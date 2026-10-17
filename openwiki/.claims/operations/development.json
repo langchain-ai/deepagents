@@ -1,0 +1,344 @@
+{
+  "schemaVersion": 1,
+  "pageVersion": "sha256:df49b6bce3bb210afbff2f944306f47bb162e50efbe09e07afe149cbd9a434a8",
+  "claims": [
+    {
+      "id": "claim_4a0fef756f594209901908160d4144b9",
+      "statement": "The release-please-managed manifest records independent current release baselines: libs/deepagents 0.7.28, libs/acp 0.0.13, libs/code 0.1.86, libs/talon 0.0.9, daytona 0.0.8, modal 0.0.6, runloop 0.0.7, vercel 0.0.2, and quickjs 0.3.9.",
+      "evidence": [
+        {
+          "resource": "repo://.release-please-manifest.json",
+          "version": "repo-file-v1:sha256:49f7fd716935c53332718551b9d0c62972f2f59a2dcb631ba7209e49fa2b42fd"
+        }
+      ]
+    },
+    {
+      "id": "claim_1f8e58134c694527ba0414e3bbf64d04",
+      "statement": "The current deepagents-code source version is 0.1.86 in both project metadata and its release-please-managed version marker, its changelog records that release, and its exact deepagents dependency pin is 0.7.28.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/CHANGELOG.md",
+          "version": "repo-file-v1:sha256:952c3737fd77deb4ee96f4101ccdc2c6ffff10c39d40c780a00051c8f5562336"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/_version.py",
+          "version": "repo-file-v1:sha256:437db15e7be7d63e500da6ac36dea8f9a2cc1a9325d8cfca8c6735b9de1f3d1a"
+        },
+        {
+          "resource": "repo://libs/code/pyproject.toml",
+          "version": "repo-file-v1:sha256:f2f280a8499dc76d371202dda329ba59846fb8e509c3a0902981cb6ee88b24de"
+        }
+      ]
+    },
+    {
+      "id": "claim_bca2e25761d743e3936bc28330d1e294",
+      "statement": "Development is package-scoped: the repository guide requires uv rather than pip, Poetry, or Conda, identifies each package Makefile as the command authority, and directs contributors to use uv sync in the package they change.",
+      "evidence": [
+        {
+          "resource": "repo://libs/DEVELOPMENT.md",
+          "version": "repo-file-v1:sha256:be4ac21db6cf4ee36bb5dcbfb20dbccc337406f9b60cc139f81ee1fe62b16ec8"
+        }
+      ]
+    },
+    {
+      "id": "claim_ed0eb38046e343b8a91e3be88b01b0e7",
+      "statement": "The Deep Agents and Code Makefiles set UV_FROZEN=true; their unit-test targets run the test group with parallel pytest, non-Unix sockets disabled and Unix sockets allowed, while their lint targets verify Ruff formatting and run ty.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/Makefile",
+          "version": "repo-file-v1:sha256:c88666cced9fe1c76690177d407f3e9df9ad46874234d1f0e3c3dde39191372b"
+        },
+        {
+          "resource": "repo://libs/deepagents/Makefile",
+          "version": "repo-file-v1:sha256:4406a7320f0b6dc46ba836c584a5a4c60038fcbffe76eda9f61d7068590b8095"
+        }
+      ]
+    },
+    {
+      "id": "claim_f0e3b94d6dff4ec195305748d060583a",
+      "statement": "Code's make check is a local CI-parity gate that runs lint, import checks, and tests, then checks extras synchronization, version-marker equality, and uv.lock freshness; only exit status 1 from its SDK-pin check is advisory.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/Makefile",
+          "version": "repo-file-v1:sha256:c88666cced9fe1c76690177d407f3e9df9ad46874234d1f0e3c3dde39191372b"
+        }
+      ]
+    },
+    {
+      "id": "claim_51e2e95f355647bfb88206d36b301f40",
+      "statement": "Code resolves deepagents, deepagents-acp, and its listed partner integrations through editable sibling paths in tool.uv.sources, allowing local consumer development without publishing those distributions.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/pyproject.toml",
+          "version": "repo-file-v1:sha256:f2f280a8499dc76d371202dda329ba59846fb8e509c3a0902981cb6ee88b24de"
+        }
+      ]
+    },
+    {
+      "id": "claim_e2a974d6bc9b4b2698094a1935322063",
+      "statement": "The aggregate libs Makefile discovers library/partner Makefiles and example manifests, stops fan-out recipes on failure, resolves ACP locks with Python 3.14 and all other discovered locks with Python 3.12, and provides lock, lock-check, and lock-bump targets.",
+      "evidence": [
+        {
+          "resource": "repo://libs/Makefile",
+          "version": "repo-file-v1:sha256:b6e4f86877495eaca03b4bf28abdedc7b0f999bf08b5863fdb5446666397d6e4"
+        }
+      ]
+    },
+    {
+      "id": "claim_79e10bb30d4047e89426bdfb820127a3",
+      "statement": "The dependency-minimums updater raises only >= and ~= floors for in-scope PyPI-resolved langchain, langgraph, langsmith, and deepagents requirements; it preserves upper bounds, extras, and markers, skips exact pins and already-higher floors, and fails rather than silently treating unresolved PyPI metadata or invalid requested narrowing as current.",
+      "evidence": [
+        {
+          "resource": "repo://.github/scripts/checks/raise_langchain_minimums.py",
+          "version": "repo-file-v1:sha256:c460c7759c85dff51b194f642951c2c927851f0847a3acaee3e8bc86a9efb0a7"
+        }
+      ]
+    },
+    {
+      "id": "claim_e16f145dfd0e4480aa5544c3c07d3d79",
+      "statement": "When dependency floors change, the updater computes the transitive reverse closure of local tool.uv.sources consumers because their locks embed producer requirements; skip-dependent-locks deliberately returns only directly changed package locks.",
+      "evidence": [
+        {
+          "resource": "repo://.github/scripts/checks/raise_langchain_minimums.py",
+          "version": "repo-file-v1:sha256:c460c7759c85dff51b194f642951c2c927851f0847a3acaee3e8bc86a9efb0a7"
+        },
+        {
+          "resource": "repo://.github/scripts/tests/checks/test_raise_langchain_minimums.py",
+          "version": "repo-file-v1:sha256:ba8cd7d022bede00bd1ba738b89a701ee6d344f4cc8673dedcf4005413fb286a"
+        }
+      ]
+    },
+    {
+      "id": "claim_b31cd6f53c5442b1979341494efa279c",
+      "statement": "The dependency-minimums workflow runs daily at 09:00 UTC or manually, invokes the updater, regenerates each reported directory=Python lock specification, and creates or refreshes a generated dependency PR only when edits occurred.",
+      "evidence": [
+        {
+          "resource": "repo://.github/workflows/raise_langchain_minimums.yml",
+          "version": "repo-file-v1:sha256:e6a9f6fa871ff39fef661489418fef4dbedfd9caa933a71e5910cccb4367fdcb"
+        }
+      ]
+    },
+    {
+      "id": "claim_b16208c7d98d41b3aec28218b2912d0b",
+      "statement": "Release-please is configured for nine separately drafted Python release PRs with per-package changelogs and extra version files, uses release(component): version titles and pre-1.0 bump behavior, and delegates GitHub release creation to release.yml.",
+      "evidence": [
+        {
+          "resource": "repo://.github/workflows/release-please.yml",
+          "version": "repo-file-v1:sha256:0d9580c8ea677c613d81ba84d817c918348694baabb3479a38d72d7fe5e74152"
+        },
+        {
+          "resource": "repo://release-please-config.json",
+          "version": "repo-file-v1:sha256:c9c9e84b4d74a8842fe1f8e49cecea496d12f553fba792d382fdea6c3abaa99f"
+        }
+      ]
+    },
+    {
+      "id": "claim_8bb9cb30a42a478db684cbf3be2b1393",
+      "statement": "Release-please blocks ordinary empty commits because component attribution comes from changed paths and a pathless commit can otherwise fan out to every package; after a release-PR merge it detects a release only when both a matching release(component): version title and that component's CHANGELOG.md change are present.",
+      "evidence": [
+        {
+          "resource": "repo://.github/workflows/release-please.yml",
+          "version": "repo-file-v1:sha256:0d9580c8ea677c613d81ba84d817c918348694baabb3479a38d72d7fe5e74152"
+        }
+      ]
+    },
+    {
+      "id": "claim_6684ba18b5bb443487bc63802914ce79",
+      "statement": "The release workflow maps the package to a working directory, resolves an exact release SHA, validates normal-release source version consistency, refuses an already-published or unverifiable PyPI version, publishes artifacts to TestPyPI after build and pre-release checks, and uses trusted publishing for that step.",
+      "evidence": [
+        {
+          "resource": "repo://.github/workflows/release.yml",
+          "version": "repo-file-v1:sha256:eb042a509ba3b6c39d9339d20f362e5b62f5581c08906e59b77653141a16f890"
+        }
+      ]
+    },
+    {
+      "id": "claim_bb114d0a1f4a490fb852b964fad11f9d",
+      "statement": "Release-note generation is deliberately non-blocking: a failure does not prevent publishing or creating the GitHub release, so an otherwise successful release can have an empty release body.",
+      "evidence": [
+        {
+          "resource": "repo://.github/workflows/release.yml",
+          "version": "repo-file-v1:sha256:eb042a509ba3b6c39d9339d20f362e5b62f5581c08906e59b77653141a16f890"
+        }
+      ]
+    },
+    {
+      "id": "claim_dc180226c59f4f0fb6038332021fa14c",
+      "statement": "Current package manifests define distinct runtime Python contracts: ACP and QuickJS require Python 3.11 or newer, Code and Talon require Python 3.12 or newer, and Deep Agents supports Python 3.11 or newer below Python 4.",
+      "evidence": [
+        {
+          "resource": "repo://libs/acp/pyproject.toml",
+          "version": "repo-file-v1:sha256:b81b86ee6a7c3ba9f74e1e9598b88fc998772c1641f190defbaf82db114cc5cf"
+        },
+        {
+          "resource": "repo://libs/code/pyproject.toml",
+          "version": "repo-file-v1:sha256:f2f280a8499dc76d371202dda329ba59846fb8e509c3a0902981cb6ee88b24de"
+        },
+        {
+          "resource": "repo://libs/deepagents/pyproject.toml",
+          "version": "repo-file-v1:sha256:b3ab370eee9c74b350923154560eac2d90618057cdfae82f572fa53723c5cdbb"
+        },
+        {
+          "resource": "repo://libs/partners/quickjs/pyproject.toml",
+          "version": "repo-file-v1:sha256:1d7d6088d520188901f54b452f6e033e75ef0dc6a188715c4bb12e0efc4ba443"
+        },
+        {
+          "resource": "repo://libs/talon/pyproject.toml",
+          "version": "repo-file-v1:sha256:5d2cb61c60626642b8b5d714012b3c0d6f4301bb555285742fcf94c226c6ed96"
+        }
+      ]
+    },
+    {
+      "id": "claim_c4dd6d82efc147128268a15e2ff1f87d",
+      "statement": "The updater preserves compatible-release ceilings by rendering a raised ~= floor with the original number of release components, plans all manifest changes before writing them, and rejects a planned rewrite that would exclude a PyPI version allowed by the original range.",
+      "evidence": [
+        {
+          "resource": "repo://.github/scripts/checks/raise_langchain_minimums.py",
+          "version": "repo-file-v1:sha256:c460c7759c85dff51b194f642951c2c927851f0847a3acaee3e8bc86a9efb0a7"
+        },
+        {
+          "resource": "repo://.github/scripts/tests/checks/test_raise_langchain_minimums.py",
+          "version": "repo-file-v1:sha256:ba8cd7d022bede00bd1ba738b89a701ee6d344f4cc8673dedcf4005413fb286a"
+        }
+      ]
+    },
+    {
+      "id": "claim_6c96e6d7c04c427081ff531c8351503a",
+      "statement": "Current core compatibility floors are langchain>=1.4.6,<2.0.0 for Deep Agents, Code, Talon, and QuickJS; Deep Agents, Talon, and QuickJS require langchain-core>=1.6.11,<2.0.0 where declared, while Talon and QuickJS require langgraph>=1.2.15,<2.0.0.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/pyproject.toml",
+          "version": "repo-file-v1:sha256:f2f280a8499dc76d371202dda329ba59846fb8e509c3a0902981cb6ee88b24de"
+        },
+        {
+          "resource": "repo://libs/deepagents/pyproject.toml",
+          "version": "repo-file-v1:sha256:b3ab370eee9c74b350923154560eac2d90618057cdfae82f572fa53723c5cdbb"
+        },
+        {
+          "resource": "repo://libs/partners/quickjs/pyproject.toml",
+          "version": "repo-file-v1:sha256:1d7d6088d520188901f54b452f6e033e75ef0dc6a188715c4bb12e0efc4ba443"
+        },
+        {
+          "resource": "repo://libs/talon/pyproject.toml",
+          "version": "repo-file-v1:sha256:5d2cb61c60626642b8b5d714012b3c0d6f4301bb555285742fcf94c226c6ed96"
+        }
+      ]
+    },
+    {
+      "id": "claim_26a4d21b2afa46b8be5ff2d98d1c2e81",
+      "statement": "CI invokes the reusable lockfile workflow on pull requests, pushes to main, and merge groups; that workflow runs the lockfile checker, which resolves ACP checks with Python 3.14 and all other package checks with Python 3.12.",
+      "evidence": [
+        {
+          "resource": "repo://.github/scripts/checks/check_lockfiles_pre_commit.py",
+          "version": "repo-file-v1:sha256:1a7f0e5ee1f16a1235d704221fc72fc1ab8ad15161cc5847a420b56b6d0e7a22"
+        },
+        {
+          "resource": "repo://.github/workflows/check_lockfiles.yml",
+          "version": "repo-file-v1:sha256:c4170bd314836e5343c44f678b65d27d73c0f4f7c365c564a281212a790d2b15"
+        },
+        {
+          "resource": "repo://.github/workflows/ci.yml",
+          "version": "repo-file-v1:sha256:9a8ff160e4c969bbc59b433930bfe77ce878fc4662eaac649c16d3dfcc6787b9"
+        }
+      ]
+    },
+    {
+      "id": "claim_312538f2ad5146fb9303e96ba7d4a5db",
+      "statement": "The lockfile checker and refresh helper compute the transitive reverse closure of editable local-source consumers, then run uv lock or uv lock --check with Python 3.14 for ACP and Python 3.12 for every other discovered package.",
+      "evidence": [
+        {
+          "resource": "repo://.github/scripts/checks/check_lockfiles_pre_commit.py",
+          "version": "repo-file-v1:sha256:1a7f0e5ee1f16a1235d704221fc72fc1ab8ad15161cc5847a420b56b6d0e7a22"
+        },
+        {
+          "resource": "repo://.github/scripts/checks/refresh_lockfiles.py",
+          "version": "repo-file-v1:sha256:4981d7b3656ace80e7c6a90e8282391dd4902d50dfa810e541386ac3c10d17b6"
+        }
+      ]
+    },
+    {
+      "id": "claim_99c4288fa60442b8a1a02eced2cf7070",
+      "statement": "The daily genai-prices workflow for deepagents-code upgrades the lock pin within the declared range, raises the manifest floor to the resolved version, refreshes the affected lockfiles, and treats a moved pin or lagging floor as staleness rather than any newer PyPI release.",
+      "evidence": [
+        {
+          "resource": "repo://.github/workflows/bump_genai_prices.yml",
+          "version": "repo-file-v1:sha256:103d7e16f34079b9bae047d6ec0abf0a216e40d393969633020120edcde70661"
+        },
+        {
+          "resource": "repo://libs/code/pyproject.toml",
+          "version": "repo-file-v1:sha256:f2f280a8499dc76d371202dda329ba59846fb8e509c3a0902981cb6ee88b24de"
+        }
+      ]
+    },
+    {
+      "id": "claim_e251d80b8991434698565a2a6aabaa43",
+      "statement": "The genai-prices workflow reuses one bot-managed bump branch and PR without overwriting a human-authored tip, reports a stable release capped by the manifest ceiling through a deduplicated issue, and similarly files or refreshes a tracking issue on workflow failure.",
+      "evidence": [
+        {
+          "resource": "repo://.github/workflows/bump_genai_prices.yml",
+          "version": "repo-file-v1:sha256:103d7e16f34079b9bae047d6ec0abf0a216e40d393969633020120edcde70661"
+        }
+      ]
+    },
+    {
+      "id": "claim_72239d00e7294a0a8b278c1526b3a918",
+      "statement": "deepagents-code must update its exact deepagents== pin in the same PR whenever it needs new SDK functionality; the release process describes the pin as the minimum SDK version Code actually requires and provides explicit release and manual-dispatch bypasses only for intentionally older pins.",
+      "evidence": [
+        {
+          "resource": "repo://.github/RELEASING.md#L41-L50",
+          "version": "repo-lines-v1:sha256:d7a058081b799a76a7a99d0aa11da497f78bccb1726f5edec0c4f881135a6c7c:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQwZDJjOTk1MmIzYThhMjAyMzY0NGNlOGNhMGFiNDczNWRiZTgzYzUxYzg2NWJhZmE3MjU5YzE4YTg0YTQ2NWEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjY0NzBkZTk0NTIwMDk5N2ZmY2FlOTNkMmU4Yzc0YTBkMjExMzhmN2JhNWY5Zjk4MDJiY2YyMDJjNjViMGU5NWYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjA4OTg0MjU0NjdiNjFmMTU4NDA4ZTM3NTAwZWUyZTUwMmVjMmNhMTY0ZDc5NTA3ZWUzOThlZTQ1N2U3N2Y0YTYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImQxNWZkNmVkOWMxMTJlM2ZkMDFkOTQ0Mzg4ODc5ZTg4ZGRhNzhkMGJhOGFiMmU4YWUyNDZhZmUzNDE5NDBmYTgifQ"
+        },
+        {
+          "resource": "repo://libs/code/pyproject.toml#L28-L31",
+          "version": "repo-lines-v1:sha256:5f7f1ceaace062b6b0002fe0e71d2874a4e90cd762f54fe9548035052b79dfd7:eyJzZWxlY3RlZExpbmVDb3VudCI6NCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYWQ5NWY1ZTllZGUwMTgxNjA0M2MwNzk3YWNlOGRhMmFjNGU5OWE4YTZhNjEwZmE5ODU3MGVmMzRiOTM1NjEwOSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMDlkOTAzNDkwNzI4YmE3ZjY3OGFkNzY2Mzc3ZDFjMDgzN2IyNGI2MjhhZjYzOTEwMTJmMjVlOGVmYzQ5ODhhMCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiYWFmZDBkOTg5MzkxYzAwN2E3ZDdhYzQ1YjQ5YmZjZjcyMTQ5Y2U2MDcxODM5MGJjZTQxNDMwNmQ0ZDhhNDZkNCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMjk4MTJmOTcxN2VmMDBmNmVhNTk1ZDJmOGY2NDIwNDg1MjE3MmIwOTE1OTI3OGZkYjJiMWM0MzM1NTJiYzlmYyJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_ddf3780d6b6241fab4de8fa90e8d485e",
+      "statement": "Curated notes are required for every release-please-managed package unless ci:skip-curated-notes is applied: a maintainer marks the release PR ready, reviews the release-bot draft, invokes @release-bot apply to update the package CHANGELOG.md and PR body, and waits for the curated release notes check before merging.",
+      "evidence": [
+        {
+          "resource": "repo://.github/RELEASING.md#L60-L86",
+          "version": "repo-lines-v1:sha256:4cf081e22da4d28c8085a000dde2ce0f8c16f752b663cd5fb00a5f1f3f621d31:eyJzZWxlY3RlZExpbmVDb3VudCI6MjcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc0NjU2YzExMmI1OTE4ZDAzM2JmNmQxYjA5YzM5NmE2YjVlOWNiYzBlZWEwM2Y2ZWRhYTU1YzI4NWVmZmE3NDkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImViNGFhNjk5N2E4YjU2NTc3YjZlN2IwY2M0MDFmY2Q3YTM3NTlhYTNhMGFkNTY3YmNiNDc4ZjI5M2M3N2M3ZWMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImYyZTM4ZTkwZjJmZmFhMDlmODg0MDQ3NjI0YWNlNDY1NjU2NzY5MTgzMzA5MGNlZGNjZDUzMGJiODA4MmQyNTQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjJmMzgyNTE0NjQ5ZTlkOTUzODUzZDQwMDkxOGQ5YmIxMmJiYjAzZjE5Y2MzYTJiMDQ4NTBjODQ3YThiMDBlMjgifQ"
+        },
+        {
+          "resource": "repo://.github/workflows/release_notes.yml#L15-L28",
+          "version": "repo-lines-v1:sha256:fb007303b27590dbb32be9f7716ac5bac242aa4f6d6dfd3682fa315664c4f430:eyJzZWxlY3RlZExpbmVDb3VudCI6MTQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI2YTg5ZWQ5MTRkZjQ1MzQyYWYxMjc2MGE1ZTE1NWNhZmJlZTI5NDlkNWZkYmVkMDg1NzZmMTMwOGY4ZWUzNWIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjY0YTAxZjI4YjZiMDRkNDVjYWQwZmU2Yjg2MmQxYTgwMmQ3YzFiYzVlNzdlYjg4NTgwMGI4ZDkxY2Y3ZjQ0ODEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjYyZTUzNTJiNDQxZDc5ZDNiZTE3NmY1ZTk3MjMxMmU2OGQzNmJkYjBkYjExYjhjMzNkYmI2ODY3ZTU0MDllOTAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImZjYzEzYTc4NjUzN2JhMGYyZWQ0ZmRhNDYxZmY4NGM0OWY4Y2E2ODFkZGI5MDJmMGQxNTFjMTc0NjhmYTdmZmEifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_b7a0071e6d874630a9fe212af6ef6178",
+      "statement": "Release-note curation runs trusted automation from main, treats release-PR content as untrusted API data rather than checked-out executable content, and serializes commands per PR without canceling work already in flight.",
+      "evidence": [
+        {
+          "resource": "repo://.github/workflows/release_notes.yml#L2-L28",
+          "version": "repo-lines-v1:sha256:7a6aa7eee5a8129ee4e25de3101426c863d82d0d9301032c911b88926f7dbc8c:eyJzZWxlY3RlZExpbmVDb3VudCI6MjcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc2OTQ0YzM3NmQ5MWRjOTE5ZWQ0OWY1MWY3ZjE3ODExOWQ2MDUxMDE4Y2IxNDExYmIxN2M1ZWIwMTZjZTM5Y2YiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjY0YTAxZjI4YjZiMDRkNDVjYWQwZmU2Yjg2MmQxYTgwMmQ3YzFiYzVlNzdlYjg4NTgwMGI4ZDkxY2Y3ZjQ0ODEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjoxLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImI4ODJhMjI1YzVhYmYyNTQ4NmQyYTMzNTE1NmZlMzljOTUyMGMxMWE0NWE2MWQzM2RmYTU5NGQyOWUwNGEzZWMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImZjYzEzYTc4NjUzN2JhMGYyZWQ0ZmRhNDYxZmY4NGM0OWY4Y2E2ODFkZGI5MDJmMGQxNTFjMTc0NjhmYTdmZmEifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_2b539488fec4498db719cb9568323b64",
+      "statement": "A package becomes release-please-managed only when it is configured in both release-please-config.json and .release-please-manifest.json; an initial never-published 0.0.1 package needs a 0.0.0 manifest baseline so release-please proposes 0.0.1 rather than 0.0.2.",
+      "evidence": [
+        {
+          "resource": "repo://.github/RELEASING.md#L244-L250",
+          "version": "repo-lines-v1:sha256:195fc86d7fbdf369a978fb6863fcdabf68e0c28a6514a0c689f7924f58517497:eyJzZWxlY3RlZExpbmVDb3VudCI6NywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYmI3YmIzYWRlMDAzMjdkMDRlMjYzNTI1ZGFhMzU0MzdhNTE4MDU3ZGNkNWFhOTlmMDMyZTFmNTk4YWVlZjBiMiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiYTJmZTU0MzIxNmVjMDVhNDA4NGYyM2Y0YTJjNzA3MDI3N2M4NWZjOGI3NWU1OGEwNGYzMjNiNTFiNTkzYTUwMyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiODgwOTE4YWM2NDMwNzA0MDMwMDQzMjc4YWJiMTY3MDAxYzY4MzQzZmM1YTNhZGY3ZjgyYjYxNjk1MjliODRhZiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMTQxZGU5MzE1MzgyMWU4YTFhMzhkZDIzYWUyYWQxODgwYzA5MTI0YTM3YjJjNTIwZjJiNDNiZjAwMWVjOGY1ZiJ9"
+        },
+        {
+          "resource": "repo://.release-please-manifest.json",
+          "version": "repo-file-v1:sha256:49f7fd716935c53332718551b9d0c62972f2f59a2dcb631ba7209e49fa2b42fd"
+        },
+        {
+          "resource": "repo://release-please-config.json#L59-L194",
+          "version": "repo-lines-v1:sha256:99688890bd35cea85dba44ea9cb93ed4ffded2552db16735737a8629f19b315c:eyJzZWxlY3RlZExpbmVDb3VudCI6MTM2LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI5MmMwMDQ3ZjdjYzRjOTcxY2FkYWI0YzI5NTc1Mjc2ZGNiYjEyZGZjMjNhN2Q5MGVhZTU0MmU1NzVmZTIwYzlhIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI0ODkzZjQwZTM3ODFlYjg5NmM4MmQwNDZhMDgwNjdhMTFlMzVjZGYyZjFkZmFmMjZmZWE5MGI4ZGI2Njc2NDEzIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI3NDRiYTVkZWY4NmU1ZmI2MWI3ODJiZTBhZDJjNWMzMDhlZDViOGExZTBkZTExYzAzNzAyY2ZlZWNmNGM3MzM3IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiJhNjVlODk4NjlhNzhkYjgyMjY4MTQxYzYxOTkxZGQ2MWY5OWIyNjkzNzBiNTEyNjQzMjcyYmZjZDU4YTFiOWY1In0"
+        }
+      ]
+    }
+  ],
+  "verification": {
+    "by": "openwiki/0.4.2",
+    "at": "2026-10-17T08:04:56.296Z"
+  }
+}

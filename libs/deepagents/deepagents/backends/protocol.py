@@ -1,6 +1,6 @@
 """Protocol definition for pluggable memory backends.
 
-This module defines the BackendProtocol that all backend implementations
+This module defines the `BackendProtocol` that all backend implementations
 must follow. Backends can store files in different locations (state, filesystem,
 database, etc.) and provide a uniform interface for file operations.
 """
@@ -9,26 +9,32 @@ import abc
 import asyncio
 import inspect
 import logging
-import warnings
-from collections.abc import Callable
 from dataclasses import dataclass
-from functools import lru_cache
-from typing import Any, Final, Literal, NotRequired, TypeAlias
+from functools import lru_cache, partial
+from typing import Final, Literal, NotRequired
 
-from langchain.tools import ToolRuntime
 from typing_extensions import TypedDict
 
-FileFormat = Literal["v1", "v2"]
-r"""File storage format version.
+logger = logging.getLogger(__name__)
 
-- `'v1'`: Legacy format — `content` stored as `list[str]` (lines split
-    on `\\n`), no `encoding` field.
-- `'v2'`: Current format — `content` stored as a plain `str` (UTF-8 text
-    or base64-encoded binary), with an `encoding` field (`"utf-8"` or
-    `"base64"`).
+DEFAULT_GREP_TIMEOUT: Final = 15
+"""Default timeout in seconds for one sync grep phase."""
+
+ASYNC_GREP_TIMEOUT: Final = (2 * DEFAULT_GREP_TIMEOUT) + 5
+"""Timeout in seconds for the async grep wrapper.
+
+This gives `FilesystemBackend` enough headroom to finish the worst-case sync
+path: ripgrep timeout, then Python fallback timeout.
 """
 
-logger = logging.getLogger(__name__)
+ASYNC_GLOB_TIMEOUT: Final = 30
+"""Timeout in seconds for a sandbox glob round-trip.
+
+The remote script bounds its own walk (`TIME_BUDGET` in `sandbox.py`), but that
+covers neither interpreter startup, the sandbox round-trip, nor transferring up
+to `MAX_MATCHES` records. Without an outer bound a wedged sandbox hangs the
+caller indefinitely.
+"""
 
 FileOperationError = Literal[
     "file_not_found",
@@ -41,10 +47,10 @@ FileOperationError = Literal[
 These represent common, recoverable errors that an LLM can understand and
 potentially fix:
 
-- file_not_found: The requested file doesn't exist (download)
-- permission_denied: Access denied for the operation
-- is_directory: Attempted to download a directory as a file
-- invalid_path: Path syntax is malformed or contains invalid characters
+- `file_not_found`: The requested file doesn't exist (download)
+- `permission_denied`: Access denied for the operation
+- `is_directory`: Attempted to download a directory as a file
+- `invalid_path`: Path syntax is malformed or contains invalid characters
 """
 
 # Named constants for each `FileOperationError` literal. Use these instead of
@@ -80,7 +86,7 @@ class FileDownloadResponse:
     content: bytes | None = None
     """File contents as bytes on success, `None` on failure."""
 
-    error: FileOperationError | None = None
+    error: FileOperationError | str | None = None
     """A `FileOperationError` literal for known conditions, or a
     backend-specific error string when the failure cannot be normalized.
 
@@ -112,8 +118,8 @@ class FileUploadResponse:
     error messages.
     """
 
-    error: FileOperationError | None = None
-    """error: A `FileOperationError` literal for known conditions, or a
+    error: FileOperationError | str | None = None
+    """A `FileOperationError` literal for known conditions, or a
     backend-specific error string when the failure cannot be normalized.
 
     `None` on success.
@@ -140,6 +146,16 @@ class FileInfo(TypedDict):
     """ISO 8601 timestamp of last modification, if known."""
 
 
+class ContextLine(TypedDict):
+    """A non-matching line surrounding a grep match, used for `context_lines`."""
+
+    line: int
+    """1-indexed line number of the context line."""
+
+    text: str
+    """Content of the context line."""
+
+
 class GrepMatch(TypedDict):
     """A single match from a grep search."""
 
@@ -151,6 +167,21 @@ class GrepMatch(TypedDict):
 
     text: str
     """Content of the matching line."""
+
+    context_before: NotRequired[list[ContextLine]]
+    """Context lines before the match.
+
+    Present (alongside `context_after`) only when a backend was asked for
+    `context_lines > 0` (via a backend-specific argument, e.g.
+    `FilesystemBackend.grep`); both keys are set together on every match or on
+    none. An empty list means no context lines were available on that side: the
+    match sits at the file boundary, the adjacent line was itself a match
+    (matches are never repeated as context), or the file could not be re-read
+    (in which case the failure is reported in `GrepResult.error`).
+    """
+
+    context_after: NotRequired[list[ContextLine]]
+    """Context lines after the match. See `context_before` for presence rules."""
 
 
 class FileData(TypedDict):
@@ -171,108 +202,138 @@ class FileData(TypedDict):
 
 @dataclass
 class ReadResult:
-    """Result from backend read operations.
-
-    Attributes:
-        error: Error message on failure, None on success.
-        file_data: FileData dict on success, None on failure.
-    """
+    """Result from backend read operations."""
 
     error: str | None = None
+    """Error message on failure, `None` on success."""
+
     file_data: FileData | None = None
+    """File data on success, `None` on failure."""
+
+    total_lines: int | None = None
+    """Total number of source lines when the backend can determine it."""
+
+    start_line: int | None = None
+    """1-indexed first source line returned in `file_data`."""
+
+    end_line: int | None = None
+    """1-indexed last source line returned in `file_data`."""
+
+    next_offset: int | None = None
+    """0-indexed offset for the next unread source line."""
+
+    no_lines_requested: bool = False
+    """The read asked for zero lines and the file was never inspected.
+
+    Set by backends when a non-positive `limit` short-circuits the read, so
+    the middleware can tell a never-inspected window apart from a file that
+    was inspected and is genuinely empty — both otherwise arrive as empty
+    content with no pagination metadata.
+    """
+
+    def __post_init__(self) -> None:
+        """Reject malformed pagination-field combinations at construction.
+
+        The window fields are not independent: `start_line`/`end_line` are a
+        pair, and neither `next_offset` nor `total_lines` describes anything
+        without the window it refers to. Beyond co-presence, the values must
+        agree numerically: a window runs forward (`1 <= start_line <=
+        end_line`), the file is at least as long as the window
+        (`total_lines >= end_line`), and the resume point is the 0-indexed line
+        immediately after the last one shown (`next_offset == end_line`, since
+        `end_line` is 1-indexed). Fail loudly here to keep a backend from
+        emitting a `next_offset` that would silently skip unshown source lines
+        once it reaches the middleware.
+        """
+        if (self.start_line is None) != (self.end_line is None):
+            msg = "ReadResult.start_line and end_line must be set together or both left unset"
+            raise ValueError(msg)
+        if self.no_lines_requested and (
+            self.error is not None or self.start_line is not None or self.next_offset is not None or self.total_lines is not None
+        ):
+            msg = "ReadResult.no_lines_requested describes an uninspected window; it cannot be combined with error or pagination fields"
+            raise ValueError(msg)
+        if self.next_offset is not None and self.start_line is None:
+            msg = "ReadResult.next_offset requires start_line and end_line to be set"
+            raise ValueError(msg)
+        if self.total_lines is not None and self.start_line is None:
+            msg = "ReadResult.total_lines requires start_line and end_line to be set"
+            raise ValueError(msg)
+
+        # Numeric consistency of a present window. `start_line`/`end_line` are
+        # bound together above, so testing `start_line` covers both.
+        if self.start_line is not None and self.end_line is not None:
+            if self.start_line < 1 or self.end_line < self.start_line:
+                msg = f"ReadResult window must satisfy 1 <= start_line <= end_line, got start_line={self.start_line}, end_line={self.end_line}"
+                raise ValueError(msg)
+            if self.total_lines is not None and self.total_lines < self.end_line:
+                msg = f"ReadResult.total_lines ({self.total_lines}) cannot be less than end_line ({self.end_line})"
+                raise ValueError(msg)
+            if self.next_offset is not None and self.next_offset != self.end_line:
+                msg = f"ReadResult.next_offset ({self.next_offset}) must equal end_line ({self.end_line}), the 0-indexed line after the last shown"
+                raise ValueError(msg)
 
 
-class _Unset:
-    """Sentinel type for detecting explicit parameter usage."""
-
-
-Unset = _Unset()
-
-
-def _normalize_files_update(
-    files_update: dict[str, Any] | None | _Unset,
-) -> dict[str, Any] | None:
-    """Normalize file updates."""
-    if isinstance(files_update, _Unset):
-        return None
-
-    warnings.warn(
-        "`files_update` is deprecated and will be removed in v0.7. State updates are now handled internally by the backend.",
-        DeprecationWarning,
-        stacklevel=3,
-    )
-    return files_update
-
-
-@dataclass(init=False)
+@dataclass
 class WriteResult:
-    """Result from backend write operations.
+    """Result from backend `write` operations.
 
     Attributes:
-        error: Error message on failure, None on success.
-        path: Absolute path of written file, None on failure.
+        error: Error message on failure, `None` on success.
+        path: Absolute path of written file, `None` on failure.
 
     Examples:
         >>> WriteResult(path="/f.txt")
         >>> WriteResult(error="File exists")
     """
 
-    error: str | None
-    path: str | None
-    files_update: dict[str, Any] | None
-
-    def __init__(
-        self,
-        error: str | None = None,
-        path: str | None = None,
-        files_update: dict[str, Any] | None | _Unset = Unset,
-    ) -> None:
-        """Initialize WriteResult."""
-        self.error = error
-        self.path = path
-        self.files_update = _normalize_files_update(files_update)
+    error: str | None = None
+    path: str | None = None
 
 
-@dataclass(init=False)
+@dataclass
 class EditResult:
-    """Result from backend edit operations.
+    """Result from backend `edit` operations.
 
     Attributes:
-        error: Error message on failure, None on success.
-        path: Absolute path of edited file, None on failure.
-        occurrences: Number of replacements made, None on failure.
+        error: Error message on failure, `None` on success.
+        path: Absolute path of edited file, `None` on failure.
+        occurrences: Number of replacements made, `None` on failure.
 
     Examples:
         >>> EditResult(path="/f.txt", occurrences=1)
         >>> EditResult(error="File not found")
     """
 
-    error: str | None
-    path: str | None
-    files_update: dict[str, Any] | None
-    occurrences: int | None
+    error: str | None = None
+    path: str | None = None
+    occurrences: int | None = None
 
-    def __init__(
-        self,
-        error: str | None = None,
-        path: str | None = None,
-        files_update: dict[str, Any] | None | _Unset = Unset,
-        occurrences: int | None = None,
-    ) -> None:
-        """Initialize edit result."""
-        self.error = error
-        self.path = path
-        self.files_update = _normalize_files_update(files_update)
-        self.occurrences = occurrences
+
+@dataclass
+class DeleteResult:
+    """Result from backend delete operations.
+
+    Attributes:
+        error: Error message on failure, None on success.
+        path: Absolute path of the deleted file, None on failure.
+
+    Examples:
+        >>> DeleteResult(path="/f.txt")
+        >>> DeleteResult(error="File not found")
+    """
+
+    error: str | None = None
+    path: str | None = None
 
 
 @dataclass
 class LsResult:
-    """Result from backend ls operations.
+    """Result from backend `ls` operations.
 
     Attributes:
-        error: Error message on failure, None on success.
-        entries: List of file info dicts on success, None on failure.
+        error: Error message on failure, `None` on success.
+        entries: List of file info dicts on success, `None` on failure.
     """
 
     error: str | None = None
@@ -281,69 +342,109 @@ class LsResult:
 
 @dataclass
 class GrepResult:
-    """Result from backend grep operations.
+    """Result from backend `grep` operations.
 
     Attributes:
-        error: Error message on failure, None on success.
-        matches: List of grep match dicts on success, None on failure.
+        error: Error message on failure, `None` on success.
+        matches: List of grep match dicts. Populated on success and, when the
+            search was cut short, with whatever was found before stopping.
+            `None` only on a hard failure.
+        truncated: True when the search stopped early (e.g. hit its time limit)
+            and `matches` is therefore incomplete but still valid.
     """
 
     error: str | None = None
     matches: list["GrepMatch"] | None = None
+    truncated: bool = False
+
+
+def _apply_grep_max_count(result: GrepResult, max_count: int | None) -> GrepResult:
+    """Enforce a match cap after a backend search has completed."""
+    if max_count is None or result.matches is None or len(result.matches) <= max_count:
+        return result
+    return GrepResult(error=result.error, matches=result.matches[:max_count], truncated=True)
+
+
+GlobTruncationReason = Literal["budget", "unreadable", "transport"]
+"""Why a `GlobResult` is incomplete.
+
+The distinction decides what advice is useful to the caller:
+
+- `budget`: the walk hit its time limit or match cap. Narrowing the pattern or
+  the path surfaces the rest.
+- `unreadable`: a subtree could not be read (e.g. permissions). Narrowing will
+  *never* surface those files, so advising it sends the caller in a loop.
+- `transport`: the sandbox transport clipped the output.
+"""
 
 
 @dataclass
 class GlobResult:
-    """Result from backend glob operations.
+    """Result from backend `glob` operations.
 
     Attributes:
-        error: Error message on failure, None on success.
-        matches: List of matching file info dicts on success, None on failure.
+        error: Error message on failure, `None` on success.
+        matches: List of matching file info dicts. Populated on success and,
+            when the walk was cut short, with whatever was found before
+            stopping. `None` only on a hard failure.
+        truncated: True when the walk stopped early (e.g. hit its time limit)
+            and `matches` is therefore incomplete but still valid.
+        truncation_reason: Why `matches` is incomplete. Set whenever the
+            producing backend can distinguish the cause; `None` when
+            `truncated` is False or the cause is unknown.
     """
 
     error: str | None = None
     matches: list["FileInfo"] | None = None
+    truncated: bool = False
+    truncation_reason: GlobTruncationReason | None = None
 
 
 # @abstractmethod to avoid breaking subclasses that only implement a subset
 class BackendProtocol(abc.ABC):  # noqa: B024
     r"""Protocol for pluggable memory backends (single, unified).
 
-    Backends can store files in different locations (state, filesystem, database, etc.)
-    and provide a uniform interface for file operations.
+    Backends can store files in different locations (state, filesystem,
+    database, etc.) and provide a uniform interface for file operations.
 
-    All file data is represented as dicts with the following structure::
+    File operations (`grep`, `glob`, `ls`, `read`, etc.) live on this base
+    protocol rather than only on `SandboxBackendProtocol` because not every
+    backend has a shell. `StateBackend` and `StoreBackend` store files in
+    in-memory state or a remote store with no process to exec into, so they
+    implement `grep`/`glob` in pure Python and have no `execute` at all.
+    Even on shell-capable backends, the tools are not just convenience
+    wrappers around `execute`: they enforce literal-only matching (not
+    regex), return structured `GrepResult`/`GlobResult` objects, support
+    `max_count` truncation, and pass through filesystem permission rules —
+    none of which raw `execute` + shell `grep`/`find` provides. Agent-facing
+    prompt guidance should therefore recommend these tools only when they
+    are actually registered, and never assume a shell is available as a
+    fallback.
 
-        {
-            "content": str,  # Text content (utf-8) or base64-encoded binary
-            "encoding": str,  # "utf-8" for text, "base64" for binary data
-            "created_at": str,  # ISO format timestamp
-            "modified_at": str,  # ISO format timestamp
-        }
+    All file data is represented as dicts with the following structure:
 
-    Note:
-        Legacy data may still contain `"content": list[str]` (lines split on
-        `\\n`).  Backends accept this for backwards compatibility and emit a
-        `DeprecationWarning`.
+    ```python
+    {
+        "content": str,  # Text content (utf-8) or base64-encoded binary
+        "encoding": str,  # "utf-8" for text, "base64" for binary data
+        "created_at": str,  # ISO format timestamp
+        "modified_at": str,  # ISO format timestamp
+    }
+    ```
     """
 
     def ls(self, path: str) -> "LsResult":
         """List all files in a directory with metadata.
 
         Args:
-            path: Absolute path to the directory to list. Must start with '/'.
+            path: Absolute path to the directory to list. Must start with `'/'`.
 
         Returns:
-            LsResult with directory entries or error.
-        """
-        if type(self).ls_info is not BackendProtocol.ls_info:
-            warnings.warn(
-                "`ls_info` is deprecated and will be removed in v0.7; rename to `ls` instead.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-            return LsResult(entries=self.ls_info(path))
+            `LsResult` with directory entries or error.
 
+        Raises:
+            NotImplementedError: If the backend does not implement `ls`.
+        """
         raise NotImplementedError
 
     async def als(self, path: str) -> "LsResult":
@@ -356,18 +457,33 @@ class BackendProtocol(abc.ABC):  # noqa: B024
         offset: int = 0,
         limit: int = 2000,
     ) -> ReadResult:
-        """Read file content with line numbers.
+        """Read file content for the requested line range.
+
+        Implementations must tolerate degenerate windows rather than raising:
+        a negative `offset` reads from the first line, and a non-positive
+        `limit` returns empty content with every pagination field unset.
+        `deepagents.backends.utils.normalize_read_bounds` clamps both bounds for
+        implementations that slice in Python.
+
+        Implementations must also set `start_line` whenever they return
+        line-numberable text. The middleware falls back to deriving the gutter
+        from `offset` when `start_line` is unset, which only yields a valid
+        1-indexed gutter for windows the backend actually sliced.
 
         Args:
-            file_path: Absolute path to the file to read. Must start with '/'.
-            offset: Line number to start reading from (0-indexed). Default: 0.
-            limit: Maximum number of lines to read. Default: 2000.
+            file_path: Absolute path to the file to read. Must start with `'/'`.
+            offset: Line number to start reading from (0-indexed).
+            limit: Maximum number of lines to read.
 
         Returns:
-            String containing file content formatted with line numbers (cat -n format),
-            starting at line 1. Lines longer than 2000 characters are truncated.
+            `ReadResult` with raw (unformatted) content for the requested window,
+                or an error if the file doesn't exist or can't be read.
 
-            Returns an error string if the file doesn't exist or can't be read.
+                Line-number formatting is applied downstream by the filesystem
+                middleware (`format_content_with_line_numbers`), not by backends:
+                it adds the gutter, starts numbering at `offset + 1`, and splits
+                lines longer than 5000 characters into continuation rows
+                (e.g., `5.1`, `5.2`).
         """
         raise NotImplementedError
 
@@ -385,6 +501,8 @@ class BackendProtocol(abc.ABC):  # noqa: B024
         pattern: str,
         path: str | None = None,
         glob: str | None = None,
+        *,
+        max_count: int | None = None,
     ) -> "GrepResult":
         """Search for a literal text pattern in files.
 
@@ -393,11 +511,11 @@ class BackendProtocol(abc.ABC):  # noqa: B024
 
                 Performs exact substring matching within file content.
 
-                Example: "TODO" matches any line containing "TODO"
+                Example: `"TODO"` matches any line containing `"TODO"`
 
             path: Optional directory path to search in.
 
-                If None, searches in current working directory.
+                If `None`, searches in current working directory.
 
                 Example: `'/workspace/src'`
 
@@ -412,6 +530,17 @@ class BackendProtocol(abc.ABC):  # noqa: B024
                 - `?` matches single character
                 - `[abc]` matches one character from set
 
+            max_count: Optional total cap on the number of matches returned
+                across all files.
+
+                `None` (the default) preserves existing backend behavior and
+                returns every match. When set to an int, at most that many
+                matches are returned; if more exist the search stops and the
+                result is flagged with `GrepResult.truncated=True`. Exactly
+                `max_count` matches with none dropped is reported complete
+                (`truncated=False`). Interpreted as a total cap, not a per-file
+                cap.
+
         Examples:
             - `'*.py'` - only search Python files
             - `'**/*.txt'` - search all `.txt` files recursively
@@ -420,18 +549,10 @@ class BackendProtocol(abc.ABC):  # noqa: B024
 
         Returns:
             `GrepResult` with matches or error.
-        """
-        if type(self).grep_raw is not BackendProtocol.grep_raw:
-            warnings.warn(
-                "`grep_raw` is deprecated and will be removed in v0.7; rename to `grep` instead.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-            result = self.grep_raw(pattern, path, glob)
-            if isinstance(result, str):
-                return GrepResult(error=result)
-            return GrepResult(matches=result)
 
+        Raises:
+            NotImplementedError: If the backend does not implement `grep`.
+        """
         raise NotImplementedError
 
     async def agrep(
@@ -439,43 +560,99 @@ class BackendProtocol(abc.ABC):  # noqa: B024
         pattern: str,
         path: str | None = None,
         glob: str | None = None,
+        *,
+        max_count: int | None = None,
     ) -> "GrepResult":
-        """Async version of `grep`."""
-        return await asyncio.to_thread(self.grep, pattern, path, glob)
+        """Async version of `grep`.
 
-    def glob(self, pattern: str, path: str = "/") -> "GlobResult":
+        Wraps the sync call with an async timeout as a safety net. The timeout
+        bounds how long the caller waits; it does not stop the worker thread
+        created by `asyncio.to_thread`.
+
+        `max_count` is forwarded when the concrete `grep` accepts it (so the
+        search can bound itself); backends that don't accept it run uncapped and
+        are trimmed afterward. Either way the return value is always passed
+        through `_apply_grep_max_count` (a no-op when already within the cap), so
+        callers get the same guarantee regardless of which path runs.
+        """
+        grep_kwargs = {"max_count": max_count} if _method_accepts_max_count(type(self), "grep") else {}
+        grep_call = partial(self.grep, pattern, path, glob, **grep_kwargs)
+        try:
+            result = await asyncio.wait_for(
+                asyncio.to_thread(grep_call),
+                timeout=ASYNC_GREP_TIMEOUT,
+            )
+            return _apply_grep_max_count(result, max_count)
+        except TimeoutError:
+            logger.warning(
+                "agrep timed out after %ds (pattern=%r, path=%r, glob=%r)",
+                ASYNC_GREP_TIMEOUT,
+                pattern,
+                path,
+                glob,
+            )
+            return GrepResult(
+                error=f"Error: grep timed out after {ASYNC_GREP_TIMEOUT}s. Try a more specific pattern or a narrower path.",
+            )
+
+    def glob(self, pattern: str, path: str | None = None) -> "GlobResult":
         """Find files matching a glob pattern.
+
+        Pattern matching follows the shared backend contract (aligned with
+        grep include-glob, not classic non-recursive shell globbing):
+
+        - Patterns without `/` match the basename at any depth under `path`.
+
+            Example: `*.py` matches `src/app/main.py`.
+        - Patterns containing `/` match paths relative to the search root, with
+          `**` support.
+
+            Example: `src/**/*.py` matches `src/app/main.py`.
+        - A leading `/` anchors the pattern to the search root; it narrows the
+          match rather than widening it.
+
+            Example: `/*.py` matches `top.py` but not `src/app/main.py`.
+        - Leading-dot names match only when the pattern segment itself starts
+          with `.`. Since `**` will not descend into dot-directories, a bare
+          pattern is *broader* than its `**/` form.
+
+            Example: `*.yml` matches `.github/workflows/ci.yml`; `**/*.yml`
+            does not. `.env` matches `.env`; `*` does not.
+
+        Only regular files are returned; directories are never matched.
 
         Args:
             pattern: Glob pattern with wildcards to match file paths.
 
-                Supports standard glob syntax:
+                Supports:
 
-                - `*` matches any characters within a filename/directory
+                - `*` matches any characters within a path segment
                 - `**` matches any directories recursively
                 - `?` matches a single character
-                - `[abc]` matches one character from set
+                - `[abc]` matches one character from a set, `[!abc]` negates
+                - `{a,b}` brace expansion, including nested groups
 
-            path: Base directory to search from.
+            path: Optional base directory to search from.
 
-                Default: `'/'` (root).
+                If omitted, the backend chooses its default search root.
 
                 The pattern is applied relative to this path.
 
         Returns:
-            GlobResult with matching files or error.
-        """
-        if type(self).glob_info is not BackendProtocol.glob_info:
-            warnings.warn(
-                "`glob_info` is deprecated and will be removed in v0.7; rename to `glob` instead.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-            return GlobResult(matches=self.glob_info(pattern, path))
+            `GlobResult` with matching files or error. Patterns the matcher
+            refuses -- brace expansion past its limit, or a `..` segment -- are
+            reported as `error` with `matches=None`, not raised.
 
+            `FileInfo.path` is always absolute. `_check_fs_permission` matches
+            `deny` rules against absolute patterns only, so a backend returning
+            a relative path silently bypasses every deny rule.
+
+        Raises:
+            NotImplementedError: If the backend does not implement `glob`.
+        """
         raise NotImplementedError
 
-    async def aglob(self, pattern: str, path: str = "/") -> "GlobResult":
+    async def aglob(self, pattern: str, path: str | None = None) -> "GlobResult":
         """Async version of `glob`."""
         return await asyncio.to_thread(self.glob, pattern, path)
 
@@ -484,10 +661,10 @@ class BackendProtocol(abc.ABC):  # noqa: B024
         file_path: str,
         content: str,
     ) -> WriteResult:
-        """Write content to a new file in the filesystem, error if file exists.
+        """Write content to a file, creating it or overwriting it if it already exists.
 
         Args:
-            file_path: Absolute path where the file should be created.
+            file_path: Absolute path where the file should be written.
 
                 Must start with '/'.
             content: String content to write to the file.
@@ -524,7 +701,7 @@ class BackendProtocol(abc.ABC):  # noqa: B024
                 Must be different from old_string.
             replace_all: If True, replace all occurrences.
 
-                If False (default), `old_string` must be unique in the file or
+                If `False` (default), `old_string` must be unique in the file or
                 the edit fails.
 
         Returns:
@@ -542,6 +719,38 @@ class BackendProtocol(abc.ABC):  # noqa: B024
         """Async version of edit."""
         return await asyncio.to_thread(self.edit, file_path, old_string, new_string, replace_all)
 
+    def delete(self, file_path: str) -> DeleteResult:
+        """Delete a path, recursively removing anything nested under it.
+
+        This method is optional. Backends that do not implement it inherit this
+        default, which raises `NotImplementedError`. Callers that need to support
+        a mix of backends should guard with
+        [`supports_delete`][deepagents.backends.protocol.supports_delete] before
+        calling, or catch `NotImplementedError`.
+
+        Deletion is recursive: it removes `file_path` plus everything nested
+        under it. On hierarchical backends (e.g.
+        [`FilesystemBackend`][deepagents.backends.filesystem.FilesystemBackend])
+        that means a directory and its contents; on key-value backends it means
+        the exact key plus every key sharing the `file_path` + "/" prefix.
+
+        Args:
+            file_path: Absolute path to delete (a file, or a directory/prefix to
+                remove recursively). Must start with '/'.
+
+        Returns:
+            `DeleteResult` with the deleted path on success, or an error if
+                nothing exists at or under the path or removal fails.
+
+        Raises:
+            NotImplementedError: If the backend does not implement `delete`.
+        """
+        raise NotImplementedError
+
+    async def adelete(self, file_path: str) -> DeleteResult:
+        """Async version of `delete`."""
+        return await asyncio.to_thread(self.delete, file_path)
+
     def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
         """Upload multiple files to the sandbox.
 
@@ -552,9 +761,9 @@ class BackendProtocol(abc.ABC):  # noqa: B024
             files: List of (path, content) tuples to upload.
 
         Returns:
-            List of FileUploadResponse objects, one per input file.
+            List of `FileUploadResponse` objects, one per input file.
 
-                Response order matches input order (response[i] for files[i]).
+                Response order matches input order (`response[i] for files[i]`).
 
                 Check the error field to determine success/failure per file.
 
@@ -586,7 +795,7 @@ class BackendProtocol(abc.ABC):  # noqa: B024
         Returns:
             List of `FileDownloadResponse` objects, one per input path.
 
-                Response order matches input order (response[i] for paths[i]).
+                Response order matches input order (`response[i] for paths[i]`).
 
                 Check the error field to determine success/failure per file.
         """
@@ -595,124 +804,6 @@ class BackendProtocol(abc.ABC):  # noqa: B024
     async def adownload_files(self, paths: list[str]) -> list[FileDownloadResponse]:
         """Async version of download_files."""
         return await asyncio.to_thread(self.download_files, paths)
-
-    # -- deprecated methods --------------------------------------------------
-
-    def ls_info(self, path: str) -> list["FileInfo"]:
-        """List all files in a directory with metadata.
-
-        !!! warning "Deprecated"
-
-            Use `ls` instead.
-        """
-        warnings.warn(
-            "`ls_info` is deprecated and will be removed in v0.7; use `ls` instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        result = self.ls(path)
-        if result.error is not None:
-            msg = "This behavior is only available via the new `ls` API."
-            raise NotImplementedError(msg)
-        return result.entries or []
-
-    async def als_info(self, path: str) -> list["FileInfo"]:
-        """Async version of `ls_info`.
-
-        !!! warning "Deprecated"
-
-            Use `als` instead.
-        """
-        warnings.warn(
-            "`als_info` is deprecated and will be removed in v0.7; use `als` instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        result = await self.als(path)
-        if result.error is not None:
-            msg = "This behavior is only available via the new `als` API."
-            raise NotImplementedError(msg)
-        return result.entries or []
-
-    def glob_info(self, pattern: str, path: str = "/") -> list["FileInfo"]:
-        """Find files matching a glob pattern.
-
-        !!! warning "Deprecated"
-
-            Use `glob` instead.
-        """
-        warnings.warn(
-            "`glob_info` is deprecated and will be removed in v0.7; use `glob` instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        result = self.glob(pattern, path)
-        if result.error is not None:
-            msg = "This behavior is only available via the new `glob` API."
-            raise NotImplementedError(msg)
-        return result.matches or []
-
-    async def aglob_info(self, pattern: str, path: str = "/") -> list["FileInfo"]:
-        """Async version of `glob_info`.
-
-        !!! warning "Deprecated"
-
-            Use `aglob` instead.
-        """
-        warnings.warn(
-            "`aglob_info` is deprecated and will be removed in v0.7; use `aglob` instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        result = await self.aglob(pattern, path)
-        if result.error is not None:
-            msg = "This behavior is only available via the new `aglob` API."
-            raise NotImplementedError(msg)
-        return result.matches or []
-
-    def grep_raw(
-        self,
-        pattern: str,
-        path: str | None = None,
-        glob: str | None = None,
-    ) -> list["GrepMatch"] | str:
-        """Search for a literal text pattern in files.
-
-        !!! warning "Deprecated"
-
-            Use `grep` instead.
-        """
-        warnings.warn(
-            "`grep_raw` is deprecated and will be removed in v0.7; use `grep` instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        result = self.grep(pattern, path, glob)
-        if result.error is not None:
-            return result.error
-        return result.matches or []
-
-    async def agrep_raw(
-        self,
-        pattern: str,
-        path: str | None = None,
-        glob: str | None = None,
-    ) -> list["GrepMatch"] | str:
-        """Async version of `grep_raw`.
-
-        !!! warning "Deprecated"
-
-            Use `agrep` instead.
-        """
-        warnings.warn(
-            "`agrep_raw` is deprecated and will be removed in v0.7; use `agrep` instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        result = await self.agrep(pattern, path, glob)
-        if result.error is not None:
-            return result.error
-        return result.matches or []
 
 
 @dataclass
@@ -728,11 +819,68 @@ class ExecuteResponse:
     exit_code: int | None = None
     """The process exit code.
 
-    0 indicates success, non-zero indicates failure.
+    0 indicates success, non-zero indicates failure. `None` means the exit code
+    could not be determined.
     """
 
     truncated: bool = False
     """Whether the output was truncated due to backend limitations."""
+
+
+class ExecuteArtifact(TypedDict):
+    """Machine-readable metadata attached to an `execute` tool result.
+
+    Carried on `ToolMessage.artifact` alongside the model-facing `content`, so
+    callers can react to shell failures. `artifact` is `None` instead when no
+    command ran -- a validation or unsupported-backend error, where
+    `ToolMessage.status` is `"error"`.
+
+    Note that `status` is `"success"` for any command that ran, including one
+    that exited non-zero: the model is expected to read the output and decide
+    what to do. Use `exit_code`, not `status`, to detect command failure.
+    """
+
+    exit_code: NotRequired[int]
+    """The command's exit status. 0 indicates success, non-zero indicates failure.
+
+    Omitted when the exit code could not be determined.
+    """
+
+
+@dataclass(frozen=True, slots=True)
+class ExecuteOffloadResult:
+    """Result of [`BaseSandbox.execute_with_offload`][deepagents.backends.sandbox.BaseSandbox.execute_with_offload].
+
+    `offloaded` describes the capture mechanism and is kept off `ExecuteResponse`
+    (which an ordinary `execute` never sets).
+    """
+
+    offloaded: bool
+    """Whether the output was left at the capture path.
+
+    When `True`, `response.output` holds only a preview of the output and the
+    full output lives at the capture path on the sandbox filesystem.
+
+    When `False`, `response.output` is the complete output.
+    """
+
+    response: ExecuteResponse
+    """The command result. `response.truncated` indicates the output hit the size cap."""
+
+    preview_has_truncation_marker: bool = False
+    """Whether the preview contains a `... [N lines truncated] ...` marker.
+
+    Set by the code that builds the preview. This is the only reliable way to
+    know the marker was inserted, as the command output itself can contain
+    a line that looks the same (scanning the text is unsafe).
+
+    This flag covers only the `... [N lines truncated] ...` marker. A preview
+    may disclose other losses through its own in-band clip notices, which need
+    no flag because they carry their own explanation; see
+    `_build_capture_execute_cmd` in `backends.sandbox` for the wording.
+
+    When `offloaded` is `False`, this flag is always `False`.
+    """
 
 
 class SandboxBackendProtocol(BackendProtocol):
@@ -793,12 +941,31 @@ class SandboxBackendProtocol(BackendProtocol):
         return await asyncio.to_thread(self.execute, command)
 
 
+@lru_cache(maxsize=256)
+def _method_accepts_max_count(cls: type[BackendProtocol], method_name: Literal["grep", "agrep"]) -> bool:
+    """Check whether a backend method accepts the optional `max_count` keyword."""
+    try:
+        sig = inspect.signature(getattr(cls, method_name))
+    except (AttributeError, ValueError, TypeError):
+        logger.warning(
+            "Could not inspect signature of %s.%s; assuming max_count is not supported. "
+            "The cap will be enforced after the search instead of bounding it, so a huge "
+            "result set is fully materialized before being trimmed.",
+            cls.__qualname__,
+            method_name,
+            exc_info=True,
+        )
+        return False
+    return "max_count" in sig.parameters or any(parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in sig.parameters.values())
+
+
 @lru_cache(maxsize=128)
 def execute_accepts_timeout(cls: type[SandboxBackendProtocol]) -> bool:
     """Check whether a backend class's `execute` accepts a `timeout` kwarg.
 
     Older backend packages didn't lower-bound their SDK dependency, so they
-    may not accept the `timeout` keyword added to `SandboxBackendProtocol`.
+    may not accept the `timeout` keyword added to
+    [`SandboxBackendProtocol`][deepagents.backends.protocol.SandboxBackendProtocol].
 
     Results are cached per class to avoid repeated introspection overhead.
     """
@@ -815,5 +982,19 @@ def execute_accepts_timeout(cls: type[SandboxBackendProtocol]) -> bool:
         return "timeout" in sig.parameters
 
 
-BackendFactory: TypeAlias = Callable[[ToolRuntime], BackendProtocol]
-BACKEND_TYPES = BackendProtocol | BackendFactory
+def _supports_delete(backend: BackendProtocol) -> bool:
+    """Check whether a backend implements `delete`.
+
+    `delete` is optional: backends that don't override it inherit the
+    `NotImplementedError` default from
+    [`BackendProtocol`][deepagents.backends.protocol.BackendProtocol]. This
+    helper lets callers detect support without invoking the method and
+    triggering the error.
+
+    Args:
+        backend: The backend instance to check.
+
+    Returns:
+        True if the backend overrides `delete`, False otherwise.
+    """
+    return type(backend).delete is not BackendProtocol.delete

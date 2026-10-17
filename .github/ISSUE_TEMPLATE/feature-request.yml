@@ -1,7 +1,6 @@
 name: "✨ Feature Request"
 description: Request a new feature or enhancement for Deep Agents. For questions, please use the Deep Agents forum (below).
-labels: ["feature request"]
-type: feature
+labels: ["type:feature"]
 body:
   - type: markdown
     attributes:
@@ -43,15 +42,15 @@ body:
       description: Which area of the repository does this request relate to? Select at least one.
       options:
         - label: deepagents (SDK)
-        - label: cli
+        - label: dcode
+        - label: talon
         - label: acp
         - label: evals
-        - label: harbor
-        - label: repl
         - label: daytona
         - label: modal
         - label: quickjs
         - label: runloop
+        - label: vercel
         - label: langsmith-sandbox
         - label: Other / not sure / general
   - type: textarea

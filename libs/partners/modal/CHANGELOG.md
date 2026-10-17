@@ -1,4 +1,22 @@
+<!-- markdownlint-disable MD024 -->
+
 # Changelog
+
+## [0.0.6](https://github.com/langchain-ai/deepagents/compare/langchain-modal==0.0.5...langchain-modal==0.0.6) (2026-07-29)
+
+### Bug Fixes
+
+* Require deepagents 0.7.x ([#5148](https://github.com/langchain-ai/deepagents/issues/5148)) ([ad6d1a3](https://github.com/langchain-ai/deepagents/commit/ad6d1a3547b5c0f9efc40ee5591c1a54b99652f4))
+
+## [0.0.5](https://github.com/langchain-ai/deepagents/compare/langchain-modal==0.0.4...langchain-modal==0.0.5) (2026-06-03)
+
+* Version bumps
+
+## [0.0.4](https://github.com/langchain-ai/deepagents/compare/langchain-modal==0.0.3...langchain-modal==0.0.4) (2026-05-12)
+
+### Features
+
+* v0.6 ([4db09ac](https://github.com/langchain-ai/deepagents/commit/4db09acba34b38521192b8f278723524be560779))
 
 ---
 

@@ -1,0 +1,301 @@
+"""Snapshot test for the CLI agent system prompt.
+
+Snapshots the full system message the model receives on first invocation,
+including middleware-injected sections (local context, memory, skills).
+Machine-specific values (cwd, local-context detection output) are fixed
+so the golden file is reproducible across machines.
+"""
+
+from __future__ import annotations
+
+import uuid
+from contextlib import contextmanager
+from typing import TYPE_CHECKING, Any
+from unittest.mock import patch
+
+import pytest
+from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
+from langgraph.checkpoint.memory import InMemorySaver
+from pydantic import Field
+
+from deepagents_code._paths import PATHS, get_built_in_skills_dir
+from deepagents_code.agent import create_cli_agent
+from deepagents_code.offload import _ArtifactsStorage
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Generator, Sequence
+    from pathlib import Path
+
+    from langchain_core.callbacks import CallbackManagerForLLMRun
+    from langchain_core.language_models import LanguageModelInput
+    from langchain_core.outputs import ChatResult
+    from langchain_core.runnables import Runnable
+    from langchain_core.tools import BaseTool
+
+# Fixed values so the snapshot is reproducible.
+_FIXED_CWD = "/home/user/project"
+_FIXED_MODEL_NAME = "claude-sonnet-4-20250514"
+_FIXED_MODEL_PROVIDER = "anthropic"
+_FIXED_CONTEXT_LIMIT = 200_000
+# Mimics the markdown output of the local-context detection script.
+_FIXED_LOCAL_CONTEXT = """## Local Context
+
+**Current Directory**: `/home/user/project`
+
+**Git**: branch `main`, 2 uncommitted changes
+
+**Project**: python (uv), monorepo
+
+**Runtimes**: Python 3.13.1, Node 24.14.0"""
+
+
+class _SnapshotChatModel(GenericFakeChatModel):
+    """Fake model that captures the first call's messages for snapshotting.
+
+    Unlike the FixedGenericFakeChatModel in test_end_to_end.py, this model
+    stores the system message separately so the snapshot test can access
+    it without parsing captured_calls tuples.
+    """
+
+    captured_system_messages: list[SystemMessage] = Field(default_factory=list)
+
+    def bind_tools(
+        self,
+        tools: Sequence[dict[str, Any] | type | Callable | BaseTool],  # noqa: ARG002
+        *,
+        tool_choice: str | None = None,  # noqa: ARG002
+        **kwargs: Any,  # noqa: ARG002
+    ) -> Runnable[LanguageModelInput, AIMessage]:
+        return self
+
+    def _generate(
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager: CallbackManagerForLLMRun | None = None,
+        **kwargs: Any,
+    ) -> ChatResult:
+        if not self.captured_system_messages:
+            for msg in messages:
+                if isinstance(msg, SystemMessage):
+                    self.captured_system_messages.append(msg)
+                    break
+        return super()._generate(messages, stop=stop, run_manager=run_manager, **kwargs)
+
+
+def _assert_snapshot(
+    snapshot_path: Path, actual: str, *, update_snapshots: bool
+) -> None:
+    if update_snapshots or not snapshot_path.exists():
+        snapshot_path.write_text(actual, encoding="utf-8")
+        if update_snapshots:
+            return
+        msg = f"Created snapshot at {snapshot_path}. Re-run tests."
+        raise AssertionError(msg)
+
+    expected = snapshot_path.read_text(encoding="utf-8")
+    assert actual == expected
+
+
+@contextmanager
+def _mock_settings(tmp_path: Path) -> Generator[None, None, None]:
+    """Patch filesystem settings and fixed runtime model identity.
+
+    Mirrors the ``mock_settings`` pattern from ``test_end_to_end.py`` but
+    fixes ``model_name``/``model_provider``/``model_context_limit`` so the
+    model-identity section in the prompt is reproducible.
+    """
+    agent_dir = tmp_path / "agents" / "agent"
+    agent_dir.mkdir(parents=True)
+    (agent_dir / "AGENTS.md").touch()
+
+    skills_dir = tmp_path / "skills"
+    skills_dir.mkdir(parents=True)
+    user_skill = tmp_path / "claude_skills" / "release-check"
+    user_skill.mkdir(parents=True)
+    (user_skill / "SKILL.md").write_text(
+        "---\nname: release-check\n"
+        "description: Check a release before publishing.\n---\n"
+        "Check the release notes.\n",
+        encoding="utf-8",
+    )
+
+    with (
+        patch("deepagents_code.agent.credentials") as mock_s,
+        patch("deepagents_code.agent.invoked_name", return_value="dcode"),
+        patch("deepagents_code.agent.runtime_state") as mock_runtime_state,
+        patch("deepagents_code.agent.ensure_agent_dir", return_value=agent_dir),
+        patch(
+            "deepagents_code.agent.ensure_user_skills_dir",
+            return_value=skills_dir,
+        ),
+        patch(
+            "deepagents_code.agent.get_user_agent_md_path",
+            return_value=agent_dir / "AGENTS.md",
+        ),
+        patch("deepagents_code.agent.get_project_skills_dir", return_value=None),
+        patch("deepagents_code.agent.get_project_agent_md_path", return_value=[]),
+        patch(
+            "deepagents_code.agent.get_user_agents_dir",
+            return_value=tmp_path / "agents",
+        ),
+        patch("deepagents_code.agent.get_project_agents_dir", return_value=None),
+        patch(
+            "deepagents_code.agent.get_user_agent_skills_dir",
+            return_value=tmp_path / "agents_skills",
+        ),
+        patch(
+            "deepagents_code.agent.get_project_agent_skills_dir",
+            return_value=None,
+        ),
+        patch(
+            "deepagents_code.agent.get_user_claude_skills_dir",
+            return_value=tmp_path / "claude_skills",
+        ),
+        patch(
+            "deepagents_code.agent.get_project_claude_skills_dir",
+            return_value=None,
+        ),
+    ):
+        mock_runtime_state.model_name = _FIXED_MODEL_NAME
+        mock_runtime_state.model_provider = _FIXED_MODEL_PROVIDER
+        mock_runtime_state.model_context_limit = _FIXED_CONTEXT_LIMIT
+        mock_runtime_state.model_unsupported_modalities = frozenset()
+        mock_s.has_tavily = False
+        mock_s.project_root = None
+        mock_s.user_langchain_project = None
+        mock_s.shell_allow_list = None
+
+        # Patch generated backend roots so host-path mappings are deterministic
+        # across machines and runs.
+        with (
+            patch(
+                "deepagents_code.agent._artifacts_root",
+                return_value=_ArtifactsStorage(
+                    root=(tmp_path / "dcode-artifacts").as_posix()
+                ),
+            ),
+            patch(
+                "deepagents_code.agent._offload_fallback_root",
+                return_value=tmp_path / ".deepagents",
+            ),
+        ):
+            yield
+
+
+def _capture_system_prompt(
+    tmp_path: Path,
+    *,
+    interactive: bool,
+    memory_auto_save: bool = True,
+    memory_content: str = "",
+) -> str:
+    """Capture the composed prompt with real middleware and a fake model."""
+    model = _SnapshotChatModel(
+        messages=iter([AIMessage(content="hello!") for _ in range(4)])
+    )
+    model.profile = {"max_input_tokens": _FIXED_CONTEXT_LIMIT}
+
+    with _mock_settings(tmp_path):
+        (tmp_path / "agents" / "agent" / "AGENTS.md").write_text(
+            memory_content, encoding="utf-8"
+        )
+        agent, _ = create_cli_agent(
+            model=model,
+            assistant_id="agent",
+            checkpointer=InMemorySaver(),
+            cwd=_FIXED_CWD,
+            interactive=interactive,
+            enable_ask_user=interactive,
+            memory_auto_save=memory_auto_save,
+        )
+
+        # Mock the local-context detection script so the local-context
+        # section in the prompt is reproducible.
+        with patch(
+            "deepagents_code.local_context.LocalContextMiddleware._run_detect_script",
+            return_value=_FIXED_LOCAL_CONTEXT,
+        ):
+            try:
+                agent.invoke(
+                    {"messages": [HumanMessage(content="hi")]},
+                    {"configurable": {"thread_id": str(uuid.uuid4())}},
+                )
+            except RuntimeError as exc:
+                if "StopIteration" not in str(exc):
+                    raise
+
+    assert len(model.captured_system_messages) >= 1
+    actual = str(model.captured_system_messages[0].text).rstrip("\n") + "\n"
+    # Redact machine-specific paths so the snapshot is reproducible across
+    # machines and CI checkouts with different repo roots.
+    actual = actual.replace(str(tmp_path), "<tmp_path>")
+    actual = actual.replace(str(get_built_in_skills_dir()), "<built_in_skills_dir>")
+    return actual.replace(str(PATHS.profile.root), "<deepagents_home>")
+
+
+@pytest.mark.parametrize(
+    ("interactive", "snapshot_name"),
+    [
+        (True, "system_prompt_interactive_local.md"),
+        (False, "system_prompt_headless_local.md"),
+    ],
+    ids=("interactive", "headless"),
+)
+def test_system_prompt_snapshot(
+    tmp_path: Path,
+    snapshots_dir: Path,
+    interactive: bool,
+    snapshot_name: str,
+    *,
+    update_snapshots: bool,
+) -> None:
+    """Snapshot the full local-mode prompt, including middleware guidance."""
+    actual = _capture_system_prompt(tmp_path, interactive=interactive)
+
+    _assert_snapshot(
+        snapshots_dir / snapshot_name,
+        actual,
+        update_snapshots=update_snapshots,
+    )
+
+
+@pytest.mark.parametrize("interactive", [True, False])
+@pytest.mark.parametrize("memory_auto_save", [True, False])
+def test_composed_prompt_respects_interaction_and_memory_modes(
+    tmp_path: Path, *, interactive: bool, memory_auto_save: bool
+) -> None:
+    """Memory stays available without adding unreachable headless questions."""
+    memory_content = "Project convention: use the existing formatter."
+    prompt = _capture_system_prompt(
+        tmp_path,
+        interactive=interactive,
+        memory_auto_save=memory_auto_save,
+        memory_content=memory_content,
+    )
+
+    assert memory_content in prompt
+    assert "Never store API keys, access tokens, passwords" in prompt
+    assert ("Automatic memory saving is disabled" in prompt) is not memory_auto_save
+    if interactive:
+        assert "ask the user what to do" in prompt
+        assert "rejected by the user" in prompt
+        assert ("explicitly ask the user for this information" in prompt) is (
+            memory_auto_save
+        )
+    else:
+        for instruction in (
+            "explicitly ask the user for this information",
+            "It is preferred for you to ask for information",
+            "Only ask when genuinely blocked",
+            "Don't substitute without asking",
+            "ask the user what to do",
+            "ask the user for help",
+            "what's your google account email?",
+            "rejected by the user",
+        ):
+            assert instruction not in prompt
+        assert "report the blocker and any completed work" in prompt
+        assert ("persist verified preferences" in prompt) is memory_auto_save
+        assert "Do not invent required identifiers or permissions" in prompt

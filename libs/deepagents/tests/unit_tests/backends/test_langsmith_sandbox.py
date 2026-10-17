@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import base64
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
+import pytest
 from langsmith.sandbox import ResourceNotFoundError, SandboxClientError
 
+from deepagents.backends import sandbox as base_sandbox
 from deepagents.backends.langsmith import LangSmithSandbox
+from deepagents.backends.sandbox import MAX_BINARY_BYTES, MAX_OUTPUT_BYTES, TRUNCATION_MSG
 
 
 def _make_sandbox() -> tuple[LangSmithSandbox, MagicMock]:
@@ -73,6 +77,8 @@ def test_execute_with_zero_timeout() -> None:
 
 def test_write_success() -> None:
     sb, mock_sdk = _make_sandbox()
+    # Preflight: file does not exist
+    mock_sdk.run.return_value = SimpleNamespace(stdout="", stderr="", exit_code=0)
 
     result = sb.write("/app/test.txt", "hello world")
 
@@ -81,8 +87,22 @@ def test_write_success() -> None:
     mock_sdk.write.assert_called_once_with("/app/test.txt", b"hello world")
 
 
+def test_write_existing_file_returns_error() -> None:
+    sb, mock_sdk = _make_sandbox()
+    # Preflight: file already exists
+    mock_sdk.run.return_value = SimpleNamespace(stdout="Error: File already exists: '/app/test.txt'", stderr="", exit_code=1)
+
+    result = sb.write("/app/test.txt", "content")
+
+    assert result.error is not None
+    assert "already exists" in result.error.lower()
+    mock_sdk.write.assert_not_called()
+
+
 def test_write_error() -> None:
     sb, mock_sdk = _make_sandbox()
+    # Preflight succeeds, but SDK write fails
+    mock_sdk.run.return_value = SimpleNamespace(stdout="", stderr="", exit_code=0)
     mock_sdk.write.side_effect = SandboxClientError("permission denied")
 
     result = sb.write("/readonly/test.txt", "content")
@@ -173,3 +193,429 @@ def test_upload_files_partial_success() -> None:
     assert responses[0].error is None
     assert responses[1].error == "permission_denied"
     assert responses[2].error is None
+
+
+# -- read() tests -----------------------------------------------------------
+
+
+def test_write_preflight_empty_output_nonzero_exit() -> None:
+    sb, mock_sdk = _make_sandbox()
+    # Preflight fails with empty output (e.g., sandbox crash)
+    mock_sdk.run.return_value = SimpleNamespace(stdout="", stderr="", exit_code=1)
+
+    result = sb.write("/app/test.txt", "content")
+
+    assert result.error == "Failed to write file '/app/test.txt'"
+    mock_sdk.write.assert_not_called()
+
+
+def test_read_text_file() -> None:
+    sb, mock_sdk = _make_sandbox()
+    mock_sdk.read.return_value = b"line1\nline2\nline3"
+
+    result = sb.read("/app/test.txt")
+
+    assert result.error is None
+    assert result.file_data is not None
+    assert result.file_data["content"] == "line1\nline2\nline3"
+    assert result.file_data["encoding"] == "utf-8"
+
+
+def test_read_with_pagination() -> None:
+    sb, mock_sdk = _make_sandbox()
+    mock_sdk.read.return_value = b"line0\nline1\nline2\nline3\nline4"
+
+    result = sb.read("/app/test.txt", offset=1, limit=2)
+
+    assert result.error is None
+    assert result.file_data is not None
+    assert result.file_data["content"] == "line1\nline2"
+
+
+def test_read_trailing_newline_does_not_add_extra_line() -> None:
+    sb, mock_sdk = _make_sandbox()
+    mock_sdk.read.return_value = b"line0\nline1\nline2\n"
+
+    result = sb.read("/app/test.txt", offset=2, limit=10)
+
+    assert result.error is None
+    assert result.file_data is not None
+    assert result.file_data["content"] == "line2"
+
+
+def test_read_sandbox_client_error() -> None:
+    sb, mock_sdk = _make_sandbox()
+    mock_sdk.read.side_effect = SandboxClientError("connection timeout")
+
+    result = sb.read("/app/test.txt")
+
+    assert result.error is not None
+    assert "connection timeout" in result.error
+
+
+def test_read_file_not_found() -> None:
+    sb, mock_sdk = _make_sandbox()
+    mock_sdk.read.side_effect = ResourceNotFoundError("not found", resource_type="file")
+
+    result = sb.read("/missing.txt")
+
+    assert result.error is not None
+    assert "file_not_found" in result.error
+
+
+def test_read_empty_file() -> None:
+    sb, mock_sdk = _make_sandbox()
+    mock_sdk.read.return_value = b""
+
+    result = sb.read("/app/empty.txt")
+
+    assert result.error is None
+    assert result.file_data is not None
+    assert "empty contents" in result.file_data["content"]
+
+
+def test_read_binary_file() -> None:
+    sb, mock_sdk = _make_sandbox()
+    raw = b"\x89PNG\r\n\x1a\n"
+    mock_sdk.read.return_value = raw
+
+    result = sb.read("/app/image.png")
+
+    assert result.error is None
+    assert result.file_data is not None
+    assert result.file_data["encoding"] == "base64"
+    assert result.file_data["content"] == base64.b64encode(raw).decode("ascii")
+
+
+def test_read_large_binary_returns_error() -> None:
+    sb, mock_sdk = _make_sandbox()
+    mock_sdk.read.return_value = b"\x89PNG" + b"\x00" * (500 * 1024)
+
+    result = sb.read("/app/large.png")
+
+    assert result.error is not None
+    assert "maximum preview size" in result.error
+
+
+def test_read_text_extension_with_invalid_utf8_falls_back_to_binary() -> None:
+    sb, mock_sdk = _make_sandbox()
+    mock_sdk.read.return_value = b"\xff\xfe invalid utf8 \x80\x81"
+
+    result = sb.read("/app/corrupted.txt")
+
+    assert result.error is None
+    assert result.file_data is not None
+    assert result.file_data["encoding"] == "base64"
+
+
+def test_read_offset_exceeds_length() -> None:
+    sb, mock_sdk = _make_sandbox()
+    mock_sdk.read.return_value = b"only one line"
+
+    result = sb.read("/app/test.txt", offset=5)
+
+    assert result.error is not None
+    assert "offset" in result.error.lower()
+
+
+@pytest.mark.parametrize("limit", [0, -3])
+def test_read_non_positive_limit_returns_empty_read(limit: int) -> None:
+    """A degenerate `limit` reads nothing instead of raising on the line range.
+
+    A negative `limit` is covered separately from `0`: the guard in `read()` is
+    what makes this hold, and a clamp-dependent `== 0` check would pass the
+    zero case while raising on the negative one.
+    """
+    sb, mock_sdk = _make_sandbox()
+    mock_sdk.read.return_value = b"line1\nline2\nline3"
+
+    result = sb.read("/app/test.txt", limit=limit)
+
+    assert result.error is None
+    assert result.file_data is not None
+    assert result.file_data["content"] == ""
+    assert result.total_lines is None
+    assert result.start_line is None
+    assert result.end_line is None
+    assert result.next_offset is None
+
+
+def test_read_negative_offset_starts_at_first_line() -> None:
+    """A negative offset is clamped to the start of the file instead of erroring."""
+    sb, mock_sdk = _make_sandbox()
+    mock_sdk.read.return_value = b"line1\nline2\nline3"
+
+    result = sb.read("/app/test.txt", offset=-1, limit=2)
+
+    assert result.error is None
+    assert result.file_data is not None
+    assert result.file_data["content"] == "line1\nline2"
+    assert result.start_line == 1
+    assert result.end_line == 2
+    assert result.next_offset == 2
+
+
+def test_read_normalizes_crlf_to_lf() -> None:
+    r"""CRLF and bare-CR line endings collapse to LF, matching `BaseSandbox.read()`.
+
+    Without this, files written on Windows round-trip with stray `\r`
+    characters that break `edit()` (issue #2880).
+    """
+    sb, mock_sdk = _make_sandbox()
+    mock_sdk.read.return_value = b"line1\r\nline2\r\nline3"
+
+    result = sb.read("/app/test.txt")
+
+    assert result.error is None
+    assert result.file_data is not None
+    assert result.file_data["content"] == "line1\nline2\nline3"
+
+
+def test_read_normalizes_bare_cr_to_lf() -> None:
+    sb, mock_sdk = _make_sandbox()
+    mock_sdk.read.return_value = b"line1\rline2\rline3"
+
+    result = sb.read("/app/test.txt")
+
+    assert result.error is None
+    assert result.file_data is not None
+    assert result.file_data["content"] == "line1\nline2\nline3"
+
+
+def test_read_text_with_only_newline_returns_empty_content() -> None:
+    r"""A file containing only `\n` paginates as a single empty line."""
+    sb, mock_sdk = _make_sandbox()
+    mock_sdk.read.return_value = b"\n"
+
+    result = sb.read("/app/test.txt")
+
+    assert result.error is None
+    assert result.file_data is not None
+    assert result.file_data["content"] == ""
+
+
+def test_read_truncates_at_max_output_bytes() -> None:
+    """Pages exceeding `MAX_OUTPUT_BYTES` are truncated with `TRUNCATION_MSG`."""
+    sb, mock_sdk = _make_sandbox()
+    # Single-line payload comfortably above the cap. Using ASCII so byte length
+    # equals string length for the assertion below.
+    payload = b"x" * (MAX_OUTPUT_BYTES + 10_000)
+    mock_sdk.read.return_value = payload
+
+    result = sb.read("/app/big.txt")
+
+    assert result.error is None
+    assert result.file_data is not None
+    content = result.file_data["content"]
+    assert content.endswith(TRUNCATION_MSG)
+    assert len(content.encode("utf-8")) <= MAX_OUTPUT_BYTES
+
+
+def test_read_pagination_metadata_partial_window() -> None:
+    """A partial window reports its 1-indexed range and the next 0-indexed offset."""
+    sb, mock_sdk = _make_sandbox()
+    mock_sdk.read.return_value = b"line0\nline1\nline2\nline3\nline4"
+
+    result = sb.read("/app/test.txt", offset=1, limit=2)
+
+    assert result.total_lines == 5
+    assert result.start_line == 2
+    assert result.end_line == 3
+    assert result.next_offset == 3
+
+
+def test_read_pagination_metadata_final_window_has_no_next_offset() -> None:
+    """A window reaching EOF reports `next_offset=None`."""
+    sb, mock_sdk = _make_sandbox()
+    mock_sdk.read.return_value = b"line0\nline1\nline2"
+
+    result = sb.read("/app/test.txt", offset=2, limit=10)
+
+    assert result.total_lines == 3
+    assert result.start_line == 3
+    assert result.end_line == 3
+    assert result.next_offset is None
+
+
+def test_read_truncation_next_offset_reflects_rendered_lines() -> None:
+    """A byte-capped page must not advance `next_offset` past lines it dropped.
+
+    Regression: `end_line`/`next_offset` were derived from the full page before
+    the `MAX_OUTPUT_BYTES` cap trimmed trailing lines, so a re-read from
+    `next_offset` silently skipped the dropped lines.
+    """
+    sb, mock_sdk = _make_sandbox()
+    line = "x" * 100_000
+    # Eight ~100 KB lines: a single 8-line page far exceeds the 500 KB cap, so
+    # the byte cap drops the tail. `next_offset` must point at the first line
+    # not fully rendered, well short of the 8-line window's end.
+    mock_sdk.read.return_value = ("\n".join([line] * 8)).encode("utf-8")
+
+    result = sb.read("/app/big.txt", offset=0, limit=8)
+
+    assert result.error is None
+    assert result.file_data is not None
+    assert result.file_data["content"].endswith(TRUNCATION_MSG)
+    assert result.total_lines == 8
+    assert result.start_line == 1
+    assert result.next_offset is not None
+    # Resume offset is the count of fully rendered lines, not the full window.
+    assert result.end_line == result.next_offset
+    assert 0 < result.next_offset < 8
+
+
+def test_read_oversized_first_line_advances_next_offset() -> None:
+    """A first line larger than the byte cap still advances `next_offset` by one.
+
+    When even the first rendered line overflows `MAX_OUTPUT_BYTES`, the retained
+    prefix contains no line terminator, so the `or 1` fallback must advance the
+    resume offset past that line — otherwise a re-read loops on the same page.
+    """
+    sb, mock_sdk = _make_sandbox()
+    big_line = "y" * 600_000
+    mock_sdk.read.return_value = (big_line + "\nsmall1\nsmall2").encode("utf-8")
+
+    result = sb.read("/app/huge_line.txt", offset=0, limit=5)
+
+    assert result.error is None
+    assert result.file_data is not None
+    assert result.file_data["content"].endswith(TRUNCATION_MSG)
+    assert result.total_lines == 3
+    assert result.start_line == 1
+    # The oversized line cannot be paginated within, so resume just past it.
+    assert result.end_line == 1
+    assert result.next_offset == 1
+
+
+def test_read_binary_at_exact_max_size_succeeds() -> None:
+    sb, mock_sdk = _make_sandbox()
+    raw = b"\x00" * MAX_BINARY_BYTES
+    mock_sdk.read.return_value = raw
+
+    result = sb.read("/app/exact.png")
+
+    assert result.error is None
+    assert result.file_data is not None
+    assert result.file_data["encoding"] == "base64"
+
+
+def test_read_binary_one_byte_over_max_returns_error() -> None:
+    sb, mock_sdk = _make_sandbox()
+    mock_sdk.read.return_value = b"\x00" * (MAX_BINARY_BYTES + 1)
+
+    result = sb.read("/app/over.png")
+
+    assert result.error is not None
+    assert "maximum preview size" in result.error
+    # Error message includes the path prefix to match `BaseSandbox.read()` shape.
+    assert "/app/over.png" in result.error
+
+
+def test_read_error_messages_include_file_path() -> None:
+    """All `read()` error paths prefix with `File '<path>': ` for parity with base."""
+    sb, mock_sdk = _make_sandbox()
+
+    mock_sdk.read.side_effect = ResourceNotFoundError("not found", resource_type="file")
+    not_found = sb.read("/missing.txt")
+    assert not_found.error is not None
+    assert not_found.error.startswith("File '/missing.txt':")
+
+    mock_sdk.read.side_effect = SandboxClientError("boom")
+    sdk_err = sb.read("/app/test.txt")
+    assert sdk_err.error is not None
+    assert sdk_err.error.startswith("File '/app/test.txt':")
+    assert "SandboxClientError" in sdk_err.error
+    assert "boom" in sdk_err.error
+
+
+def test_write_preflight_runs_existence_check() -> None:
+    """`write()` invokes `_write_preflight` before delegating to the SDK."""
+    sb, mock_sdk = _make_sandbox()
+    mock_sdk.run.return_value = SimpleNamespace(stdout="", stderr="", exit_code=0)
+
+    sb.write("/app/test.txt", "hello")
+
+    # The preflight executes the base-64-encoded `_WRITE_CHECK_TEMPLATE` script.
+    assert mock_sdk.run.call_count == 1
+    cmd_arg = mock_sdk.run.call_args.args[0]
+    assert "python3 -c" in cmd_arg
+    assert base64.b64encode(b"/app/test.txt").decode("ascii") in cmd_arg
+
+
+def test_max_binary_bytes_constant_matches_template() -> None:
+    """Python `MAX_BINARY_BYTES` constant stays in lockstep with the heredoc literal.
+
+    Drift here would silently desync `LangSmithSandbox.read()` from
+    `BaseSandbox.read()` because the template does not import the constant.
+    """
+    assert "MAX_BINARY_BYTES = 500 * 1024" in base_sandbox._READ_COMMAND_TEMPLATE
+    assert MAX_BINARY_BYTES == 500 * 1024
+
+
+def test_max_output_bytes_constant_matches_template() -> None:
+    assert "MAX_OUTPUT_BYTES = 500 * 1024" in base_sandbox._READ_COMMAND_TEMPLATE
+    assert MAX_OUTPUT_BYTES == 500 * 1024
+
+
+def _make_async_sandbox() -> tuple[LangSmithSandbox, MagicMock, MagicMock]:
+    sb, mock_sdk = _make_sandbox()
+    async_sdk = MagicMock()
+    async_sdk.run = AsyncMock(return_value=SimpleNamespace(stdout="out", stderr="", exit_code=0))
+    async_client = MagicMock()
+    async_client.aclose = AsyncMock()
+    mock_sdk._client.to_async.return_value = async_client
+    mock_sdk.to_async.return_value = async_sdk
+    return sb, async_sdk, async_client
+
+
+async def test_aexecute_uses_async_client_not_sync_run() -> None:
+    """`aexecute` must not fall through to the protocol's `to_thread(execute)`."""
+    sb, async_sdk, _ = _make_async_sandbox()
+
+    result = await sb.aexecute("echo hi", timeout=30)
+
+    assert result.output == "out"
+    assert result.exit_code == 0
+    async_sdk.run.assert_awaited_once_with("echo hi", timeout=30)
+    sb._sandbox.run.assert_not_called()
+
+
+async def test_aexecute_combines_stdout_and_stderr() -> None:
+    sb, async_sdk, _ = _make_async_sandbox()
+    async_sdk.run.return_value = SimpleNamespace(stdout="out", stderr="err", exit_code=1)
+
+    result = await sb.aexecute("failing-cmd")
+
+    assert result.output == "out\nerr"
+    assert result.exit_code == 1
+    async_sdk.run.assert_awaited_once_with("failing-cmd", timeout=30 * 60)
+
+
+async def test_aexecute_reuses_one_async_client() -> None:
+    """A client per command would add a TCP + TLS handshake to every call."""
+    sb, _, _ = _make_async_sandbox()
+
+    await sb.aexecute("true")
+    await sb.aexecute("true")
+    await sb.aexecute("true")
+
+    assert sb._sandbox.to_async.call_count == 1
+
+
+async def test_aclose_closes_pool_and_allows_rebuild() -> None:
+    sb, _, async_client = _make_async_sandbox()
+    await sb.aexecute("true")
+
+    await sb.aclose()
+    async_client.aclose.assert_awaited_once()
+
+    await sb.aexecute("true")
+    assert sb._sandbox.to_async.call_count == 2
+
+
+async def test_aclose_without_async_use_is_a_noop() -> None:
+    sb, _, async_client = _make_async_sandbox()
+
+    await sb.aclose()
+
+    async_client.aclose.assert_not_awaited()

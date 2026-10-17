@@ -1,0 +1,15 @@
+"""Tests for the `get_current_thread_id` tool."""
+
+from __future__ import annotations
+
+from deepagents_code.tools import get_current_thread_id
+
+
+def test_get_current_thread_id_returns_config_thread() -> None:
+    """Tool should read the injected LangGraph thread ID."""
+    result = get_current_thread_id.invoke(
+        {},
+        config={"configurable": {"thread_id": "thread-123"}},
+    )
+
+    assert result == "thread-123"

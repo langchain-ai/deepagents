@@ -1,0 +1,206 @@
+# Post-merge safety net for accidental release-please fan-out.
+#
+# Why this exists:
+#   Pre-merge gates (`release_please_scope_check.yml`, etc.) should catch most
+#   multi-component / lockfile-only fan-outs, but bypass labels and race windows
+#   still happen. When release-please opens a `release(<component>):` PR for a
+#   package whose only unreleased path changes on main are lockfiles, this job
+#   sticky-comments that release PR within minutes and fails the advisory check
+#   so someone notices before release time.
+#
+#   Recovery recipes it links:
+#     - .github/RELEASING.md#lockfile-churn-fan-out
+#     - .github/RELEASING.md#reverting-a-merged-but-unreleased-pr
+#
+# Triggers:
+#   - After the release-please maintenance path has a chance to open/update PRs
+#     (`workflow_run` of release-please.yml, completed).
+#   - Hourly schedule as a backstop if workflow_run is skipped.
+#   - Manual workflow_dispatch.
+#
+# Not a merge gate. Failing this check does not block main; it is a signal.
+
+name: "🔍 Release-please fan-out watch"
+
+on:
+  workflow_run:
+    workflows: ["⚠️ (Automated) Release Please"]
+    types: [completed]
+  schedule:
+    # Backstop: catch fan-out even if workflow_run is missed.
+    - cron: "17 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: release-please-fanout-watch
+  cancel-in-progress: true
+
+jobs:
+  watch:
+    name: "flag lockfile-only open release PRs"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # workflow_run fires for every conclusion; only act on successful release-
+    # please runs (or non-workflow_run triggers).
+    if: >
+      github.event_name != 'workflow_run' ||
+      github.event.workflow_run.conclusion == 'success'
+    steps:
+      - name: "📋 Checkout main"
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          # Full history so package churn since the prior release is visible.
+          # Tags are required separately: the manifest stores versions; the
+          # detector resolves them to release tags (`component==version`).
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+
+      - name: "🐍 Setup Python 3.11"
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+
+      - name: "Detect lockfile-only unreleased components"
+        id: detect
+        run: |
+          set -euo pipefail
+          # Prefer nested path; until main has it after this reorg, fall back
+          # to the flat layout (this job always checks out main).
+          detector=".github/scripts/release/check_open_release_fanout.py"
+          legacy_detector=".github/scripts/check_open_release_fanout.py"
+          if [[ ! -f "$detector" && -f "$legacy_detector" ]]; then
+            detector="$legacy_detector"
+          fi
+          if [[ ! -f "$detector" ]]; then
+            echo "::warning::Detector '$detector' missing; watch is NOT enforcing."
+            echo '[]' > offenders.json
+          else
+            # stderr gets the human summary; stdout is JSON for the next step.
+            python "$detector" > offenders.json
+          fi
+          {
+            echo "offenders<<__OFF_EOF__"
+            cat offenders.json
+            echo "__OFF_EOF__"
+          } >> "$GITHUB_OUTPUT"
+          echo "Detector offenders: $(cat offenders.json)"
+
+      - name: "Comment on open lockfile-only release PRs"
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          OFFENDERS: ${{ steps.detect.outputs.offenders }}
+        with:
+          script: |
+            const STICKY_MARKER = '<!-- release-please-fanout-watch -->';
+            const raw = process.env.OFFENDERS || '';
+            if (!raw.trim()) {
+              core.setFailed('Detector produced no output; failing closed.');
+              return;
+            }
+            let offenders;
+            try {
+              offenders = JSON.parse(raw);
+            } catch (e) {
+              core.setFailed(`Detector output was not valid JSON: ${raw}`);
+              return;
+            }
+            if (!Array.isArray(offenders)) {
+              core.setFailed(`Detector output was not an array: ${raw}`);
+              return;
+            }
+
+            // Look up open release-please PRs by conventional branch name.
+            // release-please uses:
+            //   release-please--branches--main--components--<component>
+            const { owner, repo } = context.repo;
+            const openReleasePrs = await github.paginate(github.rest.pulls.list, {
+              owner, repo, state: 'open', per_page: 100,
+            });
+            const byComponent = new Map();
+            for (const pr of openReleasePrs) {
+              const m = pr.head?.ref?.match(
+                /^release-please--branches--main--components--(.+)$/
+              );
+              if (m) {
+                byComponent.set(m[1], pr);
+              }
+            }
+
+            const flagged = [];
+            for (const off of offenders) {
+              if (!off || typeof off !== 'object' || typeof off.component !== 'string') {
+                core.setFailed(`Invalid offender entry: ${JSON.stringify(off)}`);
+                return;
+              }
+              const pr = byComponent.get(off.component);
+              if (!pr) {
+                core.info(
+                  `Component ${off.component} is lockfile-only unreleased but has no open release PR; skipping comment.`
+                );
+                continue;
+              }
+              flagged.push({ off, pr });
+            }
+
+            if (flagged.length === 0) {
+              core.info('No open lockfile-only release PRs to flag.');
+              return;
+            }
+
+            async function findSticky(issueNumber) {
+              const comments = await github.paginate(github.rest.issues.listComments, {
+                owner, repo, issue_number: issueNumber, per_page: 100,
+              });
+              return comments.find(c => c.body && c.body.startsWith(STICKY_MARKER));
+            }
+
+            for (const { off, pr } of flagged) {
+              const files = Array.isArray(off.files)
+                ? off.files.map(f => `\`${f}\``).join(', ')
+                : '_unknown_';
+              const body = [
+                STICKY_MARKER,
+                '⚠️ **Possible accidental release fan-out.**',
+                '',
+                `Open release PR for \`${off.component}\`, but on \`main\` the only changes under \`${off.path}\` since the last released tag (\`${off.baseline}\`${off.version ? `, version ${off.version}` : ''}) are lockfiles: ${files}.`,
+                '',
+                'release-please scopes by path and has no "this is just a lockfile" notion — a bump-worthy commit that only churned this package\'s `uv.lock` still opens this release PR.',
+                '',
+                '### Options',
+                '',
+                '- **If unintentional:** revert or hide the offending commit (see [Reverting a Merged-but-Unreleased PR](https://github.com/langchain-ai/deepagents/blob/main/.github/RELEASING.md#reverting-a-merged-but-unreleased-pr)); closing this PR alone will not stick.',
+                '- **If intentional:** proceed with the release (e.g. deliberate leaf-package security bump).',
+                '',
+                '📖 [Lockfile churn fan-out](https://github.com/langchain-ai/deepagents/blob/main/.github/RELEASING.md#lockfile-churn-fan-out)',
+              ].join('\n');
+
+              try {
+                const existing = await findSticky(pr.number);
+                if (existing) {
+                  if (existing.body !== body) {
+                    await github.rest.issues.updateComment({
+                      owner, repo, comment_id: existing.id, body,
+                    });
+                  }
+                } else {
+                  await github.rest.issues.createComment({
+                    owner, repo, issue_number: pr.number, body,
+                  });
+                }
+                core.warning(`Flagged release PR #${pr.number} (${off.component}) as lockfile-only fan-out.`);
+              } catch (e) {
+                core.warning(`Could not comment on PR #${pr.number}: ${e.message}`);
+              }
+            }
+
+            core.setFailed(
+              `Flagged ${flagged.length} open release PR(s) with lockfile-only unreleased deltas: ` +
+              flagged.map(f => f.off.component).join(', ') +
+              '. See sticky comments on those PRs and .github/RELEASING.md#lockfile-churn-fan-out.'
+            );

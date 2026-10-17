@@ -1,6 +1,6 @@
 # Async Subagent Server
 
-A self-hosted [Agent Protocol](https://github.com/langchain-ai/agent-protocol) server that exposes a DeepAgents researcher as an async subagent. Use this as a starting point for hosting your own agent on any infrastructure and connecting it to a DeepAgents supervisor.
+A self-hosted [Agent Protocol](https://github.com/langchain-ai/agent-protocol) server that exposes a Deep Agents researcher as an async subagent. Use this as a starting point for hosting your own agent on any infrastructure and connecting it to a Deep Agents supervisor.
 
 The example includes both sides of the pattern:
 
@@ -53,7 +53,7 @@ Try these prompts:
 
 ## Implemented endpoints
 
-These are the Agent Protocol endpoints the DeepAgents async subagent middleware calls (via the LangGraph SDK):
+These are the Agent Protocol endpoints the Deep Agents async subagent middleware calls (via the LangGraph SDK):
 
 | Endpoint | Purpose |
 | -------------------------------------------- | -------------------------------- |
@@ -79,3 +79,8 @@ _agent = create_deep_agent(
 ## ⚠️ For demonstration purposes only
 
 This example is intended to illustrate the self-hosted async subagent pattern. It does not feature authentication, rate limiting, or other features required for production use.
+
+## Resources
+
+- [LangChain Academy](https://academy.langchain.com/) — Comprehensive, free courses on LangChain libraries and products, made by the LangChain team.
+- [Code of Conduct](https://github.com/langchain-ai/langchain/?tab=coc-ov-file) — community guidelines and standards

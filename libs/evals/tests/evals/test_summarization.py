@@ -154,12 +154,15 @@ def test_summarize_continues_task(tmp_path: Path, model: BaseChatModel) -> None:
 @pytest.mark.eval_tier("baseline")
 @pytest.mark.langsmith
 def test_summarization_offloads_to_filesystem(tmp_path: Path, model: BaseChatModel) -> None:
-    """Test that conversation history is offloaded to filesystem during summarization.
+    """Test that the agent can recover old context after summarization.
 
-    This verifies the summarization middleware correctly writes conversation history
-    as markdown to the backend at /conversation_history/{thread_id}.md.
+    Unit tests cover the deterministic middleware contract that conversation
+    history is written to `/conversation_history/{thread_id}.md`. This eval only
+    checks that summarization created a history reference, then evaluates the
+    model-dependent behavior: the agent must use that reference to answer a
+    follow-up whose answer only appeared in the offloaded context.
     """
-    agent, _, root = _setup_summarization_test(tmp_path, model, 15_000)
+    agent, _, _ = _setup_summarization_test(tmp_path, model, 15_000)
     thread_id = uuid.uuid4().hex[:8]
 
     _ = run_agent(
@@ -169,39 +172,19 @@ def test_summarization_offloads_to_filesystem(tmp_path: Path, model: BaseChatMod
         thread_id=thread_id,
     )
 
-    # Check we summarized
     config = {"configurable": {"thread_id": thread_id}}
     state = agent.get_state(config)
-    assert state.values["_summarization_event"]
-
-    # Verify conversation history was offloaded to filesystem
-    conversation_history_root = root / "conversation_history"
-    assert conversation_history_root.exists(), (
-        f"Conversation history root directory not found at {conversation_history_root}"
-    )
-
-    # Verify the markdown file exists for thread_id
-    history_file = conversation_history_root / f"{thread_id}.md"
-    assert history_file.exists(), f"Expected markdown file at {history_file}"
-
-    # Read and verify markdown content
-    content = history_file.read_text()
-
-    # Should have timestamp header(s) from summarization events
-    assert "## Summarized at" in content, "Missing timestamp header in markdown file"
-
-    # Should contain human-readable message content (from get_buffer_string)
-    assert "Human:" in content or "AI:" in content, "Missing message content in markdown file"
-
-    # Verify the summary message references the conversation_history path
-    summary_message = state.values["_summarization_event"]["summary_message"]
+    event = state.values["_summarization_event"]
+    summary_message = event["summary_message"]
     assert "conversation_history" in summary_message.content
     assert f"{thread_id}.md" in summary_message.content
 
     # --- Needle in the haystack follow-up ---
     # Ask about a specific detail from the beginning of the file that was read
-    # before summarization. The agent should read the conversation history to find it.
-    # The first standard library import in summarization.py (after `from __future__`) is `import base64`.
+    # before summarization. The agent should follow the summary's
+    # `conversation_history` reference and read the offloaded transcript to find it.
+    # The first standard library import in the pinned summarization.py fixture
+    # after `from __future__` is `import logging`.
     followup_trajectory = run_agent(
         agent,
         model=model,

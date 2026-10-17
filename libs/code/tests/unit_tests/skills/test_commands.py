@@ -1,0 +1,1369 @@
+"""Unit tests for skills CLI commands."""
+
+import argparse
+import io
+import re
+from collections.abc import Iterator
+from contextlib import contextmanager
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+import pytest
+from deepagents.middleware.skills import SkillMetadata
+from rich.console import Console
+
+from deepagents_code.main import parse_args
+from deepagents_code.skills.commands import (
+    _delete,
+    _format_info_fields,
+    _generate_template,
+    _info,
+    _list,
+    _validate_name,
+    _validate_skill_path,
+)
+
+
+@contextmanager
+def _patch_skill_paths(
+    *,
+    user: Path | None,
+    project: Path | None,
+    built_in: Path | None = None,
+    user_agent: Path | None = None,
+    project_agent: Path | None = None,
+) -> Iterator[None]:
+    """Patch the free path helpers used by the skills command under test."""
+    with (
+        patch(
+            "deepagents_code.skills.commands.get_user_skills_dir",
+            return_value=user,
+        ),
+        patch(
+            "deepagents_code.skills.commands.get_project_skills_dir",
+            return_value=project,
+        ),
+        patch(
+            "deepagents_code.skills.commands.get_built_in_skills_dir",
+            return_value=built_in,
+        ),
+        patch(
+            "deepagents_code.skills.commands.get_user_agent_skills_dir",
+            return_value=user_agent,
+        ),
+        patch(
+            "deepagents_code.skills.commands.get_project_agent_skills_dir",
+            return_value=project_agent,
+        ),
+    ):
+        yield
+
+
+class TestValidateSkillName:
+    """Test skill name validation per Agent Skills spec (https://agentskills.io/specification)."""
+
+    def test_path_traversal_attacks(self):
+        """Test that path traversal attempts are blocked."""
+        malicious_names = [
+            "../../../etc/passwd",
+            "../../.ssh/authorized_keys",
+            "../.bashrc",
+            "..\\..\\windows\\system32",
+            "skill/../../../etc",
+            "../../tmp/exploit",
+            "../..",
+            "..",
+        ]
+        for name in malicious_names:
+            is_valid, error = _validate_name(name)
+            assert not is_valid, f"Malicious name '{name}' was accepted"
+            assert error != ""
+            assert "path" in error.lower() or ".." in error
+
+    def test_absolute_paths(self):
+        """Test that absolute paths are blocked."""
+        malicious_names = [
+            "/etc/passwd",
+            "/home/user/.ssh",
+            "\\Windows\\System32",
+            "/tmp/exploit",
+        ]
+        for name in malicious_names:
+            is_valid, error = _validate_name(name)
+            assert not is_valid, f"Absolute path '{name}' was accepted"
+            assert error != ""
+
+    def test_path_separators(self):
+        """Test that path separators are blocked."""
+        malicious_names = [
+            "skill/name",
+            "skill\\name",
+            "path/to/skill",
+            "parent\\child",
+        ]
+        for name in malicious_names:
+            is_valid, error = _validate_name(name)
+            assert not is_valid, f"Path with separator '{name}' was accepted"
+            assert error != ""
+
+    def test_invalid_characters(self):
+        """Test that invalid characters are blocked."""
+        malicious_names = [
+            "skill name",  # space
+            "skill;rm -rf /",  # command injection
+            "skill`whoami`",  # command substitution
+            "skill$(whoami)",  # command substitution
+            "skill&ls",  # command chaining
+            "skill|cat",  # pipe
+            "skill>file",  # redirect
+            "skill<file",  # redirect
+            "skill*",  # wildcard
+            "skill?",  # wildcard
+            "skill[a]",  # pattern
+            "skill{a,b}",  # brace expansion
+            "skill$VAR",  # variable expansion
+            "skill@host",  # at sign
+            "skill#comment",  # hash
+            "skill!event",  # exclamation
+            "skill'quote",  # single quote
+            'skill"quote',  # double quote
+        ]
+        for name in malicious_names:
+            is_valid, error = _validate_name(name)
+            assert not is_valid, f"Invalid character in '{name}' was accepted"
+            assert error != ""
+
+    def test_unicode_lowercase_accepted(self) -> None:
+        """Unicode lowercase names should be accepted (matching SDK behavior).
+
+        The SDK's `_validate_skill_name` accepts any character where
+        `c.isalpha() and c.islower()` or `c.isdigit()` is True.
+        """
+        valid_unicode_names = [
+            "caf\u00e9",  # cafe with accent
+            "\u00fcber-tool",  # uber with umlaut
+            "resum\u00e9",  # resume with accent
+            "na\u00efve",  # naive with diaeresis
+        ]
+        for name in valid_unicode_names:
+            is_valid, error = _validate_name(name)
+            assert is_valid, f"Unicode lowercase name '{name}' was rejected: {error}"
+            assert error == ""
+
+
+class TestValidateSkillPath:
+    """Test skill path validation to ensure paths stay within bounds."""
+
+    def test_path_traversal_outside_base(self, tmp_path: Path) -> None:
+        """Test that paths outside base directory are blocked."""
+        base_dir = tmp_path / "skills"
+        base_dir.mkdir()
+
+        # Try to escape to parent directory
+        malicious_dir = tmp_path / "malicious"
+        is_valid, error = _validate_skill_path(malicious_dir, base_dir)
+        assert not is_valid, "Path outside base directory was accepted"
+        assert error != ""
+
+    def test_symlink_path_traversal(self, tmp_path: Path) -> None:
+        """Test that symlinks pointing outside base are detected."""
+        base_dir = tmp_path / "skills"
+        base_dir.mkdir()
+
+        outside_dir = tmp_path / "outside"
+        outside_dir.mkdir()
+
+        symlink_path = base_dir / "evil-link"
+        try:
+            symlink_path.symlink_to(outside_dir)
+
+            is_valid, error = _validate_skill_path(symlink_path, base_dir)
+            # The symlink resolves to outside the base, so it should be blocked
+            assert not is_valid, "Symlink to outside directory was accepted"
+            assert error != ""
+        except OSError:
+            # Symlink creation might fail on some systems
+            pytest.skip("Symlink creation not supported")
+
+
+class TestIntegrationSecurity:
+    """Integration tests for security across the command flow."""
+
+    def test_combined_validation(self, tmp_path: Path) -> None:
+        """Test that both name and path validation work together."""
+        base_dir = tmp_path / "skills"
+        base_dir.mkdir()
+
+        # Test various attack scenarios
+        attack_vectors = [
+            ("../../../etc/passwd", "path traversal"),
+            ("/etc/passwd", "absolute path"),
+            ("skill/../../../tmp", "hidden traversal"),
+            ("skill;rm -rf", "command injection"),
+        ]
+
+        for skill_name, attack_type in attack_vectors:
+            # First, name validation should catch it
+            is_valid_name, name_error = _validate_name(skill_name)
+
+            if is_valid_name:
+                # If name validation doesn't catch it, path validation must
+                skill_dir = base_dir / skill_name
+                is_valid_path, _path_error = _validate_skill_path(skill_dir, base_dir)
+                assert not is_valid_path, (
+                    f"{attack_type} bypassed both validations: {skill_name}"
+                )
+            else:
+                # Name validation caught it - this is good
+                assert name_error != "", f"No error message for {attack_type}"
+
+
+class TestGenerateTemplate:
+    """Test the template generated by `_generate_template()`.
+
+    These tests verify that the template conforms to the skill-creator
+    `SKILL.md` guidance and the Agent Skills spec.
+    """
+
+    def test_template_body_has_no_when_to_use_section(self):
+        """`'When to Use'` should NOT appear in the body (below the `---` closer)."""
+        template = _generate_template("my-skill")
+        # Split on the closing --- to get the body
+        parts = re.split(r"\n---\s*\n", template, maxsplit=1)
+        assert len(parts) == 2, "Template should have frontmatter and body"
+        body = parts[1]
+        assert "## When to Use" not in body, (
+            "Template body contains '## When to Use' section — "
+            "this belongs in the description, not the body"
+        )
+
+
+def _make_skill(
+    *,
+    name: str = "test-skill",
+    description: str = "A test skill",
+    path: str = "/tmp/test-skill/SKILL.md",
+    skill_license: str | None = None,
+    compatibility: str | None = None,
+    metadata: dict[str, str] | None = None,
+    allowed_tools: list[str] | None = None,
+) -> SkillMetadata:
+    """Build a minimal `SkillMetadata` dict with overrides.
+
+    Args:
+        name: Skill identifier.
+        description: What the skill does.
+        path: Path to the SKILL.md file.
+        skill_license: License name or `None`.
+        compatibility: Environment requirements or `None`.
+        metadata: Arbitrary key-value pairs.
+        allowed_tools: Recommended tool names.
+
+    Returns:
+        A `SkillMetadata` TypedDict with the given values.
+    """
+    return SkillMetadata(
+        name=name,
+        description=description,
+        path=path,
+        license=skill_license,
+        compatibility=compatibility,
+        metadata=metadata if metadata is not None else {},
+        allowed_tools=allowed_tools if allowed_tools is not None else [],
+    )
+
+
+class TestFormatInfoFields:
+    """Tests for `_format_info_fields` optional metadata extraction."""
+
+    def test_all_fields_present(self) -> None:
+        """All four optional fields populated should produce four entries."""
+        skill = _make_skill(
+            skill_license="MIT",
+            compatibility="Python 3.10+",
+            allowed_tools=["Bash(git:*)", "Read"],
+            metadata={"author": "acme", "version": "1.0"},
+        )
+        result = _format_info_fields(skill)
+        labels = [label for label, _ in result]
+        assert labels == [
+            "License",
+            "Compatibility",
+            "Allowed Tools",
+            "Metadata",
+        ]
+        assert result[0] == ("License", "MIT")
+        assert result[1] == ("Compatibility", "Python 3.10+")
+        assert result[2] == ("Allowed Tools", "Bash(git:*), Read")
+        assert "author=acme" in result[3][1]
+        assert "version=1.0" in result[3][1]
+
+    def test_metadata_only(self) -> None:
+        """Only metadata populated should return a Metadata entry."""
+        skill = _make_skill(metadata={"author": "test-org"})
+        result = _format_info_fields(skill)
+        assert len(result) == 1
+        assert result[0] == ("Metadata", "author=test-org")
+
+
+class TestSkillsHelpFlag:
+    """Test that `deepagents skills -h` shows skills-specific help."""
+
+    def test_skills_help_shows_subcommands(self) -> None:
+        """Running `deepagents skills -h` should show skills subcommands.
+
+        Regression: -h on the skills subcommand was falling through to the
+        global help screen, showing top-level options (--sandbox, --model, etc.)
+        instead of skills-specific commands (list, create, info).
+        """
+        buf = io.StringIO()
+        test_console = Console(file=buf, highlight=False, width=120)
+
+        with (
+            patch("sys.argv", ["deepagents", "skills", "-h"]),
+            patch("deepagents_code.ui.console", test_console),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            parse_args()
+
+        assert exc_info.value.code in (0, None)
+        output = buf.getvalue()
+
+        # Should contain skills-specific content
+        assert "list" in output.lower()
+        assert "create" in output.lower()
+        assert "info" in output.lower()
+        assert "delete" in output.lower()
+
+        # Should NOT contain global-only content
+        assert "Start interactive thread" not in output
+        assert "--sandbox" not in output
+        assert "--model" not in output
+
+    def test_skills_list_help_shows_list_options(self) -> None:
+        """Running `deepagents skills list -h` should show list-specific options."""
+        buf = io.StringIO()
+        test_console = Console(file=buf, highlight=False, width=120)
+
+        with (
+            patch("sys.argv", ["deepagents", "skills", "list", "-h"]),
+            patch("deepagents_code.ui.console", test_console),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            parse_args()
+
+        assert exc_info.value.code in (0, None)
+        output = buf.getvalue()
+
+        # Should contain list-specific content
+        assert "--agent" in output
+        assert "--project" in output
+
+        # Should NOT contain global-only content
+        assert "Start interactive thread" not in output
+        assert "--sandbox" not in output
+
+
+class TestThreadsHelpFlag:
+    """Test that `deepagents threads -h` shows threads-specific help."""
+
+    def test_threads_help_shows_threads_content(self) -> None:
+        """Running `deepagents threads -h` should show threads subcommands.
+
+        Regression: same pattern as skills -- -h on the threads subcommand
+        should show threads-specific help, not the global help screen.
+        """
+        buf = io.StringIO()
+        test_console = Console(file=buf, highlight=False, width=120)
+
+        with (
+            patch("sys.argv", ["deepagents", "threads", "-h"]),
+            patch("deepagents_code.ui.console", test_console),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            parse_args()
+
+        assert exc_info.value.code in (0, None)
+        output = buf.getvalue()
+
+        # Should contain threads-specific content
+        assert "list" in output.lower()
+        assert "delete" in output.lower()
+
+        # Should NOT contain global-only content
+        assert "Start interactive thread" not in output
+        assert "--sandbox" not in output
+        assert "--model" not in output
+
+
+class TestThreadsListAlias:
+    """Test that `deepagents threads ls` is parsed as a `list` alias."""
+
+
+class TestSkillsListAlias:
+    """Test that `deepagents skills ls` is parsed as a `list` alias."""
+
+
+class TestInfoShadowWarning:
+    """Test that `skills info` warns when a project skill shadows a user skill."""
+
+    def _make_skill_dir(self, parent: Path, name: str, description: str) -> None:
+        """Create a minimal skill directory with a valid SKILL.md.
+
+        Args:
+            parent: Parent skills directory.
+            name: Skill name (used as directory name and frontmatter name).
+            description: Skill description for frontmatter.
+        """
+        skill_dir = parent / name
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            f"---\nname: {name}\ndescription: {description}\n---\nContent\n"
+        )
+
+    def test_shadow_note_shown_when_project_overrides_user(
+        self, tmp_path: Path
+    ) -> None:
+        """When a project skill shadows a user skill, info should note it."""
+        user_dir = tmp_path / "user_skills"
+        project_dir = tmp_path / "project_skills"
+        self._make_skill_dir(user_dir, "web-research", "User version")
+        self._make_skill_dir(project_dir, "web-research", "Project version")
+
+        mock_settings = patch(
+            "deepagents_code.config.Credentials.from_environment",
+            return_value=type(
+                "FakeSettings",
+                (),
+                {
+                    "project_root": None,
+                    "get_built_in_skills_dir": staticmethod(lambda: None),
+                    "get_user_skills_dir": lambda _, _a: user_dir,
+                    "get_project_skills_dir": lambda _: project_dir,
+                    "get_user_agent_skills_dir": lambda _: None,
+                    "get_project_agent_skills_dir": lambda _: None,
+                },
+            )(),
+        )
+
+        output: list[str] = []
+
+        def capture_print(*args: str, **_: str) -> None:
+            output.append(" ".join(str(a) for a in args))
+
+        with (
+            mock_settings,
+            _patch_skill_paths(user=user_dir, project=project_dir),
+            patch("deepagents_code.config.console") as mock_console,
+        ):
+            mock_console.print = capture_print
+            _info("web-research", agent="agent")
+
+        joined = "\n".join(output)
+        assert "overrides" in joined.lower() or "shadows" in joined.lower()
+
+    def test_no_shadow_note_when_no_conflict(self, tmp_path: Path) -> None:
+        """When there is no name conflict, no shadow note should appear."""
+        user_dir = tmp_path / "user_skills"
+        project_dir = tmp_path / "project_skills"
+        self._make_skill_dir(user_dir, "web-research", "User only skill")
+
+        mock_settings = patch(
+            "deepagents_code.config.Credentials.from_environment",
+            return_value=type(
+                "FakeSettings",
+                (),
+                {
+                    "project_root": None,
+                    "get_built_in_skills_dir": staticmethod(lambda: None),
+                    "get_user_skills_dir": lambda _, _a: user_dir,
+                    "get_project_skills_dir": lambda _: project_dir,
+                    "get_user_agent_skills_dir": lambda _: None,
+                    "get_project_agent_skills_dir": lambda _: None,
+                },
+            )(),
+        )
+
+        output: list[str] = []
+
+        def capture_print(*args: str, **_: str) -> None:
+            output.append(" ".join(str(a) for a in args))
+
+        with (
+            mock_settings,
+            _patch_skill_paths(user=user_dir, project=project_dir),
+            patch("deepagents_code.config.console") as mock_console,
+        ):
+            mock_console.print = capture_print
+            _info("web-research", agent="agent")
+
+        joined = "\n".join(output)
+        assert "overrides" not in joined.lower()
+        assert "shadows" not in joined.lower()
+
+
+class TestInfoBuiltInSkill:
+    """Test that `skills info` displays built-in skills correctly."""
+
+    def _make_skill_dir(self, parent: Path, name: str, description: str) -> None:
+        """Create a minimal skill directory with a valid SKILL.md.
+
+        Args:
+            parent: Parent skills directory.
+            name: Skill name (used as directory name and frontmatter name).
+            description: Skill description for frontmatter.
+        """
+        skill_dir = parent / name
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            f"---\nname: {name}\ndescription: {description}\n---\nContent\n"
+        )
+
+    def test_built_in_skill_shows_correct_label(self, tmp_path: Path) -> None:
+        """Built-in skills should display '(Built-in Skill)' in magenta."""
+        built_in_dir = tmp_path / "built_in_skills"
+        self._make_skill_dir(built_in_dir, "test-builtin", "A built-in skill")
+
+        mock_settings = patch(
+            "deepagents_code.config.Credentials.from_environment",
+            return_value=type(
+                "FakeSettings",
+                (),
+                {
+                    "project_root": None,
+                    "get_built_in_skills_dir": staticmethod(lambda: built_in_dir),
+                    "get_user_skills_dir": lambda _, _a: None,
+                    "get_project_skills_dir": lambda _: None,
+                    "get_user_agent_skills_dir": lambda _: None,
+                    "get_project_agent_skills_dir": lambda _: None,
+                },
+            )(),
+        )
+
+        output: list[str] = []
+
+        def capture_print(*args: str, **_: str) -> None:
+            output.append(" ".join(str(a) for a in args))
+
+        with (
+            mock_settings,
+            _patch_skill_paths(user=None, project=None, built_in=built_in_dir),
+            patch("deepagents_code.config.console") as mock_console,
+        ):
+            mock_console.print = capture_print
+            _info("test-builtin", agent="agent")
+
+        joined = "\n".join(output)
+        assert "Built-in Skill" in joined
+        assert "User Skill" not in joined
+
+    def test_built_in_skill_no_shadow_warning(self, tmp_path: Path) -> None:
+        """Built-in skills should never trigger a shadow warning."""
+        built_in_dir = tmp_path / "built_in_skills"
+        user_dir = tmp_path / "user_skills"
+        self._make_skill_dir(built_in_dir, "shared-skill", "Built-in version")
+        self._make_skill_dir(user_dir, "shared-skill", "User version")
+
+        mock_settings = patch(
+            "deepagents_code.config.Credentials.from_environment",
+            return_value=type(
+                "FakeSettings",
+                (),
+                {
+                    "project_root": None,
+                    "get_built_in_skills_dir": staticmethod(lambda: built_in_dir),
+                    "get_user_skills_dir": lambda _, _a: user_dir,
+                    "get_project_skills_dir": lambda _: None,
+                    "get_user_agent_skills_dir": lambda _: None,
+                    "get_project_agent_skills_dir": lambda _: None,
+                },
+            )(),
+        )
+
+        output: list[str] = []
+
+        def capture_print(*args: str, **_: str) -> None:
+            output.append(" ".join(str(a) for a in args))
+
+        with (
+            mock_settings,
+            _patch_skill_paths(
+                user=user_dir,
+                project=None,
+                built_in=built_in_dir,
+            ),
+            patch("deepagents_code.config.console") as mock_console,
+        ):
+            mock_console.print = capture_print
+            # User overrides built-in; info shows user version, no shadow note
+            _info("shared-skill", agent="agent")
+
+        joined = "\n".join(output)
+        assert "overrides" not in joined.lower()
+        assert "shadows" not in joined.lower()
+
+
+class TestListBuiltInSkillsDisplay:
+    """Test that `skills list` renders built-in skills correctly."""
+
+    def _make_skill_dir(self, parent: Path, name: str, description: str) -> None:
+        """Create a minimal skill directory with a valid SKILL.md."""
+        skill_dir = parent / name
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            f"---\nname: {name}\ndescription: {description}\n---\nContent\n"
+        )
+
+    def test_built_in_section_rendered(self, tmp_path: Path) -> None:
+        """Built-in skills should appear under 'Built-in Skills:' heading."""
+        built_in_dir = tmp_path / "built_in_skills"
+        self._make_skill_dir(built_in_dir, "test-builtin", "A built-in skill")
+
+        mock_settings = patch(
+            "deepagents_code.config.Credentials.from_environment",
+            return_value=type(
+                "FakeSettings",
+                (),
+                {
+                    "project_root": None,
+                    "get_built_in_skills_dir": staticmethod(lambda: built_in_dir),
+                    "get_user_skills_dir": lambda _, _a: None,
+                    "get_project_skills_dir": lambda _: None,
+                    "get_user_agent_skills_dir": lambda _: None,
+                    "get_project_agent_skills_dir": lambda _: None,
+                },
+            )(),
+        )
+
+        output: list[str] = []
+
+        def capture_print(*args: str, **_: str) -> None:
+            output.append(" ".join(str(a) for a in args))
+
+        with (
+            mock_settings,
+            _patch_skill_paths(user=None, project=None, built_in=built_in_dir),
+            patch("deepagents_code.config.console") as mock_console,
+        ):
+            mock_console.print = capture_print
+            _list(agent="agent")
+
+        joined = "\n".join(output)
+        assert "Built-in Skills:" in joined
+        assert "test-builtin" in joined
+
+    def test_built_in_section_omits_path(self, tmp_path: Path) -> None:
+        """Built-in skills should not display a filesystem path."""
+        built_in_dir = tmp_path / "built_in_skills"
+        self._make_skill_dir(built_in_dir, "test-builtin", "A built-in skill")
+
+        mock_settings = patch(
+            "deepagents_code.config.Credentials.from_environment",
+            return_value=type(
+                "FakeSettings",
+                (),
+                {
+                    "project_root": None,
+                    "get_built_in_skills_dir": staticmethod(lambda: built_in_dir),
+                    "get_user_skills_dir": lambda _, _a: None,
+                    "get_project_skills_dir": lambda _: None,
+                    "get_user_agent_skills_dir": lambda _: None,
+                    "get_project_agent_skills_dir": lambda _: None,
+                },
+            )(),
+        )
+
+        output: list[str] = []
+
+        def capture_print(*args: str, **_: str) -> None:
+            output.append(" ".join(str(a) for a in args))
+
+        with (
+            mock_settings,
+            _patch_skill_paths(user=None, project=None, built_in=built_in_dir),
+            patch("deepagents_code.config.console") as mock_console,
+        ):
+            mock_console.print = capture_print
+            _list(agent="agent")
+
+        joined = "\n".join(output)
+        # Built-in section should NOT contain the tmp_path directory
+        assert str(built_in_dir) not in joined
+
+
+class TestDeleteSkill:
+    """Test cases for the _delete command."""
+
+    @staticmethod
+    def _create_test_skill(skills_dir: Path, skill_name: str) -> Path:
+        """Create a test skill directory with a minimal SKILL.md.
+
+        Args:
+            skills_dir: Parent skills directory.
+            skill_name: Name of the skill to create.
+
+        Returns:
+            Path to the created skill directory.
+        """
+        skill_dir = skills_dir / skill_name
+        skill_dir.mkdir(parents=True)
+        content = (
+            "---\n"
+            f"name: {skill_name}\n"
+            "description: Test skill for unit tests\n"
+            "---\n"
+            "\n"
+            f"# {skill_name} Skill\n"
+            "\n"
+            "Test content.\n"
+        )
+        (skill_dir / "SKILL.md").write_text(content)
+        return skill_dir
+
+    def test_delete_existing_skill_with_force(self, tmp_path: Path) -> None:
+        """Test deleting an existing skill with --force flag."""
+        user_skills_dir = tmp_path / ".deepagents" / "agent" / "skills"
+        skill_dir = self._create_test_skill(user_skills_dir, "test-skill")
+        assert skill_dir.exists()
+
+        mock_settings = MagicMock()
+        mock_settings.get_user_skills_dir.return_value = user_skills_dir
+        mock_settings.get_project_skills_dir.return_value = None
+        mock_settings.get_user_agent_skills_dir.return_value = None
+        mock_settings.get_project_agent_skills_dir.return_value = None
+
+        with (
+            patch("deepagents_code.config.Credentials") as mock_settings_cls,
+            _patch_skill_paths(user=user_skills_dir, project=None),
+        ):
+            mock_settings_cls.from_environment.return_value = mock_settings
+            _delete("test-skill", agent="agent", project=False, force=True)
+
+        assert not skill_dir.exists()
+
+    def test_delete_nonexistent_skill(self, tmp_path: Path) -> None:
+        """Test deleting a skill that doesn't exist shows error."""
+        user_skills_dir = tmp_path / ".deepagents" / "agent" / "skills"
+        user_skills_dir.mkdir(parents=True)
+
+        mock_settings = MagicMock()
+        mock_settings.get_user_skills_dir.return_value = user_skills_dir
+        mock_settings.get_project_skills_dir.return_value = None
+        mock_settings.get_user_agent_skills_dir.return_value = None
+        mock_settings.get_project_agent_skills_dir.return_value = None
+
+        output: list[str] = []
+
+        def capture_print(*args: str, **_: str) -> None:
+            output.append(" ".join(str(a) for a in args))
+
+        with (
+            patch("deepagents_code.config.Credentials") as mock_settings_cls,
+            _patch_skill_paths(user=user_skills_dir, project=None),
+            patch("deepagents_code.config.console") as mock_console,
+        ):
+            mock_settings_cls.from_environment.return_value = mock_settings
+            mock_console.print = capture_print
+            with pytest.raises(SystemExit) as exc_info:
+                _delete("nonexistent-skill", agent="agent", project=False, force=True)
+            assert exc_info.value.code == 1
+
+        joined = "\n".join(output)
+        assert "not found" in joined.lower()
+
+    @pytest.mark.parametrize("response", ["y", "yes"])
+    def test_delete_with_confirmation_accepted(
+        self, tmp_path: Path, response: str
+    ) -> None:
+        """Test deleting a skill with user confirmation (y/yes)."""
+        user_skills_dir = tmp_path / ".deepagents" / "agent" / "skills"
+        skill_dir = self._create_test_skill(user_skills_dir, "test-skill")
+        assert skill_dir.exists()
+
+        mock_settings = MagicMock()
+        mock_settings.get_user_skills_dir.return_value = user_skills_dir
+        mock_settings.get_project_skills_dir.return_value = None
+        mock_settings.get_user_agent_skills_dir.return_value = None
+        mock_settings.get_project_agent_skills_dir.return_value = None
+
+        with (
+            patch("deepagents_code.config.Credentials") as mock_settings_cls,
+            _patch_skill_paths(user=user_skills_dir, project=None),
+        ):
+            mock_settings_cls.from_environment.return_value = mock_settings
+            with patch("builtins.input", return_value=response):
+                _delete("test-skill", agent="agent", project=False, force=False)
+
+        assert not skill_dir.exists()
+
+    def test_delete_with_confirmation_no(self, tmp_path: Path) -> None:
+        """Test canceling skill deletion with user confirmation (no)."""
+        user_skills_dir = tmp_path / ".deepagents" / "agent" / "skills"
+        skill_dir = self._create_test_skill(user_skills_dir, "test-skill")
+        assert skill_dir.exists()
+
+        mock_settings = MagicMock()
+        mock_settings.get_user_skills_dir.return_value = user_skills_dir
+        mock_settings.get_project_skills_dir.return_value = None
+        mock_settings.get_user_agent_skills_dir.return_value = None
+        mock_settings.get_project_agent_skills_dir.return_value = None
+
+        with (
+            patch("deepagents_code.config.Credentials") as mock_settings_cls,
+            _patch_skill_paths(user=user_skills_dir, project=None),
+        ):
+            mock_settings_cls.from_environment.return_value = mock_settings
+            with patch("builtins.input", return_value="n"):
+                _delete("test-skill", agent="agent", project=False, force=False)
+
+        assert skill_dir.exists()
+
+    def test_delete_with_confirmation_empty_input(self, tmp_path: Path) -> None:
+        """Test canceling skill deletion with empty input (default: no)."""
+        user_skills_dir = tmp_path / ".deepagents" / "agent" / "skills"
+        skill_dir = self._create_test_skill(user_skills_dir, "test-skill")
+        assert skill_dir.exists()
+
+        mock_settings = MagicMock()
+        mock_settings.get_user_skills_dir.return_value = user_skills_dir
+        mock_settings.get_project_skills_dir.return_value = None
+        mock_settings.get_user_agent_skills_dir.return_value = None
+        mock_settings.get_project_agent_skills_dir.return_value = None
+
+        with (
+            patch("deepagents_code.config.Credentials") as mock_settings_cls,
+            _patch_skill_paths(user=user_skills_dir, project=None),
+        ):
+            mock_settings_cls.from_environment.return_value = mock_settings
+            with patch("builtins.input", return_value=""):
+                _delete("test-skill", agent="agent", project=False, force=False)
+
+        assert skill_dir.exists()
+
+    def test_delete_with_keyboard_interrupt(self, tmp_path: Path) -> None:
+        """Test canceling skill deletion with Ctrl+C."""
+        user_skills_dir = tmp_path / ".deepagents" / "agent" / "skills"
+        skill_dir = self._create_test_skill(user_skills_dir, "test-skill")
+        assert skill_dir.exists()
+
+        mock_settings = MagicMock()
+        mock_settings.get_user_skills_dir.return_value = user_skills_dir
+        mock_settings.get_project_skills_dir.return_value = None
+        mock_settings.get_user_agent_skills_dir.return_value = None
+        mock_settings.get_project_agent_skills_dir.return_value = None
+
+        with (
+            patch("deepagents_code.config.Credentials") as mock_settings_cls,
+            _patch_skill_paths(user=user_skills_dir, project=None),
+        ):
+            mock_settings_cls.from_environment.return_value = mock_settings
+            with patch("builtins.input", side_effect=KeyboardInterrupt):
+                _delete("test-skill", agent="agent", project=False, force=False)
+
+        assert skill_dir.exists()
+
+    def test_delete_with_eof_error(self, tmp_path: Path) -> None:
+        """Test canceling skill deletion with EOF (piped stdin)."""
+        user_skills_dir = tmp_path / ".deepagents" / "agent" / "skills"
+        skill_dir = self._create_test_skill(user_skills_dir, "test-skill")
+        assert skill_dir.exists()
+
+        mock_settings = MagicMock()
+        mock_settings.get_user_skills_dir.return_value = user_skills_dir
+        mock_settings.get_project_skills_dir.return_value = None
+        mock_settings.get_user_agent_skills_dir.return_value = None
+        mock_settings.get_project_agent_skills_dir.return_value = None
+
+        with (
+            patch("deepagents_code.config.Credentials") as mock_settings_cls,
+            _patch_skill_paths(user=user_skills_dir, project=None),
+        ):
+            mock_settings_cls.from_environment.return_value = mock_settings
+            with patch("builtins.input", side_effect=EOFError):
+                _delete("test-skill", agent="agent", project=False, force=False)
+
+        assert skill_dir.exists()
+
+    def test_delete_invalid_skill_name(self, tmp_path: Path) -> None:
+        """Test deleting with an invalid skill name shows error."""
+        user_skills_dir = tmp_path / ".deepagents" / "agent" / "skills"
+        user_skills_dir.mkdir(parents=True)
+
+        mock_settings = MagicMock()
+        mock_settings.get_user_skills_dir.return_value = user_skills_dir
+        mock_settings.get_project_skills_dir.return_value = None
+
+        invalid_names = [
+            "../../../etc/passwd",
+            "skill;rm -rf /",
+            "",
+            "skill name",  # space
+        ]
+
+        output: list[str] = []
+
+        def capture_print(*args: str, **_: str) -> None:
+            output.append(" ".join(str(a) for a in args))
+
+        for invalid_name in invalid_names:
+            output.clear()
+
+            with (
+                patch("deepagents_code.config.Credentials") as mock_settings_cls,
+                _patch_skill_paths(user=user_skills_dir, project=None),
+                patch("deepagents_code.config.console") as mock_console,
+            ):
+                mock_settings_cls.from_environment.return_value = mock_settings
+                mock_console.print = capture_print
+                with pytest.raises(SystemExit) as exc_info:
+                    _delete(invalid_name, agent="agent", project=False, force=True)
+                assert exc_info.value.code == 1
+
+            joined = "\n".join(output)
+            assert "invalid skill name" in joined.lower(), (
+                f"Expected error for '{invalid_name}', got: {joined}"
+            )
+
+    def test_delete_project_skill(self, tmp_path: Path) -> None:
+        """Test deleting a project-level skill."""
+        project_skills_dir = tmp_path / "project" / ".deepagents" / "skills"
+        skill_dir = self._create_test_skill(project_skills_dir, "project-skill")
+        assert skill_dir.exists()
+
+        mock_settings = MagicMock()
+        user_dir = tmp_path / ".deepagents" / "agent" / "skills"
+        mock_settings.get_user_skills_dir.return_value = user_dir
+        mock_settings.get_project_skills_dir.return_value = project_skills_dir
+        mock_settings.get_user_agent_skills_dir.return_value = None
+        mock_settings.get_project_agent_skills_dir.return_value = None
+
+        with (
+            patch("deepagents_code.config.Credentials") as mock_settings_cls,
+            _patch_skill_paths(user=user_dir, project=project_skills_dir),
+        ):
+            mock_settings_cls.from_environment.return_value = mock_settings
+            _delete("project-skill", agent="agent", project=True, force=True)
+
+        assert not skill_dir.exists()
+
+    def test_delete_project_skill_not_in_project(self, tmp_path: Path) -> None:
+        """Test deleting a project skill when not in a project directory."""
+        mock_settings = MagicMock()
+        user_dir = tmp_path / ".deepagents" / "agent" / "skills"
+        mock_settings.get_user_skills_dir.return_value = user_dir
+        mock_settings.get_project_skills_dir.return_value = None
+
+        output: list[str] = []
+
+        def capture_print(*args: str, **_: str) -> None:
+            output.append(" ".join(str(a) for a in args))
+
+        with (
+            patch("deepagents_code.config.Credentials") as mock_settings_cls,
+            _patch_skill_paths(user=user_dir, project=None),
+            patch("deepagents_code.config.console") as mock_console,
+        ):
+            mock_settings_cls.from_environment.return_value = mock_settings
+            mock_console.print = capture_print
+            with pytest.raises(SystemExit) as exc_info:
+                _delete("any-skill", agent="agent", project=True, force=True)
+            assert exc_info.value.code == 1
+
+        joined = "\n".join(output)
+        assert "not in a project directory" in joined.lower()
+
+    def test_delete_skill_with_supporting_files(self, tmp_path: Path) -> None:
+        """Test deleting a skill that contains multiple supporting files."""
+        user_skills_dir = tmp_path / ".deepagents" / "agent" / "skills"
+        skill_dir = self._create_test_skill(user_skills_dir, "complex-skill")
+
+        (skill_dir / "helper.py").write_text("# Helper script")
+        (skill_dir / "config.json").write_text("{}")
+        (skill_dir / "subdir").mkdir()
+        (skill_dir / "subdir" / "nested.txt").write_text("nested file")
+
+        assert skill_dir.exists()
+        assert (skill_dir / "helper.py").exists()
+        assert (skill_dir / "subdir" / "nested.txt").exists()
+
+        mock_settings = MagicMock()
+        mock_settings.get_user_skills_dir.return_value = user_skills_dir
+        mock_settings.get_project_skills_dir.return_value = None
+        mock_settings.get_user_agent_skills_dir.return_value = None
+        mock_settings.get_project_agent_skills_dir.return_value = None
+
+        with (
+            patch("deepagents_code.config.Credentials") as mock_settings_cls,
+            _patch_skill_paths(user=user_skills_dir, project=None),
+        ):
+            mock_settings_cls.from_environment.return_value = mock_settings
+            _delete("complex-skill", agent="agent", project=False, force=True)
+
+        assert not skill_dir.exists()
+
+    def test_delete_skill_for_specific_agent(self, tmp_path: Path) -> None:
+        """Test deleting a skill for a specific agent."""
+        agent1_skills_dir = tmp_path / ".deepagents" / "agent1" / "skills"
+        agent2_skills_dir = tmp_path / ".deepagents" / "agent2" / "skills"
+
+        skill_dir_agent1 = self._create_test_skill(agent1_skills_dir, "shared-skill")
+        skill_dir_agent2 = self._create_test_skill(agent2_skills_dir, "shared-skill")
+
+        assert skill_dir_agent1.exists()
+        assert skill_dir_agent2.exists()
+
+        mock_settings = MagicMock()
+        mock_settings.get_project_skills_dir.return_value = None
+        mock_settings.get_user_skills_dir.return_value = agent1_skills_dir
+        mock_settings.get_user_agent_skills_dir.return_value = None
+        mock_settings.get_project_agent_skills_dir.return_value = None
+
+        with (
+            patch("deepagents_code.config.Credentials") as mock_settings_cls,
+            _patch_skill_paths(user=agent1_skills_dir, project=None),
+        ):
+            mock_settings_cls.from_environment.return_value = mock_settings
+            _delete("shared-skill", agent="agent1", project=False, force=True)
+
+        assert not skill_dir_agent1.exists()
+        assert skill_dir_agent2.exists()
+
+    def test_delete_rmtree_os_error(self, tmp_path: Path) -> None:
+        """Test that OSError during shutil.rmtree exits with code 1."""
+        user_skills_dir = tmp_path / ".deepagents" / "agent" / "skills"
+        skill_dir = self._create_test_skill(user_skills_dir, "test-skill")
+        assert skill_dir.exists()
+
+        mock_settings = MagicMock()
+        mock_settings.get_user_skills_dir.return_value = user_skills_dir
+        mock_settings.get_project_skills_dir.return_value = None
+        mock_settings.get_user_agent_skills_dir.return_value = None
+        mock_settings.get_project_agent_skills_dir.return_value = None
+
+        output: list[str] = []
+
+        def capture_print(*args: str, **_: str) -> None:
+            output.append(" ".join(str(a) for a in args))
+
+        with (
+            patch("deepagents_code.config.Credentials") as mock_settings_cls,
+            _patch_skill_paths(user=user_skills_dir, project=None),
+            patch("deepagents_code.config.console") as mock_console,
+            patch("shutil.rmtree", side_effect=OSError("Permission denied")),
+        ):
+            mock_settings_cls.from_environment.return_value = mock_settings
+            mock_console.print = capture_print
+            with pytest.raises(SystemExit) as exc_info:
+                _delete("test-skill", agent="agent", project=False, force=True)
+
+        assert exc_info.value.code == 1
+        joined = "\n".join(output)
+        assert "failed to fully delete skill" in joined.lower()
+        assert "partially removed" in joined.lower()
+        # Skill directory should still exist since rmtree was mocked to fail
+        assert skill_dir.exists()
+
+    def test_delete_refuses_when_base_dir_none(self, tmp_path: Path) -> None:
+        """Deletion should be refused when base skills directory is None."""
+        agent_skills_dir = tmp_path / ".agents" / "skills"
+        self._create_test_skill(agent_skills_dir, "orphan-skill")
+
+        mock_settings = MagicMock()
+        mock_settings.get_user_skills_dir.return_value = None
+        mock_settings.get_project_skills_dir.return_value = None
+        mock_settings.get_user_agent_skills_dir.return_value = agent_skills_dir
+        mock_settings.get_project_agent_skills_dir.return_value = None
+
+        output: list[str] = []
+
+        def capture_print(*args: str, **_: str) -> None:
+            output.append(" ".join(str(a) for a in args))
+
+        with (
+            patch("deepagents_code.config.Credentials") as mock_settings_cls,
+            _patch_skill_paths(
+                user=None,
+                project=None,
+                user_agent=agent_skills_dir,
+            ),
+            patch("deepagents_code.config.console") as mock_console,
+        ):
+            mock_settings_cls.from_environment.return_value = mock_settings
+            mock_console.print = capture_print
+            with pytest.raises(SystemExit) as exc_info:
+                _delete("orphan-skill", agent="agent", project=False, force=True)
+            assert exc_info.value.code == 1
+
+        joined = "\n".join(output)
+        assert "cannot determine" in joined.lower() or "refusing" in joined.lower()
+        # Must NOT have been deleted
+        assert (agent_skills_dir / "orphan-skill").exists()
+
+
+class TestSkillsTrustCommand:
+    """Unit tests for `_trust` and its dispatch in `execute_skills_command`."""
+
+    @staticmethod
+    def _capture() -> tuple[list[str], "object"]:
+        output: list[str] = []
+
+        def capture_print(*args_p: object, **_: object) -> None:
+            output.append(" ".join(str(a) for a in args_p))
+
+        return output, capture_print
+
+    def test_list_populated(self) -> None:
+        """`list` prints each trusted directory."""
+        from deepagents_code.skills.commands import _trust
+
+        args = argparse.Namespace(trust_command="list")
+        output, capture_print = self._capture()
+        with (
+            patch(
+                "deepagents_code.skills.trust.list_trusted_skill_dir_entries",
+                return_value=[
+                    ("/shared/a", "2026-01-01T00:00:00+00:00"),
+                    ("/shared/b", ""),
+                ],
+            ),
+            patch("deepagents_code.config.console") as mock_console,
+        ):
+            mock_console.print = capture_print
+            _trust(args)
+
+        joined = "\n".join(output)
+        assert "/shared/a" in joined
+        assert "/shared/b" in joined
+        # The `trusted_at` timestamp is surfaced when present.
+        assert "2026-01-01T00:00:00+00:00" in joined
+
+    def test_list_empty(self) -> None:
+        """`list` on an empty store reports that nothing is trusted."""
+        from deepagents_code.skills.commands import _trust
+
+        args = argparse.Namespace(trust_command="list")
+        output, capture_print = self._capture()
+        with (
+            patch(
+                "deepagents_code.skills.trust.list_trusted_skill_dir_entries",
+                return_value=[],
+            ),
+            patch("deepagents_code.config.console") as mock_console,
+        ):
+            mock_console.print = capture_print
+            _trust(args)
+
+        assert "no trusted skill directories" in "\n".join(output).lower()
+
+    def test_ls_alias_behaves_like_list(self) -> None:
+        """`ls` is an alias for `list`."""
+        from deepagents_code.skills.commands import _trust
+
+        args = argparse.Namespace(trust_command="ls")
+        output, capture_print = self._capture()
+        with (
+            patch(
+                "deepagents_code.skills.trust.list_trusted_skill_dir_entries",
+                return_value=[("/shared/a", "")],
+            ),
+            patch("deepagents_code.config.console") as mock_console,
+        ):
+            mock_console.print = capture_print
+            _trust(args)
+
+        assert "/shared/a" in "\n".join(output)
+
+    def test_list_json_output(self) -> None:
+        """`list --output json` emits the standard envelope shape."""
+        import json
+        from io import StringIO
+
+        from deepagents_code.skills.commands import _trust
+
+        args = argparse.Namespace(trust_command="list", output_format="json")
+        buf = StringIO()
+        with (
+            patch(
+                "deepagents_code.skills.trust.list_trusted_skill_dir_entries",
+                return_value=[("/shared/a", "2026-01-01T00:00:00+00:00")],
+            ),
+            patch("sys.stdout", buf),
+        ):
+            _trust(args)
+
+        result = json.loads(buf.getvalue())
+        assert result["command"] == "skills trust list"
+        assert result["data"] == [
+            {"dir": "/shared/a", "trusted_at": "2026-01-01T00:00:00+00:00"}
+        ]
+
+    def test_list_unreadable_store_errors_and_exits(self) -> None:
+        """An unreadable store surfaces an error and exits non-zero.
+
+        It must never silently print "No trusted skill directories" while
+        entries the user cannot see or revoke sit in the file.
+        """
+        from deepagents_code.skills.commands import _trust
+
+        args = argparse.Namespace(trust_command="list")
+        output, capture_print = self._capture()
+        with (
+            patch(
+                "deepagents_code.skills.trust.list_trusted_skill_dir_entries",
+                side_effect=OSError("permission denied"),
+            ),
+            patch("deepagents_code.config.console") as mock_console,
+        ):
+            mock_console.print = capture_print
+            with pytest.raises(SystemExit) as exc_info:
+                _trust(args)
+
+        assert exc_info.value.code == 1
+        joined = "\n".join(output).lower()
+        assert "could not read" in joined
+        assert "no trusted skill directories" not in joined
+
+    def test_revoke_success(self) -> None:
+        """A successful revoke confirms the removed directory."""
+        from deepagents_code.skills.commands import _trust
+        from deepagents_code.skills.trust import RevokeResult
+
+        args = argparse.Namespace(trust_command="revoke", dir="/shared/a")
+        output, capture_print = self._capture()
+        with (
+            patch(
+                "deepagents_code.skills.trust.revoke_skill_dir_trust",
+                return_value=RevokeResult.REMOVED,
+            ),
+            patch("deepagents_code.config.console") as mock_console,
+        ):
+            mock_console.print = capture_print
+            _trust(args)
+
+        assert "revoked" in "\n".join(output).lower()
+
+    def test_revoke_not_found_reports_honestly(self) -> None:
+        """Revoking a dir that was never trusted must not print a false success."""
+        from deepagents_code.skills.commands import _trust
+        from deepagents_code.skills.trust import RevokeResult
+
+        args = argparse.Namespace(trust_command="revoke", dir="/shared/nope")
+        output, capture_print = self._capture()
+        with (
+            patch(
+                "deepagents_code.skills.trust.revoke_skill_dir_trust",
+                return_value=RevokeResult.NOT_FOUND,
+            ),
+            patch("deepagents_code.config.console") as mock_console,
+        ):
+            mock_console.print = capture_print
+            _trust(args)
+
+        joined = "\n".join(output).lower()
+        assert "no trust entry found" in joined
+        assert "revoked" not in joined
+
+    def test_revoke_json_output(self) -> None:
+        """`revoke --output json` emits the standard envelope with the result."""
+        import json
+        from io import StringIO
+
+        from deepagents_code.skills.commands import _trust
+        from deepagents_code.skills.trust import RevokeResult
+
+        args = argparse.Namespace(
+            trust_command="revoke", dir="/shared/a", output_format="json"
+        )
+        buf = StringIO()
+        with (
+            patch(
+                "deepagents_code.skills.trust.revoke_skill_dir_trust",
+                return_value=RevokeResult.NOT_FOUND,
+            ),
+            patch("sys.stdout", buf),
+        ):
+            _trust(args)
+
+        result = json.loads(buf.getvalue())
+        assert result["command"] == "skills trust revoke"
+        assert result["data"] == {"dir": "/shared/a", "result": "not_found"}
+
+    def test_revoke_failure_exits(self) -> None:
+        """A store/IO error reports an error and exits non-zero."""
+        from deepagents_code.skills.commands import _trust
+        from deepagents_code.skills.trust import RevokeResult
+
+        args = argparse.Namespace(trust_command="revoke", dir="/shared/a")
+        output, capture_print = self._capture()
+        with (
+            patch(
+                "deepagents_code.skills.trust.revoke_skill_dir_trust",
+                return_value=RevokeResult.ERROR,
+            ),
+            patch("deepagents_code.config.console") as mock_console,
+        ):
+            mock_console.print = capture_print
+            with pytest.raises(SystemExit) as exc_info:
+                _trust(args)
+
+        assert exc_info.value.code == 1
+        assert "could not revoke" in "\n".join(output).lower()
+
+    def test_clear_success(self) -> None:
+        """A successful clear confirms removal."""
+        from deepagents_code.skills.commands import _trust
+
+        args = argparse.Namespace(trust_command="clear")
+        output, capture_print = self._capture()
+        with (
+            patch(
+                "deepagents_code.skills.trust.clear_trusted_skill_dirs",
+                return_value=True,
+            ),
+            patch("deepagents_code.config.console") as mock_console,
+        ):
+            mock_console.print = capture_print
+            _trust(args)
+
+        assert "cleared" in "\n".join(output).lower()
+
+    def test_clear_json_output(self) -> None:
+        """`clear --output json` emits the standard envelope."""
+        import json
+        from io import StringIO
+
+        from deepagents_code.skills.commands import _trust
+
+        args = argparse.Namespace(trust_command="clear", output_format="json")
+        buf = StringIO()
+        with (
+            patch(
+                "deepagents_code.skills.trust.clear_trusted_skill_dirs",
+                return_value=True,
+            ),
+            patch("sys.stdout", buf),
+        ):
+            _trust(args)
+
+        result = json.loads(buf.getvalue())
+        assert result["command"] == "skills trust clear"
+        assert result["data"] == {"cleared": True}
+
+    def test_clear_failure_exits(self) -> None:
+        """A failed clear reports an error and exits non-zero."""
+        from deepagents_code.skills.commands import _trust
+
+        args = argparse.Namespace(trust_command="clear")
+        _output, capture_print = self._capture()
+        with (
+            patch(
+                "deepagents_code.skills.trust.clear_trusted_skill_dirs",
+                return_value=False,
+            ),
+            patch("deepagents_code.config.console") as mock_console,
+        ):
+            mock_console.print = capture_print
+            with pytest.raises(SystemExit) as exc_info:
+                _trust(args)
+
+        assert exc_info.value.code == 1

@@ -15,6 +15,7 @@ downloads/
 eggs/
 .eggs/
 lib/
+!libs/cli/frontend/src/lib/
 lib64/
 parts/
 sdist/
@@ -99,6 +100,7 @@ ipython_config.py
 #   This is especially recommended for binary packages to ensure reproducibility, and is more
 #   commonly ignored for libraries.
 #uv.lock
+.local_deps/
 
 # poetry
 #   Similar to Pipfile.lock, it is generally recommended to include poetry.lock in version control.
@@ -136,13 +138,41 @@ celerybeat.pid
 
 # Environments
 .env
+.env.*
 .envrc
+env.local
+*.env.local
 .venv
 env/
 venv/
 ENV/
 env.bak/
 venv.bak/
+
+# Local credentials and secrets
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+*.jks
+credentials.json
+token.json
+**/.deepagents/mcp-tokens/
+Cookies
+Cookies.db
+cookies.sqlite
+cookies.txt
+# OpenSSH private keys (no extension, so *.key never matches);
+# .pub counterparts are not secrets and stay committable.
+id_rsa
+id_dsa
+id_ecdsa
+id_ed25519
+*_rsa
+*_dsa
+*_ecdsa
+*_ed25519
 
 # Spyder project settings
 .spyderproject
@@ -212,8 +242,10 @@ __marimo__/
 #claude
 .claude
 
-# Harbor local job output
+# Harbor local job output. `harbor-jobs/` is the per-suite variant the eval Makefile and
+# the CI workflow write to (`harbor-jobs/<category>`).
 jobs/
+harbor-jobs/
 
 .idea
 TEXTUAL_REFACTOR_PLAN.md
@@ -227,3 +259,11 @@ libs/cli/TEXTUAL_PROGRESS.md
 
 CLAUDE.md
 .worktrees/
+
+# Frontend build artifacts (source tree; package data under libs/cli/deepagents_cli/deploy/frontend_dist/ is tracked)
+libs/cli/frontend/node_modules/
+libs/cli/frontend/dist/
+node_modules/
+
+# Generated at build time by libs/code/hatch_build.py (stamps the release commit)
+libs/code/deepagents_code/_build_info.py

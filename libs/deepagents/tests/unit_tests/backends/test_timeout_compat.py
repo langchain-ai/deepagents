@@ -73,12 +73,6 @@ class TestExecuteAcceptsTimeout:
         """A backend with **kwargs does not have a named `timeout` param."""
         assert execute_accepts_timeout(KwargsBackend) is False
 
-    def test_result_is_cached(self) -> None:
-        execute_accepts_timeout(ModernBackend)
-        execute_accepts_timeout(ModernBackend)
-        info = execute_accepts_timeout.cache_info()
-        assert info.hits >= 1
-
     def test_logs_warning_on_inspect_failure(self, caplog: pytest.LogCaptureFixture) -> None:
         """If inspect.signature raises, a warning is logged and False returned."""
 

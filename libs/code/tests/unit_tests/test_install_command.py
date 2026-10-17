@@ -1,0 +1,713 @@
+"""Tests for the `/install <extra>` slash command and `--install` flag handler.
+
+The CLI-flag side is covered by `test_main_args.TestInstallExtraSubcommand`;
+this module focuses on the in-app slash dispatch in `DeepAgentsApp`.
+"""
+
+from __future__ import annotations
+
+import sys
+from typing import TYPE_CHECKING
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
+from deepagents_code.app import DeepAgentsApp
+from deepagents_code.tui.widgets.messages import AppMessage, ErrorMessage
+from deepagents_code.update_check import (
+    UPDATE_LOCK_CONTENDED_MESSAGE,
+    ExtraInstallOutcome,
+)
+
+if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+
+    # `conftest`'s fixture protocols cannot be imported here: `tool.ty`
+    # `extra-paths` puts `libs/deepagents` on the path too, so
+    # `tests.unit_tests.conftest` is ambiguous across packages.
+    DrainModalCommands = Callable[..., Awaitable[None]]
+    WaitForModal = Callable[..., Awaitable[None]]
+
+MANUAL_EXTRA_COMMAND = (
+    "curl -LsSf https://langch.in/dcode | DEEPAGENTS_CODE_EXTRAS=quickjs bash"
+)
+
+
+async def test_install_slash_failure_surfaces_log_path_and_manual_cmd() -> None:
+    """A failed install renders as `ErrorMessage` with log path + manual cmd.
+
+    The success-styling regression: a previous version mounted `AppMessage`
+    on failure, which made it visually indistinguishable from the
+    "Installing extra..." status line. Failures must use `ErrorMessage`.
+    """
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch(
+                "deepagents_code.update_check.create_update_log_path",
+                return_value="/tmp/deepagents-install.log",
+            ),
+            patch(
+                "deepagents_code.update_check.install_extra_command",
+                return_value=MANUAL_EXTRA_COMMAND,
+            ),
+            patch(
+                "deepagents_code.update_check.install_extra_recovery_command",
+                return_value=MANUAL_EXTRA_COMMAND,
+            ),
+            patch(
+                "deepagents_code.update_check.perform_install_extra",
+                new_callable=AsyncMock,
+                return_value=ExtraInstallOutcome(False, "resolver: conflict"),
+            ),
+        ):
+            await app._handle_command("/install quickjs")
+            await pilot.pause()
+        error_msgs = [str(m._content) for m in app.query(ErrorMessage)]
+        joined = "\n".join(error_msgs)
+        assert "Install failed" in joined
+        assert "resolver: conflict" in joined
+        assert "/tmp/deepagents-install.log" in joined
+        assert "curl -LsSf https://langch.in/dcode" in joined
+        assert "DEEPAGENTS_CODE_EXTRAS=quickjs bash" in joined
+        assert "quickjs" in joined
+
+
+async def test_install_slash_exception_surfaces_log_path_and_manual_cmd() -> None:
+    """When `perform_install_extra` raises, surface log path + manual cmd."""
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch(
+                "deepagents_code.update_check.create_update_log_path",
+                return_value="/tmp/deepagents-install.log",
+            ),
+            patch(
+                "deepagents_code.update_check.install_extra_command",
+                return_value=MANUAL_EXTRA_COMMAND,
+            ),
+            patch(
+                "deepagents_code.update_check.install_extra_recovery_command",
+                return_value=MANUAL_EXTRA_COMMAND,
+            ),
+            patch(
+                "deepagents_code.update_check.perform_install_extra",
+                new_callable=AsyncMock,
+                side_effect=OSError("disk full"),
+            ),
+        ):
+            await app._handle_command("/install quickjs")
+            await pilot.pause()
+        error_msgs = [str(m._content) for m in app.query(ErrorMessage)]
+        joined = "\n".join(error_msgs)
+        assert "OSError" in joined
+        assert "disk full" in joined
+        assert "/tmp/deepagents-install.log" in joined
+        assert "curl -LsSf https://langch.in/dcode" in joined
+        assert "DEEPAGENTS_CODE_EXTRAS=quickjs bash" in joined
+        assert "quickjs" in joined
+
+
+async def test_install_slash_failure_renders_recovery_bracket_literally() -> None:
+    """A uv recovery command's `[extra]` bracket renders literally in the TUI.
+
+    The TUI mounts recovery commands as Textual `Content`, so — unlike the
+    Rich-markup CLI path — the bracket must not be backslash-escaped.
+    """
+    uv_cmd = "uv tool install -U 'deepagents-code[quickjs]'"
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch(
+                "deepagents_code.update_check.create_update_log_path",
+                return_value="/tmp/deepagents-install.log",
+            ),
+            patch(
+                "deepagents_code.update_check.install_extra_command",
+                return_value=MANUAL_EXTRA_COMMAND,
+            ),
+            patch(
+                "deepagents_code.update_check.install_extra_recovery_command",
+                return_value=uv_cmd,
+            ),
+            patch(
+                "deepagents_code.update_check.perform_install_extra",
+                new_callable=AsyncMock,
+                return_value=ExtraInstallOutcome(False, "resolver: conflict"),
+            ),
+        ):
+            await app._handle_command("/install quickjs")
+            await pilot.pause()
+        joined = "\n".join(str(m._content) for m in app.query(ErrorMessage))
+        assert "deepagents-code[quickjs]" in joined
+        assert "deepagents-code\\[quickjs]" not in joined
+
+
+async def test_install_slash_failure_recovery_error_keeps_prior_command() -> None:
+    """A recovery-command error on a failed install keeps the prior command.
+
+    The TUI shows the command resolved before the failure rather than crashing
+    or showing nothing.
+    """
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch(
+                "deepagents_code.update_check.create_update_log_path",
+                return_value="/tmp/deepagents-install.log",
+            ),
+            patch(
+                "deepagents_code.update_check.install_extra_command",
+                return_value=MANUAL_EXTRA_COMMAND,
+            ),
+            patch(
+                "deepagents_code.update_check.install_extra_recovery_command",
+                side_effect=ValueError("bad receipt"),
+            ),
+            patch(
+                "deepagents_code.update_check.perform_install_extra",
+                new_callable=AsyncMock,
+                return_value=ExtraInstallOutcome(False, "resolver: conflict"),
+            ),
+        ):
+            await app._handle_command("/install quickjs")
+            await pilot.pause()
+        joined = "\n".join(str(m._content) for m in app.query(ErrorMessage))
+        assert "Install failed" in joined
+        assert MANUAL_EXTRA_COMMAND in joined
+
+
+async def test_install_slash_exception_recovery_error_keeps_prior_command() -> None:
+    """A raised install plus a failed recovery command keeps the prior command.
+
+    When `perform_install_extra` raises and the recovery command also fails, the
+    TUI still surfaces the command resolved before the failure.
+    """
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch(
+                "deepagents_code.update_check.create_update_log_path",
+                return_value="/tmp/deepagents-install.log",
+            ),
+            patch(
+                "deepagents_code.update_check.install_extra_command",
+                return_value=MANUAL_EXTRA_COMMAND,
+            ),
+            patch(
+                "deepagents_code.update_check.install_extra_recovery_command",
+                side_effect=ValueError("bad receipt"),
+            ),
+            patch(
+                "deepagents_code.update_check.perform_install_extra",
+                new_callable=AsyncMock,
+                side_effect=OSError("disk full"),
+            ),
+        ):
+            await app._handle_command("/install quickjs")
+            await pilot.pause()
+        joined = "\n".join(str(m._content) for m in app.query(ErrorMessage))
+        assert "OSError" in joined
+        assert MANUAL_EXTRA_COMMAND in joined
+
+
+async def test_install_slash_package_confirm_runs(
+    drain_modal_commands: DrainModalCommands,
+) -> None:
+    """`--package` without `--force` prompts; confirming runs the install."""
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch(
+                "deepagents_code.update_check.perform_install_package",
+                new_callable=AsyncMock,
+                return_value=(True, ""),
+            ) as perform_mock,
+            patch.object(
+                app, "_push_screen_wait", new=AsyncMock(return_value=True)
+            ) as prompt,
+        ):
+            await app._handle_command("/install langchain-custom --package")
+            await drain_modal_commands(app)
+            await pilot.pause()
+        prompt.assert_awaited_once()
+        perform_mock.assert_awaited_once()
+        app_msgs = [m for m in app.query(AppMessage) if not m._is_markdown]
+        assert any(
+            "Installed package 'langchain-custom'" in str(m._content) for m in app_msgs
+        )
+
+
+async def test_install_slash_package_cancel_aborts(
+    drain_modal_commands: DrainModalCommands,
+) -> None:
+    """Cancelling the prompt must not call `perform_install_package`."""
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch(
+                "deepagents_code.update_check.perform_install_package",
+                new_callable=AsyncMock,
+            ) as perform_mock,
+            patch.object(
+                app, "_push_screen_wait", new=AsyncMock(return_value=False)
+            ) as prompt,
+        ):
+            await app._handle_command("/install langchain-custom --package")
+            await drain_modal_commands(app)
+            await pilot.pause()
+        prompt.assert_awaited_once()
+        perform_mock.assert_not_awaited()
+        app_msgs = [m for m in app.query(AppMessage) if not m._is_markdown]
+        joined = "\n".join(str(m._content) for m in app_msgs)
+        assert "Cancelled install" in joined
+        # The raw `uv tool` command is never surfaced to the user.
+        assert "uv tool" not in joined
+
+
+async def test_install_slash_package_prompt_timeout_aborts(
+    drain_modal_commands: DrainModalCommands,
+) -> None:
+    """A timed-out prompt aborts the install and reports the timeout."""
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch(
+                "deepagents_code.update_check.perform_install_package",
+                new_callable=AsyncMock,
+            ) as perform_mock,
+            patch.object(
+                app,
+                "_push_screen_wait",
+                new=AsyncMock(side_effect=TimeoutError()),
+            ) as prompt,
+        ):
+            await app._handle_command("/install langchain-custom --package")
+            await drain_modal_commands(app)
+            await pilot.pause()
+        prompt.assert_awaited_once()
+        perform_mock.assert_not_awaited()
+        app_msgs = [m for m in app.query(AppMessage) if not m._is_markdown]
+        joined = "\n".join(str(m._content) for m in app_msgs)
+        assert "timed out" in joined
+        # A timeout is not a user cancel and must not be reported as one.
+        assert "Cancelled install" not in joined
+
+
+async def test_install_slash_package_prompt_mount_failure_aborts(
+    drain_modal_commands: DrainModalCommands,
+) -> None:
+    """A modal that fails to mount aborts the install and surfaces an error."""
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch(
+                "deepagents_code.update_check.perform_install_package",
+                new_callable=AsyncMock,
+            ) as perform_mock,
+            patch.object(
+                app,
+                "_push_screen_wait",
+                new=AsyncMock(side_effect=RuntimeError("no screen stack")),
+            ) as prompt,
+        ):
+            await app._handle_command("/install langchain-custom --package")
+            await drain_modal_commands(app)
+            await pilot.pause()
+        prompt.assert_awaited_once()
+        perform_mock.assert_not_awaited()
+        err_msgs = [str(m._content) for m in app.query(ErrorMessage)]
+        joined = "\n".join(err_msgs)
+        assert "Could not show the install confirmation" in joined
+
+
+async def test_install_package_prompt_responsive_through_message_pump(
+    drain_modal_commands: DrainModalCommands,
+    wait_for_modal: WaitForModal,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The `--package` confirmation must accept keys via the real submit path.
+
+    Regression test: `/install <pkg> --package` is dispatched from the App's
+    `on_chat_input_submitted` handler, which is awaited inline on the App message
+    pump. Previously the confirmation was `await`ed in that chain, so the pump
+    stayed blocked while the modal was open and the modal never received the
+    Enter/Esc key events it needs to resolve — it appeared frozen until the
+    confirmation helper's watchdog fired. The confirmation now runs off the pump
+    (`_schedule_off_message_pump`), so submitting through the real
+    `ChatInput.Submitted` path and pressing Enter must resolve the modal and run
+    the install rather than wedging the UI.
+
+    The watchdog is shortened here so a regression fails on a real assertion in
+    seconds. At its production length the blocked pump also stalls `run_test()`
+    teardown, and the failure surfaces as a bare pytest-timeout that says
+    nothing about the cause.
+    """
+    from deepagents_code import app as app_module
+    from deepagents_code.tui.widgets.chat_input import ChatInput
+    from deepagents_code.tui.widgets.install_confirm import InstallPackageConfirmScreen
+
+    monkeypatch.setattr(app_module, "_MODAL_WATCHDOG_TIMEOUT_SECONDS", 2.0)
+
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        # Idle session so the submission is processed instead of queued.
+        app._agent_running = False
+        app._connecting = False
+        app._startup_sequence_running = False
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch(
+                "deepagents_code.update_check.perform_install_package",
+                new_callable=AsyncMock,
+                return_value=(True, ""),
+            ) as perform_mock,
+        ):
+            # Submit through the message pump, exactly as the ChatInput widget
+            # would, rather than awaiting `_handle_command` directly (which would
+            # not exercise the pump-blocking path).
+            assert app._chat_input is not None
+            app._chat_input.post_message(
+                ChatInput.Submitted("/install langchain-custom --package", "command"),
+            )
+            await wait_for_modal(pilot, InstallPackageConfirmScreen, present=True)
+
+            # With the pump free, Enter must reach the modal and resolve it.
+            await pilot.press("enter")
+            await wait_for_modal(pilot, InstallPackageConfirmScreen, present=False)
+            await drain_modal_commands(app)
+
+        perform_mock.assert_awaited_once()
+
+
+async def test_install_package_continuation_surfaces_unexpected_error(
+    drain_modal_commands: DrainModalCommands,
+) -> None:
+    """A non-`OSError` raise in the detached install still reaches the user.
+
+    The confirmation and the install run in a task detached from
+    `_handle_install_package`, so nothing in the command's call chain catches an
+    exception from them. Without the continuation's own handler the failure would
+    reach only `_log_task_exception` — a `logger.warning` the interactive user
+    never sees — leaving the mounted "Installing package..." line as the last
+    thing shown and the install apparently still running.
+    """
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch.object(
+                app, "_confirm_install_package", new=AsyncMock(return_value=True)
+            ),
+            patch(
+                "deepagents_code.update_check.perform_install_package",
+                new_callable=AsyncMock,
+                side_effect=RuntimeError("subprocess machinery exploded"),
+            ),
+        ):
+            await app._handle_command("/install langchain-custom --package")
+            await drain_modal_commands(app)
+            await pilot.pause()
+
+        joined = "\n".join(str(m._content) for m in app.query(ErrorMessage))
+        assert "Install failed: RuntimeError" in joined
+        assert "subprocess machinery exploded" in joined
+
+
+async def test_perform_package_install_import_failure_surfaces_error() -> None:
+    """A lazy-import failure inside the install is reported, not raised.
+
+    `/install --package` rewrites dcode's own package tree, so this import can
+    hit a half-written module on a second install in the same session. It is
+    exercised directly rather than through `/install`, because breaking
+    `update_check` in `sys.modules` also breaks the earlier import in
+    `_handle_install_package`, whose own handler would return before this code
+    ran. Without the guard here the raise would reach `_fatal_error` on the
+    `--force` path and `_log_task_exception` on the detached path.
+    """
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        with patch.dict(sys.modules, {"deepagents_code.update_check": None}):
+            await app._perform_package_install("langchain-custom")
+            await pilot.pause()
+
+        joined = "\n".join(str(m._content) for m in app.query(ErrorMessage))
+        assert "Install failed" in joined
+
+
+async def test_install_restart_prompt_skipped_while_agent_running() -> None:
+    """A restart cancels in-flight work, so don't prompt mid-run."""
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._server_proc = MagicMock()
+        app._server_kwargs = {"model_name": "fireworks:fake"}
+        app._agent_running = True
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch(
+                "deepagents_code.update_check.perform_install_extra",
+                new_callable=AsyncMock,
+                return_value=ExtraInstallOutcome(True, ""),
+            ),
+            patch.object(app, "_push_screen_wait", new=AsyncMock()) as prompt,
+        ):
+            await app._handle_command("/install fireworks")
+            await pilot.pause()
+        prompt.assert_not_called()
+
+
+async def test_install_restart_prompt_mount_failure_leaves_manual_hint() -> None:
+    """If the modal cannot be mounted, fall back to the manual `/restart` hint."""
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._server_proc = MagicMock()
+        app._server_kwargs = {"model_name": "fireworks:fake"}
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch(
+                "deepagents_code.update_check.perform_install_extra",
+                new_callable=AsyncMock,
+                return_value=ExtraInstallOutcome(True, ""),
+            ),
+            patch.object(
+                app,
+                "_push_screen_wait",
+                new=AsyncMock(side_effect=RuntimeError("modal hijacked")),
+            ) as prompt,
+            patch.object(
+                app, "_restart_server_manual", new=AsyncMock(return_value=True)
+            ) as restart,
+        ):
+            await app._handle_command("/install fireworks")
+            await pilot.pause()
+        prompt.assert_awaited_once()
+        restart.assert_not_called()
+        app_msgs = [
+            str(m._content) for m in app.query(AppMessage) if not m._is_markdown
+        ]
+        # The install message keeps the manual recovery path, and no restart
+        # was attempted.
+        assert any("/restart" in m for m in app_msgs)
+        assert not any("Restarting server..." in m for m in app_msgs)
+
+
+async def test_install_restart_failure_omits_complete_message() -> None:
+    """A failed restart removes the attempt and never claims completion."""
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._server_proc = MagicMock()
+        app._server_kwargs = {"model_name": "fireworks:fake"}
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch(
+                "deepagents_code.update_check.perform_install_extra",
+                new_callable=AsyncMock,
+                return_value=ExtraInstallOutcome(True, ""),
+            ),
+            patch.object(
+                app, "_push_screen_wait", new=AsyncMock(return_value="restart")
+            ) as prompt,
+            patch("deepagents_code.config.credentials.reload_from_environment", list),
+            patch("deepagents_code.model_config.clear_caches", lambda: None),
+            patch.object(
+                app, "_restart_server_manual", new=AsyncMock(return_value=False)
+            ) as restart,
+        ):
+            await app._handle_command("/install fireworks")
+            await pilot.pause()
+        prompt.assert_awaited_once()
+        restart.assert_awaited_once()
+        app_msgs = [
+            str(m._content) for m in app.query(AppMessage) if not m._is_markdown
+        ]
+        assert not any("Restarting server..." in m for m in app_msgs)
+        assert not any("Restart complete." in m for m in app_msgs)
+
+
+async def test_install_restart_raising_removes_transient_and_propagates() -> None:
+    """A raising restart clears the transient before the exception propagates.
+
+    The transient "Restarting server..." status mounts before
+    `_restart_server_manual()` is awaited, so the `try/finally` in
+    `_restart_after_install` exists solely to remove it when the restart raises
+    (not merely returns `False`). On a raise the transient must be gone, the
+    completion banner must never mount, and the exception must propagate.
+    """
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._server_proc = MagicMock()
+        app._server_kwargs = {"model_name": "fireworks:fake"}
+
+        with (
+            patch("deepagents_code.config.credentials.reload_from_environment", list),
+            patch("deepagents_code.model_config.clear_caches", lambda: None),
+            patch.object(
+                app,
+                "_restart_server_manual",
+                new=AsyncMock(side_effect=RuntimeError("respawn exploded")),
+            ) as restart,
+            pytest.raises(RuntimeError, match="respawn exploded"),
+        ):
+            await app._restart_after_install("fireworks")
+
+        await pilot.pause()
+        restart.assert_awaited_once()
+        app_msgs = [
+            str(m._content) for m in app.query(AppMessage) if not m._is_markdown
+        ]
+        assert not any("Restarting server..." in m for m in app_msgs)
+        assert not any("Restart complete." in m for m in app_msgs)
+
+
+async def test_offer_restart_survives_missing_restart_prompt_module() -> None:
+    """A missing `restart_prompt` module must degrade, not crash the TUI.
+
+    `/install` runs `uv tool install -U 'deepagents-code[...]'`, which rewrites
+    deepagents-code's own on-disk tree mid-session. A first import of the
+    restart modal on the post-install path then reads the half-replaced tree
+    and raises `ModuleNotFoundError`. The handler must degrade to the manual
+    `/restart` hint instead of letting the import crash the app.
+    """
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._server_proc = MagicMock()
+        app._server_kwargs = {"model_name": "fireworks:fake"}
+        app._agent_running = False
+        app._connecting = False
+        push = AsyncMock(return_value="restart")
+        with (
+            # `None` in sys.modules makes the `from`-import raise
+            # `ModuleNotFoundError` — a deterministic stand-in for the import
+            # failure a half-replaced on-disk tree causes after a self-upgrade.
+            patch.dict(
+                sys.modules,
+                {"deepagents_code.tui.widgets.restart_prompt": None},
+            ),
+            patch.object(app, "_push_screen_wait", new=push),
+            patch.object(
+                app, "_restart_server_manual", new=AsyncMock(return_value=True)
+            ) as restart,
+        ):
+            # Must not raise despite the unimportable modal.
+            await app._offer_restart_after_install("fireworks")
+            await pilot.pause()
+        # The modal was never mounted and no restart was attempted.
+        push.assert_not_awaited()
+        restart.assert_not_awaited()
+
+
+async def test_install_restart_prompt_responsive_through_message_pump() -> None:
+    """The post-install restart modal must accept keys via the real submit path.
+
+    Regression test: `/install <extra>` is dispatched from the App's
+    `on_chat_input_submitted` handler, which is awaited inline on the App
+    message pump. Previously the restart offer was `await`ed in that chain, so
+    the pump stayed blocked while the modal was open and the modal never
+    received the Enter/Esc key events it needs to resolve — it appeared frozen.
+    The offer now runs off the pump (`_schedule_restart_offer`), so submitting
+    through the real `ChatInput.Submitted` path and pressing Enter must resolve
+    the modal and trigger the restart rather than wedging the UI.
+    """
+    from deepagents_code.tui.widgets.chat_input import ChatInput
+    from deepagents_code.tui.widgets.restart_prompt import RestartPromptScreen
+
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        # Pretend dcode owns an idle server so the one-keypress prompt is offered.
+        app._server_proc = MagicMock()
+        app._server_kwargs = {"model_name": "fireworks:fake"}
+        app._agent_running = False
+        app._connecting = False
+        restart = AsyncMock(return_value=True)
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch(
+                "deepagents_code.update_check.perform_install_extra",
+                new_callable=AsyncMock,
+                return_value=ExtraInstallOutcome(True, ""),
+            ),
+            patch.object(app, "_restart_after_install", new=restart),
+        ):
+            # Submit through the message pump, exactly as the ChatInput widget
+            # would, rather than awaiting `_handle_command` directly (which would
+            # not exercise the pump-blocking path).
+            assert app._chat_input is not None
+            app._chat_input.post_message(
+                ChatInput.Submitted("/install fireworks", "command")
+            )
+            # Wait for the detached offer to mount the modal.
+            for _ in range(50):
+                await pilot.pause()
+                if isinstance(app.screen, RestartPromptScreen):
+                    break
+            assert isinstance(app.screen, RestartPromptScreen)
+
+            # With the pump free, Enter must reach the modal and resolve it.
+            # Before the fix this raised `WaitForScreenTimeout`.
+            await pilot.press("enter")
+            for _ in range(50):
+                await pilot.pause()
+                if not isinstance(app.screen, RestartPromptScreen):
+                    break
+        assert not isinstance(app.screen, RestartPromptScreen)
+        restart.assert_awaited_once_with("fireworks")
+
+
+async def test_install_slash_contention_omits_manual_cmd() -> None:
+    """Lock contention never recommends bypassing the held install lock."""
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch(
+                "deepagents_code.update_check.create_update_log_path",
+                return_value="/tmp/deepagents-install.log",
+            ),
+            patch(
+                "deepagents_code.update_check.install_extra_command",
+                return_value=MANUAL_EXTRA_COMMAND,
+            ),
+            patch(
+                "deepagents_code.update_check.perform_install_extra",
+                new_callable=AsyncMock,
+                return_value=ExtraInstallOutcome(
+                    False,
+                    UPDATE_LOCK_CONTENDED_MESSAGE,
+                    manual_recovery_safe=False,
+                ),
+            ),
+        ):
+            await app._handle_command("/install quickjs")
+            await pilot.pause()
+
+        joined = "\n".join(str(m._content) for m in app.query(ErrorMessage))
+        assert "already running" in joined
+        assert "Run manually" not in joined

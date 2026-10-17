@@ -19,8 +19,10 @@ if TYPE_CHECKING:
 
 from tests.evals.utils import (
     TrajectoryScorer,
+    file_absent,
     file_contains,
     file_equals,
+    file_excludes,
     final_text_contains,
     final_text_excludes,
     run_agent,
@@ -45,6 +47,89 @@ def test_read_file_seeded_state_backend_file(model: BaseChatModel) -> None:
         scorer=TrajectoryScorer()
         .expect(agent_steps=2, tool_call_requests=1)
         .success(final_text_contains("three", case_insensitive=True)),
+    )
+
+
+@pytest.mark.eval_tier("baseline")
+@pytest.mark.eval_category("file_operations")
+@pytest.mark.langsmith
+def test_write_file_overwrites_existing(model: BaseChatModel) -> None:
+    """Overwrites an existing file without reading it first."""
+    agent = create_deep_agent(model=model)
+    run_agent(
+        agent,
+        model=model,
+        initial_files={"/note.md": "old content\n"},
+        query='Rewrite /note.md so it contains only "new content". Reply with DONE only.',
+        # 1st step: write_file to /note.md (no read needed).
+        # 2nd step: reply DONE.
+        # 1 tool call request: write_file.
+        scorer=TrajectoryScorer()
+        .expect(
+            agent_steps=2,
+            tool_call_requests=1,
+            tool_calls=[
+                tool_call(name="write_file", step=1, args_contains={"file_path": "/note.md"}),
+            ],
+        )
+        .success(
+            final_text_contains("DONE"),
+            file_equals("/note.md", "new content"),
+        ),
+    )
+
+
+@pytest.mark.eval_tier("baseline")
+@pytest.mark.eval_category("file_operations")
+@pytest.mark.langsmith
+def test_write_file_overwrite_drops_old_content(model: BaseChatModel) -> None:
+    """Overwriting a file replaces it entirely, no trace of old content should remain."""
+    agent = create_deep_agent(model=model)
+    run_agent(
+        agent,
+        model=model,
+        initial_files={"/log.txt": "stale line\n"},
+        query='Write "fresh line" to /log.txt. Reply with DONE only.',
+        # 1st step: write_file to /log.txt.
+        # 2nd step: reply DONE.
+        # 1 tool call request: write_file.
+        scorer=TrajectoryScorer()
+        .expect(agent_steps=2, tool_call_requests=1)
+        .success(
+            final_text_contains("DONE"),
+            file_contains("/log.txt", "fresh line"),
+            file_excludes("/log.txt", "stale"),
+        ),
+    )
+
+
+@pytest.mark.eval_tier("baseline")
+@pytest.mark.eval_category("file_operations")
+@pytest.mark.langsmith
+def test_write_file_prefers_edit_for_targeted_change(model: BaseChatModel) -> None:
+    """Uses edit_file (not write_file) when only a targeted in-place change is needed."""
+    agent = create_deep_agent(model=model)
+    run_agent(
+        agent,
+        model=model,
+        initial_files={"/note.md": "cat dog bird\n"},
+        query="In /note.md, replace 'cat' with 'lion'. Reply with DONE only.",
+        # 1st step: edit_file on /note.md (targeted change, rest of file preserved).
+        # 2nd step: reply DONE.
+        # 1 tool call request: edit_file.
+        scorer=TrajectoryScorer()
+        .expect(
+            agent_steps=2,
+            tool_call_requests=1,
+            tool_calls=[
+                tool_call(name="edit_file", step=1, args_contains={"file_path": "/note.md"}),
+            ],
+        )
+        .success(
+            final_text_contains("DONE"),
+            file_contains("/note.md", "lion"),
+            file_excludes("/note.md", "cat"),
+        ),
     )
 
 
@@ -346,6 +431,102 @@ def test_grep_finds_matching_paths(model: BaseChatModel) -> None:
 @pytest.mark.eval_tier("baseline")
 @pytest.mark.eval_category("retrieval")
 @pytest.mark.langsmith
+def test_grep_alternation_regex_recovers(model: BaseChatModel) -> None:
+    """Recovers when an `|` alternation grep misses, finding both literal terms.
+
+    `grep` matches literal text, so `cat|dog` is searched verbatim and misses.
+    A model that reaches for regex should be steered by the no-match hint into
+    running a separate literal search per term instead of burning calls on
+    regex variants. Either way it must end up reporting both matching files.
+    """
+    agent = create_deep_agent(model=model)
+    run_agent(
+        agent,
+        model=model,
+        initial_files={
+            "/pets/a.txt": "the cat sat\n",
+            "/pets/b.txt": "the dog ran\n",
+            "/pets/c.txt": "the bird flew\n",
+        },
+        query="Using grep, find which files mention either 'cat' or 'dog'. Answer with the matching file paths only.",
+        # 1st step (ideal): two literal greps, one per term.
+        # 2nd step: answer with the matching paths.
+        # A single `cat|dog` regex attempt misses and surfaces the literal hint.
+        scorer=TrajectoryScorer()
+        .expect(agent_steps=2, tool_call_requests=2)
+        .success(
+            final_text_contains("/pets/a.txt"),
+            final_text_contains("/pets/b.txt"),
+            final_text_excludes("/pets/c.txt"),
+        ),
+    )
+
+
+@pytest.mark.eval_tier("baseline")
+@pytest.mark.eval_category("retrieval")
+@pytest.mark.langsmith
+def test_grep_wildcard_regex_recovers(model: BaseChatModel) -> None:
+    """Recovers when a `.*` wildcard grep misses, locating the literal line.
+
+    A model may search `TODO.*cache`; literal grep treats `.*` verbatim and
+    misses. The no-match hint should steer it back to a plain literal search
+    (e.g. `TODO`) so it still finds and reports the file.
+    """
+    agent = create_deep_agent(model=model)
+    run_agent(
+        agent,
+        model=model,
+        initial_files={
+            "/src/app.py": "x = 1\n# TODO: add a cache layer here\n",
+            "/src/util.py": "y = 2\n",
+        },
+        query="Using grep, find which file has a TODO comment about a cache. Answer with the matching file path only.",
+        # 1st step (ideal): literal grep for 'TODO'.
+        # 2nd step: answer with the matching path.
+        # A `TODO.*cache` regex attempt misses and surfaces the literal hint.
+        scorer=TrajectoryScorer()
+        .expect(agent_steps=2, tool_call_requests=1)
+        .success(
+            final_text_contains("/src/app.py"),
+            final_text_excludes("/src/util.py"),
+        ),
+    )
+
+
+@pytest.mark.eval_tier("baseline")
+@pytest.mark.eval_category("retrieval")
+@pytest.mark.langsmith
+def test_grep_escaped_metachar_regex_recovers(model: BaseChatModel) -> None:
+    """Recovers when an escaped-regex grep misses a literal filename.
+
+    A model may search `config\\.yaml`; literal grep matches the backslash
+    verbatim and misses `config.yaml`. The no-match hint should steer it back
+    to a plain literal search so it still finds and reports the file.
+    """
+    agent = create_deep_agent(model=model)
+    run_agent(
+        agent,
+        model=model,
+        initial_files={
+            "/svc/readme.md": "Edit config.yaml to set up the service.\n",
+            "/svc/notes.txt": "nothing relevant here\n",
+        },
+        query="Using grep, find which file mentions the config.yaml file. Answer with the matching file path only.",
+        # 1st step (ideal): literal grep for 'config.yaml'.
+        # 2nd step: answer with the matching path.
+        # A `config\\.yaml` escaped-regex attempt misses and surfaces the literal hint.
+        scorer=TrajectoryScorer()
+        .expect(agent_steps=2, tool_call_requests=1)
+        .success(
+            final_text_contains("/svc/readme.md"),
+            final_text_excludes("/svc/notes.txt"),
+        ),
+    )
+
+
+@pytest.mark.eval_tier("baseline")
+@pytest.mark.eval_category("retrieval")
+@pytest.mark.langsmith
 def test_glob_lists_markdown_files(model: BaseChatModel) -> None:
     """Uses glob to list files matching a pattern."""
     agent = create_deep_agent(model=model)
@@ -558,16 +739,10 @@ Clues: about programming readability; software craftsmanship.
 @pytest.mark.eval_tier("baseline")
 @pytest.mark.eval_category("file_operations")
 @pytest.mark.langsmith
-def test_read_file_truncation_recovery_with_pagination(
+def test_read_file_remaining_lines_notice_enables_tail_jump(
     model: BaseChatModel,
 ) -> None:
-    """Requires paging to retrieve a value that is only present at the end of a long file.
-
-    Note: This could be made more efficient in the future if `read_file` returned
-    file metadata (e.g., total line count / size) so the agent could jump directly
-    to the tail in a single call. With the current tool surface, the agent has to
-    iteratively page to discover where the end is.
-    """
+    """Uses pagination metadata to jump directly from the first page to the file's tail."""
     agent = create_deep_agent(model=model)
     last_line = "opal-fox-91"
     initial = "x\n" * 300
@@ -577,16 +752,16 @@ def test_read_file_truncation_recovery_with_pagination(
         model=model,
         initial_files=initial_files,
         query=(
-            "Read /big.txt and tell me the exact contents of the last non-empty line. Reply with that line only."
+            "Use read_file yourself to read /big.txt and tell me the exact contents of the "
+            "last non-empty line. Do not delegate this task. Reply with that line only."
         ),
         scorer=TrajectoryScorer()
         .expect(
-            agent_steps=4,
-            tool_call_requests=3,
+            agent_steps=3,
+            tool_call_requests=2,
             tool_calls=[
                 tool_call(step=1, name="read_file", args_contains={"file_path": "/big.txt"}),
                 tool_call(step=2, name="read_file", args_contains={"file_path": "/big.txt"}),
-                tool_call(step=3, name="read_file", args_contains={"file_path": "/big.txt"}),
             ],
         )
         .success(final_text_contains(last_line)),
@@ -607,4 +782,159 @@ def test_read_file_empty_file_reports_empty(model: BaseChatModel) -> None:
         scorer=TrajectoryScorer()
         .expect(agent_steps=2, tool_call_requests=1)
         .success(final_text_contains("EMPTY")),
+    )
+
+
+@pytest.mark.eval_tier("baseline")
+@pytest.mark.eval_category("file_operations")
+@pytest.mark.langsmith
+def test_delete_simple(model: BaseChatModel) -> None:
+    """Deletes a seeded file and confirms it is gone."""
+    agent = create_deep_agent(model=model)
+    run_agent(
+        agent,
+        model=model,
+        initial_files={"/foo.md": "delete me\n"},
+        query="Delete the file /foo.md, then reply with DONE only.",
+        # 1st step: request a delete tool call for /foo.md.
+        # 2nd step: reply DONE.
+        # 1 tool call request: delete.
+        scorer=TrajectoryScorer()
+        .expect(
+            agent_steps=2,
+            tool_call_requests=1,
+            tool_calls=[
+                tool_call(name="delete", step=1, args_contains={"file_path": "/foo.md"}),
+            ],
+        )
+        .success(
+            final_text_contains("DONE"),
+            file_absent("/foo.md"),
+        ),
+    )
+
+
+@pytest.mark.eval_tier("baseline")
+@pytest.mark.eval_category("file_operations")
+@pytest.mark.langsmith
+def test_delete_one_of_several_files(model: BaseChatModel) -> None:
+    """Deletes a single target file, leaving the others untouched."""
+    agent = create_deep_agent(model=model)
+    run_agent(
+        agent,
+        model=model,
+        initial_files={
+            "/a.md": "a",
+            "/b.md": "b",
+            "/c.md": "c",
+        },
+        query="Delete /b.md only. Leave the other files untouched. Reply with DONE only.",
+        # 1st step: request a delete tool call for /b.md.
+        # 2nd step: reply DONE.
+        # 1 tool call request: delete.
+        scorer=TrajectoryScorer()
+        .expect(
+            agent_steps=2,
+            tool_call_requests=1,
+            tool_calls=[
+                tool_call(name="delete", step=1, args_contains={"file_path": "/b.md"}),
+            ],
+        )
+        .success(
+            final_text_contains("DONE"),
+            file_absent("/b.md"),
+            file_equals("/a.md", "a"),
+            file_equals("/c.md", "c"),
+        ),
+    )
+
+
+@pytest.mark.eval_tier("baseline")
+@pytest.mark.eval_category("file_operations")
+@pytest.mark.langsmith
+def test_deletes_in_parallel(model: BaseChatModel) -> None:
+    """Deletes two files in parallel without extra tool calls."""
+    agent = create_deep_agent(model=model)
+    run_agent(
+        agent,
+        model=model,
+        initial_files={"/a.md": "a", "/b.md": "b"},
+        query=(
+            "Delete /a.md and /b.md. Do the deletes in parallel. Do NOT read any files afterward. Reply with DONE only."
+        ),
+        # 1st step: request 2 delete tool calls in parallel.
+        # 2nd step: reply DONE.
+        # 2 tool call requests: delete /a.md and delete /b.md.
+        scorer=TrajectoryScorer()
+        .expect(
+            agent_steps=2,
+            tool_call_requests=2,
+            tool_calls=[
+                tool_call(name="delete", step=1, args_contains={"file_path": "/a.md"}),
+                tool_call(name="delete", step=1, args_contains={"file_path": "/b.md"}),
+            ],
+        )
+        .success(
+            final_text_contains("DONE"),
+            file_absent("/a.md"),
+            file_absent("/b.md"),
+        ),
+    )
+
+
+@pytest.mark.eval_tier("baseline")
+@pytest.mark.eval_category("file_operations")
+@pytest.mark.langsmith
+def test_write_then_delete_same_file(model: BaseChatModel) -> None:
+    """Writes a file and then deletes it, leaving no trace."""
+    agent = create_deep_agent(model=model)
+    run_agent(
+        agent,
+        model=model,
+        query=('Write "scratch" to /tmp.md, then delete /tmp.md. Reply with DONE only.'),
+        # 1st step: request a write_file tool call for /tmp.md.
+        # 2nd step: request a delete tool call for /tmp.md.
+        # 3rd step: reply DONE.
+        # 2 tool call requests: write_file then delete.
+        scorer=TrajectoryScorer()
+        .expect(
+            agent_steps=3,
+            tool_call_requests=2,
+            tool_calls=[
+                tool_call(name="write_file", step=1, args_contains={"file_path": "/tmp.md"}),
+                tool_call(name="delete", step=2, args_contains={"file_path": "/tmp.md"}),
+            ],
+        )
+        .success(
+            final_text_contains("DONE"),
+            file_absent("/tmp.md"),
+        ),
+    )
+
+
+@pytest.mark.eval_tier("baseline")
+@pytest.mark.eval_category("file_operations")
+@pytest.mark.langsmith
+def test_delete_missing_file_reports_absence(model: BaseChatModel) -> None:
+    """A delete of a nonexistent file is reported, not faked.
+
+    The `delete` tool returns a "File ... not found" error for a path
+    that does not exist. The agent should surface that the file is missing
+    rather than claim a successful deletion, and must leave the real file
+    untouched. Tool-call shape is intentionally not enforced: a model may
+    list/read first, or attempt the delete and recover from the error.
+    """
+    agent = create_deep_agent(model=model)
+    run_agent(
+        agent,
+        model=model,
+        initial_files={"/exists.md": "still here\n"},
+        query=(
+            "Delete the file /missing.md. If it does not exist, reply with exactly: NOT_FOUND. "
+            "Otherwise reply with exactly: DONE."
+        ),
+        scorer=TrajectoryScorer().success(
+            final_text_contains("NOT_FOUND"),
+            file_equals("/exists.md", "still here\n"),
+        ),
     )

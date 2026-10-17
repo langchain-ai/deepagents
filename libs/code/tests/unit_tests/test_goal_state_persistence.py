@@ -1,0 +1,290 @@
+"""Tests for persisted goal-state notice reconciliation."""
+
+import logging
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+
+from deepagents_code.app import DeepAgentsApp
+from deepagents_code.goal_state_notice import (
+    build_goal_state_notice,
+    goal_state_notice_info,
+)
+
+
+def _active_state() -> dict[str, object]:
+    return {
+        "_goal_objective": "ship it",
+        "_goal_status": "active",
+        "_goal_rubric": "tests pass",
+    }
+
+
+async def test_active_paused_active_persists_three_append_events() -> None:
+    """A return to an earlier state does not reuse or replace its first event."""
+    updater = SimpleNamespace(aupdate_state=AsyncMock())
+    app = DeepAgentsApp(agent=MagicMock())
+    app._agent = updater
+    app._lc_thread_id = "thread-1"
+    states = [
+        {"_goal_objective": "ship it", "_goal_status": "active"},
+        {"_goal_objective": "ship it", "_goal_status": "paused"},
+        {"_goal_objective": "ship it", "_goal_status": "active"},
+    ]
+
+    for state in states:
+        notice = build_goal_state_notice(state)
+        assert await app._persist_goal_rubric_state(
+            notice=notice,
+            state_update=state,
+        )
+
+    assert updater.aupdate_state.await_count == 3
+    notices = [
+        awaited.args[1]["messages"][0]
+        for awaited in updater.aupdate_state.await_args_list
+    ]
+    assert len({notice.id for notice in notices}) == 3
+    assert (
+        notices[0].additional_kwargs["state_fingerprint"]
+        == notices[2].additional_kwargs["state_fingerprint"]
+    )
+
+
+async def test_invalid_later_notice_is_superseded_by_current_inactive_state() -> None:
+    updater = SimpleNamespace(aupdate_state=AsyncMock())
+    app = DeepAgentsApp(agent=MagicMock())
+    app._agent = updater
+    app._lc_thread_id = "thread-1"
+    inactive = build_goal_state_notice({}, event_id="goal-event-inactive")
+    invalid_active = HumanMessage(
+        content=(
+            "[SYSTEM] Goal/rubric state changed.\n\n"
+            "- Goal status: active\n"
+            "- Goal actionable: yes\n"
+            "- Rubric active: yes"
+        ),
+    )
+    checkpoint = {"messages": [inactive, invalid_active]}
+
+    with patch.object(
+        app,
+        "_get_thread_state_values",
+        AsyncMock(return_value=checkpoint),
+    ):
+        assert await app._ensure_goal_state_notice()
+
+    current = updater.aupdate_state.await_args.args[1]["messages"][0]
+    assert "Goal status: not set" in current.content
+    assert goal_state_notice_info(current) is not None
+
+
+async def test_stale_notice_appends_current_state() -> None:
+    """A newer checkpoint state supersedes an older canonical notice."""
+    updater = SimpleNamespace(aupdate_state=AsyncMock())
+    app = DeepAgentsApp(agent=MagicMock())
+    app._agent = updater
+    app._lc_thread_id = "thread-1"
+    stale = build_goal_state_notice(
+        {"_goal_objective": "ship it", "_goal_status": "paused"},
+        event_id="goal-event-paused",
+    )
+    checkpoint = {**_active_state(), "messages": [stale]}
+
+    with patch.object(
+        app,
+        "_get_thread_state_values",
+        AsyncMock(return_value=checkpoint),
+    ):
+        assert await app._ensure_goal_state_notice()
+
+    current = updater.aupdate_state.await_args.args[1]["messages"][0]
+    assert "Goal status: active" in current.content
+    assert current.id != stale.id
+
+
+async def test_compaction_cutoff_repins_once() -> None:
+    """A matching notice before the active cutoff is appended once after it."""
+    updater = SimpleNamespace(aupdate_state=AsyncMock())
+    app = DeepAgentsApp(agent=MagicMock())
+    app._agent = updater
+    app._lc_thread_id = "thread-1"
+    state = _active_state()
+    old_notice = build_goal_state_notice(state, event_id="goal-event-old")
+    user = HumanMessage(content="continue", id="user-1")
+    event = {
+        "summary_message": HumanMessage(
+            content="summary",
+            additional_kwargs={"lc_source": "summarization"},
+        ),
+        "cutoff_index": 1,
+    }
+    checkpoint = {
+        **state,
+        "messages": [old_notice, user],
+        "_summarization_event": event,
+    }
+
+    fetch = AsyncMock(return_value=checkpoint)
+    with patch.object(app, "_get_thread_state_values", fetch):
+        assert await app._ensure_goal_state_notice()
+    repinned = updater.aupdate_state.await_args.args[1]["messages"][0]
+    assert repinned.id != old_notice.id
+
+    updater.aupdate_state.reset_mock()
+    checkpoint["messages"] = [old_notice, user, repinned]
+    with patch.object(
+        app,
+        "_get_thread_state_values",
+        AsyncMock(return_value=checkpoint),
+    ):
+        assert await app._ensure_goal_state_notice()
+    updater.aupdate_state.assert_not_awaited()
+
+
+@pytest.mark.parametrize("cutoff_index", [-1, 99, "1", True, None])
+async def test_out_of_range_cutoff_treats_a_matching_notice_as_visible(
+    cutoff_index: object,
+) -> None:
+    """An unusable cutoff must not discount a notice the model can see.
+
+    `_summarization_cutoff` is called with `message_count`, so an out-of-range,
+    negative, or non-int cutoff degrades to `0` rather than being trusted.
+    Without that, a stale index would mark the tail notice invisible and the
+    predicate would rewrite it on every turn. Dropping the `message_count`
+    argument breaks nothing else in the suite, so this pins it.
+    """
+    updater = SimpleNamespace(aupdate_state=AsyncMock())
+    app = DeepAgentsApp(agent=MagicMock())
+    app._agent = updater
+    app._lc_thread_id = "thread-1"
+    state = _active_state()
+    notice = build_goal_state_notice(state, event_id="goal-event-current")
+    checkpoint = {
+        **state,
+        "messages": [HumanMessage(content="continue", id="user-1"), notice],
+        "_summarization_event": {
+            "summary_message": HumanMessage(content="summary"),
+            "cutoff_index": cutoff_index,
+        },
+    }
+
+    with patch.object(
+        app,
+        "_get_thread_state_values",
+        AsyncMock(return_value=checkpoint),
+    ):
+        assert await app._ensure_goal_state_notice()
+
+    updater.aupdate_state.assert_not_awaited()
+
+
+async def test_unusable_cutoff_is_logged_by_the_notice_predicate(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Degrading the cutoff to 0 changes the outcome, so it must be visible.
+
+    A collapsed cutoff makes the `latest[0] >= cutoff` freshness test trivially
+    true, so a stale notice counts as visible and the durable write is skipped.
+    The middleware logs the same discard; staying silent here would leave the two
+    sides disagreeing for no discoverable reason.
+    """
+    updater = SimpleNamespace(aupdate_state=AsyncMock())
+    app = DeepAgentsApp(agent=MagicMock())
+    app._agent = updater
+    app._lc_thread_id = "thread-1"
+    state = _active_state()
+    notice = build_goal_state_notice(state, event_id="goal-event-current")
+    checkpoint = {
+        **state,
+        "messages": [HumanMessage(content="continue", id="user-1"), notice],
+        "_summarization_event": {
+            "summary_message": HumanMessage(content="summary"),
+            "cutoff_index": "not-an-int",
+        },
+    }
+
+    with (
+        patch.object(
+            app,
+            "_get_thread_state_values",
+            AsyncMock(return_value=checkpoint),
+        ),
+        caplog.at_level(logging.WARNING, logger="deepagents_code.goal_state_notice"),
+    ):
+        assert await app._ensure_goal_state_notice()
+
+    assert "Discarding malformed `_summarization_event`" in caplog.text
+
+
+async def test_usable_cutoff_is_not_logged_as_a_discard(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The normal path must stay quiet, or the warning means nothing."""
+    updater = SimpleNamespace(aupdate_state=AsyncMock())
+    app = DeepAgentsApp(agent=MagicMock())
+    app._agent = updater
+    app._lc_thread_id = "thread-1"
+    state = _active_state()
+    notice = build_goal_state_notice(state, event_id="goal-event-current")
+    checkpoint = {
+        **state,
+        "messages": [HumanMessage(content="continue", id="user-1"), notice],
+        "_summarization_event": {
+            "summary_message": HumanMessage(content="summary"),
+            "cutoff_index": 1,
+        },
+    }
+
+    with (
+        patch.object(
+            app,
+            "_get_thread_state_values",
+            AsyncMock(return_value=checkpoint),
+        ),
+        caplog.at_level(logging.WARNING, logger="deepagents_code.goal_state_notice"),
+    ):
+        assert await app._ensure_goal_state_notice()
+
+    assert "Discarding malformed" not in caplog.text
+
+
+@pytest.mark.parametrize("parallel_calls", [False, True])
+async def test_notice_defers_for_incomplete_tool_result_batch(
+    parallel_calls: bool,
+) -> None:
+    """Let recovery middleware repair a tool batch before inserting a notice."""
+    updater = SimpleNamespace(aupdate_state=AsyncMock())
+    app = DeepAgentsApp(agent=MagicMock())
+    app._agent = updater
+    app._lc_thread_id = "thread-1"
+    tool_calls = [{"name": "one", "args": {}, "id": "call-1"}]
+    if parallel_calls:
+        tool_calls.append({"name": "two", "args": {}, "id": "call-2"})
+    assistant = AIMessage(content="", tool_calls=tool_calls)
+    partial = [assistant, ToolMessage(content="done", tool_call_id="call-1")]
+    if not parallel_calls:
+        partial = [assistant]
+    checkpoint = {**_active_state(), "messages": partial}
+
+    with patch.object(
+        app,
+        "_get_thread_state_values",
+        AsyncMock(return_value=checkpoint),
+    ):
+        assert await app._ensure_goal_state_notice()
+    updater.aupdate_state.assert_not_awaited()
+
+    complete = [assistant, ToolMessage(content="done", tool_call_id="call-1")]
+    if parallel_calls:
+        complete.append(ToolMessage(content="done", tool_call_id="call-2"))
+    checkpoint["messages"] = complete
+    with patch.object(
+        app,
+        "_get_thread_state_values",
+        AsyncMock(return_value=checkpoint),
+    ):
+        assert await app._ensure_goal_state_notice()
+    updater.aupdate_state.assert_awaited_once()

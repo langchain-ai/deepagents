@@ -1,13 +1,501 @@
-# Changelog
+<!-- markdownlint-disable MD024 -->
+
+# Deep Agents Changelog
+
+## [0.7.28](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.27...deepagents==0.7.28) (2026-10-16)
+
+### Bug Fixes
+
+- Fixed `ContextHubBackend.glob` to honor the `path` argument.
+
+## [0.7.27](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.26...deepagents==0.7.27) (2026-10-16)
+
+### Features
+
+- Keep the main agent informed of asynchronous subagent status updates ([#6853](https://github.com/langchain-ai/deepagents/pull/6853)).
+
+### Bug Fixes
+
+- Pass subagent names to subagents ([#6987](https://github.com/langchain-ai/deepagents/pull/6987)).
+
+## [0.7.26](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.25...deepagents==0.7.26) (2026-10-15)
+
+### Features
+
+- Async subagents now report when they’re waiting for a human. ([#6842](https://github.com/langchain-ai/deepagents/pull/6842))
+- Async subagent runs now appear under their parent’s trace and identify the agent that launched them. ([#6823](https://github.com/langchain-ai/deepagents/pull/6823), [#6836](https://github.com/langchain-ai/deepagents/pull/6836))
+- Summarization middleware now exposes its `summarizer`. ([#6900](https://github.com/langchain-ai/deepagents/pull/6900))
+
+### Bug Fixes
+
+- Preserve resolved tool-result paths. ([#6968](https://github.com/langchain-ai/deepagents/pull/6968))
+
+## [0.7.25](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.24...deepagents==0.7.25) (2026-10-13)
+
+### Features
+
+- Read inline skill tool support from model profiles. ([#6879](https://github.com/langchain-ai/deepagents/pull/6879))
+
+### Bug Fixes
+
+- Filesystem permission rules and `interrupt_on` approvals now check both the requested and symlink-resolved paths; previously, `FilesystemBackend` followed symlinks after the check, potentially allowing access to denied paths. Review your rules and approvals for symlink targets. ([#6818](https://github.com/langchain-ai/deepagents/pull/6818))
+- Fixed path-glob `grep` in sandboxes. ([#6910](https://github.com/langchain-ai/deepagents/pull/6910))
+
+### Performance Improvements
+
+- Sandbox searches now prefer ripgrep, and sandbox `grep` skips `.git`. ([#6919](https://github.com/langchain-ai/deepagents/pull/6919), [#6910](https://github.com/langchain-ai/deepagents/pull/6910))
+
+## [0.7.24](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.23...deepagents==0.7.24) (2026-10-12)
+
+### Features
+
+- Added fork mode support for async subagents ([#6739](https://github.com/langchain-ai/deepagents/pull/6739)).
+
+### Bug Fixes
+
+- Recover from context overflow during summary calls ([#6864](https://github.com/langchain-ai/deepagents/pull/6864)).
+- Preserve the parent rubric during parallel subagent calls ([#6849](https://github.com/langchain-ai/deepagents/pull/6849)).
+
+## [0.7.23](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.22...deepagents==0.7.23) (2026-10-07)
+
+### Features
+
+- Pin skills by name with `pinned_skills` in the SDK ([#6810](https://github.com/langchain-ai/deepagents/pull/6810)).
+
+### Bug Fixes
+
+- Ensure each subagent uses its own `SkillsMiddleware` in the skills slot ([#6820](https://github.com/langchain-ai/deepagents/pull/6820)).
+
+## [0.7.22](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.21...deepagents==0.7.22) (2026-10-05)
+
+### Features
+
+- Load a skill’s tools only when the skill is read. ([#6552](https://github.com/langchain-ai/deepagents/pull/6552))
+
+### Bug Fixes
+
+- Reset stale encoding when overwriting text. ([#6737](https://github.com/langchain-ai/deepagents/pull/6737))
+
+## [0.7.21](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.20...deepagents==0.7.21) (2026-09-30)
+
+### Features
+
+- `FilesystemMiddleware` can now store blobs on the backend ([#6550](https://github.com/langchain-ai/deepagents/pull/6550)).
+
+## [0.7.20](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.19...deepagents==0.7.20) (2026-09-29)
+
+### Bug Fixes
+
+- Fixed binary content in `StateBackend.upload_files` being tagged as base64.
+
+## [0.7.19](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.18...deepagents==0.7.19) (2026-09-24)
+
+### Bug Fixes
+
+- Recover when `read_file` media is rejected.
+- Filter unsupported multimodal content through separate middleware.
+- Bound tool offload paths and abbreviate long IDs.
+
+## [0.7.18](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.17...deepagents==0.7.18) (2026-09-22)
+
+### Bug Fixes
+
+- Large tool result previews now more clearly explain when output was clipped or truncated, including byte-cap losses, per-line clipping, and showing truncation notices only when truncation occurs. Legacy large-result preview templates are preserved behind a deprecation path. ([#5567](https://github.com/langchain-ai/deepagents/pull/5567), [#5564](https://github.com/langchain-ai/deepagents/pull/5564), [#5563](https://github.com/langchain-ai/deepagents/pull/5563), [#5568](https://github.com/langchain-ai/deepagents/pull/5568))
+- Task tool calls now reject unknown argument keys instead of silently dropping unexpected input. ([#6299](https://github.com/langchain-ai/deepagents/pull/6299))
+- Correct `FileInfo.size` to represent the file size in bytes across backends. ([#6258](https://github.com/langchain-ai/deepagents/pull/6258))
+
+## [0.7.17](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.16...deepagents==0.7.17) (2026-09-22)
+
+### Bug Fixes
+
+- Preserve the backend exit status when capture metadata is missing. ([#6451](https://github.com/langchain-ai/deepagents/pull/6451))
+- Restrict inline file blocks to supported MIME types. ([#6447](https://github.com/langchain-ai/deepagents/pull/6447))
+
+## [0.7.16](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.15...deepagents==0.7.16) (2026-09-21)
+
+### Features
+
+- Reload skills when `skills_metadata` is reset to `None` ([#6364](https://github.com/langchain-ai/deepagents/pull/6364)).
+
+### Bug Fixes
+
+- Reject parallel edits to the same file to prevent conflicting changes ([#6446](https://github.com/langchain-ai/deepagents/pull/6446)).
+
+## [0.7.15](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.14...deepagents==0.7.15) (2026-09-16)
+
+### Bug Fixes
+
+- Gave tool result offloads without IDs unique paths to avoid collisions. ([#6316](https://github.com/langchain-ai/deepagents/pull/6316))
+- Propagated subagent state keys for provided subagent middleware. ([#5553](https://github.com/langchain-ai/deepagents/pull/5553))
+- Allow colons in model profile keys. ([#6334](https://github.com/langchain-ai/deepagents/pull/6334))
+- Required a real Nemotron task transition for built-in profile. ([#6296](https://github.com/langchain-ai/deepagents/pull/6296))
+
+## [0.7.14](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.13...deepagents==0.7.14) (2026-09-13)
+
+### Features
+
+- Updated `read_file` output formatting. ([#5648](https://github.com/langchain-ai/deepagents/pull/5648))
+
+### Bug Fixes
+
+- Bounded compaction recovery and added validation for input budgets. ([#6267](https://github.com/langchain-ai/deepagents/pull/6267))
+- Fixed invalid partial tool-call patching and updated imputed `ToolMessage` content in `PatchToolCallsMiddleware`. ([#5430](https://github.com/langchain-ai/deepagents/pull/5430), [#6277](https://github.com/langchain-ai/deepagents/pull/6277))
+- Rejected empty `old_string` values in `edit_file` paths. ([#5747](https://github.com/langchain-ai/deepagents/pull/5747))
+- Fixed character counting in `ls` and `glob` output. ([#6204](https://github.com/langchain-ai/deepagents/pull/6204))
+- Improved `glob` tool results to suggest populating `path` when appropriate. ([#6199](https://github.com/langchain-ai/deepagents/pull/6199))
+- Prevented blank read windows from triggering the empty-file warning. ([#5050](https://github.com/langchain-ai/deepagents/pull/5050))
+
+## [0.7.13](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.12...deepagents==0.7.13) (2026-09-02)
+
+### Bug Fixes
+
+- Renamed the SDK subagent mode from `handoff` to `isolated` ([#6030](https://github.com/langchain-ai/deepagents/issues/6030)).
+
+## [0.7.12](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.11...deepagents==0.7.12) (2026-09-01)
+
+### Features
+
+- Added subagent conversation forking in the SDK ([#5714](https://github.com/langchain-ai/deepagents/issues/5714)).
+
+### Bug Fixes
+
+- Fixed glob sorting to tolerate missing `modified_at` values in the SDK ([#4376](https://github.com/langchain-ai/deepagents/issues/4376)).
+
+## [0.7.11](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.10...deepagents==0.7.11) (2026-08-28)
+
+### Features
+
+- Added SDK integration hooks for rubric graders ([#5874](https://github.com/langchain-ai/deepagents/issues/5874))
+
+## [0.7.10](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.9...deepagents==0.7.10) (2026-08-28)
+
+### Bug Fixes
+
+- Prevent local shell commands from stealing TUI input ([#5873](https://github.com/langchain-ai/deepagents/issues/5873))
+- Surface sandbox glob failures instead of reporting no matches ([#5566](https://github.com/langchain-ai/deepagents/issues/5566))
+
+## [0.7.9](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.8...deepagents==0.7.9) (2026-08-25)
+
+### Features
+
+- Disabled tracing inputs on middleware. ([#5377](https://github.com/langchain-ai/deepagents/issues/5377))
+
+### Bug fixes
+
+- Exclude tools from execution when `excluded_tools` is set in harness profiles. ([#5809](https://github.com/langchain-ai/deepagents/issues/5809))
+- Enforce full criterion coverage in `RubricMiddleware`. ([#5234](https://github.com/langchain-ai/deepagents/issues/5234))
+- Clarified zero execute-timeout semantics. ([#5752](https://github.com/langchain-ai/deepagents/issues/5752))
+
+## [0.7.8](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.7...deepagents==0.7.8) (2026-08-20)
+
+### Bug Fixes
+
+- Add `files` state only for state backends ([#5643](https://github.com/langchain-ai/deepagents/issues/5643))
+
+## [0.7.7](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.6...deepagents==0.7.7) (2026-08-18)
+
+### Bug fixes
+
+- Batched concurrent `ContextHubBackend` mutations to improve SDK backend behavior ([#5471](https://github.com/langchain-ai/deepagents/issues/5471)) ([822f7c9](https://github.com/langchain-ai/deepagents/commit/822f7c9b02e6d99bdb46b5545bb2543783c01769)).
+- Made `BackendProtocol.glob` recursive for bare patterns ([#5026](https://github.com/langchain-ai/deepagents/issues/5026)) ([32f35d5](https://github.com/langchain-ai/deepagents/commit/32f35d5e01f460549c10365eb569978909f5c969)).
+
+## [0.7.6](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.5...deepagents==0.7.6) (2026-08-13)
+
+### Bug Fixes
+
+- Offload conversation history to a distinct session ID when summarizing. ([#5470](https://github.com/langchain-ai/deepagents/issues/5470))
+
+## [0.7.5](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.4...deepagents==0.7.5) (2026-08-06)
+
+### Bug Fixes
+
+- Identify SDK provider classes that support files. ([#5326](https://github.com/langchain-ai/deepagents/issues/5326))
+
+## [0.7.4](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.3...deepagents==0.7.4) (2026-08-04)
+
+### Features
+
+- Exposed the `execute` exit code in SDK artifacts. ([#5300](https://github.com/langchain-ai/deepagents/issues/5300))
+
+## [0.7.3](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.2...deepagents==0.7.3) (2026-08-03)
+
+### Bug Fixes
+
+- Fixed exact-file `delete` target resolution in the SDK using first-match-wins behavior. ([#5229](https://github.com/langchain-ai/deepagents/issues/5229))
+
+## [0.7.2](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.1...deepagents==0.7.2) (2026-08-03)
+
+### Bug Fixes
+
+- Scrub multimodal content blocks that are unsupported by the model's profile. ([#5194](https://github.com/langchain-ai/deepagents/issues/5194))
+
+## [0.7.1](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.0...deepagents==0.7.1) (2026-07-30)
+
+### Features
+
+- Mark editable installs in `lc_versions.deepagents` ([#5158](https://github.com/langchain-ai/deepagents/issues/5158))
+
+### Bug Fixes
+
+- Return an empty read for degenerate `read_file` windows ([#5184](https://github.com/langchain-ai/deepagents/issues/5184))
+- Warn instead of silently skipping unresolved state schemas ([#5166](https://github.com/langchain-ai/deepagents/issues/5166))
+
+## [0.7.0](https://github.com/langchain-ai/deepagents/compare/deepagents==0.6.12...deepagents==0.7.0) (2026-07-29)
+
+See [the docs](https://docs.langchain.com/oss/python/releases/changelog#deepagents-v0-7-0) for curated release notes.
+
+### ⚠ BREAKING CHANGES
+
+* `create_deep_agent` no longer includes `TodoListMiddleware` by default, the `write_todos` tool, `todos` state channel, and todo-planning prompt are now absent. Pass `middleware=[TodoListMiddleware()]` to restore them on the main agent; add it to each `SubAgent`'s middleware to restore them there. ([#4929](https://github.com/langchain-ai/deepagents/issues/4929)) ([9340518](https://github.com/langchain-ai/deepagents/commit/9340518a26c4287f9ad0c543edc9b69106c15154))
+* Default agent prompts are now lean: the authored base prompt is empty, and tool-usage prose that duplicates tool schemas is trimmed. `BASE_AGENT_PROMPT` is deprecated (removal in `deepagents==0.9.0`) but remains importable and still returns the previous authored prompt verbatim; pass it as `create_deep_agent(system_prompt=BASE_AGENT_PROMPT)` to restore the old behavior. ([#4859](https://github.com/langchain-ai/deepagents/issues/4859)) ([#4979](https://github.com/langchain-ai/deepagents/issues/4979)) ([a8d1b32](https://github.com/langchain-ai/deepagents/commit/a8d1b32aa4136d0498ba7b48367c8001ac462bd0)) ([d9f54fc](https://github.com/langchain-ai/deepagents/commit/d9f54fc09925171c6c0a933abd33507f85e8851c))
+* The built-in tool-usage prompt constants `TASK_SYSTEM_PROMPT`, `ASYNC_TASK_SYSTEM_PROMPT`, `SUMMARIZATION_SYSTEM_PROMPT`, `FILESYSTEM_SYSTEM_PROMPT`, and `EXECUTION_SYSTEM_PROMPT` are removed, and the `system_prompt` default on `SubAgentMiddleware`, `AsyncSubAgentMiddleware`, `SummarizationToolMiddleware`, and `create_summarization_tool_middleware` is now `None`, which injects no prose. Pass your own string to restore prompt text. ([#4859](https://github.com/langchain-ai/deepagents/issues/4859)) ([a8d1b32](https://github.com/langchain-ai/deepagents/commit/a8d1b32aa4136d0498ba7b48367c8001ac462bd0))
+* `FilesystemBackend` and `LocalShellBackend` now default to `virtual_mode=True`. Filesystem paths are anchored under `root_dir`, `..` traversal is rejected, and paths resolving outside `root_dir` raise `ValueError`. Previously an unspecified `virtual_mode` emitted a deprecation warning and fell back to `False`, where absolute host paths were used as-is and `..` could escape `root_dir`. Pass `virtual_mode=False` explicitly to restore the old filesystem behavior. ([#4541](https://github.com/langchain-ai/deepagents/issues/4541)) ([540a0fa](https://github.com/langchain-ai/deepagents/commit/540a0fa7eb9a88d82413cf10a5cb5c807d491385))
+* Agents now see a destructive, recursive `delete` filesystem tool whenever the backend supports it, and filesystem permissions classify `delete` as a write operation — so an existing rule allowing writes to a path also authorizes recursively deleting that subtree unless a narrower deny or interrupt rule covers the target. Because recursive deletes affect descendants, deny and interrupt checks use bulk path overlap instead of exact-path matching. To keep the previous behavior, add a deny or interrupt rule, or omit `delete` from `FilesystemMiddleware(tools=...)`. Missing paths return a not-found error, `CompositeBackend` reports an unsupported-operation error when a routed sub-backend cannot delete, and the tool is hidden from the model entirely when the backend itself does not implement it. ([#3659](https://github.com/langchain-ai/deepagents/issues/3659)) ([#3691](https://github.com/langchain-ai/deepagents/issues/3691)) ([#3765](https://github.com/langchain-ai/deepagents/issues/3765)) ([#3851](https://github.com/langchain-ai/deepagents/issues/3851)) ([f2a21ec](https://github.com/langchain-ai/deepagents/commit/f2a21ec1606c2560bd2fd5765409a05c2a44edee))
+* `write_file` can now create a file if it is missing and replaces it entirely if it already exists, instead of returning a file-exists error. The `write_file` tool description no longer requires reading the file first. There is no "create-only" compatibility mode. Workflows, prompts, tests, or guardrails that relied on the file-exists error to force `edit_file` usage or to protect existing content must omit `write_file`, add explicit permission or interrupt rules, or use `edit_file` where preserving existing content matters. ([#4109](https://github.com/langchain-ai/deepagents/issues/4109)) ([2506fcc](https://github.com/langchain-ai/deepagents/commit/2506fccfac0e09b656d5e2fefe23162f1c762331))
+* Removed deprecated backend compatibility shims. Callers must pass concrete `BackendProtocol` instances (not factories), configure `StoreBackend` with an explicit `namespace`, and use the current `ls` / `glob` / `grep` / `ReadResult` APIs. ([#4541](https://github.com/langchain-ai/deepagents/issues/4541)) ([540a0fa](https://github.com/langchain-ai/deepagents/commit/540a0fa7eb9a88d82413cf10a5cb5c807d491385))
+* The deprecated `files_update` attribute and constructor keyword are removed from `WriteResult` and `EditResult`. Custom backends must stop passing `files_update=`, and callers must stop reading `result.files_update`; state writes are emitted directly by `StateBackend`. ([#4541](https://github.com/langchain-ai/deepagents/issues/4541)) ([540a0fa](https://github.com/langchain-ai/deepagents/commit/540a0fa7eb9a88d82413cf10a5cb5c807d491385))
+* Removed the deprecated `BackendProtocol` methods `ls_info`, `als_info`, `glob_info`, `aglob_info`, `grep_raw`, and `agrep_raw`. Use `ls` / `glob` / `grep` and their async counterparts. ([#4541](https://github.com/langchain-ai/deepagents/issues/4541)) ([540a0fa](https://github.com/langchain-ai/deepagents/commit/540a0fa7eb9a88d82413cf10a5cb5c807d491385))
+* `SummarizationMiddleware(history_path_prefix=...)` was removed and now raises `TypeError`. Configure `CompositeBackend(artifacts_root=...)` instead. ([#4541](https://github.com/langchain-ai/deepagents/issues/4541)) ([540a0fa](https://github.com/langchain-ai/deepagents/commit/540a0fa7eb9a88d82413cf10a5cb5c807d491385))
+* Agent-facing `ls` and `glob` tool output now renders empty results as `No files found` instead of `[]`; direct backend APIs continue to return structured empty `LsResult` and `GlobResult` values. Callers that parse tool output should update those checks. ([#3709](https://github.com/langchain-ai/deepagents/issues/3709)) ([efafd1e](https://github.com/langchain-ai/deepagents/commit/efafd1e070aeae8901ee3123c7fcbf1815a33c4f))
+* `read_file` no longer renders raw text with a fixed-width `cat -n`-style line-number gutter and tab separator. Line and continuation markers are dynamically aligned and separated from source content by two spaces, and the `LINE_NUMBER_WIDTH` constant is removed from `deepagents.backends.utils` and `deepagents.middleware.filesystem`. Callers that parse raw tool output should update those parsers. ([#4561](https://github.com/langchain-ai/deepagents/issues/4561)) ([cf057b4](https://github.com/langchain-ai/deepagents/commit/cf057b4bcdb77ad67014f7dabe71e71f2366c95e))
+
+### Features
+
+* Custom middleware passed to `create_deep_agent(..., middleware=[...])` can replace a default middleware instance when `.name` matches, so defaults such as `SummarizationMiddleware` can be overridden without also excluding the built-in instance. ([#4251](https://github.com/langchain-ai/deepagents/issues/4251)) ([90c8472](https://github.com/langchain-ai/deepagents/commit/90c8472ae226394a186bf2075459645c2056db7d))
+* `FilesystemMiddleware(tools=[...])` accepts a keyword-only allowlist of built-in filesystem tools, typed by the newly exported `FsToolName` literal (`"ls"`, `"read_file"`, `"write_file"`, `"edit_file"`, `"delete"`, `"glob"`, `"grep"`, `"execute"`); pass `"all"` or omit the argument to keep every tool. A list must include `"read_file"` or the constructor raises `ValueError`. Omitted built-in tools are non-executable, and custom user tools are unaffected. ([#4325](https://github.com/langchain-ai/deepagents/issues/4325)) ([#4698](https://github.com/langchain-ai/deepagents/issues/4698)) ([704a70d](https://github.com/langchain-ai/deepagents/commit/704a70dddbd59b8c6abf658a4211c76bce1445f0)) ([9709525](https://github.com/langchain-ai/deepagents/commit/970952550e8f53cd89a64a4ee98969ce757693ff))
+* Shorten LLM-facing descriptions for the `task` tool and filesystem tools (`read_file`, `grep`, `edit_file`, `glob`, `execute`). ([#5009](https://github.com/langchain-ai/deepagents/issues/5009)) ([761f5f0](https://github.com/langchain-ai/deepagents/commit/761f5f0882dee186f2700f3c903829a5542626fe))
+* `GrepResult` and `GlobResult` now carry a `truncated` flag so supporting backends can return valid partial results when a match cap or backend deadline is reached; agent-facing tool output adds a note telling the model to narrow the search. `FilesystemBackend` returns partial `grep` and `glob` results on its backend timeout rather than erroring, while other backend or middleware timeouts may still return errors. Its `glob` also gains brace expansion such as `*.{py,md}` (already supported by the state and store backends). ([#4063](https://github.com/langchain-ai/deepagents/issues/4063)) ([ef591e7](https://github.com/langchain-ai/deepagents/commit/ef591e7a86b13bbdcb0fdedd45a8f1fe33573839))
+* The agent-facing `grep` match cap is configurable: `FilesystemMiddleware(grep_max_count=...)` sets the default (`1000`; `None` disables it) and the model can override it per call through the tool's new `max_count` argument. `grep` / `agrep` on `BackendProtocol` and all built-in backends accept a keyword-only `max_count`. Local ripgrep output is streamed and terminated once the cap is reached. Direct `FilesystemBackend.grep()` callers can request surrounding lines with keyword-only `context_lines`. ([#4570](https://github.com/langchain-ai/deepagents/issues/4570)) ([#4706](https://github.com/langchain-ai/deepagents/issues/4706)) ([8e86f5e](https://github.com/langchain-ai/deepagents/commit/8e86f5ecc8908762a2c748880287f190dde70600)) ([65230df](https://github.com/langchain-ai/deepagents/commit/65230df6f91d2bbe5f83d4d938da6bfac52363a1))
+* Paginated built-in `read_file` responses report the returned source-line range and next `offset`; total and remaining line counts are included when the backend knows the file length. Resume offsets remain safe when sandbox or middleware limits shorten the visible page. ([#4540](https://github.com/langchain-ai/deepagents/issues/4540)) ([8321194](https://github.com/langchain-ai/deepagents/commit/83211940a2cdf4c52ac21a6cde8647716a998504))
+* Optional video frame extraction for `read_file`, enabled by the new `deepagents[video]` extra. Video files are sampled into JPEG frames, with `offset` and `limit` interpreted as seconds. Without the extra, existing generic video/file content-block behavior remains. ([#4094](https://github.com/langchain-ai/deepagents/issues/4094)) ([b927147](https://github.com/langchain-ai/deepagents/commit/b927147d026749c6c790bb06c9853515dabf579c))
+* `FilesystemMiddleware` can capture oversized `execute` tool output directly inside the sandbox artifact path on compatible, opted-in `BaseSandbox` implementations to reduce round trips; `LangSmithSandbox` opts in by default. ([#4230](https://github.com/langchain-ai/deepagents/issues/4230)) ([02f5bd7](https://github.com/langchain-ai/deepagents/commit/02f5bd7bc02f2baaf5a1eefce7d686ba62493647))
+* Automatically enable Fireworks prompt-cache session affinity when a compatible `langchain-fireworks` installation is available. ([#4598](https://github.com/langchain-ai/deepagents/issues/4598)) ([5d878bf](https://github.com/langchain-ai/deepagents/commit/5d878bf1341afc3f96398733b7ef18eec4b66139))
+* Add a built-in NVIDIA Nemotron 3 Ultra harness profile and NVIDIA NIM app-origin attribution. ([#4192](https://github.com/langchain-ai/deepagents/issues/4192)) ([#4455](https://github.com/langchain-ai/deepagents/issues/4455)) ([d5a60ec](https://github.com/langchain-ai/deepagents/commit/d5a60ece7379c37c81edcef2cd6c2811ddc90c9a)) ([4cb4749](https://github.com/langchain-ai/deepagents/commit/4cb47491b024991322b7c24062c58cbcdc26a727))
+* `RubricMiddleware` now accepts any positive `max_iterations` cap instead of enforcing a hard upper bound. ([#4405](https://github.com/langchain-ai/deepagents/issues/4405)) ([d6692a7](https://github.com/langchain-ai/deepagents/commit/d6692a7c713490f170b17510d613e02ee37574ab))
+
+### Bug Fixes
+
+* Keep fields marked with `PrivateStateAttr`, including fields declared through `create_deep_agent(state_schema=...)`, out of subagent inputs and returned parent-state updates. ([#4587](https://github.com/langchain-ai/deepagents/issues/4587)) ([a4662c0](https://github.com/langchain-ai/deepagents/commit/a4662c07296c378045006c9f45ed1d12bd1a9da6))
+* Preserve `ContextT` through the `create_deep_agent(..., middleware=[...])` type annotation so type checkers accept context-aware middleware when a matching `context_schema` is passed. ([#4055](https://github.com/langchain-ai/deepagents/issues/4055)) ([7be76c7](https://github.com/langchain-ai/deepagents/commit/7be76c752117e6e61dcdc931ea5147261fad6768))
+* Accept YAML list values as well as comma-separated strings for skill `allowed-tools` frontmatter, and make skill truncation warnings actionable with field name, path, length, configured limit, and impact. ([#4140](https://github.com/langchain-ai/deepagents/issues/4140)) ([#4141](https://github.com/langchain-ai/deepagents/issues/4141)) ([d62534c](https://github.com/langchain-ai/deepagents/commit/d62534c86b87a91aca16c6bfb71209232d69a6ec)) ([2f5f5b8](https://github.com/langchain-ai/deepagents/commit/2f5f5b85793d944167a42e8d5b8e0a11bb1e3932))
+* Align filesystem instructions with the tools that remain after allowlist and backend-capability filtering, so agents no longer reference hidden `grep`/`glob` tools or prohibit equivalent shell search when dedicated search tools are unavailable. ([#4920](https://github.com/langchain-ai/deepagents/issues/4920)) ([#4921](https://github.com/langchain-ai/deepagents/issues/4921)) ([d3650c7](https://github.com/langchain-ai/deepagents/commit/d3650c7b1f5ca968abd72345a511719d4ba65907)) ([b65cc00](https://github.com/langchain-ai/deepagents/commit/b65cc0076caab2e35c07598055b8b338a47e5e1a))
+* Propagate default-backend failures from `CompositeBackend.ls("/")` and `CompositeBackend.als("/")` instead of returning successful route-only listings. ([#4925](https://github.com/langchain-ai/deepagents/issues/4925)) ([4c3b166](https://github.com/langchain-ai/deepagents/commit/4c3b1667035e3be6ae88cf8c431e0d6f143d2ff4))
+* Correct `CompositeBackend.glob` / `CompositeBackend.aglob` routing so explicit default-backend paths such as `/tools` do not also return files from routed backends such as `/memories`. ([#4531](https://github.com/langchain-ai/deepagents/issues/4531)) ([cbdb0a7](https://github.com/langchain-ai/deepagents/commit/cbdb0a7df8cd4bbacff9ca7ac2e42232ef290c10))
+* Propagate default- and routed-backend failures from root `CompositeBackend.glob(..., path=None)` / `aglob(..., path=None)` and `path="/"` searches instead of returning incomplete successful results. ([#4063](https://github.com/langchain-ai/deepagents/issues/4063)) ([ef591e7](https://github.com/langchain-ai/deepagents/commit/ef591e7a86b13bbdcb0fdedd45a8f1fe33573839))
+* Constrain sandbox `glob` and slash-pattern `grep` searches to their declared search root by treating leading `/` as search-root-relative, rejecting `..` traversal segments, and filtering symlink-resolved matches outside the root. ([#4588](https://github.com/langchain-ai/deepagents/issues/4588)) ([c6c7213](https://github.com/langchain-ai/deepagents/commit/c6c72139b3ee7d090f657dd19ced59a9bbc41140))
+* Unify `grep(..., glob=...)` include-glob semantics across filesystem and in-memory backends: basename patterns like `*.py` match at any depth, and slash-containing patterns like `src/**/*.py` match relative paths consistently. ([#3936](https://github.com/langchain-ai/deepagents/issues/3936)) ([feab6e0](https://github.com/langchain-ai/deepagents/commit/feab6e0b3762aa42fa458af16d0a3e8d04d8b075))
+* Improve agent-facing `grep` descriptions and no-match hints to steer regex-looking patterns toward literal searches, route slash-containing sandbox include-globs correctly, and shorten default search timeouts so bad patterns and huge trees return guidance faster. ([#4168](https://github.com/langchain-ai/deepagents/issues/4168)) ([b1dbf5e](https://github.com/langchain-ai/deepagents/commit/b1dbf5e66ac81a9fd95abf6987ba058bb14a5edf))
+* Align sandbox delete behavior with other backends by returning not-found errors for missing paths, and avoid over-blocking unrelated sibling deletes when deny rules use glob patterns. ([#4321](https://github.com/langchain-ai/deepagents/issues/4321)) ([d77496b](https://github.com/langchain-ai/deepagents/commit/d77496b969b9c59ce1c7c44e2085e5388e12c306))
+* Improve rubric grader failure diagnostics with configured model, structured-output strategy, and integer HTTP status when available. ([#4938](https://github.com/langchain-ai/deepagents/issues/4938)) ([#4967](https://github.com/langchain-ai/deepagents/issues/4967)) ([f51d3a0](https://github.com/langchain-ai/deepagents/commit/f51d3a0145a0301317c36b0ae15263007dacd6f1)) ([bca70aa](https://github.com/langchain-ai/deepagents/commit/bca70aa1f30ee1472809894e2474a76e4ff2f8bd))
+* Emit `max_iterations_reached` as the terminal `RubricMiddleware` status when the iteration cap is exhausted, instead of a final `needs_revision` event that will not loop. ([#4406](https://github.com/langchain-ai/deepagents/issues/4406)) ([a51c8d2](https://github.com/langchain-ai/deepagents/commit/a51c8d2b1723d143439a1466f5a49a52c442bdfc))
+* Handle missing async subagent URLs consistently in `check_async_task` and `cancel_async_task`. ([#3967](https://github.com/langchain-ai/deepagents/issues/3967)) ([b0d92c0](https://github.com/langchain-ai/deepagents/commit/b0d92c0f38ca0aa037b56e26b2b0d322cdd07856))
+
+### Performance Improvements
+
+* Run LangSmith sandbox commands over the async client. ([#5061](https://github.com/langchain-ai/deepagents/issues/5061)) ([0d08747](https://github.com/langchain-ai/deepagents/commit/0d0874710615df2c89c3c30e56bfdabb73b44d99))
+
+## [0.6.12](https://github.com/langchain-ai/deepagents/compare/deepagents==0.6.11...deepagents==0.6.12) (2026-06-25)
+
+This release adds the `deepagents[aws]` extra, which installs `langchain-aws` so Bedrock users get the automatic prompt caching integration added in [#4108](https://github.com/langchain-ai/deepagents/issues/4108).
+
+### Features
+
+* Add Bedrock prompt caching middleware ([#4108](https://github.com/langchain-ai/deepagents/issues/4108)) ([a398382](https://github.com/langchain-ai/deepagents/commit/a398382c85ce518ea1b7f365e49df905cdcd498b))
+
+### Bug Fixes
+
+* Preserve media references in summarization archives ([#3990](https://github.com/langchain-ai/deepagents/issues/3990)) ([2d6fb53](https://github.com/langchain-ai/deepagents/commit/2d6fb53cd8c94680a42fa9d7041509ff78050616))
+
+## [0.6.11](https://github.com/langchain-ai/deepagents/compare/deepagents==0.6.10...deepagents==0.6.11) (2026-06-18)
+
+### Bug Fixes
+
+* Route `BaseSandbox async` helpers through aexecute ([#3996](https://github.com/langchain-ai/deepagents/issues/3996)) ([52dcf1a](https://github.com/langchain-ai/deepagents/commit/52dcf1a42cb00dd614b336038e4398472f78859d))
+
+## [0.6.10](https://github.com/langchain-ai/deepagents/compare/deepagents==0.6.9...deepagents==0.6.10) (2026-06-13)
+
+### Bug Fixes
+
+* Compare provider in `model_matches_spec` ([#3943](https://github.com/langchain-ai/deepagents/issues/3943)) ([34244b6](https://github.com/langchain-ai/deepagents/commit/34244b6aebde4c237758dacedccdc3e22f3ca8e5))
+
+## [0.6.9](https://github.com/langchain-ai/deepagents/compare/deepagents==0.6.8...deepagents==0.6.9) (2026-06-12)
+
+### Features
+
+* Support configurable subagent response format ([#3882](https://github.com/langchain-ai/deepagents/issues/3882)) ([b0e4d7a](https://github.com/langchain-ai/deepagents/commit/b0e4d7aa8d0ad58c65bddef3835e539b3d5b2a99))
+
+### Bug Fixes
+
+* Don't swallow `TypeError` from custom `token_counter` ([#3927](https://github.com/langchain-ai/deepagents/issues/3927)) ([a6ec9d0](https://github.com/langchain-ai/deepagents/commit/a6ec9d0e797a8b8a7d53d7debb197bb25e80be41))
+* Handle `Overwrite`-wrapped messages in tool result interception ([#3905](https://github.com/langchain-ai/deepagents/issues/3905)) ([a043c5a](https://github.com/langchain-ai/deepagents/commit/a043c5a6717374c405a3ed740cfdafdd196f5f21))
+* Keep private state out of subagent propagation ([#3542](https://github.com/langchain-ai/deepagents/issues/3542)) ([7ff9553](https://github.com/langchain-ai/deepagents/commit/7ff9553fc057a682ba503ebfe9a870adb51ab848))
+* Make sync glob timeout bound wall-clock time ([#3866](https://github.com/langchain-ai/deepagents/issues/3866)) ([cba6caf](https://github.com/langchain-ai/deepagents/commit/cba6caf8f708133381506ecc9e217e7e3ca1c7f2))
+* Normalize read slices after windowing ([#3888](https://github.com/langchain-ai/deepagents/issues/3888)) ([33d900c](https://github.com/langchain-ai/deepagents/commit/33d900c98b686aa7e7782d0be3019010ced5f03a))
+* Stream Python grep fallback ([#3886](https://github.com/langchain-ai/deepagents/issues/3886)) ([3673d95](https://github.com/langchain-ai/deepagents/commit/3673d95d41aa00f03fbfe2083e46afa485800f3a))
+
+### Performance Improvements
+
+* Count tokens once per model call in summarization middleware ([#3877](https://github.com/langchain-ai/deepagents/issues/3877)) ([6558c8c](https://github.com/langchain-ai/deepagents/commit/6558c8ca3d8e10e3309f95c807e740914af3175f))
+* Cache filesystem system prompts ([#3889](https://github.com/langchain-ai/deepagents/issues/3889)) ([2f432ba](https://github.com/langchain-ai/deepagents/commit/2f432ba63687d7c8488d5d41d0551d02b4ae00b4))
+* Cache grep glob matchers ([#3887](https://github.com/langchain-ai/deepagents/issues/3887)) ([eae3cf1](https://github.com/langchain-ai/deepagents/commit/eae3cf148de3f8c8ee9ffd8af6e5a5e06cce9d6f))
+
+## [0.6.8](https://github.com/langchain-ai/deepagents/compare/deepagents==0.6.7...deepagents==0.6.8) (2026-06-03)
+
+### Features
+
+* Add interrupt mode to filesystem permissions ([#3505](https://github.com/langchain-ai/deepagents/issues/3505)) ([a090162](https://github.com/langchain-ai/deepagents/commit/a090162ea9fd950c54fac874b8a165ca770fd2dc))
+* Surface subagents via inherited `lc_agent_name` projection ([e0a1ed2](https://github.com/langchain-ai/deepagents/commit/e0a1ed24e6b44c31d0aac3358aeee0d6cb66b2c4))
+
+### Bug Fixes
+
+* Pass through summarization factory prompt knobs ([#3559](https://github.com/langchain-ai/deepagents/issues/3559)) ([a663cad](https://github.com/langchain-ai/deepagents/commit/a663cad8858a78a5d063af0c51bb789bfb1aba2b))
+* Align `glob` path default with `grep` ([#3666](https://github.com/langchain-ai/deepagents/issues/3666)) ([ece8e75](https://github.com/langchain-ai/deepagents/commit/ece8e752059f493254753194bcf59befe54b3556))
+* Guard empty binary reads with empty-content warning ([#3675](https://github.com/langchain-ai/deepagents/issues/3675)) ([2c2cec8](https://github.com/langchain-ai/deepagents/commit/2c2cec87476f06e32c7b09cedd2c44e0c713f147))
+* Surface missing path errors in `FilesystemBackend.ls` ([#3574](https://github.com/langchain-ai/deepagents/issues/3574)) ([4c28760](https://github.com/langchain-ai/deepagents/commit/4c28760abbbe43117f2118793f11ff9d4f71761e))
+* Timeout python grep fallback ([#1937](https://github.com/langchain-ai/deepagents/issues/1937)) ([665a18e](https://github.com/langchain-ai/deepagents/commit/665a18e7fe7f291319af6780328384cc658af899))
+
+### Warnings
+
+* We are dropping public exports of `SubagentRunStream`, `AsyncSubagentRunStream`, and `SubagentTransformer`. These are internal classes for the beta `stream_events(version="v3")` streaming API that should not have been publicly exported in the first place.
+
+## [0.6.7](https://github.com/langchain-ai/deepagents/compare/deepagents==0.6.6...deepagents==0.6.7) (2026-05-30)
+
+### Bug Fixes
+
+* Propagate goto and graph in Commands returned by tools ([#3391](https://github.com/langchain-ai/deepagents/issues/3391)) ([d92aef6](https://github.com/langchain-ai/deepagents/commit/d92aef68f70a5e5277c43a50581e7895e682c417))
+* Handle base64 reads with unknown file extensions ([#3663](https://github.com/langchain-ai/deepagents/issues/3663)) ([9857a08](https://github.com/langchain-ai/deepagents/commit/9857a08b6144b2f001d8f4bf03ac2f254c6b2da4))
+* Export `DeepAgentState` ([#3653](https://github.com/langchain-ai/deepagents/issues/3653)) ([14a9047](https://github.com/langchain-ai/deepagents/commit/14a904757c2d9d797945b6ea1bc9529f1f8cf369))
+
+## [0.6.6](https://github.com/langchain-ai/deepagents/compare/deepagents==0.6.5...deepagents==0.6.6) (2026-05-28)
+
+### Features
+
+* Allow passing `state_schema` in `create_deep_agent` ([#3642](https://github.com/langchain-ai/deepagents/issues/3642)) ([37839bd](https://github.com/langchain-ai/deepagents/commit/37839bd7d67fba8c11ff0ccaaa8ac92b39609450))
+
+## [0.6.5](https://github.com/langchain-ai/deepagents/compare/deepagents==0.6.4...deepagents==0.6.5) (2026-05-28)
+
+### Features
+
+* `RubricMiddleware` for self-evaluated agent iteration ([#3529](https://github.com/langchain-ai/deepagents/issues/3529)) ([5b8d44d](https://github.com/langchain-ai/deepagents/commit/5b8d44d65c6ec43084687019cf00a37d730ac2fa))
+* Log when grep falls back from ripgrep ([#3593](https://github.com/langchain-ai/deepagents/issues/3593)) ([379b1ff](https://github.com/langchain-ai/deepagents/commit/379b1ffdc3ccf5da72d9f7264d531be108f0b36d))
+
+### Bug Fixes
+
+* Use `file_path` kwarg in `read_file` examples ([#3630](https://github.com/langchain-ai/deepagents/issues/3630)) ([97946ee](https://github.com/langchain-ai/deepagents/commit/97946ee09eb167c63d8c07f8bb116f40cfc9603f))
+* `read_file` pagination skipping lines after wrapping ([#3641](https://github.com/langchain-ai/deepagents/issues/3641)) ([390551d](https://github.com/langchain-ai/deepagents/commit/390551d61d57ce68c2a80ed78c07eaa8e985908b))
+* Handle `None` state in messages delta reducer ([#3636](https://github.com/langchain-ai/deepagents/issues/3636)) ([5a6d920](https://github.com/langchain-ai/deepagents/commit/5a6d920d9dec2199cbe743062a5cc1ff8f298567))
+* Return grep errors for sandbox exec failures ([#3637](https://github.com/langchain-ai/deepagents/issues/3637)) ([f87d61f](https://github.com/langchain-ai/deepagents/commit/f87d61f01a23fcfb994e88b7f9324d404e66faef))
+
+## [0.6.4](https://github.com/langchain-ai/deepagents/compare/deepagents==0.6.3...deepagents==0.6.4) (2026-05-26)
+
+### Bug Fixes
+
+* Grep crashing when files vanish mid-walk ([#3592](https://github.com/langchain-ai/deepagents/issues/3592)) ([0b8301b](https://github.com/langchain-ai/deepagents/commit/0b8301b2067f7dbbc83ebcf05c52e91413260fd1))
+* Stable `HumanMessage` IDs across resumed threads ([#3591](https://github.com/langchain-ai/deepagents/issues/3591)) ([82c3194](https://github.com/langchain-ai/deepagents/commit/82c31947f9dc938ffc71e1cea96d162a39aec3a1))
+
+## [0.6.3](https://github.com/langchain-ai/deepagents/compare/deepagents==0.6.2...deepagents==0.6.3) (2026-05-20)
+
+### Bug Fixes
+
+* Anchor ripgrep glob to search root ([#3454](https://github.com/langchain-ai/deepagents/issues/3454)) ([e50fa3f](https://github.com/langchain-ai/deepagents/commit/e50fa3f00ab1b1a84bbaed74bf7e89118b7c2d82))
+* Assign UUIDs to ID-less messages in _messages_delta_reducer ([#3513](https://github.com/langchain-ai/deepagents/issues/3513)) ([6d959ad](https://github.com/langchain-ai/deepagents/commit/6d959ade30655eae3967c9809994434e0bbd1148))
+* Clarify skill source labels in system prompt ([#3464](https://github.com/langchain-ai/deepagents/issues/3464)) ([fc6a24f](https://github.com/langchain-ai/deepagents/commit/fc6a24f18829cf3f36089945226edfa50d52ab9e))
+* Strip HTML comments from memory content before system prompt injection ([#3462](https://github.com/langchain-ai/deepagents/issues/3462)) ([bfbb8bc](https://github.com/langchain-ai/deepagents/commit/bfbb8bc5575ebd1ba9aa29430f6d2f86c24b7d3c))
+
+## [0.6.2](https://github.com/langchain-ai/deepagents/compare/deepagents==0.6.1...deepagents==0.6.2) (2026-05-18)
+
+### Features
+
+* Add `system_prompt` override slot to memory, skills, and summarization ([#3451](https://github.com/langchain-ai/deepagents/issues/3451)) ([7583f4a](https://github.com/langchain-ai/deepagents/commit/7583f4aff6a6044bc987ee7980d322bb5c791428))
+
+### Bug Fixes
+
+* Patch invalid tool calls ([#3386](https://github.com/langchain-ai/deepagents/issues/3386)) ([c916d1b](https://github.com/langchain-ai/deepagents/commit/c916d1b2e3a81dcd4fb2e595d6b971923c18fa31))
+* Align `MemoryMiddleware` prompt with investigate-first agent behavior ([#2461](https://github.com/langchain-ai/deepagents/issues/2461)) ([d53c8f4](https://github.com/langchain-ai/deepagents/commit/d53c8f4f481288a3aa04a5e62362beba6ed7e57a))
+* Subagents: update prompt and make fetching of last message more robust ([#3406](https://github.com/langchain-ai/deepagents/issues/3406)) ([4421bec](https://github.com/langchain-ai/deepagents/commit/4421bec94ffbe1f3a3bf44088ebcf8ab8c24a736))
+* Summarization: truncate trailing ToolMessages to keep context within `keep` limit ([#3405](https://github.com/langchain-ai/deepagents/issues/3405)) ([bee514f](https://github.com/langchain-ai/deepagents/commit/bee514fd24862b6b22a5993eb8b6cfc69e42dd80))
+* Surface OS errors in sandbox ls/read/edit/glob ([#3359](https://github.com/langchain-ai/deepagents/issues/3359)) ([7598bd9](https://github.com/langchain-ai/deepagents/commit/7598bd93f72b609a46da64f7c458c42ac07a0f3a))
+
+## [0.6.1](https://github.com/langchain-ai/deepagents/compare/deepagents==0.6.0...deepagents==0.6.1) (2026-05-12)
+
+### Bug Fixes
+
+* Import profile re-exports from leaf modules ([#3377](https://github.com/langchain-ai/deepagents/issues/3377)) ([ca99391](https://github.com/langchain-ai/deepagents/commit/ca99391668ea1510932f8e9097e8ed3c0caadf73))
+
+## [0.6.0](https://github.com/langchain-ai/deepagents/compare/deepagents==0.5.9...deepagents==0.6.0) (2026-05-12)
+
+### Features
+
+* **[`CodeInterpreterMiddleware`](https://pypi.org/project/langchain-quickjs)**: (experimental) `deepagents` now supports code execution and programmatic tool calling through a scoped QuickJS runtime. Install via the optional dependency: `deepagents[quickjs]`.
+* Support for `version="v3"` in `stream_events` / `astream_events`. Refer to the [event streaming](https://docs.langchain.com/oss/python/deepagents/event-streaming) guide for details.
+
+## [0.5.9](https://github.com/langchain-ai/deepagents/compare/deepagents==0.5.8...deepagents==0.5.9) (2026-05-10)
+
+### Bug Fixes
+
+* Import profile symbols directly from `harness_profiles` ([#3291](https://github.com/langchain-ai/deepagents/issues/3291)) ([503453c](https://github.com/langchain-ai/deepagents/commit/503453c06f7e0545914789a07ddba6ca6b0c8ec5))
+
+## [0.5.8](https://github.com/langchain-ai/deepagents/compare/deepagents==0.5.7...deepagents==0.5.8) (2026-05-08)
+
+### Bug Fixes
+
+* Avoid deprecated-use warnings in `CompositeBackend` path mutation ([#3244](https://github.com/langchain-ai/deepagents/issues/3244)) ([64d45f6](https://github.com/langchain-ai/deepagents/commit/64d45f67c86edb4df2ced0e7b82f1a8fd158ec8c))
+
+## [0.5.7](https://github.com/langchain-ai/deepagents/compare/deepagents==0.5.6...deepagents==0.5.7) (2026-05-05)
+
+### Bug Fixes
+
+* Auto-added GP subagent inherits parent permissions ([#3131](https://github.com/langchain-ai/deepagents/issues/3131)) ([0d55b3b](https://github.com/langchain-ai/deepagents/commit/0d55b3ba8b974d06b1e0f52893f33e44496bff8b))
+* Default OpenRouter routing to ignore Azure upstream ([#3157](https://github.com/langchain-ai/deepagents/issues/3157)) ([01a9113](https://github.com/langchain-ai/deepagents/commit/01a911379d368fab8280cd827c38776800abe7b8))
+
+## [0.5.6](https://github.com/langchain-ai/deepagents/compare/deepagents==0.5.5...deepagents==0.5.6) (2026-05-01)
+
+### Bug Fixes
+
+* Add write preflight and native read to langsmith sandbox ([#2695](https://github.com/langchain-ai/deepagents/issues/2695)) ([741221c](https://github.com/langchain-ai/deepagents/commit/741221c9d8b65a535816e318ee24d3c19a4bde80))
+* Propagate `CompiledSubAgent` name into `lc_agent_name` metadata ([#3045](https://github.com/langchain-ai/deepagents/issues/3045)) ([f671e6b](https://github.com/langchain-ai/deepagents/commit/f671e6b18aa49700a535f7b48441662b67dafef9))
+
+## [0.5.5](https://github.com/langchain-ai/deepagents/compare/deepagents==0.5.4...deepagents==0.5.5) (2026-04-30)
+
+### Bug Fixes
+
+* Harden `FilesystemBackend` against symlink loops ([#3035](https://github.com/langchain-ai/deepagents/issues/3035)) ([abd02f9](https://github.com/langchain-ai/deepagents/commit/abd02f99ef12030bdfe429fdc3ad80a2785bea61))
+* Surface EOF-newline mismatch in `edit_file` ([#3031](https://github.com/langchain-ai/deepagents/issues/3031)) ([d30686e](https://github.com/langchain-ai/deepagents/commit/d30686ec82d36a0e9430f7c512c34835aba2c079))
+* Prevent stdin hang by passing `DEVNULL` ([#2427](https://github.com/langchain-ai/deepagents/issues/2427)) ([5bf5fae](https://github.com/langchain-ai/deepagents/commit/5bf5fae8d93beba90628f2f71e3e79817a36ac9e))
+
+## [0.5.4](https://github.com/langchain-ai/deepagents/compare/deepagents==0.5.3...deepagents==0.5.4) (2026-04-29)
+
+### Highlights
+
+Until this release, `deepagents` shipped a single set of prompts, tools, and middleware tuned to work across *all* model families. Today's headline change is **harness profiles** — a declarative override layer for the parts of the harness that vary per model (system-prompt prefix/suffix, tool inclusion and naming, middleware selection, subagent configuration, skills). `ProviderProfile` shapes how `resolve_model` builds the client; `HarnessProfile` / `HarnessProfileConfig` shape how `create_deep_agent` assembles the agent. Both are keyed by provider (`"openai"`) or full `provider:model` spec (`"openai:gpt-5.4"`), and registrations are additive — your call site doesn't change when you swap models.
+
+We currently ship built-ins for OpenAI and Anthropic out of the box, drawn directly from each vendor's published prompting guides (Codex's `apply_patch` / `shell_command` conventions, Claude's tool-result reflection and active-investigation patterns, etc.). On a curated tau2-bench subset, applying these profiles produced a 10–20 point lift over the default harness (GPT-5.3 Codex: 33% -> 53%; Claude Opus 4.7: 43% -> 53%). Third-party plugins can register via the `deepagents.provider_profiles` and `deepagents.harness_profiles` entry points.
+
+See the [profiles documentation](https://docs.langchain.com/oss/python/deepagents/profiles) for the full field surface, merge semantics, and plugin packaging.
+
+### Features
+
+* Profiles API ([#2892](https://github.com/langchain-ai/deepagents/issues/2892)) ([7365ad1](https://github.com/langchain-ai/deepagents/commit/7365ad1600064eec616c5de970320104189ddf80))
+* `ls_agent_type` configurable tag on subagent runs ([#2788](https://github.com/langchain-ai/deepagents/issues/2788)) ([3bcc51a](https://github.com/langchain-ai/deepagents/commit/3bcc51a95da80094cfc8bc4bcaf25dc1e2ad8f44))
+
+### Bug Fixes
+
+* Normalize Windows backslash paths before `PurePosixPath` processing ([#1859](https://github.com/langchain-ai/deepagents/issues/1859)) ([e1c1d50](https://github.com/langchain-ai/deepagents/commit/e1c1d5024729f5205eaa42bf6a9bc1c93a30d043))
+* Preserve CRLF line endings in sandbox edit ([#2899](https://github.com/langchain-ai/deepagents/issues/2899)) ([291aebe](https://github.com/langchain-ai/deepagents/commit/291aebe21f8a53604a2bf47daa120761dace2536))
+* Support read-your-writes in `StateBackend` ([#2991](https://github.com/langchain-ai/deepagents/issues/2991)) ([0924869](https://github.com/langchain-ai/deepagents/commit/0924869bc3d946577e7c3cbc79a86e4aaf522edd))
+* Treat boundary-truncated UTF-8 in `read()` prefix check as text ([#2980](https://github.com/langchain-ai/deepagents/issues/2980)) ([c36ebc7](https://github.com/langchain-ai/deepagents/commit/c36ebc7be5840e9008279992741c67a8377ffc01))
+* Use `configurable` directly instead of tracing context for subagent tagging ([#2845](https://github.com/langchain-ai/deepagents/issues/2845)) ([bd6ec6b](https://github.com/langchain-ai/deepagents/commit/bd6ec6bcebcdcc26f6b79e2c55611074b0e01631))
+
+### Performance Improvements
+
+* Add cache breakpoint to `MemoryMiddleware` ([#2713](https://github.com/langchain-ai/deepagents/issues/2713)) ([1699f3a](https://github.com/langchain-ai/deepagents/commit/1699f3aea710985087b16318bb8e6f6e80e02a1b))
 
 ## [0.5.3](https://github.com/langchain-ai/deepagents/compare/deepagents==0.5.2...deepagents==0.5.3) (2026-04-14)
-
 
 ### Features
 
 * **sdk:** add static structured output to subagent response ([#2437](https://github.com/langchain-ai/deepagents/issues/2437)) ([6e57731](https://github.com/langchain-ai/deepagents/commit/6e57731fc6d908ac1ebe131e782696a4776147e9))
 * **sdk:** deprecate `model=None` in `create_deep_agent` ([#2677](https://github.com/langchain-ai/deepagents/issues/2677)) ([149df41](https://github.com/langchain-ai/deepagents/commit/149df415d17f3cf3b7eb0bd1e78460112bfa9b04))
-
 
 ### Bug Fixes
 
@@ -39,6 +527,6 @@
 
 ---
 
-# Prior Releases
+## Prior Releases
 
 Versions prior to 0.5.1 were released without release-please and do not have changelog entries. Refer to the [releases page](https://github.com/langchain-ai/deepagents/releases?q=deepagents) for details on previous versions.

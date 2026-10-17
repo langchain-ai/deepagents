@@ -1,10 +1,10 @@
 """Async Subagent Server — Agent Protocol over FastAPI.
 
-A minimal self-hosted Agent Protocol server that exposes a DeepAgents
-researcher as an async subagent. Any DeepAgents supervisor can connect
+A minimal self-hosted Agent Protocol server that exposes a Deep Agents
+researcher as an async subagent. Any Deep Agents supervisor can connect
 to this server using the AsyncSubAgent configuration.
 
-Implements the endpoints the DeepAgents async subagent middleware calls
+Implements the endpoints the Deep Agents async subagent middleware calls
 (via the LangGraph SDK):
 
     POST /threads                              create a thread
@@ -20,7 +20,7 @@ The schema is created automatically on startup.
 Run:
     ANTHROPIC_API_KEY=... uvicorn server:app --port 2024
 
-Then point a DeepAgents supervisor at:
+Then point a Deep Agents supervisor at:
     RESEARCHER_URL=http://localhost:2024
 """
 

@@ -1,0 +1,216 @@
+{
+  "schemaVersion": 1,
+  "pageVersion": "sha256:b7a7196437e17b704172dec4c57cc8dec340898a32f31bcfd99e4a28567a443f",
+  "claims": [
+    {
+      "id": "claim_348ce521c96a4f32a102f91b81305997",
+      "statement": "BaseSandbox derives filesystem behavior from execute and file-transfer primitives, keeps server-side reads and edits in the sandbox where possible, and does not create a separate authorization boundary from shell execution.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/backends/protocol.py",
+          "version": "repo-file-v1:sha256:467cafdc2e18a628cc09a4cee8318b875201935a804147f947c446a3eea2f018"
+        },
+        {
+          "resource": "repo://libs/deepagents/deepagents/backends/sandbox.py",
+          "version": "repo-file-v1:sha256:8654286fec32f300953a66ad32f65a282c3547fbca34efe0cb8d662b1a20ab9a"
+        }
+      ]
+    },
+    {
+      "id": "claim_bdcfa05c51fe4fd79e390fdcb9135a55",
+      "statement": "BaseSandbox output offload is opt-in, preserves a command's exit code while capture is capped, and falls back to the original unoffloaded response when wrapper metadata cannot be parsed.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/backends/sandbox.py",
+          "version": "repo-file-v1:sha256:8654286fec32f300953a66ad32f65a282c3547fbca34efe0cb8d662b1a20ab9a"
+        },
+        {
+          "resource": "repo://libs/deepagents/tests/unit_tests/backends/test_sandbox_backend.py",
+          "version": "repo-file-v1:sha256:3fb707a0a23416e1446817ee83533e2f2cdeff7a9cb66eff1aa19ae8238c29b3"
+        }
+      ]
+    },
+    {
+      "id": "claim_015da03d55b2487a997c98855e97a7f2",
+      "statement": "dcode resolves sandbox providers with configuration over entry point over built-in precedence, uses metadata for working-directory, installation, capability, and dependency-probe information, validates snapshot use before acquisition, and cleans up only resources created by its factory.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/integrations/sandbox_factory.py",
+          "version": "repo-file-v1:sha256:d0002c50281df6cde49c59ff64489d39cd7ccda20e34bd6379da9b9984ceb997"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/integrations/sandbox_provider.py",
+          "version": "repo-file-v1:sha256:f4592034359301ee4d28a5602f5a1ed0126d37f589773b2c040d5a7c798c8468"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/integrations/sandbox_registry.py",
+          "version": "repo-file-v1:sha256:83f3f2d59825dce470dc846631dda649a494b16397de512f418c4f2b982a92c2"
+        },
+        {
+          "resource": "repo://libs/code/tests/unit_tests/test_sandbox_factory.py",
+          "version": "repo-file-v1:sha256:918b9aa0cfb5b6000e776a3b5ae4230f6e677e17a21dafdab68d7f2945ed7c1a"
+        },
+        {
+          "resource": "repo://libs/code/tests/unit_tests/test_sandbox_registry.py",
+          "version": "repo-file-v1:sha256:b54aaced86c83d4cf43726caae19d49f94df43886c449173f321452582392223"
+        }
+      ]
+    },
+    {
+      "id": "claim_e8cf87ffd08d46068737bc024c3ef47a",
+      "statement": "Talon opt-in sandbox mode reuses the dcode lifecycle while routing default filesystem work and execution to the remote backend and keeping only designated skills, memory, and blob paths on host virtual backends.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/deepagents_talon/config.py",
+          "version": "repo-file-v1:sha256:20fb3ade8ffcac0cfa85fff02a48b15d17ccdb1d5db574c0690d3fa4b954d832"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/sandbox.py",
+          "version": "repo-file-v1:sha256:b01ecf1d6602d5bad15ce01d0e481baad436c59da5dcace374fc86e8e74c1e2a"
+        }
+      ]
+    },
+    {
+      "id": "claim_eb30c85718cb4914b7bf9f09ae83d6c2",
+      "statement": "langchain-quickjs 0.3.9 is JavaScript REPL middleware rather than a remote sandbox provider, with direct dependencies on quickjs-rs, Deep Agents, LangChain, LangGraph, and bsdiff4.",
+      "evidence": [
+        {
+          "resource": "repo://libs/partners/quickjs/pyproject.toml",
+          "version": "repo-file-v1:sha256:1d7d6088d520188901f54b452f6e033e75ef0dc6a188715c4bb12e0efc4ba443"
+        }
+      ]
+    },
+    {
+      "id": "claim_4152ad70d8e64ad683d02df89e5b9daa",
+      "statement": "CodeInterpreterMiddleware isolates QuickJS slots by LangGraph thread, supports thread, turn, and call persistence modes, and uses snapshot size limits and optional slot-bound HMAC verification for persisted thread state.",
+      "evidence": [
+        {
+          "resource": "repo://libs/partners/quickjs/langchain_quickjs/_repl.py",
+          "version": "repo-file-v1:sha256:a878289eb763c651f8c81262bb5e4a229ecad14b0e9981279c8c30ecbcfe7e34"
+        },
+        {
+          "resource": "repo://libs/partners/quickjs/langchain_quickjs/middleware.py",
+          "version": "repo-file-v1:sha256:dec1b4d4dda921f3a0dbe1c0bf354fc3933ceb809be472a9fb1c8dabbf089d51"
+        },
+        {
+          "resource": "repo://libs/partners/quickjs/tests/unit_tests/test_repl_middleware.py",
+          "version": "repo-file-v1:sha256:2456e04b524000ab05b03fa369dbb4583967817cf90c214645af67ab9fed20d3"
+        }
+      ]
+    },
+    {
+      "id": "claim_5ebbca56163e4b24929b9be3913dbce3",
+      "statement": "QuickJS separately limits VM heap, VM time, console and result output, programmatic tool calls, and subagent concurrency; VM time excludes time spent awaiting host bridge calls.",
+      "evidence": [
+        {
+          "resource": "repo://libs/partners/quickjs/langchain_quickjs/_repl.py",
+          "version": "repo-file-v1:sha256:a878289eb763c651f8c81262bb5e4a229ecad14b0e9981279c8c30ecbcfe7e34"
+        },
+        {
+          "resource": "repo://libs/partners/quickjs/langchain_quickjs/middleware.py",
+          "version": "repo-file-v1:sha256:dec1b4d4dda921f3a0dbe1c0bf354fc3933ceb809be472a9fb1c8dabbf089d51"
+        }
+      ]
+    },
+    {
+      "id": "claim_ae7973ff8a41421f99e2856e70bf8f36",
+      "statement": "QuickJS programmatic tool and subagent calls dispatch through REPL bridges rather than the normal ToolNode path, so parent per-dispatch interrupt_on and HITL approval are not enforced.",
+      "evidence": [
+        {
+          "resource": "repo://libs/partners/quickjs/langchain_quickjs/_repl.py",
+          "version": "repo-file-v1:sha256:a878289eb763c651f8c81262bb5e4a229ecad14b0e9981279c8c30ecbcfe7e34"
+        },
+        {
+          "resource": "repo://libs/partners/quickjs/langchain_quickjs/middleware.py",
+          "version": "repo-file-v1:sha256:dec1b4d4dda921f3a0dbe1c0bf354fc3933ceb809be472a9fb1c8dabbf089d51"
+        },
+        {
+          "resource": "repo://libs/partners/quickjs/tests/unit_tests/test_repl_middleware.py",
+          "version": "repo-file-v1:sha256:2456e04b524000ab05b03fa369dbb4583967817cf90c214645af67ab9fed20d3"
+        }
+      ]
+    },
+    {
+      "id": "claim_30e7a6ab546449b291ddfa72f975d8c2",
+      "statement": "dcode keeps six curated external sandbox adapters optional behind provider-specific extras and all-sandboxes, while LangSmith sandbox support and QuickJS are normal dependencies; its empty quickjs extra is retained for backwards-compatible installation commands.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/pyproject.toml#L138-L152",
+          "version": "repo-lines-v1:sha256:faa63204439fa0690f71847866ce158aa9470e5d77b1131dd6de4fd57e110279:eyJzZWxlY3RlZExpbmVDb3VudCI6MTUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMxZDNkMjhiMTFhN2RhMTQyM2JlODdlOTZjMTQ3NWJlM2UwMjIxNzA0YjcxZDcxYjMxYzgyZDBlNjg1MTcwMTQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc2OTIxYTcxYzBkNDU3MGMzODhkNjI5N2IzYjQ5OTJkZjNjMGZkYWIzMjZjYWZhY2E0YjQ4NzE4OGExZDZiMDMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImYwYmMxYmQzMjEyODlkOTI4NDlkYmFmNzMxYTliN2VkYWJiMzE4YmIyYmViMmVhMGE4OWE5MzFlY2RmYmZmMWMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUwZmEzNjJjYjQ5NGE1MWE5YTQ3NTA0Yjk5OTFhYjZmNGVmZWUxODcxZWRiYTY0NDFmYjk1MDA3OTc0OTJjMDgifQ"
+        },
+        {
+          "resource": "repo://libs/code/pyproject.toml#L60-L65",
+          "version": "repo-lines-v1:sha256:3dee79b5bf7c2ae4ed9a5a67c39633c6e9551a5dcb6e5b7143848332a0af473b:eyJzZWxlY3RlZExpbmVDb3VudCI6NiwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiN2ZiZTRkNTVmMTgzNDcwNGQ2Mjc4NDNiYjA2ZmJjNDFmYjRhNDgzMWYxYzY0NTJiMzNlMWFiZGUyMDAwYjZiOCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiYmJkYzA3Y2RlNmMzYzM0NmU3NjY5OTVlZmI1ZjA0YmNmZTA0MDZjZmQxN2JjOTgwMzk3MDA1YmIyYTYxOGU0NiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNTJmMTE1ZDJjOTM2MmU3NTY5OTg1M2Q5MWVhMTUwNWMyZGIyMzc3YjY4M2Y5YWQwMTlhNjQ0ZjkzMDE0NmRhZSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNzMzMjNlY2YxOTcwYzIzMWZlYjI3NjZlZGNkMTk0YjI1YTlmNjk4ZTdiNmEzNjJiMWVkN2U2MDBhOTFlMmIzYiJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_1476b190edd246e580f9ce0286a453ec",
+      "statement": "Sandbox selection is limited to the execution/filesystem backend: Talon's documented sandbox mode leaves MCP tools, web tools, channel media handling, and provider credentials outside the sandbox routing boundary.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/README.md#L64-L85",
+          "version": "repo-lines-v1:sha256:5e3f523431a58ad807d471278840df81e1815336a3e4368f5758615734981d39:eyJzZWxlY3RlZExpbmVDb3VudCI6MjIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU5OTk3OTgzZjdkMGYyYzY0N2MwNjAwYjJjMjU3ZmJlYzYyYTJkOWQyNDE0ZTE3ZjU3YzcwNjQzODA3Nzk1N2EiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjZiOWNhNjA0MmMyMTEzZGU3ZTc0NDEzNWE2OTNiYjRiZDA3NDNhY2U2MzRiMDJjYzlmN2M1M2U1NjM3ZTg1NWYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImZkZWZmYWM5Zjc2MzA1MWM3ZWNkMWY1NGRlODUyNDYxYTE3NzM3M2IxYjUxOGRjZTJmM2IyNWU0NDA2ZjZlYzMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjEyZGIzYjkzZTg3MWJmM2VhMzQ3N2ZjNDQwNTI4YTIxOTdiYzIwOGMyNDFhZGMxODZhZTk3ZTQ0MjlhNTM5MjYifQ"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/sandbox.py#L101-L130",
+          "version": "repo-lines-v1:sha256:b327d7639c64735d83cba20d99ea485015d215a1ff00472036da9c02de43ba1f:eyJzZWxlY3RlZExpbmVDb3VudCI6MzAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjRjODhkMzdjNWUyZTIwMGJmYjkzZjA1YzVlYTNkZGQyZTYzMTNhYWYwNDE3NzkzNmI5Y2UzNjdkZDFhYmNjNDAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjA3N2M3N2YzOTM5OGIxYjIzODE1NDkwMzlmNTdkNjU3YzgwZDc0YWE4OGNlYmUwNzMxNGQ2NzQwMDdlOWExM2MiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjRjMDc4ZWFhYmU4ZWY1MDRlNzBhY2EwNmRjNTVlMTc3ZDM1NDIxMGZmMzI2N2M4YTg1OGNmZDczMjIwMDhmODYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjAyNDdkOTRlMjdmOGZkMjE2Y2Y3ZDZlNjhmNzNkNDQ3ZTBhNWE2YzA2YjBhMTFkZjdmOTY0MTMzNjc3ZmQwN2MifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_b5dd0039eb5f4f5a9aa1157f7e5fbf9a",
+      "statement": "The dcode factory runs setup files inside the acquired sandbox after expanding variables from the active workspace environment, merges configured provider parameters before explicit parameters, and reports cleanup failures without masking the initiating exception.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/integrations/sandbox_factory.py#L138-L182",
+          "version": "repo-lines-v1:sha256:f16561fc1975a3fd0de72b069b3fa9aba0160638067270526498d0dfcc4b94f7:eyJzZWxlY3RlZExpbmVDb3VudCI6NDUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjhhOTM5ZWM4ZWJiNjE2NWMxNmE0NjBhNzIyOTYwYzYwNzBlNDE2NzQzODExYTg0ODY2YzU4MGVhOTQxZjViYTAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjUxMDM0ODFjNTdkMGYwZGMwZjc2Y2QyY2M4YjM2MDRjNGU4Mjk2ZGE0MTIyYWRkMTllODE3NDVkYzdlMzMxYTYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjQ0YWMyMDlkNjcyODM2YTRjM2RkMGVjZWQxMmRjMGU2YjZmNzhkMzgxZmY1MTY4YjdjMDdhODQ3NWRhMTlhMzciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImNkYWQwMzExYWIzMTU3NjI3Y2ZjY2NmZmEzYmVhOWI1M2UyYTkyZGIzZWM0MmQwZGMwMzU2MTc4YzczYzE5MGEifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/integrations/sandbox_factory.py#L44-L83",
+          "version": "repo-lines-v1:sha256:c7f1c5e190e6fce94d35e9f77bdfe2acffcb46fe81f86878a1fddc3b8fb7ae2e:eyJzZWxlY3RlZExpbmVDb3VudCI6NDAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ3YzE5ZjMyMjU2MDA1ZDE0ZmRiMjMwMmE0MTc0NDMzYjlkNDQwNTNhZTRiYTRjNmFmZWU1ZTNiNTUwNTU1YWUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI1MTRiNzdjN2M1M2NjZjZmYWU1YzJjZTRjZTZhZGNkODkzZGFmNGY1ZDM3YzA2M2Q3MzBhMjc1ZWQwMTcxYWYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjdhMzJlZTg3YzQ4NjlmZDQ4ZDk0NDVkMzJhZTE2MmRmNTQ5MmY5YmJhMWJmZWEzYzZiOTc0NTEwYjIzOGViNGEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijc5N2I4YTg4ZTYzYTY2NGQwM2U1NzU2YWJjOGJhMTkwYTcyZWRjNDU1OTMwN2YzYWZiNDJhNzFhZjNjYzMxNzEifQ"
+        },
+        {
+          "resource": "repo://libs/code/tests/unit_tests/test_sandbox_factory.py#L90-L191",
+          "version": "repo-lines-v1:sha256:72e3780a5a5f09b7946da205408081b601a52b0a439dbafe08c1d32e7211ab1b:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAyLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI5ODRhMDEzYmM2YTg0YzM5ZGJlYWZmNDU0Nzg3MzdlOTIxM2RjYjIwNTViNjQ0ZGJhMTQ2ODc2NTlkYjA3NDk4IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJhYmMzMDNjZjI5NzI3MmZiZjMxYTM2YTYyNDRiMGJjMjY1Njg0ZmVhMTY5Mzg0YjUzZTNlMDE0N2I3NTAwOGQ0IiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJmMzZmZjIxODUwYTBlNjRjMDEyMjIwNTFiOWZiMjk5MWFhZjZiYWI1ZjIyM2Y1ZmFhYjg0YmYyYzUzMTU0NTVjIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI1NjgwYjBmMjkyOGFjMGRiZjNkZDRhMzFkNWMxNmU5MTk4YTI5YTYwODZkMzljZmI1N2MyMGY2MGJlMzNhNjVkIn0"
+        }
+      ]
+    },
+    {
+      "id": "claim_3c86b1d09106400a95997726288270b0",
+      "statement": "Talon closes a dcode sandbox context when startup completes after caller cancellation, preventing an owned sandbox from being leaked by the threaded startup handoff.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/deepagents_talon/sandbox.py#L133-L186",
+          "version": "repo-lines-v1:sha256:60154f47a3679e19eb6f3fe30ee99ddf930077fee83983484f9be914e3137268:eyJzZWxlY3RlZExpbmVDb3VudCI6NTQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg1YTc5OWNmODczYmVhMTkyMzg2N2EwMWM0YzhjOWNjOWE0OGVjYzE4NTAzNmZkZDFhODE2ODY1ZDI3YzUzZWUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjE4ZGJkZTBlMGM2ODgwOWQwOTZmYmQzZWI3OTMwY2M3YjIyMTA1MTk1Njc2YTYwYjg0ODY0ZmMxZDQzYWQwNDgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjkxNTNiYjYwNzM4Y2ExZDMzNTczYjE1NWQzOWNiMjZiODdmNzg0OTk3ODI1ODgyZjgzMGM4YjYxMTJkNTEwODQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImYwMWJmYWQ2M2YxNWYyNWU1Y2M2YzhhNGI1MWY4NTRjZWY0ZDkwMmEyZTk5YjllN2UzNDNhMTI3ZjkzN2I4NDUifQ"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/sandbox.py#L65-L98",
+          "version": "repo-lines-v1:sha256:c7a72e2f7bdf15c64ec6f98da23aab70c95192f21bcb80280cc1d097b86bd914:eyJzZWxlY3RlZExpbmVDb3VudCI6MzQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg3Y2ZmM2YxNzg0MmRlYzZlN2U5MWMzZTNiOGZjZTBhODIyZmMzMTEyNzM4MWIwMGY0NGE5ZjEzMzMzMDNhMmUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImUzNWNkMWNmY2RhZjVlOTcyZTIxNDdhMzZkM2E3YTAzMDFlZDM0MTgzZDUyZGRjMWMyNzcwMmI4YTc4YTAxMTgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjY3NzI2ZGY3MDFjNzg1NjlhNjQ4YmI4M2FkMmMzYjk1ZGRiNTdjYzgzMDViYmY3YTVjZjdhNDViNzcwNTg2ODgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImQxMzUyMzRhM2NkMjkzM2Q1ZWZhNzlhMTA1YWYyYWJiMmI4MTI0NzFjM2ZiYzA2ZGVhZGI3YjIwZmFkMWQyYzQifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_92d282388a7c49fda29f510403a1cd80",
+      "statement": "Configured sandbox provider class paths are trusted operator configuration because loading them imports arbitrary Python; configured defaults do not enable sandbox mode unless the caller explicitly opts in.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/integrations/sandbox_config.py#L49-L75",
+          "version": "repo-lines-v1:sha256:5e78d9ae8d1334c8670ec7290e3fe48add48ff298087ee539a64dbc77c287ed0:eyJzZWxlY3RlZExpbmVDb3VudCI6MjcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE4NDJiYWY2ZDU0MjhmZDRhMDExMWNlMTc4MTY3ZjlhOTk1MDA5ODQ2YjBjNzJjYzA0YjQ1YzM5NDdiOTg4YjMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjNiYzUwN2VhMjVmZDZiODIyYmIzZGZiNGU5NzYyYWE1ODliN2U2OTcwZGUyOWU5YmFkYTJkZTRiNmIxNTI5NWMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImZkYjI4Yzk1ZTQ0ODE2MmYyN2IzYWM1NjY5ZThmMjU0NTllMjkyMzViZTIyOTFhZGMyNzEzMzkzYzQ3YzAxNGMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjcwY2UzZjI0YWI0N2MyZjVhOWQzMzdmMzc3ZWQ4NTczZmE1NjU4NDA3NjQwMmYxYWYwNTRhM2RlZDYxOTQ2MmYifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/integrations/sandbox_config.py#L86-L102",
+          "version": "repo-lines-v1:sha256:d4e718a82f6ed46d0d29ace354a8b62f6644ddbecded7ed0dd9f73f7c80ea0df:eyJzZWxlY3RlZExpbmVDb3VudCI6MTcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjgzYzk5ZDE5ZmZkNDNkMjQ2NzQzYjFhNmM4OWY0MTFjMDE0ZDk5ZWVlOWUxYWI1YTBjN2VjNGU4NjM3Yzc2NTciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU2Y2UxOTdkMTllNWIwNWJkYjUxODU0NDIzZDYwNTM5NGJlMDVlZjVmYmI1Y2QzMmYwNjgyZTVjMGY0Mzc3YWEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjU2MjQyMzY2MjM1OWFlNzU2N2IyM2JiMjk5Y2MyZTAzMjRlNDE2Njg0ZmQ0YzJlMWZhZTdmYmMyYjI4NmU0M2IiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjY2MTQ1OTE4NDg0ZWJmM2RlZWFiOWIwZTZhNTQzMzU2OTQ4ODk0NDU0NzFhM2JhOGI1YjY0YTI2NjVkNGNiN2UifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/integrations/sandbox_registry.py#L266-L302",
+          "version": "repo-lines-v1:sha256:fbb84fc638a469c02be11d740f873d2ff1e6a654eae525263ed9d2c9d1f778c7:eyJzZWxlY3RlZExpbmVDb3VudCI6MzcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4ZGQ2Y2E4ZmVhNTRmZWZlNDcyNTVjNjZhMTI1NmEzNDFjNmRhZTM4N2QwMzJhZThhYjgxMWZlMDU4MGU3MzUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI2MWUzYmZlZjJjZDZhZjhhZTUyYmYxYzNiYjllM2NiYTViYmYwZDI4ZDg1MTBlM2YzYWFjZGI2MWM4ZGJhNWQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjZmZjcwYTM5ODMyMzk5OTgzMmYyMmUyNTIzMmY3NzQ0YzFhOWQxYzE0OTNjZGE2OTIwYTQzOGIwODk5ZmMyMjAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjUzZWFlNGQ2NzhlM2UzZDE5ODI2ZDcwYjBkMDllNDRjMDA1YWFmYjYxOTBjYTZiMzBkYmRkZGZjMzU5ZmM1NDYifQ"
+        }
+      ]
+    }
+  ],
+  "verification": {
+    "by": "openwiki/0.4.2",
+    "at": "2026-10-17T08:04:56.296Z"
+  }
+}

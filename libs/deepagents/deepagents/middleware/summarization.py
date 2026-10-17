@@ -29,7 +29,7 @@ from deepagents.backends import FilesystemBackend
 backend = FilesystemBackend(root_dir="/data")
 
 summ = SummarizationMiddleware(
-    model="gpt-4o-mini",
+    model="gpt-5.5",
     backend=backend,
     trigger=("fraction", 0.85),
     keep=("fraction", 0.10),
@@ -41,20 +41,38 @@ agent = create_deep_agent(middleware=[summ, tool_mw])
 
 ## Storage
 
-Offloaded messages are stored as markdown at `/conversation_history/{thread_id}.md`.
+Offloaded messages are stored as markdown at `/conversation_history/{session_id}.md`,
+where `session_id` is an internally generated per-invocation id.
 
 Each summarization event appends a new section to this file, creating a running
-log of all evicted messages.
+log of all evicted messages. Base64 media in evicted messages is written
+separately under `<artifacts_root>/conversation_history/media/` and referenced
+by path from the markdown, so the history file stays text-only (see
+`_offload_inline_media` for the exact path).
+
+## Summary prompt
+
+`DEEPAGENTS_DEFAULT_SUMMARY_PROMPT` augments LangChain's `DEFAULT_SUMMARY_PROMPT`
+with a deepagents-specific addendum explaining the media reference tags that the
+offloading behavior introduces, so the summarizing model knows to preserve them.
+It is the default `summary_prompt` for `SummarizationMiddleware` and both
+factories.
 """
 
 from __future__ import annotations
 
 import asyncio
+import base64
+import hashlib
+import inspect
 import logging
+import mimetypes
+import urllib.parse
 import uuid
 import warnings
+from collections.abc import Mapping
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Annotated, Any, NotRequired, cast
+from typing import TYPE_CHECKING, Annotated, Any, ClassVar, Never, NotRequired, cast
 
 from langchain.agents.middleware.summarization import (
     _DEFAULT_MESSAGES_TO_KEEP,
@@ -64,29 +82,49 @@ from langchain.agents.middleware.summarization import (
     SummarizationMiddleware as LCSummarizationMiddleware,
     TokenCounter,
 )
-from langchain.agents.middleware.types import AgentMiddleware, AgentState, ExtendedModelResponse, PrivateStateAttr
-from langchain.tools import ToolRuntime
+from langchain.agents.middleware.types import AgentMiddleware, AgentState, ExtendedModelResponse, PrivateStateAttr, TracePolicy, omit_payload
+from langchain.tools import (
+    ToolRuntime,  # noqa: TC002  # runtime import: StructuredTool resolves the compact-tool annotations at schema-inference time
+)
 from langchain_core.exceptions import ContextOverflowError
-from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, SystemMessage, ToolMessage, get_buffer_string
+from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, SystemMessage, ToolCall, ToolMessage, get_buffer_string
 from langchain_core.messages.utils import count_tokens_approximately
-from langgraph.config import get_config
 from langgraph.types import Command
 from pydantic import BaseModel
 from typing_extensions import TypedDict
 
 from deepagents.backends import CompositeBackend
+from deepagents.middleware._overflow_clip import _aclip_overflow_tail, _clip_overflow_tail
 from deepagents.middleware._utils import append_to_system_message
+
+_MEDIA_REFERENCE_SUMMARY_PROMPT = """<media_reference_information>
+Conversation history may include XML media reference tags, for example:
+<image url=\"/conversation_history/media/{{hash}}.png\" />
+These tags mean the original message included media that was preserved at the referenced backend path.
+Treat the tag and path as part of the conversation context. Do not infer visual details that are not available from surrounding text.
+When the media could be important for future context, preserve the media reference in your summary.
+The model consuming the summary can call `read_file` on the referenced path if it needs to inspect the media.
+</media_reference_information>"""
+
+# NOTE: This splices the media-reference addendum in just before the
+# `<messages>` marker that `DEFAULT_SUMMARY_PROMPT` exposes. That marker is a
+# load-bearing contract -- see the `DEFAULT_SUMMARY_PROMPT` docstring in
+# langchain for the downstream-dependency note.
+DEEPAGENTS_DEFAULT_SUMMARY_PROMPT = DEFAULT_SUMMARY_PROMPT.replace(
+    "\n<messages>\n",
+    f"\n{_MEDIA_REFERENCE_SUMMARY_PROMPT}\n\n<messages>\n",
+    1,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
+    from langchain.agents.middleware.summarization import Summarizer
     from langchain.agents.middleware.types import ModelRequest, ModelResponse
     from langchain.chat_models import BaseChatModel
-    from langchain_core.runnables.config import RunnableConfig
     from langchain_core.tools import BaseTool
-    from langgraph.runtime import Runtime
 
-    from deepagents.backends.protocol import BACKEND_TYPES, BackendProtocol
+    from deepagents.backends.protocol import BackendProtocol, FileUploadResponse
 
 logger = logging.getLogger(__name__)
 
@@ -95,28 +133,37 @@ class CompactConversationSchema(BaseModel):
     """Input schema for the `compact_conversation` tool."""
 
 
-SUMMARIZATION_SYSTEM_PROMPT = """## Compact conversation Tool `compact_conversation`
+SUMMARIZATION_EVENT_KEY = "_summarization_event"
+"""State key holding the most recent `SummarizationEvent`."""
 
-You have access to a `compact_conversation` tool. This tool refreshes your context window to reduce context bloat and costs.
-
-You should use the tool when:
-- The user asks to move on to a completely new task for which previous context is likely irrelevant.
-- You have finished extracting or synthesizing a result and previous working context is no longer needed.
-"""
+SUMMARIZATION_SESSION_ID_KEY = "_summarization_session_id"
+"""State key holding the id that names the offload history file."""
 
 
 class SummarizationEvent(TypedDict):
-    """Represents a summarization event.
-
-    Attributes:
-        cutoff_index: The index in the messages list where summarization occurred.
-        summary_message: The HumanMessage containing the summary.
-        file_path: Path where the conversation history was offloaded, or None if offload failed.
-    """
+    """Represents a summarization event."""
 
     cutoff_index: int
+    """The index in the messages list where summarization occurred."""
+
     summary_message: HumanMessage
+    """The `HumanMessage` containing the summary."""
+
     file_path: str | None
+    """Path where the conversation history was offloaded, or `None` if offload failed."""
+
+
+class TriggerClause(TypedDict, total=False):
+    """Dictionary-based summarization trigger with AND semantics."""
+
+    tokens: int
+    """Trigger when token count reaches or exceeds this value."""
+
+    messages: int
+    """Trigger when message count reaches or exceeds this value."""
+
+    fraction: float
+    """Trigger when token count reaches this fraction of the model context window."""
 
 
 class TruncateArgsSettings(TypedDict, total=False):
@@ -129,24 +176,24 @@ class TruncateArgsSettings(TypedDict, total=False):
 
     Typical large arguments include `write_file` content, `edit_file` patches,
     and verbose `execute` outputs.
-
-    Args:
-        trigger: Token/message/fraction threshold that activates truncation.
-
-            Uses the same `ContextSize` format as the summarization trigger.
-
-            If `None`, truncation is disabled.
-        keep: How many recent messages (or tokens/fraction of context) to
-            leave untouched.
-        max_length: Character limit per argument value before it is clipped.
-        truncation_text: Replacement suffix appended after the first 20
-            characters of a truncated argument.
     """
 
     trigger: ContextSize | None
+    """Token/message/fraction threshold that activates truncation.
+
+    Uses the same `ContextSize` format as the summarization trigger.
+
+    If `None`, truncation is disabled.
+    """
+
     keep: ContextSize
+    """How many recent messages, tokens, or fraction of context to leave untouched."""
+
     max_length: int
+    """Character limit per argument value before it is clipped."""
+
     truncation_text: str
+    """Replacement suffix appended after the first 20 characters of a truncated argument."""
 
 
 class SummarizationState(AgentState):
@@ -158,13 +205,59 @@ class SummarizationState(AgentState):
     _summarization_event: Annotated[NotRequired[SummarizationEvent | None], PrivateStateAttr]
     """Private field storing the most recent summarization event."""
 
+    _summarization_session_id: Annotated[NotRequired[str | None], PrivateStateAttr]
+    """Private, internally generated id naming the offload history file.
+
+    Scoped per graph invocation so parallel sub-agents do not share one history file.
+    """
+
 
 class SummarizationDefaults(TypedDict):
     """Default settings computed from model profile."""
 
     trigger: ContextSize
+    """Conversation size threshold that activates summarization."""
+
     keep: ContextSize
+    """How much recent conversation context to leave untouched."""
+
     truncate_args_settings: TruncateArgsSettings
+    """Settings for shortening large older tool-call arguments before summarization."""
+
+
+def _token_counter_accepts_tools(counter: TokenCounter) -> bool | None:
+    """Determine whether `counter` accepts a `tools` keyword argument.
+
+    The `TokenCounter` contract only requires accepting messages, but the
+    default counter (and most modern ones) also accept `tools=` so tool schemas
+    contribute to the count. Rather than probe by calling and catching
+    `TypeError` — which cannot distinguish a signature that rejects `tools`
+    from a genuine `TypeError` raised inside the counter's body — the signature
+    is inspected directly.
+
+    Args:
+        counter: The token-counting callable to inspect.
+
+    Returns:
+        `True` if the signature declares a `tools` parameter or accepts
+            arbitrary keyword arguments (`**kwargs`), `False` if it clearly does
+            not, or `None` when the signature cannot be introspected (some C-level
+            callables expose no signature), signaling that callers should fall back
+            to probing.
+    """
+    try:
+        parameters = inspect.signature(counter).parameters
+    except (TypeError, ValueError):
+        return None
+    for param in parameters.values():
+        if param.kind is inspect.Parameter.VAR_KEYWORD:
+            return True
+        if param.name == "tools" and param.kind in (
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            inspect.Parameter.KEYWORD_ONLY,
+        ):
+            return True
+    return False
 
 
 def compute_summarization_defaults(model: BaseChatModel) -> SummarizationDefaults:
@@ -207,38 +300,296 @@ def compute_summarization_defaults(model: BaseChatModel) -> SummarizationDefault
     }
 
 
+_OFFLOAD_FAILED_PLACEHOLDER = '<image error="failed_to_offload" />'
+"""Text placeholder written when a media block cannot be offloaded.
+
+Marks the spot so the saved history shows a block was present rather than
+silently omitting it.
+"""
+
+
+def _is_data_url(url: str) -> bool:
+    """Return whether `url` is an inline `data:` URL.
+
+    Any `data:` URL is treated as inline media to offload, because the XML
+    history renderer drops `data:` URL blocks entirely (only `http(s)`-style
+    references survive). This covers both base64 (`data:<mime>;base64,<payload>`)
+    and percent-encoded / plaintext (`data:<mime>,<payload>`, e.g. an inline SVG)
+    forms; whether the payload actually decodes is left to `_decode_data_url`.
+    """
+    return url.startswith("data:")
+
+
+def _extract_data_url(block: Any) -> str | None:  # noqa: ANN401
+    """Return the embedded `data:` URL for an inline-media content block.
+
+    Detects the three inline-data content-block shapes that appear across
+    LangChain messages:
+
+    1. A standard content block with an explicit `base64` field.
+    2. A `data:` URL on the `url` field.
+    3. An OpenAI-style `image_url` block whose `url` is a `data:` URL.
+
+    Both base64 (`;base64,`) and percent-encoded / plaintext `data:` URLs are
+    detected -- e.g. an inline SVG (`data:image/svg+xml,<svg .../>`) -- because
+    the XML history renderer drops *any* inline `data:` URL, so all of them must
+    be offloaded to a referenceable path rather than left inline.
+
+    Shape 3 is defensive: `content_blocks` normalizes most `image_url` blocks
+    (a base64 `data:` URL becomes shape 1; an `https` URL becomes a plain `url`
+    image block), so this branch rarely fires for normalized input; it is kept
+    for raw, un-normalized blocks.
+
+    This is pure detection and never raises: it reports *whether* a block
+    carries inline data, leaving decoding (which can fail) to `_decode_data_url`.
+
+    Args:
+        block: A single content block (usually a dict).
+
+    Returns:
+        The block's `data:` URL, or `None` if the block carries no inline data.
+    """
+    if not isinstance(block, dict):
+        return None
+
+    # 1. Standard content block with an explicit base64 field.
+    raw_b64 = block.get("base64")
+    if raw_b64:
+        mime = block.get("mime_type") or "application/octet-stream"
+        return f"data:{mime};base64,{raw_b64}"
+
+    # 2. Top-level data: URL.
+    url = block.get("url", "")
+    if isinstance(url, str) and _is_data_url(url):
+        return url
+
+    # 3. OpenAI-style image_url with a data: URL.
+    image_url = block.get("image_url")
+    if isinstance(image_url, dict):
+        inner = image_url.get("url", "")
+        if isinstance(inner, str) and _is_data_url(inner):
+            return inner
+
+    return None
+
+
+def _decode_data_url(data_url: str) -> tuple[bytes, str, str] | None:
+    """Decode a `data:` URL to raw bytes, a file extension, and a MIME type.
+
+    Handles both encodings a `data:` URL can use: a `;base64,` payload is
+    base64-decoded, while a plain `data:<mime>,<payload>` payload is treated as
+    percent-encoded text (e.g. an inline SVG).
+
+    Args:
+        data_url: A `data:<mime>[;base64],<payload>` URL.
+
+    Returns:
+        A `(raw_bytes, extension, mime_type)` tuple, or `None` if decoding fails
+            (including a malformed URL with no `,` payload separator). A failure
+            is logged here and, like an upload failure, surfaces as a
+            failed-offload placeholder that counts toward the caller's aggregate
+            warning -- it is never swallowed silently.
+    """
+    try:
+        header, payload = data_url.split(",", 1)
+        mime = header.split(":")[1].split(";")[0] if ":" in header else "application/octet-stream"
+        ext = (mimetypes.guess_extension(mime) or ".bin").lstrip(".")
+        is_base64 = "base64" in header.lower().split(";")
+        raw = base64.b64decode(payload) if is_base64 else urllib.parse.unquote_to_bytes(payload)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Failed to decode data: content block (%s): %s", type(e).__name__, e)
+        return None
+    else:
+        return raw, ext, mime
+
+
+def _media_reference_block(path: str, mime: str) -> dict[str, Any]:
+    """Build a content block referencing offloaded media by backend path.
+
+    The block type is chosen so the XML history renderer serializes the
+    reference: `image`, `audio`, and `video` map to their typed blocks, while
+    any other MIME type falls back to a text block (the renderer has no generic
+    file block and would otherwise drop it).
+
+    Args:
+        path: Backend path where the media was stored.
+        mime: MIME type of the original media, used to pick the block type.
+
+    Returns:
+        A content block carrying the path reference.
+    """
+    major = mime.split("/", 1)[0]
+    if major in {"image", "audio", "video"}:
+        return {"type": major, "url": path}
+    return {"type": "text", "text": f'<file url="{path}" />'}
+
+
+def _rewrite_data_url_blocks(
+    messages: list[AnyMessage],
+    path_map: dict[str, str],
+) -> tuple[list[AnyMessage], int]:
+    """Rewrite inline `data:` URL blocks using uploaded media paths.
+
+    Each inline-data block whose content hash appears in `path_map` becomes a
+    typed media reference block. Blocks whose upload failed -- or whose payload
+    could not be decoded -- become an `<image error="failed_to_offload" />` text
+    placeholder so the saved history records that media was present rather than
+    silently dropping it. Blocks without inline data pass through unchanged.
+
+    Args:
+        messages: Messages whose inline-data blocks should be rewritten.
+        path_map: Mapping of `sha256[:16]` to backend paths for uploaded media.
+
+    Returns:
+        A `(messages, failed_block_count)` tuple. `messages` has inline-data
+            blocks replaced (messages without inline data are returned without
+            copying). `failed_block_count` is the number of blocks rewritten to a
+            failed-offload placeholder -- covering both upload failures (key not
+            in `path_map`) and decode failures -- so the caller can report how
+            much media is unrecoverable.
+    """
+    rewritten: list[AnyMessage] = []
+    failed_blocks = 0
+    for msg in messages:
+        new_blocks: list[Any] = []
+        modified = False
+        for block in msg.content_blocks:
+            data_url = _extract_data_url(block)
+            if data_url is None:
+                new_blocks.append(block)
+                continue
+            modified = True
+            decoded = _decode_data_url(data_url)
+            if decoded is not None:
+                raw, _ext, mime = decoded
+                key = hashlib.sha256(raw).hexdigest()[:16]
+                if key in path_map:
+                    new_blocks.append(_media_reference_block(path_map[key], mime))
+                    continue
+            failed_blocks += 1
+            new_blocks.append({"type": "text", "text": _OFFLOAD_FAILED_PLACEHOLDER})
+        if modified:
+            new_msg = msg.model_copy()
+            new_msg.content = new_blocks
+            rewritten.append(new_msg)
+        else:
+            rewritten.append(msg)
+    return rewritten, failed_blocks
+
+
+def _upload_response_error(responses: list[FileUploadResponse]) -> str | None:
+    """Extract an error from a single-file batch upload result.
+
+    Args:
+        responses: Backend upload responses. `upload_files`/`aupload_files`
+            are batch APIs that return one `FileUploadResponse` per input file
+            in order. Image offloading passes exactly one file at a time, so the
+            expected length is 1 and `responses[0]` maps to that file.
+
+    Returns:
+        The upload error, `"missing_upload_response"` if the backend returned
+            no response, or `None` when the upload succeeded.
+    """
+    if not responses:
+        return "missing_upload_response"
+    error = responses[0].error
+    if error is None:
+        return None
+    return str(error)
+
+
+def _is_context_overflow(exc: Exception) -> bool:
+    """Recognize context errors without retrying unrelated bad requests."""
+    if isinstance(exc, ContextOverflowError):
+        return True
+    if getattr(exc, "status_code", None) not in {400, 413, 422}:
+        return False
+    text = str(exc).lower()
+    return any(
+        marker in text
+        for marker in (
+            "context_length_exceeded",
+            "contextwindowexceedederror",
+            "maximum context length",
+            "exceeds the context window",
+            "exceeds the available context size",
+            "context window exceeded",
+            "context limit exceeded",
+            "input tokens exceed the configured limit",
+            "prompt is too long",
+        )
+    )
+
+
 class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
     """Summarization middleware with backend for conversation history offloading."""
 
+    trace_policy = TracePolicy(process_inputs=omit_payload)
+    """Omit hook inputs from traces by default; set a `TracePolicy` to override."""
+
     state_schema = SummarizationState
+    serialized_name: ClassVar[str] = "SummarizationMiddleware"
+    """Preferred config-file reference for class-form exclusion export."""
+
+    @property
+    def name(self) -> str:
+        """Report the public `SummarizationMiddleware` alias for string-form exclusion.
+
+        The impl class is private (`_DeepAgentsSummarizationMiddleware`) but
+        ships under the public `SummarizationMiddleware` name, so
+        `excluded_middleware={"SummarizationMiddleware"}` targets this class.
+        Subclasses fall back to `type(self).__name__` so user-authored
+        extensions don't silently inherit the alias.
+        """
+        if type(self) is _DeepAgentsSummarizationMiddleware:
+            return "SummarizationMiddleware"
+        return type(self).__name__
 
     def __init__(
         self,
         model: str | BaseChatModel,
         *,
-        backend: BACKEND_TYPES,
-        trigger: ContextSize | list[ContextSize] | None = None,
+        backend: BackendProtocol,
+        trigger: ContextSize | TriggerClause | list[ContextSize | TriggerClause] | None = None,
         keep: ContextSize = ("messages", _DEFAULT_MESSAGES_TO_KEEP),
         token_counter: TokenCounter = count_tokens_approximately,
-        summary_prompt: str = DEFAULT_SUMMARY_PROMPT,
+        summary_prompt: str = DEEPAGENTS_DEFAULT_SUMMARY_PROMPT,
         trim_tokens_to_summarize: int | None = _DEFAULT_TRIM_TOKEN_LIMIT,
         truncate_args_settings: TruncateArgsSettings | None = None,
+        summarizer: Summarizer | None = None,
         **deprecated_kwargs: Any,
     ) -> None:
         """Initialize summarization middleware with backend support.
 
         Args:
             model: The language model to use for generating summaries.
-            backend: Backend instance or factory for persisting conversation history.
-            trigger: Threshold(s) that trigger summarization.
+            backend: Backend instance for persisting conversation history.
+            trigger: Threshold(s) that trigger summarization. A tuple is a single threshold,
+                a dict combines thresholds with AND semantics, and a list combines items
+                with OR semantics.
             keep: Context retention policy after summarization.
 
                 Defaults to keeping last 20 messages.
             token_counter: Function to count tokens in messages.
             summary_prompt: Prompt template for generating summaries.
-            trim_tokens_to_summarize: Max tokens to include when generating summary.
+            trim_tokens_to_summarize: Token budget for the older history sent to the
+                summarization model, measured by `token_counter`. Applied after
+                setting aside the recent messages selected by `keep`.
 
-                Defaults to 4000.
+                If the older history exceeds this budget, trim it to its most
+                recent messages before summarizing. History excluded by this
+                trimming is not summarized. This does not set the summarization
+                trigger or limit the generated summary's length.
+
+                For example, with `keep=("messages", 20)` and
+                `trim_tokens_to_summarize=4000`, preserve the latest 20 messages
+                and summarize up to 4,000 tokens from the end of the older
+                history. The agent receives that summary followed by the
+                preserved messages.
+
+                Pass `None` to summarize all selected history without this
+                trimming. Unlike `create_summarization_middleware`, which
+                defaults to `None`, this constructor defaults to 4000.
             truncate_args_settings: Settings for truncating large tool arguments in old messages.
 
                 Provide a [`TruncateArgsSettings`][deepagents.middleware.summarization.TruncateArgsSettings]
@@ -254,28 +605,61 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
                     # Truncate when 50% of context window reached, ignoring messages in last 10% of window
                     {"trigger": ("fraction", 0.5), "keep": ("fraction", 0.1), "max_length": 2000, "truncation_text": "...(truncated)"}
 
+            summarizer: Optional replacement for the summarization model call.
+
+                Used for both automatic summarization and the
+                `compact_conversation` tool. `model` is still used for its profile
+                and token counting, but is not called to write summaries.
+
+                Pass a model name or a `BaseChatModel` instance to summarize with
+                a different chat model; it is prompted with `summary_prompt`. Pass
+                a `Runnable` or function to generate the summary text another way;
+                it receives the messages to summarize and `summary_prompt` is not
+                used. See LangChain's `SummarizationMiddleware` for details.
+
+                !!! example
+
+                    ```python
+                    from deepagents import create_deep_agent
+                    from deepagents.backends import StateBackend
+                    from deepagents.middleware.summarization import SummarizationMiddleware
+
+                    backend = StateBackend()
+
+                    # Manage gpt-6-sol's context window, summarize with gpt-6-luna
+                    summarization = SummarizationMiddleware(
+                        model="openai:gpt-6-sol",
+                        backend=backend,
+                        trigger=("fraction", 0.85),
+                        keep=("fraction", 0.10),
+                        summarizer="openai:gpt-6-luna",
+                    )
+                    agent = create_deep_agent(
+                        model="openai:gpt-6-sol",
+                        backend=backend,
+                        middleware=[summarization],  # replaces the default
+                    )
+                    ```
+
+        Raises:
+            TypeError: If the removed `history_path_prefix` argument is provided.
+
         Example:
             ```python
             from deepagents.middleware.summarization import SummarizationMiddleware
             from deepagents.backends import StateBackend
 
             middleware = SummarizationMiddleware(
-                model="gpt-4o-mini",
+                model="gpt-5.5",
                 backend=StateBackend(),
                 trigger=("tokens", 100000),
                 keep=("messages", 20),
             )
             ```
         """
-        _deprecated_history_prefix = deprecated_kwargs.pop("history_path_prefix", None)
-        if _deprecated_history_prefix is not None:
-            warnings.warn(
-                "The argument `history_path_prefix` was deprecated in deepagents 0.5"
-                " and will be removed in 0.7."
-                " Use CompositeBackend(artifacts_root='/my/root', ...) instead.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
+        if "history_path_prefix" in deprecated_kwargs:
+            msg = "`history_path_prefix` was removed in deepagents 0.7. Configure `CompositeBackend.artifacts_root` instead."
+            raise TypeError(msg)
 
         # Initialize langchain helper for core summarization logic
         self._lc_helper = LCSummarizationMiddleware(
@@ -285,8 +669,15 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
             token_counter=token_counter,
             summary_prompt=summary_prompt,
             trim_tokens_to_summarize=trim_tokens_to_summarize,
+            summarizer=summarizer,
             **deprecated_kwargs,
         )
+
+        # Whether the configured token counter accepts a `tools` kwarg. Resolved
+        # once here (the counter is fixed after construction) so the per-call
+        # token count never pays signature-introspection cost. `None` means the
+        # signature could not be introspected, so `_count_tokens` probes instead.
+        self._counter_accepts_tools = _token_counter_accepts_tools(self.token_counter)
 
         # Deep Agents specific attributes
         self._backend = backend
@@ -294,9 +685,9 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
         artifacts_root = backend.artifacts_root if isinstance(backend, CompositeBackend) else "/"
         _root = artifacts_root.rstrip("/")
         self._history_path_prefix = f"{_root}/conversation_history"
+        self._large_tool_results_prefix = f"{_root}/large_tool_results"
 
-        if _deprecated_history_prefix is not None:
-            self._history_path_prefix = _deprecated_history_prefix
+        self._media_prefix = f"{self._history_path_prefix}/media"
 
         # Parse truncate_args_settings
         if truncate_args_settings is None:
@@ -349,72 +740,41 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
         """Generate summary for the given messages (async)."""
         return await self._lc_helper._acreate_summary(messages_to_summarize)
 
-    def _get_backend(
-        self,
-        state: AgentState[Any],
-        runtime: Runtime,
-    ) -> BackendProtocol:
-        """Resolve backend from instance or factory.
+    def _get_session_id(self, state: Mapping[str, Any]) -> str:
+        """Resolve the session id naming the offload history file.
+
+        Reuses a previously persisted `_summarization_session_id` so history
+        appends to one file across turns; otherwise generates a fresh id, which
+        the caller persists in the state update so later turns reuse it.
+
+        The id is internal and scoped per graph invocation, so each invocation
+        -- including each sub-agent -- gets its own history file.
 
         Args:
-            state: Current agent state.
-            runtime: Runtime context for factory functions.
+            state: The agent state to read the persisted id from.
 
         Returns:
-            Resolved backend instance.
+            A session id (e.g. `'session_<uuid4 hex>'`).
         """
-        if callable(self._backend):
-            # Because we're using `before_model`, which doesn't receive `config` as a
-            # parameter, we access it via `runtime.config` instead.
-            # Cast is safe: empty dict `{}` is a valid `RunnableConfig` (all fields are
-            # optional in TypedDict).
-            config = cast("RunnableConfig", getattr(runtime, "config", {}))
+        existing = state.get(SUMMARIZATION_SESSION_ID_KEY)
+        if isinstance(existing, str) and existing:
+            return existing
+        # Full uuid4 entropy: history filenames must not collide across
+        # independent sessions sharing a backend, or their evicted history mixes.
+        return f"session_{uuid.uuid4().hex}"
 
-            tool_runtime = ToolRuntime(
-                state=state,
-                context=runtime.context,
-                stream_writer=runtime.stream_writer,
-                store=runtime.store,
-                config=config,
-                tool_call_id=None,
-            )
-            return self._backend(tool_runtime)  # ty: ignore[call-top-callable, invalid-argument-type]
-        return self._backend
-
-    def _get_thread_id(self) -> str:
-        """Extract `thread_id` from langgraph config.
-
-        Uses `get_config()` to access the `RunnableConfig` from langgraph's
-        `contextvar`. Falls back to a generated session ID if not available.
-
-        Returns:
-            Thread ID string from config, or a generated session ID
-                (e.g., `'session_a1b2c3d4'`) if not in a runnable context.
-        """
-        try:
-            config = get_config()
-            thread_id = config.get("configurable", {}).get("thread_id")
-            if thread_id is not None:
-                return str(thread_id)
-        except RuntimeError:
-            # Not in a runnable context
-            pass
-
-        # Fallback: generate session ID
-        generated_id = f"session_{uuid.uuid4().hex[:8]}"
-        logger.debug("No thread_id found, using generated session ID: %s", generated_id)
-        return generated_id
-
-    def _get_history_path(self) -> str:
+    def _get_history_path(self, session_id: str) -> str:
         """Generate path for storing conversation history.
 
-        Returns a single file per thread that gets appended to over time.
+        Returns a single file per session id that gets appended to over time.
+
+        Args:
+            session_id: An id from `_get_session_id`.
 
         Returns:
-            Path string like `'/conversation_history/{thread_id}.md'`
+            Path string like `'/conversation_history/{session_id}.md'`
         """
-        thread_id = self._get_thread_id()
-        return f"{self._history_path_prefix}/{thread_id}.md"
+        return f"{self._history_path_prefix}/{session_id}.md"
 
     def _is_summary_message(self, msg: AnyMessage) -> bool:
         """Check if a message is a previous summarization message.
@@ -494,7 +854,7 @@ A condensed summary follows:
         Returns:
             The effective message list to use for the model call.
         """
-        event = request.state.get("_summarization_event")
+        event = request.state.get(SUMMARIZATION_EVENT_KEY)
         return self._apply_event_to_messages(request.messages, event)
 
     @staticmethod
@@ -643,7 +1003,7 @@ A condensed summary follows:
 
         return len(messages)
 
-    def _truncate_tool_call(self, tool_call: dict[str, Any]) -> dict[str, Any]:
+    def _truncate_tool_call(self, tool_call: ToolCall) -> ToolCall:
         """Truncate large arguments in a single tool call.
 
         Args:
@@ -671,28 +1031,64 @@ A condensed summary follows:
             }
         return tool_call
 
-    def _truncate_args(
+    def _count_tokens(
         self,
         messages: list[AnyMessage],
         system_message: SystemMessage | None,
         tools: list[BaseTool | dict[str, Any]] | None,
+    ) -> int:
+        """Count tokens for messages plus optional system message and tools.
+
+        Args:
+            messages: Messages to count.
+            system_message: Optional system message prepended before counting.
+            tools: Optional tools whose schemas contribute to the count.
+
+        Returns:
+            Total token count. Counts without `tools` when the configured
+                `token_counter` does not accept a `tools` keyword. When the
+                counter's signature is introspectable, a `TypeError` raised
+                inside the counter's own body is never masked — it propagates so
+                a broken counter is not hidden behind a silently wrong count.
+                Counters whose signature cannot be introspected are probed
+                instead, and only there does a `TypeError` fall back to counting
+                without `tools`.
+        """
+        counted_messages = [system_message, *messages] if system_message is not None else messages
+        if self._counter_accepts_tools is True:
+            # `tools=` is absent from the `TokenCounter` protocol but accepted
+            # here: the signature check above confirmed the counter takes it.
+            return self.token_counter(counted_messages, tools=tools)  # ty: ignore[unknown-argument]
+        if self._counter_accepts_tools is False:
+            return self.token_counter(counted_messages)
+        # Signature could not be introspected; probe defensively. This is the
+        # only path that swallows a `TypeError`, and only for counters whose
+        # signature is opaque (some C-level callables expose no signature).
+        try:
+            # `tools=` is outside the `TokenCounter` protocol; the probe verifies
+            # acceptance at runtime, falling back below if it is rejected.
+            return self.token_counter(counted_messages, tools=tools)  # ty: ignore[unknown-argument]
+        except TypeError:
+            return self.token_counter(counted_messages)
+
+    def _truncate_args(
+        self,
+        messages: list[AnyMessage],
+        total_tokens: int,
     ) -> tuple[list[AnyMessage], bool]:
         """Truncate large tool call arguments in old messages.
 
         Args:
             messages: Messages to potentially truncate.
-            system_message: Optional system message for token counting.
-            tools: Optional tools for token counting.
+            total_tokens: Precomputed token count for `messages` (plus system
+                message and tools). Counting tools is expensive (schema
+                conversion per tool), so the caller counts once and shares the
+                result across the truncation and summarization checks.
 
         Returns:
             Tuple of (truncated_messages, modified). If modified is False,
             truncated_messages is the same as input messages.
         """
-        counted_messages = [system_message, *messages] if system_message is not None else messages
-        try:
-            total_tokens = self.token_counter(counted_messages, tools=tools)  # ty: ignore[unknown-argument]
-        except TypeError:
-            total_tokens = self.token_counter(counted_messages)
         if not self._should_truncate_args(messages, total_tokens):
             return messages, False
 
@@ -712,7 +1108,7 @@ A condensed summary follows:
 
                 for tool_call in msg.tool_calls:
                     if tool_call["name"] in {"write_file", "edit_file"}:
-                        truncated_call = self._truncate_tool_call(tool_call)  # ty: ignore[invalid-argument-type]
+                        truncated_call = self._truncate_tool_call(tool_call)
                         if truncated_call != tool_call:
                             msg_modified = True
                         truncated_tool_calls.append(truncated_call)
@@ -732,36 +1128,174 @@ A condensed summary follows:
 
         return truncated_messages, modified
 
+    def _offload_inline_media(
+        self,
+        backend: BackendProtocol,
+        messages: list[AnyMessage],
+    ) -> tuple[list[AnyMessage], int]:
+        """Decode inline `data:` media blocks to files and replace them with path references.
+
+        Covers any inline `data:` URL (base64 or percent-encoded/plaintext), not
+        just base64, because the XML history renderer drops every inline `data:`
+        URL. The caller uploads media before both `_offload_to_backend` and
+        `_create_summary`, so both paths receive messages with inline data
+        replaced by path references (or error placeholders when an upload fails).
+        The archive keeps addressable `<image url="..." />` references, and the
+        summary prompt does not receive raw media bytes.
+
+        Each unique media file is uploaded once to
+        `{artifacts_root}/conversation_history/media/{sha256[:16]}.{ext}` (the
+        prefix follows the backend's `artifacts_root`, defaulting to `/`).
+        Identical media across messages are deduped by content hash.
+
+        Failures are tracked per block. A block whose upload failed -- or whose
+        payload could not be decoded -- is replaced with an
+        `<image error="failed_to_offload" />` text placeholder; a successfully
+        uploaded block is rewritten to a typed media reference block. The caller
+        receives the count of failed blocks so it can warn that those media are
+        unrecoverable.
+
+        Args:
+            backend: Backend to write media files to.
+            messages: Messages to process.
+
+        Returns:
+            A `(messages, failed_block_count)` tuple. `messages` has base64
+                blocks replaced by path-reference media blocks or error
+                placeholders; messages without base64 content are returned
+                unchanged. `failed_block_count` is the number of media blocks
+                that became failed-offload placeholders.
+        """
+        path_map: dict[str, str] = {}  # key -> backend path (successfully uploaded)
+        failed_keys: set[str] = set()  # keys whose upload failed
+        saw_inline_media = False
+
+        # First pass: upload each unique media file individually for per-block failure tracking.
+        for msg in messages:
+            for block in msg.content_blocks:
+                data_url = _extract_data_url(block)
+                if data_url is None:
+                    continue
+                saw_inline_media = True
+                decoded = _decode_data_url(data_url)
+                if decoded is None:
+                    continue  # undecodable; rewrite emits a failed-offload placeholder
+                raw, ext, _mime = decoded
+                key = hashlib.sha256(raw).hexdigest()[:16]
+                if key in path_map or key in failed_keys:
+                    continue
+                img_path = f"{self._media_prefix}/{key}.{ext}"
+                try:
+                    responses = backend.upload_files([(img_path, raw)])
+                    if error := _upload_response_error(responses):
+                        logger.warning(
+                            "Failed to upload media %s to backend: %s",
+                            img_path,
+                            error,
+                        )
+                        failed_keys.add(key)
+                        continue
+                    path_map[key] = img_path
+                except Exception as e:  # noqa: BLE001
+                    logger.warning(
+                        "Failed to upload media %s to backend: %s: %s",
+                        img_path,
+                        type(e).__name__,
+                        e,
+                    )
+                    failed_keys.add(key)
+
+        if not saw_inline_media:
+            return messages, 0  # no inline media present; return originals unchanged
+
+        return _rewrite_data_url_blocks(messages, path_map)
+
+    async def _aoffload_inline_media(
+        self,
+        backend: BackendProtocol,
+        messages: list[AnyMessage],
+    ) -> tuple[list[AnyMessage], int]:
+        """Async twin of `_offload_inline_media` using `aupload_files`.
+
+        See `_offload_inline_media` for full documentation, including the
+        `(messages, failed_block_count)` return contract.
+        """
+        path_map: dict[str, str] = {}
+        failed_keys: set[str] = set()
+        saw_inline_media = False
+
+        for msg in messages:
+            for block in msg.content_blocks:
+                data_url = _extract_data_url(block)
+                if data_url is None:
+                    continue
+                saw_inline_media = True
+                decoded = _decode_data_url(data_url)
+                if decoded is None:
+                    continue  # undecodable; rewrite emits a failed-offload placeholder
+                raw, ext, _mime = decoded
+                key = hashlib.sha256(raw).hexdigest()[:16]
+                if key in path_map or key in failed_keys:
+                    continue
+                img_path = f"{self._media_prefix}/{key}.{ext}"
+                try:
+                    responses = await backend.aupload_files([(img_path, raw)])
+                    if error := _upload_response_error(responses):
+                        logger.warning(
+                            "Failed to upload media %s to backend: %s",
+                            img_path,
+                            error,
+                        )
+                        failed_keys.add(key)
+                        continue
+                    path_map[key] = img_path
+                except Exception as e:  # noqa: BLE001
+                    logger.warning(
+                        "Failed to upload media %s to backend: %s: %s",
+                        img_path,
+                        type(e).__name__,
+                        e,
+                    )
+                    failed_keys.add(key)
+
+        if not saw_inline_media:
+            return messages, 0
+
+        return _rewrite_data_url_blocks(messages, path_map)
+
     def _offload_to_backend(
         self,
         backend: BackendProtocol,
         messages: list[AnyMessage],
+        session_id: str,
     ) -> str | None:
         """Persist messages to backend before summarization.
 
-        Appends evicted messages to a single markdown file per thread. Each
+        Appends evicted messages to a single markdown file per session. Each
         summarization event adds a new section with a timestamp header.
 
         Previous summary messages are filtered out to avoid redundant storage during
         chained summarization events.
 
-        A ``None`` return is non-fatal; callers may proceed without the
+        A `None` return is non-fatal; callers may proceed without the
         offloaded history.
 
         Args:
             backend: Backend to write to.
             messages: Messages being summarized.
+            session_id: Id naming the history file.
 
         Returns:
-            The file path where history was offloaded, or ``None`` on failure.
+            The file path where history was offloaded, or `None` on failure.
         """
-        path = self._get_history_path()
+        path = self._get_history_path(session_id)
 
-        # Filter out previous summary messages to avoid redundant storage
+        # Filter out previous summary messages to avoid redundant storage.
+        # Base64 images are already converted to path references by the caller.
         filtered_messages = self._filter_summary_messages(messages)
 
         timestamp = datetime.now(UTC).isoformat()
-        new_section = f"## Summarized at {timestamp}\n\n{get_buffer_string(filtered_messages)}\n\n"
+        new_section = f"## Summarized at {timestamp}\n\n{get_buffer_string(filtered_messages, format='xml')}\n\n"
 
         # Read existing content (if any) and append.
         # Note: We use download_files() instead of read() because read() returns
@@ -810,32 +1344,35 @@ A condensed summary follows:
         self,
         backend: BackendProtocol,
         messages: list[AnyMessage],
+        session_id: str,
     ) -> str | None:
         """Persist messages to backend before summarization (async).
 
-        Appends evicted messages to a single markdown file per thread. Each
+        Appends evicted messages to a single markdown file per session. Each
         summarization event adds a new section with a timestamp header.
 
         Previous summary messages are filtered out to avoid redundant storage during
         chained summarization events.
 
-        A ``None`` return is non-fatal; callers may proceed without the
+        A `None` return is non-fatal; callers may proceed without the
         offloaded history.
 
         Args:
             backend: Backend to write to.
             messages: Messages being summarized.
+            session_id: Id naming the history file.
 
         Returns:
-            The file path where history was offloaded, or ``None`` on failure.
+            The file path where history was offloaded, or `None` on failure.
         """
-        path = self._get_history_path()
+        path = self._get_history_path(session_id)
 
-        # Filter out previous summary messages to avoid redundant storage
+        # Filter out previous summary messages to avoid redundant storage.
+        # Base64 images are already converted to path references by the caller.
         filtered_messages = self._filter_summary_messages(messages)
 
         timestamp = datetime.now(UTC).isoformat()
-        new_section = f"## Summarized at {timestamp}\n\n{get_buffer_string(filtered_messages)}\n\n"
+        new_section = f"## Summarized at {timestamp}\n\n{get_buffer_string(filtered_messages, format='xml')}\n\n"
 
         # Read existing content (if any) and append.
         # Note: We use adownload_files() instead of aread() because read() returns
@@ -882,6 +1419,110 @@ A condensed summary follows:
             logger.debug("Offloaded %d messages to %s", len(filtered_messages), path)
             return path
 
+    @staticmethod
+    def _with_replacements(response: ModelResponse, replacements: list[AnyMessage]) -> ModelResponse | ExtendedModelResponse:
+        if replacements:
+            return ExtendedModelResponse(model_response=response, command=Command(update={"messages": replacements}))
+        return response
+
+    @staticmethod
+    def _raise_recovery_exhausted(error: Exception) -> Never:
+        """Expose a terminal model error instead of another retryable HTTP response."""
+        msg = "Model input still does not fit after recovery; reduce input, tools, or configured output tokens."
+        raise ContextOverflowError(msg) from error
+
+    def _input_budget(self, request: ModelRequest) -> int | None:
+        """Reserve configured output and 5% headroom from the advertised input limit."""
+        profile = request.model.profile
+        limit = profile.get("max_input_tokens") if isinstance(profile, dict) else None
+        if not isinstance(limit, int) or isinstance(limit, bool):
+            return None
+        output = 0
+        for key in ("max_tokens", "max_completion_tokens", "max_output_tokens"):
+            value = request.model_settings.get(key, getattr(request.model, key, None))
+            if isinstance(value, int) and not isinstance(value, bool):
+                output = max(output, value)
+        return max(0, int(limit * 0.95) - output)
+
+    def _over_budget(self, request: ModelRequest, total_tokens: int | None = None) -> bool:
+        budget = self._input_budget(request)
+        if budget is None:
+            return False
+        count = total_tokens if total_tokens is not None else self._count_tokens(request.messages, request.system_message, request.tools)
+        return count > budget
+
+    def _check_reduction(self, original: ModelRequest, reduced: ModelRequest, error: Exception | None) -> None:
+        """Never resend an unchanged rejected request or a known oversized request."""
+        count = self._count_tokens(reduced.messages, reduced.system_message, reduced.tools)
+        if error is not None and count >= self._count_tokens(original.messages, original.system_message, original.tools):
+            self._raise_recovery_exhausted(error)
+        budget = self._input_budget(reduced)
+        if budget is not None and count > budget:
+            msg = "Context remains above the input budget after compaction; reduce input, tools, or configured output tokens."
+            raise ContextOverflowError(msg)
+
+    def _call_with_budget(
+        self,
+        request: ModelRequest,
+        handler: Callable[[ModelRequest], ModelResponse],
+        *,
+        error: Exception | None = None,
+        rejected: ModelRequest | None = None,
+    ) -> tuple[ModelResponse, list[AnyMessage]]:
+        """Check the complete request and allow one strictly smaller tail recovery."""
+        original = rejected if rejected is not None else request
+        replacements: list[AnyMessage] = []
+        if error is not None or self._over_budget(request):
+            messages, replacements = _clip_overflow_tail(
+                request.messages,
+                self._backend,
+                keep=("tokens", 1),
+                max_input_tokens=self._get_profile_limits(),
+                token_counter=self.token_counter,
+                large_tool_results_prefix=self._large_tool_results_prefix,
+            )
+            request = request.override(messages=messages)
+            self._check_reduction(original, request, error)
+        try:
+            return handler(request), replacements
+        except Exception as exc:
+            if not _is_context_overflow(exc):
+                raise
+            if error is not None or replacements:
+                self._raise_recovery_exhausted(exc)
+            return self._call_with_budget(request, handler, error=exc)
+
+    async def _acall_with_budget(
+        self,
+        request: ModelRequest,
+        handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
+        *,
+        error: Exception | None = None,
+        rejected: ModelRequest | None = None,
+    ) -> tuple[ModelResponse, list[AnyMessage]]:
+        """Check the complete request and allow one strictly smaller tail recovery."""
+        original = rejected if rejected is not None else request
+        replacements: list[AnyMessage] = []
+        if error is not None or self._over_budget(request):
+            messages, replacements = await _aclip_overflow_tail(
+                request.messages,
+                self._backend,
+                keep=("tokens", 1),
+                max_input_tokens=self._get_profile_limits(),
+                token_counter=self.token_counter,
+                large_tool_results_prefix=self._large_tool_results_prefix,
+            )
+            request = request.override(messages=messages)
+            self._check_reduction(original, request, error)
+        try:
+            return await handler(request), replacements
+        except Exception as exc:
+            if not _is_context_overflow(exc):
+                raise
+            if error is not None or replacements:
+                self._raise_recovery_exhausted(exc)
+            return await self._acall_with_budget(request, handler, error=exc)
+
     def wrap_model_call(
         self,
         request: ModelRequest,
@@ -897,22 +1538,23 @@ A condensed summary follows:
 
         - If thresholds say "do not summarize", we still attempt one normal
             model call with the current effective/truncated messages.
-        - If that call raises `ContextOverflowError`, we immediately fall back to
-            the summarization path and retry the model call with
-            `summary_message + preserved_recent_messages`.
+        - Recognized provider context errors fall back to summarization and
+            offloading large trailing tool results. At most one smaller retry
+            is sent, including when the first request was already summarized.
+        - The complete request is checked against the input budget after
+            summarization. Irreducible input raises `ContextOverflowError`.
 
-        Unlike the legacy `before_model` approach, this does NOT modify the LangGraph state.
-        Instead, it tracks summarization events in middleware state and modifies the model
-        request directly.
+        History is condensed through a summary event rather than removing raw
+        messages. Offloaded tail results are persisted by message ID.
 
         Args:
             request: The model request to process.
             handler: The handler to call with the (possibly modified) request.
 
         Returns:
-            A plain `ModelResponse` when no summarization event is created, or
-                an `ExtendedModelResponse` that updates `_summarization_event`
-                with `cutoff_index`, `summary_message`, and `file_path`.
+            A plain `ModelResponse` when no state updates are needed, or an
+                `ExtendedModelResponse` with the summary event and/or offloaded
+                tool result replacements.
 
                 If `cutoff_index <= 0`, no compaction occurs and no
                 `_summarization_event` update is emitted.
@@ -920,53 +1562,73 @@ A condensed summary follows:
         # Get effective messages based on previous summarization events
         effective_messages = self._get_effective_messages(request)
 
+        # Count once; tool-schema conversion makes each count expensive, so the
+        # count is shared between the truncation check and the summarize check.
+        total_tokens = self._count_tokens(effective_messages, request.system_message, request.tools)
+
         # Step 1: Truncate args if configured
-        truncated_messages, _ = self._truncate_args(
+        truncated_messages, truncate_modified = self._truncate_args(
             effective_messages,
-            request.system_message,
-            request.tools,
+            total_tokens,
         )
 
         # Step 2: Check if summarization should happen
-        counted_messages = [request.system_message, *truncated_messages] if request.system_message is not None else truncated_messages
-        try:
-            total_tokens = self.token_counter(counted_messages, tools=request.tools)  # ty: ignore[unknown-argument]
-        except TypeError:
-            total_tokens = self.token_counter(counted_messages)
-        should_summarize = self._should_summarize(truncated_messages, total_tokens)
+        if truncate_modified:
+            total_tokens = self._count_tokens(truncated_messages, request.system_message, request.tools)
+        should_summarize = self._should_summarize(truncated_messages, total_tokens) or self._over_budget(request, total_tokens)
 
         # If no summarization needed, return with truncated messages
+        overflow_error: Exception | None = None
         if not should_summarize:
             try:
                 return handler(request.override(messages=truncated_messages))
-            except ContextOverflowError:
-                pass
+            except Exception as exc:
+                if not _is_context_overflow(exc):
+                    raise
+                overflow_error = exc
                 # Fallback to summarization on context overflow
 
         # Step 3: Perform summarization
         cutoff_index = self._determine_cutoff_index(truncated_messages)
         if cutoff_index <= 0:
-            # Can't summarize, return truncated messages
-            return handler(request.override(messages=truncated_messages))
+            response, replacements = self._call_with_budget(request.override(messages=truncated_messages), handler, error=overflow_error)
+            return self._with_replacements(response, replacements)
 
         messages_to_summarize, preserved_messages = self._partition_messages(truncated_messages, cutoff_index)
 
+        backend = self._backend
+        # Upload inline media once so both offload and summary see path references.
+        offloaded_media_messages, failed_media = self._offload_inline_media(backend, messages_to_summarize)
+
+        # Resolve the internal history-file id and persist it below so later turns
+        # append to the same file.
+        session_id = self._get_session_id(request.state)
+
         # Offload to backend first so history is preserved before summarization.
         # If offload fails, summarization still proceeds (with file_path=None).
-        backend = self._get_backend(request.state, request.runtime)
-        file_path = self._offload_to_backend(backend, messages_to_summarize)
+        file_path = self._offload_to_backend(backend, offloaded_media_messages, session_id)
         if file_path is None:
             msg = "Offloading conversation history to backend failed during summarization. Older messages will not be recoverable."
             logger.error(msg)
             warnings.warn(msg, stacklevel=2)
+        elif failed_media:
+            # History was saved, but some media became failed-offload placeholders.
+            # Tie the warning to the saved file so the recovery pointer is honest.
+            msg = (
+                f"Conversation history was offloaded to {file_path}, but {failed_media} media "
+                "block(s) could not be offloaded and appear as failed placeholders in the saved "
+                "history; the original media is not recoverable."
+            )
+            logger.warning(msg)
+            warnings.warn(msg, stacklevel=2)
 
         # Generate summary
-        summary = self._create_summary(messages_to_summarize)
+        summary = self._create_summary(offloaded_media_messages)
 
         # Build summary message with file path reference
         new_messages = self._build_new_messages_with_path(summary, file_path)
 
-        previous_event = request.state.get("_summarization_event")
+        previous_event = request.state.get(SUMMARIZATION_EVENT_KEY)
         state_cutoff_index = self._compute_state_cutoff(previous_event, cutoff_index)
 
         # Create new summarization event
@@ -978,12 +1640,25 @@ A condensed summary follows:
 
         # Modify request to use summarized messages
         modified_messages = [*new_messages, *preserved_messages]
-        response = handler(request.override(messages=modified_messages))
+        modified_request = request.override(messages=modified_messages)
+        response, new_state_tail = self._call_with_budget(
+            modified_request,
+            handler,
+            error=overflow_error,
+            rejected=request.override(messages=truncated_messages),
+        )
+
+        update: dict[str, Any] = {
+            SUMMARIZATION_EVENT_KEY: new_event,
+            SUMMARIZATION_SESSION_ID_KEY: session_id,
+        }
+        if new_state_tail:
+            update["messages"] = list(new_state_tail)
 
         # Return ExtendedModelResponse with state update
         return ExtendedModelResponse(
             model_response=response,
-            command=Command(update={"_summarization_event": new_event}),
+            command=Command(update=update),
         )
 
     async def awrap_model_call(
@@ -1001,22 +1676,23 @@ A condensed summary follows:
 
         - If thresholds say "do not summarize", we still attempt one normal
             model call with the current effective/truncated messages.
-        - If that call raises `ContextOverflowError`, we immediately fall back
-            to the summarization path and retry the model call with
-            `summary_message + preserved_recent_messages`.
+        - Recognized provider context errors fall back to summarization and
+            offloading large trailing tool results. At most one smaller retry
+            is sent, including when the first request was already summarized.
+        - The complete request is checked against the input budget after
+            summarization. Irreducible input raises `ContextOverflowError`.
 
-        Unlike the legacy `abefore_model` approach, this does NOT modify the LangGraph state.
-        Instead, it tracks summarization events in middleware state and modifies the model
-        request directly.
+        History is condensed through a summary event rather than removing raw
+        messages. Offloaded tail results are persisted by message ID.
 
         Args:
             request: The model request to process.
             handler: The handler to call with the (possibly modified) request.
 
         Returns:
-            A plain `ModelResponse` when no summarization event is created, or
-                an `ExtendedModelResponse` that updates `_summarization_event`
-                with `cutoff_index`, `summary_message`, and `file_path`.
+            A plain `ModelResponse` when no state updates are needed, or an
+                `ExtendedModelResponse` with the summary event and/or offloaded
+                tool result replacements.
 
                 If `cutoff_index <= 0`, no compaction occurs and no
                 `_summarization_event` update is emitted.
@@ -1024,53 +1700,74 @@ A condensed summary follows:
         # Get effective messages based on previous summarization events
         effective_messages = self._get_effective_messages(request)
 
+        # Count once; tool-schema conversion makes each count expensive, so the
+        # count is shared between the truncation check and the summarize check.
+        total_tokens = self._count_tokens(effective_messages, request.system_message, request.tools)
+
         # Step 1: Truncate args if configured
-        truncated_messages, _ = self._truncate_args(
+        truncated_messages, truncate_modified = self._truncate_args(
             effective_messages,
-            request.system_message,
-            request.tools,
+            total_tokens,
         )
 
         # Step 2: Check if summarization should happen
-        counted_messages = [request.system_message, *truncated_messages] if request.system_message is not None else truncated_messages
-        try:
-            total_tokens = self.token_counter(counted_messages, tools=request.tools)  # ty: ignore[unknown-argument]
-        except TypeError:
-            total_tokens = self.token_counter(counted_messages)
-        should_summarize = self._should_summarize(truncated_messages, total_tokens)
+        if truncate_modified:
+            total_tokens = self._count_tokens(truncated_messages, request.system_message, request.tools)
+        should_summarize = self._should_summarize(truncated_messages, total_tokens) or self._over_budget(request, total_tokens)
 
         # If no summarization needed, return with truncated messages
+        overflow_error: Exception | None = None
         if not should_summarize:
             try:
                 return await handler(request.override(messages=truncated_messages))
-            except ContextOverflowError:
-                pass
+            except Exception as exc:
+                if not _is_context_overflow(exc):
+                    raise
+                overflow_error = exc
                 # Fallback to summarization on context overflow
 
         # Step 3: Perform summarization
         cutoff_index = self._determine_cutoff_index(truncated_messages)
         if cutoff_index <= 0:
-            # Can't summarize, return truncated messages
-            return await handler(request.override(messages=truncated_messages))
+            response, replacements = await self._acall_with_budget(request.override(messages=truncated_messages), handler, error=overflow_error)
+            return self._with_replacements(response, replacements)
 
         messages_to_summarize, preserved_messages = self._partition_messages(truncated_messages, cutoff_index)
 
+        backend = self._backend
+        # Upload inline media once so both offload and summary see path references.
+        # This must complete before the gather since both methods consume the result.
+        offloaded_media_messages, failed_media = await self._aoffload_inline_media(backend, messages_to_summarize)
+
+        # Resolve the internal history-file id and persist it below so later turns
+        # append to the same file.
+        session_id = self._get_session_id(request.state)
+
         # Offload to backend and generate summary concurrently -- they are independent.
         # If offload fails, summarization still proceeds (with file_path=None).
-        backend = self._get_backend(request.state, request.runtime)
         file_path, summary = await asyncio.gather(
-            self._aoffload_to_backend(backend, messages_to_summarize),
-            self._acreate_summary(messages_to_summarize),
+            self._aoffload_to_backend(backend, offloaded_media_messages, session_id),
+            self._acreate_summary(offloaded_media_messages),
         )
         if file_path is None:
             msg = "Offloading conversation history to backend failed during summarization. Older messages will not be recoverable."
             logger.error(msg)
             warnings.warn(msg, stacklevel=2)
+        elif failed_media:
+            # History was saved, but some media became failed-offload placeholders.
+            # Tie the warning to the saved file so the recovery pointer is honest.
+            msg = (
+                f"Conversation history was offloaded to {file_path}, but {failed_media} media "
+                "block(s) could not be offloaded and appear as failed placeholders in the saved "
+                "history; the original media is not recoverable."
+            )
+            logger.warning(msg)
+            warnings.warn(msg, stacklevel=2)
 
         # Build summary message with file path reference
         new_messages = self._build_new_messages_with_path(summary, file_path)
 
-        previous_event = request.state.get("_summarization_event")
+        previous_event = request.state.get(SUMMARIZATION_EVENT_KEY)
         state_cutoff_index = self._compute_state_cutoff(previous_event, cutoff_index)
 
         # Create new summarization event
@@ -1082,12 +1779,25 @@ A condensed summary follows:
 
         # Modify request to use summarized messages
         modified_messages = [*new_messages, *preserved_messages]
-        response = await handler(request.override(messages=modified_messages))
+        modified_request = request.override(messages=modified_messages)
+        response, new_state_tail = await self._acall_with_budget(
+            modified_request,
+            handler,
+            error=overflow_error,
+            rejected=request.override(messages=truncated_messages),
+        )
+
+        update: dict[str, Any] = {
+            SUMMARIZATION_EVENT_KEY: new_event,
+            SUMMARIZATION_SESSION_ID_KEY: session_id,
+        }
+        if new_state_tail:
+            update["messages"] = list(new_state_tail)
 
         # Return ExtendedModelResponse with state update
         return ExtendedModelResponse(
             model_response=response,
-            command=Command(update={"_summarization_event": new_event}),
+            command=Command(update=update),
         )
 
 
@@ -1100,18 +1810,69 @@ This is the name external callers should import and reference.
 
 def create_summarization_middleware(
     model: BaseChatModel,
-    backend: BACKEND_TYPES,
+    backend: BackendProtocol,
+    *,
+    summary_prompt: str = DEEPAGENTS_DEFAULT_SUMMARY_PROMPT,
+    trim_tokens_to_summarize: int | None = None,
+    token_counter: TokenCounter = count_tokens_approximately,
+    summarizer: Summarizer | None = None,
 ) -> _DeepAgentsSummarizationMiddleware:
-    """Create a `SummarizationMiddleware` with model-aware defaults.
+    """Create a Deep Agents `SummarizationMiddleware` with model-aware defaults.
 
-    Computes trigger, keep, and truncation settings from the model's profile
-    (or uses fixed-token fallbacks) and returns a configured middleware.
+    ## Why this exists in `deepagents`
+
+    The Deep Agents `SummarizationMiddleware` wraps
+    `langchain.agents.middleware.SummarizationMiddleware` to add behavior
+    long-running, file-aware agents need. Prefer LangChain's middleware
+    directly if none of the below apply:
+
+    - **Backend offload of evicted history.** Evicted messages are appended
+        to `/conversation_history/{session_id}.md` (default path) on the
+        configured backend before the summary replaces them, and the
+        summary embeds that path so the agent can re-open it via
+        `read_file` when `FilesystemMiddleware` is registered. LangChain
+        drops evicted messages with no recovery path.
+    - **Pre-summarization tool-arg truncation.** Large `write_file` /
+        `edit_file` arguments in older messages are clipped at a lower
+        threshold than full compaction, often reclaiming enough context
+        to skip summarizing. Configured via `truncate_args_settings`.
+    - **`ContextOverflowError` fallback.** On a provider over-budget
+        rejection the middleware summarizes and retries instead of
+        bubbling the error up.
+    - **Non-mutating message state.** Summarization is tracked in a
+        private `_summarization_event` field via `wrap_model_call`,
+        leaving `state["messages"]` intact. LangChain rewrites it with
+        `RemoveMessage(id=REMOVE_ALL_MESSAGES)` from `before_model`.
+        Preserving the raw log enables replay, evals, and shared state
+        with `SummarizationToolMiddleware`'s `compact_conversation` tool.
+    - **Auto-selected trigger/keep thresholds.** LangChain accepts
+        fraction-based thresholds but defaults to `trigger=None` and
+        `keep=("messages", 20)`. This factory picks fraction-based
+        defaults from the model's profile when `max_input_tokens` is
+        exposed, falling back to fixed counts otherwise — see
+        [`compute_summarization_defaults`][deepagents.middleware.summarization.compute_summarization_defaults].
 
     Args:
         model: Resolved `BaseChatModel` instance.
 
             Use `resolve_model()` first if needed for model strings.
-        backend: Backend instance or factory for persisting conversation history.
+        backend: Backend instance for persisting conversation history.
+        summary_prompt: Prompt template for generating summaries.
+        trim_tokens_to_summarize: Token budget for the older history sent to the
+            summarization model, measured by `token_counter`. Applied after
+            setting aside the recent messages selected by the retention policy.
+
+            For example, `4000` summarizes up to 4,000 tokens from the end of
+            that older history; earlier history excluded by trimming is not
+            summarized. This does not set the summarization trigger or limit
+            the generated summary's length.
+
+            `None` skips this trimming and summarizes all selected history.
+            This factory defaults to `None`, unlike constructing
+            `SummarizationMiddleware` directly, which defaults to 4000.
+        token_counter: Function to count tokens in messages.
+        summarizer: Optional replacement for the summarization model call. See
+            `SummarizationMiddleware`.
 
     Returns:
         Configured `SummarizationMiddleware` instance.
@@ -1131,24 +1892,51 @@ def create_summarization_middleware(
         backend=backend,
         trigger=defaults["trigger"],
         keep=defaults["keep"],
-        trim_tokens_to_summarize=None,
+        token_counter=token_counter,
+        summary_prompt=summary_prompt,
+        trim_tokens_to_summarize=trim_tokens_to_summarize,
         truncate_args_settings=defaults["truncate_args_settings"],
+        summarizer=summarizer,
     )
 
 
 def create_summarization_tool_middleware(
     model: str | BaseChatModel,
-    backend: BACKEND_TYPES,
+    backend: BackendProtocol,
+    *,
+    system_prompt: str | None = None,
 ) -> SummarizationToolMiddleware:
     """Create a `SummarizationToolMiddleware` with model-aware defaults.
 
-    Convenience factory that creates a `SummarizationMiddleware` via
-    `create_summarization_middleware` and wraps it in a
-    `SummarizationToolMiddleware`.
+    Convenience factory: builds a `SummarizationMiddleware` via
+    [`create_summarization_middleware`][deepagents.middleware.summarization.create_summarization_middleware]
+    and wraps it in a `SummarizationToolMiddleware`. Saves a step and
+    accepts a model string.
+
+    ## What you get
+
+    Only the tool layer is registered — the wrapped `SummarizationMiddleware`
+    is the engine the tool calls into, not a middleware that runs on its
+    own. The agent gains:
+
+    - A `compact_conversation` tool to compact its own context window
+    - An eligibility gate at ~50% of the auto-summarization trigger so
+        the tool refuses to compact too early
+
+    ## Pairing with auto-summarization
+
+    For *automatic* summarization at the trigger threshold, also register
+    a `SummarizationMiddleware`. `create_deep_agent` adds one by default,
+    so dropping `create_summarization_tool_middleware(...)` into its
+    `middleware=[...]` gives you both layers; they share state via the
+    `_summarization_event` key.
 
     Args:
-        model: Chat model instance or model string (e.g., `"anthropic:claude-sonnet-4-6"`).
-        backend: Backend instance or factory for persisting conversation history.
+        model: Chat model instance, or a model string
+            (e.g. `"anthropic:claude-sonnet-4-6"`).
+        backend: Backend instance for persisting conversation history.
+        system_prompt: System-prompt fragment nudging the model to call
+            `compact_conversation`. Pass `None` to skip appending the nudge.
 
     Returns:
         Configured `SummarizationToolMiddleware` instance.
@@ -1163,11 +1951,11 @@ def create_summarization_tool_middleware(
             create_summarization_tool_middleware,
         )
 
-        model = "openai:gpt-5.4"
+        model = "openai:gpt-5.5"
         agent = create_deep_agent(
             model=model,
             middleware=[
-                create_summarization_tool_middleware(model, StateBackend),
+                create_summarization_tool_middleware(model, StateBackend()),
             ],
         )
         ```
@@ -1184,7 +1972,7 @@ def create_summarization_tool_middleware(
 
         sandbox = Daytona().create()
         backend = DaytonaSandbox(sandbox=sandbox)
-        model = "openai:gpt-5.4"
+        model = "openai:gpt-5.5"
         agent = create_deep_agent(
             model=model,
             backend=backend,
@@ -1199,7 +1987,7 @@ def create_summarization_tool_middleware(
     if isinstance(model, str):
         model = resolve_model(model)
     summarization = create_summarization_middleware(model, backend)
-    return SummarizationToolMiddleware(summarization)
+    return SummarizationToolMiddleware(summarization, system_prompt=system_prompt)
 
 
 class SummarizationToolMiddleware(AgentMiddleware):
@@ -1211,7 +1999,7 @@ class SummarizationToolMiddleware(AgentMiddleware):
 
     This middleware never compacts automatically. Compaction only occurs when
     `compact_conversation` is called as a normal tool call (by the model or by
-    an explicit user action, e.g. as implemented in the deepagents-cli).
+    an explicit user action, e.g. as implemented in the deepagents-code CLI).
 
     To avoid compacting too early, compact tool execution is gated by
     `_is_eligible_for_compaction`, which requires reported usage to reach about
@@ -1230,38 +2018,44 @@ class SummarizationToolMiddleware(AgentMiddleware):
             SummarizationToolMiddleware,
         )
 
-        summ = SummarizationMiddleware(model="gpt-4o-mini", backend=backend)
+        summ = SummarizationMiddleware(model="gpt-5.5", backend=backend)
         tool_mw = SummarizationToolMiddleware(summ)
 
         agent = create_deep_agent(middleware=[summ, tool_mw])
         ```
     """
 
+    trace_policy = TracePolicy(process_inputs=omit_payload)
+    """Omit hook inputs from traces by default; set a `TracePolicy` to override."""
+
     state_schema = SummarizationState
 
-    def __init__(self, summarization: _DeepAgentsSummarizationMiddleware) -> None:
+    def __init__(
+        self,
+        summarization: _DeepAgentsSummarizationMiddleware,
+        *,
+        system_prompt: str | None = None,
+    ) -> None:
         """Initialize with a reference to the summarization middleware.
 
         Args:
             summarization: The `SummarizationMiddleware` instance whose
                 summarization engine this tool will delegate to.
+            system_prompt: System-prompt fragment nudging the model to call
+                `compact_conversation`. Pass `None` to skip appending the
+                nudge entirely (the tool remains registered and callable
+                but the model is unlikely to discover it without an
+                external mention).
+
+        Raises:
+            TypeError: If `system_prompt` is not `str` or `None`.
         """
+        if system_prompt is not None and not isinstance(system_prompt, str):
+            msg = f"system_prompt must be str or None, got {type(system_prompt).__name__}"
+            raise TypeError(msg)
         self._summarization = summarization
+        self.system_prompt = system_prompt
         self.tools: list[BaseTool] = [self._create_compact_tool()]
-
-    def _resolve_backend(self, runtime: ToolRuntime) -> BackendProtocol:
-        """Resolve backend from instance or factory using a `ToolRuntime`.
-
-        Args:
-            runtime: The tool runtime context.
-
-        Returns:
-            Resolved backend instance.
-        """
-        backend = self._summarization._backend
-        if callable(backend):
-            return backend(runtime)  # ty: ignore[call-top-callable]
-        return backend
 
     def _create_compact_tool(self) -> BaseTool:
         """Create the `compact_conversation` structured tool.
@@ -1285,7 +2079,10 @@ class SummarizationToolMiddleware(AgentMiddleware):
                 "Compact the conversation by summarizing older messages "
                 "into a concise summary. Use this proactively when the "
                 "conversation is getting long to free up context window "
-                "space. This tool takes no arguments."
+                "space. Use it when moving on to a completely new, unrelated "
+                "task, or after finishing synthesis or extraction when the "
+                "previous working context is no longer needed. This tool "
+                "takes no arguments."
             ),
             func=sync_compact,
             coroutine=async_compact,
@@ -1301,6 +2098,7 @@ class SummarizationToolMiddleware(AgentMiddleware):
         file_path: str | None,
         event: SummarizationEvent | None,
         cutoff: int,
+        session_id: str,
     ) -> Command:
         """Build the `Command` result for a successful compact operation.
 
@@ -1311,9 +2109,11 @@ class SummarizationToolMiddleware(AgentMiddleware):
             runtime: The tool runtime context.
             to_summarize: Messages that were summarized.
             summary: The generated summary text.
-            file_path: Backend path where history was offloaded, or ``None``.
-            event: The prior `_summarization_event`, or ``None``.
+            file_path: Backend path where history was offloaded, or `None`.
+            event: The prior `_summarization_event`, or `None`.
             cutoff: The cutoff index within the effective message list.
+            session_id: Id that named the history file, persisted so later
+                turns reuse it.
 
         Returns:
             A `Command` with `_summarization_event` state update and a
@@ -1331,7 +2131,8 @@ class SummarizationToolMiddleware(AgentMiddleware):
 
         return Command(
             update={
-                "_summarization_event": new_event,
+                SUMMARIZATION_EVENT_KEY: new_event,
+                SUMMARIZATION_SESSION_ID_KEY: session_id,
                 "messages": [
                     ToolMessage(
                         content=f"Conversation compacted. Summarized {len(to_summarize)} messages into a concise summary.",
@@ -1389,6 +2190,38 @@ class SummarizationToolMiddleware(AgentMiddleware):
             }
         )
 
+    @staticmethod
+    def _compact_threshold(value: float) -> int:
+        """Return the half-trigger threshold used by the compact tool."""
+        return max(1, int(value * 0.5))
+
+    @staticmethod
+    def _compact_trigger_clause(condition: object) -> Mapping[str, float]:
+        """Normalize old tuple and new dict trigger conditions for compact gating."""
+        if isinstance(condition, Mapping):
+            return cast("Mapping[str, float]", condition)
+        kind, value = cast("tuple[str, float]", condition)
+        return {kind: value}
+
+    def _is_compaction_clause_met(self, clause: Mapping[str, float], messages: list[AnyMessage]) -> bool:
+        """Check whether a normalized compact eligibility clause is met."""
+        lc = self._summarization._lc_helper
+        for kind, value in clause.items():
+            if kind == "messages" and len(messages) < self._compact_threshold(value):
+                return False
+            if kind == "tokens" and not lc._should_summarize_based_on_reported_tokens(messages, self._compact_threshold(value)):
+                return False
+            if kind == "fraction":
+                max_input_tokens = lc._get_profile_limits()
+                if max_input_tokens is None:
+                    return False
+                threshold = self._compact_threshold(max_input_tokens * value)
+                if not lc._should_summarize_based_on_reported_tokens(messages, threshold):
+                    return False
+            if kind not in {"messages", "tokens", "fraction"}:
+                return False
+        return True
+
     def _is_eligible_for_compaction(self, messages: list[AnyMessage]) -> bool:
         """Check if manual compaction is currently allowed.
 
@@ -1397,33 +2230,17 @@ class SummarizationToolMiddleware(AgentMiddleware):
         the configured auto-summarization trigger:
 
         - For `("tokens", N)`, eligibility starts at `0.5 * N`.
+        - For `("messages", N)`, eligibility starts at `0.5 * N` messages.
         - For `("fraction", F)`, eligibility starts at `0.5 * F` of model max
             input tokens.
+        - For dict clauses, all specified thresholds must be met.
 
         Uses reported usage metadata when available.
         """
-        lc = self._summarization._lc_helper
-        trigger_conditions = lc._trigger_conditions
+        trigger_conditions = self._summarization._lc_helper._trigger_clauses
         if not trigger_conditions:
             return False
-
-        for kind, value in trigger_conditions:
-            if kind == "tokens":
-                threshold = int(value * 0.5)
-                if threshold <= 0:
-                    threshold = 1
-                if lc._should_summarize_based_on_reported_tokens(messages, threshold):
-                    return True
-            elif kind == "fraction":
-                max_input_tokens = lc._get_profile_limits()
-                if max_input_tokens is None:
-                    continue
-                threshold = int(max_input_tokens * value * 0.5)
-                if threshold <= 0:
-                    threshold = 1
-                if lc._should_summarize_based_on_reported_tokens(messages, threshold):
-                    return True
-        return False
+        return any(self._is_compaction_clause_met(self._compact_trigger_clause(condition), messages) for condition in trigger_conditions)
 
     def _run_compact(self, runtime: ToolRuntime) -> Command:
         """Synchronous compact implementation called by the compact tool.
@@ -1438,7 +2255,7 @@ class SummarizationToolMiddleware(AgentMiddleware):
         s = self._summarization
         tool_call_id = runtime.tool_call_id or ""
         messages = runtime.state.get("messages", [])
-        event = runtime.state.get("_summarization_event")
+        event = runtime.state.get(SUMMARIZATION_EVENT_KEY)
         effective = s._apply_event_to_messages(messages, event)
 
         if not self._is_eligible_for_compaction(effective):
@@ -1448,16 +2265,16 @@ class SummarizationToolMiddleware(AgentMiddleware):
         if cutoff == 0:
             return self._nothing_to_compact(tool_call_id)
 
+        session_id = s._get_session_id(runtime.state)
         try:
             to_summarize, _ = s._partition_messages(effective, cutoff)
             summary = s._create_summary(to_summarize)
-            backend = self._resolve_backend(runtime)
-            file_path = s._offload_to_backend(backend, to_summarize)
+            file_path = s._offload_to_backend(s._backend, to_summarize, session_id)
         except Exception as exc:  # tool must return a ToolMessage, not raise
             logger.exception("compact_conversation tool failed")
             return self._compact_error(tool_call_id, exc)
 
-        return self._build_compact_result(runtime, to_summarize, summary, file_path, event, cutoff)
+        return self._build_compact_result(runtime, to_summarize, summary, file_path, event, cutoff, session_id)
 
     async def _arun_compact(self, runtime: ToolRuntime) -> Command:
         """Async variant of `_run_compact`. See that method for details.
@@ -1472,7 +2289,7 @@ class SummarizationToolMiddleware(AgentMiddleware):
         s = self._summarization
         tool_call_id = runtime.tool_call_id or ""
         messages = runtime.state.get("messages", [])
-        event = runtime.state.get("_summarization_event")
+        event = runtime.state.get(SUMMARIZATION_EVENT_KEY)
         effective = s._apply_event_to_messages(messages, event)
 
         if not self._is_eligible_for_compaction(effective):
@@ -1482,16 +2299,16 @@ class SummarizationToolMiddleware(AgentMiddleware):
         if cutoff == 0:
             return self._nothing_to_compact(tool_call_id)
 
+        session_id = s._get_session_id(runtime.state)
         try:
             to_summarize, _ = s._partition_messages(effective, cutoff)
             summary = await s._acreate_summary(to_summarize)
-            backend = self._resolve_backend(runtime)
-            file_path = await s._aoffload_to_backend(backend, to_summarize)
+            file_path = await s._aoffload_to_backend(s._backend, to_summarize, session_id)
         except Exception as exc:  # tool must return a ToolMessage, not raise
             logger.exception("compact_conversation tool failed")
             return self._compact_error(tool_call_id, exc)
 
-        return self._build_compact_result(runtime, to_summarize, summary, file_path, event, cutoff)
+        return self._build_compact_result(runtime, to_summarize, summary, file_path, event, cutoff, session_id)
 
     def wrap_model_call(
         self,
@@ -1511,7 +2328,9 @@ class SummarizationToolMiddleware(AgentMiddleware):
         Returns:
             The model response from the handler.
         """
-        new_system_message = append_to_system_message(request.system_message, SUMMARIZATION_SYSTEM_PROMPT)
+        if self.system_prompt is None:
+            return handler(request)
+        new_system_message = append_to_system_message(request.system_message, self.system_prompt)
         return handler(request.override(system_message=new_system_message))
 
     async def awrap_model_call(
@@ -1532,5 +2351,7 @@ class SummarizationToolMiddleware(AgentMiddleware):
         Returns:
             The model response from the handler.
         """
-        new_system_message = append_to_system_message(request.system_message, SUMMARIZATION_SYSTEM_PROMPT)
+        if self.system_prompt is None:
+            return await handler(request)
+        new_system_message = append_to_system_message(request.system_message, self.system_prompt)
         return await handler(request.override(system_message=new_system_message))

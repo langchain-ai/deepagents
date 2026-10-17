@@ -1,0 +1,506 @@
+{
+  "_comment": "Per-task DRBench stratification labels, read from the upstream commit below. Regenerate with `python -m harbor_adapters.drbench.main --refresh-labels`.",
+  "upstream_sha": "0d699ecf6aa96b1de378595b432e9b16a82f0ed9",
+  "labels": {
+    "DR0001": {
+      "difficulty": "easy",
+      "industry": "retail",
+      "domain": "compliance"
+    },
+    "DR0002": {
+      "difficulty": "easy",
+      "industry": "retail",
+      "domain": "sales"
+    },
+    "DR0003": {
+      "difficulty": "medium",
+      "industry": "retail",
+      "domain": "crm"
+    },
+    "DR0004": {
+      "difficulty": "medium",
+      "industry": "retail",
+      "domain": "market_analysis"
+    },
+    "DR0005": {
+      "difficulty": "hard",
+      "industry": "retail",
+      "domain": "csm"
+    },
+    "DR0006": {
+      "difficulty": "easy",
+      "industry": "healthcare",
+      "domain": "compliance"
+    },
+    "DR0007": {
+      "difficulty": "easy",
+      "industry": "healthcare",
+      "domain": "itsm"
+    },
+    "DR0008": {
+      "difficulty": "medium",
+      "industry": "healthcare",
+      "domain": "cybersecurity"
+    },
+    "DR0009": {
+      "difficulty": "medium",
+      "industry": "healthcare",
+      "domain": "crm"
+    },
+    "DR0010": {
+      "difficulty": "hard",
+      "industry": "healthcare",
+      "domain": "marketing"
+    },
+    "DR0011": {
+      "difficulty": "easy",
+      "industry": "automobiles",
+      "domain": "compliance"
+    },
+    "DR0012": {
+      "difficulty": "easy",
+      "industry": "automobiles",
+      "domain": "quality_assurance"
+    },
+    "DR0013": {
+      "difficulty": "medium",
+      "industry": "automobiles",
+      "domain": "cybersecurity"
+    },
+    "DR0014": {
+      "difficulty": "medium",
+      "industry": "automobiles",
+      "domain": "research"
+    },
+    "DR0015": {
+      "difficulty": "hard",
+      "industry": "automobiles",
+      "domain": "csm"
+    },
+    "DR0016": {
+      "difficulty": "easy",
+      "industry": "retail",
+      "domain": "compliance"
+    },
+    "DR0017": {
+      "difficulty": "easy",
+      "industry": "retail",
+      "domain": "market analysis"
+    },
+    "DR0018": {
+      "difficulty": "easy",
+      "industry": "retail",
+      "domain": "market analysis"
+    },
+    "DR0019": {
+      "difficulty": "easy",
+      "industry": "retail",
+      "domain": "market analysis"
+    },
+    "DR0020": {
+      "difficulty": "medium",
+      "industry": "retail",
+      "domain": "sales"
+    },
+    "DR0021": {
+      "difficulty": "medium",
+      "industry": "retail",
+      "domain": "itsm"
+    },
+    "DR0022": {
+      "difficulty": "medium",
+      "industry": "retail",
+      "domain": "itsm"
+    },
+    "DR0023": {
+      "difficulty": "medium",
+      "industry": "retail",
+      "domain": "itsm"
+    },
+    "DR0024": {
+      "difficulty": "medium",
+      "industry": "virtual/remote healthcare",
+      "domain": "compliance"
+    },
+    "DR0025": {
+      "difficulty": "hard",
+      "industry": "retail",
+      "domain": "csm"
+    },
+    "DR0026": {
+      "difficulty": "hard",
+      "industry": "retail",
+      "domain": "csm"
+    },
+    "DR0027": {
+      "difficulty": "hard",
+      "industry": "retail",
+      "domain": "csm"
+    },
+    "DR0028": {
+      "difficulty": "medium",
+      "industry": "virtual/remote healthcare",
+      "domain": "marketing"
+    },
+    "DR0029": {
+      "difficulty": "hard",
+      "industry": "retail",
+      "domain": "knowledge management"
+    },
+    "DR0030": {
+      "difficulty": "hard",
+      "industry": "retail",
+      "domain": "knowledge management"
+    },
+    "DR0031": {
+      "difficulty": "hard",
+      "industry": "retail",
+      "domain": "knowledge management"
+    },
+    "DR0032": {
+      "difficulty": "easy",
+      "industry": "automotive -- electric vehicles",
+      "domain": "compliance"
+    },
+    "DR0033": {
+      "difficulty": "hard",
+      "industry": "retail",
+      "domain": "cybersecurity"
+    },
+    "DR0034": {
+      "difficulty": "hard",
+      "industry": "retail",
+      "domain": "cybersecurity"
+    },
+    "DR0035": {
+      "difficulty": "hard",
+      "industry": "retail",
+      "domain": "cybersecurity"
+    },
+    "DR0036": {
+      "difficulty": "medium",
+      "industry": "automotive -- electric vehicles",
+      "domain": "csm"
+    },
+    "DR0037": {
+      "difficulty": "medium",
+      "industry": "retail",
+      "domain": "public relations"
+    },
+    "DR0038": {
+      "difficulty": "medium",
+      "industry": "retail",
+      "domain": "public relations"
+    },
+    "DR0039": {
+      "difficulty": "medium",
+      "industry": "retail",
+      "domain": "public relations"
+    },
+    "DR0040": {
+      "difficulty": "hard",
+      "industry": "virtual/remote healthcare",
+      "domain": "crm"
+    },
+    "DR0041": {
+      "difficulty": "hard",
+      "industry": "virtual/remote healthcare",
+      "domain": "crm"
+    },
+    "DR0042": {
+      "difficulty": "hard",
+      "industry": "virtual/remote healthcare",
+      "domain": "crm"
+    },
+    "DR0043": {
+      "difficulty": "hard",
+      "industry": "virtual/remote healthcare",
+      "domain": "market analysis"
+    },
+    "DR0044": {
+      "difficulty": "hard",
+      "industry": "virtual/remote healthcare",
+      "domain": "market analysis"
+    },
+    "DR0045": {
+      "difficulty": "hard",
+      "industry": "virtual/remote healthcare",
+      "domain": "market analysis"
+    },
+    "DR0046": {
+      "difficulty": "hard",
+      "industry": "virtual/remote healthcare",
+      "domain": "itsm"
+    },
+    "DR0047": {
+      "difficulty": "hard",
+      "industry": "virtual/remote healthcare",
+      "domain": "itsm"
+    },
+    "DR0048": {
+      "difficulty": "hard",
+      "industry": "virtual/remote healthcare",
+      "domain": "itsm"
+    },
+    "DR0049": {
+      "difficulty": "hard",
+      "industry": "virtual/remote healthcare",
+      "domain": "csm"
+    },
+    "DR0050": {
+      "difficulty": "hard",
+      "industry": "virtual/remote healthcare",
+      "domain": "csm"
+    },
+    "DR0051": {
+      "difficulty": "hard",
+      "industry": "virtual/remote healthcare",
+      "domain": "csm"
+    },
+    "DR0052": {
+      "difficulty": "easy",
+      "industry": "virtual/remote healthcare",
+      "domain": "knowledge management"
+    },
+    "DR0053": {
+      "difficulty": "easy",
+      "industry": "virtual/remote healthcare",
+      "domain": "knowledge management"
+    },
+    "DR0054": {
+      "difficulty": "easy",
+      "industry": "virtual/remote healthcare",
+      "domain": "knowledge management"
+    },
+    "DR0055": {
+      "difficulty": "easy",
+      "industry": "virtual/remote healthcare",
+      "domain": "sales"
+    },
+    "DR0056": {
+      "difficulty": "easy",
+      "industry": "virtual/remote healthcare",
+      "domain": "sales"
+    },
+    "DR0057": {
+      "difficulty": "easy",
+      "industry": "virtual/remote healthcare",
+      "domain": "sales"
+    },
+    "DR0058": {
+      "difficulty": "hard",
+      "industry": "virtual/remote healthcare",
+      "domain": "cybersecurity"
+    },
+    "DR0059": {
+      "difficulty": "hard",
+      "industry": "virtual/remote healthcare",
+      "domain": "cybersecurity"
+    },
+    "DR0060": {
+      "difficulty": "hard",
+      "industry": "virtual/remote healthcare",
+      "domain": "cybersecurity"
+    },
+    "DR0061": {
+      "difficulty": "hard",
+      "industry": "automotive -- electric vehicles",
+      "domain": "crm"
+    },
+    "DR0062": {
+      "difficulty": "hard",
+      "industry": "automotive -- electric vehicles",
+      "domain": "crm"
+    },
+    "DR0063": {
+      "difficulty": "hard",
+      "industry": "automotive -- electric vehicles",
+      "domain": "crm"
+    },
+    "DR0064": {
+      "difficulty": "hard",
+      "industry": "automotive -- electric vehicles",
+      "domain": "sales"
+    },
+    "DR0065": {
+      "difficulty": "hard",
+      "industry": "automotive -- electric vehicles",
+      "domain": "sales"
+    },
+    "DR0066": {
+      "difficulty": "hard",
+      "industry": "automotive -- electric vehicles",
+      "domain": "sales"
+    },
+    "DR0067": {
+      "difficulty": "easy",
+      "industry": "automotive -- electric vehicles",
+      "domain": "research"
+    },
+    "DR0068": {
+      "difficulty": "easy",
+      "industry": "automotive -- electric vehicles",
+      "domain": "research"
+    },
+    "DR0069": {
+      "difficulty": "easy",
+      "industry": "automotive -- electric vehicles",
+      "domain": "research"
+    },
+    "DR0070": {
+      "difficulty": "medium",
+      "industry": "automotive -- electric vehicles",
+      "domain": "cybersecurity"
+    },
+    "DR0071": {
+      "difficulty": "medium",
+      "industry": "automotive -- electric vehicles",
+      "domain": "cybersecurity"
+    },
+    "DR0072": {
+      "difficulty": "medium",
+      "industry": "automotive -- electric vehicles",
+      "domain": "cybersecurity"
+    },
+    "DR0073": {
+      "difficulty": "medium",
+      "industry": "automotive -- electric vehicles",
+      "domain": "quality assurance"
+    },
+    "DR0074": {
+      "difficulty": "medium",
+      "industry": "automotive -- electric vehicles",
+      "domain": "quality assurance"
+    },
+    "DR0075": {
+      "difficulty": "medium",
+      "industry": "automotive -- electric vehicles",
+      "domain": "quality assurance"
+    },
+    "DR0076": {
+      "difficulty": "hard",
+      "industry": "automotive -- electric vehicles",
+      "domain": "asset management"
+    },
+    "DR0077": {
+      "difficulty": "hard",
+      "industry": "automotive -- electric vehicles",
+      "domain": "asset management"
+    },
+    "DR0078": {
+      "difficulty": "hard",
+      "industry": "automotive -- electric vehicles",
+      "domain": "asset management"
+    },
+    "DR0079": {
+      "difficulty": "hard",
+      "industry": "automotive -- electric vehicles",
+      "domain": "market analysis"
+    },
+    "DR0080": {
+      "difficulty": "hard",
+      "industry": "automotive -- electric vehicles",
+      "domain": "market analysis"
+    },
+    "DR0081": {
+      "difficulty": "hard",
+      "industry": "automotive -- electric vehicles",
+      "domain": "market analysis"
+    },
+    "DR0082": {
+      "difficulty": "hard",
+      "industry": "automotive -- electric vehicles",
+      "domain": "retail"
+    },
+    "DR0083": {
+      "difficulty": "medium",
+      "industry": "automotive -- electric vehicles",
+      "domain": "virtual/remote healthcare"
+    },
+    "DR0084": {
+      "difficulty": "hard",
+      "industry": "automotive -- electric vehicles",
+      "domain": "automotive -- electric vehicles"
+    },
+    "DR0085": {
+      "difficulty": "hard",
+      "industry": "automotive -- electric vehicles",
+      "domain": "automotive -- electric vehicles"
+    },
+    "DR0086": {
+      "difficulty": "hard",
+      "industry": "virtual/remote healthcare",
+      "domain": "it service management"
+    },
+    "DR0087": {
+      "difficulty": "hard",
+      "industry": "retail",
+      "domain": "sales"
+    },
+    "DR0088": {
+      "difficulty": "hard",
+      "industry": "virtual/remote healthcare",
+      "domain": "cybersecurity"
+    },
+    "DR0089": {
+      "difficulty": "hard",
+      "industry": "automotive \u2013 electric vehicles",
+      "domain": "quality assurance"
+    },
+    "DR0090": {
+      "difficulty": "hard",
+      "industry": "retail",
+      "domain": "sales"
+    },
+    "DR0091": {
+      "difficulty": "hard",
+      "industry": "retail",
+      "domain": "customer relationship management"
+    },
+    "DR0092": {
+      "difficulty": "hard",
+      "industry": "virtual/remote healthcare",
+      "domain": "compliance"
+    },
+    "DR0093": {
+      "difficulty": "hard",
+      "industry": "virtual/remote healthcare",
+      "domain": "compliance"
+    },
+    "DR0094": {
+      "difficulty": "hard",
+      "industry": "virtual/remote healthcare",
+      "domain": "cybersecurity"
+    },
+    "DR0095": {
+      "difficulty": "hard",
+      "industry": "retail",
+      "domain": "customer relationship management"
+    },
+    "DR0096": {
+      "difficulty": "hard",
+      "industry": "retail",
+      "domain": "sales"
+    },
+    "DR0097": {
+      "difficulty": "hard",
+      "industry": "virtual/remote healthcare",
+      "domain": "it service management"
+    },
+    "DR0098": {
+      "difficulty": "hard",
+      "industry": "retail",
+      "domain": "sales"
+    },
+    "DR0099": {
+      "difficulty": "hard",
+      "industry": "automotive \u2013 electric vehicles",
+      "domain": "compliance"
+    },
+    "DR0100": {
+      "difficulty": "hard",
+      "industry": "virtual/remote healthcare",
+      "domain": "it service management"
+    }
+  }
+}

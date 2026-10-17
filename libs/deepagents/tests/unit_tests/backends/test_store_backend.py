@@ -1,17 +1,13 @@
-import warnings
-from dataclasses import dataclass
-from types import SimpleNamespace
 from typing import Any, Never
-from unittest.mock import patch
 
 import pytest
-from langchain.tools import ToolRuntime
 from langchain_core.messages import ToolMessage
 from langgraph.runtime import Runtime
+from langgraph.store.base import PutOp
 from langgraph.store.memory import InMemoryStore
 
 from deepagents.backends.protocol import EditResult, ReadResult, WriteResult
-from deepagents.backends.store import BackendContext, StoreBackend, _NamespaceRuntimeCompat, _validate_namespace
+from deepagents.backends.store import StoreBackend, _validate_namespace
 from deepagents.middleware.filesystem import FilesystemMiddleware
 
 
@@ -41,15 +37,193 @@ def test_store_backend_crud_and_search():
     matches = be.grep("hi", path="/").matches
     assert matches is not None and any(m["path"] == "/docs/readme.md" for m in matches)
 
-    # glob
+    # glob: bare `*.md` and `**/*.md` both match nested files (shared contract)
     g = be.glob("*.md", path="/").matches
-    assert len(g) == 0
+    assert any(i["path"] == "/docs/readme.md" for i in g)
 
     g2 = be.glob("**/*.md", path="/").matches
     assert any(i["path"] == "/docs/readme.md" for i in g2)
+    assert {i["path"] for i in g} == {i["path"] for i in g2}
 
 
-def test_store_backend_write_rejects_existing_file():
+def test_store_backend_read_surfaces_pagination_metadata():
+    """`StoreBackend.read` propagates the pagination metadata from `slice_read_response`."""
+    mem_store = InMemoryStore()
+    be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
+    be.write("/notes.txt", "one\ntwo\nthree\nfour\nfive")
+
+    result = be.read("/notes.txt", offset=1, limit=2)
+
+    assert result.error is None
+    assert result.total_lines == 5
+    assert result.start_line == 2
+    assert result.end_line == 3
+    assert result.next_offset == 3
+
+
+@pytest.mark.parametrize(("offset", "limit"), [(0, 0), (0, -3), (-1, 0)])
+def test_store_backend_read_non_positive_limit_returns_empty_read(offset: int, limit: int):
+    """`StoreBackend.read` inherits the shared clamp rather than raising."""
+    mem_store = InMemoryStore()
+    be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
+    be.write("/notes.txt", "one\ntwo\nthree")
+
+    result = be.read("/notes.txt", offset=offset, limit=limit)
+
+    assert result.error is None
+    assert result.file_data is not None
+    assert result.file_data["content"] == ""
+    assert result.start_line is None
+
+
+def test_store_backend_read_negative_offset_starts_at_first_line():
+    """A negative offset is clamped to the start of the file instead of erroring."""
+    mem_store = InMemoryStore()
+    be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
+    be.write("/notes.txt", "one\ntwo\nthree")
+
+    result = be.read("/notes.txt", offset=-1, limit=2)
+
+    assert result.error is None
+    assert result.start_line == 1
+    assert result.end_line == 2
+
+
+def test_store_backend_reads_mkv_as_binary_without_slicing():
+    """`.mkv` reads bypass text line-slicing so binary bytes are returned intact.
+
+    Regression: `.mkv` is not in the shared multimodal map, so a text
+    classification here would run `slice_read_response` and raise a spurious
+    "line offset exceeds file length" error for any offset past the content.
+    """
+    mem_store = InMemoryStore()
+    be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
+    be.write("/clip.mkv", "single line of bytes")
+
+    # An offset past the 1-line content would raise a text-slice error if `.mkv`
+    # were misclassified as text; the binary path returns the file unsliced.
+    read_result = be.read("/clip.mkv", offset=5, limit=10)
+
+    assert isinstance(read_result, ReadResult)
+    assert read_result.error is None
+    assert read_result.file_data is not None
+    assert read_result.file_data["content"] == "single line of bytes"
+
+
+def test_store_backend_reads_legacy_list_content() -> None:
+    mem_store = InMemoryStore()
+    be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
+    legacy_content = ["hello", "world", ""]
+    mem_store.put(
+        ("filesystem",),
+        "/legacy.txt",
+        {
+            "content": legacy_content,
+            "created_at": "2025-01-01T00:00:00+00:00",
+            "modified_at": "2025-01-02T00:00:00+00:00",
+        },
+    )
+
+    read_result = be.read("/legacy.txt")
+    assert read_result.file_data is not None
+    assert read_result.file_data["content"] == "hello\nworld\n"
+    assert read_result.file_data["encoding"] == "utf-8"
+
+    listing = be.ls("/").entries
+    assert listing is not None
+    assert listing[0]["size"] == len("hello\nworld\n")
+
+    matches = be.grep("world", path="/").matches
+    assert matches is not None
+    assert matches[0]["text"] == "world"
+
+    glob_matches = be.glob("*.txt", path="/").matches
+    assert glob_matches is not None
+    assert glob_matches[0]["size"] == len("hello\nworld\n")
+
+    download = be.download_files(["/legacy.txt"])[0]
+    assert download.content == b"hello\nworld\n"
+
+    stored = mem_store.get(("filesystem",), "/legacy.txt")
+    assert stored is not None
+    assert stored.value["content"] == legacy_content
+    assert "encoding" not in stored.value
+
+
+def test_store_backend_reports_utf8_byte_sizes() -> None:
+    mem_store = InMemoryStore()
+    be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
+    content = "hello 😀 €"
+    be.write("/unicode.txt", content)
+    expected_size = len(content.encode("utf-8"))
+
+    listing = be.ls("/").entries
+    assert listing is not None
+    assert listing[0]["size"] == expected_size
+
+    matches = be.glob("*.txt", path="/").matches
+    assert matches is not None
+    assert matches[0]["size"] == expected_size
+
+
+def test_store_backend_rejects_legacy_lists_with_non_string_items() -> None:
+    mem_store = InMemoryStore()
+    be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
+    mem_store.put(("filesystem",), "/invalid.txt", {"content": ["hello", 1]})
+
+    with pytest.raises(TypeError, match="got list"):
+        be.read("/invalid.txt")
+
+
+def test_store_backend_write_migrates_legacy_list_content() -> None:
+    mem_store = InMemoryStore()
+    be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
+    created_at = "2025-01-01T00:00:00+00:00"
+    mem_store.put(
+        ("filesystem",),
+        "/legacy.txt",
+        {"content": ["hello", "world"], "created_at": created_at},
+    )
+
+    result = be.write("/legacy.txt", "replacement")
+
+    assert result.error is None
+    stored = mem_store.get(("filesystem",), "/legacy.txt")
+    assert stored is not None
+    assert stored.value["content"] == "replacement"
+    assert stored.value["encoding"] == "utf-8"
+    assert stored.value["created_at"] == created_at
+
+
+def test_store_backend_edit_migrates_legacy_list_content() -> None:
+    mem_store = InMemoryStore()
+    be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
+    mem_store.put(("filesystem",), "/legacy.txt", {"content": ["hello", "world"]})
+
+    result = be.edit("/legacy.txt", "world", "there")
+
+    assert result.error is None
+    stored = mem_store.get(("filesystem",), "/legacy.txt")
+    assert stored is not None
+    assert stored.value["content"] == "hello\nthere"
+    assert stored.value["encoding"] == "utf-8"
+
+
+def test_store_backend_edit_empty_old_string_returns_error() -> None:
+    mem_store = InMemoryStore()
+    be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
+    mem_store.put(("filesystem",), "/legacy.txt", {"content": ["hello", "world"]})
+
+    result = be.edit("/legacy.txt", "", "there")
+
+    assert result.error is not None
+    assert "old_string cannot be empty" in result.error
+    stored = mem_store.get(("filesystem",), "/legacy.txt")
+    assert stored is not None
+    assert stored.value["content"] == ["hello", "world"]
+
+
+def test_store_backend_write_overwrites_existing_file():
     mem_store = InMemoryStore()
     be = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))
 
@@ -57,16 +231,14 @@ def test_store_backend_write_rejects_existing_file():
     result = be.write("/charmander.txt", "Hello world")
     assert result.error is None
 
-    # Attempt to overwrite — should fail
+    # Overwrite should succeed
     result = be.write("/charmander.txt", "New content")
-    assert result.error is not None
-    assert "Cannot write" in result.error
-    assert "already exists" in result.error
+    assert result.error is None
 
-    # Original content preserved
+    # New content visible
     read_result = be.read("/charmander.txt")
     assert read_result.file_data is not None
-    assert "Hello world" in read_result.file_data["content"]
+    assert "New content" in read_result.file_data["content"]
 
 
 def test_store_backend_ls_nested_directories():
@@ -140,26 +312,17 @@ def test_store_backend_ls_trailing_slash():
     assert [fi["path"] for fi in listing1] == [fi["path"] for fi in listing2]
 
 
-@pytest.mark.parametrize("file_format", ["v1", "v2"])
-def test_store_backend_intercept_large_tool_result(file_format):
+def test_store_backend_intercept_large_tool_result():
     """Test that StoreBackend properly handles large tool result interception."""
     mem_store = InMemoryStore()
     middleware = FilesystemMiddleware(
-        backend=StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",), file_format=file_format),
+        backend=StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",)),
         tool_token_limit_before_evict=1000,
     )
 
     large_content = "y" * 5000
     tool_message = ToolMessage(content=large_content, tool_call_id="test_456")
-    rt = ToolRuntime(
-        state={"messages": []},
-        context=None,
-        tool_call_id="t2",
-        store=mem_store,
-        stream_writer=lambda _: None,
-        config={},
-    )
-    result = middleware._intercept_large_tool_result(tool_message, rt)
+    result = middleware._intercept_large_tool_result(tool_message)
 
     assert isinstance(result, ToolMessage)
     assert "Tool result too large" in result.content
@@ -167,16 +330,7 @@ def test_store_backend_intercept_large_tool_result(file_format):
 
     stored_content = mem_store.get(("filesystem",), "/large_tool_results/test_456")
     assert stored_content is not None
-    expected = [large_content] if file_format == "v1" else large_content
-    assert stored_content.value["content"] == expected
-
-
-@dataclass
-class UserContext:
-    """Simple context object for testing."""
-
-    user_id: str
-    workspace_id: str | None = None
+    assert stored_content.value["content"] == large_content
 
 
 def test_store_backend_namespace_user_scoped() -> None:
@@ -263,23 +417,38 @@ def test_store_backend_namespace_error_handling() -> None:
         be.write("/test.txt", "content")
 
 
-def test_store_backend_namespace_legacy_mode() -> None:
-    """Test that legacy mode still works when no namespace is provided, but emits deprecation warning."""
+def test_store_backend_namespace_is_required() -> None:
+    """`namespace` is a required keyword-only argument."""
     mem_store = InMemoryStore()
-    be = StoreBackend(store=mem_store)  # No namespace - uses legacy mode
+    with pytest.raises(TypeError):
+        StoreBackend(store=mem_store)  # type: ignore[call-arg]
 
-    # Should emit deprecation warning
-    with warnings.catch_warnings(record=True) as w:
-        warnings.simplefilter("always")
-        be.write("/legacy.txt", "legacy content")
-        assert len(w) == 1
-        assert issubclass(w[0].category, DeprecationWarning)
-        assert "namespace" in str(w[0].message)
 
-    # Should be in default namespace (no assistant_id in context config)
-    items = mem_store.search(("filesystem",))
-    assert len(items) == 1
-    assert items[0].key == "/legacy.txt"
+def test_store_backend_runtime_reading_factory_outside_graph() -> None:
+    """A factory that reads the runtime outside a graph raises a clear error.
+
+    `get_runtime()` fails outside graph execution, so the factory receives
+    `None`. A factory that reads runtime attributes should surface an
+    actionable `RuntimeError` rather than an opaque `AttributeError`.
+    """
+    mem_store = InMemoryStore()
+    be = StoreBackend(
+        store=mem_store,
+        namespace=lambda rt: (rt.server_info.user.identity, "filesystem"),
+    )
+
+    with pytest.raises(RuntimeError, match="outside a LangGraph graph execution"):
+        be.write("/test.txt", "content")
+
+
+def test_store_backend_arg_ignoring_factory_works_outside_graph() -> None:
+    """A factory that ignores its argument still works outside a graph."""
+    mem_store = InMemoryStore()
+    be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
+
+    result = be.write("/test.txt", "content")
+    assert result.error is None
+    assert mem_store.get(("filesystem",), "/test.txt") is not None
 
 
 def test_store_backend_namespace_with_context() -> None:
@@ -298,104 +467,6 @@ def test_store_backend_namespace_with_context() -> None:
     items = mem_store.search(("threads", "ctx-user"))
     assert len(items) == 1
     assert items[0].key == "/test.txt"
-
-
-# --- Backwards compatibility tests for _NamespaceRuntimeCompat ---
-
-
-def test_compat_wrapper_old_style_runtime_access_warns() -> None:
-    """Old-style factories accessing .runtime get a deprecation warning."""
-    compat = _NamespaceRuntimeCompat(runtime=None)
-
-    with warnings.catch_warnings(record=True) as w:
-        warnings.simplefilter("always")
-        result = compat.runtime
-        assert result is None
-        assert len(w) == 1
-        assert issubclass(w[0].category, DeprecationWarning)
-        assert ".runtime" in str(w[0].message)
-        assert "v0.7" in str(w[0].message)
-
-
-def test_compat_wrapper_old_style_state_access_warns() -> None:
-    """Old-style factories accessing .state get a deprecation warning."""
-    compat = _NamespaceRuntimeCompat(runtime=None, state={"messages": []})
-
-    with warnings.catch_warnings(record=True) as w:
-        warnings.simplefilter("always")
-        result = compat.state
-        assert result == {"messages": []}
-        assert len(w) == 1
-        assert issubclass(w[0].category, DeprecationWarning)
-        assert ".state" in str(w[0].message)
-        assert "v0.7" in str(w[0].message)
-
-
-def test_compat_wrapper_proxies_runtime_attrs() -> None:
-    """New-style factories can access Runtime attributes directly through the wrapper."""
-
-    @dataclass
-    class Ctx:
-        user_id: str
-
-    rt = Runtime(context=Ctx(user_id="alice"))
-    compat = _NamespaceRuntimeCompat(runtime=rt)
-
-    # New-style access: no warning, proxied to Runtime
-    with warnings.catch_warnings(record=True) as w:
-        warnings.simplefilter("always")
-        assert compat.context.user_id == "alice"  # type: ignore[union-attr]
-        assert compat.store is None  # type: ignore[union-attr]
-        # No deprecation warnings for direct Runtime attr access
-        assert len(w) == 0
-
-
-def test_compat_wrapper_old_style_factory_end_to_end() -> None:
-    """An old-style namespace factory using ctx.runtime.context still works."""
-
-    @dataclass
-    class Ctx:
-        user_id: str
-
-    rt = Runtime(context=Ctx(user_id="bob"))
-    compat = _NamespaceRuntimeCompat(runtime=rt)
-
-    # Old-style factory
-    def old_factory(ctx: BackendContext) -> tuple[str, ...]:  # type: ignore[type-arg]
-        return (ctx.runtime.context.user_id, "filesystem")  # type: ignore[union-attr]
-
-    with warnings.catch_warnings(record=True) as w:
-        warnings.simplefilter("always")
-        result = old_factory(compat)  # type: ignore[arg-type]
-        assert result == ("bob", "filesystem")
-        assert len(w) == 1  # one warning from .runtime access
-
-
-def test_compat_wrapper_new_style_factory_end_to_end() -> None:
-    """A new-style namespace factory using rt.context works without warnings."""
-    rt = Runtime(
-        context=None,
-        server_info=SimpleNamespace(user=SimpleNamespace(identity="carol")),  # type: ignore[arg-type]
-    )
-    compat = _NamespaceRuntimeCompat(runtime=rt)
-
-    # New-style factory
-    def new_factory(rt: Runtime) -> tuple[str, ...]:  # type: ignore[type-arg]
-        return (rt.server_info.user.identity, "filesystem")
-
-    with warnings.catch_warnings(record=True) as w:
-        warnings.simplefilter("always")
-        result = new_factory(compat)  # type: ignore[arg-type]
-        assert result == ("carol", "filesystem")
-        assert len(w) == 0  # no warnings
-
-
-def test_compat_wrapper_no_runtime_raises_on_attr_access() -> None:
-    """Accessing Runtime attrs when runtime is None raises AttributeError."""
-    compat = _NamespaceRuntimeCompat(runtime=None)
-
-    with pytest.raises(AttributeError, match="running outside graph execution"):
-        _ = compat.context  # type: ignore[union-attr]
 
 
 @pytest.mark.parametrize(
@@ -497,20 +568,194 @@ def test_store_backend_rejects_wildcard_namespace() -> None:
         be.write("/test.txt", "content")
 
 
-def test_store_backend_legacy_path_rejects_malicious_assistant_id() -> None:
-    """Ensure the legacy namespace path validates assistant_id from config metadata.
+def test_store_backend_delete() -> None:
+    mem_store = InMemoryStore()
+    be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
 
-    A wildcard or otherwise malformed assistant_id must raise ValueError and
-    never reach the store, closing the injection gap in _get_namespace_legacy.
+    be.write("/docs/readme.md", "hello store")
+    assert be.read("/docs/readme.md").error is None
+
+    result = be.delete("/docs/readme.md")
+    assert result.error is None
+    assert result.path == "/docs/readme.md"
+    # File is gone
+    assert be.read("/docs/readme.md").error is not None
+
+
+def test_store_backend_delete_directory_recursive() -> None:
+    mem_store = InMemoryStore()
+    be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
+    be.write("/work/a.txt", "a")
+    be.write("/work/sub/b.txt", "b")
+    be.write("/keep.txt", "k")
+
+    result = be.delete("/work")
+    assert result.error is None
+    assert result.path == "/work"
+    # Every key at or under /work is gone.
+    assert be.read("/work/a.txt").error is not None
+    assert be.read("/work/sub/b.txt").error is not None
+    # A sibling outside the subtree is untouched.
+    assert be.read("/keep.txt").error is None
+
+
+async def test_store_backend_adelete_directory_recursive() -> None:
+    mem_store = InMemoryStore()
+    be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
+    await be.awrite("/work/a.txt", "a")
+    await be.awrite("/work/sub/b.txt", "b")
+    await be.awrite("/keep.txt", "k")
+
+    result = await be.adelete("/work")
+    assert result.error is None
+    assert (await be.aread("/work/a.txt")).error is not None
+    assert (await be.aread("/work/sub/b.txt")).error is not None
+    assert (await be.aread("/keep.txt")).error is None
+
+
+class _RecordingStore(InMemoryStore):
+    """InMemoryStore that records the ops passed to each batch/abatch call.
+
+    `batch`/`abatch` are the single primitive every store op routes through, so
+    recording them lets a test assert how many round-trips a delete performs.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.batch_calls: list[list] = []
+
+    def batch(self, ops):
+        ops = list(ops)
+        self.batch_calls.append(ops)
+        return super().batch(ops)
+
+    async def abatch(self, ops):
+        ops = list(ops)
+        self.batch_calls.append(ops)
+        return await super().abatch(ops)
+
+
+def _delete_op_batches(batch_calls: list[list]) -> list[list]:
+    """Batches that carried at least one delete (PutOp with value=None)."""
+    return [ops for ops in batch_calls if any(isinstance(op, PutOp) and op.value is None for op in ops)]
+
+
+def test_store_backend_delete_uses_single_batch_call() -> None:
+    """A recursive delete issues one batched store write, not one call per key."""
+    store = _RecordingStore()
+    be = StoreBackend(store=store, namespace=lambda _rt: ("filesystem",))
+    be.write("/work/a.txt", "a")
+    be.write("/work/sub/b.txt", "b")
+    be.write("/keep.txt", "k")
+    store.batch_calls.clear()  # ignore the setup writes
+
+    result = be.delete("/work")
+    assert result.error is None
+
+    # All the deletes happened in exactly one batch (not one call per key).
+    delete_batches = _delete_op_batches(store.batch_calls)
+    assert len(delete_batches) == 1
+    ops = delete_batches[0]
+    assert all(isinstance(op, PutOp) and op.value is None for op in ops)
+    assert {op.key for op in ops} == {"/work/a.txt", "/work/sub/b.txt"}
+
+
+async def test_store_backend_adelete_uses_single_batch_call() -> None:
+    """Async recursive delete issues one batched store write, not one per key."""
+    store = _RecordingStore()
+    be = StoreBackend(store=store, namespace=lambda _rt: ("filesystem",))
+    await be.awrite("/work/a.txt", "a")
+    await be.awrite("/work/sub/b.txt", "b")
+    await be.awrite("/keep.txt", "k")
+    store.batch_calls.clear()
+
+    result = await be.adelete("/work")
+    assert result.error is None
+
+    delete_batches = _delete_op_batches(store.batch_calls)
+    assert len(delete_batches) == 1
+    ops = delete_batches[0]
+    assert all(isinstance(op, PutOp) and op.value is None for op in ops)
+    assert {op.key for op in ops} == {"/work/a.txt", "/work/sub/b.txt"}
+
+
+def test_store_backend_delete_missing_returns_error() -> None:
+    be = StoreBackend(store=InMemoryStore(), namespace=lambda _rt: ("filesystem",))
+    result = be.delete("/nope.md")
+    assert result.path is None
+    assert result.error is not None
+    assert "not found" in result.error
+
+
+async def test_store_backend_adelete() -> None:
+    mem_store = InMemoryStore()
+    be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
+
+    await be.awrite("/a.md", "x")
+    result = await be.adelete("/a.md")
+    assert result.error is None
+    assert result.path == "/a.md"
+    assert (await be.aread("/a.md")).error is not None
+
+    missing = await be.adelete("/a.md")
+    assert missing.error is not None and "not found" in missing.error
+
+
+def test_store_backend_delete_treats_wildcard_as_literal_key() -> None:
+    """`*` is used as an exact store key, not a wildcard.
+
+    Deleting "*" must only remove an entry whose key is literally "*" and must
+    never expand to match/remove other files in the namespace.
     """
     mem_store = InMemoryStore()
-    be = StoreBackend(store=mem_store)  # No namespace factory — triggers legacy path
+    be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
 
-    malicious_ids = ["*", "user*", "a b", "path/to", "$var", "ns[0]", "ns{a}"]
+    be.write("/a.md", "a")
+    be.write("/b.md", "b")
+    be.write("*", "literal star")
 
-    for bad_id in malicious_ids:
-        fake_cfg = {"metadata": {"assistant_id": bad_id}}
-        with patch("deepagents.backends.store.get_config", return_value=fake_cfg), warnings.catch_warnings(record=True):
-            warnings.simplefilter("always")
-            with pytest.raises(ValueError, match="disallowed characters"):
-                be.write("/test.txt", "content")
+    # Deleting "*" removes only the literally-named entry.
+    result = be.delete("*")
+    assert result.error is None
+    assert result.path == "*"
+
+    # The other files are untouched — "*" did not expand to a wildcard.
+    assert be.read("/a.md").error is None
+    assert be.read("/b.md").error is None
+    assert be.read("*").error is not None
+
+
+def test_store_backend_delete_wildcard_missing_does_not_match_files() -> None:
+    """Deleting "*" when no literal "*" key exists is a not-found, not a purge."""
+    mem_store = InMemoryStore()
+    be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
+
+    be.write("/a.md", "a")
+    be.write("/b.md", "b")
+
+    result = be.delete("*")
+    assert result.path is None
+    assert result.error is not None and "not found" in result.error
+
+    # Nothing was deleted by the wildcard-looking key.
+    assert be.read("/a.md").error is None
+    assert be.read("/b.md").error is None
+
+
+async def test_store_backend_adelete_treats_wildcard_as_literal_key() -> None:
+    """Async delete also treats `*` as an exact key, not a wildcard."""
+    mem_store = InMemoryStore()
+    be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
+
+    await be.awrite("/a.md", "a")
+    await be.awrite("*", "literal star")
+
+    result = await be.adelete("*")
+    assert result.error is None
+    assert result.path == "*"
+
+    assert (await be.aread("/a.md")).error is None
+    assert (await be.aread("*")).error is not None
+
+    missing = await be.adelete("*")
+    assert missing.error is not None and "not found" in missing.error

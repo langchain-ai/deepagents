@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 434" width="720" height="434" font-family="system-ui,-apple-system,'Segoe UI',sans-serif" role="img" aria-label="Lite micro and macro avg@k by model, sorted by micro avg@k">
+<rect x="0.5" y="0.5" width="719" height="433" rx="12" fill="#161514" stroke="rgba(255,255,255,0.09)"/>
+<text x="24" y="34" font-size="15" font-weight="600" fill="#e8e7e4">Lite — avg@k by model</text>
+<rect x="24" y="48" width="11" height="11" rx="3" fill="#f0a85f"/><text x="41" y="58" font-size="12.5" fill="#a4a3a0">micro avg@k</text>
+<rect x="140" y="48" width="11" height="11" rx="3" fill="#5a9be0"/><text x="157" y="58" font-size="12.5" fill="#a4a3a0">macro avg@k</text>
+<line x1="263.0" y1="70" x2="263.0" y2="404" stroke="rgba(255,255,255,0.09)"/>
+<text x="263.0" y="420" font-size="10.5" fill="#a4a3a0" text-anchor="middle">0.25</text>
+<line x1="394.0" y1="70" x2="394.0" y2="404" stroke="rgba(255,255,255,0.09)"/>
+<text x="394.0" y="420" font-size="10.5" fill="#a4a3a0" text-anchor="middle">0.5</text>
+<line x1="525.0" y1="70" x2="525.0" y2="404" stroke="rgba(255,255,255,0.09)"/>
+<text x="525.0" y="420" font-size="10.5" fill="#a4a3a0" text-anchor="middle">0.75</text>
+<line x1="656.0" y1="70" x2="656.0" y2="404" stroke="rgba(255,255,255,0.09)"/>
+<text x="656.0" y="420" font-size="10.5" fill="#a4a3a0" text-anchor="middle">1</text>
+<text x="122" y="107" font-size="12.5" fill="#e8e7e4" text-anchor="end">GPT-5.6 sol</text>
+<rect x="132" y="80" width="276.7" height="16" rx="3" fill="#f0a85f"/>
+<text x="414.7" y="92" font-size="11" fill="#a4a3a0">0.528</text>
+<rect x="132" y="100" width="297.6" height="16" rx="3" fill="#5a9be0"/>
+<text x="435.6" y="112" font-size="11" fill="#a4a3a0">0.568</text>
+<text x="122" y="161" font-size="12.5" fill="#e8e7e4" text-anchor="end">Claude Opus 4.8</text>
+<rect x="132" y="134" width="213.3" height="16" rx="3" fill="#f0a85f"/>
+<text x="351.3" y="146" font-size="11" fill="#a4a3a0">0.407</text>
+<rect x="132" y="154" width="230.0" height="16" rx="3" fill="#5a9be0"/>
+<text x="368.0" y="166" font-size="11" fill="#a4a3a0">0.439</text>
+<text x="122" y="215" font-size="12.5" fill="#e8e7e4" text-anchor="end">GPT-5.6 terra</text>
+<rect x="132" y="188" width="208.6" height="16" rx="3" fill="#f0a85f"/>
+<text x="346.6" y="200" font-size="11" fill="#a4a3a0">0.398</text>
+<rect x="132" y="208" width="225.8" height="16" rx="3" fill="#5a9be0"/>
+<text x="363.8" y="220" font-size="11" fill="#a4a3a0">0.431</text>
+<text x="122" y="269" font-size="12.5" fill="#e8e7e4" text-anchor="end">GPT-5.6 luna</text>
+<rect x="132" y="242" width="193.9" height="16" rx="3" fill="#f0a85f"/>
+<text x="331.9" y="254" font-size="11" fill="#a4a3a0">0.370</text>
+<rect x="132" y="262" width="215.9" height="16" rx="3" fill="#5a9be0"/>
+<text x="353.9" y="274" font-size="11" fill="#a4a3a0">0.412</text>
+<text x="122" y="323" font-size="12.5" fill="#e8e7e4" text-anchor="end">Claude Sonnet 5</text>
+<rect x="132" y="296" width="145.7" height="16" rx="3" fill="#f0a85f"/>
+<text x="283.7" y="308" font-size="11" fill="#a4a3a0">0.278</text>
+<rect x="132" y="316" width="167.2" height="16" rx="3" fill="#5a9be0"/>
+<text x="305.2" y="328" font-size="11" fill="#a4a3a0">0.319</text>
+<text x="122" y="377" font-size="12.5" fill="#e8e7e4" text-anchor="end">GLM-5.2</text>
+<rect x="132" y="350" width="126.3" height="16" rx="3" fill="#f0a85f"/>
+<text x="264.3" y="362" font-size="11" fill="#a4a3a0">0.241</text>
+<rect x="132" y="370" width="149.3" height="16" rx="3" fill="#5a9be0"/>
+<text x="287.3" y="382" font-size="11" fill="#a4a3a0">0.285</text>
+</svg>

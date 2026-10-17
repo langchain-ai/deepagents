@@ -4,127 +4,154 @@
 Quick reference for every eval, grouped by category.
 Source of truth: [`tests/evals/`](tests/evals/).
 
-**108 evals** across **7 categories**
+Categories (for `--eval-category` filtering):
 
-## File Ops (`file_operations`) (13 evals)
+```txt
+file_operations,retrieval,tool_use,memory,conversation,summarization,unit_test,langchain/middleware
+```
 
-- [`test_read_file_seeded_state_backend_file`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_file_operations.py#L34) — `tests/evals/test_file_operations.py:34`
-- [`test_write_file_simple`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_file_operations.py#L54) — `tests/evals/test_file_operations.py:54`
-- [`test_write_files_in_parallel`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_file_operations.py#L76) — `tests/evals/test_file_operations.py:76`
-- [`test_write_files_in_parallel_confirm_with_verification`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_file_operations.py#L108) — `tests/evals/test_file_operations.py:108`
-- [`test_write_files_in_parallel_ambiguous_confirmation`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_file_operations.py#L143) — `tests/evals/test_file_operations.py:143`
-- [`test_ls_directory_contains_file_yes_no`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_file_operations.py#L178) — `tests/evals/test_file_operations.py:178`
-- [`test_ls_directory_missing_file_yes_no`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_file_operations.py#L202) — `tests/evals/test_file_operations.py:202`
-- [`test_edit_file_replace_text`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_file_operations.py#L225) — `tests/evals/test_file_operations.py:225`
-- [`test_read_then_write_derived_output`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_file_operations.py#L248) — `tests/evals/test_file_operations.py:248`
-- [`test_avoid_unnecessary_tool_calls`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_file_operations.py#L273) — `tests/evals/test_file_operations.py:273`
-- [`test_read_files_in_parallel`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_file_operations.py#L291) — `tests/evals/test_file_operations.py:291`
-- [`test_read_file_truncation_recovery_with_pagination`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_file_operations.py#L561) — `tests/evals/test_file_operations.py:561`
-- [`test_read_file_empty_file_reports_empty`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_file_operations.py#L599) — `tests/evals/test_file_operations.py:599`
+**136 evals** across **8 categories**
 
-## Retrieval (`retrieval`) (6 evals)
+## File Ops (`file_operations`) (21 evals)
+
+- [`test_read_file_seeded_state_backend_file`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_file_operations.py#L36) — `tests/evals/test_file_operations.py:36`
+- [`test_write_file_overwrites_existing`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_file_operations.py#L56) — `tests/evals/test_file_operations.py:56`
+- [`test_write_file_overwrite_drops_old_content`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_file_operations.py#L85) — `tests/evals/test_file_operations.py:85`
+- [`test_write_file_prefers_edit_for_targeted_change`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_file_operations.py#L109) — `tests/evals/test_file_operations.py:109`
+- [`test_write_file_simple`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_file_operations.py#L139) — `tests/evals/test_file_operations.py:139`
+- [`test_write_files_in_parallel`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_file_operations.py#L161) — `tests/evals/test_file_operations.py:161`
+- [`test_write_files_in_parallel_confirm_with_verification`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_file_operations.py#L193) — `tests/evals/test_file_operations.py:193`
+- [`test_write_files_in_parallel_ambiguous_confirmation`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_file_operations.py#L228) — `tests/evals/test_file_operations.py:228`
+- [`test_ls_directory_contains_file_yes_no`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_file_operations.py#L263) — `tests/evals/test_file_operations.py:263`
+- [`test_ls_directory_missing_file_yes_no`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_file_operations.py#L287) — `tests/evals/test_file_operations.py:287`
+- [`test_edit_file_replace_text`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_file_operations.py#L310) — `tests/evals/test_file_operations.py:310`
+- [`test_read_then_write_derived_output`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_file_operations.py#L333) — `tests/evals/test_file_operations.py:333`
+- [`test_avoid_unnecessary_tool_calls`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_file_operations.py#L358) — `tests/evals/test_file_operations.py:358`
+- [`test_read_files_in_parallel`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_file_operations.py#L376) — `tests/evals/test_file_operations.py:376`
+- [`test_read_file_remaining_lines_notice_enables_tail_jump`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_file_operations.py#L742) — `tests/evals/test_file_operations.py:742`
+- [`test_read_file_empty_file_reports_empty`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_file_operations.py#L774) — `tests/evals/test_file_operations.py:774`
+- [`test_delete_simple`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_file_operations.py#L791) — `tests/evals/test_file_operations.py:791`
+- [`test_delete_one_of_several_files`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_file_operations.py#L820) — `tests/evals/test_file_operations.py:820`
+- [`test_deletes_in_parallel`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_file_operations.py#L855) — `tests/evals/test_file_operations.py:855`
+- [`test_write_then_delete_same_file`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_file_operations.py#L888) — `tests/evals/test_file_operations.py:888`
+- [`test_delete_missing_file_reports_absence`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_file_operations.py#L918) — `tests/evals/test_file_operations.py:918`
+
+## Retrieval (`retrieval`) (9 evals)
 
 - [`test_frames`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_external_benchmarks.py#L67) — `tests/evals/test_external_benchmarks.py:67`
-- [`test_grep_finds_matching_paths`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_file_operations.py#L321) — `tests/evals/test_file_operations.py:321`
-- [`test_glob_lists_markdown_files`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_file_operations.py#L349) — `tests/evals/test_file_operations.py:349`
-- [`test_find_magic_phrase_deep_nesting`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_file_operations.py#L377) — `tests/evals/test_file_operations.py:377`
-- [`test_identify_quote_author_from_directory_parallel_reads`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_file_operations.py#L413) — `tests/evals/test_file_operations.py:413`
-- [`test_identify_quote_author_from_directory_unprompted_efficiency`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_file_operations.py#L488) — `tests/evals/test_file_operations.py:488`
+- [`test_grep_finds_matching_paths`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_file_operations.py#L406) — `tests/evals/test_file_operations.py:406`
+- [`test_grep_alternation_regex_recovers`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_file_operations.py#L434) — `tests/evals/test_file_operations.py:434`
+- [`test_grep_wildcard_regex_recovers`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_file_operations.py#L468) — `tests/evals/test_file_operations.py:468`
+- [`test_grep_escaped_metachar_regex_recovers`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_file_operations.py#L499) — `tests/evals/test_file_operations.py:499`
+- [`test_glob_lists_markdown_files`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_file_operations.py#L530) — `tests/evals/test_file_operations.py:530`
+- [`test_find_magic_phrase_deep_nesting`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_file_operations.py#L558) — `tests/evals/test_file_operations.py:558`
+- [`test_identify_quote_author_from_directory_parallel_reads`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_file_operations.py#L594) — `tests/evals/test_file_operations.py:594`
+- [`test_identify_quote_author_from_directory_unprompted_efficiency`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_file_operations.py#L669) — `tests/evals/test_file_operations.py:669`
 
-## Tool Use (`tool_use`) (53 evals)
+## Tool Use (`tool_use`) (60 evals)
 
+- [`test_auto_mode_instrumental_action_authorization`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_auto_mode_authorization.py#L326) — `tests/evals/test_auto_mode_authorization.py:326`
 - [`test_nexus`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_external_benchmarks.py#L75) — `tests/evals/test_external_benchmarks.py:75`
 - [`test_bfcl_v3`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_external_benchmarks.py#L83) — `tests/evals/test_external_benchmarks.py:83`
+- [`test_no_goal_trivial_task_skips_goal_tools`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_goal_tools.py#L89) — `tests/evals/test_goal_tools.py:89`
+- [`test_no_goal_multistep_task_skips_goal_tools`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_goal_tools.py#L107) — `tests/evals/test_goal_tools.py:107`
+- [`test_latest_inactive_notice_supersedes_stale_active_notice`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_goal_tools.py#L138) — `tests/evals/test_goal_tools.py:138`
+- [`test_inactive_goal_status_skips_goal_tools`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_goal_tools.py#L172) — `tests/evals/test_goal_tools.py:172`
+- [`test_active_goal_followed_without_read_tools`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_goal_tools.py#L204) — `tests/evals/test_goal_tools.py:204`
+- [`test_active_rubric_followed_without_read_tools`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_goal_tools.py#L239) — `tests/evals/test_goal_tools.py:239`
 - [`test_write_todos_sequential_updates_returns_text`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_todos.py#L27) — `tests/evals/test_todos.py:27`
 - [`test_write_todos_three_steps_returns_text`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_todos.py#L53) — `tests/evals/test_todos.py:53`
-- [`test_direct_request_slack_dm`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_selection.py#L112) — `tests/evals/test_tool_selection.py:112`
-- [`test_direct_request_github_pr`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_selection.py#L135) — `tests/evals/test_tool_selection.py:135`
-- [`test_direct_request_multiple_tools`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_selection.py#L163) — `tests/evals/test_tool_selection.py:163`
-- [`test_indirect_schedule_meeting`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_selection.py#L195) — `tests/evals/test_tool_selection.py:195`
-- [`test_indirect_notify_team`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_selection.py#L218) — `tests/evals/test_tool_selection.py:218`
-- [`test_indirect_email_report`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_selection.py#L246) — `tests/evals/test_tool_selection.py:246`
-- [`test_chain_search_then_email`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_selection.py#L279) — `tests/evals/test_tool_selection.py:279`
-- [`test_chain_create_issue_then_notify`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_selection.py#L303) — `tests/evals/test_tool_selection.py:303`
-- [`test_single_tool_list_incident_ids`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_incident_graph.py#L789) — `tests/evals/test_tool_usage_incident_graph.py:789`
-- [`test_two_tools_current_incident_service_name`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_incident_graph.py#L810) — `tests/evals/test_tool_usage_incident_graph.py:810`
-- [`test_three_tools_find_service_owner_team`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_incident_graph.py#L832) — `tests/evals/test_tool_usage_incident_graph.py:832`
-- [`test_multi_question_current_incident_service_and_incident_oncall`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_incident_graph.py#L854) — `tests/evals/test_tool_usage_incident_graph.py:854`
-- [`test_multi_question_incident_oncall_and_incident_environment`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_incident_graph.py#L887) — `tests/evals/test_tool_usage_incident_graph.py:887`
-- [`test_multi_question_incident_oncall_and_service_with_most_firing_alerts`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_incident_graph.py#L922) — `tests/evals/test_tool_usage_incident_graph.py:922`
-- [`test_multi_question_three_independent_simple_lookups`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_incident_graph.py#L954) — `tests/evals/test_tool_usage_incident_graph.py:954`
-- [`test_four_tools_incident_to_oncall_name`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_incident_graph.py#L988) — `tests/evals/test_tool_usage_incident_graph.py:988`
-- [`test_four_tools_service_runbook_url`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_incident_graph.py#L1011) — `tests/evals/test_tool_usage_incident_graph.py:1011`
-- [`test_five_tools_incident_latest_deploy_and_repo`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_incident_graph.py#L1033) — `tests/evals/test_tool_usage_incident_graph.py:1033`
-- [`test_five_tools_incident_environment_name_and_region`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_incident_graph.py#L1062) — `tests/evals/test_tool_usage_incident_graph.py:1062`
-- [`test_five_tools_service_dependency_names_parallel`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_incident_graph.py#L1094) — `tests/evals/test_tool_usage_incident_graph.py:1094`
-- [`test_five_tools_service_alert_names_parallel`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_incident_graph.py#L1122) — `tests/evals/test_tool_usage_incident_graph.py:1122`
-- [`test_six_tools_current_incident_oncall_name_and_email`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_incident_graph.py#L1150) — `tests/evals/test_tool_usage_incident_graph.py:1150`
-- [`test_six_tools_service_repo_and_branch`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_incident_graph.py#L1180) — `tests/evals/test_tool_usage_incident_graph.py:1180`
-- [`test_six_tools_incident_title_severity_and_status`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_incident_graph.py#L1206) — `tests/evals/test_tool_usage_incident_graph.py:1206`
-- [`test_six_tools_current_incident_metrics_parallel`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_incident_graph.py#L1230) — `tests/evals/test_tool_usage_incident_graph.py:1230`
-- [`test_aggregation_active_incident_count_by_team`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_incident_graph.py#L1264) — `tests/evals/test_tool_usage_incident_graph.py:1264`
-- [`test_comparison_active_incident_most_dependencies`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_incident_graph.py#L1307) — `tests/evals/test_tool_usage_incident_graph.py:1307`
-- [`test_latest_selection_active_incident_most_recent_deploy`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_incident_graph.py#L1357) — `tests/evals/test_tool_usage_incident_graph.py:1357`
-- [`test_metric_ranking_active_incident_highest_latency`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_incident_graph.py#L1413) — `tests/evals/test_tool_usage_incident_graph.py:1413`
-- [`test_alert_aggregation_service_with_most_firing_alerts`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_incident_graph.py#L1465) — `tests/evals/test_tool_usage_incident_graph.py:1465`
-- [`test_dependency_reasoning_active_incident_depending_on_identity_api`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_incident_graph.py#L1521) — `tests/evals/test_tool_usage_incident_graph.py:1521`
-- [`test_single_tool_list_user_ids`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_relational.py#L450) — `tests/evals/test_tool_usage_relational.py:450`
-- [`test_single_tool_get_user_email`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_relational.py#L479) — `tests/evals/test_tool_usage_relational.py:479`
-- [`test_single_tool_get_food_calories`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_relational.py#L503) — `tests/evals/test_tool_usage_relational.py:503`
-- [`test_two_tools_user_name_from_current_id`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_relational.py#L527) — `tests/evals/test_tool_usage_relational.py:527`
-- [`test_two_tools_city_for_user`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_relational.py#L555) — `tests/evals/test_tool_usage_relational.py:555`
-- [`test_two_tools_find_user_then_email`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_relational.py#L587) — `tests/evals/test_tool_usage_relational.py:587`
-- [`test_three_tools_current_user_city`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_relational.py#L615) — `tests/evals/test_tool_usage_relational.py:615`
-- [`test_three_tools_find_user_then_city`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_relational.py#L649) — `tests/evals/test_tool_usage_relational.py:649`
-- [`test_three_tools_current_user_weather`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_relational.py#L683) — `tests/evals/test_tool_usage_relational.py:683`
-- [`test_four_tools_current_user_favorite_food_names`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_relational.py#L717) — `tests/evals/test_tool_usage_relational.py:717`
-- [`test_four_tools_find_user_food_name_and_calories`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_relational.py#L758) — `tests/evals/test_tool_usage_relational.py:758`
-- [`test_four_tools_current_user_location_time_and_weather`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_relational.py#L799) — `tests/evals/test_tool_usage_relational.py:799`
-- [`test_five_steps_current_user_food_names_and_calories`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_relational.py#L844) — `tests/evals/test_tool_usage_relational.py:844`
-- [`test_four_steps_find_user_city_and_weather`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_relational.py#L892) — `tests/evals/test_tool_usage_relational.py:892`
-- [`test_four_steps_find_user_food_allergies`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_relational.py#L942) — `tests/evals/test_tool_usage_relational.py:942`
-- [`test_four_steps_current_user_food_names_calories_and_allergies`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_relational.py#L995) — `tests/evals/test_tool_usage_relational.py:995`
-- [`test_four_steps_find_user_city_weather_time_and_food_details`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_relational.py#L1060) — `tests/evals/test_tool_usage_relational.py:1060`
-- [`test_four_steps_find_user_email_city_foods_calories_and_allergies`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_relational.py#L1131) — `tests/evals/test_tool_usage_relational.py:1131`
+- [`test_direct_request_slack_dm`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_selection.py#L117) — `tests/evals/test_tool_selection.py:117`
+- [`test_direct_request_github_pr`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_selection.py#L140) — `tests/evals/test_tool_selection.py:140`
+- [`test_direct_request_multiple_tools`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_selection.py#L168) — `tests/evals/test_tool_selection.py:168`
+- [`test_indirect_schedule_meeting`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_selection.py#L200) — `tests/evals/test_tool_selection.py:200`
+- [`test_indirect_notify_team`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_selection.py#L223) — `tests/evals/test_tool_selection.py:223`
+- [`test_indirect_email_report`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_selection.py#L251) — `tests/evals/test_tool_selection.py:251`
+- [`test_chain_search_then_email`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_selection.py#L284) — `tests/evals/test_tool_selection.py:284`
+- [`test_chain_create_issue_then_notify`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_selection.py#L308) — `tests/evals/test_tool_selection.py:308`
+- [`test_single_tool_list_incident_ids`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_incident_graph.py#L786) — `tests/evals/test_tool_usage_incident_graph.py:786`
+- [`test_two_tools_current_incident_service_name`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_incident_graph.py#L807) — `tests/evals/test_tool_usage_incident_graph.py:807`
+- [`test_three_tools_find_service_owner_team`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_incident_graph.py#L829) — `tests/evals/test_tool_usage_incident_graph.py:829`
+- [`test_multi_question_current_incident_service_and_incident_oncall`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_incident_graph.py#L851) — `tests/evals/test_tool_usage_incident_graph.py:851`
+- [`test_multi_question_incident_oncall_and_incident_environment`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_incident_graph.py#L884) — `tests/evals/test_tool_usage_incident_graph.py:884`
+- [`test_multi_question_incident_oncall_and_service_with_most_firing_alerts`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_incident_graph.py#L919) — `tests/evals/test_tool_usage_incident_graph.py:919`
+- [`test_multi_question_three_independent_simple_lookups`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_incident_graph.py#L951) — `tests/evals/test_tool_usage_incident_graph.py:951`
+- [`test_four_tools_incident_to_oncall_name`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_incident_graph.py#L985) — `tests/evals/test_tool_usage_incident_graph.py:985`
+- [`test_four_tools_service_runbook_url`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_incident_graph.py#L1008) — `tests/evals/test_tool_usage_incident_graph.py:1008`
+- [`test_five_tools_incident_latest_deploy_and_repo`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_incident_graph.py#L1030) — `tests/evals/test_tool_usage_incident_graph.py:1030`
+- [`test_five_tools_incident_environment_name_and_region`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_incident_graph.py#L1059) — `tests/evals/test_tool_usage_incident_graph.py:1059`
+- [`test_five_tools_service_dependency_names_parallel`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_incident_graph.py#L1091) — `tests/evals/test_tool_usage_incident_graph.py:1091`
+- [`test_five_tools_service_alert_names_parallel`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_incident_graph.py#L1119) — `tests/evals/test_tool_usage_incident_graph.py:1119`
+- [`test_six_tools_current_incident_oncall_name_and_email`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_incident_graph.py#L1147) — `tests/evals/test_tool_usage_incident_graph.py:1147`
+- [`test_six_tools_service_repo_and_branch`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_incident_graph.py#L1177) — `tests/evals/test_tool_usage_incident_graph.py:1177`
+- [`test_six_tools_incident_title_severity_and_status`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_incident_graph.py#L1203) — `tests/evals/test_tool_usage_incident_graph.py:1203`
+- [`test_six_tools_current_incident_metrics_parallel`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_incident_graph.py#L1227) — `tests/evals/test_tool_usage_incident_graph.py:1227`
+- [`test_aggregation_active_incident_count_by_team`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_incident_graph.py#L1261) — `tests/evals/test_tool_usage_incident_graph.py:1261`
+- [`test_comparison_active_incident_most_dependencies`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_incident_graph.py#L1304) — `tests/evals/test_tool_usage_incident_graph.py:1304`
+- [`test_latest_selection_active_incident_most_recent_deploy`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_incident_graph.py#L1354) — `tests/evals/test_tool_usage_incident_graph.py:1354`
+- [`test_metric_ranking_active_incident_highest_latency`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_incident_graph.py#L1410) — `tests/evals/test_tool_usage_incident_graph.py:1410`
+- [`test_alert_aggregation_service_with_most_firing_alerts`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_incident_graph.py#L1462) — `tests/evals/test_tool_usage_incident_graph.py:1462`
+- [`test_dependency_reasoning_active_incident_depending_on_identity_api`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_incident_graph.py#L1518) — `tests/evals/test_tool_usage_incident_graph.py:1518`
+- [`test_single_tool_list_user_ids`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_relational.py#L453) — `tests/evals/test_tool_usage_relational.py:453`
+- [`test_single_tool_get_user_email`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_relational.py#L482) — `tests/evals/test_tool_usage_relational.py:482`
+- [`test_single_tool_get_food_calories`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_relational.py#L506) — `tests/evals/test_tool_usage_relational.py:506`
+- [`test_two_tools_user_name_from_current_id`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_relational.py#L530) — `tests/evals/test_tool_usage_relational.py:530`
+- [`test_two_tools_city_for_user`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_relational.py#L558) — `tests/evals/test_tool_usage_relational.py:558`
+- [`test_two_tools_find_user_then_email`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_relational.py#L590) — `tests/evals/test_tool_usage_relational.py:590`
+- [`test_three_tools_current_user_city`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_relational.py#L618) — `tests/evals/test_tool_usage_relational.py:618`
+- [`test_three_tools_find_user_then_city`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_relational.py#L652) — `tests/evals/test_tool_usage_relational.py:652`
+- [`test_three_tools_current_user_weather`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_relational.py#L686) — `tests/evals/test_tool_usage_relational.py:686`
+- [`test_four_tools_current_user_favorite_food_names`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_relational.py#L720) — `tests/evals/test_tool_usage_relational.py:720`
+- [`test_four_tools_find_user_food_name_and_calories`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_relational.py#L761) — `tests/evals/test_tool_usage_relational.py:761`
+- [`test_four_tools_current_user_location_time_and_weather`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_relational.py#L802) — `tests/evals/test_tool_usage_relational.py:802`
+- [`test_five_steps_current_user_food_names_and_calories`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_relational.py#L847) — `tests/evals/test_tool_usage_relational.py:847`
+- [`test_four_steps_find_user_city_and_weather`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_relational.py#L895) — `tests/evals/test_tool_usage_relational.py:895`
+- [`test_four_steps_find_user_food_allergies`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_relational.py#L945) — `tests/evals/test_tool_usage_relational.py:945`
+- [`test_four_steps_current_user_food_names_calories_and_allergies`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_relational.py#L998) — `tests/evals/test_tool_usage_relational.py:998`
+- [`test_four_steps_find_user_city_weather_time_and_food_details`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_relational.py#L1063) — `tests/evals/test_tool_usage_relational.py:1063`
+- [`test_four_steps_find_user_email_city_foods_calories_and_allergies`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_usage_relational.py#L1134) — `tests/evals/test_tool_usage_relational.py:1134`
 
-## Memory (`memory`) (17 evals)
+## Memory (`memory`) (22 evals)
 
 - [`test_conflict_resolution`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/memory_agent_bench/test_memory_agent_bench.py#L351) — `tests/evals/memory_agent_bench/test_memory_agent_bench.py:351`
 - [`test_time_learning`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/memory_agent_bench/test_memory_agent_bench.py#L381) — `tests/evals/memory_agent_bench/test_memory_agent_bench.py:381`
 - [`test_memory_agent_bench_ci`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/memory_agent_bench/test_memory_agent_bench.py#L410) — `tests/evals/memory_agent_bench/test_memory_agent_bench.py:410`
 - [`test_memory_agent_bench_ci_fileseeded`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/memory_agent_bench/test_memory_agent_bench.py#L439) — `tests/evals/memory_agent_bench/test_memory_agent_bench.py:439`
-- [`test_memory_basic_recall`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_memory.py#L39) — `tests/evals/test_memory.py:39`
-- [`test_memory_guided_behavior_naming_convention`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_memory.py#L71) — `tests/evals/test_memory.py:71`
-- [`test_memory_influences_file_content`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_memory.py#L114) — `tests/evals/test_memory.py:114`
-- [`test_memory_multiple_sources_combined`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_memory.py#L142) — `tests/evals/test_memory.py:142`
-- [`test_memory_with_missing_file_graceful`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_memory.py#L176) — `tests/evals/test_memory.py:176`
-- [`test_memory_prevents_unnecessary_file_reads`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_memory.py#L193) — `tests/evals/test_memory.py:193`
-- [`test_memory_does_not_persist_transient_info`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_memory.py#L227) — `tests/evals/test_memory.py:227`
-- [`test_memory_updates_user_formatting_preference`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_memory.py#L252) — `tests/evals/test_memory.py:252`
-- [`test_memory_missing_file_graceful_without_claiming_context`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_memory.py#L285) — `tests/evals/test_memory.py:285`
-- [`test_memory_middleware_composite_backend`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_memory.py#L309) — `tests/evals/test_memory.py:309`
+- [`test_memory_basic_recall`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_memory.py#L40) — `tests/evals/test_memory.py:40`
+- [`test_memory_guided_behavior_naming_convention`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_memory.py#L72) — `tests/evals/test_memory.py:72`
+- [`test_memory_influences_file_content`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_memory.py#L115) — `tests/evals/test_memory.py:115`
+- [`test_memory_multiple_sources_combined`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_memory.py#L143) — `tests/evals/test_memory.py:143`
+- [`test_memory_with_missing_file_graceful`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_memory.py#L177) — `tests/evals/test_memory.py:177`
+- [`test_memory_prevents_unnecessary_file_reads`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_memory.py#L194) — `tests/evals/test_memory.py:194`
+- [`test_memory_does_not_persist_transient_info`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_memory.py#L228) — `tests/evals/test_memory.py:228`
+- [`test_memory_updates_user_formatting_preference`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_memory.py#L253) — `tests/evals/test_memory.py:253`
+- [`test_memory_missing_file_graceful_without_claiming_context`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_memory.py#L286) — `tests/evals/test_memory.py:286`
+- [`test_memory_middleware_composite_backend`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_memory.py#L310) — `tests/evals/test_memory.py:310`
+- [`test_memory_stale_fact_overridden_by_verified_file`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_memory.py#L361) — `tests/evals/test_memory.py:361`
+- [`test_memory_adversarial_instruction_does_not_override_user`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_memory.py#L386) — `tests/evals/test_memory.py:386`
+- [`test_memory_user_explicit_request_overrides_saved_preference`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_memory.py#L415) — `tests/evals/test_memory.py:415`
+- [`test_memory_conflicting_identity_prefers_current_user`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_memory.py#L443) — `tests/evals/test_memory.py:443`
+- [`test_memory_investigation_precedes_memory_save_when_required`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_memory.py#L480) — `tests/evals/test_memory.py:480`
 - [`test_implicit_preference_remembered`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_memory_multiturn.py#L205) — `tests/evals/test_memory_multiturn.py:205`
 - [`test_explicit_preference_remembered`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_memory_multiturn.py#L232) — `tests/evals/test_memory_multiturn.py:232`
 - [`test_transient_info_not_persisted`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_memory_multiturn.py#L259) — `tests/evals/test_memory_multiturn.py:259`
 
-## Conversation (`conversation`) (2 evals)
+## Conversation (`conversation`) (3 evals)
 
 - [`test_tau2_airline`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/tau2_airline/test_tau2_airline.py#L86) — `tests/evals/tau2_airline/test_tau2_airline.py:86`
 - [`test_followup_question_quality`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_followup_quality.py#L96) — `tests/evals/test_followup_quality.py:96`
+- [`test_exact_word_count_and_z_starts`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_iterative_constraint_satisfaction.py#L168) — `tests/evals/test_iterative_constraint_satisfaction.py:168`
 
 ## Summarization (`summarization`) (5 evals)
 
 - [`test_summarize_continues_task`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_summarization.py#L116) — `tests/evals/test_summarization.py:116`
 - [`test_summarization_offloads_to_filesystem`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_summarization.py#L156) — `tests/evals/test_summarization.py:156`
-- [`test_compact_tool_new_task`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_summarization.py#L246) — `tests/evals/test_summarization.py:246`
-- [`test_compact_tool_not_overly_sensitive`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_summarization.py#L262) — `tests/evals/test_summarization.py:262`
-- [`test_compact_tool_large_reads`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_summarization.py#L278) — `tests/evals/test_summarization.py:278`
+- [`test_compact_tool_new_task`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_summarization.py#L229) — `tests/evals/test_summarization.py:229`
+- [`test_compact_tool_not_overly_sensitive`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_summarization.py#L245) — `tests/evals/test_summarization.py:245`
+- [`test_compact_tool_large_reads`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_summarization.py#L261) — `tests/evals/test_summarization.py:261`
 
-## Unit Test (`unit_test`) (12 evals)
+## Unit Test (`unit_test`) (9 evals)
 
-- [`test_hitl_agent`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_hitl.py#L54) — `tests/evals/test_hitl.py:54`
-- [`test_subagent_with_hitl`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_hitl.py#L122) — `tests/evals/test_hitl.py:122`
-- [`test_subagent_with_custom_interrupt_on`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_hitl.py#L183) — `tests/evals/test_hitl.py:183`
 - [`test_read_skill_full_content`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_skills.py#L40) — `tests/evals/test_skills.py:40`
 - [`test_read_skill_by_name`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_skills.py#L78) — `tests/evals/test_skills.py:78`
 - [`test_combine_two_skills`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_skills.py#L122) — `tests/evals/test_skills.py:122`
@@ -134,3 +161,13 @@ Source of truth: [`tests/evals/`](tests/evals/).
 - [`test_task_calls_weather_subagent`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_subagents.py#L39) — `tests/evals/test_subagents.py:39`
 - [`test_task_calls_general_purpose_subagent`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_subagents.py#L79) — `tests/evals/test_subagents.py:79`
 - [`test_custom_system_prompt`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_system_prompt.py#L29) — `tests/evals/test_system_prompt.py:29`
+
+## Upstream Middleware (`langchain/middleware`) (7 evals)
+
+- [`test_density_rank_lands_in_final_message`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_langchain_middleware_todo.py#L105) — `tests/evals/test_langchain_middleware_todo.py:105`
+- [`test_population_compare_lands_in_final_message`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_langchain_middleware_todo.py#L144) — `tests/evals/test_langchain_middleware_todo.py:144`
+- [`test_trivial_arithmetic_skips_write_todos`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_langchain_middleware_todo.py#L187) — `tests/evals/test_langchain_middleware_todo.py:187`
+- [`test_rank_with_unknown_lookup_lands_in_final_message`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_langchain_middleware_todo.py#L222) — `tests/evals/test_langchain_middleware_todo.py:222`
+- [`test_design_api_lands_in_final_message`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_langchain_middleware_todo.py#L283) — `tests/evals/test_langchain_middleware_todo.py:283`
+- [`test_density_cairo_lands_in_final_message`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_langchain_middleware_todo.py#L321) — `tests/evals/test_langchain_middleware_todo.py:321`
+- [`test_trivial_plan_skips_write_todos`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_langchain_middleware_todo.py#L355) — `tests/evals/test_langchain_middleware_todo.py:355`

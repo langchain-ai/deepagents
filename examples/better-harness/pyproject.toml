@@ -8,15 +8,15 @@ dependencies = []
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=8.4.2",
-    "ruff>=0.12.0",
+    "pytest>=9.1.1",
+    "ruff>=0.15.20",
 ]
 
 [project.scripts]
 better-harness = "better_harness:main"
 
 [build-system]
-requires = ["setuptools>=75.0"]
+requires = ["setuptools>=82.0.1"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]

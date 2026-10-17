@@ -1,0 +1,7 @@
+{
+  "name": "deepagents-deploy-gtm-agent",
+  "description": "Go-to-market strategy agent that coordinates research and content creation",
+  "runtime": {
+    "model": {"model_id": "openai:gpt-5.4-nano"}
+  }
+}

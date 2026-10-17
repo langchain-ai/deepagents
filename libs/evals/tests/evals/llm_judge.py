@@ -12,6 +12,8 @@ delegated to openevals (https://github.com/langchain-ai/openevals).
 from __future__ import annotations
 
 import warnings
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextvars import copy_context
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -21,6 +23,7 @@ from openevals.llm import create_llm_as_judge
 from tests.evals.utils import AgentTrajectory, SuccessAssertion
 
 _DEFAULT_JUDGE_MODEL = "claude-sonnet-4-6"
+_MAX_JUDGE_WORKERS = 8
 
 _RESPONSES_PROMPT = """You are a strict grading assistant. You will receive a
 series of agent responses and a single criterion. Decide whether the agent's
@@ -159,20 +162,47 @@ class LLMJudge(SuccessAssertion):
             model=self.judge_model,
         )
 
+        def _evaluate(criterion: str) -> dict[str, Any]:
+            return evaluator(outputs=conversation, criterion=criterion)
+
+        # The per-criterion judge calls are independent network calls, so run them
+        # concurrently rather than serializing one round-trip per criterion. Every
+        # criterion is evaluated (there is no early short-circuit on the first
+        # failure); results are stored by criterion index and consumed in order, so
+        # the surfaced error stays deterministic regardless of completion order.
+        total = len(self.criteria)
+        raw_results: list[Any] = [None] * total
+        if total > 1:
+            with ThreadPoolExecutor(max_workers=min(total, _MAX_JUDGE_WORKERS)) as executor:
+                futures = {}
+                for idx, criterion in enumerate(self.criteria):
+                    ctx = copy_context()
+                    futures[executor.submit(ctx.run, _evaluate, criterion)] = idx
+                for future in as_completed(futures):
+                    idx = futures[future]
+                    try:
+                        raw_results[idx] = future.result()
+                    except Exception as exc:  # noqa: BLE001
+                        raw_results[idx] = exc
+        else:
+            for idx, criterion in enumerate(self.criteria):
+                try:
+                    raw_results[idx] = _evaluate(criterion)
+                except Exception as exc:  # noqa: BLE001
+                    raw_results[idx] = exc
+
         results: list[dict[str, Any]] = []
-        for i, criterion in enumerate(self.criteria, 1):
-            try:
-                result = evaluator(outputs=conversation, criterion=criterion)
-            except Exception as exc:
+        for i, (criterion, result) in enumerate(zip(self.criteria, raw_results, strict=True), 1):
+            if isinstance(result, BaseException):
                 msg = (
-                    f"LLM judge failed on criterion {i}/{len(self.criteria)} "
+                    f"LLM judge failed on criterion {i}/{total} "
                     f"(model={self.judge_model!r}): {criterion!r}"
                 )
-                raise RuntimeError(msg) from exc
+                raise RuntimeError(msg) from result  # noqa: TRY004
             if not isinstance(result, dict) or "score" not in result:
                 msg = (
                     f"openevals returned unexpected result for criterion "
-                    f"{i}/{len(self.criteria)} {criterion!r}: {result!r}"
+                    f"{i}/{total} {criterion!r}: {result!r}"
                 )
                 raise ValueError(msg)
             results.append(result)

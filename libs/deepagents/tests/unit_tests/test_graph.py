@@ -2,25 +2,50 @@
 
 from __future__ import annotations
 
+import logging
+import shutil
+import subprocess
+import sys
 import warnings
-from typing import TYPE_CHECKING, Any
+from pathlib import Path
+from typing import TYPE_CHECKING, Annotated, Any, ClassVar, cast
 from unittest.mock import MagicMock, patch
 
+import pytest
+from langchain.agents.middleware import ModelFallbackMiddleware, TodoListMiddleware
+from langchain.agents.middleware.types import AgentMiddleware, PrivateStateAttr
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, SystemMessage
 from langchain_core.tools import BaseTool, StructuredTool
 
-from deepagents._version import __version__
+from deepagents._api.deprecation import LangChainDeprecationWarning
+from deepagents._tools import _apply_tool_description_overrides, _tool_name
+from deepagents._version import __version__, _lc_version, _with_editable_local_version
+from deepagents.backends import StateBackend
 from deepagents.graph import (
-    BASE_AGENT_PROMPT,
-    _apply_tool_description_overrides,
-    _harness_profile_for_model,
-    _resolve_extra_middleware,
-    _tool_name,
+    _REQUIRED_MIDDLEWARE_CLASSES,
+    _REQUIRED_MIDDLEWARE_NAMES,
+    DeepAgentState,
+    _apply_custom_middleware,
     create_deep_agent,
+    get_default_model,
+)
+from deepagents.middleware._prompt_caching import (
+    _create_bedrock_prompt_caching_middleware,
+    _create_fireworks_prompt_caching_middleware,
 )
 from deepagents.middleware._tool_exclusion import _ToolExclusionMiddleware
-from deepagents.profiles import _HARNESS_PROFILES, _get_harness_profile, _HarnessProfile, _register_harness_profile
+from deepagents.middleware.async_subagents import AsyncSubAgentMiddleware
+from deepagents.middleware.filesystem import FilesystemMiddleware
+from deepagents.middleware.skills import SkillsMiddleware
+from deepagents.middleware.subagents import SubAgent, SubAgentMiddleware, create_sub_agent
+from deepagents.middleware.summarization import SummarizationMiddleware, _DeepAgentsSummarizationMiddleware
+from deepagents.profiles import GeneralPurposeSubagentProfile, HarnessProfile, register_harness_profile
+from deepagents.profiles.harness.harness_profiles import (
+    _HARNESS_PROFILES,
+    _get_harness_profile,
+    _harness_profile_for_model,
+)
 from tests.unit_tests.chat_model import GenericFakeChatModel
 
 if TYPE_CHECKING:
@@ -29,23 +54,102 @@ if TYPE_CHECKING:
     from langchain.agents.middleware.types import ModelRequest
 
 
-def _make_model(dump: dict[str, Any]) -> MagicMock:
-    """Create a mock BaseChatModel with a given model_dump return."""
+def _make_model(attrs: dict[str, Any]) -> MagicMock:
+    """Create a mock BaseChatModel exposing `attrs` via attribute access.
+
+    `get_model_identifier` reads `model_name` / `model` directly off the
+    instance, so attributes are set explicitly. `model_dump.return_value`
+    is also populated for tests that still introspect the serialized form.
+    """
     model = MagicMock(spec=BaseChatModel)
-    model.model_dump.return_value = dump
+    model.model_dump.return_value = dict(attrs)
+    for key, value in attrs.items():
+        setattr(model, key, value)
     return model
+
+
+class _MockSubAgentMiddlewareMeta(type):
+    """Expose recorded construction calls with the mock call interface."""
+
+    @property
+    def call_args(cls) -> MagicMock:
+        args, kwargs = cls.calls[-1]
+        return MagicMock(args=args, kwargs=kwargs)
+
+    @property
+    def call_args_list(cls) -> list[MagicMock]:
+        return [MagicMock(args=args, kwargs=kwargs) for args, kwargs in cls.calls]
+
+    @property
+    def call_count(cls) -> int:
+        return len(cls.calls)
+
+    @property
+    def called(cls) -> bool:
+        return bool(cls.calls)
+
+
+class _MockSubAgentMiddleware(SubAgentMiddleware, metaclass=_MockSubAgentMiddlewareMeta):
+    """Capture construction args without compiling subagent graphs."""
+
+    calls: ClassVar[list[tuple[tuple[Any, ...], dict[str, Any]]]] = []
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        self.calls.append((args, kwargs))
+        self._private_state_keys = kwargs.get("private_state_keys", frozenset())
+
+    @property
+    def private_state_keys(self) -> frozenset[str]:
+        return self._private_state_keys
+
+    @private_state_keys.setter
+    def private_state_keys(self, value: frozenset[str]) -> None:
+        self._private_state_keys = value
+
+
+def _mock_subagent_middleware() -> type[_MockSubAgentMiddleware]:
+    """Replace construction while preserving `SubAgentMiddleware` type checks."""
+    _MockSubAgentMiddleware.calls = []
+    return _MockSubAgentMiddleware
 
 
 class TestCreateDeepAgentMetadata:
     """Tests for metadata on the compiled graph."""
 
-    def test_versions_metadata_contains_sdk_version(self) -> None:
-        """`create_deep_agent` should attach SDK version in metadata.versions."""
+    def teardown_method(self) -> None:
+        """Drop any version cached under a patched `_is_editable_install`."""
+        _lc_version.cache_clear()
+
+    def test_versions_metadata_reports_release_for_wheel_install(self) -> None:
+        """A published install reports the bare release version."""
         model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
-        agent = create_deep_agent(model=model)
+        _lc_version.cache_clear()
+        with patch("deepagents._version._is_editable_install", return_value=False):
+            agent = create_deep_agent(model=model)
         assert agent.config is not None
-        versions = agent.config["metadata"]["versions"]
-        assert versions["deepagents"] == __version__
+        assert agent.config["metadata"]["lc_versions"]["deepagents"] == __version__
+
+    def test_versions_metadata_marks_editable_installs(self) -> None:
+        """An editable install reports an `editable` PEP 440 local segment."""
+        model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+        _lc_version.cache_clear()
+        with patch("deepagents._version._is_editable_install", return_value=True):
+            agent = create_deep_agent(model=model)
+        assert agent.config is not None
+        assert agent.config["metadata"]["lc_versions"]["deepagents"] == (_with_editable_local_version(__version__))
+
+    def test_versions_metadata_uses_lc_version(self) -> None:
+        """`create_deep_agent` must forward `_lc_version()` rather than `__version__`.
+
+        This is the only test pinning that wiring; without it the call site could
+        revert to the bare constant and the editable marker would vanish.
+        """
+        model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+        sentinel = "1.2.3+sentinel"
+        with patch("deepagents.graph._lc_version", return_value=sentinel):
+            agent = create_deep_agent(model=model)
+        assert agent.config is not None
+        assert agent.config["metadata"]["lc_versions"]["deepagents"] == sentinel
 
     def test_ls_integration_metadata_preserved(self) -> None:
         """`ls_integration` should still be present alongside versions."""
@@ -55,44 +159,14 @@ class TestCreateDeepAgentMetadata:
         assert agent.config["metadata"]["ls_integration"] == "deepagents"
 
 
-class TestResolveExtraMiddleware:
-    """Tests for _resolve_extra_middleware."""
-
-    def test_empty_profile_returns_empty_list(self) -> None:
-        result = _resolve_extra_middleware(_HarnessProfile())
-        assert result == []
-
-    def test_static_sequence_returned_as_list(self) -> None:
-        sentinel = MagicMock()
-        profile = _HarnessProfile(extra_middleware=(sentinel,))
-        result = _resolve_extra_middleware(profile)
-        assert result == [sentinel]
-
-    def test_callable_factory_is_invoked(self) -> None:
-        sentinel = MagicMock()
-        factory = MagicMock(return_value=[sentinel])
-        profile = _HarnessProfile(extra_middleware=factory)
-        result = _resolve_extra_middleware(profile)
-        factory.assert_called_once()
-        assert result == [sentinel]
-
-    def test_returns_fresh_list_each_call(self) -> None:
-        sentinel = MagicMock()
-        profile = _HarnessProfile(extra_middleware=(sentinel,))
-        a = _resolve_extra_middleware(profile)
-        b = _resolve_extra_middleware(profile)
-        assert a == b
-        assert a is not b
-
-
 class TestProfileForModel:
     """Tests for _harness_profile_for_model."""
 
     def test_uses_spec_when_provided(self) -> None:
         original = dict(_HARNESS_PROFILES)
         try:
-            profile = _HarnessProfile(init_kwargs={"from_spec": True})
-            _register_harness_profile("testprov", profile)
+            profile = HarnessProfile(system_prompt_suffix="from spec")
+            register_harness_profile("testprov", profile)
             result = _harness_profile_for_model(_make_model({}), "testprov:some-model")
             assert result is profile
         finally:
@@ -102,8 +176,8 @@ class TestProfileForModel:
     def test_falls_back_to_identifier_when_spec_is_none(self) -> None:
         original = dict(_HARNESS_PROFILES)
         try:
-            profile = _HarnessProfile(init_kwargs={"from_id": True})
-            _register_harness_profile("myprov", profile)
+            profile = HarnessProfile(system_prompt_suffix="from identifier")
+            register_harness_profile("myprov", profile)
             model = _make_model({"model_name": "myprov:my-model"})
             result = _harness_profile_for_model(model, None)
             assert result is profile
@@ -115,8 +189,8 @@ class TestProfileForModel:
         """Pre-built models with bare identifiers (no colon) resolve via provider."""
         original = dict(_HARNESS_PROFILES)
         try:
-            profile = _HarnessProfile(init_kwargs={"from_provider": True})
-            _register_harness_profile("fakeprov", profile)
+            profile = HarnessProfile(system_prompt_suffix="from provider")
+            register_harness_profile("fakeprov", profile)
             model = _make_model({"model": "some-model-name"})
             # Simulate _get_ls_params returning the provider
             model._get_ls_params = MagicMock(return_value={"ls_provider": "fakeprov"})
@@ -126,17 +200,70 @@ class TestProfileForModel:
             _HARNESS_PROFILES.clear()
             _HARNESS_PROFILES.update(original)
 
+    @pytest.mark.parametrize("identifier_attr", ["model_name", "model"])
+    @pytest.mark.parametrize("identifier", ["my-model", "model:version"])
+    def test_matches_combined_provider_model_key_for_prebuilt(self, identifier_attr: str, identifier: str) -> None:
+        """Bare and colon-containing identifiers combine with providers for exact lookup."""
+        original = dict(_HARNESS_PROFILES)
+        try:
+            provider_profile = HarnessProfile(system_prompt_suffix="provider level")
+            model_profile = HarnessProfile(system_prompt_suffix="model level")
+            register_harness_profile("fakeprov", provider_profile)
+            register_harness_profile(f"fakeprov:{identifier}", model_profile)
+            model = _make_model({identifier_attr: identifier})
+            model._get_ls_params = MagicMock(return_value={"ls_provider": "fakeprov"})
+            result = _harness_profile_for_model(model, None)
+            # Model-level wins on merge; suffix reflects model-level registration.
+            assert result.system_prompt_suffix == "model level"
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+    @pytest.mark.parametrize("identifier_attr", ["model_name", "model"])
+    @pytest.mark.parametrize("combined_exact", [False, True])
+    def test_exact_candidates_precede_provider_defaults(self, identifier_attr: str, *, combined_exact: bool) -> None:
+        """Qualified identifiers retain exact overrides and inherit provider fields."""
+        with patch.dict(_HARNESS_PROFILES):
+            register_harness_profile("myprov", HarnessProfile(base_system_prompt="provider base", system_prompt_suffix="provider suffix"))
+            register_harness_profile("myprov:my-model", HarnessProfile(system_prompt_suffix="identifier suffix"))
+            if combined_exact:
+                register_harness_profile("myprov:myprov:my-model", HarnessProfile(system_prompt_suffix="combined suffix"))
+            model = _make_model({identifier_attr: "myprov:my-model"})
+            model._get_ls_params = MagicMock(return_value={"ls_provider": "myprov"})
+            result = _harness_profile_for_model(model, None)
+            assert result.base_system_prompt == "provider base"
+            assert result.system_prompt_suffix == ("combined suffix" if combined_exact else "identifier suffix")
+
+    def test_qualified_identifier_falls_back_to_provider(self) -> None:
+        """Provider defaults remain available when neither exact candidate exists."""
+        with patch.dict(_HARNESS_PROFILES):
+            profile = HarnessProfile(system_prompt_suffix="provider suffix")
+            register_harness_profile("myprov", profile)
+            model = _make_model({"model_name": "myprov:my-model"})
+            model._get_ls_params = MagicMock(return_value={"ls_provider": "myprov"})
+            assert _harness_profile_for_model(model, None) is profile
+
+    @pytest.mark.parametrize("identifier_attr", ["model_name", "model"])
+    def test_identifier_prefix_is_not_treated_as_provider(self, identifier_attr: str) -> None:
+        """Provider fallback uses the reported provider instead of an identifier prefix."""
+        with patch.dict(_HARNESS_PROFILES):
+            register_harness_profile("glm-5.2", HarnessProfile(system_prompt_suffix="unrelated bare key"))
+            model = _make_model({identifier_attr: "glm-5.2:cloud"})
+            model._get_ls_params = MagicMock(return_value={"ls_provider": "ollama"})
+            result = _harness_profile_for_model(model, None)
+            assert result == HarnessProfile()
+
     def test_returns_empty_default_when_no_match(self) -> None:
         model = _make_model({"model_name": "unknown-model"})
         model._get_ls_params = MagicMock(return_value={})
         result = _harness_profile_for_model(model, None)
-        assert result == _HarnessProfile()
+        assert result == HarnessProfile()
 
     def test_returns_empty_default_when_no_identifier(self) -> None:
         model = _make_model({})
         model._get_ls_params = MagicMock(return_value={})
         result = _harness_profile_for_model(model, None)
-        assert result == _HarnessProfile()
+        assert result == HarnessProfile()
 
 
 class TestToolName:
@@ -211,12 +338,11 @@ class TestToolDescriptionOverrides:
 
 
 class TestDefaultModelProfile:
-    """Tests for default model=None getting the default profile."""
+    """Tests for harness-profile lookup on Anthropic model keys."""
 
-    def test_default_model_gets_default_profile(self) -> None:
-        """model=None resolves to default profile (no Anthropic-specific registration)."""
-        profile = _get_harness_profile("anthropic:claude-sonnet-4-6")
-        assert profile == _HarnessProfile()
+    def test_unregistered_anthropic_model_returns_none(self) -> None:
+        """An Anthropic model without a built-in registration falls through."""
+        assert _get_harness_profile("anthropic:claude-sonnet-4-5") is None
 
 
 class TestToolDescriptionOverrideWiring:
@@ -225,9 +351,9 @@ class TestToolDescriptionOverrideWiring:
     def test_create_deep_agent_passes_overrides_to_filesystem_and_task(self) -> None:
         original = dict(_HARNESS_PROFILES)
         try:
-            _register_harness_profile(
+            register_harness_profile(
                 "testprov",
-                _HarnessProfile(
+                HarnessProfile(
                     tool_description_overrides={
                         "ls": "custom ls",
                         "task": "custom task",
@@ -241,8 +367,7 @@ class TestToolDescriptionOverrideWiring:
             with (
                 patch("deepagents.graph.resolve_model", return_value=fake_model),
                 patch("deepagents.graph.FilesystemMiddleware", side_effect=[MagicMock(), MagicMock()]) as mock_fs,
-                patch("deepagents.graph.SubAgentMiddleware", return_value=MagicMock()) as mock_subagents,
-                patch("deepagents.graph.TodoListMiddleware", return_value=MagicMock()),
+                patch("deepagents.graph.SubAgentMiddleware", new_callable=_mock_subagent_middleware) as mock_subagents,
                 patch("deepagents.graph.PatchToolCallsMiddleware", return_value=MagicMock()),
                 patch("deepagents.graph.create_summarization_middleware", return_value=MagicMock()),
                 patch("deepagents.graph.create_agent", return_value=fake_agent),
@@ -263,14 +388,265 @@ class TestToolDescriptionOverrideWiring:
             _HARNESS_PROFILES.update(original)
 
 
+class TestGeneralPurposeSubagentProfileWiring:
+    """Tests for harness-level general-purpose subagent controls."""
+
+    def test_create_deep_agent_applies_general_purpose_subagent_edits(self) -> None:
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile(
+                "testprov",
+                HarnessProfile(
+                    general_purpose_subagent=GeneralPurposeSubagentProfile(
+                        description="Custom general-purpose description",
+                        system_prompt="Custom general-purpose prompt.",
+                    )
+                ),
+            )
+            fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+            fake_agent = MagicMock()
+            fake_agent.with_config.return_value = "compiled-agent"
+
+            # Patch only what we need to inspect (`SubAgentMiddleware` call
+            # args) plus the boundary (`resolve_model`) and `create_agent`,
+            # which would otherwise reject the mocked middleware. All other
+            # middleware constructors run for real.
+            with (
+                patch("deepagents.graph.resolve_model", return_value=fake_model),
+                patch("deepagents.graph.SubAgentMiddleware", new_callable=_mock_subagent_middleware) as mock_subagents,
+                patch("deepagents.graph.create_agent", return_value=fake_agent),
+            ):
+                create_deep_agent(model="testprov:some-model")
+
+            subagents = mock_subagents.call_args.kwargs["subagents"]
+            general_purpose = next(spec for spec in subagents if spec["name"] == "general-purpose")
+            assert general_purpose["description"] == "Custom general-purpose description"
+            assert general_purpose["system_prompt"] == "Custom general-purpose prompt."
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+    def test_disabling_default_general_purpose_removes_task_tool(self) -> None:
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile(
+                "testprov",
+                HarnessProfile(general_purpose_subagent=GeneralPurposeSubagentProfile(enabled=False)),
+            )
+            fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+            with patch("deepagents.graph.resolve_model", return_value=fake_model):
+                agent = create_deep_agent(model="testprov:some-model")
+            assert "task" not in agent.nodes["tools"].bound._tools_by_name
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+    def test_explicit_sync_subagent_still_keeps_task_tool_when_default_disabled(self) -> None:
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile(
+                "testprov",
+                HarnessProfile(general_purpose_subagent=GeneralPurposeSubagentProfile(enabled=False)),
+            )
+            fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+            with patch("deepagents.graph.resolve_model", return_value=fake_model):
+                agent = create_deep_agent(
+                    model="testprov:some-model",
+                    subagents=[
+                        {
+                            "name": "worker",
+                            "description": "Worker subagent.",
+                            "system_prompt": "Do work.",
+                        }
+                    ],
+                )
+            assert "task" in agent.nodes["tools"].bound._tools_by_name
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+
+class TestPromptCachingWiring:
+    """Tests for provider-specific prompt caching middleware wiring."""
+
+    def test_main_and_general_purpose_agents_get_bedrock_prompt_caching(self) -> None:
+        model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+        gp_cache = MagicMock()
+        main_cache = MagicMock()
+        fake_agent = MagicMock()
+        fake_agent.with_config.return_value = "compiled-agent"
+
+        with (
+            patch("deepagents.middleware._prompt_caching._create_bedrock_prompt_caching_middleware", side_effect=[gp_cache, main_cache]),
+            patch("deepagents.graph.SubAgentMiddleware", new_callable=_mock_subagent_middleware) as mock_subagents,
+            patch("deepagents.graph.create_agent", return_value=fake_agent) as mock_create,
+        ):
+            result = create_deep_agent(model=model)
+
+        assert result == "compiled-agent"
+        subagents = mock_subagents.call_args.kwargs["subagents"]
+        general_purpose = next(spec for spec in subagents if spec["name"] == "general-purpose")
+        assert gp_cache in general_purpose["middleware"]
+        assert main_cache in mock_create.call_args.kwargs["middleware"]
+
+    def test_bedrock_explicit_subagent_gets_prompt_caching(self) -> None:
+        main_model = GenericFakeChatModel(messages=iter([AIMessage(content="main")]))
+        bedrock_model = GenericFakeChatModel(messages=iter([AIMessage(content="sub")]))
+        bedrock_model._get_ls_params = MagicMock(return_value={"ls_provider": "amazon_bedrock"})
+        subagent_cache = MagicMock()
+        fake_agent = MagicMock()
+        fake_agent.with_config.return_value = "compiled-agent"
+
+        with (
+            patch("deepagents.middleware._prompt_caching._create_bedrock_prompt_caching_middleware", return_value=subagent_cache),
+            patch("deepagents.graph.SubAgentMiddleware", new_callable=_mock_subagent_middleware) as mock_subagents,
+            patch("deepagents.graph.create_agent", return_value=fake_agent),
+        ):
+            create_deep_agent(
+                model=main_model,
+                subagents=[
+                    {
+                        "name": "bedrock-worker",
+                        "description": "Uses Bedrock.",
+                        "system_prompt": "Help with Bedrock tasks.",
+                        "model": bedrock_model,
+                    }
+                ],
+            )
+
+        subagents = mock_subagents.call_args.kwargs["subagents"]
+        bedrock_worker = next(spec for spec in subagents if spec["name"] == "bedrock-worker")
+        assert subagent_cache in bedrock_worker["middleware"]
+
+    def test_bedrock_prompt_caching_is_optional_when_middleware_unavailable(self) -> None:
+        bedrock_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+        bedrock_model._get_ls_params = MagicMock(return_value={"ls_provider": "amazon_bedrock"})
+        fake_agent = MagicMock()
+        fake_agent.with_config.return_value = "compiled-agent"
+
+        with (
+            patch("deepagents.middleware._prompt_caching._create_fireworks_prompt_caching_middleware", return_value=None),
+            patch(
+                "deepagents.middleware._prompt_caching.import_module",
+                side_effect=ModuleNotFoundError(name="langchain_aws.middleware.prompt_caching"),
+            ),
+            patch("deepagents.graph.SubAgentMiddleware", new_callable=_mock_subagent_middleware) as mock_subagents,
+            patch("deepagents.graph.create_agent", return_value=fake_agent) as mock_create,
+        ):
+            result = create_deep_agent(model=bedrock_model)
+
+        assert result == "compiled-agent"
+        subagents = mock_subagents.call_args.kwargs["subagents"]
+        general_purpose = next(spec for spec in subagents if spec["name"] == "general-purpose")
+        assert None not in general_purpose["middleware"]
+        assert None not in mock_create.call_args.kwargs["middleware"]
+
+    def test_bedrock_prompt_caching_preserves_unrelated_import_errors(self) -> None:
+        with (
+            patch("deepagents.middleware._prompt_caching.import_module", side_effect=ImportError(name="missing_transitive")),
+            pytest.raises(ImportError),
+        ):
+            _create_bedrock_prompt_caching_middleware()
+
+    def test_main_and_general_purpose_agents_get_fireworks_prompt_caching(self) -> None:
+        model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+        gp_cache = MagicMock()
+        main_cache = MagicMock()
+        fake_agent = MagicMock()
+        fake_agent.with_config.return_value = "compiled-agent"
+
+        with (
+            patch("deepagents.middleware._prompt_caching._create_bedrock_prompt_caching_middleware", return_value=None),
+            patch("deepagents.middleware._prompt_caching._create_fireworks_prompt_caching_middleware", side_effect=[gp_cache, main_cache]),
+            patch("deepagents.graph.SubAgentMiddleware", new_callable=_mock_subagent_middleware) as mock_subagents,
+            patch("deepagents.graph.create_agent", return_value=fake_agent) as mock_create,
+        ):
+            result = create_deep_agent(model=model)
+
+        assert result == "compiled-agent"
+        subagents = mock_subagents.call_args.kwargs["subagents"]
+        general_purpose = next(spec for spec in subagents if spec["name"] == "general-purpose")
+        assert gp_cache in general_purpose["middleware"]
+        assert main_cache in mock_create.call_args.kwargs["middleware"]
+
+    def test_explicit_subagent_gets_fireworks_prompt_caching(self) -> None:
+        main_model = GenericFakeChatModel(messages=iter([AIMessage(content="main")]))
+        worker_model = GenericFakeChatModel(messages=iter([AIMessage(content="sub")]))
+        subagent_cache = MagicMock()
+        fake_agent = MagicMock()
+        fake_agent.with_config.return_value = "compiled-agent"
+
+        with (
+            patch("deepagents.middleware._prompt_caching._create_bedrock_prompt_caching_middleware", return_value=None),
+            patch("deepagents.middleware._prompt_caching._create_fireworks_prompt_caching_middleware", return_value=subagent_cache),
+            patch("deepagents.graph.SubAgentMiddleware", new_callable=_mock_subagent_middleware) as mock_subagents,
+            patch("deepagents.graph.create_agent", return_value=fake_agent),
+        ):
+            create_deep_agent(
+                model=main_model,
+                subagents=[
+                    {
+                        "name": "worker",
+                        "description": "Does work.",
+                        "system_prompt": "Help with tasks.",
+                        "model": worker_model,
+                    }
+                ],
+            )
+
+        subagents = mock_subagents.call_args.kwargs["subagents"]
+        worker = next(spec for spec in subagents if spec["name"] == "worker")
+        assert subagent_cache in worker["middleware"]
+
+    def test_fireworks_prompt_caching_is_optional_when_middleware_unavailable(self) -> None:
+        model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+        fake_agent = MagicMock()
+        fake_agent.with_config.return_value = "compiled-agent"
+
+        with (
+            patch("deepagents.middleware._prompt_caching._create_bedrock_prompt_caching_middleware", return_value=None),
+            patch(
+                "deepagents.middleware._prompt_caching.import_module",
+                side_effect=ModuleNotFoundError(name="langchain_fireworks.middleware.prompt_caching"),
+            ),
+            patch("deepagents.graph.SubAgentMiddleware", new_callable=_mock_subagent_middleware) as mock_subagents,
+            patch("deepagents.graph.create_agent", return_value=fake_agent) as mock_create,
+        ):
+            result = create_deep_agent(model=model)
+
+        assert result == "compiled-agent"
+        subagents = mock_subagents.call_args.kwargs["subagents"]
+        general_purpose = next(spec for spec in subagents if spec["name"] == "general-purpose")
+        assert None not in general_purpose["middleware"]
+        assert None not in mock_create.call_args.kwargs["middleware"]
+
+    def test_fireworks_prompt_caching_preserves_unrelated_import_errors(self) -> None:
+        with (
+            patch("deepagents.middleware._prompt_caching.import_module", side_effect=ImportError(name="missing_transitive")),
+            pytest.raises(ImportError),
+        ):
+            _create_fireworks_prompt_caching_middleware()
+
+    def test_fireworks_prompt_caching_ignores_unsupported_models(self) -> None:
+        middleware = MagicMock()
+        middleware_cls = MagicMock(return_value=middleware)
+        module = MagicMock(FireworksPromptCachingMiddleware=middleware_cls)
+
+        with patch("deepagents.middleware._prompt_caching.import_module", return_value=module):
+            result = _create_fireworks_prompt_caching_middleware()
+
+        assert result is middleware
+        middleware_cls.assert_called_once_with(unsupported_model_behavior="ignore")
+
+
 class TestSystemPromptAssembly:
     """Tests for system prompt assembly: profile base_system_prompt, suffix, and user prompt interaction."""
 
-    def _build_and_capture_system_prompt(self, profile_key: str, profile: _HarnessProfile, **kwargs: Any) -> str | SystemMessage:
+    def _build_and_capture_system_prompt(self, profile_key: str, profile: HarnessProfile, **kwargs: Any) -> str | SystemMessage:
         """Register a profile, call create_deep_agent, return the system_prompt passed to create_agent."""
         original = dict(_HARNESS_PROFILES)
         try:
-            _register_harness_profile(profile_key, profile)
+            register_harness_profile(profile_key, profile)
             fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
             fake_agent = MagicMock()
             fake_agent.with_config.return_value = "compiled-agent"
@@ -278,8 +654,7 @@ class TestSystemPromptAssembly:
             with (
                 patch("deepagents.graph.resolve_model", return_value=fake_model),
                 patch("deepagents.graph.FilesystemMiddleware", side_effect=[MagicMock(), MagicMock()]),
-                patch("deepagents.graph.SubAgentMiddleware", return_value=MagicMock()),
-                patch("deepagents.graph.TodoListMiddleware", return_value=MagicMock()),
+                patch("deepagents.graph.SubAgentMiddleware", new_callable=_mock_subagent_middleware),
                 patch("deepagents.graph.PatchToolCallsMiddleware", return_value=MagicMock()),
                 patch("deepagents.graph.create_summarization_middleware", return_value=MagicMock()),
                 patch("deepagents.graph.create_agent", return_value=fake_agent) as mock_create,
@@ -291,95 +666,212 @@ class TestSystemPromptAssembly:
             _HARNESS_PROFILES.clear()
             _HARNESS_PROFILES.update(original)
 
-    def test_default_uses_base_agent_prompt(self) -> None:
-        prompt = self._build_and_capture_system_prompt("defprov", _HarnessProfile())
-        assert prompt == BASE_AGENT_PROMPT
-
     def test_profile_base_system_prompt_replaces_base(self) -> None:
         prompt = self._build_and_capture_system_prompt(
             "custprov",
-            _HarnessProfile(base_system_prompt="You are a custom agent."),
+            HarnessProfile(base_system_prompt="You are a custom agent."),
         )
         assert prompt == "You are a custom agent."
-        assert BASE_AGENT_PROMPT not in prompt
 
     def test_profile_base_system_prompt_with_suffix(self) -> None:
         prompt = self._build_and_capture_system_prompt(
             "custprov",
-            _HarnessProfile(
+            HarnessProfile(
                 base_system_prompt="You are a custom agent.",
                 system_prompt_suffix="Be concise.",
             ),
         )
         assert prompt == "You are a custom agent.\n\nBe concise."
-        assert BASE_AGENT_PROMPT not in prompt
 
-    def test_suffix_without_base_system_prompt_appends_to_base(self) -> None:
+    def test_suffix_without_base_system_prompt_omits_empty_base(self) -> None:
         prompt = self._build_and_capture_system_prompt(
             "suffprov",
-            _HarnessProfile(system_prompt_suffix="Think step by step."),
+            HarnessProfile(system_prompt_suffix="Think step by step."),
         )
-        assert prompt == BASE_AGENT_PROMPT + "\n\nThink step by step."
+        assert prompt == "Think step by step."
 
     def test_user_system_prompt_prepended_before_profile_base(self) -> None:
         prompt = self._build_and_capture_system_prompt(
             "custprov",
-            _HarnessProfile(base_system_prompt="Custom base."),
+            HarnessProfile(base_system_prompt="Custom base."),
             system_prompt="User instructions.",
         )
         assert prompt == "User instructions.\n\nCustom base."
-        assert BASE_AGENT_PROMPT not in prompt
 
-    def test_user_system_prompt_prepended_before_default_base(self) -> None:
+    def test_user_system_prompt_is_used_without_default_base(self) -> None:
         prompt = self._build_and_capture_system_prompt(
             "defprov",
-            _HarnessProfile(),
+            HarnessProfile(),
             system_prompt="User instructions.",
         )
-        assert prompt == f"User instructions.\n\n{BASE_AGENT_PROMPT}"
+        assert prompt == "User instructions."
 
     def test_triple_combo_all_three_inputs(self) -> None:
         prompt = self._build_and_capture_system_prompt(
             "custprov",
-            _HarnessProfile(
+            HarnessProfile(
                 base_system_prompt="Custom base.",
                 system_prompt_suffix="Extra.",
             ),
             system_prompt="User instructions.",
         )
         assert prompt == "User instructions.\n\nCustom base.\n\nExtra."
-        assert BASE_AGENT_PROMPT not in prompt
 
-    def test_system_message_with_profile_base(self) -> None:
-        msg = SystemMessage(content="User content.")
+    def test_system_message_preserves_caller_blocks_and_appends_profile_prompt(self) -> None:
+        caller_block = {
+            "type": "text",
+            "text": "User content.",
+            "cache_control": {"type": "ephemeral"},
+        }
+        msg = SystemMessage(content=[caller_block])
         result = self._build_and_capture_system_prompt(
             "custprov",
-            _HarnessProfile(base_system_prompt="Custom base."),
+            HarnessProfile(
+                base_system_prompt="Custom base.",
+                system_prompt_suffix="Extra.",
+            ),
             system_prompt=msg,
         )
+
         assert isinstance(result, SystemMessage)
-        # Last content block should contain the custom base, not BASE_AGENT_PROMPT
-        last_block = result.content_blocks[-1]
-        assert "Custom base." in last_block["text"]
-        assert BASE_AGENT_PROMPT not in last_block["text"]
+        assert result.content_blocks == [
+            caller_block,
+            {"type": "text", "text": "\n\nCustom base.\n\nExtra."},
+        ]
+        assert msg.content_blocks == [caller_block]
+
+    def test_system_message_without_profile_prompt_is_passed_through(self) -> None:
+        msg = SystemMessage(content="User content.")
+
+        result = self._build_and_capture_system_prompt(
+            "defprov",
+            HarnessProfile(),
+            system_prompt=msg,
+        )
+
+        assert result is msg
 
     def test_empty_string_base_system_prompt_replaces_with_empty(self) -> None:
         prompt = self._build_and_capture_system_prompt(
             "custprov",
-            _HarnessProfile(base_system_prompt=""),
+            HarnessProfile(base_system_prompt=""),
         )
         assert prompt == ""
-        assert BASE_AGENT_PROMPT not in prompt
 
     def test_empty_string_suffix_still_appended(self) -> None:
         prompt = self._build_and_capture_system_prompt(
             "custprov",
-            _HarnessProfile(
+            HarnessProfile(
                 base_system_prompt="Custom base.",
                 system_prompt_suffix="",
             ),
         )
         assert prompt == "Custom base.\n\n"
+
+    def test_default_base_is_empty(self) -> None:
+        """With no profile base and no caller base, the assembled base is empty."""
+        prompt = self._build_and_capture_system_prompt("defprov", HarnessProfile())
+        assert prompt == ""
+
+
+class TestBaseAgentPromptDeprecation:
+    """Tests for the deprecated legacy base prompt accessor."""
+
+    def test_graph_base_agent_prompt_emits_deprecation_warning(self) -> None:
+        """Legacy graph-level access returns the prompt and signals its removal."""
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            from deepagents.graph import BASE_AGENT_PROMPT  # noqa: PLC0415  # verifies the legacy import contract
+
+            prompt = BASE_AGENT_PROMPT
+
+        assert prompt.startswith("You are a deep agent")
+        deprecations = [warning for warning in caught if issubclass(warning.category, DeprecationWarning)]
+        assert len(deprecations) == 1
+        assert deprecations[0].category is LangChainDeprecationWarning
+        assert "BASE_AGENT_PROMPT" in str(deprecations[0].message)
+        assert "0.7.0" in str(deprecations[0].message)
+        assert "deepagents==0.9.0" in str(deprecations[0].message)
+        assert deprecations[0].filename == __file__
+
+
+_ABSENT = object()
+
+
+class TestDuplicateToolPromptTrimming:
+    """`create_deep_agent` ships the built-in tool-usage guidance prose trimmed.
+
+    The deepagents-owned middleware (Filesystem, SubAgent, AsyncSubAgent) default
+    to emitting no tool-usage prose, so `create_deep_agent` passes them no
+    `system_prompt` override.
+
+    Skills and Memory are never trimmed: their fragment is the only channel that
+    surfaces the loaded skill index / memory content, so they always emit it
+    (kwarg omitted). The lean middleware defaults themselves are covered by the
+    per-middleware unit tests and `TestFilesystemRoutingPrompt`.
+    """
+
+    def _capture_middleware_kwargs(self, **create_kwargs: Any) -> dict[str, list[Any]]:
+        """Capture the `system_prompt` each built-in middleware is built with.
+
+        Patches the middleware, calls `create_deep_agent`, and returns, per
+        middleware class name, the `system_prompt` value each was constructed
+        with (`_ABSENT` when the kwarg was omitted).
+        """
+        fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+        fake_agent = MagicMock()
+        fake_agent.with_config.return_value = "compiled-agent"
+
+        patched = {
+            "FilesystemMiddleware": MagicMock(),
+            "SkillsMiddleware": MagicMock(),
+            "SubAgentMiddleware": _mock_subagent_middleware(),
+            "AsyncSubAgentMiddleware": MagicMock(),
+            "MemoryMiddleware": MagicMock(),
+        }
+        with (
+            patch("deepagents.graph.resolve_model", return_value=fake_model),
+            patch("deepagents.graph.create_summarization_middleware", return_value=MagicMock()),
+            patch("deepagents.graph.PatchToolCallsMiddleware", return_value=MagicMock()),
+            patch("deepagents.graph.create_agent", return_value=fake_agent),
+            patch("deepagents.graph.FilesystemMiddleware", patched["FilesystemMiddleware"]),
+            patch("deepagents.graph.SkillsMiddleware", patched["SkillsMiddleware"]),
+            patch("deepagents.graph.SubAgentMiddleware", patched["SubAgentMiddleware"]),
+            patch("deepagents.graph.AsyncSubAgentMiddleware", patched["AsyncSubAgentMiddleware"]),
+            patch("deepagents.graph.MemoryMiddleware", patched["MemoryMiddleware"]),
+        ):
+            create_deep_agent(model="anthropic:claude-sonnet-4-6", **create_kwargs)
+
+        return {name: [call.kwargs.get("system_prompt", _ABSENT) for call in mock.call_args_list] for name, mock in patched.items()}
+
+    def _create_kwargs(self) -> dict[str, Any]:
+        """Args that force every built-in middleware to be constructed."""
+        return {
+            "skills": ["skill-a"],
+            "memory": ["memory-a"],
+            "subagents": [{"name": "async-a", "graph_id": "g", "description": "d"}],
+        }
+
+    def test_builtin_middleware_use_lean_defaults(self) -> None:
+        captured = self._capture_middleware_kwargs(**self._create_kwargs())
+
+        # deepagents-owned middleware are lean by default; no override is passed.
+        for name in ("FilesystemMiddleware", "SubAgentMiddleware", "AsyncSubAgentMiddleware"):
+            values = captured[name]
+            assert values, f"expected {name} to be built"
+            assert all(v is _ABSENT for v in values), f"{name} should use its lean default"
+
+    def test_skills_and_memory_never_trimmed(self) -> None:
+        """Regression guard for the skills/memory content channel.
+
+        Their fragments carry the feature's only content, so they must emit
+        (kwarg omitted, never `None`) rather than be trimmed like usage prose.
+        """
+        captured = self._capture_middleware_kwargs(**self._create_kwargs())
+        for name in ("SkillsMiddleware", "MemoryMiddleware"):
+            values = captured[name]
+            assert values, f"expected {name} to be built"
+            assert all(v is _ABSENT for v in values), f"{name} must keep its built-in fragment, not be trimmed"
 
 
 class TestToolExclusionMiddleware:
@@ -449,9 +941,9 @@ class TestToolExclusionWiring:
     def test_exclusion_middleware_added_when_profile_has_excluded_tools(self) -> None:
         original = dict(_HARNESS_PROFILES)
         try:
-            _register_harness_profile(
+            register_harness_profile(
                 "exclprov",
-                _HarnessProfile(excluded_tools=frozenset({"execute", "write_file"})),
+                HarnessProfile(excluded_tools=frozenset({"execute", "write_file"})),
             )
             fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
             fake_agent = MagicMock()
@@ -460,8 +952,7 @@ class TestToolExclusionWiring:
             with (
                 patch("deepagents.graph.resolve_model", return_value=fake_model),
                 patch("deepagents.graph.FilesystemMiddleware", side_effect=[MagicMock(), MagicMock()]),
-                patch("deepagents.graph.SubAgentMiddleware", return_value=MagicMock()),
-                patch("deepagents.graph.TodoListMiddleware", return_value=MagicMock()),
+                patch("deepagents.graph.SubAgentMiddleware", new_callable=_mock_subagent_middleware),
                 patch("deepagents.graph.PatchToolCallsMiddleware", return_value=MagicMock()),
                 patch("deepagents.graph.create_summarization_middleware", return_value=MagicMock()),
                 patch("deepagents.graph.create_agent", return_value=fake_agent) as mock_create,
@@ -481,9 +972,9 @@ class TestToolExclusionWiring:
     def test_no_exclusion_middleware_when_no_excluded_tools(self) -> None:
         original = dict(_HARNESS_PROFILES)
         try:
-            _register_harness_profile(
+            register_harness_profile(
                 "noxprov",
-                _HarnessProfile(init_kwargs={"x": 1}),
+                HarnessProfile(system_prompt_suffix="present"),
             )
             fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
             fake_agent = MagicMock()
@@ -492,8 +983,7 @@ class TestToolExclusionWiring:
             with (
                 patch("deepagents.graph.resolve_model", return_value=fake_model),
                 patch("deepagents.graph.FilesystemMiddleware", side_effect=[MagicMock(), MagicMock()]),
-                patch("deepagents.graph.SubAgentMiddleware", return_value=MagicMock()),
-                patch("deepagents.graph.TodoListMiddleware", return_value=MagicMock()),
+                patch("deepagents.graph.SubAgentMiddleware", new_callable=_mock_subagent_middleware),
                 patch("deepagents.graph.PatchToolCallsMiddleware", return_value=MagicMock()),
                 patch("deepagents.graph.create_summarization_middleware", return_value=MagicMock()),
                 patch("deepagents.graph.create_agent", return_value=fake_agent) as mock_create,
@@ -511,9 +1001,9 @@ class TestToolExclusionWiring:
         """User tools are not pre-filtered; the middleware handles exclusion."""
         original = dict(_HARNESS_PROFILES)
         try:
-            _register_harness_profile(
+            register_harness_profile(
                 "exclprov",
-                _HarnessProfile(excluded_tools=frozenset({"my_tool"})),
+                HarnessProfile(excluded_tools=frozenset({"my_tool"})),
             )
             fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
             fake_agent = MagicMock()
@@ -525,8 +1015,7 @@ class TestToolExclusionWiring:
             with (
                 patch("deepagents.graph.resolve_model", return_value=fake_model),
                 patch("deepagents.graph.FilesystemMiddleware", side_effect=[MagicMock(), MagicMock()]),
-                patch("deepagents.graph.SubAgentMiddleware", return_value=MagicMock()),
-                patch("deepagents.graph.TodoListMiddleware", return_value=MagicMock()),
+                patch("deepagents.graph.SubAgentMiddleware", new_callable=_mock_subagent_middleware),
                 patch("deepagents.graph.PatchToolCallsMiddleware", return_value=MagicMock()),
                 patch("deepagents.graph.create_summarization_middleware", return_value=MagicMock()),
                 patch("deepagents.graph.create_agent", return_value=fake_agent) as mock_create,
@@ -551,6 +1040,1023 @@ class TestToolExclusionWiring:
             _HARNESS_PROFILES.clear()
             _HARNESS_PROFILES.update(original)
 
+    def test_tool_exclusion_middleware_is_last_in_stack(self) -> None:
+        """_ToolExclusionMiddleware is appended after custom middleware so it strips tools last."""
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile(
+                "exclprov",
+                HarnessProfile(excluded_tools=frozenset({"write_file"})),
+            )
+            fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+            fake_agent = MagicMock()
+            fake_agent.with_config.return_value = "compiled-agent"
+            custom = _named_mw("CustomMW")
+            with (
+                patch("deepagents.graph.resolve_model", return_value=fake_model),
+                patch("deepagents.graph.create_agent", return_value=fake_agent) as mock_create,
+            ):
+                create_deep_agent(model="exclprov:some-model", middleware=[custom])
+            mw_stack = mock_create.call_args.kwargs["middleware"]
+            custom_idx = next(i for i, m in enumerate(mw_stack) if m is custom)
+            excl_idx = next(i for i, m in enumerate(mw_stack) if isinstance(m, _ToolExclusionMiddleware))
+            assert excl_idx > custom_idx, "_ToolExclusionMiddleware must come after custom middleware"
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+    def test_tool_exclusion_middleware_is_last_in_subagent_stack(self) -> None:
+        """_ToolExclusionMiddleware is appended after subagent custom middleware."""
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile(
+                "exclprov",
+                HarnessProfile(
+                    excluded_tools=frozenset({"write_file"}),
+                    general_purpose_subagent=GeneralPurposeSubagentProfile(enabled=False),
+                ),
+            )
+            fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+            fake_agent = MagicMock()
+            fake_agent.with_config.return_value = "compiled-agent"
+            custom = _named_mw("CustomSubMW")
+            subagent: SubAgent = {
+                "name": "worker",
+                "description": "A worker subagent",
+                "system_prompt": "You are a worker.",
+                "model": "exclprov:some-model",
+                "middleware": [custom],
+            }
+            with (
+                patch("deepagents.graph.resolve_model", return_value=fake_model),
+                patch("deepagents.graph.create_agent", return_value=fake_agent) as mock_create,
+            ):
+                create_deep_agent(model="exclprov:some-model", subagents=[subagent])
+            main_stack = mock_create.call_args.kwargs["middleware"]
+            sub_mw = next(m for m in main_stack if isinstance(m, SubAgentMiddleware))
+            worker_spec = next(s for s in sub_mw._subagents if s.get("name") == "worker")
+            subagent_stack = worker_spec["middleware"]
+            custom_idx = next(i for i, m in enumerate(subagent_stack) if m is custom)
+            excl_idx = next(i for i, m in enumerate(subagent_stack) if isinstance(m, _ToolExclusionMiddleware))
+            assert excl_idx > custom_idx, "_ToolExclusionMiddleware must come after custom middleware in subagent"
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+
+class _StubMW(AgentMiddleware[Any, Any, Any]):
+    """Minimal real `AgentMiddleware` subclass so langchain's agent factory accepts it."""
+
+
+class TestExtraMiddlewareWiring:
+    """End-to-end tests that `extra_middleware` from a harness profile reaches the compiled agent."""
+
+    def test_extra_middleware_is_added_to_main_stack(self) -> None:
+        mw_instance = _StubMW()
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile(
+                "emprov",
+                HarnessProfile(extra_middleware=[mw_instance]),
+            )
+            fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+            fake_agent = MagicMock()
+            fake_agent.with_config.return_value = "compiled-agent"
+
+            with (
+                patch("deepagents.graph.resolve_model", return_value=fake_model),
+                patch("deepagents.graph.create_agent", return_value=fake_agent) as mock_create,
+            ):
+                create_deep_agent(model="emprov:some-model")
+
+            mw_stack = mock_create.call_args.kwargs["middleware"]
+            assert any(m is mw_instance for m in mw_stack), "extra_middleware instance missing from main middleware stack"
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+    def test_extra_middleware_factory_is_invoked_per_stack(self) -> None:
+        """A callable factory is called once for each middleware stack (main + general-purpose)."""
+        calls: list[None] = []
+
+        def factory() -> list[AgentMiddleware]:
+            calls.append(None)
+            return [_StubMW()]
+
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile(
+                "emfactprov",
+                HarnessProfile(extra_middleware=factory),
+            )
+            fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+            fake_agent = MagicMock()
+            fake_agent.with_config.return_value = "compiled-agent"
+
+            with (
+                patch("deepagents.graph.resolve_model", return_value=fake_model),
+                patch("deepagents.graph.create_agent", return_value=fake_agent),
+            ):
+                create_deep_agent(model="emfactprov:some-model")
+
+            # Invoked at least twice: once for the general-purpose subagent, once for the main stack.
+            assert len(calls) >= 2
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+
+class TestStateSchema:
+    """Tests for the `state_schema` parameter on `create_deep_agent`.
+
+    Covers wiring (the schema reaches `create_agent` and `SubAgentMiddleware`) and
+    that a custom schema is applied when declarative subagents compile, so the
+    custom field is exposed as a channel on the subagent graph.
+
+    The round-trip of a custom field through a compiled agent is not retested here:
+    it is `create_agent`'s contract, covered upstream in langchain's
+    `test_state_schema.py`. These tests only assert deepagents' own wiring.
+    """
+
+    def test_default_state_schema_uses_deep_agent_state(self) -> None:
+        fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+        fake_agent = MagicMock()
+        fake_agent.with_config.return_value = "compiled-agent"
+
+        with (
+            patch("deepagents.graph.resolve_model", return_value=fake_model),
+            patch("deepagents.graph.create_agent", return_value=fake_agent) as mock_create,
+        ):
+            create_deep_agent(model="testprov:some-model")
+
+        assert mock_create.call_args.kwargs["state_schema"] is DeepAgentState
+
+    def test_custom_state_schema_passed_through(self) -> None:
+        class MyState(DeepAgentState):
+            page_url: str
+            file_urls: list[str]
+
+        fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+        fake_agent = MagicMock()
+        fake_agent.with_config.return_value = "compiled-agent"
+
+        with (
+            patch("deepagents.graph.resolve_model", return_value=fake_model),
+            patch("deepagents.graph.create_agent", return_value=fake_agent) as mock_create,
+        ):
+            create_deep_agent(model="testprov:some-model", state_schema=MyState)
+
+        assert mock_create.call_args.kwargs["state_schema"] is MyState
+
+    def test_custom_state_schema_propagates_to_subagent_middleware(self) -> None:
+        """Custom schema reaches `SubAgentMiddleware` so declarative subagents compile with it."""
+
+        class MyState(DeepAgentState):
+            page_url: str
+
+        fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+        fake_agent = MagicMock()
+        fake_agent.with_config.return_value = "compiled-agent"
+
+        with (
+            patch("deepagents.graph.resolve_model", return_value=fake_model),
+            patch("deepagents.graph.create_agent", return_value=fake_agent) as mock_create,
+        ):
+            create_deep_agent(model="testprov:some-model", state_schema=MyState)
+
+        mw_stack = mock_create.call_args.kwargs["middleware"]
+        sub_mw = next(m for m in mw_stack if isinstance(m, SubAgentMiddleware))
+        assert sub_mw._state_schema is MyState
+
+    def test_custom_subagent_middleware_receives_private_state_keys(self) -> None:
+        """A caller-supplied task middleware filters private state like the default one."""
+
+        class _PrivateState(DeepAgentState):
+            secret: Annotated[str, PrivateStateAttr]
+
+        class _PrivateStateMiddleware(AgentMiddleware[Any, Any, Any]):
+            state_schema = _PrivateState
+
+        fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+        custom_subagent_middleware = SubAgentMiddleware(
+            backend=StateBackend(),
+            private_state_keys=frozenset({"explicit_secret"}),
+            subagents=[
+                {
+                    "name": "worker",
+                    "description": "A worker subagent.",
+                    "system_prompt": "You are a worker.",
+                    "model": fake_model,
+                    "tools": [],
+                }
+            ],
+        )
+        fake_agent = MagicMock()
+        fake_agent.with_config.return_value = "compiled-agent"
+
+        with (
+            patch("deepagents.graph.resolve_model", return_value=fake_model),
+            patch("deepagents.graph.create_agent", return_value=fake_agent),
+        ):
+            create_deep_agent(
+                model="testprov:some-model",
+                middleware=[_PrivateStateMiddleware(), custom_subagent_middleware],
+            )
+
+        assert {"explicit_secret", "secret"} <= custom_subagent_middleware.private_state_keys
+
+    def test_declarative_subagent_compiles_with_custom_state_schema(self) -> None:
+        """A declarative subagent's compiled runnable exposes the custom field as a channel."""
+
+        class MyState(DeepAgentState):
+            page_url: str
+
+        runnable = create_sub_agent(
+            {
+                "name": "researcher",
+                "description": "Research agent",
+                "system_prompt": "You are a researcher.",
+                "model": GenericFakeChatModel(messages=iter([AIMessage(content="ok")])),
+                "tools": [],
+            },
+            state_schema=MyState,
+        )
+
+        properties = runnable.get_input_jsonschema()["properties"]
+        assert "page_url" in properties
+
+
+class _OtherStubMW(AgentMiddleware[Any, Any, Any]):
+    """Second stub class so exclusion tests can assert coexistence with `_StubMW`."""
+
+
+class _StubSubMW(_StubMW):
+    """Subclass of `_StubMW` used to verify exact-type (not isinstance) exclusion."""
+
+
+class TestMiddlewareExclusionWiring:
+    """End-to-end tests that `excluded_middleware` filters the assembled stack."""
+
+    def test_excluded_middleware_strips_user_middleware_from_main_stack(self) -> None:
+        """User-supplied middleware whose class is excluded is filtered out."""
+        dropped = _StubMW()
+        kept = _OtherStubMW()
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile(
+                "excmwprov",
+                HarnessProfile(excluded_middleware=frozenset({_StubMW})),
+            )
+            fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+            fake_agent = MagicMock()
+            fake_agent.with_config.return_value = "compiled-agent"
+
+            with (
+                patch("deepagents.graph.resolve_model", return_value=fake_model),
+                patch("deepagents.graph.create_agent", return_value=fake_agent) as mock_create,
+            ):
+                create_deep_agent(
+                    model="excmwprov:some-model",
+                    middleware=[dropped, kept],
+                )
+
+            mw_stack = mock_create.call_args.kwargs["middleware"]
+            assert not any(m is dropped for m in mw_stack), "excluded user middleware leaked into stack"
+            assert any(m is kept for m in mw_stack), "non-excluded user middleware was dropped"
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+    def test_excluded_middleware_strips_profile_extra_middleware(self) -> None:
+        """A profile can exclude a class it also provides via `extra_middleware`.
+
+        This covers the merge case where a provider-level profile adds a
+        middleware and a model-level profile removes it.
+        """
+        provided = _StubMW()
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile("excmwprov", HarnessProfile(extra_middleware=[provided]))
+            register_harness_profile(
+                "excmwprov:some-model",
+                HarnessProfile(excluded_middleware=frozenset({_StubMW})),
+            )
+            fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+            fake_agent = MagicMock()
+            fake_agent.with_config.return_value = "compiled-agent"
+
+            with (
+                patch("deepagents.graph.resolve_model", return_value=fake_model),
+                patch("deepagents.graph.create_agent", return_value=fake_agent) as mock_create,
+            ):
+                create_deep_agent(model="excmwprov:some-model")
+
+            mw_stack = mock_create.call_args.kwargs["middleware"]
+            assert not any(m is provided for m in mw_stack)
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+    def test_excluded_middleware_preserves_subclass(self) -> None:
+        """Exclusion matches on exact type, so subclasses of an excluded class are kept."""
+        base_instance = _StubMW()
+        subclass_instance = _StubSubMW()
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile(
+                "excmwprov",
+                HarnessProfile(excluded_middleware=frozenset({_StubMW})),
+            )
+            fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+            fake_agent = MagicMock()
+            fake_agent.with_config.return_value = "compiled-agent"
+
+            with (
+                patch("deepagents.graph.resolve_model", return_value=fake_model),
+                patch("deepagents.graph.create_agent", return_value=fake_agent) as mock_create,
+            ):
+                create_deep_agent(
+                    model="excmwprov:some-model",
+                    middleware=[base_instance, subclass_instance],
+                )
+
+            mw_stack = mock_create.call_args.kwargs["middleware"]
+            assert not any(m is base_instance for m in mw_stack), "exact base class should be filtered"
+            assert any(m is subclass_instance for m in mw_stack), "subclass instance should be preserved"
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+    def test_excluded_middleware_strips_from_general_purpose_subagent_stack(self) -> None:
+        """The auto-added general-purpose subagent has its stack filtered too.
+
+        Covers the case where a profile injects middleware *and* excludes the same
+        class — the auto-generated general-purpose subagent inherits the profile's
+        stack and must have the excluded entries removed.
+        """
+        provided = _StubMW()
+
+        def factory() -> list[AgentMiddleware]:
+            return [provided]
+
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile(
+                "excmwprov",
+                HarnessProfile(
+                    extra_middleware=factory,
+                    excluded_middleware=frozenset({_StubMW}),
+                ),
+            )
+            fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+            fake_agent = MagicMock()
+            fake_agent.with_config.return_value = "compiled-agent"
+
+            with (
+                patch("deepagents.graph.resolve_model", return_value=fake_model),
+                patch("deepagents.graph.SubAgentMiddleware", new_callable=_mock_subagent_middleware) as mock_subagents,
+                patch("deepagents.graph.create_agent", return_value=fake_agent),
+            ):
+                create_deep_agent(model="excmwprov:some-model")
+
+            gp_spec = next(s for s in mock_subagents.call_args.kwargs["subagents"] if s["name"] == "general-purpose")
+            gp_stack = gp_spec["middleware"]
+            assert not any(type(m) is _StubMW for m in gp_stack), "general-purpose stack not filtered"
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+    def test_excluded_middleware_strips_from_declarative_subagent_stack(self) -> None:
+        """Declarative `SubAgent` specs built by `create_deep_agent` are filtered too.
+
+        Pins down which side wins when a profile both adds and excludes the same
+        middleware class: exclusion. This isn't a pattern users would write
+        directly — they'd just omit the entry from `extra_middleware`. It
+        matters because profiles compose across packages via additive
+        re-registration.
+
+        Concrete example. A platform package registers a bundled profile that
+        downstream code cannot edit:
+
+        ```python
+        # acme_platform/profiles.py — owned by the platform team
+        register_harness_profile(
+            "acme-prod",
+            HarnessProfile(
+                extra_middleware=[AuditLogging(), PIIRedaction(), RateLimit()],
+            ),
+        )
+        ```
+
+        A downstream application re-registers under the same key to subtract
+        one piece. Re-registration merges additively rather than replacing
+        (see `test_register_additive_unions_excluded_middleware`):
+
+        ```python
+        # your_app/__init__.py
+        import acme_platform  # triggers the registration above
+
+        register_harness_profile(
+            "acme-prod",
+            HarnessProfile(excluded_middleware=frozenset({AuditLogging})),
+        )
+        ```
+
+        The merged profile now holds `AuditLogging` in *both* `extra_middleware`
+        (from the platform layer) and `excluded_middleware` (from the app
+        layer). The resolved stack for any subagent using `"acme-prod"` must
+        therefore be `[PIIRedaction(), RateLimit()]` — exclusion wins.
+
+        Without this guarantee, the merged profile would silently re-add the
+        very middleware the downstream override was trying to remove, and the
+        "wrap and subtract" pattern would be unusable for declarative
+        subagents.
+        """
+        provided = _StubMW()
+
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile(
+                "excmwprov",
+                HarnessProfile(
+                    extra_middleware=[provided],
+                    excluded_middleware=frozenset({_StubMW}),
+                ),
+            )
+            fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+            fake_agent = MagicMock()
+            fake_agent.with_config.return_value = "compiled-agent"
+
+            with (
+                patch("deepagents.graph.resolve_model", return_value=fake_model),
+                patch("deepagents.graph.SubAgentMiddleware", new_callable=_mock_subagent_middleware) as mock_subagents,
+                patch("deepagents.graph.create_agent", return_value=fake_agent),
+            ):
+                create_deep_agent(
+                    model="excmwprov:main-model",
+                    subagents=[
+                        {
+                            "name": "worker",
+                            "description": "Worker.",
+                            "system_prompt": "Do work.",
+                            "model": "excmwprov:worker-model",
+                        }
+                    ],
+                )
+
+            worker_spec = next(s for s in mock_subagents.call_args.kwargs["subagents"] if s.get("name") == "worker")
+            worker_stack = worker_spec["middleware"]
+            assert not any(type(m) is _StubMW for m in worker_stack)
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+    def test_register_additive_unions_excluded_middleware(self) -> None:
+        """Re-registering under the same key unions `excluded_middleware` with the prior set."""
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile(
+                "excmwprov",
+                HarnessProfile(excluded_middleware=frozenset({_StubMW})),
+            )
+            register_harness_profile(
+                "excmwprov",
+                HarnessProfile(excluded_middleware=frozenset({_OtherStubMW})),
+            )
+            merged = _get_harness_profile("excmwprov")
+            assert merged is not None
+            assert merged.excluded_middleware == frozenset({_StubMW, _OtherStubMW})
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+    def test_excluded_middleware_strips_async_subagent_middleware(self) -> None:
+        """Async subagents add `AsyncSubAgentMiddleware` to the parent stack — it can be excluded.
+
+        Covers the case where a graph-id (remote) subagent causes
+        `AsyncSubAgentMiddleware` to be appended to the parent stack and the
+        profile lists that class in `excluded_middleware` — the auto-added
+        middleware must still be filtered out.
+        """
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile(
+                "excmwprov",
+                HarnessProfile(excluded_middleware=frozenset({AsyncSubAgentMiddleware})),
+            )
+            fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+            fake_agent = MagicMock()
+            fake_agent.with_config.return_value = "compiled-agent"
+
+            with (
+                patch("deepagents.graph.resolve_model", return_value=fake_model),
+                patch("deepagents.graph.create_agent", return_value=fake_agent) as mock_create,
+            ):
+                create_deep_agent(
+                    model="excmwprov:some-model",
+                    subagents=[
+                        {
+                            "name": "remote",
+                            "description": "Remote worker.",
+                            "graph_id": "my-graph",
+                        }
+                    ],
+                )
+
+            mw_stack = mock_create.call_args.kwargs["middleware"]
+            assert not any(type(m) is AsyncSubAgentMiddleware for m in mw_stack)
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+    def test_excluded_middleware_handles_multiple_classes_in_one_set(self) -> None:
+        """A single exclusion set with two classes removes instances of both.
+
+        Covers the case where `excluded_middleware` contains more than one class
+        and the user passes instances of each via `middleware=` — every listed
+        class must be filtered, not just the first.
+        """
+        stub = _StubMW()
+        other = _OtherStubMW()
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile(
+                "excmwprov",
+                HarnessProfile(excluded_middleware=frozenset({_StubMW, _OtherStubMW})),
+            )
+            fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+            fake_agent = MagicMock()
+            fake_agent.with_config.return_value = "compiled-agent"
+
+            with (
+                patch("deepagents.graph.resolve_model", return_value=fake_model),
+                patch("deepagents.graph.create_agent", return_value=fake_agent) as mock_create,
+            ):
+                create_deep_agent(model="excmwprov:some-model", middleware=[stub, other])
+
+            mw_stack = mock_create.call_args.kwargs["middleware"]
+            assert not any(m is stub for m in mw_stack)
+            assert not any(m is other for m in mw_stack)
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+    def test_excluded_middleware_preserves_order_of_kept_entries(self) -> None:
+        """Filtering an excluded class keeps surrounding middleware in original relative order."""
+        before = _OtherStubMW()
+        dropped = _StubMW()
+        after = _OtherStubMW()
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile(
+                "excmwprov",
+                HarnessProfile(excluded_middleware=frozenset({_StubMW})),
+            )
+            fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+            fake_agent = MagicMock()
+            fake_agent.with_config.return_value = "compiled-agent"
+
+            with (
+                patch("deepagents.graph.resolve_model", return_value=fake_model),
+                patch("deepagents.graph.create_agent", return_value=fake_agent) as mock_create,
+            ):
+                create_deep_agent(
+                    model="excmwprov:some-model",
+                    middleware=[before, dropped, after],
+                )
+
+            mw_stack = mock_create.call_args.kwargs["middleware"]
+            before_idx = mw_stack.index(before)
+            after_idx = mw_stack.index(after)
+            assert before_idx < after_idx, "relative order of non-excluded middleware changed after filter"
+            assert not any(m is dropped for m in mw_stack)
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+    def test_excluded_middleware_rejects_required_scaffolding(self) -> None:
+        """Excluding a required class raises `ValueError` at construction time.
+
+        Splitting the assertion per class makes the failure message point at
+        the specific class that slipped past the deny-list, rather than a
+        single composite test that hides which class regressed. The check
+        fires at `HarnessProfile` `__post_init__` so register-site typos
+        fail before reaching `create_deep_agent`.
+        """
+        forbidden_classes: tuple[type[AgentMiddleware[Any, Any, Any]], ...] = (
+            FilesystemMiddleware,
+            SubAgentMiddleware,
+        )
+        for forbidden_cls in forbidden_classes:
+            with pytest.raises(ValueError, match=forbidden_cls.__name__):
+                # cast silences ty's narrow inference when HarnessProfile's
+                # field type is `frozenset[type[AgentMiddleware[Any, Any, Any]]]`
+                # and the loop variable is a specific scaffolding class — the
+                # runtime behavior is identical, but ty sees the exact class
+                # instead of the parameterized base.
+                HarnessProfile(
+                    excluded_middleware=cast(
+                        "frozenset[type[AgentMiddleware[Any, Any, Any]]]",
+                        frozenset({forbidden_cls}),
+                    )
+                )
+
+
+class TestScaffoldingViolationAggregation:
+    """Multiple scaffolding exclusions surface together in a single `ValueError`.
+
+    Aggregation happens at `HarnessProfile` construction so all violations
+    in a single registration are reported in one error rather than one at a
+    time across repeated edits.
+    """
+
+    def test_class_and_name_violations_report_together(self) -> None:
+        """Mixing class-form and name-form scaffolding entries reports both in one message."""
+        with pytest.raises(ValueError, match="scaffolding") as excinfo:
+            HarnessProfile(excluded_middleware=frozenset({FilesystemMiddleware, "SubAgentMiddleware"}))
+        message = str(excinfo.value)
+        assert "FilesystemMiddleware" in message
+        assert "SubAgentMiddleware" in message
+        assert "scaffolding" in message
+
+
+class TestRequiredMiddlewareNamesCoverage:
+    """Drift guard: `_REQUIRED_MIDDLEWARE_NAMES` must cover every required class's `.name`.
+
+    `_REQUIRED_MIDDLEWARE_NAMES` is a hand-maintained frozenset of the string
+    forms that should be rejected by the scaffolding guard. If a future
+    refactor renames a required class or overrides its `.name` without
+    updating the names constant, string-form exclusion would silently bypass
+    the guard. This test catches that drift.
+    """
+
+    def test_every_required_class_name_is_listed(self) -> None:
+        """Every `_REQUIRED_MIDDLEWARE_CLASSES` entry's `.name` must appear in `_REQUIRED_MIDDLEWARE_NAMES`.
+
+        `.name` is a property on `AgentMiddleware` that doesn't require
+        `__init__` to have run, so `__new__` gives us the reportable name
+        without invoking constructor arguments we don't have here.
+        """
+        for cls in _REQUIRED_MIDDLEWARE_CLASSES:
+            instance = cls.__new__(cls)
+            assert instance.name in _REQUIRED_MIDDLEWARE_NAMES, (
+                f"{cls.__name__}.name={instance.name!r} is not in _REQUIRED_MIDDLEWARE_NAMES "
+                f"({sorted(_REQUIRED_MIDDLEWARE_NAMES)!r}) — string-form exclusion would "
+                f"silently bypass the scaffolding guard. Add it to _REQUIRED_MIDDLEWARE_NAMES."
+            )
+
+
+class PublicStubMW(AgentMiddleware[Any, Any, Any]):
+    """Middleware with a public (non-underscore-prefixed) class name.
+
+    String-form `excluded_middleware` matches against `AgentMiddleware.name`,
+    which defaults to the class's `__name__`. The underscore-prefix guard
+    rejects private-looking names, so string-form exclusion tests need a stub
+    class whose name does not start with `_`.
+    """
+
+
+class OtherPublicStubMW(AgentMiddleware[Any, Any, Any]):
+    """Second public-named stub used to assert coexistence with `PublicStubMW`."""
+
+
+class TestStringFormExcludedMiddleware:
+    """End-to-end tests that string-form entries in `excluded_middleware` filter the stack.
+
+    String entries match `AgentMiddleware.name` exactly (no normalization), so
+    a caller can exclude middleware without importing its class — useful for
+    profiles loaded from config files or for excluding middleware injected
+    internally by `create_deep_agent`.
+    """
+
+    def test_string_entry_excludes_user_middleware_by_name(self) -> None:
+        """An exact `.name` match drops the corresponding user middleware."""
+        dropped = PublicStubMW()
+        kept = OtherPublicStubMW()
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile(
+                "strexcprov",
+                HarnessProfile(excluded_middleware=frozenset({"PublicStubMW"})),
+            )
+            fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+            fake_agent = MagicMock()
+            fake_agent.with_config.return_value = "compiled-agent"
+
+            with (
+                patch("deepagents.graph.resolve_model", return_value=fake_model),
+                patch("deepagents.graph.create_agent", return_value=fake_agent) as mock_create,
+            ):
+                create_deep_agent(
+                    model="strexcprov:some-model",
+                    middleware=[dropped, kept],
+                )
+
+            mw_stack = mock_create.call_args.kwargs["middleware"]
+            assert not any(m is dropped for m in mw_stack)
+            assert any(m is kept for m in mw_stack)
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+    def test_string_entry_matches_overridden_name_on_summarization(self) -> None:
+        """`"SummarizationMiddleware"` drops `_DeepAgentsSummarizationMiddleware` via the `.name` override."""
+        dropped = _DeepAgentsSummarizationMiddleware.__new__(_DeepAgentsSummarizationMiddleware)
+        kept = PublicStubMW()
+        assert dropped.name == "SummarizationMiddleware", "summarization impl must report its public alias via `.name`"
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile(
+                "strexcprov",
+                HarnessProfile(excluded_middleware=frozenset({"SummarizationMiddleware"})),
+            )
+            fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+            fake_agent = MagicMock()
+            fake_agent.with_config.return_value = "compiled-agent"
+
+            with (
+                patch("deepagents.graph.resolve_model", return_value=fake_model),
+                patch("deepagents.graph.create_agent", return_value=fake_agent) as mock_create,
+            ):
+                create_deep_agent(
+                    model="strexcprov:some-model",
+                    middleware=[dropped, kept],
+                )
+
+            mw_stack = mock_create.call_args.kwargs["middleware"]
+            assert not any(type(m) is _DeepAgentsSummarizationMiddleware for m in mw_stack)
+            assert any(m is kept for m in mw_stack)
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+    def test_mixed_class_and_string_entries_both_apply(self) -> None:
+        """A single `excluded_middleware` set may hold both classes and strings."""
+        dropped_by_class = PublicStubMW()
+        dropped_by_string = OtherPublicStubMW()
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile(
+                "strexcprov",
+                HarnessProfile(excluded_middleware=frozenset({PublicStubMW, "OtherPublicStubMW"})),
+            )
+            fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+            fake_agent = MagicMock()
+            fake_agent.with_config.return_value = "compiled-agent"
+
+            with (
+                patch("deepagents.graph.resolve_model", return_value=fake_model),
+                patch("deepagents.graph.create_agent", return_value=fake_agent) as mock_create,
+            ):
+                create_deep_agent(
+                    model="strexcprov:some-model",
+                    middleware=[dropped_by_class, dropped_by_string],
+                )
+
+            mw_stack = mock_create.call_args.kwargs["middleware"]
+            assert not any(m is dropped_by_class for m in mw_stack)
+            assert not any(m is dropped_by_string for m in mw_stack)
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+    @pytest.mark.parametrize(
+        "forbidden",
+        [
+            "FilesystemMiddleware",
+            "SubAgentMiddleware",
+        ],
+    )
+    def test_string_entry_rejects_required_scaffolding(self, forbidden: str) -> None:
+        """Public-name strings of required scaffolding raise `ValueError` at construction.
+
+        Underscore-prefixed private middleware names are rejected by the
+        grammar guard on `HarnessProfile.__post_init__` (see
+        `test_string_entry_rejects_private_underscore_prefixed_names`); the
+        public spellings here are caught by the same construction-time
+        scaffolding guard rather than waiting for `create_deep_agent`.
+        """
+        with pytest.raises(ValueError, match="scaffolding"):
+            HarnessProfile(excluded_middleware=frozenset({forbidden}))
+
+    @pytest.mark.parametrize("entry", ["_ToolExclusionMiddleware"])
+    def test_string_entry_rejects_private_underscore_prefixed_names(self, entry: str) -> None:
+        """Underscore-prefixed string entries raise `ValueError` at construction.
+
+        The grammar guard on `HarnessProfile.__post_init__` rejects private
+        plain names up front. This catches typos eagerly; callers who
+        genuinely need to exclude a private middleware can pass the class
+        directly via the runtime `HarnessProfile`.
+        """
+        with pytest.raises(ValueError, match="cannot start with '_'"):
+            HarnessProfile(excluded_middleware=frozenset({entry}))
+
+    def test_string_entry_unknown_name_raises_coverage_error(self) -> None:
+        """A string entry that matches nothing across any stack raises `ValueError`.
+
+        Typos and stale profiles fail loudly rather than silently no-opping —
+        a typo'd exclusion that silently has no effect is a common source of
+        "my profile isn't working" confusion.
+        """
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile(
+                "strexcprov",
+                HarnessProfile(excluded_middleware=frozenset({"DoesNotExistMiddleware"})),
+            )
+            fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+            with (
+                patch("deepagents.graph.resolve_model", return_value=fake_model),
+                pytest.raises(ValueError, match="matched no middleware"),
+            ):
+                create_deep_agent(model="strexcprov:some-model", middleware=[PublicStubMW()])
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+    def test_class_entry_unknown_class_raises_coverage_error(self) -> None:
+        """A class entry that matches nothing across any stack raises `ValueError`.
+
+        The coverage guard is symmetric across class and string forms — class
+        typos (or stale profiles referencing removed middleware) are caught
+        at assembly time alongside string typos.
+        """
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile(
+                "strexcprov",
+                HarnessProfile(excluded_middleware=frozenset({_OtherStubMW})),
+            )
+            fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+            with (
+                patch("deepagents.graph.resolve_model", return_value=fake_model),
+                pytest.raises(ValueError, match="matched no middleware"),
+            ):
+                create_deep_agent(model="strexcprov:some-model", middleware=[_StubMW()])
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+    def test_excluding_non_default_todo_middleware_raises_coverage_error(self) -> None:
+        """Excluding `TodoListMiddleware` now raises, since it is no longer a default.
+
+        Todos are opt-in: `TodoListMiddleware` is not added to any default stack,
+        so a profile excluding it matches nothing across the main and GP subagent
+        stacks and trips the coverage guard — a typo/stale-profile signal.
+        """
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile(
+                "strexcprov",
+                HarnessProfile(excluded_middleware=frozenset({"TodoListMiddleware"})),
+            )
+            fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+            with (
+                patch("deepagents.graph.resolve_model", return_value=fake_model),
+                pytest.raises(ValueError, match="matched no middleware"),
+            ):
+                create_deep_agent(model="strexcprov:some-model")
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+    def test_string_entry_matching_multiple_classes_raises(self) -> None:
+        """A string entry matching multiple distinct classes in one stack raises `ValueError`.
+
+        Protects against accidental collisions where a user-supplied
+        middleware's `.name` happens to match a built-in alias. Dropping
+        every instance under the shared name would silently widen the blast
+        radius beyond what the caller asked for.
+        """
+
+        class ShadowingStubMW(AgentMiddleware[Any, Any, Any]):
+            """Second class whose `.name` collides with `PublicStubMW` by override."""
+
+            name = "PublicStubMW"
+
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile(
+                "strexcprov",
+                HarnessProfile(excluded_middleware=frozenset({"PublicStubMW"})),
+            )
+            fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+            with (
+                patch("deepagents.graph.resolve_model", return_value=fake_model),
+                pytest.raises(ValueError, match="matched multiple distinct"),
+            ):
+                create_deep_agent(
+                    model="strexcprov:some-model",
+                    middleware=[PublicStubMW(), ShadowingStubMW()],
+                )
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+    def test_string_entry_unions_with_class_entry_on_merge(self) -> None:
+        """Re-registering with a string-form entry unions with an existing class-form set."""
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile(
+                "strexcprov",
+                HarnessProfile(excluded_middleware=frozenset({PublicStubMW})),
+            )
+            register_harness_profile(
+                "strexcprov",
+                HarnessProfile(excluded_middleware=frozenset({"OtherPublicStubMW"})),
+            )
+            merged = _get_harness_profile("strexcprov")
+            assert merged is not None
+            assert merged.excluded_middleware == frozenset({PublicStubMW, "OtherPublicStubMW"})
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+
+class TestSubagentLevelProfileResolution:
+    """Tests that sync subagents with their own `model` get their own harness profile applied."""
+
+    def test_subagent_with_different_model_resolves_its_own_profile(self) -> None:
+        parent_mw = _StubMW()
+        subagent_mw = _StubMW()
+
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile(
+                "parentprov",
+                HarnessProfile(extra_middleware=[parent_mw]),
+            )
+            register_harness_profile(
+                "subprov",
+                HarnessProfile(extra_middleware=[subagent_mw]),
+            )
+
+            parent_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+            subagent_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+
+            def fake_resolve(spec: str | BaseChatModel) -> BaseChatModel:
+                if isinstance(spec, BaseChatModel):
+                    return spec
+                if spec.startswith("subprov"):
+                    return subagent_model
+                return parent_model
+
+            fake_agent = MagicMock()
+            fake_agent.with_config.return_value = "compiled-agent"
+
+            with (
+                patch("deepagents.graph.resolve_model", side_effect=fake_resolve),
+                patch("deepagents.graph.SubAgentMiddleware", new_callable=_mock_subagent_middleware) as mock_subagents,
+                patch("deepagents.graph.create_agent", return_value=fake_agent),
+            ):
+                create_deep_agent(
+                    model="parentprov:main-model",
+                    subagents=[
+                        {
+                            "name": "worker",
+                            "description": "Worker.",
+                            "system_prompt": "Do work.",
+                            "model": "subprov:worker-model",
+                        }
+                    ],
+                )
+
+            sub_specs = mock_subagents.call_args.kwargs["subagents"]
+            worker = next(s for s in sub_specs if s.get("name") == "worker")
+            worker_middleware = worker["middleware"]
+            assert any(m is subagent_mw for m in worker_middleware), "Subagent profile's middleware not applied"
+            assert not any(m is parent_mw for m in worker_middleware), "Parent profile's middleware leaked into subagent"
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+
+class TestProfileMissLogLevel:
+    """Profile misses remain debug diagnostics even with registered profiles."""
+
+    @pytest.mark.parametrize("spec", [None, "someprovv:some-model"])
+    @pytest.mark.parametrize("registered", [False, True])
+    def test_miss_logs_at_debug(self, caplog: pytest.LogCaptureFixture, spec: str | None, *, registered: bool) -> None:
+        with patch.dict(_HARNESS_PROFILES):
+            if registered:
+                register_harness_profile("someprov", HarnessProfile(system_prompt_suffix="x"))
+            model = _make_model({"model_name": "some-model"})
+            model._get_ls_params = MagicMock(return_value={"ls_provider": "someprovv"})
+            with caplog.at_level(logging.DEBUG, logger="deepagents.profiles.harness.harness_profiles"):
+                assert _harness_profile_for_model(model, spec) == HarnessProfile()
+            records = [r for r in caplog.records if "No harness profile matched" in r.getMessage()]
+            assert records, "Expected a profile-miss log record"
+            assert all(r.levelno == logging.DEBUG for r in records)
+            assert any("someprovv" in r.getMessage() for r in records)
+
+    def test_string_spec_hit_logs_no_miss(self, caplog: pytest.LogCaptureFixture) -> None:
+        with patch.dict(_HARNESS_PROFILES):
+            profile = HarnessProfile(system_prompt_suffix="x")
+            register_harness_profile("someprov", profile)
+            with caplog.at_level(logging.DEBUG, logger="deepagents.profiles.harness.harness_profiles"):
+                assert _harness_profile_for_model(_make_model({}), "someprov") is profile
+            assert not [r for r in caplog.records if "No harness profile matched" in r.getMessage()]
+
 
 class TestModelNoneDeprecationWarning:
     """Tests for the deprecation warning when model=None."""
@@ -567,7 +2073,11 @@ class TestModelNoneDeprecationWarning:
         assert "deprecated" in msg
         assert "BaseChatModel | str" in msg
         assert "https://docs.langchain.com/oss/python/deepagents/models" in msg
-        # stacklevel=2 should point at the caller, not inside graph.py
+        # The warning must be a `LangChainDeprecationWarning`, not stdlib —
+        # this is the strongest signal that we routed through `warn_deprecated`.
+        assert deprecations[0].category is LangChainDeprecationWarning
+        # And it should be attributed to the caller frame (this test file),
+        # not to a frame inside `deepagents` itself.
         assert deprecations[0].filename == __file__
 
     def test_model_none_default_emits_deprecation_warning(self) -> None:
@@ -588,3 +2098,1134 @@ class TestModelNoneDeprecationWarning:
 
         deprecations = [w for w in caught if issubclass(w.category, DeprecationWarning) and "model=None" in str(w.message)]
         assert len(deprecations) == 0
+
+
+class TestPrebuiltModelIdentifierDoesNotMatchProviderKey:
+    """Regression tests: a bare model identifier must not match a registered provider key.
+
+    Previously, `_harness_profile_for_model` would call `_get_harness_profile(identifier)`
+    for a pre-built model whose identifier happened to coincide with a registered
+    provider (e.g. an in-house proxy whose `model_name` is `"openai"`), silently
+    picking up that provider's profile. The fix skips bare-identifier lookups.
+    """
+
+    def test_bare_identifier_coinciding_with_provider_key_does_not_match(self) -> None:
+        original = dict(_HARNESS_PROFILES)
+        try:
+            # A harness profile is registered under bare "openai".
+            register_harness_profile(
+                "openai",
+                HarnessProfile(system_prompt_suffix="openai-specific"),
+            )
+            # Build a pre-built model whose identifier happens to equal "openai"
+            # but whose provider (from _get_ls_params) is a different vendor.
+            model = _make_model({"model_name": "openai"})
+            model._get_ls_params = MagicMock(return_value={"ls_provider": "custom_proxy"})
+
+            result = _harness_profile_for_model(model, None)
+            assert result == HarnessProfile(), "Bare-identifier lookup should not match the openai provider profile"
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+    def test_colon_qualified_identifier_still_matches(self) -> None:
+        """If the identifier itself is in `provider:model` shape, lookup still resolves."""
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile(
+                "colprov",
+                HarnessProfile(system_prompt_suffix="from provider"),
+            )
+            model = _make_model({"model_name": "colprov:some-model"})
+            # No ls_provider in _get_ls_params; the identifier alone carries the provider.
+            model._get_ls_params = MagicMock(return_value={})
+            result = _harness_profile_for_model(model, None)
+            assert result.system_prompt_suffix == "from provider"
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+
+class TestSubagentLevelToolExclusionAndOverrides:
+    """Tests that sync subagents with their own profile get their own `excluded_tools` and `tool_description_overrides`."""
+
+    def test_subagent_excluded_tools_not_leaked_from_parent(self) -> None:
+        """A subagent's profile `excluded_tools` must apply to the subagent only, not inherit parent's."""
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile(
+                "parentexcl",
+                HarnessProfile(excluded_tools=frozenset({"parent_only"})),
+            )
+            register_harness_profile(
+                "subexcl",
+                HarnessProfile(excluded_tools=frozenset({"child_only"})),
+            )
+
+            parent_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+            subagent_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+
+            def fake_resolve(spec: str | BaseChatModel) -> BaseChatModel:
+                if isinstance(spec, BaseChatModel):
+                    return spec
+                if spec.startswith("subexcl"):
+                    return subagent_model
+                return parent_model
+
+            fake_agent = MagicMock()
+            fake_agent.with_config.return_value = "compiled-agent"
+
+            with (
+                patch("deepagents.graph.resolve_model", side_effect=fake_resolve),
+                patch("deepagents.graph.SubAgentMiddleware", new_callable=_mock_subagent_middleware) as mock_subagents,
+                patch("deepagents.graph.create_agent", return_value=fake_agent),
+            ):
+                create_deep_agent(
+                    model="parentexcl:main-model",
+                    subagents=[
+                        {
+                            "name": "worker",
+                            "description": "Worker.",
+                            "system_prompt": "Do work.",
+                            "model": "subexcl:worker-model",
+                        }
+                    ],
+                )
+
+            sub_specs = mock_subagents.call_args.kwargs["subagents"]
+            worker = next(s for s in sub_specs if s.get("name") == "worker")
+            exclusions = [m for m in worker["middleware"] if isinstance(m, _ToolExclusionMiddleware)]
+            assert len(exclusions) == 1
+            assert exclusions[0]._excluded == frozenset({"child_only"})
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+    def test_subagent_tool_description_overrides_not_leaked_from_parent(self) -> None:
+        """A subagent's profile `tool_description_overrides` must reach its FilesystemMiddleware, not the parent's."""
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile(
+                "parentdesc",
+                HarnessProfile(tool_description_overrides={"ls": "parent ls"}),
+            )
+            register_harness_profile(
+                "subdesc",
+                HarnessProfile(tool_description_overrides={"ls": "child ls"}),
+            )
+
+            parent_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+            subagent_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+
+            def fake_resolve(spec: str | BaseChatModel) -> BaseChatModel:
+                if isinstance(spec, BaseChatModel):
+                    return spec
+                if spec.startswith("subdesc"):
+                    return subagent_model
+                return parent_model
+
+            fake_agent = MagicMock()
+            fake_agent.with_config.return_value = "compiled-agent"
+
+            with (
+                patch("deepagents.graph.resolve_model", side_effect=fake_resolve),
+                patch("deepagents.graph.FilesystemMiddleware", return_value=MagicMock()) as mock_fs,
+                patch("deepagents.graph.SubAgentMiddleware", new_callable=_mock_subagent_middleware),
+                patch("deepagents.graph.create_agent", return_value=fake_agent),
+            ):
+                create_deep_agent(
+                    model="parentdesc:main-model",
+                    subagents=[
+                        {
+                            "name": "worker",
+                            "description": "Worker.",
+                            "system_prompt": "Do work.",
+                            "model": "subdesc:worker-model",
+                        }
+                    ],
+                )
+
+            # The subagent's FilesystemMiddleware should receive the child overrides.
+            subagent_descriptions = [
+                call.kwargs["custom_tool_descriptions"]
+                for call in mock_fs.call_args_list
+                if dict(call.kwargs["custom_tool_descriptions"]) == {"ls": "child ls"}
+            ]
+            assert subagent_descriptions, "Subagent FilesystemMiddleware did not receive its own tool_description_overrides"
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+
+class TestSubagentSystemPromptWiring:
+    """`HarnessProfile` prompt fields apply to declarative subagents and the auto-added GP subagent.
+
+    Without this wiring, built-in profile suffixes (e.g. Codex behavior
+    overlays, Claude Opus 4.7 tool-usage guidance) would silently be dropped
+    when a subagent picks up that model — middleware/tool fields would apply
+    but prompt fields would not, an asymmetry that confuses users.
+    """
+
+    def _capture_subagents(self, model: str | BaseChatModel, **kwargs: Any) -> list[Any]:
+        """Run `create_deep_agent`, returning the subagent specs given to `SubAgentMiddleware`."""
+        fake_agent = MagicMock()
+        fake_agent.with_config.return_value = "compiled-agent"
+        with (
+            patch("deepagents.graph.SubAgentMiddleware", new_callable=_mock_subagent_middleware) as mock_subagents,
+            patch("deepagents.graph.create_summarization_middleware", return_value=MagicMock()),
+            patch("deepagents.graph.create_agent", return_value=fake_agent),
+        ):
+            create_deep_agent(model=model, **kwargs)
+        # `subagents` may be absent if no subagent was built; surface as empty.
+        if not mock_subagents.called:
+            return []
+        return list(mock_subagents.call_args.kwargs["subagents"])
+
+    def test_subagent_inherits_profile_suffix(self) -> None:
+        """A declarative subagent's `system_prompt` gains the profile's suffix."""
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile(
+                "subprompt",
+                HarnessProfile(system_prompt_suffix="Be terse."),
+            )
+            parent = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+            sub = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+
+            def fake_resolve(spec: str | BaseChatModel) -> BaseChatModel:
+                if isinstance(spec, BaseChatModel):
+                    return spec
+                if spec.startswith("subprompt"):
+                    return sub
+                return parent
+
+            with patch("deepagents.graph.resolve_model", side_effect=fake_resolve):
+                specs = self._capture_subagents(
+                    model=parent,
+                    subagents=[
+                        {
+                            "name": "worker",
+                            "description": "Worker.",
+                            "system_prompt": "Authored worker prompt.",
+                            "model": "subprompt:worker-model",
+                        }
+                    ],
+                )
+            worker = next(s for s in specs if s.get("name") == "worker")
+            assert worker["system_prompt"] == "Authored worker prompt.\n\nBe terse."
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+    def test_subagent_base_system_prompt_replaces_authored_prompt(self) -> None:
+        """`base_system_prompt` is treated as the new base, mirroring main-agent semantics."""
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile(
+                "subbase",
+                HarnessProfile(
+                    base_system_prompt="Profile base.",
+                    system_prompt_suffix="Suffix.",
+                ),
+            )
+            parent = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+            sub = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+
+            def fake_resolve(spec: str | BaseChatModel) -> BaseChatModel:
+                if isinstance(spec, BaseChatModel):
+                    return spec
+                if spec.startswith("subbase"):
+                    return sub
+                return parent
+
+            with patch("deepagents.graph.resolve_model", side_effect=fake_resolve):
+                specs = self._capture_subagents(
+                    model=parent,
+                    subagents=[
+                        {
+                            "name": "worker",
+                            "description": "Worker.",
+                            "system_prompt": "Authored worker prompt.",
+                            "model": "subbase:worker-model",
+                        }
+                    ],
+                )
+            worker = next(s for s in specs if s.get("name") == "worker")
+            assert worker["system_prompt"] == "Profile base.\n\nSuffix."
+            assert "Authored worker prompt." not in worker["system_prompt"]
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+    def test_general_purpose_subagent_inherits_profile_suffix(self) -> None:
+        """The auto-added GP subagent receives the main profile's suffix.
+
+        Built-ins like the Codex / Claude Opus 4.7 profiles register a suffix;
+        this asserts the GP subagent picks it up alongside the main agent.
+        """
+        from deepagents.middleware.subagents import GENERAL_PURPOSE_SUBAGENT  # noqa: PLC0415
+
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile(
+                "gpsuffix",
+                HarnessProfile(system_prompt_suffix="GP suffix."),
+            )
+            parent = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+            with patch("deepagents.graph.resolve_model", return_value=parent):
+                specs = self._capture_subagents(model="gpsuffix:main")
+            gp = next(s for s in specs if s["name"] == "general-purpose")
+            expected = GENERAL_PURPOSE_SUBAGENT["system_prompt"] + "\n\nGP suffix."
+            assert gp["system_prompt"] == expected
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+    def test_general_purpose_subagent_with_gp_override_and_profile_suffix(self) -> None:
+        """`general_purpose_subagent.system_prompt` is the GP base; the profile suffix layers on top.
+
+        This locks in the layering order: GP-level system_prompt overrides the
+        default GP base, then the profile suffix is appended.
+        """
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile(
+                "gpcombined",
+                HarnessProfile(
+                    system_prompt_suffix="Trailer.",
+                    general_purpose_subagent=GeneralPurposeSubagentProfile(
+                        system_prompt="GP override.",
+                    ),
+                ),
+            )
+            parent = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+            with patch("deepagents.graph.resolve_model", return_value=parent):
+                specs = self._capture_subagents(model="gpcombined:main")
+            gp = next(s for s in specs if s["name"] == "general-purpose")
+            assert gp["system_prompt"] == "GP override.\n\nTrailer."
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+    def test_general_purpose_subagent_override_beats_profile_base(self) -> None:
+        """GP-level `system_prompt` wins over the profile-level `base_system_prompt`.
+
+        Both fields can carry a base-prompt replacement, but
+        `general_purpose_subagent.system_prompt` is GP-specific configuration
+        while `base_system_prompt` is a global override that primarily targets
+        the main agent. For the GP subagent, the more-specific intent wins —
+        otherwise a user setting both fields would silently see their GP
+        override dropped, which is surprising and hard to debug.
+
+        The profile suffix still layers on top of the GP override.
+        """
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile(
+                "gpprec",
+                HarnessProfile(
+                    base_system_prompt="Profile base.",
+                    system_prompt_suffix="Trailer.",
+                    general_purpose_subagent=GeneralPurposeSubagentProfile(
+                        system_prompt="GP override.",
+                    ),
+                ),
+            )
+            parent = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+            with patch("deepagents.graph.resolve_model", return_value=parent):
+                specs = self._capture_subagents(model="gpprec:main")
+            gp = next(s for s in specs if s["name"] == "general-purpose")
+            assert gp["system_prompt"] == "GP override.\n\nTrailer."
+            # Lock in the more-specific-wins semantic: profile.base_system_prompt
+            # MUST NOT appear in the GP prompt when a GP-level override is set.
+            assert "Profile base." not in gp["system_prompt"]
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+    def test_general_purpose_subagent_falls_back_to_profile_base_without_override(self) -> None:
+        """Without a GP-level override, `profile.base_system_prompt` does apply to the GP subagent.
+
+        Symmetric to the precedence test above: when the user hasn't set a
+        GP-level prompt, the profile-level base override is still the right
+        fallback (it just shouldn't *override* the GP-specific intent when both
+        are set).
+        """
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile(
+                "gpfallback",
+                HarnessProfile(
+                    base_system_prompt="Profile base.",
+                    system_prompt_suffix="Trailer.",
+                ),
+            )
+            parent = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+            with patch("deepagents.graph.resolve_model", return_value=parent):
+                specs = self._capture_subagents(model="gpfallback:main")
+            gp = next(s for s in specs if s["name"] == "general-purpose")
+            assert gp["system_prompt"] == "Profile base.\n\nTrailer."
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+
+class TestPrebuiltSubagentModelResolvesProfile:
+    """A pre-built `BaseChatModel` passed as a subagent's `model` must still get a harness profile via identifier/provider extraction."""
+
+    def test_prebuilt_subagent_model_uses_provider_profile_by_ls_params(self) -> None:
+        subagent_mw = _StubMW()
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile(
+                "prebuiltprov",
+                HarnessProfile(extra_middleware=[subagent_mw]),
+            )
+
+            parent_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+            # Subagent pre-built model: expose model_name + _get_ls_params so
+            # `_harness_profile_for_model` can extract identifier and provider.
+            subagent_model = MagicMock(spec=BaseChatModel)
+            subagent_model.model_name = "sub-model"
+            subagent_model.model_dump.return_value = {"model_name": "sub-model"}
+            subagent_model._get_ls_params = MagicMock(return_value={"ls_provider": "prebuiltprov"})
+
+            def fake_resolve(spec: str | BaseChatModel) -> BaseChatModel:
+                if isinstance(spec, BaseChatModel):
+                    return spec
+                return parent_model
+
+            fake_agent = MagicMock()
+            fake_agent.with_config.return_value = "compiled-agent"
+
+            with (
+                patch("deepagents.graph.resolve_model", side_effect=fake_resolve),
+                patch("deepagents.graph.SubAgentMiddleware", new_callable=_mock_subagent_middleware) as mock_subagents,
+                patch("deepagents.graph.create_summarization_middleware", return_value=MagicMock()),
+                patch("deepagents.graph.create_agent", return_value=fake_agent),
+            ):
+                create_deep_agent(
+                    model=parent_model,
+                    subagents=[
+                        {
+                            "name": "worker",
+                            "description": "Worker.",
+                            "system_prompt": "Do work.",
+                            "model": subagent_model,
+                        }
+                    ],
+                )
+
+            sub_specs = mock_subagents.call_args.kwargs["subagents"]
+            worker = next(s for s in sub_specs if s.get("name") == "worker")
+            assert any(m is subagent_mw for m in worker["middleware"]), "Pre-built subagent model did not pick up registered profile"
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+
+class TestHasAnyHarnessProfile:
+    """Regression test for `_has_any_harness_profile` helper."""
+
+    def test_reports_true_when_registered(self) -> None:
+        from deepagents.profiles.harness.harness_profiles import _has_any_harness_profile  # noqa: PLC0415
+
+        original = dict(_HARNESS_PROFILES)
+        try:
+            assert _has_any_harness_profile() is False
+            register_harness_profile("helperprov", HarnessProfile(system_prompt_suffix="x"))
+            assert _has_any_harness_profile() is True
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+
+class TestBuildDefaultModelContract:
+    """Pin the contract that internal default-model construction does not burn `get_default_model`'s dedupe slot.
+
+    Direct callers of `get_default_model` should still see exactly one warning
+    after `create_deep_agent(model=None)` runs in the same process.
+    """
+
+    def test_create_deep_agent_does_not_consume_get_default_model_dedupe(self) -> None:
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            create_deep_agent(model=None)
+            get_default_model()
+
+        get_default_model_warnings = [
+            w for w in caught if issubclass(w.category, DeprecationWarning) and "Relying on the default model" in str(w.message)
+        ]
+        # `create_deep_agent(model=None)` must not consume the
+        # `get_default_model` dedupe slot — the direct caller still gets a
+        # warning.
+        assert len(get_default_model_warnings) == 1
+
+    def test_get_default_model_emits_langchain_deprecation_warning(self) -> None:
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            get_default_model()
+
+        deprecations = [w for w in caught if issubclass(w.category, DeprecationWarning)]
+        assert len(deprecations) == 1
+        assert deprecations[0].category is LangChainDeprecationWarning
+        msg = str(deprecations[0].message)
+        assert "deprecated" in msg
+        assert "https://docs.langchain.com/oss/python/deepagents/models" in msg
+
+
+class TestMiddlewareTyping:
+    """Type-level coverage for `create_deep_agent`'s `middleware` parameter."""
+
+    def test_context_aware_middleware_type_checks(self) -> None:
+        """Context-aware middleware must type-check under `context_schema` (#4051).
+
+        Runs `ty` over a fixture that passes an
+        `AgentMiddleware[AgentState, Context]` alongside `context_schema=Context`.
+        Before the fix the `middleware` parameter pinned `ContextT=None`, so the
+        type checker rejected the call.
+        """
+        if shutil.which("ty") is None:
+            pytest.skip("ty is not installed in this environment")
+
+        package_root = Path(__file__).parents[2]
+        fixture = Path(__file__).parent / "_typing_fixtures" / "context_aware_middleware.py"
+        result = subprocess.run(  # noqa: S603  # fixed args, no user input
+            [sys.executable, "-m", "ty", "check", str(fixture)],
+            cwd=package_root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode == 0, f"ty reported diagnostics:\n{result.stdout}\n{result.stderr}"
+
+
+def _named_mw(name: str) -> AgentMiddleware[Any, Any, Any]:
+    """Return a minimal AgentMiddleware whose .name returns `name`."""
+
+    class _MW(AgentMiddleware[Any, Any, Any]):
+        @property
+        def name(self) -> str:
+            return name
+
+    return _MW()
+
+
+def _fallback_mw() -> ModelFallbackMiddleware:
+    """Return a `ModelFallbackMiddleware`, which skill tool disclosure must run inside."""
+    return ModelFallbackMiddleware(GenericFakeChatModel(messages=iter([])))
+
+
+class TestApplyUserMiddleware:
+    """Unit tests for the _apply_user_middleware helper."""
+
+    def test_matching_name_replaces_at_same_position(self) -> None:
+        a, b, c = _named_mw("A"), _named_mw("B"), _named_mw("C")
+        replacement = _named_mw("B")
+        result = _apply_custom_middleware([a, b, c], [replacement])
+        assert result[1] is replacement
+        assert result[0] is a
+        assert result[2] is c
+        assert len(result) == 3
+
+    def test_non_matching_name_is_appended(self) -> None:
+        a, b = _named_mw("A"), _named_mw("B")
+        new = _named_mw("Z")
+        result = _apply_custom_middleware([a, b], [new])
+        assert result[-1] is new
+        assert len(result) == 3
+
+    def test_empty_user_list_returns_base_unchanged(self) -> None:
+        a, b = _named_mw("A"), _named_mw("B")
+        result = _apply_custom_middleware([a, b], [])
+        assert result == [a, b]
+
+    def test_multiple_replacements_in_one_call(self) -> None:
+        a, b, c = _named_mw("A"), _named_mw("B"), _named_mw("C")
+        r_a, r_c = _named_mw("A"), _named_mw("C")
+        result = _apply_custom_middleware([a, b, c], [r_a, r_c])
+        assert result[0] is r_a
+        assert result[1] is b
+        assert result[2] is r_c
+        assert len(result) == 3
+
+    def test_non_matching_appended_in_original_order(self) -> None:
+        base = _named_mw("Base")
+        x, y = _named_mw("X"), _named_mw("Y")
+        result = _apply_custom_middleware([base], [x, y])
+        assert result[1] is x
+        assert result[2] is y
+
+    def test_mix_of_replacements_and_new_entries(self) -> None:
+        a, b = _named_mw("A"), _named_mw("B")
+        r_a, new = _named_mw("A"), _named_mw("New")
+        result = _apply_custom_middleware([a, b], [r_a, new])
+        assert result[0] is r_a
+        assert result[1] is b
+        assert result[2] is new
+
+
+class TestUserMiddlewareOverride:
+    """Integration tests: user-supplied middleware replaces same-named defaults in create_deep_agent."""
+
+    def _run(self, user_mw: list[Any]) -> list[Any]:
+        fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+        fake_agent = MagicMock()
+        fake_agent.with_config.return_value = "compiled-agent"
+        with (
+            patch("deepagents.graph.resolve_model", return_value=fake_model),
+            patch("deepagents.graph.create_agent", return_value=fake_agent) as mock_create,
+        ):
+            create_deep_agent(model="anthropic:claude-sonnet-4-6", middleware=user_mw)
+        return mock_create.call_args.kwargs["middleware"]
+
+    def test_custom_middleware_precedes_prompt_caching(self) -> None:
+        """User middleware must wrap outside AnthropicPromptCachingMiddleware.
+
+        The relative order fixes the Anthropic prompt-cache prefix: user
+        middleware that mutates the request/system prompt has to run before the
+        cache breakpoint, else it can invalidate the cached prefix.
+        """
+        custom = _named_mw("CustomMW")
+        stack = self._run([custom])
+
+        custom_idx = next(i for i, m in enumerate(stack) if m is custom)
+        pc_idx = next(
+            (i for i, m in enumerate(stack) if m.name == "AnthropicPromptCachingMiddleware"),
+            None,
+        )
+        assert pc_idx is not None, f"expected prompt caching middleware in stack; got {[m.name for m in stack]}"
+        assert custom_idx < pc_idx, f"user middleware must precede prompt caching; got order {[m.name for m in stack]}"
+
+    def test_summarization_middleware_replaces_default(self) -> None:
+        """Passing SummarizationMiddleware in middleware= replaces the built-in instance."""
+        custom = SummarizationMiddleware(
+            model=GenericFakeChatModel(messages=iter([])),
+            backend=StateBackend(),
+            trigger=("tokens", 50_000),
+        )
+        stack = self._run([custom])
+
+        summ_entries = [m for m in stack if isinstance(m, _DeepAgentsSummarizationMiddleware)]
+        assert len(summ_entries) == 1, "expected exactly one SummarizationMiddleware in stack"
+        assert summ_entries[0] is custom
+
+    def test_same_name_subclass_replaces_default(self) -> None:
+        """A subclass whose .name == 'SummarizationMiddleware' replaces the default."""
+
+        class MySummarizationMiddleware(SummarizationMiddleware):
+            @property
+            def name(self) -> str:
+                return "SummarizationMiddleware"
+
+        custom = MySummarizationMiddleware(
+            model=GenericFakeChatModel(messages=iter([])),
+            backend=StateBackend(),
+        )
+        stack = self._run([custom])
+
+        summ_entries = [m for m in stack if isinstance(m, _DeepAgentsSummarizationMiddleware)]
+        assert len(summ_entries) == 1
+        assert summ_entries[0] is custom
+
+    def test_diff_name_subclass_is_appended(self) -> None:
+        """A subclass with a different .name doesn't replace the default. Both are present."""
+
+        class CompactSummarizationMiddleware(SummarizationMiddleware):
+            pass
+
+        custom = CompactSummarizationMiddleware(
+            model=GenericFakeChatModel(messages=iter([])),
+            backend=StateBackend(),
+        )
+        stack = self._run([custom])
+
+        summ_entries = [m for m in stack if isinstance(m, _DeepAgentsSummarizationMiddleware)]
+        assert len(summ_entries) == 2
+        assert any(m is custom for m in summ_entries)
+
+    def test_replacement_preserves_stack_position(self) -> None:
+        """The replaced entry sits at the same index as the original default."""
+        custom = SummarizationMiddleware(
+            model=GenericFakeChatModel(messages=iter([])),
+            backend=StateBackend(),
+        )
+        stack = self._run([custom])
+
+        default_index = next(i for i, m in enumerate(stack) if isinstance(m, _DeepAgentsSummarizationMiddleware))
+        assert stack[default_index] is custom
+
+    def test_subagent_middleware_replaces_default(self) -> None:
+        """SubAgent middleware= field also replaces same-named defaults in that subagent's stack."""
+        custom = SummarizationMiddleware(
+            model=GenericFakeChatModel(messages=iter([])),
+            backend=StateBackend(),
+            trigger=("tokens", 30_000),
+        )
+        subagent: SubAgent = {
+            "name": "researcher",
+            "description": "Research subagent",
+            "system_prompt": "You are a researcher.",
+            "middleware": [custom],
+        }
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile(
+                "samwprov",
+                HarnessProfile(general_purpose_subagent=GeneralPurposeSubagentProfile(enabled=False)),
+            )
+            fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+            fake_agent = MagicMock()
+            fake_agent.with_config.return_value = "compiled-agent"
+            with (
+                patch("deepagents.graph.resolve_model", return_value=fake_model),
+                patch("deepagents.graph.create_agent", return_value=fake_agent) as mock_create,
+            ):
+                create_deep_agent(model="samwprov:some-model", subagents=[subagent])
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+        sub_specs = mock_create.call_args.kwargs["middleware"]
+        # SubAgentMiddleware is in the main stack; the processed subagent specs
+        # are accessible via the subagents kwarg passed to its constructor.
+        sub_mw = next(m for m in sub_specs if isinstance(m, SubAgentMiddleware))
+        researcher_spec = next(s for s in sub_mw._subagents if s.get("name") == "researcher")
+        subagent_stack = researcher_spec["middleware"]
+        summ_entries = [m for m in subagent_stack if isinstance(m, _DeepAgentsSummarizationMiddleware)]
+        assert len(summ_entries) == 1
+        assert summ_entries[0] is custom
+
+    def test_same_name_subclass_with_exclusion_does_not_raise(self) -> None:
+        """Profile-excluded default replaced by same-name subclass does not raise ValueError."""
+
+        class MySummarizationMiddleware(SummarizationMiddleware):
+            @property
+            def name(self) -> str:
+                return "SummarizationMiddleware"
+
+        custom = MySummarizationMiddleware(
+            model=GenericFakeChatModel(messages=iter([])),
+            backend=StateBackend(),
+        )
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile(
+                "excsamwprov",
+                HarnessProfile(excluded_middleware=frozenset({_DeepAgentsSummarizationMiddleware})),
+            )
+            fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+            fake_agent = MagicMock()
+            fake_agent.with_config.return_value = "compiled-agent"
+            with (
+                patch("deepagents.graph.resolve_model", return_value=fake_model),
+                patch("deepagents.graph.create_agent", return_value=fake_agent) as mock_create,
+            ):
+                # Should not raise ValueError from coverage verification
+                create_deep_agent(model="excsamwprov:some-model", middleware=[custom])
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+        stack = mock_create.call_args.kwargs["middleware"]
+        assert any(m is custom for m in stack)
+
+
+class TestSubagentMiddlewareIsolation:
+    """GP inherits main-agent overrides; declarative subagents build stacks independently."""
+
+    _GP_NAME = "general-purpose"
+
+    def _setup(
+        self,
+        user_mw: list[Any],
+        subagents: list[SubAgent] | None = None,
+        *,
+        enable_gp: bool = True,
+        excluded_middleware: frozenset[type[Any]] | None = None,
+    ) -> tuple[list[Any], SubAgentMiddleware]:
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile(
+                "mwinhrt",
+                HarnessProfile(
+                    general_purpose_subagent=GeneralPurposeSubagentProfile(enabled=enable_gp),
+                    excluded_middleware=excluded_middleware or frozenset(),
+                ),
+            )
+            fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+            fake_agent = MagicMock()
+            fake_agent.with_config.return_value = "compiled-agent"
+            with (
+                patch("deepagents.graph.resolve_model", return_value=fake_model),
+                patch("deepagents.graph.create_agent", return_value=fake_agent) as mock_create,
+            ):
+                create_deep_agent(
+                    model="mwinhrt:some-model",
+                    subagents=subagents or [],
+                    middleware=user_mw,
+                )
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+        main_stack = mock_create.call_args.kwargs["middleware"]
+        sub_mw = next(m for m in main_stack if isinstance(m, SubAgentMiddleware))
+        return main_stack, sub_mw
+
+    # ── GP inherits main-agent overrides ──────────────────────────────────────
+
+    def test_gp_inherits_main_middleware_override(self) -> None:
+        """GP subagent receives the main agent's SummarizationMiddleware override."""
+        custom = SummarizationMiddleware(
+            model=GenericFakeChatModel(messages=iter([])),
+            backend=StateBackend(),
+            trigger=("tokens", 50_000),
+        )
+        _, sub_mw = self._setup([custom], enable_gp=True)
+        gp_spec = next(s for s in sub_mw._subagents if s.get("name") == self._GP_NAME)
+        summ_entries = [m for m in gp_spec["middleware"] if isinstance(m, _DeepAgentsSummarizationMiddleware)]
+        assert len(summ_entries) == 1
+        assert summ_entries[0] is custom
+
+    def test_gp_does_not_inherit_non_default_main_middleware(self) -> None:
+        """Main-agent middleware whose name isn't a GP default is not inherited by GP."""
+
+        class _ParentOnlyMW(SummarizationMiddleware):
+            @property
+            def name(self) -> str:
+                return "ParentOnlyMW"
+
+        custom = _ParentOnlyMW(model=GenericFakeChatModel(messages=iter([])), backend=StateBackend())
+        _, sub_mw = self._setup([custom], enable_gp=True)
+        gp_spec = next(s for s in sub_mw._subagents if s.get("name") == self._GP_NAME)
+        assert not any(m is custom for m in gp_spec["middleware"])
+
+    # ── TodoListMiddleware is opt-in (no longer a default) ─────────────────────
+
+    def test_default_has_no_todos_in_main_or_gp(self) -> None:
+        """With no opt-in, neither the main agent nor the GP subagent has todos."""
+        main_stack, sub_mw = self._setup([], enable_gp=True)
+        assert not any(isinstance(m, TodoListMiddleware) for m in main_stack)
+        gp_spec = next(s for s in sub_mw._subagents if s.get("name") == self._GP_NAME)
+        assert not any(isinstance(m, TodoListMiddleware) for m in gp_spec["middleware"])
+
+    def test_main_opt_in_todos_not_mirrored_to_gp(self) -> None:
+        """A caller-supplied TodoListMiddleware stays on the main agent only.
+
+        It is treated like any other main-agent-only middleware: because it is
+        not a default GP slot, it is not propagated to the general-purpose
+        subagent.
+        """
+        custom = TodoListMiddleware()
+        main_stack, sub_mw = self._setup([custom], enable_gp=True)
+        main_todos = [m for m in main_stack if isinstance(m, TodoListMiddleware)]
+        assert len(main_todos) == 1
+        gp_spec = next(s for s in sub_mw._subagents if s.get("name") == self._GP_NAME)
+        assert not any(isinstance(m, TodoListMiddleware) for m in gp_spec["middleware"])
+
+    def test_gp_override_can_opt_in_todos(self) -> None:
+        """Overriding the GP subagent by name lets its own middleware add todos."""
+        from deepagents.middleware.subagents import GENERAL_PURPOSE_SUBAGENT  # noqa: PLC0415
+
+        gp_override: SubAgent = {**GENERAL_PURPOSE_SUBAGENT, "middleware": [TodoListMiddleware()]}
+        _, sub_mw = self._setup([], subagents=[gp_override])
+        gp_spec = next(s for s in sub_mw._subagents if s.get("name") == self._GP_NAME)
+        assert len([m for m in gp_spec["middleware"] if isinstance(m, TodoListMiddleware)]) == 1
+
+    def test_declarative_subagent_todos_opt_in(self) -> None:
+        """A declarative subagent gets todos when its own spec includes the middleware."""
+        subagent: SubAgent = {
+            "name": "helper",
+            "description": "A helper subagent",
+            "system_prompt": "You are a helper.",
+            "middleware": [TodoListMiddleware()],
+        }
+        _, sub_mw = self._setup([], subagents=[subagent])
+        helper_spec = next(s for s in sub_mw._subagents if s.get("name") == "helper")
+        assert len([m for m in helper_spec["middleware"] if isinstance(m, TodoListMiddleware)]) == 1
+
+    def test_declarative_subagent_does_not_inherit_main_opt_in(self) -> None:
+        """A main-agent todos opt-in is not inherited by a declarative subagent."""
+        subagent: SubAgent = {
+            "name": "helper",
+            "description": "A helper subagent",
+            "system_prompt": "You are a helper.",
+        }
+        _, sub_mw = self._setup([TodoListMiddleware()], subagents=[subagent])
+        helper_spec = next(s for s in sub_mw._subagents if s.get("name") == "helper")
+        assert not any(isinstance(m, TodoListMiddleware) for m in helper_spec["middleware"])
+
+    def test_profile_extra_middleware_todos_on_main_and_gp(self) -> None:
+        """A profile that supplies todos via `extra_middleware` gets it on both stacks.
+
+        This is the mechanism the GLM-5.2 and Codex profiles rely on to keep
+        `write_todos` after the SDK default was removed.
+        """
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile(
+                "todoprof",
+                HarnessProfile(extra_middleware=lambda: [TodoListMiddleware()]),
+            )
+            fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+            fake_agent = MagicMock()
+            fake_agent.with_config.return_value = "compiled-agent"
+            with (
+                patch("deepagents.graph.resolve_model", return_value=fake_model),
+                patch("deepagents.graph.create_agent", return_value=fake_agent) as mock_create,
+            ):
+                create_deep_agent(model="todoprof:some-model")
+            main_stack = mock_create.call_args.kwargs["middleware"]
+            assert len([m for m in main_stack if isinstance(m, TodoListMiddleware)]) == 1
+            sub_mw = next(m for m in main_stack if isinstance(m, SubAgentMiddleware))
+            gp_spec = next(s for s in sub_mw._subagents if s.get("name") == self._GP_NAME)
+            assert len([m for m in gp_spec["middleware"] if isinstance(m, TodoListMiddleware)]) == 1
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+    def test_gp_profile_exclusion_wins_over_inherited_override(self) -> None:
+        """Profile exclusion on a GP default slot wins even when the main agent supplies a replacement."""
+        custom = SummarizationMiddleware(
+            model=GenericFakeChatModel(messages=iter([])),
+            backend=StateBackend(),
+            trigger=("tokens", 50_000),
+        )
+        _, sub_mw = self._setup(
+            [custom],
+            enable_gp=True,
+            excluded_middleware=frozenset({_DeepAgentsSummarizationMiddleware}),
+        )
+        gp_spec = next(s for s in sub_mw._subagents if s.get("name") == self._GP_NAME)
+        assert not any(isinstance(m, _DeepAgentsSummarizationMiddleware) for m in gp_spec["middleware"])
+
+    # ── Declarative subagents are isolated from main-agent overrides ──────────
+
+    def test_declarative_subagent_does_not_inherit_main_middleware_override(self) -> None:
+        """Declarative subagent with no spec middleware is not affected by main-agent overrides."""
+        custom = SummarizationMiddleware(
+            model=GenericFakeChatModel(messages=iter([])),
+            backend=StateBackend(),
+            trigger=("tokens", 50_000),
+        )
+        subagent: SubAgent = {
+            "name": "helper",
+            "description": "A helper subagent",
+            "system_prompt": "You are a helper.",
+        }
+        _, sub_mw = self._setup([custom], subagents=[subagent], enable_gp=False)
+        helper_spec = next(s for s in sub_mw._subagents if s.get("name") == "helper")
+        assert not any(m is custom for m in helper_spec["middleware"])
+        assert any(isinstance(m, _DeepAgentsSummarizationMiddleware) for m in helper_spec["middleware"])
+
+    def test_declarative_subagent_spec_middleware_replaces_default(self) -> None:
+        """Spec-supplied middleware replaces the matching default in that subagent's stack."""
+        spec_custom = SummarizationMiddleware(
+            model=GenericFakeChatModel(messages=iter([])),
+            backend=StateBackend(),
+            trigger=("tokens", 30_000),
+        )
+        subagent: SubAgent = {
+            "name": "helper",
+            "description": "A helper subagent",
+            "system_prompt": "You are a helper.",
+            "middleware": [spec_custom],
+        }
+        _, sub_mw = self._setup([], subagents=[subagent], enable_gp=False)
+        helper_spec = next(s for s in sub_mw._subagents if s.get("name") == "helper")
+        summ_entries = [m for m in helper_spec["middleware"] if isinstance(m, _DeepAgentsSummarizationMiddleware)]
+        assert len(summ_entries) == 1
+        assert summ_entries[0] is spec_custom
+
+    def test_declarative_subagent_profile_exclusion_removes_default(self) -> None:
+        """Profile-excluded middleware is removed from a declarative subagent's stack."""
+        subagent: SubAgent = {
+            "name": "helper",
+            "description": "A helper subagent",
+            "system_prompt": "You are a helper.",
+            "model": "mwinhrt:some-model",
+        }
+        _, sub_mw = self._setup(
+            [],
+            subagents=[subagent],
+            enable_gp=False,
+            excluded_middleware=frozenset({_DeepAgentsSummarizationMiddleware}),
+        )
+        helper_spec = next(s for s in sub_mw._subagents if s.get("name") == "helper")
+        assert not any(isinstance(m, _DeepAgentsSummarizationMiddleware) for m in helper_spec["middleware"])
+
+
+class TestSkillsMiddlewarePlacement:
+    """`SkillsMiddleware` sits innermost, just outside prompt caching, in every stack.
+
+    From there skill tool disclosure sees the compacted conversation and the
+    model actually called, after any user fallback or routing middleware.
+    """
+
+    def _build(self, model: str | BaseChatModel | None = None, **kwargs: Any) -> tuple[list[AgentMiddleware], dict[str, list[AgentMiddleware]]]:
+        """Return the main stack and each subagent's stack by name."""
+        kwargs.setdefault("skills", ["/skills/"])
+        fake_agent = MagicMock()
+        fake_agent.with_config.return_value = "compiled-agent"
+        with (
+            patch("deepagents.graph.SubAgentMiddleware", new_callable=_mock_subagent_middleware) as mock_subagents,
+            patch("deepagents.graph.create_agent", return_value=fake_agent) as mock_create,
+        ):
+            create_deep_agent(model=model or GenericFakeChatModel(messages=iter([])), **kwargs)
+        subagents = {spec["name"]: spec["middleware"] for spec in mock_subagents.call_args.kwargs["subagents"]}
+        return mock_create.call_args.kwargs["middleware"], subagents
+
+    @staticmethod
+    def _skills_slot(stack: list[AgentMiddleware]) -> int:
+        """Return the index of the Skills entry, asserting prompt caching follows it."""
+        names = [m.name for m in stack]
+        index = names.index("SkillsMiddleware")
+        assert names[index + 1] == "AnthropicPromptCachingMiddleware", names
+        return index
+
+    @staticmethod
+    def _tail(stack: list[AgentMiddleware]) -> list[str]:
+        """Return the names from `PatchToolCallsMiddleware` through prompt caching."""
+        names = [m.name for m in stack]
+        return names[names.index("PatchToolCallsMiddleware") : names.index("AnthropicPromptCachingMiddleware") + 1]
+
+    def test_main_and_general_purpose_stacks_put_skills_after_user_middleware(self) -> None:
+        novel = _named_mw("NovelMW")
+
+        main, subagents = self._build(middleware=[novel])
+
+        assert main.index(novel) < self._skills_slot(main)
+        self._skills_slot(subagents["general-purpose"])
+
+    def test_profile_extra_middleware_precedes_skills(self) -> None:
+        extra = _StubMW()
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile("skillsslot", HarnessProfile(extra_middleware=[extra]))
+            with patch("deepagents.graph.resolve_model", return_value=GenericFakeChatModel(messages=iter([]))):
+                main, subagents = self._build(model="skillsslot:some-model")
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+        assert main.index(extra) < self._skills_slot(main)
+        general_purpose = subagents["general-purpose"]
+        assert any(isinstance(m, _StubMW) for m in general_purpose[: self._skills_slot(general_purpose)])
+
+    def test_same_name_user_middleware_replaces_skills_in_its_slot(self) -> None:
+        replacement = _named_mw("SkillsMiddleware")
+
+        main, subagents = self._build(middleware=[replacement])
+
+        assert main[self._skills_slot(main)] is replacement
+        general_purpose = subagents["general-purpose"]
+        assert general_purpose[self._skills_slot(general_purpose)] is replacement
+
+    def test_custom_skills_middleware_takes_its_slot_without_skills(self) -> None:
+        custom = SkillsMiddleware(backend=StateBackend(), sources=["/skills/"])
+
+        main, subagents = self._build(skills=None, middleware=[custom])
+
+        assert main[self._skills_slot(main)] is custom
+        general_purpose = subagents["general-purpose"]
+        assert general_purpose[self._skills_slot(general_purpose)] is custom
+
+    def test_declarative_subagent_puts_its_own_middleware_before_skills(self) -> None:
+        own = _named_mw("OwnMW")
+        worker: SubAgent = {"name": "worker", "description": "d", "skills": ["/skills/"], "middleware": [own]}
+
+        _, subagents = self._build(subagents=[worker])
+
+        stack = subagents["worker"]
+        assert stack.index(own) < self._skills_slot(stack)
+
+    def test_fork_puts_inherited_and_own_middleware_before_skills(self) -> None:
+        inherited, own = _named_mw("ParentMW"), _named_mw("OwnMW")
+        worker: SubAgent = {"name": "worker", "description": "d", "mode": "fork", "middleware": [own]}
+
+        _, subagents = self._build(middleware=[inherited], subagents=[worker])
+
+        stack = subagents["worker"]
+        skills = self._skills_slot(stack)
+        assert stack.index(inherited) < skills
+        assert stack.index(own) < skills
+
+    @pytest.mark.parametrize("skills", [None, ["/skills/"]], ids=["without_skills", "with_skills"])
+    def test_declarative_subagent_skills_middleware_takes_its_slot(self, skills: list[str] | None) -> None:
+        own = SkillsMiddleware(backend=StateBackend(), sources=["/skills/"])
+        helper: SubAgent = {"name": "helper", "description": "d", "middleware": [own, _fallback_mw()]}
+        if skills is not None:
+            helper["skills"] = skills
+
+        main, subagents = self._build(skills=None, subagents=[helper])
+
+        stack = subagents["helper"]
+        assert stack[self._skills_slot(stack)] is own
+        assert self._tail(stack) == ["PatchToolCallsMiddleware", "ModelFallbackMiddleware", "SkillsMiddleware", "AnthropicPromptCachingMiddleware"]
+        assert not any(isinstance(m, SkillsMiddleware) for m in [*main, *subagents["general-purpose"]])
+
+    def test_fork_skills_middleware_takes_its_slot_without_main_skills(self) -> None:
+        own = SkillsMiddleware(backend=StateBackend(), sources=["/skills/"])
+        worker: SubAgent = {"name": "worker", "description": "d", "mode": "fork", "middleware": [own, _fallback_mw()]}
+
+        main, subagents = self._build(skills=None, subagents=[worker])
+
+        stack = subagents["worker"]
+        assert stack[self._skills_slot(stack)] is own
+        assert self._tail(stack) == ["PatchToolCallsMiddleware", "ModelFallbackMiddleware", "SkillsMiddleware", "AnthropicPromptCachingMiddleware"]
+        assert not any(isinstance(m, SkillsMiddleware) for m in [*main, *subagents["general-purpose"]])
+
+    def test_declarative_subagent_keeps_its_last_skills_middleware(self) -> None:
+        first = SkillsMiddleware(backend=StateBackend(), sources=["/first/"])
+        last = SkillsMiddleware(backend=StateBackend(), sources=["/last/"])
+        helper: SubAgent = {"name": "helper", "description": "d", "middleware": [first, last]}
+
+        _, subagents = self._build(skills=None, subagents=[helper])
+
+        stack = subagents["helper"]
+        assert [m for m in stack if isinstance(m, SkillsMiddleware)] == [last]
+        assert stack[self._skills_slot(stack)] is last
+
+    def test_declarative_subagent_profile_extra_middleware_precedes_its_skills_middleware(self) -> None:
+        extra = _StubMW()
+        own = SkillsMiddleware(backend=StateBackend(), sources=["/skills/"])
+        helper: SubAgent = {"name": "helper", "description": "d", "model": "skillsslot:some-model", "middleware": [own]}
+
+        with patch.dict(_HARNESS_PROFILES):
+            register_harness_profile("skillsslot", HarnessProfile(extra_middleware=[extra]))
+            with patch("deepagents.graph.resolve_model", return_value=GenericFakeChatModel(messages=iter([]))):
+                _, subagents = self._build(skills=None, subagents=[helper])
+
+        stack = subagents["helper"]
+        assert stack[self._skills_slot(stack)] is own
+        assert stack.index(extra) < self._skills_slot(stack)
+
+    def test_fork_skills_middleware_replaces_the_inherited_one_in_its_slot(self) -> None:
+        own = SkillsMiddleware(backend=StateBackend(), sources=["/fork/"])
+        worker: SubAgent = {"name": "worker", "description": "d", "mode": "fork", "middleware": [own, _fallback_mw()]}
+
+        main, subagents = self._build(skills=["/main/"], subagents=[worker])
+
+        stack = subagents["worker"]
+        assert stack[self._skills_slot(stack)] is own
+        assert self._tail(stack) == ["PatchToolCallsMiddleware", "ModelFallbackMiddleware", "SkillsMiddleware", "AnthropicPromptCachingMiddleware"]
+        assert main[self._skills_slot(main)] is not own
+
+    def test_differently_named_skills_middleware_subclass_stays_novel_in_a_subagent(self) -> None:
+        class PluginSkillsMiddleware(SkillsMiddleware):
+            pass
+
+        plugin = PluginSkillsMiddleware(backend=StateBackend(), sources=["/plugins/"])
+        helper: SubAgent = {"name": "helper", "description": "d", "middleware": [plugin, _fallback_mw()]}
+
+        _, subagents = self._build(skills=None, subagents=[helper])
+
+        names = [m.name for m in subagents["helper"]]
+        assert "SkillsMiddleware" not in names
+        assert self._tail(subagents["helper"]) == [
+            "PatchToolCallsMiddleware",
+            "PluginSkillsMiddleware",
+            "ModelFallbackMiddleware",
+            "AnthropicPromptCachingMiddleware",
+        ]

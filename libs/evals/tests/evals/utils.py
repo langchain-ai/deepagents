@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -80,7 +80,7 @@ class SuccessAssertion:
     """Base for correctness assertions that fail the test when violated."""
 
     def check(self, trajectory: AgentTrajectory) -> bool:
-        """Return ``True`` when the assertion holds.
+        """Return `True` when the assertion holds.
 
         Args:
             trajectory: The agent trajectory to check.
@@ -113,7 +113,7 @@ class EfficiencyAssertion:
     """Base for trajectory-shape assertions that are logged but never fail."""
 
     def check(self, trajectory: AgentTrajectory) -> bool:
-        """Return ``True`` when the assertion holds.
+        """Return `True` when the assertion holds.
 
         Args:
             trajectory: The agent trajectory to check.
@@ -174,7 +174,7 @@ def _strip_common_zero_width(text: str) -> str:
 
 
 def _coerce_result_files_to_strings(raw_files: object) -> dict[str, str]:
-    """Coerce the ``files`` value from an agent result into ``dict[str, str]``.
+    """Coerce the `files` value from an agent result into `dict[str, str]`.
 
     Args:
         raw_files: The raw files object from the agent result.
@@ -229,7 +229,7 @@ class FinalTextContains(SuccessAssertion):
     case_insensitive: bool = False
 
     def check(self, trajectory: AgentTrajectory) -> bool:
-        """Check that the final step text contains ``self.text``.
+        """Check that the final step text contains `self.text`.
 
         Args:
             trajectory: The agent trajectory to check.
@@ -270,7 +270,7 @@ class FinalTextExcludes(SuccessAssertion):
     case_insensitive: bool = False
 
     def check(self, trajectory: AgentTrajectory) -> bool:
-        """Check that the final step text does not contain ``self.text``.
+        """Check that the final step text does not contain `self.text`.
 
         Args:
             trajectory: The agent trajectory to check.
@@ -299,6 +299,102 @@ class FinalTextExcludes(SuccessAssertion):
 
 
 @dataclass(frozen=True)
+class FinalTextContainsAny(SuccessAssertion):
+    """Assert that the final agent text contains at least ONE of the given substrings.
+
+    Useful when a behavior can be expressed in several equivalent phrasings
+    (e.g., a "value is missing" acknowledgement that could be worded as
+    "unknown", "no data", "n/a", "unable to look up", "cannot be ranked",
+    etc.). The any-of group still proves the behavior — a model that fakes
+    or hallucinates instead of acknowledging the gap would not include any
+    of these phrases.
+
+    Attributes:
+        texts: The set of substrings to look for; the check passes if any
+            one of them is present.
+        case_insensitive: Whether the comparison should ignore case.
+    """
+
+    texts: tuple[str, ...]
+    case_insensitive: bool = False
+
+    def check(self, trajectory: AgentTrajectory) -> bool:
+        """Check that the final step text contains at least one of `self.texts`.
+
+        Args:
+            trajectory: The agent trajectory to check.
+
+        Returns:
+            Whether the final text contains any of the expected substrings.
+        """
+        haystack = _strip_common_zero_width(trajectory.steps[-1].action.text)
+        if self.case_insensitive:
+            haystack = haystack.lower()
+        for text in self.texts:
+            needle = _strip_common_zero_width(text)
+            if self.case_insensitive:
+                needle = needle.lower()
+            if needle in haystack:
+                return True
+        return False
+
+    def describe_failure(self, trajectory: AgentTrajectory) -> str:
+        """Describe why the final-text-contains-any check failed.
+
+        Args:
+            trajectory: The agent trajectory that failed the check.
+
+        Returns:
+            A human-readable failure description.
+        """
+        final_text = _strip_common_zero_width(trajectory.steps[-1].action.text)
+        return (
+            f"Expected final text to contain at least one of "
+            f"{list(self.texts)!r} (case_insensitive={self.case_insensitive}), "
+            f"got: {final_text!r}"
+        )
+
+
+@dataclass(frozen=True)
+class FinalTextMinLength(SuccessAssertion):
+    """Assert that the final agent text is at least `n` chars (after strip).
+
+    Useful for filtering out short recap-style wrap-up messages that may
+    happen to contain expected substrings but aren't the substantive
+    answer the user asked for.
+
+    Attributes:
+        n: Minimum length of `trajectory.steps[-1].action.text.strip()`.
+    """
+
+    n: int
+
+    def check(self, trajectory: AgentTrajectory) -> bool:
+        """Check that the stripped final text is at least `self.n` chars.
+
+        Args:
+            trajectory: The agent trajectory to check.
+
+        Returns:
+            Whether the final text meets the minimum length.
+        """
+        return len(trajectory.steps[-1].action.text.strip()) >= self.n
+
+    def describe_failure(self, trajectory: AgentTrajectory) -> str:
+        """Describe why the final-text-min-length check failed.
+
+        Args:
+            trajectory: The agent trajectory that failed the check.
+
+        Returns:
+            A human-readable failure description.
+        """
+        final_text = _strip_common_zero_width(trajectory.steps[-1].action.text)
+        actual = len(final_text.strip())
+        return f"Expected final text length >= {self.n}, got {actual}: {final_text!r}"
+
+
+@dataclass(frozen=True)
 class FileEquals(SuccessAssertion):
     """Assert that a file in the trajectory has exactly the expected content.
 
@@ -311,7 +407,7 @@ class FileEquals(SuccessAssertion):
     content: str
 
     def check(self, trajectory: AgentTrajectory) -> bool:
-        """Check that the file at ``self.path`` equals ``self.content``.
+        """Check that the file at `self.path` equals `self.content`.
 
         Args:
             trajectory: The agent trajectory to check.
@@ -349,7 +445,7 @@ class FileContains(SuccessAssertion):
     substring: str
 
     def check(self, trajectory: AgentTrajectory) -> bool:
-        """Check that the file at ``self.path`` contains ``self.substring``.
+        """Check that the file at `self.path` contains `self.substring`.
 
         Args:
             trajectory: The agent trajectory to check.
@@ -392,7 +488,7 @@ class FileExcludes(SuccessAssertion):
     substring: str
 
     def check(self, trajectory: AgentTrajectory) -> bool:
-        """Check that the file at ``self.path`` does not contain ``self.substring``.
+        """Check that the file at `self.path` does not contain `self.substring`.
 
         Args:
             trajectory: The agent trajectory to check.
@@ -415,6 +511,279 @@ class FileExcludes(SuccessAssertion):
         return f"File {self.path!r} unexpectedly contains {self.substring!r}.\nActual content:\n{actual!r}"
 
 
+@dataclass(frozen=True)
+class FileAbsent(SuccessAssertion):
+    """Assert that a file path does not exist in the trajectory.
+
+    A successful deletion removes the path from state entirely (the `files`
+    channel reducer drops keys whose update value is `None`), so a deleted
+    path should not appear in `trajectory.files` at all. This is stricter
+    than `FileExcludes`, which only checks for an absent substring and
+    therefore passes even when the file is still present.
+
+    Attributes:
+        path: The file path that must not exist.
+    """
+
+    path: str
+
+    def check(self, trajectory: AgentTrajectory) -> bool:
+        """Check that `self.path` is absent from the trajectory files.
+
+        Args:
+            trajectory: The agent trajectory to check.
+
+        Returns:
+            Whether the file path is absent.
+        """
+        return self.path not in trajectory.files
+
+    def describe_failure(self, trajectory: AgentTrajectory) -> str:
+        """Describe why the file-absent check failed.
+
+        Args:
+            trajectory: The agent trajectory that failed the check.
+
+        Returns:
+            A human-readable failure description.
+        """
+        actual = trajectory.files.get(self.path)
+        return (
+            f"Expected file {self.path!r} to be absent, but it still exists "
+            f"with content:\n{actual!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Shared tool-call matching (used by `ToolCall` and `ToolNotCalled`)
+# ---------------------------------------------------------------------------
+
+
+def _validate_tool_call_selector(
+    step: int | None,
+    args_contains: dict[str, object] | None,
+    args_equals: dict[str, object] | None,
+) -> None:
+    """Validate a tool-call selector at construction time (fail fast).
+
+    Guards the two *construction-time* footguns both `ToolCall` and
+    `ToolNotCalled` depend on. This cannot catch every vacuous selector: an
+    unknown `name` or an out-of-range `step` still match nothing and are only
+    knowable against a concrete trajectory — see `ToolNotCalled` for that
+    caveat.
+
+    A non-positive `step` would silently index the wrong step (the matcher uses
+    `step - 1`, so `step=0` wraps to the last step). Setting both
+    `args_contains` and `args_equals` is rejected as ambiguous intent: the two
+    filters can conflict (an unsatisfiable match) and, even when they agree, one
+    is redundant. Either way, for the hard-fail `ToolNotCalled` a never-matching
+    filter would make the assertion vacuously pass and masquerade as coverage.
+
+    Args:
+        step: Optional 1-indexed step selector.
+        args_contains: Optional subset match on tool call args.
+        args_equals: Optional exact match on tool call args.
+
+    Raises:
+        ValueError: If `step` is not positive, or both `args_contains` and
+            `args_equals` are set.
+    """
+    if step is not None and step <= 0:
+        msg = f"step must be positive (1-indexed), got {step}"
+        raise ValueError(msg)
+    if args_contains is not None and args_equals is not None:
+        msg = "args_contains and args_equals are mutually exclusive"
+        raise ValueError(msg)
+
+
+def _tool_call_matches(
+    tc: Mapping[str, object],
+    *,
+    name: str,
+    args_contains: dict[str, object] | None,
+    args_equals: dict[str, object] | None,
+) -> bool:
+    """Check whether a single tool call dict matches the selector.
+
+    Args:
+        tc: A tool call dictionary with `name` and `args` keys.
+        name: Expected tool name.
+        args_contains: If set, the args must contain these key-value pairs.
+        args_equals: If set, the args must equal this dict exactly.
+
+    Returns:
+        Whether the tool call matches.
+    """
+    if tc.get("name") != name:
+        return False
+    if args_contains is not None:
+        args = tc.get("args")
+        if not isinstance(args, dict):
+            return False
+        if not all(k in args and args.get(k) == v for k, v in args_contains.items()):
+            return False
+    return args_equals is None or tc.get("args") == args_equals
+
+
+def _find_tool_call_matches(
+    trajectory: AgentTrajectory,
+    *,
+    name: str,
+    step: int | None,
+    args_contains: dict[str, object] | None,
+    args_equals: dict[str, object] | None,
+) -> list[Mapping[str, object]]:
+    """Find tool calls in `trajectory` matching the selector.
+
+    When `step` is `None`, all steps are searched. When `step` is given, only
+    that step (1-indexed) is checked. Shared by `ToolCall` (presence check) and
+    `ToolNotCalled` (absence check) so the two stay in lockstep.
+
+    Args:
+        trajectory: The agent trajectory to search.
+        name: Expected tool name.
+        step: Optional 1-indexed step to restrict the search to.
+        args_contains: If set, the args must contain these key-value pairs.
+        args_equals: If set, the args must equal this dict exactly.
+
+    Returns:
+        A list of matching tool call dicts.
+    """
+    if step is not None:
+        if step > len(trajectory.steps):
+            return []
+        steps_to_search = [trajectory.steps[step - 1]]
+    else:
+        steps_to_search = trajectory.steps
+    return [
+        tc
+        for s in steps_to_search
+        for tc in s.action.tool_calls
+        if _tool_call_matches(tc, name=name, args_contains=args_contains, args_equals=args_equals)
+    ]
+
+
+@dataclass(frozen=True)
+class ToolCalled(SuccessAssertion):
+    """Assert that a matching tool call exists in the trajectory."""
+
+    name: str
+    step: int | None = None
+    args_contains: dict[str, object] | None = None
+    args_equals: dict[str, object] | None = None
+
+    def __post_init__(self) -> None:
+        """Reject wrong-index or ambiguous selectors at construction time."""
+        _validate_tool_call_selector(self.step, self.args_contains, self.args_equals)
+
+    def check(self, trajectory: AgentTrajectory) -> bool:
+        """Check that a matching tool call exists in the trajectory.
+
+        Args:
+            trajectory: The agent trajectory to check.
+
+        Returns:
+            Whether the required tool call is present.
+        """
+        return bool(
+            _find_tool_call_matches(
+                trajectory,
+                name=self.name,
+                step=self.step,
+                args_contains=self.args_contains,
+                args_equals=self.args_equals,
+            )
+        )
+
+    def describe_failure(self, trajectory: AgentTrajectory) -> str:
+        """Describe why the tool-called check failed.
+
+        Args:
+            trajectory: The agent trajectory that failed the check.
+
+        Returns:
+            A human-readable failure description.
+        """
+        step_desc = f" in step {self.step}" if self.step is not None else ""
+        return f"Expected a {self.name!r} tool call{step_desc}, but none matched."
+
+
+@dataclass(frozen=True)
+class ToolNotCalled(SuccessAssertion):
+    """Assert that a specific tool was NOT called in the trajectory.
+
+    The hard-fail counterpart to the efficiency `ToolCall` presence check.
+    Use this when calling a tool at all is the failure mode — e.g. an agent
+    that reflexively calls `update_goal` when no goal or rubric was ever set.
+    Matching is shared with `ToolCall`: when `step` is `None`, all
+    steps are searched; `args_contains` / `args_equals` narrow the match to
+    specific args and are mutually exclusive.
+
+    An out-of-range `step` fails the assertion. Callers using fixed tool-name
+    literals should also pin those names to the relevant tool registry so a
+    rename cannot make the absence check pass vacuously.
+
+    Attributes:
+        name: Tool name that must be absent.
+        step: Optional 1-indexed step to restrict the search to.
+        args_contains: If set, only calls whose args contain these key-value
+            pairs count as a (forbidden) match.
+        args_equals: If set, only calls whose args equal this dict exactly count
+            as a (forbidden) match.
+    """
+
+    name: str
+    step: int | None = None
+    args_contains: dict[str, object] | None = None
+    args_equals: dict[str, object] | None = None
+
+    def __post_init__(self) -> None:
+        """Reject wrong-index or ambiguous selectors at construction time."""
+        _validate_tool_call_selector(self.step, self.args_contains, self.args_equals)
+
+    def check(self, trajectory: AgentTrajectory) -> bool:
+        """Check that no matching tool call exists in the trajectory.
+
+        Args:
+            trajectory: The agent trajectory to check.
+
+        Returns:
+            Whether the forbidden tool call is absent.
+        """
+        if self.step is not None and self.step > len(trajectory.steps):
+            return False
+        return not _find_tool_call_matches(
+            trajectory,
+            name=self.name,
+            step=self.step,
+            args_contains=self.args_contains,
+            args_equals=self.args_equals,
+        )
+
+    def describe_failure(self, trajectory: AgentTrajectory) -> str:
+        """Describe why the tool-not-called check failed.
+
+        Args:
+            trajectory: The agent trajectory that failed the check.
+
+        Returns:
+            A human-readable failure description.
+        """
+        if self.step is not None and self.step > len(trajectory.steps):
+            return f"Cannot check step {self.step}; trajectory has {len(trajectory.steps)} step(s)."
+        step_desc = f" in step {self.step}" if self.step is not None else ""
+        matches = _find_tool_call_matches(
+            trajectory,
+            name=self.name,
+            step=self.step,
+            args_contains=self.args_contains,
+            args_equals=self.args_equals,
+        )
+        return (
+            f"Expected no {self.name!r} tool call{step_desc}, but found {len(matches)}: {matches!r}"
+        )
+
+
 # ---------------------------------------------------------------------------
 # Concrete efficiency assertions
 # ---------------------------------------------------------------------------
@@ -422,7 +791,7 @@ class FileExcludes(SuccessAssertion):
 
 @dataclass(frozen=True)
 class AgentSteps(EfficiencyAssertion):
-    """Assert that the trajectory has exactly ``n`` agent steps.
+    """Assert that the trajectory has exactly `n` agent steps.
 
     Attributes:
         n: Expected number of agent steps.
@@ -431,7 +800,7 @@ class AgentSteps(EfficiencyAssertion):
     n: int
 
     def check(self, trajectory: AgentTrajectory) -> bool:
-        """Check that the trajectory has exactly ``self.n`` steps.
+        """Check that the trajectory has exactly `self.n` steps.
 
         Args:
             trajectory: The agent trajectory to check.
@@ -455,7 +824,7 @@ class AgentSteps(EfficiencyAssertion):
 
 @dataclass(frozen=True)
 class ToolCallRequests(EfficiencyAssertion):
-    """Assert that the trajectory has exactly ``n`` total tool call requests.
+    """Assert that the trajectory has exactly `n` total tool call requests.
 
     Attributes:
         n: Expected total number of tool call requests.
@@ -464,7 +833,7 @@ class ToolCallRequests(EfficiencyAssertion):
     n: int
 
     def check(self, trajectory: AgentTrajectory) -> bool:
-        """Check that total tool call requests equal ``self.n``.
+        """Check that total tool call requests equal `self.n`.
 
         Args:
             trajectory: The agent trajectory to check.
@@ -489,10 +858,50 @@ class ToolCallRequests(EfficiencyAssertion):
 
 
 @dataclass(frozen=True)
+class MaxToolCallRequests(EfficiencyAssertion):
+    """Assert that the trajectory has AT MOST `n` total tool call requests.
+
+    Use this when a trivial task should not invoke tools at all (or invoke
+    them rarely): a model that lost its "skip for simple tasks" guidance
+    and cargo-cults a planning tool on every query produces 4+ tool calls
+    where 0-1 was expected.
+
+    Attributes:
+        n: Maximum allowed number of tool call requests in the trajectory.
+    """
+
+    n: int
+
+    def check(self, trajectory: AgentTrajectory) -> bool:
+        """Check that total tool call requests do not exceed `self.n`.
+
+        Args:
+            trajectory: The agent trajectory to check.
+
+        Returns:
+            Whether the tool call count is at or below the maximum.
+        """
+        actual = sum(len(s.action.tool_calls) for s in trajectory.steps)
+        return actual <= self.n
+
+    def describe_failure(self, trajectory: AgentTrajectory) -> str:
+        """Describe why the max-tool-call-requests check failed.
+
+        Args:
+            trajectory: The agent trajectory that failed the check.
+
+        Returns:
+            A human-readable failure description.
+        """
+        actual = sum(len(s.action.tool_calls) for s in trajectory.steps)
+        return f"Expected at most {self.n} tool call requests, got {actual}"
+
+
+@dataclass(frozen=True)
 class ToolCall(EfficiencyAssertion):
     """Assert that a specific tool call occurred in the trajectory.
 
-    When ``step`` is ``None``, all steps are searched. When ``step`` is given,
+    When `step` is `None`, all steps are searched. When `step` is given,
     only that step (1-indexed) is checked.
 
     Attributes:
@@ -507,6 +916,12 @@ class ToolCall(EfficiencyAssertion):
     args_contains: dict[str, object] | None = None
     args_equals: dict[str, object] | None = None
 
+    def __post_init__(self) -> None:
+        """Reject a non-positive step at construction time."""
+        if self.step is not None and self.step <= 0:
+            msg = f"step must be positive (1-indexed), got {self.step}"
+            raise ValueError(msg)
+
     def check(self, trajectory: AgentTrajectory) -> bool:
         """Check that a matching tool call exists in the trajectory.
 
@@ -516,7 +931,15 @@ class ToolCall(EfficiencyAssertion):
         Returns:
             Whether a matching tool call was found.
         """
-        return bool(self._find_matches(trajectory))
+        return bool(
+            _find_tool_call_matches(
+                trajectory,
+                name=self.name,
+                step=self.step,
+                args_contains=self.args_contains,
+                args_equals=self.args_equals,
+            )
+        )
 
     def describe_failure(self, trajectory: AgentTrajectory) -> str:
         """Describe why the tool-call check failed.
@@ -530,45 +953,6 @@ class ToolCall(EfficiencyAssertion):
         step_desc = f" in step {self.step}" if self.step is not None else ""
         return f"Missing expected tool call{step_desc}: name={self.name!r}, args_contains={self.args_contains!r}, args_equals={self.args_equals!r}"
 
-    def _matches_tool_call(self, tc: dict[str, object]) -> bool:
-        """Check whether a single tool call dict matches this expectation.
-
-        Args:
-            tc: A tool call dictionary with ``name`` and ``args`` keys.
-
-        Returns:
-            Whether the tool call matches.
-        """
-        if tc.get("name") != self.name:
-            return False
-        if self.args_contains is not None:
-            args = tc.get("args")
-            if not isinstance(args, dict):
-                return False
-            if not all(args.get(k) == v for k, v in self.args_contains.items()):
-                return False
-        return self.args_equals is None or tc.get("args") == self.args_equals
-
-    def _find_matches(self, trajectory: AgentTrajectory) -> list[dict[str, object]]:
-        """Find tool calls matching this expectation.
-
-        Args:
-            trajectory: The agent trajectory to search.
-
-        Returns:
-            A list of matching tool call dicts.
-        """
-        if self.step is not None:
-            if self.step > len(trajectory.steps):
-                return []
-            steps_to_search = [trajectory.steps[self.step - 1]]
-        else:
-            steps_to_search = trajectory.steps
-
-        return [
-            tc for s in steps_to_search for tc in s.action.tool_calls if self._matches_tool_call(tc)
-        ]
-
 
 # ---------------------------------------------------------------------------
 # Factory functions (public API)
@@ -580,14 +964,14 @@ def final_text_contains(
     *,
     case_insensitive: bool = False,
 ) -> FinalTextContains:
-    """Create a ``FinalTextContains`` success assertion.
+    """Create a `FinalTextContains` success assertion.
 
     Args:
         text: The substring to look for in the final agent text.
         case_insensitive: Whether the comparison should ignore case.
 
     Returns:
-        A ``FinalTextContains`` assertion instance.
+        A `FinalTextContains` assertion instance.
     """
     return FinalTextContains(text=text, case_insensitive=case_insensitive)
 
@@ -597,79 +981,132 @@ def final_text_excludes(
     *,
     case_insensitive: bool = False,
 ) -> FinalTextExcludes:
-    """Create a ``FinalTextExcludes`` success assertion.
+    """Create a `FinalTextExcludes` success assertion.
 
     Args:
         text: The substring that must be absent from the final agent text.
         case_insensitive: Whether the comparison should ignore case.
 
     Returns:
-        A ``FinalTextExcludes`` assertion instance.
+        A `FinalTextExcludes` assertion instance.
     """
     return FinalTextExcludes(text=text, case_insensitive=case_insensitive)
 
 
+def final_text_contains_any(
+    *texts: str,
+    case_insensitive: bool = False,
+) -> FinalTextContainsAny:
+    """Create a `FinalTextContainsAny` success assertion.
+
+    Args:
+        *texts: The substrings to look for; the check passes if any one of
+            them is present.
+        case_insensitive: Whether the comparison should ignore case.
+
+    Returns:
+        A `FinalTextContainsAny` assertion instance.
+    """
+    return FinalTextContainsAny(texts=tuple(texts), case_insensitive=case_insensitive)
+
+
+def final_text_min_length(n: int) -> FinalTextMinLength:
+    """Create a `FinalTextMinLength` success assertion.
+
+    Args:
+        n: Minimum length of the final agent text (after stripping).
+
+    Returns:
+        A `FinalTextMinLength` assertion instance.
+    """
+    return FinalTextMinLength(n=n)
+
+
 def file_equals(path: str, content: str) -> FileEquals:
-    """Create a ``FileEquals`` success assertion.
+    """Create a `FileEquals` success assertion.
 
     Args:
         path: The file path to check.
         content: The expected full content of the file.
 
     Returns:
-        A ``FileEquals`` assertion instance.
+        A `FileEquals` assertion instance.
     """
     return FileEquals(path=path, content=content)
 
 
 def file_contains(path: str, substring: str) -> FileContains:
-    """Create a ``FileContains`` success assertion.
+    """Create a `FileContains` success assertion.
 
     Args:
         path: The file path to check.
         substring: The substring to look for.
 
     Returns:
-        A ``FileContains`` assertion instance.
+        A `FileContains` assertion instance.
     """
     return FileContains(path=path, substring=substring)
 
 
 def file_excludes(path: str, substring: str) -> FileExcludes:
-    """Create a ``FileExcludes`` success assertion.
+    """Create a `FileExcludes` success assertion.
 
     Args:
         path: The file path to check.
         substring: The substring that must be absent.
 
     Returns:
-        A ``FileExcludes`` assertion instance.
+        A `FileExcludes` assertion instance.
     """
     return FileExcludes(path=path, substring=substring)
 
 
+def file_absent(path: str) -> FileAbsent:
+    """Create a `FileAbsent` success assertion.
+
+    Args:
+        path: The file path that must not exist in the trajectory files.
+
+    Returns:
+        A `FileAbsent` assertion instance.
+    """
+    return FileAbsent(path=path)
+
+
 def agent_steps(n: int) -> AgentSteps:
-    """Create an ``AgentSteps`` efficiency assertion.
+    """Create an `AgentSteps` efficiency assertion.
 
     Args:
         n: Expected number of agent steps.
 
     Returns:
-        An ``AgentSteps`` assertion instance.
+        An `AgentSteps` assertion instance.
     """
     return AgentSteps(n=n)
 
 
 def tool_call_requests(n: int) -> ToolCallRequests:
-    """Create a ``ToolCallRequests`` efficiency assertion.
+    """Create a `ToolCallRequests` efficiency assertion.
 
     Args:
         n: Expected total number of tool call requests.
 
     Returns:
-        A ``ToolCallRequests`` assertion instance.
+        A `ToolCallRequests` assertion instance.
     """
     return ToolCallRequests(n=n)
+
+
+def max_tool_call_requests(n: int) -> MaxToolCallRequests:
+    """Create a `MaxToolCallRequests` efficiency assertion.
+
+    Args:
+        n: Maximum allowed number of tool call requests.
+
+    Returns:
+        A `MaxToolCallRequests` assertion instance.
+    """
+    return MaxToolCallRequests(n=n)
 
 
 def tool_call(
@@ -679,7 +1116,7 @@ def tool_call(
     args_contains: dict[str, object] | None = None,
     args_equals: dict[str, object] | None = None,
 ) -> ToolCall:
-    """Create a ``ToolCall`` efficiency assertion.
+    """Create a `ToolCall` efficiency assertion.
 
     Args:
         name: Expected tool name.
@@ -688,9 +1125,63 @@ def tool_call(
         args_equals: If set, the tool call args must equal this dict exactly.
 
     Returns:
-        A ``ToolCall`` assertion instance.
+        A `ToolCall` assertion instance.
     """
     return ToolCall(
+        name=name,
+        step=step,
+        args_contains=args_contains,
+        args_equals=args_equals,
+    )
+
+
+def tool_called(
+    name: str,
+    *,
+    step: int | None = None,
+    args_contains: dict[str, object] | None = None,
+    args_equals: dict[str, object] | None = None,
+) -> ToolCalled:
+    """Create a `ToolCalled` success assertion (hard-fail).
+
+    Args:
+        name: Tool name that must be present in the trajectory.
+        step: Optional 1-indexed step to restrict the search to.
+        args_contains: If set, the tool call args must contain these key-value pairs.
+        args_equals: If set, the tool call args must equal this dict exactly.
+
+    Returns:
+        A `ToolCalled` assertion instance.
+    """
+    return ToolCalled(
+        name=name,
+        step=step,
+        args_contains=args_contains,
+        args_equals=args_equals,
+    )
+
+
+def tool_not_called(
+    name: str,
+    *,
+    step: int | None = None,
+    args_contains: dict[str, object] | None = None,
+    args_equals: dict[str, object] | None = None,
+) -> ToolNotCalled:
+    """Create a `ToolNotCalled` success assertion (hard-fail).
+
+    Args:
+        name: Tool name that must be absent from the trajectory.
+        step: Optional 1-indexed step to restrict the search to.
+        args_contains: If set, only calls whose args contain these key-value
+            pairs count as a forbidden match.
+        args_equals: If set, only calls whose args equal this dict exactly count
+            as a forbidden match.
+
+    Returns:
+        A `ToolNotCalled` assertion instance.
+    """
+    return ToolNotCalled(
         name=name,
         step=step,
         args_contains=args_contains,
@@ -707,8 +1198,8 @@ def tool_call(
 class TrajectoryScorer:
     """Two-tier assertion container for agent trajectories.
 
-    Use ``.success()`` to add correctness assertions (hard-fail) and
-    ``.expect()`` to add efficiency assertions (logged but never fail).
+    Use `.success()` to add correctness assertions (hard-fail) and
+    `.expect()` to add efficiency assertions (logged but never fail).
 
     Attributes:
         _success: Tuple of success assertions.
@@ -722,10 +1213,10 @@ class TrajectoryScorer:
         """Append correctness assertions that hard-fail the test when violated.
 
         Args:
-            *assertions: One or more ``SuccessAssertion`` instances.
+            *assertions: One or more `SuccessAssertion` instances.
 
         Returns:
-            A new ``TrajectoryScorer`` with the assertions appended.
+            A new `TrajectoryScorer` with the assertions appended.
         """
         return TrajectoryScorer(
             _success=(*self._success, *assertions),
@@ -747,7 +1238,7 @@ class TrajectoryScorer:
             tool_calls: Expected tool calls with optional step pinning.
 
         Returns:
-            A new ``TrajectoryScorer`` with the assertions appended.
+            A new `TrajectoryScorer` with the assertions appended.
         """
         new: list[EfficiencyAssertion] = []
         if agent_steps is not None:
@@ -768,16 +1259,16 @@ class TrajectoryScorer:
 
 
 def _trajectory_from_result(result: Mapping[str, object]) -> AgentTrajectory:
-    """Build an ``AgentTrajectory`` from a raw agent invoke result.
+    """Build an `AgentTrajectory` from a raw agent invoke result.
 
     Args:
-        result: The mapping returned by ``agent.invoke()``.
+        result: The mapping returned by `agent.invoke()`.
 
     Returns:
-        The constructed ``AgentTrajectory``.
+        The constructed `AgentTrajectory`.
 
     Raises:
-        TypeError: If ``result['messages']`` is not a list.
+        TypeError: If `result['messages']` is not a list.
     """
     steps: list[AgentStep] = []
     current_step: AgentStep | None = None
@@ -832,8 +1323,8 @@ def _log_efficiency(
         scorer: The scorer containing efficiency expectations.
 
     Returns:
-        An ``EfficiencyResult`` when the scorer has step or tool-call
-        expectations, ``None`` otherwise.
+        An `EfficiencyResult` when the scorer has step or tool-call
+        expectations, `None` otherwise.
     """
     actual_steps = len(trajectory.steps)
     actual_tool_calls = sum(len(s.action.tool_calls) for s in trajectory.steps)
@@ -842,7 +1333,25 @@ def _log_efficiency(
 
     expected_steps: int | None = None
     expected_tool_calls: int | None = None
-    for assertion in scorer._expectations:
+    for index, assertion in enumerate(scorer._expectations, start=1):
+        feedback_name = {
+            AgentSteps: "agent_steps",
+            ToolCallRequests: "tool_call_requests",
+            MaxToolCallRequests: "max_tool_call_requests",
+            ToolCall: "tool_call",
+        }.get(type(assertion), "assertion")
+        feedback_key = f"efficiency_{feedback_name}_{index}"
+        passed = assertion.check(trajectory)
+        if passed:
+            t.log_feedback(key=feedback_key, score=True, value=repr(assertion))
+        else:
+            t.log_feedback(
+                key=feedback_key,
+                score=False,
+                value=repr(assertion),
+                comment=assertion.describe_failure(trajectory),
+            )
+
         if isinstance(assertion, AgentSteps):
             expected_steps = assertion.n
         elif isinstance(assertion, ToolCallRequests):
@@ -853,7 +1362,7 @@ def _log_efficiency(
     if expected_tool_calls is not None:
         t.log_feedback(key="expected_tool_call_requests", value=expected_tool_calls)
 
-    if expected_steps is None and expected_tool_calls is None:
+    if not scorer._expectations:
         return None
 
     return EfficiencyResult(
@@ -870,7 +1379,7 @@ def _assert_expectations(
 ) -> None:
     """Run all assertions in *scorer* against *trajectory*.
 
-    Success assertions hard-fail the test via ``pytest.fail``. Efficiency
+    Success assertions hard-fail the test via `pytest.fail`. Efficiency
     assertions are logged as feedback but never cause a test failure.
 
     Args:
@@ -901,18 +1410,24 @@ def _assert_expectations(
 
 
 def _build_invoke_inputs(
-    query: str | list[AnyMessage],
+    query: str | Sequence[AnyMessage],
     initial_files: dict[str, str] | None,
+    extra_state: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build the input payload passed to the agent invoke methods."""
     if isinstance(query, str):
         invoke_inputs: dict[str, Any] = {"messages": [{"role": "user", "content": query}]}
     else:
-        invoke_inputs = {"messages": query}
+        invoke_inputs = {"messages": list(query)}
     if initial_files is not None:
         invoke_inputs["files"] = {
             path: create_file_data(content) for path, content in initial_files.items()
         }
+    if extra_state:
+        # Shallow merge so callers can populate middleware-owned state fields
+        # (e.g. `rubric` for RubricMiddleware) without clobbering `messages`/`files`.
+        for key, value in extra_state.items():
+            invoke_inputs[key] = value
     return invoke_inputs
 
 
@@ -948,12 +1463,13 @@ def _log_run_inputs(logged_inputs: dict[str, Any]) -> None:
 def run_agent(
     agent: CompiledStateGraph[Any, Any],
     *,
-    query: str | list[AnyMessage],
+    query: str | Sequence[AnyMessage],
     model: BaseChatModel,
     initial_files: dict[str, str] | None = None,
     scorer: TrajectoryScorer | None = None,
     thread_id: str | None = None,
     eval_metadata: dict[str, object] | None = None,
+    extra_state: dict[str, Any] | None = None,
 ) -> AgentTrajectory:
     """Run agent eval against the given query.
 
@@ -965,6 +1481,8 @@ def run_agent(
         scorer: Optional trajectory expectations to validate.
         thread_id: Optional thread ID for the invocation.
         eval_metadata: Optional metadata to attach to the logged inputs.
+        extra_state: Optional extra fields merged into the invoke input
+            (e.g. `{"rubric": "..."}` for `RubricMiddleware`).
 
     Returns:
         The resulting `AgentTrajectory`.
@@ -972,7 +1490,7 @@ def run_agent(
     Raises:
         TypeError: If the invoke result is not a `Mapping`.
     """
-    invoke_inputs = _build_invoke_inputs(query, initial_files)
+    invoke_inputs = _build_invoke_inputs(query, initial_files, extra_state)
 
     if thread_id is None:
         thread_id = str(uuid.uuid4())
@@ -996,12 +1514,13 @@ def run_agent(
 async def run_agent_async(
     agent: CompiledStateGraph[Any, Any],
     *,
-    query: str | list[AnyMessage],
+    query: str | Sequence[AnyMessage],
     model: BaseChatModel,
     initial_files: dict[str, str] | None = None,
     scorer: TrajectoryScorer | None = None,
     thread_id: str | None = None,
     eval_metadata: dict[str, object] | None = None,
+    extra_state: dict[str, Any] | None = None,
 ) -> AgentTrajectory:
     """Run agent eval asynchronously against the given query.
 
@@ -1013,6 +1532,8 @@ async def run_agent_async(
         scorer: Optional trajectory expectations to validate.
         thread_id: Optional thread ID for the invocation.
         eval_metadata: Optional metadata to attach to the logged inputs.
+        extra_state: Optional extra fields merged into the invoke input
+            (e.g. `{"rubric": "..."}` for `RubricMiddleware`).
 
     Returns:
         The resulting `AgentTrajectory`.
@@ -1020,7 +1541,7 @@ async def run_agent_async(
     Raises:
         TypeError: If the invoke result is not a `Mapping`.
     """
-    invoke_inputs = _build_invoke_inputs(query, initial_files)
+    invoke_inputs = _build_invoke_inputs(query, initial_files, extra_state)
 
     if thread_id is None:
         thread_id = str(uuid.uuid4())

@@ -1,0 +1,6 @@
+{
+  "name": "deepagents-deploy-content-writer",
+  "runtime": {
+    "model": {"model_id": "openai:gpt-4.1"}
+  }
+}

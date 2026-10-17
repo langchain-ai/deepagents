@@ -1,7 +1,21 @@
-"""QuickJS integration package for Deep Agents."""
+"""langchain-quickjs: persistent JS REPL middleware for agents."""
 
-from langchain_quickjs.middleware import QuickJSMiddleware
+from langchain_quickjs._ptc import PTCOption
+from langchain_quickjs._subagent import (
+    SUBAGENT_STREAM_EVENT_TYPE,
+    SubagentCompleteEvent,
+    SubagentErrorEvent,
+    SubagentStartEvent,
+    SubagentStreamEvent,
+)
+from langchain_quickjs.middleware import CodeInterpreterMiddleware
 
-__version__ = "0.0.1"
-
-__all__ = ["QuickJSMiddleware", "__version__"]
+__all__ = [
+    "SUBAGENT_STREAM_EVENT_TYPE",
+    "CodeInterpreterMiddleware",
+    "PTCOption",
+    "SubagentCompleteEvent",
+    "SubagentErrorEvent",
+    "SubagentStartEvent",
+    "SubagentStreamEvent",
+]

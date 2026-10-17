@@ -58,7 +58,7 @@ export LANGSMITH_PROJECT="nemotron-deep-agent"
 export LANGSMITH_TRACING="true"
 ```
 
-Add your Modal keys to your `.env`(`MODAL_TOKEN_ID` & `MODEL_TOKEN_SECRET)`
+Add your Modal keys to your `.env` (`MODAL_TOKEN_ID` & `MODAL_TOKEN_SECRET`)
 
 OR
 
@@ -197,3 +197,5 @@ For a full enterprise deployment with NeMo Agent Toolkit, evaluation harnesses, 
 - [NVIDIA NIM](https://build.nvidia.com/)
 - [Modal](https://modal.com)
 - [The Two Patterns for Agent Sandboxes](https://blog.langchain.com/the-two-patterns-by-which-agents-connect-sandboxes/)
+- [LangChain Academy](https://academy.langchain.com/) — Comprehensive, free courses on LangChain libraries and products, made by the LangChain team.
+- [Code of Conduct](https://github.com/langchain-ai/langchain/?tab=coc-ov-file) — community guidelines and standards

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import importlib
 import json
 
 import pytest
 
+import deepagents_evals.radar as radar_module
 from deepagents_evals.radar import (
     ALL_CATEGORIES,
     CATEGORY_LABELS,
@@ -21,6 +23,27 @@ mpl = pytest.importorskip("matplotlib")
 mpl.use("Agg")
 
 
+def test_radar_import_handles_missing_matplotlib(monkeypatch: pytest.MonkeyPatch) -> None:
+    real_import_module = importlib.import_module
+
+    def fake_import_module(name: str, package: str | None = None) -> object:
+        if name == "matplotlib.pyplot":
+            msg = "No module named 'matplotlib'"
+            raise ModuleNotFoundError(msg)
+        return real_import_module(name, package)
+
+    try:
+        with monkeypatch.context() as mp:
+            mp.setattr(importlib, "import_module", fake_import_module)
+            reloaded = importlib.reload(radar_module)
+
+        assert reloaded.plt is None
+        with pytest.raises(ImportError, match="deepagents-evals\\[charts\\]"):
+            reloaded.generate_radar([reloaded.ModelResult(model="test", scores={})])
+    finally:
+        importlib.reload(radar_module)
+
+
 def test_toy_data_covers_all_categories():
     results = toy_data()
     assert len(results) >= 2
@@ -34,9 +57,10 @@ def test_category_labels_cover_all_categories():
     assert set(CATEGORY_LABELS.keys()) == set(ALL_CATEGORIES)
 
 
-def test_short_model_name_strips_provider():
-    assert _short_model_name("anthropic:claude-sonnet-4-6") == "claude-sonnet-4-6"
-    assert _short_model_name("openai:gpt-5.4") == "gpt-5.4"
+def test_short_model_name_uses_registry_display_name():
+    """Registered specs should render their curated display_name."""
+    assert _short_model_name("anthropic:claude-sonnet-4-6") == "Claude Sonnet 4.6"
+    assert _short_model_name("openai:gpt-5.4") == "GPT-5.4"
 
 
 def test_short_model_name_truncates_long():
@@ -53,7 +77,13 @@ def test_short_model_name_no_provider():
 
 
 def test_short_model_name_provider_and_long():
+    """Unregistered provider:model specs fall back to strip + truncate."""
     assert _short_model_name("provider:" + "x" * 50) == "x" * 27 + "..."
+
+
+def test_short_model_name_unregistered_spec_strips_provider():
+    """Unregistered but well-formed specs strip the provider prefix."""
+    assert _short_model_name("madeup_provider:my-model-v1") == "my-model-v1"
 
 
 # --- generate_radar ---

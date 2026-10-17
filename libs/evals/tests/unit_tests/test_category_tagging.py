@@ -1,10 +1,18 @@
 from __future__ import annotations
 
+import ast
 import json
+from pathlib import Path
 
 import pytest
 
-from deepagents_evals.radar import ALL_CATEGORIES, CATEGORY_LABELS, EVAL_CATEGORIES
+from deepagents_evals.radar import (
+    ALL_CATEGORIES,
+    CATEGORY_LABELS,
+    EVAL_CATEGORIES,
+    load_results_from_summary,
+)
+from tests.evals.pytest_reporter import _CATEGORY_RESULTS
 
 # ---------------------------------------------------------------------------
 # Category definitions consistency
@@ -22,16 +30,22 @@ EXPECTED_CATEGORY_MODULES: dict[str, list[str]] = {
         "test_todos",
         "test_tool_usage_incident_graph",
         "test_external_benchmarks",
+        "test_goal_tools",
+        "test_auto_mode_authorization",
     ],
     "memory": ["test_memory", "test_memory_multiturn", "test_memory_agent_bench"],
-    "conversation": ["test_followup_quality", "test_tau2_airline"],
+    "conversation": [
+        "test_followup_quality",
+        "test_tau2_airline",
+        "test_iterative_constraint_satisfaction",
+    ],
     "summarization": ["test_summarization"],
     "unit_test": [
         "test_system_prompt",
-        "test_hitl",
         "test_subagents",
         "test_skills",
     ],
+    "langchain/middleware": ["test_langchain_middleware_todo"],
 }
 
 
@@ -59,8 +73,6 @@ def test_unit_test_excluded_from_radar():
 
 def _is_marker_call(node: object, marker_name: str) -> str | None:
     """Return the marker value if *node* is a `pytest.mark.<marker_name>("value")` call, else `None`."""
-    import ast
-
     if not (
         isinstance(node, ast.Call)
         and isinstance(node.func, ast.Attribute)
@@ -80,14 +92,11 @@ def _is_eval_category_call(node: object) -> str | None:
 def test_expected_modules_match_filesystem():
     """Discover eval_category markers on disk and assert they match `EXPECTED_CATEGORY_MODULES`.
 
-    Scans both module-level ``pytestmark`` assignments and per-function
-    ``@pytest.mark.eval_category(...)`` decorators so that files with
+    Scans both module-level `pytestmark` assignments and per-function
+    `@pytest.mark.eval_category(...)` decorators so that files with
     mixed per-function categories (e.g. test_external_benchmarks,
     test_file_operations) are detected correctly.
     """
-    import ast
-    from pathlib import Path
-
     evals_dir = Path(__file__).resolve().parent.parent / "evals"
     discovered: dict[str, set[str]] = {}
 
@@ -128,8 +137,6 @@ def _has_eval_tier_marker(tree: object) -> bool:
     Walks the entire AST to catch eval_tier in pytestmark lists, function
     decorators, and helper functions like `_tiered_params`.
     """
-    import ast
-
     if not isinstance(tree, ast.Module):
         return False
 
@@ -165,9 +172,6 @@ def test_all_eval_modules_have_eval_tier():
     Ensures new eval files cannot silently lack tier annotations, which would
     cause them to be excluded when running `--eval-tier baseline`.
     """
-    import ast
-    from pathlib import Path
-
     evals_dir = Path(__file__).resolve().parent.parent / "evals"
     missing: list[str] = []
 
@@ -189,8 +193,6 @@ def test_all_eval_modules_have_eval_tier():
 
 
 def test_category_scores_computation():
-    from tests.evals.pytest_reporter import _CATEGORY_RESULTS
-
     # Save original state and restore after test.
     original = dict(_CATEGORY_RESULTS)
     try:
@@ -216,8 +218,6 @@ def test_category_scores_computation():
 
 
 def test_load_results_with_category_scores(tmp_path):
-    from deepagents_evals.radar import load_results_from_summary
-
     data = [
         {
             "model": "test:model-a",
@@ -233,8 +233,6 @@ def test_load_results_with_category_scores(tmp_path):
 
 
 def test_load_results_missing_category_scores_raises(tmp_path):
-    from deepagents_evals.radar import load_results_from_summary
-
     data = [{"model": "test:model-b", "correctness": 0.72}]
     path = tmp_path / "summary.json"
     path.write_text(json.dumps(data), encoding="utf-8")
@@ -244,8 +242,6 @@ def test_load_results_missing_category_scores_raises(tmp_path):
 
 
 def test_load_results_empty_category_scores(tmp_path):
-    from deepagents_evals.radar import load_results_from_summary
-
     data = [{"model": "test:model-c", "category_scores": {}}]
     path = tmp_path / "summary.json"
     path.write_text(json.dumps(data), encoding="utf-8")

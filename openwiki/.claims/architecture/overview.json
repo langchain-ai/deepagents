@@ -1,0 +1,176 @@
+{
+  "schemaVersion": 1,
+  "pageVersion": "sha256:6327e92256b879015177a06188c7d4a17ee87b741111288b30ab856c525874f0",
+  "claims": [
+    {
+      "id": "claim_7e77f7ec620944c29e36936e3abea92f",
+      "statement": "The repository is an independently versioned Python monorepo: the SDK is deepagents 0.7.28, dcode is 0.1.86, ACP is 0.0.13, Talon is 0.0.9, and evals is 0.0.1; Release Please has release lines for the first four and five partners but not evals, creates separate draft release pull requests, and delegates PyPI and GitHub release creation to the release workflow after a release PR is merged.",
+      "evidence": [
+        {
+          "resource": "repo://.github/RELEASING.md",
+          "version": "repo-file-v1:sha256:9bd7464627062084936795312a9bf73bcf5f93c2696d6c9e2f34041a456a95a8"
+        },
+        {
+          "resource": "repo://.release-please-manifest.json",
+          "version": "repo-file-v1:sha256:49f7fd716935c53332718551b9d0c62972f2f59a2dcb631ba7209e49fa2b42fd"
+        },
+        {
+          "resource": "repo://libs/acp/pyproject.toml",
+          "version": "repo-file-v1:sha256:b81b86ee6a7c3ba9f74e1e9598b88fc998772c1641f190defbaf82db114cc5cf"
+        },
+        {
+          "resource": "repo://libs/code/pyproject.toml",
+          "version": "repo-file-v1:sha256:f2f280a8499dc76d371202dda329ba59846fb8e509c3a0902981cb6ee88b24de"
+        },
+        {
+          "resource": "repo://libs/deepagents/pyproject.toml",
+          "version": "repo-file-v1:sha256:b3ab370eee9c74b350923154560eac2d90618057cdfae82f572fa53723c5cdbb"
+        },
+        {
+          "resource": "repo://libs/evals/pyproject.toml",
+          "version": "repo-file-v1:sha256:2133729fb13320242ac78d95455bd4a911a23f0f000f0519384b9889690b1a0c"
+        },
+        {
+          "resource": "repo://libs/talon/pyproject.toml",
+          "version": "repo-file-v1:sha256:5d2cb61c60626642b8b5d714012b3c0d6f4301bb555285742fcf94c226c6ed96"
+        },
+        {
+          "resource": "repo://release-please-config.json",
+          "version": "repo-file-v1:sha256:c9c9e84b4d74a8842fe1f8e49cecea496d12f553fba792d382fdea6c3abaa99f"
+        }
+      ]
+    },
+    {
+      "id": "claim_c476cf01e3534db9823db06bc72373e9",
+      "statement": "Published dependencies flow from ACP to the SDK, dcode to ACP, QuickJS, and pinned deepagents==0.7.28, Talon to the SDK and dcode, evals to the SDK, dcode, and QuickJS, and QuickJS to the 0.7.x SDK; separate `uv` source mappings replace selected dependencies with sibling monorepo source during development, and only mappings marked `editable = true` are editable installs.",
+      "evidence": [
+        {
+          "resource": "repo://libs/acp/pyproject.toml",
+          "version": "repo-file-v1:sha256:b81b86ee6a7c3ba9f74e1e9598b88fc998772c1641f190defbaf82db114cc5cf"
+        },
+        {
+          "resource": "repo://libs/code/pyproject.toml",
+          "version": "repo-file-v1:sha256:f2f280a8499dc76d371202dda329ba59846fb8e509c3a0902981cb6ee88b24de"
+        },
+        {
+          "resource": "repo://libs/evals/pyproject.toml",
+          "version": "repo-file-v1:sha256:2133729fb13320242ac78d95455bd4a911a23f0f000f0519384b9889690b1a0c"
+        },
+        {
+          "resource": "repo://libs/partners/quickjs/pyproject.toml",
+          "version": "repo-file-v1:sha256:1d7d6088d520188901f54b452f6e033e75ef0dc6a188715c4bb12e0efc4ba443"
+        },
+        {
+          "resource": "repo://libs/talon/pyproject.toml",
+          "version": "repo-file-v1:sha256:5d2cb61c60626642b8b5d714012b3c0d6f4301bb555285742fcf94c226c6ed96"
+        }
+      ]
+    },
+    {
+      "id": "claim_ace3ce6fd4484cbca167cd0c8555c6b5",
+      "statement": "Deep Agents layers an opinionated harness over LangChain create_agent and the LangGraph runtime; create_deep_agent resolves model, profile, backend, middleware, default subagent, and prompt before creating the graph, while protecting required middleware and DeepAgentState invariants.",
+      "evidence": [
+        {
+          "resource": "repo://README.md",
+          "version": "repo-file-v1:sha256:24666c576b54e1e1ed9793b97971f8cb0e16ebb9d0ab9a887989c6e4dfece4ac"
+        },
+        {
+          "resource": "repo://libs/ARCHITECTURE.md",
+          "version": "repo-file-v1:sha256:a2657562c0c28a61c0b8c1ff335b29c714b31f601558d92abcfc8977a987bb2c"
+        },
+        {
+          "resource": "repo://libs/deepagents/deepagents/graph.py",
+          "version": "repo-file-v1:sha256:3826c92c9613a30d898d3fb4fb76ab49a6af0537b5ef74ec9e7340673f7f2261"
+        }
+      ]
+    },
+    {
+      "id": "claim_5175a8e3d7014cff86f8077dc1b9a354",
+      "statement": "Deep Agents distinguishes synchronous task subagents from AsyncSubAgent remote background runs: the latter use the LangGraph SDK and Agent Protocol, return task IDs, and persist remote thread, run, and status state for checking, updating, cancellation, and listing.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/graph.py",
+          "version": "repo-file-v1:sha256:3826c92c9613a30d898d3fb4fb76ab49a6af0537b5ef74ec9e7340673f7f2261"
+        },
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/async_subagents.py",
+          "version": "repo-file-v1:sha256:2a4ce6a5d9a072eb09c8601a9325a5b57cb338914a318e859d5e1f5b554641c2"
+        }
+      ]
+    },
+    {
+      "id": "claim_0665eadd1fda4144ae780f6cc9c2d026",
+      "statement": "dcode is a separate-process terminal client and agent server product; ACP accepts a compiled graph or session-context factory and dcode adds Auto-mode approval and prompt metadata, while evals measures real-LLM trajectories and Harbor sandbox benchmarks.",
+      "evidence": [
+        {
+          "resource": "repo://libs/acp/deepagents_acp/server.py",
+          "version": "repo-file-v1:sha256:c834c7c994ffac0a707a8a855ef3fc31470b1f333ba012d1db2b3c3c6836e105"
+        },
+        {
+          "resource": "repo://libs/code/ARCHITECTURE.md",
+          "version": "repo-file-v1:sha256:1044d5960a89cb0a26efdc7ff02036cba8f13332e6c4c6b1e08f443c49796aed"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/acp.py",
+          "version": "repo-file-v1:sha256:58225ca66bd453f957f32badbf7084495e931b9c4f63a01f94ad2117049bbb2f"
+        },
+        {
+          "resource": "repo://libs/evals/README.md",
+          "version": "repo-file-v1:sha256:88443acb01ceea42de14ede461bd126771570b8808c7eb3522ebe99e75688dca"
+        }
+      ]
+    },
+    {
+      "id": "claim_39c3b528bd8c4f30a3eb1bb03952894b",
+      "statement": "Talon is an experimental single-event-loop local host rather than a production containment boundary. Its runtime builds and invokes an SDK graph with request-scoped context, rebuilds on approval changes, and avoids closing resources if background cancellation fails; the host coordinates runtime, channels, and optional scheduler lifecycle.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/README.md",
+          "version": "repo-file-v1:sha256:6326fad8c0835a98d9255aa098dba1699a0ef137077ed43e4a5ffa99aaf9b864"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/host.py",
+          "version": "repo-file-v1:sha256:47bf496031e579d7767ba95f3389a7f9ea07bd167f5bd366ab9c36364c8505a1"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/runtime.py",
+          "version": "repo-file-v1:sha256:3810c6d2eaffdbb4a1a64e8841df1ae475caed9d597f3b1a9ad9ec1a65dc1d7c"
+        },
+        {
+          "resource": "repo://libs/talon/tests/test_host.py",
+          "version": "repo-file-v1:sha256:78e8024cc75f6975ede0af4224c19697e0d42cc83aec641d4c51fbe4091418eb"
+        }
+      ]
+    },
+    {
+      "id": "claim_e4c70c513dd74546905f4bc3eded2c72",
+      "statement": "Talon keeps graph checkpoints, backend capabilities, conversation archive, and cron persistence distinct; checkpoint URIs select built-in SQLite, PostgreSQL, or MongoDB before trusted plugins, and channel adapters support the documented transport lifecycle and built-in WhatsApp, Telegram, Discord, and Slack integrations.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/graph.py",
+          "version": "repo-file-v1:sha256:3826c92c9613a30d898d3fb4fb76ab49a6af0537b5ef74ec9e7340673f7f2261"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/__main__.py",
+          "version": "repo-file-v1:sha256:bc9f97c16989202db7c4c5b7ddea9983473996ac18de652b2225a4bd178915fd"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/channels/__init__.py",
+          "version": "repo-file-v1:sha256:e012db150256e5ac3502acf90b6c2b7ee81bed90594782436291c4713a632830"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/checkpoint_backends.py",
+          "version": "repo-file-v1:sha256:12a6a302d806d09be9990faa167d4e208c9009d3d03343d60a85dcb409c7d69f"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/interfaces.py",
+          "version": "repo-file-v1:sha256:29e905a67a663b38cdebadded219fd797b01ceb12d9d0bcdb73377df61650d06"
+        }
+      ]
+    }
+  ],
+  "verification": {
+    "by": "openwiki/0.4.2",
+    "at": "2026-10-17T08:04:56.296Z"
+  }
+}

@@ -9,8 +9,8 @@ on:
     paths:
       - "libs/deepagents/pyproject.toml"
       - "libs/deepagents/deepagents/_version.py"
-      - "libs/cli/pyproject.toml"
-      - "libs/cli/deepagents_cli/_version.py"
+      - "libs/code/pyproject.toml"
+      - "libs/code/deepagents_code/_version.py"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -25,7 +25,7 @@ jobs:
     timeout-minutes: 2
 
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: "🐍 Set up Python and uv"
         uses: "./.github/actions/uv_setup"
@@ -34,4 +34,4 @@ jobs:
           enable-cache: "false"
 
       - name: "✅ Verify pyproject.toml & _version.py Match"
-        run: python .github/scripts/check_version_equality.py
+        run: python .github/scripts/checks/check_version_equality.py

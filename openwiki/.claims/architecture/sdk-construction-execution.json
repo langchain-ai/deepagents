@@ -1,0 +1,224 @@
+{
+  "schemaVersion": 1,
+  "pageVersion": "sha256:d32a1fd399a4f13dd61c399981034f822925368a7cd96784c4c387a3b7ac783c",
+  "claims": [
+    {
+      "id": "claim_c5dfbd9cde8e41eb8280d713c9d71d4f",
+      "statement": "create_deep_agent is the public assembly entry point: it resolves the model and harness profile, selects or creates StateBackend, assembles middleware and subagent policy, and delegates compilation to LangChain create_agent with DeepAgentState unless a schema is supplied.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/graph.py",
+          "version": "repo-file-v1:sha256:3826c92c9613a30d898d3fb4fb76ab49a6af0537b5ef74ec9e7340673f7f2261"
+        }
+      ]
+    },
+    {
+      "id": "claim_1adcb986c5814ce682b1ec2dd9a70861",
+      "statement": "The main middleware core is FilesystemMiddleware, optional SubAgentMiddleware, _ParentNotifierMiddleware, summarization, PatchToolCallsMiddleware, and optional AsyncSubAgentMiddleware; caller middleware replaces surviving same-name entries or is spliced after that core, exclusions are applied before and after the splice, and excluded-tool filtering is appended last.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/graph.py",
+          "version": "repo-file-v1:sha256:3826c92c9613a30d898d3fb4fb76ab49a6af0537b5ef74ec9e7340673f7f2261"
+        }
+      ]
+    },
+    {
+      "id": "claim_fa52c3b43aae4b428a8a9585742f901e",
+      "statement": "Declarative subagents are compiled behind the synchronous task tool, receive isolated task messages or forked effective parent history, reject recursive task delegation in fork context, and return only permitted state updates plus a ToolMessage result.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/subagents.py",
+          "version": "repo-file-v1:sha256:f4a40887da485863f593be6d242fe3bb663943c55f6f49116db49a02789505d6"
+        }
+      ]
+    },
+    {
+      "id": "claim_1b5641eb13cc4cf2bfa39ef1de6f6548",
+      "statement": "AsyncSubAgentMiddleware exposes launch, status, update, cancellation, and list tools for Agent Protocol graphs; launch immediately stores an async task record in state with remote thread and run identifiers while the parent continues.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/async_subagents.py",
+          "version": "repo-file-v1:sha256:1e89c0dbff1203444693e639800cece2c843458de2c54472e2dc72f01b53fc5e"
+        }
+      ]
+    },
+    {
+      "id": "claim_8067f8923a1d4512ad174350c26a8863",
+      "statement": "Async subagent fork mode sends a snapshot of effective parent history plus the delegated task to the remote graph, whereas isolated mode sends only the task; it does not transfer parent configuration, and local ASGI transport without a URL requires asynchronous invocation.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/async_subagents.py",
+          "version": "repo-file-v1:sha256:1e89c0dbff1203444693e639800cece2c843458de2c54472e2dc72f01b53fc5e"
+        }
+      ]
+    },
+    {
+      "id": "claim_7ce7ccaf2fa6412faab4fe07f8d3609b",
+      "statement": "The default DeepAgentState messages channel uses DeltaChannel with the message-delta reducer; the reducer coerces raw inputs, updates or removes messages by ID, honors remove-all, and handles absent replay state as empty.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/_messages_reducer.py",
+          "version": "repo-file-v1:sha256:4539763f8d47a4894fac9998d68b3fe0aa7eb369425f8dab08fc7cf9650aa681"
+        },
+        {
+          "resource": "repo://libs/deepagents/deepagents/graph.py",
+          "version": "repo-file-v1:sha256:3826c92c9613a30d898d3fb4fb76ab49a6af0537b5ef74ec9e7340673f7f2261"
+        }
+      ]
+    },
+    {
+      "id": "claim_0d93b5d7b595450b80831454b95a6d8c",
+      "statement": "SkillsMiddleware loads and caches backend-sourced skill metadata per thread, applies later sources over earlier same-name skills, reloads after skills_metadata is reset to None, and records source-load errors as warnings.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/skills.py",
+          "version": "repo-file-v1:sha256:f3cc2139f2b77bd599bf99df032efe27774462b2ecc80f6e58b7ea7edd2d7895"
+        }
+      ]
+    },
+    {
+      "id": "claim_99e2dad1ac0d4838a687946482335bfb",
+      "statement": "Filesystem permission rules with mode interrupt are converted into path-sensitive HumanInTheLoopMiddleware interrupt_on predicates and merged with caller entries, which take precedence; FilesystemMiddleware continues to enforce deny rules independently of approval.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/graph.py",
+          "version": "repo-file-v1:sha256:3826c92c9613a30d898d3fb4fb76ab49a6af0537b5ef74ec9e7340673f7f2261"
+        },
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/_fs_interrupt.py",
+          "version": "repo-file-v1:sha256:3f2d0ac7f91d97a39b648ca10ec14a685d271357a0e3d1c581c4ca7c29ed2be5"
+        }
+      ]
+    },
+    {
+      "id": "claim_f9f56c04b65041649a9d82dbef180b87",
+      "statement": "A harness profile cannot exclude the required FilesystemMiddleware or SubAgentMiddleware scaffolding, and unmatched or colliding exclusion entries fail construction rather than silently degrading the agent.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/_excluded_middleware.py",
+          "version": "repo-file-v1:sha256:cc7064524e3e782928b4579f9ec1f635183333b7fae4682a7d40ce846918e68c"
+        },
+        {
+          "resource": "repo://libs/deepagents/deepagents/graph.py",
+          "version": "repo-file-v1:sha256:3826c92c9613a30d898d3fb4fb76ab49a6af0537b5ef74ec9e7340673f7f2261"
+        }
+      ]
+    },
+    {
+      "id": "claim_9ed12a080cc14a7fafdd8b849abf5e97",
+      "statement": "Generated filesystem approval predicates distinguish exact-path from bulk operations, conservatively gate pathless or current-directory bulk calls, account for glob patterns that redirect outside the supplied path, and match symlink-resolved targets when the backend can resolve them.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/_fs_interrupt.py",
+          "version": "repo-file-v1:sha256:3f2d0ac7f91d97a39b648ca10ec14a685d271357a0e3d1c581c4ca7c29ed2be5"
+        },
+        {
+          "resource": "repo://libs/deepagents/tests/unit_tests/test_permissions.py",
+          "version": "repo-file-v1:sha256:842dd3fd1bc751abddd15818cf0dd267de9f6ead7ffcc45dbc77dfbd5caf0f90"
+        }
+      ]
+    },
+    {
+      "id": "claim_32c115b20823434c80aba812736a456e",
+      "statement": "Provider-payload tests verify that inline skill-tool disclosure follows the relevant read result without splitting a tool-result batch or preceding queued user content, and that disclosure uses the model selected after fallback.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/tests/unit_tests/middleware/test_skill_tools_payload.py",
+          "version": "repo-file-v1:sha256:c330defe73e08e7ef8ecc3ce8632799ebcca523ac41ca3d495166ce151755cca"
+        }
+      ]
+    },
+    {
+      "id": "claim_099fdef72b73429998f3e4586b8b82be",
+      "statement": "The checkpointer and store are forwarded only at the main create_agent boundary; synchronous task children run under ambient LangGraph configuration, so parent callbacks, tags, configurable values, and metadata propagate while child-bound configuration wins collisions.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/graph.py",
+          "version": "repo-file-v1:sha256:3826c92c9613a30d898d3fb4fb76ab49a6af0537b5ef74ec9e7340673f7f2261"
+        },
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/subagents.py",
+          "version": "repo-file-v1:sha256:f4a40887da485863f593be6d242fe3bb663943c55f6f49116db49a02789505d6"
+        },
+        {
+          "resource": "repo://libs/deepagents/tests/unit_tests/test_subagents.py",
+          "version": "repo-file-v1:sha256:b0f8c6d1d2173400d0adbcd8617c102a2c72d9076a9023a9ae78874bd75b35a8"
+        }
+      ]
+    },
+    {
+      "id": "claim_efe8764e3d5a426bb640ef72c49d4144",
+      "statement": "An explicit state_schema is forwarded when declarative subagents are compiled, while caller-provided CompiledSubAgent runnables own their schema; private fields from the main schema and installed middleware are excluded at task boundaries.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/graph.py",
+          "version": "repo-file-v1:sha256:3826c92c9613a30d898d3fb4fb76ab49a6af0537b5ef74ec9e7340673f7f2261"
+        },
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/subagents.py",
+          "version": "repo-file-v1:sha256:f4a40887da485863f593be6d242fe3bb663943c55f6f49116db49a02789505d6"
+        },
+        {
+          "resource": "repo://libs/deepagents/tests/unit_tests/test_graph.py",
+          "version": "repo-file-v1:sha256:f360fd9dcae597dc05022579a9fb5a29e90f7fdc11f26c489eb3fa54a8ad289a"
+        }
+      ]
+    },
+    {
+      "id": "claim_5a0d1071a8394f09a53c9ca382dc12ea",
+      "statement": "Async task tracking is parent-local state, while the Agent Protocol server owns remote threads and runs: checks derive waiting from a successful run whose thread is paused, updates interrupt the current run and create a new one on the same thread, and cancellation of a waiting task only updates local tracking.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/async_subagents.py",
+          "version": "repo-file-v1:sha256:1e89c0dbff1203444693e639800cece2c843458de2c54472e2dc72f01b53fc5e"
+        },
+        {
+          "resource": "repo://libs/deepagents/tests/unit_tests/test_async_subagents.py",
+          "version": "repo-file-v1:sha256:1af6f9f14e9c91cc22c813a5a1be348d46441ccf1c0acc706fa57a4827fa1cc6"
+        }
+      ]
+    },
+    {
+      "id": "claim_4dc0f99a777f493aabb614e5f77b72d1",
+      "statement": "The automatically added general-purpose subagent has its own filesystem, summarization, and patching core, then profile, skills, and caching middleware; caller middleware reaches it only when it replaces an original general-purpose stack slot, rather than as a wholesale copy of the main stack.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/graph.py",
+          "version": "repo-file-v1:sha256:3826c92c9613a30d898d3fb4fb76ab49a6af0537b5ef74ec9e7340673f7f2261"
+        },
+        {
+          "resource": "repo://libs/deepagents/tests/unit_tests/test_graph.py",
+          "version": "repo-file-v1:sha256:f360fd9dcae597dc05022579a9fb5a29e90f7fdc11f26c489eb3fa54a8ad289a"
+        }
+      ]
+    },
+    {
+      "id": "claim_48bce274c9894523b7d728192d03ffc1",
+      "statement": "The final compiled main graph is configured with recursion limit 9999 and metadata identifying the Deep Agents integration, installed version, and supplied agent name.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/graph.py",
+          "version": "repo-file-v1:sha256:3826c92c9613a30d898d3fb4fb76ab49a6af0537b5ef74ec9e7340673f7f2261"
+        }
+      ]
+    },
+    {
+      "id": "claim_cdaba0705b254b2dbbca677efefa43f3",
+      "statement": "CompositeBackend artifacts_root defaults to /, and FilesystemMiddleware and summarization derive large-result and conversation-history paths from a configured artifacts root after normalizing a trailing slash.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/tests/unit_tests/test_artifacts_root.py",
+          "version": "repo-file-v1:sha256:0dd55bbfa5e2c9ad5c6d776f3a145d679ce9333f480e9ca4919672e317a4ee06"
+        },
+        {
+          "resource": "repo://libs/deepagents/tests/unit_tests/test_end_to_end.py",
+          "version": "repo-file-v1:sha256:f9c76a0cb02ea94f5b1ab204be371ebd677afb40ccace47cb389d8af6577e5cb"
+        }
+      ]
+    }
+  ],
+  "verification": {
+    "by": "openwiki/0.4.2",
+    "at": "2026-10-16T08:05:35.701Z"
+  }
+}

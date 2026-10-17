@@ -1,10 +1,12 @@
 """Unit tests for the summarization middleware factory."""
 
+from collections.abc import Iterable
+from inspect import Parameter, signature
 from typing import Any, cast
 from unittest.mock import MagicMock
 
 import pytest
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, MessageLikeRepresentation
 
 from deepagents.middleware.summarization import create_summarization_middleware
 from tests.unit_tests.chat_model import GenericFakeChatModel
@@ -42,7 +44,98 @@ def test_factory_uses_fallback_defaults_without_profile() -> None:
     assert middleware._truncate_args_keep == ("messages", 20)
 
 
+def test_factory_default_prompt_explains_media_references() -> None:
+    """Explains preserved media tags in the default summary prompt."""
+    model = _make_model(with_profile_limit=None)
+    middleware = create_summarization_middleware(model, cast("Any", MagicMock()))
+
+    # The prompt is consumed via str.format(messages=...), so the example's
+    # braces must be escaped in the template and survive formatting. Assert
+    # against the rendered result -- this also guards against the literal
+    # `{hash}` regression that made format() raise KeyError.
+    rendered = middleware._lc_helper.summary_prompt.format(messages="<conversation>")
+    assert '<image url="/conversation_history/media/{hash}.png" />' in rendered
+    assert "preserve the media reference in your summary" in rendered
+    assert "call `read_file` on the referenced path" in rendered
+
+
+def test_factory_surfaces_summarization_knobs() -> None:
+    """Passes explicit summarization settings through to the middleware."""
+    model = _make_model(with_profile_limit=120_000)
+
+    def token_counter(messages: Iterable[MessageLikeRepresentation]) -> int:
+        return len(list(messages))
+
+    middleware = create_summarization_middleware(
+        model,
+        cast("Any", MagicMock()),
+        summary_prompt="custom summary prompt: {messages}",
+        trim_tokens_to_summarize=123,
+        token_counter=token_counter,
+    )
+
+    assert middleware._lc_helper.summary_prompt == "custom summary prompt: {messages}"
+    assert middleware._lc_helper.trim_tokens_to_summarize == 123
+    assert middleware._lc_helper.token_counter is token_counter
+
+
+def test_factory_summarization_knobs_are_keyword_only() -> None:
+    """Requires optional factory controls to be passed by name."""
+    params = signature(create_summarization_middleware).parameters
+
+    assert params["summary_prompt"].kind is Parameter.KEYWORD_ONLY
+    assert params["trim_tokens_to_summarize"].kind is Parameter.KEYWORD_ONLY
+    assert params["token_counter"].kind is Parameter.KEYWORD_ONLY
+    assert params["summarizer"].kind is Parameter.KEYWORD_ONLY
+
+
 def test_factory_rejects_string_model() -> None:
     """Raises `TypeError` when called with a string model name."""
     with pytest.raises(TypeError, match="BaseChatModel"):
         create_summarization_middleware("openai:gpt-5", cast("Any", MagicMock()))  # type: ignore[arg-type]
+
+
+def test_factory_passes_summarizer_through() -> None:
+    """Summaries come from `summarizer` instead of the model."""
+    model = _make_model(with_profile_limit=120_000)
+    received: list[list[AnyMessage]] = []
+
+    def summarizer(messages: list[AnyMessage]) -> str:
+        received.append(messages)
+        return "custom summary"
+
+    middleware = create_summarization_middleware(model, cast("Any", MagicMock()), summarizer=summarizer)
+    messages: list[AnyMessage] = [HumanMessage(content="hi")]
+
+    assert middleware.name == "SummarizationMiddleware"
+    assert middleware._create_summary(messages) == "custom summary"
+    assert received == [messages]
+
+
+async def test_factory_passes_summarizer_through_async() -> None:
+    """Async summaries come from `summarizer` instead of the model."""
+    model = _make_model(with_profile_limit=120_000)
+
+    async def summarizer(messages: list[AnyMessage]) -> str:
+        return f"{len(messages)} messages"
+
+    middleware = create_summarization_middleware(model, cast("Any", MagicMock()), summarizer=summarizer)
+
+    assert await middleware._acreate_summary([HumanMessage(content="hi")]) == "1 messages"
+
+
+def test_factory_chat_model_summarizer_uses_deepagents_prompt() -> None:
+    """A chat model summarizer gets the Deep Agents prompt; thresholds come from `model`."""
+    model = _make_model(with_profile_limit=120_000)
+    summary_model = GenericFakeChatModel(messages=iter([AIMessage(content="the summary")]))
+    summary_model.profile = {"max_input_tokens": 8_000}
+
+    middleware = create_summarization_middleware(model, cast("Any", MagicMock()), summarizer=summary_model)
+
+    assert middleware._create_summary([HumanMessage(content="hi")]) == "the summary"
+    assert model.call_history == []
+    prompt = summary_model.call_history[0]["messages"][-1].text
+    assert "preserve the media reference in your summary" in prompt
+    assert "hi" in prompt
+    assert middleware._lc_helper.trigger == ("fraction", 0.85)
+    assert middleware._get_profile_limits() == 120_000

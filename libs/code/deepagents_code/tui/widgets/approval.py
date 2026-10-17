@@ -1,0 +1,771 @@
+"""Approval widget for HITL - using standard Textual patterns."""
+
+from __future__ import annotations
+
+import logging
+from typing import TYPE_CHECKING, Any, ClassVar
+
+from textual.binding import Binding, BindingType
+from textual.containers import Container, Vertical, VerticalScroll
+from textual.content import Content
+from textual.message import Message
+from textual.widgets import Input, Static
+
+if TYPE_CHECKING:
+    import asyncio
+
+    from textual import events
+    from textual.app import ComposeResult
+
+from deepagents_code import theme
+from deepagents_code.config import (
+    get_glyphs,
+    is_ascii_mode,
+)
+from deepagents_code.tui.widgets.tool_renderers import get_renderer
+from deepagents_code.unicode_security import (
+    check_url_safety,
+    detect_dangerous_unicode,
+    format_warning_detail,
+    iter_string_values,
+    looks_like_url_key,
+    render_with_unicode_markers,
+    strip_dangerous_unicode,
+    summarize_issues,
+)
+
+logger = logging.getLogger(__name__)
+
+# Max length for truncated shell command display
+_SHELL_COMMAND_TRUNCATE_LENGTH: int = 120
+# Max number of lines for truncated shell command display
+_SHELL_COMMAND_TRUNCATE_LINES: int = 5
+_WARNING_PREVIEW_LIMIT: int = 3
+_WARNING_TEXT_TRUNCATE_LENGTH: int = 220
+
+
+def _is_command_too_long(command: str) -> bool:
+    """Whether a shell command exceeds the display thresholds (char or line).
+
+    Args:
+        command: The shell command string to check.
+
+    Returns:
+        `True` if the command is longer than `_SHELL_COMMAND_TRUNCATE_LENGTH`
+        characters or has more than `_SHELL_COMMAND_TRUNCATE_LINES` lines.
+    """
+    if len(command) > _SHELL_COMMAND_TRUNCATE_LENGTH:
+        return True
+    return command.count("\n") + 1 > _SHELL_COMMAND_TRUNCATE_LINES
+
+
+def _truncate_command(command: str) -> str:
+    """Truncate a shell command for compact display.
+
+    Applies line truncation first (keeping at most `_SHELL_COMMAND_TRUNCATE_LINES`
+    lines), then character truncation, so multi-line commands collapse before
+    long single lines are cut. A single ellipsis is appended at the end.
+
+    Args:
+        command: The shell command string to truncate.
+
+    Returns:
+        The truncated command string, with a trailing ellipsis if any truncation
+        was applied; otherwise the original command unchanged.
+    """
+    ellipsis = get_glyphs().ellipsis
+    lines = command.split("\n")
+    truncated = len(lines) > _SHELL_COMMAND_TRUNCATE_LINES
+    if truncated:
+        command = "\n".join(lines[:_SHELL_COMMAND_TRUNCATE_LINES])
+    if len(command) > _SHELL_COMMAND_TRUNCATE_LENGTH:
+        command = command[:_SHELL_COMMAND_TRUNCATE_LENGTH]
+        truncated = True
+    return command + ellipsis if truncated else command
+
+
+def _description_widget(description: str) -> Static:
+    """Build the dim widget that renders an approval description.
+
+    Args:
+        description: The description text to render.
+
+    Returns:
+        The styled description widget.
+    """
+    return Static(
+        Content.from_markup("[dim]$desc[/dim]", desc=description),
+        classes="approval-description",
+    )
+
+
+class ApprovalMenu(Container):
+    """Approval menu using standard Textual patterns.
+
+    Key design decisions (following mistral-vibe reference):
+    - Container base class with compose()
+    - BINDINGS for key handling (not on_key)
+    - can_focus_children = False to prevent focus theft
+    - Simple Static widgets for options
+    - Standard message posting
+    - Tool-specific widgets via renderer pattern
+    """
+
+    can_focus = True
+    can_focus_children = False
+
+    # CSS is in app.tcss - no DEFAULT_CSS needed
+
+    BINDINGS: ClassVar[list[BindingType]] = [
+        Binding("up", "move_up", "Up", show=False),
+        Binding("k", "move_up", "Up", show=False),
+        Binding("down", "move_down", "Down", show=False),
+        Binding("j", "move_down", "Down", show=False),
+        Binding("enter", "select", "Select", show=False),
+        Binding("1", "select_position(0)", "Select first", show=False),
+        Binding("2", "select_position(1)", "Select second", show=False),
+        Binding("3", "select_position(2)", "Select third", show=False),
+        Binding("y", "select_approve", "Approve", show=False),
+        Binding("a", "select_auto", "Auto-approve", show=False),
+        Binding("n", "select_reject", "Reject", show=False),
+        Binding("e", "toggle_expand", "Expand command", show=False),
+        Binding("tab", "reject_with_reason", "Reject with feedback", show=False),
+    ]
+
+    class Decided(Message):
+        """Message sent when user makes a decision."""
+
+        def __init__(self, decision: dict[str, str]) -> None:
+            """Initialize a Decided message with the user's decision.
+
+            Args:
+                decision: Dictionary containing the decision type (e.g., 'approve',
+                    'reject', or 'auto_approve_all').
+            """
+            super().__init__()
+            self.decision = decision
+
+    # Tools that don't need detailed info display (already shown in tool call)
+    _MINIMAL_TOOLS: ClassVar[frozenset[str]] = frozenset({"execute"})
+
+    def __init__(
+        self,
+        action_requests: list[dict[str, Any]] | dict[str, Any],
+        assistant_id: str | None = None,
+        id: str | None = None,  # noqa: A002  # Textual widget constructor uses `id` parameter
+        *,
+        auto_mode_eligible: bool = True,
+        show_diff_line_numbers: bool = True,
+        **kwargs: Any,
+    ) -> None:
+        """Initialize the ApprovalMenu widget.
+
+        Args:
+            action_requests: A single action request dictionary or a list of action
+                request dictionaries requiring approval. Each dictionary should
+                contain 'name' (tool name) and 'args' (tool arguments).
+            assistant_id: Optional assistant ID for resolving virtual paths in
+                file-operation previews.
+            id: Optional widget ID. Defaults to 'approval-menu'.
+            auto_mode_eligible: Whether Auto mode can be enabled in this session.
+                When `False` (e.g. a sandbox is active), the "Enable Auto for this
+                thread" option is not offered.
+            show_diff_line_numbers: Whether file-relative line numbers are shown
+                in diff previews.
+            **kwargs: Additional keyword arguments passed to the Container base class.
+        """
+        super().__init__(id=id or "approval-menu", classes="approval-menu", **kwargs)
+        # Support both single request (legacy) and list of requests (batch)
+        if isinstance(action_requests, dict):
+            self._action_requests = [action_requests]
+        else:
+            self._action_requests = action_requests
+
+        self._assistant_id = assistant_id
+        self._show_diff_line_numbers = show_diff_line_numbers
+        # For display purposes, get tool names
+        self._tool_names = [r.get("name", "unknown") for r in self._action_requests]
+        self._is_auto_fallback = any(
+            isinstance(request.get("description"), str)
+            and request["description"].startswith("Auto human fallback")
+            for request in self._action_requests
+        )
+        # Only offer the Auto option when it can actually be enabled. A live
+        # Auto fallback implies Auto is already active, so its "Switch to
+        # Manual" affordance is always shown regardless of eligibility.
+        self._show_auto_option = self._is_auto_fallback or auto_mode_eligible
+        # Built once: every input to `_build_options` is fixed for the widget's
+        # lifetime, so caching keeps `_num_options`/`_reject_index` from ever
+        # disagreeing with the option list they describe.
+        self._options = self._build_options()
+        self._num_options = len(self._options)
+        self._reject_index = self._num_options - 1
+        self._selected = 0
+        self._future: asyncio.Future[dict[str, str]] | None = None
+        self._option_widgets: list[Static] = []
+        self._tool_info_container: Vertical | None = None
+        # Minimal display if ALL tools are shell-execution tools
+        self._is_minimal = all(name in self._MINIMAL_TOOLS for name in self._tool_names)
+        # For expandable shell commands
+        self._command_expanded = False
+        self._command_widget: Static | None = None
+        self._has_expandable_command = self._check_expandable_command()
+        self._security_warnings = self._collect_security_warnings()
+        # Free-text reject mode state (Tab on Reject opens an inline Input).
+        self._reason_input: Input | None = None
+        self._reason_input_active = False
+        self._help_widget: Static | None = None
+
+    def set_future(self, future: asyncio.Future[dict[str, str]]) -> None:
+        """Set the future to resolve when user decides."""
+        self._future = future
+
+    def _check_expandable_command(self) -> bool:
+        """Check if there's a shell command that can be expanded.
+
+        Returns:
+            Whether the single action request is an expandable shell command.
+        """
+        if len(self._action_requests) != 1:
+            return False
+        req = self._action_requests[0]
+        if req.get("name", "") != "execute":
+            return False
+        command = str(req.get("args", {}).get("command", ""))
+        return _is_command_too_long(command)
+
+    def _get_command_display(self, *, expanded: bool) -> Content:
+        """Get the command display content (truncated or full).
+
+        Args:
+            expanded: Whether to show the full command or truncated version.
+
+        Returns:
+            Styled Content for the command display.
+
+        Raises:
+            RuntimeError: If called with empty action_requests.
+        """
+        if not self._action_requests:
+            msg = "_get_command_display called with empty action_requests"
+            raise RuntimeError(msg)
+        req = self._action_requests[0]
+        command_raw = str(req.get("args", {}).get("command", ""))
+        command = strip_dangerous_unicode(command_raw)
+        issues = detect_dangerous_unicode(command_raw)
+
+        too_long = _is_command_too_long(command)
+        if expanded or not too_long:
+            command_display = command
+        else:
+            command_display = _truncate_command(command)
+
+        if not expanded and too_long:
+            display = Content.from_markup(
+                "[bold]$cmd[/bold] [dim](press 'e' to expand)[/dim]",
+                cmd=command_display,
+            )
+        else:
+            display = Content.from_markup("[bold]$cmd[/bold]", cmd=command_display)
+
+        if not issues:
+            return display
+
+        raw_with_markers = render_with_unicode_markers(command_raw)
+        if not expanded and len(raw_with_markers) > _WARNING_TEXT_TRUNCATE_LENGTH:
+            raw_with_markers = (
+                raw_with_markers[:_WARNING_TEXT_TRUNCATE_LENGTH] + get_glyphs().ellipsis
+            )
+
+        return Content.assemble(
+            display,
+            Content.from_markup(
+                "\n[yellow]Warning:[/yellow] hidden chars detected ($summary)\n"
+                "[dim]raw: $raw[/dim]",
+                summary=summarize_issues(issues),
+                raw=raw_with_markers,
+            ),
+        )
+
+    def _get_minimal_description(self) -> Static | None:
+        """Get supplemental details for a minimal execute approval.
+
+        The command has its own widget, so drop the formatter's
+        `Execute Command:` line and keep the rest. Auto-mode fallbacks prefix
+        the description with a review notice ahead of that line, so match the
+        line itself rather than assuming it is first.
+
+        Returns:
+            Widget holding the supplemental details, or `None` when there are
+            none.
+        """
+        description = self._action_requests[0].get("description")
+        if not isinstance(description, str):
+            return None
+        lines = description.splitlines()
+        details = "\n".join(
+            line for line in lines if not line.startswith("Execute Command:")
+        ).strip()
+        if not details:
+            return None
+        return _description_widget(details)
+
+    def compose(self) -> ComposeResult:
+        """Compose the widget with Static children.
+
+        Layout: Tool info first (what's being approved), then options at bottom.
+        For bash/shell, skip tool info since it's already shown in tool call.
+
+        Yields:
+            Widgets for title, tool info, options, and help text.
+        """
+        # Title - show count if multiple tools
+        count = len(self._action_requests)
+        if count == 1:
+            title = Content.from_markup(
+                ">>> $name Requires Approval <<<", name=self._tool_names[0]
+            )
+        else:
+            title = Content(f">>> {count} Tool Calls Require Approval <<<")
+        yield Static(title, classes="approval-title")
+
+        if self._security_warnings:
+            parts: list[Content] = [
+                Content.from_markup(
+                    "[yellow]Warning:[/yellow] Potentially deceptive text"
+                ),
+            ]
+            parts.extend(
+                Content.from_markup("\n[dim]- $w[/dim]", w=warning)
+                for warning in self._security_warnings[:_WARNING_PREVIEW_LIMIT]
+            )
+            if len(self._security_warnings) > _WARNING_PREVIEW_LIMIT:
+                remaining = len(self._security_warnings) - _WARNING_PREVIEW_LIMIT
+                parts.append(Content.styled(f"\n- +{remaining} more warning(s)", "dim"))
+            yield Static(
+                Content.assemble(*parts),
+                classes="approval-security-warning",
+            )
+
+        # For shell commands, show the command (expandable if long)
+        if self._is_minimal and len(self._action_requests) == 1:
+            self._command_widget = Static(
+                self._get_command_display(expanded=self._command_expanded),
+                classes="approval-command",
+            )
+            yield self._command_widget
+            description_widget = self._get_minimal_description()
+            if description_widget is not None:
+                yield description_widget
+
+        # Tool info - only for non-minimal tools (diffs, writes show actual content)
+        if not self._is_minimal:
+            with VerticalScroll(classes="tool-info-scroll"):
+                self._tool_info_container = Vertical(classes="tool-info-container")
+                yield self._tool_info_container
+
+            # Separator between tool details and options
+            glyphs = get_glyphs()
+            yield Static(glyphs.box_horizontal * 40, classes="approval-separator")
+
+        # Options container at bottom
+        with Container(classes="approval-options-container"):
+            # Options - one Static widget per visible option
+            for i in range(self._num_options):  # noqa: B007  # Loop variable unused - iterating for count only
+                widget = Static("", classes="approval-option")
+                self._option_widgets.append(widget)
+                yield widget
+
+        # Free-text reject reason input (hidden until activated via Tab)
+        self._reason_input = Input(
+            placeholder="Reason (Enter to submit, Esc to cancel)",
+            classes="approval-reason-input",
+            id="approval-reason-input",
+            # Textual selects all on focus by default, which would make the next
+            # keystroke replace the reason instead of extending it whenever
+            # `on_focus` hands focus back after it drifted to the menu.
+            select_on_focus=False,
+        )
+        self._reason_input.display = False
+        yield self._reason_input
+
+        # Help text at the very bottom
+        self._help_widget = Static(self._compose_help_text(), classes="approval-help")
+        yield self._help_widget
+
+    def _compose_help_text(self) -> str:
+        """Build the help-line content for the current mode.
+
+        Returns:
+            Help text for either the normal menu or the reject-reason input.
+        """
+        glyphs = get_glyphs()
+        if self._reason_input_active:
+            return (
+                f"Enter submit {glyphs.bullet} Esc cancel {glyphs.bullet} "
+                "leave blank to reject without a reason"
+            )
+        quick_keys = "y/a/n" if self._show_auto_option else "y/n"
+        # The Tab hint shows from every option, not just Reject: the quick keys
+        # are the fast path, so a hint gated on the Reject row stays invisible to
+        # the users most likely to want it. `Tab` moves the cursor to Reject
+        # itself, so the hint is live wherever it is read.
+        help_parts = [
+            (
+                f"{glyphs.arrow_up}/{glyphs.arrow_down} navigate "
+                f"{glyphs.bullet} Enter select {glyphs.bullet} {quick_keys} quick keys"
+            ),
+            "Tab reject with feedback",
+            "Esc reject",
+        ]
+        help_text = f" {glyphs.bullet} ".join(help_parts)
+        if self._has_expandable_command:
+            help_text += f" {glyphs.bullet} e expand"
+        return help_text
+
+    async def on_mount(self) -> None:
+        """Focus self on mount and update tool info."""
+        if is_ascii_mode():
+            colors = theme.get_theme_colors(self)
+            self.styles.border = ("ascii", colors.warning)
+
+        if not self._is_minimal:
+            await self._update_tool_info()
+        self._update_options()
+        self.focus()
+
+    async def _update_tool_info(self) -> None:
+        """Mount the tool-specific approval widgets for all tools."""
+        if not self._tool_info_container:
+            return
+
+        # Clear existing content
+        await self._tool_info_container.remove_children()
+
+        # Mount info for each tool
+        for i, action_request in enumerate(self._action_requests):
+            tool_name = action_request.get("name", "unknown")
+            tool_args = action_request.get("args", {})
+
+            # Add tool header if multiple tools
+            if len(self._action_requests) > 1:
+                header = Static(
+                    Content.from_markup(
+                        "[bold]$num. $name[/bold]",
+                        num=i + 1,
+                        name=tool_name,
+                    )
+                )
+                await self._tool_info_container.mount(header)
+
+            # Show description if present
+            description = action_request.get("description")
+            if description:
+                await self._tool_info_container.mount(_description_widget(description))
+
+            # Get the appropriate renderer for this tool
+            renderer = get_renderer(tool_name)
+            widget_class, data = renderer.get_approval_widget(
+                tool_args, assistant_id=self._assistant_id
+            )
+            if "show_numbers" in data:
+                data["show_numbers"] = (
+                    bool(data["show_numbers"]) and self._show_diff_line_numbers
+                )
+            approval_widget = widget_class(data)
+            await self._tool_info_container.mount(approval_widget)
+
+    def _build_options(self) -> list[tuple[str, str]]:
+        """Build the visible options as `(label, decision_type)` pairs.
+
+        The Auto option is omitted unless Auto can actually be enabled
+        (`_show_auto_option`), so it is never suggested outside the local TUI.
+        Labels are unnumbered; `_update_options` prefixes the display number.
+
+        Returns:
+            Ordered `(label, decision_type)` pairs for the visible options.
+        """
+        count = len(self._action_requests)
+        approve = "Approve (y)" if count == 1 else f"Approve all {count} (y)"
+        reject = "Reject (n)" if count == 1 else f"Reject all {count} (n)"
+        options: list[tuple[str, str]] = [(approve, "approve")]
+        if self._show_auto_option:
+            if self._is_auto_fallback:
+                options.append(("Switch to Manual (a)", "switch_manual"))
+            else:
+                options.append(("Enable Auto for this thread (a)", "auto_approve_all"))
+        options.append((reject, "reject"))
+        return options
+
+    def _update_options(self) -> None:
+        """Update option widgets based on selection."""
+        for i, ((text, _decision), widget) in enumerate(
+            zip(self._options, self._option_widgets, strict=True)
+        ):
+            cursor = f"{get_glyphs().cursor} " if i == self._selected else "  "
+            widget.update(f"{cursor}{i + 1}. {text}")
+
+            # Update classes
+            widget.remove_class("approval-option-selected")
+            if i == self._selected:
+                widget.add_class("approval-option-selected")
+        if self._help_widget is not None:
+            self._help_widget.update(self._compose_help_text())
+
+    def action_move_up(self) -> None:
+        """Move selection up."""
+        if self._reason_input_active:
+            return
+        self._selected = (self._selected - 1) % self._num_options
+        self._update_options()
+
+    def action_move_down(self) -> None:
+        """Move selection down."""
+        if self._reason_input_active:
+            return
+        self._selected = (self._selected + 1) % self._num_options
+        self._update_options()
+
+    def action_select(self) -> None:
+        """Select the current option, or submit an open reason field.
+
+        While the reason field is open the footer reads `Enter submit`, so an
+        Enter that reaches the menu instead of the `Input` submits the typed
+        reason rather than falling through to a reason-less reject that would
+        discard it.
+        """
+        if self._reason_input_active and self._reason_input is not None:
+            self._submit_reason(self._reason_input.value)
+            return
+        self._handle_selection(self._selected)
+
+    def action_select_position(self, position: int) -> None:
+        """Submit the option at a display position (0-indexed).
+
+        Backs the numeric quick keys, which map key `1`/`2`/`3` to position
+        `0`/`1`/`2`. Positions outside the visible options are ignored, so
+        when the Auto option is hidden (only positions 0-1 exist) the `3` key
+        (position 2) is a no-op and key `2` (position 1) selects Reject rather
+        than Auto.
+
+        Args:
+            position: Zero-based index of the visible option to submit.
+        """
+        if not 0 <= position < self._num_options:
+            return
+        self._handle_selection(position)
+
+    def action_select_approve(self) -> None:
+        """Submit approve option."""
+        self._handle_selection(0)
+
+    def action_select_auto(self) -> None:
+        """Submit the middle option (Auto, or Switch to Manual in a fallback).
+
+        No-op when the option is hidden, since Auto cannot be enabled. When
+        shown it is always the second option (index 1): "Enable Auto" normally,
+        or "Switch to Manual" during a live Auto fallback.
+        """
+        if not self._show_auto_option:
+            return
+        self._handle_selection(1)
+
+    def action_select_reject(self) -> None:
+        """Submit reject option.
+
+        When the free-text reject input is open, the first press cancels the
+        input instead of rejecting, so the user can back out without losing
+        their unsubmitted reason.
+        """
+        if self._reason_input_active:
+            self._exit_reason_input_mode()
+            return
+        self._handle_selection(self._reject_index)
+
+    def action_toggle_expand(self) -> None:
+        """Toggle shell command expansion."""
+        if not self._has_expandable_command or not self._command_widget:
+            return
+        self._command_expanded = not self._command_expanded
+        self._command_widget.update(
+            self._get_command_display(expanded=self._command_expanded)
+        )
+
+    def _handle_selection(
+        self, option: int, *, reject_message: str | None = None
+    ) -> None:
+        """Handle the selected option.
+
+        Args:
+            option: Index of the chosen visible option. Maps to a decision type
+                via the current option layout (which omits Auto when hidden).
+            reject_message: Optional free-text reason. Only attached when a
+                non-empty reason is submitted via `on_input_submitted` (the
+                free-text reject flow opened by `action_reject_with_reason`).
+        """
+        # Every quick key and Enter path resolves the approval through here, and
+        # the reason-submit callers all clear `_reason_input_active` before
+        # calling. So reaching this with the flag still set means a key was read
+        # as a menu command while the reason field was open and holding the
+        # user's half-typed rejection - letting it through would resolve (and for
+        # `y`/`a`/`1` *approve*) the very call being rejected. `on_focus` keeps
+        # the field focused so this should be unreachable; guard anyway, since
+        # focus is deferred and `Widget.focus()` swallows `NoScreen`.
+        if self._reason_input_active:
+            logger.warning(
+                "option %d reached _handle_selection while the reject reason "
+                "input was active; ignoring (focus desync)",
+                option,
+            )
+            return
+
+        decision_type = self._options[option][1]
+        decision: dict[str, str] = {"type": decision_type}
+        if decision_type == "reject" and reject_message:
+            decision["message"] = reject_message
+
+        self.display = False
+
+        # Resolve the future
+        if self._future and not self._future.done():
+            self._future.set_result(decision)
+
+        # Post message
+        self.post_message(self.Decided(decision))
+
+    def action_reject_with_reason(self) -> None:
+        """Enter free-text reject mode from any option.
+
+        Moves the cursor to Reject first, so the highlighted option always
+        matches the decision the input will submit; it can only ever produce a
+        reject, never an approval. Reveals the inline `Input` composed (hidden)
+        by `compose()` and focuses it; its value is emitted verbatim on submit as
+        the human-provided reason in `RejectDecision.message`.
+        """
+        if self._reason_input_active:
+            # Tab is advertised unconditionally, so a second press must not wipe
+            # a reason already being typed - hence returning before the
+            # `value = ""` reset below rather than re-entering the field.
+            return
+        if self._reason_input is None:
+            # Lifecycle bug: Tab fired before `compose()` populated the Input ref.
+            # Logging makes the silent no-op debuggable instead of invisible.
+            # Doubles as the guard for `_update_options`'s `strict=True` zip:
+            # `compose()` fills `_option_widgets` before assigning
+            # `_reason_input`, so a non-None ref implies the widget list exists.
+            # Keep that order if these yields are ever rearranged.
+            logger.warning(
+                "action_reject_with_reason: _reason_input is None; menu may not "
+                "be mounted yet"
+            )
+            return
+        self._reason_input_active = True
+        self._selected = self._reject_index
+        self._reason_input.value = ""
+        self._reason_input.display = True
+        self._update_options()
+        self._reason_input.focus()
+
+    def _submit_reason(self, raw_reason: str) -> None:
+        """Submit a reject carrying the typed reason.
+
+        Clears `_reason_input_active` before deciding, both so `on_focus` stops
+        bouncing focus into the field and so `_handle_selection`'s desync guard
+        recognizes this as the one legitimate caller during reason mode.
+
+        Args:
+            raw_reason: Unstripped reason field contents. Whitespace-only text
+                submits a bare reject, matching a blank field.
+        """
+        reason = raw_reason.strip()
+        self._reason_input_active = False
+        self._handle_selection(self._reject_index, reject_message=reason or None)
+
+    def _exit_reason_input_mode(self) -> None:
+        """Close the reason input and return focus to the menu without deciding.
+
+        Backs the Esc/`n` cancel path, so it must leave the user on the menu.
+        """
+        if not self._reason_input_active or self._reason_input is None:
+            return
+        # Order matters: clearing the flag before `self.focus()` is what stops
+        # `on_focus` bouncing focus straight back into the field being closed.
+        # Reversing these two would trap the user in a cancelled reason field.
+        self._reason_input_active = False
+        self._reason_input.display = False
+        if self._help_widget is not None:
+            self._help_widget.update(self._compose_help_text())
+        self.focus()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        """Submit the reject decision with the typed reason (if any)."""
+        # Stop before the guard so a stray submit (e.g. queued after Esc closed
+        # the input) cannot bubble to a parent and be re-interpreted, and so a
+        # foreign Input's submission is never misrouted through this handler.
+        if event.input is not self._reason_input:
+            return
+        event.stop()
+        if not self._reason_input_active:
+            logger.debug(
+                "on_input_submitted fired with inactive reason input; dropping"
+            )
+            return
+        self._submit_reason(event.value)
+
+    def _collect_security_warnings(self) -> list[str]:
+        """Collect warning strings for suspicious Unicode and URL values.
+
+        Recursively inspects all nested string values in action arguments.
+
+        Returns:
+            Warning strings for the current action request batch.
+        """
+        warnings: list[str] = []
+        for action_request in self._action_requests:
+            tool_name = str(action_request.get("name", "unknown"))
+            args = action_request.get("args", {})
+            if not isinstance(args, dict):
+                continue
+            for arg_path, text in iter_string_values(args):
+                issues = detect_dangerous_unicode(text)
+                if issues:
+                    warnings.append(
+                        f"{tool_name}.{arg_path}: hidden Unicode "
+                        f"({summarize_issues(issues)})"
+                    )
+                if looks_like_url_key(arg_path):
+                    result = check_url_safety(text)
+                    if result.safe:
+                        continue
+                    detail = format_warning_detail(result.warnings)
+                    if result.decoded_domain:
+                        detail = f"{detail}; decoded host: {result.decoded_domain}"
+                    warnings.append(f"{tool_name}.{arg_path}: {detail}")
+        return warnings
+
+    def on_blur(self, event: events.Blur) -> None:  # noqa: ARG002  # Textual event handler signature
+        """Re-focus on blur to keep focus trapped until decision is made.
+
+        Skipped while the free-text reject input is active so the `Input`
+        widget can keep keyboard focus.
+        """
+        if self._reason_input_active:
+            return
+        self.call_after_refresh(self.focus)
+
+    def on_focus(self, event: events.Focus) -> None:  # noqa: ARG002  # Textual event handler signature
+        """Hand focus to the reason input while it is open.
+
+        `on_blur` deliberately stops re-trapping focus during reason mode so the
+        `Input` can hold it, which leaves the reverse direction unhandled: a
+        click on the menu body focuses the menu and strands an open reason field,
+        where quick keys read as menu commands instead of text. Bouncing focus
+        back keeps "field open" and "field focused" the same state.
+
+        Cannot ping-pong: this focuses the `Input`, whose gain of focus blurs the
+        menu, and `on_blur` above returns early during reason mode. Nor does it
+        trap the user - `_exit_reason_input_mode` clears the flag before moving
+        focus, so a cancelled field is not re-entered.
+        """
+        if self._reason_input_active and self._reason_input is not None:
+            self.call_after_refresh(self._reason_input.focus)

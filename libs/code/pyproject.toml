@@ -1,0 +1,396 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "deepagents-code"
+version = "0.1.86"
+description = "Terminal coding agent built on the Deep Agents SDK - works with any model, with persistent memory, customizable skills, subagents, and approval controls."
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "LangChain" }]
+maintainers = [{ name = "LangChain" }]
+requires-python = ">=3.12,<4.0"
+keywords = ["agents", "ai", "cli", "terminal", "llm", "langgraph", "langchain", "deep-agent"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Terminals",
+]
+dependencies = [
+    # Framework
+    "deepagents==0.7.28",
+    "langchain>=1.4.6,<2.0.0",
+    "langgraph-checkpoint-sqlite>=3.1.2,<4.0.0",
+
+    # Client-server architecture
+    "langgraph-sdk>=0.4.7,<1.0.0",
+    "langgraph-cli[inmem]>=0.4.35,<1.0.0",
+    "langgraph-runtime-inmem>=0.36.1,<1.0.0",
+    "httpx>=0.28.1,<1.0.0",
+
+    # Core model providers - others are added as optional
+    "langchain-anthropic>=1.7.6,<2.0.0",
+    "langchain-google-genai>=4.4.2,<5.0.0",
+    "langchain-openai>=1.7.2,<2.0.0",
+    "pydantic>=2.12.5,<2.14.0a0",
+
+    # UI/Terminal
+    # Textual 8.2.8 handles colon-separated Kitty associated text.
+    # Textualize/textual#6378 remains unresolved; its Alt-key workaround and
+    # the remaining Kitty fixes live in `_textual_patches.py`. The upper bound
+    # also protects `tui/widgets/diff.py`, which reproduces part of
+    # `Content._wrap_and_format` and the compositor's offset metadata contract
+    # to repeat a diff row's gutter on wrapped lines.
+    "textual>=8.2.8,<9.0.0",
+    "textual-autocomplete>=4.0.6,<5.0.0",
+    "textual-speedups>=0.2.1,<1.0.0",
+    "prompt-toolkit>=3.0.53,<4.0.0",
+    "rich>=15.0.0,<16.0.0",
+    "markdownify>=1.2.3,<2.0.0",
+
+    # Sandbox integrations
+    "langsmith[sandbox]>=0.14.11",
+
+    # Tools
+    "tavily-python>=0.7.26,<1.0.0",
+    "langchain-quickjs>=0.3.4,<0.4.0",
+
+    # Cost estimation (bundled offline pricing data).
+    # The local pricing overrides resolve through two *private* upstream names,
+    # `genai_prices.types._providers_from_raw` and
+    # `genai_prices.data_snapshot.find_provider_by_id`. Neither is covered by any
+    # compatibility promise, and this range spans every 0.1.x patch, so re-verify
+    # both against `cost_tracking._build_price_overrides` and
+    # `cost_tracking._find_override_model` when widening it.
+    "genai-prices>=0.1.13,<0.2.0",
+
+    # Clipboard
+    "pyperclip>=1.11.0,<2.0.0",
+
+    # Version parsing
+    "packaging>=26.2",
+
+    # Utilities
+    "uuid-utils>=0.17.0,<1.0.0",
+    "python-dotenv>=1.2.2,<2.0.0",
+    "requests>=2.34.2,<3.0.0",
+    "pillow>=12.3.0,<13.0.0",
+    "pyyaml>=6.0.3",
+    "aiosqlite>=0.22.1,<1.0.0",
+    "tomli-w>=1.2.0,<2.0.0",
+
+    # MCP
+    "fastmcp>=4.0.0b4,<5.0.0",
+    # Cross-process lock serializing MCP OAuth token refreshes.
+    # Capped below 3.30: it runs a blocking temp-dir probe at import time
+    # (_probe_link_follow_symlinks), which trips Blockbuster's os.getcwd guard
+    # on the async server graph startup path.
+    "filelock>=3.29.7,<3.30",
+    # `CancelScope` shields MCP token writes/lock ops from cancellation in
+    # mcp_auth.py. Always installed transitively via mcp/httpx; declared here
+    # because we import it directly.
+    "anyio>=4.14.2,<5.0.0",
+
+    # ACP
+    "deepagents-acp>=0.0.10,<1.0.0",
+    "mcp>=2.0.0,<3.0.0",
+]
+
+[project.optional-dependencies]
+# Model providers
+anthropic = ["langchain-anthropic>=1.7.6,<2.0.0"]
+baseten = ["langchain-baseten>=0.2.5,<1.0.0"]
+bedrock = ["langchain-aws>=1.9.0,<2.0.0"]
+cohere = ["langchain-cohere>=0.6.0,<1.0.0"]
+deepseek = ["langchain-deepseek>=1.1.1,<2.0.0"]
+fireworks = ["langchain-fireworks>=1.7.1,<2.0.0"]
+google-genai = ["langchain-google-genai>=4.4.2,<5.0.0"]
+groq = ["langchain-groq>=1.1.3,<2.0.0"]
+huggingface = ["langchain-huggingface>=1.2.3,<2.0.0"]
+ibm = ["langchain-ibm>=1.1.2,<2.0.0"]
+litellm = ["langchain-litellm>=0.11.1,<2.0.0"]
+meta = ["langchain-meta>=0.5.0,<2.0.0"]
+mistralai = ["langchain-mistralai>=1.1.6,<2.0.0"]
+nvidia = [
+    "aiohttp>=3.14.3,<3.15.0",
+    "langchain-nvidia-ai-endpoints>=1.5.0,<2.0.0",
+]
+ollama = ["langchain-ollama>=1.1.0,<2.0.0"]
+openai = ["langchain-openai>=1.7.2,<2.0.0"]
+openrouter = ["langchain-openrouter>=0.2.9,<2.0.0"]
+perplexity = ["langchain-perplexity>=1.4.1,<2.0.0"]
+together = ["langchain-together>=0.4.0,<2.0.0"]
+vertex = ["langchain-google-vertexai>=3.2.4,<4.0.0"]
+xai = ["langchain-xai>=1.3.0,<2.0.0"]
+all-providers = [
+    "deepagents-code[anthropic,baseten,bedrock,cohere,deepseek,fireworks,google-genai,groq,huggingface,ibm,litellm,meta,mistralai,nvidia,ollama,openai,openrouter,perplexity,together,vertex,xai]",
+]
+
+# Sandbox providers
+agentcore = ["langchain-agentcore-codeinterpreter>=0.0.5,<1.0.0"]
+daytona = ["langchain-daytona>=0.0.7"]
+modal = ["langchain-modal>=0.0.5"]
+openshell = ["langchain-nvidia-openshell>=0.1.1"]
+runloop = ["langchain-runloop>=0.0.6"]
+vercel = ["langchain-vercel-sandbox>=0.0.1"]
+all-sandboxes = [
+    "deepagents-code[agentcore,daytona,modal,openshell,runloop,vercel]",
+]
+
+# Standalone integrations
+media = ["av>=18.0.0,<19.0.0", "pillow>=12.3.0,<13.0.0"]
+# (quickjs kept for backwards-compatible install commands)
+quickjs = []
+
+
+[project.scripts]
+deepagents-code = "deepagents_code:cli_main"
+dcode = "deepagents_code:cli_main"
+
+[project.urls]
+Homepage = "https://www.langchain.com/dcode"
+Documentation = "https://docs.langchain.com/oss/deepagents/code/overview"
+Repository = "https://github.com/langchain-ai/deepagents"
+Issues = "https://github.com/langchain-ai/deepagents/issues"
+Changelog = "https://github.com/langchain-ai/deepagents/blob/main/libs/code/CHANGELOG.md"
+Twitter = "https://x.com/langchain_oss"
+Slack = "https://www.langchain.com/join-community"
+Reddit = "https://www.reddit.com/r/LangChain/"
+
+[dependency-groups]
+test = [
+    "textual-dev>=1.8.0,<2.0.0",
+    "build>=1.5.0,<2.0.0",
+    # Build backend; imported by tests that exercise the `hatch_build.py` hook.
+    "hatchling>=1.31.0,<2.0.0",
+    "ruff>=0.16.0,<1.0.0",
+    # ty 0.0.62+ panics during full-package `ty check` (dependency-graph cycle).
+    "ty>=0.0.61,<0.0.62",
+    "pytest>=9.1.1,<10.0.0",
+    "pytest-asyncio>=1.4.0,<2.0.0",
+    "pytest-benchmark>=5.2.3,<6.0.0",
+    "pytest-codspeed>=5.0.3,<6.0.0",
+    "pytest-cov>=7.1.0,<8.0.0",
+    "pytest-mock>=3.15.1,<4.0.0",
+    "pytest-socket>=0.8.0,<1.0.0",
+    "pytest-timeout>=2.4.0,<3.0.0",
+    "pytest-watcher>=0.6.3,<1.0.0",
+    "pytest-xdist>=3.8.0,<4.0.0",
+    "responses>=0.26.2,<1.0.0",
+    "twine>=6.2.0,<7.0.0",
+    # Detect blocking calls on the event loop in startup smoke tests; mirrors the
+    # Blockbuster instance langgraph-runtime-inmem activates at runtime.
+    "blockbuster>=1.5.26,<1.6",
+]
+
+[tool.hatch.build.hooks.custom]
+# Stamps deepagents_code/_build_info.py with the release commit when
+# DEEPAGENTS_CODE_BUILD_COMMIT is set (CI release builds). See hatch_build.py.
+
+[tool.hatch.build.targets.wheel]
+packages = ["deepagents_code"]
+include = [
+    "deepagents_code/**/*.py",
+    "deepagents_code/**/*.md",
+    "deepagents_code/**/*.tcss",
+    # Maintainer-curated pricing overrides consulted when the genai-prices
+    # catalog misses (see `cost_tracking._override_price`).
+    "deepagents_code/bundled_prices.json",
+]
+
+[tool.hatch.build.targets.wheel.shared-data]
+"deepagents_code/default_agent_prompt.md" = "deepagents_code/default_agent_prompt.md"
+"deepagents_code/*.tcss" = "deepagents_code/"
+
+[tool.uv.sources]
+deepagents = { path = "../deepagents", editable = true }
+deepagents-acp = { path = "../acp", editable = true }
+langchain-daytona = { path = "../partners/daytona", editable = true }
+langchain-modal = { path = "../partners/modal", editable = true }
+langchain-quickjs = { path = "../partners/quickjs", editable = true }
+langchain-runloop = { path = "../partners/runloop", editable = true }
+langchain-vercel-sandbox = { path = "../partners/vercel", editable = true }
+
+[tool.ty.environment]
+python-version = "3.12"
+extra-paths = [
+    "../deepagents",
+    "../partners/daytona",
+    "../partners/modal",
+    "../partners/quickjs",
+    "../partners/runloop",
+    "../partners/vercel",
+]
+
+[tool.ty.rules]
+# https://docs.astral.sh/ty/rules/
+division-by-zero = "error"
+# Optional-dependency imports (e.g., `boto3` from the `bedrock` extra) need
+# `ty: ignore[unresolved-import]` suppressions to keep CI green when the extra
+# isn't installed. Devs who do install the extra would otherwise hit
+# "unused suppression" warnings; silence that rule so suppressions are stable
+# across environments.
+unused-ignore-comment = "ignore"
+
+[tool.ruff.format]
+docstring-code-format = true
+docstring-code-line-length = 100
+
+[tool.ruff.lint]
+preview = true
+select = ["ALL"]
+ignore = [
+    "C90",     # McCabe complexity
+    "COM812",  # Messes with the formatter
+    "CPY",     # No copyright
+    "FBT",     # Boolean positional arguments (too pedantic)
+    "FIX002",  # Line contains TODO
+    "ISC001",  # Messes with the formatter
+    "PERF203", # Rarely useful
+    "PLC0414", # Inconsistent with how type checkers expect to be notified of intentional re-exports
+    "PLC0415", # Lazy imports are used extensively throughout the CLI for startup performance (deferred heavy imports)
+    "PLR09",   # Too many something (args, branches, returns, statements, etc)
+    "PLR1702", # Too many nested blocks
+    "PLW0717", # Too many try clause statements
+    "noqa-comments",
+    "rule-codes-in-selectors",
+    "SLF001",  # Private member access
+    "TD002",   # Missing author in TODO
+    "TD003",   # Missing issue link in TODO
+]
+unfixable = ["B028"] # People should intentionally tune the stacklevel
+extend-safe-fixes = ["PLR6201"]
+
+flake8-annotations.allow-star-arg-any = true
+flake8-annotations.mypy-init-return = true
+
+[tool.ruff.lint.flake8-tidy-imports]
+ban-relative-imports = "all"
+
+[tool.ruff.lint.isort]
+force-single-line = false
+combine-as-imports = true
+known-first-party = ["deepagents_code"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+ignore-var-parameters = true
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = [
+    "ANN001",   # Missing type annotation for function argument — not needed in tests
+    "ANN201",   # Missing return type annotation — not needed in tests
+    "D1",       # Missing docstrings — not needed in tests
+    "DOC",      # Docstring conventions — not needed in tests
+    "F401",     # Imported but unused — test fixtures may appear unused
+    "PLC0415",  # Lazy imports — test organization patterns
+    "PLC1901",  # Comparison to empty string — fine in test assertions
+    "PLC2701",  # Private name import — tests need access to internals
+    "PLR2004",  # Magic value used in comparison — fine in test assertions
+    "PLR6201",  # Literal membership test — fine in tests
+    "PLR6301",  # Method could be a function — test class organization
+    "PLW0108",  # Lambda may be unnecessary — fine in test mocks
+    "RUF001",   # Ambiguous characters — fine in test strings
+    "RUF076",   # Autouse fixtures enforce suite-wide test isolation
+    "S",        # Security warnings — not applicable to tests
+    "SLF",      # Private member access — tests need access to internals
+]
+"tests/unit_tests/test_mcp_{auth,tools}.py" = [
+    "ANN202",   # Missing return type on private test helper — common for mocks
+    "ARG001",   # Unused function argument — pytest fixtures / mock stand-ins
+    "ARG002",   # Unused method argument — pytest fixtures / mock stand-ins
+    "RUF029",   # Async without await — required for AsyncMock / asynccontextmanager stand-ins
+]
+"tests/unit_tests/client/commands/test_mcp.py" = [
+    "ANN202",   # Missing return type on private test helper — common for mocks
+    "ARG001",   # Unused function argument — pytest fixtures / mock stand-ins
+    "ARG002",   # Unused method argument — pytest fixtures / mock stand-ins
+    "RUF029",   # Async without await — required for AsyncMock / asynccontextmanager stand-ins
+]
+"scripts/**" = [
+    "BLE001",   # Blind exception catch — resilience in standalone scripts
+    "INP",      # Missing `__init__.py` — scripts are standalone
+    "S",        # Security warnings — not applicable to scripts
+    "T201",     # `print` found — scripts use print for output
+]
+"examples/**" = [
+    "ANN001",   # Missing type annotation for function argument — examples prioritize clarity
+    "ANN201",   # Missing return type annotation — examples prioritize clarity
+    "BLE001",   # Blind exception catch — resilience in example scripts
+    "INP001",   # Missing `__init__.py` — examples are standalone
+    "N806",     # Variable in function should be lowercase — example naming conventions
+    "PLC0415",  # Lazy import — example organization patterns
+    "PLR2004",  # Magic value used in comparison — fine in examples
+    "T201",     # `print` found — examples use print for output
+    "TRY300",   # Consider moving to `else` block — examples prioritize readability
+]
+"deepagents_code/built_in_skills/**/scripts/**" = [
+    "ANN001",   # Missing type annotation for function argument — standalone scripts
+    "ANN201",   # Missing return type annotation — standalone scripts
+    "BLE001",   # Blind exception catch — resilience in standalone scripts
+    "INP001",   # Missing `__init__.py` — scripts are standalone
+    "N806",     # Variable in function should be lowercase — script naming conventions
+    "PLR2004",  # Magic value used in comparison — fine in scripts
+    "T201",     # `print` found — scripts use print for output
+]
+[tool.coverage.run]
+omit = ["tests/*"]
+
+[tool.pytest.ini_options]
+timeout = 30  # Default timeout for all tests (can be overridden per-test)
+filterwarnings = [
+    # Unexpected warnings fail the run; see "Warnings are errors" in AGENTS.md.
+    "error",
+    # `langchain_core` imports `pydantic.v1` during collection on Python 3.14+.
+    # Deliberately unqualified by module: `pydantic` warns with `stacklevel=2`, so
+    # the attributed module is whichever `langchain_core` module imports
+    # `pydantic.v1` first, which is import-order dependent.
+    "ignore:Core Pydantic V1 functionality isn't compatible:UserWarning",
+    # `genai_prices.Usage` only warns for a usage key it does not recognize, then
+    # drops it -- the request still prices, just without that bucket. A renamed
+    # key anywhere in the allowed range would silently undercount, so fail
+    # instead. Matched on the message rather than `genai_prices`: the warning
+    # uses `stacklevel=2`, so it is attributed to this package, not to the
+    # module that raised it.
+    "error:Unsupported usage key for standard pricing:UserWarning",
+    # `google.genai.types` builds a union alias out of `typing._UnionGenericAlias`
+    # at import time, which Python 3.14 deprecates. Nothing here can act on it --
+    # it fires before any of our code runs and is fixed by upgrading the SDK.
+    "ignore:'_UnionGenericAlias' is deprecated:DeprecationWarning:google\\.genai\\.types",
+    # pytest-benchmark warns during pytest configuration when xdist is active and
+    # benchmarks are not already disabled. `make test` passes `--benchmark-disable`,
+    # which short-circuits it; this entry covers `make integration_test` and keeps
+    # a dropped `--benchmark-disable` from turning into an `INTERNALERROR`.
+    "ignore:Benchmarks are automatically disabled:pytest_benchmark.logger.PytestBenchmarkWarning",
+    # TODO(mdrxy): the three entries below are real nondeterministic test-hygiene
+    # bugs caused by leaked `_run_agent_task` coroutines and sqlite/aiosqlite
+    # resources. They cannot be attached to one test because scheduling/GC
+    # determines where they land. They should be fixed and deleted, not expanded.
+    "ignore:coroutine 'DeepAgentsApp._run_agent_task' was never awaited:RuntimeWarning",
+    # The two below are `default`, not `ignore`, and that distinction is
+    # load-bearing. These are the only categories through which pytest reports
+    # failures Python itself swallows: an exception in a worker thread, and one
+    # raised in a `__del__`/finalizer or during GC. `ignore` would delete them
+    # outright, so a test asserting inside a thread would pass silently -- a
+    # regression against the pre-policy behaviour, where they were at least
+    # printed. `default` keeps them printed without failing the run.
+    "default::pytest.PytestUnhandledThreadExceptionWarning",
+    "default::pytest.PytestUnraisableExceptionWarning",
+]
+
+addopts = "--strict-markers --strict-config --durations=5"
+markers = [
+    "benchmark: marks tests as benchmarks (select with '-m benchmark')",
+    "self_managed_update_check: tests that manage app-startup update-check setup themselves",
+]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"

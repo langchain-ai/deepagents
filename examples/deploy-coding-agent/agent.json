@@ -1,0 +1,6 @@
+{
+  "name": "deepagents-deploy-coding-agent",
+  "runtime": {
+    "model": {"model_id": "anthropic:claude-sonnet-4-5"}
+  }
+}

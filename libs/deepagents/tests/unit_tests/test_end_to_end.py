@@ -1,36 +1,49 @@
 """End-to-end unit tests for deepagents with fake LLM models."""
 
 import base64
+import hashlib
 import json
-import warnings
+import mimetypes
 from collections.abc import Awaitable, Callable, Iterator, Sequence
 from pathlib import Path
-from typing import Any
-from unittest.mock import MagicMock, patch
+from typing import Any, cast
+from unittest.mock import ANY, MagicMock, patch
 
 import pytest
+from langchain.agents import create_agent
 from langchain.agents.middleware import AgentMiddleware
 from langchain.agents.middleware.types import ModelRequest, ModelResponse
 from langchain.tools import ToolRuntime
-from langchain_core.language_models import LanguageModelInput
+from langchain_core.callbacks import CallbackManagerForLLMRun
+from langchain_core.exceptions import ContextOverflowError, ModelInvalidRequestError
+from langchain_core.language_models import BaseChatModel, LanguageModelInput
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.messages.content import ContentBlock
+from langchain_core.outputs import ChatGeneration, ChatResult
 from langchain_core.runnables import Runnable
 from langchain_core.tools import BaseTool, tool
+from langchain_openai import AzureChatOpenAI, ChatOpenAI
+from langgraph.channels.delta import DeltaChannel
 from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.graph import END, START, StateGraph
+from langgraph.graph.state import CompiledStateGraph
 from langgraph.store.memory import InMemoryStore
-from pydantic import Field
+from langgraph.types import Command
+from pydantic import BaseModel, ConfigDict, Field
 
-from deepagents.backends import CompositeBackend, FilesystemBackend
+import deepagents.middleware.filesystem as filesystem_middleware
+from deepagents.backends import CompositeBackend, FilesystemBackend, LocalShellBackend
 from deepagents.backends.protocol import BackendProtocol, ExecuteResponse, SandboxBackendProtocol
 from deepagents.backends.state import StateBackend
 from deepagents.backends.store import StoreBackend
 from deepagents.backends.utils import TOOL_RESULT_TOKEN_LIMIT, create_file_data
 from deepagents.graph import create_deep_agent
-from deepagents.middleware.filesystem import NUM_CHARS_PER_TOKEN
-from deepagents.middleware.permissions import FilesystemPermission
-from deepagents.middleware.subagents import SubAgent  # noqa: TC001
+from deepagents.middleware.filesystem import NUM_CHARS_PER_TOKEN, FilesystemMiddleware, FilesystemPermission
+from deepagents.middleware.rubric import RUBRIC_GRADER_MESSAGE_SOURCE, RubricMiddleware
+from deepagents.middleware.subagents import SubAgent, create_sub_agent
 from deepagents.middleware.summarization import create_summarization_tool_middleware
+from deepagents.middleware.unsupported_content import UnsupportedContentMiddleware
 from tests.unit_tests.chat_model import GenericFakeChatModel as FakeChatModelWithHistory
 from tests.utils import SampleMiddlewareWithTools, SampleMiddlewareWithToolsAndState, assert_all_deepagent_qualities
 
@@ -77,11 +90,11 @@ def backend(request: pytest.FixtureRequest, tmp_path: Path) -> BackendProtocol:
 
 
 def prepopulate_file(backend: BackendProtocol, file_path: str, content: str) -> dict[str, Any] | None:
-    """Write a file to the backend, returning starter ``files`` for StateBackend.
+    """Write a file to the backend, returning starter `files` for StateBackend.
 
     For external backends (filesystem, store) the write happens immediately.
     For StateBackend, the file data is returned as a dict that should be
-    passed via ``agent.invoke({"files": ...})`` since StateBackend requires
+    passed via `agent.invoke({"files": ...})` since StateBackend requires
     a LangGraph execution context.
     """
     if isinstance(backend, StateBackend):
@@ -102,6 +115,23 @@ class FixedGenericFakeChatModel(GenericFakeChatModel):
     the first real model call.
     """
 
+    llm_type: str = "generic-fake-chat-model"
+    """Settable `_llm_type` value, so tests can simulate a specific provider
+    (e.g. `"openai-chat"`, `"anthropic-chat"`) without a real provider package."""
+
+    captured_messages: list[list[BaseMessage]] = Field(default_factory=list, exclude=True)
+    """Every message list passed to `_generate`, in call order.
+
+    Some middleware (e.g. `UnsupportedContentMiddleware`) only transforms the
+    outgoing request, it never mutates persisted
+    graph state, so `result["messages"]` from `agent.invoke(...)` can't reveal
+    what the model actually received. This does.
+    """
+
+    @property
+    def _llm_type(self) -> str:
+        return self.llm_type
+
     def bind_tools(
         self,
         tools: Sequence[dict[str, Any] | type | Callable | BaseTool],
@@ -111,6 +141,82 @@ class FixedGenericFakeChatModel(GenericFakeChatModel):
     ) -> Runnable[LanguageModelInput, AIMessage]:
         """Override bind_tools to return self."""
         return self
+
+    def _generate(
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager: CallbackManagerForLLMRun | None = None,
+        **kwargs: Any,
+    ) -> ChatResult:
+        self.captured_messages.append(messages)
+        return super()._generate(messages, stop=stop, run_manager=run_manager, **kwargs)
+
+
+class SummaryFilteringModel(FixedGenericFakeChatModel):
+    """Serves summarization's summary-generation call separately from the action script.
+
+    A summarization event makes an extra model call to write the summary, in
+    addition to the normal turn's call. Detecting that call by the summary
+    prompt's `<messages>` marker and returning a canned summary lets the scripted
+    `messages` iterator hold only the agent's turn-by-turn actions, without
+    predicting when summarization fires.
+    """
+
+    def _generate(
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager: CallbackManagerForLLMRun | None = None,
+        **kwargs: Any,
+    ) -> ChatResult:
+        if any(isinstance(m.content, str) and "<messages>" in m.content for m in messages):
+            return ChatResult(generations=[ChatGeneration(message=AIMessage(content="summary"))])
+        return super()._generate(messages, stop=stop, run_manager=run_manager, **kwargs)
+
+
+class _RecordingOpenAIModel(BaseModel):
+    """Serves scripted responses and records requests instead of calling OpenAI.
+
+    `_llm_type` is masked, so behavior gated on the provider class can't be
+    passing because of the `_llm_type` string.
+    """
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    messages: Iterator[AIMessage] = Field(default_factory=lambda: iter([]), exclude=True)
+    captured_messages: list[list[BaseMessage]] = Field(default_factory=list, exclude=True)
+
+    @property
+    def _llm_type(self) -> str:
+        return "langchain-chat"
+
+    def bind_tools(
+        self,
+        tools: Sequence[dict[str, Any] | type | Callable | BaseTool],
+        *,
+        tool_choice: str | None = None,
+        **kwargs: Any,
+    ) -> Runnable[LanguageModelInput, AIMessage]:
+        return cast("Runnable[LanguageModelInput, AIMessage]", self)
+
+    def _generate(
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager: CallbackManagerForLLMRun | None = None,
+        **kwargs: Any,
+    ) -> ChatResult:
+        self.captured_messages.append(messages)
+        return ChatResult(generations=[ChatGeneration(message=next(self.messages))])
+
+
+class RecordingChatOpenAI(_RecordingOpenAIModel, ChatOpenAI):
+    pass
+
+
+class RecordingAzureChatOpenAI(_RecordingOpenAIModel, AzureChatOpenAI):
+    pass
 
 
 class TestDeepAgentEndToEnd:
@@ -127,11 +233,11 @@ class TestDeepAgentEndToEnd:
             messages=iter(
                 [
                     AIMessage(
-                        content="I'll use the sample_tool to process your request.",
+                        content="I'll list the files to process your request.",
                         tool_calls=[
                             {
-                                "name": "write_todos",
-                                "args": {"todos": []},
+                                "name": "ls",
+                                "args": {},
                                 "id": "call_1",
                                 "type": "tool_call",
                             }
@@ -246,7 +352,7 @@ class TestDeepAgentEndToEnd:
         assert captured_config["tags"] == ["tool-tag", "tool-session-456"]
         assert captured_config["metadata"]["ls_integration"] == "deepagents"
         assert captured_config["metadata"]["lc_agent_name"] == "supervisor"
-        assert "deepagents" in captured_config["metadata"]["versions"]
+        assert "deepagents" in captured_config["metadata"]["lc_versions"]
 
     def test_deep_agent_with_fake_llm_with_tools(self) -> None:
         """Test deepagent with tools using a fake LLM model.
@@ -416,28 +522,22 @@ class TestDeepAgentEndToEnd:
             assert len(result["messages"]) > 0
 
     def test_deep_agent_truncate_lines(self, tmp_path: Path, backend: BackendProtocol) -> None:
-        """Test line count limiting in read_file tool with very long lines."""
-        # Create a file with a very long line (18,000 chars) that will be split into continuation lines
-        # With MAX_LINE_LENGTH=5000, this becomes line 2, 2.1, 2.2, 2.3 (4 output lines for 1 logical line)
-        very_long_line = "x" * 18000  # 18,000 characters -> will split into 4 continuation lines (5k each)
-
-        # Add some normal lines before and after
+        """`limit` bounds source lines; an oversized line doesn't displace later lines."""
+        # 18k chars is one source line against `limit`, however wide it renders.
+        very_long_line = "x" * 18000
         lines = [
             "short line 0",
-            very_long_line,  # This becomes lines 2, 2.1, 2.2, 2.3 (4 output lines)
+            very_long_line,
             "short line 2",
             "short line 3",
             "short line 4",
         ]
         content = "\n".join(lines)
 
-        # Create backend and write file
-
         file_path = "/my_file"
         starter_files = prepopulate_file(backend, file_path, content)
 
-        # Create a fake model that calls read_file with limit=3
-        # This should return: line 1 (short line 0), line 2 (first chunk of very_long_line), line 2.1 (second chunk)
+        # `limit=3` source lines → lines 1, 2 (whole), 3.
         model = FixedGenericFakeChatModel(
             messages=iter(
                 [
@@ -459,41 +559,31 @@ class TestDeepAgentEndToEnd:
             )
         )
 
-        # Create agent with backend
         agent = create_deep_agent(model=model, backend=backend)
 
-        # Invoke the agent
         invoke_input: dict[str, Any] = {"messages": [HumanMessage(content=f"Read {file_path}")]}
         if starter_files:
             invoke_input["files"] = starter_files
         result = agent.invoke(invoke_input)
 
-        # Verify the agent executed correctly
         assert "messages" in result
-
-        # Get the tool message containing the file content
         tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
         assert len(tool_messages) > 0
-
         file_content = tool_messages[0].content
 
-        # Should have the first short line
         assert "short line 0" in file_content
-
-        # Should have the beginning of the very long line (line 2 with continuation)
-        assert "xxx" in file_content  # The very long line should be present
-
-        # Should NOT have the later short lines because the limit cuts off after 3 output lines
-        # (line 1, line 2, line 2.1)
-        assert "short line 2" not in file_content
+        # The oversized source line renders whole, inside the reported range.
+        assert file_content.startswith("@@ lines 1-3 of 5 | next offset 3 @@\n")
+        assert "x" * 18000 in file_content
+        # Source line 3 is the third source line and must be included.
+        assert "short line 2" in file_content
+        # Source lines 4 and 5 fall outside `limit=3`.
         assert "short line 3" not in file_content
         assert "short line 4" not in file_content
-
-        # Count actual lines in the output (excluding empty lines from formatting)
-        output_lines = [line for line in file_content.split("\n") if line.strip()]
-        # Should be at most 3 lines (the limit we specified)
-        # This includes continuation lines as separate lines
-        assert len(output_lines) <= 3
+        # The partial window surfaces the resume offset end-to-end for every
+        # backend (StateBackend included, which has no standalone read test).
+        assert "lines 1-3 of 5" in file_content
+        assert "next offset 3" in file_content
 
     def test_deep_agent_read_empty_file(self, tmp_path: Path, backend: BackendProtocol) -> None:
         """Test reading an empty file through the agent."""
@@ -570,7 +660,6 @@ class TestDeepAgentEndToEnd:
         content = str(capturing_middleware.captured_system_messages[0].content)
         assert "You are a helpful assistant." in content
         assert "Always be polite." in content
-        assert "You are a deep agent" in content
 
     def test_deep_agent_with_system_message_string_content(self) -> None:
         """Test that create_deep_agent accepts a SystemMessage with string content."""
@@ -590,7 +679,6 @@ class TestDeepAgentEndToEnd:
 
         content = str(capturing_middleware.captured_system_messages[0].content)
         assert "You are a helpful research assistant." in content
-        assert "You are a deep agent" in content
 
     def test_deep_agent_two_turns_no_initial_files(self) -> None:
         """Test deepagent with two conversation turns without specifying files on invoke.
@@ -939,9 +1027,9 @@ class TestDeepAgentEndToEnd:
 
         file_content = tool_messages[0].content
 
-        # Verify truncation occurred
-        assert "Output was truncated due to size limits" in file_content
-        assert "reformatting" in file_content.lower() or "reformat" in file_content.lower()
+        # Verify truncation occurred. The remediation prose lives in the tool
+        # description now, so the header flag is what the result carries.
+        assert "truncated mid-line" in file_content or "truncated due to size" in file_content
 
         # Verify the content stays under threshold (including truncation message)
         assert len(file_content) <= 80000
@@ -997,7 +1085,7 @@ class TestDeepAgentEndToEnd:
         file_content = tool_messages[0].content
 
         # Verify NO truncation occurred
-        assert "Output was truncated" not in file_content
+        assert "truncated" not in file_content
         assert "Hello, world!" in file_content
 
     def test_deep_agent_read_file_truncation_with_offset(self, tmp_path: Path, backend: BackendProtocol) -> None:
@@ -1052,9 +1140,9 @@ class TestDeepAgentEndToEnd:
 
         file_content = tool_messages[0].content
 
-        # Verify truncation occurred
-        assert "Output was truncated due to size limits" in file_content
-        assert "reformatting" in file_content.lower() or "reformat" in file_content.lower()
+        # Verify truncation occurred. The remediation prose lives in the tool
+        # description now, so the header flag is what the result carries.
+        assert "truncated mid-line" in file_content or "truncated due to size" in file_content
 
     async def test_deep_agent_read_file_truncation_async(self, tmp_path: Path, backend: BackendProtocol) -> None:
         """Test that read_file truncates large files in async mode."""
@@ -1106,40 +1194,24 @@ class TestDeepAgentEndToEnd:
 
         file_content = tool_messages[0].content
 
-        # Verify truncation occurred
-        assert "Output was truncated due to size limits" in file_content
-        assert "reformatting" in file_content.lower() or "reformat" in file_content.lower()
+        # Verify truncation occurred. The remediation prose lives in the tool
+        # description now, so the header flag is what the result carries.
+        assert "truncated mid-line" in file_content or "truncated due to size" in file_content
 
         # Verify the content is actually truncated
         assert len(file_content) < 85000
 
     def test_deep_agent_read_file_single_long_line_behavior(self, tmp_path: Path, backend: BackendProtocol) -> None:
-        """Test the behavior with a single very long line.
+        """`limit` bounds source lines, not characters.
 
-        When a file has a single very long line (e.g., 85,000 chars), it gets split
-        into continuation markers (1, 1.1, 1.2, etc.) by format_content_with_line_numbers.
-
-        The current behavior:
-        - offset works on logical lines (before formatting)
-        - limit applies to formatted output lines (after continuation markers)
-        - This allows pagination through long lines by increasing limit
-        - Limitation: cannot use offset to skip within a long line
-
-        This test verifies:
-        1. A single long line with limit=1 returns only the first chunk (respects limit on formatted lines)
-        2. Size-based truncation applies if the formatted output exceeds threshold
+        A source line wider than the size cap is still one line against
+        `limit`, so the byte-budget guard is what clamps the result.
         """
-        # Create a file with a SINGLE very long line (no newlines)
-        # This will be split into ~17 continuation chunks (85000 / 5000)
         single_long_line = "x" * 85000
-
-        # Create backend and write file
 
         file_path = "/single_long_line.txt"
         starter_files = prepopulate_file(backend, file_path, single_long_line)
 
-        # Create a fake model that calls read_file with limit=1
-        # This should return just 1 formatted line (the first chunk of the long line)
         model = FixedGenericFakeChatModel(
             messages=iter(
                 [
@@ -1161,32 +1233,80 @@ class TestDeepAgentEndToEnd:
             )
         )
 
-        # Create agent with backend
         agent = create_deep_agent(model=model, backend=backend)
 
-        # Invoke the agent
         invoke_input: dict[str, Any] = {"messages": [HumanMessage(content=f"Read {file_path}")]}
         if starter_files:
             invoke_input["files"] = starter_files
         result = agent.invoke(invoke_input)
 
-        # Verify the agent executed correctly
         assert "messages" in result
-
-        # Get the tool message containing the file content
         tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
         assert len(tool_messages) > 0
-
         file_content = tool_messages[0].content
 
-        # Verify behavior: with limit=1, we get only the first formatted line
-        # (not all continuation markers)
-        assert len(file_content) < 10000  # Only got first chunk (~5000 chars)
-        assert len(file_content.splitlines()) == 1  # Only 1 formatted line
-        assert "1.1" not in file_content  # No continuation markers (would need higher limit)
+        # `limit=1` admits the whole source line; the size cap then trims it.
+        assert file_content.startswith("[Output was truncated due to size limits.")
+        assert "@@ lines 1-1 of 1 | truncated mid-line " in file_content
+        assert len(file_content) <= 80000
 
-        # To get more of the line, the model would need to increase limit, not offset
-        # E.g., read_file(offset=0, limit=20) would get first 20 formatted lines
+    def test_deep_agent_read_file_pagination_does_not_skip_wrapped_lines(self, tmp_path: Path, backend: BackendProtocol) -> None:
+        """Long lines must not displace later source lines across pagination.
+
+        Regression for #2453: a 15k-char line on page 1 must not push
+        `important instruction` off the page and have page 2 resume past it.
+        """
+        long_line = "x" * 15000
+        content = f"line1\n{long_line}\nimportant instruction\nline4"
+        file_path = "/wrapped.txt"
+        starter_files = prepopulate_file(backend, file_path, content)
+
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "read_file",
+                                "args": {"file_path": file_path, "offset": 0, "limit": 3},
+                                "id": "call_1",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "read_file",
+                                "args": {"file_path": file_path, "offset": 3, "limit": 3},
+                                "id": "call_2",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="done"),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(model=model, backend=backend)
+
+        invoke_input: dict[str, Any] = {"messages": [HumanMessage(content=f"Read {file_path}")]}
+        if starter_files:
+            invoke_input["files"] = starter_files
+        result = agent.invoke(invoke_input)
+
+        tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
+        assert len(tool_messages) == 2
+        combined = tool_messages[0].content + tool_messages[1].content
+        assert "important instruction" in combined
+        assert "line4" in combined
+        # Source line 2 renders whole and in place, before `important
+        # instruction`, with nothing dropped at the page boundary.
+        assert long_line in combined
+        assert combined.index(long_line) < combined.index("important instruction")
 
     def test_read_large_single_line_file_returns_reasonable_size(self) -> None:
         """Test that read_file doesn't return excessive chars for a single-line file.
@@ -1242,7 +1362,7 @@ class TestDeepAgentEndToEnd:
         read_file_response = tool_messages[-1]
 
         # Verify truncation occurred and result stays under threshold
-        assert "Output was truncated due to size limits" in read_file_response.content, "Expected truncation message for large single-line file"
+        assert "truncated mid-line" in read_file_response.content, "Expected truncation disclosure for large single-line file"
         assert len(read_file_response.content) <= max_reasonable_chars, (
             f"read_file returned {len(read_file_response.content):,} chars. "
             f"Expected <= {max_reasonable_chars:,} chars (TOOL_RESULT_TOKEN_LIMIT * 4). "
@@ -1324,6 +1444,437 @@ class TestDeepAgentEndToEnd:
         assert tm.content[0]["type"] == "image"
         assert tm.content[0]["mime_type"] == "image/png"
         assert "base64" in tm.content[0]
+
+
+_OFFLOAD_PNG = b"\x89PNG\r\n\x1a\n fake image data"
+_OFFLOAD_PNG_B64 = base64.b64encode(_OFFLOAD_PNG).decode("ascii")
+_OFFLOAD_PNG_DIGEST = hashlib.sha256(_OFFLOAD_PNG).hexdigest()
+
+
+class TestBinaryContentOffload:
+    """End-to-end tests for `FilesystemMiddleware(offload_binary_content=True)`."""
+
+    @staticmethod
+    def _agent(backend: BackendProtocol, model: BaseChatModel, checkpointer: InMemorySaver) -> CompiledStateGraph:
+        return create_deep_agent(
+            model=model,
+            backend=backend,
+            middleware=[FilesystemMiddleware(backend=backend, offload_binary_content=True)],
+            checkpointer=checkpointer,
+        )
+
+    @staticmethod
+    def _read_image_model() -> FixedGenericFakeChatModel:
+        return FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[{"name": "read_file", "args": {"file_path": "/photo.png"}, "id": "call_img", "type": "tool_call"}],
+                    ),
+                    AIMessage(content="Here is the image."),
+                ]
+            )
+        )
+
+    @staticmethod
+    def _sent_tool_message(model: FixedGenericFakeChatModel, call: int) -> BaseMessage:
+        return next(m for m in model.captured_messages[call] if m.type == "tool")
+
+    @staticmethod
+    def _record_downloads(backend: FilesystemBackend, monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
+        """Record each `download_files` batch; the async variant delegates to it."""
+        downloads: list[list[str]] = []
+        original = backend.download_files
+
+        def recording(paths: list[str]) -> list[Any]:
+            downloads.append(paths)
+            return original(paths)
+
+        monkeypatch.setattr(backend, "download_files", recording)
+        return downloads
+
+    @pytest.mark.parametrize("use_async", [False, True])
+    async def test_checkpoint_keeps_reference_and_model_receives_bytes(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, use_async: bool
+    ) -> None:
+        backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+        (tmp_path / "photo.png").write_bytes(_OFFLOAD_PNG)
+        downloads = self._record_downloads(backend, monkeypatch)
+        model = self._read_image_model()
+        agent = self._agent(backend, model, InMemorySaver())
+        config: dict[str, Any] = {"configurable": {"thread_id": "t"}}
+        payload = {"messages": [HumanMessage(content="Read the image")]}
+
+        result = await agent.ainvoke(payload, config) if use_async else agent.invoke(payload, config)
+
+        values = agent.get_state(config).values
+        checkpointed = next(m for m in values["messages"] if m.type == "tool")
+        assert checkpointed.content == [{"type": "image", "mime_type": "image/png", "deepagents_blob": _OFFLOAD_PNG_DIGEST}]
+        assert (tmp_path / "blobs" / _OFFLOAD_PNG_DIGEST).read_bytes() == _OFFLOAD_PNG
+        assert self._sent_tool_message(model, 1).content == [{"type": "image", "mime_type": "image/png", "base64": _OFFLOAD_PNG_B64}]
+        assert downloads == [[f"/blobs/{_OFFLOAD_PNG_DIGEST}"]]
+        assert "_blob_payloads" not in values
+        assert "_blob_payloads" not in result
+
+    def test_resumed_thread_rehydrates_snapshot_after_source_changes(self, tmp_path: Path) -> None:
+        backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+        (tmp_path / "photo.png").write_bytes(_OFFLOAD_PNG)
+        checkpointer = InMemorySaver()
+        config: dict[str, Any] = {"configurable": {"thread_id": "t"}}
+        self._agent(backend, self._read_image_model(), checkpointer).invoke({"messages": [HumanMessage(content="Read the image")]}, config)
+        (tmp_path / "photo.png").write_bytes(b"changed")
+
+        # A new agent has a cold blob cache, like a fresh worker process.
+        model = FixedGenericFakeChatModel(messages=iter([AIMessage(content="Same image.")]))
+        self._agent(backend, model, checkpointer).invoke({"messages": [HumanMessage(content="What was in it?")]}, config)
+
+        assert self._sent_tool_message(model, 0).content[0]["base64"] == _OFFLOAD_PNG_B64
+
+    def test_resumed_thread_downloads_each_blob_once(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+        (tmp_path / "photo.png").write_bytes(_OFFLOAD_PNG)
+        checkpointer = InMemorySaver()
+        config: dict[str, Any] = {"configurable": {"thread_id": "t"}}
+        self._agent(backend, self._read_image_model(), checkpointer).invoke({"messages": [HumanMessage(content="Read the image")]}, config)
+        downloads = self._record_downloads(backend, monkeypatch)
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(content="", tool_calls=[{"name": "ls", "args": {"path": "/"}, "id": "call_ls", "type": "tool_call"}]),
+                    AIMessage(content="Done."),
+                ]
+            )
+        )
+
+        self._agent(backend, model, checkpointer).invoke({"messages": [HumanMessage(content="List files")]}, config)
+
+        assert len(model.captured_messages) == 2
+        assert all(self._sent_tool_message(model, call).content[0]["base64"] == _OFFLOAD_PNG_B64 for call in range(2))
+        assert downloads == [[f"/blobs/{_OFFLOAD_PNG_DIGEST}"]]
+
+    def test_cache_is_not_shared_across_threads(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+        (tmp_path / "photo.png").write_bytes(_OFFLOAD_PNG)
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[{"name": "read_file", "args": {"file_path": "/photo.png"}, "id": "call_img", "type": "tool_call"}],
+                    ),
+                    AIMessage(content="Here is the image."),
+                    AIMessage(content="Another thread."),
+                ]
+            )
+        )
+        agent = self._agent(backend, model, InMemorySaver())
+        agent.invoke({"messages": [HumanMessage(content="Read the image")]}, {"configurable": {"thread_id": "a"}})
+        downloads = self._record_downloads(backend, monkeypatch)
+        forged = HumanMessage(content=[{"type": "image", "mime_type": "image/png", "deepagents_blob": _OFFLOAD_PNG_DIGEST}])
+
+        agent.invoke({"messages": [forged]}, {"configurable": {"thread_id": "b"}})
+
+        assert downloads == [[f"/blobs/{_OFFLOAD_PNG_DIGEST}"]]
+
+    def test_resumed_thread_batches_downloads_for_multiple_blobs(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+        other = b"\x89PNG\r\n\x1a\n another image"
+        (tmp_path / "a.png").write_bytes(_OFFLOAD_PNG)
+        (tmp_path / "b.png").write_bytes(other)
+        checkpointer = InMemorySaver()
+        config: dict[str, Any] = {"configurable": {"thread_id": "t"}}
+        reads = [{"name": "read_file", "args": {"file_path": f"/{name}"}, "id": f"call_{name}", "type": "tool_call"} for name in ("a.png", "b.png")]
+        first = FixedGenericFakeChatModel(messages=iter([AIMessage(content="", tool_calls=reads), AIMessage(content="Read both.")]))
+        self._agent(backend, first, checkpointer).invoke({"messages": [HumanMessage(content="Read both images")]}, config)
+        downloads = self._record_downloads(backend, monkeypatch)
+
+        model = FixedGenericFakeChatModel(messages=iter([AIMessage(content="They differ.")]))
+        self._agent(backend, model, checkpointer).invoke({"messages": [HumanMessage(content="Compare them")]}, config)
+
+        sent = [m.content[0]["base64"] for m in model.captured_messages[0] if m.type == "tool"]
+        assert sorted(sent) == sorted([_OFFLOAD_PNG_B64, base64.b64encode(other).decode("ascii")])
+        assert len(downloads) == 1
+        assert sorted(downloads[0]) == sorted(f"/blobs/{hashlib.sha256(raw).hexdigest()}" for raw in (_OFFLOAD_PNG, other))
+
+    @pytest.mark.parametrize("backend_kind", ["state", "composite_blobs_to_state"])
+    def test_offload_skipped_when_blobs_route_to_state(self, tmp_path: Path, backend_kind: str) -> None:
+        payload: dict[str, Any] = {"messages": [HumanMessage(content="Read the image")]}
+        if backend_kind == "state":
+            backend: BackendProtocol = StateBackend()
+            payload["files"] = {"/photo.png": create_file_data(_OFFLOAD_PNG_B64, encoding="base64")}
+        else:
+            backend = CompositeBackend(default=FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True), routes={"/blobs/": StateBackend()})
+            (tmp_path / "photo.png").write_bytes(_OFFLOAD_PNG)
+        with pytest.warns(UserWarning, match="`offload_binary_content` has no effect"):
+            agent = self._agent(backend, self._read_image_model(), InMemorySaver())
+        config: dict[str, Any] = {"configurable": {"thread_id": "t"}}
+
+        agent.invoke(payload, config)
+
+        values = agent.get_state(config).values
+        checkpointed = next(m for m in values["messages"] if m.type == "tool")
+        assert checkpointed.content == [{"type": "image", "mime_type": "image/png", "base64": _OFFLOAD_PNG_B64}]
+        assert not any("blobs" in path for path in values.get("files", {}))
+
+    def test_offload_applies_when_only_other_routes_use_state(self, tmp_path: Path) -> None:
+        backend = CompositeBackend(default=FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True), routes={"/memories/": StateBackend()})
+        (tmp_path / "photo.png").write_bytes(_OFFLOAD_PNG)
+        agent = self._agent(backend, self._read_image_model(), InMemorySaver())
+        config: dict[str, Any] = {"configurable": {"thread_id": "t"}}
+
+        agent.invoke({"messages": [HumanMessage(content="Read the image")]}, config)
+
+        checkpointed = next(m for m in agent.get_state(config).values["messages"] if m.type == "tool")
+        assert checkpointed.content == [{"type": "image", "mime_type": "image/png", "deepagents_blob": _OFFLOAD_PNG_DIGEST}]
+        assert (tmp_path / "blobs" / _OFFLOAD_PNG_DIGEST).read_bytes() == _OFFLOAD_PNG
+
+    @staticmethod
+    def _human_image(text: str = "What is in this image?") -> HumanMessage:
+        return HumanMessage(content=[{"type": "text", "text": text}, {"type": "image", "mime_type": "image/png", "base64": _OFFLOAD_PNG_B64}])
+
+    @staticmethod
+    def _sent_human_image(model: FixedGenericFakeChatModel, call: int) -> dict[str, Any]:
+        human = next(m for m in model.captured_messages[call] if m.type == "human" and isinstance(m.content, list))
+        return next(block for block in human.content if block.get("type") == "image")
+
+    @pytest.mark.parametrize("use_async", [False, True])
+    async def test_human_message_image_checkpoints_reference(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, use_async: bool) -> None:
+        backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+        downloads = self._record_downloads(backend, monkeypatch)
+        model = FixedGenericFakeChatModel(messages=iter([AIMessage(content="A picture."), AIMessage(content="Still a picture.")]))
+        agent = self._agent(backend, model, InMemorySaver())
+        config: dict[str, Any] = {"configurable": {"thread_id": "t"}}
+
+        for payload in ({"messages": [self._human_image()]}, {"messages": [HumanMessage(content="Describe it again")]}):
+            if use_async:
+                await agent.ainvoke(payload, config)
+            else:
+                agent.invoke(payload, config)
+
+        checkpointed = next(m for m in agent.get_state(config).values["messages"] if m.type == "human")
+        assert checkpointed.content[1] == {"type": "image", "mime_type": "image/png", "deepagents_blob": _OFFLOAD_PNG_DIGEST}
+        assert (tmp_path / "blobs" / _OFFLOAD_PNG_DIGEST).read_bytes() == _OFFLOAD_PNG
+        assert all(self._sent_human_image(model, call)["base64"] == _OFFLOAD_PNG_B64 for call in range(2))
+        # Payloads loaded in one run are not carried into the next.
+        assert downloads == [[f"/blobs/{_OFFLOAD_PNG_DIGEST}"]]
+
+    def test_human_message_image_added_mid_thread(self, tmp_path: Path) -> None:
+        backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+        model = FixedGenericFakeChatModel(messages=iter([AIMessage(content="Hi."), AIMessage(content="A picture.")]))
+        agent = self._agent(backend, model, InMemorySaver())
+        config: dict[str, Any] = {"configurable": {"thread_id": "t"}}
+
+        agent.invoke({"messages": [HumanMessage(content="Hello")]}, config)
+        agent.invoke({"messages": [self._human_image()]}, config)
+
+        humans = [m for m in agent.get_state(config).values["messages"] if m.type == "human"]
+        assert humans[0].content == "Hello"
+        assert humans[1].content[1] == {"type": "image", "mime_type": "image/png", "deepagents_blob": _OFFLOAD_PNG_DIGEST}
+
+    def test_human_message_image_answered_before_offload_is_offloaded(self, tmp_path: Path) -> None:
+        backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+        checkpointer = InMemorySaver()
+        config: dict[str, Any] = {"configurable": {"thread_id": "t"}}
+        create_deep_agent(
+            model=FixedGenericFakeChatModel(messages=iter([AIMessage(content="A picture.")])),
+            backend=backend,
+            middleware=[FilesystemMiddleware(backend=backend, offload_binary_content=False)],
+            checkpointer=checkpointer,
+        ).invoke({"messages": [self._human_image()]}, config)
+        other = b"\x89PNG\r\n\x1a\n another image"
+        second = HumanMessage(content=[{"type": "image", "mime_type": "image/png", "base64": base64.b64encode(other).decode("ascii")}])
+
+        agent = self._agent(backend, FixedGenericFakeChatModel(messages=iter([AIMessage(content="Another picture.")])), checkpointer)
+        agent.invoke({"messages": [second]}, config)
+
+        humans = [m for m in agent.get_state(config).values["messages"] if m.type == "human"]
+        assert humans[0].content[1] == {"type": "image", "mime_type": "image/png", "deepagents_blob": _OFFLOAD_PNG_DIGEST}
+        assert humans[1].content[0] == {"type": "image", "mime_type": "image/png", "deepagents_blob": hashlib.sha256(other).hexdigest()}
+
+    def test_evicted_human_message_image_keeps_eviction_tag(self, tmp_path: Path) -> None:
+        backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+        model = FixedGenericFakeChatModel(messages=iter([AIMessage(content="Long message with a picture.")]))
+        agent = create_deep_agent(
+            model=model,
+            backend=backend,
+            middleware=[FilesystemMiddleware(backend=backend, offload_binary_content=True, human_message_token_limit_before_evict=10)],
+            checkpointer=InMemorySaver(),
+        )
+        config: dict[str, Any] = {"configurable": {"thread_id": "t"}}
+
+        agent.invoke({"messages": [self._human_image("word " * 200)]}, config)
+
+        checkpointed = next(m for m in agent.get_state(config).values["messages"] if m.type == "human")
+        assert checkpointed.additional_kwargs.get("lc_evicted_to")
+        assert checkpointed.content[1] == {"type": "image", "mime_type": "image/png", "deepagents_blob": _OFFLOAD_PNG_DIGEST}
+
+    def test_resumed_thread_with_missing_blob_sends_notice(self, tmp_path: Path) -> None:
+        backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+        (tmp_path / "photo.png").write_bytes(_OFFLOAD_PNG)
+        checkpointer = InMemorySaver()
+        config: dict[str, Any] = {"configurable": {"thread_id": "t"}}
+        self._agent(backend, self._read_image_model(), checkpointer).invoke({"messages": [HumanMessage(content="Read the image")]}, config)
+        (tmp_path / "blobs" / _OFFLOAD_PNG_DIGEST).unlink()
+
+        model = FixedGenericFakeChatModel(messages=iter([AIMessage(content="I'll re-read it.")]))
+        self._agent(backend, model, checkpointer).invoke({"messages": [HumanMessage(content="What was in it?")]}, config)
+
+        content = self._sent_tool_message(model, 0).content
+        assert len(content) == 1
+        assert content[0]["type"] == "text"
+        assert "no longer available" in content[0]["text"]
+
+
+class TestDeleteFileTool:
+    """End-to-end tests for the `delete` filesystem tool."""
+
+    def test_delete_removes_existing_file(self) -> None:
+        """Delete removes a file from state and reports success."""
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "delete",
+                                "args": {"file_path": "/keep.txt"},
+                                "id": "call_1",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Done."),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(model=model)
+        result = agent.invoke(
+            {
+                "messages": [HumanMessage(content="delete it")],
+                "files": {
+                    "/keep.txt": create_file_data("bye"),
+                    "/other.txt": create_file_data("stay"),
+                },
+            }
+        )
+
+        tool_messages = [m for m in result["messages"] if m.type == "tool"]
+        assert len(tool_messages) == 1
+        assert tool_messages[0].status == "success"
+        assert tool_messages[0].content == "Deleted /keep.txt"
+        assert set(result["files"].keys()) == {"/other.txt"}
+
+    def test_delete_directory_removes_nested_files(self) -> None:
+        """Delete on a directory removes every nested file from state (StateBackend)."""
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "delete",
+                                "args": {"file_path": "/work"},
+                                "id": "call_1",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Done."),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(model=model)
+        result = agent.invoke(
+            {
+                "messages": [HumanMessage(content="delete the work dir")],
+                "files": {
+                    "/work/a.txt": create_file_data("a"),
+                    "/work/sub/b.txt": create_file_data("b"),
+                    "/keep.txt": create_file_data("stay"),
+                },
+            }
+        )
+
+        tool_messages = [m for m in result["messages"] if m.type == "tool"]
+        assert tool_messages[0].status == "success"
+        # Whole /work subtree gone; sibling preserved.
+        assert set(result["files"].keys()) == {"/keep.txt"}
+
+    def test_delete_missing_returns_error(self) -> None:
+        """Delete on a missing path returns an error tool message."""
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "delete",
+                                "args": {"file_path": "/nope.txt"},
+                                "id": "call_1",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Done."),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(model=model)
+        result = agent.invoke({"messages": [HumanMessage(content="delete it")]})
+
+        tool_messages = [m for m in result["messages"] if m.type == "tool"]
+        assert len(tool_messages) == 1
+        assert tool_messages[0].status == "error"
+        assert "not found" in tool_messages[0].content
+
+    def test_delete_permission_deny_blocks_delete(self) -> None:
+        """FilesystemPermission deny write blocks delete (delete is a write op)."""
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "delete",
+                                "args": {"file_path": "/secrets/key.txt"},
+                                "id": "call_1",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Done."),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(
+            model=model,
+            permissions=[
+                FilesystemPermission(operations=["write"], paths=["/secrets/**"], mode="deny"),
+            ],
+        )
+        result = agent.invoke(
+            {
+                "messages": [HumanMessage(content="delete secret")],
+                "files": {"/secrets/key.txt": create_file_data("data")},
+            }
+        )
+
+        tool_messages = [m for m in result["messages"] if m.type == "tool"]
+        assert len(tool_messages) == 1
+        assert tool_messages[0].status == "error"
+        assert "permission denied" in tool_messages[0].content
+        assert "write" in tool_messages[0].content
+        # The file must still be present after a denied delete.
+        assert "/secrets/key.txt" in result["files"]
 
 
 class TestDeepAgentPermissionsEndToEnd:
@@ -2052,12 +2603,12 @@ class TestLargeHumanMessageEviction:
     """Test that oversized HumanMessages are evicted to the filesystem."""
 
     def test_large_human_message_evicted_before_model_call(self) -> None:
-        """An oversized HumanMessage is evicted and tagged with ``lc_evicted_to``.
+        """An oversized HumanMessage is evicted and tagged with `lc_evicted_to`.
 
         The agent receives a HumanMessage (no id) whose text content exceeds
-        the eviction threshold. The filesystem middleware's ``wrap_model_call``
+        the eviction threshold. The filesystem middleware's `wrap_model_call`
         should write the full content to the backend and tag the message in
-        state via ``lc_evicted_to``, while preserving the original content.
+        state via `lc_evicted_to`, while preserving the original content.
         The model should see a truncated preview, not the full content.
         """
         threshold = 50_000
@@ -2154,12 +2705,11 @@ class TestSummarizationOffloadToState:
     """Test that SummarizationMiddleware offloads conversation history to StateBackend."""
 
     def test_offloaded_file_persisted_in_state(self) -> None:
-        """Summarization should write the offloaded history to state via files_update.
+        """Summarization should write the offloaded history to the `files` state channel.
 
-        Uses ``create_deep_agent`` with default ``StateBackend`` so that
-        ``backend.write`` returns a ``files_update`` dict. The ``Command``
-        produced by ``wrap_model_call`` must propagate that dict so the file
-        is persisted in graph state under the ``files`` channel.
+        Uses `create_deep_agent` with default `StateBackend`, which applies
+        writes as channel writes to the `files` state key. The offloaded
+        conversation-history file must be persisted in graph state there.
         """
         fake_model = FakeChatModelWithHistory(
             messages=iter(
@@ -2220,9 +2770,9 @@ class TestCompactConversationTool:
     def test_compact_conversation_tool_invocation(self) -> None:
         """Agent invokes compact_conversation and conversation is compacted.
 
-        Uses ``create_summarization_tool_middleware`` with a fake model that
+        Uses `create_summarization_tool_middleware` with a fake model that
         has a profile so fraction-based defaults are used. Input messages
-        carry ``usage_metadata`` and ``response_metadata`` so the eligibility
+        carry `usage_metadata` and `response_metadata` so the eligibility
         gate passes. The summarization model (same fake instance) returns a
         summary, and the agent model emits the tool call then a final response.
         """
@@ -2429,69 +2979,6 @@ class TestStateBackendConfigKeys:
         ls_msg = next(m for m in tool_msgs if m.tool_call_id == "call_ls")
         assert "/data/notes.md" in ls_msg.content
 
-    def test_backward_compat_lambda_factory(self) -> None:
-        """The old ``lambda rt: StateBackend(rt)`` factory pattern still works."""
-        model = FixedGenericFakeChatModel(
-            messages=iter(
-                [
-                    AIMessage(
-                        content="",
-                        tool_calls=[
-                            {
-                                "name": "write_file",
-                                "args": {"file_path": "/compat.txt", "content": "works"},
-                                "id": "call_w",
-                                "type": "tool_call",
-                            }
-                        ],
-                    ),
-                    AIMessage(
-                        content="",
-                        tool_calls=[
-                            {
-                                "name": "read_file",
-                                "args": {"file_path": "/compat.txt"},
-                                "id": "call_r",
-                                "type": "tool_call",
-                            }
-                        ],
-                    ),
-                    AIMessage(content="Done."),
-                ]
-            )
-        )
-
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", DeprecationWarning)
-            agent = create_deep_agent(
-                model=model,
-                backend=StateBackend,
-            )
-            result = agent.invoke({"messages": [HumanMessage(content="go")]})
-
-        tool_msgs = [m for m in result["messages"] if m.type == "tool"]
-        assert any("works" in m.content for m in tool_msgs)
-
-    def test_state_backend_runtime_deprecation(self) -> None:
-        """Passing runtime to StateBackend emits a DeprecationWarning."""
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
-            StateBackend("ignored_runtime_value")
-
-        deprecations = [x for x in w if issubclass(x.category, DeprecationWarning)]
-        assert len(deprecations) == 1
-        assert "runtime" in str(deprecations[0].message).lower()
-
-    def test_store_backend_runtime_deprecation(self) -> None:
-        """Passing runtime to StoreBackend emits a DeprecationWarning."""
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
-            StoreBackend("ignored_runtime_value")
-
-        deprecations = [x for x in w if issubclass(x.category, DeprecationWarning)]
-        assert len(deprecations) == 1
-        assert "runtime" in str(deprecations[0].message).lower()
-
     def test_store_backend_explicit_store_works(self) -> None:
         """StoreBackend(store=my_store) works without a graph context."""
         model = FixedGenericFakeChatModel(
@@ -2577,22 +3064,6 @@ class TestStateBackendConfigKeys:
         tool_msgs = [m for m in result["messages"] if m.type == "tool"]
         assert any("via get_store" in m.content for m in tool_msgs)
 
-    def test_backend_factory_deprecation(self) -> None:
-        """Passing a callable factory as backend emits a DeprecationWarning."""
-        model = FixedGenericFakeChatModel(messages=iter([AIMessage(content="hi")]))
-
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
-            agent = create_deep_agent(
-                model=model,
-                backend=StateBackend,
-            )
-            agent.invoke({"messages": [HumanMessage(content="go")]})
-
-        dep_msgs = [x for x in w if issubclass(x.category, DeprecationWarning)]
-        factory_warnings = [x for x in dep_msgs if "callable" in str(x.message).lower() or "factory" in str(x.message).lower()]
-        assert len(factory_warnings) >= 1
-
     def test_state_backend_upload_files_works_in_graph_context(self) -> None:
         """upload_files called in an after-model middleware hook stores readable files."""
         backend = StateBackend()
@@ -2619,12 +3090,239 @@ class TestStateBackendConfigKeys:
 
         assert result["files"]["/injected.txt"]["content"] == "from middleware"
 
+    def test_state_backend_read_your_writes_within_one_tool_call(self) -> None:
+        """Write + read in the same tool call — read sees the pending write.
+
+        Both operations happen inside a single ToolNode superstep, so the
+        write is still in `task.writes` (not yet committed). `fresh=True`
+        in `_read_files` applies pending writes through the channel reducer,
+        giving read-your-writes semantics.
+        """
+        backend = StateBackend()
+
+        @tool
+        def write_then_read(path: str, content: str) -> str:
+            """Write a file via StateBackend, then immediately read it back."""
+            backend.write(path, content)
+            result = backend.read(path)
+            if result.error:
+                return f"ERROR: {result.error}"
+            file_data = result.file_data or {}
+            return str(file_data.get("content", ""))
+
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "write_then_read",
+                                "args": {"path": "/pending.txt", "content": "buffered"},
+                                "id": "call_wr",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Done."),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(model=model, backend=backend, tools=[write_then_read])
+        result = agent.invoke({"messages": [HumanMessage(content="go")]})
+
+        tool_msg = next(m for m in result["messages"] if m.type == "tool" and m.tool_call_id == "call_wr")
+        assert "buffered" in tool_msg.content
+        assert "ERROR" not in tool_msg.content
+
+    def test_write_overwrites_existing_file(self) -> None:
+        """write_file on an existing path replaces its content."""
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "write_file",
+                                "args": {"file_path": "/doc.txt", "content": "new content"},
+                                "id": "call_w2",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "read_file",
+                                "args": {"file_path": "/doc.txt"},
+                                "id": "call_r2",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Done."),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(model=model)
+        result = agent.invoke(
+            {
+                "messages": [HumanMessage(content="go")],
+                "files": {"/doc.txt": {"content": "old content", "encoding": "utf-8"}},
+            }
+        )
+
+        tool_msgs = [m for m in result["messages"] if m.type == "tool"]
+        # write should succeed and overwrite the old content
+        assert any("Updated file" in m.content for m in tool_msgs)
+        assert any("new content" in m.content for m in tool_msgs)
+        assert not any("old content" in m.content for m in tool_msgs)
+
+    def test_state_backend_delete_in_graph_context(self) -> None:
+        """delete() removes a file from state; missing paths report an error."""
+        backend = StateBackend()
+
+        @tool
+        def delete_path(path: str) -> str:
+            """Delete a file via StateBackend."""
+            result = backend.delete(path)
+            return result.error or f"deleted {result.path}"
+
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {"name": "delete_path", "args": {"path": "/keep.txt"}, "id": "c1", "type": "tool_call"},
+                        ],
+                    ),
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {"name": "delete_path", "args": {"path": "/missing.txt"}, "id": "c2", "type": "tool_call"},
+                        ],
+                    ),
+                    AIMessage(content="Done."),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(model=model, backend=backend, tools=[delete_path])
+        result = agent.invoke(
+            {
+                "messages": [HumanMessage(content="go")],
+                "files": {
+                    "/keep.txt": create_file_data("bye"),
+                    "/other.txt": create_file_data("stay"),
+                },
+            }
+        )
+
+        tool_msgs = {m.tool_call_id: m.content for m in result["messages"] if m.type == "tool"}
+        assert tool_msgs["c1"] == "deleted /keep.txt"
+        assert "not found" in tool_msgs["c2"]
+        # The deleted file is gone; the untouched file remains.
+        assert set(result["files"].keys()) == {"/other.txt"}
+
+    async def test_state_backend_delete_in_graph_context_async(self) -> None:
+        """adelete() removes a file from state on the async path; missing paths report an error."""
+        backend = StateBackend()
+
+        @tool
+        async def adelete_path(path: str) -> str:
+            """Delete a file via StateBackend's async path."""
+            result = await backend.adelete(path)
+            return result.error or f"deleted {result.path}"
+
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {"name": "adelete_path", "args": {"path": "/keep.txt"}, "id": "c1", "type": "tool_call"},
+                        ],
+                    ),
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {"name": "adelete_path", "args": {"path": "/missing.txt"}, "id": "c2", "type": "tool_call"},
+                        ],
+                    ),
+                    AIMessage(content="Done."),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(model=model, backend=backend, tools=[adelete_path])
+        result = await agent.ainvoke(
+            {
+                "messages": [HumanMessage(content="go")],
+                "files": {
+                    "/keep.txt": create_file_data("bye"),
+                    "/other.txt": create_file_data("stay"),
+                },
+            }
+        )
+
+        tool_msgs = {m.tool_call_id: m.content for m in result["messages"] if m.type == "tool"}
+        assert tool_msgs["c1"] == "deleted /keep.txt"
+        assert "not found" in tool_msgs["c2"]
+        # The deleted file is gone; the untouched file remains.
+        assert set(result["files"].keys()) == {"/other.txt"}
+
+
+class TestFilesystemRoutingPrompt:
+    """Routing survives prose suppression; filesystem usage prose does not.
+
+    The host-path routing section is essential per-backend config, so it is
+    emitted even on the lean default where the usage prose is suppressed.
+    """
+
+    def _capture_system_prompt(self, backend: BackendProtocol, **create_kwargs: Any) -> str:
+        model = FixedGenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+        capturing = SystemMessageCapturingMiddleware()
+        agent = create_deep_agent(model=model, backend=backend, middleware=[capturing], **create_kwargs)
+        agent.invoke({"messages": [HumanMessage(content="hi")]})
+        return str(capturing.captured_system_messages[0].content)
+
+    def _routed_backend(self) -> CompositeBackend:
+        # LocalShellBackend default + FilesystemBackend route => the routing
+        # section maps `/common/` to the route's host path for the `execute` shell.
+        return CompositeBackend(
+            default=LocalShellBackend(root_dir=str(Path.cwd()), virtual_mode=True),
+            routes={"/common/": FilesystemBackend(root_dir="/work/app", virtual_mode=True)},
+        )
+
+    def test_routing_survives_lean_default(self) -> None:
+        """The routing section is emitted on the lean default.
+
+        The filesystem usage prose and base prose are suppressed.
+        """
+        content = self._capture_system_prompt(self._routed_backend())
+        assert "Shell paths vs. virtual paths" in content, "routing section must survive trimming"
+        assert "## Following Conventions" not in content, "filesystem usage prose should be trimmed"
+        assert "You are a deep agent" not in content, "base prose should be absent"
+
+    def test_no_routing_section_for_non_composite_backend(self) -> None:
+        """A single backend has no routes, so no routing section is added.
+
+        The model still gets a functional (prose-suppressed) agent.
+        """
+        content = self._capture_system_prompt(LocalShellBackend(root_dir=str(Path.cwd()), virtual_mode=True))
+        assert "Shell paths vs. virtual paths" not in content
+
 
 class TestArtifactsRoot:
     """Test that artifacts_root on CompositeBackend parameterizes internal paths."""
 
-    def test_deep_agent_artifacts_root_system_prompt_and_eviction(self) -> None:
-        """Custom artifacts_root flows through to system prompt and eviction paths."""
+    def test_deep_agent_artifacts_root_eviction(self) -> None:
+        """Custom artifacts_root flows through to the eviction paths."""
 
         @tool(description="Returns a very large string")
         def big_tool() -> str:
@@ -2637,8 +3335,6 @@ class TestArtifactsRoot:
             routes={},
             artifacts_root="/workspace",
         )
-
-        capturing_middleware = SystemMessageCapturingMiddleware()
 
         model = FixedGenericFakeChatModel(
             messages=iter(
@@ -2663,15 +3359,9 @@ class TestArtifactsRoot:
             model=model,
             tools=[big_tool],
             backend=backend,
-            middleware=[capturing_middleware],
         )
 
         result = agent.invoke({"messages": [HumanMessage(content="Call the big tool")]})
-
-        # Verify system prompt references the custom artifacts_root
-        system_content = str(capturing_middleware.captured_system_messages[0].content)
-        assert "/workspace/large_tool_results/" in system_content
-        assert "/large_tool_results/<tool_call_id>" not in system_content or "/workspace/large_tool_results/<tool_call_id>" in system_content
 
         # Verify the evicted tool result was written under the custom prefix
         tool_messages = [m for m in result["messages"] if m.type == "tool"]
@@ -2790,33 +3480,185 @@ class TestArtifactsRoot:
         default_ls = backend.ls("/conversation_history/")
         assert not default_ls.entries, "No files should be written to /conversation_history/ when artifacts_root is set"
 
-    def test_create_deep_agent_no_composite_backend(self) -> None:
-        """create_deep_agent with a non-composite backend defaults artifacts_root to '/'."""
-        backend = StateBackend()
-        capturing_middleware = SystemMessageCapturingMiddleware()
-        agent = create_deep_agent(
-            model=FakeChatModelWithHistory(messages=iter([AIMessage(content="done")])),
-            backend=backend,
-            middleware=[capturing_middleware],
+    @staticmethod
+    def _offloaded_history_names(backend: CompositeBackend) -> list[str]:
+        """Return the basenames of offloaded history files under the artifacts root."""
+        entries = backend.ls("/workspace/conversation_history/").entries or []
+        return [e["path"].rsplit("/", 1)[-1] for e in entries if e["path"].endswith(".md")]
+
+    def _summarizing_agent(self, backend: CompositeBackend) -> CompiledStateGraph:
+        fake_model = FakeChatModelWithHistory(
+            messages=iter(
+                [
+                    AIMessage(content="summary goes here"),
+                    AIMessage(content="response"),
+                ]
+            )
         )
-        agent.invoke({"messages": [HumanMessage(content="Hi")]})
-        system_content = str(capturing_middleware.captured_system_messages[0].content)
-        assert "/large_tool_results/" in system_content
+        fake_model.profile = {"max_input_tokens": 200_000}
+        return create_deep_agent(model=fake_model, backend=backend, checkpointer=InMemorySaver())
+
+    @staticmethod
+    def _messages_over_threshold() -> list[BaseMessage]:
+        small = "x" * 10_000 * NUM_CHARS_PER_TOKEN
+        large = "x" * 50_000 * NUM_CHARS_PER_TOKEN
+        return [
+            HumanMessage(content=small),
+            AIMessage(content=large),
+            HumanMessage(content=small),
+            AIMessage(content=large),
+            HumanMessage(content=small),
+            AIMessage(content=large),
+            HumanMessage(content="query"),
+        ]
+
+    def test_offload_path_uses_session_id_not_thread_id(self) -> None:
+        """The offload history file is named by an internal session id, not the thread_id."""
+        backend = CompositeBackend(
+            default=StoreBackend(store=InMemoryStore(), namespace=lambda _ctx: ("filesystem",)),
+            routes={},
+            artifacts_root="/workspace",
+        )
+        agent = self._summarizing_agent(backend)
+
+        thread_id = "conversation-alpha"
+        agent.invoke({"messages": self._messages_over_threshold()}, {"configurable": {"thread_id": thread_id}})
+
+        names = self._offloaded_history_names(backend)
+        assert names, "expected conversation history offloaded"
+        assert all(name.startswith("session_") for name in names)
+        assert all(thread_id not in name for name in names)
+
+    def test_offload_ignores_caller_supplied_session_id(self) -> None:
+        """A `_summarization_session_id` supplied on invoke input does not name the file.
+
+        The session id is a `PrivateStateAttr`, so LangGraph does not load it
+        from caller input; the internally generated id is used instead.
+        """
+        backend = CompositeBackend(
+            default=StoreBackend(store=InMemoryStore(), namespace=lambda _ctx: ("filesystem",)),
+            routes={},
+            artifacts_root="/workspace",
+        )
+        agent = self._summarizing_agent(backend)
+
+        supplied = "caller-supplied-id"
+        agent.invoke(
+            {"messages": self._messages_over_threshold(), "_summarization_session_id": supplied},
+            {"configurable": {"thread_id": "conversation-beta"}},
+        )
+
+        names = self._offloaded_history_names(backend)
+        assert names, "expected conversation history offloaded"
+        assert all(name.startswith("session_") for name in names)
+        assert f"{supplied}.md" not in names
+
+    def test_parent_and_subagent_offload_to_separate_files(self) -> None:
+        """A parent and a sub-agent that both summarize write to separate history files.
+
+        Both share one backend under a single thread. The parent summarizes its
+        oversized opening context, then delegates to a sub-agent that loops tool
+        calls until its own context crosses the threshold and summarizes too.
+        The two offloads land in distinct files rather than overwriting one.
+        """
+        backend = CompositeBackend(
+            default=StoreBackend(store=InMemoryStore(), namespace=lambda _ctx: ("filesystem",)),
+            routes={},
+            artifacts_root="/workspace",
+        )
+
+        @tool(description="Return a block of filler text.")
+        def filler() -> str:
+            # ~10k tokens: accumulates toward the summarization threshold but
+            # stays under the 20k-token per-result eviction limit.
+            return "x" * 40_000
+
+        subagent_model = SummaryFilteringModel(
+            messages=iter(
+                [
+                    *(
+                        AIMessage(
+                            content="",
+                            tool_calls=[{"name": "filler", "args": {}, "id": f"filler_{i}", "type": "tool_call"}],
+                        )
+                        for i in range(5)
+                    ),
+                    AIMessage(content="subagent done"),
+                ]
+            )
+        )
+        subagent_model.profile = {"max_input_tokens": 50_000}
+
+        worker: SubAgent = {
+            "name": "worker",
+            "description": "Does a chunk of work.",
+            "system_prompt": "Do the work.",
+            "model": subagent_model,
+            "tools": [filler],
+        }
+
+        parent_model = SummaryFilteringModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "task",
+                                "args": {"description": "do it", "subagent_type": "worker"},
+                                "id": "call_task",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Done."),
+                ]
+            )
+        )
+        parent_model.profile = {"max_input_tokens": 200_000}
+
+        agent = create_deep_agent(model=parent_model, backend=backend, subagents=[worker], checkpointer=InMemorySaver())
+
+        agent.invoke({"messages": self._messages_over_threshold()}, {"configurable": {"thread_id": "shared-thread"}})
+
+        names = self._offloaded_history_names(backend)
+        assert len(names) >= 2, f"expected separate parent and sub-agent history files, got {names}"
+        assert len(set(names)) == len(names), f"history files collided: {names}"
+        assert all(name.startswith("session_") for name in names)
+
+    def test_create_deep_agent_no_composite_backend(self) -> None:
+        """A non-composite backend defaults artifacts_root to '/' (root prefix)."""
+
+        @tool(description="Returns a very large string")
+        def big_tool() -> str:
+            """Return a large string to trigger eviction."""
+            return "x" * 500_000
+
+        backend = StoreBackend(store=InMemoryStore(), namespace=lambda _ctx: ("filesystem",))
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[{"name": "big_tool", "args": {}, "id": "call_big", "type": "tool_call"}],
+                    ),
+                    AIMessage(content="Done."),
+                ]
+            )
+        )
+        agent = create_deep_agent(model=model, tools=[big_tool], backend=backend)
+        result = agent.invoke({"messages": [HumanMessage(content="Call the big tool")]})
+
+        # With no artifacts_root, evicted results land under the "/" root prefix.
+        tool_messages = [m for m in result["messages"] if m.type == "tool"]
+        evicted_msg = next(m for m in tool_messages if m.tool_call_id == "call_big")
+        assert "/large_tool_results/call_big" in evicted_msg.content
+        assert "/workspace/" not in evicted_msg.content
 
     def test_create_deep_agent_composite_backend_default_artifacts_root(self) -> None:
         """create_deep_agent with CompositeBackend without artifacts_root defaults to '/'."""
         backend = CompositeBackend(default=StateBackend(), routes={})
         assert backend.artifacts_root == "/"
-
-        capturing_middleware = SystemMessageCapturingMiddleware()
-        agent = create_deep_agent(
-            model=FakeChatModelWithHistory(messages=iter([AIMessage(content="done")])),
-            backend=backend,
-            middleware=[capturing_middleware],
-        )
-        agent.invoke({"messages": [HumanMessage(content="Hi")]})
-        system_content = str(capturing_middleware.captured_system_messages[0].content)
-        assert "/large_tool_results/" in system_content
 
     def test_human_message_eviction_uses_artifacts_root(self) -> None:
         """Oversized HumanMessage is evicted under the custom artifacts_root."""
@@ -2876,10 +3718,10 @@ class TestArtifactsRoot:
 class TestAsyncSubagentEndToEnd:
     """End-to-end tests for async (non-blocking) subagent tools.
 
-    These tests wire up ``create_deep_agent`` with ``AsyncSubAgent`` specs and
+    These tests wire up `create_deep_agent` with `AsyncSubAgent` specs and
     mock the LangGraph SDK client to verify the full agent loop: model emits a
     tool call → tool executes against the (mocked) remote server → state is
-    updated with ``async_tasks`` → model sees the result and responds.
+    updated with `async_tasks` → model sees the result and responds.
     """
 
     @patch("deepagents.middleware.async_subagents.get_sync_client")
@@ -3147,6 +3989,7 @@ class TestAsyncSubagentEndToEnd:
             assistant_id="writer_graph",
             input={"messages": [{"role": "user", "content": "Focus specifically on LLM trends"}]},
             multitask_strategy="interrupt",
+            headers=ANY,  # trace headers are covered in test_async_subagents.py
         )
 
     @patch("deepagents.middleware.async_subagents.get_sync_client")
@@ -3436,3 +4279,1463 @@ class TestAsyncSubagentEndToEnd:
 
         async_tasks = result.get("async_tasks", {})
         assert async_tasks["thread_err"]["status"] == "error"
+
+
+class TestDeltaChannels:
+    """Verify that messages and files use DeltaChannel.
+
+    DeltaChannel stores individual writes in the `writes` table rather than
+    snapshotting the full accumulated value into `channel_values` on every
+    checkpoint step. This keeps checkpoint blobs small (O(1) per step instead
+    of O(N) for messages). The full state is still reconstructable via
+    `agent.get_state()`, which replays writes through the reducer.
+    """
+
+    def test_messages_uses_delta_channel(self) -> None:
+        """Messages channel must be a DeltaChannel in the compiled graph."""
+        fake_model = FakeChatModelWithHistory(messages=iter([AIMessage(content="Hello!")]))
+        agent = create_deep_agent(model=fake_model)
+
+        assert isinstance(agent.channels.get("messages"), DeltaChannel), "messages must use DeltaChannel so checkpoint growth is O(N) not O(N²)"
+
+    def test_messages_reconstructed_via_get_state(self) -> None:
+        """get_state() must reconstruct messages correctly despite DeltaChannel."""
+        fake_model = FakeChatModelWithHistory(messages=iter([AIMessage(content="Hello!")]))
+        checkpointer = InMemorySaver()
+        agent = create_deep_agent(model=fake_model, checkpointer=checkpointer)
+
+        config: dict = {"configurable": {"thread_id": "delta-messages-reconstruct"}}
+        agent.invoke({"messages": [HumanMessage(content="Hi")]}, config)
+
+        state = agent.get_state(config)
+        msgs = state.values["messages"]
+        assert len(msgs) >= 2
+        assert any(isinstance(m, HumanMessage) for m in msgs)
+        assert any(isinstance(m, AIMessage) for m in msgs)
+
+    def test_files_not_in_channel_values(self) -> None:
+        """Files should not appear in checkpoint channel_values (DeltaChannel)."""
+        fake_model = FakeChatModelWithHistory(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "id": "call_1",
+                                "name": "write_file",
+                                "args": {"file_path": "hello.txt", "content": "hello"},
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Done."),
+                ]
+            )
+        )
+        backend = StateBackend()
+        checkpointer = InMemorySaver()
+        agent = create_deep_agent(model=fake_model, backend=backend, checkpointer=checkpointer)
+
+        config: dict = {"configurable": {"thread_id": "delta-files"}}
+        agent.invoke({"messages": [HumanMessage(content="Write a file")]}, config)
+
+        checkpoint = checkpointer.get(config)
+        assert checkpoint is not None
+        # DeltaChannel: full files dict is NOT snapshotted into channel_values on every step
+        assert "files" not in checkpoint["channel_values"], (
+            "files is a DeltaChannel and should not appear in channel_values; it should be reconstructed from writes"
+        )
+
+    def test_files_reconstructed_via_get_state(self) -> None:
+        """get_state() must reconstruct files correctly despite DeltaChannel."""
+        fake_model = FakeChatModelWithHistory(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "id": "call_1",
+                                "name": "write_file",
+                                "args": {"file_path": "hello.txt", "content": "hello"},
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Done."),
+                ]
+            )
+        )
+        backend = StateBackend()
+        checkpointer = InMemorySaver()
+        agent = create_deep_agent(model=fake_model, backend=backend, checkpointer=checkpointer)
+
+        config: dict = {"configurable": {"thread_id": "delta-files-reconstruct"}}
+        agent.invoke({"messages": [HumanMessage(content="Write a file")]}, config)
+
+        state = agent.get_state(config)
+        files = state.values.get("files", {})
+        assert any("hello.txt" in k for k in files)
+
+
+def test_tool_command_parent_handoff_preserved() -> None:
+    # A tool returning Command(goto=..., graph=Command.PARENT) must propagate routing
+    # through FilesystemMiddleware so multi-agent handoffs reach the sibling node.
+    @tool
+    def transfer_to_b(runtime: ToolRuntime) -> Command:
+        """Transfer to agent_b."""
+        return Command(
+            goto="agent_b",
+            graph=Command.PARENT,
+            update={
+                "messages": [
+                    ToolMessage(content="transferred", tool_call_id=runtime.tool_call_id),
+                ],
+            },
+        )
+
+    fake_model = FakeChatModelWithHistory(
+        messages=iter(
+            [
+                AIMessage(
+                    content="",
+                    tool_calls=[{"id": "call_xfer", "name": "transfer_to_b", "args": {}}],
+                ),
+            ]
+        )
+    )
+    agent_a = create_deep_agent(model=fake_model, tools=[transfer_to_b])
+
+    visited: list[str] = []
+
+    def agent_b_node(_state: dict) -> dict:
+        visited.append("agent_b")
+        return {}
+
+    parent = StateGraph(dict)
+    parent.add_node("agent_a", agent_a)
+    parent.add_node("agent_b", agent_b_node)
+    parent.add_edge(START, "agent_a")
+    parent.add_edge("agent_a", END)
+    parent.add_edge("agent_b", END)
+    compiled = parent.compile()
+
+    compiled.invoke({"messages": [HumanMessage(content="hi")]})
+
+    assert visited == ["agent_b"]
+
+
+def test_read_file_video_frames_attached_after_tool_message(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Video frame media is sent as input after the required tool result."""
+    monkeypatch.setattr(
+        filesystem_middleware,
+        "extract_video_frames",
+        lambda *_args, **_kwargs: [
+            {"type": "text", "text": "Frame at t=00:00:00.000"},
+            {"type": "image", "base64": "AAAA", "mime_type": "image/jpeg"},
+        ],
+    )
+    fake_model = FakeChatModelWithHistory(
+        messages=iter(
+            [
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "id": "call_video",
+                            "name": "read_file",
+                            "args": {"file_path": "/clip.mp4"},
+                        }
+                    ],
+                ),
+                AIMessage(content="saw frame"),
+            ]
+        )
+    )
+    fake_model.call_history.clear()
+    video = base64.b64encode(b"video bytes").decode("ascii")
+    agent = create_deep_agent(model=fake_model, backend=StateBackend())
+
+    result = agent.invoke(
+        {
+            "messages": [HumanMessage(content="Read the video")],
+            "files": {"/clip.mp4": {**create_file_data(video, encoding="base64")}},
+        }
+    )
+
+    assert result["messages"][-1].content == "saw frame"
+    second_call = fake_model.call_history[1]["messages"]
+    tool_index = next(i for i, message in enumerate(second_call) if isinstance(message, ToolMessage))
+    media_message = second_call[tool_index + 1]
+    assert isinstance(media_message, HumanMessage)
+    assert media_message.additional_kwargs["read_file_media_result"] is True
+    assert media_message.content == [
+        {"type": "text", "text": "Reading first 100s of /clip.mp4 at 0.5 fps."},
+        {"type": "text", "text": "Frame at t=00:00:00.000"},
+        {"type": "image", "base64": "AAAA", "mime_type": "image/jpeg"},
+    ]
+
+
+def test_invalid_tool_call_patched_on_next_turn() -> None:
+    # Turn 1: model truncates and emits an invalid tool call (no matching ToolMessage
+    # will be produced because agents only route on `tool_calls`).
+    # Turn 2: the middleware must patch the dangling call before the model is re-invoked.
+    fake_model = FakeChatModelWithHistory(
+        messages=iter(
+            [
+                AIMessage(
+                    content="",
+                    invalid_tool_calls=[
+                        {
+                            "id": "call_truncated",
+                            "name": "search",
+                            "args": '{"query": "weath',
+                            "error": "Unterminated string at line 1 column 17",
+                            "type": "invalid_tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(content="Recovered."),
+            ]
+        )
+    )
+    checkpointer = InMemorySaver()
+    agent = create_deep_agent(model=fake_model, checkpointer=checkpointer)
+    config: dict = {"configurable": {"thread_id": "patch-invalid-tool-calls"}}
+
+    first_result = agent.invoke({"messages": [HumanMessage(content="Run a tool")]}, config)
+    assert isinstance(first_result["messages"][-1], AIMessage)
+    assert first_result["messages"][-1].invalid_tool_calls
+
+    result = agent.invoke({"messages": [HumanMessage(content="Try again")]}, config)
+
+    # The second model call must see the dangling invalid_tool_call paired with a ToolMessage.
+    second_call_inputs = fake_model.call_history[1]["messages"]
+    synthetic = next(
+        (m for m in second_call_inputs if isinstance(m, ToolMessage) and m.tool_call_id == "call_truncated"),
+        None,
+    )
+    assert synthetic is not None, "PatchToolCallsMiddleware did not inject a ToolMessage for invalid_tool_calls"
+    assert "could not be executed" in synthetic.content
+    assert "malformed or truncated" in synthetic.content
+    assert synthetic.name == "search"
+    assert synthetic.status == "error"
+
+    # Final state must also expose the patched ToolMessage.
+    assert any(isinstance(m, ToolMessage) and m.tool_call_id == "call_truncated" for m in result["messages"])
+
+
+_OVERFLOW_INPUT_CHAR_THRESHOLD = 50_000
+
+
+class _OverflowOnLargeInputModel(FakeChatModelWithHistory):
+    """Raises `ContextOverflowError` on any call whose input exceeds the char threshold.
+
+    Calls below the threshold pass through to the iterator (initial agent call,
+    summary-generation calls, post-clip retry). Raising on every over-threshold
+    call -- including the retry -- gives tests a built-in correctness check:
+    if clipping fails to reduce input below the threshold, the retry raises
+    and the test fails visibly.
+    """
+
+    def _generate(self, messages, stop=None, run_manager=None, **kwargs: Any):  # type: ignore[override]
+        total_chars = sum(len(m.content) for m in messages if isinstance(m.content, str))
+        if total_chars > _OVERFLOW_INPUT_CHAR_THRESHOLD:
+            self.call_history.append(
+                {"messages": messages, "kwargs": {"stop": stop, "run_manager": run_manager, **kwargs}, "tools": self.tools, "raised": True}
+            )
+            msg = "simulated overflow"
+            raise ContextOverflowError(msg)
+        return super()._generate(messages, stop, run_manager, **kwargs)
+
+
+def _make_parallel_tool_tail(
+    tool_name: str,
+    per_tm_chars: int,
+    n_tools: int = 4,
+    args_builder: Callable[[int], dict[str, Any]] | None = None,
+) -> list[Any]:
+    """Build [Human, AI(n_tools `tool_name` calls), n_tools x ToolMessage(per_tm_chars)].
+
+    Args:
+        tool_name: The tool name to use in each emitted tool_call.
+        per_tm_chars: Char length of each ToolMessage's content (all 'x').
+        n_tools: Number of parallel tool calls in the AI message.
+        args_builder: Optional `i -> args dict` mapper. Defaults to an empty args dict.
+    """
+    tool_call_ids = [f"tc_{i}" for i in range(n_tools)]
+    args_fn = args_builder if args_builder is not None else (lambda _i: {})
+    ai_msg = AIMessage(
+        content="",
+        tool_calls=[{"id": tcid, "name": tool_name, "args": args_fn(i), "type": "tool_call"} for i, tcid in enumerate(tool_call_ids)],
+    )
+    tool_msgs = [ToolMessage(content="x" * per_tm_chars, tool_call_id=tcid, name=tool_name) for tcid in tool_call_ids]
+    return [HumanMessage(content="query"), ai_msg, *tool_msgs]
+
+
+def test_summarization_clips_read_file_batch_on_overflow() -> None:
+    """End-to-end: 4 parallel real `read_file` calls hit pre-populated big files in state, then the clip path slices each.
+
+    Pre-populates `state["files"]` with 4 large files, has the fake model emit
+    4 parallel `read_file` tool_calls, lets the real `read_file` tool execute
+    against `StateBackend`, then triggers the overflow path and verifies:
+
+    - Each TM in state ends up as the read_file-specific slice (head + path
+      pointer to the original file).
+    - No `/large_tool_results/` files are written -- read_file's full content
+      already lives on the backend at the agent-passed path.
+    - The original files in state are untouched.
+    """
+    big_content = "\n".join(f"line {i}: " + "x" * 200 for i in range(120))  # ~25k chars, multi-line
+    initial_files = {f"/big_{i}.txt": {**create_file_data(big_content)} for i in range(4)}
+
+    fake_model = _OverflowOnLargeInputModel(
+        messages=iter(
+            [
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {"id": f"tc_{i}", "name": "read_file", "args": {"file_path": f"/big_{i}.txt"}, "type": "tool_call"} for i in range(4)
+                    ],
+                ),
+                AIMessage(content="summary text"),
+                AIMessage(content="final response"),
+            ]
+        )
+    )
+    fake_model.call_history = []
+    fake_model.profile = {"max_input_tokens": 200_000}
+
+    agent = create_deep_agent(model=fake_model, checkpointer=InMemorySaver())
+    config = {"configurable": {"thread_id": "real-read-file-clip-test"}}
+
+    result = agent.invoke(
+        {"messages": [HumanMessage(content="read the files")], "files": initial_files},
+        config,
+    )
+
+    assert result["messages"][-1].content == "final response"
+
+    # Each ToolMessage in state should be the read_file-specific slice replacement.
+    state_tool_msgs = [m for m in result["messages"] if isinstance(m, ToolMessage)]
+    assert len(state_tool_msgs) == 4
+    for i, tm in enumerate(state_tool_msgs):
+        assert "Tool result too large" not in tm.content
+        assert f"/big_{i}.txt" in tm.content
+        assert "Output was truncated due to context window size limits" in tm.content
+        assert "Use read_file with offset and limit" in tm.content
+        # Sliced content is smaller than the original file.
+        assert len(tm.content) < len(big_content)
+
+    # No per-TM offload files were written -- read_file's full content is at the original path.
+    state = agent.get_state(config)
+    files = state.values.get("files", {})
+    assert not any(k.startswith("/large_tool_results/") for k in files)
+    # Original files are still intact.
+    for i in range(4):
+        assert f"/big_{i}.txt" in files
+
+
+def test_summarization_clips_ls_batch_on_overflow() -> None:
+    """On overflow with 4 parallel `ls` results, each TM is evicted via the generic offload.
+
+    `ls` isn't read_file, so the tail-clip path falls through to
+    `_offload_tool_message_content`: full content written under
+    `/large_tool_results/{tcid}` and the message replaced with a
+    large-tool-result stub.
+    """
+    fake_model = _OverflowOnLargeInputModel(messages=iter([AIMessage(content="summary text"), AIMessage(content="final response")]))
+    fake_model.call_history = []
+    fake_model.profile = {"max_input_tokens": 200_000}
+
+    agent = create_deep_agent(model=fake_model, checkpointer=InMemorySaver())
+
+    input_messages = _make_parallel_tool_tail(
+        tool_name="ls",
+        per_tm_chars=25_000,
+        n_tools=4,
+        args_builder=lambda i: {"path": f"/dir_{i}"},
+    )
+    config = {"configurable": {"thread_id": "clip-ls-test"}}
+    result = agent.invoke({"messages": input_messages}, config)
+
+    assert len(fake_model.call_history) == 3
+    state_tool_msgs = [m for m in result["messages"] if isinstance(m, ToolMessage)]
+    assert len(state_tool_msgs) == 4
+    for tm in state_tool_msgs:
+        assert "Tool result too large" in tm.content
+        assert "/large_tool_results/" in tm.content
+
+    state = agent.get_state(config)
+    files = state.values.get("files", {})
+    for tcid in ("tc_0", "tc_1", "tc_2", "tc_3"):
+        assert f"/large_tool_results/{tcid}" in files, f"missing offload file for {tcid}"
+
+
+def test_summarization_clips_vanilla_tool_batch_on_overflow() -> None:
+    """On overflow with 4 parallel calls to an arbitrary user tool, each TM is evicted.
+
+    Same expected behavior as the `ls` test -- any non-read_file tool name routes
+    through the generic offload path.
+    """
+    fake_model = _OverflowOnLargeInputModel(messages=iter([AIMessage(content="summary text"), AIMessage(content="final response")]))
+    fake_model.call_history = []
+    fake_model.profile = {"max_input_tokens": 200_000}
+
+    agent = create_deep_agent(model=fake_model, checkpointer=InMemorySaver())
+
+    input_messages = _make_parallel_tool_tail(
+        tool_name="vendor_lookup",
+        per_tm_chars=25_000,
+        n_tools=4,
+        args_builder=lambda i: {"vendor_id": f"v_{i}"},
+    )
+    config = {"configurable": {"thread_id": "clip-vanilla-test"}}
+    _ = agent.invoke({"messages": input_messages}, config)
+
+    state = agent.get_state(config)
+    files = state.values.get("files", {})
+    for tcid in ("tc_0", "tc_1", "tc_2", "tc_3"):
+        assert f"/large_tool_results/{tcid}" in files, f"missing offload file for {tcid}"
+
+
+@pytest.mark.filterwarnings(r"ignore:The middleware `RubricMiddleware` is in beta\..*")
+class TestRubricMiddlewareEndToEnd:
+    """End-to-end tests for `RubricMiddleware` wired into `create_deep_agent`.
+
+    Both the main agent and the grader sub-agent are driven by
+    `FixedGenericFakeChatModel` instances. The grader's `response_format` is
+    `GraderResponse`, which `create_agent` resolves via
+    `AutoStrategy -> ToolStrategy(GraderResponse)`, so a fake grader emits a
+    `GraderResponse` tool call to deliver its verdict.
+
+    `RubricMiddleware`'s bookkeeping fields (`_rubric_status`,
+    `_rubric_iterations`, `_rubric_evaluations`) are
+    `PrivateStateAttr`-annotated and not part of the I/O schema, so these
+    tests use an `InMemorySaver` and read final values via
+    `agent.get_state(config).values`.
+    """
+
+    @staticmethod
+    def _grader_call(
+        *,
+        result: str,
+        explanation: str,
+        criteria: list[dict[str, Any]] | None = None,
+        call_id: str = "grader_call",
+    ) -> AIMessage:
+        """Build an `AIMessage` carrying a `GraderResponse` structured-output tool call."""
+        return AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "GraderResponse",
+                    "args": {
+                        "result": result,
+                        "explanation": explanation,
+                        "criteria": criteria or [],
+                    },
+                    "id": call_id,
+                    "type": "tool_call",
+                }
+            ],
+        )
+
+    def test_satisfied_first_try_terminates(self) -> None:
+        """Grader returns `satisfied` on the first pass: agent stops, no revision injected."""
+        main_model = FixedGenericFakeChatModel(messages=iter([AIMessage(content="here is my draft")]))
+        grader_model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    self._grader_call(
+                        result="satisfied",
+                        explanation="looks good",
+                        criteria=[{"name": "built", "passed": True}],
+                        call_id="grader_1",
+                    )
+                ]
+            )
+        )
+
+        agent = create_deep_agent(
+            model=main_model,
+            middleware=[RubricMiddleware(model=grader_model, max_iterations=3)],
+            checkpointer=InMemorySaver(),
+        )
+        config = {"configurable": {"thread_id": "rubric-e2e-satisfied"}}
+        result = agent.invoke(
+            {"messages": [HumanMessage(content="do it")], "rubric": "- The thing is built"},
+            config=config,
+        )
+
+        # Only the original user message and the model's draft survive — no
+        # synthetic revision turn was injected.
+        assert [type(m).__name__ for m in result["messages"]] == ["HumanMessage", "AIMessage"]
+        assert not any(m.additional_kwargs.get("lc_source") == RUBRIC_GRADER_MESSAGE_SOURCE for m in result["messages"])
+
+        state = agent.get_state(config).values
+        assert state["_rubric_status"] == "satisfied"
+        assert state["_rubric_iterations"] == 1
+        evals = state["_rubric_evaluations"]
+        assert len(evals) == 1
+        assert evals[0]["result"] == "satisfied"
+        assert evals[0]["criteria"] == [{"name": "built", "passed": True}]
+
+    def test_needs_revision_loops_back_then_satisfied(self) -> None:
+        """Grader's `needs_revision` triggers a model re-run with the feedback HumanMessage injected."""
+        main_model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(content="first attempt"),
+                    AIMessage(content="second attempt with fix"),
+                ]
+            )
+        )
+        grader_model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    self._grader_call(
+                        result="needs_revision",
+                        explanation="add tests",
+                        criteria=[{"name": "tests", "passed": False, "gap": "no tests"}],
+                        call_id="grader_1",
+                    ),
+                    self._grader_call(
+                        result="satisfied",
+                        explanation="ok now",
+                        criteria=[{"name": "tests", "passed": True}],
+                        call_id="grader_2",
+                    ),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(
+            model=main_model,
+            middleware=[RubricMiddleware(model=grader_model, max_iterations=5)],
+            checkpointer=InMemorySaver(),
+        )
+        config = {"configurable": {"thread_id": "rubric-e2e-revise"}}
+        result = agent.invoke(
+            {"messages": [HumanMessage(content="do it")], "rubric": "- tests pass"},
+            config=config,
+        )
+
+        # The grader-injected revision message must appear between the two
+        # AIMessage attempts and carry the `rubric_grader` source tag.
+        injected = [m for m in result["messages"] if m.additional_kwargs.get("lc_source") == RUBRIC_GRADER_MESSAGE_SOURCE]
+        assert len(injected) == 1
+        assert injected[0].name == RUBRIC_GRADER_MESSAGE_SOURCE
+        assert "add tests" in injected[0].content
+        assert "no tests" in injected[0].content
+
+        # Both main-model attempts ended up in the transcript.
+        ai_contents = [m.content for m in result["messages"] if isinstance(m, AIMessage)]
+        assert "first attempt" in ai_contents
+        assert "second attempt with fix" in ai_contents
+
+        state = agent.get_state(config).values
+        assert state["_rubric_status"] == "satisfied"
+        assert state["_rubric_iterations"] == 2
+        results = [e["result"] for e in state["_rubric_evaluations"]]
+        assert results == ["needs_revision", "satisfied"]
+
+    def test_max_iterations_reached(self) -> None:
+        """Grader keeps returning `needs_revision`: agent terminates at the iteration cap."""
+        main_model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(content="attempt 1"),
+                    AIMessage(content="attempt 2"),
+                ]
+            )
+        )
+        grader_model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    self._grader_call(
+                        result="needs_revision",
+                        explanation="still missing",
+                        criteria=[{"name": "x", "passed": False, "gap": "y"}],
+                        call_id="grader_1",
+                    ),
+                    self._grader_call(
+                        result="needs_revision",
+                        explanation="still missing",
+                        criteria=[{"name": "x", "passed": False, "gap": "y"}],
+                        call_id="grader_2",
+                    ),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(
+            model=main_model,
+            middleware=[RubricMiddleware(model=grader_model, max_iterations=2)],
+            checkpointer=InMemorySaver(),
+        )
+        config = {"configurable": {"thread_id": "rubric-e2e-max"}}
+        agent.invoke(
+            {"messages": [HumanMessage(content="do it")], "rubric": "- thing"},
+            config=config,
+        )
+
+        state = agent.get_state(config).values
+        assert state["_rubric_status"] == "max_iterations_reached"
+        assert state["_rubric_iterations"] == 2
+        assert len(state["_rubric_evaluations"]) == 2
+        results = [e["result"] for e in state["_rubric_evaluations"]]
+        assert results == ["needs_revision", "max_iterations_reached"]
+
+    def test_undercounted_criteria_retries_then_downgrades_then_recovers(self) -> None:
+        """Full lifecycle of the criterion-coverage guard through a real graph.
+
+        Iteration 0 establishes and freezes the criterion list. Iteration 1
+        grades only one of the three, so the middleware feeds the count back
+        and regrades; the retry still under-reports while claiming
+        `satisfied`, so the verdict is downgraded and the agent is told the
+        rubric could not be fully verified. Iteration 2 grades all three and
+        the run terminates.
+        """
+        rubric = "- Tests cover the new branch\n- Public API is documented\n- Changelog updated"
+        criterion_names = ["Tests cover the new branch", "Public API is documented", "Changelog updated"]
+        main_model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(content="first attempt"),
+                    AIMessage(content="second attempt"),
+                    AIMessage(content="third attempt"),
+                ]
+            )
+        )
+        grader_model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    # Iteration 0: full accounting, one failure.
+                    self._grader_call(
+                        result="needs_revision",
+                        explanation="changelog is missing",
+                        criteria=[
+                            {"name": criterion_names[0], "passed": True},
+                            {"name": criterion_names[1], "passed": True},
+                            {"name": criterion_names[2], "passed": False, "gap": "no changelog entry"},
+                        ],
+                        call_id="grader_1",
+                    ),
+                    # Iteration 1: covers one of three, so it gets corrected.
+                    self._grader_call(
+                        result="needs_revision",
+                        explanation="changelog still missing",
+                        criteria=[{"name": criterion_names[2], "passed": False, "gap": "still nothing"}],
+                        call_id="grader_2",
+                    ),
+                    # Iteration 1 retry: claims success, still under-reports.
+                    self._grader_call(
+                        result="satisfied",
+                        explanation="everything looks fine",
+                        criteria=[{"name": criterion_names[2], "passed": True}],
+                        call_id="grader_3",
+                    ),
+                    # Iteration 2: full accounting, all passing.
+                    self._grader_call(
+                        result="satisfied",
+                        explanation="all three verified",
+                        criteria=[{"name": name, "passed": True} for name in criterion_names],
+                        call_id="grader_4",
+                    ),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(
+            model=main_model,
+            middleware=[RubricMiddleware(model=grader_model, max_iterations=5)],
+            checkpointer=InMemorySaver(),
+        )
+        config = {"configurable": {"thread_id": "rubric-e2e-undercount"}}
+        result = agent.invoke(
+            {"messages": [HumanMessage(content="ship the feature")], "rubric": rubric},
+            config=config,
+        )
+
+        state = agent.get_state(config).values
+
+        # The criterion list was frozen on the first pass and never re-derived.
+        assert state["_rubric_criteria"] == criterion_names
+
+        # Four model calls: three iterations plus one retry.
+        payloads = [str(batch[-1].content) for batch in grader_model.captured_messages]
+        assert len(payloads) == 4
+        assert "A previous attempt returned only 1 of the 3 criteria in the rubric." in payloads[2]
+        assert "regrading after an unusable response" in payloads[2]
+        # Both iteration-1 calls replay the frozen checklist, not just the prose.
+        for payload in payloads[1:]:
+            assert "Return exactly 3 entries" in payload
+            assert "2. Public API is documented" in payload
+
+        # The retry's `satisfied` could not end the loop.
+        evaluations = state["_rubric_evaluations"]
+        assert [e["result"] for e in evaluations] == ["needs_revision", "needs_revision", "satisfied"]
+        assert [e["unverified"] for e in evaluations] == [False, True, False]
+        assert "everything looks fine" in evaluations[1]["explanation"]
+        assert state["_rubric_status"] == "satisfied"
+        assert state["_rubric_iterations"] == 3
+
+        injected = [m for m in result["messages"] if m.additional_kwargs.get("lc_source") == RUBRIC_GRADER_MESSAGE_SOURCE]
+        assert len(injected) == 2
+        # Iteration 0 fed back real defects plus a no-regression instruction.
+        assert "no changelog entry" in injected[0].content
+        assert "Criteria already satisfied -- do not regress these:" in injected[0].content
+        assert "- Public API is documented" in injected[0].content
+        # Iteration 1 fed back a verification gap, explicitly not a defect list.
+        assert "could not verify every criterion" in injected[1].content
+        assert "not a list of confirmed defects" in injected[1].content
+
+    def test_no_rubric_is_noop(self) -> None:
+        """Without a rubric on invocation state the middleware does not call the grader."""
+        main_model = FixedGenericFakeChatModel(messages=iter([AIMessage(content="hello")]))
+        # An empty grader iterator would raise StopIteration if the middleware
+        # ever invoked it — this is the assertion that the no-op path is taken.
+        grader_model = FixedGenericFakeChatModel(messages=iter([]))
+
+        agent = create_deep_agent(
+            model=main_model,
+            middleware=[RubricMiddleware(model=grader_model, max_iterations=3)],
+            checkpointer=InMemorySaver(),
+        )
+        config = {"configurable": {"thread_id": "rubric-e2e-noop"}}
+        result = agent.invoke({"messages": [HumanMessage(content="say hi")]}, config=config)
+
+        # Plain conversation: user prompt + single AI reply, no grader turns.
+        assert [type(m).__name__ for m in result["messages"]] == ["HumanMessage", "AIMessage"]
+        assert not any(m.additional_kwargs.get("lc_source") == RUBRIC_GRADER_MESSAGE_SOURCE for m in result["messages"])
+
+        state = agent.get_state(config).values
+        assert state.get("_rubric_status") is None
+        assert state.get("_rubric_iterations", 0) == 0
+        assert state.get("_rubric_evaluations", []) == []
+
+    def test_keyboard_interrupt_in_grader_propagates(self) -> None:
+        """A `KeyboardInterrupt` raised during grading bubbles out of `agent.invoke()`.
+
+        The middleware narrows `except Exception:` around the grader call so
+        `KeyboardInterrupt` (a `BaseException`) cannot be swallowed into a
+        "failed" evaluation — Ctrl+C must actually interrupt.
+        """
+
+        def _raising_messages() -> Iterator[AIMessage]:
+            msg = "simulated Ctrl+C during grading"
+            raise KeyboardInterrupt(msg)
+            yield  # pragma: no cover -- unreachable, makes this a generator
+
+        main_model = FixedGenericFakeChatModel(messages=iter([AIMessage(content="draft")]))
+        grader_model = FixedGenericFakeChatModel(messages=_raising_messages())
+
+        agent = create_deep_agent(
+            model=main_model,
+            middleware=[RubricMiddleware(model=grader_model, max_iterations=3)],
+            checkpointer=InMemorySaver(),
+        )
+        config = {"configurable": {"thread_id": "rubric-e2e-interrupt"}}
+
+        with pytest.raises(KeyboardInterrupt, match="simulated Ctrl"):
+            agent.invoke(
+                {"messages": [HumanMessage(content="do it")], "rubric": "- thing"},
+                config=config,
+            )
+
+    def test_custom_grader_system_prompt_is_honored(self) -> None:
+        """A `system_prompt` kwarg replaces the default grader prompt at the wire."""
+        captured_grader_prompts: list[str] = []
+
+        class _CapturingGraderModel(FixedGenericFakeChatModel):
+            def _generate(self, messages: list[Any], *args: Any, **kwargs: Any) -> ChatResult:
+                captured_grader_prompts.extend(str(m.content) for m in messages if isinstance(m, SystemMessage))
+                return super()._generate(messages, *args, **kwargs)
+
+        main_model = FixedGenericFakeChatModel(messages=iter([AIMessage(content="draft")]))
+        grader_model = _CapturingGraderModel(
+            messages=iter(
+                [
+                    self._grader_call(
+                        result="satisfied",
+                        explanation="ok",
+                        # A criterion is required for this to be a usable
+                        # verdict; without one the coverage gate downgrades it
+                        # and the agent loops, which this test does not model.
+                        criteria=[{"name": "whatever", "passed": True}],
+                        call_id="grader_1",
+                    )
+                ]
+            )
+        )
+
+        custom_prompt = "CUSTOM_GRADER_MARKER: be extremely strict about every criterion."
+        agent = create_deep_agent(
+            model=main_model,
+            middleware=[
+                RubricMiddleware(
+                    model=grader_model,
+                    system_prompt=custom_prompt,
+                    max_iterations=3,
+                )
+            ],
+            checkpointer=InMemorySaver(),
+        )
+        config = {"configurable": {"thread_id": "rubric-e2e-custom-prompt"}}
+        agent.invoke(
+            {"messages": [HumanMessage(content="do it")], "rubric": "- whatever"},
+            config=config,
+        )
+
+        # The custom prompt must reach the grader model as the system message.
+        assert captured_grader_prompts, "expected the grader model to receive at least one system prompt"
+        assert "CUSTOM_GRADER_MARKER" in captured_grader_prompts[0]
+
+
+class TestFilesystemMiddlewareToolsAllowlist:
+    """End-to-end tests for FilesystemMiddleware(tools=[...]) allowlist."""
+
+    def _make_spy_middleware(self) -> tuple[AgentMiddleware, list[set[str]]]:
+        """Return a middleware that records tool names seen on each model request."""
+        captured: list[set[str]] = []
+
+        class _ToolSpyMiddleware(AgentMiddleware):
+            def wrap_model_call(
+                self,
+                request: ModelRequest,
+                handler: Callable[[ModelRequest], ModelResponse],
+            ) -> ModelResponse:
+                captured.append({t.name if hasattr(t, "name") else t.get("name") for t in request.tools})
+                return handler(request)
+
+        return _ToolSpyMiddleware(), captured
+
+    def test_allowlist_removes_tools_from_request(self) -> None:
+        """tools=[...] on FilesystemMiddleware restricts the tools on the wire."""
+        model = FixedGenericFakeChatModel(messages=iter([AIMessage(content="done")]))
+        spy, captured_tool_sets = self._make_spy_middleware()
+
+        agent = create_deep_agent(
+            model=model,
+            middleware=[
+                FilesystemMiddleware(
+                    backend=StateBackend(),
+                    tools=["read_file", "ls"],
+                ),
+                spy,
+            ],
+        )
+
+        agent.invoke({"messages": [HumanMessage(content="hi")]})
+
+        # --- tools on the wire ---
+        assert captured_tool_sets, "spy must have seen at least one model request"
+        tool_names = captured_tool_sets[0]
+        assert "read_file" in tool_names
+        assert "ls" in tool_names
+        for disabled in ("write_file", "edit_file", "delete", "glob", "grep", "execute"):
+            assert disabled not in tool_names, f"{disabled!r} should have been filtered out"
+
+    def test_excluded_tool_call_fails_instead_of_executing(self) -> None:
+        """An excluded tool referenced in a `ToolCall` errors instead of executing.
+
+        Simulates an out-of-schema `write_file` call despite
+        `tools=["ls", "read_file"]`. Before the fix, `write_file` was still
+        registered on `ToolNode` and would execute. After the fix, it's no longer
+        registered, so `ToolNode` returns an error `ToolMessage` instead.
+        """
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "write_file",
+                                "args": {"file_path": "/pwned.txt", "content": "hi"},
+                                "id": "call_1",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="done"),
+                ]
+            )
+        )
+        agent = create_deep_agent(
+            model=model,
+            middleware=[FilesystemMiddleware(backend=StateBackend(), tools=["ls", "read_file"])],
+        )
+
+        result = agent.invoke({"messages": [HumanMessage(content="hi")]})
+
+        tool_messages = [m for m in result["messages"] if isinstance(m, ToolMessage)]
+        assert len(tool_messages) == 1
+        assert tool_messages[0].status == "error"
+        assert "write_file" in tool_messages[0].content
+        # The excluded tool must not have actually run.
+        assert "/pwned.txt" not in result.get("files", {})
+
+
+# Fails on Windows / Python 3.13. Python <= 3.13 has no built-in `.docx` MIME type; Linux/macOS read
+# one from `/etc/mime.types`, but Windows relies on the registry, so `read_file` labels `.docx`
+# `application/octet-stream` there.
+_DOCX_MIME_TYPE_UNKNOWN = mimetypes.guess_type("file.docx")[0] is None
+
+
+def _docx_base64() -> str:
+    return base64.b64encode(b"PK\x03\x04 fake docx bytes").decode("ascii")
+
+
+def _image_base64() -> str:
+    return base64.b64encode(b"\x89PNG\r\n\x1a\n fake image data").decode("ascii")
+
+
+def _read_file_agent(
+    *,
+    model: FixedGenericFakeChatModel | _RecordingOpenAIModel,
+    file_path: str,
+    file_content: str,
+    encoding: str = "base64",
+) -> CompiledStateGraph:
+    model.messages = iter(
+        [
+            AIMessage(
+                content="",
+                tool_calls=[{"name": "read_file", "args": {"file_path": file_path}, "id": "call_1", "type": "tool_call"}],
+            ),
+            AIMessage(content="done"),
+        ]
+    )
+    agent = create_deep_agent(model=model)
+    agent.invoke(
+        {
+            "messages": [HumanMessage(content=f"read {file_path}")],
+            "files": {file_path: create_file_data(file_content, encoding=encoding)},
+        }
+    )
+    return agent
+
+
+def _second_call_tool_message(model: FixedGenericFakeChatModel | _RecordingOpenAIModel) -> ToolMessage:
+    """Return the `read_file` `ToolMessage` from the model's second invocation.
+
+    The second call is the one `wrap_model_call` scrubs, since it's the request
+    that carries the tool result back to the model.
+    """
+    assert len(model.captured_messages) >= 2, "expected at least two model calls (initial + after tool result)"
+    return next(m for m in model.captured_messages[1] if isinstance(m, ToolMessage))
+
+
+def _is_placeholder_block(block: ContentBlock, *, path: str) -> bool:
+    return block["type"] == "text" and path in block["text"]
+
+
+class RejectingFileChatModel(FixedGenericFakeChatModel):
+    """Reject tool results to exercise the agent's provider-error fallback."""
+
+    retry_fails: bool = False
+    error_type: type[Exception] = ModelInvalidRequestError
+
+    def _generate(
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager: CallbackManagerForLLMRun | None = None,
+        **kwargs: Any,
+    ) -> ChatResult:
+        if any(isinstance(message, ToolMessage) for message in messages) and (
+            len(self.captured_messages) == 1
+            or self.retry_fails
+            or any(isinstance(message, ToolMessage) and isinstance(message.content, list) for message in messages)
+        ):
+            self.captured_messages.append(messages)
+            msg = "Rejected file content"
+            raise self.error_type(msg)
+        return super()._generate(messages, stop=stop, run_manager=run_manager, **kwargs)
+
+
+@pytest.mark.parametrize("async_mode", [False, True])
+@pytest.mark.parametrize(
+    ("file_path", "error_type", "retry_fails", "recovers", "calls"),
+    [
+        ("/photo.png", ModelInvalidRequestError, False, True, 3),
+        ("/report.pdf", ModelInvalidRequestError, False, True, 3),
+        ("/photo.png", ModelInvalidRequestError, True, False, 3),
+        ("/notes.txt", ModelInvalidRequestError, False, False, 2),
+        ("/photo.png", RuntimeError, False, False, 2),
+    ],
+)
+async def test_read_file_invalid_request_fallback(
+    *, async_mode: bool, file_path: str, error_type: type[Exception], retry_fails: bool, recovers: bool, calls: int
+) -> None:
+    model = RejectingFileChatModel(
+        messages=iter(
+            [
+                AIMessage(content="", tool_calls=[{"name": "read_file", "args": {"file_path": file_path}, "id": "read-1"}]),
+                AIMessage(content="done"),
+                AIMessage(content="followup"),
+            ]
+        ),
+        error_type=error_type,
+        retry_fails=retry_fails,
+    )
+    agent = create_deep_agent(model=model, checkpointer=InMemorySaver())
+    config = {"configurable": {"thread_id": "file-fallback"}}
+    inputs = {
+        "messages": [HumanMessage(content="Read the file")],
+        "files": {
+            file_path: create_file_data(
+                "invalid" if file_path.endswith(".txt") else _docx_base64(), encoding="utf-8" if file_path.endswith(".txt") else "base64"
+            )
+        },
+    }
+
+    async def invoke() -> dict[str, Any]:
+        return await agent.ainvoke(inputs, config) if async_mode else agent.invoke(inputs, config)
+
+    if recovers:
+        result = await invoke()
+        assert result["messages"][-1].content == "done"
+        persisted = next(message for message in result["messages"] if isinstance(message, ToolMessage))
+        assert persisted.content == "Unsupported content. The file may be invalid, too large, or of an unsupported mime-type."
+        checkpoint = await agent.aget_state(config) if async_mode else agent.get_state(config)
+        assert [message for message in checkpoint.values["messages"] if isinstance(message, ToolMessage)] == [persisted]
+    else:
+        with pytest.raises(error_type, match="Rejected file content"):
+            await invoke()
+    assert len(model.captured_messages) == calls
+    if calls == 3:
+        original = _second_call_tool_message(model)
+        retried = next(message for message in model.captured_messages[2] if isinstance(message, ToolMessage))
+        assert retried.content == "Unsupported content. The file may be invalid, too large, or of an unsupported mime-type."
+        assert retried.tool_call_id == original.tool_call_id
+        assert retried.id == original.id
+        assert isinstance(original.content, list)
+
+    if recovers:
+        followup = {"messages": [HumanMessage(content="What next?")]}
+        result = await agent.ainvoke(followup, config) if async_mode else agent.invoke(followup, config)
+        assert result["messages"][-1].content == "followup"
+        assert len(model.captured_messages) == calls + 1
+        assert [message for message in model.captured_messages[-1] if isinstance(message, ToolMessage)] == [persisted]
+
+
+class SelectivelyRejectingFileChatModel(FixedGenericFakeChatModel):
+    """Reject only the invalid file while accepting other media."""
+
+    def _generate(
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager: CallbackManagerForLLMRun | None = None,
+        **kwargs: Any,
+    ) -> ChatResult:
+        if any(isinstance(message, ToolMessage) and message.tool_call_id == "invalid" and isinstance(message.content, list) for message in messages):
+            self.captured_messages.append(messages)
+            msg = "Invalid image"
+            raise ModelInvalidRequestError(msg)
+        return super()._generate(messages, stop=stop, run_manager=run_manager, **kwargs)
+
+
+@pytest.mark.parametrize("async_mode", [False, True])
+async def test_read_file_fallback_preserves_previously_accepted_media(*, async_mode: bool) -> None:
+    model = SelectivelyRejectingFileChatModel(
+        messages=iter(
+            [
+                AIMessage(content="", tool_calls=[{"name": "read_file", "args": {"file_path": "/valid.png"}, "id": "accepted"}]),
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {"name": "read_file", "args": {"file_path": "/invalid.png"}, "id": "invalid"},
+                        {"name": "read_file", "args": {"file_path": "/valid.png"}, "id": "sibling"},
+                    ],
+                ),
+                AIMessage(content="done"),
+                AIMessage(content="followup"),
+            ]
+        )
+    )
+    agent = create_deep_agent(model=model, checkpointer=InMemorySaver())
+    config = {"configurable": {"thread_id": "mixed-files"}}
+    inputs = {
+        "messages": [HumanMessage(content="Read the files")],
+        "files": {path: create_file_data(_docx_base64(), encoding="base64") for path in ["/valid.png", "/invalid.png"]},
+    }
+    result = await agent.ainvoke(inputs, config) if async_mode else agent.invoke(inputs, config)
+    assert result["messages"][-1].content == "done"
+    assert len(model.captured_messages) == 4
+    accepted = _second_call_tool_message(model)
+    checkpoint = await agent.aget_state(config) if async_mode else agent.get_state(config)
+    for messages in [model.captured_messages[-1], checkpoint.values["messages"]]:
+        results = {message.tool_call_id: message for message in messages if isinstance(message, ToolMessage)}
+        assert results["accepted"] == accepted
+        assert isinstance(results["accepted"].content, list)
+        for call_id in ["invalid", "sibling"]:
+            assert results[call_id].content == "Unsupported content. The file may be invalid, too large, or of an unsupported mime-type."
+    followup = {"messages": [HumanMessage(content="What next?")]}
+    result = await agent.ainvoke(followup, config) if async_mode else agent.invoke(followup, config)
+    assert result["messages"][-1].content == "followup"
+    assert len(model.captured_messages) == 5
+    assert next(message for message in model.captured_messages[-1] if isinstance(message, ToolMessage)) == accepted
+
+
+class ImageRejectingChatModel(FixedGenericFakeChatModel):
+    """Reject any request carrying an image block."""
+
+    def _generate(
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager: CallbackManagerForLLMRun | None = None,
+        **kwargs: Any,
+    ) -> ChatResult:
+        if any(block["type"] == "image" for message in messages for block in message.content_blocks):
+            self.captured_messages.append(messages)
+            msg = "Invalid image"
+            raise ModelInvalidRequestError(msg)
+        return super()._generate(messages, stop=stop, run_manager=run_manager, **kwargs)
+
+
+@pytest.mark.parametrize("async_mode", [False, True])
+async def test_read_file_fallback_replaces_rejected_video_frames(*, async_mode: bool, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        filesystem_middleware,
+        "extract_video_frames",
+        lambda *_args, **_kwargs: [{"type": "image", "base64": "AAAA", "mime_type": "image/jpeg"}],
+    )
+    model = ImageRejectingChatModel(
+        messages=iter(
+            [
+                AIMessage(content="", tool_calls=[{"name": "read_file", "args": {"file_path": "/clip.mp4"}, "id": "video"}]),
+                AIMessage(content="done"),
+                AIMessage(content="followup"),
+            ]
+        )
+    )
+    agent = create_deep_agent(model=model, checkpointer=InMemorySaver())
+    config = {"configurable": {"thread_id": "video-fallback"}}
+    inputs = {
+        "messages": [HumanMessage(content="Read the video")],
+        "files": {"/clip.mp4": create_file_data(base64.b64encode(b"video bytes").decode("ascii"), encoding="base64")},
+    }
+    result = await agent.ainvoke(inputs, config) if async_mode else agent.invoke(inputs, config)
+    assert result["messages"][-1].content == "done"
+    assert len(model.captured_messages) == 3
+    rejected = next(message for message in model.captured_messages[1] if message.additional_kwargs.get("read_file_media_result"))
+    checkpoint = await agent.aget_state(config) if async_mode else agent.get_state(config)
+    for messages in [model.captured_messages[2], checkpoint.values["messages"]]:
+        media = next(message for message in messages if message.additional_kwargs.get("read_file_media_result"))
+        assert media.id == rejected.id
+        assert media.content == "Unsupported content. The file may be invalid, too large, or of an unsupported mime-type."
+    followup = {"messages": [HumanMessage(content="What next?")]}
+    result = await agent.ainvoke(followup, config) if async_mode else agent.invoke(followup, config)
+    assert result["messages"][-1].content == "followup"
+    assert len(model.captured_messages) == 4
+
+
+class TestMultimodalProfileScrubNoProfile:
+    """No `model.profile` set defaults every block type to supported."""
+
+    def test_pdf_passes_through_with_no_profile_set(self) -> None:
+        model = FixedGenericFakeChatModel(messages=iter([]))
+        _read_file_agent(model=model, file_path="/report.pdf", file_content=_docx_base64())
+
+        tool_message = _second_call_tool_message(model)
+        blocks = tool_message.content_blocks
+        assert blocks[0]["type"] == "file"
+        assert blocks[0]["mime_type"] == "application/pdf"
+
+
+class TestMultimodalProfileScrubProfileGatedBlocks:
+    def test_pdf_stripped_when_profile_disallows(self) -> None:
+        model = FixedGenericFakeChatModel(messages=iter([]), profile={"pdf_inputs": False})
+        _read_file_agent(model=model, file_path="/report.pdf", file_content=_docx_base64())
+
+        tool_message = _second_call_tool_message(model)
+        assert _is_placeholder_block(tool_message.content_blocks[0], path="/report.pdf")
+
+    def test_image_stripped_when_profile_disallows(self) -> None:
+        model = FixedGenericFakeChatModel(messages=iter([]), profile={"image_inputs": False})
+        img_b64 = base64.b64encode(b"\x89PNG\r\n\x1a\n fake image data").decode("ascii")
+        _read_file_agent(model=model, file_path="/photo.png", file_content=img_b64)
+
+        tool_message = _second_call_tool_message(model)
+        assert _is_placeholder_block(tool_message.content_blocks[0], path="/photo.png")
+
+    @pytest.mark.parametrize("profile", [{}, {"image_inputs": True}, {"image_inputs": True, "image_tool_message": True}])
+    def test_image_attached_when_profile_allows(self, profile: dict[str, bool]) -> None:
+        model = FixedGenericFakeChatModel(messages=iter([]), profile=profile)
+        _read_file_agent(model=model, file_path="/photo.png", file_content=_image_base64())
+
+        tool_message = _second_call_tool_message(model)
+        assert tool_message.content_blocks[0]["type"] == "image"
+
+    def test_pdf_stripped_by_tool_message_specific_field(self) -> None:
+        model = FixedGenericFakeChatModel(messages=iter([]), profile={"pdf_inputs": True, "pdf_tool_message": False})
+        _read_file_agent(model=model, file_path="/report.pdf", file_content=_docx_base64())
+
+        tool_message = _second_call_tool_message(model)
+        assert _is_placeholder_block(tool_message.content_blocks[0], path="/report.pdf")
+
+    def test_image_stripped_by_tool_message_specific_field(self) -> None:
+        """A model may allow images generally but reject them specifically in a `ToolMessage`."""
+        model = FixedGenericFakeChatModel(messages=iter([]), profile={"image_inputs": True, "image_tool_message": False})
+        img_b64 = base64.b64encode(b"\x89PNG\r\n\x1a\n fake image data").decode("ascii")
+        _read_file_agent(model=model, file_path="/photo.png", file_content=img_b64)
+
+        tool_message = _second_call_tool_message(model)
+        assert _is_placeholder_block(tool_message.content_blocks[0], path="/photo.png")
+
+
+class TestMultimodalProfileScrubFileProviderGate:
+    """Binary document `file` blocks have no `ModelProfile` field yet."""
+
+    def test_docx_stripped_for_anthropic(self) -> None:
+        model = FixedGenericFakeChatModel(messages=iter([]), llm_type="anthropic-chat")
+        _read_file_agent(model=model, file_path="/report.docx", file_content=_docx_base64())
+
+        tool_message = _second_call_tool_message(model)
+        assert _is_placeholder_block(tool_message.content_blocks[0], path="/report.docx")
+
+    @pytest.mark.parametrize("model_type", [RecordingChatOpenAI, RecordingAzureChatOpenAI])
+    @pytest.mark.parametrize(
+        ("use_responses_api", "attached"),
+        [
+            pytest.param(True, True, marks=pytest.mark.xfail(_DOCX_MIME_TYPE_UNKNOWN, reason="no `.docx` MIME type on this platform", strict=True)),
+            (False, False),
+            (None, False),
+        ],
+    )
+    def test_openai_docx_gated_on_provider_class_and_responses_api(
+        self,
+        model_type: type[RecordingChatOpenAI | RecordingAzureChatOpenAI],
+        *,
+        use_responses_api: bool | None,
+        attached: bool,
+    ) -> None:
+        model = model_type.model_construct(use_responses_api=use_responses_api)
+        _read_file_agent(model=model, file_path="/report.docx", file_content=_docx_base64())
+
+        block = _second_call_tool_message(model).content_blocks[0]
+        assert block["type"] == ("file" if attached else "text")
+
+    def test_openai_responses_rejects_mime_type_outside_allowlist(self) -> None:
+        model = RecordingChatOpenAI.model_construct(use_responses_api=True)
+        _read_file_agent(model=model, file_path="/archive.zip", file_content=_docx_base64())
+
+        tool_message = _second_call_tool_message(model)
+        assert _is_placeholder_block(tool_message.content_blocks[0], path="/archive.zip")
+
+    @pytest.mark.parametrize("file_path", ["/data.csv", "/notes.md"])
+    @pytest.mark.parametrize("use_responses_api", [True, False])
+    def test_openai_responses_accepts_non_utf8_text_files(self, file_path: str, *, use_responses_api: bool) -> None:
+        model = RecordingChatOpenAI.model_construct(use_responses_api=use_responses_api)
+        _read_file_agent(model=model, file_path=file_path, file_content=base64.b64encode(b"value\n\xff\n").decode())
+
+        block = _second_call_tool_message(model).content_blocks[0]
+        assert block["type"] == ("file" if use_responses_api else "text")
+
+    @pytest.mark.parametrize("llm_type", ["openai-chat", "azure-openai-chat", "chat-google-generative-ai", "openai-mantle-chat"])
+    def test_llm_type_does_not_grant_docx_support(self, llm_type: str) -> None:
+        model = FixedGenericFakeChatModel(messages=iter([]), llm_type=llm_type)
+        _read_file_agent(model=model, file_path="/report.docx", file_content=_docx_base64())
+
+        tool_message = _second_call_tool_message(model)
+        assert _is_placeholder_block(tool_message.content_blocks[0], path="/report.docx")
+
+
+class TestMultimodalProfileScrubAsyncPath:
+    async def test_docx_stripped_for_anthropic_async(self) -> None:
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[{"name": "read_file", "args": {"file_path": "/report.docx"}, "id": "call_1", "type": "tool_call"}],
+                    ),
+                    AIMessage(content="done"),
+                ]
+            ),
+            llm_type="anthropic-chat",
+        )
+        agent = create_deep_agent(model=model)
+
+        await agent.ainvoke(
+            {
+                "messages": [HumanMessage(content="read /report.docx")],
+                "files": {"/report.docx": create_file_data(_docx_base64(), encoding="base64")},
+            }
+        )
+
+        tool_message = _second_call_tool_message(model)
+        assert _is_placeholder_block(tool_message.content_blocks[0], path="/report.docx")
+
+
+@pytest.mark.parametrize(
+    "file_block",
+    [{"type": "file", "file_id": "file_abc123"}, {"type": "file", "url": "https://example.com/archive.zip"}],
+)
+def test_file_reference_reaches_model_unchanged(file_block: dict[str, str]) -> None:
+    model = FixedGenericFakeChatModel(messages=iter([AIMessage(content="ok")]), llm_type="anthropic-chat")
+    agent = create_deep_agent(model=model)
+
+    agent.invoke({"messages": [HumanMessage(content=[file_block])]})
+
+    human_message = next(message for message in model.captured_messages[0] if isinstance(message, HumanMessage))
+    assert human_message.content_blocks[0] == file_block
+
+
+def test_utf8_text_read_reaches_model_as_text() -> None:
+    model = FixedGenericFakeChatModel(messages=iter([]))
+    _read_file_agent(model=model, file_path="/notes.txt", file_content="plain text", encoding="utf-8")
+
+    tool_message = _second_call_tool_message(model)
+    assert isinstance(tool_message.content, str)
+    assert "plain text" in tool_message.content
+
+
+class TestMultimodalProfileScrubRuntimeModelSwitch:
+    """The filter must read the model a custom middleware selects at call time.
+
+    `UnsupportedContentMiddleware` is installed last, so it is the innermost
+    `wrap_model_call` layer and observes `request.model` after every override.
+    """
+
+    @staticmethod
+    def _swap_middleware(runtime_model: BaseChatModel) -> AgentMiddleware:
+        class SwapModel(AgentMiddleware):
+            def wrap_model_call(
+                self,
+                request: ModelRequest,
+                handler: Callable[[ModelRequest], ModelResponse],
+            ) -> ModelResponse:
+                return handler(request.override(model=runtime_model))
+
+            async def awrap_model_call(
+                self,
+                request: ModelRequest,
+                handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
+            ) -> ModelResponse:
+                return await handler(request.override(model=runtime_model))
+
+        return SwapModel()
+
+    @staticmethod
+    def _runtime_model(*, image_inputs: bool) -> FixedGenericFakeChatModel:
+        return FixedGenericFakeChatModel(messages=iter([AIMessage(content="done")]), profile={"image_inputs": image_inputs})
+
+    def _agent(self, runtime_model: BaseChatModel, *, startup_image_inputs: bool) -> CompiledStateGraph:
+        startup_model = FixedGenericFakeChatModel(messages=iter([]), profile={"image_inputs": startup_image_inputs})
+        return create_deep_agent(model=startup_model, middleware=[self._swap_middleware(runtime_model)])
+
+    def test_switch_to_multimodal_model_preserves_image(self) -> None:
+        runtime_model = self._runtime_model(image_inputs=True)
+        agent = self._agent(runtime_model, startup_image_inputs=False)
+
+        agent.invoke({"messages": [HumanMessage(content=[{"type": "image", "base64": _image_base64(), "mime_type": "image/png"}])]})
+
+        human_message = next(m for m in runtime_model.captured_messages[0] if isinstance(m, HumanMessage))
+        assert human_message.content_blocks[0]["type"] == "image"
+
+    def test_switch_to_text_only_model_scrubs_image(self) -> None:
+        runtime_model = self._runtime_model(image_inputs=False)
+        agent = self._agent(runtime_model, startup_image_inputs=True)
+
+        agent.invoke({"messages": [HumanMessage(content=[{"type": "image", "base64": _image_base64(), "mime_type": "image/png"}])]})
+
+        human_message = next(m for m in runtime_model.captured_messages[0] if isinstance(m, HumanMessage))
+        assert human_message.content_blocks[0]["type"] == "text"
+
+    async def test_switch_to_text_only_model_scrubs_image_async(self) -> None:
+        runtime_model = self._runtime_model(image_inputs=False)
+        agent = self._agent(runtime_model, startup_image_inputs=True)
+
+        await agent.ainvoke({"messages": [HumanMessage(content=[{"type": "image", "base64": _image_base64(), "mime_type": "image/png"}])]})
+
+        human_message = next(m for m in runtime_model.captured_messages[0] if isinstance(m, HumanMessage))
+        assert human_message.content_blocks[0]["type"] == "text"
+
+    def test_switch_to_text_only_model_scrubs_read_file_tool_result(self) -> None:
+        runtime_model = FixedGenericFakeChatModel(
+            messages=iter([AIMessage(content="done")]),
+            profile={"image_inputs": False},
+        )
+        startup_model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[{"name": "read_file", "args": {"file_path": "/photo.png"}, "id": "call_1", "type": "tool_call"}],
+                    ),
+                ]
+            ),
+            profile={"image_inputs": True},
+        )
+
+        # Only the second model call is swapped, so `read_file` runs against the
+        # startup model and its image result reaches the text-only runtime model.
+        class SwapAfterToolCall(AgentMiddleware):
+            calls = 0
+
+            def wrap_model_call(
+                self,
+                request: ModelRequest,
+                handler: Callable[[ModelRequest], ModelResponse],
+            ) -> ModelResponse:
+                self.calls += 1
+                if self.calls > 1:
+                    request = request.override(model=runtime_model)
+                return handler(request)
+
+        agent = create_deep_agent(model=startup_model, middleware=[SwapAfterToolCall()])
+        agent.invoke(
+            {
+                "messages": [HumanMessage(content="read /photo.png")],
+                "files": {"/photo.png": create_file_data(_image_base64(), encoding="base64")},
+            }
+        )
+
+        tool_message = next(m for m in runtime_model.captured_messages[0] if isinstance(m, ToolMessage))
+        assert _is_placeholder_block(tool_message.content_blocks[0], path="/photo.png")
+
+
+class TestMultimodalProfileScrubStandalone:
+    def test_create_agent_with_filesystem_middleware(self) -> None:
+        """Callers composing `FilesystemMiddleware` into `create_agent` add the filter themselves."""
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[{"name": "read_file", "args": {"file_path": "/photo.png"}, "id": "call_1", "type": "tool_call"}],
+                    ),
+                    AIMessage(content="done"),
+                ]
+            ),
+            profile={"image_inputs": False},
+        )
+        agent = create_agent(model, middleware=[FilesystemMiddleware(), UnsupportedContentMiddleware()])
+
+        agent.invoke(
+            {
+                "messages": [HumanMessage(content="read /photo.png")],
+                "files": {"/photo.png": create_file_data(_image_base64(), encoding="base64")},
+            }
+        )
+
+        tool_message = _second_call_tool_message(model)
+        assert _is_placeholder_block(tool_message.content_blocks[0], path="/photo.png")
+
+
+class TestMultimodalProfileScrubSubagents:
+    def test_subagents_get_the_filter(self) -> None:
+        model = FixedGenericFakeChatModel(messages=iter([AIMessage(content="done")]), profile={"image_inputs": False})
+        spec: SubAgent = {"name": "researcher", "description": "researches", "model": model, "tools": []}
+
+        subagent = create_sub_agent(spec)
+
+        subagent.invoke({"messages": [HumanMessage(content=[{"type": "image", "base64": _image_base64(), "mime_type": "image/png"}])]})
+
+        human_message = next(m for m in model.captured_messages[0] if isinstance(m, HumanMessage))
+        assert human_message.content_blocks[0]["type"] == "text"

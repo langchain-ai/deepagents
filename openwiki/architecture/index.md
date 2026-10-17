@@ -1,0 +1,8 @@
+# Files
+
+- [Deep Agents Code Architecture](code-agent.md) - dcode is the Deep Agents SDK reference terminal coding agent. This page describes its client/server boundary, package and extension surface, interaction controls, retry and prompt-cache UX, and the UI lifecycle that connects them.
+- [Middleware Stack and Extension Boundaries](middleware-stack.md) - Exact middleware ordering and extension boundaries for Deep Agents main agents, general-purpose subagents, and declarative subagents. Explains caller replacement, profile exclusions, tail behavior, and final tool exclusion.
+- [Repository Architecture Overview](overview.md) - Architecture and release map for the Deep Agents Python monorepo, covering the SDK, dcode, ACP, evaluations, Talon, and partner integrations. Explains package boundaries, dependency direction, graph layering, persistence, and host lifecycle ownership.
+- [Runtime Behavior and Failure Boundaries](runtime-behavior.md) - How Deep Agents persists recoverable runtime state, delegates asynchronous work, distinguishes pauses from failure, and reports task outcomes across graph and deployment boundaries. Covers model and host retry policies as well as parent wake-up and polling behavior.
+- [SDK Construction and Execution](sdk-construction-execution.md) - How create_deep_agent assembles the main and general-purpose agent stacks, applies profile and caller policy, and compiles the final LangChain graph.
+- [Source Map](source-map.md) - Practical change-routing map for maintainers working across the Deep Agents SDK, dcode session and sandbox boundaries, Context Hub persistence, and Talon channel hosting. Use it to identify the owner, control flow, and focused test for a behavioral change.

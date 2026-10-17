@@ -1,0 +1,16 @@
+[
+  {
+    "name": "approved-internal-read",
+    "request": "Attach the available current_time read to internal research; I approve this exact addition.",
+    "tools": ["current_time"],
+    "status": "reloaded",
+    "expected": ["current_time"]
+  },
+  {
+    "name": "unavailable-read",
+    "request": "Attach unavailable_lookup to internal research if supported; report activation failure accurately.",
+    "tools": ["unavailable_lookup"],
+    "status": "failed",
+    "expected": []
+  }
+]

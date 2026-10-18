@@ -3,6 +3,9 @@ type: system architecture
 title: Repository Architecture Overview
 description: Architecture and release map for the Deep Agents Python monorepo, covering the SDK, dcode, ACP, evaluations, Talon, and partner integrations. Explains package boundaries, dependency direction, graph layering, persistence, and host lifecycle ownership.
 tags: [architecture, deepagents, langgraph, sdk, talon, integrations]
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-10-18T08:05:11.339Z
 sources:
   - id: openwiki-source-9a1c436646ef8c4f6dde787a
     resource: repo://.github/RELEASING.md
@@ -54,10 +57,7 @@ sources:
     resource: repo://README.md
   - id: openwiki-source-482fa4ca84f42b04ba025fc1
     resource: repo://release-please-config.json
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-10-17T08:04:56.296Z
-generated: { by: "openwiki/0.4.2", at: "2026-10-17T08:04:56.296Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-10-18T08:05:11.339Z" }
 ---
 
 # Repository Architecture Overview
@@ -66,7 +66,6 @@ This is a monorepo of independently versioned Python packages, not one deployabl
 
 - [SDK construction and execution](./sdk-construction-execution.md)
 - [Code agent](./code-agent.md)
-- [Runtime behavior](./runtime-behavior.md)
 - [ACP integration](../integrations/acp.md)
 - [Talon integration](../integrations/talon.md)
 - [Development](../operations/development.md)

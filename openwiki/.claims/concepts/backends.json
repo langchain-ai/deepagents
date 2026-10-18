@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:529d0ada08653c7dcbd7b1314c68e726e1df6b6e9f6e54109935c07e7b48f9f6",
+  "pageVersion": "sha256:93413afa55b7fb227df249d1e84b73062a664364fe010f2144e56bbabe21a336",
   "claims": [
     {
       "id": "claim_d4917133d46d4f37b410b2de0ca3c467",
@@ -147,10 +147,64 @@
           "version": "repo-lines-v1:sha256:5ac9721b7c101831a76b4fcfb01de1fb5453865b569518a59d01e01eec07ed87:eyJzZWxlY3RlZExpbmVDb3VudCI6NzYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQwOTY2ZmM4MjlmYmFlYmI3MzA3MmRjYTY3NjFmYjA1YjZkNmZhMThjNWFhODdjMTg1ODlmNmNlYjM4NzU4YmQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImI0NTNkNDFiMzI1MDlhZWZjYzE4ODYyMWViNWI4Nzc5MjY2OGI3YTExOGE4NDYyNGFiZTk1MzE2MTRlZTUzNTIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjUzZmFjMjYyYTQwOGYyODUwY2MwNTEwNjE5MmM1MzgxMDdjMWYxNmVhZGY5ODAyOTliMzA2NGZlMjU2YzcyNzYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjU4YTFjN2NkYjYzN2RiNDI4YzQ0YjFjODEyNzUzZGJiOGYyYThlY2U0ODViMjEyM2QyZTY1ZWU5NjAyYTNiNzQifQ"
         }
       ]
+    },
+    {
+      "id": "claim_5835710e18f24ecca048355bd806aa0e",
+      "statement": "CompositeBackend routes file operations by longest matching virtual path prefix, strips that prefix for the delegated backend and restores it in routed result paths; unmatched paths use the default backend, while a route-root path is delegated as that backend's root.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/backends/composite.py#L195-L225",
+          "version": "repo-lines-v1:sha256:dd9c0efc52735c90262495ef0b0f60bb1fea7cb838cdc2a88ff3ed3d41b9e919:eyJzZWxlY3RlZExpbmVDb3VudCI6MzEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjFiMWM4ZGMyZDQ4NmU2NDQwOWM3OTY2ZjUyNWVlZTBlMDlhMWIwZTM0NWZjNmU0ODRlOGE5MDAwNDc3NTVlOTEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjA2YTUwZGM3ZDk1NTA2MjYzYTcwZTgyOTFhMTVkNGM4NmM4YmM2M2JhNTI5MjBlOGZiYjUxYTI4MmI4MmE3MmEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjQzOTlmZTA3ZDBiOTYwNGFiNWU1MTkzNDI1MDU5MjYzODUwMzc4YzZjODdhZDFlZjFjNjdlNjJhYTkxMWJkNjQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjMzNjUwZmJhMGY1OWMwZGMwZTk3MTczNWFlOTIwYTU1NzdmMDU0MzZkZTVmYTcxYmY5OGQwNDUyZmVhMjc0MzQifQ"
+        },
+        {
+          "resource": "repo://libs/deepagents/deepagents/backends/composite.py#L300-L352",
+          "version": "repo-lines-v1:sha256:7374002faf9b16f2f5a10450d00982a64560eb9e6f77cfb55833b0f8cc288388:eyJzZWxlY3RlZExpbmVDb3VudCI6NTMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjYyZTVkMzg3NGRmYzM4ODJhOTJlYmNkNDQ4YTdmY2FlNGY5YjVlMTBkNzQzOTMzZDU2MzdiNTI1MTgyMjJlMDIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImM5ZWEwOWQyZmRmZDM0MzU0MmRkYTI1NTNiMjAzYTc1MjI0M2U2MGNmZWVjYjIwMTdiMTEzYjNhZjY2ZGM0MTciLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImU0NmQyNmE1MmZlZTFjODE5Yjg0YmRjMTM2OTJmZTdjYTk3ZTA2ODFjYmNlM2Y2ZTdiMTgwZWQyYmE1ODg1NWIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjJlNmIxNmY4ZGIxODA5ZmVjNTE5Yjc5YjI5YjVjNzQ2MTQwZTQwYjcyN2ZiYTlhODQzNjFhN2ExOTBiNjE0NjAifQ"
+        },
+        {
+          "resource": "repo://libs/deepagents/tests/unit_tests/backends/test_context_hub_backend.py#L818-L863",
+          "version": "repo-lines-v1:sha256:b8c0be35c1f1ed3bbf6e5724495db041359bcd7428141f495f7c6a41c4498b29:eyJzZWxlY3RlZExpbmVDb3VudCI6NDYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQzNDM0MjAyYjUxYTcwMTYxNWM4ZmNmNDJiYjQ0ODVhYzU2N2EzZTRhNGNiYzdiODI2MWRhNjc1MjcxZWM5MzAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAzNTc3YTgzNjQ2MjZmMDZiZjc0NzdlODk3OWQyNzAxNDI4NzUzMDk0NjJkYTQ1NzExYzMyOTVmNTNjMmM4NDYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijc5NTkxZjhiNWNhNjAyOWIzODYyZDMwYWQwNDhjNzJmZWViYTA3MjdmZjFjMmQyYmQ0ZWEwMmQwZjM2NGNkNDkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImMxZDM0OTNjNGViYjFiNGYzYzQ4M2NmY2I2N2U5OTQ5NTBmYjA1ZDMyZTYyZmI3NjQ0MjUyMWU5MDQxNDk5ZGUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_0e907ccb7bf142db81dbfd5c1eb541e2",
+      "statement": "CompositeBackend root grep applies max_count as a global budget across default and routed backends, conservatively marks output truncated when it skips remaining routes, and root glob preserves anchoring by skipping routes unless an absolute pattern explicitly targets their prefix.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/backends/composite.py#L459-L549",
+          "version": "repo-lines-v1:sha256:891579575f9cb4a4672791209e73a430cd6c2a6be05029c6c2817fffaaa559d9:eyJzZWxlY3RlZExpbmVDb3VudCI6OTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM0YWRmNjNjNTY0MGJkNjBiN2UzZmJiYjQyODM4NmI2NTgwNGEwMTIwZTI0ZTkwMTQxZDJmZjcyNjdiY2U3OTAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjRmZWFhOWU0Y2FhZjg0ZDQwZjg1YTI0MTk0NDgwYjRmYjMwMzU4ZWU3NDJiZmVmZDMwNTk5NGViYjE5Y2RhMGQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjMwOWVjZDNhYjczYmNkY2FhMGM2NjFmNWRmMWVhNjExYjRlOWZjYTFkNDAyOTcxMjI3OTVhNTQ5YzNmZGM0NWIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImNkYTAxNTkyZDcwYjNhZTYwYzUxMTU4YjUwNmIwYzE0MDI2NDA4NWZmYzM2OTc0ZTVkYjRkZWExZDRlZWZhYWIifQ"
+        },
+        {
+          "resource": "repo://libs/deepagents/deepagents/backends/composite.py#L48-L106",
+          "version": "repo-lines-v1:sha256:b61a958c6c318e191ee27b7706ba63678bf676de06ec149d430334e8bdba22f8:eyJzZWxlY3RlZExpbmVDb3VudCI6NTksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg3MjIwNWI2NTI3YmMxMTc2YzRlOTMxMDM1MjdhYmVlZDE0N2ZiMzM4NmExZTg5MTM3NjE2ZmRlNWRjODlkMzkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjdlZmU0NzUwODQ1NDI1OTdlZjAxOTIwNWQ4ZDc0YzM4YzVmODZlYjM4Yzk2YTUxMzM1YTIxNWUyM2FiYjBiZmUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjhjYzRhN2QxY2M3OTZhYmEzZTQ2NzIzMzI3ZjUxN2U5ZjgxMTk4MmQyNTBmMDcwMjk4NmU0YjU3NjRhZDk1ODkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImE0MmQxMjAxODcyYjFkZThmNGNkMjFkMDRlYzU2NDNkNzcwMDM5MzQ0YWU2ZGM3YWU5ODhkZDUwZjIwMjg3MjQifQ"
+        },
+        {
+          "resource": "repo://libs/deepagents/deepagents/backends/composite.py#L613-L663",
+          "version": "repo-lines-v1:sha256:dea8af5aa9db54ad888afec672e542fc19116e9ec0339da4e7057dbc0652dfc0:eyJzZWxlY3RlZExpbmVDb3VudCI6NTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjUzMzE2MmJlODMzZTJkNzZlOTA4MGQ2NDFhZGZlMWQ5MTFmZDYyMTVhNWM5Nzg0OWQ4ZWJlZjA4ZDJhMDQ1YTEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImM3ZGYzZTBhN2E5MjFlNzg3YTA1ZTg4MTRkMThjNDEzNTNjNDJlOWUzYjQ3MjdhM2NiNDIyN2YwMDM3NWFlZjciLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImEyYTk3YTkxZjMzZDIzNTdjZmRjY2I2MGQyOWViZjg4MjYzYjk3ZGUzYjQ2ODNjZGVkMDg1ZDA0ZDFmMDdjOGIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjFmMGNiYmY4ZGYxOWIxMjM1ZjEwZjk5ZjE1M2I2MGYwZmQwZWYyN2I3YTk1ZjkxZjE4ODllNjY4NjcxMDIzMzAifQ"
+        },
+        {
+          "resource": "repo://libs/deepagents/tests/unit_tests/backends/test_composite_backend.py#L1414-L1502",
+          "version": "repo-lines-v1:sha256:4457af874a3b037e11fba63edd9e1547e1a39ff40f619a39ba7c68dbc5e48e69:eyJzZWxlY3RlZExpbmVDb3VudCI6ODksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjkyNGM4Njc2ZGY4NjliZTc1NDNiZjhjMDhlYTNkYmYwNDE4MWQ3M2I0ZTYwZjc1ZWEwZDUyMmFiMzBhYzEyODUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjFhYmViY2ZiNjI0MjFhYzk0MzE1MWY3NzRjYmYxZDcyODJiMmY4N2IyMTc2NjAzMzBiNTU1YmJlMTc4NzQ2ZmMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjJmOTliODA1NDA4MWVmODMzYmVjZDg5NDNkNGMyMDZjNzdkNWNiMTBkOTUyMzRlZDAyNjViMjg0ZTQ0MGI2YmIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImZhNTMwMDJkMWRiYTU1YTA5MjlkMWM0YTFkNWRiYWIzYTgwODExMDk2NjRhYjlkN2RmMGNmMzI2Mjc1NzFjOWQifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_7b0c66cbf8d84ef49d9a2e66c83ef8a2",
+      "statement": "CompositeBackend does not route command execution by file path: execute and aexecute delegate only to a SandboxBackendProtocol default and raise NotImplementedError otherwise, so mounting a backend does not make it shell-visible.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/backends/composite.py#L814-L875",
+          "version": "repo-lines-v1:sha256:127773445a33954183a55bf89a96ef85c5febf046485884103ced498bd690650:eyJzZWxlY3RlZExpbmVDb3VudCI6NjIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjhmMWRlNzZkY2FlNGQ1NmVmYTJmNmE1YTY1NzhlYzFlY2ZjZDk1NmQwN2UwMTQ4OWIwNWU5MTcyZjE1MDIyYTMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjgzM2IzNjc5NjdlODc3ZWJhMmRhMTZmNDBmYjljMDgwYzAwZjM3MmNmODE2ZmU2N2MxNjczMWNmMzJlN2FhNGYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjhkZDVkY2MzMWUyY2Q5MzgzMjVhMTk0NDA4YTg2ZDIzODczNWVhZTdhNzI4NjAwMzlmYWQ5ZDliNDA4OTc2YjYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjJlYWY1NDdiN2VhNWZjMWU4ZDY1Zjk2MzMwNWRhYmNkMTUyMTNiYzg3Y2FhMDc2ZjE5NDVlOGVkNjU1OTUwYjIifQ"
+        },
+        {
+          "resource": "repo://libs/deepagents/tests/unit_tests/backends/test_composite_backend.py#L657-L708",
+          "version": "repo-lines-v1:sha256:f1d88a9a861634fb17329aebea02209c7804947454c9bd6961d31589c33d0667:eyJzZWxlY3RlZExpbmVDb3VudCI6NTIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImExZDkwODA1MjhiZWRkNDhmOGYzOGM4NWZjNjcwMmMyZTgxY2IxNDQzNTAxMmY4YmRjOWFiMDNkOTBjOTZkNzIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjFmNzc1MmIxNDY4YmNhMDNlMDUyNzQxZTNlMjQyZjU2Yzc4OGNhNWZkNWIyZmNjYjI4ZTFkYTlmZDZlMGVmOTciLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijg2M2E2MDAxODM5YWM5ZjdmMDQ1MzRmNmU3Y2I5MjEwYzVjNzk0NGJjNTA1NTI5MDQwMjFjZDliODE4NGI0OGUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImNmNDk3YjU1Y2RhNjBkN2EyNjZiMjM0ZTI3NDJkMTUxYzU4ZTgyYTJkY2YxYjM4NjYyNWI0M2E0ZjM2NjM0NDMifQ"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-10-17T08:04:56.296Z"
+    "at": "2026-10-18T08:05:11.339Z"
   }
 }

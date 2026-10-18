@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:4b8c2d81e744ecc367ba91b6484023e2868cf3ce978b5bb7a42e81b6100c0ccf",
+  "pageVersion": "sha256:4f2e482614acab81c8ecff655cfe7716d126c51739ac8baa8a56f0c8dd8cb114",
   "claims": [
     {
       "id": "claim_3f6e4d8c4f6f470a94669778d16a96b1",
@@ -144,15 +144,15 @@
     },
     {
       "id": "claim_0822e09ac02e45ce842f3f47140485fc",
-      "statement": "On async invocations, `AsyncSubAgentMiddleware` polls unfinished tasks at agent start, before model calls, and after a final answer; changed success, error, timeout, or waiting outcomes are inserted as marked notifications, and a post-answer notification sends the model for another turn.",
+      "statement": "On async invocations, `AsyncSubAgentMiddleware` polls unfinished tasks at agent start, before model calls, and after a final answer; changed success, error, timeout, or waiting outcomes are inserted as marked user messages framed as system notifications, and a post-answer notification sends the model for another turn.",
       "evidence": [
         {
-          "resource": "repo://libs/deepagents/deepagents/middleware/async_subagents.py#L1446-L1518",
-          "version": "repo-lines-v1:sha256:512f7ac91b13b62d2374b34bc42868b91c3be0f9f069dd2b491db2638b383a9e:eyJzZWxlY3RlZExpbmVDb3VudCI6NzMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImJiMmZlNmU0YzkxYTAzMmYyODIxMzVkNDA4MWNiNjM3NWZiMmU2OWQ4OGIwNTk1NDk5NjgwMDkyN2UxNTlmYTEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQyMDc4MzkyZmZlOTM1MTNhNGNlYzA2MjQ2ODZhOTcyM2Y4MzgxYjM4YTNjNjBmYWQ0NmYzYjEwYTc2NjVlN2UiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImFiMDMzMzZjMmYzYTkxMTg3Njk0NDFkM2Q5NTY5OTVjMDIxNGVmNDY4YmFkYWEwYTk2Yjk3ZWFjNGJlMzdlZDgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUxOWFjMTc5YTdiZDcwZmFhMDIxNmFhNTZmMTgxNjFjYTcyYzhkMzY0YmVlMTJkZjhjNmQ1YjEwZGFhNDQyNzAifQ"
+          "resource": "repo://libs/deepagents/deepagents/middleware/async_subagents.py#L1339-L1522",
+          "version": "repo-lines-v1:sha256:017ec113162e58cd46d490ae57670d0e42a207d6bf535a12a34134e86d664613:eyJzZWxlY3RlZExpbmVDb3VudCI6MTg0LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIzYjM2M2M1N2JmNmU2MGMxN2Q0NmE2ZGU5NjQ4ZDkxOWVkNDdkNDgzY2IyYzMzM2MzOTJmZjcwZTI0ODQ1YTM2IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI0MjA3ODM5MmZmZTkzNTEzYTRjZWMwNjI0Njg2YTk3MjNmODM4MWIzOGEzYzYwZmFkNDZmM2IxMGE3NjY1ZTdlIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJlYmFmZTMyOTk4MjAwYjY4ZDE5YmQ1MzgwOTY1ODM1NTRiZjE1ODRjMDZjMzY3ZTQwYzE3ZDg3YWQ3M2I4NjkxIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiJlMTlhYzE3OWE3YmQ3MGZhYTAyMTZhYTU2ZjE4MTYxY2E3MmM4ZDM2NGJlZTEyZGY4YzZkNWIxMGRhYTQ0MjcwIn0"
         },
         {
-          "resource": "repo://libs/deepagents/tests/unit_tests/test_async_subagents.py#L1881-L1908",
-          "version": "repo-lines-v1:sha256:c6e0059962b480345c521d623fbb43a015e748a46ada9bcd5588efc60f44d5c0:eyJzZWxlY3RlZExpbmVDb3VudCI6MjgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMxOTY2MGI0YjIxMTdiZTU0NTU3ZDBkMjUyMTAzYjAwMGU5MTk2OTE4MWU4N2ZhMWQwYmYxOGJjYTJmZTVmZWMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ0ZDQ4ODRkYjUyOGI3ZmIwNWY3MDMxMTZhZmQzMmMzNDk1ZjFiNTY3OWYxMTRkOWUwODg0MGY1YjkwOWQxMDgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImY0MDdhYzQ3NGQ1MDJkZTE4ZmIxNzhiOWE0ZDJlYTkxYzAxODRmNmU0YTM4ZDNmODlmZmVjZWU5YjJjNjUxMDIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjZkOWNlYzUyOTEyMWNjYjA3NGY0YWJmYzE4ZTY5NjU3ZDViYjRmNTJjYzU1ODYzOTVjZTI0NDkyZWFmNTE2NDIifQ"
+          "resource": "repo://libs/deepagents/tests/unit_tests/test_async_subagents.py#L1899-L2023",
+          "version": "repo-lines-v1:sha256:664e8da10853537ea0c8443489fe6f2eebc66480e6c40fbce29250f2c2b0d7b1:eyJzZWxlY3RlZExpbmVDb3VudCI6MTI1LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIzMTk2NjBiNGIyMTE3YmU1NDU1N2QwZDI1MjEwM2IwMDBlOTE5NjkxODFlODdmYTFkMGJmMThiY2EyZmU1ZmVjIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJhNjEwMmExNDk1MzZkZmYxMjc0YTRhZDIzYzdiMzBlMGJjYWYwN2I4MmVhNjQ0NTUyOThiNzc0MzFhNzJiOWY4IiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJmNDA3YWM0NzRkNTAyZGUxOGZiMTc4YjlhNGQyZWE5MWMwMTg0ZjZlNGEzOGQzZjg5ZmZlY2VlOWIyYzY1MTAyIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI0Y2FhOTBjNTAzNzdjOGQ5YTI0MTM1YTNjOTk3N2ZiMWE1YjJjYmQ3MDJjZDYwMGIwMDI1NDU3ZDFlZTIxZTE0In0"
         }
       ]
     },
@@ -233,6 +233,6 @@
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-10-17T08:04:56.296Z"
+    "at": "2026-10-18T08:05:11.339Z"
   }
 }

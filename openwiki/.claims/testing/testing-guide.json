@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:f268bf2e421355afea32148a99a421fd72cd2153b815e530344cd29ac1ce54aa",
+  "pageVersion": "sha256:ba85a4311ee45bc4b2974c2f65cc0e0aa31112dff83da75a13653f62c5c0b708",
   "claims": [
     {
       "id": "claim_bb941496a1ea42cd805f3446242fcb0c",
@@ -285,10 +285,52 @@
           "version": "repo-lines-v1:sha256:63d6a857dfd18d7740fbe7727ef8b7e913923f85acce40346b4efa7630d41136:eyJzZWxlY3RlZExpbmVDb3VudCI6MTMxLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJkZDk0ZTA2ZTk5YWI3ZGExMGQzN2NmNGFmZTZkOTczODFiOGVmMTkxNmIyMjkzOGZhNGIzMzA3MzA3NTI1MDMwIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJmNzI2NTVkODA0YzgyMTdhMmQzYjJlODY3NTNjZWI5ZjIxOTEzZDNmMTA5NDZlODI5N2JkN2EzODQzYjAxMWFkIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI0ZWU1NTRjOTVhZGFjY2FhNDY0MGQyZTljNTdlNjRiNGU4ODczYzQzYjU4NzAzODYwZDJmOTgwMDQ0MDU2NjAxIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI1MzM2ZmQxYTE2MDBhZWVlZTQwY2E2ODYyOWU1Mjc5MGM2OWRhZTE0MWE0ODg3Y2Y5Zjk2ZGUwY2NhZjNiYzgxIn0"
         }
       ]
+    },
+    {
+      "id": "claim_ca363ef4028b41788f1ef901bd5aae30",
+      "statement": "CompositeBackend tests require prefix-routed storage to retain composite paths, root search and glob merges to preserve matches and truncation from each backend, and backend errors to surface rather than silently return partial results.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/tests/unit_tests/backends/test_composite_backend.py#L222-L355",
+          "version": "repo-lines-v1:sha256:4b6ec75e3642f59b3773ebf8e563d4068a5f280d47977f4e87767d0672213649:eyJzZWxlY3RlZExpbmVDb3VudCI6MTM0LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJiM2ZhNmM3OGUyOTgyYmY1YWU3YjY2MWJjOTAzZGFjMjdiZDkwNGMyN2UyYmU2Y2UwOGIwYjJjMGU4YmI5M2Q5IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJiZDgxMjk5MmY4OWQ2N2E1NzhiM2YzNDVkYTkxMDk4MWZkZTA5MzhjZGM2YmZlMDRmYmE0NGU1MjYzZjhmMjQ3IiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiIzZDkzYTc4ODUyMjE5NzI5ZTIwMjdhZjQxOWM4NzFlOWM0YzdiMGNhMWEwNjEyY2VhNWM2YWJjZDE2NDJkNDdhIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI1YmRlOTQ4NDExZmE0NWRiYTQ1NzA0MDk3MmY3NWI3ZjFhMmJjZDRiYjZlZjI5MzE4NGE2NGQyOGI3ZDZmOWNlIn0"
+        },
+        {
+          "resource": "repo://libs/deepagents/tests/unit_tests/backends/test_composite_backend.py#L386-L435",
+          "version": "repo-lines-v1:sha256:d81e1c1da74aa1b5b1caf41e1f334e6e660c4ecd1cae3a0262b17d7d847c3977:eyJzZWxlY3RlZExpbmVDb3VudCI6NTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZkZDE5ZDJhODJiODE1ZTgyNDZmZTA0OTdmY2M0MjkzMWU4YjdlZTk1NGQ3MDg1MmYzNDJjZTYyZmYwYzcyZTciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImViZGNmMTg5MWMwZWY5NTBiMzE0ODc5ZjkxZDYzM2MxMzgwOGM3NDQzMzg5M2E4ZjNlYzA5ZWM2NDIxZDA5YzYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjVjNGY4NDk2ODcyOWQ4YjI0OWEwOTA5MmM4YjQ0YjYxOTVjMjI3YTdhNTM2NjBkYWY4MzBhYmZhZWUyODdlYmYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImVjMDIzYWZlOWMzNGMxODU5NDI0MmY0OWQyOWJkODllMjgzYzU5ZWQzNjQ0ZGNjMGIyNjc0Njc5MWJlM2I0OTMifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_e03f3cf9bde2466dbd10b2c95be2b8c9",
+      "statement": "dcode interpreter workspace-policy tests allow implicit and explicit safe-policy resume, but reject unknown historical permissions and effective-policy or acknowledgement drift; managed policy overrides invocation settings and unsafe all-permissions mode requires acknowledgement.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/tests/unit_tests/test_interpreter_workspace_policy.py#L200-L219",
+          "version": "repo-lines-v1:sha256:4242c68528e9bf872dab5e7de9a62c3408a94cd5d66c6722568ad8b70a54b1c1:eyJzZWxlY3RlZExpbmVDb3VudCI6MjAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQyNDQwZDEwZDg2ODRmMTA1ZmU0NDIwYjYxYjljODc5ZmZlYTczMDUxOTdmNDBlODBlNmM0NzFlZTY5ZDI3NzAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ1Zjk1Y2Q5MDNmZDViNGI2ZTU2MTRhYWM4OGZhZDUyNWZkMGQ3NjIyMjEwNDJmZTFjM2E0ZDQ4M2NjZTFhYmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjhjYzRhN2QxY2M3OTZhYmEzZTQ2NzIzMzI3ZjUxN2U5ZjgxMTk4MmQyNTBmMDcwMjk4NmU0YjU3NjRhZDk1ODkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        },
+        {
+          "resource": "repo://libs/code/tests/unit_tests/test_interpreter_workspace_policy.py#L47-L197",
+          "version": "repo-lines-v1:sha256:dd8ca45171c75175f81f8cc6e86b6a1e7b4cc8f88f705689ece12ba52b006ea9:eyJzZWxlY3RlZExpbmVDb3VudCI6MTUxLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI4OGQwMmUzNzYyY2E0ODM4Yzg0ZDgyNzgzOWQyY2RjOTkyMTcyMjNhYWQ5YTY0MzViYmYzNTY4MjE4ZGU4YjlmIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiIzMGMxZjE4OGYxNDJlZDdhODI0NjgwYjIwNzE3MmM1NTE5YmM2MTRhNDhmZGE3Y2YxNjdlZGI4ZGRmNzk5NTZjIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJkMjEyMTFjMWM0MDE0ZWFiZjg5YTUzOWU2NDY3MTlhZTRiZDQxNGMxNTY0YjhhMWE3Y2RlZTc0NDc0NmQ0MThjIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI5OTI3OWQwN2M2MThlNmJhZTQxYzkwNzUyMTM0ZTIwM2FiNDZkMzBmOWEzM2UzYzlhNzYwYTAzYzk3YjI0ODVkIn0"
+        }
+      ]
+    },
+    {
+      "id": "claim_bf8e246f770f414f8d94f8a0e33c6ae7",
+      "statement": "dcode thread-resume tests treat command parsing and session-store lookup as user-facing behavior: invalid command forms do not resume, missing IDs can suggest close matches, bare resume prefers the previous thread, and cross-agent cancellation or remote sessions avoid mutating the current local session.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/tests/unit_tests/test_threads_resume.py#L215-L257",
+          "version": "repo-lines-v1:sha256:e51f9d8f722526d66af2f03a85ac6bd2775099a6001991febd2e893737b3dbd5:eyJzZWxlY3RlZExpbmVDb3VudCI6NDMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImYxZjU4ZmRmYzJlZTc4MGU1Y2I3NGMwMDM0OGExMzc4NGE0ZmNmNTA4MDkwYTZmYWNhOGQzM2UxZGE4NTE0MzMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMzFmODFiNTAyODg2ZmUyMDFmZmRhNTQ5Yzc3ZGJkMzE3OTc4OTY5NmFmMDE1ZTY2M2YwNWQzN2FmMzg3YTciLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjgxYTU3MTE2ZTQzMWQwNmRiZTI4ZWI2ZTkzZjBiOGZiYWRhNWI4NDJjNTAzYjJjZWJhNDM0NGE2OTY1NDhiMDYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjAwMzk5Yjk0MDgyZDYwY2RlNGJlOTUwNTg2MGIxZjBkY2Y0OGI5ZDEwMTk4ZWYyZmJjZWYwMmQ2YTYxNzMxMzkifQ"
+        },
+        {
+          "resource": "repo://libs/code/tests/unit_tests/test_threads_resume.py#L33-L214",
+          "version": "repo-lines-v1:sha256:7b0bdcf8b8d16d9e3b46fff507193c6091af04f54ab1a263d913b949444a450c:eyJzZWxlY3RlZExpbmVDb3VudCI6MTgyLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJmZWE5YTlmMDUyY2I3NzRlYjJiOWU2Mjc0NDM3MjUwMTU5NWUyM2QwZDdhNmRjNjIxOTE2Y2NmYWE4NWRjZTgxIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiIwMWJhNDcxOWM4MGI2ZmU5MTFiMDkxYTdjMDUxMjRiNjRlZWVjZTk2NGUwOWMwNThlZjhmOTgwNWRhY2E1NDZiIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiIxZWZhYzlhNmI2OGQwOTQ0ZmQzMzZkYzhmMzkzOGI4YTE1Y2RmNmM0NmViYjg1YjQ5ODM1YjgyMTRjYTAxOTU1IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiIyYjBhM2EyNTc2ZTU1OTUyOGUxYjZlMzEyYzRhYjI2OTQ4MDY0NDM4OTg1ZjkwY2Y2NzQyMmVmMGZkYWYzOGQ3In0"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-10-17T08:04:56.296Z"
+    "at": "2026-10-18T08:05:11.339Z"
   }
 }

@@ -1664,6 +1664,32 @@ def test_route_for_path_no_trailing_slash_boundary() -> None:
     )
 
 
+@pytest.mark.parametrize("prefix", ["/memories", "/memories/"])
+def test_search_results_preserve_route_prefix(tmp_path: Path, prefix: str) -> None:
+    """Paths from `ls`, `glob`, and `grep` keep the full route name and read back.
+
+    Regression test for https://github.com/langchain-ai/deepagents/issues/7013.
+    """
+    (tmp_path / "workspace").mkdir()
+    (tmp_path / "memory").mkdir()
+    backend = CompositeBackend(
+        default=FilesystemBackend(root_dir=tmp_path / "workspace", virtual_mode=True),
+        routes={prefix: FilesystemBackend(root_dir=tmp_path / "memory", virtual_mode=True)},
+    )
+    backend.write("/memories/note.md", "hello")
+
+    paths = [
+        *(fi["path"] for fi in backend.ls("/memories").entries or []),
+        *(fi["path"] for fi in backend.glob("*.md", path="/memories").matches or []),
+        *(fi["path"] for fi in backend.glob("**/*.md", path="/").matches or []),
+        *(m["path"] for m in backend.grep("hello", path="/memories").matches or []),
+        *(m["path"] for m in backend.grep("hello", path="/").matches or []),
+    ]
+
+    assert paths == ["/memories/note.md"] * 5
+    assert backend.read(paths[0]).error is None
+
+
 def test_write_result_path_restored_to_full_routed_path():
     """CompositeBackend.write should return the full path, not the stripped key."""
     mem_store = InMemoryStore()

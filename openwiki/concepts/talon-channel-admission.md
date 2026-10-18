@@ -5,7 +5,7 @@ description: Discord admission and interaction routing in Talon, from provider e
 tags: [talon, discord, channels, admission-control, pairing, conversation-identity, security]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-10-17T08:04:56.296Z
+    at: 2026-10-18T08:05:11.339Z
 sources:
   - id: openwiki-source-6a038e6e1a11f450bcafce54
     resource: repo://libs/talon/deepagents_talon/__main__.py
@@ -19,6 +19,10 @@ sources:
     resource: repo://libs/talon/deepagents_talon/channels/telegram.py
   - id: openwiki-source-3d157a5857f325aceaade7f1
     resource: repo://libs/talon/deepagents_talon/channels/whatsapp.py
+  - id: openwiki-source-80976c09402c30d4f886a2fa
+    resource: repo://libs/talon/deepagents_talon/commands.py
+  - id: openwiki-source-81698d033a5726401d48b135
+    resource: repo://libs/talon/deepagents_talon/config.py
   - id: openwiki-source-6801a88de6305bc8cbdd259f
     resource: repo://libs/talon/deepagents_talon/host.py
   - id: openwiki-source-cebe4ea270e21dce4de9b074
@@ -33,16 +37,18 @@ sources:
     resource: repo://libs/talon/tests/integration_tests/test_discord_host.py
   - id: openwiki-source-a69daa62c9a3eb9a49f09bf9
     resource: repo://libs/talon/tests/test_host.py
+  - id: openwiki-source-18959cdb729a1a796d950993
+    resource: repo://libs/talon/tests/unit_tests/test_commands.py
   - id: openwiki-source-e8daeda7e19a9ca643b4d20c
     resource: repo://libs/talon/tests/unit_tests/test_pairing_slack.py
   - id: openwiki-source-8614e79d8a8371505c879e50
     resource: repo://libs/talon/tests/unit_tests/test_pairing.py
-generated: { by: "openwiki/0.4.2", at: "2026-10-17T08:04:56.296Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-10-18T08:05:11.339Z" }
 ---
 
 Talon channel adapters are the boundary between provider events and the configured agent. An adapter normalizes provider-local identities, applies exposure and pairing policy, and calls the callback installed by `TalonHost`. The host—not the adapter—owns commands, agent-conversation identity, turn replacement, authorization and approval state, and result delivery.
 
-> **Boundary:** Admission decides who may invoke the operator-configured agent. It is neither a multi-tenant boundary nor execution containment. In particular, `open` lets arbitrary senders invoke an agent with the host's configured credentials and local access. A paired sender is not an operator.
+> **Experimental single-operator boundary:** Admission decides who may invoke the operator-configured agent. It is **not** tenant isolation or execution containment. In particular, `open` lets arbitrary senders invoke an agent with the host's configured credentials and local access. A paired sender is not an operator.
 
 See [state persistence](/openwiki/concepts/state-persistence.md), [Talon scheduling](/openwiki/concepts/talon-scheduling.md), [the Talon integration](/openwiki/integrations/talon.md), and [security operations](/openwiki/operations/security.md).
 
@@ -76,7 +82,7 @@ sequenceDiagram
     end
 ```
 
-*Discord determines whether an event enters Talon; the host owns work and state after callback dispatch.*
+*Discord decides whether an event enters Talon; the host owns work and state after callback dispatch.*
 
 ## Exposure and Discord turn gating
 
@@ -97,9 +103,11 @@ Discord applies two gates before host dispatch:
 
 For a permitted top-level guild message, Discord creates a public thread and changes the outbound conversation to that thread. If creation fails, it replies in the original channel. Existing guild threads remain their own conversations. These are routing choices after admission, so a rejected mention neither opens a thread nor downloads media.
 
-## Discord application commands
+## Commands and Discord application interactions
 
-When `DEEPAGENTS_TALON_DISCORD_SLASH_COMMANDS` is enabled (the default), the Gateway registers Talon's visible commands as Discord application commands. `DEEPAGENTS_TALON_DISCORD_COMMAND_GUILD_ID` can scope registration to a guild for immediate development visibility, but scoped commands are unavailable in DMs. Failure to synchronize commands is logged and does not stop channel startup.
+The shared command registry is the single description of chat commands: it drives `/help`, host parsing, and Discord application-command registration. Commands marked hidden remain valid when typed but are deliberately omitted from `/help` and the Discord picker; for example, `/reset-all-history` is not advertised because it is irreversible, and `/pair` is not registered as an application command.
+
+When `DEEPAGENTS_TALON_DISCORD_SLASH_COMMANDS` is enabled (the default), the Gateway registers the visible commands as Discord application commands. `DEEPAGENTS_TALON_DISCORD_COMMAND_GUILD_ID` can scope registration to a guild for immediate development visibility, but scoped commands are unavailable in DMs. Failure to synchronize commands is logged and does not stop channel startup.
 
 An interaction is converted to the same `ChannelMessage` shape as its typed command, including channel, sender, interaction ID, DM status, and public-thread history scope. It must pass the same admission check before it is deferred or reaches the host. Unknown commands or missing channel identities receive a private refusal; rejected interactions also receive a private refusal.
 
@@ -141,16 +149,18 @@ Admission of a reaction is not itself tool approval. The host requires a pending
 
 Progress delivery is bound to the originating invocation by a task-local handler and is refused once a turn is inactive, stale, or terminally authorized. Final delivery also checks generation before sending, so old work cannot overwrite a newer turn.
 
-## Operational checklist
+## Configuration and operations
+
+`TalonConfig` derives a validated assistant ID and a per-assistant home. It creates that home and its state directories with owner-only permissions, and state-path resolution verifies that checkpoint, history, conversation, and model state stay inside it. Protect this home—including `pairing.json`—as operational state; a CLI pairing change cannot terminate in-memory work.
 
 1. Set `DEEPAGENTS_TALON_DISCORD_OPERATOR_ID` before using Discord `self` exposure.
 2. Prefer `self` or explicit allowlists. Treat `open` as arbitrary external invocation, not as a sandbox.
 3. Leave guild mentions required unless an intentional channel is named in `DEEPAGENTS_TALON_DISCORD_MENTION_OPTIONAL_CHATS`; this does not replace exposure policy.
 4. Enable pairing only for people who may invoke the agent wherever the bot can see. Use host `/pair revoke` to stop live work as well as future admission.
 5. Keep `DEEPAGENTS_TALON_DISCORD_INCLUDE_OTHER_THREAD_PARTICIPANTS=0` unless broader untrusted thread history is required.
-6. Protect the assistant home and `pairing.json`; a CLI change cannot terminate in-memory work.
-7. Set an intentional outbound-media root and byte cap independently of inbound media storage.
+6. Set an intentional outbound-media root and byte cap independently of inbound media storage.
+7. Treat invalid slash-command configuration as startup configuration failure: `DEEPAGENTS_TALON_DISCORD_SLASH_COMMANDS` must be a boolean and `DEEPAGENTS_TALON_DISCORD_COMMAND_GUILD_ID`, if set, must be a numeric Discord guild ID.
 
 ## Focused verification
 
-`libs/talon/tests/channels/test_discord.py` covers Gateway status transitions, self-message loop prevention, exposure and reaction admission, mention and thread routing, attachment failures, application-command conversion and reply isolation, and bounded thread context. `libs/talon/tests/integration_tests/test_discord_host.py` covers host command execution through interactions, interaction-only replies, public-thread agent identity versus parent history scope, and scope-wide reset behavior. Pairing, host cancellation, and delivery behavior are covered in `test_pairing.py`, `test_pairing_slack.py`, and `test_host.py`; see the [testing guide](/openwiki/testing/testing-guide.md) for running the suite.
+`libs/talon/tests/channels/test_discord.py` covers Gateway status transitions, self-message loop prevention, exposure and reaction admission, mention and thread routing, attachment failures, application-command conversion and reply isolation, registration behavior, and bounded thread context. `libs/talon/tests/integration_tests/test_discord_host.py` covers host command execution through interactions, interaction-only replies, public-thread agent identity versus parent history scope, and scope-wide reset behavior. `libs/talon/tests/unit_tests/test_commands.py` checks that visible registry entries drive help and that host commands reply without invoking the agent. Pairing, host cancellation, and delivery behavior are covered in `test_pairing.py`, `test_pairing_slack.py`, and `test_host.py`; see the [testing guide](/openwiki/testing/testing-guide.md) for running the suite.

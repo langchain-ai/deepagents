@@ -1,28 +1,40 @@
 ---
 type: architecture
 title: Deep Agents Code Architecture
-description: dcode is the Deep Agents SDK reference terminal coding agent. This page describes its client/server boundary, package and extension surface, interaction controls, retry and prompt-cache UX, and the UI lifecycle that connects them.
-tags: [dcode, deepagents-code, cli, langgraph, textual, approvals, prompt-cache]
+description: dcode is the Deep Agents SDK reference terminal coding agent. This page explains its client/server boundary, workspace policy, command and completion behavior, retry contract, and sandbox lifecycle.
+tags: [dcode, deepagents-code, cli, langgraph, textual, sandbox, workspace]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-10-17T08:04:56.296Z
+    at: 2026-10-18T08:05:11.339Z
 sources:
   - id: openwiki-source-15628256fe9cd22197db74ed
     resource: repo://libs/code/AGENTS.md
   - id: openwiki-source-6f5b1b7a043ee1d414708793
     resource: repo://libs/code/ARCHITECTURE.md
+  - id: openwiki-source-1728494bdd59604ce9b5f65b
+    resource: repo://libs/code/deepagents_code/_server_config.py
   - id: openwiki-source-fdf5afeb1dd1d11652374e88
     resource: repo://libs/code/deepagents_code/app.py
   - id: openwiki-source-a9143c1c174362216a1cfa2c
     resource: repo://libs/code/deepagents_code/approval_mode.py
+  - id: openwiki-source-b9ef532d79a0667acf40e58b
+    resource: repo://libs/code/deepagents_code/client/launch/server_manager.py
   - id: openwiki-source-fcc71dc507b62bee0432e12e
     resource: repo://libs/code/deepagents_code/command_registry.py
+  - id: openwiki-source-bcf1f68e7989964d2fcec7aa
+    resource: repo://libs/code/deepagents_code/integrations/sandbox_factory.py
+  - id: openwiki-source-668d65d09330d04370b47300
+    resource: repo://libs/code/deepagents_code/integrations/sandbox_registry.py
   - id: openwiki-source-2e03fee957625ca21a1c21af
     resource: repo://libs/code/deepagents_code/main.py
   - id: openwiki-source-c101168dc0286ff6c29ed37f
     resource: repo://libs/code/deepagents_code/model_retry.py
+  - id: openwiki-source-ea1089f0d7536fbc96c64866
+    resource: repo://libs/code/deepagents_code/offload_api.py
   - id: openwiki-source-f820645728a7602f14195650
     resource: repo://libs/code/deepagents_code/tui/widgets/auto_mode_notice.py
+  - id: openwiki-source-d45b105016df62ad3c6e485f
+    resource: repo://libs/code/deepagents_code/tui/widgets/autocomplete.py
   - id: openwiki-source-757c2a7976ead67a5fbe1e5c
     resource: repo://libs/code/deepagents_code/tui/widgets/messages.py
   - id: openwiki-source-2c41bc0b19795204a48854ee
@@ -37,16 +49,20 @@ sources:
     resource: repo://libs/code/tests/unit_tests/test_approval_mode.py
   - id: openwiki-source-42e76fc26f690f7d6dab298d
     resource: repo://libs/code/tests/unit_tests/test_cache_expiry.py
-generated: { by: "openwiki/0.4.2", at: "2026-10-17T08:04:56.296Z" }
+  - id: openwiki-source-b6c121d977850bad8b8c8068
+    resource: repo://libs/code/tests/unit_tests/test_sandbox_factory.py
+  - id: openwiki-source-b7beeddb49bcfbe0565494c8
+    resource: repo://libs/code/tests/unit_tests/tui/widgets/test_autocomplete.py
+generated: { by: "openwiki/0.4.2", at: "2026-10-18T08:05:11.339Z" }
 ---
 
 # Deep Agents Code Architecture
 
-`deepagents-code` (`dcode`) is a prebuilt terminal coding agent and reference implementation of the `deepagents` SDK harness. It combines a terminal experience with persistence, tools, skills, approval controls, and optional sandboxed execution. It is a product architecture rather than a second agent harness: retain the SDK/graph boundary when adding product behavior.
+`deepagents-code` (`dcode`) is a prebuilt terminal coding agent and reference implementation of the `deepagents` SDK harness. It packages terminal interaction, persistence, tools, skills, approval controls, and optional sandboxed execution around the SDK rather than creating another agent harness.
 
-## Process and ownership boundary
+## Process, configuration, and workspace ownership
 
-The terminal client and agent server are distinct processes. The client owns interactive and headless presentation, user input, streamed-event rendering, and collecting approvals. The server runs the coding-agent graph and connects the model, tools, memory, skills, and backend. It also owns graph checkpointing and execution state. Consequently, a rendering or input-policy change belongs in the client, while a tool/model/graph or durable-session change belongs in the server.
+The terminal client and agent server are separate processes. The client owns interactive and headless presentation, input, streamed-event rendering, and approval collection. The server owns the coding-agent graph, model, tools, memory, skills, backend, execution state, and graph checkpoints. Keep these responsibilities separate: a rendering or input-policy change belongs in the client; tool, model, graph, checkpoint, and durable-session behavior belongs in the server.
 
 ```mermaid
 sequenceDiagram
@@ -55,35 +71,35 @@ sequenceDiagram
     participant Server as Agent server
     participant Store as Checkpoint store
     CLI->>Client: start session
-    Client->>Server: send input and thread context
+    Client->>Server: input and workspace context
     Server->>Store: read or write graph state
     Server-->>Client: stream events and state
-    Client->>Client: render output and collect approvals
+    Client->>Client: render and collect approvals
 ```
 
-*The client presents the session; the server executes and persists it.*
+*The client presents and requests; the server executes and persists.*
 
-Configuration is deliberately layered across user, project, session, and runtime scopes. Shared readers resolve a process-wide configuration generation; editing a file does not change that generation until an in-app default-config write or `/reload`. The environment tier is the exception: it is read live so dotenv bootstrap and working-directory changes are visible. See [Configuration layering](/openwiki/concepts/config-layering.md) for precedence and reload semantics.
+`ServerConfig` is the typed process-boundary contract. The launcher serializes it as `DEEPAGENTS_CODE_SERVER_*` environment variables and the server reconstructs the same schema, so the two sides do not maintain independent flag serialization. Relative project paths are normalized before that handoff because the server subprocess has a different working directory. `None` serializes as a cleared variable rather than an empty-string setting.
 
-## Entry points, commands, and install surface
+A workspace binding has a deliberately narrower trust boundary than that transport contract. The client may claim only session-scoped invocation policy and its SHA-256 fingerprint. The server resolves the target canonical directory and project policy itself, rejects any client claim of project-scoped fields, then persists the server-authoritative policy with the thread binding. On a directory change, it drops launch-project MCP configuration, sandbox setup, and explicit extension paths rather than applying one checkout's execution policy to another; extension trust is re-evaluated for the target project. Cosmetic model settings can rebuild a runtime without invalidating the durable authorization binding, whereas tool, sandbox, approval, and workspace-identity changes are binding policy.
 
-The package exposes both `dcode` and `deepagents-code`, which call the same `cli_main` entrypoint. The command path keeps heavyweight agent imports out of argument parsing and trivial operations such as `--version`; version reporting can additionally show installed optional dependencies.
+The server caches runtimes by workspace binding and runtime fingerprint. It validates a thread's workspace context before graph execution, builds or reuses its runtime under a lock, and reserves a configured process-wide sandbox for its first workspace. This makes sandbox containment a server execution resource, not an attribute of client presentation or approval mode.
 
-Slash commands have one declarative registry. A `SlashCommand` supplies its canonical name, description, aliases, autocomplete metadata, and a queue-bypass tier; derived sets prevent other code from duplicating command classification. The tiers make responsiveness explicit: `ALWAYS` runs even while busy, `CONNECTING` bypasses only initial connection, `IMMEDIATE_UI` opens a modal while deferring work, `SIDE_EFFECT_FREE` performs its effect but defers chat output, and `QUEUED` waits. `/install`, `/reload`, and `/update` are recovery exceptions when server startup failed, so a missing provider can be repaired rather than leaving the remedy behind a parked queue.
+## Entrypoints and terminal interaction
 
-The distribution pins `deepagents==0.7.28` exactly. SDK-dependent work must update this pin in the same change; CI rejects a release pin older than the workspace SDK unless explicitly bypassed, while an ahead-of-workspace pin supports prerelease coordination.
+The distribution exposes both `dcode` and `deepagents-code`, which call the same `cli_main` entrypoint. `--version` is a fast path before heavy imports and can report installed optional dependencies. Apart from diagnostic commands such as `config`, `doctor`, and `auth path`, commands requiring managed policy refuse to run when that policy cannot be enforced.
 
-Core providers are Anthropic, Google GenAI, and OpenAI. Optional extras add Baseten, Bedrock, Cohere, DeepSeek, Fireworks, Groq, Hugging Face, IBM, LiteLLM, Meta, Mistral, NVIDIA, Ollama, OpenRouter, Perplexity, Together, Vertex, and xAI; `all-providers` combines them. Separate sandbox extras cover AgentCore, Daytona, Modal, OpenShell, Runloop, and Vercel, with `all-sandboxes` as their composite. These extras make integrations available; they do not change the client/server ownership model or grant execution authority. See [Sandbox partners](/openwiki/integrations/sandbox-partners.md).
+`DeepAgentsApp` composes the startup tip, goal-status panel, chat input, and docked status bar. After first paint it constructs the Textual adapter with callbacks for rendering, approvals, status, accounting, skills, and Auto-mode events before starting background initialization. The status bar keeps hook and agent messages in separate slots: a nonempty hook message temporarily wins without erasing agent state; it renders hook-configured text as plain `Content`, shares one spinner for connection and busy indication, and stops it on unmount.
 
-## Textual client lifecycle
+Textual is constrained to `textual>=8.2.8,<9.0.0`. Local patches and custom rendering rely on upstream behavior and private wrapping/compositor offset contracts; message pointer hit testing specifically relies on private `offset` style metadata. Startup conditions hidden by the alternate screen—such as unavailable interpreter configuration, sandbox-suppressed interpreter, disabled tracing, or failed Auto restoration—become best-effort post-refresh notices while logs remain the durable diagnostic.
 
-`DeepAgentsApp.compose()` builds the header, cache-expiry banner, scrollable message area, bottom chrome (subagent panel, optional startup tip, goal-status panel, and chat input), and docked status bar. `on_mount` restricts itself to widget lookup, focus, status synchronization, and lightweight setup; it schedules expensive initialization after the first refresh. `_post_paint_init` creates `TextualUIAdapter`, wiring callbacks for rendering, approvals, active/status state, cache reconciliation, tokens/cost, tools, subagents, Auto-mode events, and skills, then starts session initialization, periodic cache checks, skill discovery, and server startup as background work.
+A continuation that needs a modal is detached from the Textual submitted-message pump: awaiting it there would prevent Enter and Esc dispatch. Admission permits one global continuation, reports a conflict, tracks task failure, and resumes queued-message draining when it completes.
 
-The status bar is client presentation state rather than graph authority. It maintains separate hook and agent message slots so a nonempty hook message temporarily wins without destroying the agent message; hook-configured content is plain `Content`. Connection and busy indicators share a spinner, which is stopped on unmount. Textual is constrained to `textual>=8.2.8,<9.0.0`: local patches and custom diff/message rendering depend on upstream behavior and private wrapping/compositor offset contracts, including pointer hit testing via private `offset` metadata.
+### Commands and completion
 
-Startup conditions that would be hidden by the alternate screen are best-effort notifications after refresh: an ineffective interpreter-tools setting, a remote sandbox that suppresses local `js_eval`, disabled orphaned tracing, and an Auto startup preference that cannot be restored. Logging at the mutation site remains the durable diagnostic.
+Slash commands have one declarative registry. Each `SlashCommand` supplies canonical name, description, aliases, autocomplete data, and a queue-bypass tier; derived tier sets include aliases, preventing classifications from being replicated at dispatch sites. `ALWAYS` executes through any busy state; `CONNECTING` bypasses only initial connection; `IMMEDIATE_UI` opens UI and defers actual work; `SIDE_EFFECT_FREE` performs its immediate effect but defers chat output; and `QUEUED` waits while the app is busy. `/install`, `/reload`, and `/update` are still allowed after server-startup failure even though they are normally queue-bound, because they can repair the cause of that parked queue.
 
-A continuation that needs a modal cannot be awaited on the Textual submitted-message pump, because the pump must return to route Enter and Esc. `_schedule_off_message_pump` detaches it, permits one global continuation, reports conflicts, records failures, and resumes queued-message draining on completion. Detached work therefore owns its own error and cancellation handling.
+The input completion manager separates command, file, and thread-reference triggers. `/` suggestions rank canonical names, aliases, hidden keywords, descriptions, and fuzzy matches; the popup displays a friendly label but inserts the machine name, which preserves namespaced skill commands. `@` is file completion and `@@` is reserved for durable thread references. A selected thread becomes `@@(thread:<id>)`, while its searchable, sanitized row label may use the saved thread name, initial prompt, or short ID. Project-file completion prefers tracked files before untracked nonignored files from `git ls-files`; it falls back to a dotpath-excluding glob only when Git is unavailable or no authoritative listing succeeded.
 
 ## Approval is a decision boundary, not sandbox containment
 
@@ -109,28 +125,50 @@ sequenceDiagram
 
 *Local acknowledgement controls first enable; the live per-thread record is the activation commit.*
 
-Auto requires explicit Enter confirmation before its first interactive enable; YOLO requires explicit acknowledgement. Dismissal does not activate or persist either mode, and selecting Manual from the YOLO notice selects Manual. Following a successful selection, dcode saves Manual or Auto as a startup preference but never YOLO. A preference-write failure warns but does not roll back the already-active session mode. For the authorization and review model, see [Permissions and human-in-the-loop](/openwiki/concepts/permissions-hitl.md).
+Auto requires explicit Enter confirmation before its first interactive enable; YOLO requires explicit acknowledgement. Dismissal does not activate or persist either mode, and choosing Manual from the YOLO notice selects Manual. After a successful selection, dcode saves Manual or Auto as a startup preference but never YOLO; a failed preference write warns without rolling back the active session mode.
 
-Approval governs whether the user or Auto flow reviews agent actions. It is not authorization for a provider, an assertion that a tool is safe, or a sandbox/containment boundary. Likewise, a remote sandbox can affect tool placement and may make Auto unavailable, but it is not implemented by the cache or UI warnings described below.
+Approval decides whether a person or Auto flow reviews agent actions. It neither authorizes a provider nor contains tool execution. A remote sandbox instead determines where server-side execution runs; it may affect available tools and Auto eligibility but does not replace a review decision.
 
-## Model failures and streamed output
+## Model failure and streamed output contract
 
-`CodeModelRetryMiddleware` wraps the agent model node rather than an entire turn, so transient model connection failures can retry without replaying completed tool calls. Provider-specific retry budget is attached to constructed models, allowing runtime model switches to carry the right limit. Retry policy recognizes transient transport/provider faults, uses capped exponential backoff with modest jitter or a valid capped `Retry-After`, and bounds interactive total sleep to 60 seconds.
+`CodeModelRetryMiddleware` wraps the agent model node rather than an entire turn, so transient model failures can retry without replaying already-completed tool calls. Retry budget is read per request from the constructed model when present, which lets a runtime model switch carry provider-specific limits. The policy recognizes transport and provider failures—including eligible errors inside exception groups and cause chains—uses capped exponential backoff with modest jitter or valid capped `Retry-After`, and limits total interactive sleep to 60 seconds.
 
-For streamed attempts, the middleware tracks whether output may already have reached the message stream. A retry event correlates attempts and tells the client to mark partial output as incomplete before the replay; malformed event counters degrade to a safe generic status/marker rather than trusting event text. Auxiliary synchronous and asynchronous model calls use the same policy and may pass a cumulative delay budget when operating inside another deadline.
+Every model attempt emits correlated `model_attempt` start and completion events. The middleware tracks whether a message-stream handler may have received output; a retry event then identifies the superseded attempt and tells the client whether partial output must be marked incomplete before replay. Event parsers validate lifecycle fields and safely ignore malformed newer payloads, protecting client/server version skew. The retry event writer is best effort: its failure is logged but does not replace the model request failure.
 
-## Prompt-cache expiry is cost and continuity UX
+## Sandbox provider lifecycle
 
-Cache timing is reconciled from model-attempt and usage information and displayed by the client. After post-paint initialization, one-second timers independently check expiration and the final retention window. During the final 60 seconds, the app posts one warning per thread and cache window, unless exiting, switching threads, or awaiting cache reconciliation; the same event is offered to hooks without allowing hook failures to block the UI.
+Sandbox discovery merges curated built-ins, third-party entry points in `deepagents_code.sandbox_providers`, and user configuration from `[sandboxes.providers]`; collision precedence is configuration, then entry point, then built-in. Metadata describes working directory, install hint, backend probe module, and support for existing sandbox IDs and snapshot names. This supports providers without making the TUI responsible for their lifecycle.
 
-When a reconciled cache has expired, the base screen displays an expiry banner independently of the user's warning preference. A lapsed window loaded during thread resume is marked seen to avoid interrupting the user immediately after resume; send-time handling still applies.
+Before spawning the server, the client-side launcher can probe a known provider's backend module without importing it and return an actionable `/install` or CLI install hint. At execution time `create_sandbox()` resolves one fresh registry, verifies provider capabilities, merges configured parameters with explicit parameters, and obtains or reconnects to a backend. A snapshot name is accepted only for snapshot-capable providers and never with an existing sandbox ID.
 
-With `warnings.cache_prompt = "expiry"`, an expired cache can open a handoff dialog only while the session is idle and no competing modal, queue work, thread switch, run, or user typing is active. For an already submitted interactive prompt, the dialog offers a cache handoff, send in the current thread, or cancel; handoff and cancel preserve or restore the draft, and only an explicit send dispatches it. The handoff is suppressed by session/permanent opt-outs, a disabled threshold, or an estimate below the configured incremental-cost threshold; unavailable estimation may still offer a choice without quoting cost. If the dialog cannot be admitted because another continuation owns the modal slot, the draft is restored rather than sent silently.
+```mermaid
+flowchart TD
+    Start["create_sandbox"] --> Registry["load registry and metadata"]
+    Registry --> Validate["validate snapshot and sandbox ID"]
+    Validate --> Acquire["provider get or create"]
+    Acquire --> Setup["run optional setup script"]
+    Setup --> Body["yield backend"]
+    Body --> Owned{"created by this call"}
+    Owned -->|yes| Delete["delete backend"]
+    Owned -->|no| Retain["retain connected backend"]
+```
 
-This feature communicates likely prompt-cache retention and potential re-warm cost. It does **not** approve model/tool execution, authorize data access, or contain execution in a sandbox.
+*Only a sandbox created by this context manager is deleted on exit.*
 
-## Focused change guidance and tests
+A setup script expands `${VAR}` from the bound workspace environment, runs inside the sandbox, and aborts on nonzero exit. Once an owned sandbox has been acquired, cleanup runs even if setup or the caller's body fails. Cleanup failure is reported but never masks the primary error; an existing `sandbox_id` is never deleted. See [Sandbox partners](/openwiki/integrations/sandbox-partners.md) for provider selection.
 
-Keep display state and modal/input policy in the client, execution and checkpoints in the server, and treat stream payloads and private Textual APIs as compatibility seams. Add slash commands through the registry and choose their queue tier deliberately. When changing optional providers, update model configuration, the dependency extra, authentication presentation, and focused provider tests together.
+## Configuration, cost continuity, and extension surface
 
-`tests/unit_tests/test_app.py` covers the interactive application, including first-enable approval and detached-continuation paths. `tests/unit_tests/test_cache_expiry.py` exercises final-minute warning deduplication, reconciliation gating, banner lifecycle, idle/send-time handoff behavior, draft preservation, short-terminal modal navigation, and opt-out/threshold cases. Consult [Run a dcode session](/openwiki/workflows/run-dcode-session.md) for operational use and [Architecture overview](/openwiki/architecture/overview.md) for repository context.
+The interpreter takes a consistent resolver snapshot for its timeout, memory, call/result limits, PTC policy, and unsafe acknowledgement. Invocation PTC overrides are ignored if a lower-ranked configuration source supplies that policy, preventing a weaker caller override from changing centrally supplied policy. The default interpreter is sandbox-aware: an unspecified setting resolves disabled for a remote sandbox, and enabling it with a sandbox is invalid.
+
+The package pins `deepagents==0.7.28` exactly. SDK-dependent work must update that pin in the same change; package guidance describes CI validation against an outdated release pin. Optional dependency groups expose individual model-provider and sandbox-provider extras, plus `all-providers` and `all-sandboxes` composites.
+
+Prompt-cache timing is reconciled from model-attempt and usage data and presented by the client. After post-paint initialization, once-per-second checks handle expiry and final-window warnings; final warnings are deduplicated by thread and expiry, withheld during reconciliation, and do not let hook-notification failure block UI work. A reconciled expired cache displays an expiry banner regardless of handoff preference, while a window that was already expired on resume is marked seen to avoid an immediate idle interruption.
+
+With `warnings.cache_prompt = "expiry"`, a handoff is offered only when idle. A submitted expired prompt is gated through a detached modal: cancellation or handoff preserves the draft, and inability to admit the modal restores it rather than silently sending. This is continuity and cost UX, not approval or containment. See [Cost and sessions](/openwiki/operations/cost-and-sessions.md).
+
+## Change and test guidance
+
+Add commands through the registry and choose a queue tier deliberately. Treat client completion labels and machine insertion as a compatibility pair. Keep workspace claims minimal and server-authoritative; new `ServerConfig` fields must be classified as model-compatible, runtime-only, identity, or durable policy so a security-relevant setting cannot disappear from fingerprints.
+
+For sandbox work, test metadata capability checks, missing-dependency guidance, ownership-sensitive cleanup, setup failure, and reconnect behavior. `tests/unit_tests/test_sandbox_factory.py` focuses on those lifecycle invariants. `tests/unit_tests/tui/widgets/test_autocomplete.py` covers command ranking, namespaced insertion, `@@` durable tokens and label sanitation, Git ordering/ignore behavior, failure logging, and glob fallback. `tests/unit_tests/test_app.py` covers application approval and detached-continuation behavior. Consult [Run a dcode session](/openwiki/workflows/run-dcode-session.md), [Configuration layering](/openwiki/concepts/config-layering.md), and [Permissions and human-in-the-loop](/openwiki/concepts/permissions-hitl.md) for operational and policy guidance.

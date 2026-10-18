@@ -91,6 +91,23 @@ When onboarding a new tracing project to Engine, capture the nature of that proj
 
 A server keeps the first workspace's tracing configuration for its lifetime. Workspaces sharing that server must use matching tracing credentials, projects, endpoints, profile selectors, tracing flags, and redaction policy. A conflicting workspace is refused before its settings can affect cached or concurrent runs; start a separate server for that workspace. Restart the server to change its tracing configuration.
 
+## Local server lifetime
+
+On POSIX, each local server watches a pipe whose writer belongs to its launching
+client. When that client exits, including after SIGKILL, EOF requests SIGTERM in
+the server root. A server that cannot finish shutdown is killed after the same
+five-second grace period used by explicit stop. The guard starts before
+LangGraph imports and remains active through interpreter teardown. Normal stop
+and restart retain the writer until their existing process-group teardown ends.
+
+Only the reader is passed through `pass_fds`; neither end is inherited by later
+exec children. A fork-only client child must close its copy of the writer, or it
+can delay EOF. The guard covers the server root, not arbitrary descendants that
+outlive it. Windows keeps its existing launch and explicit-stop behavior.
+
+The owner-death process regressions use Linux pidfds and subreaping to pin and
+reap their fixtures; execution on Linux does not establish macOS coverage.
+
 ## Debugging
 
 Deep Agents Code runs as two processes: the **Textual TUI** you interact with, and a **`langgraph dev` subprocess** that hosts the agent graph. Each writes its own log, and a single switch turns both on:

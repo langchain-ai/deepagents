@@ -1125,6 +1125,8 @@ def grep_matches_from_files(
 
     matches: list[GrepMatch] = []
     for file_path, file_data in filtered.items():
+        if file_data.get("encoding") == "base64":
+            continue
         content_str = _normalize_content(file_data)
         for line_num, line in enumerate(content_str.split("\n"), 1):
             if pattern in line:  # Simple substring search for literal matching

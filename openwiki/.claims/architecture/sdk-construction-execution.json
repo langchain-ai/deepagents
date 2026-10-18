@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:d32a1fd399a4f13dd61c399981034f822925368a7cd96784c4c387a3b7ac783c",
+  "pageVersion": "sha256:b14cc9e8a5c3476932d86112fc96016a406d767685eada4dcd261227980819b3",
   "claims": [
     {
       "id": "claim_c5dfbd9cde8e41eb8280d713c9d71d4f",
@@ -34,21 +34,25 @@
     },
     {
       "id": "claim_1b5641eb13cc4cf2bfa39ef1de6f6548",
-      "statement": "AsyncSubAgentMiddleware exposes launch, status, update, cancellation, and list tools for Agent Protocol graphs; launch immediately stores an async task record in state with remote thread and run identifiers while the parent continues.",
+      "statement": "AsyncSubAgentMiddleware exposes start, check, update, cancellation, and list tools for Agent Protocol graphs; launch creates a remote thread and run, then immediately stores a parent-local async task record keyed by that thread ID while the parent continues.",
       "evidence": [
         {
           "resource": "repo://libs/deepagents/deepagents/middleware/async_subagents.py",
-          "version": "repo-file-v1:sha256:1e89c0dbff1203444693e639800cece2c843458de2c54472e2dc72f01b53fc5e"
+          "version": "repo-file-v1:sha256:2a4ce6a5d9a072eb09c8601a9325a5b57cb338914a318e859d5e1f5b554641c2"
         }
       ]
     },
     {
       "id": "claim_8067f8923a1d4512ad174350c26a8863",
-      "statement": "Async subagent fork mode sends a snapshot of effective parent history plus the delegated task to the remote graph, whereas isolated mode sends only the task; it does not transfer parent configuration, and local ASGI transport without a URL requires asynchronous invocation.",
+      "statement": "Async subagent fork mode serializes a launch-time snapshot of effective parent history plus the delegated task after removing parent-local artifacts, whereas isolated mode sends only the task; a same-deployment launch may forward JSON-compatible run context, but a URL-targeted remote launch does not, and local ASGI transport without a URL requires asynchronous invocation.",
       "evidence": [
         {
           "resource": "repo://libs/deepagents/deepagents/middleware/async_subagents.py",
-          "version": "repo-file-v1:sha256:1e89c0dbff1203444693e639800cece2c843458de2c54472e2dc72f01b53fc5e"
+          "version": "repo-file-v1:sha256:2a4ce6a5d9a072eb09c8601a9325a5b57cb338914a318e859d5e1f5b554641c2"
+        },
+        {
+          "resource": "repo://libs/deepagents/tests/unit_tests/test_async_subagents.py",
+          "version": "repo-file-v1:sha256:a73314c11631526641f86727d782d037ea593d7ac563ba99efa817fd4288df0f"
         }
       ]
     },
@@ -166,15 +170,15 @@
     },
     {
       "id": "claim_5a0d1071a8394f09a53c9ca382dc12ea",
-      "statement": "Async task tracking is parent-local state, while the Agent Protocol server owns remote threads and runs: checks derive waiting from a successful run whose thread is paused, updates interrupt the current run and create a new one on the same thread, and cancellation of a waiting task only updates local tracking.",
+      "statement": "Async task tracking is parent-local state while the Agent Protocol server owns remote threads and runs: checks infer waiting from a successful run whose thread is paused, updates create an interrupting replacement run on the same thread, and cancellation of a waiting task only updates local tracking.",
       "evidence": [
         {
           "resource": "repo://libs/deepagents/deepagents/middleware/async_subagents.py",
-          "version": "repo-file-v1:sha256:1e89c0dbff1203444693e639800cece2c843458de2c54472e2dc72f01b53fc5e"
+          "version": "repo-file-v1:sha256:2a4ce6a5d9a072eb09c8601a9325a5b57cb338914a318e859d5e1f5b554641c2"
         },
         {
           "resource": "repo://libs/deepagents/tests/unit_tests/test_async_subagents.py",
-          "version": "repo-file-v1:sha256:1af6f9f14e9c91cc22c813a5a1be348d46441ccf1c0acc706fa57a4827fa1cc6"
+          "version": "repo-file-v1:sha256:a73314c11631526641f86727d782d037ea593d7ac563ba99efa817fd4288df0f"
         }
       ]
     },
@@ -215,10 +219,56 @@
           "version": "repo-file-v1:sha256:f9c76a0cb02ea94f5b1ab204be371ebd677afb40ccace47cb389d8af6577e5cb"
         }
       ]
+    },
+    {
+      "id": "claim_b1bdbeb09129499cbdf406dbfc10b3f9",
+      "statement": "Async polling runs only on the middleware asynchronous hooks, reporting newly observed terminal or waiting outcomes before model calls and after a final answer; synchronous invocation still exposes task tools but does not poll.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/async_subagents.py",
+          "version": "repo-file-v1:sha256:2a4ce6a5d9a072eb09c8601a9325a5b57cb338914a318e859d5e1f5b554641c2"
+        },
+        {
+          "resource": "repo://libs/deepagents/tests/unit_tests/test_async_subagents.py",
+          "version": "repo-file-v1:sha256:a73314c11631526641f86727d782d037ea593d7ac563ba99efa817fd4288df0f"
+        }
+      ]
+    },
+    {
+      "id": "claim_a35e1530a6004ebcbb1b0963c5d91e39",
+      "statement": "Every SDK-built Deep Agent includes _ParentNotifierMiddleware, which reports completion or model failure once for a top-level asynchronous task run launched by a parent and can wake an idle parent only when it has both parent thread and assistant identifiers; a paused task is not woken this way.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/graph.py",
+          "version": "repo-file-v1:sha256:3826c92c9613a30d898d3fb4fb76ab49a6af0537b5ef74ec9e7340673f7f2261"
+        },
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/_parent_notifier.py",
+          "version": "repo-file-v1:sha256:99c09d664713da8d7d4eba1cd430c876f185961393b0885b1a23608fd894e2cf"
+        },
+        {
+          "resource": "repo://libs/deepagents/tests/unit_tests/test_async_subagents.py",
+          "version": "repo-file-v1:sha256:a73314c11631526641f86727d782d037ea593d7ac563ba99efa817fd4288df0f"
+        }
+      ]
+    },
+    {
+      "id": "claim_de93d5325a7246c998d3a42f1aa8c0ec",
+      "statement": "Remote async tasks do not inherit local filesystem permissions or human-interrupt configuration; those controls, authorization, and remote persistence are owned by the remote graph and its Agent Protocol deployment.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/graph.py",
+          "version": "repo-file-v1:sha256:3826c92c9613a30d898d3fb4fb76ab49a6af0537b5ef74ec9e7340673f7f2261"
+        },
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/async_subagents.py",
+          "version": "repo-file-v1:sha256:2a4ce6a5d9a072eb09c8601a9325a5b57cb338914a318e859d5e1f5b554641c2"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-10-16T08:05:35.701Z"
+    "at": "2026-10-18T08:05:11.339Z"
   }
 }

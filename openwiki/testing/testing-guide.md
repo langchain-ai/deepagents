@@ -1,11 +1,11 @@
 ---
 type: testing guide
 title: Testing Guide
-description: Focused, deterministic regression routing for SDK async/background work and Context Hub persistence, dcode application/configuration/autocomplete behavior, and Talon Discord host integration. Use package-local commands and assert observable contracts at the relevant boundary.
+description: Focused, deterministic regression routing for async subagents and backend persistence, dcode session, interpreter, sandbox, and completion behavior, and Talon Discord host flows. Use package-local targets and assert observable contracts at the relevant boundary.
 tags: [testing, pytest, deepagents, dcode, context-hub, talon, discord]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-10-17T08:04:56.296Z
+    at: 2026-10-18T08:05:11.339Z
 sources:
   - id: openwiki-source-8037e2358a2c4f9b2c722a11
     resource: repo://AGENTS.md
@@ -17,12 +17,18 @@ sources:
     resource: repo://libs/code/tests/unit_tests/test_app.py
   - id: openwiki-source-42e76fc26f690f7d6dab298d
     resource: repo://libs/code/tests/unit_tests/test_cache_expiry.py
+  - id: openwiki-source-dbf986bbfdd9750d4d02f16d
+    resource: repo://libs/code/tests/unit_tests/test_interpreter_workspace_policy.py
   - id: openwiki-source-b6c121d977850bad8b8c8068
     resource: repo://libs/code/tests/unit_tests/test_sandbox_factory.py
+  - id: openwiki-source-97e242977ea97fdae74a7989
+    resource: repo://libs/code/tests/unit_tests/test_threads_resume.py
   - id: openwiki-source-b7beeddb49bcfbe0565494c8
     resource: repo://libs/code/tests/unit_tests/tui/widgets/test_autocomplete.py
   - id: openwiki-source-0f308f1610986e2f3ed6d53c
     resource: repo://libs/deepagents/Makefile
+  - id: openwiki-source-ab8bfe29057131f7fc94fb78
+    resource: repo://libs/deepagents/tests/unit_tests/backends/test_composite_backend.py
   - id: openwiki-source-97b09ca9987a984f1b37f8c8
     resource: repo://libs/deepagents/tests/unit_tests/backends/test_context_hub_backend.py
   - id: openwiki-source-6ce85b02eabe462f99e0c912
@@ -35,28 +41,30 @@ sources:
     resource: repo://libs/talon/tests/channels/test_discord.py
   - id: openwiki-source-6fd40210153ee05d5c26d545
     resource: repo://libs/talon/tests/integration_tests/test_discord_host.py
-generated: { by: "openwiki/0.4.2", at: "2026-10-17T08:04:56.296Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-10-18T08:05:11.339Z" }
 ---
 
 # Testing Guide
 
-Test from the package that owns the changed observable boundary. `libs/` contains independently versioned packages, each with its own environment and `Makefile`; synchronize dependencies in that package and use `make help` if a target is unclear. Network-free coverage belongs in `tests/unit_tests/`; tests that need a networked contract belong in `tests/integration_tests/`. Pytest asyncio mode is automatic, and unaccepted warnings fail the suite. Prefer a fake SDK, gateway, filesystem, clock, or process boundary over live services, sleeps, or assertions about incidental call order.
+Test from the package that owns the changed observable boundary. `libs/` packages have independent environments and `Makefile`s: synchronize in the package, then use its target (or `make help`). Put network-free tests in `tests/unit_tests/`; reserve `tests/integration_tests/` for a composed boundary that requires it. Pytest asyncio mode is automatic and unaccepted warnings fail the suite. Prefer controlled clients, gateways, filesystems, events, and UI pilots to live services, sleeps, or assertions about incidental internal call order.
 
-See [Development](../operations/development.md), [Backends](../concepts/backends.md), [Subagents and Skills](../concepts/subagents-skills.md), [Talon channel admission](../concepts/talon-channel-admission.md), and [Run a dcode session](../workflows/run-dcode-session.md) for the surrounding runtime behavior.
+See [Development](../operations/development.md), [Backends](../concepts/backends.md), [Subagents and Skills](../concepts/subagents-skills.md), [Talon channel admission](../concepts/talon-channel-admission.md), and [Run a dcode session](../workflows/run-dcode-session.md) for runtime context.
 
-## Run the owning package's test target
+## Run the owning package target
 
 ```bash
 cd libs/deepagents
 uv sync --all-groups
 make test TEST_FILE=tests/unit_tests/test_async_subagents.py
+make test TEST_FILE=tests/unit_tests/backends/test_composite_backend.py
 make test TEST_FILE=tests/unit_tests/backends/test_context_hub_backend.py
 make lint
 
 cd ../code
 uv sync --group test
-make test TEST_FILE=tests/unit_tests/test_cache_expiry.py
+make test TEST_FILE=tests/unit_tests/test_interpreter_workspace_policy.py
 make test TEST_FILE=tests/unit_tests/test_sandbox_factory.py
+make test TEST_FILE=tests/unit_tests/test_threads_resume.py
 make test TEST_FILE=tests/unit_tests/tui/widgets/test_autocomplete.py
 make lint
 
@@ -67,90 +75,73 @@ make test TEST_FILE=tests/integration_tests/test_discord_host.py
 make lint
 ```
 
-`deepagents` and `code` unit targets run parallel pytest with non-Unix sockets disabled, Unix sockets allowed, benchmarks disabled, and coverage enabled. Their integration target selects `tests/integration_tests/` and permits the integration path with a 30-second timeout. Talon's target first runs its WhatsApp bridge tests, then runs Python pytest with non-Unix sockets disabled and a 10-second timeout; its default `TEST_FILE` is `tests/`, so a focused integration file can be selected with the same target. Pass additional pytest options in `PYTEST_EXTRA`.
+`deepagents` and `code` unit targets run socket-restricted parallel pytest with coverage; their integration targets select `tests/integration_tests/` and have a 30-second timeout. Talon's target runs its WhatsApp bridge tests before socket-restricted Python pytest with a 10-second timeout. Pass extra pytest options in `PYTEST_EXTRA`.
 
-## Route a regression to its observable seam
+## Route the regression to its observable seam
 
-| Changed boundary | Focused test file | Deterministic seam and result to assert |
+| Changed boundary | Focused test file | Deterministic seam and observable result |
 | --- | --- | --- |
-| Async child launch, status, update, cancellation, forked state, or forwarded context | `libs/deepagents/tests/unit_tests/test_async_subagents.py` | Substitute sync or async SDK clients; assert tool `Command` state and outgoing child payload. |
-| Context Hub reads, commits, batching, conflict recovery, or local visibility | `libs/deepagents/tests/unit_tests/backends/test_context_hub_backend.py` | Use a mocked `langsmith.Client`, events, and a thread pool; assert returned backend results, committed payloads, and cache-visible content. |
-| dcode cache-expiry notice, banner, handoff, or queue behavior | `libs/code/tests/unit_tests/test_cache_expiry.py` | Mount `DeepAgentsApp` with `run_test()`, control time and remote state, and observe notifications, widgets, and resulting thread state. |
-| dcode sandbox lifecycle or provider configuration | `libs/code/tests/unit_tests/test_sandbox_factory.py` | Construct a registry without entry-point discovery and fake the provider; assert cleanup ownership and user-facing dependency/configuration failures. |
-| dcode configuration or UI preference behavior | `libs/code/tests/unit_tests/test_app.py` | Redirect `DEFAULT_CONFIG_PATH` to `tmp_path`, mount the app when rendering matters, and assert persisted TOML plus visible UI state. |
-| Slash, file, or thread completion | `libs/code/tests/unit_tests/tui/widgets/test_autocomplete.py` | Use a mock completion view and throwaway Git repository; assert displayed candidates and inserted token/range. |
-| Discord gateway/channel behavior | `libs/talon/tests/channels/test_discord.py` | Deliver events through a recording gateway; assert admission, conversation routing, interaction responses, and outbound behavior. |
-| Discord-to-host behavior | `libs/talon/tests/integration_tests/test_discord_host.py` | Start `TalonHost` with a stub gateway and small agent/runtime; assert host commands, history scope, authorization, and replies. |
+| Async child lifecycle, fork snapshot, or forwarded context | `libs/deepagents/tests/unit_tests/test_async_subagents.py` | Substitute sync and async SDK clients; assert task `Command` state and outbound child payload. |
+| Composite routing, merged search, or sandbox execution delegation | `libs/deepagents/tests/unit_tests/backends/test_composite_backend.py` | Compose in-memory or temporary backends; assert public paths, merged results, truncation/error propagation, and execution result. |
+| Context Hub reads, batching, conflict recovery, or local visibility | `libs/deepagents/tests/unit_tests/backends/test_context_hub_backend.py` | Mock `langsmith.Client` and gate concurrent work with events; assert backend results, commit payloads, and cache-visible content. |
+| Interpreter permissions while binding or resuming a workspace | `libs/code/tests/unit_tests/test_interpreter_workspace_policy.py` | Use a temporary policy and session DB; assert effective policy preservation or `WorkspaceConflictError`. |
+| Sandbox lifecycle/provider configuration | `libs/code/tests/unit_tests/test_sandbox_factory.py` | Construct a registry without entry-point discovery; assert cleanup ownership and user-facing failures. |
+| `/threads` and cross-agent resume behavior | `libs/code/tests/unit_tests/test_threads_resume.py` | Mock the checkpoint/session store and UI seams; assert target choice, user messages, cancellation, and relaunch fallback. |
+| dcode configuration/UI or completion | `libs/code/tests/unit_tests/test_app.py`, `tui/widgets/test_autocomplete.py` | Redirect configuration to `tmp_path`; mount only when rendering matters; use a mock view and throwaway Git repository. |
+| Discord channel admission and interactions | `libs/talon/tests/channels/test_discord.py` | Deliver events through a recording gateway; assert routing, context, interaction response, and outbound behavior. |
+| Discord-to-host composition | `libs/talon/tests/integration_tests/test_discord_host.py` | Start `TalonHost` with a stub gateway and minimal runtime; assert commands, authorization, history scope, and replies. |
 
 ```mermaid
 flowchart TD
-    Change["Changed observable behavior"] --> Owner["Choose the owning package"]
+    Change["Changed observable behavior"] --> Owner["Choose owning package"]
     Owner --> Boundary{"Boundary"}
-    Boundary -->|"SDK task or Hub"| SDK["Mock client plus events or threads"]
-    Boundary -->|"dcode UI or config"| Dcode["Temporary state and Textual pilot"]
-    Boundary -->|"completion"| Complete["Mock view and throwaway Git repo"]
+    Boundary -->|"Task or persistence backend"| Backend["Mock client or composed in-memory backend"]
+    Boundary -->|"dcode policy session UI or completion"| Dcode["Temporary state and Textual pilot"]
     Boundary -->|"Discord channel or host"| Discord["Recording gateway and stub agent"]
-    SDK --> Assert["Assert result state payload or error"]
+    Backend --> Assert["Assert result state payload or error"]
     Dcode --> Assert
-    Complete --> Assert
     Discord --> Assert
     Assert --> Check["Run focused make test and make lint"]
 ```
 
-*Regression routing maps each changed boundary to an isolated, observable test seam.*
+*Regression routing maps each changed boundary to an isolated observable seam.*
 
-## SDK async subagents: task lifecycle and forwarding
+## Deepagents: asynchronous delegation and composite persistence
 
-`AsyncSubAgentMiddleware` exposes a five-tool task interface: start, check, update, cancel, and list. Treat `async_tasks` as the parent-visible task record, rather than inspecting middleware internals. A focused launch/check/update/cancel regression should verify task identity, run identity, status, and tool-visible `Command` or error results for the corresponding synchronous and asynchronous client entry point.
+Async-subagent tests require the five-tool task interface to preserve tracked task state across launch, live status checks, interrupting updates, cancellation, and sync or async client entry points; a waiting child exposes its interrupt payload, and cancellation while waiting remains terminal without a remote cancel call.
 
-A completed remote run can have an interrupted child thread. Checking it must expose `waiting` and its interrupt payload rather than invent a final result. Cancelling a waiting task is terminal without a remote cancel request. These are observable lifecycle semantics; use a fake client state to establish them, not a live deployment.
+Forked async-subagent launch tests serialize a snapshot of parent context, including summarized history and rehydrated offloaded media, while isolated launches send only the delegated request; the coverage runs both synchronous and asynchronous invocations. Async-subagent context forwarding is deployment-scoped: a child on the parent deployment receives serializable parent context and parent-assistant metadata, but a parent-reference-only context and children on another server do not receive that context.
 
-Fork and isolated modes have intentionally different input ownership. Isolated launch sends only the delegated request. Fork launch serializes a parent snapshot, including summarized history and rehydrated offloaded media, so tests should examine the outbound request while changing parent state to prove the child received a snapshot. Parent context also crosses only a deployment-local boundary: serializable context and parent-assistant metadata accompany a child on the same deployment, while parent-reference-only context and cross-server children do not receive that context.
+For `CompositeBackend`, build actual temporary filesystem and in-memory store backends rather than testing route-selection internals. A route owns its prefix, while root list/search/glob combines the default and routed spaces with composite paths. Focus regressions on path isolation and on the result contract: merged search truncation is preserved, a backend error is surfaced rather than converted into partial success, and command execution delegates only to a sandbox-capable default backend.
 
-## Context Hub: persistence is concurrent and locally readable
+`ContextHubBackend` tests model persistence with a mocked LangSmith client: reads cache the pulled tree, treat a 404 as an empty repository, surface Hub API failures as structured errors, and use the pulled commit hash as the parent for a subsequent write. Gate fake pushes with events rather than sleeping. ContextHubBackend mutation tests require the batching window to be anchored to the first mutation, coalesce concurrent mixed mutations into one commit, expose pending changes to read/list/search/download operations, and serialize a dependent edit behind its in-flight commit. ContextHubBackend failure and conflict regressions require failed in-flight batches to reject queued waiters and recover later, while a conflict reloads authoritative state, replays valid changes, and rejects a queued edit whose precondition became stale.
 
-`ContextHubBackend` is tested with a mocked LangSmith client, never a Hub service. Reads lazily populate a cached tree: a missing remote repository is an empty tree, a Hub API failure becomes a structured backend error, and unexpected runtime errors remain visible. Writes use the pulled commit hash as `parent_commit`; a returned URL without a usable hash triggers an authoritative reload before subsequent work can depend on the new parent.
+## dcode: process state, workspace policy, sandboxes, and session UI
 
-The mutation queue is the critical persistence seam. Its coalescing deadline is anchored to the first mutation, so concurrent writes—and mixed write, edit, delete, and upload operations—can form one commit. The speculative overlay must make accepted pending or in-flight mutations visible through read, list, grep, glob, and download before the commit finishes. A dependent edit waits for the first commit instead of issuing concurrent commits, then uses that commit as its parent.
+The dcode unit `conftest.py` creates a synthetic `DEEPAGENTS_HOME` before imports and uses autouse fixtures to restore environment and dotenv state, isolate user configuration, and disable Ollama discovery so unit tests do not depend on a developer profile or local service. Use these fixtures and `tmp_path`; do not read a developer profile, dotenv file, managed configuration, or local service in a unit test.
 
-Exercise failures and conflicts deliberately. A failed in-flight commit rejects queued waiters, invalidates stale cache state, and permits a later burst to recover. On conflict, the backend reloads authoritative state and replays valid changes; a queued edit whose old text no longer exists fails rather than overwriting remote content. Do not use timing sleeps: gate fake client calls with events and release the batch explicitly.
+Interpreter workspace-policy regressions should bind the same temporary thread more than once. The safe implicit/default policy and an explicit safe policy may resume each other; managed policy overrides invocation values. Unknown historical permission, changed effective allowlist, acknowledgement changes, or other workspace-policy drift must fail with `WorkspaceConflictError`. The unsafe `all` policy still requires explicit acknowledgement, and runtime validation resolves the effective bound policy rather than silently adopting a changed environment.
 
-## dcode: isolate process state before testing app behavior
+Sandbox-factory tests construct registries without entry-point discovery and require cleanup only for newly owned sandboxes on setup or context failure, while preserving caller-supplied sandboxes and converting missing provider dependencies or incompatible provider options into explicit errors. Bind both environment lookup seams when the factory reads configuration so the test cannot accidentally use a different active environment.
 
-The dcode unit `conftest.py` establishes a synthetic `DEEPAGENTS_HOME` before imports can freeze paths. Its autouse fixtures restore environment variables and dotenv-loader maps, remove credentials and user configuration that could cause tracing or onboarding side effects, and disable automatic Ollama discovery. Use those fixtures and `tmp_path`; do not read a developer profile, dotenv file, managed configuration, or local service as part of a unit test.
+For `/threads`, test parsing and session-store outcomes rather than widget internals. `/resume` delegates to the same handler; invalid flags or too many arguments show usage without resuming. A requested existing thread retains its owning assistant, a missing identifier can suggest close matches, and database failures become user-visible retry errors. Bare resume prefers a valid `previous_thread_id`; cross-agent resume must leave the current session unchanged when cancelled and give remote sessions an actionable `dcode -r <thread>` relaunch instruction instead of attempting a local server switch.
 
-### Cache expiry and handoff
+dcode cache-expiry tests require the expiring notice to be emitted only in the 1-to-60-second window, suppressed during cache reconciliation, deduplicated until the thread or expiry changes, and non-disruptive to an editable draft or message processing in a mounted app. dcode scrollbar regressions isolate config in a temporary TOML file and require environment precedence with safe fallback for invalid data, preservation of unrelated UI keys, visible layout updates in a mounted app, and hidden scrollbars in ASCII mode even when the preference is enabled.
 
-The cache-expiry suite separates a non-disruptive notification from an expiry handoff. Control `cache_expires_at`, reconciliation state, and hook outcomes, then assert the visible toast/notification and that duplicate checks do not duplicate it. A pending cache reconciliation suppresses the expiring notice; changing thread or expiry re-arms it. In a mounted app, a timer notification must leave the draft editable and must not unexpectedly process a prompt or start a handoff.
+dcode autocomplete tests require thread completion to turn a standalone `@@` query into a durable thread token, file discovery to preserve tracked files when an optional untracked scan fails and to fall back without Git, and nested-cwd completion to be scoped to that subtree without prefix leakage. Use a temporary repository with local identity, and assert candidates and the inserted replacement range.
 
-For expiry, assert the rendered banner and its disappearance when a later cache use refreshes the deadline. Use a real graph/checkpoint only where the regression concerns handoff preservation: the suite checks that the source configuration and state are copied to the new thread without mutating the source, and that failures clean up the owned thread reservation.
+## Talon Discord: channel admission before host composition
 
-### Application configuration and sandboxes
+Discord channel tests use a recording gateway to verify admission and routing: self-authored messages are dropped, exposure controls operator and allowlisted access, and an admitted top-level guild mention opens a thread while thread-creation failure falls back to the channel. Discord thread-context tests require post-admission context to omit OAuth callback content, remain bounded to recent messages, be represented to the host as data rather than instructions, and allowlisted parent channels to admit their threads.
 
-Configuration tests redirect `deepagents_code.model_config.DEFAULT_CONFIG_PATH` to a temporary file. Test precedence and recovery at the public helper or command: missing or malformed config falls back safely, valid environment values override persisted settings, invalid or empty environment values fall back, saves preserve unrelated `[ui]` keys, and filesystem write failures return a structured error rather than escaping. When a preference changes layout, mount `DeepAgentsApp` and assert the rendered widget or notification; reset global glyph caches around tests that alter the charset.
+Discord interaction tests require authorized slash commands to be deferred and dispatched as their typed equivalent with replies sent through the interaction, while unauthorized, unknown, or contextless commands are rejected without dispatch and handler failures receive one generic response. Test long interaction replies through the recorder so Discord-limit chunking is observable without Discord.
 
-Sandbox-factory tests build `SandboxRegistry(..., include_entry_points=False)` and bind both environment lookup seams so resolution is deterministic. Their high-value invariant is ownership: setup failure, setup-file failure, interruption, and context-body failure delete a newly created sandbox, but never delete a caller-supplied sandbox ID. Test optional provider imports, credentials, provider-specific snapshot restrictions, and backend exception translation as user-facing errors without importing or calling real provider SDKs.
-
-### Completion behavior
-
-Autocomplete tests keep the controller boundary narrow. Thread completion recognizes a standalone `@@` reference, searches durable thread metadata, renders a human label, and inserts `@@(thread:<id>)` into the exact replacement range. File completion obtains tracked then untracked Git files, preserves tracked priority, excludes ignored paths, and retains a successful tracked listing if the optional untracked pass fails. If Git is unavailable it uses a dotpath-excluding glob fallback.
-
-For a nested working directory, suggestions are scoped to that subtree and made relative to it; a sibling that merely shares a string prefix must not leak in, and a cwd outside the project fails closed. Use a temporary repository with a local identity rather than an existing checkout. Keep Git diagnostics locale-stable and sanitize failure output before asserting diagnostics.
-
-## Talon Discord: test channel admission separately from host composition
-
-Channel tests use a recording gateway that stores callbacks and delivers synthetic inbound messages, reactions, connection changes, and interactions. They should cover lifecycle status separately from admission. A self-authored message never re-enters the host; `SELF` accepts its configured operator, while allowlist behavior can admit a user or a configured guild channel. Guild messages normally require a mention, whereas DMs do not. A permitted top-level guild mention opens a Discord thread and routes the conversation/reply there; thread creation failure falls back to the channel.
-
-Thread context is untrusted input. Tests establish that context is fetched only after admission, filters unsafe OAuth-callback material, keeps bounded recent content, and is wrapped by the host as context rather than instructions. An allowlisted parent channel admits its threads for both messages and slash interactions.
-
-Slash interactions must obey the same admission model as typed commands. For an authorized command, the channel defers before dispatching and represents it as its typed text equivalent with matching metadata; its reply is sent to the interaction follow-up and split at the Discord text limit. Unauthorized, unknown, or contextless interactions are rejected without dispatch/defer. Handler failure still answers the interaction once with a generic failure response.
-
-The integration file starts a real `TalonHost` around a stub gateway and minimal agent/runtime. Use it when a change spans channel conversion and host semantics: `/new` must advance the conversation identity and answer the interaction, `/stop` reports absent work, `/help` returns host commands, and an unauthorized interaction never reaches the agent. Public Discord threads may share the parent history archive for discovery without injecting one thread's messages into another thread's agent state; reset of that public history applies to the parent scope and blocks concurrent sibling turns until reset completes.
+Use the host integration file only when channel conversion must compose with real host behavior. Discord host integration tests verify that slash commands reach real host semantics: `/new` starts a fresh conversation and answers the interaction, `/stop` and `/help` return host responses, and unauthorized interactions do not reach the agent. Discord host integration tests verify that public Discord threads can share a parent history archive for discovery without sharing each thread's agent-state messages, and that resetting public parent history coordinates sibling work before new turns proceed.
 
 ## Completion checklist
 
 1. Work in the owning package and use its `uv sync` and `Makefile` target.
-2. Place a network-free regression in `unit_tests`; use `integration_tests` only for the composed boundary it needs.
-3. Isolate environment, filesystem, time, SDK, gateway, and process boundaries; do not use live providers or sleeps.
-4. Assert a public result, persisted data, outbound payload, rendered UI, or user-visible error—not an incidental sequence of internal calls.
-5. Cover both sync and async entry points where the boundary exposes both, then run the focused `make test TEST_FILE=...` and `make lint`.
+2. Keep a regression network-free unless the composed integration boundary requires otherwise.
+3. Isolate environment, filesystem, clock, SDK, gateway, and process boundaries; gate concurrency with events, not sleeps.
+4. Assert a public result, persisted data, outbound payload, rendered UI, or user-visible error—not an incidental internal call sequence.
+5. Cover both sync and async entry points when the public boundary exposes both, then run the focused target and `make lint`.

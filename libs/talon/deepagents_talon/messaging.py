@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import logging
+from contextlib import contextmanager
 from contextvars import ContextVar
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from langchain.agents.middleware import AgentMiddleware, AgentState
@@ -13,6 +15,8 @@ from langchain_core.tools import tool
 from deepagents_talon.background import _IN_SUBAGENT
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
+
     from langgraph.runtime import Runtime
 
     from deepagents_talon.interfaces import ProgressMessageHandler
@@ -44,6 +48,31 @@ MESSAGE_HANDLER: ContextVar[ProgressMessageHandler | None] = ContextVar(
 )
 
 
+@dataclass
+class _ProgressBudget:
+    remaining: int
+
+
+_PROGRESS_BUDGET: ContextVar[_ProgressBudget | None] = ContextVar(
+    "talon_progress_budget", default=None
+)
+
+
+@contextmanager
+def progress_messages(handler: ProgressMessageHandler | None, verbosity: int) -> Iterator[None]:
+    """Scope progress delivery and its shared budget to one runtime invocation."""
+    limits = {1: 0, 2: 2}
+    message_token = MESSAGE_HANDLER.set(handler)
+    budget_token = _PROGRESS_BUDGET.set(
+        _ProgressBudget(limits[verbosity]) if verbosity in limits else None
+    )
+    try:
+        yield
+    finally:
+        _PROGRESS_BUDGET.reset(budget_token)
+        MESSAGE_HANDLER.reset(message_token)
+
+
 @tool
 async def send_message(text: str) -> str:
     """Send a progress update to the user in the chat that started this turn.
@@ -64,6 +93,14 @@ async def _deliver_message(text: str) -> str:
         return "Message unavailable: this run has no originating channel."
     if not text.strip():
         return "Message not sent: text must not be blank."
+    budget = _PROGRESS_BUDGET.get()
+    if budget is not None:
+        if budget.remaining == 0:
+            return (
+                "Message not sent: interim update limit reached. "
+                "Continue working; give your final answer when finished."
+            )
+        budget.remaining -= 1
     try:
         result = await handler(text)
     except Exception:  # noqa: BLE001  # Keep transport failures out of model context.

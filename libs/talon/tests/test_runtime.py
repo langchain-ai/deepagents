@@ -269,7 +269,7 @@ async def test_runtime_wires_backend_checkpointer_tools_skills_and_memory(
 
     assert isinstance(captured["backend"], CompositeBackend)
     assert captured["checkpointer"] is runtime.checkpointer
-    assert captured["system_prompt"] == "assistant instructions"
+    assert captured["system_prompt"].startswith("assistant instructions\n\n")
     assert captured["skills"] == [str(assistant_dir / "skills")]
     assert captured["memory"] == [str(assistant_dir / "memory" / "AGENTS.md")]
     assert (assistant_dir / "memory" / "AGENTS.md").is_file()

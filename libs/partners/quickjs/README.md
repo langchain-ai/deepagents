@@ -48,6 +48,8 @@ uv add langchain-quickjs
 
 `langchain-quickjs` depends on `quickjs-rs`, a PyO3 extension module that ships prebuilt wheels for macOS, Linux, and Windows on CPython 3.11+.
 
+On Python 3.14+, `bsdiff4` is not installed automatically because it has no prebuilt wheels. Snapshot persistence still works, but stores full snapshots rather than compact binary deltas, increasing checkpoint storage. To enable delta encoding or resume older checkpoints containing patches, install `bsdiff4>=1.2.6,<2.0.0` separately and restart the process. Building it on Python 3.14 requires a C compiler and Python development headers.
+
 ## Quick start
 
 ```python

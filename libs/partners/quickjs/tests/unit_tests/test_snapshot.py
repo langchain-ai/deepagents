@@ -28,7 +28,7 @@ from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage
 from pydantic import Field
 
-from langchain_quickjs import CodeInterpreterMiddleware
+from langchain_quickjs import CodeInterpreterMiddleware, _snapshot
 from langchain_quickjs._snapshot import (
     coerce_record,
     normalize_signing_key,
@@ -49,13 +49,18 @@ def _assert_slot_update(update: dict[str, Any] | None) -> str:
     return slot_id
 
 
-def test_after_agent_snapshot_roundtrip_with_before_agent() -> None:
+@pytest.mark.parametrize("without_bsdiff4", [False, True])
+def test_after_agent_snapshot_roundtrip_with_before_agent(
+    monkeypatch: pytest.MonkeyPatch, without_bsdiff4: bool
+) -> None:
     """Snapshots from ``after_agent`` restore into fresh slots in ``before_agent``.
 
     ``after_agent`` emits a patch-chain record; the ``DeltaChannel`` reducer
     materializes the chain into full snapshot bytes before ``before_agent``
     reads it. The test runs the reducer explicitly to model that contract.
     """
+    if without_bsdiff4:
+        monkeypatch.setattr(_snapshot, "bsdiff4", None)
     mw = CodeInterpreterMiddleware()
     try:
         slot_id = "snapshot-roundtrip"
@@ -306,6 +311,29 @@ def test_replay_chain_skips_unrecognized_records() -> None:
     noisy = [chain[0], 42, ("bogus",), chain[1], None, ("snap", snaps[0])]
     # Folds: snap s0, skip, skip, patch->s1, clear->b"", snap->s0.
     assert replay_snapshot_chain(b"", noisy) == snaps[0]
+
+
+def test_snapshot_chain_without_bsdiff4(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(_snapshot, "bsdiff4", None)
+    snapshots = _make_snapshots()
+    prior = b""
+    records = []
+    for payload in snapshots:
+        record = _snapshot.encode_snapshot(payload, prior)
+        assert record == ("snap", payload)
+        records.append(record)
+        prior = replay_snapshot_chain(prior, [record])
+        assert prior == payload
+    assert replay_snapshot_chain(b"", records) == snapshots[-1]
+    assert replay_snapshot_chain(prior, [None]) == b""
+
+
+def test_replay_patch_without_bsdiff4(monkeypatch: pytest.MonkeyPatch) -> None:
+    snapshots = _make_snapshots()
+    chain = _build_chain(snapshots)
+    monkeypatch.setattr(_snapshot, "bsdiff4", None)
+    with pytest.raises(ImportError, match="snapshot patches requires bsdiff4"):
+        replay_snapshot_chain(b"", chain)
 
 
 def test_snapshot_update_first_write_is_anchor() -> None:

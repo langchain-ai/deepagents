@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = ">=3.11, <4.0"
 resolution-markers = [
     "python_full_version >= '3.14' and sys_platform == 'emscripten'",
@@ -991,7 +991,7 @@ name = "langchain-quickjs"
 version = "0.3.9"
 source = { editable = "." }
 dependencies = [
-    { name = "bsdiff4" },
+    { name = "bsdiff4", marker = "python_full_version < '3.14'" },
     { name = "deepagents" },
     { name = "langchain" },
     { name = "langchain-core" },
@@ -1001,6 +1001,7 @@ dependencies = [
 
 [package.dev-dependencies]
 test = [
+    { name = "bsdiff4" },
     { name = "build" },
     { name = "langgraph-checkpoint-postgres" },
     { name = "psycopg", extra = ["binary"] },
@@ -1021,7 +1022,7 @@ test = [
 
 [package.metadata]
 requires-dist = [
-    { name = "bsdiff4", specifier = ">=1.2.6,<2.0.0" },
+    { name = "bsdiff4", marker = "python_full_version < '3.14'", specifier = ">=1.2.6,<2.0.0" },
     { name = "deepagents", editable = "../../deepagents" },
     { name = "langchain", specifier = ">=1.4.6,<2.0.0" },
     { name = "langchain-core", specifier = ">=1.6.12,<2.0.0" },
@@ -1031,6 +1032,7 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 test = [
+    { name = "bsdiff4", specifier = ">=1.2.6,<2.0.0" },
     { name = "build" },
     { name = "langgraph-checkpoint-postgres", specifier = ">=3.2.0,<4.0.0" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.3.4,<4.0.0" },

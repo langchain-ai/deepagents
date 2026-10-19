@@ -29,10 +29,18 @@ import logging
 from hashlib import sha256
 from typing import TYPE_CHECKING
 
-import bsdiff4
-
 if TYPE_CHECKING:
     from collections.abc import Sequence
+    from types import ModuleType
+
+try:
+    import bsdiff4 as _bsdiff4
+except ModuleNotFoundError as exc:
+    if exc.name != "bsdiff4":
+        raise
+    bsdiff4: ModuleType | None = None
+else:
+    bsdiff4 = _bsdiff4
 
 logger = logging.getLogger(__name__)
 
@@ -148,6 +156,13 @@ def replay_snapshot_chain(
         if kind == SNAP:
             base = blob
         elif kind == PATCH:
+            if bsdiff4 is None:
+                msg = (
+                    "Replaying QuickJS snapshot patches requires bsdiff4. "
+                    "Install bsdiff4>=1.2.6,<2.0.0 and restart the process; "
+                    "Python 3.14 may require a C compiler to build it."
+                )
+                raise ImportError(msg)
             base = bsdiff4.patch(base, blob)
         elif kind == CLEAR:
             base = b""
@@ -168,7 +183,7 @@ def encode_snapshot(payload: bytes, prior: bytes) -> SnapshotRecord:
         patch would not be smaller than a fresh anchor;
       * ``("patch", diff)`` otherwise.
     """
-    if not prior:
+    if not prior or bsdiff4 is None:
         return (SNAP, payload)
     try:
         patch = bsdiff4.diff(prior, payload)

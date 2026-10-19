@@ -81,7 +81,7 @@ def test_lock_command_uses_package_specific_python_version() -> None:
         "--directory",
         "libs/evals",
         "--python",
-        "3.12",
+        "3.14",
     ]
     assert _lock_command(LIBS_ROOT / "acp", check=False) == [
         "uv",
@@ -99,7 +99,7 @@ def test_lockfile_error_names_package_and_fix_command() -> None:
         "::error file=libs/evals/uv.lock,title=Out-of-date uv.lock::"
         "libs/evals/uv.lock is out of sync with libs/evals/pyproject.toml. "
         "From the repository root, run `uv lock --directory libs/evals "
-        "--python 3.12` and commit the updated lockfile."
+        "--python 3.14` and commit the updated lockfile."
     )
 
 
@@ -128,9 +128,9 @@ def test_main_prints_actionable_error_on_lock_failure(monkeypatch, capsys) -> No
             "--directory",
             "libs/evals",
             "--python",
-            "3.12",
+            "3.14",
         ]
     ]
     assert "🔍 Checking evals" in captured.out
     assert "libs/evals/uv.lock is out of sync" in captured.err
-    assert "uv lock --directory libs/evals --python 3.12" in captured.err
+    assert "uv lock --directory libs/evals --python 3.14" in captured.err

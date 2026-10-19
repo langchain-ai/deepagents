@@ -277,7 +277,7 @@ jobs:
     uses: ./.github/workflows/_lint.yml
     with:
       working-directory: "libs/evals"
-      python-version: "3.13"
+      python-version: "3.14"
 
   lint-acp:
     name: "🧹 Lint acp"
@@ -369,7 +369,7 @@ jobs:
     uses: ./.github/workflows/_test.yml
     with:
       working-directory: "libs/evals"
-      python-versions: '["3.12", "3.13"]'
+      python-versions: '["3.14"]'
 
   test-acp:
     name: "🧪 Test acp"
@@ -527,10 +527,10 @@ jobs:
       - name: "📋 Checkout Code"
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: "🐍 Set up Python 3.12 + UV"
+      - name: "🐍 Set up Python 3.14 + UV"
         uses: "./.github/actions/uv_setup"
         with:
-          python-version: "3.12"
+          python-version: "3.14"
           cache-suffix: drbench-dataset
           working-directory: "libs/evals"
 

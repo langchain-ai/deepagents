@@ -4,15 +4,14 @@ version = "0.0.1"
 description = "Evaluation suite and Harbor integration for Deep Agents"
 readme = "README.md"
 license = { text = "MIT" }
-requires-python = ">=3.12,<3.14"
+requires-python = ">=3.14,<3.15"
 keywords = ["agents", "ai", "evals", "harbor", "llm", "langgraph", "langchain", "langsmith", "tracing"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.12",
-    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
@@ -229,5 +228,6 @@ testpaths = ["tests"]
 filterwarnings = [
     # Unexpected warnings fail the run; see "Warnings are errors" in AGENTS.md.
     "error",
+    "default:Core Pydantic V1 functionality isn't compatible:UserWarning",
 ]
 asyncio_mode = "auto"

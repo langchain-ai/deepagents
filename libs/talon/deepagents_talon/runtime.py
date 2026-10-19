@@ -52,6 +52,7 @@ from deepagents_talon.clock import current_time
 from deepagents_talon.config import TalonConfig
 from deepagents_talon.context_doctor import ContextDoctor
 from deepagents_talon.cron import CronJobStore, CronOrigin, CronTools
+from deepagents_talon.effort import ACTIVE_EFFORT, effort_levels, effort_settings
 from deepagents_talon.interfaces import (
     AgentRequest,
     AgentResult,
@@ -595,10 +596,21 @@ class DeepAgentRuntime:
     @contextlib.asynccontextmanager
     async def _turn_models(self, request: AgentRequest) -> AsyncIterator[None]:
         """Bind the chat's selected model for one turn."""
-        model_token = ACTIVE_MODEL.set(await self._turn_model(request))
+        model = await self._turn_model(request)
+        spec = request.model or self.default_model
+        settings = (
+            effort_settings(spec, request.effort)
+            if request.effort is not None
+            and (model is not None or spec == self.default_model)
+            and request.effort in effort_levels(spec)
+            else None
+        )
+        model_token = ACTIVE_MODEL.set(model)
+        effort_token = ACTIVE_EFFORT.set(settings)
         try:
             yield
         finally:
+            ACTIVE_EFFORT.reset(effort_token)
             ACTIVE_MODEL.reset(model_token)
 
     async def _turn_model(self, request: AgentRequest) -> BaseChatModel | None:

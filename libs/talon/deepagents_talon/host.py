@@ -42,6 +42,7 @@ from deepagents_talon.channels.slack import SlackChannel
 from deepagents_talon.cron.errors import CronJobError
 from deepagents_talon.cron.jobs import CronJobStore
 from deepagents_talon.cron.scheduler import is_silent
+from deepagents_talon.effort import effort_levels, normalize_effort
 from deepagents_talon.interfaces import (
     AgentRequest,
     AgentResult,
@@ -106,6 +107,7 @@ _HELP_COMMAND = chat_commands.HELP
 _CONTEXT_DOCTOR_COMMAND = chat_commands.CONTEXT_DOCTOR
 _MODEL_COMMAND = chat_commands.MODEL
 _SMART_MODEL_COMMAND = chat_commands.SMART_MODEL
+_EFFORT_COMMAND = chat_commands.EFFORT
 _RESET_ALL_HISTORY_COMMAND = chat_commands.RESET_ALL_HISTORY
 _PAIR_COMMAND = chat_commands.PAIR
 _PAIR_OPERATOR_ONLY_MESSAGE = "Only an operator can manage sender pairing."
@@ -190,6 +192,7 @@ class _Turn:
     recovery_degraded: bool
     model: str | None = None
     """`/model` selection captured when the turn started, so a later switch cannot reach it."""
+    effort: str | None = None
 
 
 @dataclass(slots=True)
@@ -303,6 +306,7 @@ class TalonHost:
         self._blocked: set[str] = set()
         self._conversation_resets = _load_conversation_resets(config.conversation_state_path)
         self._model_selections = _load_model_selections(config.model_state_path)
+        self._effort_selections = _load_model_selections(config.effort_state_path)
         self._smart_model_override = _load_smart_model_override(config.smart_model_state_path)
         self._smart_model_lock = asyncio.Lock()
         self._pending_tool_approvals: dict[str, _PendingToolApproval] = {}
@@ -592,6 +596,9 @@ class TalonHost:
         elif command == _SMART_MODEL_COMMAND:
             reply = await self._smart_model_command(channel, message)
             await send_with_retry(lambda: channel.send_message(message.conversation_id, reply))
+        elif command == _EFFORT_COMMAND:
+            reply = await self._effort_command(channel, message)
+            await send_with_retry(lambda: channel.send_message(message.conversation_id, reply))
         else:
             return False
         return True
@@ -741,6 +748,43 @@ class TalonHost:
         self._model_selections = selections
         return f"All chats now use {spec or agent.default_model}."
 
+    async def _effort_command(self, channel: ChannelAdapter, message: ChannelMessage) -> str:
+        """Show or update the current model's reasoning control."""
+        if not isinstance(self.agent, ModelSelectableRuntime):
+            return "Reasoning effort is unavailable for this runtime."
+        argument = normalize_effort(_command_argument(message.text))
+        if argument and not _is_operator(channel, message):
+            return "Only an operator can change reasoning effort."
+        spec = self._model_selections.get(_GLOBAL_MODEL_KEY) or self.agent.default_model
+        levels = await asyncio.to_thread(effort_levels, spec)
+        current = self._effort_selections.get(spec)
+        current = current if current in levels else "default"
+        options = ", ".join((*levels, "default"))
+        if not argument:
+            detail = f"Supported: {options}."
+            if not levels:
+                detail = "No effort controls are known for this model."
+            if "qwen" in spec.lower() and levels:
+                detail += (
+                    " Qwen budgets: low=1024, medium=4096, high=8192, "
+                    "xhigh=16384; max=provider limit."
+                )
+            return f"Reasoning effort for {spec}: {current}. {detail}"
+        if argument != "default" and argument not in levels:
+            return f"Unsupported effort for {spec}. Supported: {options}."
+        selections = {**self._effort_selections}
+        if argument == "default":
+            selections.pop(spec, None)
+        else:
+            selections[spec] = argument
+        try:
+            _write_json_state(self.config.effort_state_path, selections)
+        except OSError:
+            logger.warning("Could not save reasoning effort", exc_info=True)
+            return "Could not save reasoning effort. Check Talon logs."
+        self._effort_selections = selections
+        return f"Reasoning effort for {spec}: {argument}. Applies across chats from the next turn."
+
     async def _smart_model_command(self, channel: ChannelAdapter, message: ChannelMessage) -> str:
         """Show or switch the assistant's one-off help model."""
         if not isinstance(self.agent, SmartModelRuntime):
@@ -880,6 +924,10 @@ class TalonHost:
                     generation,
                     recovery_degraded,
                     model=self._model_selections.get(_GLOBAL_MODEL_KEY),
+                    effort=self._effort_selections.get(
+                        self._model_selections.get(_GLOBAL_MODEL_KEY)
+                        or getattr(self.agent, "default_model", "")
+                    ),
                 ),
             ),
             name=f"talon:{conversation_id}",
@@ -1053,6 +1101,7 @@ class TalonHost:
                 tool_approval_operator=operator,
                 message_handler=message_handler,
                 model=turn.model,
+                effort=turn.effort,
             )
             suppress_result = agent_conversation_id in self._terminal_authorizations
         except Exception:  # noqa: BLE001  # _invoke_agent logged the traceback for operators
@@ -1276,6 +1325,7 @@ class TalonHost:
         tool_approval_operator: bool = False,
         message_handler: ProgressMessageHandler | None = None,
         model: str | None = None,
+        effort: str | None = None,
     ) -> AgentResult:
         metadata = {
             **metadata,
@@ -1299,6 +1349,7 @@ class TalonHost:
                         authorization_handler=authorization_handler,
                         message_handler=message_handler,
                         model=model,
+                        effort=effort,
                     ),
                 )
         except asyncio.CancelledError:

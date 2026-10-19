@@ -141,6 +141,7 @@ class AgentRequest:
         model: `provider:model` spec the conversation selected with `/model`, or
             `None` for the runtime's default. Set only by the host, never from
             channel metadata.
+        effort: Reasoning control captured by the host for this turn's model.
     """
 
     conversation_id: str
@@ -166,6 +167,7 @@ class AgentRequest:
         compare=False,
     )
     model: str | None = field(default=None, kw_only=True)
+    effort: str | None = field(default=None, kw_only=True)
 
 
 @dataclass(frozen=True, slots=True)

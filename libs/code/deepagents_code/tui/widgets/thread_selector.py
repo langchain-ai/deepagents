@@ -2687,15 +2687,14 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         """Show delete confirmation for the highlighted thread."""
         if self._confirming_delete:
             return
-        if self._load_more_selected():
-            return
         if not self._filtered_threads:
-            # Nothing to delete — fall through to quit. Using exit() instead of
-            # dismiss() is intentional: dismiss() would just close the modal
-            # silently, re-swallowing ctrl+d.
+            # Nothing to delete — fall through to quit, even when a "Load more"
+            # row is shown. Using exit() instead of dismiss() is intentional:
+            # dismiss() would just close the modal silently, re-swallowing
+            # ctrl+d.
             self.app.exit()
             return
-        if self._selected_index >= len(self._filtered_threads):
+        if self._load_more_selected():
             return
         self._confirming_delete = True
         thread = self._filtered_threads[self._selected_index]

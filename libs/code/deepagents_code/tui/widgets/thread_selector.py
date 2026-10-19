@@ -2441,15 +2441,21 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         """Fetch another batch without dismissing the picker."""
         if self._loading_more or not self._has_more:
             return
-        self._loading_more = True
-        if self._load_more_row is not None:
-            self._load_more_row.set_loading(True)
         self.run_worker(
             self._load_more_threads, exclusive=True, group="thread-selector-load"
         )
 
+    def _set_loading_more(self, loading: bool) -> None:
+        """Track an in-flight batch and show it on the "Load more" row."""
+        self._loading_more = loading
+        if self._load_more_row is not None:
+            self._load_more_row.set_loading(loading)
+
     async def _load_more_threads(self) -> None:
         """Expand the loaded window; a failed fetch keeps the rows shown."""
+        # Set the flag inside the worker: a worker cancelled before it starts
+        # never reaches `finally`, so a flag set by the caller would stick.
+        self._set_loading_more(True)
         limit = self._loaded_limit + self._page_size
         try:
             threads = await self._fetch_window(limit)
@@ -2459,9 +2465,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         else:
             await self._apply_window(threads, limit, load_more=True)
         finally:
-            self._loading_more = False
-            if self._load_more_row is not None:
-                self._load_more_row.set_loading(False)
+            self._set_loading_more(False)
 
     def _move_selection(self, delta: int) -> None:
         """Move selection by delta, updating only the affected rows.

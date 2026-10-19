@@ -475,6 +475,15 @@ class LoadMoreThreads(Static):
         """
         self.set_class(selected, "thread-option-selected")
 
+    def set_loading(self, loading: bool) -> None:
+        """Show whether a batch fetch is in flight.
+
+        Args:
+            loading: Whether a fetch is running.
+        """
+        label = "Loading" if loading else "Load more"
+        self.update(f"{label}{get_glyphs().ellipsis}")
+
     def on_click(self, event: Click) -> None:
         """Load another batch when clicked."""
         event.stop()
@@ -988,8 +997,11 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         """
         super().__init__()
         self._current_thread = current_thread
-        self._thread_limit = thread_limit
-        self._page_size = max(1, self._effective_thread_limit())
+        if thread_limit is None:
+            from deepagents_code.sessions import get_thread_limit
+
+            thread_limit = get_thread_limit()
+        self._page_size = max(1, thread_limit)
         self._loaded_limit = self._page_size
         self._has_more = False
         self._loading_more = False
@@ -1104,6 +1116,25 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             )
         return f"Select Thread (current: {self._current_thread})"
 
+    def _selected_thread_id(self) -> str | None:
+        """Return the highlighted thread ID, or `None` off the thread rows."""
+        if self._selected_index < len(self._filtered_threads):
+            return self._filtered_threads[self._selected_index]["thread_id"]
+        return None
+
+    def _select_thread_id(self, thread_id: str | None, fallback: int) -> None:
+        """Highlight `thread_id` if it is listed, else the clamped `fallback`.
+
+        Args:
+            thread_id: Thread to highlight.
+            fallback: Index to use when the thread is not in the filtered rows.
+        """
+        self._selected_index = min(fallback, max(0, len(self._filtered_threads) - 1))
+        for index, thread in enumerate(self._filtered_threads):
+            if thread["thread_id"] == thread_id:
+                self._selected_index = index
+                break
+
     def _load_more_selected(self) -> bool:
         """Return whether the highlighted row is the "Load more" row."""
         return self._has_more and self._selected_index == len(self._filtered_threads)
@@ -1131,14 +1162,6 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             f"{thread_hints}"
             f" {glyphs.bullet} Esc cancel"
         )
-
-    def _effective_thread_limit(self) -> int:
-        """Return the configured batch size."""
-        if self._thread_limit is not None:
-            return self._thread_limit
-        from deepagents_code.sessions import get_thread_limit
-
-        return get_thread_limit()
 
     def _get_filter_input(self) -> Input:
         """Return the cached search input widget."""
@@ -1941,63 +1964,69 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
                 return False
         return True
 
-    async def _load_threads(self) -> None:
-        """Load thread rows first, then kick off background enrichment.
+    async def _fetch_window(self, limit: int) -> list[ThreadInfo]:
+        """Fetch one row past `limit` so the caller can tell if more exist.
 
-        Fetches one row past the loaded window to learn whether a "Load more"
-        row is needed. A failed "Load more" batch keeps the rows already shown
-        and reports the error in a toast instead of replacing the list.
+        Args:
+            limit: Number of rows in the loaded window.
+
+        Returns:
+            Up to `limit + 1` threads in the active sort order.
         """
-        from deepagents_code.sessions import (
-            apply_cached_thread_initial_prompts,
-            apply_cached_thread_message_counts,
-            list_threads,
+        from deepagents_code.sessions import list_threads
+
+        sort_by = "updated" if self._sort_by_updated else "created"
+        return await list_threads(
+            limit=limit + 1,
+            include_message_count=False,
+            sort_by=sort_by,
+            cwd=self._filter_cwd,
         )
 
-        old_threads = list(self._threads)
-        selected_id = (
-            self._filtered_threads[self._selected_index]["thread_id"]
-            if self._selected_index < len(self._filtered_threads)
-            else None
-        )
-        selected_index = self._selected_index
-
+    async def _load_threads(self) -> None:
+        """Load thread rows first, then kick off background enrichment."""
         try:
-            limit = self._loaded_limit
-            sort_by = "updated" if self._sort_by_updated else "created"
-            threads = await list_threads(
-                limit=limit + 1,
-                include_message_count=False,
-                sort_by=sort_by,
-                cwd=self._filter_cwd,
-            )
+            threads = await self._fetch_window(self._loaded_limit)
         except (OSError, sqlite3.Error) as exc:
-            if self._loading_more:
-                logger.exception("Failed to load more threads for thread selector")
-                self._notify_load_more_failed(exc)
-                return
             logger.exception("Failed to load threads for thread selector")
             self._disk_load_complete = True
             await self._show_mount_error(str(exc))
             return
         except Exception as exc:
-            if self._loading_more:
-                logger.exception(
-                    "Unexpected error loading more threads for thread selector"
-                )
-                self._notify_load_more_failed(exc)
-                return
-            # On a full load, an unexpected error (e.g. a malformed row raising
-            # ValueError) must still mark the load complete and surface the
-            # failure; otherwise the picker stays stuck on the "Loading
-            # threads..." placeholder forever.
+            # An unexpected error (e.g. a malformed row raising ValueError) must
+            # still mark the load complete and surface the failure; otherwise
+            # the picker stays stuck on the "Loading threads..." placeholder
+            # forever.
             # CancelledError is a BaseException and is intentionally not caught
             # here, so a superseding exclusive worker keeps ownership of the flag.
             logger.exception("Unexpected error loading threads for thread selector")
             self._disk_load_complete = True
             await self._show_mount_error(str(exc))
             return
+        await self._apply_window(threads, self._loaded_limit)
 
+    async def _apply_window(
+        self, threads: list[ThreadInfo], limit: int, *, load_more: bool = False
+    ) -> None:
+        """Render a fetched window and schedule background enrichment.
+
+        Args:
+            threads: Rows from `_fetch_window(limit)`.
+            limit: Number of rows in the loaded window.
+            load_more: Whether this extends the shown rows. Keeps the
+                highlighted row and skips lookups that do not change between
+                batches.
+        """
+        from deepagents_code.sessions import (
+            apply_cached_thread_initial_prompts,
+            apply_cached_thread_message_counts,
+        )
+
+        old_threads = list(self._threads)
+        selected_id = self._selected_thread_id()
+        selected_index = self._selected_index
+
+        self._loaded_limit = limit
         self._has_more = len(threads) > limit
         self._threads = threads[:limit]
         self._disk_load_complete = True
@@ -2018,7 +2047,8 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
                     exc_info=True,
                 )
         try:
-            await self._load_available_agent_names()
+            if not load_more:
+                await self._load_available_agent_names()
         except Exception:
             # The configured-agent scan is non-essential: a failure here must
             # not strand the picker by skipping the filter refresh, DOM build,
@@ -2035,14 +2065,8 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             self._update_filtered_list()
             self._sync_selected_index()
 
-        if self._loading_more:
-            self._selected_index = min(
-                selected_index, max(0, len(self._filtered_threads) - 1)
-            )
-            for index, thread in enumerate(self._filtered_threads):
-                if thread["thread_id"] == selected_id:
-                    self._selected_index = index
-                    break
+        if load_more:
+            self._select_thread_id(selected_id, selected_index)
 
         # Short-circuit: when the fresh data matches what is already rendered,
         # update widget references and cell labels without tearing down the DOM.
@@ -2066,7 +2090,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
 
         self._schedule_checkpoint_enrichment()
 
-        if self._current_thread:
+        if self._current_thread and not load_more:
             self._resolve_thread_url()
 
     def _notify_load_more_failed(self, exc: Exception) -> None:
@@ -2099,17 +2123,10 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         if load_prompts and self._filter_text.strip():
             # Prompts may affect fuzzy match results; rebuild the filtered
             # list but preserve the user's cursor position.
-            saved_tid = (
-                self._filtered_threads[self._selected_index]["thread_id"]
-                if self._selected_index < len(self._filtered_threads)
-                else None
-            )
+            saved_tid = self._selected_thread_id()
             self._update_filtered_list()
             if saved_tid is not None:
-                for i, thread in enumerate(self._filtered_threads):
-                    if thread["thread_id"] == saved_tid:
-                        self._selected_index = i
-                        break
+                self._select_thread_id(saved_tid, self._selected_index)
             self._schedule_list_rebuild()
         else:
             self._refresh_cell_labels()
@@ -2276,11 +2293,8 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         Returns:
             The unmounted "Load more" row.
         """
-        row = LoadMoreThreads(
-            f"Load more{get_glyphs().ellipsis}",
-            id="thread-load-more",
-            classes="thread-option",
-        )
+        row = LoadMoreThreads(id="thread-load-more", classes="thread-option")
+        row.set_loading(self._loading_more)
         row.set_selected(self._load_more_selected())
         return row
 
@@ -2426,24 +2440,25 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             return
         self._loading_more = True
         if self._load_more_row is not None:
-            self._load_more_row.update(f"Loading{get_glyphs().ellipsis}")
+            self._load_more_row.set_loading(True)
         self.run_worker(
             self._load_more_threads, exclusive=True, group="thread-selector-load"
         )
 
     async def _load_more_threads(self) -> None:
-        """Expand the loaded window, keeping rows if a fetch fails or is superseded."""
-        self._loaded_limit += self._page_size
+        """Expand the loaded window; a failed fetch keeps the rows shown."""
+        limit = self._loaded_limit + self._page_size
         try:
-            await self._load_threads()
+            threads = await self._fetch_window(limit)
+        except Exception as exc:
+            logger.exception("Failed to load more threads for thread selector")
+            self._notify_load_more_failed(exc)
+        else:
+            await self._apply_window(threads, limit, load_more=True)
         finally:
-            # The fetch did not finish (error or cancellation), so shrink the
-            # window back to the rows that are shown.
-            if len(self._threads) < self._loaded_limit and self._has_more:
-                self._loaded_limit -= self._page_size
             self._loading_more = False
             if self._load_more_row is not None:
-                self._load_more_row.update(f"Load more{get_glyphs().ellipsis}")
+                self._load_more_row.set_loading(False)
 
     def _move_selection(self, delta: int) -> None:
         """Move selection by delta, updating only the affected rows.
@@ -2457,12 +2472,14 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
 
         count = len(rows)
         old_index = self._selected_index
+        was_load_more = self._load_more_selected()
         new_index = (old_index + delta) % count
         self._selected_index = new_index
 
         rows[old_index].set_selected(False)
         rows[new_index].set_selected(True)
-        self._update_help_text()
+        if self._load_more_selected() != was_load_more:
+            self._update_help_text()
 
         if new_index == 0:
             scroll = self.query_one(".thread-list", VerticalScroll)
@@ -2515,9 +2532,9 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
 
     def action_page_down(self) -> None:
         """Move selection down by one visible page."""
-        if self._confirming_delete or not self._selection_rows():
-            return
         count = len(self._selection_rows())
+        if self._confirming_delete or not count:
+            return
         page = self._visible_page_size()
         target = min(count - 1, self._selected_index + page)
         delta = target - self._selected_index
@@ -2536,8 +2553,8 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         if self._load_more_selected():
             self.on_load_more_threads_requested()
             return
-        if self._filtered_threads:
-            thread_id = self._filtered_threads[self._selected_index]["thread_id"]
+        thread_id = self._selected_thread_id()
+        if thread_id is not None:
             self._select_thread(thread_id)
 
     def _select_thread(self, thread_id: str) -> None:
@@ -2551,15 +2568,14 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
 
     def action_copy_thread_id(self) -> None:
         """Copy the highlighted thread ID without dismissing the selector."""
-        if self._confirming_delete or self._selected_index >= len(
-            self._filtered_threads
-        ):
+        thread_id = self._selected_thread_id()
+        if self._confirming_delete or thread_id is None:
             return
         from deepagents_code.clipboard import copy_text_with_feedback
 
         copy_text_with_feedback(
             self.app,
-            self._filtered_threads[self._selected_index]["thread_id"],
+            thread_id,
             failure_noun="selection",
             success_message="Thread ID copied to clipboard",
         )
@@ -2661,16 +2677,17 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         if self._sort_by_updated == sort_by_updated:
             return
         self._sort_by_updated = sort_by_updated
-        self._apply_sort()
-        self._sync_selected_index()
         self._update_help_widgets()
-        self._schedule_list_rebuild()
         if self._has_more:
             # The loaded rows are only the top of the old order. Re-fetch so
             # the window and any later "Load more" use the new order.
             self.run_worker(
                 self._load_threads, exclusive=True, group="thread-selector-load"
             )
+        else:
+            self._apply_sort()
+            self._sync_selected_index()
+            self._schedule_list_rebuild()
         self._persist_sort_order(
             _SORT_VALUE_UPDATED if sort_by_updated else _SORT_VALUE_CREATED
         )
@@ -2710,11 +2727,10 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             # ctrl+d.
             self.app.exit()
             return
-        if self._load_more_selected():
+        tid = self._selected_thread_id()
+        if tid is None:
             return
         self._confirming_delete = True
-        thread = self._filtered_threads[self._selected_index]
-        tid = thread["thread_id"]
         self.app.push_screen(
             DeleteThreadConfirmScreen(tid),
             lambda confirmed: self._on_delete_confirmed(tid, confirmed),
@@ -2780,13 +2796,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             thread for thread in self._threads if thread["thread_id"] != thread_id
         ]
         self._update_filtered_list()
-        if preferred_thread_id is not None:
-            for index, thread in enumerate(self._filtered_threads):
-                if thread["thread_id"] == preferred_thread_id:
-                    self._selected_index = index
-                    break
-        if self._selected_index >= len(self._filtered_threads):
-            self._selected_index = max(0, len(self._filtered_threads) - 1)
+        self._select_thread_id(preferred_thread_id, self._selected_index)
         await self._build_list()
         with contextlib.suppress(NoMatches):
             self.query_one("#thread-filter", Input).focus()

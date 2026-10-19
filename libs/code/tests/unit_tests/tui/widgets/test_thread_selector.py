@@ -81,14 +81,22 @@ def _patch_list_threads(threads: list[ThreadInfo] | None = None) -> Any:  # noqa
     """Return a patch context manager for `list_threads`.
 
     Args:
-        threads: Thread list to return. Defaults to `MOCK_THREADS`.
+        threads: Thread list to return, cut to the requested `limit`.
+            Defaults to `MOCK_THREADS`.
     """
     data = threads if threads is not None else MOCK_THREADS
     return patch(
         "deepagents_code.sessions.list_threads",
         new_callable=AsyncMock,
-        return_value=data,
+        side_effect=lambda **kwargs: data[: kwargs.get("limit")],
     )
+
+
+def _numbered_threads(count: int) -> list[ThreadInfo]:
+    """Return `count` copies of a mock thread with IDs `thread-0`, `thread-1`, ..."""
+    return [
+        {**MOCK_THREADS[0], "thread_id": f"thread-{index}"} for index in range(count)
+    ]
 
 
 def _patch_columns(columns: dict[str, bool] | None = None) -> Any:  # noqa: ANN401
@@ -910,11 +918,7 @@ class TestThreadSelectorPagination:
         with (
             _patch_columns(),
             patch.dict("os.environ", {"DEEPAGENTS_CODE_RECENT_THREADS": "2"}),
-            patch(
-                "deepagents_code.sessions.list_threads",
-                new_callable=AsyncMock,
-                side_effect=lambda **kwargs: MOCK_THREADS[: kwargs["limit"]],
-            ),
+            _patch_list_threads(),
         ):
             app = ThreadSelectorTestApp()
             async with app.run_test(size=(140, 40)) as pilot:
@@ -938,17 +942,10 @@ class TestThreadSelectorPagination:
 
     async def test_load_multiple_batches(self) -> None:
         """Pagination remains available until the final batch is exhausted."""
-        threads: list[ThreadInfo] = [
-            {**MOCK_THREADS[0], "thread_id": f"thread-{index}"} for index in range(5)
-        ]
         with (
             _patch_columns(),
             patch.dict("os.environ", {"DEEPAGENTS_CODE_RECENT_THREADS": "2"}),
-            patch(
-                "deepagents_code.sessions.list_threads",
-                new_callable=AsyncMock,
-                side_effect=lambda **kwargs: threads[: kwargs["limit"]],
-            ),
+            _patch_list_threads(_numbered_threads(5)),
         ):
             app = ThreadSelectorTestApp(current_thread=None)
             async with app.run_test(size=(140, 40)) as pilot:
@@ -1027,9 +1024,7 @@ class TestThreadSelectorPagination:
 
     async def test_load_more_failure_can_be_retried(self) -> None:
         """A failed batch retains the visible rows and retries the same page."""
-        threads: list[ThreadInfo] = [
-            {**MOCK_THREADS[0], "thread_id": f"thread-{index}"} for index in range(7)
-        ]
+        threads = _numbered_threads(7)
         results: list[list[ThreadInfo] | OSError] = [
             threads,
             OSError("database unavailable"),

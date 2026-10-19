@@ -259,7 +259,7 @@ jobs:
     uses: ./.github/workflows/_lint.yml
     with:
       working-directory: "libs/code"
-      python-version: "3.12"
+      python-version: "3.14"
 
   lint-talon:
     name: "🧹 Lint talon"
@@ -351,7 +351,7 @@ jobs:
     uses: ./.github/workflows/_test.yml
     with:
       working-directory: "libs/code"
-      python-versions: '["3.12", "3.13", "3.14"]'
+      python-versions: '["3.14"]'
 
   test-talon:
     name: "🧪 Test deepagents-talon"

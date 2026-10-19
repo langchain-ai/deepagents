@@ -62,7 +62,7 @@
 #     resolving the latest version: disallow, allow, if-necessary, explicit,
 #     or if-necessary-or-explicit (default: allow; explicitly setting it is
 #     mutually exclusive with DEEPAGENTS_CODE_VERSION)
-#   DEEPAGENTS_CODE_PYTHON — Python version to use (default: 3.13)
+#   DEEPAGENTS_CODE_PYTHON — Python version to use (default: 3.14)
 #   DEEPAGENTS_CODE_YES — set to 1 to accept an available update without
 #     prompting (assume "yes"). Exists so automated runs that still attach a
 #     terminal (CI, wrapper scripts) update instead of stalling at the y/n
@@ -142,7 +142,7 @@ Environment variables:
     resolving the latest version: disallow, allow, if-necessary, explicit,
     or if-necessary-or-explicit (default: allow; explicitly setting it is
     mutually exclusive with DEEPAGENTS_CODE_VERSION)
-  DEEPAGENTS_CODE_PYTHON — Python version to use (default: 3.13)
+  DEEPAGENTS_CODE_PYTHON — Python version to use (default: 3.14)
   DEEPAGENTS_CODE_YES — set to 1 to accept an available update without
     prompting (assume "yes")
   DEEPAGENTS_CODE_SKIP_OPTIONAL — set to 1 to skip optional tool checks
@@ -1335,7 +1335,7 @@ PYTHON_REQUESTED=false
 if [[ -n "${DEEPAGENTS_CODE_PYTHON:-}" ]]; then
   PYTHON_REQUESTED=true
 fi
-PYTHON_VERSION="${DEEPAGENTS_CODE_PYTHON:-3.13}"
+PYTHON_VERSION="${DEEPAGENTS_CODE_PYTHON:-3.14}"
 SKIP_OPTIONAL="${DEEPAGENTS_CODE_SKIP_OPTIONAL:-0}"
 VERBOSE="${DEEPAGENTS_CODE_VERBOSE:-0}"
 ASSUME_YES="$(printf '%s' "${DEEPAGENTS_CODE_YES:-0}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
@@ -2554,7 +2554,7 @@ if [ "$uv_rc" -ne 0 ]; then
   if [ -n "$INSTALL_LOG" ] && [ -s "$INSTALL_LOG" ]; then
     log_error "Full log: ${INSTALL_LOG_DISPLAY}"
   fi
-  log_error "Common fixes: check your network, try a different Python version (DEEPAGENTS_CODE_PYTHON=3.12), or install manually."
+  log_error "Common fixes: check your network, try a different Python version (DEEPAGENTS_CODE_PYTHON=3.14), or install manually."
   exit "$uv_rc"
 fi
 if path_is_under_home "$TOOL_BIN_DIR"; then

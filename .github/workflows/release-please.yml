@@ -815,7 +815,7 @@ jobs:
             git ls-files "uv.lock" "**/uv.lock" | sort | while IFS= read -r lockfile; do
               dir=$(dirname "$lockfile")
               echo "Updating $dir"
-              if [ "$dir" = "libs/acp" ]; then
+              if [ "$dir" = "libs/acp" ] || [ "$dir" = "libs/code" ]; then
                 uv lock --directory "$dir" --python 3.14
               else
                 uv lock --directory "$dir" --python 3.12
@@ -841,7 +841,7 @@ jobs:
           regenerate() {
             git ls-files "uv.lock" "**/uv.lock" | sort | while IFS= read -r lockfile; do
               dir=$(dirname "$lockfile")
-              if [ "$dir" = "libs/acp" ]; then
+              if [ "$dir" = "libs/acp" ] || [ "$dir" = "libs/code" ]; then
                 uv lock --directory "$dir" --python 3.14
               else
                 uv lock --directory "$dir" --python 3.12

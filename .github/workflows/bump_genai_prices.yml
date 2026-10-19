@@ -92,7 +92,7 @@ jobs:
       - name: Set up Python and uv
         uses: "./.github/actions/uv_setup"
         with:
-          python-version: "3.12"
+          python-version: "3.14"
           enable-cache: "false"
 
       - name: Re-lock genai-prices and resolve the version change
@@ -135,7 +135,7 @@ jobs:
           # in `libs/code/pyproject.toml`, yanks and pre-releases are all
           # honoured by uv itself, and a version we could never adopt simply
           # reads as "not stale".
-          uv lock --directory libs/code --python 3.12 --upgrade-package genai-prices
+          uv lock --directory libs/code --python 3.14 --upgrade-package genai-prices
 
           latest=$(read_pin)
 

@@ -94,7 +94,7 @@ jobs:
           # enforce `required` on composite-action inputs: it resolved to
           # empty and `setup-uv` installed no managed Python. Match the
           # version the lockfile is regenerated with below.
-          python-version: "3.12"
+          python-version: "3.14"
           enable-cache: "false"
 
       - name: Resolve workspace SDK version and current Code pin
@@ -356,7 +356,7 @@ jobs:
 
             # Regenerate the lockfile alongside the manifest change so the
             # pre-commit lock check passes on the PR.
-            uv lock --directory libs/code --python 3.12
+            uv lock --directory libs/code --python 3.14
             if ! git ls-files --error-unmatch "$lockfile" >/dev/null 2>&1; then
               fail "$lockfile is not tracked in $BRANCH after uv lock"
             fi

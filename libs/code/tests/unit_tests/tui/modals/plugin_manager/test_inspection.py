@@ -4,7 +4,7 @@ import asyncio
 import json
 import threading
 from dataclasses import replace
-from pathlib import Path
+from typing import TYPE_CHECKING
 from unittest.mock import MagicMock
 
 import pytest
@@ -26,6 +26,9 @@ from deepagents_code.tui.modals.plugin_manager.models import (
     _MarketplaceRow,
     _PluginRow,
 )
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 @pytest.fixture

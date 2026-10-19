@@ -364,7 +364,7 @@ def _home_relative(path: str) -> str:
         if candidate.is_relative_to(home):
             relative = candidate.relative_to(home).as_posix()
             return "~" if relative == "." else f"~/{relative}"
-    except (ValueError, RuntimeError):
+    except ValueError, RuntimeError:
         pass
     return path
 

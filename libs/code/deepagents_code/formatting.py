@@ -124,7 +124,7 @@ def format_message_timestamp(timestamp: float) -> str | None:
     """
     try:
         dt = datetime.fromtimestamp(timestamp, tz=UTC).astimezone()
-    except (ValueError, OSError, OverflowError, TypeError):
+    except ValueError, OSError, OverflowError, TypeError:
         return None
     if uses_24_hour_clock():
         time_str = f"{dt:%H:%M:%S}"

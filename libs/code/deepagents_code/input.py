@@ -6,14 +6,16 @@ import shlex
 from dataclasses import dataclass, replace
 from difflib import SequenceMatcher
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 from urllib.parse import unquote, urlparse
 
 from rich.markup import escape as escape_markup
 
 from deepagents_code.config import console
-from deepagents_code.media_utils import ImageData, VideoData
 from deepagents_code.unicode_security import is_safe_file_path
+
+if TYPE_CHECKING:
+    from deepagents_code.media_utils import ImageData, VideoData
 
 logger = logging.getLogger(__name__)
 
@@ -199,7 +201,7 @@ class MediaTracker:
         self.next_image_id = 1
         self.next_video_id = 1
 
-    def snapshot(self) -> "MediaTracker":
+    def snapshot(self) -> MediaTracker:
         """Return an independent copy of the currently tracked media."""
         tracker = MediaTracker()
         tracker.images = [replace(img) for img in self.images]
@@ -208,7 +210,7 @@ class MediaTracker:
         tracker.next_video_id = self.next_video_id
         return tracker
 
-    def restore(self, snapshot: "MediaTracker") -> None:
+    def restore(self, snapshot: MediaTracker) -> None:
         """Replace current media state with an independent snapshot copy.
 
         Args:
@@ -475,7 +477,7 @@ def _resolve_file_mention(path: str) -> Path | None:
             resolved = Path(path[:end]).resolve()
             if resolved.is_file():
                 return resolved
-        except (OSError, RuntimeError):
+        except OSError, RuntimeError:
             logger.debug("Could not resolve file mention candidate", exc_info=True)
     return None
 

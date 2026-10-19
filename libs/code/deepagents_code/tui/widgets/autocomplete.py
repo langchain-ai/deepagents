@@ -647,7 +647,7 @@ def _run_git_ls_files(
             # Git localizes stderr; use C so the non-repo marker stays stable.
             env={**os.environ, "LC_ALL": "C"},
         )
-    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+    except subprocess.TimeoutExpired, FileNotFoundError, OSError:
         logger.debug("git ls-files %s failed to run", extra_args, exc_info=True)
         return False, []
     if result.returncode != 0:

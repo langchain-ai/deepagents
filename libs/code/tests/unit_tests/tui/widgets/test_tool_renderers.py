@@ -1,8 +1,7 @@
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 from textual.content import Content
-from textual.widget import Widget
 from textual.widgets import Markdown
 
 from deepagents_code.tui.widgets.tool_renderers import get_renderer
@@ -12,6 +11,11 @@ from deepagents_code.tui.widgets.tool_widgets import (
     GenericApprovalWidget,
     WriteFileApprovalWidget,
 )
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+    from textual.widget import Widget
 
 _CREDENTIAL_NOTICE_FRAGMENT = "may contain credentials"
 

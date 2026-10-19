@@ -5,10 +5,9 @@ import logging
 import subprocess
 import sys
 import warnings
-from collections.abc import Iterator, Mapping
 from dataclasses import replace
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 from unittest.mock import Mock, patch
 
 import pytest
@@ -60,6 +59,9 @@ from deepagents_code.model_config import (
 from deepagents_code.project_utils import (
     find_project_agent_md as _find_project_agent_md,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator, Mapping
 
 
 class TestRuntimeDotenvReload:
@@ -4694,7 +4696,7 @@ class TestQuietSdkLogging:
         for exc in (anyio.ClosedResourceError(), ValueError("bad json")):
             try:
                 _raise(exc)
-            except (anyio.ClosedResourceError, ValueError):
+            except anyio.ClosedResourceError, ValueError:
                 transport_logger.exception("Error parsing JSON response")
 
         assert captured == ["Error parsing JSON response"]

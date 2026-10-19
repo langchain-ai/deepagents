@@ -13,11 +13,12 @@ import subprocess  # noqa: S404
 import sys
 import tempfile
 from collections import Counter
-from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
+
     from langchain_core.messages.content import VideoContentBlock
 
 logger = logging.getLogger(__name__)
@@ -207,7 +208,7 @@ class VideoData:
     placeholder: str  # Display text like "[video 1]"
     placeholder_span: tuple[int, int] | None = None
 
-    def to_message_content(self) -> "VideoContentBlock":
+    def to_message_content(self) -> VideoContentBlock:
         """Convert to LangChain `VideoContentBlock` format.
 
         Returns:

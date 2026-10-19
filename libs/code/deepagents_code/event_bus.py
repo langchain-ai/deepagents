@@ -322,7 +322,7 @@ async def _write_nack(
     try:
         writer.write(json.dumps(body).encode("utf-8") + b"\n")
         await writer.drain()
-    except (BrokenPipeError, ConnectionResetError):
+    except BrokenPipeError, ConnectionResetError:
         pass
 
 

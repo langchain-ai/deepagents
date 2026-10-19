@@ -5,7 +5,6 @@ import json
 import sqlite3
 from contextlib import asynccontextmanager, closing
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -19,6 +18,7 @@ from deepagents_code.app import TextualSessionState
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
+    from pathlib import Path
 
     import aiosqlite
     from langchain_core.runnables import RunnableConfig
@@ -218,7 +218,7 @@ async def test_named_thread_listing_does_not_need_a_write_lock(
     connect = sessions._connect
 
     @asynccontextmanager
-    async def fail_fast_connection() -> "AsyncIterator[aiosqlite.Connection]":
+    async def fail_fast_connection() -> AsyncIterator[aiosqlite.Connection]:
         async with connect() as conn:
             await conn.execute("PRAGMA busy_timeout = 0")
             yield conn

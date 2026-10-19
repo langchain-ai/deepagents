@@ -343,7 +343,7 @@ class BackgroundSubagents(AgentMiddleware):
             on_disconnect="cancel",
         )
         result = "Subagent returned no result."
-        async with aclosing(cast("AsyncGenerator[StreamPart, None]", stream)):
+        async with aclosing(cast("AsyncGenerator[StreamPart]", stream)):
             async for part in stream:
                 if part.event == "error":
                     msg = "Remote subagent failed"

@@ -5,8 +5,8 @@ import io
 import json
 import sys
 import time
-from pathlib import Path
 from types import SimpleNamespace
+from typing import TYPE_CHECKING
 from unittest.mock import patch
 
 import pytest
@@ -20,6 +20,9 @@ from deepagents_code.doctor import (
     collect_sections,
     run_doctor_command,
 )
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 class TestDoctorArgs:

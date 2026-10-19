@@ -678,7 +678,7 @@ class TalonHost:
         try:
             jobs = sender_jobs(store, provider, revoked.sender_id)
             paused = pause_jobs(store, jobs)
-        except (CronJobError, OSError):
+        except CronJobError, OSError:
             logger.warning("Could not pause a revoked sender's cron jobs", exc_info=True)
             return ["Could not pause their scheduled jobs. Check Talon logs."]
         stopped = 0
@@ -2341,7 +2341,7 @@ def _format_tool_approval_prompt(approval: ToolApprovalRequest) -> str:
 def _json_preview(value: object) -> str:
     try:
         return json.dumps(value, sort_keys=True, default=str)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return str(value)
 
 

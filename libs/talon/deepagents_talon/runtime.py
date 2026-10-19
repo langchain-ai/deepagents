@@ -318,8 +318,8 @@ class DeepAgentRuntime:
             transport errors.
         max_continuations: Number of continuation nudges after empty responses.
         env: Environment values for model, path, and backend settings.
-            `DEEPAGENTS_TALON_VERBOSITY` selects silent (1), sparse (2), or
-            unrestricted (3, default) interim updates. Defaults to `os.environ`.
+            `DEEPAGENTS_TALON_VERBOSITY` selects silent (1, default), sparse (2), or
+            unrestricted (3) interim updates. Defaults to `os.environ`.
         sandbox_working_dir: Working directory inside a remote sandbox `backend`.
             When set, the system prompt tells the agent its tools run there.
     """
@@ -950,7 +950,17 @@ class DeepAgentRuntime:
     ) -> list[BaseTool | Callable[..., object]]:
         tools: list[BaseTool | Callable[..., object]] = [current_time]
         if self.verbosity > 1:
-            tools.append(send_message)
+            guidance = {
+                2: " Use extremely sparingly: only for significant updates while working, "
+                "at most 1-2 per turn, not per subagent or batch."
+            }
+            tools.append(
+                send_message.model_copy(
+                    update={
+                        "description": send_message.description + guidance.get(self.verbosity, "")
+                    }
+                )
+            )
         if self._smart_model is not None:
             tools.append(self._help_tool(self._smart_model))
         if isinstance(self.checkpointer, ConversationSaver):
@@ -1173,14 +1183,15 @@ class DeepAgentRuntime:
                 "give only the final answer."
             ),
             2: (
-                "Send at most 1-2 brief interim updates only for genuinely long, multi-step work "
-                "(one when a long phase starts, optionally one near completion), not per subagent "
-                "or batch. This includes narration alongside tool calls. Otherwise stay silent "
+                "Use interim updates extremely sparingly: at most 1-2 brief, significant updates "
+                "while working on genuinely long tasks, not per subagent or batch. "
+                "This includes narration alongside tool calls. Otherwise stay silent "
                 "until the final answer."
             ),
             3: (
-                "Send brief, useful progress updates during longer tasks; "
-                "give the final answer normally."
+                "Send brief, useful progress updates as you work, with no fixed message limit. "
+                "Limit them to important updates or notifications about changes in working "
+                "direction, not routine narration. Give the final answer normally."
             ),
         }[self.verbosity]
         parts = [prompt, progress]

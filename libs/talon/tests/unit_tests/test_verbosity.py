@@ -26,7 +26,7 @@ if TYPE_CHECKING:
 def test_verbosity_configuration(tmp_path: Path, value: str | None) -> None:
     env = {} if value is None else {"DEEPAGENTS_TALON_VERBOSITY": value}
     config = TalonConfig.from_env(env, base_home=tmp_path)
-    assert config.verbosity == (3 if value is None else int(value))
+    assert config.verbosity == (1 if value is None else int(value))
     runtime = DeepAgentRuntime(model="test:model", env=env)
     assert runtime.verbosity == config.verbosity
     names = {item.name for item in runtime._build_tools()}
@@ -36,6 +36,21 @@ def test_verbosity_configuration(tmp_path: Path, value: str | None) -> None:
     assert {1: "only the final answer", 2: "not per subagent", 3: "brief, useful"}[
         config.verbosity
     ] in prompt
+
+
+@pytest.mark.parametrize("level", [2, 3])
+def test_progress_tool_guidance(level: int) -> None:
+    runtime = DeepAgentRuntime(model="test:model", env={"DEEPAGENTS_TALON_VERBOSITY": str(level)})
+    tools = {item.name: item for item in runtime._build_tools()}
+    description = tools["send_message"].description
+    assert "important updates" in description
+    assert "changes in working direction" in description
+    assert ("extremely sparingly" in description) is (level == 2)
+    assert ("at most 1-2" in description) is (level == 2)
+    prompt = runtime._resolve_system_prompt()
+    assert prompt is not None
+    assert ("extremely sparingly" in prompt) is (level == 2)
+    assert ("no fixed message limit" in prompt) is (level == 3)
 
 
 @pytest.mark.parametrize("value", ["", "0", "4", "-1", "2.0", "silent"])

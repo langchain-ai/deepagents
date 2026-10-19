@@ -83,7 +83,8 @@ async def test_normal_stop_keeps_writer_until_termination(
     monkeypatch.setattr(server_module, "_terminate_server_process", terminate)
     server.stop()
     assert os.read(reader, 1) == b""
-    assert log.closed and not Path(log.name).exists()
+    assert log.closed
+    assert not os.path.exists(log.name)
 
 
 def test_failed_launch_closes_reader_writer_and_log(
@@ -106,19 +107,21 @@ def test_failed_launch_closes_reader_writer_and_log(
         reader = os.dup(pass_fds[0])
         os.set_blocking(reader, False)
         children.append((reader, MagicMock(), stdout))
-        raise OSError("cannot spawn server")
+        message = "cannot spawn server"
+        raise OSError(message)
 
     monkeypatch.setattr(server_module.subprocess, "Popen", fail)
     with pytest.raises(OSError, match="cannot spawn server"):
         server._spawn_process(expected_stop_generation=None)
 
     for descriptor in inherited:
-        with pytest.raises(OSError) as error:
+        with pytest.raises(OSError, match=r"\[Errno 9\]") as error:
             os.fstat(descriptor)
         assert error.value.errno == errno.EBADF
     reader, _, log = children[-1]
     assert os.read(reader, 1) == b""
-    assert log.closed and not Path(log.name).exists()
+    assert log.closed
+    assert not os.path.exists(log.name)
     assert not server.running
 
 
@@ -136,7 +139,8 @@ async def test_replacement_closes_old_pipe_and_log(
     else:
         await server.restart()
     assert os.read(old_reader, 1) == b""
-    assert old_log.closed and not Path(old_log.name).exists()
+    assert old_log.closed
+    assert not os.path.exists(old_log.name)
     with pytest.raises(BlockingIOError):
         os.read(children[-1][0], 1)
     server.stop()

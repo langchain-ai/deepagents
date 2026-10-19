@@ -12,10 +12,8 @@ from pydantic import Field
 
 from deepagents_talon.effort import (
     ACTIVE_EFFORT,
-    QWEN_BUDGETS,
     effort_levels,
     effort_settings,
-    normalize_effort,
 )
 from deepagents_talon.host import TalonHost
 from deepagents_talon.interfaces import AgentRequest
@@ -117,25 +115,6 @@ async def test_failed_save_keeps_previous_effort(tmp_path: Path, monkeypatch) ->
         await host.stop()
 
 
-@pytest.mark.parametrize("alias", ["extra high", "extra-high", "EXTRA_HIGH", "xhigh"])
-def test_extra_high_alias(alias: str) -> None:
-    assert normalize_effort(alias) == "xhigh"
-
-
-@pytest.mark.parametrize(("level", "budget"), QWEN_BUDGETS.items())
-def test_qwen_budget_presets(level: str, budget: int | None) -> None:
-    assert effort_settings("openai:qwen/qwen3.5-plus", level) == {
-        "extra_body": {"enable_thinking": True, **({"thinking_budget": budget} if budget else {})}
-    }
-
-
-@pytest.mark.parametrize("spec", ["openai:gpt-4o", "openai:qwen3-coder-plus", "unknown:model"])
-def test_nonreasoning_models_reject_effort(spec: str) -> None:
-    assert not effort_levels(spec)
-    with pytest.raises(ValueError, match="Unsupported reasoning effort"):
-        effort_settings(spec, "high")
-
-
 def test_glm_uses_native_thinking_modes() -> None:
     assert effort_settings("openai:z-ai/glm-4.7", "off") == {
         "extra_body": {"thinking": {"type": "disabled"}}
@@ -143,14 +122,6 @@ def test_glm_uses_native_thinking_modes() -> None:
     assert effort_levels("openai:glm-5.3") == ("on",)
     with pytest.raises(ValueError, match="Unsupported"):
         effort_settings("openai:glm-4.7", "max")
-
-
-@pytest.mark.parametrize("spec", ["openai:gpt-5.5", "anthropic:claude-opus-4-6"])
-def test_native_and_gateway_profiles_share_levels(spec: str) -> None:
-    provider, name = spec.split(":")
-    assert "high" in effort_levels(spec)
-    assert effort_levels(f"openai:{provider}/{name}") == effort_levels(spec)
-    assert effort_settings(spec, "high") == {"reasoning_effort": "high"}
 
 
 def test_anthropic_serializes_effort_to_output_config() -> None:

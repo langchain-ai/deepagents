@@ -1,11 +1,11 @@
 ---
 type: system architecture
 title: Repository Architecture Overview
-description: Architecture and release map for the Deep Agents Python monorepo, covering the SDK, dcode, ACP, evaluations, Talon, and partner integrations. Explains package boundaries, dependency direction, graph layering, persistence, and host lifecycle ownership.
+description: Architecture and dependency map for the Deep Agents Python monorepo, including Talon's invocation-scoped graph runtime, approval snapshots, host-owned transport, and optional progress delivery.
 tags: [architecture, deepagents, langgraph, sdk, talon, integrations]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-10-18T08:05:11.339Z
+    at: 2026-10-19T08:10:20.273Z
 sources:
   - id: openwiki-source-9a1c436646ef8c4f6dde787a
     resource: repo://.github/RELEASING.md
@@ -45,24 +45,36 @@ sources:
     resource: repo://libs/talon/deepagents_talon/host.py
   - id: openwiki-source-cebe4ea270e21dce4de9b074
     resource: repo://libs/talon/deepagents_talon/interfaces.py
+  - id: openwiki-source-5b9a69640ff3d94216c614ce
+    resource: repo://libs/talon/deepagents_talon/messaging.py
   - id: openwiki-source-665a21e2fbd09a89d3f13ac0
     resource: repo://libs/talon/deepagents_talon/runtime.py
+  - id: openwiki-source-267468fe937003d4716fe6c2
+    resource: repo://libs/talon/deepagents_talon/tool_approvals.py
   - id: openwiki-source-686a5e2ba1fe4ce0f98b9bf2
     resource: repo://libs/talon/pyproject.toml
   - id: openwiki-source-fdd0c2c3830b8e9a88502a57
     resource: repo://libs/talon/README.md
   - id: openwiki-source-a69daa62c9a3eb9a49f09bf9
     resource: repo://libs/talon/tests/test_host.py
+  - id: openwiki-source-4d6726e17c8a0c78539a7d33
+    resource: repo://libs/talon/tests/test_runtime.py
+  - id: openwiki-source-1698129adea358c8813da5a5
+    resource: repo://libs/talon/tests/unit_tests/test_messaging.py
+  - id: openwiki-source-242a21b2da46507f58415265
+    resource: repo://libs/talon/tests/unit_tests/test_tool_approval_runtime.py
+  - id: openwiki-source-1e7998c9f5a94d22f3819721
+    resource: repo://libs/talon/tests/unit_tests/test_verbosity.py
   - id: openwiki-source-23775c3de52f3ab95a13cb8b
     resource: repo://README.md
   - id: openwiki-source-482fa4ca84f42b04ba025fc1
     resource: repo://release-please-config.json
-generated: { by: "openwiki/0.4.2", at: "2026-10-18T08:05:11.339Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-10-19T08:10:20.273Z" }
 ---
 
 # Repository Architecture Overview
 
-This is a monorepo of independently versioned Python packages, not one deployable service. The reusable `deepagents` SDK builds agent graphs. dcode packages that SDK as a terminal coding-agent product; ACP exposes graphs to Agent Client Protocol clients; `deepagents-evals` measures behavior; and Talon is a separate, experimental local host for channel and scheduled work. Partner packages add optional integrations rather than becoming a required SDK layer.
+This repository is a monorepo of independently versioned Python packages, not one deployable service. The reusable `deepagents` SDK builds agent graphs. dcode packages that SDK as a terminal coding-agent product; ACP exposes graphs to Agent Client Protocol clients; `deepagents-evals` measures behavior; and Talon is a separate, experimental local host for channels and scheduled work. Partner packages add optional integrations rather than becoming a required SDK layer.
 
 - [SDK construction and execution](./sdk-construction-execution.md)
 - [Code agent](./code-agent.md)
@@ -181,47 +193,70 @@ The `deepagents-talon` CLI builds channel adapters and a cron store, then runs `
 ```mermaid
 sequenceDiagram
   participant CLI as Talon CLI
-  participant Runtime as Agent runtime
   participant Host as Talon host
   participant Channel as Channel adapter
+  participant Runtime as Agent runtime
+  participant Approvals as Approval store
   participant Graph as SDK graph
-  CLI->>Runtime: Construct runtime and persistence
-  CLI->>Host: Construct host
-  Host->>Runtime: Start and build graph
+  CLI->>Host: Construct host runtime and adapters
+  Host->>Runtime: Start and build initial graph
   Host->>Channel: Bind callbacks and start
   Channel->>Host: Inbound message
-  Host->>Runtime: Invoke serialized turn
-  Runtime->>Graph: Invoke graph
-  Graph-->>Runtime: Result or interrupt
+  Host->>Runtime: Invoke request with delivery callbacks
+  Runtime->>Runtime: Refresh runtime tools
+  Runtime->>Approvals: Read invocation snapshot
+  Runtime->>Graph: Invoke graph selected for this request
+  Graph-->>Runtime: Result or approval interrupt
   Runtime-->>Host: Agent result
-  Host->>Channel: Deliver result
+  Host->>Channel: Deliver final result
 ```
-This separates CLI construction, host-owned transport and delivery, and runtime-owned graph invocation.
+This source-grounded lifecycle separates host-owned transport, callback lifetime, and final delivery from runtime-owned graph construction and invocation. A snapshot or tool replacement can rebuild the graph for a later request without changing the graph already selected by an in-flight request.
 
-### Runtime and lifecycle invariants
+### Runtime: graph construction and invocation scope
 
-At `DeepAgentRuntime.start()`, Talon resolves subagents, loads the tool-approval snapshot, and builds an SDK graph. Its composition layers Talon filesystem behavior, selected-model summarization and model selection, progress messages, task tools, background subagents, and caller middleware before `create_deep_agent()`.
+`DeepAgentRuntime.start()` resolves subagents, materializes and reads the approval policy, builds the initial SDK graph, and records that snapshot as active. Graph construction combines Talon's filesystem behavior, selected-model summarization and model selection, `ProgressMessages`, caller middleware, task/background-subagent middleware, optional cron and archive tools, runtime tools, and the approval-store tools before calling `create_deep_agent()`. The runtime supplies its checkpointer to that SDK graph; it does not implement graph execution itself.
 
-Each `invoke()` rejects calls before startup, refreshes runtime tools, and rebuilds the graph when the approval snapshot changes. A turn binds request-scoped approval policy, authorization, archive scope, cron origin, selected model, progress delivery, invocation graph, and pending background results, then resets those bindings in `finally`. This prevents one channel or scheduled turn's state from leaking into another. `stop()` cancels background workers before clearing the graph or closing the checkpointer; if cancellation fails, it intentionally leaves resources open rather than permitting a live worker to write to a closed saver.
+Each `invoke()` first refreshes externally supplied runtime tools. A non-`None` replacement is compiled into a replacement graph; an automatic refresh failure logs a warning and retains the prior graph, while an explicit `reload_mcp_configuration()` propagates the failure and leaves the prior tools and graph intact. The runtime also re-reads the approval store under its tools lock. If the immutable snapshot differs from the active one, it builds a graph using that snapshot and only installs it after construction succeeds. Thus invalid policy or graph-construction failure blocks that new request rather than silently running with stale policy, while the previous graph and snapshot remain usable after the policy is repaired.
 
-`TalonHost` starts the runtime before binding and starting channels, and then starts the optional scheduler. A failed partial start unwinds in reverse order. Shutdown cancels active work first, then stops channels, scheduler, and runtime; failures stopping one component are isolated so later components are still stopped. Host tests cover normal and partial startup, cancellation and interruption recovery, authorization routing, and reply delivery.
+The selected graph is stored in an invocation `ContextVar` before execution. This is crucial: graph replacement is not a stop-the-world turn lock. A concurrent turn keeps invoking, resuming interrupts, and reading approval tools through the graph and snapshot selected for that turn; a later turn can use the newly rebuilt graph. The runtime sends the LangGraph thread ID as the host-resolved conversation ID, applies the recursion limit and optional archive metadata, retries only retryable invocation errors, and may issue continuation prompts when an invocation returns no final text.
+
+### Approval snapshots and request-context cleanup
+
+`ToolApprovalStore` persists an exact-tool-name boolean policy in `tools.json`. It validates bounded regular, non-symlink JSON input, detects duplicate entries, and assigns a SHA-256 revision to the raw bytes. `ApprovalSnapshot` freezes that validated mapping; only entries enabled in the snapshot become LangGraph approve/reject interrupts. The store's update operation is compare-and-swap on the expected persisted revision, and its read/update graph tools report the active invocation policy separately from saved policy.
+
+A policy change made by `update_tool_approvals` is deliberately **next-invocation** state: the tool is bound to the current immutable snapshot, and an operator is required to save changes. A persisted change makes the current graph report `saved_changes_inactive`; the next invocation detects the revision and rebuilds. Prompting disabled for a tool does not grant authority to edit policy. The runtime sets operator authority only for an operator channel turn, never for cron or background-delivery requests.
+
+For every request, the runtime scopes and resets context in `finally`: the invocation graph, active approval snapshot and operator flag, authorization handler, cron origin and scheduled-turn marker, pending background results, selected model, and progress-delivery handler/budget. This request-bound design prevents callbacks, approval policy, model choice, archive/cron metadata, or delivery destination from leaking to another channel, scheduled run, or concurrent invocation. Background results are acknowledged only after a successful runtime result; the host requeues acknowledged IDs when it drops an undelivered reply.
+
+### Optional progress-delivery surface
+
+`AgentRequest` lets the host pass an optional `message_handler` in addition to approval and authorization callbacks. `ProgressMessages` forwards a visible main-agent tool-calling narration before tools execute, except for subagents and messages that already call `send_message`. The `send_message` tool has no destination argument: it uses the handler held in the active request context, rejects blank text or a request with no channel, and turns transport errors into model-safe status text rather than transport details.
+
+Progress is optional and controlled by `DEEPAGENTS_TALON_VERBOSITY`: level 1 exposes no progress tool and allows no interim messages, level 2 exposes it with a shared maximum of two updates per invocation, and level 3 has no fixed budget. The host owns the actual channel callback, keeps it live only while the turn is active, and sends the final `AgentResult` itself. Consequently, the runtime can request progress but cannot choose a different recipient or claim delivery after cancellation; transport, retry, typing indicators, and final reply delivery remain host concerns.
+
+### Host lifecycle and delivery ownership
+
+`TalonHost` starts the runtime before it binds and starts channels, then starts the optional scheduler. A partial-start failure unwinds scheduler, channels, and runtime in reverse order. On shutdown it cancels active work before stopping channels, scheduler, and runtime; component-stop failures are isolated so later components still stop. `DeepAgentRuntime.stop()` cancels background workers before clearing its graph or closing the checkpointer. If workers outlive cancellation, it raises and intentionally leaves those resources open rather than permit a live worker to write to a closed saver.
+
+The host serializes turns at the conversation boundary and constructs trusted request metadata and callbacks. It owns inbound admission, channel identity and reply routing, typing, approval prompts, authorization interaction, cancellation, and the decision whether a final response was delivered. Channel adapters implement the provider transport lifecycle—start, stop, inbound handler registration, text/media send, edit, typing, and connection status—and optional reaction and thread surfaces. Built-in adapters cover WhatsApp, Telegram, Discord, and Slack.
 
 ### Persistence and extension points
 
 Persistence is intentionally split:
 
-- The SDK passes a LangGraph checkpointer through graph construction for execution state.
+- The SDK receives a LangGraph checkpointer for execution state.
 - A Deep Agents backend independently governs filesystem, memory, and execution capability.
 - Talon can wrap checkpoints in `ConversationSaver` for its channel conversation archive, and keeps cron jobs separately.
 
 Talon selects checkpoint storage from `DEEPAGENTS_TALON_CHECKPOINT_URI`: built-in SQLite or `file`, PostgreSQL, and MongoDB schemes take precedence, followed by exactly one trusted `deepagents_talon.checkpoint_backends` entry-point plugin. The plugin receives the unchanged URI and owns setup and cleanup. Unexpected open failures are converted into a credential-safe configuration error. Remote checkpoint thread IDs are not automatically namespaced by assistant ID, so separate assistants need separate remote databases.
 
-A channel adapter supplies the provider transport lifecycle: start and stop, inbound handler registration, text and media sending, editing, typing, and connection status. Built-in exports cover WhatsApp, Telegram, Discord, and Slack. Treat both adapter implementations and checkpoint/history plugins as trusted operator-installed extensions.
+Treat channel adapters and checkpoint/history plugins as trusted operator-installed extensions. `deepagents-talon` declares the SDK and dcode as published dependencies and uses editable sibling source mappings for both during monorepo development; optional extras provide selected history, checkpoint, sandbox, and media integrations.
 
 ## Safe change and test starting points
 
 - Put reusable graph composition changes in `deepagents`, beginning at `create_deep_agent()`; do not import terminal, editor, channel, or cron policy into the SDK.
 - Keep synchronous `task` delegation separate from `AsyncSubAgent` remote orchestration; apply schema, approval, and cancellation changes on the graph that owns them.
+- For Talon, keep host transport/lifecycle/delivery behavior in `TalonHost` and graph composition plus request-scoped context in `DeepAgentRuntime`. Do not move channel callbacks or recipient selection into graph tools.
+- When changing approval policy or tool reload behavior, preserve the transaction boundary: construct a replacement graph before installing it, pin the selected graph and immutable snapshot for each invocation, and clean every context binding in `finally`.
+- Test runtime refresh and transactional rebuild behavior in `libs/talon/tests/test_runtime.py`; test snapshot, concurrent-turn, and authority boundaries in `libs/talon/tests/unit_tests/test_tool_approval_runtime.py`; test progress routing and cleanup in `libs/talon/tests/unit_tests/test_messaging.py` and `libs/talon/tests/unit_tests/test_verbosity.py`. For host lifecycle or cancellation changes, start with `libs/talon/tests/test_host.py`.
 - Preserve the distinction between published dependency constraints and local `uv` source mappings when changing package metadata or release pins. In particular, update dcode's exact SDK pin in the feature change that requires it.
-- Put terminal product behavior in dcode, generic ACP streaming/session behavior in ACP, and Talon delivery/serialization/scheduling in `TalonHost` versus graph composition/request context in `DeepAgentRuntime`.
-- For Talon lifecycle or cancellation changes, start with `libs/talon/tests/test_host.py`, then run focused runtime and package tests. The monorepo workflow is package-local `uv sync` and `make` targets; use `make lock-check` from `libs/` for cross-package lockfile validation.

@@ -3,9 +3,6 @@ type: runtime host
 title: Talon Runtime Integration
 description: Talon is an experimental, local host for long-running Deep Agents, channel adapters, schedules, persistence, and optional dcode sandboxes. This page explains process ownership, state boundaries, lifecycle choices, and operating constraints.
 tags: [talon, runtime, channels, scheduling, persistence, sandboxing, mcp]
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-10-17T08:04:56.296Z
 sources:
   - id: openwiki-source-6a038e6e1a11f450bcafce54
     resource: repo://libs/talon/deepagents_talon/__main__.py
@@ -29,19 +26,34 @@ sources:
     resource: repo://libs/talon/deepagents_talon/mcp_auth.py
   - id: openwiki-source-82cac27adeecff8a900a40fa
     resource: repo://libs/talon/deepagents_talon/mcp.py
+  - id: openwiki-source-5b9a69640ff3d94216c614ce
+    resource: repo://libs/talon/deepagents_talon/messaging.py
   - id: openwiki-source-665a21e2fbd09a89d3f13ac0
     resource: repo://libs/talon/deepagents_talon/runtime.py
   - id: openwiki-source-580d91c607e0a09e0659e565
     resource: repo://libs/talon/deepagents_talon/sandbox.py
+  - id: openwiki-source-267468fe937003d4716fe6c2
+    resource: repo://libs/talon/deepagents_talon/tool_approvals.py
   - id: openwiki-source-df8e616d4a20b5878bc1a05e
     resource: repo://libs/talon/tests/test_mcp_auth.py
+  - id: openwiki-source-4d6726e17c8a0c78539a7d33
+    resource: repo://libs/talon/tests/test_runtime.py
+  - id: openwiki-source-1698129adea358c8813da5a5
+    resource: repo://libs/talon/tests/unit_tests/test_messaging.py
   - id: openwiki-source-caa081bf22565f9bef5bc7d1
     resource: repo://libs/talon/tests/unit_tests/test_oauth_transport.py
   - id: openwiki-source-57a0613315e23277d358df76
     resource: repo://libs/talon/tests/unit_tests/test_sandbox.py
   - id: openwiki-source-8de0ff38635f214c7268d8e7
     resource: repo://libs/talon/tests/unit_tests/test_tool_approval_authorization.py
-generated: { by: "openwiki/0.4.2", at: "2026-10-17T08:04:56.296Z" }
+  - id: openwiki-source-242a21b2da46507f58415265
+    resource: repo://libs/talon/tests/unit_tests/test_tool_approval_runtime.py
+  - id: openwiki-source-1e7998c9f5a94d22f3819721
+    resource: repo://libs/talon/tests/unit_tests/test_verbosity.py
+generated: { by: "openwiki/0.4.2", at: "2026-10-19T08:10:20.273Z" }
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-10-19T08:10:20.273Z
 ---
 
 # Talon Runtime Integration
@@ -77,7 +89,23 @@ The host starts the runtime, binds each channel's inbound handlers, starts chann
 
 A conversation lock serializes turns for the same host conversation root. A new message interrupts active work for that conversation; `/stop` cancels it, while `/new` begins a fresh thread/context. If cancellation does not finish within 30 seconds, Talon does **not** start the new message alongside the stuck run and instructs the operator to restart. Host task, approval, authorization, and background-routing maps are in-memory coordination state and are forgotten once a conversation is idle.
 
-`DeepAgentRuntime` owns Deep Agents graph construction: it combines filesystem middleware, built-in clock and progress tools, configured runtime tools, optional archive and cron tools, approval tools, subagents, and optional web/help capabilities before the host invokes it through `AgentRequest`. For each interactive turn, the host supplies request-scoped delivery, tool-approval, and authorization handlers plus trusted metadata; the runtime binds invocation graph, model, approval, history, cron, authorization, and message state in context variables and resets them after invocation.
+`DeepAgentRuntime` owns Deep Agents graph construction: it combines filesystem middleware, the built-in clock, configured runtime tools, optional archive and cron tools, approval tools, subagents, and optional web/help capabilities before the host invokes it through `AgentRequest`. For each interactive turn, the host supplies request-scoped delivery, tool-approval, and authorization handlers plus trusted metadata; the runtime binds the invocation graph, model, approval, history, cron, authorization, and message state in context variables and resets them after invocation.
+
+### Interim updates are not final delivery
+
+`DEEPAGENTS_TALON_VERBOSITY` is validated during configuration and runtime construction. It accepts only `1`, `2`, or `3`: **1** (the default) does not assemble `send_message` into the graph, **2** assembles it for sparse significant updates, and **3** assembles it for unrestricted interim updates. This is deliberately graph construction, not merely prompt advice: a level-1 model cannot call the progress tool. Host-visible tool activity and the normal final reply are outside this setting.
+
+When available, `send_message` has a destination fixed by the request-local channel handler. It rejects blank content, does not expose transport exceptions to the model, and returns an unavailable result when the invocation has no originating channel. `ProgressMessages` may also deliver a visible main-agent narration immediately before a non-`send_message` tool call; it excludes subagents and avoids duplicating an explicit `send_message` call. These are interim messages: the host separately sends the `AgentResult.text` final reply after the turn completes.
+
+The delivery limit is invocation-scoped, shared by concurrent progress calls in that invocation, and restored on success, error, or cancellation. Verbosity 1 creates a zero-message budget, verbosity 2 permits two messages, and verbosity 3 has no budget object and therefore no fixed limit. A delivery that fails or arrives after the turn is no longer active still consumes the sparse budget once delivery was attempted. Concurrent turns receive separate context-variable handlers and budgets, so one chat cannot redirect or exhaust another chat's updates.
+
+### Approval snapshots and graph replacement
+
+`tools.json` is a bounded, regular, non-symlink JSON mapping of exact tool names to booleans. Its immutable `ApprovalSnapshot` includes a hash of the source bytes; enabled names become approve/reject interrupts, while an unspecified or `false` name does not request a prompt. The store uses a locked compare-and-swap update, so an edit must name the revision it read. The write is atomically published and reports `next_invocation`; only an operator main-chat invocation can invoke the update tool.
+
+At startup Talon builds the graph from the saved snapshot. Before each invocation it reads the policy under the graph lock; a changed snapshot causes a replacement graph to be constructed and atomically installed before that invocation captures its graph and approval context. A running invocation continues with its captured graph and snapshot, including the approval read/update tool closures. If policy parsing or replacement-graph construction fails, that invocation is blocked and the prior graph and active snapshot remain intact; correcting the policy allows a later invocation to retry activation. This prevents a malformed edit from silently running against mismatched tool gates.
+
+The same construct-before-publish pattern protects runtime capability refreshes. A passive `refresh_tools` callback may replace the configured runtime tool set between turns; refresh errors log that saved MCP changes are inactive and preserve the usable graph. Explicit MCP reload and subagent reload run under the same lock and only assign new tools, subagents, or graph after graph construction succeeds. Active turns and delegated tasks retain their captured graph/capabilities; reload affects subsequent turns rather than serving as immediate revocation.
 
 ## Assistant home and deliberately separate state lifecycles
 
@@ -100,7 +128,7 @@ Cron jobs are persisted under `cron/jobs.json`. At process startup, `DEEPAGENTS_
 
 ## Channels and unattended scheduling
 
-Channels turn admitted inbound messages into host-managed agent turns. The host fixes the reply destination and supplies trusted turn metadata; the runtime must not infer authority from model arguments or untrusted inbound metadata. Tool-approval policy is an assistant-wide `tools.json` snapshot: changes are atomic compare-and-swap and take effect on a later invocation, while in-flight turns retain their snapshot.
+Channels turn admitted inbound messages into host-managed agent turns. The host fixes the reply destination and supplies trusted turn metadata; the runtime must not infer authority from model arguments or untrusted inbound metadata. Tool-approval policy is an assistant-wide `tools.json` snapshot: changes are atomic compare-and-swap and take effect on a later invocation, while in-flight turns retain their snapshot. See [Approval snapshots and graph replacement](#approval-snapshots-and-graph-replacement) for the activation and failure behavior.
 
 Cron uses a persistent minute ticker. It removes finished jobs before a scan, claims and runs due jobs one at a time, records a run or delivery error in the store, suppresses `[SILENT]` output, and logs a failed scan before retrying at its normal interval rather than silently dying. The scheduler is attached only when the host has channels, because delivery resolves the job's origin channel.
 
@@ -126,11 +154,11 @@ OAuth discovery and token traffic use an HTTPS-only SSRF-safe transport that ign
 
 ## Focused verification
 
-From `libs/talon`, install the test group and run focused lifecycle tests:
+From `libs/talon`, install the test group and run the focused runtime regressions:
 
 ```bash
 uv sync --group test
-uv run --group test pytest tests/unit_tests/test_checkpoint_backends.py tests/unit_tests/test_sandbox.py tests/unit_tests/test_history_backends.py tests/unit_tests/test_scheduled_history.py
+uv run --group test pytest tests/test_runtime.py tests/unit_tests/test_messaging.py tests/unit_tests/test_tool_approval_runtime.py tests/unit_tests/test_verbosity.py
 ```
 
-The checkpoint tests prove SQLite persistence, plugin cleanup, invalid URI rejection, and sanitized startup errors. Sandbox tests cover default/attached ownership, LangSmith snapshot selection, fail-closed startup and cancellation cleanup, and routing that keeps `memory/` and blobs host-side while preventing traversal to `tools.json`. History and scheduled-history tests are the relevant regression layer for archive scope and the fact that scheduled runs do not become conversation history. OAuth transport, host, MCP-auth, and approval/authorization tests additionally cover the MCP security boundary.
+`test_verbosity.py` verifies accepted values, rejects malformed values in both configuration and runtime construction, confirms conditional progress-tool assembly, checks the level-specific prompt/tool guidance, and exercises per-turn sparse budgets under parallel calls. `test_messaging.py` covers narration ordering, explicit-message de-duplication, channel-bound delivery, transport-error redaction, concurrent request isolation, and expiration before final delivery. `test_tool_approval_runtime.py` covers approval before progress delivery, snapshot visibility across edits, concurrent old/new graphs, operator boundaries, and failed activation preserving the prior graph. `test_runtime.py` covers tool refresh and transactional MCP replacement; together these tests are the focused regression layer for safe graph rebuild behavior. Sandbox, history, OAuth transport, host, MCP-auth, and approval/authorization suites continue to cover their respective lifecycle and security boundaries.

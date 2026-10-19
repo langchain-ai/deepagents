@@ -13,17 +13,14 @@ from rich.markup import escape as escape_markup
 
 from deepagents_code.config import console
 from deepagents_code.media_utils import ImageData, VideoData
+from deepagents_code.unicode_security import is_safe_file_path
 
 logger = logging.getLogger(__name__)
 
-PATH_CHAR_CLASS = r"A-Za-z0-9._~/\\:-"
-"""Characters allowed in file paths.
+PATH_CHAR_PATTERN = r"(?:[\w.~/\\:-]|[^\x00-\x7f\s])"
+"""Match a path character, including non-ASCII combining marks but not whitespace."""
 
-Includes alphanumeric, period, underscore, tilde (home), forward/back slashes
-(path separators), colon (Windows drive letters), and hyphen.
-"""
-
-FILE_MENTION_PATTERN = re.compile(r"@(?P<path>(?:\\.|[" + PATH_CHAR_CLASS + r"])+)")
+FILE_MENTION_PATTERN = re.compile(r"@(?P<path>(?:\\.|" + PATH_CHAR_PATTERN + r")+)")
 """Pattern for extracting `@file` mentions from input text.
 
 Matches `@` followed by one or more path characters or escaped character
@@ -42,7 +39,7 @@ a file reference.
 """
 
 INPUT_HIGHLIGHT_PATTERN = re.compile(
-    r"(^\/[a-zA-Z0-9_-]+|@(?:\\.|[" + PATH_CHAR_CLASS + r"])+)"
+    r"(^\/[a-zA-Z0-9_-]+|@(?:\\.|" + PATH_CHAR_PATTERN + r")+)"
 )
 """Pattern for highlighting `@mentions` and `/commands` in rendered
 user messages.
@@ -464,6 +461,25 @@ class MediaTracker:
         return max_id + 1 if max_id else fallback_count + 1
 
 
+def _resolve_file_mention(path: str) -> Path | None:
+    """Prefer the full path, then prefixes before non-ASCII prose or punctuation.
+
+    Returns:
+        The longest existing file path, or `None` when no candidate resolves.
+    """
+    ends = [len(path)] + [
+        index for index in range(len(path) - 1, 0, -1) if not path[index].isascii()
+    ]
+    for end in ends:
+        try:
+            resolved = Path(path[:end]).resolve()
+            if resolved.is_file():
+                return resolved
+        except (OSError, RuntimeError):
+            logger.debug("Could not resolve file mention candidate", exc_info=True)
+    return None
+
+
 def parse_file_mentions(text: str) -> tuple[str, list[Path]]:
     r"""Extract `@file` mentions and return the text with resolved file paths.
 
@@ -499,15 +515,18 @@ def parse_file_mentions(text: str) -> tuple[str, list[Path]]:
 
         raw_path = match.group("path")
         clean_path = raw_path.replace("\\ ", " ")
+        if not is_safe_file_path(clean_path):
+            console.print(
+                "[yellow]Warning: Unsafe characters in file mention.[/yellow]"
+            )
+            continue
 
         try:
             path = Path(clean_path).expanduser()
-
             if not path.is_absolute():
                 path = Path.cwd() / path
-
-            resolved = path.resolve()
-            if resolved.exists() and resolved.is_file():
+            resolved = _resolve_file_mention(str(path))
+            if resolved is not None:
                 files.append(resolved)
             else:
                 console.print(

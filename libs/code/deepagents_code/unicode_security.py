@@ -220,6 +220,19 @@ def sanitize_control_chars(
     return cleaned
 
 
+def is_safe_file_path(path: str) -> bool:
+    """Reject deceptive controls and line separators without rewriting file paths.
+
+    Returns:
+        Whether the path can be displayed and inserted verbatim safely.
+    """
+    return (
+        sanitize_control_chars(path, collapse_whitespace=False) == path
+        and "\u2028" not in path
+        and "\u2029" not in path
+    )
+
+
 def render_with_unicode_markers(text: str) -> str:
     """Render hidden Unicode characters as explicit markers.
 

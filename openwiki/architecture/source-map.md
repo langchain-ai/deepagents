@@ -1,11 +1,11 @@
 ---
 type: architecture source map
 title: Source Map
-description: Practical change-routing map for Deep Agents SDK assembly and backends, dcode CLI, UI, and sandbox boundaries, and Talon host and Discord delivery. Use it to identify the contract owner and focused tests before changing behavior.
-tags: [deepagents, source-map, architecture, middleware, dcode, talon, testing]
+description: Practical change-routing map for Deep Agents backend compatibility and SDK assembly, plus Talon runtime configuration, progress, approval, and channel seams. Use it to identify the contract owner and focused tests before changing behavior.
+tags: [deepagents, source-map, architecture, backends, talon, approvals, testing]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-10-18T08:05:11.339Z
+    at: 2026-10-19T08:10:20.273Z
 sources:
   - id: openwiki-source-9d81aa681a56a98960013750
     resource: repo://.github/scripts/checks/check_lockfiles_pre_commit.py
@@ -27,6 +27,12 @@ sources:
     resource: repo://libs/deepagents/deepagents/backends/composite.py
   - id: openwiki-source-d70fe6f8bf81e2aa641a4950
     resource: repo://libs/deepagents/deepagents/backends/context_hub.py
+  - id: openwiki-source-07f9eac13e71bcbdb4e6994b
+    resource: repo://libs/deepagents/deepagents/backends/state.py
+  - id: openwiki-source-21e2b0401425a427d8cea9c1
+    resource: repo://libs/deepagents/deepagents/backends/store.py
+  - id: openwiki-source-c972622237a22631e36f3625
+    resource: repo://libs/deepagents/deepagents/backends/utils.py
   - id: openwiki-source-0fc0e47059e4d07e23e50be2
     resource: repo://libs/deepagents/deepagents/graph.py
   - id: openwiki-source-fc54598423086acf9d53d9fd
@@ -43,6 +49,10 @@ sources:
     resource: repo://libs/deepagents/tests/unit_tests/backends/test_composite_backend.py
   - id: openwiki-source-97b09ca9987a984f1b37f8c8
     resource: repo://libs/deepagents/tests/unit_tests/backends/test_context_hub_backend.py
+  - id: openwiki-source-fb022ddbcc554eaabedfa8cd
+    resource: repo://libs/deepagents/tests/unit_tests/backends/test_state_backend.py
+  - id: openwiki-source-e11958a6a68a079be57552fc
+    resource: repo://libs/deepagents/tests/unit_tests/backends/test_store_backend.py
   - id: openwiki-source-530f1194888c9c15f9c71332
     resource: repo://libs/deepagents/tests/unit_tests/middleware/test_summarization_factory.py
   - id: openwiki-source-6ce85b02eabe462f99e0c912
@@ -51,10 +61,14 @@ sources:
     resource: repo://libs/deepagents/tests/unit_tests/test_graph.py
   - id: openwiki-source-a8e2e928218febcb386206bf
     resource: repo://libs/talon/deepagents_talon/channels/discord.py
+  - id: openwiki-source-81698d033a5726401d48b135
+    resource: repo://libs/talon/deepagents_talon/config.py
   - id: openwiki-source-6801a88de6305bc8cbdd259f
     resource: repo://libs/talon/deepagents_talon/host.py
   - id: openwiki-source-31e40ff79779f51cafd03f01
     resource: repo://libs/talon/deepagents_talon/mcp_auth.py
+  - id: openwiki-source-5b9a69640ff3d94216c614ce
+    resource: repo://libs/talon/deepagents_talon/messaging.py
   - id: openwiki-source-665a21e2fbd09a89d3f13ac0
     resource: repo://libs/talon/deepagents_talon/runtime.py
   - id: openwiki-source-94758cb9b3302b8f80f516f9
@@ -65,7 +79,13 @@ sources:
     resource: repo://libs/talon/tests/test_host.py
   - id: openwiki-source-df8e616d4a20b5878bc1a05e
     resource: repo://libs/talon/tests/test_mcp_auth.py
-generated: { by: "openwiki/0.4.2", at: "2026-10-18T08:05:11.339Z" }
+  - id: openwiki-source-1698129adea358c8813da5a5
+    resource: repo://libs/talon/tests/unit_tests/test_messaging.py
+  - id: openwiki-source-242a21b2da46507f58415265
+    resource: repo://libs/talon/tests/unit_tests/test_tool_approval_runtime.py
+  - id: openwiki-source-1e7998c9f5a94d22f3819721
+    resource: repo://libs/talon/tests/unit_tests/test_verbosity.py
+generated: { by: "openwiki/0.4.2", at: "2026-10-19T08:10:20.273Z" }
 ---
 
 # Source Map
@@ -80,6 +100,9 @@ Route a change to the component that owns its contract, rather than the product 
 | Blocking or asynchronous delegation | `middleware/subagents.py` or `middleware/async_subagents.py` | relevant subagent unit tests; `tests/unit_tests/test_async_subagents.py` for remote-task lifecycle |
 | Context compaction and offload recovery | `middleware/summarization.py` | `tests/unit_tests/middleware/test_summarization_factory.py` plus lifecycle coverage |
 | Prefix-routed files, root listings, cross-route search, glob behavior, or execution capability | `backends/composite.py` — `CompositeBackend` | `tests/unit_tests/backends/test_composite_backend.py` and `test_composite_backend_async.py` |
+| Ephemeral, checkpointed per-thread files or read-your-writes during a graph step | `backends/state.py` — `StateBackend` | `tests/unit_tests/backends/test_state_backend.py` |
+| Persistent, cross-thread files, namespace isolation, or BaseStore pagination | `backends/store.py` — `StoreBackend` and its `NamespaceFactory` | `tests/unit_tests/backends/test_store_backend.py` |
+| Shared file-data migration, byte encoding, read windows, literal grep, or glob semantics | `backends/utils.py` — `file_data_to_string`, `slice_read_response`, and matcher helpers | the State and Store backend unit suites |
 | Persistent Hub-backed files | `backends/context_hub.py` — `ContextHubBackend` | `tests/unit_tests/backends/test_context_hub_backend.py`; real-Hub coverage in `tests/integration_tests/test_context_hub_backend.py` |
 | dcode command dispatch, policy gates, or sandbox-default validation | `libs/code/deepagents_code/main.py` — `cli_main` | nearest `libs/code/tests/unit_tests/` CLI test |
 | dcode Textual UI, session start, server handoff, thread rendering, or approvals | `libs/code/deepagents_code/app.py` — `DeepAgentsApp` | `libs/code/tests/unit_tests/test_app.py` |
@@ -87,7 +110,9 @@ Route a change to the component that owns its contract, rather than the product 
 | Sandbox acquisition, setup, cleanup, or provider-specific lifecycle | `integrations/sandbox_factory.py` — `create_sandbox` | `libs/code/tests/unit_tests/test_sandbox_factory.py` |
 | Talon host lifecycle, turns, approvals, cancellation, scheduling, or delivery | `libs/talon/deepagents_talon/host.py` — `TalonHost` | `libs/talon/tests/test_host.py` and the narrower host suite |
 | Discord admission, threads, interactions, media, or Gateway status | `libs/talon/deepagents_talon/channels/discord.py` — `DiscordChannel` | `libs/talon/tests/channels/test_discord.py`; cross-boundary behavior in `tests/integration_tests/test_discord_host.py` |
-| Talon graph composition and SDK configuration | `libs/talon/deepagents_talon/runtime.py` — `DeepAgentRuntime` | nearest Talon runtime test |
+| Talon environment parsing, assistant-home layout, verbosity, or history URI validation | `libs/talon/deepagents_talon/config.py` — `TalonConfig.from_env` and `ensure_home` | `libs/talon/tests/unit_tests/test_verbosity.py` for verbosity; configuration tests for path and URI validation |
+| Talon graph composition, per-turn policy snapshots, approval interrupts, and recovery | `libs/talon/deepagents_talon/runtime.py` — `DeepAgentRuntime.start`, `invoke`, and `recover_interrupted` | `libs/talon/tests/test_runtime.py` and `libs/talon/tests/unit_tests/test_tool_approval_runtime.py` |
+| Main-agent narration, explicit `send_message`, or per-turn interim-message budget | `libs/talon/deepagents_talon/messaging.py` — `ProgressMessages` and `progress_messages` | `libs/talon/tests/unit_tests/test_messaging.py` and `libs/talon/tests/unit_tests/test_verbosity.py` |
 | Talon MCP OAuth storage, discovery, or transport security | `libs/talon/deepagents_talon/mcp_auth.py` | `libs/talon/tests/test_mcp_auth.py` and OAuth transport tests |
 
 ```mermaid
@@ -122,6 +147,16 @@ Deep Agents summarization preserves raw messages while recording a private event
 `CompositeBackend` is the virtual filesystem router: it selects the longest matching prefix, exposes route roots in a root listing, remaps routed result paths, and searches or globs across routes only from the root. A root-anchored glob that does not target a route skips that route; command execution is never routed and requires the default backend to implement `SandboxBackendProtocol`. Test both sync and async behavior when changing routing or merge semantics.
 
 For persistent files, ContextHubBackend lazily snapshots a LangSmith Hub agent repository, treats a missing repository as empty, overlays accepted pending and in-flight mutations on reads, and batches writes before their callers return after remote durability. On a Context Hub commit conflict, ContextHubBackend reloads the remote tree and rematerializes queued edits or deletes from their original intents before retrying; incompatible rematerialization settles affected callers with the conflict.
+
+### State and store file-data compatibility
+
+Use `StateBackend` when files should live in the LangGraph `files` state channel for one conversation thread. It must run in graph context: it reads through `CONFIG_KEY_READ` with `fresh=True`, queues only changed keys through `CONFIG_KEY_SEND`, and therefore makes a write visible to later backend calls in the same superstep before the node boundary commits it. Deleting a directory queues `None` for its exact and descendant keys.
+
+Use `StoreBackend` when files must persist across threads. Its caller-owned `NamespaceFactory` is the isolation boundary; namespace components are validated to reject empty, non-string, and wildcard-like components before any store lookup. It may use an injected `BaseStore` outside a graph only when the namespace factory does not require a runtime; otherwise route the call through graph execution. Store listings and searches page through all matching items rather than depending on backend-specific filter semantics.
+
+`backends/utils.py` owns cross-backend file-data behavior. Readers accept legacy `list[str]` content and normalize it without mutating persisted data; writes and edits migrate it to a string while retaining `created_at`. Uploads store UTF-8 payloads as text and undecodable bytes as base64, and downloads reverse that encoding. Do not fork these rules in an individual backend.
+
+The shared read helper clamps negative offsets and limits, returns an explicitly empty no-lines-requested window for a zero limit, preserves metadata on a read-only slice, normalizes returned line endings, and provides pagination metadata. Shared grep is literal, excludes base64 payloads, and reports invalid include globs as result errors rather than exceptions. Focus changes to this contract with the State and Store suites, including legacy content, binary round trips, non-positive bounds, and binary grep behavior.
 
 ## dcode entry, UI, and sandbox boundaries
 
@@ -162,6 +197,14 @@ sequenceDiagram
 *Discord decides whether and where an event becomes a turn; the host serializes the turn and owns agent lifecycle and delivery.*
 
 Talon's DeepAgentRuntime is an integration caller of the SDK builder: it prepares Talon-specific tools, approvals, middleware, backend, and checkpointing, then invokes create_deep_agent, including a replacement filesystem middleware and selected-model summarization layer.
+
+### Talon runtime seams: configuration, progress, and approval
+
+`TalonConfig.from_env` owns the process boundary: it validates the assistant identifier and history URI, filters the inherited environment to runtime-relevant keys, and namespaces state beneath one assistant home. `ensure_home` creates that home and its state directories with mode `0700`, installs defaults without overwriting existing files, and initializes the tool-approval store. Route new settings and their validation here, rather than treating `DeepAgentRuntime.env` as an unvalidated configuration API.
+
+`DEEPAGENTS_TALON_VERBOSITY` is deliberately small: level 1 is the default and suppresses interim updates, level 2 permits a shared maximum of two per invocation, and level 3 has no runtime cap. The level also controls whether `send_message` is exposed and the system guidance supplied to the model. `progress_messages` scopes both handler and budget with `ContextVar`s and resets them even on failure, so concurrent requests cannot cross-deliver messages. `ProgressMessages.aafter_model` automatically forwards nonblank main-agent narration only when an AI message will call tools and does not itself call `send_message`; subagent narration and duplicate explicit progress are suppressed. Delivery failures stay out of model context as a generic result.
+
+`DeepAgentRuntime.start` snapshots the persisted approval policy and constructs the graph. Each `invoke` refreshes tools, rebuilds the graph if the persisted policy changed, then binds that graph and snapshot in invocation-local context before running it. This keeps a turn that is already awaiting approval on its original policy while later turns see the replacement. The runtime wires protected tools through `interrupt_on`; on an interrupt it sends the complete action batch to the request approval handler, resumes with matching approve or reject decisions, and auto-denies cron, background-delivery, or handler-less requests. Change policy persistence in `tool_approvals.py`; change the graph bridge, snapshot lifecycle, or denial policy in `runtime.py` and verify it with the network-free approval-runtime suite.
 
 Talon MCP OAuth stores credentials in server-identity-scoped owner-only files and preserves a previous refresh token on refresh responses that omit it; its OAuth transport is HTTPS-only, SSRF-safe, and rejects redirects and unsafe discovered endpoints.
 

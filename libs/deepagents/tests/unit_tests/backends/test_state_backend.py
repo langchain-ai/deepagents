@@ -48,6 +48,30 @@ def test_upload_download_round_trip(monkeypatch: pytest.MonkeyPatch, initial: by
     assert response.content == uploaded
 
 
+@pytest.mark.parametrize("use_async", [False, True])
+@pytest.mark.parametrize("max_count", [None, 1])
+@pytest.mark.parametrize("glob", [None, "*.txt", "*.png"])
+async def test_state_backend_grep_skips_binary_uploads(
+    monkeypatch: pytest.MonkeyPatch, *, use_async: bool, max_count: int | None, glob: str | None
+) -> None:
+    """Binary payloads neither appear in grep results nor consume the match limit."""
+    backend = StateBackend()
+    files: dict[str, Any] = {}
+    monkeypatch.setattr(backend, "_read_files", lambda: files)
+    monkeypatch.setattr(backend, "_send_files_update", files.update)
+    responses = backend.upload_files([("/image.png", b"\xff\xff\xff"), ("/client.txt", b"GET /api")])
+    assert all(response.error is None for response in responses)
+
+    if use_async:
+        result = await backend.agrep("/", path="/", glob=glob, max_count=max_count)
+    else:
+        result = backend.grep("/", path="/", glob=glob, max_count=max_count)
+
+    assert result.error is None
+    assert result.matches == ([] if glob == "*.png" else [{"path": "/client.txt", "line": 1, "text": "GET /api"}])
+    assert result.truncated is False
+
+
 @pytest.mark.parametrize(("offset", "limit"), [(0, 0), (0, -3), (-1, 0)])
 def test_state_backend_read_non_positive_limit_returns_empty_read(monkeypatch: pytest.MonkeyPatch, offset: int, limit: int) -> None:
     """`StateBackend.read` inherits the shared clamp rather than raising."""

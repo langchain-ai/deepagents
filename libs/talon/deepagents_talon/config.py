@@ -1,6 +1,9 @@
 """Configuration loading for the Talon runtime host.
 
 Talon is an experimental runtime and is subject to change or removal at any time.
+Set `DEEPAGENTS_TALON_VERBOSITY` per assistant process: 1 (the default) disables
+interim chat updates, 2 permits at most two for long tasks, and 3 allows unrestricted
+updates. Final replies and host-visible tool activity are unaffected.
 """
 
 from __future__ import annotations
@@ -72,7 +75,7 @@ class TalonConfig:
             Runtime configuration with a validated assistant id and namespaced home.
 
         Raises:
-            TalonConfigError: If the assistant id or history connection URI is invalid.
+            TalonConfigError: If the assistant id, verbosity, or history connection URI is invalid.
         """
         values = os.environ if env is None else env
         assistant_id = _first_present(
@@ -101,6 +104,7 @@ class TalonConfig:
             env={key: value for key, value in values.items() if _is_runtime_env(key)},
         )
 
+        _ = config.verbosity
         _ = config.history_reindex
         _ = config.history_vector_search
         _ = config.history_embedding_profile
@@ -130,6 +134,15 @@ class TalonConfig:
             child.mkdir(mode=0o700, parents=True, exist_ok=True)
             child.chmod(0o700)
         return self.home
+
+    @property
+    def verbosity(self) -> int:
+        """Interim updates: 1 disables them, 2 allows at most two, 3 is unrestricted."""
+        value = self.env.get("DEEPAGENTS_TALON_VERBOSITY", "1")
+        if value not in {"1", "2", "3"}:
+            msg = "DEEPAGENTS_TALON_VERBOSITY must be 1, 2, or 3"
+            raise TalonConfigError(msg)
+        return int(value)
 
     @property
     def huggingface_cache_dir(self) -> Path:

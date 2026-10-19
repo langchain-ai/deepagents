@@ -4,7 +4,7 @@ okf_version: "0.2"
 
 # Files
 
-- [Deep Agents Monorepo Quickstart](quickstart.md) - Task-routing entry point for maintainers of the Deep Agents monorepo. Identify the contract owner, use the package-local workflow and focused tests, then follow the linked guide for cross-package operations.
+- [Deep Agents Monorepo Quickstart](quickstart.md) - Task-routing entry point for Deep Agents maintainers. Find the package that owns a contract, run its narrowest deterministic regression seam, and then use the linked system guide for cross-package work.
 
 # Directories
 

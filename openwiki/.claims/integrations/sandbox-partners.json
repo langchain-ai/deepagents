@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:b7a7196437e17b704172dec4c57cc8dec340898a32f31bcfd99e4a28567a443f",
+  "pageVersion": "sha256:f41549a1eb235c896895f74448c12ada7cecfda5e55c048373c579967b4db2f1",
   "claims": [
     {
       "id": "claim_348ce521c96a4f32a102f91b81305997",
@@ -62,7 +62,7 @@
       "evidence": [
         {
           "resource": "repo://libs/talon/deepagents_talon/config.py",
-          "version": "repo-file-v1:sha256:20fb3ade8ffcac0cfa85fff02a48b15d17ccdb1d5db574c0690d3fa4b954d832"
+          "version": "repo-file-v1:sha256:0cf902ed6e7f0272692eb044b219acd2a6fc5e5577616249c1dcee2e223daf3d"
         },
         {
           "resource": "repo://libs/talon/deepagents_talon/sandbox.py",
@@ -207,10 +207,56 @@
           "version": "repo-lines-v1:sha256:fbb84fc638a469c02be11d740f873d2ff1e6a654eae525263ed9d2c9d1f778c7:eyJzZWxlY3RlZExpbmVDb3VudCI6MzcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4ZGQ2Y2E4ZmVhNTRmZWZlNDcyNTVjNjZhMTI1NmEzNDFjNmRhZTM4N2QwMzJhZThhYjgxMWZlMDU4MGU3MzUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI2MWUzYmZlZjJjZDZhZjhhZTUyYmYxYzNiYjllM2NiYTViYmYwZDI4ZDg1MTBlM2YzYWFjZGI2MWM4ZGJhNWQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjZmZjcwYTM5ODMyMzk5OTgzMmYyMmUyNTIzMmY3NzQ0YzFhOWQxYzE0OTNjZGE2OTIwYTQzOGIwODk5ZmMyMjAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjUzZWFlNGQ2NzhlM2UzZDE5ODI2ZDcwYjBkMDllNDRjMDA1YWFmYjYxOTBjYTZiMzBkYmRkZGZjMzU5ZmM1NDYifQ"
         }
       ]
+    },
+    {
+      "id": "claim_dbcf93de416c40b193edde5660397218",
+      "statement": "Talon's sandbox configuration is enabled only by a nonblank `DEEPAGENTS_TALON_SANDBOX` provider value; it optionally accepts an ID, snapshot, and setup-script path, and does not read dcode's configured default provider.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/deepagents_talon/config.py#L173-L194",
+          "version": "repo-lines-v1:sha256:1b3c2669bd15364269e5b8904d06639e810c85b43afae0cc8ba3964bba5600b4:eyJzZWxlY3RlZExpbmVDb3VudCI6MjIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQyYmRjODNlODFiMjFiMjFlYmJhNjdiYjgyOWRjNDNlZWQ5ZmZlNWE5Y2YzYmFmMDIxMmEwZTlmOTA4NWRmZmQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjdjMjRjOWNiYjU4YzFkZjkyZDRjMjJiZGJmOGY2Yjc1NmJjMmRmMDg1ODM2YjkxMmUxNDU1YzZlMTQzNmVkZjQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjFiNWU2OTQzMjZiMzZmOGI4M2M2MTgxYzA3NTdmNDM5ZTZkZDc4MzY0MGIyNWRiOTUzOGY2YjZhODliNDliM2UiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijk5ODY3MjFlOTk0NDRlNzQwYWM0YTVhN2ZmYjE3ZWQwMmI3NDcxNmJkMDVlNGNiZmQyMjNhYmIwYmEyYjg3NTMifQ"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/sandbox.py#L65-L85",
+          "version": "repo-lines-v1:sha256:8b043aea608a3a7d45fe9a4146938e67dd1a77bde56d7407a609eb213a14d9c1:eyJzZWxlY3RlZExpbmVDb3VudCI6MjEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg3Y2ZmM2YxNzg0MmRlYzZlN2U5MWMzZTNiOGZjZTBhODIyZmMzMTEyNzM4MWIwMGY0NGE5ZjEzMzMzMDNhMmUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFiNWM4MjYzMmZjODJkNGIyYzM0MGY0MjU1OGJhM2RmYTMxYzc2NTVkZjZmY2MxNjhiNGZkY2U1N2ZhYzYwNDMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjY3NzI2ZGY3MDFjNzg1NjlhNjQ4YmI4M2FkMmMzYjk1ZGRiNTdjYzgzMDViYmY3YTVjZjdhNDViNzcwNTg2ODgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjgwMTdiYjNjMDczY2JkZGI1NmY0YzFlNzM2ZTIwNzRkOGVlZWE2YmNiZGZhZmRlYzI1OGUyYjgyOTExMjg3YWIifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_9263cad9c1a84a5ab41918709ad77949",
+      "statement": "For a fresh LangSmith Talon sandbox, Talon defaults the snapshot to `talon-<assistant_id>` unless an explicit Talon snapshot is supplied or the provider's LangSmith snapshot-name environment override is present.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/deepagents_talon/config.py#L189-L194",
+          "version": "repo-lines-v1:sha256:ae144b3fdddd0123e8b3e4b3bd9f39e100b986ed2767931b029c8919d898a8c6:eyJzZWxlY3RlZExpbmVDb3VudCI6NiwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiM2QxMTM0YzlhZWM2NDljYmFlZWYzNzZjMDQzMDFhNGI0Mjc3MTcxODcwNGYyZjgxY2ZmNjQ4MzE3OWRkYTA5YSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiN2MyNGM5Y2JiNThjMWRmOTJkNGMyMmJkYmY4ZjZiNzU2YmMyZGYwODU4MzZiOTEyZTE0NTVjNmUxNDM2ZWRmNCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMDk2YjBiNDMyYzIxYjBjNTFhNzhjNzllZmNiOTBmZThmMzBiZTExYzkwYWIwODgwM2U5NDFjN2UwMDFjYmRiOSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiOTk4NjcyMWU5OTQ0NGU3NDBhYzRhNWE3ZmZiMTdlZDAyYjc0NzE2YmQwNWU0Y2JmZDIyM2FiYjBiYTJiODc1MyJ9"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/sandbox.py#L189-L199",
+          "version": "repo-lines-v1:sha256:bd259dd40d6dbf3bb02b4907c70b36dd0273aeb2288e3ec51b10620d2504cc7a:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ1MjBhY2M3YTU3MjBhNzQ0ODI0ZmUxZTJjODI3MjNhYTFiNGIyMzVmZTc2MzhlNGUyYzhkYjc1N2VkYTRjNTEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjVhNzhkODRlNDA5NDU1MDg4ZGNmNzQ1NTVjZTUzYjUzNDkzZTg5OTdmOWM5ZTg1MjkwNmE3MmMxZDhhMzZkNzAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjI3ZDJmOGUyMGI0YjU1NDk1NDliMGExMWU1ZGMxNzE4YTIxZTdmOWI2NWQ1NzZiYzRlMjJlMGJmMWFkMmNkNTMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjM2NThkZjI4YmVkZmRmNDg3OTBlM2Y2OTI1YWY3MzdhOTA2ZGE0NGJmNWU1YjBmM2NkMDZiYzAxOWQwMzhhZDUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_17a64983c6bc46ebbc257f53ce2d90c1",
+      "statement": "Talon treats a configured sandbox startup failure as fatal rather than using host execution, retains the factory context for its host lifetime, and preserves attachment ownership by closing only factory-owned sandboxes.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/integrations/sandbox_factory.py#L143-L182",
+          "version": "repo-lines-v1:sha256:23857308c463684782df193cdb7aa1b9ddade5310a2eea9b67531d0a2373bdac:eyJzZWxlY3RlZExpbmVDb3VudCI6NDAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImMxMzY5NzFjNzZhOTVjNjg3YTM1ZDJmZTVjYWIyNmRiZTZkNjNjOTUwOWE5YjczODllZmE4OWE2ZWU2NWVlNDUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjUxMDM0ODFjNTdkMGYwZGMwZjc2Y2QyY2M4YjM2MDRjNGU4Mjk2ZGE0MTIyYWRkMTllODE3NDVkYzdlMzMxYTYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImE5ZDFjMDA3OTQ5ZWE1YjdlN2E4YjU1MTdjNjFkYzU1YWZjYjY2ZWRkYTdmZTNmZTI0YmQ5MmY0ODBlMTlmZTkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImNkYWQwMzExYWIzMTU3NjI3Y2ZjY2NmZmEzYmVhOWI1M2UyYTkyZGIzZWM0MmQwZGMwMzU2MTc4YzczYzE5MGEifQ"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/sandbox.py#L161-L186",
+          "version": "repo-lines-v1:sha256:62a9f1eb5ee178e6b8d1be6bf6c6963ff7f55bf544a7fbf4fc7e95fdcd68c5b6:eyJzZWxlY3RlZExpbmVDb3VudCI6MjYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc1OTdiMjMyNzU4MWVlN2VjNjlhMTI4MjdhMjg2YjYyMWZmMjFkNmQ5ODA2ZTdkYjdkM2Y1YjAzNzI3YWFkN2EiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjE4ZGJkZTBlMGM2ODgwOWQwOTZmYmQzZWI3OTMwY2M3YjIyMTA1MTk1Njc2YTYwYjg0ODY0ZmMxZDQzYWQwNDgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijc0MGY2Y2MwZDYyYzczYzlkMzI5ZGM4YTQ0MDg3ZWRlZDM5NDg3ZDkyNGI0MzgxNTJiOWI3ZDY1OTI2MTFjMWMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImYwMWJmYWQ2M2YxNWYyNWU1Y2M2YzhhNGI1MWY4NTRjZWY0ZDkwMmEyZTk5YjllN2UzNDNhMTI3ZjkzN2I4NDUifQ"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/sandbox.py#L65-L98",
+          "version": "repo-lines-v1:sha256:c7a72e2f7bdf15c64ec6f98da23aab70c95192f21bcb80280cc1d097b86bd914:eyJzZWxlY3RlZExpbmVDb3VudCI6MzQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg3Y2ZmM2YxNzg0MmRlYzZlN2U5MWMzZTNiOGZjZTBhODIyZmMzMTEyNzM4MWIwMGY0NGE5ZjEzMzMzMDNhMmUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImUzNWNkMWNmY2RhZjVlOTcyZTIxNDdhMzZkM2E3YTAzMDFlZDM0MTgzZDUyZGRjMWMyNzcwMmI4YTc4YTAxMTgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjY3NzI2ZGY3MDFjNzg1NjlhNjQ4YmI4M2FkMmMzYjk1ZGRiNTdjYzgzMDViYmY3YTVjZjdhNDViNzcwNTg2ODgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImQxMzUyMzRhM2NkMjkzM2Q1ZWZhNzlhMTA1YWYyYWJiMmI4MTI0NzFjM2ZiYzA2ZGVhZGI3YjIwZmFkMWQyYzQifQ"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-10-17T08:04:56.296Z"
+    "at": "2026-10-19T08:10:20.273Z"
   }
 }

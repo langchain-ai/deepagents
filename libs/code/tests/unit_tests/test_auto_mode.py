@@ -64,6 +64,7 @@ from deepagents_code.auto_mode import (
     _active_user_directives,
     _ask_user_question_count,
     _batch_id,
+    _classifier_context,
     _ClassifierBatch,
     _ClassifierConstructionDeadlineExceededError,
     _ClassifierDeadlineExceededError,
@@ -2296,26 +2297,25 @@ async def test_failed_proposed_creation_is_not_temp_provenance(
         args={"file_path": str(failed_path)},
         tools=list(middleware.tools),
     )
-    request.messages.extend(
-        [
-            AIMessage(
-                content="",
-                tool_calls=[
-                    {
-                        "name": "create_temp_artifact",
-                        "args": {"content": "body", "suffix": ".md"},
-                        "id": "failed-create",
-                        "type": "tool_call",
-                    }
-                ],
-            ),
-            ToolMessage(
-                content="creation failed",
-                tool_call_id="failed-create",
-                status="error",
-            ),
-        ]
-    )
+    for message in [
+        AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "create_temp_artifact",
+                    "args": {"content": "body", "suffix": ".md"},
+                    "id": "failed-create",
+                    "type": "tool_call",
+                }
+            ],
+        ),
+        ToolMessage(
+            content="creation failed",
+            tool_call_id="failed-create",
+            status="error",
+        ),
+    ]:
+        _append_history_message(request, message)
 
     plan = await _plan(
         middleware,
@@ -4617,6 +4617,157 @@ async def test_current_turn_receipt_still_answers_when_prior_turn_receipt_invali
         }
     ]
     assert plan["decisions"][0]["disposition"] == "classifier_allow"
+
+
+@pytest.mark.parametrize("view", ["compacted", "original", "fallback", "untrusted"])
+async def test_classifier_prompt_evidence_survives_compaction(
+    tmp_path: Path, view: str
+) -> None:
+    model = _StructuredModel(_allow_result())
+    request, _store, _key = _request(
+        tmp_path,
+        model=model,
+        tool_name="execute",
+        args={},
+        raw_user_text="Inspect the project configuration",
+    )
+    summary = HumanMessage(
+        content="Conversation summary", additional_kwargs={"lc_source": "summarization"}
+    )
+    if view == "compacted":
+        cast("dict[str, Any]", request.state)["_summarization_event"] = {
+            "cutoff_index": 1,
+            "summary_message": summary,
+        }
+        request = request.override(messages=[summary])
+    elif view == "fallback":
+        cast("dict[str, Any]", request.state).pop("messages")
+    elif view == "untrusted":
+        request.state["messages"] = [summary]
+        request = request.override(messages=[summary])
+
+    plan = await _plan(
+        _middleware(tmp_path),
+        request,
+        tool_name="execute",
+        args={"command": "find . -maxdepth 2 -type f"},
+    )
+
+    classifier_message = cast("HumanMessage", model.calls[0][1])
+    payload = json.loads(cast("str", classifier_message.content))
+    expected = (
+        []
+        if view == "untrusted"
+        else [
+            user_prompt_metadata(
+                "Inspect the project configuration",
+                [tmp_path / "mentioned.py"],
+                turn_id="turn-1",
+            )
+        ]
+    )
+    assert payload["authorization_evidence"] == expected
+    assert plan["decisions"][0]["disposition"] == "classifier_allow"
+
+
+async def test_automatic_compaction_keeps_classifier_prompt_evidence(
+    tmp_path: Path,
+) -> None:
+    from deepagents.backends import FilesystemBackend
+    from deepagents.middleware.summarization import SummarizationMiddleware
+    from langchain_core.language_models.fake_chat_models import FakeListChatModel
+
+    model = _StructuredModel(_allow_result())
+    request, _store, _key = _request(
+        tmp_path, model=model, tool_name="execute", args={}
+    )
+    request = request.override(model=FakeListChatModel(responses=["done"]))
+    for text in ["Inspecting configuration", "Continuing inspection"]:
+        _append_history_message(request, AIMessage(content=text))
+    summarization = SummarizationMiddleware(
+        FakeListChatModel(responses=["Conversation summary"]),
+        backend=FilesystemBackend(root_dir=tmp_path, virtual_mode=True),
+        trigger=("messages", 2),
+        keep=("messages", 1),
+    )
+
+    async def inspect(compacted_request: ModelRequest) -> ModelResponse:
+        assert (
+            USER_PROMPT_METADATA_KEY
+            not in compacted_request.messages[0].additional_kwargs
+        )
+        plan = await _plan(
+            _middleware(tmp_path),
+            compacted_request.override(model=cast("BaseChatModel", model)),
+            tool_name="execute",
+            args={"command": "find . -maxdepth 2 -type f"},
+        )
+        assert plan["decisions"][0]["disposition"] == "classifier_allow"
+        return ModelResponse(result=[AIMessage(content="done")])
+
+    response = await summarization.awrap_model_call(request, inspect)
+
+    assert isinstance(response, ExtendedModelResponse)
+    assert response.command is not None
+    update = cast("dict[str, Any]", response.command.update)
+    assert update["_summarization_event"]["cutoff_index"] > 0
+    classifier_message = cast("HumanMessage", model.calls[0][1])
+    payload = json.loads(cast("str", classifier_message.content))
+    assert payload["authorization_evidence"] == [
+        user_prompt_metadata(
+            "perform the requested task", [tmp_path / "mentioned.py"], turn_id="turn-1"
+        )
+    ]
+
+
+@pytest.mark.parametrize("compacted", [False, True])
+def test_classifier_prior_calls_follow_latest_state_prompt(
+    tmp_path: Path, compacted: bool
+) -> None:
+    request, _store, _key = _request(
+        tmp_path, model=_StructuredModel(), tool_name="execute", args={}
+    )
+    for call_id in ["old-call", "current-call"]:
+        if call_id == "current-call":
+            _append_trusted_user_prompt(
+                request, "Inspect configuration", turn_id="turn-2"
+            )
+        _append_history_message(
+            request,
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "execute",
+                        "args": {"command": "find ."},
+                        "id": call_id,
+                    }
+                ],
+            ),
+        )
+        _append_history_message(
+            request, ToolMessage(content="config.py", tool_call_id=call_id)
+        )
+    if compacted:
+        summary = HumanMessage(
+            content="Conversation summary",
+            additional_kwargs={"lc_source": "summarization"},
+        )
+        cast("dict[str, Any]", request.state)["_summarization_event"] = {
+            "cutoff_index": 4,
+            "summary_message": summary,
+        }
+        request = request.override(messages=[summary, *request.messages[4:]])
+
+    payload = json.loads(_classifier_context(request, [], [], {}, {}, {}, None))
+
+    assert [
+        call["tool_call_id"] for call in payload["prior_tool_calls_for_current_request"]
+    ] == ["current-call"]
+    assert [row["literal_user_text"] for row in payload["authorization_evidence"]] == [
+        "perform the requested task",
+        "Inspect configuration",
+    ]
 
 
 async def test_compacted_model_view_preserves_ask_user_authorization_evidence(

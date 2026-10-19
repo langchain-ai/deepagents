@@ -1655,10 +1655,10 @@ def _classifier_context(
     trusted_environment: Mapping[str, str],
     trusted_ask_user_tool: BaseTool | None,
 ) -> str:
-    trusted_rows, latest_index = _trusted_prompt_rows(request.messages)
     authorization_messages = _authorization_messages(request)
+    trusted_rows, latest_index = _trusted_prompt_rows(authorization_messages)
     prior_calls: list[dict[str, object]] = []
-    for message in request.messages[latest_index + 1 :]:
+    for message in authorization_messages[latest_index + 1 :]:
         if not isinstance(message, AIMessage):
             continue
         for call in message.tool_calls:

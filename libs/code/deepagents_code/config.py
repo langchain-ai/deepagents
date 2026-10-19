@@ -7095,6 +7095,33 @@ def create_model(
                 label="bundled fallback",
             )
 
+    upstream = getattr(model, "profile", None)
+    if (
+        resolved_provider
+        and not (isinstance(upstream, dict) and upstream.get("max_input_tokens"))
+        and re.search(r"-[0-9]{4}$", model_name)
+    ):
+        from deepagents_code.model_config import (
+            _get_provider_profile_modules,
+            _load_provider_profiles,
+        )
+
+        for profile_provider, module_path in _get_provider_profile_modules():
+            if profile_provider != resolved_provider:
+                continue
+            try:
+                fallback = _load_provider_profiles(module_path).get(model_name[:-5])
+            except ImportError:
+                fallback = None
+            if fallback:
+                _apply_profile_overrides(
+                    model,
+                    {**fallback, **(upstream if isinstance(upstream, dict) else {})},
+                    model_name,
+                    label="snapshot base fallback",
+                )
+            break
+
     # Apply profile overrides from config.toml (e.g., max_input_tokens)
     if provider:
         config_profile_overrides = config.get_profile_overrides(

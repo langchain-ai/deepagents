@@ -7,6 +7,7 @@ import hashlib
 import json
 import logging
 from contextlib import asynccontextmanager
+from copy import copy
 from functools import partial
 from pathlib import Path
 from threading import Lock
@@ -80,6 +81,9 @@ if TYPE_CHECKING:
     from deepagents_code.hooks.server_middleware import ServerHooksMiddleware
 
 logger = logging.getLogger(__name__)
+
+_ESTIMATED_SUMMARY_TOKENS = 4_000
+"""Estimated generated summary size for threshold-compaction planning."""
 
 _SUMMARY_TRIM_FALLBACK = 4_000
 """Conservative history budget when a summary model exposes no context limit."""
@@ -1042,6 +1046,7 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
             environ: Workspace environment retained for lazy model construction.
         """
         super().__init__(summarization, system_prompt=system_prompt)
+        self._compaction_warning_emitted = False
         self._cli_max_retries = cli_max_retries
         self._summarization_model_spec = summarization_model_spec
         self._environ = environ
@@ -1095,24 +1100,11 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
         )
         return _require_decision(decision, PreCompactDecision).continue_processing
 
-    @staticmethod
     def _auto_compaction_request(
+        self,
         request: ModelRequest,
         summarization: SummarizationMiddleware,
     ) -> ModelRequest | None:
-        """Return the prepared request when threshold compaction will run.
-
-        Args:
-            request: The pending model request.
-            summarization: Request-local summarizer for this runtime. Passed in
-                rather than read from `self._summarization` so a summarization
-                override cannot be bypassed; `@staticmethod` makes that
-                structural rather than a convention.
-
-        Returns:
-            The prepared request, or `None` when threshold compaction will not
-                run.
-        """
         messages = summarization._get_effective_messages(request)
         tokens = summarization._count_tokens(
             messages, request.system_message, request.tools
@@ -1127,7 +1119,55 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
             or summarization._determine_cutoff_index(messages) <= 0
         ):
             return None
+        if self._suppress_threshold_compaction(request, summarization, messages):
+            summarization._lc_helper = copy(summarization._lc_helper)
+            summarization._lc_helper._trigger_clauses = []
+            return None
         return request.override(messages=messages)
+
+    def _suppress_threshold_compaction(
+        self,
+        request: ModelRequest,
+        summarization: SummarizationMiddleware,
+        messages: list[AnyMessage],
+    ) -> bool:
+        helper = summarization._lc_helper
+        thresholds: list[float] = []
+        for clause in helper._trigger_clauses:
+            limits = [clause["tokens"]] if "tokens" in clause else []
+            if "fraction" in clause:
+                limit = summarization._get_profile_limits()
+                if limit is not None:
+                    limits.append(limit * clause["fraction"])
+            if not limits:
+                return False
+            thresholds.append(max(limits))
+        if not thresholds:
+            return False
+        trigger = min(thresholds)
+        overhead = summarization._count_tokens(
+            [], request.system_message, request.tools
+        )
+        cutoff = summarization._determine_cutoff_index(messages)
+        retained = summarization._count_tokens(messages[cutoff:], None, [])
+        summary_budget = _ESTIMATED_SUMMARY_TOKENS
+        ineffective = overhead + summary_budget + retained >= trigger
+        event = request.state.get("_summarization_event")
+        recent = bool(event) and summarization._count_tokens(
+            request.messages[_event_cutoff(event) :], None, []
+        ) < max(summary_budget, trigger * 0.1)
+        if not ineffective and not recent:
+            return False
+        if not self._compaction_warning_emitted:
+            self._compaction_warning_emitted = True
+            logger.warning(
+                "Skipping ineffective automatic compaction: fixed system/tool overhead "
+                "is %d tokens and the trigger is %d tokens. Trim MCP servers or "
+                "configure max_input_tokens for the model.",
+                overhead,
+                trigger,
+            )
+        return True
 
     def _pre_overflow_compact(
         self,
@@ -1162,7 +1202,7 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
             The model response.
         """
         call_model = partial(super().wrap_model_call, handler=handler)
-        summarization = self._summarization_for_runtime(request.runtime)
+        summarization = copy(self._summarization_for_runtime(request.runtime))
         prepared = self._auto_compaction_request(request, summarization)
         if prepared is not None:
             if not self._pre_auto_compact(prepared):
@@ -1220,8 +1260,8 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
             The model response.
         """
         call_model = partial(super().awrap_model_call, handler=handler)
-        summarization = await asyncio.to_thread(
-            self._summarization_for_runtime, request.runtime
+        summarization = copy(
+            await asyncio.to_thread(self._summarization_for_runtime, request.runtime)
         )
         prepared = self._auto_compaction_request(request, summarization)
         if prepared is not None:

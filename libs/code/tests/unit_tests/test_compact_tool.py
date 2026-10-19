@@ -149,6 +149,156 @@ class TestCLICompactionMiddleware:
         summarization._compute_state_cutoff.return_value = 2
         return summarization
 
+    @pytest.mark.parametrize("asynchronous", [False, True])
+    @pytest.mark.parametrize(
+        "scenario",
+        [
+            "overhead",
+            "retention",
+            "recent",
+            "useful",
+            "overflow",
+            "denied",
+            "budget",
+            "irreducible",
+        ],
+    )
+    async def test_threshold_compaction_through_wrappers(
+        self,
+        asynchronous: bool,
+        scenario: str,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from deepagents.backends import FilesystemBackend
+        from deepagents.middleware.summarization import (
+            SummarizationMiddleware,
+            SummarizationState,
+        )
+        from langchain.agents.middleware.types import (
+            ExtendedModelResponse,
+            ModelRequest,
+            ModelResponse,
+        )
+        from langchain_core.exceptions import ContextOverflowError
+        from langchain_core.language_models.fake_chat_models import FakeListChatModel
+        from langchain_core.messages import SystemMessage, convert_to_messages
+        from langgraph.runtime import Runtime
+
+        model = FakeListChatModel(responses=["Summary"])
+        if scenario in {"budget", "irreducible"}:
+            model.profile = {
+                "max_input_tokens": 15_000 if scenario == "budget" else 8_000
+            }
+        summarization = SummarizationMiddleware(
+            model,
+            backend=FilesystemBackend(root_dir=tmp_path, virtual_mode=True),
+            trigger=("tokens", 10_000),
+            keep=("messages", 1),
+            token_counter=lambda messages: sum(
+                len(message.text) for message in convert_to_messages(messages)
+            ),
+        )
+        middleware = CLICompactionMiddleware(summarization)
+        sync_summary = MagicMock(return_value="Summary")
+        async_summary = AsyncMock(return_value="Summary")
+        monkeypatch.setattr(summarization, "_create_summary", sync_summary)
+        monkeypatch.setattr(summarization, "_acreate_summary", async_summary)
+        gate = MagicMock(return_value=scenario != "denied")
+        monkeypatch.setattr(middleware, "_pre_auto_compact", gate)
+        overhead = (
+            11_000
+            if scenario in {"overhead", "overflow", "denied", "budget", "irreducible"}
+            else 0
+        )
+        if scenario == "retention":
+            overhead = 7_000
+        messages: list[AnyMessage] = [HumanMessage("x" * 20_000), HumanMessage("tail")]
+        state: SummarizationState = {"messages": messages}
+        if scenario == "retention":
+            messages[-1] = HumanMessage("x" * 4_000)
+        if scenario == "recent":
+            state["_summarization_event"] = {
+                "cutoff_index": 1,
+                "summary_message": HumanMessage("s" * 11_000),
+                "file_path": None,
+            }
+        request: ModelRequest[None] = ModelRequest(
+            model=model,
+            messages=messages,
+            system_message=SystemMessage("s" * overhead),
+            tools=[],
+            state=state,
+            runtime=Runtime(context=None),
+        )
+        seen: list[list[AnyMessage]] = []
+        response = ModelResponse(result=[AIMessage("done")])
+
+        def handler(next_request: ModelRequest) -> ModelResponse:
+            seen.append(next_request.messages)
+            if scenario in {"overflow", "denied"} and len(seen) == 1:
+                msg = "provider context limit"
+                raise ContextOverflowError(msg)
+            return response
+
+        async def ahandler(next_request: ModelRequest) -> ModelResponse:
+            await asyncio.sleep(0)
+            return handler(next_request)
+
+        if scenario in {"denied", "irreducible"}:
+            if asynchronous:
+                with pytest.raises(ContextOverflowError):
+                    await middleware.awrap_model_call(request, ahandler)
+            else:
+                with pytest.raises(ContextOverflowError):
+                    middleware.wrap_model_call(request, handler)
+            assert sync_summary.call_count + async_summary.call_count == (
+                0 if scenario == "denied" else 1
+            )
+            assert len(seen) == (1 if scenario == "denied" else 0)
+            if scenario == "denied":
+                assert gate.call_count == 1
+            return
+
+        with caplog.at_level("WARNING", logger="deepagents_code.offload_middleware"):
+            for _ in range(2):
+                if asynchronous:
+                    result = await middleware.awrap_model_call(request, ahandler)
+                else:
+                    result = middleware.wrap_model_call(request, handler)
+                if scenario in {"useful", "overflow", "budget"}:
+                    assert isinstance(result, ExtendedModelResponse)
+                    assert result.command is not None
+                    assert isinstance(result.command.update, dict)
+                    assert (
+                        result.command.update["_summarization_event"]["cutoff_index"]
+                        == 1
+                    )
+                    break
+                assert result is response
+        summary_calls = async_summary.call_count + sync_summary.call_count
+        if scenario in {"useful", "overflow", "budget"}:
+            assert summary_calls == 1
+            assert seen[-1][-1].text == "tail"
+        else:
+            assert summary_calls == 0
+            assert len(seen) == 2
+            assert seen[0][0].text == (
+                "s" * 11_000 if scenario == "recent" else "x" * 20_000
+            )
+            warnings = [
+                record
+                for record in caplog.records
+                if "fixed system/tool overhead" in record.message
+            ]
+            assert len(warnings) == 1
+            assert str(overhead) in warnings[0].message
+            assert "10000" in warnings[0].message
+        if scenario == "overflow":
+            assert gate.call_count == 1
+        assert summarization._should_summarize(messages, 50_000)
+
     def test_auto_compaction_uses_each_runtime_workspace(self, tmp_path: Path) -> None:
         """One process must expose each run's bound directory to hooks."""
         launch_dir = tmp_path / "launch"

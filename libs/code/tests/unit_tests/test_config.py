@@ -5145,6 +5145,65 @@ class TestCreateModelForwardsProviderProfile:
             create_model("anthropic:claude-sonnet-4-5")
 
 
+class TestSnapshotProfileFallback:
+    @pytest.mark.parametrize(
+        ("model_name", "upstream", "override", "expected"),
+        [
+            (
+                "accounts/fireworks/models/example-1017",
+                {"tool_calling": False},
+                None,
+                200_000,
+            ),
+            (
+                "accounts/fireworks/models/example-1017",
+                {"max_input_tokens": 120_000},
+                None,
+                120_000,
+            ),
+            ("accounts/fireworks/models/example-1017", {}, 90_000, 90_000),
+            ("accounts/fireworks/models/unknown-1017", {}, None, None),
+            ("accounts/fireworks/models/example", {}, None, None),
+        ],
+    )
+    @patch("langchain.chat_models.init_chat_model")
+    def test_snapshot_profile_resolution(
+        self,
+        mock_init: Mock,
+        model_name: str,
+        upstream: dict[str, Any],
+        override: int | None,
+        expected: int | None,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(model_config, "has_provider_credentials", lambda _: True)
+        monkeypatch.setattr(
+            model_config,
+            "_get_provider_profile_modules",
+            lambda: [("fireworks", "profiles")],
+        )
+        monkeypatch.setattr(
+            model_config,
+            "_load_provider_profiles",
+            lambda _: {
+                "accounts/fireworks/models/example": {
+                    "max_input_tokens": 200_000,
+                    "tool_calling": True,
+                },
+            },
+        )
+        model = _make_init_chat_model_mock()
+        model.profile = upstream.copy()
+        mock_init.return_value = model
+        result = create_model(
+            f"fireworks:{model_name}",
+            profile_overrides={"max_input_tokens": override} if override else None,
+        )
+        assert result.context_limit == expected
+        if "tool_calling" in upstream:
+            assert model.profile["tool_calling"] is upstream["tool_calling"]
+
+
 class TestCreateModelAnthropicThinkingBinding:
     """Tests for Anthropic preserved-thinking defaults."""
 

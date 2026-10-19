@@ -3,13 +3,18 @@ from __future__ import annotations
 import asyncio
 from dataclasses import replace
 from pathlib import Path
-from unittest.mock import Mock
+from typing import TYPE_CHECKING
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
 from deepagents_talon.channels import slack as slack_module
 from deepagents_talon.channels.slack import _SlackFile
+from deepagents_talon.speech import _voice_path, transcribe_voice_message
 from tests.channels.test_slack import _channel, _dm, _FakeResponse
+
+if TYPE_CHECKING:
+    from deepagents_talon.interfaces import ChannelMessage
 
 
 def _mock_downloads(monkeypatch: pytest.MonkeyPatch, responses: list[object]) -> Mock:
@@ -88,6 +93,44 @@ async def test_mixed_documents_preserve_first_native_media_type(
         *(asyncio.to_thread(Path(path).read_bytes) for path in metadata["media_paths"])
     )
     assert downloaded == bodies
+    assert metadata["media_path"] == metadata["media_paths"][1]
+
+    async def transcribe(message: ChannelMessage) -> str:
+        path = _voice_path(message)
+        assert path is not None
+        return (await asyncio.to_thread(path.read_bytes)).decode()
+
+    transcriber = Mock(transcribe=AsyncMock(side_effect=transcribe))
+    transcribed = await transcribe_voice_message(transcriber, messages[0])
+    if native_type in {"audio", "video"}:
+        assert transcribed.text.endswith("native")
+        assert transcribed.metadata["voice_transcribed"] is True
+    else:
+        transcriber.transcribe.assert_not_awaited()
+    await channel.stop()
+
+
+@pytest.mark.parametrize("native_type", ["image", "audio", "video"])
+async def test_failed_native_media_does_not_send_document_to_transcription(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, native_type: str
+) -> None:
+    _mock_downloads(monkeypatch, [_FakeResponse(b"document"), OSError("download failed")])
+    channel, gateway, messages, _ = _channel(tmp_path)
+    await channel.start()
+    files = (
+        _SlackFile("F1", "https://files.slack.com/a", "report.pdf", "application/pdf", 8),
+        _SlackFile("F2", "https://files.slack.com/b", "native.bin", f"{native_type}/test", 6),
+    )
+
+    await gateway.handle_message(replace(_dm(), files=files))
+
+    metadata = messages[0].metadata
+    assert metadata["media_type"] == "document"
+    assert metadata["mime_type"] == "application/pdf"
+    assert metadata["media_path"] == metadata["media_paths"][0]
+    transcriber = Mock(transcribe=AsyncMock())
+    await transcribe_voice_message(transcriber, messages[0])
+    transcriber.transcribe.assert_not_awaited()
     await channel.stop()
 
 

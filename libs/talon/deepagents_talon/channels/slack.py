@@ -17,7 +17,7 @@ import urllib.request
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 from contextvars import ContextVar
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from html import escape
 from pathlib import Path
 from typing import IO, TYPE_CHECKING, NoReturn, Protocol
@@ -1075,6 +1075,7 @@ class SlackChannel:
             return message
         paths: list[str] = []
         mime_types: list[str] = []
+        downloaded: list[_SlackFile] = []
         errors: list[str] = []
         for file in files:
             if file.size > self.config.max_media_bytes:
@@ -1102,6 +1103,7 @@ class SlackChannel:
                 errors.append(str(error))
                 continue
             paths.append(str(destination))
+            downloaded.append(file)
             mime_types.append(
                 file.mimetype
                 or mimetypes.guess_type(destination.name)[0]
@@ -1109,7 +1111,26 @@ class SlackChannel:
             )
         if errors:
             message = with_media_error(message, "; ".join(errors))
-        return message_with_media_paths(message, media_paths=paths, mime_types=mime_types)
+        message = message_with_media_paths(message, media_paths=paths, mime_types=mime_types)
+        if not downloaded:
+            return message
+        primary = next(
+            (
+                index
+                for index, file in enumerate(downloaded)
+                if _file_media_type(file) != "document"
+            ),
+            0,
+        )
+        return replace(
+            message,
+            metadata={
+                **message.metadata,
+                "media_type": _file_media_type(downloaded[primary]),
+                "mime_type": mime_types[primary],
+                "media_path": paths[primary],
+            },
+        )
 
 
 def format_markdown_for_slack(text: str, *, mention_allowlist: frozenset[str] | None = None) -> str:

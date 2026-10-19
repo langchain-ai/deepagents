@@ -640,11 +640,8 @@ def _run_git_ls_files(
             cwd=root,
             capture_output=True,
             text=True,
-            # Git writes paths as raw bytes regardless of the locale (a legacy
-            # code page on Windows); `replace` keeps one non-UTF-8 name from
-            # failing the whole listing.
             encoding="utf-8",
-            errors="replace",
+            errors="surrogateescape",
             timeout=5,
             check=False,
             # Git localizes stderr; use C so the non-repo marker stays stable.
@@ -829,13 +826,14 @@ def _scope_files_to_cwd(files: list[str], project_root: Path, cwd: Path) -> list
         cwd: Directory to scope suggestions to.
 
     Returns:
-        Paths rewritten relative to `cwd`, filtered to that subtree (possibly
-        empty), when `cwd` is nested under `project_root`. The input list
+        Safe paths rewritten relative to `cwd`, filtered to that subtree (possibly
+        empty), when `cwd` is nested under `project_root`. Safe paths remain
         unchanged when `cwd` equals `project_root`. An empty list when `cwd` is
         not under `project_root`: the paths are project-root-relative and would
         resolve to the wrong base from `cwd`, so fail closed rather than offer
         misleading suggestions.
     """
+    files = [path for path in files if is_safe_file_path(path)]
     if cwd == project_root:
         return files
     try:
@@ -1014,7 +1012,7 @@ class FuzzyFileController:
         Returns:
             List of (label, type_hint) tuples for matching files.
         """
-        files = [path for path in self._get_files() if is_safe_file_path(path)]
+        files = self._get_files()
         # Include dotfiles only if query starts with "."
         include_dots = search.startswith(".")
         matches = _fuzzy_search(

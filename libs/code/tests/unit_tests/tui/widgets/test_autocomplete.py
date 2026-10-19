@@ -2,6 +2,7 @@
 
 import locale
 import logging
+import os
 import subprocess
 from pathlib import Path
 from typing import cast
@@ -297,8 +298,9 @@ class TestSlashCommandControllerDisplaySeparation:
     "control",
     ["\n", "\t", "\x1b", "\x85", "\u2028", "\u2029", "\u202e", "\u200b", "\u034f"],
 )
-def test_file_completion_rejects_unsafe_names(
-    control: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("warm", [False, True])
+async def test_file_completion_rejects_unsafe_names(
+    control: str, warm: bool, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Unsafe repository filenames never enter the popup or chat input."""
     view = MagicMock()
@@ -309,6 +311,8 @@ def test_file_completion_rejects_unsafe_names(
         lambda _root: [f"unsafe{control}@secret.txt", "re\u0301sume\u0301.md"],
     )
 
+    if warm:
+        await controller.warm_cache(force=True)
     controller.on_text_changed("@", 1)
     view.render_completion_suggestions.assert_called_once_with(
         [("@re\u0301sume\u0301.md", "md")], 0
@@ -414,6 +418,27 @@ class TestGetProjectFiles:
         files = _get_project_files(tmp_path)
 
         assert files == ["résumé.md", "naïve.py"]
+
+    @pytest.mark.skipif(os.name == "nt", reason="Windows filenames are Unicode")
+    def test_non_utf8_names_do_not_alias_valid_files(self, tmp_path: Path) -> None:
+        """Invalid UTF-8 names must not become a different selectable filename."""
+        self._init_repo(tmp_path)
+        invalid_name = os.fsdecode(b"bad-\xff.md")
+        valid_name = "bad-\ufffd.md"
+        (tmp_path / invalid_name).write_text("invalid name")
+        (tmp_path / valid_name).write_text("valid name")
+
+        files = _get_project_files(tmp_path)
+        assert set(files) == {invalid_name, valid_name}
+
+        view = MagicMock()
+        controller = FuzzyFileController(view, cwd=tmp_path)
+        controller.on_text_changed("@", 1)
+        view.render_completion_suggestions.assert_called_once_with(
+            [(f"@{valid_name}", "md")], 0
+        )
+        assert controller.apply_selection(0, "@", 1)
+        view.replace_completion_range.assert_called_once_with(0, 1, f"@{valid_name}")
 
     def test_deduplicates_repeated_paths(self, tmp_path: Path) -> None:
         """A path emitted more than once by git ls-files appears only once.

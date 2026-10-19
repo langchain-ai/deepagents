@@ -2227,8 +2227,10 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
                 classes="thread-empty",
                 id="thread-loading",
             )
+        # With older pages unloaded, a match may still exist below "Load more".
+        message = "No matching threads loaded" if self._has_more else "No threads found"
         return Static(
-            Content.styled("No threads found", "dim"),
+            Content.styled(message, "dim"),
             classes="thread-empty",
         )
 

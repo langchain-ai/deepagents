@@ -901,6 +901,138 @@ class TestThreadSelectorErrorHandling:
                 assert app.result is None
 
 
+class TestThreadSelectorPagination:
+    """Loading older threads through the picker."""
+
+    @pytest.mark.parametrize("use_mouse", [False, True])
+    async def test_load_more_and_select_older_thread(self, use_mouse: bool) -> None:
+        """Both input methods reveal older rows and stop at the end."""
+        with (
+            _patch_columns(),
+            patch.dict("os.environ", {"DEEPAGENTS_CODE_RECENT_THREADS": "2"}),
+            patch(
+                "deepagents_code.sessions.list_threads",
+                new_callable=AsyncMock,
+                side_effect=lambda **kwargs: MOCK_THREADS[: kwargs["limit"]],
+            ),
+        ):
+            app = ThreadSelectorTestApp()
+            async with app.run_test(size=(140, 40)) as pilot:
+                app.show_selector()
+                await pilot.pause()
+                screen = cast("ThreadSelectorScreen", app.screen)
+                assert len(screen._option_widgets) == 2
+                assert "DEEPAGENTS_CODE_RECENT_THREADS" not in screen._build_help_text()
+                if use_mouse:
+                    await pilot.click("#thread-load-more")
+                else:
+                    await pilot.press("down", "down", "ctrl+c", "ctrl+d", "enter")
+                await pilot.pause()
+                assert len(screen._option_widgets) == 3
+                assert not screen.query("#thread-load-more")
+                assert not app.dismissed
+                if use_mouse:
+                    await pilot.press("down", "down")
+                await pilot.press("enter")
+                assert app.result == "ghi11111"
+
+    async def test_load_multiple_batches(self) -> None:
+        """Pagination remains available until the final batch is exhausted."""
+        threads: list[ThreadInfo] = [
+            {**MOCK_THREADS[0], "thread_id": f"thread-{index}"} for index in range(5)
+        ]
+        with (
+            _patch_columns(),
+            patch.dict("os.environ", {"DEEPAGENTS_CODE_RECENT_THREADS": "2"}),
+            patch(
+                "deepagents_code.sessions.list_threads",
+                new_callable=AsyncMock,
+                side_effect=lambda **kwargs: threads[: kwargs["limit"]],
+            ),
+        ):
+            app = ThreadSelectorTestApp(current_thread=None)
+            async with app.run_test(size=(140, 40)) as pilot:
+                app.show_selector()
+                await pilot.pause()
+                await pilot.press("pagedown", "enter")
+                await pilot.pause()
+                screen = cast("ThreadSelectorScreen", app.screen)
+                assert len(screen._option_widgets) == 4
+                assert screen.query("#thread-load-more")
+                await pilot.press("pagedown", "enter")
+                await pilot.pause()
+                assert len(screen._option_widgets) == 5
+                assert not screen.query("#thread-load-more")
+                await pilot.press("enter")
+                assert app.result == "thread-4"
+
+    async def test_load_more_with_no_search_matches(self) -> None:
+        """Older matching rows remain discoverable from an empty filtered list."""
+        with (
+            _patch_columns(),
+            patch.dict("os.environ", {"DEEPAGENTS_CODE_RECENT_THREADS": "2"}),
+            _patch_list_threads(),
+        ):
+            app = ThreadSelectorTestApp()
+            async with app.run_test(size=(140, 40)) as pilot:
+                app.show_selector()
+                await pilot.pause()
+                await pilot.press("g", "h", "i")
+                await pilot.pause()
+                screen = cast("ThreadSelectorScreen", app.screen)
+                assert not screen._option_widgets
+                assert screen.query("#thread-load-more")
+                await pilot.press("enter")
+                await pilot.pause()
+                assert len(screen._option_widgets) == 1
+                await pilot.press("enter")
+                assert app.result == "ghi11111"
+
+    @pytest.mark.parametrize("count", [0, 1, 2])
+    async def test_no_load_more_when_all_threads_fit(self, count: int) -> None:
+        """An exact batch does not imply another page exists."""
+        with (
+            _patch_columns(),
+            patch.dict("os.environ", {"DEEPAGENTS_CODE_RECENT_THREADS": "2"}),
+            _patch_list_threads(MOCK_THREADS[:count]),
+        ):
+            app = ThreadSelectorTestApp()
+            async with app.run_test() as pilot:
+                app.show_selector()
+                await pilot.pause()
+                assert not app.screen.query("#thread-load-more")
+
+    async def test_load_more_failure_can_be_retried(self) -> None:
+        """A failed batch retains the visible rows and a working retry action."""
+        with (
+            _patch_columns(),
+            patch.dict("os.environ", {"DEEPAGENTS_CODE_RECENT_THREADS": "2"}),
+            patch(
+                "deepagents_code.sessions.list_threads",
+                new_callable=AsyncMock,
+                side_effect=[
+                    MOCK_THREADS,
+                    OSError("database unavailable"),
+                    MOCK_THREADS,
+                ],
+            ),
+        ):
+            app = ThreadSelectorTestApp()
+            async with app.run_test(size=(140, 40)) as pilot:
+                app.show_selector()
+                await pilot.pause()
+                await pilot.press("down", "down", "enter")
+                await pilot.pause()
+                screen = cast("ThreadSelectorScreen", app.screen)
+                assert len(screen._option_widgets) == 2
+                assert not screen._loading_more
+                assert screen.query("#thread-load-more")
+                await pilot.press("enter")
+                await pilot.pause()
+                assert len(screen._option_widgets) == 3
+                assert not screen.query("#thread-load-more")
+
+
 class TestThreadSelectorLimit:
     """Tests for thread limit via get_thread_limit()."""
 

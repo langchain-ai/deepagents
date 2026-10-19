@@ -39,7 +39,6 @@ if TYPE_CHECKING:
     from deepagents_code.sessions import ThreadInfo
 
 from deepagents_code import theme
-from deepagents_code._env_vars import RECENT_THREADS
 from deepagents_code.config import (
     build_langsmith_thread_url,
     get_glyphs,
@@ -460,6 +459,22 @@ class ThreadOption(Horizontal):
         """
         event.stop()
         self.post_message(self.Clicked(self.thread_id, self.index))
+
+
+class LoadMoreThreads(Static):
+    """Selectable pagination row at the bottom of the thread list."""
+
+    class Requested(Message):
+        """Request the next batch of threads."""
+
+    def set_selected(self, selected: bool) -> None:
+        """Match the thread rows' keyboard-selection styling."""
+        self.set_class(selected, "thread-option-selected")
+
+    def on_click(self, event: Click) -> None:
+        """Load another batch when clicked."""
+        event.stop()
+        self.post_message(self.Requested())
 
 
 class ThreadControlsScroll(VerticalScroll):
@@ -950,7 +965,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
 
         Args:
             current_thread: The currently active thread ID (to highlight).
-            thread_limit: Maximum number of rows to fetch when querying DB.
+            thread_limit: Number of rows to load per batch.
             initial_threads: Optional preloaded rows to render immediately.
             filter_cwd: Working-directory filter for the picker.
 
@@ -968,6 +983,11 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         super().__init__()
         self._current_thread = current_thread
         self._thread_limit = thread_limit
+        self._page_size = max(1, self._effective_thread_limit())
+        self._loaded_limit = self._page_size
+        self._has_more = False
+        self._loading_more = False
+        self._load_more_row: LoadMoreThreads | None = None
         self._initial_query = initial_query
         self._reference_mode = reference_mode
         self._validate_selection = validate_selection
@@ -1078,14 +1098,15 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             )
         return f"Select Thread (current: {self._current_thread})"
 
-    def _build_help_text(self) -> str:
+    @staticmethod
+    def _build_help_text() -> str:
         """Build the footer help text for the selector.
 
         Returns:
             Footer guidance for the active selector bindings.
         """
         glyphs = get_glyphs()
-        lines = (
+        return (
             f"{glyphs.arrow_up}/{glyphs.arrow_down} navigate"
             f" {glyphs.bullet} Enter select"
             f" {glyphs.bullet} Tab/Shift+Tab focus options"
@@ -1094,15 +1115,9 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             f" {glyphs.bullet} Ctrl+D delete"
             f" {glyphs.bullet} Esc cancel"
         )
-        limit = self._effective_thread_limit()
-        if len(self._threads) >= limit:
-            lines += (
-                f"\nShowing last {limit} threads. Set {RECENT_THREADS} to override."
-            )
-        return lines
 
     def _effective_thread_limit(self) -> int:
-        """Return the resolved thread limit for display purposes."""
+        """Return the configured batch size."""
         if self._thread_limit is not None:
             return self._thread_limit
         from deepagents_code.sessions import get_thread_limit
@@ -1919,26 +1934,35 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         )
 
         old_threads = list(self._threads)
+        old_has_more = self._has_more
+        selected_id = (
+            self._filtered_threads[self._selected_index]["thread_id"]
+            if self._selected_index < len(self._filtered_threads)
+            else None
+        )
+        selected_index = self._selected_index
 
         try:
-            limit = self._thread_limit
-            if limit is None:
-                from deepagents_code.sessions import get_thread_limit
-
-                limit = get_thread_limit()
+            limit = self._loaded_limit
             sort_by = "updated" if self._sort_by_updated else "created"
-            self._threads = await list_threads(
-                limit=limit,
+            threads = await list_threads(
+                limit=limit + 1,
                 include_message_count=False,
                 sort_by=sort_by,
                 cwd=self._filter_cwd,
             )
         except (OSError, sqlite3.Error) as exc:
+            if self._loading_more:
+                self.notify(str(exc), severity="error", markup=False)
+                return
             logger.exception("Failed to load threads for thread selector")
             self._disk_load_complete = True
             await self._show_mount_error(str(exc))
             return
         except Exception as exc:
+            if self._loading_more:
+                self.notify(str(exc), severity="error", markup=False)
+                return
             # An unexpected error (e.g. a malformed row raising ValueError) must
             # still mark the load complete and surface the failure; otherwise the
             # picker stays stuck on the "Loading threads..." placeholder forever.
@@ -1949,6 +1973,8 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             await self._show_mount_error(str(exc))
             return
 
+        self._has_more = len(threads) > limit
+        self._threads = threads[:limit]
         self._disk_load_complete = True
         apply_cached_thread_message_counts(self._threads)
         apply_cached_thread_initial_prompts(self._threads)
@@ -1984,10 +2010,20 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             self._update_filtered_list()
             self._sync_selected_index()
 
+        if self._loading_more:
+            self._selected_index = min(
+                selected_index, max(0, len(self._filtered_threads) - 1)
+            )
+            for index, thread in enumerate(self._filtered_threads):
+                if thread["thread_id"] == selected_id:
+                    self._selected_index = index
+                    break
+
         # Short-circuit: when the fresh data matches what is already rendered,
         # update widget references and cell labels without tearing down the DOM.
         if (
             self._has_initial_threads
+            and old_has_more == self._has_more
             and self._option_widgets
             and self._threads_match(old_threads, self._filtered_threads)
         ):
@@ -2181,13 +2217,22 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
                 await scroll.remove_children()
                 self._update_help_widgets()
 
-                if not self._filtered_threads:
-                    self._option_widgets = []
-                    await scroll.mount(self._build_empty_state())
-                    return
-
                 self._option_widgets, selected_widget = self._create_option_widgets()
-                await scroll.mount(*self._option_widgets)
+                self._load_more_row = None
+                if self._option_widgets:
+                    await scroll.mount(*self._option_widgets)
+                else:
+                    await scroll.mount(self._build_empty_state())
+                if self._has_more:
+                    self._load_more_row = LoadMoreThreads(
+                        f"Load more{get_glyphs().ellipsis}",
+                        id="thread-load-more",
+                        classes="thread-option",
+                    )
+                    self._load_more_row.set_selected(
+                        self._selected_index == len(self._filtered_threads)
+                    )
+                    await scroll.mount(self._load_more_row)
 
             if expanded_select_id is not None:
                 self.call_after_refresh(
@@ -2234,9 +2279,8 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
 
     def _scroll_selected_into_view(self) -> None:
         """Scroll selected option into view without animation."""
-        if not self._option_widgets:
-            return
-        if self._selected_index >= len(self._option_widgets):
+        rows = self._selection_rows()
+        if self._selected_index >= len(rows):
             return
         try:
             scroll = self.query_one(".thread-list", VerticalScroll)
@@ -2246,7 +2290,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         if self._selected_index == 0:
             scroll.scroll_home(animate=False)
         else:
-            self._option_widgets[self._selected_index].scroll_visible(animate=False)
+            rows[self._selected_index].scroll_visible(animate=False)
 
     def _update_help_widgets(self) -> None:
         """Update visible header and help text after state changes."""
@@ -2306,28 +2350,59 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             key=lambda thread: thread.get(key) or "", reverse=True
         )
 
+    def _selection_rows(self) -> list[ThreadOption | LoadMoreThreads]:
+        """Return the thread rows followed by the pagination action."""
+        rows: list[ThreadOption | LoadMoreThreads] = list(self._option_widgets)
+        if self._load_more_row is not None:
+            rows.append(self._load_more_row)
+        return rows
+
+    def on_load_more_threads_requested(self) -> None:
+        """Fetch another batch without dismissing the picker."""
+        if self._loading_more or not self._has_more:
+            return
+        self._loading_more = True
+        if self._load_more_row is not None:
+            self._load_more_row.update(f"Loading{get_glyphs().ellipsis}")
+        self.run_worker(
+            self._load_more_threads, exclusive=True, group="thread-selector-load"
+        )
+
+    async def _load_more_threads(self) -> None:
+        """Expand the loaded window, retaining rows if fetching fails."""
+        self._loaded_limit += self._page_size
+        try:
+            await self._load_threads()
+        finally:
+            if len(self._threads) < self._loaded_limit and self._has_more:
+                self._loaded_limit -= self._page_size
+            self._loading_more = False
+            if self._load_more_row is not None:
+                self._load_more_row.update(f"Load more{get_glyphs().ellipsis}")
+
     def _move_selection(self, delta: int) -> None:
         """Move selection by delta, updating only the affected rows.
 
         Args:
             delta: Positions to move (negative for up, positive for down).
         """
-        if not self._filtered_threads or not self._option_widgets:
+        rows = self._selection_rows()
+        if not rows:
             return
 
-        count = len(self._filtered_threads)
+        count = len(rows)
         old_index = self._selected_index
         new_index = (old_index + delta) % count
         self._selected_index = new_index
 
-        self._option_widgets[old_index].set_selected(False)
-        self._option_widgets[new_index].set_selected(True)
+        rows[old_index].set_selected(False)
+        rows[new_index].set_selected(True)
 
         if new_index == 0:
             scroll = self.query_one(".thread-list", VerticalScroll)
             scroll.scroll_home(animate=False)
         else:
-            self._option_widgets[new_index].scroll_visible()
+            rows[new_index].scroll_visible()
 
     def action_move_up(self) -> None:
         """Move selection up."""
@@ -2364,7 +2439,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
 
     def action_page_up(self) -> None:
         """Move selection up by one visible page."""
-        if self._confirming_delete or not self._filtered_threads:
+        if self._confirming_delete or not self._selection_rows():
             return
         page = self._visible_page_size()
         target = max(0, self._selected_index - page)
@@ -2374,9 +2449,9 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
 
     def action_page_down(self) -> None:
         """Move selection down by one visible page."""
-        if self._confirming_delete or not self._filtered_threads:
+        if self._confirming_delete or not self._selection_rows():
             return
-        count = len(self._filtered_threads)
+        count = len(self._selection_rows())
         page = self._visible_page_size()
         target = min(count - 1, self._selected_index + page)
         delta = target - self._selected_index
@@ -2391,6 +2466,9 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             self._select_expanded_highlight()
             return
         if self._open_focused_select():
+            return
+        if self._has_more and self._selected_index == len(self._filtered_threads):
+            self.on_load_more_threads_requested()
             return
         if self._filtered_threads:
             thread_id = self._filtered_threads[self._selected_index]["thread_id"]
@@ -2407,7 +2485,9 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
 
     def action_copy_thread_id(self) -> None:
         """Copy the highlighted thread ID without dismissing the selector."""
-        if self._confirming_delete or not self._filtered_threads:
+        if self._confirming_delete or self._selected_index >= len(
+            self._filtered_threads
+        ):
             return
         from deepagents_code.clipboard import copy_text_with_feedback
 
@@ -2551,11 +2631,15 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         """Show delete confirmation for the highlighted thread."""
         if self._confirming_delete:
             return
+        if self._has_more and self._selected_index == len(self._filtered_threads):
+            return
         if not self._filtered_threads:
             # Nothing to delete — fall through to quit. Using exit() instead of
             # dismiss() is intentional: dismiss() would just close the modal
             # silently, re-swallowing ctrl+d.
             self.app.exit()
+            return
+        if self._selected_index >= len(self._filtered_threads):
             return
         self._confirming_delete = True
         thread = self._filtered_threads[self._selected_index]

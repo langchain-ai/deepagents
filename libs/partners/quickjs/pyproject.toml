@@ -34,6 +34,9 @@ dependencies = [
 [tool.hatch.build.targets.wheel]
 packages = ["langchain_quickjs"]
 
+[tool.hatch.build.targets.sdist]
+exclude = ["/benchmarks"]
+
 [project.urls]
 Homepage = "https://github.com/langchain-ai/deepagents/tree/main/libs/partners/quickjs"
 Repository = "https://github.com/langchain-ai/deepagents"

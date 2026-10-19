@@ -1,8 +1,10 @@
 ---
-type: approval-and-intervention concept
-title: Permissions and Human-in-the-Loop
-description: Explains Deep Agents filesystem permission enforcement and HITL routing, including local and remote subagent boundaries. Distinguishes SDK controls from dcode Manual, Auto, and YOLO approval behavior and Talon channel approvals.
-tags: [permissions, human-in-the-loop, subagents, talon, security]
+type: "Reference"
+title: "Permissions and Human-in-the-Loop"
+openwiki_generated: true
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-10-19T08:10:20.273Z
 sources:
   - id: openwiki-source-05106e66a949150d557266a2
     resource: repo://libs/code/deepagents_code/agent.py
@@ -42,8 +44,8 @@ sources:
     resource: repo://libs/talon/deepagents_talon/background.py
   - id: openwiki-source-6801a88de6305bc8cbdd259f
     resource: repo://libs/talon/deepagents_talon/host.py
-  - id: openwiki-source-82cac27adeecff8a900a40fa
-    resource: repo://libs/talon/deepagents_talon/mcp.py
+  - id: openwiki-source-5b9a69640ff3d94216c614ce
+    resource: repo://libs/talon/deepagents_talon/messaging.py
   - id: openwiki-source-665a21e2fbd09a89d3f13ac0
     resource: repo://libs/talon/deepagents_talon/runtime.py
   - id: openwiki-source-267468fe937003d4716fe6c2
@@ -54,19 +56,17 @@ sources:
     resource: repo://libs/talon/tests/test_host.py
   - id: openwiki-source-82dab853903c3a574614fd1e
     resource: repo://libs/talon/tests/unit_tests/test_background.py
+  - id: openwiki-source-1698129adea358c8813da5a5
+    resource: repo://libs/talon/tests/unit_tests/test_messaging.py
   - id: openwiki-source-8de0ff38635f214c7268d8e7
     resource: repo://libs/talon/tests/unit_tests/test_tool_approval_authorization.py
-  - id: openwiki-source-6cf260dd7a6018657221ec15
-    resource: repo://libs/talon/tests/unit_tests/test_tool_approval_batch.py
   - id: openwiki-source-242a21b2da46507f58415265
     resource: repo://libs/talon/tests/unit_tests/test_tool_approval_runtime.py
   - id: openwiki-source-d4964daa078854bf4438d764
     resource: repo://libs/talon/tests/unit_tests/test_tool_approvals.py
-generated: { by: "openwiki/0.4.2", at: "2026-10-16T08:05:35.701Z" }
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-10-16T08:05:35.701Z
+generated: { by: "openwiki/0.4.2", at: "2026-10-19T08:10:20.273Z" }
 ---
+
 
 # Permissions and Human-in-the-Loop
 
@@ -177,42 +177,48 @@ Profile `excluded_middleware` is a different mechanism again: it removes selecte
 
 ## Talon approvals: persisted exact-name interrupt policy
 
-Talon maintains an assistant-local `tools.json` map of exact tool names to booleans. Enabled entries generate approve/reject `interrupt_on` configuration; absent or false entries generate no prompt. Names are not patterns. When the file is first missing, the defaults enable `update_tool_approvals`, `delete_conversations`, `update_mcp_server`, `start_async_task`, and `send_message`; an existing valid file is retained.
+Talon maintains an assistant-local `tools.json` map of exact tool names to booleans. An enabled name generates approve/reject `interrupt_on` configuration; an absent or false name generates no prompt. Names are not patterns. When the file is first missing, the defaults enable `update_tool_approvals`, `delete_conversations`, `update_mcp_server`, `start_async_task`, and `send_message`; an existing valid file is retained.
 
-This policy selects graph routing, not an ACL. Disabling a prompt neither exposes a tool nor authorizes it, and it does not contain the tool's effects. Policy self-edit remains separately protected: `update_tool_approvals` requires both active invocation policy context and operator context.
+This policy selects graph routing, not an ACL. It neither adds a tool to the graph nor grants an identity, permission, or containment boundary. Disabling a prompt does not expose a hidden tool or authorize its effects. Policy self-edit is separately guarded: `update_tool_approvals` requires both an active invocation snapshot and operator context.
 
-`ToolApprovalStore` validates a bounded regular, non-symlink JSON file and freezes its exact-name boolean policy in an `ApprovalSnapshot`; its revision hashes persisted bytes. Updates lock the file, validate the complete update, compare the expected revision, and atomically replace only on a match. The active snapshot is fixed for an invocation: runtime graph rebuilding and policy-management closures use the snapshot read at invocation start. Saved changes therefore take effect on a later invocation, while invalid saved policy prevents that invocation rather than silently retaining an old graph.
+`ToolApprovalStore` validates a bounded regular, non-symlink JSON file and freezes its exact-name boolean policy in an `ApprovalSnapshot`; its revision hashes persisted bytes. Updates lock the file, validate the complete merge, compare the expected revision, and atomically replace only on a match. At invocation entry, the runtime reads the snapshot under its tools lock. If it differs from the active one, it builds and installs a graph configured with that snapshot, then binds that graph and snapshot in invocation-local context. Thus a concurrent older invocation continues to use its bound graph and policy-management closures while a later invocation can use the rebuilt graph; saved changes take effect only on a later invocation. An invalid saved policy or graph rebuild failure blocks that new invocation and leaves the last active graph and snapshot intact.
 
-## From interruption to a channel decision
+## From policy snapshot and interruption to a channel decision
 
-Talon validates unique nonempty resumable IDs before seeking approval. It cancels valid MCP elicitation separately, aggregates ordinary interrupted action requests into one `ToolApprovalRequest`, obtains one approve/reject decision, expands that decision into explicit resume payloads, and resumes the graph. Malformed batches and the 50-round ceiling fail rather than being implicitly resumed.
+At invocation entry, Talon reads the persisted policy before it calls the graph. A changed snapshot produces a rebuilt graph and is then bound to that invocation; an in-flight invocation retains its previously bound graph. An enabled exact name can therefore produce a LangGraph interrupt. Talon validates unique nonempty resumable IDs before seeking approval. It cancels valid MCP elicitation separately, aggregates ordinary interrupted action requests into one `ToolApprovalRequest`, obtains one approve/reject decision, expands that decision into explicit resume payloads, and resumes the invocation-bound graph. Malformed batches and the 50-round ceiling fail rather than being implicitly resumed.
 
 ```mermaid
 sequenceDiagram
-    participant Graph as LangGraph
+    participant Store as Tool approval store
     participant Runtime as Talon runtime
+    participant Graph as Invocation graph
     participant Host as Talon host
     participant Channel as Origin channel
+    Runtime->>Store: Read approval snapshot
+    Runtime->>Runtime: Rebuild graph if snapshot changed
+    Runtime->>Graph: Invoke with bound snapshot
     Graph->>Runtime: Interrupt batch
     Runtime->>Runtime: Validate and separate MCP elicitation
     Runtime->>Host: Ordinary action batch
     Host->>Channel: Approval prompt
     Channel->>Host: Accepted reply or reaction
     Host->>Runtime: Approve or reject
-    Runtime->>Graph: Resume payload
+    Runtime->>Graph: Explicit resume payload
 ```
 
-Caption: Talon makes one channel decision for ordinary actions while cancelling valid MCP elicitation separately.
+Caption: A policy snapshot selects the invocation graph before an exact-name interrupt can be routed; one channel decision resumes the ordinary batch, while valid MCP elicitation is cancelled separately.
 
 The host holds one pending approval future per agent conversation and removes it after resolution. A known initiating sender is required for text reply approval; reaction approval additionally matches provider, conversation, prompt message, and sender. That binds a response to a pending prompt, not to general tool authorization.
 
-Operator authority for policy changes is also separate from the approval handler. The host derives it from trusted channel exposure rather than inbound request metadata, and the runtime requires active invocation context. It clears this authority for cron and background delivery.
+Operator authority for policy changes is also separate from the approval handler. The host calculates `tool_approval_operator` from trusted channel exposure and passes its boolean result to the request; the runtime only accepts that flag while active invocation context exists and clears it for cron and background delivery. Do not treat arbitrary `AgentRequest.metadata` supplied directly to the runtime as a trust boundary.
 
-## Invocation context is scoped and cleaned up
+## Protected progress delivery and invocation-context cleanup
 
-At the start of each `DeepAgentRuntime.invoke`, Talon selects the invocation graph and immutable approval snapshot, derives the approval-operator flag from trusted request metadata, and installs request-scoped context for pending background results, cron origin, scheduled-turn status, OAuth authorization, and progress messages. The invocation's `finally` block resets every one of those context variables, including the graph and snapshot. A later request therefore cannot inherit an earlier request's approval policy, operator authority, authorization callback, scheduled status, or delivery state—even if the earlier graph call raises or is cancelled.
+`send_message` is an explicit progress tool, not a general channel-routing API: it sends only through the request-scoped handler, whose host destination is the chat that started the turn. The runtime adds that tool only at verbosity 2 or 3. Because the default policy contains the same exact name, an exposed `send_message` enters the ordinary approval map and pauses before delivery when its active snapshot enables it; approval executes it and rejection leaves the message undelivered. The policy key does not expose the tool at verbosity 1, authorize arbitrary recipients, establish sender identity, or contain text effects. Separately, `ProgressMessages` may forward nonempty main-agent narration before other tool calls; it suppresses that automatic narration for explicit `send_message` calls and for subagents. That middleware delivery is not itself a `send_message` tool call and therefore is not an approval interrupt.
 
-This scoping is important but narrow: it prevents accidental cross-turn context leakage inside the runtime; it does not turn metadata supplied outside the host into trusted authority. The host is responsible for deriving `tool_approval_operator` from trusted channel exposure and for clearing authorization records after a turn.
+At the start of each `DeepAgentRuntime.invoke`, Talon selects the invocation graph and immutable approval snapshot, consumes the host-provided operator boolean subject to cron/background restrictions, and installs request-scoped context for pending background results, cron origin, scheduled-turn status, OAuth authorization, and progress delivery. The `progress_messages` context manager resets its message handler and shared verbosity budget; the invocation's `finally` block resets the approval, operator, authorization, scheduling, graph, and pending-result context variables. A later request therefore cannot inherit an earlier request's approval policy, operator authority, authorization callback, scheduled status, graph, progress destination or budget, or delivery state—even if the earlier graph call raises or is cancelled.
+
+This scoping is important but narrow: it prevents accidental cross-turn context leakage inside the runtime; it does not turn metadata supplied outside the host into trusted authority. The host remains responsible for deriving `tool_approval_operator` from trusted channel exposure and for clearing authorization records after a turn.
 
 ## Unattended and delegated work fails closed
 
@@ -235,6 +241,7 @@ Within a scheduled turn, delegation is inline rather than detached: it waits for
 - Review every declarative subagent's replacement `permissions` and `interrupt_on`; configure compiled and remote agents independently.
 - Use exact names and the revision from `get_tool_approvals` when changing Talon policy. Expect a new invocation before saved changes apply.
 - Keep Talon approval UIs batch-oriented and validate interrupt IDs and actions before calling an external handler. Do not treat a channel decision as an identity or authorization system.
+- In `test_tool_approval_runtime.py`, cover a `send_message` call at verbosity 3: approval must occur before delivery and rejection must leave it undelivered. In `test_messaging.py`, cover the separately scoped handler and budget, automatic narration ordering, explicit-message de-duplication, and concurrent-request cleanup.
 - Focus regression coverage on `test_permissions.py` for first-match decisions, confirmed-leaf versus recursive deletion, symlink target enforcement, bulk/glob routing bypasses, and inheritance behavior. Use `test_filesystem_backend.py` to cover the backend's virtual-root and symlink-containment behavior separately; permission middleware does not turn backend path handling into a sandbox.
 - Cover Talon policy validation, snapshots, batch fan-out, unattended rejection, trusted sender handling, reaction matching, and request-context reset in its tool-approval and host authorization tests.
 - In `test_host.py`, exercise scheduled timeout repair and same-job serialization. In `test_background.py`, cover inline scheduled delegation, its nested-delegation guard, fan-out, slot queueing, and deadline behavior.

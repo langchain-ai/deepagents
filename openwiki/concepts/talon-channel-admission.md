@@ -1,11 +1,11 @@
 ---
 type: channel admission and runtime routing
 title: Talon Channel Admission
-description: Discord admission and interaction routing in Talon, from provider events through host-owned conversations, pairing, thread context, and failure-safe delivery. Explains the access policy boundary and request-bound privileged responses.
-tags: [talon, discord, channels, admission-control, pairing, conversation-identity, security]
+description: Talon channel admission, provider routing, pairing, and host-owned conversation controls. Covers the separate per-process verbosity setting for interim channel updates, not access or approval policy.
+tags: [talon, discord, channels, admission-control, pairing, conversation-identity, security, verbosity]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-10-18T08:05:11.339Z
+    at: 2026-10-19T08:10:20.273Z
 sources:
   - id: openwiki-source-6a038e6e1a11f450bcafce54
     resource: repo://libs/talon/deepagents_talon/__main__.py
@@ -27,8 +27,12 @@ sources:
     resource: repo://libs/talon/deepagents_talon/host.py
   - id: openwiki-source-cebe4ea270e21dce4de9b074
     resource: repo://libs/talon/deepagents_talon/interfaces.py
+  - id: openwiki-source-5b9a69640ff3d94216c614ce
+    resource: repo://libs/talon/deepagents_talon/messaging.py
   - id: openwiki-source-26b7e102f81f5c7bcfdc2424
     resource: repo://libs/talon/deepagents_talon/pairing.py
+  - id: openwiki-source-665a21e2fbd09a89d3f13ac0
+    resource: repo://libs/talon/deepagents_talon/runtime.py
   - id: openwiki-source-1c86f8e1d9b6cb62f342d9ed
     resource: repo://libs/talon/tests/channels/test_base.py
   - id: openwiki-source-94758cb9b3302b8f80f516f9
@@ -43,7 +47,9 @@ sources:
     resource: repo://libs/talon/tests/unit_tests/test_pairing_slack.py
   - id: openwiki-source-8614e79d8a8371505c879e50
     resource: repo://libs/talon/tests/unit_tests/test_pairing.py
-generated: { by: "openwiki/0.4.2", at: "2026-10-18T08:05:11.339Z" }
+  - id: openwiki-source-1e7998c9f5a94d22f3819721
+    resource: repo://libs/talon/tests/unit_tests/test_verbosity.py
+generated: { by: "openwiki/0.4.2", at: "2026-10-19T08:10:20.273Z" }
 ---
 
 Talon channel adapters are the boundary between provider events and the configured agent. An adapter normalizes provider-local identities, applies exposure and pairing policy, and calls the callback installed by `TalonHost`. The host—not the adapter—owns commands, agent-conversation identity, turn replacement, authorization and approval state, and result delivery.
@@ -149,6 +155,20 @@ Admission of a reaction is not itself tool approval. The host requires a pending
 
 Progress delivery is bound to the originating invocation by a task-local handler and is refused once a turn is inactive, stale, or terminally authorized. Final delivery also checks generation before sending, so old work cannot overwrite a newer turn.
 
+## Interim-update verbosity is not admission or approval policy
+
+`DEEPAGENTS_TALON_VERBOSITY` is parsed for each Talon assistant process when `TalonConfig` is built and again by `DeepAgentRuntime`; it accepts only `1`, `2`, or `3`, defaulting to `1`. Invalid values fail configuration rather than silently choosing a level. The setting controls **interim** messages from the main agent to the chat that started an invocation. It neither changes channel exposure/pairing admission, selects a reply recipient, nor changes tool-approval rules or host-visible activity logging.
+
+| Level | Runtime behavior |
+| --- | --- |
+| `1` (default) | The runtime does not expose the `send_message` progress tool, and its per-invocation budget is zero. The normal final `AgentResult` remains deliverable. |
+| `2` | The runtime exposes `send_message` with sparse-use guidance. One invocation shares a budget of two interim updates, including concurrent calls; each new invocation gets a fresh budget. |
+| `3` | The runtime exposes `send_message` without a fixed interim-update budget. |
+
+The progress tool has a host-fixed destination: it uses the request's `message_handler`, so a model cannot choose another conversation. The `ProgressMessages` middleware can also forward a visible main-agent narration immediately before tool execution, but it skips subagents, blank narration, and an AI message that already calls `send_message`; both paths consume the same invocation-local budget. A missing handler, blank text, transport exception, unsuccessful send, exhausted budget, or a handler refused because the host has ended/replaced the turn produces a model-facing failure message rather than raising transport details into model context.
+
+The runtime scopes the handler and budget with context variables around each `invoke()` and resets them in `finally`. This isolates simultaneous conversations and prevents a completed or failed invocation from leaking its delivery capability into later work. Final replies travel through the host's ordinary result-delivery path, while agent activity logging records tool completion independently. Consequently, verbosity `1` suppresses chat progress—not the final answer and not host-visible tool activity.
+
 ## Configuration and operations
 
 `TalonConfig` derives a validated assistant ID and a per-assistant home. It creates that home and its state directories with owner-only permissions, and state-path resolution verifies that checkpoint, history, conversation, and model state stay inside it. Protect this home—including `pairing.json`—as operational state; a CLI pairing change cannot terminate in-memory work.
@@ -163,4 +183,6 @@ Progress delivery is bound to the originating invocation by a task-local handler
 
 ## Focused verification
 
-`libs/talon/tests/channels/test_discord.py` covers Gateway status transitions, self-message loop prevention, exposure and reaction admission, mention and thread routing, attachment failures, application-command conversion and reply isolation, registration behavior, and bounded thread context. `libs/talon/tests/integration_tests/test_discord_host.py` covers host command execution through interactions, interaction-only replies, public-thread agent identity versus parent history scope, and scope-wide reset behavior. `libs/talon/tests/unit_tests/test_commands.py` checks that visible registry entries drive help and that host commands reply without invoking the agent. Pairing, host cancellation, and delivery behavior are covered in `test_pairing.py`, `test_pairing_slack.py`, and `test_host.py`; see the [testing guide](/openwiki/testing/testing-guide.md) for running the suite.
+`libs/talon/tests/channels/test_discord.py` covers Gateway status transitions, self-message loop prevention, exposure and reaction admission, mention and thread routing, attachment failures, application-command conversion and reply isolation, registration behavior, and bounded thread context. `libs/talon/tests/integration_tests/test_discord_host.py` covers host command execution through interactions, interaction-only replies, public-thread agent identity versus parent history scope, and scope-wide reset behavior. `libs/talon/tests/unit_tests/test_commands.py` checks that visible registry entries drive help and that host commands reply without invoking the agent. Pairing, host cancellation, and delivery behavior are covered in `test_pairing.py`, `test_pairing_slack.py`, and `test_host.py`.
+
+For the separate verbosity contract, run `libs/talon/tests/unit_tests/test_verbosity.py` and `libs/talon/tests/unit_tests/test_messaging.py`. They cover parsing and rejection of values, progress-tool availability and prompt guidance, zero/two/unlimited interim-update behavior through the host, a shared sparse budget under parallel calls, context cleanup after failure, narration ordering, duplicate avoidance, request-local routing, and refusal after a turn ends. `libs/talon/tests/test_runtime.py` covers the runtime invocation wiring that scopes request handlers. See the [testing guide](/openwiki/testing/testing-guide.md) for running the suite.

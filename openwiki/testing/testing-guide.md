@@ -1,11 +1,11 @@
 ---
 type: testing guide
 title: Testing Guide
-description: Focused, deterministic regression routing for async subagents and backend persistence, dcode session, interpreter, sandbox, and completion behavior, and Talon Discord host flows. Use package-local targets and assert observable contracts at the relevant boundary.
-tags: [testing, pytest, deepagents, dcode, context-hub, talon, discord]
+description: Focused, deterministic regression routing for Deep Agents state and store backend compatibility, dcode behavior, and Talon runtime refresh, progress delivery, verbosity, and approval concurrency. Use package-local targets and assert observable contracts at the relevant boundary.
+tags: [testing, pytest, deepagents, backends, dcode, context-hub, talon, approvals, verbosity, discord]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-10-18T08:05:11.339Z
+    at: 2026-10-19T08:10:20.273Z
 sources:
   - id: openwiki-source-8037e2358a2c4f9b2c722a11
     resource: repo://AGENTS.md
@@ -31,6 +31,10 @@ sources:
     resource: repo://libs/deepagents/tests/unit_tests/backends/test_composite_backend.py
   - id: openwiki-source-97b09ca9987a984f1b37f8c8
     resource: repo://libs/deepagents/tests/unit_tests/backends/test_context_hub_backend.py
+  - id: openwiki-source-fb022ddbcc554eaabedfa8cd
+    resource: repo://libs/deepagents/tests/unit_tests/backends/test_state_backend.py
+  - id: openwiki-source-e11958a6a68a079be57552fc
+    resource: repo://libs/deepagents/tests/unit_tests/backends/test_store_backend.py
   - id: openwiki-source-6ce85b02eabe462f99e0c912
     resource: repo://libs/deepagents/tests/unit_tests/test_async_subagents.py
   - id: openwiki-source-fb60ee46c55b974b8341651c
@@ -41,7 +45,15 @@ sources:
     resource: repo://libs/talon/tests/channels/test_discord.py
   - id: openwiki-source-6fd40210153ee05d5c26d545
     resource: repo://libs/talon/tests/integration_tests/test_discord_host.py
-generated: { by: "openwiki/0.4.2", at: "2026-10-18T08:05:11.339Z" }
+  - id: openwiki-source-4d6726e17c8a0c78539a7d33
+    resource: repo://libs/talon/tests/test_runtime.py
+  - id: openwiki-source-1698129adea358c8813da5a5
+    resource: repo://libs/talon/tests/unit_tests/test_messaging.py
+  - id: openwiki-source-242a21b2da46507f58415265
+    resource: repo://libs/talon/tests/unit_tests/test_tool_approval_runtime.py
+  - id: openwiki-source-1e7998c9f5a94d22f3819721
+    resource: repo://libs/talon/tests/unit_tests/test_verbosity.py
+generated: { by: "openwiki/0.4.2", at: "2026-10-19T08:10:20.273Z" }
 ---
 
 # Testing Guide
@@ -56,6 +68,8 @@ See [Development](../operations/development.md), [Backends](../concepts/backends
 cd libs/deepagents
 uv sync --all-groups
 make test TEST_FILE=tests/unit_tests/test_async_subagents.py
+make test TEST_FILE=tests/unit_tests/backends/test_state_backend.py
+make test TEST_FILE=tests/unit_tests/backends/test_store_backend.py
 make test TEST_FILE=tests/unit_tests/backends/test_composite_backend.py
 make test TEST_FILE=tests/unit_tests/backends/test_context_hub_backend.py
 make lint
@@ -70,6 +84,10 @@ make lint
 
 cd ../talon
 uv sync --group test
+make test TEST_FILE=tests/test_runtime.py
+make test TEST_FILE=tests/unit_tests/test_messaging.py
+make test TEST_FILE=tests/unit_tests/test_tool_approval_runtime.py
+make test TEST_FILE=tests/unit_tests/test_verbosity.py
 make test TEST_FILE=tests/channels/test_discord.py
 make test TEST_FILE=tests/integration_tests/test_discord_host.py
 make lint
@@ -82,12 +100,18 @@ make lint
 | Changed boundary | Focused test file | Deterministic seam and observable result |
 | --- | --- | --- |
 | Async child lifecycle, fork snapshot, or forwarded context | `libs/deepagents/tests/unit_tests/test_async_subagents.py` | Substitute sync and async SDK clients; assert task `Command` state and outbound child payload. |
+| State-file compatibility or graph-context behavior | `libs/deepagents/tests/unit_tests/backends/test_state_backend.py` | Replace graph state hooks with a dictionary; assert byte round trips, binary search exclusion, legacy read views, and mutation migration without a graph service. |
+| Durable store compatibility, namespace, or deletion behavior | `libs/deepagents/tests/unit_tests/backends/test_store_backend.py` | Use `InMemoryStore` or a recording subclass; assert the same public file contract, namespace isolation, literal keys, and single-batch recursive removal in sync and async paths. |
 | Composite routing, merged search, or sandbox execution delegation | `libs/deepagents/tests/unit_tests/backends/test_composite_backend.py` | Compose in-memory or temporary backends; assert public paths, merged results, truncation/error propagation, and execution result. |
 | Context Hub reads, batching, conflict recovery, or local visibility | `libs/deepagents/tests/unit_tests/backends/test_context_hub_backend.py` | Mock `langsmith.Client` and gate concurrent work with events; assert backend results, commit payloads, and cache-visible content. |
 | Interpreter permissions while binding or resuming a workspace | `libs/code/tests/unit_tests/test_interpreter_workspace_policy.py` | Use a temporary policy and session DB; assert effective policy preservation or `WorkspaceConflictError`. |
 | Sandbox lifecycle/provider configuration | `libs/code/tests/unit_tests/test_sandbox_factory.py` | Construct a registry without entry-point discovery; assert cleanup ownership and user-facing failures. |
 | `/threads` and cross-agent resume behavior | `libs/code/tests/unit_tests/test_threads_resume.py` | Mock the checkpoint/session store and UI seams; assert target choice, user messages, cancellation, and relaunch fallback. |
 | dcode configuration/UI or completion | `libs/code/tests/unit_tests/test_app.py`, `tui/widgets/test_autocomplete.py` | Redirect configuration to `tmp_path`; mount only when rendering matters; use a mock view and throwaway Git repository. |
+| Runtime graph wiring, tool refresh, reload, or recovery | `libs/talon/tests/test_runtime.py` | Replace agent construction with a recording graph and use temporary assistant state; assert captured graph/configuration, atomic replacement, and recovery state. |
+| Interim message routing or narration timing | `libs/talon/tests/unit_tests/test_messaging.py` | Use fake tool-calling models, recording channels, barriers, and events; assert delivery destination, ordering, rejection, expiry, and concurrent request isolation. |
+| Approval graph policy, snapshot, or concurrent reload | `libs/talon/tests/unit_tests/test_tool_approval_runtime.py` | Drive a real in-memory runtime graph with fake models and events; assert one approval batch, fixed invocation snapshot, operator limits, and fail-closed reloads. |
+| Verbosity configuration or update budget | `libs/talon/tests/unit_tests/test_verbosity.py` | Build the runtime from a controlled environment and run it through a recording host; assert tool visibility, prompt guidance, per-turn budgets, and cleanup. |
 | Discord channel admission and interactions | `libs/talon/tests/channels/test_discord.py` | Deliver events through a recording gateway; assert routing, context, interaction response, and outbound behavior. |
 | Discord-to-host composition | `libs/talon/tests/integration_tests/test_discord_host.py` | Start `TalonHost` with a stub gateway and minimal runtime; assert commands, authorization, history scope, and replies. |
 
@@ -95,11 +119,13 @@ make lint
 flowchart TD
     Change["Changed observable behavior"] --> Owner["Choose owning package"]
     Owner --> Boundary{"Boundary"}
-    Boundary -->|"Task or persistence backend"| Backend["Mock client or composed in-memory backend"]
+    Boundary -->|"State store or persistence backend"| Backend["Dictionary InMemoryStore or mock client"]
     Boundary -->|"dcode policy session UI or completion"| Dcode["Temporary state and Textual pilot"]
+    Boundary -->|"Talon runtime progress approval or verbosity"| Runtime["Fake model recording graph and channel"]
     Boundary -->|"Discord channel or host"| Discord["Recording gateway and stub agent"]
     Backend --> Assert["Assert result state payload or error"]
     Dcode --> Assert
+    Runtime --> Assert
     Discord --> Assert
     Assert --> Check["Run focused make test and make lint"]
 ```
@@ -111,6 +137,8 @@ flowchart TD
 Async-subagent tests require the five-tool task interface to preserve tracked task state across launch, live status checks, interrupting updates, cancellation, and sync or async client entry points; a waiting child exposes its interrupt payload, and cancellation while waiting remains terminal without a remote cancel call.
 
 Forked async-subagent launch tests serialize a snapshot of parent context, including summarized history and rehydrated offloaded media, while isolated launches send only the delegated request; the coverage runs both synchronous and asynchronous invocations. Async-subagent context forwarding is deployment-scoped: a child on the parent deployment receives serializable parent context and parent-assistant metadata, but a parent-reference-only context and children on another server do not receive that context.
+
+For `StateBackend` and `StoreBackend`, keep shared file-contract regressions parallel but use their actual local ownership boundary: monkeypatch `StateBackend` graph-state hooks to a dictionary, and give `StoreBackend` an `InMemoryStore` plus a fixed namespace. Cover binary upload/download and the invariant that binary entries are excluded from grep without spending its match budget; cover legacy `list[str]` content as a read-only normalized view across read, listing, search, glob, and download. A successful write or edit is the migration boundary, whereas a rejected empty replacement must leave legacy stored data intact. Also assert byte-sized UTF-8 metadata and line-window edge cases rather than backend-private conversion helpers. For durable scope changes, add namespace isolation and validation cases; test a recursive delete with a recording store to require one batch, and prove a `*` file key is literal rather than a broad deletion. Exercise both sync and async variants where the public backend exposes them.
 
 For `CompositeBackend`, build actual temporary filesystem and in-memory store backends rather than testing route-selection internals. A route owns its prefix, while root list/search/glob combines the default and routed spaces with composite paths. Focus regressions on path isolation and on the result contract: merged search truncation is preserved, a backend error is surfaced rather than converted into partial success, and command execution delegates only to a sandbox-capable default backend.
 
@@ -129,6 +157,16 @@ For `/threads`, test parsing and session-store outcomes rather than widget inter
 dcode cache-expiry tests require the expiring notice to be emitted only in the 1-to-60-second window, suppressed during cache reconciliation, deduplicated until the thread or expiry changes, and non-disruptive to an editable draft or message processing in a mounted app. dcode scrollbar regressions isolate config in a temporary TOML file and require environment precedence with safe fallback for invalid data, preservation of unrelated UI keys, visible layout updates in a mounted app, and hidden scrollbars in ASCII mode even when the preference is enabled.
 
 dcode autocomplete tests require thread completion to turn a standalone `@@` query into a durable thread token, file discovery to preserve tracked files when an optional untracked scan fails and to fall back without Git, and nested-cwd completion to be scoped to that subtree without prefix leakage. Use a temporary repository with local identity, and assert candidates and the inserted replacement range.
+
+## Talon runtime: scoped progress, graph refresh, and approval snapshots
+
+Treat progress delivery as request-scoped state, not a process-global callback. For narration and `send_message`, use fake tool-calling models and a recording delivery function to assert that visible main-agent narration occurs before ordinary tools, never comes from a subagent, and is not duplicated when the model calls `send_message` explicitly. Use a barrier for simultaneous `runtime.invoke()` calls and separate recording channels to prove each request retains its own destination; use an event-controlled host turn to show that an update is delivered before its final reply and rejected after completion or cancellation. Do not test this with a provider or a timed delay.
+
+Verbosity tests construct `TalonConfig` and `DeepAgentRuntime` from a controlled `env`. Levels are `1`, `2`, and `3`: level 1 omits `send_message`; levels 2 and 3 include it with distinct guidance. Invalid values must fail configuration and runtime construction. Run multi-step fake-model turns through `TalonHost` to observe the end-to-end budget: no updates at 1, two at 2, and no fixed budget at 3. For the sparse case, launch concurrent calls under one progress scope to confirm they share its budget, then run two scopes concurrently to confirm the budgets and context cleanup are isolated.
+
+Runtime refresh tests replace `create_deep_agent()` with a recording graph and use a callback that returns a changed tool list exactly once. Assert the graph is rebuilt between turns, the authorization handler is present only during its invocation, and no context variable leaks afterward. For explicit MCP or subagent reload, make graph construction fail after a successful replacement and assert the preceding tools and graph remain installed; a replacement is published only after it is constructible. Temporary assistant directories also let wiring tests inspect the created backend, memory, skills, cron tools, and workspace without contacting a model provider.
+
+Approval tests should use the real network-free graph with a fake message model, a temporary `ToolApprovalStore`, and events that hold an invocation at its approval handler. A protected multi-call response must yield one approval request before either effect executes. Capture the active snapshot at invocation start: a policy save or graph refresh while an old turn is waiting must not change its interrupt behavior or read/update closures, while a later turn sees the saved revision. Exercise self-disabling policy updates to verify that the current turn remains governed by its pre-edit snapshot and that compare-and-swap conflicts do not overwrite it. Background or scheduled-like requests and detached subagents must fail closed instead of inheriting operator authority or an injected approval handler. Finally, corrupt the policy or force graph construction failure: the runtime must block the affected invocation, keep the last usable graph/snapshot, and activate corrected policy only on a later retry.
 
 ## Talon Discord: channel admission before host composition
 

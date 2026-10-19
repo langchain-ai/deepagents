@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock
 
+import anyio
 import pytest
 
 from deepagents_code.client.launch import server as server_module
@@ -84,7 +85,7 @@ async def test_normal_stop_keeps_writer_until_termination(
     server.stop()
     assert os.read(reader, 1) == b""
     assert log.closed
-    assert not os.path.exists(log.name)
+    assert not (await anyio.Path(log.name).exists())
 
 
 def test_failed_launch_closes_reader_writer_and_log(
@@ -121,7 +122,7 @@ def test_failed_launch_closes_reader_writer_and_log(
     reader, _, log = children[-1]
     assert os.read(reader, 1) == b""
     assert log.closed
-    assert not os.path.exists(log.name)
+    assert not Path(log.name).exists()
     assert not server.running
 
 
@@ -140,7 +141,7 @@ async def test_replacement_closes_old_pipe_and_log(
         await server.restart()
     assert os.read(old_reader, 1) == b""
     assert old_log.closed
-    assert not os.path.exists(old_log.name)
+    assert not (await anyio.Path(old_log.name).exists())
     with pytest.raises(BlockingIOError):
         os.read(children[-1][0], 1)
     server.stop()

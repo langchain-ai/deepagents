@@ -26,7 +26,7 @@ if TYPE_CHECKING:
 def test_verbosity_configuration(tmp_path: Path, value: str | None) -> None:
     env = {} if value is None else {"DEEPAGENTS_TALON_VERBOSITY": value}
     config = TalonConfig.from_env(env, base_home=tmp_path)
-    assert config.verbosity == (3 if value is None else int(value))
+    assert config.verbosity == (1 if value is None else int(value))
     runtime = DeepAgentRuntime(model="test:model", env=env)
     assert runtime.verbosity == config.verbosity
     names = {item.name for item in runtime._build_tools()}

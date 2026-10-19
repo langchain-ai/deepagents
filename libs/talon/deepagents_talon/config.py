@@ -1,9 +1,9 @@
 """Configuration loading for the Talon runtime host.
 
 Talon is an experimental runtime and is subject to change or removal at any time.
-Set `DEEPAGENTS_TALON_VERBOSITY` per assistant process: 1 disables interim chat
-updates, 2 permits at most two for long tasks, and 3 preserves unrestricted updates
-(the default). Final replies and host-visible tool activity are unaffected.
+Set `DEEPAGENTS_TALON_VERBOSITY` per assistant process: 1 (the default) disables
+interim chat updates, 2 permits at most two for long tasks, and 3 allows unrestricted
+updates. Final replies and host-visible tool activity are unaffected.
 """
 
 from __future__ import annotations
@@ -138,7 +138,7 @@ class TalonConfig:
     @property
     def verbosity(self) -> int:
         """Interim updates: 1 disables them, 2 allows at most two, 3 is unrestricted."""
-        value = self.env.get("DEEPAGENTS_TALON_VERBOSITY", "3")
+        value = self.env.get("DEEPAGENTS_TALON_VERBOSITY", "1")
         if value not in {"1", "2", "3"}:
             msg = "DEEPAGENTS_TALON_VERBOSITY must be 1, 2, or 3"
             raise TalonConfigError(msg)

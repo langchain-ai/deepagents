@@ -318,8 +318,8 @@ class DeepAgentRuntime:
             transport errors.
         max_continuations: Number of continuation nudges after empty responses.
         env: Environment values for model, path, and backend settings.
-            `DEEPAGENTS_TALON_VERBOSITY` selects silent (1), sparse (2), or
-            unrestricted (3, default) interim updates. Defaults to `os.environ`.
+            `DEEPAGENTS_TALON_VERBOSITY` selects silent (1, default), sparse (2), or
+            unrestricted (3) interim updates. Defaults to `os.environ`.
         sandbox_working_dir: Working directory inside a remote sandbox `backend`.
             When set, the system prompt tells the agent its tools run there.
     """

@@ -1989,8 +1989,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             threads = await self._fetch_window(self._loaded_limit)
         except (OSError, sqlite3.Error) as exc:
             logger.exception("Failed to load threads for thread selector")
-            self._disk_load_complete = True
-            await self._show_mount_error(str(exc))
+            await self._report_load_failure(exc)
             return
         except Exception as exc:
             # An unexpected error (e.g. a malformed row raising ValueError) must
@@ -2000,10 +1999,25 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             # CancelledError is a BaseException and is intentionally not caught
             # here, so a superseding exclusive worker keeps ownership of the flag.
             logger.exception("Unexpected error loading threads for thread selector")
-            self._disk_load_complete = True
-            await self._show_mount_error(str(exc))
+            await self._report_load_failure(exc)
             return
         await self._apply_window(threads, self._loaded_limit)
+
+    async def _report_load_failure(self, exc: Exception) -> None:
+        """Show a failed load; a failed reload keeps the rows already shown.
+
+        Args:
+            exc: The error from the fetch.
+        """
+        if self._disk_load_complete:
+            # A sort, scope, or refresh reload: the shown rows are still usable.
+            detail = str(exc) or type(exc).__name__
+            self.notify(
+                f"Could not reload threads: {detail}", severity="error", markup=False
+            )
+            return
+        self._disk_load_complete = True
+        await self._show_mount_error(str(exc))
 
     async def _apply_window(
         self, threads: list[ThreadInfo], limit: int, *, load_more: bool = False
@@ -2212,6 +2226,11 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             async with self._render_lock:
                 scroll = self.query_one(".thread-list", VerticalScroll)
                 await scroll.remove_children()
+                # Drop the removed rows so keys cannot act on them.
+                self._filtered_threads = []
+                self._option_widgets = []
+                self._load_more_row = None
+                self._has_more = False
                 await scroll.mount(
                     Static(
                         Content.from_markup(

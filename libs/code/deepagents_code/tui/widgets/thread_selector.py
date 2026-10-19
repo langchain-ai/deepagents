@@ -2303,6 +2303,9 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         if self._has_more == (self._load_more_row is not None):
             return
         async with self._render_lock:
+            # A rebuild that held the lock may have synced the row already.
+            if self._has_more == (self._load_more_row is not None):
+                return
             if self._load_more_row is not None:
                 await self._load_more_row.remove()
                 self._load_more_row = None

@@ -1001,8 +1001,8 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             from deepagents_code.sessions import get_thread_limit
 
             thread_limit = get_thread_limit()
-        self._page_size = max(1, thread_limit)
-        self._loaded_limit = self._page_size
+        self._batch_size = max(1, thread_limit)
+        self._loaded_limit = self._batch_size
         self._has_more = False
         self._loading_more = False
         self._load_more_row: LoadMoreThreads | None = None
@@ -2484,7 +2484,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         # Set the flag inside the worker: a worker cancelled before it starts
         # never reaches `finally`, so a flag set by the caller would stick.
         self._set_loading_more(True)
-        limit = self._loaded_limit + self._page_size
+        limit = self._loaded_limit + self._batch_size
         try:
             threads = await self._fetch_window(limit)
             # Inside the `try`: a worker error would otherwise exit the app.

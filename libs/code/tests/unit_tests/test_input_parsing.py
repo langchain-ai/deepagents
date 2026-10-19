@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from deepagents_code.input import (
+    INPUT_HIGHLIGHT_PATTERN,
     ParsedPastedPathPayload,
     dropped_payload_paths,
     parse_file_mentions,
@@ -51,18 +52,25 @@ def test_parse_file_mentions_handles_path_traversal(
     assert files == [file_path.resolve()]
 
 
-@pytest.mark.parametrize("name", ["résumé.md", "笔记.md"])
+@pytest.mark.parametrize(
+    "name", ["résumé.md", "笔记.md", "re\u0301sume\u0301.md", "हिन्दी.md", "บันทึก.md"]
+)
+@pytest.mark.parametrize(
+    "suffix", [" please", ", please", "\u00a0please", "\u3000please"]
+)
 def test_parse_file_mentions_with_non_ascii_name(
-    name: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    name: str, suffix: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Regression test for #6965: a non-ASCII name is part of the mention."""
+    """Non-ASCII mentions resolve and highlight fully without swallowing delimiters."""
     file_path = tmp_path / name
     file_path.write_text("content")
     monkeypatch.chdir(tmp_path)
 
-    _, files = parse_file_mentions(f"summarize @{name} please")
+    text = f"summarize @{name}{suffix}"
+    _, files = parse_file_mentions(text)
 
     assert files == [file_path.resolve()]
+    assert INPUT_HIGHLIGHT_PATTERN.findall(text) == [f"@{name}"]
 
 
 def test_dropped_payload_paths_resolves_non_media(tmp_path: Path) -> None:

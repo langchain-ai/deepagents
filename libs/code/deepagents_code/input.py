@@ -16,15 +16,10 @@ from deepagents_code.media_utils import ImageData, VideoData
 
 logger = logging.getLogger(__name__)
 
-PATH_CHAR_CLASS = r"\w.~/\\:-"
-"""Characters allowed in file paths.
+PATH_CHAR_PATTERN = r"(?:[\w.~/\\:-]|[^\x00-\x7f\s])"
+"""Match a path character, including non-ASCII combining marks but not whitespace."""
 
-Includes letters and digits in any script, underscore, period, tilde (home),
-forward/back slashes (path separators), colon (Windows drive letters), and
-hyphen.
-"""
-
-FILE_MENTION_PATTERN = re.compile(r"@(?P<path>(?:\\.|[" + PATH_CHAR_CLASS + r"])+)")
+FILE_MENTION_PATTERN = re.compile(r"@(?P<path>(?:\\.|" + PATH_CHAR_PATTERN + r")+)")
 """Pattern for extracting `@file` mentions from input text.
 
 Matches `@` followed by one or more path characters or escaped character
@@ -43,7 +38,7 @@ a file reference.
 """
 
 INPUT_HIGHLIGHT_PATTERN = re.compile(
-    r"(^\/[a-zA-Z0-9_-]+|@(?:\\.|[" + PATH_CHAR_CLASS + r"])+)"
+    r"(^\/[a-zA-Z0-9_-]+|@(?:\\.|" + PATH_CHAR_PATTERN + r")+)"
 )
 """Pattern for highlighting `@mentions` and `/commands` in rendered
 user messages.

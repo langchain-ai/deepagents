@@ -38,6 +38,28 @@ def test_verbosity_configuration(tmp_path: Path, value: str | None) -> None:
     ] in prompt
 
 
+def test_progress_tool_guidance_is_scoped_to_runtime_verbosity() -> None:
+    original_description = send_message.description
+    for level in (2, 3, 1, 2, 3):
+        runtime = DeepAgentRuntime(
+            model="test:model", env={"DEEPAGENTS_TALON_VERBOSITY": str(level)}
+        )
+        tools = {item.name: item for item in runtime._build_tools()}
+        if level == 1:
+            assert "send_message" not in tools
+            continue
+        description = tools["send_message"].description
+        assert "important updates" in description
+        assert "changes in working direction" in description
+        assert ("extremely sparingly" in description) is (level == 2)
+        assert ("at most 1-2" in description) is (level == 2)
+        prompt = runtime._resolve_system_prompt()
+        assert prompt is not None
+        assert ("extremely sparingly" in prompt) is (level == 2)
+        assert ("no fixed message limit" in prompt) is (level == 3)
+    assert send_message.description == original_description
+
+
 @pytest.mark.parametrize("value", ["", "0", "4", "-1", "2.0", "silent"])
 def test_invalid_verbosity(tmp_path: Path, value: str) -> None:
     env = {"DEEPAGENTS_TALON_VERBOSITY": value}

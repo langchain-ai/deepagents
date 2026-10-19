@@ -77,8 +77,9 @@ def progress_messages(handler: ProgressMessageHandler | None, verbosity: int) ->
 async def send_message(text: str) -> str:
     """Send a progress update to the user in the chat that started this turn.
 
-    The agent keeps working after this tool returns. Use for brief, useful updates
-    during longer tasks; give the final answer normally when finished.
+    The agent keeps working after this tool returns. Use only for important updates
+    or notifications about changes in working direction, not routine narration.
+    Give the final answer normally when finished.
     The destination is fixed by the host and cannot be changed.
 
     Args:

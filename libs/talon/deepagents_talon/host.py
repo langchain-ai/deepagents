@@ -763,7 +763,7 @@ class TalonHost:
         if not argument:
             detail = f"Supported: {options}."
             if not levels:
-                detail = "This model has no supported effort controls."
+                detail = "No effort controls are known for this model."
             if "qwen" in spec.lower() and levels:
                 detail += (
                     " Qwen budgets: low=1024, medium=4096, high=8192, "

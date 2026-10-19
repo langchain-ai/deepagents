@@ -15,6 +15,36 @@ ACTIVE_EFFORT: contextvars.ContextVar[dict[str, Any] | None] = contextvars.Conte
 # https://www.alibabacloud.com/help/en/model-studio/deep-thinking
 QWEN_BUDGETS = {"low": 1024, "medium": 4096, "high": 8192, "xhigh": 16384, "max": None}
 
+# Provider profiles can omit effort metadata even for reasoning-capable models.
+# https://developers.openai.com/api/docs/models/gpt-5.6
+# https://developers.openai.com/api/docs/models/gpt-6.1-sol
+# https://docs.baseten.co/development/model-apis/reasoning
+_FULL_EFFORTS = ("none", "low", "medium", "high", "xhigh", "max")
+_DOCUMENTED_EFFORTS = {
+    **dict.fromkeys(
+        (
+            "openai:gpt-5.6",
+            "openai:gpt-5.6-luna",
+            "openai:gpt-5.6-sol",
+            "openai:gpt-5.6-terra",
+            "openai:gpt-6-luna",
+            "openai:gpt-6-sol",
+        ),
+        _FULL_EFFORTS,
+    ),
+    **dict.fromkeys(("openai:gpt-6-astra", "openai:gpt-6.1-sol"), _FULL_EFFORTS[1:]),
+    **dict.fromkeys(
+        (
+            "baseten:zai-org/glm-5.2",
+            "baseten:zai-org/glm-5.2-fast",
+            "baseten:zai-org/glm-5.3",
+            "baseten:zai-org/glm-5.3-fast",
+            "baseten:zai-org/glm-5.3-flash",
+        ),
+        ("none", "low", "high", "max"),
+    ),
+}
+
 
 def _family(spec: str) -> str:
     provider, _, name = spec.lower().partition(":")
@@ -52,7 +82,7 @@ def effort_levels(spec: str) -> tuple[str, ...]:
             spec = f"{namespace}:{name}"
         else:
             return ()
-    return supported_efforts_for_model(spec)
+    return supported_efforts_for_model(spec) or _DOCUMENTED_EFFORTS.get(spec.lower(), ())
 
 
 def effort_settings(spec: str, effort: str) -> dict[str, Any]:

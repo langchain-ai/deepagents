@@ -32,11 +32,11 @@ if TYPE_CHECKING:
 
 
 class EffortAgent(SelectableAgent):
-    default_model = "openai:qwen3.5-plus"
+    default_model = "openai:gpt-6.1-sol"
 
     def __init__(self) -> None:
         super().__init__()
-        self.catalog = {"openai": ["qwen3.5-plus", "glm-4.7"]}
+        self.catalog = {"openai": ["gpt-6.1-sol"], "baseten": ["zai-org/GLM-5.3-Flash"]}
 
 
 async def test_effort_persists_per_model_and_captures_each_turn(tmp_path: Path) -> None:
@@ -45,36 +45,38 @@ async def test_effort_persists_per_model_and_captures_each_turn(tmp_path: Path) 
     host = TalonHost(config=config, agent=agent, channels=[channel])
     await host.start()
     try:
-        await host.receive_message(channel, _from("op", "/effort extra high"))
+        await host.receive_message(channel, _from("op", "/effort xhigh"))
         await host.receive_message(channel, _from("op", "first"))
         await _wait_for_request(agent, "first")
         await host.receive_message(channel, _from("op", "/effort low", "other"))
         await host.receive_message(channel, _from("op", "second", "second"))
         await _wait_for_request(agent, "second")
         assert [r.effort for r in agent.requests] == ["xhigh", "low"]
-        await host.receive_message(channel, _from("op", "/model openai:glm-4.7"))
+        await host.receive_message(channel, _from("op", "/model baseten:zai-org/GLM-5.3-Flash"))
         await host.receive_message(channel, _from("op", "/effort"))
         assert "default" in channel.sent[-1][1]
-        assert "off, on, default" in channel.sent[-1][1]
-        await host.receive_message(channel, _from("op", "/effort on"))
+        assert "none, low, high, max, default" in channel.sent[-1][1]
+        await host.receive_message(channel, _from("op", "/effort high"))
     finally:
         await host.stop()
 
     assert json.loads(config.effort_state_path.read_text()) == {
-        "openai:qwen3.5-plus": "low",
-        "openai:glm-4.7": "on",
+        "openai:gpt-6.1-sol": "low",
+        "baseten:zai-org/GLM-5.3-Flash": "high",
     }
     assert config.effort_state_path.stat().st_mode & 0o777 == 0o600
     host = TalonHost(config=config, agent=EffortAgent(), channels=[channel])
     await host.start()
     try:
         await host.receive_message(channel, _from("op", "/effort"))
-        assert "openai:glm-4.7: on" in channel.sent[-1][1]
+        assert "baseten:zai-org/GLM-5.3-Flash: high" in channel.sent[-1][1]
         await host.receive_message(channel, _from("op", "/model default"))
         await host.receive_message(channel, _from("op", "/effort"))
-        assert "openai:qwen3.5-plus: low" in channel.sent[-1][1]
+        assert "openai:gpt-6.1-sol: low" in channel.sent[-1][1]
         await host.receive_message(channel, _from("op", "/effort default"))
-        assert json.loads(config.effort_state_path.read_text()) == {"openai:glm-4.7": "on"}
+        assert json.loads(config.effort_state_path.read_text()) == {
+            "baseten:zai-org/GLM-5.3-Flash": "high"
+        }
     finally:
         await host.stop()
 
@@ -110,7 +112,7 @@ async def test_failed_save_keeps_previous_effort(tmp_path: Path, monkeypatch) ->
         await host.receive_message(channel, _from("op", "/effort low"))
         assert "Could not save" in channel.sent[-1][1]
         await host.receive_message(channel, _from("op", "/effort"))
-        assert "qwen3.5-plus: high" in channel.sent[-1][1]
+        assert "gpt-6.1-sol: high" in channel.sent[-1][1]
     finally:
         await host.stop()
 
@@ -134,12 +136,38 @@ def test_anthropic_serializes_effort_to_output_config() -> None:
     assert "reasoning_effort" not in payload
 
 
+def test_documented_levels_survive_missing_profile_metadata(monkeypatch) -> None:
+    monkeypatch.setattr("deepagents_talon.effort.supported_efforts_for_model", lambda _spec: ())
+    assert effort_levels("openai:gpt-5.6") == ("none", "low", "medium", "high", "xhigh", "max")
+    assert effort_levels("openai:gpt-6.1-sol") == ("low", "medium", "high", "xhigh", "max")
+    assert effort_levels("openai:openai/gpt-6.1-sol") == effort_levels("openai:gpt-6.1-sol")
+    assert effort_levels("baseten:zai-org/GLM-5.3-Flash") == ("none", "low", "high", "max")
+    for spec, invalid in (
+        ("openai:gpt-6.1-sol", "none"),
+        ("baseten:zai-org/GLM-5.3-Flash", "xhigh"),
+    ):
+        with pytest.raises(ValueError, match="Unsupported"):
+            effort_settings(spec, invalid)
+    assert effort_levels("openai:unknown-model") == ()
+
+
+def test_openai_responses_serializes_effort() -> None:
+    module = pytest.importorskip("langchain_openai")
+    model = module.ChatOpenAI(model="gpt-6.1-sol", api_key="test", use_responses_api=True)
+    payload = model._get_request_payload(
+        [HumanMessage(content="hello")], **effort_settings("openai:gpt-6.1-sol", "xhigh")
+    )
+    assert payload["reasoning"] == {"effort": "xhigh"}
+    assert "reasoning_effort" not in payload
+
+
 @pytest.mark.parametrize(
     ("spec", "level", "expected"),
     [
         ("openai:qwen3.5-plus", "high", {"enable_thinking": True, "thinking_budget": 8192}),
         ("openai:glm-4.7", "off", {"thinking": {"type": "disabled"}}),
-        ("openai:gpt-5.5", "xhigh", {"reasoning_effort": "xhigh"}),
+        ("openai:gpt-6.1-sol", "xhigh", {"reasoning_effort": "xhigh"}),
+        ("baseten:zai-org/GLM-5.3-Flash", "high", {"reasoning_effort": "high"}),
     ],
 )
 def test_openai_compatible_wire_payload(spec: str, level: str, expected: dict) -> None:

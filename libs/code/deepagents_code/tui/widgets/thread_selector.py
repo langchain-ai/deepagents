@@ -465,10 +465,14 @@ class LoadMoreThreads(Static):
     """Selectable pagination row at the bottom of the thread list."""
 
     class Requested(Message):
-        """Request the next batch of threads."""
+        """Posted when the user activates the row to load the next batch."""
 
     def set_selected(self, selected: bool) -> None:
-        """Match the thread rows' keyboard-selection styling."""
+        """Match the thread rows' keyboard-selection styling.
+
+        Args:
+            selected: Whether the row is highlighted.
+        """
         self.set_class(selected, "thread-option-selected")
 
     def on_click(self, event: Click) -> None:
@@ -966,6 +970,8 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         Args:
             current_thread: The currently active thread ID (to highlight).
             thread_limit: Number of rows to load per batch.
+
+                Uses `get_thread_limit()` when `None`.
             initial_threads: Optional preloaded rows to render immediately.
             filter_cwd: Working-directory filter for the picker.
 
@@ -1936,7 +1942,12 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         return True
 
     async def _load_threads(self) -> None:
-        """Load thread rows first, then kick off background enrichment."""
+        """Load thread rows first, then kick off background enrichment.
+
+        Fetches one row past the loaded window to learn whether a "Load more"
+        row is needed. A failed "Load more" batch keeps the rows already shown
+        and reports the error in a toast instead of replacing the list.
+        """
         from deepagents_code.sessions import (
             apply_cached_thread_initial_prompts,
             apply_cached_thread_message_counts,
@@ -1976,9 +1987,10 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
                 )
                 self._notify_load_more_failed(exc)
                 return
-            # An unexpected error (e.g. a malformed row raising ValueError) must
-            # still mark the load complete and surface the failure; otherwise the
-            # picker stays stuck on the "Loading threads..." placeholder forever.
+            # On a full load, an unexpected error (e.g. a malformed row raising
+            # ValueError) must still mark the load complete and surface the
+            # failure; otherwise the picker stays stuck on the "Loading
+            # threads..." placeholder forever.
             # CancelledError is a BaseException and is intentionally not caught
             # here, so a superseding exclusive worker keeps ownership of the flag.
             logger.exception("Unexpected error loading threads for thread selector")
@@ -2418,11 +2430,13 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         )
 
     async def _load_more_threads(self) -> None:
-        """Expand the loaded window, retaining rows if fetching fails."""
+        """Expand the loaded window, keeping rows if a fetch fails or is superseded."""
         self._loaded_limit += self._page_size
         try:
             await self._load_threads()
         finally:
+            # The fetch did not finish (error or cancellation), so shrink the
+            # window back to the rows that are shown.
             if len(self._threads) < self._loaded_limit and self._has_more:
                 self._loaded_limit -= self._page_size
             self._loading_more = False

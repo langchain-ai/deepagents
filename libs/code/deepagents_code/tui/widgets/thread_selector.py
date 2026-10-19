@@ -2478,11 +2478,11 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         limit = self._loaded_limit + self._page_size
         try:
             threads = await self._fetch_window(limit)
+            # Inside the `try`: a worker error would otherwise exit the app.
+            await self._apply_window(threads, limit, load_more=True)
         except Exception as exc:
             logger.exception("Failed to load more threads for thread selector")
             self._notify_load_more_failed(exc)
-        else:
-            await self._apply_window(threads, limit, load_more=True)
         finally:
             self._set_loading_more(False)
 

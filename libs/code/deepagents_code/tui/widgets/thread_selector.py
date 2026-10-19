@@ -1944,7 +1944,6 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         )
 
         old_threads = list(self._threads)
-        old_has_more = self._has_more
         selected_id = (
             self._filtered_threads[self._selected_index]["thread_id"]
             if self._selected_index < len(self._filtered_threads)
@@ -2035,9 +2034,10 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
 
         # Short-circuit: when the fresh data matches what is already rendered,
         # update widget references and cell labels without tearing down the DOM.
+        # The prewarmed cache holds exactly one page, so the pagination row is
+        # usually added here rather than through a full rebuild.
         if (
             self._has_initial_threads
-            and old_has_more == self._has_more
             and self._option_widgets
             and self._threads_match(old_threads, self._filtered_threads)
         ):
@@ -2048,6 +2048,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             ):
                 widget.thread = thread
             self._refresh_cell_labels()
+            await self._sync_load_more_row()
         else:
             await self._build_list()
 
@@ -2245,14 +2246,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
                 else:
                     await scroll.mount(self._build_empty_state())
                 if self._has_more:
-                    self._load_more_row = LoadMoreThreads(
-                        f"Load more{get_glyphs().ellipsis}",
-                        id="thread-load-more",
-                        classes="thread-option",
-                    )
-                    self._load_more_row.set_selected(
-                        self._selected_index == len(self._filtered_threads)
-                    )
+                    self._load_more_row = self._build_load_more_row()
                     await scroll.mount(self._load_more_row)
 
             if expanded_select_id is not None:
@@ -2261,6 +2255,37 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
                 )
             elif selected_widget:
                 self.call_after_refresh(self._scroll_selected_into_view)
+
+    def _build_load_more_row(self) -> LoadMoreThreads:
+        """Build the pagination row, highlighted when it holds the selection.
+
+        Returns:
+            The unmounted "Load more" row.
+        """
+        row = LoadMoreThreads(
+            f"Load more{get_glyphs().ellipsis}",
+            id="thread-load-more",
+            classes="thread-option",
+        )
+        row.set_selected(self._load_more_selected())
+        return row
+
+    async def _sync_load_more_row(self) -> None:
+        """Mount or remove the pagination row without rebuilding thread rows."""
+        if self._has_more == (self._load_more_row is not None):
+            return
+        async with self._render_lock:
+            if self._load_more_row is not None:
+                await self._load_more_row.remove()
+                self._load_more_row = None
+            else:
+                try:
+                    scroll = self.query_one(".thread-list", VerticalScroll)
+                except NoMatches:
+                    return
+                self._load_more_row = self._build_load_more_row()
+                await scroll.mount(self._load_more_row)
+        self._update_help_text()
 
     def _create_option_widgets(self) -> tuple[list[ThreadOption], ThreadOption | None]:
         """Build option widgets from filtered threads without mounting.

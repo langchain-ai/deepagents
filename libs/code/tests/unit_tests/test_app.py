@@ -496,7 +496,9 @@ class TestStartupSequence:
         assert mounted == "mounted"
         assert order == ["history", "update"]
 
-    async def test_resuming_status_clears_when_session_init_fails(self) -> None:
+    async def test_resuming_status_clears_when_session_init_fails(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Resume progress should clear when startup aborts before history loading."""
         app = DeepAgentsApp(
             agent=MagicMock(),
@@ -506,13 +508,17 @@ class TestStartupSequence:
         app._connecting = False
         app._restoring_resumed_history = True
         app._session_state = None
-        app._init_session_state = AsyncMock(side_effect=RuntimeError("failed"))  # ty: ignore
+        # Drive startup explicitly below; do not run the failing mock in a worker.
+        monkeypatch.setattr(app, "_post_paint_init", AsyncMock())
+        init_session = AsyncMock(side_effect=RuntimeError("failed"))
+        monkeypatch.setattr(app, "_init_session_state", init_session)
 
         async with app.run_test():
             app._sync_status_connection()
             with pytest.raises(RuntimeError, match="failed"):
                 await app._run_session_start_sequence()
 
+            init_session.assert_awaited_once()
             assert app._startup_sequence_running is False
             assert app._restoring_resumed_history is False
             assert app._status_bar is not None

@@ -6,7 +6,6 @@ import logging
 import os
 import signal
 import sys
-from collections.abc import AsyncIterator, Iterator, Sequence
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
@@ -17,6 +16,8 @@ from langchain_core.messages import AIMessage, AIMessageChunk, ToolMessage
 from rich.console import Console
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncIterator, Iterator, Sequence
+
     from langchain_core.runnables import RunnableConfig
 from typing import cast
 

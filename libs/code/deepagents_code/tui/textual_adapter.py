@@ -2157,7 +2157,7 @@ async def execute_task_textual(
                 )
             try:
                 selected_mode = ApprovalMode(raw_mode)
-            except (TypeError, ValueError):
+            except TypeError, ValueError:
                 selected_mode = ApprovalMode.MANUAL
             context["approval_mode"] = selected_mode.value
             context["auto_approve"] = selected_mode is not ApprovalMode.MANUAL
@@ -4269,7 +4269,7 @@ async def execute_task_textual(
     except ClientHookStopError:
         _reject_tracked_rows(adapter)
         raise
-    except (asyncio.CancelledError, KeyboardInterrupt):
+    except asyncio.CancelledError, KeyboardInterrupt:
         await _handle_interrupt_cleanup(
             adapter=adapter,
             agent=agent,

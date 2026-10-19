@@ -273,7 +273,7 @@ def _save_store(data: Mapping[str, Any], store_path: Path) -> bool:
             with contextlib.suppress(OSError):
                 Path(tmp_path).unlink()
             raise
-    except (OSError, ValueError):
+    except OSError, ValueError:
         logger.exception("Failed to save skill trust store to %s", store_path)
         return False
     return True
@@ -361,7 +361,7 @@ def trust_skill_dir(
     # silently erase the store.
     try:
         data = _load_store(store_path, strict=True)
-    except (OSError, ValueError):
+    except OSError, ValueError:
         logger.exception(
             "Refusing to persist skill trust: could not read existing store %s",
             store_path,
@@ -426,7 +426,7 @@ def revoke_skill_dir_trust(
     # from `{}` and dropping the other entries on the next save.
     try:
         data = _load_store(store_path, strict=True)
-    except (OSError, ValueError):
+    except OSError, ValueError:
         logger.exception(
             "Refusing to revoke skill trust: could not read existing store %s",
             store_path,
@@ -552,7 +552,7 @@ def load_trusted_skill_dirs(*, store_path: Path | None = None) -> list[Path]:
         stored = Path(entry)
         try:
             resolves_to_self = stored.resolve() == stored
-        except (OSError, RuntimeError):
+        except OSError, RuntimeError:
             # A single unresolvable entry (e.g. a symlink cycle introduced under
             # the stored path) must not abort discovery of every other skill.
             # Drop it like the swap case below. `RuntimeError` is caught

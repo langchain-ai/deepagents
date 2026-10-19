@@ -1,9 +1,8 @@
 """Tests for ThreadSelectorScreen."""
 
 import asyncio
-from collections.abc import Coroutine
 from pathlib import Path
-from typing import Any, ClassVar, cast
+from typing import TYPE_CHECKING, Any, ClassVar, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -18,7 +17,6 @@ from textual.widgets._select import SelectCurrent
 
 from deepagents_code.app import DeepAgentsApp, _ThreadHistoryPayload
 from deepagents_code.hooks.manager import HooksManager
-from deepagents_code.sessions import ThreadInfo
 from deepagents_code.tui.widgets.thread_selector import (
     ContainedSelect,
     ContainedSelectOverlay,
@@ -26,6 +24,11 @@ from deepagents_code.tui.widgets.thread_selector import (
     ThreadSelectorScreen,
     _format_column_value,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Coroutine
+
+    from deepagents_code.sessions import ThreadInfo
 
 MOCK_THREADS: list[ThreadInfo] = [
     {

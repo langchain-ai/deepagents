@@ -34,7 +34,7 @@ def _has_runtime() -> bool:
     try:
         for module, symbol in _RUNTIME_IMPORTS:
             getattr(importlib.import_module(module), symbol)
-    except (AttributeError, ImportError):
+    except AttributeError, ImportError:
         return False
     return True
 
@@ -57,7 +57,7 @@ def _ensure_runtime() -> None:
         launcher = Path(executable).resolve()
         try:
             first_line = launcher.read_text(encoding="utf-8").splitlines()[0]
-        except (OSError, UnicodeDecodeError, IndexError):
+        except OSError, UnicodeDecodeError, IndexError:
             first_line = ""
         if first_line.startswith("#!"):
             candidates.append(Path(first_line[2:].strip()))
@@ -84,7 +84,7 @@ def _ensure_runtime() -> None:
                 check=False,
                 timeout=10,
             )
-        except (subprocess.TimeoutExpired, OSError):
+        except subprocess.TimeoutExpired, OSError:
             # A hung or non-executable candidate must not abort the search;
             # skip it and fall through to the next one (or the clear error below).
             continue

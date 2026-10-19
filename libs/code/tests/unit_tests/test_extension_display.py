@@ -1,12 +1,14 @@
 """Tests for the built-in extension provenance display."""
 
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock
-
-import pytest
 
 from deepagents_code._env_vars import EXPERIMENTAL
 from deepagents_code.app import DeepAgentsApp
 from deepagents_code.command_registry import get_slash_commands
+
+if TYPE_CHECKING:
+    import pytest
 
 
 def test_extension_command_autocomplete_requires_experimental_mode(

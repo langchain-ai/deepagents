@@ -987,7 +987,7 @@ def _provider_value[T](provider: RankedProviderValue[T]) -> T:
     """
     result = provider.result
     if isinstance(result, Found):
-        return cast("T", result.value)
+        return result.value
     msg = f"rank {provider.rank} did not contain a found value"
     raise RuntimeError(msg)
 

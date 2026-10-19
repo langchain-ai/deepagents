@@ -1,9 +1,9 @@
 """Tests for optional-dependency status inspection."""
 
 import tomllib
-from collections.abc import Iterator
 from importlib.metadata import PackageNotFoundError
 from pathlib import Path
+from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, PropertyMock, patch
 
 import pytest
@@ -38,6 +38,9 @@ from deepagents_code.extras_info import (
     resolve_sdk_version,
     sdk_requirement_from_cli,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 _PYPROJECT_PATH = Path(__file__).resolve().parents[2] / "pyproject.toml"
 

@@ -173,7 +173,7 @@ def _read_single_git_metadata_line(path: Path) -> str | None:
         return None
     try:
         raw = path.read_text(encoding="utf-8")
-    except (OSError, UnicodeError):
+    except OSError, UnicodeError:
         logger.debug("Failed to read Git metadata from %s", path, exc_info=True)
         return None
 
@@ -204,7 +204,7 @@ def _resolve_git_metadata_path(path: Path, *, relative_to: Path) -> Path | None:
         candidate = relative_to / candidate
     try:
         return candidate.resolve(strict=True)
-    except (OSError, RuntimeError, ValueError):
+    except OSError, RuntimeError, ValueError:
         logger.debug("Failed to resolve Git metadata path from %s", path, exc_info=True)
         return None
 
@@ -227,7 +227,7 @@ def _normalize_git_metadata_path(path: Path, *, relative_to: Path) -> Path | Non
         candidate = relative_to / candidate
     try:
         return Path(os.path.abspath(candidate))  # noqa: PTH100  # do not follow links
-    except (OSError, RuntimeError, ValueError):
+    except OSError, RuntimeError, ValueError:
         logger.debug(
             "Failed to normalize Git metadata path from %s", path, exc_info=True
         )
@@ -254,7 +254,7 @@ def _parse_trusted_git_dir_pointer(git_entry: Path) -> Path | None:
         candidate = git_entry.parent / candidate
     try:
         git_dir = candidate.resolve(strict=True)
-    except (OSError, RuntimeError, ValueError):
+    except OSError, RuntimeError, ValueError:
         logger.debug(
             "Failed to resolve trusted gitdir pointer %s", git_entry, exc_info=True
         )
@@ -328,7 +328,7 @@ def find_git_common_dir(path: str | Path) -> Path | None:
         backlink = _normalize_git_metadata_path(git_dir / "gitdir", relative_to=git_dir)
         if backlink is None or backlink != git_entry:
             return None
-    except (OSError, RuntimeError, ValueError):
+    except OSError, RuntimeError, ValueError:
         logger.debug(
             "Failed to validate Git common directory for %s", path, exc_info=True
         )
@@ -377,7 +377,7 @@ def _submodule_git_dir(root: Path, parent_config_dir: Path) -> Path | None:
         if not candidate.is_absolute():
             candidate = git_dir / candidate
         return git_dir if candidate.resolve(strict=True) == root else None
-    except (OSError, RuntimeError, ValueError):
+    except OSError, RuntimeError, ValueError:
         logger.debug("Failed to validate submodule Git metadata")
         return None
 

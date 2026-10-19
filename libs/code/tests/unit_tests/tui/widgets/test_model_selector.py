@@ -1,9 +1,7 @@
 """Tests for ModelSelectorScreen."""
 
 import tomllib
-from collections.abc import Callable, Iterator
-from pathlib import Path
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
 from unittest.mock import MagicMock
 
 import pytest
@@ -25,6 +23,10 @@ from deepagents_code.tui.widgets.model_selector import (
     MAIN_MODEL_DEFAULT_SCOPE,
     ModelSelectorScreen,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Iterator
+    from pathlib import Path
 
 
 @pytest.fixture(autouse=True)

@@ -1,9 +1,12 @@
 """Unit tests for skills loading functionality."""
 
-from pathlib import Path
+from typing import TYPE_CHECKING
 from unittest.mock import patch
 
 from deepagents_code.skills.load import list_skills
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 def _create_skill(skill_dir: Path, name: str, description: str) -> None:

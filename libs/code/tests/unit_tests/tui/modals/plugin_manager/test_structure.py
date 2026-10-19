@@ -4,7 +4,7 @@ import asyncio
 import contextlib
 import re
 import time
-from pathlib import Path
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -30,6 +30,9 @@ from deepagents_code.tui.modals.plugin_manager.models import (
     _MarketplaceRow,
     _PluginRow,
 )
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 def test_plugin_options_preserve_selectable_rows_and_spacers() -> None:

@@ -971,7 +971,7 @@ def _same_config_location(first: Path, second: Path) -> MCPConfigIdentity:
         return MCPConfigIdentity.SAME
     try:
         identity_match = first.samefile(second)
-    except (OSError, RuntimeError):
+    except OSError, RuntimeError:
         logger.warning(
             "Could not determine whether %s and %s are the same MCP config; "
             "the pair cannot be told apart",
@@ -2321,7 +2321,7 @@ async def _load_tools_from_config(
                 )
                 for tool in server_tools
             ]
-        except (asyncio.CancelledError, KeyboardInterrupt, SystemExit):
+        except asyncio.CancelledError, KeyboardInterrupt, SystemExit:
             raise
         except Exception as exc:
             error = (

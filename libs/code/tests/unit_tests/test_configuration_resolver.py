@@ -1,7 +1,6 @@
 """Unit tests for ranked config precedence and durable masking."""
 
-from pathlib import Path
-from typing import Any, Self, cast
+from typing import TYPE_CHECKING, Any, Self, cast
 
 import pytest
 
@@ -32,6 +31,9 @@ from deepagents_code.configuration.types import (
     TomlSnapshot,
     Unset,
 )
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 def _provider(

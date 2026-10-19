@@ -523,7 +523,7 @@ class SubagentPanel(Vertical):
         """
         try:
             header = self.query_one("#subagent-header", Horizontal)
-        except (NoMatches, TooManyMatches):  # not mounted yet
+        except NoMatches, TooManyMatches:  # not mounted yet
             return False
         return event.get_content_offset(header) is not None
 
@@ -538,7 +538,7 @@ class SubagentPanel(Vertical):
         """
         try:
             phases = self.query_one("#subagent-phases", Static)
-        except (NoMatches, TooManyMatches):  # not mounted yet
+        except NoMatches, TooManyMatches:  # not mounted yet
             return None
         offset = event.get_content_offset(phases)
         if offset is None:
@@ -633,7 +633,7 @@ class SubagentPanel(Vertical):
         """Show/hide the body when the expanded state changes."""
         try:
             body = self.query_one("#subagent-body")
-        except (NoMatches, TooManyMatches):  # body not mounted yet
+        except NoMatches, TooManyMatches:  # body not mounted yet
             return
         body.set_class(not expanded, "-collapsed")
         # Drop vertical padding when collapsed so the header bar is thin.
@@ -725,7 +725,7 @@ class SubagentPanel(Vertical):
             return
         try:
             self.query_one(f"#{widget_id}", Static).update(content)
-        except (NoMatches, TooManyMatches):  # not mounted yet
+        except NoMatches, TooManyMatches:  # not mounted yet
             return
         self._last_render[widget_id] = content.plain
 
@@ -805,7 +805,7 @@ class SubagentPanel(Vertical):
         """Render the left pane: one selectable row per phase (eval batch)."""
         try:
             scroll = self.query_one("#subagent-phases-scroll")
-        except (NoMatches, TooManyMatches):  # not mounted yet
+        except NoMatches, TooManyMatches:  # not mounted yet
             return
         # Hide only when there are no phases at all; otherwise always show the
         # list (even a single phase) for a consistent two-pane view.
@@ -868,7 +868,7 @@ class SubagentPanel(Vertical):
         """
         try:
             width = self.query_one("#subagent-agents", Static).size.width
-        except (NoMatches, TooManyMatches):  # not mounted yet
+        except NoMatches, TooManyMatches:  # not mounted yet
             width = 0
         if not width or width <= 0:
             width = _FALLBACK_WIDTH

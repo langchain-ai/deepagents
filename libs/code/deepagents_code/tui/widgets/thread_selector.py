@@ -2107,12 +2107,20 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         if self._current_thread and not load_more:
             self._resolve_thread_url()
 
-    def _notify_load_more_failed(self, exc: Exception) -> None:
-        """Tell the user a "Load more" batch failed; the loaded rows stay."""
+    def _notify_load_more_failed(self, exc: Exception, *, retryable: bool) -> None:
+        """Tell the user a "Load more" batch failed; the loaded rows stay.
+
+        Args:
+            exc: The error from the batch.
+            retryable: Whether the error is an I/O error that a retry can fix.
+        """
         detail = str(exc) or type(exc).__name__
-        self.notify(
-            f"Could not load more threads: {detail}", severity="error", markup=False
+        message = (
+            f'Could not load more threads: {detail}. Select "Load more" to retry.'
+            if retryable
+            else f"Unexpected error loading more threads: {detail}"
         )
+        self.notify(message, severity="error", markup=False)
 
     async def _load_checkpoint_details(self) -> None:
         """Populate checkpoint-derived thread fields in one background pass."""
@@ -2480,9 +2488,14 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             threads = await self._fetch_window(limit)
             # Inside the `try`: a worker error would otherwise exit the app.
             await self._apply_window(threads, limit, load_more=True)
-        except Exception as exc:
+        except (OSError, sqlite3.Error) as exc:
             logger.exception("Failed to load more threads for thread selector")
-            self._notify_load_more_failed(exc)
+            self._notify_load_more_failed(exc, retryable=True)
+        except Exception as exc:
+            logger.exception(
+                "Unexpected error loading more threads for thread selector"
+            )
+            self._notify_load_more_failed(exc, retryable=False)
         finally:
             self._set_loading_more(False)
 

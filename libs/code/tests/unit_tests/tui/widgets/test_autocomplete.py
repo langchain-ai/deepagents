@@ -293,6 +293,32 @@ class TestSlashCommandControllerDisplaySeparation:
         return SlashCommandController(commands, mock_view)
 
 
+@pytest.mark.parametrize(
+    "control",
+    ["\n", "\t", "\x1b", "\x85", "\u2028", "\u2029", "\u202e", "\u200b", "\u034f"],
+)
+def test_file_completion_rejects_unsafe_names(
+    control: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Unsafe repository filenames never enter the popup or chat input."""
+    view = MagicMock()
+    controller = FuzzyFileController(view, cwd=tmp_path)
+    monkeypatch.setattr(
+        autocomplete_module,
+        "_get_project_files",
+        lambda _root: [f"unsafe{control}@secret.txt", "re\u0301sume\u0301.md"],
+    )
+
+    controller.on_text_changed("@", 1)
+    view.render_completion_suggestions.assert_called_once_with(
+        [("@re\u0301sume\u0301.md", "md")], 0
+    )
+    assert controller.apply_selection(0, "@", 1)
+    view.replace_completion_range.assert_called_once_with(
+        0, 1, "@re\u0301sume\u0301.md"
+    )
+
+
 class TestGetProjectFiles:
     """Tests for _get_project_files."""
 

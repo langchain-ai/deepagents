@@ -73,6 +73,52 @@ def test_parse_file_mentions_with_non_ascii_name(
     assert INPUT_HIGHLIGHT_PATTERN.findall(text) == [f"@{name}"]
 
 
+@pytest.mark.parametrize("suffix", ["，然后总结", "。", "）", "”", "…", "里面的内容"])
+def test_file_mentions_followed_by_unicode_prose(
+    suffix: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Resolve a filename before unseparated Unicode prose or punctuation."""
+    target = tmp_path / "README.md"
+    target.write_text("content")
+    monkeypatch.chdir(tmp_path)
+
+    _, files = parse_file_mentions(f"看一下@README.md{suffix}")
+
+    assert files == [target.resolve()]
+
+
+@pytest.mark.parametrize("name", ["l’été.md", "「メモ」.md", "README.md里面"])
+@pytest.mark.parametrize("suffix", ["", "，然后总结"])
+def test_unicode_file_mentions_prefer_longest_existing_path(
+    name: str, suffix: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Prefer the complete Unicode filename over an existing shorter prefix."""
+    target = tmp_path / name
+    target.write_text("content")
+    (tmp_path / ("README.md" if name.startswith("README") else "l")).write_text(
+        "prefix"
+    )
+    monkeypatch.chdir(tmp_path)
+
+    _, files = parse_file_mentions(f"看一下@{name}{suffix}")
+
+    assert files == [target.resolve()]
+
+
+@pytest.mark.parametrize("hidden", ["\u202e", "\u2066", "\u200b", "\u034f"])
+def test_file_mentions_reject_deceptive_paths(
+    hidden: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Unsafe names cannot resolve or fall back to an innocent-looking prefix."""
+    (tmp_path / "README.md").write_text("prefix")
+    (tmp_path / f"README.md{hidden}secret").write_text("content")
+    monkeypatch.chdir(tmp_path)
+
+    _, files = parse_file_mentions(f"@README.md{hidden}secret")
+
+    assert files == []
+
+
 def test_dropped_payload_paths_resolves_non_media(tmp_path: Path) -> None:
     """Classification is left to the caller, so non-media paths resolve too."""
     doc = tmp_path / "notes.txt"

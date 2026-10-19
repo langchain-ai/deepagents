@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
 from deepagents_code.project_utils import find_project_root
-from deepagents_code.unicode_security import sanitize_control_chars
+from deepagents_code.unicode_security import is_safe_file_path, sanitize_control_chars
 
 logger = logging.getLogger(__name__)
 
@@ -1014,7 +1014,7 @@ class FuzzyFileController:
         Returns:
             List of (label, type_hint) tuples for matching files.
         """
-        files = self._get_files()
+        files = [path for path in self._get_files() if is_safe_file_path(path)]
         # Include dotfiles only if query starts with "."
         include_dots = search.startswith(".")
         matches = _fuzzy_search(

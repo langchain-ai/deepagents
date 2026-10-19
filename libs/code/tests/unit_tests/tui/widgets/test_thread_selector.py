@@ -1026,18 +1026,28 @@ class TestThreadSelectorPagination:
                 assert not app.screen.query("#thread-load-more")
 
     async def test_load_more_failure_can_be_retried(self) -> None:
-        """A failed batch retains the visible rows and a working retry action."""
+        """A failed batch retains the visible rows and retries the same page."""
+        threads: list[ThreadInfo] = [
+            {**MOCK_THREADS[0], "thread_id": f"thread-{index}"} for index in range(7)
+        ]
+        results: list[list[ThreadInfo] | OSError] = [
+            threads,
+            OSError("database unavailable"),
+        ]
+
+        def list_threads(**kwargs: int) -> list[ThreadInfo]:
+            result = results.pop(0) if results else threads
+            if isinstance(result, OSError):
+                raise result
+            return result[: kwargs["limit"]]
+
         with (
             _patch_columns(),
             patch.dict("os.environ", {"DEEPAGENTS_CODE_RECENT_THREADS": "2"}),
             patch(
                 "deepagents_code.sessions.list_threads",
                 new_callable=AsyncMock,
-                side_effect=[
-                    MOCK_THREADS,
-                    OSError("database unavailable"),
-                    MOCK_THREADS,
-                ],
+                side_effect=list_threads,
             ),
         ):
             app = ThreadSelectorTestApp()
@@ -1048,12 +1058,11 @@ class TestThreadSelectorPagination:
                 await pilot.pause()
                 screen = cast("ThreadSelectorScreen", app.screen)
                 assert len(screen._option_widgets) == 2
-                assert not screen._loading_more
                 assert screen.query("#thread-load-more")
                 await pilot.press("enter")
                 await pilot.pause()
-                assert len(screen._option_widgets) == 3
-                assert not screen.query("#thread-load-more")
+                assert len(screen._option_widgets) == 4
+                assert screen.query("#thread-load-more")
 
 
 class TestThreadSelectorLimit:

@@ -1963,7 +1963,8 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             )
         except (OSError, sqlite3.Error) as exc:
             if self._loading_more:
-                self.notify(str(exc), severity="error", markup=False)
+                logger.exception("Failed to load more threads for thread selector")
+                self._notify_load_more_failed(exc)
                 return
             logger.exception("Failed to load threads for thread selector")
             self._disk_load_complete = True
@@ -1971,7 +1972,10 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             return
         except Exception as exc:
             if self._loading_more:
-                self.notify(str(exc), severity="error", markup=False)
+                logger.exception(
+                    "Unexpected error loading more threads for thread selector"
+                )
+                self._notify_load_more_failed(exc)
                 return
             # An unexpected error (e.g. a malformed row raising ValueError) must
             # still mark the load complete and surface the failure; otherwise the
@@ -2051,6 +2055,13 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
 
         if self._current_thread:
             self._resolve_thread_url()
+
+    def _notify_load_more_failed(self, exc: Exception) -> None:
+        """Tell the user a "Load more" batch failed; the loaded rows stay."""
+        detail = str(exc) or type(exc).__name__
+        self.notify(
+            f"Could not load more threads: {detail}", severity="error", markup=False
+        )
 
     async def _load_checkpoint_details(self) -> None:
         """Populate checkpoint-derived thread fields in one background pass."""

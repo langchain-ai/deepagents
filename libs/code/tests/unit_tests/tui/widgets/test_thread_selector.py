@@ -914,7 +914,10 @@ class TestThreadSelectorPagination:
 
     @pytest.mark.parametrize("use_mouse", [False, True])
     async def test_load_more_and_select_older_thread(self, use_mouse: bool) -> None:
-        """Both input methods reveal older rows and stop at the end."""
+        """Both input methods reveal older rows and stop at the end.
+
+        Copy and delete do nothing on the "Load more" row.
+        """
         with (
             _patch_columns(),
             patch.dict("os.environ", {"DEEPAGENTS_CODE_RECENT_THREADS": "2"}),
@@ -999,7 +1002,7 @@ class TestThreadSelectorPagination:
                 assert not app.screen.query("#thread-load-more")
 
     async def test_load_more_failure_can_be_retried(self) -> None:
-        """A failed batch retains the visible rows and retries the same page."""
+        """A failed batch retains the visible rows and retries the same batch."""
         threads = _numbered_threads(7)
         results: list[list[ThreadInfo] | OSError] = [
             threads,

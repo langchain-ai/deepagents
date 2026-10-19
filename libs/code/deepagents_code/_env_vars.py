@@ -516,8 +516,8 @@ repo file, so a project `.env` cannot disable itself.
 RECENT_THREADS = "DEEPAGENTS_CODE_RECENT_THREADS"
 """Recent threads per batch (default: `_constants.DEFAULT_THREAD_LIMIT`).
 
-The thread switcher loads this many at a time; `threads list` shows at most
-this many.
+The thread switcher loads this many at a time. It is also the default row
+limit for `threads list` (override with `-n`) and `@@` thread completion.
 """
 
 RECURSION_LIMIT = "DEEPAGENTS_CODE_RECURSION_LIMIT"

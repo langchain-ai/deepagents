@@ -1988,7 +1988,8 @@ def get_thread_limit() -> int:
     """Read the thread listing limit from the environment.
 
     Returns:
-        Thread switcher batch size, also the `threads list` row limit.
+        Thread switcher batch size. Also the default row limit for
+            `threads list`, `@@` thread completion, and the startup prewarm.
     """
     import os
 

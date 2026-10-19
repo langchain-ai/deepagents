@@ -1128,6 +1128,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         Args:
             thread_id: Thread to highlight.
             fallback: Index to use when the thread is not in the filtered rows.
+                Clamped to the last thread row, never the "Load more" row.
         """
         self._selected_index = min(fallback, max(0, len(self._filtered_threads) - 1))
         for index, thread in enumerate(self._filtered_threads):
@@ -1143,7 +1144,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         """Build the footer help text for the selector.
 
         Thread-only hints (copy ID, delete) are hidden while the "Load more"
-        row is highlighted, since those actions do nothing there.
+        row is highlighted, since no thread is highlighted to act on.
 
         Returns:
             Footer guidance for the active selector bindings.
@@ -1984,7 +1985,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         )
 
     async def _load_threads(self) -> None:
-        """Load thread rows first, then kick off background enrichment."""
+        """Reload every loaded batch, then kick off background enrichment."""
         try:
             threads = await self._fetch_window(self._loaded_limit)
         except (OSError, sqlite3.Error) as exc:
@@ -2084,8 +2085,8 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
 
         # Short-circuit: when the fresh data matches what is already rendered,
         # update widget references and cell labels without tearing down the DOM.
-        # The prewarmed cache holds exactly one page, so the pagination row is
-        # usually added here rather than through a full rebuild.
+        # The prewarmed cache holds at most one batch, so on first load the
+        # pagination row is usually added here rather than through a rebuild.
         if (
             self._has_initial_threads
             and self._option_widgets
@@ -2271,7 +2272,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
                 classes="thread-empty",
                 id="thread-loading",
             )
-        # With older pages unloaded, a match may still exist below "Load more".
+        # Older threads are not loaded yet, so a match may exist past "Load more".
         message = "No matching threads loaded" if self._has_more else "No threads found"
         return Static(
             Content.styled(message, "dim"),

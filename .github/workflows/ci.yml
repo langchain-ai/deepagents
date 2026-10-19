@@ -268,7 +268,7 @@ jobs:
     uses: ./.github/workflows/_lint.yml
     with:
       working-directory: "libs/talon"
-      python-version: "3.12"
+      python-version: "3.14"
 
   lint-evals:
     name: "🧹 Lint evals"
@@ -360,7 +360,7 @@ jobs:
     uses: ./.github/workflows/_test.yml
     with:
       working-directory: "libs/talon"
-      python-versions: '["3.12", "3.13", "3.14"]'
+      python-versions: '["3.14"]'
 
   test-evals:
     name: "🧪 Test evals"

@@ -551,12 +551,12 @@ def test_resolve_release_target_matches_release_please_component(
 
     assert target.package_name == "deepagents-talon"
     assert target.package_path == "libs/talon"
-    assert target.python_version == "3.12"
+    assert target.python_version == "3.14"
 
 
 def test_release_python_version_matches_release_workflow() -> None:
     assert release_python_version("deepagents-code") == "3.14"
-    assert release_python_version("deepagents-talon") == "3.12"
+    assert release_python_version("deepagents-talon") == "3.14"
     assert release_python_version("deepagents") == "3.11"
 
 
@@ -773,7 +773,7 @@ def test_target_cli_writes_actions_outputs(tmp_path: Path, monkeypatch) -> None:
     assert "package_path" in written
     assert "libs/talon" in written
     assert "python_version" in written
-    assert "3.12" in written
+    assert "3.14" in written
 
 
 def test_workflow_mirrors_release_install_flags() -> None:

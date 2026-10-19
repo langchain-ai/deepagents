@@ -555,7 +555,7 @@ def test_resolve_release_target_matches_release_please_component(
 
 
 def test_release_python_version_matches_release_workflow() -> None:
-    assert release_python_version("deepagents-code") == "3.12"
+    assert release_python_version("deepagents-code") == "3.14"
     assert release_python_version("deepagents-talon") == "3.12"
     assert release_python_version("deepagents") == "3.11"
 

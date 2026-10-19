@@ -356,7 +356,9 @@ def release_python_version(package_name: str) -> str:
     Returns:
         Python minor version used for release artifact tests.
     """
-    if package_name in {"deepagents-code", "deepagents-talon"}:
+    if package_name == "deepagents-code":
+        return "3.14"
+    if package_name == "deepagents-talon":
         return "3.12"
     return "3.11"
 

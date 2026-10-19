@@ -184,16 +184,14 @@ async def _unused_handler(_request):
     raise AssertionError(msg)
 
 
-async def test_inspect_cancel_ownership_and_capacity(monkeypatch):
-    monkeypatch.setattr("deepagents_talon.background._MAX_RUNNING", 1)
-
+async def test_inspect_cancel_ownership_and_capacity():
     @tool
     async def task() -> str:
         """Wait for cancellation."""
         await asyncio.Event().wait()
         return "done"
 
-    background = BackgroundSubagents()
+    background = BackgroundSubagents(max_running=1)
     try:
         await background.awrap_tool_call(_request("one", task), _unused_handler)
         await asyncio.sleep(0)
@@ -214,6 +212,47 @@ async def test_inspect_cancel_ownership_and_capacity(monkeypatch):
         assert not background.results("one")
     finally:
         await background.cancel()
+
+
+@pytest.mark.parametrize(("value", "limit"), [(None, 4), ("", 4), ("5", 5), ("1", 1)])
+async def test_runtime_background_capacity_from_env(tmp_path, value, limit):
+    env = {} if value is None else {"DEEPAGENTS_TALON_MAX_BACKGROUND_TASKS": value}
+    runtime = DeepAgentRuntime(model="test:parent", assistant_dir=tmp_path, env=env)
+    background = runtime.background
+    configured = background.configured([])
+
+    @tool
+    async def task() -> str:
+        """Wait for cancellation."""
+        await asyncio.Event().wait()
+        return "done"
+
+    try:
+        results = await asyncio.gather(
+            *(
+                configured.awrap_tool_call(_request(str(index), task), _unused_handler)
+                for index in range(limit + 1)
+            )
+        )
+        assert sum("Started background subagent" in result.content for result in results) == limit
+        assert "capacity" in results[-1].content
+        refused = await background.awrap_tool_call(_request("another", task), _unused_handler)
+        assert "capacity" in refused.content
+        await background.cancel("0")
+        accepted = await configured.awrap_tool_call(_request("another", task), _unused_handler)
+        assert "Started background subagent" in accepted.content
+    finally:
+        await background.cancel()
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "1.5", "invalid"])
+def test_runtime_rejects_invalid_background_capacity(tmp_path, value):
+    with pytest.raises(ValueError, match="DEEPAGENTS_TALON_MAX_BACKGROUND_TASKS"):
+        DeepAgentRuntime(
+            model="test:parent",
+            assistant_dir=tmp_path,
+            env={"DEEPAGENTS_TALON_MAX_BACKGROUND_TASKS": value},
+        )
 
 
 async def test_cancel_finished_subagent_preserves_result():
@@ -813,9 +852,8 @@ async def test_inline_result_is_truncated():
     assert len(result.update["messages"][0].content) == _MAX_RESULT_CHARACTERS
 
 
-async def test_scheduled_run_does_not_consume_background_capacity(monkeypatch):
+async def test_scheduled_run_does_not_consume_background_capacity():
     """Cron delegations no longer compete with chat for the worker slots."""
-    monkeypatch.setattr("deepagents_talon.background._MAX_RUNNING", 1)
 
     async def handler(request):
         return ToolMessage("findings", tool_call_id=request.tool_call["id"])
@@ -826,7 +864,7 @@ async def test_scheduled_run_does_not_consume_background_capacity(monkeypatch):
         await asyncio.Event().wait()
         return "done"
 
-    background = BackgroundSubagents()
+    background = BackgroundSubagents(max_running=1)
     token = _scheduled()
     try:
         await background.awrap_tool_call(

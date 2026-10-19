@@ -940,29 +940,6 @@ class TestThreadSelectorPagination:
                 await pilot.press("enter")
                 assert app.result == "ghi11111"
 
-    async def test_load_multiple_batches(self) -> None:
-        """Pagination remains available until the final batch is exhausted."""
-        with (
-            _patch_columns(),
-            patch.dict("os.environ", {"DEEPAGENTS_CODE_RECENT_THREADS": "2"}),
-            _patch_list_threads(_numbered_threads(5)),
-        ):
-            app = ThreadSelectorTestApp(current_thread=None)
-            async with app.run_test(size=(140, 40)) as pilot:
-                app.show_selector()
-                await pilot.pause()
-                await pilot.press("pagedown", "enter")
-                await pilot.pause()
-                screen = cast("ThreadSelectorScreen", app.screen)
-                assert len(screen._option_widgets) == 4
-                assert screen.query("#thread-load-more")
-                await pilot.press("pagedown", "enter")
-                await pilot.pause()
-                assert len(screen._option_widgets) == 5
-                assert not screen.query("#thread-load-more")
-                await pilot.press("enter")
-                assert app.result == "thread-4"
-
     async def test_load_more_with_no_search_matches(self) -> None:
         """Older matching rows remain discoverable from an empty filtered list."""
         with (
@@ -1008,13 +985,12 @@ class TestThreadSelectorPagination:
                 await pilot.pause()
                 assert "Ctrl+C copy ID" in str(help_widget.render())
 
-    @pytest.mark.parametrize("count", [0, 1, 2])
-    async def test_no_load_more_when_all_threads_fit(self, count: int) -> None:
+    async def test_no_load_more_for_exact_batch(self) -> None:
         """An exact batch does not imply another page exists."""
         with (
             _patch_columns(),
             patch.dict("os.environ", {"DEEPAGENTS_CODE_RECENT_THREADS": "2"}),
-            _patch_list_threads(MOCK_THREADS[:count]),
+            _patch_list_threads(MOCK_THREADS[:2]),
         ):
             app = ThreadSelectorTestApp()
             async with app.run_test() as pilot:

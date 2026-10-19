@@ -2649,6 +2649,12 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         self._sync_selected_index()
         self._update_help_widgets()
         self._schedule_list_rebuild()
+        if self._has_more:
+            # The loaded rows are only the top of the old order. Re-fetch so
+            # the window and any later "Load more" use the new order.
+            self.run_worker(
+                self._load_threads, exclusive=True, group="thread-selector-load"
+            )
         self._persist_sort_order(
             _SORT_VALUE_UPDATED if sort_by_updated else _SORT_VALUE_CREATED
         )

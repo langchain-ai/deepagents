@@ -1690,6 +1690,73 @@ def test_search_results_preserve_route_prefix(tmp_path: Path, prefix: str) -> No
     assert backend.read(paths[0]).error is None
 
 
+@pytest.mark.parametrize("prefix", ["/memories", "/memories/"])
+def test_composite_backend_ls_root_normalizes_route_trailing_slash(tmp_path: Path, prefix: str) -> None:
+    """Root listing ensures route directories always end with a trailing slash."""
+    (tmp_path / "workspace").mkdir()
+    (tmp_path / "memory").mkdir()
+    backend = CompositeBackend(
+        default=FilesystemBackend(root_dir=tmp_path / "workspace", virtual_mode=True),
+        routes={prefix: FilesystemBackend(root_dir=tmp_path / "memory", virtual_mode=True)},
+    )
+    backend.write("/memories/note.md", "hello")
+
+    listing = backend.ls("/").entries
+    assert listing is not None
+    assert [fi["path"] for fi in listing] == ["/memories/"]
+    assert listing[0]["is_dir"] is True
+
+
+@pytest.mark.parametrize("prefix", ["/memories", "/memories/"])
+async def test_composite_backend_als_root_normalizes_route_trailing_slash(tmp_path: Path, prefix: str) -> None:
+    """Async root listing ensures route directories end with a trailing slash."""
+    (tmp_path / "workspace").mkdir()
+    (tmp_path / "memory").mkdir()
+    backend = CompositeBackend(
+        default=FilesystemBackend(root_dir=tmp_path / "workspace", virtual_mode=True),
+        routes={prefix: FilesystemBackend(root_dir=tmp_path / "memory", virtual_mode=True)},
+    )
+    await backend.awrite("/memories/note.md", "hello")
+
+    listing = (await backend.als("/")).entries
+    assert listing is not None
+    assert [fi["path"] for fi in listing] == ["/memories/"]
+    assert listing[0]["is_dir"] is True
+
+
+def test_composite_backend_ls_root_deduplicates_existing_dir(tmp_path: Path) -> None:
+    """Root listing does not duplicate directory entries when default backend already contains them."""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "memories").mkdir()
+    (workspace / "file.txt").write_text("file")
+
+    backend = CompositeBackend(
+        default=FilesystemBackend(root_dir=workspace, virtual_mode=True),
+        routes={"/memories/": FilesystemBackend(root_dir=tmp_path / "memory", virtual_mode=True)},
+    )
+
+    listing = backend.ls("/").entries
+    assert listing is not None
+    assert [fi["path"] for fi in listing] == ["/file.txt", "/memories/"]
+
+
+async def test_composite_backend_als_root_deduplicates_existing_dir(tmp_path: Path) -> None:
+    """Async root listing does not duplicate directory entries when default backend already contains them."""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "memories").mkdir()
+
+    backend = CompositeBackend(
+        default=FilesystemBackend(root_dir=workspace, virtual_mode=True),
+        routes={"/memories": FilesystemBackend(root_dir=tmp_path / "memory", virtual_mode=True)},
+    )
+
+    listing = (await backend.als("/")).entries
+    assert listing is not None
+    assert [fi["path"] for fi in listing] == ["/memories/"]
+
+
 def test_write_result_path_restored_to_full_routed_path():
     """CompositeBackend.write should return the full path, not the stripped key."""
     mem_store = InMemoryStore()

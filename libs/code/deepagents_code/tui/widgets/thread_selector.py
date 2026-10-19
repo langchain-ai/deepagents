@@ -1098,21 +1098,31 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             )
         return f"Select Thread (current: {self._current_thread})"
 
-    @staticmethod
-    def _build_help_text() -> str:
+    def _load_more_selected(self) -> bool:
+        """Return whether the highlighted row is the "Load more" row."""
+        return self._has_more and self._selected_index == len(self._filtered_threads)
+
+    def _build_help_text(self) -> str:
         """Build the footer help text for the selector.
+
+        Thread-only hints (copy ID, delete) are hidden while the "Load more"
+        row is highlighted, since those actions do nothing there.
 
         Returns:
             Footer guidance for the active selector bindings.
         """
         glyphs = get_glyphs()
+        thread_hints = (
+            ""
+            if self._load_more_selected()
+            else f" {glyphs.bullet} Ctrl+C copy ID {glyphs.bullet} Ctrl+D delete"
+        )
         return (
             f"{glyphs.arrow_up}/{glyphs.arrow_down} navigate"
             f" {glyphs.bullet} Enter select"
             f" {glyphs.bullet} Tab/Shift+Tab focus options"
             f" {glyphs.bullet} Space toggle option"
-            f" {glyphs.bullet} Ctrl+C copy ID"
-            f" {glyphs.bullet} Ctrl+D delete"
+            f"{thread_hints}"
             f" {glyphs.bullet} Esc cancel"
         )
 
@@ -2296,7 +2306,10 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         """Update visible header and help text after state changes."""
         self._schedule_header_rebuild()
         self.call_after_refresh(self._update_controls_overflow_hint)
+        self._update_help_text()
 
+    def _update_help_text(self) -> None:
+        """Refresh the footer help text for the current selection."""
         try:
             help_widget = self.query_one("#thread-help", Static)
             help_widget.update(self._build_help_text())
@@ -2397,6 +2410,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
 
         rows[old_index].set_selected(False)
         rows[new_index].set_selected(True)
+        self._update_help_text()
 
         if new_index == 0:
             scroll = self.query_one(".thread-list", VerticalScroll)
@@ -2467,7 +2481,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             return
         if self._open_focused_select():
             return
-        if self._has_more and self._selected_index == len(self._filtered_threads):
+        if self._load_more_selected():
             self.on_load_more_threads_requested()
             return
         if self._filtered_threads:
@@ -2631,7 +2645,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         """Show delete confirmation for the highlighted thread."""
         if self._confirming_delete:
             return
-        if self._has_more and self._selected_index == len(self._filtered_threads):
+        if self._load_more_selected():
             return
         if not self._filtered_threads:
             # Nothing to delete — fall through to quit. Using exit() instead of

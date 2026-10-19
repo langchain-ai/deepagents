@@ -181,6 +181,12 @@ class BackgroundSubagents(AgentMiddleware):
             return await handler(request)
         scheduled = _SCHEDULED_TURN.get()
         instructions = _SCHEDULED_INSTRUCTIONS if scheduled else _INSTRUCTIONS
+        if not scheduled:
+            instructions += (
+                f" You can run at most {self._max_running} background subagents concurrently, "
+                "shared across all conversations. "
+                "Batch or stagger additional work as results arrive; excess launches are refused."
+            )
         hidden = HIDDEN_ASYNC_TOOLS | _SCHEDULED_HIDDEN_TOOLS if scheduled else HIDDEN_ASYNC_TOOLS
         blocks = request.system_message.content_blocks if request.system_message else []
         message = SystemMessage(content_blocks=[*blocks, {"type": "text", "text": instructions}])

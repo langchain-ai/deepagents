@@ -929,6 +929,26 @@ def _override(**kwargs: object) -> SimpleNamespace:
     return SimpleNamespace(**kwargs)
 
 
+@pytest.mark.parametrize(
+    ("env", "limit"), [({}, 4), ({"DEEPAGENTS_TALON_MAX_BACKGROUND_TASKS": "5"}, 5)]
+)
+async def test_background_prompt_includes_configured_capacity(tmp_path, env, limit):
+    runtime = DeepAgentRuntime(model="test:parent", assistant_dir=tmp_path, env=env)
+    request = SimpleNamespace(system_message=None, tools=[], override=_override)
+    captured = []
+
+    async def handler(request):
+        captured.append(request.system_message.text)
+        return "response"
+
+    await runtime.background.configured([]).awrap_model_call(request, handler)
+
+    assert _INSTRUCTIONS in captured[0]
+    assert f"at most {limit} background subagents concurrently" in captured[0]
+    assert "shared across all conversations" in captured[0]
+    assert "Batch or stagger additional work as results arrive" in captured[0]
+
+
 async def test_scheduled_prompt_replaces_the_background_instructions():
     captured = {}
 

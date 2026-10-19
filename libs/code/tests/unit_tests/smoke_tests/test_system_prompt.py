@@ -99,7 +99,7 @@ def _assert_snapshot(
 
 
 @contextmanager
-def _mock_settings(tmp_path: Path) -> Generator[None, None, None]:
+def _mock_settings(tmp_path: Path) -> Generator[None]:
     """Patch filesystem settings and fixed runtime model identity.
 
     Mirrors the ``mock_settings`` pattern from ``test_end_to_end.py`` but

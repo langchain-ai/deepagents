@@ -408,7 +408,7 @@ def _load_approval_state(path: Path) -> dict[str, object]:
         data = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
         return {}
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+    except OSError, UnicodeDecodeError, json.JSONDecodeError:
         logger.warning(
             "Ignoring unreadable or corrupt approval state at %s; callers fail "
             "closed and the file will be overwritten on the next save",

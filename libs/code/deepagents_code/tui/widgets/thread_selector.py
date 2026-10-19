@@ -1955,7 +1955,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         if not self._has_initial_threads:
             try:
                 await self._populate_visible_checkpoint_details()
-            except (OSError, sqlite3.Error):
+            except OSError, sqlite3.Error:
                 logger.debug(
                     "Could not preload checkpoint details for thread selector",
                     exc_info=True,
@@ -2013,7 +2013,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
 
         try:
             _, load_prompts = await self._populate_visible_checkpoint_details()
-        except (OSError, sqlite3.Error):
+        except OSError, sqlite3.Error:
             logger.debug(
                 "Could not load checkpoint details for thread selector",
                 exc_info=True,
@@ -2085,7 +2085,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
                 asyncio.to_thread(build_langsmith_thread_url, self._current_thread),
                 timeout=_URL_FETCH_TIMEOUT,
             )
-        except (TimeoutError, OSError):
+        except TimeoutError, OSError:
             logger.debug(
                 "Could not resolve LangSmith thread URL for '%s'",
                 self._current_thread,

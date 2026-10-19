@@ -4,13 +4,16 @@ import importlib.util
 import io
 import json
 from pathlib import Path
-from types import ModuleType
+from typing import TYPE_CHECKING
 
 import pytest
 
 from deepagents_code import agent, config, model_config
 from deepagents_code.hooks import legacy as legacy_hooks
 from deepagents_code.skills import commands
+
+if TYPE_CHECKING:
+    from types import ModuleType
 
 _PACKAGE = Path(config.__file__).parent
 

@@ -850,7 +850,7 @@ class ServerProcess:
             # unreachable, so this is defensive. `read_text(errors="replace")`
             # cannot raise `ValueError` for decoding, so the catch stays narrow
             # in practice.
-            except (OSError, ValueError):
+            except OSError, ValueError:
                 logger.warning(
                     "Failed to read server log file %s",
                     self._log_file.name,

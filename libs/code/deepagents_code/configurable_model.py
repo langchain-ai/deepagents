@@ -143,7 +143,7 @@ def _get_ls_provider(model: object) -> str | None:
     """
     try:
         ls_params = model._get_ls_params()  # ty: ignore[unresolved-attribute]
-    except (AttributeError, TypeError, RuntimeError, NotImplementedError):
+    except AttributeError, TypeError, RuntimeError, NotImplementedError:
         logger.debug("_get_ls_params raised for %s", type(model).__name__)
         return None
     if isinstance(ls_params, dict):

@@ -173,7 +173,7 @@ async def run_command_handler(
     plain = _decode(stdout).strip()
     try:
         decoded = json.loads(stdout)
-    except (json.JSONDecodeError, UnicodeDecodeError):
+    except json.JSONDecodeError, UnicodeDecodeError:
         return HandlerResult(
             handler_id=handler.id,
             plain_output=plain,
@@ -340,7 +340,7 @@ def _windows_taskkill_path() -> str | None:
             if length < size:
                 return ntpath.join(buffer.value, "taskkill.exe")
             size = length + 1
-    except (AttributeError, OSError, TypeError, ValueError):
+    except AttributeError, OSError, TypeError, ValueError:
         return None
 
 

@@ -17,12 +17,16 @@ Can be removed once the standard suite is expanded. Skipped in release
 pipeline — see release.yml.
 """
 
-from collections.abc import Iterator
+from typing import TYPE_CHECKING
 
 import pytest
-from deepagents.backends.protocol import SandboxBackendProtocol
 
 from deepagents_code.integrations.sandbox_factory import create_sandbox
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+
+    from deepagents.backends.protocol import SandboxBackendProtocol
 
 
 class TestSandboxOperations:

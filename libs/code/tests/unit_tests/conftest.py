@@ -85,7 +85,7 @@ def _self_manages_update_check(request: pytest.FixtureRequest) -> bool:
 
 
 @pytest.fixture(autouse=True, scope="session")
-def _warm_model_caches() -> Generator[None, None, None]:
+def _warm_model_caches() -> Generator[None]:
     """Pre-populate model-config caches once per xdist worker.
 
     Tests like the model-selector UI tests call `get_available_models()` and
@@ -121,7 +121,7 @@ def _warm_model_caches() -> Generator[None, None, None]:
 
 
 @pytest.fixture(autouse=True)
-def _restore_os_environ() -> Generator[None, None, None]:
+def _restore_os_environ() -> Generator[None]:
     """Snapshot and restore `os.environ` around every test.
 
     Production code under test (`_ensure_bootstrap`, `_load_dotenv`,
@@ -149,7 +149,7 @@ def _restore_os_environ() -> Generator[None, None, None]:
 
 
 @pytest.fixture(autouse=True)
-def _restore_dotenv_loader_state() -> Generator[None, None, None]:
+def _restore_dotenv_loader_state() -> Generator[None]:
     """Snapshot and restore the dotenv loader's module-level maps.
 
     `_load_dotenv` records every value it injects in two module dicts
@@ -359,7 +359,7 @@ def _clear_splash_tips_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
-def _pin_invoked_name(monkeypatch: pytest.MonkeyPatch) -> Generator[None, None, None]:
+def _pin_invoked_name(monkeypatch: pytest.MonkeyPatch) -> Generator[None]:
     """Pin the launch command name echoed by resume hints.
 
     `invoked_name()` derives from `sys.argv[0]`, which under test is the runner
@@ -836,7 +836,7 @@ def wait_for_modal() -> WaitForModal:
 
 
 @pytest.hookimpl(wrapper=True)
-def pytest_sessionfinish() -> Generator[None, None, None]:
+def pytest_sessionfinish() -> Generator[None]:
     """Close any debug-log file handlers still attached at session end.
 
     Companion to `_close_leaked_debug_handlers`, which is setup-only and so

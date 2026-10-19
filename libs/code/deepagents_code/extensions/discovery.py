@@ -86,7 +86,7 @@ def _resolve_explicit(path: Path, scope: SourceScope) -> DiscoveryResult:
             return DiscoveryResult(tuple(sources), tuple(errors))
         if expanded.is_file() and expanded.suffix == ".py":
             return DiscoveryResult((_source(expanded, scope),))
-    except (OSError, RuntimeError):
+    except OSError, RuntimeError:
         return DiscoveryResult(errors=("Could not inspect an extension path",))
     msg = f"Extension path must be an existing Python file or directory: {path}"
     return DiscoveryResult(errors=(msg,))

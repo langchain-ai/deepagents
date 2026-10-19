@@ -258,7 +258,7 @@ def format_timestamp(iso_timestamp: str | None) -> str:
         return ""
     try:
         dt = datetime.fromisoformat(iso_timestamp).astimezone()
-    except (ValueError, TypeError):
+    except ValueError, TypeError:
         logger.debug(
             "Failed to parse timestamp %r; displaying as blank",
             iso_timestamp,
@@ -286,7 +286,7 @@ def format_relative_timestamp(iso_timestamp: str | None) -> str:
         return ""
     try:
         dt = datetime.fromisoformat(iso_timestamp).astimezone()
-    except (ValueError, TypeError):
+    except ValueError, TypeError:
         logger.debug(
             "Failed to parse timestamp %r; displaying as blank",
             iso_timestamp,
@@ -337,7 +337,7 @@ def format_path(path: str | None) -> str:
         prefix = home + "/"
         if path.startswith(prefix):
             return "~/" + path[len(prefix) :]
-    except (RuntimeError, KeyError, OSError):
+    except RuntimeError, KeyError, OSError:
         logger.debug(
             "Could not resolve home directory for path formatting", exc_info=True
         )
@@ -710,7 +710,7 @@ async def prewarm_thread_message_counts(limit: int | None = None) -> None:
                 source="startup-prewarm",
             )
         _cache_recent_threads(None, thread_limit, threads)
-    except (OSError, sqlite3.Error):
+    except OSError, sqlite3.Error:
         logger.debug("Could not prewarm thread selector cache", exc_info=True)
     except Exception:
         logger.warning(

@@ -19,15 +19,18 @@ import shutil
 import signal
 import sys
 import traceback
-from collections.abc import Callable, Mapping, Sequence
 from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, NoReturn, cast
 
 if TYPE_CHECKING:
+    from collections.abc import Callable, Mapping, Sequence
+
     from deepagents import FsToolName
     from deepagents_acp.server import AgentSessionContext
+    from langchain_core.runnables import RunnableConfig
     from langgraph.pregel import Pregel
+    from prompt_toolkit.key_binding.key_processor import KeyPressEvent
     from rich.console import Console
 
     from deepagents_code._dep_floor_check import _FloorViolation
@@ -261,7 +264,7 @@ def _restart_current_process(*, restart_path: Path | None = None) -> NoReturn:
     raise RuntimeError(msg)
 
 
-def _terminal_row_count(console: "Console", text: str) -> int:
+def _terminal_row_count(console: Console, text: str) -> int:
     """Return how many terminal rows Rich renders for `text`.
 
     Args:
@@ -341,7 +344,7 @@ def _resume_term_program() -> str | None:
 
 
 def _render_teardown_thread_hints(
-    console: "Console",
+    console: Console,
     thread_id: str,
     *,
     return_code: int,
@@ -422,7 +425,7 @@ def _render_teardown_thread_hints(
         )
 
 
-def _confirm_update_after_restart(console: "Console", version: str) -> None:
+def _confirm_update_after_restart(console: Console, version: str) -> None:
     """Rewrite the pre-restart `Launching...` line as a stable update status.
 
     The `Updated to v{version}. Launching...` line is printed by the previous
@@ -484,7 +487,7 @@ def _mark_startup_auto_update_failed_safe(version: str) -> None:
 
 
 def _exit_after_unrestartable_update(
-    console: "Console",
+    console: Console,
     version: str,
     *,
     cause: BaseException | None = None,
@@ -560,7 +563,7 @@ def _exit_after_unrestartable_update(
     raise SystemExit(0 if cause is None else 1)
 
 
-def _run_startup_auto_update(console: "Console") -> None:
+def _run_startup_auto_update(console: Console) -> None:
     """Apply enabled auto-updates before the TUI and server start.
 
     On a successful upgrade the process is *always* re-exec'd so the new version
@@ -788,7 +791,7 @@ def _run_startup_auto_update(console: "Console") -> None:
                     _restart_current_process()
                 else:
                     _restart_current_process(restart_path=shadow.upgraded_bin)
-            except (OSError, RuntimeError):
+            except OSError, RuntimeError:
                 # Upgrade succeeded but the re-exec did not happen (`os.execv`
                 # raised, or returned unexpectedly). Drop the sentinel and stop:
                 # this process can no longer launch safely, since the install
@@ -1006,7 +1009,7 @@ from deepagents_code._constants import FS_TOOL_NAMES as _FS_TOOL_NAMES
 
 def _parse_allow_fs_tools_flag(
     raw: str | None,
-) -> "list[FsToolName] | None":
+) -> list[FsToolName] | None:
     """Parse `--allow-fs-tools` into `FilesystemMiddleware`'s `tools` shape.
 
     Args:
@@ -1077,7 +1080,7 @@ def _parse_allow_fs_tools_flag(
     return cast("list[FsToolName]", names)
 
 
-def _resolver_for_args(args: argparse.Namespace) -> "ConfigResolver":
+def _resolver_for_args(args: argparse.Namespace) -> ConfigResolver:
     """Return the shared resolver after installing parsed CLI state if needed."""
     from deepagents_code.configuration.provider import CliProvider
     from deepagents_code.configuration.resolver import (
@@ -1286,7 +1289,7 @@ def _interpreter_sandbox_conflict(sandbox_type: str, deciding_rank: int) -> str:
     )
 
 
-def _resolve_approval_mode(args: argparse.Namespace) -> "ApprovalMode":
+def _resolve_approval_mode(args: argparse.Namespace) -> ApprovalMode:
     """Resolve the startup mode through the shared provider chain.
 
     When no explicit mode resolves, restore the app-managed recent mode through
@@ -1334,7 +1337,7 @@ def _resolved_recursion_limit(args: argparse.Namespace) -> int | None:
     return resolve_recursion_limit()
 
 
-def _prompt_yolo_acknowledgement(console: "Console") -> bool:
+def _prompt_yolo_acknowledgement(console: Console) -> bool:
     """Show an inline fail-closed selector for unrestricted execution.
 
     Args:
@@ -1360,7 +1363,6 @@ def _prompt_yolo_acknowledgement(console: "Console") -> bool:
         from prompt_toolkit import Application
         from prompt_toolkit.formatted_text import FormattedText
         from prompt_toolkit.key_binding import KeyBindings
-        from prompt_toolkit.key_binding.key_processor import KeyPressEvent
         from prompt_toolkit.layout import Layout
         from prompt_toolkit.layout.containers import Window
         from prompt_toolkit.layout.controls import FormattedTextControl
@@ -1440,14 +1442,14 @@ def _prompt_yolo_acknowledgement(console: "Console") -> bool:
             output=create_output(stdout=sys.stderr),
         )
         return bool(app.run())
-    except (EOFError, OSError, RuntimeError, ImportError):
+    except EOFError, OSError, RuntimeError, ImportError:
         logger.debug("YOLO acknowledgement selector unavailable", exc_info=True)
         return False
     # A KeyboardInterrupt (Ctrl+C/Ctrl+D) deliberately propagates so the launch
     # aborts instead of falling back to Manual and starting the TUI.
 
 
-def _ensure_yolo_acknowledged(console: "Console") -> bool:
+def _ensure_yolo_acknowledged(console: Console) -> bool:
     """Ensure the current local YOLO policy has been accepted and persisted.
 
     Args:
@@ -1857,7 +1859,7 @@ def check_optional_tools(*, config_path: Path | None = None) -> list[str]:
 
 
 def _auto_install_ripgrep_cli(
-    warn_console: "Console", missing_tools: list[str]
+    warn_console: Console, missing_tools: list[str]
 ) -> list[str]:
     """Attempt the one-shot managed `rg` install for the headless CLI path.
 
@@ -1917,7 +1919,7 @@ def _auto_install_ripgrep_cli(
     return [tool for tool in missing_tools if tool != "ripgrep"]
 
 
-def build_missing_tool_notification(tool: str) -> "PendingNotification":
+def build_missing_tool_notification(tool: str) -> PendingNotification:
     """Build a `PendingNotification` for a missing optional tool.
 
     The returned entry carries the install hint (or URL) in a typed payload so
@@ -2037,7 +2039,7 @@ async def _preload_session_mcp_server_info(
     mcp_config_path: str | None,
     no_mcp: bool,
     trust_project_mcp: bool | None,
-) -> list["MCPServerInfo"] | None:
+) -> list[MCPServerInfo] | None:
     """Load MCP metadata for the interactive TUI in server mode.
 
     In server mode the actual MCP tools are created inside the LangGraph server
@@ -3145,7 +3147,7 @@ def _resolve_summarization_model(spec: str | None) -> str | None:
 async def run_textual_cli_async(
     assistant_id: str,
     *,
-    approval_mode: "ApprovalMode | str" = "manual",
+    approval_mode: ApprovalMode | str = "manual",
     auto_approve: bool | None = None,
     sandbox_type: str = "none",  # str (not None) to match argparse choices
     sandbox_id: str | None = None,
@@ -3165,17 +3167,17 @@ async def run_textual_cli_async(
     mcp_config_path: str | None = None,
     no_mcp: bool = False,
     trust_project_mcp: bool | None = None,
-    hook_trust: "WorkspaceTrust | None" = None,
+    hook_trust: WorkspaceTrust | None = None,
     trust_project_extensions: bool = False,
     extension_paths: tuple[str, ...] = (),
     enable_interpreter: bool | None = None,
     interpreter_arg: bool | None = None,
     interpreter_ptc: str | list[str] | None = None,
     interpreter_ptc_acknowledge_unsafe: bool = False,
-    allow_fs_tools: "list[FsToolName] | None" = None,
+    allow_fs_tools: list[FsToolName] | None = None,
     auto_classifier_model: str | None = None,
     recursion_limit: int | None = None,
-) -> "AppResult":
+) -> AppResult:
     """Run the Textual TUI interface (async version).
 
     Starts a LangGraph server in a subprocess and connects the TUI to it via the
@@ -3454,15 +3456,13 @@ async def run_textual_cli_async(
 
 
 def _owned_acp_server_class(
-    server_cls: type[Any], leases: "dict[str, ThreadLease]"
+    server_cls: type[Any], leases: dict[str, ThreadLease]
 ) -> type[Any]:
     """Build the ownership-aware ACP adapter.
 
     Returns:
         An adapter reserving sessions before restoration and checkpoint writes.
     """
-    from langchain_core.runnables import RunnableConfig
-
     from deepagents_code.thread_ownership import (
         OWNER_KEY,
         ThreadOwnershipError,
@@ -3503,7 +3503,7 @@ async def _run_acp_cli_async(
     mcp_config_path: str | None = None,
     no_mcp: bool = False,
     trust_project_mcp: bool | None = None,
-    allow_fs_tools: "list[FsToolName] | None" = None,
+    allow_fs_tools: list[FsToolName] | None = None,
     recursion_limit: int | None = None,
     auto: bool = False,
     yolo: bool = False,
@@ -3570,7 +3570,7 @@ async def _run_acp_cli_async(
 
     try:
         project_context = ProjectContext.from_user_cwd(Path.cwd())
-    except (OSError, RuntimeError):
+    except OSError, RuntimeError:
         logger.warning("Could not determine working directory for ACP MCP loading")
         project_context = None
     project_dir = (
@@ -3649,8 +3649,8 @@ async def _run_acp_cli_async(
             store = InMemoryStore() if auto else None
 
             def build_agent(
-                context: "AgentSessionContext",
-            ) -> "Pregel[Any, Any, Any, Any]":
+                context: AgentSessionContext,
+            ) -> Pregel[Any, Any, Any, Any]:
                 selected_model = context.model or resolved_spec
                 session_model = (
                     model_result
@@ -3794,7 +3794,7 @@ def apply_stdin_pipe(args: argparse.Namespace) -> None:
 
     try:
         is_tty = sys.stdin.isatty()
-    except (ValueError, OSError):
+    except ValueError, OSError:
         if explicit_stdin:
             console.print(
                 "[bold red]Error:[/bold red] --stdin was passed but stdin "
@@ -3979,10 +3979,10 @@ def _parse_server_number_selection(raw: str, count: int) -> list[int]:
 
 
 def _format_project_mcp_checkbox_rows(
-    prompt_servers: Sequence["ProjectServerSummary"],
+    prompt_servers: Sequence[ProjectServerSummary],
     selected_names: set[str],
     selected_index: int,
-    glyphs: "Glyphs",
+    glyphs: Glyphs,
 ) -> list[tuple[str, str]]:
     """Format rows for the inline project MCP checkbox picker.
 
@@ -4013,7 +4013,7 @@ def _trust_picker_has_terminal() -> bool:
 
 
 def _run_trust_action_picker(
-    console: "Console",
+    console: Console,
     *,
     remember_label: str = "Allow for this project — until changed",
     allow_label: str = "Allow once",
@@ -4057,7 +4057,6 @@ def _run_trust_action_picker(
         from prompt_toolkit import Application
         from prompt_toolkit.formatted_text import FormattedText
         from prompt_toolkit.key_binding import KeyBindings
-        from prompt_toolkit.key_binding.key_processor import KeyPressEvent
         from prompt_toolkit.layout import Layout
         from prompt_toolkit.layout.containers import Window
         from prompt_toolkit.layout.controls import FormattedTextControl
@@ -4181,7 +4180,7 @@ def _run_trust_action_picker(
     )
     try:
         return app.run()
-    except (RuntimeError, OSError):
+    except RuntimeError, OSError:
         logger.debug("Trust action picker failed", exc_info=True)
         console.print(
             "[dim]Interactive selector unavailable; falling back to text input.[/dim]",
@@ -4195,8 +4194,8 @@ def _run_trust_action_picker(
 
 
 def prompt_for_dep_floor_mismatch(
-    console: "Console",
-    violations: "Sequence[_FloorViolation]",
+    console: Console,
+    violations: Sequence[_FloorViolation],
 ) -> _TrustAction | _TrustPromptOutcome:
     """Block on a refresh / continue / mute / abort picker for stale dependencies.
 
@@ -4250,7 +4249,7 @@ def prompt_for_dep_floor_mismatch(
 
 
 def _select_trust_action(
-    console: "Console",
+    console: Console,
     *,
     remember_label: str = "Allow for this project — until changed",
     allow_label: str = "Allow once",
@@ -4363,8 +4362,8 @@ def _select_trust_action(
 
 
 def _run_project_mcp_server_checkbox_picker(
-    prompt_servers: Sequence["ProjectServerSummary"],
-    console: "Console",
+    prompt_servers: Sequence[ProjectServerSummary],
+    console: Console,
     *,
     deny: bool = False,
 ) -> list[str] | _TrustPromptOutcome | None:
@@ -4388,7 +4387,6 @@ def _run_project_mcp_server_checkbox_picker(
         from prompt_toolkit import Application
         from prompt_toolkit.formatted_text import FormattedText
         from prompt_toolkit.key_binding import KeyBindings
-        from prompt_toolkit.key_binding.key_processor import KeyPressEvent
         from prompt_toolkit.layout import Layout
         from prompt_toolkit.layout.containers import HSplit, Window
         from prompt_toolkit.layout.controls import FormattedTextControl
@@ -4533,7 +4531,7 @@ def _run_project_mcp_server_checkbox_picker(
     )
     try:
         return app.run()
-    except (RuntimeError, OSError):
+    except RuntimeError, OSError:
         logger.debug("Project MCP checkbox picker failed", exc_info=True)
         console.print(
             "[dim]Checkbox picker unavailable; falling back to number selection.[/dim]",
@@ -4549,8 +4547,8 @@ def _run_project_mcp_server_checkbox_picker(
 
 
 def _select_project_servers_with_numbers(
-    prompt_servers: Sequence["ProjectServerSummary"],
-    console: "Console",
+    prompt_servers: Sequence[ProjectServerSummary],
+    console: Console,
     *,
     deny: bool = False,
 ) -> list[str] | _TrustPromptOutcome:
@@ -4593,8 +4591,8 @@ def _select_project_servers_with_numbers(
 
 
 def _select_project_servers_to_persist(
-    prompt_servers: Sequence["ProjectServerSummary"],
-    console: "Console",
+    prompt_servers: Sequence[ProjectServerSummary],
+    console: Console,
     *,
     deny: bool = False,
 ) -> list[str] | _TrustPromptOutcome:
@@ -4685,7 +4683,7 @@ def _check_mcp_project_trust(
     try:
         project_context = ProjectContext.from_user_cwd(Path.cwd())
         config_sources = discover_mcp_config_sources(project_context=project_context)
-    except (OSError, RuntimeError):
+    except OSError, RuntimeError:
         logger.debug(
             "Could not discover MCP configs for project trust check",
             exc_info=True,
@@ -4866,7 +4864,7 @@ _PROJECT_HOOKS_REMEMBER_LABEL = "Always allow hooks in this project"
 def _check_project_hooks_trust(
     *,
     trust_flag: bool = False,
-) -> "WorkspaceTrust | _TrustPromptOutcome":
+) -> WorkspaceTrust | _TrustPromptOutcome:
     """Resolve interactive trust for project-scoped hook commands.
 
     Returns a policy rather than a Boolean so the decision keeps its scope: the
@@ -4965,7 +4963,7 @@ def _check_project_hooks_trust(
 def _check_project_extensions_trust(
     *,
     trust_flag: bool = False,
-) -> "bool | _TrustPromptOutcome":
+) -> bool | _TrustPromptOutcome:
     """Resolve interactive trust for project-authored Python extensions.
 
     Args:
@@ -5081,7 +5079,7 @@ def _verify_interpreter_or_exit() -> None:
         sys.exit(1)
 
 
-def _config_provider_statuses() -> Mapping[int, "ProviderStatus"]:
+def _config_provider_statuses() -> Mapping[int, ProviderStatus]:
     """Return shared provider health without resolving an option."""
     from deepagents_code.configuration.resolver import get_config_resolver
 

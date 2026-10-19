@@ -1,15 +1,12 @@
 """Fork goal visibility without parent grading or cache-prefix churn."""
 
-from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, Any, Literal, cast
 from unittest.mock import MagicMock
 
 import pytest
 from deepagents import create_deep_agent
-from langchain_core.callbacks import CallbackManagerForLLMRun
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
-from langchain_core.outputs import ChatResult
 from langchain_core.tools import BaseTool, tool
 from langgraph.checkpoint.memory import InMemorySaver
 from pydantic import Field
@@ -19,8 +16,12 @@ from deepagents_code.goal_tools import ForkGoalToolsMiddleware, GoalToolsMiddlew
 from deepagents_code.reliable_rubric import ReliableRubricMiddleware
 
 if TYPE_CHECKING:
+    from collections.abc import Callable, Sequence
+
     from deepagents.middleware.subagents import SubAgent
     from langchain.agents.middleware.types import AgentMiddleware, AgentState
+    from langchain_core.callbacks import CallbackManagerForLLMRun
+    from langchain_core.outputs import ChatResult
     from langchain_core.runnables import RunnableConfig
 
 
@@ -52,7 +53,7 @@ class RecordingModel(GenericFakeChatModel):
         self,
         tools: Sequence[dict[str, Any] | type | Callable | BaseTool],
         **kwargs: Any,
-    ) -> "RecordingModel":
+    ) -> RecordingModel:
         del tools, kwargs
         return self
 

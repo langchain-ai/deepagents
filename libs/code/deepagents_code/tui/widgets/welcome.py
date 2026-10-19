@@ -157,7 +157,7 @@ def _home_prefixed(cwd: str) -> str:
     # `Path.home()` raises `RuntimeError` when the home dir can't be resolved
     # (no HOME/passwd entry); `ValueError` guards odd paths (e.g. embedded NUL).
     # Either way, fall back to the accurate absolute path.
-    except (ValueError, RuntimeError):
+    except ValueError, RuntimeError:
         pass
     return str(path)
 
@@ -293,7 +293,7 @@ class WelcomeBanner(Static):
                     asyncio.to_thread(fetch_langsmith_project_url, project),
                     timeout=2.0,
                 )
-            except (TimeoutError, OSError):
+            except TimeoutError, OSError:
                 logger.debug(
                     "LangSmith project URL fetch failed for %r", project, exc_info=True
                 )

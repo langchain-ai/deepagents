@@ -1412,7 +1412,7 @@ def _load_offset(offset_file: Path) -> int:
         return 0
     try:
         data = json.loads(offset_file.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
+    except json.JSONDecodeError, OSError:
         logger.warning("Telegram offset file is corrupt or unreadable; starting with offset=0")
         return 0
     offset = data.get("offset") if isinstance(data, dict) else None

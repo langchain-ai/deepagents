@@ -44,15 +44,16 @@ from functools import lru_cache
 from typing import (
     TYPE_CHECKING,
     Any,
+    Generic,
     Literal,
     NotRequired,
     TypedDict,
+    TypeIs,
+    TypeVar,
     Unpack,
     get_args,
     overload,
 )
-
-from typing_extensions import TypeIs
 
 from deepagents_code import _env_vars
 from deepagents_code.terminal_title import DEFAULT_TERMINAL_TAB_TITLE
@@ -481,8 +482,11 @@ type _SynthesizedStrKind = Literal[
 ]
 
 
+T_co = TypeVar("T_co", covariant=True)
+
+
 @dataclass(frozen=True)
-class ConfigOption[T]:
+class ConfigOption(Generic[T_co]):  # noqa: UP046  # Explicit covariance avoids dataclass __replace__ inference.
     """One user-tunable configuration option and where it can be set.
 
     `T` is the type `ConfigResolver.get` yields for this option. It is not
@@ -508,7 +512,7 @@ class ConfigOption[T]:
     kind: OptionKind
     """How env/TOML values are coerced to a typed value."""
 
-    default: T | None = None
+    default: T_co | None = None
     """Typed default value, or `None` when there is no static default.
 
     Declaring one is what removes `None` from `T`: `_resolve` falls back to
@@ -871,7 +875,7 @@ def load_config_toml() -> dict[str, Any]:
             return tomllib.load(f)
     except FileNotFoundError:
         return {}
-    except (OSError, tomllib.TOMLDecodeError, UnicodeDecodeError):
+    except OSError, tomllib.TOMLDecodeError, UnicodeDecodeError:
         # `UnicodeDecodeError` is neither of the other two (it subclasses
         # `ValueError`), but a file saved as UTF-16 or holding a stray byte is
         # unreadable TOML in exactly the same way -- without it, a config that
@@ -1171,7 +1175,7 @@ def _notify_cli_warning(message: str) -> bool:
         from textual._context import active_app  # noqa: PLC2701
 
         app = active_app.get()
-    except (ImportError, LookupError):
+    except ImportError, LookupError:
         return False
     if not app.is_running:
         return False
@@ -2142,7 +2146,7 @@ def is_provider_package_installed(provider: str) -> bool:
         return True
     try:
         return importlib.util.find_spec(dependency[0]) is not None
-    except (ImportError, ValueError):
+    except ImportError, ValueError:
         # `find_spec` re-raises errors from a broken parent package and raises
         # `ValueError` for a malformed spec. Treat "can't tell" as "missing"
         # so the model selector routes to the install prompt rather than

@@ -219,7 +219,7 @@ langchain-runloop = { path = "../partners/runloop", editable = true }
 langchain-vercel-sandbox = { path = "../partners/vercel", editable = true }
 
 [tool.ty.environment]
-python-version = "3.12"
+python-version = "3.14"
 extra-paths = [
     "../deepagents",
     "../partners/daytona",
@@ -238,9 +238,6 @@ division-by-zero = "error"
 # "unused suppression" warnings; silence that rule so suppressions are stable
 # across environments.
 unused-ignore-comment = "ignore"
-
-[tool.ruff]
-target-version = "py312"
 
 [tool.ruff.format]
 docstring-code-format = true
@@ -273,6 +270,11 @@ extend-safe-fixes = ["PLR6201"]
 
 flake8-annotations.allow-star-arg-any = true
 flake8-annotations.mypy-init-return = true
+
+[tool.ruff.lint.flake8-type-checking]
+runtime-evaluated-base-classes = [
+    "langchain_core.language_models.fake_chat_models.GenericFakeChatModel",
+]
 
 [tool.ruff.lint.flake8-tidy-imports]
 ban-relative-imports = "all"

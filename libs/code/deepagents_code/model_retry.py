@@ -300,7 +300,7 @@ def _retry_after_seconds(exc: Exception) -> float | None:
         raw = headers.get("retry-after")
         if raw is None:
             raw = headers.get("Retry-After")
-    except (AttributeError, TypeError):
+    except AttributeError, TypeError:
         logger.debug("Retry-After lookup failed on %s headers", type(exc).__name__)
         return None
     if raw is None:
@@ -317,7 +317,7 @@ def _retry_after_seconds(exc: Exception) -> float | None:
     except ValueError:
         try:
             retry_at = parsedate_to_datetime(raw)
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             logger.debug("Ignoring unparseable Retry-After value %r", raw)
             return None
         if retry_at.tzinfo is None:

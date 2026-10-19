@@ -213,7 +213,7 @@ def _make_stdio_encoding_safe() -> None:
             continue
         try:
             reconfigure(errors="replace")
-        except (ValueError, OSError, TypeError):
+        except ValueError, OSError, TypeError:
             # Closed, detached, or otherwise non-reconfigurable stream (a
             # duck-typed `reconfigure` with a different signature raises
             # `TypeError`) — leave it as-is. This is a best-effort hardening

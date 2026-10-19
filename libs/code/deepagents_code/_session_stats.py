@@ -1311,7 +1311,7 @@ def record_model_usage_event(
                 "model_provider": provider,
             },
         )
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         logger.debug("Rejected malformed nested model usage", exc_info=True)
         return None
     return record_message_usage(

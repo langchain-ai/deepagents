@@ -4,7 +4,6 @@ import asyncio
 import os
 import signal
 import sys
-from collections.abc import Callable, Iterator
 from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
@@ -15,6 +14,8 @@ import pytest
 from rich.console import Console
 
 if TYPE_CHECKING:
+    from collections.abc import Callable, Iterator
+
     from prompt_toolkit.layout import Layout
 
 from deepagents_code._env_vars import (
@@ -2779,7 +2780,7 @@ class TestNormalizeCwdFilter:
         link = tmp_path / "via_link"
         try:
             link.symlink_to(real)
-        except (OSError, NotImplementedError):
+        except OSError, NotImplementedError:
             pytest.skip("symlinks unsupported on this platform")
 
         result = _normalize_cwd_filter(str(link))
@@ -3967,7 +3968,7 @@ class TestCheckMcpProjectTrustPrompt:
         assert "require approval" not in err
 
 
-def _assert_all_controls_hide_cursor(layout: "Layout") -> None:
+def _assert_all_controls_hide_cursor(layout: Layout) -> None:
     """Assert every text control in `layout` suppresses the terminal cursor.
 
     Walks the layout instead of indexing into a fixed container/window shape so
@@ -3999,7 +4000,7 @@ class TestPromptYoloAcknowledgement:
         captured: dict[str, Any] = {}
 
         class _FakeApplication:
-            def __class_getitem__(cls, _item: object) -> type["_FakeApplication"]:
+            def __class_getitem__(cls, _item: object) -> type[_FakeApplication]:
                 return cls
 
             def __init__(self, **kwargs: Any) -> None:
@@ -4095,7 +4096,7 @@ class TestSelectProjectServersToPersist:
         captured: dict[str, Any] = {}
 
         class _FakeApplication:
-            def __class_getitem__(cls, _item: object) -> type["_FakeApplication"]:
+            def __class_getitem__(cls, _item: object) -> type[_FakeApplication]:
                 return cls
 
             def __init__(self, **kwargs: Any) -> None:
@@ -4155,7 +4156,7 @@ class TestSelectProjectServersToPersist:
         captured: dict[str, Any] = {}
 
         class _FakeApplication:
-            def __class_getitem__(cls, _item: object) -> type["_FakeApplication"]:
+            def __class_getitem__(cls, _item: object) -> type[_FakeApplication]:
                 return cls
 
             def __init__(self, **kwargs: Any) -> None:
@@ -4218,7 +4219,7 @@ class TestSelectProjectServersToPersist:
         captured: dict[str, Any] = {}
 
         class _FakeApplication:
-            def __class_getitem__(cls, _item: object) -> type["_FakeApplication"]:
+            def __class_getitem__(cls, _item: object) -> type[_FakeApplication]:
                 return cls
 
             def __init__(self, **kwargs: Any) -> None:
@@ -4280,7 +4281,7 @@ class TestSelectProjectServersToPersist:
         captured: dict[str, Any] = {}
 
         class _FakeApplication:
-            def __class_getitem__(cls, _item: object) -> type["_FakeApplication"]:
+            def __class_getitem__(cls, _item: object) -> type[_FakeApplication]:
                 return cls
 
             def __init__(self, **kwargs: Any) -> None:
@@ -4363,7 +4364,7 @@ class TestSelectProjectServersToPersist:
         captured: dict[str, Any] = {}
 
         class _FakeApplication:
-            def __class_getitem__(cls, _item: object) -> type["_FakeApplication"]:
+            def __class_getitem__(cls, _item: object) -> type[_FakeApplication]:
                 return cls
 
             def __init__(self, **kwargs: Any) -> None:
@@ -4395,7 +4396,7 @@ class TestSelectProjectServersToPersist:
         captured: dict[str, Any] = {}
 
         class _FakeApplication:
-            def __class_getitem__(cls, _item: object) -> type["_FakeApplication"]:
+            def __class_getitem__(cls, _item: object) -> type[_FakeApplication]:
                 return cls
 
             def __init__(self, **kwargs: Any) -> None:
@@ -4507,7 +4508,7 @@ class TestSelectProjectServersToPersist:
         captured: dict[str, Any] = {}
 
         class _FakeApplication:
-            def __class_getitem__(cls, _item: object) -> type["_FakeApplication"]:
+            def __class_getitem__(cls, _item: object) -> type[_FakeApplication]:
                 return cls
 
             def __init__(self, **kwargs: Any) -> None:
@@ -4565,7 +4566,7 @@ class TestSelectProjectServersToPersist:
         captured: dict[str, Any] = {}
 
         class _FakeApplication:
-            def __class_getitem__(cls, _item: object) -> type["_FakeApplication"]:
+            def __class_getitem__(cls, _item: object) -> type[_FakeApplication]:
                 return cls
 
             def __init__(self, **kwargs: Any) -> None:
@@ -4618,7 +4619,7 @@ class TestSelectProjectServersToPersist:
         captured: dict[str, Any] = {}
 
         class _FakeApplication:
-            def __class_getitem__(cls, _item: object) -> type["_FakeApplication"]:
+            def __class_getitem__(cls, _item: object) -> type[_FakeApplication]:
                 return cls
 
             def __init__(self, **kwargs: Any) -> None:
@@ -4672,7 +4673,7 @@ class TestSelectProjectServersToPersist:
         captured: dict[str, Any] = {}
 
         class _FakeApplication:
-            def __class_getitem__(cls, _item: object) -> type["_FakeApplication"]:
+            def __class_getitem__(cls, _item: object) -> type[_FakeApplication]:
                 return cls
 
             def __init__(self, **kwargs: Any) -> None:
@@ -4718,7 +4719,7 @@ class TestSelectProjectServersToPersist:
         )
 
         class _FakeApplication:
-            def __class_getitem__(cls, _item: object) -> type["_FakeApplication"]:
+            def __class_getitem__(cls, _item: object) -> type[_FakeApplication]:
                 return cls
 
             def __init__(self, **_kwargs: Any) -> None:
@@ -4748,7 +4749,7 @@ class TestSelectProjectServersToPersist:
         from deepagents_code.main import _run_project_mcp_server_checkbox_picker
 
         class _FakeApplication:
-            def __class_getitem__(cls, _item: object) -> type["_FakeApplication"]:
+            def __class_getitem__(cls, _item: object) -> type[_FakeApplication]:
                 return cls
 
             def __init__(self, **_kwargs: Any) -> None:
@@ -4781,7 +4782,7 @@ class TestSelectProjectServersToPersist:
         from deepagents_code.main import _run_trust_action_picker
 
         class _FakeApplication:
-            def __class_getitem__(cls, _item: object) -> type["_FakeApplication"]:
+            def __class_getitem__(cls, _item: object) -> type[_FakeApplication]:
                 return cls
 
             def __init__(self, **_kwargs: Any) -> None:

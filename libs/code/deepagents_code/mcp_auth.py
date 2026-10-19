@@ -524,7 +524,7 @@ class FileTokenStorage(TokenStorage):
             return None
         try:
             return float(raw)
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             # Log the value's type, never the value itself — the sidecar lives
             # next to the bearer token in the same JSON envelope, so a
             # misplaced token string would land here.

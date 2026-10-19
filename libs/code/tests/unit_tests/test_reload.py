@@ -1879,7 +1879,7 @@ class TestReloadPluginsViaReload:
         link = skills_root / "linked"
         try:
             link.symlink_to(outside, target_is_directory=True)
-        except (NotImplementedError, OSError):
+        except NotImplementedError, OSError:
             pytest.skip("directory symlinks are unavailable")
         plugin = PluginInstance(
             plugin_id="demo@tools",

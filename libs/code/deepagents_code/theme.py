@@ -896,7 +896,7 @@ def get_theme_colors(widget_or_app: App | object | None = None) -> ThemeColors:
             from textual._context import active_app  # noqa: PLC2701
 
             widget_or_app = active_app.get()
-        except (ImportError, LookupError):
+        except ImportError, LookupError:
             return DARK_COLORS
     app = _resolve_app(widget_or_app)
     entry = get_registry().get(app.theme)  # ty: ignore[unresolved-attribute]

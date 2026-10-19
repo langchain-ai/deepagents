@@ -1691,7 +1691,7 @@ def _manifest_memory_paths(assistant_dir: Path) -> list[str]:
         return []
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    except OSError, ValueError:
         logger.warning("Could not read Talon manifest memory paths from %s", path, exc_info=True)
         return []
     if not isinstance(data, dict):

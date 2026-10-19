@@ -3,7 +3,7 @@
 import argparse
 import io
 import sys
-from pathlib import Path
+from typing import TYPE_CHECKING
 from unittest.mock import patch
 
 import pytest
@@ -11,6 +11,9 @@ from rich.console import Console
 
 from deepagents_code._constants import DEFAULT_AGENT_NAME, DEFAULT_THREAD_LIMIT
 from deepagents_code.main import _resolve_agent_arg, parse_args
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 class TestInitialPromptArg:

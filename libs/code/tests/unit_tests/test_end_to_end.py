@@ -2,26 +2,29 @@
 
 import logging
 import uuid
-from collections.abc import Callable, Generator, Sequence
 from contextlib import contextmanager
-from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest.mock import patch
 
-import pytest
 from deepagents.backends import CompositeBackend
 from deepagents.backends.filesystem import FilesystemBackend
-from langchain_core.callbacks import CallbackManagerForLLMRun
-from langchain_core.language_models import LanguageModelInput
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
-from langchain_core.outputs import ChatResult
-from langchain_core.runnables import Runnable
 from langchain_core.tools import BaseTool, tool
 from langgraph.checkpoint.memory import InMemorySaver
 from pydantic import Field
 
 from deepagents_code.agent import create_cli_agent
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Generator, Sequence
+    from pathlib import Path
+
+    import pytest
+    from langchain_core.callbacks import CallbackManagerForLLMRun
+    from langchain_core.language_models import LanguageModelInput
+    from langchain_core.outputs import ChatResult
+    from langchain_core.runnables import Runnable
 
 
 @tool(description="Sample tool")
@@ -66,9 +69,7 @@ class FixedGenericFakeChatModel(GenericFakeChatModel):
 
 
 @contextmanager
-def mock_settings(
-    tmp_path: Path, assistant_id: str = "test-agent"
-) -> Generator[Path, None, None]:
+def mock_settings(tmp_path: Path, assistant_id: str = "test-agent") -> Generator[Path]:
     """Context manager for patching CLI settings with temporary directories.
 
     Args:

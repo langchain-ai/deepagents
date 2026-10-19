@@ -1,11 +1,14 @@
 """Tests for extension source resolution and provenance."""
 
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 
 from deepagents_code.extensions.discovery import discover_extensions
 from deepagents_code.extensions.registry import SourceScope
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 @pytest.fixture(autouse=True)

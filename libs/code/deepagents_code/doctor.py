@@ -144,7 +144,7 @@ def _commit_hash(path: str) -> str:
             check=False,
             cwd=cwd,
         )
-    except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
+    except FileNotFoundError, OSError, subprocess.TimeoutExpired:
         logger.debug("Git commit hash detection failed", exc_info=True)
         return "unknown"
     if result.returncode != 0:

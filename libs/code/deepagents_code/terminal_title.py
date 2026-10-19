@@ -66,7 +66,7 @@ class TerminalTitle:
         try:
             self._stream.write(sequence)
             self._stream.flush()
-        except (OSError, ValueError):
+        except OSError, ValueError:
             # Warn once so a stale title is diagnosable without flooding the log
             # when every later update hits the same broken stream.
             level = logging.DEBUG if self._write_failed else logging.WARNING

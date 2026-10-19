@@ -548,7 +548,7 @@ def _validate_temp_artifact(value: object) -> AutoTempArtifact | None:
         return None
     try:
         file_path = Path(cast("str", raw_file_path))
-    except (OSError, TypeError, ValueError):
+    except OSError, TypeError, ValueError:
         return None
     if not file_path.is_absolute() or not file_path.name.startswith(
         _TEMP_ARTIFACT_PREFIX
@@ -794,7 +794,7 @@ def _known_credential_values(
                     and len(value) >= _MIN_SECRET_LENGTH
                 ):
                     values.add(value)
-    except (OSError, RuntimeError, TypeError, ValueError):
+    except OSError, RuntimeError, TypeError, ValueError:
         logger.debug("Could not load stored credential values for Auto redaction")
     return tuple(sorted(values, key=len, reverse=True))
 
@@ -2033,7 +2033,7 @@ def _resolve_path(root: Path, raw: object) -> Path | None:
         if not candidate.is_absolute():
             candidate = root / candidate
         return candidate.resolve(strict=False)
-    except (OSError, RuntimeError, ValueError):
+    except OSError, RuntimeError, ValueError:
         return None
 
 
@@ -2662,7 +2662,7 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         if not targets_managed_artifact:
             try:
                 candidate_stat = candidate.stat()
-            except (OSError, ValueError):
+            except OSError, ValueError:
                 pass
             else:
                 targets_managed_artifact = any(

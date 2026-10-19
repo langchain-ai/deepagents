@@ -1,6 +1,5 @@
 """Unit tests for goal tools middleware."""
 
-from collections.abc import Callable
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, NamedTuple, cast
 
@@ -22,6 +21,8 @@ from deepagents_code.goal_state_notice import (
 from deepagents_code.goal_tools import GoalToolsMiddleware, _update_goal_command
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from langchain.agents.middleware.types import AgentState
 
 

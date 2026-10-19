@@ -720,7 +720,7 @@ async def _thread_starter(thread: discord.Thread) -> discord.Message | None:
         return None
     try:
         return await thread.parent.fetch_message(thread.id)
-    except (discord.NotFound, discord.Forbidden):
+    except discord.NotFound, discord.Forbidden:
         # A thread not started from a message, a starter since deleted, or a
         # parent channel the bot cannot read; the thread's own history still counts.
         return None
@@ -1101,7 +1101,7 @@ class DiscordChannel:
             thread_id = await self._gateway.create_thread(
                 inbound.channel_id, inbound.message_id, _thread_name(inbound.text)
             )
-        except (discord.DiscordException, OSError, TimeoutError):
+        except discord.DiscordException, OSError, TimeoutError:
             # Most often a missing Create Public Threads permission. Answering in
             # the channel beats not answering at all.
             logger.warning(
@@ -1120,7 +1120,7 @@ class DiscordChannel:
     async def _thread_context(self, inbound: _DiscordInboundMessage) -> str:
         try:
             messages = await self._gateway.thread_context(inbound.channel_id, inbound.message_id)
-        except (discord.DiscordException, OSError, TimeoutError, ValueError):
+        except discord.DiscordException, OSError, TimeoutError, ValueError:
             logger.warning("Could not read Discord thread context", exc_info=True)
             return _THREAD_CONTEXT_UNAVAILABLE
         senders = (

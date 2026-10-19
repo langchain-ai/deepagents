@@ -899,6 +899,12 @@ def _cache_recent_threads(
 ) -> None:
     """Store a copy of recent thread rows for fast selector startup."""
     key = (agent_name, max(1, limit))
+    # A fresh, longer window serves every shorter request for the same agent,
+    # so drop the shorter keys. Otherwise each thread switcher "Load more"
+    # batch adds a key until the cap clears the prewarmed entry.
+    for old in [k for k in _recent_threads_cache if k[0] == agent_name]:
+        if old[1] < key[1]:
+            del _recent_threads_cache[old]
     if len(_recent_threads_cache) >= _MAX_RECENT_THREADS_CACHE_KEYS and (
         key not in _recent_threads_cache
     ):

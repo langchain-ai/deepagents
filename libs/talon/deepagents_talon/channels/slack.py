@@ -1073,35 +1073,43 @@ class SlackChannel:
     ) -> ChannelMessage:
         if not files or self.config.inbound_media_dir is None:
             return message
-        file = files[0]
-        if file.size > self.config.max_media_bytes:
-            logger.warning("Skipping Slack inbound media because it exceeds the size cap")
-            return with_media_error(
-                message,
-                f"media file is too large: {file.size} bytes exceeds {self.config.max_media_bytes}",
+        paths: list[str] = []
+        mime_types: list[str] = []
+        errors: list[str] = []
+        for file in files:
+            if file.size > self.config.max_media_bytes:
+                logger.warning("Skipping Slack inbound media because it exceeds the size cap")
+                errors.append(
+                    f"media file is too large: {file.size} bytes "
+                    f"exceeds {self.config.max_media_bytes}"
+                )
+                continue
+            destination = self.config.inbound_media_dir / _inbound_media_filename(
+                message_id=message.message_id,
+                file=file,
             )
-        destination = self.config.inbound_media_dir / _inbound_media_filename(
-            message_id=message.message_id,
-            file=file,
-        )
-        try:
-            await asyncio.to_thread(
-                download_slack_file,
-                file.url,
-                destination,
-                token=self.config.bot_token,
-                timeout=self.config.request_timeout_seconds,
-                max_bytes=self.config.max_media_bytes,
+            try:
+                await asyncio.to_thread(
+                    download_slack_file,
+                    file.url,
+                    destination,
+                    token=self.config.bot_token,
+                    timeout=self.config.request_timeout_seconds,
+                    max_bytes=self.config.max_media_bytes,
+                )
+            except (ChannelMediaError, OSError, urllib.error.URLError, TimeoutError) as error:
+                logger.warning("Skipping Slack inbound media after download failure")
+                errors.append(str(error))
+                continue
+            paths.append(str(destination))
+            mime_types.append(
+                file.mimetype
+                or mimetypes.guess_type(destination.name)[0]
+                or "application/octet-stream"
             )
-        except (ChannelMediaError, OSError, urllib.error.URLError, TimeoutError) as error:
-            logger.warning("Skipping Slack inbound media after download failure")
-            return with_media_error(message, str(error))
-        mime_type = file.mimetype or mimetypes.guess_type(destination.name)[0]
-        return message_with_media_paths(
-            message,
-            media_paths=[str(destination)],
-            mime_types=[mime_type] if mime_type else [],
-        )
+        if errors:
+            message = with_media_error(message, "; ".join(errors))
+        return message_with_media_paths(message, media_paths=paths, mime_types=mime_types)
 
 
 def format_markdown_for_slack(text: str, *, mention_allowlist: frozenset[str] | None = None) -> str:
@@ -1511,7 +1519,10 @@ def _message_metadata(inbound: _SlackInboundMessage) -> dict[str, object]:
     if not inbound.is_dm:
         metadata["history_chat"] = inbound.channel_id
     if inbound.files:
-        file = inbound.files[0]
+        file = next(
+            (file for file in inbound.files if _file_media_type(file) != "document"),
+            inbound.files[0],
+        )
         metadata["media_type"] = _file_media_type(file)
         if file.mimetype:
             metadata["mime_type"] = file.mimetype

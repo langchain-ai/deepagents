@@ -750,6 +750,7 @@ def _run_startup_auto_update(console: "Console") -> None:
                 )
             pending_failure_version = latest
             notices: list[str] = []
+            deferred: list[bool] = []
 
             def show_notice(message: str) -> None:
                 notices.append(message)
@@ -764,6 +765,7 @@ def _run_startup_auto_update(console: "Console") -> None:
                     log_path=log_path,
                     target_version=latest,
                     allow_python_migration=False,
+                    on_migration_deferred=lambda: deferred.append(True),
                 )
             )
         if success:
@@ -820,7 +822,10 @@ def _run_startup_auto_update(console: "Console") -> None:
                 _exit_after_unrestartable_update(console, latest)
             return
         persisted = mark_startup_auto_update_failed(latest)
-        if notices:
+        if deferred:
+            # Nothing failed: the notice above explains how to migrate.
+            message = f"Continuing with v{cli_version}."
+        elif notices:
             # The notice above already carries the migration-aware recovery
             # steps; a generic command here would contradict them.
             message = (

@@ -7694,6 +7694,7 @@ class DeepAgentsApp(App):
             )
 
         notices: list[str] = []
+        deferred: list[bool] = []
 
         async def show_upgrade_notice(message: str) -> None:
             notices.append(message)
@@ -7707,6 +7708,7 @@ class DeepAgentsApp(App):
             include_prereleases=include_prereleases,
             target_version=latest,
             allow_python_migration=False,
+            on_migration_deferred=lambda: deferred.append(True),
         )
         if success:
             self._update_available = (False, None)
@@ -7738,6 +7740,9 @@ class DeepAgentsApp(App):
                 await self._mount_message(
                     ErrorMessage(format_shadowed_dcode_warning(shadow)),
                 )
+        elif deferred:
+            # Nothing ran, so there is no failure or log to point at.
+            await self._mount_message(AppMessage("Update deferred; see above."))
         elif notices:
             # The notice already carries migration-aware recovery steps; a
             # generic command here would contradict them.
@@ -27286,6 +27291,7 @@ class DeepAgentsApp(App):
                         return
 
                     notices: list[str] = []
+                    deferred: list[bool] = []
 
                     def show_upgrade_notice(message: str) -> None:
                         notices.append(message)
@@ -27299,6 +27305,7 @@ class DeepAgentsApp(App):
                         log_path=log_path,
                         target_version=payload.latest,
                         allow_python_migration=False,
+                        on_migration_deferred=lambda: deferred.append(True),
                     )
                     if success:
                         self._notice_registry.remove(entry.key)
@@ -27348,6 +27355,9 @@ class DeepAgentsApp(App):
                         output,
                     )
                     self._notice_registry.remove(entry.key)
+                    if deferred:
+                        screen.mark_warning("Update deferred. See details.")
+                        return
                     if notices:
                         # The notice toast and modal line already carry the
                         # migration-aware recovery steps.

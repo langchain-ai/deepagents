@@ -2661,6 +2661,7 @@ async def perform_upgrade(
     target_version: str | None = None,
     on_notice: UpgradeProgressCallback | None = None,
     allow_python_migration: bool = True,
+    on_migration_deferred: Callable[[], None] | None = None,
 ) -> tuple[bool, str, str | None]:
     """Attempt to upgrade `deepagents-code` using the detected install method.
 
@@ -2682,6 +2683,9 @@ async def perform_upgrade(
             before install, and recovery guidance for every migration failure.
             When it is set, that guidance is not repeated in *output*.
         allow_python_migration: Disable in live sessions whose interpreter must survive.
+        on_migration_deferred: Called when the target needs a Python migration
+            that `allow_python_migration` forbids, so callers can report a
+            deferral rather than a failure.
 
     Returns:
         `(success, output, installed_version)` — *output* is the combined
@@ -2747,6 +2751,8 @@ async def perform_upgrade(
             "your shell to migrate safely."
         )
         await _emit_progress(on_notice, guidance)
+        if on_migration_deferred is not None:
+            on_migration_deferred()
         return False, guidance, None
     # Targeted pre-release admission: a *stable* dcode target that mandates an
     # exact pre-release dependency (e.g. `deepagents==0.7.0a7`). Rather than opt

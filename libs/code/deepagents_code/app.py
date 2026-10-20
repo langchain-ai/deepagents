@@ -7692,7 +7692,12 @@ class DeepAgentsApp(App):
             await self._mount_message(
                 AppMessage(f"Update log: {format_log_follow_command(log_path)}"),
             )
+
+        async def show_upgrade_notice(message: str) -> None:
+            await self._mount_message(AppMessage(message))
+
         success, output, installed = await perform_upgrade(
+            on_notice=show_upgrade_notice,
             log_path=log_path,
             include_prereleases=include_prereleases,
             target_version=latest,
@@ -27268,8 +27273,14 @@ class DeepAgentsApp(App):
                             show_toast=not progress_modal_visible,
                         )
                         return
+
+                    def show_upgrade_notice(message: str) -> None:
+                        screen.append_line(message)
+                        self.notify(message, timeout=15, markup=False)
+
                     success, output, installed = await perform_upgrade(
                         progress=screen.append_line,
+                        on_notice=show_upgrade_notice,
                         log_path=log_path,
                         target_version=payload.latest,
                     )

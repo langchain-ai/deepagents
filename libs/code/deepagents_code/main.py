@@ -242,6 +242,10 @@ def _restart_current_process(*, restart_path: Path | None = None) -> NoReturn:
 
     if restart_path is None:
         executable = sys.executable
+        if sys.prefix != sys.base_prefix:
+            bindir = "Scripts" if sys.platform == "win32" else "bin"
+            python = "python.exe" if sys.platform == "win32" else "python"
+            executable = str(Path(sys.prefix) / bindir / python)
         argv = [executable, "-m", "deepagents_code", *sys.argv[1:]]
     else:
         # The PATH winner can be a shim into another uv tool environment.
@@ -750,7 +754,13 @@ def _run_startup_auto_update(console: "Console") -> None:
                 )
             pending_failure_version = latest
             success, output, _installed = asyncio.run(
-                perform_upgrade(log_path=log_path, target_version=latest)
+                perform_upgrade(
+                    on_notice=lambda message: console.print(
+                        message, markup=False, highlight=False
+                    ),
+                    log_path=log_path,
+                    target_version=latest,
+                )
             )
         if success:
             pending_failure_version = None
@@ -6032,6 +6042,9 @@ def cli_main() -> None:
                         )
                     success, output, _installed = asyncio.run(
                         perform_upgrade(
+                            on_notice=lambda message: console.print(
+                                message, markup=False, highlight=False
+                            ),
                             log_path=log_path,
                             include_prereleases=include_prereleases,
                             target_version=latest,

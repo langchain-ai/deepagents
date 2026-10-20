@@ -1379,44 +1379,50 @@ class TestUpdateLogs:
                 "deepagents_code.update_check.upgrade_install_command",
                 return_value="printf 'ok\\n'",
             ),
+            patch("deepagents_code.update_check._upgrade_python", return_value=None),
+            patch(
+                "deepagents_code.update_check.release_prerelease_pins", return_value=[]
+            ),
+            patch(
+                "deepagents_code.update_check.read_installed_distribution_version",
+                return_value="2.0.0",
+            ),
         ):
-            success, output, _installed = await perform_upgrade(log_path=log_path)
+            success, output, _installed = await perform_upgrade(
+                log_path=log_path, target_version="2.0.0"
+            )
 
         assert success is True
         assert output == "ok"
 
-    async def test_perform_upgrade_falls_back_when_receipt_introspection_fails(
+    async def test_perform_upgrade_refuses_receipt_introspection_failure(
         self,
     ) -> None:
-        """Receipt failures must not block the upgrade — fall back to bare.
-
-        Dropping extras is bad, but silently keeping the user pinned to an
-        old version is worse. The fallback path runs the bare upgrade
-        command rather than refusing the upgrade outright.
-        """
+        """Unreadable install context must not silently discard selected extras."""
         with (
-            patch("deepagents_code.update_check.__version__", "1.0.0"),
+            patch("deepagents_code.update_check._upgrade_python", return_value=None),
+            patch(
+                "deepagents_code.update_check.release_prerelease_pins", return_value=[]
+            ),
             patch(
                 "deepagents_code.update_check.detect_install_method",
                 return_value="uv",
             ),
             patch(
-                "deepagents_code.extras_info.installed_extra_names",
+                "deepagents_code.update_check.upgrade_install_command",
                 side_effect=ExtrasIntrospectionError("metadata unreadable"),
             ),
             patch(
                 "deepagents_code.update_check._run_install_subprocess",
                 new_callable=AsyncMock,
-                return_value=(True, ""),
             ) as run_mock,
         ):
-            success, _output, _installed = await perform_upgrade()
+            success, output, installed = await perform_upgrade(target_version="2.0.0")
 
-        assert success is True
-        run_mock.assert_awaited_once()
-        await_args = run_mock.await_args
-        assert await_args is not None
-        assert await_args.args[0] == "uv tool install -U deepagents-code"
+        assert success is False
+        assert "metadata unreadable" in output
+        assert installed is None
+        run_mock.assert_not_awaited()
 
     def test_dependency_refresh_dry_run_ignores_phantom_metadata_extras(
         self, tmp_path, monkeypatch
@@ -2007,9 +2013,8 @@ class TestUpgradeInstallCommand:
     def test_propagates_extras_introspection_error(self, tmp_path, monkeypatch) -> None:
         """Unreadable extras metadata propagates rather than silently dropping.
 
-        `perform_upgrade` catches this and falls back to the bare command, but
-        the builder itself must surface the failure so that decision stays at
-        the caller, matching the docstring's documented contract.
+        `perform_upgrade` refuses the upgrade rather than dropping extras;
+        the builder surfaces the failure for that safe caller decision.
         """
         _write_uv_receipt(tmp_path, '{ name = "deepagents-code" }')
         monkeypatch.setattr("sys.prefix", str(tmp_path))
@@ -2035,7 +2040,7 @@ class TestUpgradeInstallCommand:
         508-invalid extra name. Since the extras here come from the
         distribution's own metadata, such a name signals malformed metadata —
         the builder re-raises it as `ExtrasIntrospectionError` so `perform_upgrade`
-        handles it through its typed fallback rather than relying on a broad
+        refuses the upgrade through its typed error handling rather than a broad
         `ValueError` catch that could also mask an unrelated builder bug.
         """
         _write_uv_receipt(tmp_path, '{ name = "deepagents-code" }')

@@ -80,6 +80,29 @@ class TestTerminationSignalHandling:
         install.assert_not_called()
 
 
+@pytest.mark.parametrize(
+    ("platform", "expected"),
+    [("linux", "/tool/bin/python"), ("win32", "/tool/Scripts/python.exe")],
+)
+def test_restart_uses_rebuilt_environment_interpreter(
+    monkeypatch: pytest.MonkeyPatch, platform: str, expected: str
+) -> None:
+    """A removed versioned interpreter must not strand a migrated tool."""
+    monkeypatch.setattr(sys, "prefix", "/tool")
+    monkeypatch.setattr(sys, "base_prefix", "/old-python")
+    monkeypatch.setattr(sys, "executable", "/tool/bin/python3.13")
+    monkeypatch.setattr(sys, "platform", platform)
+    with (
+        patch(
+            "deepagents_code.main.os.execv", side_effect=OSError("restart failed")
+        ) as execute,
+        pytest.raises(OSError, match="restart failed"),
+    ):
+        _restart_current_process()
+    assert execute.call_args.args[0] == expected
+    assert execute.call_args.args[1][:3] == [expected, "-m", "deepagents_code"]
+
+
 class TestStartupAutoUpdate:
     """Tests for startup auto-update behavior."""
 
@@ -348,6 +371,7 @@ class TestStartupAutoUpdate:
         """Restart should reload package code from the updated environment."""
         with (
             patch.object(sys, "executable", "/tool/bin/python"),
+            patch.object(sys, "prefix", "/tool"),
             patch.object(sys, "argv", ["dcode", "--model", "openai:gpt-5.5"]),
             patch("os.execv", side_effect=SystemExit(0)) as execv,
             pytest.raises(SystemExit),
@@ -390,9 +414,18 @@ class TestStartupAutoUpdate:
         assert os.environ[INVOKED_AS] == "abc"
 
     def test_failed_update_does_not_restart_and_continues(self) -> None:
-        """A failed upgrade must not restart; it surfaces the error and returns."""
+        """Migration is explained before installing, and failure stays fail-soft."""
         console = MagicMock()
-        upgrade = AsyncMock(return_value=(False, "pip exploded", None))
+        notice = "Python 3.14 is required; migrating [tool] environment."
+
+        def install(
+            *, on_notice: Callable[[str], None], **_kwargs: object
+        ) -> tuple[bool, str, None]:
+            on_notice(notice)
+            console.print.assert_called_with(notice, markup=False, highlight=False)
+            return False, "pip exploded", None
+
+        upgrade = AsyncMock(side_effect=install)
 
         with (
             patch("deepagents_code.config._is_editable_install", return_value=False),

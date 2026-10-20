@@ -7,7 +7,7 @@ import sys
 from collections.abc import Callable
 from contextlib import AbstractContextManager
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -1292,6 +1292,28 @@ class TestUpdateSubcommand:
             "the install ran without holding the update lock"
         )
 
+    @pytest.mark.parametrize("flag_style", [False, True])
+    def test_update_explains_migration_before_install(
+        self, flag_style: bool, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Both explicit CLI update forms show notices without a prompt."""
+        notice = "Python 3.14 is required; migrating [tool] environment."
+
+        def upgrade(
+            *, on_notice: Callable[[str], None], **_kwargs: object
+        ) -> tuple[bool, str, str]:
+            on_notice(notice)
+            assert notice in capsys.readouterr().out
+            return True, "", "99.0.0"
+
+        code, _, _ = self._run_update(
+            editable=False,
+            is_update_available_return=(True, "99.0.0"),
+            flag_style=flag_style,
+            upgrade_side_effect=upgrade,
+        )
+        assert code == 0
+
     def test_stable_update_with_prerelease_deps_keeps_upgrade_intent_none(
         self,
     ) -> None:
@@ -1308,6 +1330,7 @@ class TestUpdateSubcommand:
             include_prereleases=None,
         )
         perform_upgrade_mock.assert_awaited_once_with(
+            on_notice=ANY,
             log_path="/tmp/deepagents-update.log",
             include_prereleases=None,
             target_version="99.0.0",

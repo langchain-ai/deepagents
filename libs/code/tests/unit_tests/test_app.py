@@ -20261,6 +20261,44 @@ class TestNotificationCenterIntegration:
         assert app._notice_registry.get("dep:ripgrep") is None
         assert any("debug mode" in m for m in notified)
 
+    async def test_slash_update_explains_migration_before_install(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The migration notice is mounted before the installer can proceed."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        mount = AsyncMock()
+        monkeypatch.setattr(app, "_mount_message", mount)
+        notice = "Python 3.14 is required; migrating the tool environment."
+
+        async def install(
+            *, on_notice: Callable[[str], Awaitable[None]], **_kwargs: object
+        ) -> tuple[bool, str, None]:
+            await on_notice(notice)
+            assert mount.call_args.args[0]._content == notice
+            return False, "resolution failed", None
+
+        with (
+            patch("deepagents_code.update_check.perform_upgrade", side_effect=install),
+            patch(
+                "deepagents_code.update_check.create_update_log_file", return_value=None
+            ),
+            patch(
+                "deepagents_code.update_check.format_release_age_parenthetical",
+                return_value="",
+            ),
+            patch(
+                "deepagents_code.update_check.format_installed_age_suffix",
+                return_value="",
+            ),
+        ):
+            await app._perform_app_upgrade_unlocked(
+                current="1.0.0",
+                latest="2.0.0",
+                include_prereleases=None,
+                upgrade_include_prereleases=None,
+                pin_upgrade_version=None,
+            )
+
     async def test_install_success_marks_modal_without_a_banner(self) -> None:
         """A missing splash banner cannot spoil a successful install.
 
@@ -20286,6 +20324,14 @@ class TestNotificationCenterIntegration:
             original_notify(message, **kwargs)
 
         app.notify = capture_notify  # ty: ignore
+        notice = "Python 3.14 is required; migrating [tool] environment."
+
+        def install(
+            *, on_notice: Callable[[str], None], **_kwargs: object
+        ) -> tuple[bool, str, str]:
+            on_notice(notice)
+            assert notice in notified
+            return True, "Updated deepagents-code", "2.0.0"
 
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -20293,7 +20339,7 @@ class TestNotificationCenterIntegration:
             await pilot.pause()
             with patch(
                 "deepagents_code.update_check.perform_upgrade",
-                new=AsyncMock(return_value=(True, "Updated deepagents-code", "2.0.0")),
+                new=AsyncMock(side_effect=install),
             ):
                 await app._dispatch_notification_action(entry.key, ActionId.INSTALL)
                 await pilot.pause()

@@ -44,6 +44,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple, TextIO
 
 from packaging.requirements import InvalidRequirement, Requirement
+from packaging.specifiers import SpecifierSet
 from packaging.utils import NormalizedName, canonicalize_name
 from packaging.version import InvalidVersion, Version
 
@@ -232,6 +233,10 @@ _TERMINATE_WAIT_TIMEOUT = 5  # seconds
 
 INSTALL_SCRIPT_COMMAND = "curl -LsSf https://langch.in/dcode | bash"
 """Promoted public install command for Deep Agents Code."""
+
+_PYTHON_MIGRATION_INSTALL_COMMAND = (
+    "curl -LsSf https://langch.in/dcode | DEEPAGENTS_CODE_PYTHON=3.14 bash"
+)
 
 UPDATE_LOG_DIR: Path = default_cache_dir() / "deepagents-code" / "update_logs"
 """Directory for persisted update command logs.
@@ -2492,12 +2497,104 @@ def update_install_lock() -> Iterator[bool]:
         _UPDATE_INSTALL_THREAD_LOCK.release()
 
 
+def _release_python_requirement(version: str) -> SpecifierSet:
+    """Fetch and validate the exact release's Python requirement.
+
+    Returns:
+        The validated release requirement.
+
+    Raises:
+        ValueError: If metadata is unavailable, invalid, or mismatched.
+    """
+    import requests
+
+    target = Version(version)
+    try:
+        response = requests.get(
+            f"{PYPI_URL.removesuffix('/json')}/{target}/json",
+            timeout=3,
+            **_pypi_request_kwargs(bypass_cache=True),
+        )
+        response.raise_for_status()
+        payload = response.json()
+    except (requests.RequestException, OSError, ValueError) as exc:
+        msg = f"Could not fetch Python compatibility metadata for v{target}: {exc}"
+        raise ValueError(msg) from exc
+    info = payload.get("info") if isinstance(payload, dict) else None
+    if not isinstance(info, dict) or info.get("version") != str(target):
+        msg = f"Missing or mismatched release metadata for v{target}"
+        raise ValueError(msg)
+    requires_python = info.get("requires_python")
+    if not isinstance(requires_python, str) or not requires_python.strip():
+        msg = f"Missing Requires-Python metadata for v{target}"
+        raise ValueError(msg)
+    return SpecifierSet(requires_python)
+
+
+def _upgrade_python(version: str) -> str | None:
+    """Select only the supported 3.14 migration when the target requires it.
+
+    Returns:
+        The migration interpreter, or None to preserve the receipt.
+
+    Raises:
+        ValueError: If metadata or the supported migration cannot be validated.
+    """
+    requirement = _release_python_requirement(version)
+    running = ".".join(str(part) for part in sys.version_info[:3])
+    if requirement.contains(running):
+        return None
+    if requirement.contains("3.14"):
+        return "3.14"
+    msg = (
+        f"v{version} requires Python {requirement}; running Python {running} is "
+        "incompatible and the supported migration to Python 3.14 cannot satisfy it. "
+        "Install a compatible interpreter manually."
+    )
+    raise ValueError(msg)
+
+
+def _read_migrated_distribution_version() -> str | None:
+    """Verify the rebuilt environment using its new interpreter.
+
+    Returns:
+        The installed version, or None when verification fails.
+    """
+    import subprocess  # noqa: S404  # Run only the tool's interpreter with fixed code.
+
+    python = Path(sys.prefix) / (
+        "Scripts/python.exe" if os.name == "nt" else "bin/python"
+    )
+    try:
+        result = subprocess.run(  # noqa: S603  # Fixed argv, no shell or external code.
+            [
+                str(python),
+                "-I",
+                "-c",
+                (
+                    "import sys; from importlib.metadata import version; "
+                    "assert sys.version_info[:2] == (3, 14); "
+                    "print(version('deepagents-code'))"
+                ),
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=10,
+        )
+        return str(Version(result.stdout.strip()))
+    except (OSError, subprocess.SubprocessError, InvalidVersion):
+        logger.warning("Could not verify the migrated tool environment", exc_info=True)
+        return None
+
+
 async def perform_upgrade(
     *,
     progress: UpgradeProgressCallback | None = None,
     log_path: Path | None = None,
     include_prereleases: bool | None = None,
     target_version: str | None = None,
+    on_notice: UpgradeProgressCallback | None = None,
 ) -> tuple[bool, str, str | None]:
     """Attempt to upgrade `deepagents-code` using the detected install method.
 
@@ -2511,19 +2608,16 @@ async def perform_upgrade(
             `None`, follows the installed version's channel and the target
             release's dependency metadata. Pre-release upgrades require the uv
             install method; returns failure otherwise.
-        target_version: Release version being installed, used to detect stable
-            dcode releases that intentionally depend on pre-release packages.
+        target_version: Exact release to inspect and install for uv upgrades.
+        on_notice: Optional callback explaining an interpreter migration before install.
 
     Returns:
         `(success, output, installed_version)` — *output* is the combined
         stdout/stderr. *installed_version* is the version the successful
         install actually resolved to, read back from the tool environment on
         disk, or `None` when the upgrade failed or the installed version
-        could not be determined. A successful uv installer exit is reported
-        as a failure when the installed version remains below `target_version`.
-        Callers should report *installed_version* rather than the version their
-        update check observed: the install command is unpinned, so a release
-        published between check and install is what lands on disk.
+        could not be determined. A successful uv installer exit is a failure
+        unless the installed version matches the exact inspected target.
 
     Raises:
         OSError: Propagated from building the upgrade command or running the
@@ -2546,6 +2640,29 @@ async def perform_upgrade(
             None,
         )
     resolved_include_prereleases = _resolve_include_prereleases(include_prereleases)
+    python: str | None = None
+    if method == "uv":
+        target_version = target_version or await asyncio.to_thread(
+            get_latest_version, include_prereleases=resolved_include_prereleases
+        )
+        if not target_version:
+            return (
+                False,
+                "Could not determine the target release; retry the update later.",
+                None,
+            )
+        try:
+            python = await asyncio.to_thread(_upgrade_python, target_version)
+        except (ImportError, ValueError) as exc:
+            return (
+                False,
+                (
+                    f"Update stopped before installation: {exc}. "
+                    "No interpreter was changed. Check your network and retry, or use "
+                    f"the updated installer: {INSTALL_SCRIPT_COMMAND}"
+                ),
+                None,
+            )
     # Targeted pre-release admission: a *stable* dcode target that mandates an
     # exact pre-release dependency (e.g. `deepagents==0.7.0a7`). Rather than opt
     # the whole resolution into pre-releases with a global `--prerelease allow`
@@ -2555,11 +2672,8 @@ async def perform_upgrade(
     # admitted. Kept separate from the explicit pre-release *channel* below,
     # where the user deliberately follows dcode's own pre-release feed.
     targeted_pins: list[str] = []
-    pin_target_version: str | None = None
     if not resolved_include_prereleases and include_prereleases is None:
         targeted_pins = release_prerelease_pins(target_version)
-        if targeted_pins:
-            pin_target_version = target_version
 
     if resolved_include_prereleases or targeted_pins:
         supported, reason = prerelease_upgrade_supported(method)
@@ -2578,21 +2692,14 @@ async def perform_upgrade(
             # this point originates in command-building or the subprocess
             # wrapper, not constraint staging.
             constraints_staged = True
-            fell_back_to_bare_command = False
             if method == "uv":
-                # Prefer the receipt-aware `uv tool install -U` builder so
-                # installed extras / `--with` packages survive the upgrade and
-                # any stale `==<version>` pin in the receipt is cleared. Fall
-                # back to the bare display command when extras or receipt
-                # introspection fails — the fallback might drop extras, but a
-                # successful unpinned upgrade is still strictly better than a
-                # pinned "upgrade" that quietly stays on the old version.
                 from deepagents_code.extras_info import ExtrasIntrospectionError
 
                 try:
                     cmd = upgrade_install_command(
                         include_prereleases=resolved_include_prereleases,
-                        version=pin_target_version,
+                        version=target_version,
+                        python=python,
                         constraints_path=constraints_path,
                         prerelease_strategy=prerelease_strategy,
                     )
@@ -2600,26 +2707,16 @@ async def perform_upgrade(
                     ExtrasIntrospectionError,
                     ToolRequirementIntrospectionError,
                 ) as exc:
-                    logger.warning(
-                        "Could not build receipt-aware uv upgrade command "
-                        "(%s: %s); falling back to the bare command. Installed "
-                        "extras may be dropped.",
-                        type(exc).__name__,
-                        exc,
-                    )
-                    fell_back_to_bare_command = True
-                    cmd = upgrade_command(
-                        method,
-                        include_prereleases=resolved_include_prereleases,
-                        version=pin_target_version,
-                    )
-                    # The bare display command has no constraints knob, so add
-                    # the targeted flags here too — the fallback must not revert
-                    # to a global `--prerelease allow`.
-                    cmd = _append_uv_prerelease_flags(
-                        cmd,
-                        constraints_path=constraints_path,
-                        prerelease_strategy=prerelease_strategy,
+                    return (
+                        False,
+                        (
+                            f"Could not preserve your installation options: {exc}. "
+                            "The existing installation was left unchanged. "
+                            "Retry after repairing the uv receipt, or use the updated "
+                            "installer and reselect extras and added packages: "
+                            f"{INSTALL_SCRIPT_COMMAND}"
+                        ),
+                        None,
                     )
             else:
                 cmd = upgrade_command(
@@ -2627,6 +2724,15 @@ async def perform_upgrade(
                     include_prereleases=resolved_include_prereleases,
                 )
 
+            if python is not None:
+                await _emit_progress(
+                    on_notice,
+                    f"v{target_version} is incompatible with the running Python "
+                    f"{sys.version_info[0]}.{sys.version_info[1]}. "
+                    "This update will move dcode to Python 3.14; uv will acquire "
+                    "the interpreter if needed. Selected extras and added packages "
+                    "will be preserved. Configuration and conversations are unchanged.",
+                )
             success, output = await _run_install_subprocess(
                 cmd, progress=progress, log_path=log_path
             )
@@ -2659,47 +2765,46 @@ async def perform_upgrade(
             None,
         )
 
-    if success and fell_back_to_bare_command:
-        # Surface the dropped-extras caveat only now that the bare upgrade has
-        # actually succeeded. Emitting it before `_run_install_subprocess` ran
-        # would misfire on a failed upgrade — telling the user to re-add extras
-        # for an install that was left untouched. The log line above is
-        # invisible in the TUI, so the progress stream is the user's only window
-        # into this.
-        await _emit_progress(
-            progress,
-            "Note: couldn't read your full install configuration; "
-            "installed extras or extra packages may not carry over. "
-            "Re-add them if a feature stops working after relaunch.",
+    if not success and python is not None:
+        guidance = (
+            "Python 3.14 migration failed. Check the uv output for network "
+            "or dependency conflicts. If Python downloads are disabled, provision "
+            "Python 3.14 with uv or your administrator, or allow uv downloads and "
+            "retry. Do not uninstall dcode first. Recovery installer: "
+            f"{_PYTHON_MIGRATION_INSTALL_COMMAND} "
+            "(reselect extras and added packages)."
         )
+        await _emit_progress(on_notice, guidance)
+        output = f"{guidance}\n{output}"
     installed_version: str | None = None
-    if success:
-        if pin_target_version is not None:
-            # The install was pinned to the exact target version, so that is
-            # what landed on disk; skip the filesystem readback.
-            installed_version = pin_target_version
-        elif method == "uv":
-            # uv updates the running tool environment in place, so its dist-info
-            # reflects what the resolver actually installed. Homebrew replaces
-            # and relinks a Cellar keg instead; this process still sees the old
-            # prefix and cannot verify the new formula this way.
-            installed_version = await asyncio.to_thread(
-                read_installed_distribution_version
-            )
-            if (
+    if success and method == "uv":
+        reader = (
+            _read_migrated_distribution_version
+            if python is not None
+            else read_installed_distribution_version
+        )
+        installed_version = await asyncio.to_thread(reader)
+        try:
+            verified = (
                 installed_version is not None
                 and target_version is not None
-                and _parse_version(installed_version) < _parse_version(target_version)
-            ):
-                detail = (
-                    f"v{target_version} is still propagating to the package index; "
-                    f"dcode remains on v{installed_version}. "
-                    "Try again in a few minutes."
-                )
-                return False, detail, None
-            installed_version = installed_version or target_version
-        else:
-            installed_version = target_version
+                and Version(installed_version) == Version(target_version)
+            )
+        except InvalidVersion:
+            verified = False
+        if not verified:
+            return (
+                False,
+                (
+                    f"Could not verify installation of v{target_version} "
+                    f"(found {installed_version or 'no readable installed version'}). "
+                    "Not restarting or reporting success. Check the uv output and "
+                    f"retry, or use the updated installer: {INSTALL_SCRIPT_COMMAND}"
+                ),
+                None,
+            )
+    elif success:
+        installed_version = target_version
     return success, output, installed_version
 
 
@@ -3222,6 +3327,7 @@ def _uv_tool_install_command(
     extras_to_add: Iterable[str] = (),
     extras_to_remove: Iterable[str] = (),
     with_packages_to_add: Iterable[str] = (),
+    python: str | None = None,
     reinstall: bool = False,
     constraints_path: Path | None = None,
     prerelease_strategy: UvPrereleaseStrategy | None = None,
@@ -3246,6 +3352,7 @@ def _uv_tool_install_command(
             not duplicated; genuinely new names are appended after the preserved
             ones. Callers must validate these names before passing them — the
             builder only `shlex.quote`-s them.
+        python: Validated migration interpreter; otherwise preserve the receipt.
         reinstall: When `True`, add `--reinstall` so uv rebuilds the tool
             environment from scratch instead of patching it in place. An
             in-place `-U` upgrade can leave stale files behind (e.g. an old
@@ -3302,7 +3409,7 @@ def _uv_tool_install_command(
         msg = f"uv tool receipt yielded an invalid extra name: {exc}"
         raise ExtrasIntrospectionError(msg) from exc
     cmd = "uv tool install --reinstall -U" if reinstall else "uv tool install -U"
-    python = _uv_tool_python(data=receipt)
+    python = python if python is not None else _uv_tool_python(data=receipt)
     if python is not None:
         cmd += f" --python {shlex.quote(python)}"
     cmd += f" {requirement}"
@@ -3409,6 +3516,7 @@ def upgrade_install_command(
     include_prereleases: bool | None = None,
     distribution_name: str = "deepagents-code",
     version: str | None = None,
+    python: str | None = None,
     constraints_path: Path | None = None,
     prerelease_strategy: UvPrereleaseStrategy | None = None,
 ) -> str:
@@ -3432,8 +3540,9 @@ def upgrade_install_command(
             `None`, follows the installed version's channel.
         distribution_name: Name of the installed distribution to inspect for
             already-installed extras.
-        version: Optional exact target version. Use only when pre-release
-            dependency resolution must not also select a root app pre-release.
+        version: Optional exact target version, aligning release metadata checks
+            and pre-release dependency constraints with the installed package.
+        python: Validated migration interpreter; otherwise preserve the receipt.
         constraints_path: Optional uv constraints file pinning the exact
             pre-release dependency, forwarded as `--constraints <path>`.
         prerelease_strategy: Optional uv `--prerelease` strategy (e.g.
@@ -3454,6 +3563,7 @@ def upgrade_install_command(
         version=version,
         include_prereleases=include_prereleases,
         distribution_name=distribution_name,
+        python=python,
         constraints_path=constraints_path,
         prerelease_strategy=prerelease_strategy,
     )

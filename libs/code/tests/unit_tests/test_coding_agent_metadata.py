@@ -207,6 +207,15 @@ class TestContractValueSemantics:
         )
         assert metadata["repository_provider"] == "github"
         assert metadata["repository_name"] == "langchain-ai/deepagents"
+        assert metadata["ls_git_repo"] == metadata["repository_name"]
+        assert metadata["ls_repo_provider"] == metadata["repository_provider"]
+
+    def test_canonical_aliases_preserve_configured_identity(self) -> None:
+        metadata = build_stream_config(
+            "thread-123", assistant_id="agent", turn_id="turn-abc", turn_number=2
+        )["metadata"]
+        assert metadata["ls_git_branch"] == metadata["git_branch"] == "main"
+        assert metadata["ls_attribution_identifier"] == metadata["user_id"] == "u_test"
 
     def test_turn_markers_present_and_typed(self) -> None:
         metadata = build_coding_agent_metadata(
@@ -266,6 +275,10 @@ class TestUnknownKeysOmitted:
             "turn_id",
             "turn_number",
             "repository_url",
+            "ls_git_repo",
+            "ls_repo_provider",
+            "ls_git_branch",
+            "ls_attribution_identifier",
             "git_branch",
             "git_commit_sha",
             "cwd",

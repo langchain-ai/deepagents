@@ -2711,6 +2711,141 @@ def _sentence(exc: BaseException) -> str:
     return f"{str(exc).rstrip().rstrip('.')}."
 
 
+def _target_python(target_version: str) -> tuple[str | None, bool]:
+    """Pick the interpreter for *target_version*, tolerating missing metadata.
+
+    Returns:
+        `(python, requirement_unknown)`. *python* is the `--python` request,
+        or `None` to keep the receipt's interpreter. *requirement_unknown* is
+        `True` when the release metadata could not be read.
+    """
+    try:
+        return _upgrade_python(target_version), False
+    except _PythonRequirementUnavailableError:
+        # Keep the receipt's interpreter. The install pins `==version`, so uv
+        # refuses a target that needs a newer Python rather than changing
+        # anything. One failed request must not block upgrades that need no
+        # migration, or upgrades for users behind a mirror that cannot reach
+        # PyPI.
+        logger.warning(
+            "Could not read Python requirement for v%s; keeping the current "
+            "interpreter",
+            target_version,
+            exc_info=True,
+        )
+        return None, True
+
+
+def _migration_notice(target_version: str) -> str:
+    """Return the notice shown before a Python migration starts.
+
+    Returns:
+        A user-facing message that names the running Python.
+    """
+    return (
+        f"v{target_version} is incompatible with the running Python "
+        f"{sys.version_info[0]}.{sys.version_info[1]}. "
+        "This update will move dcode to Python 3.14; uv will acquire "
+        "the interpreter if needed. Selected extras and added packages "
+        "will be preserved. Configuration and conversations are unchanged. "
+        "Other open dcode sessions stop working until restarted."
+    )
+
+
+def _migration_deferral_message(target_version: str) -> str:
+    """Return the guidance for a migration that this caller may not run.
+
+    Returns:
+        A user-facing message that names the safe `update` command.
+    """
+    from deepagents_code._invocation import invoked_name
+
+    return (
+        f"v{target_version} requires migrating dcode to Python 3.14. "
+        "Migration is deferred because rebuilding the environment would break "
+        "running dcode sessions and their servers. Nothing was installed. "
+        f"Quit every dcode session, then run `{invoked_name()} update` from "
+        "your shell to migrate safely."
+    )
+
+
+def _install_failure_guidance(
+    target_version: str, *, migrating: bool, requirement_unknown: bool, output: str
+) -> str | None:
+    """Return recovery steps for a failed uv install, if any apply.
+
+    Returns:
+        Migration guidance, or `None` when the generic failure path fits.
+    """
+    if migrating:
+        return (
+            "Python 3.14 migration failed. Check the update log for a timeout, "
+            "network errors, or dependency conflicts. If Python downloads are "
+            "disabled, provision Python 3.14 with uv or your administrator, or "
+            "allow uv downloads and retry. Do not uninstall dcode first. "
+            f"Recovery installer: {_PYTHON_MIGRATION_INSTALL_COMMAND} "
+            "(reselect extras and added packages)."
+        )
+    if not requirement_unknown or not _UV_PYTHON_CONFLICT_PATTERN.search(output):
+        return None
+    from deepagents_code._invocation import invoked_name
+
+    # Callers hide uv's output after a notice, so name the likely fix.
+    return (
+        f"Could not check v{target_version}'s Python requirement before "
+        "installing. If the update log shows it needs a newer Python, retry "
+        f"`{invoked_name()} update` later, or use the Python 3.14 installer: "
+        f"{_PYTHON_MIGRATION_INSTALL_COMMAND} "
+        "(reselect extras and added packages)."
+    )
+
+
+async def _verify_uv_install(
+    target_version: str, *, migrating: bool
+) -> tuple[str | None, str | None]:
+    """Read back a uv install and compare it with *target_version*.
+
+    Returns:
+        `(installed_version, failure)`. *failure* is `None` when the install
+        matches the target, and otherwise describes what was found.
+    """
+    verification_error: str | None = None
+    installed_version: str | None = None
+    try:
+        installed_version = await asyncio.to_thread(
+            _read_migrated_distribution_version
+            if migrating
+            else read_installed_distribution_version
+        )
+    except _MigrationVerificationError as exc:
+        verification_error = str(exc)
+    if installed_version is None and not migrating:
+        dist_infos = await asyncio.to_thread(_distribution_dist_infos)
+        if dist_infos is not None and len(dist_infos) > 1:
+            # In-place readback is ambiguous when stale dist-info directories
+            # remain. uv exited 0 with an exact `==target` pin, so trust the
+            # pin rather than report a landed install as a failure. A missing
+            # dist-info or unreadable site-packages is never trusted.
+            logger.warning(
+                "Could not read back the installed version; trusting the "
+                "exact uv pin v%s",
+                target_version,
+            )
+            installed_version = target_version
+    try:
+        if installed_version is not None and Version(installed_version) == Version(
+            target_version
+        ):
+            return installed_version, None
+    except InvalidVersion:
+        pass
+    if verification_error is not None:
+        return None, (
+            f"check with the migrated interpreter failed: {verification_error}"
+        )
+    return None, f"found {installed_version or 'no readable installed version'}"
+
+
 async def perform_upgrade(
     *,
     progress: UpgradeProgressCallback | None = None,
@@ -2799,20 +2934,9 @@ async def perform_upgrade(
                 None,
             )
         try:
-            python = await asyncio.to_thread(_upgrade_python, target_version)
-        except _PythonRequirementUnavailableError:
-            # Keep the receipt's interpreter. The install pins `==version`, so
-            # uv refuses a target that needs a newer Python rather than
-            # changing anything. One failed request must not block upgrades
-            # that need no migration, or upgrades for users behind a mirror
-            # that cannot reach PyPI.
-            logger.warning(
-                "Could not read Python requirement for v%s; keeping the current "
-                "interpreter",
-                target_version,
-                exc_info=True,
+            python, requirement_unknown = await asyncio.to_thread(
+                _target_python, target_version
             )
-            requirement_unknown = True
         except (ImportError, ValueError) as exc:
             refusal = (
                 f"Update stopped before installation: {_sentence(exc)} "
@@ -2824,16 +2948,8 @@ async def perform_upgrade(
         # The plain installer defaults to an older Python, which would resolve
         # the newest compatible release instead of this target.
         recovery_installer = _PYTHON_MIGRATION_INSTALL_COMMAND
-    if python is not None and not allow_python_migration:
-        from deepagents_code._invocation import invoked_name
-
-        guidance = (
-            f"v{target_version} requires migrating dcode to Python 3.14. "
-            "Migration is deferred because rebuilding the environment would break "
-            "running dcode sessions and their servers. Nothing was installed. "
-            f"Quit every dcode session, then run `{invoked_name()} update` from "
-            "your shell to migrate safely."
-        )
+    if python is not None and target_version and not allow_python_migration:
+        guidance = _migration_deferral_message(target_version)
         await _emit_progress(on_notice, guidance)
         if on_migration_deferred is not None:
             on_migration_deferred()
@@ -2900,16 +3016,8 @@ async def perform_upgrade(
                     include_prereleases=resolved_include_prereleases,
                 )
 
-            if python is not None:
-                await _emit_progress(
-                    on_notice,
-                    f"v{target_version} is incompatible with the running Python "
-                    f"{sys.version_info[0]}.{sys.version_info[1]}. "
-                    "This update will move dcode to Python 3.14; uv will acquire "
-                    "the interpreter if needed. Selected extras and added packages "
-                    "will be preserved. Configuration and conversations are unchanged. "
-                    "Other open dcode sessions stop working until restarted.",
-                )
+            if python is not None and target_version:
+                await _emit_progress(on_notice, _migration_notice(target_version))
             success, output = await _run_install_subprocess(
                 cmd,
                 progress=progress,
@@ -2945,76 +3053,25 @@ async def perform_upgrade(
             None,
         )
 
-    if not success and python is not None:
-        guidance = (
-            "Python 3.14 migration failed. Check the update log for a timeout, "
-            "network errors, or dependency conflicts. If Python downloads are "
-            "disabled, provision Python 3.14 with uv or your administrator, or "
-            "allow uv downloads and retry. Do not uninstall dcode first. "
-            "Recovery installer: "
-            f"{_PYTHON_MIGRATION_INSTALL_COMMAND} "
-            "(reselect extras and added packages)."
+    guidance = (
+        None
+        if success or not target_version
+        else _install_failure_guidance(
+            target_version,
+            migrating=python is not None,
+            requirement_unknown=requirement_unknown,
+            output=output,
         )
-        output = f"{guidance}\n{output}"
-        await _emit_progress(on_notice, guidance)
-    elif (
-        not success
-        and requirement_unknown
-        and _UV_PYTHON_CONFLICT_PATTERN.search(output)
-    ):
-        from deepagents_code._invocation import invoked_name
-
-        # Callers hide uv's output after a notice, so name the likely fix.
-        guidance = (
-            f"Could not check v{target_version}'s Python requirement before "
-            "installing. If the update log shows it needs a newer Python, retry "
-            f"`{invoked_name()} update` later, or use the Python 3.14 installer: "
-            f"{_PYTHON_MIGRATION_INSTALL_COMMAND} "
-            "(reselect extras and added packages)."
-        )
+    )
+    if guidance is not None:
         output = f"{guidance}\n{output}"
         await _emit_progress(on_notice, guidance)
     installed_version: str | None = None
-    if success and method == "uv":
-        verification_error: str | None = None
-        try:
-            installed_version = await asyncio.to_thread(
-                _read_migrated_distribution_version
-                if python is not None
-                else read_installed_distribution_version
-            )
-        except _MigrationVerificationError as exc:
-            verification_error = str(exc)
-        dist_infos = (
-            await asyncio.to_thread(_distribution_dist_infos)
-            if installed_version is None and python is None
-            else None
+    if success and method == "uv" and target_version:
+        installed_version, found = await _verify_uv_install(
+            target_version, migrating=python is not None
         )
-        if dist_infos is not None and len(dist_infos) > 1:
-            # In-place readback is ambiguous when stale dist-info directories
-            # remain. uv exited 0 with an exact `==target` pin, so trust the pin
-            # rather than report a landed install as a failure. A missing
-            # dist-info or unreadable site-packages is never trusted.
-            logger.warning(
-                "Could not read back the installed version; trusting the "
-                "exact uv pin v%s",
-                target_version,
-            )
-            installed_version = target_version
-        try:
-            verified = (
-                installed_version is not None
-                and target_version is not None
-                and Version(installed_version) == Version(target_version)
-            )
-        except InvalidVersion:
-            verified = False
-        if not verified:
-            found = (
-                f"check with the migrated interpreter failed: {verification_error}"
-                if verification_error is not None
-                else f"found {installed_version or 'no readable installed version'}"
-            )
+        if found is not None:
             failure = (
                 f"Could not verify installation of v{target_version} ({found}). "
                 "Not restarting or reporting success. Check the update log and "

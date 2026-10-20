@@ -197,7 +197,7 @@ async def test_live_session_defers_migration_without_touching_environment(
     assert not success
     assert installed is None
     assert notices == [output]
-    assert "Quit dcode" in output
+    assert "Quit every dcode session" in output
     assert " update`" in output
     assert receipt.read_bytes() == original
     uv_install.assert_not_awaited()
@@ -319,25 +319,6 @@ async def test_installer_success_requires_exact_verified_version(
     assert not success
     assert version is None
     assert output
-
-
-@pytest.mark.parametrize("installed", [None, "2.0.0"])
-async def test_migration_reports_interpreter_change_before_verification(
-    uv_install: AsyncMock, monkeypatch: pytest.MonkeyPatch, installed: str | None
-) -> None:
-    """A rebuilt environment requires relaunch even if readback fails."""
-    changed = MagicMock()
-    monkeypatch.setattr(update_check, "_upgrade_python", lambda _version: "3.14")
-    monkeypatch.setattr(
-        update_check, "_read_migrated_distribution_version", lambda: installed
-    )
-    await update_check.perform_upgrade(
-        target_version="2.0.0",
-        include_prereleases=False,
-        on_interpreter_change=changed,
-    )
-    changed.assert_called_once_with()
-    uv_install.assert_awaited_once()
 
 
 @pytest.mark.parametrize(

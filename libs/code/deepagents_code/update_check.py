@@ -2653,7 +2653,6 @@ async def perform_upgrade(
     include_prereleases: bool | None = None,
     target_version: str | None = None,
     on_notice: UpgradeProgressCallback | None = None,
-    on_interpreter_change: Callable[[], None] | None = None,
     allow_python_migration: bool = True,
 ) -> tuple[bool, str, str | None]:
     """Attempt to upgrade `deepagents-code` using the detected install method.
@@ -2675,9 +2674,6 @@ async def perform_upgrade(
         on_notice: Receives user-facing messages about a Python migration: one
             before install, and recovery guidance for every migration failure.
             When it is set, that guidance is not repeated in *output*.
-        on_interpreter_change: Called after a successful migration command, even
-            if version verification fails. The caller's process then imports
-            from a deleted environment and must not keep running.
         allow_python_migration: Disable in live sessions whose interpreter must survive.
 
     Returns:
@@ -2739,9 +2735,9 @@ async def perform_upgrade(
         guidance = (
             f"v{target_version} requires migrating dcode to Python 3.14. "
             "Migration is deferred because rebuilding the environment would break "
-            "this running session and its server. Nothing was installed. "
-            f"Quit dcode, then run `{invoked_name()} update` from your shell "
-            "to migrate safely."
+            "running dcode sessions and their servers. Nothing was installed. "
+            f"Quit every dcode session, then run `{invoked_name()} update` from "
+            "your shell to migrate safely."
         )
         await _emit_progress(on_notice, guidance)
         return False, guidance, None
@@ -2814,13 +2810,12 @@ async def perform_upgrade(
                     f"{sys.version_info[0]}.{sys.version_info[1]}. "
                     "This update will move dcode to Python 3.14; uv will acquire "
                     "the interpreter if needed. Selected extras and added packages "
-                    "will be preserved. Configuration and conversations are unchanged.",
+                    "will be preserved. Configuration and conversations are unchanged. "
+                    "Other open dcode sessions stop working until restarted.",
                 )
             success, output = await _run_install_subprocess(
                 cmd, progress=progress, log_path=log_path
             )
-            if success and python is not None and on_interpreter_change is not None:
-                on_interpreter_change()
     except OSError as exc:
         if constraints_staged:
             # The constraints file was written successfully, so this OSError

@@ -232,8 +232,7 @@ def _restart_current_process(*, restart_path: Path | None = None) -> NoReturn:
 
     Args:
         restart_path: The upgraded console-script shim to execute. When omitted,
-            re-executes the `deepagents_code` module with the environment's
-            interpreter.
+            re-executes the current interpreter's `deepagents_code` module.
 
     Raises:
         RuntimeError: If process replacement unexpectedly returns.
@@ -243,13 +242,6 @@ def _restart_current_process(*, restart_path: Path | None = None) -> NoReturn:
 
     if restart_path is None:
         executable = sys.executable
-        # After a Python migration uv rebuilds the venv, so a versioned
-        # `sys.executable` (e.g. `python3.13`) may no longer exist. The venv's
-        # unversioned `python` link points at the new interpreter.
-        if sys.prefix != sys.base_prefix:
-            bindir = "Scripts" if sys.platform == "win32" else "bin"
-            python = "python.exe" if sys.platform == "win32" else "python"
-            executable = str(Path(sys.prefix) / bindir / python)
         argv = [executable, "-m", "deepagents_code", *sys.argv[1:]]
     else:
         # The PATH winner can be a shim into another uv tool environment.
@@ -261,7 +253,7 @@ def _restart_current_process(*, restart_path: Path | None = None) -> NoReturn:
     # and post-update resume hints would fall back to `dcode`. Hand it to the
     # next generation explicitly.
     os.environ[INVOKED_AS] = invoked_name()
-    # Re-exec the trusted environment interpreter or uv-managed shim with the
+    # Re-exec the trusted current interpreter or uv-managed shim with the
     # user's own argv verbatim; the only "input" is the command the user
     # already ran, so S606's concern (untrusted/unsanitized args to a spawned
     # executable) does not apply.
@@ -757,28 +749,22 @@ def _run_startup_auto_update(console: "Console") -> None:
                     markup=False,
                 )
             pending_failure_version = latest
-            interpreter_changed: list[bool] = []
             notices: list[str] = []
 
             def show_notice(message: str) -> None:
                 notices.append(message)
                 console.print(message, markup=False, highlight=False)
 
+            # A Python migration rebuilds the shared tool environment, which
+            # would break dcode sessions running in other terminals. Defer it
+            # to an explicit `dcode update`.
             success, output, _installed = asyncio.run(
                 perform_upgrade(
                     on_notice=show_notice,
                     log_path=log_path,
                     target_version=latest,
-                    on_interpreter_change=lambda: interpreter_changed.append(True),
+                    allow_python_migration=False,
                 )
-            )
-        if not success and interpreter_changed:
-            # uv rebuilt the environment on a new Python but the readback failed.
-            # This process now imports from a deleted site-packages, so it must
-            # not continue as if nothing was installed.
-            _mark_startup_auto_update_failed_safe(latest)
-            _exit_after_unrestartable_update(
-                console, latest, cause=RuntimeError(output)
             )
         if success:
             pending_failure_version = None

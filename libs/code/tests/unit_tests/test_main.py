@@ -80,29 +80,6 @@ class TestTerminationSignalHandling:
         install.assert_not_called()
 
 
-@pytest.mark.parametrize(
-    ("platform", "expected"),
-    [("linux", "/tool/bin/python"), ("win32", "/tool/Scripts/python.exe")],
-)
-def test_restart_uses_rebuilt_environment_interpreter(
-    monkeypatch: pytest.MonkeyPatch, platform: str, expected: str
-) -> None:
-    """A removed versioned interpreter must not strand a migrated tool."""
-    monkeypatch.setattr(sys, "prefix", "/tool")
-    monkeypatch.setattr(sys, "base_prefix", "/old-python")
-    monkeypatch.setattr(sys, "executable", "/tool/bin/python3.13")
-    monkeypatch.setattr(sys, "platform", platform)
-    with (
-        patch(
-            "deepagents_code.main.os.execv", side_effect=OSError("restart failed")
-        ) as execute,
-        pytest.raises(OSError, match="restart failed"),
-    ):
-        _restart_current_process()
-    assert execute.call_args.args[0] == expected
-    assert execute.call_args.args[1][:3] == [expected, "-m", "deepagents_code"]
-
-
 class TestStartupAutoUpdate:
     """Tests for startup auto-update behavior."""
 
@@ -371,7 +348,6 @@ class TestStartupAutoUpdate:
         """Restart should reload package code from the updated environment."""
         with (
             patch.object(sys, "executable", "/tool/bin/python"),
-            patch.object(sys, "prefix", "/tool"),
             patch.object(sys, "argv", ["dcode", "--model", "openai:gpt-5.5"]),
             patch("os.execv", side_effect=SystemExit(0)) as execv,
             pytest.raises(SystemExit),
@@ -457,6 +433,8 @@ class TestStartupAutoUpdate:
             _run_startup_auto_update(console)
 
         upgrade.assert_awaited_once()
+        # Migrating here would break sessions running in other terminals.
+        assert upgrade.call_args.kwargs["allow_python_migration"] is False
         mark_failed.assert_called_once_with("9.9.9")
         restart.assert_not_called()
         console.print.assert_any_call(notice, markup=False, highlight=False)

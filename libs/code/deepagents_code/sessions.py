@@ -1131,8 +1131,10 @@ async def _load_initial_prompts_from_writes_batch(
     """Batch-load initial prompts from the LangGraph `writes` table.
 
     For each thread, returns the first human/user message extracted from the
-    earliest write to the `messages` channel (ordered by `checkpoint_id` ASC,
-    then `idx` ASC).
+    earliest root-namespace write to the `messages` channel, in primary-key
+    order (`checkpoint_id`, `task_id`, `idx`). Each lookup seeks that order and
+    stops at the first match, so it reads a few index pages per thread rather
+    than every write the thread has.
 
     Args:
         conn: Database connection.
@@ -1150,44 +1152,34 @@ async def _load_initial_prompts_from_writes_batch(
 
     results: dict[str, str | None] = {}
     loop = asyncio.get_running_loop()
-    for start in range(0, len(thread_ids), _SQLITE_MAX_VARIABLE_NUMBER):
-        chunk = thread_ids[start : start + _SQLITE_MAX_VARIABLE_NUMBER]
-        placeholders = ",".join("?" * len(chunk))
-        query = f"""
-            SELECT w.thread_id, w.type, w.value
-            FROM writes AS w
-            JOIN (
-                SELECT rowid AS rid,
-                       ROW_NUMBER() OVER (
-                           PARTITION BY thread_id
-                           ORDER BY checkpoint_id ASC, idx ASC
-                       ) AS rn
-                FROM writes
-                WHERE thread_id IN ({placeholders}) AND channel = 'messages'
-            ) AS ranked ON w.rowid = ranked.rid
-            WHERE ranked.rn = 1
-        """  # noqa: S608  # placeholders built from len(chunk); user values use ? params
-        async with conn.execute(query, chunk) as cursor:
-            rows = await cursor.fetchall()
+    async with conn.execute(
+        "SELECT w.thread_id, w.type, w.value FROM json_each(?) AS requested "
+        "JOIN writes AS w ON w.rowid = (SELECT rowid FROM writes "
+        "WHERE thread_id = requested.value AND checkpoint_ns = '' "
+        "AND channel = 'messages' "
+        "ORDER BY checkpoint_id, task_id, idx LIMIT 1)",
+        (json.dumps(thread_ids),),
+    ) as cursor:
+        rows = await cursor.fetchall()
 
-        for row in rows:
-            tid, type_str, value_blob = row
-            if not type_str or not value_blob:
-                continue
-            try:
-                messages = await loop.run_in_executor(
-                    None, serde.loads_typed, (type_str, value_blob)
-                )
-            except Exception:
-                logger.warning(
-                    "Failed to deserialize initial messages write for thread %s",
-                    tid,
-                    exc_info=True,
-                )
-                continue
-            if not isinstance(messages, list):
-                continue
-            results[tid] = _initial_prompt_from_messages(cast("list[object]", messages))
+    for row in rows:
+        tid, type_str, value_blob = row
+        if not type_str or not value_blob:
+            continue
+        try:
+            messages = await loop.run_in_executor(
+                None, serde.loads_typed, (type_str, value_blob)
+            )
+        except Exception:
+            logger.warning(
+                "Failed to deserialize initial messages write for thread %s",
+                tid,
+                exc_info=True,
+            )
+            continue
+        if not isinstance(messages, list):
+            continue
+        results[tid] = _initial_prompt_from_messages(cast("list[object]", messages))
 
     return results
 

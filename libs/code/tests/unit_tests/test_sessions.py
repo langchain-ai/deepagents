@@ -1871,8 +1871,8 @@ class TestLoadInitialPromptsFromWritesBatch:
 
         assert results == {"t1": "first"}
 
-    async def test_preserves_namespace_and_channel_selection(self) -> None:
-        """Earliest messages write should win regardless of its namespace."""
+    async def test_reads_root_namespace_messages_writes_only(self) -> None:
+        """The earliest root-namespace messages write wins over subgraph writes."""
         serde = JsonPlusSerializer()
         first = serde.dumps_typed([{"role": "user", "content": "first"}])
         later = serde.dumps_typed([{"role": "user", "content": "later"}])
@@ -1900,7 +1900,7 @@ class TestLoadInitialPromptsFromWritesBatch:
                 conn, ["t1"], serde
             )
 
-        assert results == {"t1": "first"}
+        assert results == {"t1": "later"}
 
     async def test_omits_threads_with_no_messages_writes(self) -> None:
         """Threads without any messages-channel write should be absent from result."""

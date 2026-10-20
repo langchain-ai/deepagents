@@ -2579,7 +2579,9 @@ def _upgrade_python(version: str) -> str | None:
     running = ".".join(str(part) for part in sys.version_info[:3])
     if requirement.contains(running):
         return None
-    if _allows_python_314(requirement):
+    # The bridge only moves forward; a newer interpreter must not be silently
+    # downgraded to 3.14.
+    if sys.version_info[:2] <= (3, 14) and _allows_python_314(requirement):
         return "3.14"
     msg = (
         f"v{version} requires Python {requirement}; running Python {running} is "

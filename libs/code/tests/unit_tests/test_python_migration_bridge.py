@@ -127,19 +127,23 @@ def test_upgrade_python_only_migrates_incompatible_interpreters(
 
 
 @pytest.mark.parametrize(
-    "requirement",
+    ("running", "requirement"),
     [
-        ">=3.15",
-        ">=3.14,!=3.14.*",
-        ">=3.14.1,<3.14.1",
-        ">=3.14.1,<3.14.2,!=3.14.1",
-        ">3.14.1,<3.14.2",
-        "<3.13",
+        ((3, 13, 4), ">=3.15"),
+        ((3, 13, 4), ">=3.14,!=3.14.*"),
+        ((3, 13, 4), ">=3.14.1,<3.14.1"),
+        ((3, 13, 4), ">=3.14.1,<3.14.2,!=3.14.1"),
+        ((3, 13, 4), ">3.14.1,<3.14.2"),
+        ((3, 13, 4), "<3.13"),
+        # A newer interpreter is never downgraded to the 3.14 bridge.
+        ((3, 15, 0), ">=3.12,<3.15"),
     ],
 )
-def test_upgrade_python_refuses_unsupported_requirements(requirement: str) -> None:
+def test_upgrade_python_refuses_unsupported_requirements(
+    running: tuple[int, int, int], requirement: str
+) -> None:
     with (
-        patch.object(update_check.sys, "version_info", VersionInfo(3, 13, 4)),
+        patch.object(update_check.sys, "version_info", VersionInfo(*running)),
         patch.object(
             update_check,
             "_release_python_requirement",

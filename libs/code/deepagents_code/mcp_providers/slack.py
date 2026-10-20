@@ -1,10 +1,10 @@
 """Slack-hosted MCP OAuth provider.
 
 Slack's hosted MCP endpoint uses the Authorization Code flow with a
-hardcoded public client ID and a fixed pre-registered loopback redirect
-URI (`http://localhost:3118/callback`). The local callback server listens
-on that port so the browser redirect completes automatically. An optional
-`team` query parameter selects the workspace to install the app into.
+default public app or configured app credentials and a fixed loopback
+redirect URI (`http://localhost:3118/callback`). The local callback server
+listens on that port so the browser redirect completes automatically. An
+optional `team` query parameter selects the workspace to install the app into.
 """
 
 from __future__ import annotations
@@ -84,30 +84,37 @@ async def _prompt_slack_team(ui: OAuthInteraction) -> str | None:
     return await ui.prompt_slack_team_id()
 
 
-async def _preseed_slack_client_info(storage: FileTokenStorage) -> None:
-    """Write the hardcoded Slack `client_info` to `storage` if not current."""
-    existing = await storage.get_client_info()
-    redirect_uris = existing.redirect_uris if existing is not None else None
-    current_redirect = str(redirect_uris[0]) if redirect_uris else None
-    if (
-        existing is not None
-        and existing.client_id == _SLACK_MCP_CLIENT_ID
-        and current_redirect == _SLACK_REDIRECT_URI
-    ):
-        return
-    await storage.set_client_info(
-        OAuthClientInformationFull(
-            client_id=_SLACK_MCP_CLIENT_ID,
-            redirect_uris=[AnyUrl(_SLACK_REDIRECT_URI)],
-            grant_types=["authorization_code", "refresh_token"],
-            response_types=["code"],
-            token_endpoint_auth_method="none",  # noqa: S106
-        )
+async def _preseed_slack_client_info(
+    storage: FileTokenStorage,
+    *,
+    client_id: str = _SLACK_MCP_CLIENT_ID,
+    client_secret: str | None = None,
+) -> None:
+    """Persist the selected Slack app registration when it changes."""
+    client_info = OAuthClientInformationFull(
+        client_id=client_id,
+        client_secret=client_secret,
+        redirect_uris=[AnyUrl(_SLACK_REDIRECT_URI)],
+        grant_types=["authorization_code", "refresh_token"],
+        response_types=["code"],
+        token_endpoint_auth_method="client_secret_post" if client_secret else "none",
     )
+    if await storage.get_client_info() != client_info:
+        await storage.set_client_info(client_info)
 
 
 class SlackProvider(OAuthProvider):
-    """Slack-hosted MCP: loopback Authorization Code with a public client."""
+    """Slack-hosted MCP: loopback authorization using the selected app."""
+
+    def __init__(
+        self,
+        *,
+        client_id: str = _SLACK_MCP_CLIENT_ID,
+        client_secret: str | None = None,
+    ) -> None:
+        """Select an app registered for Slack's fixed loopback callback."""
+        self._client_id = client_id
+        self._client_secret = client_secret
 
     def matches(self, server_url: str) -> bool:  # noqa: PLR6301  # subclass hook
         """Match `slack.com` and any `*.slack.com` subdomain.
@@ -128,16 +135,16 @@ class SlackProvider(OAuthProvider):
         """
         return _SLACK_LOOPBACK_PORT
 
-    def client_metadata(  # noqa: PLR6301  # subclass hook
+    def client_metadata(  # subclass hook
         self, *, redirect_uri: str | None = None
     ) -> OAuthClientMetadata:
-        """Return public-client metadata with Slack's pre-registered loopback URI.
+        """Return app metadata with Slack's pre-registered loopback URI.
 
         Args:
             redirect_uri: Ignored; Slack requires its pre-registered loopback URI.
 
         Returns:
-            Metadata configured for Slack's public OAuth client (no token secret).
+            Metadata using the selected app's token authentication method.
         """
         del redirect_uri
         return OAuthClientMetadata(
@@ -145,10 +152,12 @@ class SlackProvider(OAuthProvider):
             redirect_uris=[AnyUrl(_SLACK_REDIRECT_URI)],
             grant_types=["authorization_code", "refresh_token"],
             response_types=["code"],
-            token_endpoint_auth_method="none",  # noqa: S106
+            token_endpoint_auth_method=(
+                "client_secret_post" if self._client_secret else "none"
+            ),
         )
 
-    async def run_login(  # noqa: PLR6301  # subclass hook
+    async def run_login(  # subclass hook
         self,
         *,
         server_name: str,
@@ -169,7 +178,9 @@ class SlackProvider(OAuthProvider):
             so the Slack authorize URL installs into the chosen workspace.
         """
         del server_name, server_url
-        await _preseed_slack_client_info(storage)
+        await _preseed_slack_client_info(
+            storage, client_id=self._client_id, client_secret=self._client_secret
+        )
         team_id = await _prompt_slack_team(ui)
         extras = {"team": team_id} if team_id else {}
         return LoginResult(extra_auth_params=extras)

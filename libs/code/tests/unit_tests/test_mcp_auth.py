@@ -11,7 +11,7 @@ import threading
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, cast
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import anyio
 import httpx
@@ -4147,6 +4147,64 @@ class TestLogin:
         assert ui.authorize_urls, "authorize URL must be shown"
         shown_url, _opened = ui.authorize_urls[0]
         assert "team=T01234567" in shown_url
+
+    @pytest.mark.parametrize("secret", [None, "test-app-secret"])
+    async def test_slack_custom_app_login(
+        self, secret: str | None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Login uses the selected app without reusing another app's grant."""
+        from deepagents_code.mcp_auth import login
+        from deepagents_code.mcp_oauth_ui import OAuthInteraction
+        from deepagents_code.mcp_providers.slack import _SLACK_REDIRECT_URI
+
+        url = "https://mcp.slack.com/mcp"
+        default = FileTokenStorage("slack", server_url=url)
+        await default.set_tokens(_make_tokens("default-app-token"))
+        oauth = {"client_id": "custom-app"}
+        if secret:
+            monkeypatch.setenv("SLACK_APP_SECRET", secret)
+            oauth["client_secret"] = "${SLACK_APP_SECRET}"
+        selected = FileTokenStorage(
+            "slack", server_url=url, oauth_client_id="custom-app"
+        )
+        other = FileTokenStorage("slack", server_url=url, oauth_client_id="other-app")
+        assert len({default.path, selected.path, other.path}) == 3
+        ui = AsyncMock(spec=OAuthInteraction)
+
+        async def handshake(transport: StreamableHttpTransport) -> None:
+            provider = transport.auth
+            assert isinstance(provider, OAuthClientProvider)
+            assert await provider.context.storage.get_tokens() is None
+            info = await provider.context.storage.get_client_info()
+            assert info is not None
+            assert info.client_id == "custom-app"
+            assert info.client_secret == secret
+            assert info.redirect_uris is not None
+            assert str(info.redirect_uris[0]) == _SLACK_REDIRECT_URI
+            assert info.token_endpoint_auth_method == (
+                "client_secret_post" if secret else "none"
+            )
+            await provider.context.storage.set_tokens(_make_tokens("custom-app-token"))
+
+        with patch("deepagents_code.mcp_auth._drive_handshake", handshake):
+            await login(
+                server_name="slack",
+                server_config={
+                    "type": "http",
+                    "url": url,
+                    "auth": "oauth",
+                    "oauth": oauth,
+                },
+                ui=ui,
+            )
+        selected_tokens = await selected.get_tokens()
+        default_tokens = await default.get_tokens()
+        assert selected_tokens is not None
+        assert selected_tokens.access_token == "custom-app-token"
+        assert default_tokens is not None
+        assert default_tokens.access_token == "default-app-token"
+        assert await other.get_tokens() is None
+        ui.show_success.assert_awaited_once()
 
     async def test_slack_preseed_is_idempotent(self) -> None:
         """Preseeding Slack client info a second time reads rather than writes."""

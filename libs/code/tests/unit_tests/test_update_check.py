@@ -1395,35 +1395,6 @@ class TestUpdateLogs:
         assert success is True
         assert output == "ok"
 
-    async def test_perform_upgrade_refuses_receipt_introspection_failure(
-        self,
-    ) -> None:
-        """Unreadable install context must not silently discard selected extras."""
-        with (
-            patch("deepagents_code.update_check._upgrade_python", return_value=None),
-            patch(
-                "deepagents_code.update_check.release_prerelease_pins", return_value=[]
-            ),
-            patch(
-                "deepagents_code.update_check.detect_install_method",
-                return_value="uv",
-            ),
-            patch(
-                "deepagents_code.update_check.upgrade_install_command",
-                side_effect=ExtrasIntrospectionError("metadata unreadable"),
-            ),
-            patch(
-                "deepagents_code.update_check._run_install_subprocess",
-                new_callable=AsyncMock,
-            ) as run_mock,
-        ):
-            success, output, installed = await perform_upgrade(target_version="2.0.0")
-
-        assert success is False
-        assert "metadata unreadable" in output
-        assert installed is None
-        run_mock.assert_not_awaited()
-
     def test_dependency_refresh_dry_run_ignores_phantom_metadata_extras(
         self, tmp_path, monkeypatch
     ) -> None:

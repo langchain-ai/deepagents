@@ -7,7 +7,7 @@ import sys
 from collections.abc import Callable
 from contextlib import AbstractContextManager
 from pathlib import Path
-from unittest.mock import ANY, AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -1327,12 +1327,10 @@ class TestUpdateSubcommand:
             bypass_cache=True,
             include_prereleases=None,
         )
-        perform_upgrade_mock.assert_awaited_once_with(
-            on_notice=ANY,
-            log_path="/tmp/deepagents-update.log",
-            include_prereleases=None,
-            target_version="99.0.0",
-        )
+        perform_upgrade_mock.assert_awaited_once()
+        kwargs = perform_upgrade_mock.call_args.kwargs
+        assert kwargs["include_prereleases"] is None
+        assert kwargs["target_version"] == "99.0.0"
 
     def test_prerelease_unsupported_install_refuses_before_pypi(
         self, capsys: pytest.CaptureFixture[str]

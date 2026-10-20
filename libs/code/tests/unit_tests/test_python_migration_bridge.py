@@ -362,9 +362,11 @@ async def test_preflight_failure_never_runs_bare_installer(
         else "upgrade_install_command"
     )
     monkeypatch.setattr(update_check, helper, MagicMock(side_effect=failure))
-    success, output, version = await update_check.perform_upgrade(
-        target_version="2.0.0", include_prereleases=False
-    )
+    # Pin the interpreter so receipt failures always take the migration path.
+    with patch.object(update_check.sys, "version_info", VersionInfo(3, 13, 4)):
+        success, output, version = await update_check.perform_upgrade(
+            target_version="2.0.0", include_prereleases=False
+        )
     assert not success
     assert version is None
     assert str(failure) in output

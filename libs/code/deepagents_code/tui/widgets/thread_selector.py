@@ -2232,12 +2232,17 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
                 they are and background enrichment fills in the rest.
         """
         timeout = _LOAD_MORE_DETAILS_TIMEOUT if bounded else None
+        deadline = asyncio.timeout(timeout)
         try:
-            async with asyncio.timeout(timeout):
+            async with deadline:
                 await self._populate_visible_checkpoint_details()
-        except TimeoutError:
-            logger.debug("Timed out preloading checkpoint details for thread selector")
         except (OSError, sqlite3.Error):
+            # `TimeoutError` is an `OSError`, so check that it is our deadline.
+            if deadline.expired():
+                logger.debug(
+                    "Timed out preloading checkpoint details for thread selector"
+                )
+                return
             logger.debug(
                 "Could not preload checkpoint details for thread selector",
                 exc_info=True,

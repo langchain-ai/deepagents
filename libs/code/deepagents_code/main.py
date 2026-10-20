@@ -854,11 +854,12 @@ def _run_startup_auto_update(console: "Console") -> None:
             # Nothing failed: the notice above explains how to migrate.
             message = f"Continuing with v{cli_version}."
         elif notices:
-            # The notice above already carries the migration-aware recovery
-            # steps; a generic command here would contradict them.
+            # The notice above carries its own recovery steps and points at the
+            # log; a generic command here would contradict them.
+            log_line = f"Log: {escape(str(log_path))}\n" if log_path else ""
             message = (
                 "[bold red]Auto-update failed; see the message above.[/bold red]\n"
-                f"Continuing with v{cli_version}."
+                f"{log_line}Continuing with v{cli_version}."
             )
         else:
             update_needs_prereleases = release_requires_prereleases(latest)
@@ -6102,10 +6103,12 @@ def cli_main() -> None:
                 if success:
                     console.print(f"[green]Updated to v{latest}.[/green]")
                 elif notices:
-                    # The notice already carries migration-aware recovery steps.
+                    # The notice carries its own recovery steps and points at
+                    # the log, so repeat where the log is.
+                    log_line = f"\nLog: {escape(str(log_path))}" if log_path else ""
                     console.print(
                         "[bold red]Auto-update failed; see the message above."
-                        "[/bold red]"
+                        f"[/bold red]{log_line}"
                     )
                     sys.exit(1)
                 else:

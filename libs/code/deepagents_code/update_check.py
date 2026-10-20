@@ -2941,7 +2941,7 @@ async def perform_upgrade(
 
     if not success and python is not None:
         guidance = (
-            "Python 3.14 migration failed. Check the uv output for a timeout, "
+            "Python 3.14 migration failed. Check the update log for a timeout, "
             "network errors, or dependency conflicts. If Python downloads are "
             "disabled, provision Python 3.14 with uv or your administrator, or "
             "allow uv downloads and retry. Do not uninstall dcode first. "
@@ -2954,10 +2954,10 @@ async def perform_upgrade(
     elif not success and requirement_unknown:
         from deepagents_code._invocation import invoked_name
 
-        # uv's resolver error is cut short by callers, so name the likely fix.
+        # Callers hide uv's output after a notice, so name the likely fix.
         guidance = (
             f"Could not check v{target_version}'s Python requirement before "
-            "installing. If uv reports that it needs a newer Python, retry "
+            "installing. If the update log shows it needs a newer Python, retry "
             f"`{invoked_name()} update` later, or use the Python 3.14 installer: "
             f"{_PYTHON_MIGRATION_INSTALL_COMMAND} "
             "(reselect extras and added packages)."
@@ -3007,7 +3007,7 @@ async def perform_upgrade(
             )
             failure = (
                 f"Could not verify installation of v{target_version} ({found}). "
-                "Not restarting or reporting success. Check the uv output and "
+                "Not restarting or reporting success. Check the update log and "
                 f"retry, or rerun the installer: {recovery_installer}"
             )
             await _emit_progress(on_notice, failure)

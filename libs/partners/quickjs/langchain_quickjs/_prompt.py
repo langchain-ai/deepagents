@@ -453,7 +453,12 @@ def _safe_json_schema(tool: BaseTool) -> dict[str, Any] | None:
     try:
         if tool.args_schema is None:
             return None
-        model_json_schema = getattr(tool.args_schema, "model_json_schema", None)
+        # `tool_call_schema` drops injected args such as `ToolRuntime`, which
+        # the full `args_schema` cannot serialize to JSON schema.
+        schema_cls = tool.tool_call_schema
+        if not callable(getattr(schema_cls, "model_json_schema", None)):
+            schema_cls = tool.args_schema
+        model_json_schema = getattr(schema_cls, "model_json_schema", None)
         if callable(model_json_schema):
             return model_json_schema()
     except Exception:  # noqa: BLE001 — prompt rendering is best-effort

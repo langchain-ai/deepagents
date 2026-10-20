@@ -10,6 +10,7 @@ import json
 from typing import Any, Literal
 
 import pytest
+from langchain.tools import ToolRuntime, tool
 from langchain_core.messages import ToolMessage
 from langchain_core.tools import BaseTool, StructuredTool
 from langgraph.types import Command
@@ -342,6 +343,23 @@ def test_render_ptc_prompt_uses_signatures() -> None:
     assert "times?: number" in prompt
     # Descriptions from Field(description=...) appear on the fields
     assert "Who to greet" in prompt
+
+
+def test_render_ptc_prompt_excludes_injected_runtime_arg() -> None:
+    """Tools taking `runtime: ToolRuntime` still render their real arguments."""
+
+    @tool
+    def runtime_query(sql: str, artifact_id: str, runtime: ToolRuntime) -> str:
+        """Run SQL over one artifact."""
+        return sql
+
+    prompt = render_ptc_prompt([runtime_query])
+    signature = prompt.split("tools.runtimeQuery")[1]
+    msg = f"signature fell back to a generic input: {signature}"
+    assert "Record<string, unknown>" not in signature.split("Promise")[0], msg
+    assert "sql: string" in signature
+    assert "artifact_id: string" in signature
+    assert "runtime" not in signature
 
 
 def test_render_ptc_prompt_rejects_invalid_js_identifiers() -> None:

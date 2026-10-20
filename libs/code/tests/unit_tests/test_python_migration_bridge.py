@@ -323,11 +323,17 @@ async def test_installer_success_requires_exact_verified_version(
     monkeypatch.setattr(
         update_check, "_upgrade_python", lambda _version: "3.14" if migrating else None
     )
+    # The unused reader reports the target, so reading the wrong environment
+    # (e.g. the old interpreter's site-packages after a migration) would pass.
     monkeypatch.setattr(
-        update_check, "read_installed_distribution_version", lambda: installed
+        update_check,
+        "read_installed_distribution_version",
+        lambda: "2.0.0" if migrating else installed,
     )
     monkeypatch.setattr(
-        update_check, "_read_migrated_distribution_version", lambda: installed
+        update_check,
+        "_read_migrated_distribution_version",
+        lambda: installed if migrating else "2.0.0",
     )
     success, output, version = await update_check.perform_upgrade(
         target_version="2.0.0", include_prereleases=False

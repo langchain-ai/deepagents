@@ -18376,7 +18376,7 @@ class DeepAgentsApp(App):
                     f"  - {change}" for change in changes
                 )
             else:
-                report = "Configuration reloaded. No changes detected."
+                report = "Configuration reloaded."
             report += "\nModel config caches cleared."
             if theme_reload_ok:
                 report += "\nTheme registry reloaded."

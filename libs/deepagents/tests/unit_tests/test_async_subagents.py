@@ -690,6 +690,27 @@ class TestCheckTool:
         assert tasks["thread_abc"]["last_updated_at"] != "2024-01-15T10:30:00Z"
 
     @patch("deepagents.middleware.async_subagents.get_sync_client")
+    def test_check_result_drops_reasoning_and_keeps_images(self, mock_get_client: MagicMock) -> None:
+        mock_client = MagicMock()
+        mock_client.runs.get.return_value = {"run_id": "run_xyz", "status": "success"}
+        answer = [
+            {"type": "reasoning", "reasoning": "secret plan"},
+            {"type": "text", "text": "Here's the look."},
+            {"type": "image", "base64": "aGVsbG8=", "mime_type": "image/png"},
+        ]
+        mock_client.threads.get.return_value = {"values": {"messages": [{"role": "assistant", "content": answer}]}}
+        mock_get_client.return_value = mock_client
+
+        check = _build_async_subagent_tools([_make_spec()])[1]
+        result = check.func(task_id="thread_abc", runtime=self._make_check_runtime("tc_check"))
+
+        assert isinstance(result, Command)
+        output, image = result.update["messages"][0].content
+        assert json.loads(output["text"])["result"] == "Here's the look."
+        assert "secret plan" not in output["text"]
+        assert (image["type"], image["base64"]) == ("image", "aGVsbG8=")
+
+    @patch("deepagents.middleware.async_subagents.get_sync_client")
     def test_check_errored_task(self, mock_get_client: MagicMock) -> None:
         mock_client = MagicMock()
         mock_client.runs.get.return_value = {"run_id": "run_xyz", "status": "error"}
@@ -1897,6 +1918,28 @@ def _pulled_events(update: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 class TestParentPull:
+    async def test_run_cancelled_on_the_server_is_reported(self) -> None:
+        server = _FakeServer(run={"run_id": "run_xyz", "status": "interrupted"})
+
+        update = await _pull("abefore_model", _lead_state(), server)
+
+        assert [e["status"] for e in _pulled_events(update)] == ["interrupted"]
+        assert "cancelled before it finished" in _text(update["messages"][0])
+        assert update["async_tasks"]["thread_abc"]["status"] == "interrupted"
+
+    async def test_run_replaced_by_another_client_is_followed_not_reported(self) -> None:
+        server = _FakeServer(run={"run_id": "run_xyz", "status": "interrupted"})
+
+        async def newer(**_kwargs: Any) -> list[dict[str, Any]]:
+            return [{"run_id": "run_newer", "status": "running"}]
+
+        server.runs.list = newer
+
+        update = await _pull("abefore_model", _lead_state(), server)
+
+        assert "messages" not in (update or {})
+        assert update["async_tasks"]["thread_abc"]["run_id"] == "run_newer"
+
     async def test_status_update_is_added_before_the_model_call(self) -> None:
         update = await _pull("abefore_model", _lead_state(), _ended())
 

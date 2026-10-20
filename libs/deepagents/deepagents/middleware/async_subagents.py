@@ -427,8 +427,8 @@ class TaskEvent(TypedDict):
     agent_name: str
     """The async subagent's name, as in the task's `AsyncTask.agent_name`."""
 
-    status: Literal["success", "error", "timeout", "waiting"]
-    """`waiting` means the subagent paused for input or approval."""
+    status: Literal["success", "error", "timeout", "interrupted", "waiting"]
+    """`waiting` means the subagent paused for input or approval; `interrupted`, that its run was cancelled on the server."""
 
     run_id: NotRequired[str]
     """The subagent run that ended."""
@@ -462,6 +462,7 @@ def _notification_content(update: _TaskUpdate) -> list[dict[str, Any]]:
         "success": "Use the result to continue; report back to the user if they're waiting on it.",
         "error": "Use `check_async_task` for details, then decide whether to retry, try another approach, or tell the user.",
         "timeout": "The task ran too long and was stopped. Decide whether to retry with a smaller task, or tell the user.",
+        "interrupted": "The task's run was cancelled before it finished, outside your tools. Decide whether to start it again, or tell the user.",
         "waiting": "The subagent is waiting for the user, who answers it on the subagent's own thread; you can't answer or approve it. Keep working.",
     }[update["status"]]
     blocks = [
@@ -800,8 +801,14 @@ def _needs_latest_run(run: Run, thread: Thread | None) -> bool:
 
 
 def _observe(client: SyncLangGraphClient, task: AsyncTask) -> tuple[Run, Thread | None]:
-    """Fetch a task's latest run and, when that run finished, its thread."""
+    """Fetch a task's latest run and, when that run finished, its thread.
+
+    A tracked run that another client's run interrupted hands over to the newest run;
+    the tracked run is reported `interrupted` only when nothing replaced it.
+    """
     run = client.runs.get(thread_id=task["thread_id"], run_id=task["run_id"])
+    if run["status"] == "interrupted":
+        run = next(iter(client.runs.list(thread_id=task["thread_id"], limit=1)), run)
     if run["status"] != "success":
         return run, None
     try:
@@ -817,6 +824,8 @@ def _observe(client: SyncLangGraphClient, task: AsyncTask) -> tuple[Run, Thread 
 async def _aobserve(client: LangGraphClient, task: AsyncTask) -> tuple[Run, Thread | None]:
     """Async version of `_observe`."""
     run = await client.runs.get(thread_id=task["thread_id"], run_id=task["run_id"])
+    if run["status"] == "interrupted":
+        run = next(iter(await client.runs.list(thread_id=task["thread_id"], limit=1)), run)
     if run["status"] != "success":
         return run, None
     try:
@@ -843,17 +852,15 @@ _WAITING_NOTE = (
 
 
 def _build_check_result(run: Run, thread_id: str, thread: Thread | None) -> dict[str, Any]:
-    """Build the result dict from a task's latest run and its thread."""
+    """Build the result dict from a task's latest run and its thread.
+
+    A finished task's `result` is its answer as standard content blocks, as notifications get it.
+    """
     status = _task_status(run, thread)
     result: dict[str, Any] = {"status": status, "thread_id": thread_id}
     if status == "success":
-        thread_values = thread.get("values") if thread else None
-        messages = thread_values.get("messages", []) if isinstance(thread_values, dict) else []
-        if messages:
-            last = messages[-1]
-            result["result"] = last.get("content", "") if isinstance(last, dict) else str(last)
-        else:
-            result["result"] = "(completed with no output messages)"
+        values = thread.get("values") if thread else None
+        result["result"] = _final_content(values if isinstance(values, Mapping) else {})
     elif status == "error":
         error_detail = run.get("error")
         result["error"] = str(error_detail) if error_detail else "The async subagent encountered an error."
@@ -885,10 +892,24 @@ def _build_check_command(
     )
     return Command(
         update={
-            "messages": [ToolMessage(json.dumps(result), tool_call_id=tool_call_id)],
+            "messages": [ToolMessage(_check_output(result), tool_call_id=tool_call_id)],
             "async_tasks": {task["task_id"]: updated_task},
         }
     )
+
+
+def _check_output(result: dict[str, Any]) -> str | list[str | dict[Any, Any]]:
+    """A check result as tool output: JSON with the answer's text in `result`, then any media as its own blocks.
+
+    Reasoning and tool-call blocks are dropped, as in notifications; the text isn't cut.
+    """
+    blocks = result.get("result")
+    if not isinstance(blocks, list):
+        return json.dumps(result)
+    text = "".join(block["text"] for block in blocks if block["type"] == "text")
+    media: list[str | dict[Any, Any]] = [dict(block) for block in blocks if block["type"] in _MEDIA_BLOCK_TYPES]
+    output = json.dumps({**result, "result": text})
+    return [_text_block(output), *media] if media else output
 
 
 def _keep_cancelled(task: AsyncTask, result: dict[str, Any]) -> dict[str, Any]:
@@ -1317,13 +1338,12 @@ def _build_async_subagent_tools(
 
 def _check_event(task: AsyncTask, run: Run, thread: Thread | None, status: str) -> _TaskUpdate | None:
     """The notification for a task outcome a check found, or `None` for outcomes not worth waking for."""
-    if status not in {"success", "error", "timeout", _WAITING}:
+    if status not in {"success", "error", "timeout", "interrupted", _WAITING}:
         return None
     result = _build_check_result(run, task["thread_id"], thread)
     details: dict[str, object] = {"interrupts": result["interrupts"]} if "interrupts" in result else {}
     if status == "success":
-        values = thread.get("values") if thread else None
-        details["result"] = _final_content(values if isinstance(values, Mapping) else {})
+        details["result"] = result["result"]
     if status == "error":
         details["error"] = "The subagent failed."
     return _event(task["task_id"], task["agent_name"], status, run.get("run_id", task["run_id"]), **details)

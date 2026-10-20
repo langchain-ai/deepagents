@@ -45,6 +45,7 @@ from deepagents_talon.authorization import (
 from deepagents_talon.background import (
     _IN_SUBAGENT,
     _INLINE_TIMEOUT_SECONDS,
+    _MAX_RUNNING,
     _SCHEDULED_TURN,
     BackgroundSubagents,
 )
@@ -109,6 +110,7 @@ DEFAULT_MAX_APPROVAL_ROUNDS = 50
 CONTEXT_SIZE_ENV_KEY = "DEEPAGENTS_TALON_CONTEXT_SIZE"
 RECURSION_LIMIT_ENV_KEY = "DEEPAGENTS_TALON_RECURSION_LIMIT"
 INLINE_SUBAGENT_TIMEOUT_ENV_KEY = "DEEPAGENTS_TALON_INLINE_SUBAGENT_TIMEOUT"
+MAX_BACKGROUND_TASKS_ENV_KEY = "DEEPAGENTS_TALON_MAX_BACKGROUND_TASKS"
 _WORKSPACE_ENV = "DEEPAGENTS_TALON_WORKSPACE"
 _HELP_MODEL_ENV = "DEEPAGENTS_TALON_HELP_MODEL"
 _MAX_HELP_QUESTION = 8_000
@@ -402,7 +404,9 @@ class DeepAgentRuntime:
         )
         self._tools_lock = asyncio.Lock()
         self.background = BackgroundSubagents(
-            inline_timeout=_inline_timeout_from_env(self.env, _INLINE_TIMEOUT_SECONDS)
+            inline_timeout=_inline_timeout_from_env(self.env, _INLINE_TIMEOUT_SECONDS),
+            max_running=_positive_int_from_env(self.env, MAX_BACKGROUND_TASKS_ENV_KEY)
+            or _MAX_RUNNING,
         )
         self._pending_results: contextvars.ContextVar[dict[str, str] | None] = (
             contextvars.ContextVar("talon_subagent_results", default=None)

@@ -56,6 +56,7 @@ from deepagents_talon.interfaces import (
     ConversationDeliveryRuntime,
     ConversationHistoryRuntime,
     CronScheduler,
+    InboundMediaRuntime,
     MCPReloadableRuntime,
     ModelSelectableRuntime,
     ProgressMessageHandler,
@@ -1009,6 +1010,14 @@ class TalonHost:
         self._background_retries[owner] = _BackgroundRetry(attempts, now + delay)
         return True
 
+    async def _prepare_agent_message(self, route: _BackgroundRoute) -> ChannelMessage:
+        message = route.message
+        if not route.metadata.get("background_delivery"):
+            message = await transcribe_voice_message(self.voice_transcriber, message)
+        if isinstance(self.agent, InboundMediaRuntime):
+            message = await self.agent.prepare_inbound_media(message, config=self.config)
+        return _prepare_inbound_message(message)
+
     async def _run_agent_turn(
         self,
         route: _BackgroundRoute,
@@ -1016,10 +1025,7 @@ class TalonHost:
     ) -> None:
         channel = route.channel
         agent_conversation_id = turn.conversation_id
-        message = route.message
-        if not route.metadata.get("background_delivery"):
-            message = await transcribe_voice_message(self.voice_transcriber, message)
-        message = _prepare_inbound_message(message)
+        message = await self._prepare_agent_message(route)
         metadata: dict[str, object] = {
             "channel": turn.provider,
             "sender_id": message.sender_id,

@@ -924,124 +924,246 @@ async def _populate_checkpoint_fields(
     include_message_count: bool,
     include_initial_prompt: bool,
 ) -> None:
-    """Populate checkpoint-derived thread fields with a batched latest-row pass."""
-    serde = await _get_jsonplus_serializer()
+    """Populate checkpoint-derived thread fields, cheapest source first.
 
-    # Phase 1: apply cache hits, collect threads that need DB fetch.
-    uncached: list[ThreadInfo] = []
+    Order: the in-memory caches, then counts an earlier session saved to
+    `dcode_thread_message_counts`, then the `writes` and `checkpoints` tables.
+    Counts computed here are saved so later sessions skip the replay.
+    """
+    serde = await _get_jsonplus_serializer()
+    _apply_memory_caches(
+        threads,
+        include_message_count=include_message_count,
+        include_initial_prompt=include_initial_prompt,
+    )
+    count_ids = [
+        t["thread_id"]
+        for t in threads
+        if include_message_count and "message_count" not in t
+    ]
+    if count_ids:
+        await _apply_saved_message_counts(conn, threads, count_ids)
+        count_ids = [t["thread_id"] for t in threads if "message_count" not in t]
+    prompt_ids = [
+        t["thread_id"]
+        for t in threads
+        if include_initial_prompt and "initial_prompt" not in t
+    ]
+    logger.debug(
+        "Thread enrichment cache lookup: rows=%d count_misses=%d prompt_misses=%d",
+        len(threads),
+        len(count_ids),
+        len(prompt_ids),
+    )
+    if not count_ids and not prompt_ids:
+        return
+
+    by_id = {t["thread_id"]: t for t in threads}
+    summaries = await _load_prompts_and_summaries(
+        conn, by_id, count_ids, prompt_ids, serde
+    )
+    counts = await _load_message_counts(conn, by_id, count_ids, summaries, serde)
+    await _save_message_counts(conn, by_id, counts)
+
+
+def _apply_memory_caches(
+    threads: list[ThreadInfo],
+    *,
+    include_message_count: bool,
+    include_initial_prompt: bool,
+) -> None:
+    """Fill requested fields from the in-memory caches when still fresh."""
     for thread in threads:
         thread_id = thread["thread_id"]
         freshness = _thread_freshness(thread)
-        needs_count = False
-        needs_prompt = False
+        cached_count = _message_count_cache.get(thread_id)
+        if include_message_count and cached_count and cached_count[0] == freshness:
+            thread["message_count"] = cached_count[1]
+        cached_prompt = _initial_prompt_cache.get(thread_id)
+        if (
+            include_initial_prompt
+            and "initial_prompt" not in thread
+            and cached_prompt
+            and cached_prompt[0] == freshness
+        ):
+            thread["initial_prompt"] = cached_prompt[1]
 
-        if include_message_count:
-            cached = _message_count_cache.get(thread_id)
-            if cached is not None and cached[0] == freshness:
-                thread["message_count"] = cached[1]
-            else:
-                needs_count = True
 
-        if include_initial_prompt and "initial_prompt" not in thread:
-            cached_prompt = _initial_prompt_cache.get(thread_id)
-            if cached_prompt is not None and cached_prompt[0] == freshness:
-                thread["initial_prompt"] = cached_prompt[1]
-            else:
-                needs_prompt = True
+async def _load_prompts_and_summaries(
+    conn: aiosqlite.Connection,
+    by_id: dict[str, ThreadInfo],
+    count_ids: list[str],
+    prompt_ids: list[str],
+    serde: JsonPlusSerializer,
+) -> dict[str, _CheckpointSummary]:
+    """Fill initial prompts and decode the latest checkpoints that are needed.
 
-        if needs_count or needs_prompt:
-            uncached.append(thread)
-
-    logger.debug(
-        "Thread enrichment cache lookup: rows=%d hits=%d misses=%d",
-        len(threads),
-        len(threads) - len(uncached),
-        len(uncached),
-    )
-    if not uncached:
-        return
-
-    # Phase 2: batch-fetch all uncached threads.
-    uncached_ids = [t["thread_id"] for t in uncached]
-    batch_results: dict[str, _CheckpointSummary] = {}
-    if include_message_count or include_initial_prompt:
-        phase_started_at = time.perf_counter()
-        batch_results = await _load_latest_checkpoint_summaries_batch(
-            conn, uncached_ids, serde
-        )
-        logger.debug(
-            "Latest checkpoint loading and decoding completed in %.1f ms: "
-            "requested=%d loaded=%d",
-            (time.perf_counter() - phase_started_at) * 1000,
-            len(uncached_ids),
-            len(batch_results),
-        )
+    Returns:
+        Latest checkpoint summaries, for counts that they inline.
+    """
     # `initial_prompt` cannot be recovered from the latest checkpoint alone:
     # `after_model` middleware (e.g., `ResumeStateMiddleware`) writes partial
     # checkpoints whose `channel_values` omit `messages`. Read the very first
     # write to the `messages` channel from the `writes` table instead — that
     # row holds the user's original input.
-    prompt_results: dict[str, str | None] = {}
-    if include_initial_prompt:
-        phase_started_at = time.perf_counter()
-        prompt_results = await _load_initial_prompts_from_writes_batch(
-            conn, uncached_ids, serde
+    started_at = time.perf_counter()
+    prompts = (
+        await _load_initial_prompts_from_writes_batch(conn, prompt_ids, serde)
+        if prompt_ids
+        else {}
+    )
+    _log_phase("Initial prompt loading", started_at, len(prompt_ids), len(prompts))
+
+    # A latest checkpoint is decoded only for a count, or for a prompt that
+    # has no `messages` write to read from.
+    fallback_ids = [tid for tid in prompt_ids if tid not in prompts]
+    summary_ids = list(dict.fromkeys([*count_ids, *fallback_ids]))
+    started_at = time.perf_counter()
+    summaries = (
+        await _load_latest_checkpoint_summaries_batch(conn, summary_ids, serde)
+        if summary_ids
+        else {}
+    )
+    _log_phase(
+        "Latest checkpoint loading and decoding",
+        started_at,
+        len(summary_ids),
+        len(summaries),
+    )
+
+    for tid in prompt_ids:
+        thread = by_id[tid]
+        prompt = (
+            prompts[tid]
+            if tid in prompts
+            else summaries.get(tid, _CheckpointSummary(None, None)).initial_prompt
         )
+        thread["initial_prompt"] = prompt
+        _cache_initial_prompt(tid, _thread_freshness(thread), prompt)
+    return summaries
+
+
+async def _load_message_counts(
+    conn: aiosqlite.Connection,
+    by_id: dict[str, ThreadInfo],
+    count_ids: list[str],
+    summaries: dict[str, _CheckpointSummary],
+    serde: JsonPlusSerializer,
+) -> dict[str, int]:
+    """Fill message counts from checkpoint summaries, else the `writes` table.
+
+    When `messages` uses a `DeltaChannel` (LangGraph channel applied by the
+    deepagents SDK as of v0.6) the full list is only snapshotted into
+    `channel_values` periodically, so the latest checkpoint usually omits it;
+    the count must then be reconstructed from the `writes` table.
+
+    Returns:
+        The counts filled in, keyed by thread ID.
+    """
+    counts: dict[str, int] = {}
+    replay_ids: list[str] = []
+    for tid in count_ids:
+        summary = summaries.get(tid)
+        if summary is not None and summary.message_count is not None:
+            counts[tid] = summary.message_count
+        else:
+            replay_ids.append(tid)
+    if replay_ids:
+        started_at = time.perf_counter()
+        replayed = await _load_message_counts_from_writes_batch(conn, replay_ids, serde)
+        _log_phase(
+            "Message write fetching and count reconstruction",
+            started_at,
+            len(replay_ids),
+            len(replayed),
+        )
+        counts.update({tid: replayed.get(tid, 0) for tid in replay_ids})
+    for tid, count in counts.items():
+        by_id[tid]["message_count"] = count
+        _cache_message_count(tid, _thread_freshness(by_id[tid]), count)
+    return counts
+
+
+def _log_phase(label: str, started_at: float, requested: int, loaded: int) -> None:
+    """Log how long one enrichment phase took."""
+    if requested:
         logger.debug(
-            "Initial prompt loading completed in %.1f ms: requested=%d loaded=%d",
-            (time.perf_counter() - phase_started_at) * 1000,
-            len(uncached_ids),
-            len(prompt_results),
+            "%s completed in %.1f ms: requested=%d loaded=%d",
+            label,
+            (time.perf_counter() - started_at) * 1000,
+            requested,
+            loaded,
         )
 
-    # Phase 3: apply inline results, deferring threads whose latest checkpoint
-    # does not inline the `messages` channel value. When `messages` uses a
-    # `DeltaChannel` (LangGraph channel applied by the deepagents SDK as of
-    # v0.6) the full list is only snapshotted into `channel_values` periodically,
-    # so the latest checkpoint usually omits it; the count must then be
-    # reconstructed from the `writes` table.
-    needs_writes_count: list[str] = []
-    for thread in uncached:
-        thread_id = thread["thread_id"]
+
+_MESSAGE_COUNTS_TABLE = "dcode_thread_message_counts"
+"""Message counts saved across sessions, keyed by thread and freshness token.
+
+A count from the `writes` replay can take seconds to compute for a batch of
+threads on a large database, so it is saved and reused until the thread's
+freshness token (see `_thread_freshness`) changes.
+"""
+
+
+async def _apply_saved_message_counts(
+    conn: aiosqlite.Connection,
+    threads: list[ThreadInfo],
+    thread_ids: list[str],
+) -> None:
+    """Fill message counts saved by an earlier session when still fresh."""
+    if not await _table_exists(conn, _MESSAGE_COUNTS_TABLE):
+        return
+    async with conn.execute(
+        f"SELECT thread_id, freshness, message_count FROM {_MESSAGE_COUNTS_TABLE} "  # noqa: S608  # constant table name
+        "WHERE thread_id IN (SELECT value FROM json_each(?))",
+        (json.dumps(thread_ids),),
+    ) as cursor:
+        saved = {row[0]: (row[1], row[2]) for row in await cursor.fetchall()}
+    for thread in threads:
+        entry = saved.get(thread["thread_id"])
         freshness = _thread_freshness(thread)
+        if entry is None or entry[0] != freshness or "message_count" in thread:
+            continue
+        thread["message_count"] = entry[1]
+        _cache_message_count(thread["thread_id"], freshness, entry[1])
 
-        if include_message_count and "message_count" not in thread:
-            summary = batch_results.get(thread_id)
-            if summary is not None and summary.message_count is not None:
-                thread["message_count"] = summary.message_count
-                _cache_message_count(thread_id, freshness, summary.message_count)
-            else:
-                needs_writes_count.append(thread_id)
-        if include_initial_prompt and "initial_prompt" not in thread:
-            if thread_id in prompt_results:
-                prompt = prompt_results[thread_id]
-            else:
-                prompt = batch_results.get(
-                    thread_id, _CheckpointSummary(None, None)
-                ).initial_prompt
-            thread["initial_prompt"] = prompt
-            _cache_initial_prompt(thread_id, freshness, prompt)
 
-    # Phase 4: reconstruct counts for delta-channel threads from the `writes`
-    # table by replaying the `messages` writes through the canonical reducer.
-    if needs_writes_count:
-        phase_started_at = time.perf_counter()
-        writes_counts = await _load_message_counts_from_writes_batch(
-            conn, needs_writes_count, serde
+async def _save_message_counts(
+    conn: aiosqlite.Connection,
+    by_id: dict[str, ThreadInfo],
+    counts: dict[str, int],
+) -> None:
+    """Save computed message counts for later sessions; best effort.
+
+    A listing must never wait on another connection's write lock, so this
+    gives up at once when the database is busy and leaves the counts unsaved.
+    """
+    rows = [
+        (tid, freshness, count)
+        for tid, count in counts.items()
+        if (freshness := _thread_freshness(by_id[tid])) is not None
+    ]
+    if not rows:
+        return
+    async with conn.execute("PRAGMA busy_timeout") as cursor:
+        busy_timeout = (await cursor.fetchone() or (0,))[0]
+    await conn.execute("PRAGMA busy_timeout = 0")
+    try:
+        await conn.execute(
+            f"CREATE TABLE IF NOT EXISTS {_MESSAGE_COUNTS_TABLE} "
+            "(thread_id TEXT PRIMARY KEY NOT NULL, freshness TEXT NOT NULL, "
+            "message_count INTEGER NOT NULL)"
         )
-        logger.debug(
-            "Message write fetching and count reconstruction completed in %.1f ms: "
-            "requested=%d counted=%d",
-            (time.perf_counter() - phase_started_at) * 1000,
-            len(needs_writes_count),
-            len(writes_counts),
+        await conn.executemany(
+            f"INSERT OR REPLACE INTO {_MESSAGE_COUNTS_TABLE} VALUES (?, ?, ?)",  # noqa: S608  # constant table name
+            rows,
         )
-        uncached_by_id = {t["thread_id"]: t for t in uncached}
-        for thread_id in needs_writes_count:
-            count = writes_counts.get(thread_id, 0)
-            thread = uncached_by_id[thread_id]
-            thread["message_count"] = count
-            _cache_message_count(thread_id, _thread_freshness(thread), count)
+        await conn.commit()
+    except sqlite3.Error:
+        logger.debug("Could not save thread message counts", exc_info=True)
+        await conn.rollback()
+    finally:
+        await conn.execute(f"PRAGMA busy_timeout = {int(busy_timeout)}")
 
 
 _SQLITE_MAX_VARIABLE_NUMBER = 500
@@ -1838,10 +1960,12 @@ async def delete_thread(thread_id: str) -> bool:
         deleted = False
         async with _connect() as conn:
             await delete_cost(conn, thread_id)
-            if await _table_exists(conn, "dcode_thread_names"):
-                await conn.execute(
-                    "DELETE FROM dcode_thread_names WHERE thread_id = ?", (thread_id,)
-                )
+            for table in ("dcode_thread_names", _MESSAGE_COUNTS_TABLE):
+                if await _table_exists(conn, table):
+                    await conn.execute(
+                        f"DELETE FROM {table} WHERE thread_id = ?",  # noqa: S608  # constant table names
+                        (thread_id,),
+                    )
             if await _table_exists(conn, "checkpoints"):
                 cursor = await conn.execute(
                     "DELETE FROM checkpoints WHERE thread_id = ?", (thread_id,)

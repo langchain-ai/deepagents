@@ -2,6 +2,24 @@
 
 # Deep Agents Code Changelog
 
+## [0.1.87](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.86...deepagents-code==0.1.87) (2026-10-20)
+
+
+### Features
+
+* **code:** compact large idle sessions before cache expiry ([#6956](https://github.com/langchain-ai/deepagents/issues/6956)) ([3698b14](https://github.com/langchain-ai/deepagents/commit/3698b146b7c2db6d15d42b2d77568f93e169f36a))
+* **code:** load older threads from the thread switcher ([#7051](https://github.com/langchain-ai/deepagents/issues/7051)) ([82cca1d](https://github.com/langchain-ai/deepagents/commit/82cca1da885152718f7e055a4b96835425da841f))
+* **code:** resume threads in non-interactive mode ([#7011](https://github.com/langchain-ai/deepagents/issues/7011)) ([a2f8843](https://github.com/langchain-ai/deepagents/commit/a2f88434c5a4b5ce5244c468bb9f69b27831842d))
+* **code:** show the prompt-cache expiration time ([#7005](https://github.com/langchain-ai/deepagents/issues/7005)) ([3407dc3](https://github.com/langchain-ai/deepagents/commit/3407dc33b9918c98c126097bf485dbf6d2f035bd))
+* **code:** support custom Slack OAuth app identity ([#7061](https://github.com/langchain-ai/deepagents/issues/7061)) ([612ccbd](https://github.com/langchain-ai/deepagents/commit/612ccbd463b9eaa8f326e40ed0335bf4ee42b784))
+
+
+### Bug Fixes
+
+* **code:** avoid misleading `/reload` change summary ([#7063](https://github.com/langchain-ai/deepagents/issues/7063)) ([b6504f6](https://github.com/langchain-ai/deepagents/commit/b6504f6654ee6f25e1cd923087291de9e51572cc))
+* **code:** stop the local server when its owner dies ([#7038](https://github.com/langchain-ai/deepagents/issues/7038)) ([fc1dbad](https://github.com/langchain-ai/deepagents/commit/fc1dbad249e82cb77776683aa891ec24dfb584fc))
+* **code:** support non-ASCII file names in `@` mentions ([#7023](https://github.com/langchain-ai/deepagents/issues/7023)) ([12f70f2](https://github.com/langchain-ai/deepagents/commit/12f70f27cc2e96ac715f4563e05b205be7adc275))
+
 ## [0.1.86](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.85...deepagents-code==0.1.86) (2026-10-16)
 
 ### Features

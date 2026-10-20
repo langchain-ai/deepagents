@@ -44,6 +44,7 @@ concurrency:
 
 jobs:
   label:
+    environment: labeling
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -140,6 +141,10 @@ jobs:
         env:
           IS_EXTERNAL: ${{ steps.check-membership.outputs.is-external }}
           RENAMED_TITLE: ${{ steps.rename-scope.outputs.title }}
+          TOPIC_CLASSIFIER_PROVIDER: ${{ vars.TOPIC_CLASSIFIER_PROVIDER }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
+          LANGSMITH_WORKSPACE_ID: ${{ vars.LANGSMITH_WORKSPACE_ID }}
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
@@ -178,11 +183,11 @@ jobs:
                 toAdd.add(label);
               }
 
-              // `topic:*` from the modules the PR touched. Additive, like the
-              // package labels: a topic is never removed on edit, because a
-              // later push dropping the file does not mean the PR stopped
-              // being about the subject.
-              for (const label of h.matchTopicFileLabels(files)) {
+              const topics = await h.getTopicFileLabels(prNumber, files, {
+                before: action === 'synchronize' ? context.payload.before : null,
+                head: pr.head?.sha, title: pr.title, body: pr.body,
+              });
+              for (const label of topics) {
                 toAdd.add(label);
               }
             }

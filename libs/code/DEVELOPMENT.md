@@ -71,9 +71,7 @@ Run `make help` to see every available target.
 
 ## Custom Slack MCP app identity
 
-Slack's hosted MCP server attributes sent messages to the OAuth app used to
-connect. To use your own registered Slack app instead of Deep Agents Code, add
-an `oauth` object to its `.mcp.json` server entry:
+Slack's hosted MCP server attributes sent messages to the OAuth app used to connect. To use your own registered Slack app instead of Deep Agents Code, add an `oauth` object to its `.mcp.json` server entry:
 
 ```json
 {
@@ -91,20 +89,9 @@ an `oauth` object to its `.mcp.json` server entry:
 }
 ```
 
-Enable MCP access for your Slack app and register
-`http://localhost:3118/callback` as its redirect URL. Set the environment
-variables and run `dcode mcp login slack` to authorize it. Confidential apps
-use `client_secret_post`; omit `client_secret` only for an app registered as
-a public client. Keep secrets in environment variables, not committed config.
-The registration, including any secret, is saved in the existing restricted
-local token store.
+Enable MCP access for your Slack app and register `http://localhost:3118/callback` as its redirect URL. Set the environment variables and run `dcode mcp login slack` to authorize it. Confidential apps use `client_secret_post`; omit `client_secret` only for an app registered as a public client. Keep secrets in environment variables, not committed config. The registration, including any secret, is saved in the existing restricted local token store.
 
-Credentials are isolated by server name, URL, and configured client ID, so
-changing apps requires a separate login and never reuses the default app's
-grant. Re-run login after rotating a client secret. Omitting `oauth` preserves
-the existing app and credentials. This selects the authenticated app; it does
-not let a message supply arbitrary attribution or suppress Slack's footer.
-These settings apply to dcode; Talon's separate OAuth implementation is unchanged.
+Credentials are isolated by server name, URL, and configured client ID, so changing apps requires a separate login and never reuses the default app's grant. Re-run login after rotating a client secret. Omitting `oauth` preserves the existing app and credentials. This selects the authenticated app; it does not let a message supply arbitrary attribution or suppress Slack's footer. These settings apply to dcode; Talon's separate OAuth implementation is unchanged.
 
 ## LangSmith tracing projects
 

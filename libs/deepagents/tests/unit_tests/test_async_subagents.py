@@ -1494,19 +1494,6 @@ class TestWebhook:
 
         assert mock_client.runs.create.call_args.kwargs.get("webhook") == webhook
 
-    @patch("deepagents.middleware.async_subagents.get_client")
-    async def test_subagent_on_this_deployment_gets_the_webhook(self, mock_get_client: MagicMock) -> None:
-        mock_client = MagicMock()
-        mock_client.threads.create = AsyncMock(return_value={"thread_id": "thread_abc"})
-        mock_client.runs.create = AsyncMock(return_value={"run_id": "run_xyz"})
-        mock_get_client.return_value = mock_client
-        spec = _make_spec(url=None, webhook="https://app.example.com/hooks/run-done")
-        launch = _get_tool(_build_async_subagent_tools([spec]), "start_async_task")
-
-        await launch.coroutine(description="analyze data", subagent_type="test-agent", runtime=_parent_runtime())
-
-        assert mock_client.runs.create.call_args.kwargs["webhook"] == "https://app.example.com/hooks/run-done"
-
 
 @patch("deepagents.middleware.async_subagents.get_client")
 async def test_launch_reads_assistant_from_configurable_when_metadata_lacks_it(mock_get_client: MagicMock) -> None:

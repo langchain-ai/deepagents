@@ -754,11 +754,15 @@ def _run_startup_auto_update(console: "Console") -> None:
                 )
             pending_failure_version = latest
             interpreter_changed: list[bool] = []
+            notices: list[str] = []
+
+            def show_notice(message: str) -> None:
+                notices.append(message)
+                console.print(message, markup=False, highlight=False)
+
             success, output, _installed = asyncio.run(
                 perform_upgrade(
-                    on_notice=lambda message: console.print(
-                        message, markup=False, highlight=False
-                    ),
+                    on_notice=show_notice,
                     log_path=log_path,
                     target_version=latest,
                     on_interpreter_change=lambda: interpreter_changed.append(True),
@@ -826,17 +830,25 @@ def _run_startup_auto_update(console: "Console") -> None:
                 _exit_after_unrestartable_update(console, latest)
             return
         persisted = mark_startup_auto_update_failed(latest)
-        update_needs_prereleases = release_requires_prereleases(latest)
-        cmd = upgrade_command(
-            include_prereleases=True if update_needs_prereleases else None,
-            version=latest if update_needs_prereleases else None,
-        )
-        detail = f": {escape(output[:200])}" if output else ""
-        message = (
-            f"[bold red]Auto-update failed{detail}[/bold red]\n"
-            f"Run manually: [cyan]{cmd}[/cyan]\n"
-            f"Continuing with v{cli_version}."
-        )
+        if notices:
+            # The notice above already carries the migration-aware recovery
+            # steps; a generic command here would contradict them.
+            message = (
+                "[bold red]Auto-update failed; see the message above.[/bold red]\n"
+                f"Continuing with v{cli_version}."
+            )
+        else:
+            update_needs_prereleases = release_requires_prereleases(latest)
+            cmd = upgrade_command(
+                include_prereleases=True if update_needs_prereleases else None,
+                version=latest if update_needs_prereleases else None,
+            )
+            detail = f": {escape(output[:200])}" if output else ""
+            message = (
+                f"[bold red]Auto-update failed{detail}[/bold red]\n"
+                f"Run manually: [cyan]{cmd}[/cyan]\n"
+                f"Continuing with v{cli_version}."
+            )
         if not persisted:
             # The cooldown marker could not be saved (e.g. a read-only state
             # dir), so this same failing upgrade would otherwise be retried on
@@ -6050,11 +6062,15 @@ def cli_main() -> None:
                             highlight=False,
                             markup=False,
                         )
+                    notices: list[str] = []
+
+                    def show_notice(message: str) -> None:
+                        notices.append(message)
+                        console.print(message, markup=False, highlight=False)
+
                     success, output, _installed = asyncio.run(
                         perform_upgrade(
-                            on_notice=lambda message: console.print(
-                                message, markup=False, highlight=False
-                            ),
+                            on_notice=show_notice,
                             log_path=log_path,
                             include_prereleases=include_prereleases,
                             target_version=latest,
@@ -6062,6 +6078,13 @@ def cli_main() -> None:
                     )
                 if success:
                     console.print(f"[green]Updated to v{latest}.[/green]")
+                elif notices:
+                    # The notice already carries migration-aware recovery steps.
+                    console.print(
+                        "[bold red]Auto-update failed; see the message above."
+                        "[/bold red]"
+                    )
+                    sys.exit(1)
                 else:
                     cmd = upgrade_command(
                         include_prereleases=upgrade_include_prereleases,

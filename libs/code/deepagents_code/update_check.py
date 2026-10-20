@@ -2761,17 +2761,16 @@ async def perform_upgrade(
                     ExtrasIntrospectionError,
                     ToolRequirementIntrospectionError,
                 ) as exc:
-                    return (
-                        False,
-                        (
-                            f"Could not preserve your installation options: {exc}. "
-                            "The existing installation was left unchanged. "
-                            "Retry after repairing the uv receipt, or use the updated "
-                            "installer and reselect extras and added packages: "
-                            f"{recovery_installer}"
-                        ),
-                        None,
+                    refusal = (
+                        f"Could not preserve your installation options: {exc}. "
+                        "The existing installation was left unchanged. "
+                        "Retry after repairing the uv receipt, or use the updated "
+                        "installer and reselect extras and added packages: "
+                        f"{recovery_installer}"
                     )
+                    if python is not None:
+                        await _emit_progress(on_notice, refusal)
+                    return False, refusal, None
             else:
                 cmd = upgrade_command(
                     method,
@@ -2830,8 +2829,10 @@ async def perform_upgrade(
             f"{_PYTHON_MIGRATION_INSTALL_COMMAND} "
             "(reselect extras and added packages)."
         )
-        await _emit_progress(on_notice, guidance)
-        output = f"{guidance}\n{output}"
+        if on_notice is None:
+            output = f"{guidance}\n{output}"
+        else:
+            await _emit_progress(on_notice, guidance)
     installed_version: str | None = None
     if success and method == "uv":
         reader = (
@@ -2859,16 +2860,15 @@ async def perform_upgrade(
         except InvalidVersion:
             verified = False
         if not verified:
-            return (
-                False,
-                (
-                    f"Could not verify installation of v{target_version} "
-                    f"(found {installed_version or 'no readable installed version'}). "
-                    "Not restarting or reporting success. Check the uv output and "
-                    f"retry, or use the updated installer: {recovery_installer}"
-                ),
-                None,
+            failure = (
+                f"Could not verify installation of v{target_version} "
+                f"(found {installed_version or 'no readable installed version'}). "
+                "Not restarting or reporting success. Check the uv output and "
+                f"retry, or use the updated installer: {recovery_installer}"
             )
+            if python is not None:
+                await _emit_progress(on_notice, failure)
+            return False, failure, None
     elif success:
         installed_version = target_version
     return success, output, installed_version

@@ -7743,7 +7743,10 @@ class DeepAgentsApp(App):
                 AppMessage(f"Update log: {format_log_follow_command(log_path)}"),
             )
 
+        notices: list[str] = []
+
         async def show_upgrade_notice(message: str) -> None:
+            notices.append(message)
             await self._mount_message(AppMessage(message))
 
         result = await self._perform_interactive_upgrade(
@@ -7788,6 +7791,13 @@ class DeepAgentsApp(App):
                 await self._mount_message(
                     ErrorMessage(format_shadowed_dcode_warning(shadow)),
                 )
+        elif notices:
+            # The notice already carries migration-aware recovery steps; a
+            # generic command here would contradict them.
+            log_line = f"\nLog: {log_path}" if log_path is not None else ""
+            await self._mount_message(
+                AppMessage(f"Auto-update failed; see the message above.{log_line}"),
+            )
         else:
             cmd = upgrade_command(
                 include_prereleases=upgrade_include_prereleases,
@@ -27327,7 +27337,10 @@ class DeepAgentsApp(App):
                         )
                         return
 
+                    notices: list[str] = []
+
                     def show_upgrade_notice(message: str) -> None:
+                        notices.append(message)
                         screen.append_line(message)
                         self.notify(message, timeout=15, markup=False)
 
@@ -27392,6 +27405,11 @@ class DeepAgentsApp(App):
                         output,
                     )
                     self._notice_registry.remove(entry.key)
+                    if notices:
+                        # The notice toast and modal line already carry the
+                        # migration-aware recovery steps.
+                        screen.mark_warning("Update did not complete. See details.")
+                        return
                     screen.mark_failure(cmd)
                     snippet = _truncate(output, limit=160) if output else ""
                     message = f"Auto-update failed. Run manually: {cmd}"

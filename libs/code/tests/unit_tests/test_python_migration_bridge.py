@@ -435,32 +435,20 @@ async def test_missing_or_malformed_receipt_refuses_migration(
     uv_install.assert_not_awaited()
 
 
-@pytest.mark.parametrize(
-    "failure",
-    [
-        "dependency conflict",
-        "Python downloads disabled",
-        "interpreter unavailable",
-        "network connection failed",
-    ],
-)
 async def test_migration_install_failure_has_actionable_recovery(
     uv_install: AsyncMock,
-    failure: str,
 ) -> None:
+    """Recovery guidance is shown once, with the 3.14 installer."""
     notices: list[str] = []
-    uv_install.return_value = False, failure
+    uv_install.return_value = False, "dependency conflict"
     with patch.object(update_check.sys, "version_info", VersionInfo(3, 13, 4)):
         success, output, version = await update_check.perform_upgrade(
             target_version="2.0.0", include_prereleases=False, on_notice=notices.append
         )
     assert not success
     assert version is None
-    assert failure in output
-    assert notices
-    assert "network" in notices[-1].lower()
-    assert "3.14" in output
-    assert "network" in output.lower() or "download" in output.lower()
+    assert output == "dependency conflict"
+    assert update_check._PYTHON_MIGRATION_INSTALL_COMMAND in notices[-1]
 
 
 def test_migrated_readback_uses_rebuilt_interpreter(

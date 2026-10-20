@@ -1,0 +1,19 @@
+browser-mda/HARNESS_COMPARISON.md
+  s_199de864fdc442::t_e55ff2eaa1fd0f 188-261
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "5872275390fcbe0fbb4d6a38b9ebd30ce1a7eb86",
+  "prompts": {},
+  "sessions": {
+    "s_199de864fdc442": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ef2256c0-e240-44d5-a34c-fbc22ec5bcbf",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Sydney Runkle <sydneymarierunkle@gmail.com>"
+    }
+  }
+}

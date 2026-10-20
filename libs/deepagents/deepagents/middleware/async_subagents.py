@@ -113,10 +113,13 @@ class AsyncSubAgent(TypedDict):
     """Additional headers to include in requests to the remote server."""
 
     webhook: NotRequired[str]
-    """Webhook URL the server calls when the run that `start_async_task` launches finishes.
+    """Webhook URL the server calls when each run of this subagent's tasks finishes.
 
-    Lets an app track tasks in its own backend. The run calls it as it ends,
-    including on error, timeout, or interruption. A run paused for a human ends
+    Set on every run `start_async_task` and `update_async_task` start, so an app
+    can track tasks in its own backend. Each run calls it as it ends, including
+    on error, timeout, or interruption. An update interrupts the previous run,
+    which then reports as interrupted while the task continues in the new run;
+    the latest run's call has the task's outcome. A run paused for a human ends
     as a success, so read the thread to tell a finished task from a waiting one.
     The parent's own checks for task updates still run.
 
@@ -370,24 +373,18 @@ def _thread_metadata(spec: AsyncSubAgent, runtime: ToolRuntime) -> dict[str, str
 
 
 def _run_options(spec: AsyncSubAgent, runtime: ToolRuntime) -> dict[str, Any]:
-    """Keyword arguments for `runs.create` that link a launched run to this agent.
+    """Keyword arguments for `runs.create`: the link to this agent, and the subagent's webhook.
 
     A subagent on this deployment runs with this agent's context, like a sync subagent.
     """
     options: dict[str, Any] = {"headers": _trace_headers(spec)}
+    if webhook := spec.get("webhook"):
+        options["webhook"] = webhook
     context = None if spec.get("url") else _forwarded_context(runtime.context)
     if context is not None:
         options["context"] = context
     elif reference := _reference_for(spec, runtime):
         options["config"] = {"configurable": {_PARENT_KEY: reference}}
-    return options
-
-
-def _launch_options(spec: AsyncSubAgent, runtime: ToolRuntime) -> dict[str, Any]:
-    """Keyword arguments for the `runs.create` that launches a task: `_run_options` plus the subagent's webhook."""
-    options = _run_options(spec, runtime)
-    if webhook := spec.get("webhook"):
-        options["webhook"] = webhook
     return options
 
 
@@ -726,7 +723,7 @@ def _build_start_tool(
                 thread_id=thread["thread_id"],
                 assistant_id=spec["graph_id"],
                 input={"messages": messages},
-                **_launch_options(spec, runtime),
+                **_run_options(spec, runtime),
             )
         except Exception as e:  # noqa: BLE001  # LangGraph SDK raises untyped errors
             logger.warning("Failed to launch async subagent '%s': %s", subagent_type, e)
@@ -768,7 +765,7 @@ def _build_start_tool(
                 thread_id=thread["thread_id"],
                 assistant_id=spec["graph_id"],
                 input={"messages": messages},
-                **_launch_options(spec, runtime),
+                **_run_options(spec, runtime),
             )
         except Exception as e:  # noqa: BLE001  # LangGraph SDK raises untyped errors
             logger.warning("Failed to launch async subagent '%s': %s", subagent_type, e)

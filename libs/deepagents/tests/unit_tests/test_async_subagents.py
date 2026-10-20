@@ -1477,17 +1477,20 @@ class TestForwardedContext:
 
 
 class TestWebhook:
-    @pytest.mark.parametrize("webhook", ["https://app.example.com/hooks/run-done", None], ids=["set", "unset"])
+    @pytest.mark.parametrize("tool", ["start_async_task", "update_async_task"])
+    @pytest.mark.parametrize("webhook", ["https://app.example.com/webhooks/subagent-finished", None], ids=["set", "unset"])
     @patch("deepagents.middleware.async_subagents.get_sync_client")
-    def test_launched_run_carries_the_subagents_webhook(self, mock_get_client: MagicMock, webhook: str | None) -> None:
+    def test_runs_of_a_task_carry_the_subagents_webhook(self, mock_get_client: MagicMock, tool: str, webhook: str | None) -> None:
         mock_client = MagicMock()
         mock_client.threads.create.return_value = {"thread_id": "thread_abc"}
         mock_client.runs.create.return_value = {"run_id": "run_xyz"}
         mock_get_client.return_value = mock_client
-        spec = _make_spec(**({"webhook": webhook} if webhook else {}))
-        launch = _get_tool(_build_async_subagent_tools([spec]), "start_async_task")
+        tools = _build_async_subagent_tools([_make_spec(**({"webhook": webhook} if webhook else {}))])
 
-        launch.func(description="analyze data", subagent_type="test-agent", runtime=_parent_runtime())
+        if tool == "start_async_task":
+            _get_tool(tools, tool).func(description="analyze data", subagent_type="test-agent", runtime=_parent_runtime())
+        else:
+            _get_tool(tools, tool).func(task_id="thread_abc", message="more", runtime=_make_runtime_with_task())
 
         assert mock_client.runs.create.call_args.kwargs.get("webhook") == webhook
 

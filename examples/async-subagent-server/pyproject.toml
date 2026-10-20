@@ -2,7 +2,7 @@
 name = "async-subagent-server-example"
 version = "0.1.0"
 description = "Self-hosted async subagent server example using deepagents"
-requires-python = ">=3.11"
+requires-python = ">=3.11,<4.0"
 dependencies = [
     "deepagents>=0.6.12",
     "fastapi>=0.138.1",

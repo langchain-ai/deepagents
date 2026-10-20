@@ -3,7 +3,7 @@ name = "better-harness"
 version = "0.1.0"
 description = "Small eval-driven harness optimizer for agent systems"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.12,<4.0"
 dependencies = []
 
 [project.optional-dependencies]

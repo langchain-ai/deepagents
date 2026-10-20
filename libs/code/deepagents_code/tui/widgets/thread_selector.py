@@ -843,11 +843,6 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         margin-bottom: 1;
     }
 
-    ThreadSelectorScreen .thread-controls-help {
-        color: $text-muted;
-        margin-bottom: 1;
-    }
-
     ThreadSelectorScreen .thread-controls-label {
         color: $text-muted;
         margin-top: 0;
@@ -1450,14 +1445,6 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
 
                 with Vertical(classes="thread-controls"):
                     yield Static("Options", classes="thread-controls-title")
-                    yield Static(
-                        (
-                            "Tab through scope, sort, agent, and column options. "
-                            "Column visibility persists between sessions."
-                        ),
-                        classes="thread-controls-help",
-                        markup=False,
-                    )
                     yield Static(
                         "Show threads from:",
                         classes="thread-controls-label",

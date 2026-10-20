@@ -227,6 +227,13 @@ since that one-liner is the path we promote.
 _UPGRADE_TIMEOUT = 120  # seconds
 """Wall-clock cap for `perform_upgrade` and `perform_install_extra`."""
 
+_MIGRATION_TIMEOUT = 600  # seconds
+"""Wall-clock cap for a Python migration.
+
+A migration can download an interpreter and reinstall every package, and
+killing uv mid-rebuild can leave the tool environment broken.
+"""
+
 _TERMINATE_WAIT_TIMEOUT = 5  # seconds
 """Cap on reaping a killed install subprocess so cleanup cannot hang launch."""
 
@@ -2167,6 +2174,7 @@ async def _run_install_subprocess(
     *,
     progress: UpgradeProgressCallback | None,
     log_path: Path | None,
+    max_seconds: float = _UPGRADE_TIMEOUT,
 ) -> tuple[bool, str]:
     """Run a shell command, streaming stdout/stderr to *progress* and a log file.
 
@@ -2175,14 +2183,14 @@ async def _run_install_subprocess(
     *combined_output* is the concatenated stdout+stderr, stripped.
 
     On timeout or `OSError`, the process is killed and a synthetic error
-    line is emitted both to the log and via *progress*. The wall-clock cap
-    is `_UPGRADE_TIMEOUT`.
+    line is emitted both to the log and via *progress*.
 
     Args:
         cmd: Shell command to execute.
         progress: Optional callback invoked for each output line.
         log_path: Optional path to persist command output. Falls back to a
             fresh `create_update_log_path()` when `None`.
+        max_seconds: Wall-clock cap for the command.
 
     Returns:
         `(success, output)` — *success* is `True` iff the subprocess exited 0.
@@ -2190,7 +2198,6 @@ async def _run_install_subprocess(
     Raises:
         asyncio.CancelledError: If the calling task is cancelled.
     """
-    timeout = _UPGRADE_TIMEOUT
     if log_path is None:
         log_path = create_update_log_path()
 
@@ -2243,12 +2250,12 @@ async def _run_install_subprocess(
                 ),
                 proc.wait(),
             ),
-            timeout=timeout,
+            timeout=max_seconds,
         )
     except TimeoutError:
         if proc is not None:
             await _terminate_install_process(proc)
-        msg = f"Command timed out after {timeout}s: {cmd}"
+        msg = f"Command timed out after {max_seconds}s: {cmd}"
         if log_file is not None:
             with suppress(OSError):
                 log_file.write(f"{msg}\n")
@@ -2814,7 +2821,10 @@ async def perform_upgrade(
                     "Other open dcode sessions stop working until restarted.",
                 )
             success, output = await _run_install_subprocess(
-                cmd, progress=progress, log_path=log_path
+                cmd,
+                progress=progress,
+                log_path=log_path,
+                max_seconds=_UPGRADE_TIMEOUT if python is None else _MIGRATION_TIMEOUT,
             )
     except OSError as exc:
         if constraints_staged:
@@ -2847,10 +2857,11 @@ async def perform_upgrade(
 
     if not success and python is not None:
         guidance = (
-            "Python 3.14 migration failed. Check the uv output for network "
-            "or dependency conflicts. If Python downloads are disabled, provision "
-            "Python 3.14 with uv or your administrator, or allow uv downloads and "
-            "retry. Do not uninstall dcode first. Recovery installer: "
+            "Python 3.14 migration failed. Check the uv output for a timeout, "
+            "network errors, or dependency conflicts. If Python downloads are "
+            "disabled, provision Python 3.14 with uv or your administrator, or "
+            "allow uv downloads and retry. Do not uninstall dcode first. "
+            "Recovery installer: "
             f"{_PYTHON_MIGRATION_INSTALL_COMMAND} "
             "(reselect extras and added packages)."
         )

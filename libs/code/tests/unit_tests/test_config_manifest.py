@@ -2378,3 +2378,16 @@ def test_legacy_debug_file_remains_discoverable(monkeypatch) -> None:
     assert _resolve_manifest_option(
         option, toml_data={"debug": {"file": "/tmp/configured.log"}}
     ) == ("/tmp/configured.log", "config.toml")
+
+
+@pytest.mark.parametrize("value", ["100000", "0"])
+def test_idle_compaction_env_override(
+    monkeypatch: pytest.MonkeyPatch, value: str
+) -> None:
+    option = get_option("history.idle_compaction_tokens")
+    assert option is not None
+    monkeypatch.setenv(_env_vars.IDLE_COMPACTION_TOKENS, value)
+    resolved, _ = resolve_option_for_test(
+        option, toml_data={"history": {"idle_compaction_tokens": 50000}}
+    )
+    assert resolved == int(value)

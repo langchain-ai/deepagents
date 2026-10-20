@@ -413,8 +413,8 @@ class TestStartupAutoUpdate:
 
         assert os.environ[INVOKED_AS] == "abc"
 
-    def test_failed_update_does_not_restart_and_continues(self) -> None:
-        """Migration is explained before installing, and failure stays fail-soft."""
+    def test_failed_migration_continues_without_generic_command(self) -> None:
+        """A migration notice is printed once and no conflicting command follows."""
         console = MagicMock()
         notice = "Python 3.14 is required; migrating [tool] environment."
 
@@ -422,7 +422,6 @@ class TestStartupAutoUpdate:
             *, on_notice: Callable[[str], None], **_kwargs: object
         ) -> tuple[bool, str, None]:
             on_notice(notice)
-            console.print.assert_called_with(notice, markup=False, highlight=False)
             return False, "pip exploded", None
 
         upgrade = AsyncMock(side_effect=install)
@@ -460,8 +459,13 @@ class TestStartupAutoUpdate:
         upgrade.assert_awaited_once()
         mark_failed.assert_called_once_with("9.9.9")
         restart.assert_not_called()
+        console.print.assert_any_call(notice, markup=False, highlight=False)
         printed = " ".join(str(c.args[0]) for c in console.print.call_args_list)
-        assert "Auto-update failed" in printed
+        # The returned-failure branch ran, not the exception fallback.
+        assert "see the message above" in printed
+        assert "before startup" not in printed
+        assert "Run manually" not in printed
+        assert "pip exploded" not in printed
 
     def test_unpersisted_failure_marker_warns_user(self) -> None:
         """An unwritable cooldown marker must be surfaced, not silently dropped."""

@@ -753,6 +753,7 @@ def _run_startup_auto_update(console: "Console") -> None:
                     markup=False,
                 )
             pending_failure_version = latest
+            interpreter_changed: list[bool] = []
             success, output, _installed = asyncio.run(
                 perform_upgrade(
                     on_notice=lambda message: console.print(
@@ -760,7 +761,16 @@ def _run_startup_auto_update(console: "Console") -> None:
                     ),
                     log_path=log_path,
                     target_version=latest,
+                    on_interpreter_change=lambda: interpreter_changed.append(True),
                 )
+            )
+        if not success and interpreter_changed:
+            # uv rebuilt the environment on a new Python but the readback failed.
+            # This process now imports from a deleted site-packages, so it must
+            # not continue as if nothing was installed.
+            _mark_startup_auto_update_failed_safe(latest)
+            _exit_after_unrestartable_update(
+                console, latest, cause=RuntimeError(output)
             )
         if success:
             pending_failure_version = None

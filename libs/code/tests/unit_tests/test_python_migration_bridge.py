@@ -328,10 +328,14 @@ async def test_installer_success_requires_exact_verified_version(
     success, output, version = await update_check.perform_upgrade(
         target_version="2.0.0", include_prereleases=False
     )
+    uv_install.assert_awaited_once()
+    if installed is None and not migrating:
+        # An ambiguous in-place readback trusts the exact uv pin.
+        assert (success, version) == (True, "2.0.0")
+        return
     assert not success
     assert version is None
     assert output
-    uv_install.assert_awaited_once()
 
 
 @pytest.mark.parametrize("installed", [None, "2.0.0"])

@@ -2826,6 +2826,16 @@ async def perform_upgrade(
             else read_installed_distribution_version
         )
         installed_version = await asyncio.to_thread(reader)
+        if installed_version is None and python is None:
+            # In-place readback is ambiguous when stale dist-info directories
+            # remain. uv exited 0 with an exact `==target` pin, so trust the pin
+            # rather than report a landed install as a failure.
+            logger.warning(
+                "Could not read back the installed version; trusting the "
+                "exact uv pin v%s",
+                target_version,
+            )
+            installed_version = target_version
         try:
             verified = (
                 installed_version is not None

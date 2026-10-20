@@ -625,6 +625,8 @@ async def populate_thread_checkpoint_details(
 
     This is used by the `/threads` modal to enrich rows in one background pass,
     so the latest checkpoint is fetched and deserialized at most once per row.
+    Computed message counts are also saved to the sessions database, best
+    effort, so later sessions can reuse them.
 
     Args:
         threads: Thread rows to enrich in place.
@@ -681,7 +683,8 @@ async def prewarm_thread_message_counts(limit: int | None = None) -> None:
     """Prewarm thread selector cache for faster `/threads` open.
 
     Fetches a bounded list of recent threads and populates checkpoint-derived
-    fields for currently visible columns into the in-memory cache. Intended to
+    fields for currently visible columns into the in-memory cache (message
+    counts are also saved to the sessions database, best effort). Intended to
     run in a background worker during app startup and again whenever the
     session database has changed (e.g. after a turn writes new checkpoints), so
     the selector's first paint is never missing a thread the user just created.
@@ -928,7 +931,7 @@ async def _populate_checkpoint_fields(
 
     Order: the in-memory caches, then counts an earlier session saved to
     `dcode_thread_message_counts`, then the `writes` and `checkpoints` tables.
-    Counts computed here are saved so later sessions skip the replay.
+    Counts computed here are saved so later sessions skip recomputing them.
     """
     serde = await _get_jsonplus_serializer()
     _apply_memory_caches(
@@ -1014,8 +1017,8 @@ async def _load_prompts_and_summaries(
     )
     _log_phase("Initial prompt loading", started_at, len(prompt_ids), len(prompts))
 
-    # A latest checkpoint is decoded only for a count, or for a prompt that
-    # has no `messages` write to read from.
+    # A latest checkpoint is decoded only for a count, or for a prompt whose
+    # first `messages` write is missing or unreadable.
     fallback_ids = [tid for tid in prompt_ids if tid not in prompts]
     summary_ids = list(dict.fromkeys([*count_ids, *fallback_ids]))
     started_at = time.perf_counter()
@@ -1296,9 +1299,9 @@ async def _load_initial_prompts_from_writes_batch(
 
     For each thread, returns the first human/user message extracted from the
     earliest root-namespace write to the `messages` channel, in primary-key
-    order (`checkpoint_id`, `task_id`, `idx`). Each lookup seeks that order and
-    stops at the first match, so it reads a few index pages per thread rather
-    than every write the thread has.
+    order (`checkpoint_id`, `task_id`, `idx`). Each lookup walks that order and
+    stops at the first match, which is usually among the thread's first rows,
+    rather than ranking every write the thread has.
 
     Args:
         conn: Database connection.
@@ -1307,9 +1310,9 @@ async def _load_initial_prompts_from_writes_batch(
 
     Returns:
         Dict mapping thread IDs to their initial prompt text. Threads with no
-        write to the `messages` channel are absent from the result; threads
-        whose first such write decoded but contained no human/user entry map
-        to `None`.
+        readable write to the `messages` channel are absent from the result;
+        threads whose first such write decoded but contained no human/user
+        entry map to `None`.
     """
     if not thread_ids:
         return {}

@@ -1060,7 +1060,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         self._filter_text = initial_query
         self._filter_agent: str | None = None
         # Configured agent names from `~/.deepagents/` (the `/agents` list),
-        # loaded off the event loop in `_apply_window`. Unioned with
+        # loaded off the event loop in `_preload_window_details`. Unioned with
         # thread-derived names so the agent filter mirrors `/agents` even for
         # agents that have not produced any threads yet.
         self._available_agent_names: list[str] = []
@@ -1152,10 +1152,12 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         return None
 
     def _select_thread_id(self, thread_id: str | None, fallback: int) -> None:
-        """Highlight `thread_id` if it is listed, else the clamped `fallback`.
+        """Point the cursor at `thread_id` if listed, else the clamped `fallback`.
+
+        Only sets the index; callers update the row styles.
 
         Args:
-            thread_id: Thread to highlight.
+            thread_id: Thread to select.
             fallback: Index to use when the thread is not in the filtered rows.
                 Clamped to the last selectable row, so a cursor on "Load more"
                 stays there when a batch adds no rows above it.
@@ -2070,6 +2072,8 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
     def _revert_to_shown_settings(self) -> bool:
         """Put the sort and scope controls back to match the shown rows.
 
+        Also saves the restored settings, so the next picker opens with them.
+
         Returns:
             Whether any setting changed.
         """
@@ -2199,7 +2203,10 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             self._resolve_thread_url()
 
     async def _preload_window_details(self, *, load_more: bool) -> None:
-        """Load row details and agent names before the first render.
+        """Load row details and agent names before a window renders.
+
+        A reload of prefetched rows skips the row details; background
+        enrichment fills them in after the render.
 
         Args:
             load_more: Whether this extends the shown rows. Agent names do not
@@ -2261,7 +2268,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         """
         # Short-circuit: when the fresh data matches what is already rendered,
         # update widget references and cell labels without tearing down the DOM.
-        # The initial rows are capped at one batch, so the first load often
+        # Callers pass at most one batch of initial rows, so the first load often
         # matches them and the pagination row is added here, not in a rebuild.
         if not (
             self._has_initial_threads

@@ -2682,6 +2682,7 @@ async def perform_upgrade(
         )
     resolved_include_prereleases = _resolve_include_prereleases(include_prereleases)
     python: str | None = None
+    recovery_installer = INSTALL_SCRIPT_COMMAND
     if method == "uv":
         target_version = target_version or await asyncio.to_thread(
             get_latest_version, include_prereleases=resolved_include_prereleases
@@ -2700,6 +2701,10 @@ async def perform_upgrade(
                 (f"Update stopped before installation: {exc} Nothing was installed."),
                 None,
             )
+    if python is not None:
+        # The plain installer defaults to an older Python, which would resolve
+        # the newest compatible release instead of this target.
+        recovery_installer = _PYTHON_MIGRATION_INSTALL_COMMAND
     if python is not None and not allow_python_migration:
         from deepagents_code._invocation import invoked_name
 
@@ -2763,7 +2768,7 @@ async def perform_upgrade(
                             "The existing installation was left unchanged. "
                             "Retry after repairing the uv receipt, or use the updated "
                             "installer and reselect extras and added packages: "
-                            f"{INSTALL_SCRIPT_COMMAND}"
+                            f"{recovery_installer}"
                         ),
                         None,
                     )
@@ -2860,7 +2865,7 @@ async def perform_upgrade(
                     f"Could not verify installation of v{target_version} "
                     f"(found {installed_version or 'no readable installed version'}). "
                     "Not restarting or reporting success. Check the uv output and "
-                    f"retry, or use the updated installer: {INSTALL_SCRIPT_COMMAND}"
+                    f"retry, or use the updated installer: {recovery_installer}"
                 ),
                 None,
             )

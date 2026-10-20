@@ -3011,7 +3011,7 @@ async def perform_upgrade(
             verified = False
         if not verified:
             found = (
-                f"Python 3.14 check failed: {verification_error}"
+                f"check with the migrated interpreter failed: {verification_error}"
                 if verification_error is not None
                 else f"found {installed_version or 'no readable installed version'}"
             )

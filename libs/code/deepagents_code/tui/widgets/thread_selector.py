@@ -1063,6 +1063,10 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         self._columns = dict(cfg.columns)
         self._relative_time = cfg.relative_time
         self._sort_by_updated = cfg.sort_order == "updated_at"
+        # The sort and scope the shown rows were loaded with. A failed reload
+        # rolls the controls back to these.
+        self._shown_sort_by_updated = self._sort_by_updated
+        self._shown_filter_cwd = self._filter_cwd
 
         # Cached threads are pre-sorted by updated_at DESC (the only sort
         # order the cache stores).  Skip the O(n log n) re-sort when that
@@ -2021,6 +2025,9 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             # A worker error would otherwise exit the app.
             logger.exception("Unexpected error showing threads for thread selector")
             await self._report_load_failure(exc)
+            return
+        self._shown_sort_by_updated = self._sort_by_updated
+        self._shown_filter_cwd = self._filter_cwd
 
     async def _report_load_failure(self, exc: Exception) -> None:
         """Show a failed load; a failed reload keeps the rows already shown.
@@ -2031,12 +2038,50 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         if self._disk_load_complete:
             # A sort, scope, or refresh reload: the shown rows are still usable.
             detail = str(exc) or type(exc).__name__
-            self.notify(
-                f"Could not reload threads: {detail}", severity="error", markup=False
-            )
+            message = f"Could not reload threads: {detail}"
+            if self._revert_to_shown_settings():
+                message += ". Kept the previous sort and directory."
+            self.notify(message, severity="error", markup=False)
             return
         self._disk_load_complete = True
         await self._show_mount_error(str(exc))
+
+    def _revert_to_shown_settings(self) -> bool:
+        """Put the sort and scope controls back to match the shown rows.
+
+        Returns:
+            Whether any setting changed.
+        """
+        changed = False
+        if self._sort_by_updated != self._shown_sort_by_updated:
+            self._sort_by_updated = self._shown_sort_by_updated
+            sort = _SORT_VALUE_UPDATED if self._sort_by_updated else _SORT_VALUE_CREATED
+            self._set_select_quietly(_SORT_SELECT_ID, sort)
+            self._persist_sort_order(sort)
+            changed = True
+        if self._filter_cwd != self._shown_filter_cwd:
+            self._filter_cwd = self._shown_filter_cwd
+            scope = _SCOPE_VALUE_ALL if self._filter_cwd is None else _SCOPE_VALUE_CWD
+            self._set_select_quietly(_SCOPE_SELECT_ID, scope)
+            self._persist_scope(scope)
+            changed = True
+        if changed:
+            self._update_help_widgets()
+        return changed
+
+    def _set_select_quietly(self, select_id: str, value: str) -> None:
+        """Set a dropdown without re-running its change handler.
+
+        Args:
+            select_id: ID of the `Select` widget.
+            value: Option value to show.
+        """
+        try:
+            select = self.query_one(f"#{select_id}", Select)
+        except NoMatches:
+            return
+        with self.prevent(Select.Changed):
+            select.value = value
 
     async def _apply_window_or_restore(
         self, threads: list[ThreadInfo], limit: int, *, load_more: bool = False
@@ -2804,6 +2849,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             )
         else:
             self._apply_sort()
+            self._shown_sort_by_updated = sort_by_updated
             self._sync_selected_index()
             self._schedule_list_rebuild()
         self._persist_sort_order(

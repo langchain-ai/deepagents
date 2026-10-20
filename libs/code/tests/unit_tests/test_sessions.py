@@ -1083,6 +1083,17 @@ class TestSavedMessageCounts:
             mock_summary = await self._populate(conn, self._thread("cp_1"), 4)
         mock_summary.assert_awaited_once()
 
+    async def test_unreadable_saved_counts_are_recomputed(self, tmp_path: Path) -> None:
+        """A count table in an unexpected shape does not fail the listing."""
+        import aiosqlite
+
+        async with aiosqlite.connect(tmp_path / "sessions.db") as conn:
+            await conn.execute("CREATE TABLE dcode_thread_message_counts (id TEXT)")
+            thread = self._thread("cp_1")
+            await self._populate(conn, thread, 4)
+
+        assert thread["message_count"] == 4
+
     async def test_delete_thread_removes_saved_count(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

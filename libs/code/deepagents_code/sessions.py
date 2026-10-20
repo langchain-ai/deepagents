@@ -1111,14 +1111,7 @@ async def _apply_saved_message_counts(
     thread_ids: list[str],
 ) -> None:
     """Fill message counts saved by an earlier session when still fresh."""
-    if not await _table_exists(conn, _MESSAGE_COUNTS_TABLE):
-        return
-    async with conn.execute(
-        f"SELECT thread_id, freshness, message_count FROM {_MESSAGE_COUNTS_TABLE} "  # noqa: S608  # constant table name
-        "WHERE thread_id IN (SELECT value FROM json_each(?))",
-        (json.dumps(thread_ids),),
-    ) as cursor:
-        saved = {row[0]: (row[1], row[2]) for row in await cursor.fetchall()}
+    saved = await _read_saved_message_counts(conn, thread_ids)
     for thread in threads:
         entry = saved.get(thread["thread_id"])
         freshness = _thread_freshness(thread)
@@ -1126,6 +1119,29 @@ async def _apply_saved_message_counts(
             continue
         thread["message_count"] = entry[1]
         _cache_message_count(thread["thread_id"], freshness, entry[1])
+
+
+async def _read_saved_message_counts(
+    conn: aiosqlite.Connection, thread_ids: list[str]
+) -> dict[str, tuple[str, int]]:
+    """Return saved `(freshness, count)` pairs by thread ID; best effort.
+
+    The table is only a cache, so an unreadable one (for example, a schema
+    from another version) reads as empty and the counts are recomputed.
+    """
+    try:
+        if not await _table_exists(conn, _MESSAGE_COUNTS_TABLE):
+            return {}
+        async with conn.execute(
+            f"SELECT thread_id, freshness, message_count FROM {_MESSAGE_COUNTS_TABLE} "  # noqa: S608  # constant table name
+            "WHERE thread_id IN (SELECT value FROM json_each(?))",
+            (json.dumps(thread_ids),),
+        ) as cursor:
+            rows = await cursor.fetchall()
+    except sqlite3.Error:
+        logger.warning("Could not read saved thread message counts", exc_info=True)
+        return {}
+    return {row[0]: (row[1], row[2]) for row in rows}
 
 
 async def _save_message_counts(
@@ -1155,13 +1171,15 @@ async def _save_message_counts(
             "message_count INTEGER NOT NULL)"
         )
         await conn.executemany(
-            f"INSERT OR REPLACE INTO {_MESSAGE_COUNTS_TABLE} VALUES (?, ?, ?)",  # noqa: S608  # constant table name
+            f"INSERT OR REPLACE INTO {_MESSAGE_COUNTS_TABLE} "  # noqa: S608  # constant table name
+            "(thread_id, freshness, message_count) VALUES (?, ?, ?)",
             rows,
         )
         await conn.commit()
     except sqlite3.Error:
         logger.debug("Could not save thread message counts", exc_info=True)
-        await conn.rollback()
+        with contextlib.suppress(sqlite3.Error):
+            await conn.rollback()
     finally:
         await conn.execute(f"PRAGMA busy_timeout = {int(busy_timeout)}")
 

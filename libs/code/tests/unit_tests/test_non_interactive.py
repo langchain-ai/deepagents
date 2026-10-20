@@ -25,6 +25,11 @@ from rich.style import Style
 from deepagents_code._tool_stream import ToolCallBuffer
 from deepagents_code._tracing import RESUME_TRACE_TAG
 from deepagents_code.approval_mode import ApprovalMode
+from deepagents_code.client.headless_resume import (
+    ResumeError,
+    ResumeRequest,
+    ResumeTarget,
+)
 from deepagents_code.client.non_interactive import (
     RETRY_BOUNDARY_LINE,
     HITLIterationLimitError,
@@ -74,6 +79,7 @@ from deepagents_code.hooks.models.domain import (
 )
 from deepagents_code.hooks.transcript import TranscriptRecorder, TranscriptStore
 from deepagents_code.model_metadata import ModelMetadata
+from deepagents_code.thread_ownership import ensure_owned, held_lease
 from deepagents_code.tool_display import format_tool_message_content
 
 
@@ -633,7 +639,7 @@ class TestQuietMode:
             )
 
         assert stdout.getvalue() == "answer\n"
-        assert stderr.getvalue() == "\nReasoning:\nthinking\n"
+        assert stderr.getvalue() == "Thread: test-thread\n\nReasoning:\nthinking\n"
 
 
 class TestQuietFileOpNotification:
@@ -4467,3 +4473,215 @@ async def test_headless_uses_server_metadata_before_inference(
     assert code == (1 if metadata_fails else 0)
     assert run.await_count == (0 if metadata_fails else 1)
     server.stop.assert_called_once()
+
+
+class TestHeadlessResume:
+    """`run_non_interactive(resume=...)` continues an existing thread or exits 1."""
+
+    @pytest.fixture
+    def start_server(self, monkeypatch: pytest.MonkeyPatch) -> AsyncMock:
+        agent = _headless_agent()
+        agent.aensure_thread = AsyncMock()
+        agent.aget_state = AsyncMock(return_value=SimpleNamespace(values={}))
+        agent.aresolve_model = AsyncMock(
+            return_value=ModelMetadata("thread-model", "openai", context_limit=999)
+        )
+        agent.astream = MagicMock(return_value=_async_iter([]))
+        start = AsyncMock(return_value=(agent, MagicMock(), None))
+        monkeypatch.setattr(
+            "deepagents_code.client.launch.server_manager.start_server_and_get_agent",
+            start,
+        )
+        monkeypatch.setattr(
+            "deepagents_code.client.non_interactive._resolve_shell_allow_list",
+            lambda: None,
+        )
+        monkeypatch.setattr(
+            "deepagents_code.client.non_interactive.build_langsmith_thread_url",
+            lambda _thread_id: None,
+        )
+        monkeypatch.setattr("deepagents_code.thread_ownership.ensure_owned", Mock())
+        monkeypatch.setattr(
+            "deepagents_code.sessions.thread_exists", AsyncMock(return_value=True)
+        )
+        return start
+
+    @staticmethod
+    def _target(monkeypatch: pytest.MonkeyPatch, **overrides: object) -> AsyncMock:
+        fields: dict[str, Any] = {
+            "thread_id": "t-1",
+            "agent_name": "coder",
+            "cwd": None,
+            **overrides,
+        }
+        resolve = AsyncMock(return_value=ResumeTarget(**fields))
+        monkeypatch.setattr(
+            "deepagents_code.client.headless_resume.resolve_resume_target", resolve
+        )
+        return resolve
+
+    @staticmethod
+    def _request(
+        *, adopt_agent: bool = True, adopt_model: bool = True
+    ) -> ResumeRequest:
+        return ResumeRequest("t-1", adopt_agent=adopt_agent, adopt_model=adopt_model)
+
+    async def _run(self, **kwargs: Any) -> tuple[int, str, str]:
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with patch.object(sys, "stdout", stdout), patch.object(sys, "stderr", stderr):
+            code = await run_non_interactive(
+                message="next step", quiet=True, no_mcp=True, **kwargs
+            )
+        return code, stdout.getvalue(), stderr.getvalue()
+
+    async def test_missing_thread_exits_before_server_start(
+        self, monkeypatch: pytest.MonkeyPatch, start_server: AsyncMock
+    ) -> None:
+        monkeypatch.setattr(
+            "deepagents_code.client.headless_resume.resolve_resume_target",
+            AsyncMock(side_effect=ResumeError("Thread 't-1' not found.")),
+        )
+
+        code, stdout, stderr = await self._run(resume=self._request())
+
+        assert code == 1
+        assert "Thread 't-1' not found." in stderr
+        assert "Thread: " not in stderr
+        assert stdout == ""
+        start_server.assert_not_awaited()
+
+    async def test_cancelled_startup_command_leaves_thread_unreserved(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        start_server: AsyncMock,
+        tmp_path: Path,
+    ) -> None:
+        db = tmp_path / "sessions.db"
+        monkeypatch.setattr("deepagents_code.sessions.get_db_path", lambda: db)
+        monkeypatch.setattr(
+            "deepagents_code.thread_ownership.ensure_owned", ensure_owned
+        )
+        monkeypatch.setattr(
+            "deepagents_code.client.non_interactive._run_startup_command",
+            AsyncMock(side_effect=asyncio.CancelledError),
+        )
+        self._target(monkeypatch)
+
+        with pytest.raises(asyncio.CancelledError):
+            await self._run(resume=self._request(), startup_cmd="sleep 60")
+
+        assert held_lease("t-1", db_path=db) is None
+        start_server.assert_not_awaited()
+
+    async def test_resumed_run_releases_its_reservation(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        start_server: AsyncMock,
+        tmp_path: Path,
+    ) -> None:
+        db = tmp_path / "sessions.db"
+        monkeypatch.setattr("deepagents_code.sessions.get_db_path", lambda: db)
+        monkeypatch.setattr(
+            "deepagents_code.thread_ownership.ensure_owned", ensure_owned
+        )
+        self._target(monkeypatch)
+        held_during_run: list[bool] = []
+        start_server.side_effect = lambda **_kwargs: (
+            held_during_run.append(held_lease("t-1", db_path=db) is not None),
+            start_server.return_value,
+        )[1]
+
+        code, _stdout, _stderr = await self._run(resume=self._request())
+
+        assert code == 0
+        assert held_during_run == [True]
+        assert held_lease("t-1", db_path=db) is None
+
+    async def test_other_directory_exits_1(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        start_server: AsyncMock,
+        tmp_path: Path,
+    ) -> None:
+        origin, here = tmp_path / "origin", tmp_path / "here"
+        origin.mkdir()
+        here.mkdir()
+        monkeypatch.chdir(here)
+        self._target(monkeypatch, cwd=str(origin))
+
+        code, _stdout, stderr = await self._run(resume=self._request())
+
+        assert code == 1
+        assert "Run from that directory" in stderr
+        start_server.assert_not_awaited()
+
+    async def test_resumed_turn_continues_thread_with_its_agent_and_model(
+        self, monkeypatch: pytest.MonkeyPatch, start_server: AsyncMock
+    ) -> None:
+        self._target(monkeypatch)
+        agent = start_server.return_value[0]
+        agent.aget_state.return_value = SimpleNamespace(
+            values={
+                "_model_spec": "openai:thread-model",
+                "_model_params": {"temperature": 0},
+                "rubric": "criteria from an earlier run",
+            }
+        )
+        session_start = AsyncMock(
+            return_value=SimpleNamespace(ok=True, stop_reason=None)
+        )
+        monkeypatch.setattr(HooksManager, "on_session_start", session_start)
+
+        code, _stdout, stderr = await self._run(
+            resume=self._request(), profile_override={"max_input_tokens": 10}
+        )
+
+        assert code == 0
+        assert stderr.startswith("Thread: t-1\n")
+        assert start_server.call_args.kwargs["assistant_id"] == "coder"
+        stream_input = agent.astream.call_args.args[0]
+        kwargs = agent.astream.call_args.kwargs
+        assert kwargs["config"]["configurable"]["thread_id"] == "t-1"
+        assert stream_input["rubric"] is None
+        assert kwargs["context"]["model"] == "openai:thread-model"
+        assert kwargs["context"]["model_params"] == {"temperature": 0}
+        assert kwargs["context"]["profile_overrides"] == {"max_input_tokens": 10}
+        assert kwargs["context"]["model_context_limit"] == 999
+        from deepagents_code.hooks.models.domain import SessionStartCause
+
+        assert session_start.call_args.args[0] is SessionStartCause.RESUME
+
+    async def test_explicit_agent_and_model_win(
+        self, monkeypatch: pytest.MonkeyPatch, start_server: AsyncMock
+    ) -> None:
+        self._target(monkeypatch, agent_name="coder")
+        agent = start_server.return_value[0]
+        agent.aget_state.return_value = SimpleNamespace(
+            values={"_model_spec": "openai:thread-model"}
+        )
+
+        code, _stdout, _stderr = await self._run(
+            resume=self._request(adopt_agent=False, adopt_model=False),
+            assistant_id="reviewer",
+        )
+
+        assert code == 0
+        assert start_server.call_args.kwargs["assistant_id"] == "reviewer"
+        agent.aresolve_model.assert_not_awaited()
+        assert "model" not in agent.astream.call_args.kwargs["context"]
+
+    async def test_unrestorable_model_warns_and_uses_launch_model(
+        self, monkeypatch: pytest.MonkeyPatch, start_server: AsyncMock
+    ) -> None:
+        self._target(monkeypatch)
+        agent = start_server.return_value[0]
+        agent.aget_state.return_value = SimpleNamespace(
+            values={"_model_spec": "gone:model"}
+        )
+        agent.aresolve_model.side_effect = RuntimeError("unknown provider")
+
+        code, _stdout, stderr = await self._run(resume=self._request())
+
+        assert code == 0
+        assert "could not restore this thread's model gone:model" in stderr
+        assert "model" not in agent.astream.call_args.kwargs["context"]

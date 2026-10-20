@@ -26452,7 +26452,7 @@ class DeepAgentsApp(App):
             cli_version="0.1.0",
             release_age=" (released 2 days ago)",
             installed_age="",
-            upgrade_cmd="uv tool upgrade deepagents-code",
+            upgrade_cmd="uv tool install -U deepagents-code",
         )
         self._notice_registry.add(update_notification)
         self._update_modal_pending.set()

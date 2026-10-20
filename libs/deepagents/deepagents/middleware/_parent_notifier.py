@@ -22,6 +22,7 @@ from pydantic import BaseModel, Field
 
 from deepagents.middleware._utils import append_to_system_message
 from deepagents.middleware.async_subagents import (
+    PrepareRun,
     _current_run_id,
     _failure_text,
     _final_content,
@@ -45,8 +46,9 @@ class _ParentNotifierMiddleware(AgentMiddleware[AgentState, ContextT, ResponseT]
     trace_policy = TracePolicy(process_inputs=omit_payload)
     """Omit hook inputs from traces by default; set a `TracePolicy` to override."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, prepare_run: PrepareRun | None = None) -> None:
         super().__init__()
+        self._prepare_run = prepare_run
         self._reported: dict[str, None] = {}
         self.tools = [
             StructuredTool.from_function(
@@ -67,7 +69,13 @@ class _ParentNotifierMiddleware(AgentMiddleware[AgentState, ContextT, ResponseT]
             return "No launching agent is available for this graph."
         metadata = config.get("metadata") or {}
         name = str(metadata.get("subagent_name") or metadata.get("graph_id") or "subagent")
-        delivered = await _notify_parent(config, _task_event(config, name, "message", message=message), runtime.context)
+        delivered = await _notify_parent(
+            config,
+            _task_event(config, name, "message", message=message),
+            runtime.context,
+            prepare_run=self._prepare_run,
+            tool_call_id=runtime.tool_call_id,
+        )
         if not delivered:
             return "Message not delivered: the parent is unavailable or waiting for human input."
         return "Message queued for your parent. Continue working; this task is still running."
@@ -129,7 +137,7 @@ class _ParentNotifierMiddleware(AgentMiddleware[AgentState, ContextT, ResponseT]
             del self._reported[next(iter(self._reported))]
         metadata = config.get("metadata") or {}
         name = str(metadata.get("subagent_name") or metadata.get("graph_id") or "subagent")
-        await _notify_parent(config, _task_event(config, name, status, **details), context)
+        await _notify_parent(config, _task_event(config, name, status, **details), context, prepare_run=self._prepare_run)
 
 
 def _is_top_level_graph(config: Mapping[str, Any]) -> bool:

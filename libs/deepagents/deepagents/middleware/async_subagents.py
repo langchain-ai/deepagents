@@ -18,7 +18,7 @@ import urllib.parse
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from copy import deepcopy
 from datetime import UTC, datetime
-from typing import Annotated, Any, Literal, NotRequired, TypedDict, cast
+from typing import Annotated, Any, Literal, NotRequired, Protocol, TypedDict, cast
 
 from langchain.agents.middleware.types import (
     AgentMiddleware,
@@ -35,6 +35,7 @@ from langchain.tools import ToolRuntime
 from langchain_core._api.beta_decorator import warn_beta
 from langchain_core.messages import AnyMessage, BaseMessage, ContentBlock, ToolMessage, convert_to_messages
 from langchain_core.runnables import RunnableConfig
+from langchain_core.runnables.config import get_executor_for_config
 from langchain_core.tools import StructuredTool
 from langgraph.runtime import Runtime
 from langgraph.types import Command
@@ -51,6 +52,54 @@ from deepagents.middleware.subagents import _fork_messages
 from deepagents.middleware.summarization import SUMMARIZATION_EVENT_KEY
 
 logger = logging.getLogger(__name__)
+
+
+RunKind = Literal["start", "update", "wake", "message"]
+"""Why deepagents is creating a run on the application's behalf."""
+
+RunOptions = dict[str, Any]
+"""Complete keyword arguments for the LangGraph SDK's `runs.create`."""
+
+
+class PrepareRun(Protocol):
+    """Trusted application callback for preparing or taking over a run request."""
+
+    def __call__(
+        self,
+        kind: RunKind,
+        options: RunOptions,
+        config: RunnableConfig,
+        *,
+        tool_call_id: str | None = None,
+    ) -> RunOptions | None | Awaitable[RunOptions | None]:
+        """Return SDK kwargs, or `None` to suppress SDK run creation."""
+        ...
+
+
+async def _aprepare_run(
+    prepare_run: PrepareRun | None, kind: RunKind, options: RunOptions, config: RunnableConfig, tool_call_id: str | None = None
+) -> RunOptions | None:
+    if prepare_run is None:
+        return options
+    try:
+        result = prepare_run(kind, options, config, tool_call_id=tool_call_id)
+        if isinstance(result, Awaitable):
+            return await cast("Awaitable[RunOptions | None]", result)
+        return cast("RunOptions | None", result)
+    except Exception:  # noqa: BLE001  # application exceptions may contain credentials
+        msg = "Application run preparation failed."
+        raise RuntimeError(msg) from None
+
+
+def _prepare_run(prepare_run: PrepareRun | None, kind: RunKind, options: RunOptions, runtime: ToolRuntime) -> RunOptions | None:
+    if prepare_run is None:
+        return options
+
+    def prepare() -> RunOptions | None:
+        return asyncio.run(_aprepare_run(prepare_run, kind, options, runtime.config, runtime.tool_call_id))
+
+    with get_executor_for_config(runtime.config) as executor:
+        return executor.submit(prepare).result()
 
 
 class AsyncSubAgent(TypedDict):
@@ -556,34 +605,59 @@ _DELIVERABLE_THREAD_STATUSES = frozenset({"idle", "error"})
 """Parent thread statuses a notification run can start on: neither running nor waiting for a human."""
 
 
-async def _awake_parent(parent_thread_id: str, assistant_id: str, event: _TaskUpdate, context: dict[str, Any] | None = None) -> bool:
+async def _awake_parent(
+    parent_thread_id: str,
+    assistant_id: str,
+    event: _TaskUpdate,
+    context: dict[str, Any] | None = None,
+    *,
+    prepare_run: PrepareRun | None = None,
+    config: RunnableConfig | None = None,
+    tool_call_id: str | None = None,
+) -> bool:
     """Deliver outcomes to idle parents; enqueue messages that polling cannot discover."""
+    options: RunOptions | None = {
+        "thread_id": parent_thread_id,
+        "assistant_id": assistant_id,
+        "input": {"messages": [_notification_message(event)]},
+        "multitask_strategy": "enqueue" if event["status"] == "message" else "reject",
+        **({"context": context} if context is not None else {}),
+    }
+    try:
+        options = await _aprepare_run(prepare_run, "message" if event["status"] == "message" else "wake", options, config or {}, tool_call_id)
+    except RuntimeError:
+        logger.warning("Application run preparation failed for task %s", event["task_id"])
+        return False
+    if options is None:
+        return True
     client = get_client()
     try:
-        status = (await client.threads.get(thread_id=parent_thread_id)).get("status")
+        status = (await client.threads.get(thread_id=options["thread_id"])).get("status")
         allowed = _DELIVERABLE_THREAD_STATUSES | {"busy"} if event["status"] == "message" else _DELIVERABLE_THREAD_STATUSES
         if status not in allowed:
             return False
-        await client.runs.create(
-            thread_id=parent_thread_id,
-            assistant_id=assistant_id,
-            input={"messages": [_notification_message(event)]},
-            multitask_strategy="enqueue" if event["status"] == "message" else "reject",
-            **({"context": context} if context is not None else {}),
-        )
+        await client.runs.create(**options)
     except Exception as e:  # noqa: BLE001  # LangGraph SDK raises untyped errors
         status_code = getattr(getattr(e, "response", None), "status_code", None)
         log = logger.debug if status_code in {404, 409} else logger.warning
-        log("Didn't deliver the notification for task %s", event["task_id"], exc_info=True)
+        log("Didn't deliver the notification for task %s", event["task_id"], exc_info=prepare_run is None)
         return False
     return True
 
 
-async def _notify_parent(config: RunnableConfig, event: _TaskUpdate, context: object = None) -> bool:
+async def _notify_parent(
+    config: RunnableConfig,
+    event: _TaskUpdate,
+    context: object = None,
+    *,
+    prepare_run: PrepareRun | None = None,
+    tool_call_id: str | None = None,
+) -> bool:
     """Notify the launching agent, returning whether a notification run was accepted."""
     parent = _launching_agent(config) or {}
     if "thread_id" in parent and "assistant_id" in parent:
-        return await _awake_parent(parent["thread_id"], parent["assistant_id"], event, _forwarded_context(context))
+        kwargs = {"prepare_run": prepare_run, "config": config, "tool_call_id": tool_call_id} if prepare_run is not None else {}
+        return await _awake_parent(parent["thread_id"], parent["assistant_id"], event, _forwarded_context(context), **kwargs)
     return False
 
 
@@ -690,6 +764,7 @@ def _build_start_tool(
     agent_map: dict[str, AsyncSubAgent],
     clients: _ClientCache,
     tool_description: str,
+    prepare_run: PrepareRun | None = None,
 ) -> StructuredTool:
     """Build the `start_async_task` tool."""
 
@@ -706,16 +781,20 @@ def _build_start_tool(
         try:
             client = clients.get_sync(subagent_type)
             thread = client.threads.create(metadata=_thread_metadata(spec, runtime))
-            run = client.runs.create(
-                thread_id=thread["thread_id"],
-                assistant_id=spec["graph_id"],
-                input={"messages": messages},
-                **_run_options(spec, runtime),
+            options = _prepare_run(
+                prepare_run,
+                "start",
+                {"thread_id": thread["thread_id"], "assistant_id": spec["graph_id"], "input": {"messages": messages}, **_run_options(spec, runtime)},
+                runtime,
             )
+            if options is None:
+                return "Async subagent launch suppressed by the application; no task was tracked."
+            run = client.runs.create(**options)
         except Exception as e:  # noqa: BLE001  # LangGraph SDK raises untyped errors
-            logger.warning("Failed to launch async subagent '%s': %s", subagent_type, e)
-            return f"Failed to launch async subagent '{subagent_type}': {e}"
-        task_id = thread["thread_id"]
+            detail = type(e).__name__ if prepare_run is not None else str(e)
+            logger.warning("Failed to launch async subagent '%s': %s", subagent_type, detail)
+            return f"Failed to launch async subagent '{subagent_type}': {detail}"
+        task_id = options["thread_id"]
         now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
         task: AsyncTask = {
             "task_id": task_id,
@@ -748,16 +827,21 @@ def _build_start_tool(
         try:
             client = clients.get_async(subagent_type)
             thread = await client.threads.create(metadata=_thread_metadata(spec, runtime))
-            run = await client.runs.create(
-                thread_id=thread["thread_id"],
-                assistant_id=spec["graph_id"],
-                input={"messages": messages},
-                **_run_options(spec, runtime),
+            options = await _aprepare_run(
+                prepare_run,
+                "start",
+                {"thread_id": thread["thread_id"], "assistant_id": spec["graph_id"], "input": {"messages": messages}, **_run_options(spec, runtime)},
+                runtime.config,
+                runtime.tool_call_id,
             )
+            if options is None:
+                return "Async subagent launch suppressed by the application; no task was tracked."
+            run = await client.runs.create(**options)
         except Exception as e:  # noqa: BLE001  # LangGraph SDK raises untyped errors
-            logger.warning("Failed to launch async subagent '%s': %s", subagent_type, e)
-            return f"Failed to launch async subagent '{subagent_type}': {e}"
-        task_id = thread["thread_id"]
+            detail = type(e).__name__ if prepare_run is not None else str(e)
+            logger.warning("Failed to launch async subagent '%s': %s", subagent_type, detail)
+            return f"Failed to launch async subagent '{subagent_type}': {detail}"
+        task_id = options["thread_id"]
         now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
         task: AsyncTask = {
             "task_id": task_id,
@@ -976,6 +1060,7 @@ def _update_message(tracked: AsyncTask) -> str:
 def _build_update_tool(
     agent_map: dict[str, AsyncSubAgent],
     clients: _ClientCache,
+    prepare_run: PrepareRun | None = None,
 ) -> StructuredTool:
     """Build the `update_async_task` tool.
 
@@ -995,17 +1080,26 @@ def _build_update_tool(
             return tracked
         spec = agent_map[tracked["agent_name"]]
         try:
-            client = clients.get_sync(tracked["agent_name"])
-            run = client.runs.create(
-                thread_id=tracked["thread_id"],
-                assistant_id=spec["graph_id"],
-                input={"messages": [{"role": "user", "content": message}]},
-                multitask_strategy="interrupt",
-                **_run_options(spec, runtime),
+            options = _prepare_run(
+                prepare_run,
+                "update",
+                {
+                    "thread_id": tracked["thread_id"],
+                    "assistant_id": spec["graph_id"],
+                    "input": {"messages": [{"role": "user", "content": message}]},
+                    "multitask_strategy": "interrupt",
+                    **_run_options(spec, runtime),
+                },
+                runtime,
             )
+            if options is None:
+                return "Async subagent update suppressed by the application; task tracking is unchanged."
+            client = clients.get_sync(tracked["agent_name"])
+            run = client.runs.create(**options)
         except Exception as e:  # noqa: BLE001  # LangGraph SDK raises untyped errors
-            logger.warning("Failed to update async subagent '%s': %s", tracked["agent_name"], e)
-            return f"Failed to update async subagent: {e}"
+            detail = type(e).__name__ if prepare_run is not None else str(e)
+            logger.warning("Failed to update async subagent '%s': %s", tracked["agent_name"], detail)
+            return f"Failed to update async subagent: {detail}"
         now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
         task: AsyncTask = {
             "task_id": tracked["task_id"],
@@ -1035,17 +1129,27 @@ def _build_update_tool(
             return tracked
         spec = agent_map[tracked["agent_name"]]
         try:
-            client = clients.get_async(tracked["agent_name"])
-            run = await client.runs.create(
-                thread_id=tracked["thread_id"],
-                assistant_id=spec["graph_id"],
-                input={"messages": [{"role": "user", "content": message}]},
-                multitask_strategy="interrupt",
-                **_run_options(spec, runtime),
+            options = await _aprepare_run(
+                prepare_run,
+                "update",
+                {
+                    "thread_id": tracked["thread_id"],
+                    "assistant_id": spec["graph_id"],
+                    "input": {"messages": [{"role": "user", "content": message}]},
+                    "multitask_strategy": "interrupt",
+                    **_run_options(spec, runtime),
+                },
+                runtime.config,
+                runtime.tool_call_id,
             )
+            if options is None:
+                return "Async subagent update suppressed by the application; task tracking is unchanged."
+            client = clients.get_async(tracked["agent_name"])
+            run = await client.runs.create(**options)
         except Exception as e:  # noqa: BLE001  # LangGraph SDK raises untyped errors
-            logger.warning("Failed to update async subagent '%s': %s", tracked["agent_name"], e)
-            return f"Failed to update async subagent: {e}"
+            detail = type(e).__name__ if prepare_run is not None else str(e)
+            logger.warning("Failed to update async subagent '%s': %s", tracked["agent_name"], detail)
+            return f"Failed to update async subagent: {detail}"
         now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
         task: AsyncTask = {
             "task_id": tracked["task_id"],
@@ -1295,11 +1399,13 @@ def _build_list_tasks_tool(clients: _ClientCache) -> StructuredTool:
 
 def _build_async_subagent_tools(
     agents: list[AsyncSubAgent],
+    prepare_run: PrepareRun | None = None,
 ) -> list[StructuredTool]:
     """Build the async subagent tools from agent specs.
 
     Args:
         agents: List of async subagent specifications.
+        prepare_run: Application callback for outgoing run requests.
 
     Returns:
         List of `StructuredTools` for launch, check, update, cancel, and list operations.
@@ -1310,9 +1416,9 @@ def _build_async_subagent_tools(
     launch_desc = ASYNC_TASK_TOOL_DESCRIPTION.format(available_agents=agents_desc)
 
     return [
-        _build_start_tool(agent_map, clients, launch_desc),
+        _build_start_tool(agent_map, clients, launch_desc, prepare_run),
         _build_check_tool(clients),
-        _build_update_tool(agent_map, clients),
+        _build_update_tool(agent_map, clients, prepare_run),
         _build_cancel_tool(clients),
         _build_list_tasks_tool(clients),
     ]
@@ -1397,6 +1503,22 @@ class AsyncSubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
             optional — omit it to use ASGI transport for local servers.
         system_prompt: Instructions appended to the main agent's system prompt
             about how to use the async subagent tools.
+        prepare_run: Trusted sync or async application callback, called with
+            `(kind, options, config, *, tool_call_id=None)` before SDK run creation.
+            `options` contains all `runs.create` kwargs, including target thread,
+            assistant and input. Return modified kwargs to customize webhook,
+            context or multitask strategy, or `None` to suppress the run.
+            Suppressed starts create a thread but no tracked task; suppressed
+            updates leave tracking unchanged. The tool reports suppression, not
+            success. The tool-call ID supports application idempotency, but does
+            not make thread creation idempotent. Options are not persisted in
+            agent state; keep secrets out of input, config and context.
+
+            !!! warning "Experimental"
+
+                This callback API may change. Configure it on each child graph
+                via `create_deep_agent` to intercept wake/message runs too. It
+                does not replace server-side webhooks if a child process dies.
 
     Example:
         ```python
@@ -1425,6 +1547,7 @@ class AsyncSubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         *,
         async_subagents: list[AsyncSubAgent],
         system_prompt: str | None = None,
+        prepare_run: PrepareRun | None = None,
     ) -> None:
         """Initialize the `AsyncSubAgentMiddleware`."""
         super().__init__()
@@ -1447,7 +1570,7 @@ class AsyncSubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
             warn_beta(name="forked subagents", obj_type="feature")
 
         self._clients = _ClientCache({a["name"]: a for a in async_subagents})
-        self.tools = _build_async_subagent_tools(async_subagents)
+        self.tools = _build_async_subagent_tools(async_subagents, prepare_run)
 
         if system_prompt:
             agents_desc = "\n".join(_describe_async_subagent(a) for a in async_subagents)

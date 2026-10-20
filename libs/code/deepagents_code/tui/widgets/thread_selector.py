@@ -2639,7 +2639,9 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
 
     def on_load_more_threads_requested(self) -> None:
         """Fetch another batch without dismissing the picker."""
-        if self._loading_more or not self._has_more:
+        # A pending reload replaces the window anyway; a batch now would cancel
+        # it and leave the shown sort and scope out of date.
+        if self._loading_more or not self._has_more or self._reload_pending():
             return
         self.run_worker(
             self._load_more_threads, exclusive=True, group="thread-selector-load"

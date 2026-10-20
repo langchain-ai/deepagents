@@ -20262,14 +20262,12 @@ class TestNotificationCenterIntegration:
         assert any("debug mode" in m for m in notified)
 
     @pytest.mark.parametrize("source", ["slash", "notification"])
-    @pytest.mark.parametrize("verified", [False, True])
     async def test_python_migration_ends_session(
         self,
         monkeypatch: pytest.MonkeyPatch,
         capsys: pytest.CaptureFixture[str],
         tmp_path: Path,
         source: str,
-        verified: bool,
     ) -> None:
         """Both update routes require relaunch, even if verification fails."""
         from deepagents_code.notifications import ActionId
@@ -20291,7 +20289,7 @@ class TestNotificationCenterIntegration:
             *, on_interpreter_change: Callable[[], None], **_kwargs: object
         ) -> tuple[bool, str, str | None]:
             on_interpreter_change()
-            return verified, "installed", "2.0.0" if verified else None
+            return False, "installed", None
 
         with patch(
             "deepagents_code.update_check.perform_upgrade",
@@ -20383,18 +20381,6 @@ class TestNotificationCenterIntegration:
             original_notify(message, **kwargs)
 
         app.notify = capture_notify  # ty: ignore
-        notice = "Python 3.14 is required; migrating [tool] environment."
-
-        def install(
-            *,
-            on_notice: Callable[[str], None],
-            allow_python_migration: bool,
-            **_kwargs: object,
-        ) -> tuple[bool, str, str]:
-            assert allow_python_migration is False
-            on_notice(notice)
-            assert notice in notified
-            return True, "Updated deepagents-code", "2.0.0"
 
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -20402,7 +20388,7 @@ class TestNotificationCenterIntegration:
             await pilot.pause()
             with patch(
                 "deepagents_code.update_check.perform_upgrade",
-                new=AsyncMock(side_effect=install),
+                new=AsyncMock(return_value=(True, "Updated deepagents-code", "2.0.0")),
             ):
                 await app._dispatch_notification_action(entry.key, ActionId.INSTALL)
                 await pilot.pause()

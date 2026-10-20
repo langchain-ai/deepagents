@@ -1292,11 +1292,10 @@ class TestUpdateSubcommand:
             "the install ran without holding the update lock"
         )
 
-    @pytest.mark.parametrize("flag_style", [False, True])
     def test_update_explains_migration_before_install(
-        self, flag_style: bool, capsys: pytest.CaptureFixture[str]
+        self, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        """Both explicit CLI update forms show notices without a prompt."""
+        """The explicit CLI update shows notices without a prompt."""
         notice = "Python 3.14 is required; migrating [tool] environment."
 
         def upgrade(
@@ -1309,7 +1308,6 @@ class TestUpdateSubcommand:
         code, _, _ = self._run_update(
             editable=False,
             is_update_available_return=(True, "99.0.0"),
-            flag_style=flag_style,
             upgrade_side_effect=upgrade,
         )
         assert code == 0

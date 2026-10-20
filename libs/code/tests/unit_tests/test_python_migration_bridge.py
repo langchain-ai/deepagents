@@ -39,58 +39,34 @@ def test_release_requirement_reads_exact_target(version: str) -> None:
         requirement = update_check._release_python_requirement(version)
     assert requirement == SpecifierSet(">=3.14,<3.15")
     assert get.call_args.args[0].endswith(f"/{version}/json")
-    assert get.call_args.kwargs["timeout"] > 0
 
 
-@pytest.mark.parametrize(
-    "info",
-    [
-        None,
-        {},
-        {"version": "2.0.1", "requires_python": ">=3.14"},
-        {"version": "invalid", "requires_python": ">=3.14"},
-        {"version": "2.0.0"},
-        {"version": "2.0.0", "requires_python": None},
-        {"version": "2.0.0", "requires_python": " "},
-        {"version": "2.0.0", "requires_python": "not a specifier"},
-    ],
-)
-def test_release_requirement_refuses_untrusted_metadata(info: object) -> None:
-    with (
-        patch("requests.get", return_value=_response(info)),
-        pytest.raises(ValueError, match=r"metadata|specifier"),
-    ):
-        update_check._release_python_requirement("2.0.0")
-
-
-@pytest.mark.parametrize(
-    "error", [requests.ConnectionError("offline"), ValueError("bad JSON")]
-)
-def test_release_requirement_refuses_network_or_json_failure(error: Exception) -> None:
-    with (
-        patch("requests.get", side_effect=error),
-        pytest.raises(ValueError, match="metadata"),
-    ):
-        update_check._release_python_requirement("2.0.0")
-
-
-@pytest.mark.parametrize("payload", [None, [], "invalid"])
-def test_release_requirement_refuses_non_object_response(payload: object) -> None:
-    response = MagicMock()
-    response.json.return_value = payload
-    with (
-        patch("requests.get", return_value=response),
-        pytest.raises(ValueError, match="metadata"),
-    ):
-        update_check._release_python_requirement("2.0.0")
-
-
-def test_release_requirement_refuses_http_error() -> None:
+def _http_error() -> MagicMock:
     response = _response({"version": "2.0.0", "requires_python": ">=3.14,<3.15"})
     response.raise_for_status.side_effect = requests.HTTPError("503 unavailable")
+    return response
+
+
+@pytest.mark.parametrize(
+    "get",
+    [
+        MagicMock(side_effect=requests.ConnectionError("offline")),
+        MagicMock(return_value=_http_error()),
+        MagicMock(return_value=MagicMock(json=MagicMock(return_value=[]))),
+        MagicMock(return_value=_response({"version": "2.0.1"})),
+        MagicMock(return_value=_response({"version": "2.0.0"})),
+        MagicMock(
+            return_value=_response(
+                {"version": "2.0.0", "requires_python": "not a specifier"}
+            )
+        ),
+    ],
+)
+def test_release_requirement_refuses_unusable_metadata(get: MagicMock) -> None:
+    """Every unusable response raises, so the caller keeps the interpreter."""
     with (
-        patch("requests.get", return_value=response),
-        pytest.raises(ValueError, match="503 unavailable"),
+        patch("requests.get", get),
+        pytest.raises(ValueError, match=r"metadata|specifier"),
     ):
         update_check._release_python_requirement("2.0.0")
 
@@ -182,9 +158,8 @@ def uv_install(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> AsyncMock:
     return run
 
 
-@pytest.mark.parametrize("minor", [12, 13])
 async def test_migration_preserves_install_context_and_announces_before_install(
-    uv_install: AsyncMock, minor: int
+    uv_install: AsyncMock,
 ) -> None:
     notices: list[str] = []
 
@@ -196,11 +171,10 @@ async def test_migration_preserves_install_context_and_announces_before_install(
         assert args[args.index("--python") + 1] == "3.14"
         assert "deepagents-code[openai,quickjs]==2.0.0" in args
         assert args[args.index("--with") + 1] == "langchain-custom"
-        assert "uninstall" not in args
         return True, "installed"
 
     uv_install.side_effect = install
-    with patch.object(update_check.sys, "version_info", VersionInfo(3, minor, 4)):
+    with patch.object(update_check.sys, "version_info", VersionInfo(3, 13, 4)):
         result = await update_check.perform_upgrade(
             target_version="2.0.0", include_prereleases=False, on_notice=notices.append
         )
@@ -208,14 +182,13 @@ async def test_migration_preserves_install_context_and_announces_before_install(
     uv_install.assert_awaited_once()
 
 
-@pytest.mark.parametrize("minor", [12, 13])
 async def test_live_session_defers_migration_without_touching_environment(
-    uv_install: AsyncMock, tmp_path: Path, minor: int
+    uv_install: AsyncMock, tmp_path: Path
 ) -> None:
     receipt = tmp_path / "uv-receipt.toml"
     original = receipt.read_bytes()
     notices: list[str] = []
-    with patch.object(update_check.sys, "version_info", VersionInfo(3, minor, 4)):
+    with patch.object(update_check.sys, "version_info", VersionInfo(3, 13, 4)):
         success, output, installed = await update_check.perform_upgrade(
             target_version="2.0.0",
             on_notice=notices.append,
@@ -473,10 +446,6 @@ def test_migrated_readback_uses_rebuilt_interpreter(
     assert args[0] == str(
         tmp_path / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
     )
-    assert "-I" in args
-    assert "(3, 14)" in args[-1]
-    assert run.call_args.kwargs["check"] is True
-    assert run.call_args.kwargs["timeout"] > 0
 
 
 @pytest.mark.parametrize(

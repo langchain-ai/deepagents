@@ -95,8 +95,8 @@ A server keeps the first workspace's tracing configuration for its lifetime. Wor
 
 Idle compaction is disabled by default. When enabled, the interactive client
 automatically uses the existing `/offload` operation for contexts at or above
-the configured token threshold during the final 120 seconds of a known
-prompt-cache retention window. This keeps the same thread and archives older
+the configured token threshold during the final 20% of a known prompt-cache
+retention window, capped at 120 seconds (60 seconds for a 5-minute window). This keeps the same thread and archives older
 messages; it does not create a handoff thread. The configured offload model is
 used, so summarization can incur costs and cache reuse is not guaranteed.
 
@@ -106,6 +106,9 @@ Opt in with a token threshold through the normal layered config:
 [history]
 idle_compaction_tokens = 100000
 ```
+
+Alternatively, set `DEEPAGENTS_CODE_IDLE_COMPACTION_TOKENS=100000` before
+launching dcode.
 
 Set `idle_compaction_tokens = 0` to disable it again. File edits take effect after
 `/reload`. This setting is independent of cold-cache warning preferences.

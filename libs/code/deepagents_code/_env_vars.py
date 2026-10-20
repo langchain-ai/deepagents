@@ -328,6 +328,9 @@ HIDE_SPLASH_TIPS = "DEEPAGENTS_CODE_HIDE_SPLASH_TIPS"
 HIDE_SPLASH_VERSION = "DEEPAGENTS_CODE_HIDE_SPLASH_VERSION"
 """Hide version and local-install details in the splash screen when enabled."""
 
+IDLE_COMPACTION_TOKENS = "DEEPAGENTS_CODE_IDLE_COMPACTION_TOKENS"
+"""Minimum context tokens for opt-in idle compaction; 0 disables it."""
+
 HISTORY_RETENTION_DAYS = "DEEPAGENTS_CODE_HISTORY_RETENTION_DAYS"
 """Days an offloaded conversation-history archive is kept before the startup
 sweep deletes it.

@@ -9775,6 +9775,8 @@ class DeepAgentsApp(App):
         option = get_option("history.idle_compaction_tokens")
         threshold = get_config_resolver().get(option).value if option else 0
         expires_at = self._status_bar.cache_expires_at if self._status_bar else None
+        window = self._status_bar.cache_window_seconds if self._status_bar else None
+        lead = min(window * 0.2, _IDLE_COMPACTION_LEAD_SECONDS) if window else 0
         thread_id = self._lc_thread_id
         if (
             not isinstance(threshold, int)
@@ -9784,9 +9786,7 @@ class DeepAgentsApp(App):
             or not thread_id
             or expires_at is None
             or self._idle_compaction_seen.get(thread_id) == expires_at
-            or not 0
-            < (expires_at - datetime.now(UTC)).total_seconds()
-            <= _IDLE_COMPACTION_LEAD_SECONDS
+            or not 0 < (expires_at - datetime.now(UTC)).total_seconds() <= lead
             or not self._cache_maintenance_idle()
             or self._remote_agent() is None
         ):

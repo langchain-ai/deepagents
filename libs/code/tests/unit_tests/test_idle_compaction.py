@@ -10,12 +10,13 @@ from deepagents_code.app import DeepAgentsApp, QueuedMessage, TextualSessionStat
 from deepagents_code.config_manifest import get_option
 
 
+@pytest.mark.parametrize("window", [300, 3600])
 @pytest.mark.parametrize(
     "blocker",
     ["none", "busy", "typing", "small", "expired", "disabled", "early", "boundary"],
 )
 async def test_idle_compaction_guards(
-    monkeypatch: pytest.MonkeyPatch, blocker: str
+    monkeypatch: pytest.MonkeyPatch, blocker: str, window: int
 ) -> None:
     app = DeepAgentsApp()
     offload = AsyncMock()
@@ -37,11 +38,13 @@ async def test_idle_compaction_guards(
         clock = MagicMock(wraps=datetime)
         clock.now.return_value = now
         monkeypatch.setattr("deepagents_code.app.datetime", clock)
-        app._status_bar.cache_expires_at = now + timedelta(seconds=90)
+        app._status_bar.set_cache_timing(now, ttl_seconds=window)
+        lead = min(window * 0.2, 120)
+        app._status_bar.cache_expires_at = now + timedelta(seconds=lead - 1)
         if blocker == "early":
-            app._status_bar.cache_expires_at = now + timedelta(seconds=121)
+            app._status_bar.cache_expires_at = now + timedelta(seconds=lead + 1)
         elif blocker == "boundary":
-            app._status_bar.cache_expires_at = now + timedelta(seconds=120)
+            app._status_bar.cache_expires_at = now + timedelta(seconds=lead)
         elif blocker == "busy":
             app._agent_running = True
         elif blocker == "typing":
@@ -152,6 +155,7 @@ async def test_cancellation_releases_idle_reservation(
         app._context_tokens = 100_000
         app._tokens_approximate = False
         assert app._status_bar is not None
+        app._status_bar.set_cache_timing(datetime.now(UTC), ttl_seconds=300)
         app._status_bar.cache_expires_at = datetime.now(UTC) + timedelta(seconds=45)
         app._check_idle_compaction()
         await asyncio.wait_for(started.wait(), timeout=2)

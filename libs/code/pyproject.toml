@@ -219,7 +219,6 @@ langchain-runloop = { path = "../partners/runloop", editable = true }
 langchain-vercel-sandbox = { path = "../partners/vercel", editable = true }
 
 [tool.ty.environment]
-python-version = "3.14"
 extra-paths = [
     "../deepagents",
     "../partners/daytona",

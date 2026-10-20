@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import logging
 import sqlite3
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar, cast
 
@@ -156,6 +157,18 @@ _CWD_DEFAULT = _Sentinel()
 
 Distinguishes "caller did not specify" (use the current working directory) from
 an explicit `None` (start with no cwd filter)."""
+
+
+@dataclass(frozen=True, slots=True)
+class _WindowSnapshot:
+    """Picker state that `_apply_window` replaces, kept to undo a failed render."""
+
+    threads: list[ThreadInfo]
+    filtered_threads: list[ThreadInfo]
+    selected_index: int
+    has_more: bool
+    loaded_limit: int
+    disk_load_complete: bool
 
 
 def _safe_cwd_string() -> str | None:
@@ -2020,6 +2033,55 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         self._disk_load_complete = True
         await self._show_mount_error(str(exc))
 
+    async def _apply_window_or_restore(
+        self, threads: list[ThreadInfo], limit: int, *, load_more: bool = False
+    ) -> None:
+        """Run `_apply_window`, undoing its state changes if it raises.
+
+        Args:
+            threads: Rows from `_fetch_window(limit)`.
+            limit: Number of rows in the loaded window.
+            load_more: Whether this extends the shown rows.
+        """
+        snapshot = self._snapshot_window()
+        try:
+            await self._apply_window(threads, limit, load_more=load_more)
+        except Exception:
+            self._restore_window(snapshot)
+            raise
+
+    def _snapshot_window(self) -> _WindowSnapshot:
+        """Capture the state that `_apply_window` replaces.
+
+        Returns:
+            Copies of the rows and the cursor and pagination state.
+        """
+        return _WindowSnapshot(
+            threads=list(self._threads),
+            filtered_threads=list(self._filtered_threads),
+            selected_index=self._selected_index,
+            has_more=self._has_more,
+            loaded_limit=self._loaded_limit,
+            disk_load_complete=self._disk_load_complete,
+        )
+
+    def _restore_window(self, snapshot: _WindowSnapshot) -> None:
+        """Undo a window whose render failed so the rows match the state again.
+
+        Args:
+            snapshot: State from before the failed `_apply_window`.
+        """
+        self._threads = snapshot.threads
+        self._filtered_threads = snapshot.filtered_threads
+        self._selected_index = snapshot.selected_index
+        self._has_more = snapshot.has_more
+        self._loaded_limit = snapshot.loaded_limit
+        self._disk_load_complete = snapshot.disk_load_complete
+        if self._disk_load_complete:
+            # The render may have removed rows. Before the first disk load,
+            # the mount error replaces the list instead.
+            self._schedule_list_rebuild()
+
     async def _apply_window(
         self, threads: list[ThreadInfo], limit: int, *, load_more: bool = False
     ) -> None:
@@ -2499,7 +2561,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         try:
             threads = await self._fetch_window(limit)
             # Inside the `try`: a worker error would otherwise exit the app.
-            await self._apply_window(threads, limit, load_more=True)
+            await self._apply_window_or_restore(threads, limit, load_more=True)
         except (OSError, sqlite3.Error) as exc:
             logger.exception("Failed to load more threads for thread selector")
             self._notify_load_more_failed(exc, retryable=True)

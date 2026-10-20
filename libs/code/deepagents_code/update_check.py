@@ -2517,7 +2517,11 @@ def _release_python_requirement(version: str) -> SpecifierSet:
     Raises:
         ValueError: If metadata is unavailable, invalid, or mismatched.
     """
-    import requests
+    try:
+        import requests
+    except ImportError as exc:
+        msg = f"Could not load the HTTP client to read v{version} metadata: {exc}"
+        raise ValueError(msg) from exc
 
     target = Version(version)
     try:
@@ -2564,6 +2568,10 @@ def _allows_python_314(requirement: SpecifierSet) -> bool:
     return any(requirement.contains(candidate) for candidate in candidates)
 
 
+class _PythonRequirementUnavailableError(ValueError):
+    """The target's `Requires-Python` metadata could not be read."""
+
+
 def _upgrade_python(version: str) -> str | None:
     """Choose the interpreter for the target release.
 
@@ -2571,26 +2579,18 @@ def _upgrade_python(version: str) -> str | None:
     3.14 patch release. A running Python newer than 3.14 is never moved down.
 
     Returns:
-        The migration interpreter, or None to preserve the receipt (also when
-            the target's metadata is unavailable).
+        The migration interpreter, or None to preserve the receipt.
 
     Raises:
-        ValueError: If the target's Python requirement cannot be met by 3.14.
+        _PythonRequirementUnavailableError: If the target's metadata cannot be
+            read.
+        ValueError: If the target's Python requirement cannot be met without
+            moving the interpreter down, or by 3.14.
     """
     try:
         requirement = _release_python_requirement(version)
-    except ValueError:
-        # Without metadata, keep the receipt's interpreter. The install pins
-        # `==version`, so uv refuses a target that needs a newer Python rather
-        # than changing anything; one failed request must not block upgrades
-        # that need no migration (or users behind a mirror PyPI cannot reach).
-        logger.warning(
-            "Could not read Python requirement for v%s; keeping the current "
-            "interpreter",
-            version,
-            exc_info=True,
-        )
-        return None
+    except ValueError as exc:
+        raise _PythonRequirementUnavailableError(str(exc)) from exc
     running = ".".join(str(part) for part in sys.version_info[:3])
     if requirement.contains(running):
         return None
@@ -2727,6 +2727,7 @@ async def perform_upgrade(
         )
     resolved_include_prereleases = _resolve_include_prereleases(include_prereleases)
     python: str | None = None
+    requirement_unknown = False
     recovery_installer = INSTALL_SCRIPT_COMMAND
     if method == "uv":
         target_version = target_version or await asyncio.to_thread(
@@ -2740,6 +2741,19 @@ async def perform_upgrade(
             )
         try:
             python = await asyncio.to_thread(_upgrade_python, target_version)
+        except _PythonRequirementUnavailableError:
+            # Keep the receipt's interpreter. The install pins `==version`, so
+            # uv refuses a target that needs a newer Python rather than
+            # changing anything. One failed request must not block upgrades
+            # that need no migration, or upgrades for users behind a mirror
+            # that cannot reach PyPI.
+            logger.warning(
+                "Could not read Python requirement for v%s; keeping the current "
+                "interpreter",
+                target_version,
+                exc_info=True,
+            )
+            requirement_unknown = True
         except (ImportError, ValueError) as exc:
             refusal = (
                 f"Update stopped before installation: {_sentence(exc)} "
@@ -2879,6 +2893,19 @@ async def perform_upgrade(
             "disabled, provision Python 3.14 with uv or your administrator, or "
             "allow uv downloads and retry. Do not uninstall dcode first. "
             "Recovery installer: "
+            f"{_PYTHON_MIGRATION_INSTALL_COMMAND} "
+            "(reselect extras and added packages)."
+        )
+        output = f"{guidance}\n{output}"
+        await _emit_progress(on_notice, guidance)
+    elif not success and requirement_unknown:
+        from deepagents_code._invocation import invoked_name
+
+        # uv's resolver error is cut short by callers, so name the likely fix.
+        guidance = (
+            f"Could not check v{target_version}'s Python requirement before "
+            "installing. If uv reports that it needs a newer Python, retry "
+            f"`{invoked_name()} update` later, or use the Python 3.14 installer: "
             f"{_PYTHON_MIGRATION_INSTALL_COMMAND} "
             "(reselect extras and added packages)."
         )

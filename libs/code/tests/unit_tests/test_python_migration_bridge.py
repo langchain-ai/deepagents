@@ -367,6 +367,26 @@ async def test_metadata_failure_upgrades_without_migration(
     notice.assert_not_called()
 
 
+async def test_metadata_failure_names_migration_when_install_fails(
+    uv_install: AsyncMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Without metadata, a failed install still points at the 3.14 installer."""
+    monkeypatch.setattr(
+        update_check,
+        "_release_python_requirement",
+        MagicMock(side_effect=ValueError("metadata unavailable")),
+    )
+    uv_install.return_value = False, "requires Python>=3.14"
+    notices: list[str] = []
+    with patch.object(update_check.sys, "version_info", VersionInfo(3, 13, 4)):
+        success, output, _ = await update_check.perform_upgrade(
+            target_version="2.0.0", include_prereleases=False, on_notice=notices.append
+        )
+    assert not success
+    assert update_check._PYTHON_MIGRATION_INSTALL_COMMAND in notices[-1]
+    assert output.endswith("requires Python>=3.14")
+
+
 async def test_unresolved_target_refuses_install(
     uv_install: AsyncMock, monkeypatch: pytest.MonkeyPatch
 ) -> None:

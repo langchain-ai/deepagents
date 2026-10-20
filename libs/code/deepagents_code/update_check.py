@@ -2868,7 +2868,7 @@ async def perform_upgrade(
             )
             if python is not None:
                 await _emit_progress(on_notice, failure)
-            return False, failure, None
+            return False, f"{failure}\n{output}", None
     elif success:
         installed_version = target_version
     return success, output, installed_version

@@ -14,17 +14,34 @@ from langgraph.types import Command
 from pydantic import PrivateAttr
 
 from deepagents_code.agent import create_cli_agent
+from deepagents_code.mcp_tools import MCPServerInfo, MCPToolInfo
 from deepagents_code.skills.invocation import build_skill_invocation_envelope
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
     from pathlib import Path
 
+    from langchain_core.callbacks import CallbackManagerForLLMRun
+    from langchain_core.messages import BaseMessage
+    from langchain_core.outputs import ChatResult
     from langchain_core.runnables import RunnableConfig
 
 
 class _RecordingModel(GenericFakeChatModel):
     _schemas: list[set[str]] = PrivateAttr(default_factory=list)
+    _prompts: list[str] = PrivateAttr(default_factory=list)
+
+    def _generate(
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager: CallbackManagerForLLMRun | None = None,
+        **kwargs: Any,
+    ) -> ChatResult:
+        self._prompts.append(
+            "\n".join(message.text for message in messages if message.type == "system")
+        )
+        return super()._generate(messages, stop, run_manager, **kwargs)
 
     def bind_tools(
         self,
@@ -86,16 +103,27 @@ async def test_skill_only_tool_disclosure(
         profile={"max_input_tokens": 200000},
         disable_streaming=True,
     )
+    server_info = [
+        MCPServerInfo(
+            name="records",
+            transport="http",
+            tools=(
+                MCPToolInfo(name="scoped_tool", description="Scoped"),
+                MCPToolInfo(name="eager_tool", description="Eager"),
+            ),
+        )
+    ]
     graph, _ = create_cli_agent(
         model,
         "skill-tools-test",
         cwd=tmp_path,
         tools=[scoped_tool, eager_tool],
+        mcp_server_info=server_info,
         mcp_tools=[scoped_tool, eager_tool],
         auto_approve=activation != "approval",
         enable_memory=False,
         enable_skills=activation != "disabled",
-        enable_shell=False,
+        enable_shell=True,
         checkpointer=InMemorySaver(),
     )
     state: dict[str, Any] = {"messages": [HumanMessage("read records")]}
@@ -114,6 +142,10 @@ async def test_skill_only_tool_disclosure(
         result = await graph.ainvoke(
             Command(resume={"decisions": [{"type": "approve"}]}), config
         )
+    assert "**MCP Servers** (1 servers, 1 tools)" in model._prompts[0]
+    assert "scoped_tool" not in model._prompts[0]
+    assert "eager_tool" in model._prompts[0]
+    assert [item.name for item in server_info[0].tools] == ["scoped_tool", "eager_tool"]
     assert all("eager_tool" in names for names in model._schemas)
     if activation in {"disabled", "unread"}:
         assert calls == []

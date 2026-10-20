@@ -2776,6 +2776,17 @@ def create_cli_agent(
     )
     skill_tool_ids = {id(item) for item in skill_tools}
     tools = [item for item in tools if id(item) not in skill_tool_ids]
+    if skill_tools and mcp_server_info:
+        skill_tool_names = {item.name for item in skill_tools}
+        mcp_server_info = [
+            replace(
+                server,
+                tools=tuple(
+                    item for item in server.tools if item.name not in skill_tool_names
+                ),
+            )
+            for server in mcp_server_info
+        ]
     if skill_tools and not enable_skills:
         logger.warning(
             "Skill-only MCP tools are unavailable because skills are disabled"

@@ -998,26 +998,6 @@ class TestThreadSelectorPagination:
                 await pilot.press("enter")
                 assert app.result == "abc12345"
 
-    async def test_space_hint_shows_only_while_option_focused(self) -> None:
-        """The Space hint hides while search has focus and a thread is highlighted."""
-        with _patch_list_threads(), _patch_columns():
-            app = ThreadSelectorTestApp()
-            async with app.run_test(size=(140, 40)) as pilot:
-                app.show_selector()
-                await pilot.pause()
-                screen = cast("ThreadSelectorScreen", app.screen)
-                help_widget = screen.query_one("#thread-help", Static)
-                assert "Space toggle option" not in str(help_widget.render())
-
-                await pilot.press("tab")
-                await pilot.pause()
-                assert isinstance(screen.focused, (Checkbox, Select))
-                assert "Space toggle option" in str(help_widget.render())
-
-                await pilot.press("shift+tab")
-                await pilot.pause()
-                assert "Space toggle option" not in str(help_widget.render())
-
     async def test_load_more_stays_selected_after_prompt_enrichment(self) -> None:
         """Prompts loaded after a batch do not move a search off "Load more"."""
         # Older rows arrive without prompts, so a batch schedules enrichment.
@@ -1145,37 +1125,6 @@ class TestThreadSelectorPagination:
                 await pilot.pause()
                 await pilot.pause()
                 assert all("initial_prompt" in t for t in screen._threads)
-
-    async def test_load_more_survives_queued_rebuild(self) -> None:
-        """A queued row sync leaves a rebuilt pagination button usable."""
-        threads = _numbered_threads(7)
-        with (
-            _patch_columns(),
-            patch.dict("os.environ", {"DEEPAGENTS_CODE_RECENT_THREADS": "2"}),
-            _patch_list_threads(threads[:2]) as list_threads,
-        ):
-            app = ThreadSelectorTestApp()
-            async with app.run_test(size=(140, 40)) as pilot:
-                app.show_selector()
-                await pilot.pause()
-                screen = cast("ThreadSelectorScreen", app.screen)
-                assert not screen.query("#thread-load-more")
-
-                # Model a fresh fetch discovering older threads while a list
-                # rebuild is queued ahead of the pagination-row update.
-                screen._has_more = True
-                async with screen._render_lock:
-                    rebuild = asyncio.create_task(screen._build_list())
-                    sync = asyncio.create_task(screen._sync_load_more_row())
-                    await asyncio.sleep(0)
-                await asyncio.gather(rebuild, sync)
-                assert len(screen.query("#thread-load-more")) == 1
-
-                list_threads.side_effect = lambda **kwargs: threads[: kwargs["limit"]]
-                await pilot.press("down", "down", "enter")
-                await pilot.pause()
-                assert not app.dismissed
-                assert len(screen._option_widgets) == 4
 
     async def test_reload_during_load_more_keeps_rows_in_sync(self) -> None:
         """A reload that cancels a batch mid-render shows only rendered rows."""

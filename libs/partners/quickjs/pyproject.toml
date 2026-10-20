@@ -66,7 +66,6 @@ deepagents = { path = "../../deepagents", editable = true }
 "*" = ["py.typed"]
 
 [tool.ty.environment]
-python-version = "3.11"
 extra-paths = ["../../deepagents"]
 
 [tool.ty.rules]

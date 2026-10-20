@@ -401,6 +401,9 @@ class _DiscordGateway(Protocol):
     async def trigger_typing(self, channel_id: str) -> None:
         """Send a one-shot typing indicator."""
 
+    async def create_breakout(self, channel_id: str, title: str, instructions: str) -> str:
+        """Create an independent thread without broadening source visibility."""
+
     async def create_thread(self, channel_id: str, message_id: str, name: str) -> str:
         """Start a public thread from a message and return the thread id."""
 
@@ -659,6 +662,23 @@ class _DiscordPyGateway:
         async with channel.typing():
             pass
 
+    async def create_breakout(self, channel_id: str, title: str, instructions: str) -> str:
+        """Create a sibling task in a guild text channel, never from private threads."""
+        channel = await self._fetch_channel(channel_id)
+        if (
+            isinstance(channel, discord.Thread)
+            and channel.type == discord.ChannelType.public_thread
+        ):
+            channel = channel.parent
+        if not isinstance(channel, discord.TextChannel):
+            msg = "Discord breakouts require a guild text channel or public thread"
+            raise discord.ClientException(msg)
+        message = await channel.send(content=title, allowed_mentions=discord.AllowedMentions.none())
+        thread = await message.create_thread(name=_thread_name(title))
+        for chunk in chunk_text(instructions, limit=MAX_TEXT_CHARS):
+            await thread.send(content=chunk, allowed_mentions=discord.AllowedMentions.none())
+        return str(thread.id)
+
     async def create_thread(self, channel_id: str, message_id: str, name: str) -> str:
         channel = await self._fetch_channel(channel_id)
         if not isinstance(channel, discord.TextChannel):
@@ -840,6 +860,19 @@ class DiscordChannel:
             message_id_present=message_id is not None,
         )
         return SendResult(success=True, message_id=message_id)
+
+    async def create_breakout(self, conversation_id: str, title: str, instructions: str) -> str:
+        """Create an independent Discord task thread with self-contained instructions.
+
+        Args:
+            conversation_id: Source guild text channel or public thread.
+            title: Short title for the new thread.
+            instructions: Complete task to display in the new thread.
+
+        Returns:
+            The new Discord thread identifier.
+        """
+        return await self._gateway.create_breakout(conversation_id, title, instructions)
 
     async def send_media(self, conversation_id: str, media: ChannelMedia) -> SendResult:
         """Send media as a file attachment with an optional caption.

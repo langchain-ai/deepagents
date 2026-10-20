@@ -7,7 +7,7 @@ name = "deepagents-talon"
 version = "0.0.9"
 description = "Local runtime host for long-running Deep Agents channels and schedules (experimental)"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.12,<4.0"
 license = {text = "MIT"}
 keywords = ["agents", "ai", "deepagents", "runtime", "channels", "scheduling"]
 classifiers = [

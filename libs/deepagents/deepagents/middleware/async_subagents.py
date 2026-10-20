@@ -141,8 +141,9 @@ _THREAD_TO_TASK_STATUS = {"interrupted": _WAITING, "busy": "running", "error": "
 _TERMINAL_STATUSES = frozenset({"cancelled", "success", "error", "timeout", "interrupted"})
 """Task statuses that will never change, so live-status fetches can be skipped.
 
-`interrupted` is a run cancelled or replaced on the server. A subagent paused
-by `interrupt()` is `waiting`, which isn't terminal.
+`interrupted` is a run cancelled or replaced on the server, which tasks now report
+as `cancelled`; older state may still hold it. A subagent paused by `interrupt()`
+is `waiting`, which isn't terminal.
 """
 
 
@@ -427,8 +428,8 @@ class TaskEvent(TypedDict):
     agent_name: str
     """The async subagent's name, as in the task's `AsyncTask.agent_name`."""
 
-    status: Literal["success", "error", "timeout", "waiting"]
-    """`waiting` means the subagent paused for input or approval."""
+    status: Literal["success", "error", "timeout", "cancelled", "waiting"]
+    """`waiting` means the subagent paused for input or approval; `cancelled`, that its run was cancelled on the server."""
 
     run_id: NotRequired[str]
     """The subagent run that ended."""
@@ -462,6 +463,7 @@ def _notification_content(update: _TaskUpdate) -> list[dict[str, Any]]:
         "success": "Use the result to continue; report back to the user if they're waiting on it.",
         "error": "Use `check_async_task` for details, then decide whether to retry, try another approach, or tell the user.",
         "timeout": "The task ran too long and was stopped. Decide whether to retry with a smaller task, or tell the user.",
+        "cancelled": "The task's run was cancelled before it finished, outside your tools. Decide whether to start it again, or tell the user.",
         "waiting": "The subagent is waiting for the user, who answers it on the subagent's own thread; you can't answer or approve it. Keep working.",
     }[update["status"]]
     blocks = [
@@ -542,7 +544,11 @@ def _final_content(values: Mapping[str, Any]) -> list[ContentBlock]:
     messages = values.get("messages") or []
     if not messages:
         return [{"type": "text", "text": "(completed with no output messages)"}]
-    return convert_to_messages(messages[-1:])[0].content_blocks
+    try:
+        return convert_to_messages(messages[-1:])[0].content_blocks
+    except ValueError:  # a message LangChain can't read, e.g. from a non-LangChain server
+        last = messages[-1]
+        return [{"type": "text", "text": str(last.get("content", "") if isinstance(last, Mapping) else last)}]
 
 
 _DELIVERABLE_THREAD_STATUSES = frozenset({"idle", "error"})
@@ -788,7 +794,10 @@ def _task_status(run: Run, thread: Thread | None) -> str:
     """Return a task's status from its latest run, reading the thread to spot pauses.
 
     A run that hits `interrupt()` ends as `success`; only its thread shows the pause.
+    A run cancelled on the server ends `interrupted`, which a task reports as `cancelled`.
     """
+    if run["status"] == "interrupted":
+        return "cancelled"
     if run["status"] != "success" or thread is None:
         return run["status"]
     return _THREAD_TO_TASK_STATUS.get(thread.get("status"), "success")
@@ -800,8 +809,15 @@ def _needs_latest_run(run: Run, thread: Thread | None) -> bool:
 
 
 def _observe(client: SyncLangGraphClient, task: AsyncTask) -> tuple[Run, Thread | None]:
-    """Fetch a task's latest run and, when that run finished, its thread."""
+    """Fetch a task's latest run and, when that run finished, its thread.
+
+    A tracked run that another client's run interrupted hands over to the newest run;
+    the tracked run is reported `cancelled` only when nothing replaced it. A task the
+    parent cancelled isn't followed, so another client's run can't revive it.
+    """
     run = client.runs.get(thread_id=task["thread_id"], run_id=task["run_id"])
+    if run["status"] == "interrupted" and task["status"] != "cancelled":
+        run = next(iter(client.runs.list(thread_id=task["thread_id"], limit=1)), run)
     if run["status"] != "success":
         return run, None
     try:
@@ -817,6 +833,8 @@ def _observe(client: SyncLangGraphClient, task: AsyncTask) -> tuple[Run, Thread 
 async def _aobserve(client: LangGraphClient, task: AsyncTask) -> tuple[Run, Thread | None]:
     """Async version of `_observe`."""
     run = await client.runs.get(thread_id=task["thread_id"], run_id=task["run_id"])
+    if run["status"] == "interrupted" and task["status"] != "cancelled":
+        run = next(iter(await client.runs.list(thread_id=task["thread_id"], limit=1)), run)
     if run["status"] != "success":
         return run, None
     try:
@@ -843,17 +861,15 @@ _WAITING_NOTE = (
 
 
 def _build_check_result(run: Run, thread_id: str, thread: Thread | None) -> dict[str, Any]:
-    """Build the result dict from a task's latest run and its thread."""
+    """Build the result dict from a task's latest run and its thread.
+
+    A finished task's `result` is its answer as standard content blocks, as notifications get it.
+    """
     status = _task_status(run, thread)
     result: dict[str, Any] = {"status": status, "thread_id": thread_id}
     if status == "success":
-        thread_values = thread.get("values") if thread else None
-        messages = thread_values.get("messages", []) if isinstance(thread_values, dict) else []
-        if messages:
-            last = messages[-1]
-            result["result"] = last.get("content", "") if isinstance(last, dict) else str(last)
-        else:
-            result["result"] = "(completed with no output messages)"
+        values = thread.get("values") if thread else None
+        result["result"] = _final_content(values if isinstance(values, Mapping) else {})
     elif status == "error":
         error_detail = run.get("error")
         result["error"] = str(error_detail) if error_detail else "The async subagent encountered an error."
@@ -885,10 +901,30 @@ def _build_check_command(
     )
     return Command(
         update={
-            "messages": [ToolMessage(json.dumps(result), tool_call_id=tool_call_id)],
+            "messages": [ToolMessage(_check_output(result), tool_call_id=tool_call_id)],
             "async_tasks": {task["task_id"]: updated_task},
         }
     )
+
+
+def _check_output(result: dict[str, Any]) -> str | list[str | dict[Any, Any]]:
+    """A check result as tool output: JSON, with a text-only answer's text in `result`.
+
+    An answer with media follows the JSON as its own blocks, in order, so each image stays by
+    its text. Reasoning and tool-call blocks are dropped, as in notifications; the text isn't cut.
+    """
+    blocks = result.get("result")
+    if not isinstance(blocks, list):
+        return json.dumps(result)
+    if not any(block["type"] in _MEDIA_BLOCK_TYPES for block in blocks):
+        return json.dumps({**result, "result": "".join(block["text"] for block in blocks if block["type"] == "text")})
+    status = {key: value for key, value in result.items() if key != "result"}
+    answer: list[str | dict[Any, Any]] = [
+        _text_block(block["text"]) if block["type"] == "text" else dict(block)
+        for block in blocks
+        if block["type"] == "text" or block["type"] in _MEDIA_BLOCK_TYPES
+    ]
+    return [_text_block(json.dumps(status)), *answer]
 
 
 def _keep_cancelled(task: AsyncTask, result: dict[str, Any]) -> dict[str, Any]:
@@ -1317,13 +1353,12 @@ def _build_async_subagent_tools(
 
 def _check_event(task: AsyncTask, run: Run, thread: Thread | None, status: str) -> _TaskUpdate | None:
     """The notification for a task outcome a check found, or `None` for outcomes not worth waking for."""
-    if status not in {"success", "error", "timeout", _WAITING}:
+    if status not in {"success", "error", "timeout", "cancelled", _WAITING}:
         return None
     result = _build_check_result(run, task["thread_id"], thread)
     details: dict[str, object] = {"interrupts": result["interrupts"]} if "interrupts" in result else {}
     if status == "success":
-        values = thread.get("values") if thread else None
-        details["result"] = _final_content(values if isinstance(values, Mapping) else {})
+        details["result"] = result["result"]
     if status == "error":
         details["error"] = "The subagent failed."
     return _event(task["task_id"], task["agent_name"], status, run.get("run_id", task["run_id"]), **details)

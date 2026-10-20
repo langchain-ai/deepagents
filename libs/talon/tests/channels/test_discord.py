@@ -44,6 +44,7 @@ class RecordingGateway:
         self.edits = []
         self.typing = []
         self.threads = []
+        self.breakouts = []
         self.thread_error: BaseException | None = None
         self.context_requests = []
         self.context = []
@@ -85,6 +86,12 @@ class RecordingGateway:
 
     async def trigger_typing(self, channel_id):
         self.typing.append(channel_id)
+
+    async def create_breakout(self, channel_id, title, instructions):
+        if self.thread_error is not None:
+            raise self.thread_error
+        self.breakouts.append((channel_id, title, instructions))
+        return "456"
 
     async def create_thread(self, channel_id, message_id, name):
         if self.thread_error is not None:

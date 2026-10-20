@@ -8,6 +8,34 @@ import pytest
 
 from deepagents_code.app import DeepAgentsApp, QueuedMessage, TextualSessionState
 from deepagents_code.config_manifest import get_option
+from deepagents_code.tui.widgets.messages import AppMessage, ErrorMessage
+
+
+@pytest.mark.parametrize("status", ["empty", "noop", "failed"])
+@pytest.mark.parametrize("idle", [False, True])
+async def test_offload_feedback(
+    monkeypatch: pytest.MonkeyPatch, status: str, *, idle: bool
+) -> None:
+    app = DeepAgentsApp()
+    remote = MagicMock(aoffload=AsyncMock(return_value={"status": status}))
+    monkeypatch.setattr(app, "_remote_agent", lambda: remote)
+    monkeypatch.setattr(app, "_sync_session_cost_from_checkpoint", AsyncMock())
+    monkeypatch.setattr(app, "_cache_maintenance_idle", lambda **_: True)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        monkeypatch.setattr(app, "_agent", remote)
+        app._lc_thread_id = "idle"
+        assert app._status_bar is not None
+        expiry = datetime.now(UTC) + timedelta(seconds=45)
+        app._status_bar.cache_expires_at = expiry
+        app._set_agent_running(True)
+        await app._run_offload_task(idle_window=("idle", expiry) if idle else None)
+        messages = "\n".join(str(widget._content) for widget in app.query(AppMessage))
+        assert ("Nothing to offload" in messages) == (not idle and status != "failed")
+        assert bool(app.query(ErrorMessage)) == (status == "failed")
+        assert not app._agent_running
+        assert app._loading_widget is None
+        remote.aoffload.assert_awaited_once()
 
 
 @pytest.mark.parametrize("window", [300, 3600])
@@ -137,7 +165,8 @@ async def test_cancellation_releases_idle_reservation(
     app = DeepAgentsApp()
     started = asyncio.Event()
 
-    async def offload() -> None:
+    async def offload(*, automatic: bool = False) -> None:
+        assert automatic
         started.set()
         await asyncio.Event().wait()
 

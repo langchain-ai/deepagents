@@ -754,6 +754,28 @@ class SlackChannel:
         log_debug_event(logger, "slack.outbound.text.completed", chunk_count=len(chunks))
         return SendResult(success=True, message_id=message_id)
 
+    async def create_breakout(self, conversation_id: str, title: str, instructions: str) -> str:
+        """Create a task thread in the source channel without changing its visibility.
+
+        Args:
+            conversation_id: Source Slack conversation.
+            title: New thread title.
+            instructions: Self-contained task to display in the new thread.
+
+        Returns:
+            The new thread's conversation identifier.
+        """
+        channel_id, _ = _parse_conversation_id(conversation_id)
+        text = format_markdown_for_slack(title, mention_allowlist=frozenset())
+        message_id = await self._gateway.post_message(channel_id, text, thread_ts=None)
+        self._remember_sent(channel_id, message_id, channel_id)
+        target = f"{channel_id}:{message_id}"
+        result = await self.send_message(target, instructions)
+        if not result.success:
+            msg = "Could not post breakout instructions"
+            raise RuntimeError(msg)
+        return target
+
     async def send_tool_approval_prompt(self, conversation_id: str, text: str) -> SendResult:
         """Send a tool approval preview without activating user mentions."""
         token = _TOOL_APPROVAL_PROMPT.set(True)

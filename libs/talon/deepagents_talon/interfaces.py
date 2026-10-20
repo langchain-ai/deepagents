@@ -14,6 +14,7 @@ if TYPE_CHECKING:
 
     from deepagents_talon.authorization import AuthorizationHandler
     from deepagents_talon.background import BackgroundSubagents
+    from deepagents_talon.breakout import BreakoutHandler
     from deepagents_talon.config import TalonConfig
 
 
@@ -137,6 +138,7 @@ class AgentRequest:
         approval_handler: Optional callback used by runtimes that surface
             tool approval interrupts over the originating channel.
         message_handler: Optional callback for progress updates to the originating chat.
+        breakout_handler: Optional host callback for independent channel tasks.
         authorization_handler: Optional callback used for authorization events
             that must be handled outside model context.
         model: `provider:model` spec the conversation selected with `/model`, or
@@ -166,6 +168,9 @@ class AgentRequest:
         kw_only=True,
         repr=False,
         compare=False,
+    )
+    breakout_handler: BreakoutHandler | None = field(
+        default=None, kw_only=True, repr=False, compare=False
     )
     model: str | None = field(default=None, kw_only=True)
     effort: str | None = field(default=None, kw_only=True)

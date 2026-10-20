@@ -288,7 +288,8 @@ async def test_effort_selected_during_offload_applies_before_queued_prompt(
     finish = asyncio.Event()
     next_turn_efforts: list[object] = []
 
-    async def offload() -> None:
+    async def offload(*, automatic: bool = False) -> None:
+        assert not automatic
         started.set()
         await finish.wait()
 

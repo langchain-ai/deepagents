@@ -141,8 +141,9 @@ _THREAD_TO_TASK_STATUS = {"interrupted": _WAITING, "busy": "running", "error": "
 _TERMINAL_STATUSES = frozenset({"cancelled", "success", "error", "timeout", "interrupted"})
 """Task statuses that will never change, so live-status fetches can be skipped.
 
-`interrupted` is a run cancelled or replaced on the server. A subagent paused
-by `interrupt()` is `waiting`, which isn't terminal.
+`interrupted` is a run cancelled or replaced on the server, which tasks now report
+as `cancelled`; older state may still hold it. A subagent paused by `interrupt()`
+is `waiting`, which isn't terminal.
 """
 
 
@@ -427,8 +428,8 @@ class TaskEvent(TypedDict):
     agent_name: str
     """The async subagent's name, as in the task's `AsyncTask.agent_name`."""
 
-    status: Literal["success", "error", "timeout", "interrupted", "waiting"]
-    """`waiting` means the subagent paused for input or approval; `interrupted`, that its run was cancelled on the server."""
+    status: Literal["success", "error", "timeout", "cancelled", "waiting"]
+    """`waiting` means the subagent paused for input or approval; `cancelled`, that its run was cancelled on the server."""
 
     run_id: NotRequired[str]
     """The subagent run that ended."""
@@ -462,7 +463,7 @@ def _notification_content(update: _TaskUpdate) -> list[dict[str, Any]]:
         "success": "Use the result to continue; report back to the user if they're waiting on it.",
         "error": "Use `check_async_task` for details, then decide whether to retry, try another approach, or tell the user.",
         "timeout": "The task ran too long and was stopped. Decide whether to retry with a smaller task, or tell the user.",
-        "interrupted": "The task's run was cancelled before it finished, outside your tools. Decide whether to start it again, or tell the user.",
+        "cancelled": "The task's run was cancelled before it finished, outside your tools. Decide whether to start it again, or tell the user.",
         "waiting": "The subagent is waiting for the user, who answers it on the subagent's own thread; you can't answer or approve it. Keep working.",
     }[update["status"]]
     blocks = [
@@ -793,7 +794,10 @@ def _task_status(run: Run, thread: Thread | None) -> str:
     """Return a task's status from its latest run, reading the thread to spot pauses.
 
     A run that hits `interrupt()` ends as `success`; only its thread shows the pause.
+    A run cancelled on the server ends `interrupted`, which a task reports as `cancelled`.
     """
+    if run["status"] == "interrupted":
+        return "cancelled"
     if run["status"] != "success" or thread is None:
         return run["status"]
     return _THREAD_TO_TASK_STATUS.get(thread.get("status"), "success")
@@ -808,7 +812,7 @@ def _observe(client: SyncLangGraphClient, task: AsyncTask) -> tuple[Run, Thread 
     """Fetch a task's latest run and, when that run finished, its thread.
 
     A tracked run that another client's run interrupted hands over to the newest run;
-    the tracked run is reported `interrupted` only when nothing replaced it. A task the
+    the tracked run is reported `cancelled` only when nothing replaced it. A task the
     parent cancelled isn't followed, so another client's run can't revive it.
     """
     run = client.runs.get(thread_id=task["thread_id"], run_id=task["run_id"])
@@ -903,24 +907,23 @@ def _build_check_command(
     )
 
 
-def _check_output(result: dict[str, Any]) -> str:
-    """A check result as tool output: JSON with the answer's text in `result`.
+def _check_output(result: dict[str, Any]) -> str | list[str | dict[Any, Any]]:
+    """A check result as tool output: JSON with the answer's text in `result`, then any media as its own blocks.
 
-    Reasoning and tool-call blocks are dropped, as in notifications; the text isn't cut. Many
-    providers reject media in a tool result, so media are only counted; notifications carry them.
+    Reasoning and tool-call blocks are dropped, as in notifications; the text isn't cut.
     """
     blocks = result.get("result")
     if not isinstance(blocks, list):
         return json.dumps(result)
-    output = {**result, "result": "".join(block["text"] for block in blocks if block["type"] == "text")}
-    if media := [block["type"] for block in blocks if block["type"] in _MEDIA_BLOCK_TYPES]:
-        output["note"] = f"The answer also had {len(media)} media item(s) ({', '.join(media)}), not shown in a tool result."
-    return json.dumps(output)
+    text = "".join(block["text"] for block in blocks if block["type"] == "text")
+    media: list[str | dict[Any, Any]] = [dict(block) for block in blocks if block["type"] in _MEDIA_BLOCK_TYPES]
+    output = json.dumps({**result, "result": text})
+    return [_text_block(output), *media] if media else output
 
 
 def _keep_cancelled(task: AsyncTask, result: dict[str, Any]) -> dict[str, Any]:
-    """Keep a cancelled task cancelled; its thread may still show the old pause, and its run reads `interrupted`."""
-    if task["status"] == "cancelled" and result["status"] in {_WAITING, "interrupted"}:
+    """Keep a task cancelled while paused as cancelled; its thread still shows the old pause."""
+    if task["status"] == "cancelled" and result["status"] == _WAITING:
         return {"status": "cancelled", "thread_id": result["thread_id"]}
     return result
 
@@ -1344,7 +1347,7 @@ def _build_async_subagent_tools(
 
 def _check_event(task: AsyncTask, run: Run, thread: Thread | None, status: str) -> _TaskUpdate | None:
     """The notification for a task outcome a check found, or `None` for outcomes not worth waking for."""
-    if status not in {"success", "error", "timeout", "interrupted", _WAITING}:
+    if status not in {"success", "error", "timeout", "cancelled", _WAITING}:
         return None
     result = _build_check_result(run, task["thread_id"], thread)
     details: dict[str, object] = {"interrupts": result["interrupts"]} if "interrupts" in result else {}

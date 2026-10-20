@@ -703,28 +703,26 @@ class TestCheckTool:
         client.threads.get.return_value = {"values": {"messages": [content]}}
         return client
 
-    def test_check_result_drops_reasoning_and_counts_media(self) -> None:
+    def test_check_result_drops_reasoning_and_keeps_images(self) -> None:
         answer = [
             {"type": "reasoning", "reasoning": "secret plan"},
             {"type": "text", "text": "Here's the look."},
             {"type": "image", "base64": "aGVsbG8=", "mime_type": "image/png"},
         ]
 
-        content = self._check(self._answered({"role": "assistant", "content": answer})).update["messages"][0].content
+        output, image = self._check(self._answered({"role": "assistant", "content": answer})).update["messages"][0].content
 
-        parsed = json.loads(content)
-        assert parsed["result"] == "Here's the look."
-        assert "1 media item(s) (image)" in parsed["note"]
-        assert "secret plan" not in content
-        assert "aGVsbG8=" not in content
+        assert json.loads(output["text"])["result"] == "Here's the look."
+        assert "secret plan" not in output["text"]
+        assert (image["type"], image["base64"]) == ("image", "aGVsbG8=")
 
     def test_check_result_of_a_media_only_answer(self) -> None:
         answer = [{"type": "image", "base64": "aGVsbG8=", "mime_type": "image/png"}]
 
-        parsed = json.loads(self._check(self._answered({"role": "assistant", "content": answer})).update["messages"][0].content)
+        output, image = self._check(self._answered({"role": "assistant", "content": answer})).update["messages"][0].content
 
-        assert parsed["result"] == ""
-        assert "(image)" in parsed["note"]
+        assert json.loads(output["text"])["result"] == ""
+        assert image["type"] == "image"
 
     def test_check_reads_a_message_langchain_cannot(self) -> None:
         parsed = json.loads(self._check(self._answered({"content": "raw answer"})).update["messages"][0].content)
@@ -748,8 +746,8 @@ class TestCheckTool:
 
         update = self._check(client).update
 
-        assert json.loads(update["messages"][0].content)["status"] == "interrupted"
-        assert update["async_tasks"]["thread_abc"]["status"] == "interrupted"
+        assert json.loads(update["messages"][0].content)["status"] == "cancelled"
+        assert update["async_tasks"]["thread_abc"]["status"] == "cancelled"
 
     def test_check_keeps_a_cancelled_task_cancelled(self) -> None:
         client = MagicMock()
@@ -1975,9 +1973,9 @@ class TestParentPull:
 
         update = await _pull("abefore_model", _lead_state(), server)
 
-        assert [e["status"] for e in _pulled_events(update)] == ["interrupted"]
+        assert [e["status"] for e in _pulled_events(update)] == ["cancelled"]
         assert "cancelled before it finished" in _text(update["messages"][0])
-        assert update["async_tasks"]["thread_abc"]["status"] == "interrupted"
+        assert update["async_tasks"]["thread_abc"]["status"] == "cancelled"
 
     async def test_task_the_parent_cancelled_is_not_reported(self) -> None:
         server = _FakeServer(run={"run_id": "run_xyz", "status": "interrupted"})

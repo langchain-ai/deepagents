@@ -1304,9 +1304,9 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         swallowed by `get_available_agent_names`, which returns an empty list
         (logging the cause for unexpected `OSError`s, but staying silent when
         the agents directory simply does not exist yet), so the agent filter
-        degrades to thread-derived names only. The caller in `_apply_window`
-        additionally guards against any unexpected error so the picker is never
-        stranded if the scan fails.
+        degrades to thread-derived names only. The caller in
+        `_preload_window_details` additionally guards against any unexpected
+        error so the picker is never stranded if the scan fails.
         """
         from deepagents_code.agent import get_available_agent_names
 
@@ -2159,6 +2159,28 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         self._disk_load_complete = True
         apply_cached_thread_message_counts(self._threads)
         apply_cached_thread_initial_prompts(self._threads)
+        await self._preload_window_details(load_more=load_more)
+        self._update_filtered_list()
+        self._sync_selected_index()
+        if self._refresh_agent_select_options():
+            self._update_filtered_list()
+            self._sync_selected_index()
+        if load_more:
+            self._keep_batch_selection(selected_id, selected_index)
+        await self._render_window(old_threads)
+
+        self._schedule_checkpoint_enrichment()
+
+        if self._current_thread and not load_more:
+            self._resolve_thread_url()
+
+    async def _preload_window_details(self, *, load_more: bool) -> None:
+        """Load row details and agent names before the first render.
+
+        Args:
+            load_more: Whether this extends the shown rows. Agent names do not
+                change between batches, so a batch skips the scan.
+        """
         if not self._has_initial_threads:
             try:
                 await self._populate_visible_checkpoint_details()
@@ -2179,59 +2201,62 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         except Exception:
             # The configured-agent scan is non-essential: a failure here must
             # not strand the picker by skipping the filter refresh, DOM build,
-            # and checkpoint enrichment below. `get_available_agent_names`
+            # and checkpoint enrichment that follow. `get_available_agent_names`
             # already absorbs expected filesystem errors; this guards anything
             # unexpected that escapes it.
             logger.warning(
                 "Could not load configured agent names for thread selector",
                 exc_info=True,
             )
-        self._update_filtered_list()
-        self._sync_selected_index()
-        if self._refresh_agent_select_options():
-            self._update_filtered_list()
-            self._sync_selected_index()
 
-        if load_more:
-            if (
-                selected_id is None
-                and self._has_more
-                and selected_index == len(self._filtered_threads)
-            ):
-                # No new matches: keep paging instead of selecting a thread.
-                self._selected_index = selected_index
-            else:
-                self._select_thread_id(selected_id, selected_index)
+    def _keep_batch_selection(
+        self, selected_id: str | None, selected_index: int
+    ) -> None:
+        """Keep the row that was highlighted before a batch loaded.
 
+        Args:
+            selected_id: Thread highlighted before the batch, or `None` for
+                the "Load more" row.
+            selected_index: Cursor index before the batch.
+        """
+        if (
+            selected_id is None
+            and self._has_more
+            and selected_index == len(self._filtered_threads)
+        ):
+            # No new matches: keep paging instead of selecting a thread.
+            self._selected_index = selected_index
+        else:
+            self._select_thread_id(selected_id, selected_index)
+
+    async def _render_window(self, old_threads: list[ThreadInfo]) -> None:
+        """Update the rows in place when they are unchanged, else rebuild.
+
+        Args:
+            old_threads: Rows shown before the fetch.
+        """
         # Short-circuit: when the fresh data matches what is already rendered,
         # update widget references and cell labels without tearing down the DOM.
         # The initial rows are capped at one batch, so the first load often
         # matches them and the pagination row is added here, not in a rebuild.
-        if (
+        if not (
             self._has_initial_threads
             and self._option_widgets
             and self._threads_match(old_threads, self._filtered_threads)
         ):
-            for widget, thread in zip(
-                self._option_widgets,
-                self._filtered_threads,
-                strict=True,
-            ):
-                widget.thread = thread
-            self._refresh_cell_labels()
-            await self._sync_load_more_row()
-            # The cursor may have moved while the rows stayed in place.
-            for index, row in enumerate(self._selection_rows()):
-                selected = index == self._selected_index
-                if row.has_class("thread-option-selected") != selected:
-                    row.set_selected(selected)
-        else:
             await self._build_list()
-
-        self._schedule_checkpoint_enrichment()
-
-        if self._current_thread and not load_more:
-            self._resolve_thread_url()
+            return
+        for widget, thread in zip(
+            self._option_widgets, self._filtered_threads, strict=True
+        ):
+            widget.thread = thread
+        self._refresh_cell_labels()
+        await self._sync_load_more_row()
+        # The cursor may have moved while the rows stayed in place.
+        for index, row in enumerate(self._selection_rows()):
+            selected = index == self._selected_index
+            if row.has_class("thread-option-selected") != selected:
+                row.set_selected(selected)
 
     def _notify_load_more_failed(self, exc: Exception, *, retryable: bool) -> None:
         """Tell the user a "Load more" batch failed; the loaded rows stay.

@@ -2104,7 +2104,10 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         snapshot = self._snapshot_window()
         try:
             await self._apply_window(threads, limit, load_more=load_more)
-        except Exception:
+        except BaseException:
+            # Also undo on cancellation: a superseding load can cancel this
+            # worker while it waits for row details, after the rows were
+            # replaced but before they render.
             self._restore_window(snapshot)
             raise
 

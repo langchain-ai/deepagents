@@ -1179,6 +1179,52 @@ class TestThreadSelectorPagination:
                 assert not app.dismissed
                 assert len(screen._option_widgets) == 4
 
+    async def test_reload_during_load_more_keeps_rows_in_sync(self) -> None:
+        """A reload that cancels a batch mid-render shows only rendered rows."""
+        # The second batch lacks prompts, so its render waits on enrichment.
+        threads = _numbered_threads(5)
+        for thread in threads[2:]:
+            thread.pop("initial_prompt", None)
+        release = asyncio.Event()
+
+        async def populate(rows: list[ThreadInfo], **_: bool) -> None:
+            await release.wait()
+            for row in rows:
+                row.setdefault("initial_prompt", "older prompt")
+
+        with (
+            _patch_columns(),
+            patch.dict("os.environ", {"DEEPAGENTS_CODE_RECENT_THREADS": "2"}),
+            _patch_list_threads(threads),
+            patch(
+                "deepagents_code.sessions.populate_thread_checkpoint_details",
+                new_callable=AsyncMock,
+                side_effect=populate,
+            ),
+        ):
+            app = ThreadSelectorTestApp()
+            async with app.run_test(size=(140, 40)) as pilot:
+                screen = ThreadSelectorScreen(
+                    current_thread="thread-0",
+                    filter_cwd=None,
+                    initial_threads=threads[:2],
+                )
+                app.push_screen(screen)
+                await pilot.pause()
+                await pilot.press("down", "down", "enter")
+                await pilot.pause()
+                assert screen._loading_more
+                screen.refresh_threads()
+                await pilot.pause()
+                release.set()
+                await pilot.pause()
+                await pilot.pause()
+                assert not screen._loading_more
+                assert len(screen._option_widgets) == len(screen._filtered_threads)
+                await pilot.click("#thread-load-more")
+                await pilot.pause()
+                assert len(screen._option_widgets) == 4
+
     async def test_no_load_more_for_exact_batch(self) -> None:
         """An exact batch does not imply another page exists."""
         with (

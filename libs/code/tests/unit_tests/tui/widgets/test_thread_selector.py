@@ -998,6 +998,26 @@ class TestThreadSelectorPagination:
                 await pilot.press("enter")
                 assert app.result == "abc12345"
 
+    async def test_space_hint_shows_only_while_option_focused(self) -> None:
+        """The Space hint hides while search has focus and a thread is highlighted."""
+        with _patch_list_threads(), _patch_columns():
+            app = ThreadSelectorTestApp()
+            async with app.run_test(size=(140, 40)) as pilot:
+                app.show_selector()
+                await pilot.pause()
+                screen = cast("ThreadSelectorScreen", app.screen)
+                help_widget = screen.query_one("#thread-help", Static)
+                assert "Space toggle option" not in str(help_widget.render())
+
+                await pilot.press("tab")
+                await pilot.pause()
+                assert isinstance(screen.focused, (Checkbox, Select))
+                assert "Space toggle option" in str(help_widget.render())
+
+                await pilot.press("shift+tab")
+                await pilot.pause()
+                assert "Space toggle option" not in str(help_widget.render())
+
     async def test_load_more_stays_selected_after_prompt_enrichment(self) -> None:
         """Prompts loaded after a batch do not move a search off "Load more"."""
         # Older rows arrive without prompts, so a batch schedules enrichment.

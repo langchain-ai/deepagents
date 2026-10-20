@@ -1170,12 +1170,19 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         """Build the footer help text for the selector.
 
         Thread-only hints (copy ID, delete) are hidden while the "Load more"
-        row is highlighted, since no thread is highlighted to act on.
+        row is highlighted, since no thread is highlighted to act on. The
+        Space hint shows only while an Options control has focus, since Space
+        types into the search input otherwise.
 
         Returns:
             Footer guidance for the active selector bindings.
         """
         glyphs = get_glyphs()
+        option_hint = (
+            f" {glyphs.bullet} Space toggle option"
+            if isinstance(self.focused, (Checkbox, Select))
+            else ""
+        )
         thread_hints = (
             ""
             if self._load_more_selected()
@@ -1185,7 +1192,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             f"{glyphs.arrow_up}/{glyphs.arrow_down} navigate"
             f" {glyphs.bullet} Enter select"
             f" {glyphs.bullet} Tab/Shift+Tab focus options"
-            f" {glyphs.bullet} Space toggle option"
+            f"{option_hint}"
             f"{thread_hints}"
             f" {glyphs.bullet} Esc cancel"
         )
@@ -1611,6 +1618,10 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         """
         event.stop()
         self.action_select()
+
+    def on_descendant_focus(self) -> None:
+        """Refresh the footer so the Space hint tracks the focused control."""
+        self._update_help_text()
 
     def on_key(self, event: Key) -> None:
         """Return focus to search when letters are typed from other controls.

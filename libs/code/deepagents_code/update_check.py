@@ -2618,6 +2618,7 @@ async def perform_upgrade(
     target_version: str | None = None,
     on_notice: UpgradeProgressCallback | None = None,
     on_interpreter_change: Callable[[], None] | None = None,
+    allow_python_migration: bool = True,
 ) -> tuple[bool, str, str | None]:
     """Attempt to upgrade `deepagents-code` using the detected install method.
 
@@ -2636,6 +2637,7 @@ async def perform_upgrade(
         on_interpreter_change: Called after a successful migration command, even
             if version verification fails. Interactive callers must end the old
             session because its import paths may no longer exist.
+        allow_python_migration: Disable in live sessions whose interpreter must survive.
 
     Returns:
         `(success, output, installed_version)` — *output* is the combined
@@ -2689,6 +2691,18 @@ async def perform_upgrade(
                 ),
                 None,
             )
+    if python is not None and not allow_python_migration:
+        from deepagents_code._invocation import invoked_name
+
+        guidance = (
+            f"v{target_version} requires migrating dcode to Python 3.14. "
+            "Migration is deferred because rebuilding the environment would break "
+            "this running session and its server. Nothing was installed. "
+            f"Quit dcode, then run `{invoked_name()} update` from your shell "
+            "to migrate safely."
+        )
+        await _emit_progress(on_notice, guidance)
+        return False, guidance, None
     # Targeted pre-release admission: a *stable* dcode target that mandates an
     # exact pre-release dependency (e.g. `deepagents==0.7.0a7`). Rather than opt
     # the whole resolution into pre-releases with a global `--prerelease allow`

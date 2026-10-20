@@ -204,8 +204,31 @@ async def test_migration_preserves_install_context_and_announces_before_install(
     uv_install.assert_awaited_once()
 
 
+@pytest.mark.parametrize("minor", [12, 13])
+async def test_live_session_defers_migration_without_touching_environment(
+    uv_install: AsyncMock, tmp_path: Path, minor: int
+) -> None:
+    receipt = tmp_path / "uv-receipt.toml"
+    original = receipt.read_bytes()
+    notices: list[str] = []
+    with patch.object(update_check.sys, "version_info", VersionInfo(3, minor, 4)):
+        success, output, installed = await update_check.perform_upgrade(
+            target_version="2.0.0",
+            on_notice=notices.append,
+            allow_python_migration=False,
+        )
+    assert not success
+    assert installed is None
+    assert notices == [output]
+    assert "Quit dcode" in output
+    assert " update`" in output
+    assert receipt.read_bytes() == original
+    uv_install.assert_not_awaited()
+
+
+@pytest.mark.parametrize("allow_migration", [False, True])
 async def test_compatible_upgrade_keeps_receipt_interpreter(
-    uv_install: AsyncMock, monkeypatch: pytest.MonkeyPatch
+    uv_install: AsyncMock, monkeypatch: pytest.MonkeyPatch, allow_migration: bool
 ) -> None:
     monkeypatch.setattr(
         update_check,
@@ -215,7 +238,10 @@ async def test_compatible_upgrade_keeps_receipt_interpreter(
     notice = MagicMock()
     with patch.object(update_check.sys, "version_info", VersionInfo(3, 13, 4)):
         success, _, version = await update_check.perform_upgrade(
-            target_version="2.0.0", include_prereleases=False, on_notice=notice
+            target_version="2.0.0",
+            include_prereleases=False,
+            on_notice=notice,
+            allow_python_migration=allow_migration,
         )
     assert success
     assert version == "2.0.0"

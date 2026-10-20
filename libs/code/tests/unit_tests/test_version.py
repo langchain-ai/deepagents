@@ -389,6 +389,7 @@ async def test_update_slash_command_links_log_instead_of_listing_dependencies() 
 
         perform_upgrade_mock.assert_awaited_once_with(
             on_notice=ANY,
+            allow_python_migration=False,
             log_path=log_path,
             include_prereleases=None,
             target_version="99.0.0",
@@ -483,6 +484,7 @@ async def test_update_slash_command_stable_prerelease_deps_keep_intent_none() ->
 
     perform_upgrade_mock.assert_awaited_once_with(
         on_notice=ANY,
+        allow_python_migration=False,
         log_path=ANY,
         include_prereleases=None,
         target_version="99.0.0",
@@ -701,6 +703,7 @@ async def test_update_deps_skips_refresh_prompt_when_refresh_unsupported(
         refresh_mock.assert_not_awaited()
         perform_upgrade_mock.assert_awaited_once_with(
             on_notice=ANY,
+            allow_python_migration=False,
             log_path=ANY,
             include_prereleases=None,
             target_version="1.1.0",
@@ -1426,6 +1429,7 @@ async def test_perform_app_upgrade_omits_log_hint_when_log_uncreatable() -> None
 
         perform_upgrade_mock.assert_awaited_once_with(
             on_notice=ANY,
+            allow_python_migration=False,
             log_path=None,
             include_prereleases=None,
             target_version="1.1.0",

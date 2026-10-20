@@ -7748,6 +7748,7 @@ class DeepAgentsApp(App):
 
         result = await self._perform_interactive_upgrade(
             on_notice=show_upgrade_notice,
+            allow_python_migration=False,
             log_path=log_path,
             include_prereleases=include_prereleases,
             target_version=latest,
@@ -27333,6 +27334,7 @@ class DeepAgentsApp(App):
                     result = await self._perform_interactive_upgrade(
                         progress=screen.append_line,
                         on_notice=show_upgrade_notice,
+                        allow_python_migration=False,
                         log_path=log_path,
                         target_version=payload.latest,
                     )

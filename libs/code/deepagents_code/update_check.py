@@ -226,7 +226,8 @@ since that one-liner is the path we promote.
 """
 
 _UPGRADE_TIMEOUT = 120  # seconds
-"""Wall-clock cap for `perform_upgrade` and `perform_install_extra`."""
+"""Wall-clock cap for `perform_upgrade` without a migration (see
+`_MIGRATION_TIMEOUT`) and for `perform_install_extra`."""
 
 _MIGRATION_TIMEOUT = 600  # seconds
 """Wall-clock cap for a Python migration.
@@ -2544,7 +2545,9 @@ def _release_python_requirement(version: str) -> SpecifierSet:
         )
         response.raise_for_status()
         payload = response.json()
-    except (requests.RequestException, OSError, ValueError) as exc:
+    except requests.RequestException as exc:
+        # Includes `requests.JSONDecodeError`; other errors are bugs, not
+        # unavailable metadata.
         msg = f"Could not fetch Python compatibility metadata for v{target}: {exc}"
         raise ValueError(msg) from exc
     info = payload.get("info") if isinstance(payload, dict) else None
@@ -2597,13 +2600,13 @@ def _upgrade_python(version: str) -> str | None:
     3.14 patch release. A running Python newer than 3.14 is never moved down.
 
     Returns:
-        The migration interpreter, or None to preserve the receipt.
+        The migration interpreter, or `None` to preserve the receipt.
 
     Raises:
         _PythonRequirementUnavailableError: If the target's metadata cannot be
             read.
-        ValueError: If the target's Python requirement cannot be met without
-            moving the interpreter down, or by 3.14.
+        ValueError: If the running Python is newer than 3.14 and incompatible,
+            or no 3.14 patch satisfies the requirement.
     """
     try:
         requirement = _release_python_requirement(version)
@@ -2744,7 +2747,7 @@ def _migration_notice(target_version: str) -> str:
     """
     return (
         f"v{target_version} is incompatible with the running Python "
-        f"{sys.version_info[0]}.{sys.version_info[1]}. "
+        f"{'.'.join(str(part) for part in sys.version_info[:3])}. "
         "This update will move dcode to Python 3.14; uv will acquire "
         "the interpreter if needed. Selected extras and added packages "
         "will be preserved. Configuration and conversations are unchanged. "
@@ -2893,11 +2896,11 @@ async def perform_upgrade(
         `(success, output, installed_version)` — *output* is the combined
         stdout/stderr, preceded by a failure explanation where one applies.
         For uv, *installed_version* is read back from the tool environment on
-        disk, and a successful installer exit is a failure unless it matches
-        the exact target. Without a migration, stale dist-info directories
-        make that readback ambiguous; the exact pin is then trusted. For other
-        methods it is *target_version*. It is
-        `None` when the upgrade failed.
+        disk, or after a migration from the rebuilt environment's interpreter.
+        A successful installer exit is a failure unless it matches the exact
+        target. Without a migration, stale dist-info directories make that
+        readback ambiguous; the exact pin is then trusted. For other methods
+        it is *target_version*. It is `None` when the upgrade failed.
 
     Raises:
         OSError: Propagated from building the upgrade command or running the
@@ -2937,7 +2940,8 @@ async def perform_upgrade(
             python, requirement_unknown = await asyncio.to_thread(
                 _target_python, target_version
             )
-        except (ImportError, ValueError) as exc:
+        except ValueError as exc:
+            logger.warning("Refused to install v%s: %s", target_version, exc)
             refusal = (
                 f"Update stopped before installation: {_sentence(exc)} "
                 "Nothing was installed."
@@ -2949,6 +2953,7 @@ async def perform_upgrade(
         # the newest compatible release instead of this target.
         recovery_installer = _PYTHON_MIGRATION_INSTALL_COMMAND
     if python is not None and target_version and not allow_python_migration:
+        logger.info("Deferred the Python 3.14 migration for v%s", target_version)
         guidance = _migration_deferral_message(target_version)
         await _emit_progress(on_notice, guidance)
         if on_migration_deferred is not None:

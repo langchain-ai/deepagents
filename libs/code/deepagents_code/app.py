@@ -7712,8 +7712,8 @@ class DeepAgentsApp(App):
         )
         if success:
             self._update_available = (False, None)
-            # The install is pinned, so this matches `latest`; the fallback is
-            # defensive.
+            # uv installs are pinned and verified, and other methods report
+            # the target, so this matches `latest`; the fallback is defensive.
             upgraded_to = installed or latest
             # uv may have installed the upgraded shim into a directory that
             # isn't first on the user's PATH (e.g. a leftover pre-uv
@@ -7744,8 +7744,8 @@ class DeepAgentsApp(App):
             # Nothing ran, so there is no failure or log to point at.
             await self._mount_message(AppMessage("Update deferred; see above."))
         elif notices:
-            # The notice already carries migration-aware recovery steps; a
-            # generic command here would contradict them.
+            # The notice already carries its own recovery steps; a generic
+            # command here would contradict them.
             log_line = f"\nLog: {log_path}" if log_path is not None else ""
             await self._mount_message(
                 AppMessage(f"Auto-update failed; see the message above.{log_line}"),
@@ -27330,8 +27330,9 @@ class DeepAgentsApp(App):
                                 markup=False,
                             )
                             return
-                        # The install is pinned, so this matches the payload;
-                        # the fallback is defensive.
+                        # uv installs are pinned and verified, and other
+                        # methods report the target, so this matches the
+                        # payload; the fallback is defensive.
                         upgraded_to = installed or payload.latest
                         # After `mark_success`: the modal stays un-dismissable
                         # until it is marked done, and this worker runs with
@@ -27363,7 +27364,7 @@ class DeepAgentsApp(App):
                     )
                     if notices:
                         # The notice toast and modal line already carry the
-                        # migration-aware recovery steps.
+                        # notice's own recovery steps.
                         screen.mark_warning("Update did not complete. See details.")
                         return
                     screen.mark_failure(cmd)

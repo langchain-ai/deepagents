@@ -1578,7 +1578,7 @@ def _resolve_rubric_text(rubric: str | None) -> str | None:
 # Add the combined check here before allowing `--rubric` with `-r`.
 
 
-def _headless_resume_request(args: argparse.Namespace) -> "ResumeRequest | None":
+def _headless_resume_request(args: argparse.Namespace) -> ResumeRequest | None:
     """Build the resume request for `-r <ID>` in non-interactive mode.
 
     Bare `-r` is rejected earlier in `cli_main`, so the value is a thread ID.

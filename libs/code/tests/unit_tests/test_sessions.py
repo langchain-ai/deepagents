@@ -840,7 +840,7 @@ class TestPopulateThreadCheckpointDetails:
     """Tests for combined checkpoint-detail enrichment."""
 
     @pytest.fixture
-    async def conn(self) -> "AsyncIterator[aiosqlite.Connection]":
+    async def conn(self) -> AsyncIterator[aiosqlite.Connection]:
         """Yield an empty in-memory database for the mocked loaders."""
         import aiosqlite
 
@@ -848,7 +848,7 @@ class TestPopulateThreadCheckpointDetails:
             yield opened
 
     async def test_populates_count_and_prompt_from_separate_sources(
-        self, conn: "aiosqlite.Connection"
+        self, conn: aiosqlite.Connection
     ) -> None:
         """Counts come from the checkpoint summary, prompts from the writes table."""
         threads: list[sessions.ThreadInfo] = [
@@ -898,7 +898,7 @@ class TestPopulateThreadCheckpointDetails:
         assert mock_prompts.await_count == 1
 
     async def test_skips_prompt_query_when_not_requested(
-        self, conn: "aiosqlite.Connection"
+        self, conn: aiosqlite.Connection
     ) -> None:
         """The writes-table prompt query should be skipped when prompts are off."""
         threads: list[sessions.ThreadInfo] = [
@@ -941,7 +941,7 @@ class TestPopulateThreadCheckpointDetails:
         mock_prompts.assert_not_awaited()
 
     async def test_falls_back_to_checkpoint_prompt_when_writes_omit_thread(
-        self, conn: "aiosqlite.Connection"
+        self, conn: aiosqlite.Connection
     ) -> None:
         """Sessions without message writes still show checkpoint-backed prompts."""
         sessions._initial_prompt_cache.clear()
@@ -998,7 +998,7 @@ class TestSavedMessageCounts:
     """Message counts saved for later sessions."""
 
     @staticmethod
-    def _thread(checkpoint_id: str) -> "sessions.ThreadInfo":
+    def _thread(checkpoint_id: str) -> sessions.ThreadInfo:
         return {
             "thread_id": "thread-a",
             "agent_name": "agent",
@@ -1008,7 +1008,7 @@ class TestSavedMessageCounts:
 
     @staticmethod
     async def _populate(
-        conn: "aiosqlite.Connection", thread: "sessions.ThreadInfo", count: int
+        conn: aiosqlite.Connection, thread: sessions.ThreadInfo, count: int
     ) -> AsyncMock:
         """Populate one row's count as a fresh session would.
 

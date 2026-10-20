@@ -2243,7 +2243,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         try:
             async with deadline:
                 await self._populate_visible_checkpoint_details()
-        except (OSError, sqlite3.Error):
+        except OSError, sqlite3.Error:
             # `TimeoutError` is an `OSError`, so check that it is our deadline.
             if deadline.expired():
                 logger.debug(

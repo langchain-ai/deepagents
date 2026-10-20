@@ -115,13 +115,9 @@ class AsyncSubAgent(TypedDict):
     webhook: NotRequired[str]
     """Webhook URL the server calls when each run of this subagent's tasks finishes.
 
-    Set on every run `start_async_task` and `update_async_task` start, so an app
-    can track tasks in its own backend. Each run calls it as it ends, including
-    on error, timeout, or interruption. An update interrupts the previous run,
-    which then reports as interrupted while the task continues in the new run;
-    the latest run's call has the task's outcome. A run paused for a human ends
-    as a success, so read the thread to tell a finished task from a waiting one.
-    The parent's own checks for task updates still run.
+    Set on the runs `start_async_task` and `update_async_task` start. An update
+    interrupts the previous run, so the latest run's call has the task's outcome.
+    A run paused for a human ends as a success.
 
     The server rejects the run if it refuses the URL (by default, loopback addresses).
     """

@@ -38,6 +38,7 @@ from langgraph.types import Command
 from deepagents_code.tools import create_web_search_tool, fetch_url
 from deepagents_talon.archive import ArchiveScope, conversation_tools
 from deepagents_talon.archive_saver import ConversationSaver
+from deepagents_talon.attachments import stage_documents
 from deepagents_talon.authorization import (
     reset_authorization_handler,
     set_authorization_handler,
@@ -58,6 +59,7 @@ from deepagents_talon.effort import ACTIVE_EFFORT, effort_levels, effort_setting
 from deepagents_talon.interfaces import (
     AgentRequest,
     AgentResult,
+    ChannelMessage,
     ToolApprovalDecision,
     ToolApprovalHandler,
     ToolApprovalRequest,
@@ -684,6 +686,16 @@ class DeepAgentRuntime:
         await update_state(
             checkpoint_config,
             {"messages": [*messages, HumanMessage(content=_INTERRUPTED_MESSAGE)]},
+        )
+
+    async def prepare_inbound_media(
+        self, message: ChannelMessage, *, config: TalonConfig
+    ) -> ChannelMessage:
+        """Stage downloaded documents in the sandbox when execution is remote."""
+        if self.sandbox_working_dir is None:
+            return message
+        return await stage_documents(
+            message, backend=self.backend, working_dir=self.sandbox_working_dir, config=config
         )
 
     async def invoke(self, request: AgentRequest) -> AgentResult:

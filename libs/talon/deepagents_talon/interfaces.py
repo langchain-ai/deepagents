@@ -15,6 +15,7 @@ if TYPE_CHECKING:
     from deepagents_talon.authorization import AuthorizationHandler
     from deepagents_talon.background import BackgroundSubagents
     from deepagents_talon.breakout import BreakoutHandler
+    from deepagents_talon.config import TalonConfig
 
 
 @dataclass(frozen=True, slots=True)
@@ -295,6 +296,16 @@ class CronScheduler(Protocol):
 
     async def stop(self) -> None:
         """Stop the scheduler ticker and release resources."""
+
+
+@runtime_checkable
+class InboundMediaRuntime(Protocol):
+    """Optional runtime preparation of attachments for its execution environment."""
+
+    async def prepare_inbound_media(
+        self, message: ChannelMessage, *, config: TalonConfig
+    ) -> ChannelMessage:
+        """Make downloaded documents accessible before building model content."""
 
 
 class AgentRuntime(Protocol):

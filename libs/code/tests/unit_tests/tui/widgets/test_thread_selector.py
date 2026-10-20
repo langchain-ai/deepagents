@@ -916,7 +916,8 @@ class TestThreadSelectorPagination:
     async def test_load_more_and_select_older_thread(self, use_mouse: bool) -> None:
         """Both input methods reveal older rows and stop at the end.
 
-        Copy and delete do nothing on the "Load more" row.
+        The keyboard path also checks that copy and delete do nothing on the
+        "Load more" row.
         """
         with (
             _patch_columns(),
@@ -1055,7 +1056,7 @@ class TestThreadSelectorPagination:
                 screen = cast("ThreadSelectorScreen", app.screen)
                 assert not screen.query("#thread-load-more")
 
-                # Model a fresh fetch discovering older threads while a filter
+                # Model a fresh fetch discovering older threads while a list
                 # rebuild is queued ahead of the pagination-row update.
                 screen._has_more = True
                 async with screen._render_lock:

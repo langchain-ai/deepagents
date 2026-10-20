@@ -1050,7 +1050,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         self._filter_text = initial_query
         self._filter_agent: str | None = None
         # Configured agent names from `~/.deepagents/` (the `/agents` list),
-        # loaded off the event loop in `_load_threads`. Unioned with
+        # loaded off the event loop in `_apply_window`. Unioned with
         # thread-derived names so the agent filter mirrors `/agents` even for
         # agents that have not produced any threads yet.
         self._available_agent_names: list[str] = []
@@ -1145,7 +1145,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         Args:
             thread_id: Thread to highlight.
             fallback: Index to use when the thread is not in the filtered rows.
-                Clamped to the last thread row, never the "Load more" row.
+                Clamped to the last thread row, or 0 when no thread rows show.
         """
         self._selected_index = min(fallback, max(0, len(self._filtered_threads) - 1))
         for index, thread in enumerate(self._filtered_threads):
@@ -1304,7 +1304,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         swallowed by `get_available_agent_names`, which returns an empty list
         (logging the cause for unexpected `OSError`s, but staying silent when
         the agents directory simply does not exist yet), so the agent filter
-        degrades to thread-derived names only. The caller in `_load_threads`
+        degrades to thread-derived names only. The caller in `_apply_window`
         additionally guards against any unexpected error so the picker is never
         stranded if the scan fails.
         """
@@ -2030,7 +2030,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         self._shown_filter_cwd = self._filter_cwd
 
     async def _report_load_failure(self, exc: Exception) -> None:
-        """Show a failed load; a failed reload keeps the rows already shown.
+        """Show a failed load; after the first disk load, keep the rows shown.
 
         Args:
             exc: The error from the fetch.
@@ -2205,8 +2205,8 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
 
         # Short-circuit: when the fresh data matches what is already rendered,
         # update widget references and cell labels without tearing down the DOM.
-        # The prewarmed cache holds at most one batch, so on first load the
-        # pagination row is usually added here rather than through a rebuild.
+        # The initial rows are capped at one batch, so the first load often
+        # matches them and the pagination row is added here, not in a rebuild.
         if (
             self._has_initial_threads
             and self._option_widgets

@@ -52,6 +52,13 @@ logger = logging.getLogger(__name__)
 _URL_FETCH_TIMEOUT = 2.0
 """Seconds to wait for LangSmith thread-URL resolution before giving up."""
 
+_LOAD_MORE_DETAILS_TIMEOUT = 5.0
+"""Seconds a "Load more" batch waits for row details before it renders.
+
+Rendering first would show "Loading" cells that fill in a moment later, which
+reads as a flicker. A slower load renders anyway and fills in afterwards.
+"""
+
 _column_widths_cache: (
     tuple[
         tuple[tuple[str, str | None, str | None], ...],
@@ -2192,22 +2199,12 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
 
         Args:
             load_more: Whether this extends the shown rows. Agent names do not
-                change between batches, so a batch skips the scan.
+                change between batches, so a batch skips the scan. A batch
+                waits a bounded time for row details so its rows do not
+                render with "Loading" cells that fill in a moment later.
         """
-        if not self._has_initial_threads:
-            try:
-                await self._populate_visible_checkpoint_details()
-            except (OSError, sqlite3.Error):
-                logger.debug(
-                    "Could not preload checkpoint details for thread selector",
-                    exc_info=True,
-                )
-            except Exception:
-                logger.warning(
-                    "Unexpected error preloading checkpoint details "
-                    "for thread selector",
-                    exc_info=True,
-                )
+        if load_more or not self._has_initial_threads:
+            await self._preload_checkpoint_details(bounded=load_more)
         try:
             if not load_more:
                 await self._load_available_agent_names()
@@ -2219,6 +2216,31 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             # unexpected that escapes it.
             logger.warning(
                 "Could not load configured agent names for thread selector",
+                exc_info=True,
+            )
+
+    async def _preload_checkpoint_details(self, *, bounded: bool) -> None:
+        """Load missing row details before a render; failures only log.
+
+        Args:
+            bounded: Whether to stop waiting after
+                `_LOAD_MORE_DETAILS_TIMEOUT`. On timeout the rows render as
+                they are and background enrichment fills in the rest.
+        """
+        timeout = _LOAD_MORE_DETAILS_TIMEOUT if bounded else None
+        try:
+            async with asyncio.timeout(timeout):
+                await self._populate_visible_checkpoint_details()
+        except TimeoutError:
+            logger.debug("Timed out preloading checkpoint details for thread selector")
+        except (OSError, sqlite3.Error):
+            logger.debug(
+                "Could not preload checkpoint details for thread selector",
+                exc_info=True,
+            )
+        except Exception:
+            logger.warning(
+                "Unexpected error preloading checkpoint details for thread selector",
                 exc_info=True,
             )
 

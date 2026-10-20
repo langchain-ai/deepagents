@@ -1061,6 +1061,91 @@ class TestThreadSelectorPagination:
                 await pilot.pause()
                 assert len(screen._threads) == 6
 
+    async def test_load_more_waits_for_prompts_before_rendering_rows(self) -> None:
+        """A batch's rows first render with prompts, not "Loading" cells."""
+        # Only the second batch lacks prompts, so the first needs no enrichment.
+        older = _numbered_threads(3)
+        for thread in older[1:]:
+            thread.pop("initial_prompt", None)
+        threads = [MOCK_THREADS[0], *older]
+        rows_at_populate: list[int] = []
+
+        def populate(rows: list[ThreadInfo], **_: bool) -> None:
+            rows_at_populate.append(len(screen._option_widgets))
+            for row in rows:
+                row.setdefault("initial_prompt", "older prompt")
+
+        with (
+            _patch_columns(),
+            patch.dict("os.environ", {"DEEPAGENTS_CODE_RECENT_THREADS": "2"}),
+            _patch_list_threads(threads),
+            patch(
+                "deepagents_code.sessions.populate_thread_checkpoint_details",
+                new_callable=AsyncMock,
+                side_effect=populate,
+            ),
+        ):
+            app = ThreadSelectorTestApp()
+            async with app.run_test(size=(140, 40)) as pilot:
+                screen = ThreadSelectorScreen(
+                    current_thread="abc12345",
+                    filter_cwd=None,
+                    initial_threads=threads[:2],
+                )
+                app.push_screen(screen)
+                await pilot.pause()
+                await pilot.press("down", "down", "enter")
+                await pilot.pause()
+                await pilot.pause()
+                assert len(screen._option_widgets) == 4
+                # Populated while only the first batch's two rows were shown.
+                assert rows_at_populate == [2]
+
+    async def test_load_more_renders_rows_when_prompts_are_slow(self) -> None:
+        """A batch renders after the wait times out, then prompts fill in."""
+        # Only the second batch lacks prompts, so the first needs no enrichment.
+        older = _numbered_threads(3)
+        for thread in older[1:]:
+            thread.pop("initial_prompt", None)
+        threads = [MOCK_THREADS[0], *older]
+        release = asyncio.Event()
+
+        async def populate(rows: list[ThreadInfo], **_: bool) -> None:
+            await release.wait()
+            for row in rows:
+                row.setdefault("initial_prompt", "older prompt")
+
+        with (
+            _patch_columns(),
+            patch.dict("os.environ", {"DEEPAGENTS_CODE_RECENT_THREADS": "2"}),
+            _patch_list_threads(threads),
+            patch(
+                "deepagents_code.sessions.populate_thread_checkpoint_details",
+                side_effect=populate,
+            ),
+            patch(
+                "deepagents_code.tui.widgets.thread_selector._LOAD_MORE_DETAILS_TIMEOUT",
+                0.01,
+            ),
+        ):
+            app = ThreadSelectorTestApp()
+            async with app.run_test(size=(140, 40)) as pilot:
+                screen = ThreadSelectorScreen(
+                    current_thread="abc12345",
+                    filter_cwd=None,
+                    initial_threads=threads[:2],
+                )
+                app.push_screen(screen)
+                await pilot.pause()
+                await pilot.press("down", "down", "enter")
+                await pilot.pause(0.1)
+                assert len(screen._option_widgets) == 4
+                assert not screen._loading_more
+                release.set()
+                await pilot.pause()
+                await pilot.pause()
+                assert all("initial_prompt" in t for t in screen._threads)
+
     async def test_load_more_survives_queued_rebuild(self) -> None:
         """A queued row sync leaves a rebuilt pagination button usable."""
         threads = _numbered_threads(7)

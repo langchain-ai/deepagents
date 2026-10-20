@@ -967,6 +967,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
 
     ThreadSelectorScreen .thread-selector-help {
         height: auto;
+        min-height: 2;
         color: $text-muted;
         text-style: italic;
         margin-top: 1;

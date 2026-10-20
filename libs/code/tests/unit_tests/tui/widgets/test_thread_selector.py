@@ -965,6 +965,38 @@ class TestThreadSelectorPagination:
                 await pilot.press("enter")
                 assert app.result == "ghi11111"
 
+    async def test_load_more_keeps_selection_without_new_search_matches(self) -> None:
+        """Enter keeps paging through nonmatching batches until the end."""
+        threads = [MOCK_THREADS[0], *_numbered_threads(6)]
+        with (
+            _patch_columns(),
+            patch.dict("os.environ", {"DEEPAGENTS_CODE_RECENT_THREADS": "2"}),
+            _patch_list_threads(threads),
+        ):
+            app = ThreadSelectorTestApp()
+            async with app.run_test(size=(140, 40)) as pilot:
+                app.show_selector()
+                await pilot.pause()
+                await pilot.press(*"abc12345")
+                await pilot.pause()
+                screen = cast("ThreadSelectorScreen", app.screen)
+                assert len(screen._option_widgets) == 1
+                await pilot.press("down")
+                for loaded in (4, 6):
+                    await pilot.press("enter")
+                    await pilot.pause()
+                    assert not app.dismissed
+                    assert len(screen._threads) == loaded
+                    assert screen._load_more_selected()
+                    assert "Ctrl+D delete" not in screen._build_help_text()
+                await pilot.press("enter")
+                await pilot.pause()
+                assert not app.dismissed
+                assert len(screen._threads) == len(threads)
+                assert not screen.query("#thread-load-more")
+                await pilot.press("enter")
+                assert app.result == "abc12345"
+
     async def test_load_more_row_hides_thread_hints(self) -> None:
         """Copy and delete hints disappear while "Load more" is highlighted."""
         with (

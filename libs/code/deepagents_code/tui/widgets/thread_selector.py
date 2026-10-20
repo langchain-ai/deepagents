@@ -2081,7 +2081,15 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             self._sync_selected_index()
 
         if load_more:
-            self._select_thread_id(selected_id, selected_index)
+            if (
+                selected_id is None
+                and self._has_more
+                and selected_index == len(self._filtered_threads)
+            ):
+                # No new matches: keep paging instead of selecting a thread.
+                self._selected_index = selected_index
+            else:
+                self._select_thread_id(selected_id, selected_index)
 
         # Short-circuit: when the fresh data matches what is already rendered,
         # update widget references and cell labels without tearing down the DOM.

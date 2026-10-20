@@ -2560,9 +2560,22 @@ def _upgrade_python(version: str) -> str | None:
         The migration interpreter, or None to preserve the receipt.
 
     Raises:
-        ValueError: If metadata or the supported migration cannot be validated.
+        ValueError: If the target's Python requirement cannot be met by 3.14.
     """
-    requirement = _release_python_requirement(version)
+    try:
+        requirement = _release_python_requirement(version)
+    except ValueError:
+        # Without metadata, keep the receipt's interpreter. The install pins
+        # `==version`, so uv refuses a target that needs a newer Python rather
+        # than changing anything; one failed request must not block upgrades
+        # that need no migration (or users behind a mirror PyPI cannot reach).
+        logger.warning(
+            "Could not read Python requirement for v%s; keeping the current "
+            "interpreter",
+            version,
+            exc_info=True,
+        )
+        return None
     running = ".".join(str(part) for part in sys.version_info[:3])
     if requirement.contains(running):
         return None
@@ -2684,11 +2697,7 @@ async def perform_upgrade(
         except (ImportError, ValueError) as exc:
             return (
                 False,
-                (
-                    f"Update stopped before installation: {exc}. "
-                    "No interpreter was changed. Check your network and retry, or use "
-                    f"the updated installer: {INSTALL_SCRIPT_COMMAND}"
-                ),
+                (f"Update stopped before installation: {exc} Nothing was installed."),
                 None,
             )
     if python is not None and not allow_python_migration:

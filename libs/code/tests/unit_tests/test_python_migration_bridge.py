@@ -360,7 +360,7 @@ async def test_migration_reports_interpreter_change_before_verification(
 @pytest.mark.parametrize(
     "failure",
     [
-        ValueError("metadata unavailable"),
+        ValueError("requirement unsatisfiable"),
         ExtrasIntrospectionError("missing extras"),
         update_check.ToolRequirementIntrospectionError("missing receipt"),
     ],
@@ -381,6 +381,26 @@ async def test_preflight_failure_never_runs_bare_installer(
     assert version is None
     assert str(failure) in output
     uv_install.assert_not_awaited()
+
+
+async def test_metadata_failure_upgrades_without_migration(
+    uv_install: AsyncMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed metadata fetch keeps the interpreter instead of blocking."""
+    monkeypatch.setattr(
+        update_check,
+        "_release_python_requirement",
+        MagicMock(side_effect=ValueError("metadata unavailable")),
+    )
+    notice = MagicMock()
+    with patch.object(update_check.sys, "version_info", VersionInfo(3, 13, 4)):
+        success, _, version = await update_check.perform_upgrade(
+            target_version="2.0.0", include_prereleases=False, on_notice=notice
+        )
+    assert (success, version) == (True, "2.0.0")
+    args = shlex.split(uv_install.call_args.args[0])
+    assert args[args.index("--python") + 1] == "3.13"
+    notice.assert_not_called()
 
 
 async def test_unresolved_target_refuses_install(

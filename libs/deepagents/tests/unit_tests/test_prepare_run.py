@@ -9,6 +9,7 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.types import Command
 
 from deepagents import create_deep_agent
+from deepagents.middleware import ParentNotifierMiddleware
 from deepagents.middleware._parent_notifier import _ParentNotifierMiddleware
 from deepagents.middleware.async_subagents import AsyncSubAgentMiddleware, RunKind, RunOptions, _notify_parent, _task_event
 from tests.unit_tests.chat_model import GenericFakeChatModel
@@ -119,7 +120,8 @@ async def test_create_deep_agent_forwards_start_preparation(invocation: str) -> 
     call = {"name": "start_async_task", "args": {"description": "dig", "subagent_type": "test-agent"}, "id": "start_id"}
     prepare = AsyncMock(return_value=None)
     model = GenericFakeChatModel(messages=iter([AIMessage(content="", tool_calls=[call]), AIMessage(content="done")]))
-    agent = create_deep_agent(model=model, subagents=[_make_spec()], prepare_run=prepare)
+    middleware = AsyncSubAgentMiddleware(async_subagents=[_make_spec()], prepare_run=prepare)
+    agent = create_deep_agent(model=model, subagents=[_make_spec()], middleware=[middleware])
     client = MagicMock()
     client.threads.create.return_value = {"thread_id": "new_thread"}
     if invocation == "async":
@@ -138,7 +140,7 @@ async def test_create_deep_agent_forwards_message_and_completion_preparation() -
     call = {"name": "message_parent", "args": {"message": "Which file?"}, "id": "message_id"}
     prepare = AsyncMock(return_value=None)
     model = GenericFakeChatModel(messages=iter([AIMessage(content="", tool_calls=[call]), AIMessage(content="done")]))
-    agent = create_deep_agent(model=model, prepare_run=prepare)
+    agent = create_deep_agent(model=model, middleware=[ParentNotifierMiddleware(prepare_run=prepare)])
     with patch("deepagents.middleware.async_subagents.get_client") as client:
         result = await agent.ainvoke({"messages": [HumanMessage(content="dig")]}, _callback_config())
     assert [call.args[0] for call in prepare.call_args_list] == ["message", "wake"]

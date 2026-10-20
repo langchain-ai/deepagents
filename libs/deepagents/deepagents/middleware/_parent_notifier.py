@@ -40,7 +40,19 @@ class _ParentNotifierMiddleware(AgentMiddleware[AgentState, ContextT, ResponseT]
     """Message the agent that started this run with `start_async_task`, including when it ends.
 
     `create_deep_agent` attaches it to every deep agent. It does nothing unless the
-    run carries the parent reference, and skips nested runs.
+    run carries the parent reference, and skips nested runs. Import as
+    `ParentNotifierMiddleware` from `deepagents.middleware` and pass an instance
+    through `create_deep_agent(middleware=[...])` to replace the default notifier.
+
+    Args:
+        prepare_run: Trusted sync or async callback for `wake` and `message` run
+            requests, using the `AsyncSubAgentMiddleware` callback signature.
+            Returning `None` accepts application delivery before parent status
+            checks or SDK access. Configure this middleware on each child graph.
+
+    !!! warning "Experimental"
+
+        The run-preparation callback API may change.
     """
 
     trace_policy = TracePolicy(process_inputs=omit_payload)

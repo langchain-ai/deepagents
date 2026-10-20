@@ -48,7 +48,7 @@ from deepagents.middleware._prompt_caching import append_prompt_caching_middlewa
 from deepagents.middleware._state import private_state_field_names
 from deepagents.middleware._tool_exclusion import _ToolExclusionMiddleware
 from deepagents.middleware._utils import append_to_system_message
-from deepagents.middleware.async_subagents import AsyncSubAgent, AsyncSubAgentMiddleware, PrepareRun
+from deepagents.middleware.async_subagents import AsyncSubAgent, AsyncSubAgentMiddleware
 from deepagents.middleware.filesystem import FilesystemMiddleware, FilesystemPermission
 from deepagents.middleware.memory import MemoryMiddleware
 from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
@@ -295,7 +295,6 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     debug: bool = False,
     name: str | None = None,
     cache: BaseCache | None = None,
-    prepare_run: PrepareRun | None = None,
 ) -> CompiledStateGraph[AgentState[ResponseT], ContextT, InputAgentState, OutputAgentState[ResponseT]]:  # ty: ignore[invalid-type-arguments]  # ty can't verify generic TypedDicts satisfy StateLike bound
     r"""Create a deep agent.
 
@@ -572,17 +571,6 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
 
             agent = create_deep_agent(model=..., state_schema=MyState)
             ```
-        prepare_run: Trusted sync or async callback for SDK run requests, as
-            documented on `AsyncSubAgentMiddleware`. Applied to async task
-            starts/updates and to this graph's parent notifications. For wake
-            and message requests, returning `None` means the application accepted
-            responsibility for delivery, before parent status checks or SDK calls.
-            Configure it separately on remote child graphs; it is never sent to
-            the model or serialized to the child.
-
-            !!! warning "Experimental"
-
-                The run-preparation callback API may change.
         context_schema: Schema class that defines immutable run-scoped context.
 
             Passed through to [`create_agent`][langchain.agents.create_agent].
@@ -926,7 +914,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         deepagent_middleware.append(sub_agent_middleware)
     deepagent_middleware.extend(
         [
-            _ParentNotifierMiddleware(prepare_run=prepare_run),
+            _ParentNotifierMiddleware(),
             create_summarization_middleware(model, backend),
             PatchToolCallsMiddleware(),
         ]
@@ -935,7 +923,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     if async_subagents:
         # Async here means that we run these subagents in a non-blocking manner.
         # Currently this supports agents deployed via LangSmith deployments.
-        deepagent_middleware.append(AsyncSubAgentMiddleware(async_subagents=async_subagents, prepare_run=prepare_run))
+        deepagent_middleware.append(AsyncSubAgentMiddleware(async_subagents=async_subagents))
 
     # Names of the core stack, captured before the tail is appended so new user
     # middleware can splice in ahead of the profile/prompt-caching/memory tail.

@@ -1516,9 +1516,11 @@ class AsyncSubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
 
             !!! warning "Experimental"
 
-                This callback API may change. Configure it on each child graph
-                via `create_deep_agent` to intercept wake/message runs too. It
-                does not replace server-side webhooks if a child process dies.
+                This callback API may change. Install `ParentNotifierMiddleware`
+                from `deepagents.middleware` on each child graph via
+                `create_deep_agent(middleware=[...])` to intercept wake/message
+                runs too. It does not replace server-side webhooks if a child
+                process dies.
 
     Example:
         ```python

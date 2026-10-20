@@ -2,6 +2,7 @@
 
 import asyncio
 from collections.abc import Coroutine
+from pathlib import Path
 from typing import Any, ClassVar, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -1224,6 +1225,46 @@ class TestThreadSelectorPagination:
                 await pilot.click("#thread-load-more")
                 await pilot.pause()
                 assert len(screen._option_widgets) == 4
+
+    async def test_sort_change_during_reload_fetches_new_order(self) -> None:
+        """A sort change while a reload runs re-fetches in the new order."""
+        release = asyncio.Event()
+        calls: list[dict[str, Any]] = []
+
+        async def list_threads(**kwargs: Any) -> list[ThreadInfo]:
+            calls.append(kwargs)
+            if kwargs.get("cwd") is None:
+                await release.wait()
+                return _numbered_threads(3)[: kwargs["limit"]]
+            return MOCK_THREADS[:1]
+
+        with (
+            _patch_columns(),
+            patch.dict("os.environ", {"DEEPAGENTS_CODE_RECENT_THREADS": "2"}),
+            patch(
+                "deepagents_code.sessions.list_threads",
+                new_callable=AsyncMock,
+                side_effect=list_threads,
+            ),
+            patch("deepagents_code.model_config.save_thread_scope", return_value=True),
+            patch(
+                "deepagents_code.model_config.save_thread_sort_order",
+                return_value=True,
+            ),
+        ):
+            app = _ThreadSelectorScopedTestApp(filter_cwd=str(Path.cwd()))
+            async with app.run_test(size=(140, 40)) as pilot:
+                app.show_selector()
+                await pilot.pause()
+                screen = cast("ThreadSelectorScreen", app.screen)
+                screen.query_one("#thread-scope-select", Select).value = "all"
+                await pilot.pause()
+                screen.query_one("#thread-sort-select", Select).value = "created_at"
+                await pilot.pause()
+                release.set()
+                await app.workers.wait_for_complete()
+                assert calls[-1]["cwd"] is None
+                assert calls[-1]["sort_by"] == "created"
 
     async def test_no_load_more_for_exact_batch(self) -> None:
         """An exact batch does not imply another page exists."""

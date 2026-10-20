@@ -36,6 +36,7 @@ if TYPE_CHECKING:
 
     from textual.app import ComposeResult
     from textual.events import Click, Key, MouseMove
+    from textual.worker import Worker
 
     from deepagents_code.sessions import ThreadInfo
 
@@ -1026,6 +1027,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         self._loaded_limit = self._batch_size
         self._has_more = False
         self._loading_more = False
+        self._reload_worker: Worker[None] | None = None
         self._load_more_row: LoadMoreThreads | None = None
         self._initial_query = initial_query
         self._reference_mode = reference_mode
@@ -1569,9 +1571,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             # enrichment (message counts, initial prompts) after load
             # completes.  Launch immediately when there are no cached rows
             # to render.
-            self.run_worker(
-                self._load_threads, exclusive=True, group="thread-selector-load"
-            )
+            self._run_reload()
 
     def on_resize(self) -> None:
         """Refresh the overflow indicator when the modal is resized."""
@@ -1592,9 +1592,22 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         """Launch the thread-load worker after the initial layout pass."""
         if not self.is_attached:
             return
-        self.run_worker(
-            self._load_threads, exclusive=True, group="thread-selector-load"
+        self._run_reload()
+
+    def _run_reload(self) -> None:
+        """Reload every loaded batch, superseding any load in flight."""
+        # Cast because Textual's `WorkType` alias admits both a coroutine
+        # factory and a plain callable, so the result type infers as a union.
+        self._reload_worker = cast(
+            "Worker[None]",
+            self.run_worker(
+                self._load_threads, exclusive=True, group="thread-selector-load"
+            ),
         )
+
+    def _reload_pending(self) -> bool:
+        """Return whether a reload has been started and has not finished."""
+        return self._reload_worker is not None and not self._reload_worker.is_finished
 
     def on_input_changed(self, event: Input.Changed) -> None:
         """Filter threads as user types.
@@ -2866,9 +2879,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             return
         self._filter_cwd = new_cwd
         self._update_help_widgets()
-        self.run_worker(
-            self._load_threads, exclusive=True, group="thread-selector-load"
-        )
+        self._run_reload()
 
     def _apply_sort_selection(self, sort_by_updated: bool) -> None:
         """Re-sort the picker when the sort dropdown selection changes.
@@ -2880,7 +2891,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             return
         self._sort_by_updated = sort_by_updated
         self._update_help_widgets()
-        if self._has_more or not self._disk_load_complete:
+        if self._has_more or not self._disk_load_complete or self._reload_pending():
             # The loaded rows are only the top of the old order, or a fetch in
             # the old order is still running. Re-fetch so the window and any
             # later "Load more" use the new order.

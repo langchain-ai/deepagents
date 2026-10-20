@@ -2614,12 +2614,21 @@ def _read_migrated_distribution_version() -> str | None:
             ],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             check=True,
             timeout=10,
         )
         return str(Version(result.stdout.strip()))
-    except (OSError, subprocess.SubprocessError, InvalidVersion):
-        logger.warning("Could not verify the migrated tool environment", exc_info=True)
+    except (OSError, subprocess.SubprocessError, InvalidVersion) as exc:
+        # The child's stderr names the real cause (wrong interpreter, missing
+        # package); the traceback alone only shows the exit status.
+        stderr = getattr(exc, "stderr", None) or ""
+        logger.warning(
+            "Could not verify the migrated tool environment: %s",
+            stderr.strip() or exc,
+            exc_info=True,
+        )
         return None
 
 

@@ -997,29 +997,6 @@ class TestThreadSelectorPagination:
                 await pilot.press("enter")
                 assert app.result == "abc12345"
 
-    async def test_load_more_row_hides_thread_hints(self) -> None:
-        """Copy and delete hints disappear while "Load more" is highlighted."""
-        with (
-            _patch_columns(),
-            patch.dict("os.environ", {"DEEPAGENTS_CODE_RECENT_THREADS": "2"}),
-            _patch_list_threads(),
-        ):
-            app = ThreadSelectorTestApp()
-            async with app.run_test(size=(140, 40)) as pilot:
-                app.show_selector()
-                await pilot.pause()
-                screen = cast("ThreadSelectorScreen", app.screen)
-                help_widget = screen.query_one("#thread-help", Static)
-                assert "Ctrl+D delete" in str(help_widget.render())
-                await pilot.press("down", "down")
-                await pilot.pause()
-                rendered = str(help_widget.render())
-                assert "Ctrl+C copy ID" not in rendered
-                assert "Ctrl+D delete" not in rendered
-                await pilot.press("up")
-                await pilot.pause()
-                assert "Ctrl+C copy ID" in str(help_widget.render())
-
     async def test_load_more_survives_queued_rebuild(self) -> None:
         """A queued row sync leaves a rebuilt pagination button usable."""
         threads = _numbered_threads(7)

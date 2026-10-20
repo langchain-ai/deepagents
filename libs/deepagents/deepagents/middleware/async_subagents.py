@@ -112,6 +112,17 @@ class AsyncSubAgent(TypedDict):
     headers: NotRequired[dict[str, str]]
     """Additional headers to include in requests to the remote server."""
 
+    webhook: NotRequired[str]
+    """Webhook URL the server calls when the run that `start_async_task` launches finishes.
+
+    Lets an app track tasks in its own backend. The run calls it as it ends,
+    including on error, timeout, or interruption. A run paused for a human ends
+    as a success, so read the thread to tell a finished task from a waiting one.
+    The parent's own checks for task updates still run.
+
+    The server rejects the run if it refuses the URL (by default, loopback addresses).
+    """
+
     mode: NotRequired[Literal["isolated", "fork"]]
     """When using `mode="fork"`, configure the remote agent to match the parent's model,
     system prompt, tools, and prompt-processing middleware if you want prompt-cache
@@ -369,6 +380,14 @@ def _run_options(spec: AsyncSubAgent, runtime: ToolRuntime) -> dict[str, Any]:
         options["context"] = context
     elif reference := _reference_for(spec, runtime):
         options["config"] = {"configurable": {_PARENT_KEY: reference}}
+    return options
+
+
+def _launch_options(spec: AsyncSubAgent, runtime: ToolRuntime) -> dict[str, Any]:
+    """Keyword arguments for the `runs.create` that launches a task: `_run_options` plus the subagent's webhook."""
+    options = _run_options(spec, runtime)
+    if webhook := spec.get("webhook"):
+        options["webhook"] = webhook
     return options
 
 
@@ -707,7 +726,7 @@ def _build_start_tool(
                 thread_id=thread["thread_id"],
                 assistant_id=spec["graph_id"],
                 input={"messages": messages},
-                **_run_options(spec, runtime),
+                **_launch_options(spec, runtime),
             )
         except Exception as e:  # noqa: BLE001  # LangGraph SDK raises untyped errors
             logger.warning("Failed to launch async subagent '%s': %s", subagent_type, e)
@@ -749,7 +768,7 @@ def _build_start_tool(
                 thread_id=thread["thread_id"],
                 assistant_id=spec["graph_id"],
                 input={"messages": messages},
-                **_run_options(spec, runtime),
+                **_launch_options(spec, runtime),
             )
         except Exception as e:  # noqa: BLE001  # LangGraph SDK raises untyped errors
             logger.warning("Failed to launch async subagent '%s': %s", subagent_type, e)

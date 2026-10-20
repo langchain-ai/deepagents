@@ -187,8 +187,9 @@ unrecognized installs instead of updating a separate environment.
 _UPGRADE_COMMANDS: dict[InstallMethod, str] = {
     # Use `uv tool install -U` instead of `uv tool upgrade`: the latter
     # *respects* the requirement string baked into the uv tool receipt by the
-    # original install (or by any prior `dependency_refresh_command` that
-    # wrote `deepagents-code==<old_version>` into the receipt). When that
+    # original install (or by any prior `perform_upgrade` or
+    # `dependency_refresh_command`, which both write `deepagents-code==<version>`
+    # into the receipt). When that
     # requirement is pinned, `uv tool upgrade` "succeeds" but re-installs the
     # same pinned version, silently leaving the user behind latest. This bare
     # form is the *displayed* manual hint; `perform_upgrade` runs the
@@ -2607,7 +2608,14 @@ def _upgrade_python(version: str) -> str | None:
         return None
     # The bridge only moves forward; a newer interpreter must not be silently
     # downgraded to 3.14.
-    if sys.version_info[:2] <= (3, 14) and _allows_python_314(requirement):
+    if sys.version_info[:2] > (3, 14):
+        msg = (
+            f"v{version} requires Python {requirement}; running Python {running} "
+            "is incompatible, and dcode does not move to an older interpreter. "
+            "Install a compatible interpreter manually."
+        )
+        raise ValueError(msg)
+    if _allows_python_314(requirement):
         return "3.14"
     msg = (
         f"v{version} requires Python {requirement}; running Python {running} is "
@@ -2727,7 +2735,10 @@ async def perform_upgrade(
             the pre-install migration notice, and every failure that carries
             its own recovery steps. Callers should show no generic upgrade
             command after one. *output* also includes the failure text.
-        allow_python_migration: Disable in live sessions whose interpreter must survive.
+        allow_python_migration: When `False` and the target needs a Python
+            migration, install nothing and return failure with deferral
+            guidance (also sent to `on_notice`). Disable wherever a rebuilt
+            environment could break a running session.
         on_migration_deferred: Called when the target needs a Python migration
             that `allow_python_migration` forbids, so callers can report a
             deferral rather than a failure.
@@ -2737,7 +2748,9 @@ async def perform_upgrade(
         stdout/stderr, preceded by a failure explanation where one applies.
         For uv, *installed_version* is read back from the tool environment on
         disk, and a successful installer exit is a failure unless it matches
-        the exact target. For other methods it is *target_version*. It is
+        the exact target. Without a migration, stale dist-info directories
+        make that readback ambiguous; the exact pin is then trusted. For other
+        methods it is *target_version*. It is
         `None` when the upgrade failed.
 
     Raises:
@@ -2864,7 +2877,7 @@ async def perform_upgrade(
                         "Could not preserve your installation options: "
                         f"{_sentence(exc)} "
                         "The existing installation was left unchanged. "
-                        "Retry after repairing the uv receipt, or use the updated "
+                        "Retry after repairing the uv receipt, or rerun the "
                         "installer and reselect extras and added packages: "
                         f"{recovery_installer}"
                     )
@@ -2990,7 +3003,7 @@ async def perform_upgrade(
             failure = (
                 f"Could not verify installation of v{target_version} ({found}). "
                 "Not restarting or reporting success. Check the uv output and "
-                f"retry, or use the updated installer: {recovery_installer}"
+                f"retry, or rerun the installer: {recovery_installer}"
             )
             await _emit_progress(on_notice, failure)
             return False, f"{failure}\n{output}", None

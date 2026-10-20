@@ -7712,8 +7712,8 @@ class DeepAgentsApp(App):
         )
         if success:
             self._update_available = (False, None)
-            # Prefer the version `perform_upgrade` verified on disk over the
-            # update check's result.
+            # The install is pinned, so this matches `latest`; the fallback is
+            # defensive.
             upgraded_to = installed or latest
             # uv may have installed the upgraded shim into a directory that
             # isn't first on the user's PATH (e.g. a leftover pre-uv
@@ -27330,8 +27330,8 @@ class DeepAgentsApp(App):
                                 markup=False,
                             )
                             return
-                        # Prefer the version `perform_upgrade` verified on
-                        # disk over the notification payload.
+                        # The install is pinned, so this matches the payload;
+                        # the fallback is defensive.
                         upgraded_to = installed or payload.latest
                         # After `mark_success`: the modal stays un-dismissable
                         # until it is marked done, and this worker runs with

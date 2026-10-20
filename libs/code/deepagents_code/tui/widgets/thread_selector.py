@@ -2846,9 +2846,10 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             return
         self._sort_by_updated = sort_by_updated
         self._update_help_widgets()
-        if self._has_more:
-            # The loaded rows are only the top of the old order. Re-fetch so
-            # the window and any later "Load more" use the new order.
+        if self._has_more or not self._disk_load_complete:
+            # The loaded rows are only the top of the old order, or a fetch in
+            # the old order is still running. Re-fetch so the window and any
+            # later "Load more" use the new order.
             self.run_worker(
                 self._load_threads, exclusive=True, group="thread-selector-load"
             )

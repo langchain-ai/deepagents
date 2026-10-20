@@ -2015,7 +2015,12 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             logger.exception("Unexpected error loading threads for thread selector")
             await self._report_load_failure(exc)
             return
-        await self._apply_window(threads, self._loaded_limit)
+        try:
+            await self._apply_window_or_restore(threads, self._loaded_limit)
+        except Exception as exc:
+            # A worker error would otherwise exit the app.
+            logger.exception("Unexpected error showing threads for thread selector")
+            await self._report_load_failure(exc)
 
     async def _report_load_failure(self, exc: Exception) -> None:
         """Show a failed load; a failed reload keeps the rows already shown.

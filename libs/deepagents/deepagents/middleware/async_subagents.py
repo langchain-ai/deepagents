@@ -543,7 +543,11 @@ def _final_content(values: Mapping[str, Any]) -> list[ContentBlock]:
     messages = values.get("messages") or []
     if not messages:
         return [{"type": "text", "text": "(completed with no output messages)"}]
-    return convert_to_messages(messages[-1:])[0].content_blocks
+    try:
+        return convert_to_messages(messages[-1:])[0].content_blocks
+    except ValueError:  # a message LangChain can't read, e.g. from a non-LangChain server
+        last = messages[-1]
+        return [{"type": "text", "text": str(last.get("content", "") if isinstance(last, Mapping) else last)}]
 
 
 _DELIVERABLE_THREAD_STATUSES = frozenset({"idle", "error"})
@@ -804,10 +808,11 @@ def _observe(client: SyncLangGraphClient, task: AsyncTask) -> tuple[Run, Thread 
     """Fetch a task's latest run and, when that run finished, its thread.
 
     A tracked run that another client's run interrupted hands over to the newest run;
-    the tracked run is reported `interrupted` only when nothing replaced it.
+    the tracked run is reported `interrupted` only when nothing replaced it. A task the
+    parent cancelled isn't followed, so another client's run can't revive it.
     """
     run = client.runs.get(thread_id=task["thread_id"], run_id=task["run_id"])
-    if run["status"] == "interrupted":
+    if run["status"] == "interrupted" and task["status"] != "cancelled":
         run = next(iter(client.runs.list(thread_id=task["thread_id"], limit=1)), run)
     if run["status"] != "success":
         return run, None
@@ -824,7 +829,7 @@ def _observe(client: SyncLangGraphClient, task: AsyncTask) -> tuple[Run, Thread 
 async def _aobserve(client: LangGraphClient, task: AsyncTask) -> tuple[Run, Thread | None]:
     """Async version of `_observe`."""
     run = await client.runs.get(thread_id=task["thread_id"], run_id=task["run_id"])
-    if run["status"] == "interrupted":
+    if run["status"] == "interrupted" and task["status"] != "cancelled":
         run = next(iter(await client.runs.list(thread_id=task["thread_id"], limit=1)), run)
     if run["status"] != "success":
         return run, None
@@ -898,23 +903,24 @@ def _build_check_command(
     )
 
 
-def _check_output(result: dict[str, Any]) -> str | list[str | dict[Any, Any]]:
-    """A check result as tool output: JSON with the answer's text in `result`, then any media as its own blocks.
+def _check_output(result: dict[str, Any]) -> str:
+    """A check result as tool output: JSON with the answer's text in `result`.
 
-    Reasoning and tool-call blocks are dropped, as in notifications; the text isn't cut.
+    Reasoning and tool-call blocks are dropped, as in notifications; the text isn't cut. Many
+    providers reject media in a tool result, so media are only counted; notifications carry them.
     """
     blocks = result.get("result")
     if not isinstance(blocks, list):
         return json.dumps(result)
-    text = "".join(block["text"] for block in blocks if block["type"] == "text")
-    media: list[str | dict[Any, Any]] = [dict(block) for block in blocks if block["type"] in _MEDIA_BLOCK_TYPES]
-    output = json.dumps({**result, "result": text})
-    return [_text_block(output), *media] if media else output
+    output = {**result, "result": "".join(block["text"] for block in blocks if block["type"] == "text")}
+    if media := [block["type"] for block in blocks if block["type"] in _MEDIA_BLOCK_TYPES]:
+        output["note"] = f"The answer also had {len(media)} media item(s) ({', '.join(media)}), not shown in a tool result."
+    return json.dumps(output)
 
 
 def _keep_cancelled(task: AsyncTask, result: dict[str, Any]) -> dict[str, Any]:
-    """Keep a task cancelled while paused as cancelled; its thread still shows the old pause."""
-    if task["status"] == "cancelled" and result["status"] == _WAITING:
+    """Keep a cancelled task cancelled; its thread may still show the old pause, and its run reads `interrupted`."""
+    if task["status"] == "cancelled" and result["status"] in {_WAITING, "interrupted"}:
         return {"status": "cancelled", "thread_id": result["thread_id"]}
     return result
 

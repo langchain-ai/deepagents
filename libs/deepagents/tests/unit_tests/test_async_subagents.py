@@ -614,7 +614,7 @@ async def test_fork_preserves_evicted_human_content(tmp_path: Path) -> None:
 
 
 class TestCheckTool:
-    def _make_check_runtime(self, tool_call_id: str = "tc_check") -> ToolRuntime:
+    def _make_check_runtime(self, tool_call_id: str = "tc_check", status: str = "running") -> ToolRuntime:
         """Create a runtime with a tracked task in state."""
         tasks: dict[str, AsyncTask] = {
             "thread_abc": {
@@ -622,7 +622,7 @@ class TestCheckTool:
                 "agent_name": "test-agent",
                 "thread_id": "thread_abc",
                 "run_id": "run_xyz",
-                "status": "running",
+                "status": status,
                 "created_at": "2024-01-15T10:30:00Z",
                 "last_checked_at": "2024-01-15T10:30:00Z",
                 "last_updated_at": "2024-01-15T10:30:00Z",
@@ -689,26 +689,78 @@ class TestCheckTool:
         assert tasks["thread_abc"]["status"] == "success"
         assert tasks["thread_abc"]["last_updated_at"] != "2024-01-15T10:30:00Z"
 
-    @patch("deepagents.middleware.async_subagents.get_sync_client")
-    def test_check_result_drops_reasoning_and_keeps_images(self, mock_get_client: MagicMock) -> None:
-        mock_client = MagicMock()
-        mock_client.runs.get.return_value = {"run_id": "run_xyz", "status": "success"}
+    def _check(self, mock_client: MagicMock, status: str = "running") -> Command:
+        check = _build_async_subagent_tools([_make_spec()])[1]
+        with patch("deepagents.middleware.async_subagents.get_sync_client", return_value=mock_client):
+            result = check.func(task_id="thread_abc", runtime=self._make_check_runtime("tc_check", status))
+        assert isinstance(result, Command)
+        return result
+
+    @staticmethod
+    def _answered(content: Any) -> MagicMock:  # noqa: ANN401
+        client = MagicMock()
+        client.runs.get.return_value = {"run_id": "run_xyz", "status": "success"}
+        client.threads.get.return_value = {"values": {"messages": [content]}}
+        return client
+
+    def test_check_result_drops_reasoning_and_counts_media(self) -> None:
         answer = [
             {"type": "reasoning", "reasoning": "secret plan"},
             {"type": "text", "text": "Here's the look."},
             {"type": "image", "base64": "aGVsbG8=", "mime_type": "image/png"},
         ]
-        mock_client.threads.get.return_value = {"values": {"messages": [{"role": "assistant", "content": answer}]}}
-        mock_get_client.return_value = mock_client
 
-        check = _build_async_subagent_tools([_make_spec()])[1]
-        result = check.func(task_id="thread_abc", runtime=self._make_check_runtime("tc_check"))
+        content = self._check(self._answered({"role": "assistant", "content": answer})).update["messages"][0].content
 
-        assert isinstance(result, Command)
-        output, image = result.update["messages"][0].content
-        assert json.loads(output["text"])["result"] == "Here's the look."
-        assert "secret plan" not in output["text"]
-        assert (image["type"], image["base64"]) == ("image", "aGVsbG8=")
+        parsed = json.loads(content)
+        assert parsed["result"] == "Here's the look."
+        assert "1 media item(s) (image)" in parsed["note"]
+        assert "secret plan" not in content
+        assert "aGVsbG8=" not in content
+
+    def test_check_result_of_a_media_only_answer(self) -> None:
+        answer = [{"type": "image", "base64": "aGVsbG8=", "mime_type": "image/png"}]
+
+        parsed = json.loads(self._check(self._answered({"role": "assistant", "content": answer})).update["messages"][0].content)
+
+        assert parsed["result"] == ""
+        assert "(image)" in parsed["note"]
+
+    def test_check_reads_a_message_langchain_cannot(self) -> None:
+        parsed = json.loads(self._check(self._answered({"content": "raw answer"})).update["messages"][0].content)
+
+        assert (parsed["status"], parsed["result"]) == ("success", "raw answer")
+
+    def test_check_follows_a_run_another_client_started(self) -> None:
+        client = MagicMock()
+        client.runs.get.return_value = {"run_id": "run_xyz", "status": "interrupted"}
+        client.runs.list.return_value = [{"run_id": "run_newer", "status": "running"}]
+
+        update = self._check(client).update
+
+        assert json.loads(update["messages"][0].content)["status"] == "running"
+        assert update["async_tasks"]["thread_abc"]["run_id"] == "run_newer"
+
+    def test_check_reports_a_run_cancelled_on_the_server(self) -> None:
+        client = MagicMock()
+        client.runs.get.return_value = {"run_id": "run_xyz", "status": "interrupted"}
+        client.runs.list.return_value = []
+
+        update = self._check(client).update
+
+        assert json.loads(update["messages"][0].content)["status"] == "interrupted"
+        assert update["async_tasks"]["thread_abc"]["status"] == "interrupted"
+
+    def test_check_keeps_a_cancelled_task_cancelled(self) -> None:
+        client = MagicMock()
+        client.runs.get.return_value = {"run_id": "run_xyz", "status": "interrupted"}
+        client.runs.list.return_value = [{"run_id": "run_newer", "status": "running"}]
+
+        update = self._check(client, status="cancelled").update
+
+        assert json.loads(update["messages"][0].content)["status"] == "cancelled"
+        assert update["async_tasks"]["thread_abc"]["status"] == "cancelled"
+        client.runs.list.assert_not_called()
 
     @patch("deepagents.middleware.async_subagents.get_sync_client")
     def test_check_errored_task(self, mock_get_client: MagicMock) -> None:
@@ -1926,6 +1978,11 @@ class TestParentPull:
         assert [e["status"] for e in _pulled_events(update)] == ["interrupted"]
         assert "cancelled before it finished" in _text(update["messages"][0])
         assert update["async_tasks"]["thread_abc"]["status"] == "interrupted"
+
+    async def test_task_the_parent_cancelled_is_not_reported(self) -> None:
+        server = _FakeServer(run={"run_id": "run_xyz", "status": "interrupted"})
+
+        assert await _pull("abefore_model", _lead_state("cancelled"), server) is None
 
     async def test_run_replaced_by_another_client_is_followed_not_reported(self) -> None:
         server = _FakeServer(run={"run_id": "run_xyz", "status": "interrupted"})

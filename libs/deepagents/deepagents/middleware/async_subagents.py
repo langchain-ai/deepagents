@@ -33,7 +33,7 @@ from langchain.agents.middleware.types import (
 )
 from langchain.tools import ToolRuntime
 from langchain_core._api.beta_decorator import warn_beta
-from langchain_core.messages import AnyMessage, BaseMessage, ContentBlock, ToolMessage, convert_to_messages
+from langchain_core.messages import AnyMessage, BaseMessage, ContentBlock, RemoveMessage, ToolMessage, convert_to_messages
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import StructuredTool
 from langgraph.runtime import Runtime
@@ -186,6 +186,9 @@ class AsyncTask(TypedDict):
 
     Format: `YYYY-MM-DDTHH:MM:SSZ` (e.g., `2024-01-15T10:30:00Z`).
     """
+
+    received_message_ids: NotRequired[list[str]]
+    """Checkpointed IDs of child messages already delivered to the parent."""
 
     last_updated_at: str
     """ISO-8601 timestamp (UTC) when the task status changes or when a follow-up message is sent via the update tool.
@@ -435,6 +438,9 @@ class TaskEvent(TypedDict):
     run_id: NotRequired[str]
     """The subagent run that produced the event."""
 
+    message_id: NotRequired[str]
+    """Stable identity of a mid-task message for replay-safe delivery."""
+
 
 class _TaskUpdate(TaskEvent, total=False):
     """A task event plus what the parent's model reads about it."""
@@ -563,18 +569,17 @@ _DELIVERABLE_THREAD_STATUSES = frozenset({"idle", "error"})
 
 
 async def _awake_parent(parent_thread_id: str, assistant_id: str, event: _TaskUpdate, context: dict[str, Any] | None = None) -> bool:
-    """Deliver outcomes to idle parents; enqueue messages that polling cannot discover."""
+    """Wake idle parents without queueing runs that could replace a later human approval."""
     client = get_client()
     try:
         status = (await client.threads.get(thread_id=parent_thread_id)).get("status")
-        allowed = _DELIVERABLE_THREAD_STATUSES | {"busy"} if event["status"] == "message" else _DELIVERABLE_THREAD_STATUSES
-        if status not in allowed:
+        if status not in _DELIVERABLE_THREAD_STATUSES:
             return False
         await client.runs.create(
             thread_id=parent_thread_id,
             assistant_id=assistant_id,
             input={"messages": [_notification_message(event)]},
-            multitask_strategy="enqueue" if event["status"] == "message" else "reject",
+            multitask_strategy="reject",
             **({"context": context} if context is not None else {}),
         )
     except Exception as e:  # noqa: BLE001  # LangGraph SDK raises untyped errors
@@ -901,6 +906,7 @@ def _build_check_command(
         created_at=task["created_at"],
         last_checked_at=now,
         last_updated_at=now if changed else task["last_updated_at"],
+        received_message_ids=task.get("received_message_ids", []),
     )
     return Command(
         update={
@@ -1044,6 +1050,7 @@ def _build_update_tool(
             return f"Failed to update async subagent: {e}"
         now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
         task: AsyncTask = {
+            **tracked,
             "task_id": tracked["task_id"],
             "agent_name": tracked["agent_name"],
             "thread_id": tracked["thread_id"],
@@ -1084,6 +1091,7 @@ def _build_update_tool(
             return f"Failed to update async subagent: {e}"
         now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
         task: AsyncTask = {
+            **tracked,
             "task_id": tracked["task_id"],
             "agent_name": tracked["agent_name"],
             "thread_id": tracked["thread_id"],
@@ -1145,6 +1153,7 @@ def _build_cancel_tool(
             created_at=tracked["created_at"],
             last_checked_at=now,
             last_updated_at=now,
+            received_message_ids=tracked.get("received_message_ids", []),
         )
         msg = f"Cancelled async subagent task: {tracked['task_id']}"
         return Command(
@@ -1178,6 +1187,7 @@ def _build_cancel_tool(
             created_at=tracked["created_at"],
             last_checked_at=now,
             last_updated_at=now,
+            received_message_ids=tracked.get("received_message_ids", []),
         )
         msg = f"Cancelled async subagent task: {tracked['task_id']}"
         return Command(
@@ -1276,6 +1286,7 @@ def _build_list_command(filtered: list[AsyncTask], live: list[tuple[str, str]], 
             created_at=task["created_at"],
             last_checked_at=now,
             last_updated_at=now if changed else task["last_updated_at"],
+            received_message_ids=task.get("received_message_ids", []),
         )
     msg = f"{len(entries)} tracked task(s):\n" + "\n".join(entries)
     return Command(
@@ -1376,7 +1387,7 @@ _UNFINISHED_STATUSES = frozenset({"running", "pending", _WAITING})
 
 def _notification_message(update: _TaskUpdate) -> dict[str, Any]:
     """A task update as the message the parent's model sees, marked with its `TaskEvent` so apps can recognize it."""
-    event = {key: update[key] for key in ("task_id", "agent_name", "status", "run_id") if key in update}
+    event = {key: update[key] for key in ("task_id", "agent_name", "status", "run_id", "message_id") if key in update}
     return {"role": "user", "content": _notification_content(update), _NOTIFICATION_KEY: event}
 
 
@@ -1393,6 +1404,7 @@ def _observed(task: AsyncTask, status: str, run_id: str) -> AsyncTask:
         created_at=task["created_at"],
         last_checked_at=now,
         last_updated_at=now if changed else task["last_updated_at"],
+        received_message_ids=task.get("received_message_ids", []),
     )
 
 
@@ -1421,9 +1433,9 @@ class AsyncSubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         may change.
 
         A deep agent subagent on this deployment can use `message_parent` to send
-        questions or updates without ending its task. Messages enqueue a new parent
-        run, so a busy parent receives them after its current run, not at its next
-        model call. Delivery does not replace a pending human approval.
+        questions or updates without ending its task. Messages are checkpointed on
+        the child and read before the parent's next model call. An idle parent is
+        woken with `reject`, never `enqueue`; a paused parent reads them after human resume.
 
     Args:
         async_subagents: List of async subagent specifications.
@@ -1490,13 +1502,17 @@ class AsyncSubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         else:
             self.system_prompt = system_prompt
 
+    @hook_config(can_jump_to=["end"])
     def before_agent(self, state: AsyncSubAgentState, runtime: Runtime[ContextT]) -> dict[str, Any] | None:  # noqa: ARG002  # signature set by AgentMiddleware
         """Record the task notification that started this run, if one did."""
         return self._record_notification(state)
 
+    @hook_config(can_jump_to=["end"])
     async def abefore_agent(self, state: AsyncSubAgentState, runtime: Runtime[ContextT]) -> dict[str, Any] | None:  # noqa: ARG002  # signature set by AgentMiddleware
         """(async) Record the notification that started this run, then add status updates from this agent's tasks."""
         recorded = self._record_notification(state) or {}
+        if recorded.get("jump_to") == "end":
+            return recorded
         tasks = {**(state.get("async_tasks") or {}), **recorded.get("async_tasks", {})}
         updates = await self._apull(tasks)
         return {
@@ -1552,10 +1568,33 @@ class AsyncSubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
             records[task["task_id"]] = _observed(task, status, run["run_id"])
             if status != task["status"] and (event := _check_event(task, run, thread, status)):
                 messages.append(_notification_message(event))
+        outgoing = await asyncio.gather(*(self._amessages(task) for task in tasks.values()))
+        for task, events in zip(tasks.values(), outgoing, strict=True):
+            if events:
+                current = records.get(task["task_id"], task)
+                records[task["task_id"]] = {**current, "received_message_ids": [*task.get("received_message_ids", []), *events]}
+                messages.extend(_notification_message(event) for event in events.values())
         update: dict[str, Any] = {"async_tasks": records} if records else {}
         if messages:
             update["messages"] = messages
         return update
+
+    async def _amessages(self, task: AsyncTask) -> dict[str, _TaskUpdate]:
+        """Read committed child messages, including after a completion push marked the task terminal."""
+        try:
+            client = self._clients.get_async(task["agent_name"])
+            snapshot = await asyncio.wait_for(client.threads.get_state(thread_id=task["thread_id"]), _PULL_TIMEOUT_SECONDS)
+            values = snapshot.get("values")
+            outbox = cast("dict[str, _TaskUpdate]", values.get("deepagents_parent_messages", {})) if isinstance(values, Mapping) else {}
+            seen = task.get("received_message_ids", [])
+            return {
+                key: _event(task["task_id"], task["agent_name"], "message", event.get("run_id"), message_id=key, message=event["message"])
+                for key, event in outbox.items()
+                if key not in seen
+            }
+        except Exception:  # noqa: BLE001  # a failed read is retried at the next model boundary
+            logger.warning("Failed to read messages for task %s", task["task_id"], exc_info=True)
+            return {}
 
     async def _aobserve_task(self, task: AsyncTask) -> tuple[Run, Thread | None] | None:
         try:
@@ -1570,8 +1609,16 @@ class AsyncSubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         messages = state.get("messages") or []
         event = _notification_event(messages[-1]) if messages else None
         task = (state.get("async_tasks") or {}).get(event["task_id"]) if event else None
-        if event is None or task is None or event["status"] == "message":
+        if event is None or task is None:
             return None
+        if event["status"] == "message":
+            message_id = event.get("message_id")
+            if not message_id:
+                return None
+            seen = task.get("received_message_ids", [])
+            if message_id in seen:
+                return {"jump_to": "end", "messages": [RemoveMessage(id=messages[-1].id)]}
+            return {"async_tasks": {task["task_id"]: {**task, "received_message_ids": [*seen, message_id]}}}
         run_id = event.get("run_id", task["run_id"])
         # Answering a pause starts a new run; an update cancels the old run before it can report.
         if run_id != task["run_id"] and task["status"] not in _UNFINISHED_STATUSES:

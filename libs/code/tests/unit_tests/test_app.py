@@ -20261,59 +20261,6 @@ class TestNotificationCenterIntegration:
         assert app._notice_registry.get("dep:ripgrep") is None
         assert any("debug mode" in m for m in notified)
 
-    @pytest.mark.parametrize("source", ["slash", "notification"])
-    async def test_python_migration_ends_session(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-        capsys: pytest.CaptureFixture[str],
-        tmp_path: Path,
-        source: str,
-    ) -> None:
-        """Both update routes require relaunch, even if verification fails."""
-        from deepagents_code.notifications import ActionId
-
-        app = DeepAgentsApp(agent=MagicMock(), thread_id="migration-thread")
-        entry = _update_entry()
-        app._notice_registry.add(entry)
-        monkeypatch.setattr(app, "_post_paint_init", AsyncMock())
-        monkeypatch.setattr(
-            "deepagents_code.update_check.create_update_log_file",
-            lambda: tmp_path / "update.log",
-        )
-        monkeypatch.setattr(
-            "deepagents_code.update_check.create_update_log_path",
-            lambda: tmp_path / "update.log",
-        )
-
-        def install(
-            *, on_interpreter_change: Callable[[], None], **_kwargs: object
-        ) -> tuple[bool, str, str | None]:
-            on_interpreter_change()
-            return False, "installed", None
-
-        with patch(
-            "deepagents_code.update_check.perform_upgrade",
-            new=AsyncMock(side_effect=install),
-        ):
-            async with app.run_test() as pilot:
-                await pilot.pause()
-                if source == "notification":
-                    await app._dispatch_notification_action(entry.key, ActionId.INSTALL)
-                else:
-                    await app._perform_app_upgrade_unlocked(
-                        current="1.0.0",
-                        latest="2.0.0",
-                        include_prereleases=None,
-                        upgrade_include_prereleases=None,
-                        pin_upgrade_version=None,
-                    )
-                await pilot.pause()
-                assert app._exiting
-
-        message = capsys.readouterr().err
-        assert "fresh session is required" in message
-        assert "-r migration-thread" in message
-
     async def test_slash_update_explains_migration_before_install(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

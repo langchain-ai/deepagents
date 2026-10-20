@@ -2676,8 +2676,8 @@ async def perform_upgrade(
             before install, and recovery guidance for every migration failure.
             When it is set, that guidance is not repeated in *output*.
         on_interpreter_change: Called after a successful migration command, even
-            if version verification fails. Interactive callers must end the old
-            session because its import paths may no longer exist.
+            if version verification fails. The caller's process then imports
+            from a deleted environment and must not keep running.
         allow_python_migration: Disable in live sessions whose interpreter must survive.
 
     Returns:

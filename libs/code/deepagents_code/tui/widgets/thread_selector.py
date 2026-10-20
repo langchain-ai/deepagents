@@ -2680,7 +2680,10 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             scroll = self.query_one(".thread-list", VerticalScroll)
             scroll.scroll_home(animate=False)
         else:
-            rows[new_index].scroll_visible()
+            # Wrapping jumps the full list, so an animated scroll would sweep
+            # through every row; snap instead.
+            wrapped = new_index != old_index + delta
+            rows[new_index].scroll_visible(animate=not wrapped)
 
     def action_move_up(self) -> None:
         """Move selection up."""

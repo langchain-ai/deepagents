@@ -393,24 +393,41 @@ async def test_metadata_failure_upgrades_without_migration(
     notice.assert_not_called()
 
 
-async def test_metadata_failure_names_migration_when_install_fails(
-    uv_install: AsyncMock, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    ("uv_output", "names_migration"),
+    [
+        (
+            (
+                "Because the current Python version (3.13.4) does not satisfy "
+                "Python>=3.14 and deepagents-code==2.0.0 depends on Python>=3.14"
+            ),
+            True,
+        ),
+        ("error: Failed to fetch: dns error", False),
+    ],
+)
+async def test_metadata_failure_names_migration_only_for_python_conflicts(
+    uv_install: AsyncMock,
+    monkeypatch: pytest.MonkeyPatch,
+    uv_output: str,
+    names_migration: bool,
 ) -> None:
-    """Without metadata, a failed install still points at the 3.14 installer."""
+    """Without metadata, only a Python conflict points at the 3.14 installer."""
     monkeypatch.setattr(
         update_check,
         "_release_python_requirement",
         MagicMock(side_effect=ValueError("metadata unavailable")),
     )
-    uv_install.return_value = False, "requires Python>=3.14"
+    uv_install.return_value = False, uv_output
     notices: list[str] = []
     with patch.object(update_check.sys, "version_info", VersionInfo(3, 13, 4)):
         success, output, _ = await update_check.perform_upgrade(
             target_version="2.0.0", include_prereleases=False, on_notice=notices.append
         )
     assert not success
-    assert update_check._PYTHON_MIGRATION_INSTALL_COMMAND in notices[-1]
-    assert output.endswith("requires Python>=3.14")
+    assert output.endswith(uv_output)
+    named = any(update_check._PYTHON_MIGRATION_INSTALL_COMMAND in n for n in notices)
+    assert named is names_migration
 
 
 async def test_unresolved_target_refuses_install(

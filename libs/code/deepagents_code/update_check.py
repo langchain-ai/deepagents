@@ -2580,6 +2580,12 @@ def _allows_python_314(requirement: SpecifierSet) -> bool:
     return any(requirement.contains(candidate) for candidate in candidates)
 
 
+_UV_PYTHON_CONFLICT_PATTERN = re.compile(
+    r"requires-python|\bPython\s*(?:[<>=!~]=?|===)\s*\d", re.IGNORECASE
+)
+"""Matches uv resolver output that rejects a release for its Python version."""
+
+
 class _PythonRequirementUnavailableError(ValueError):
     """The target's `Requires-Python` metadata could not be read."""
 
@@ -2951,7 +2957,11 @@ async def perform_upgrade(
         )
         output = f"{guidance}\n{output}"
         await _emit_progress(on_notice, guidance)
-    elif not success and requirement_unknown:
+    elif (
+        not success
+        and requirement_unknown
+        and _UV_PYTHON_CONFLICT_PATTERN.search(output)
+    ):
         from deepagents_code._invocation import invoked_name
 
         # Callers hide uv's output after a notice, so name the likely fix.

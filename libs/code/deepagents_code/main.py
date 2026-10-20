@@ -561,6 +561,31 @@ def _exit_after_unrestartable_update(
     raise SystemExit(0 if cause is None else 1)
 
 
+def _exit_after_unverified_update(console: "Console", *, persisted: bool) -> NoReturn:
+    """Exit after uv changed the tool environment but verification failed.
+
+    The installed files no longer match the code this process has loaded, so
+    launching would mix releases. The failure notice is already printed.
+
+    Args:
+        console: Console to print the notice to.
+        persisted: Whether the startup cooldown marker was saved.
+
+    Raises:
+        SystemExit: Always, to stop the launch.
+    """
+    from deepagents_code._invocation import invoked_name
+
+    message = (
+        "uv changed the installed files, so this session cannot start on the "
+        f"previous version. Run [cyan]{invoked_name()}[/cyan] again."
+    )
+    if not persisted:
+        message += _UNPERSISTED_AUTO_UPDATE_FAILURE_NOTE
+    console.print(message, markup=True, highlight=False)
+    raise SystemExit(1)
+
+
 def _run_startup_auto_update(console: "Console") -> None:
     """Apply enabled auto-updates before the TUI and server start.
 
@@ -750,6 +775,7 @@ def _run_startup_auto_update(console: "Console") -> None:
             pending_failure_version = latest
             notices: list[str] = []
             deferred: list[bool] = []
+            unverified: list[bool] = []
 
             def show_notice(message: str) -> None:
                 notices.append(message)
@@ -765,6 +791,7 @@ def _run_startup_auto_update(console: "Console") -> None:
                     target_version=latest,
                     allow_python_migration=False,
                     on_migration_deferred=lambda: deferred.append(True),
+                    on_unverified_install=lambda: unverified.append(True),
                 )
             )
         if success:
@@ -821,6 +848,8 @@ def _run_startup_auto_update(console: "Console") -> None:
                 _exit_after_unrestartable_update(console, latest)
             return
         persisted = mark_startup_auto_update_failed(latest)
+        if unverified:
+            _exit_after_unverified_update(console, persisted=persisted)
         if deferred:
             # Nothing failed: the notice above explains how to migrate.
             message = f"Continuing with v{cli_version}."

@@ -2714,6 +2714,7 @@ async def perform_upgrade(
     on_notice: UpgradeProgressCallback | None = None,
     allow_python_migration: bool = True,
     on_migration_deferred: Callable[[], None] | None = None,
+    on_unverified_install: Callable[[], None] | None = None,
 ) -> tuple[bool, str, str | None]:
     """Attempt to upgrade `deepagents-code` using the detected install method.
 
@@ -2742,6 +2743,10 @@ async def perform_upgrade(
         on_migration_deferred: Called when the target needs a Python migration
             that `allow_python_migration` forbids, so callers can report a
             deferral rather than a failure.
+        on_unverified_install: Called when uv exited successfully but the
+            installed version could not be verified. The tool environment has
+            changed, so a caller that has not loaded its code yet must not
+            continue on the previous version.
 
     Returns:
         `(success, output, installed_version)` — *output* is the combined
@@ -3006,6 +3011,8 @@ async def perform_upgrade(
                 f"retry, or rerun the installer: {recovery_installer}"
             )
             await _emit_progress(on_notice, failure)
+            if on_unverified_install is not None:
+                on_unverified_install()
             return False, f"{failure}\n{output}", None
     elif success:
         installed_version = target_version

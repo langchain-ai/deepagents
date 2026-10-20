@@ -908,17 +908,23 @@ def _build_check_command(
 
 
 def _check_output(result: dict[str, Any]) -> str | list[str | dict[Any, Any]]:
-    """A check result as tool output: JSON with the answer's text in `result`, then any media as its own blocks.
+    """A check result as tool output: JSON, with a text-only answer's text in `result`.
 
-    Reasoning and tool-call blocks are dropped, as in notifications; the text isn't cut.
+    An answer with media follows the JSON as its own blocks, in order, so each image stays by
+    its text. Reasoning and tool-call blocks are dropped, as in notifications; the text isn't cut.
     """
     blocks = result.get("result")
     if not isinstance(blocks, list):
         return json.dumps(result)
-    text = "".join(block["text"] for block in blocks if block["type"] == "text")
-    media: list[str | dict[Any, Any]] = [dict(block) for block in blocks if block["type"] in _MEDIA_BLOCK_TYPES]
-    output = json.dumps({**result, "result": text})
-    return [_text_block(output), *media] if media else output
+    if not any(block["type"] in _MEDIA_BLOCK_TYPES for block in blocks):
+        return json.dumps({**result, "result": "".join(block["text"] for block in blocks if block["type"] == "text")})
+    status = {key: value for key, value in result.items() if key != "result"}
+    answer: list[str | dict[Any, Any]] = [
+        _text_block(block["text"]) if block["type"] == "text" else dict(block)
+        for block in blocks
+        if block["type"] == "text" or block["type"] in _MEDIA_BLOCK_TYPES
+    ]
+    return [_text_block(json.dumps(status)), *answer]
 
 
 def _keep_cancelled(task: AsyncTask, result: dict[str, Any]) -> dict[str, Any]:

@@ -710,18 +710,31 @@ class TestCheckTool:
             {"type": "image", "base64": "aGVsbG8=", "mime_type": "image/png"},
         ]
 
-        output, image = self._check(self._answered({"role": "assistant", "content": answer})).update["messages"][0].content
+        status, text, image = self._check(self._answered({"role": "assistant", "content": answer})).update["messages"][0].content
 
-        assert json.loads(output["text"])["result"] == "Here's the look."
-        assert "secret plan" not in output["text"]
+        assert json.loads(status["text"])["status"] == "success"
+        assert text["text"] == "Here's the look."
         assert (image["type"], image["base64"]) == ("image", "aGVsbG8=")
+        assert "secret plan" not in json.dumps([status, text])
+
+    def test_check_result_keeps_each_image_by_its_text(self) -> None:
+        answer = [
+            {"type": "text", "text": "Version one:"},
+            {"type": "image", "base64": "b25l", "mime_type": "image/png"},
+            {"type": "text", "text": "Version two:"},
+            {"type": "image", "base64": "dHdv", "mime_type": "image/png"},
+        ]
+
+        _, *blocks = self._check(self._answered({"role": "assistant", "content": answer})).update["messages"][0].content
+
+        assert [block.get("text") or block["base64"] for block in blocks] == ["Version one:", "b25l", "Version two:", "dHdv"]
 
     def test_check_result_of_a_media_only_answer(self) -> None:
         answer = [{"type": "image", "base64": "aGVsbG8=", "mime_type": "image/png"}]
 
-        output, image = self._check(self._answered({"role": "assistant", "content": answer})).update["messages"][0].content
+        status, image = self._check(self._answered({"role": "assistant", "content": answer})).update["messages"][0].content
 
-        assert json.loads(output["text"])["result"] == ""
+        assert "result" not in json.loads(status["text"])
         assert image["type"] == "image"
 
     def test_check_reads_a_message_langchain_cannot(self) -> None:

@@ -39,6 +39,7 @@ dependencies = [
     "langchain-anthropic>=1.7.6,<2.0.0",
     "langchain-google-genai>=4.4.2,<5.0.0",
     "langchain-openai>=1.7.2,<2.0.0",
+    # Require Pydantic 2.13+ explicitly to avoid Python 3.14 warnings from LangChain's v1 imports.
     "pydantic>=2.13.0,<3.0.0",
 
     # UI/Terminal
@@ -271,6 +272,7 @@ flake8-annotations.allow-star-arg-any = true
 flake8-annotations.mypy-init-return = true
 
 [tool.ruff.lint.flake8-type-checking]
+# Pydantic resolves these fake models' field types at runtime, so keep their imports.
 runtime-evaluated-base-classes = [
     "langchain_core.language_models.fake_chat_models.GenericFakeChatModel",
 ]

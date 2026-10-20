@@ -20,6 +20,7 @@ dependencies = [
     "deepagents>=0.6.12",
     "langchain[mcp]>=1.4.1,<2.0.0",
     "deepagents-code>=0.1.27",
+    # Require Pydantic 2.13+ explicitly to avoid Python 3.14 warnings from LangChain's v1 imports.
     "pydantic>=2.13.0,<3.0.0",
     # Harbor runtime, with the built-in LangSmith sandbox env (`-e langsmith`, introduced in harbor 0.13.2).
     # 0.20+: managed-Python agent venv. harbor-langsmith 0.3.0+ is the piece that honors

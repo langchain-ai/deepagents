@@ -283,10 +283,12 @@ for (const title of ['', undefined, 'not a conventional title', 'unknown(sdk): c
 
 function labelerApi(title, labels, files = [{ filename: 'libs/code/example.py', additions: 1, deletions: 0 }]) {
   const assigned = new Set(labels);
+  const events = [];
   const known = new Map(labels.map(name => [name, {}]));
   const pr = { number: 12, title, user: { login: 'contributor', type: 'User' }, head: { ref: 'feature-branch' } };
   const issues = {
     listLabelsOnIssue: async () => [...assigned].map(name => ({ name })),
+    listEvents: async () => events,
     getLabel: async ({ name }) => {
       if (!known.has(name)) throw Object.assign(new Error('Missing label'), { status: 404 });
     },
@@ -309,7 +311,7 @@ function labelerApi(title, labels, files = [{ filename: 'libs/code/example.py', 
   // to look up, so it is always known. Omitting it would make the backfill's
   // unknown-tier guard fire and fail every run.
   h.getContributorInfo = async () => ({ isExternal: false, tierKnown: true });
-  return { assigned, known, pr, github, h };
+  return { assigned, known, pr, github, h, events };
 }
 
 function workflowScript(filename, stepName) {
@@ -368,6 +370,57 @@ test('live topics come from the changed modules', async () => {
   assert.ok(api.assigned.has('topic:mcp'), 'a touched module must contribute its topic');
   assert.ok(api.known.has('topic:mcp'), 'a path topic is created before it is applied');
   assert.ok(api.assigned.has('package:dcode'));
+});
+
+for (const action of ['synchronize', 'reopened']) {
+  test(`live ${action} respects human topic removals across repeated updates`, async () => {
+    const api = labelerApi('fix(code): correct behavior', ['topic:skills'], [
+      { filename: 'libs/code/deepagents_code/mcp_tools.py', additions: 1, deletions: 0 },
+      { filename: 'libs/code/deepagents_code/memory_guard.py', additions: 1, deletions: 0 },
+    ]);
+    api.events.push(
+      ...Array.from({ length: 100 }, () => ({ event: 'committed' })),
+      { event: 'unlabeled', actor: { type: 'User' }, label: { name: 'topic:mcp' } },
+      { event: 'labeled', actor: { type: 'Bot' }, label: { name: 'topic:mcp' } },
+    );
+    for (let update = 0; update < 2; update++) {
+      await runLabeler('live', api, { action });
+      assert.ok(!api.assigned.has('topic:mcp'));
+      assert.ok(api.assigned.has('topic:memory'));
+      assert.ok(api.assigned.has('topic:skills'));
+      assert.ok(api.assigned.has('package:dcode'));
+      assert.ok(api.assigned.has('type:bug'));
+      assert.ok(api.assigned.has('size: XS'));
+    }
+    api.events.push({ event: 'labeled', actor: { type: 'User' }, label: { name: 'topic:mcp' } });
+    await runLabeler('live', api, { action });
+    assert.ok(api.assigned.has('topic:mcp'));
+    api.assigned.delete('topic:mcp');
+    api.events.push({ event: 'unlabeled', actor: { type: 'User' }, label: { name: 'topic:mcp' } });
+    await runLabeler('live', api, { action });
+    assert.ok(!api.assigned.has('topic:mcp'));
+  });
+}
+
+test('bot and unattributed removals do not suppress automatic topics', async () => {
+  const api = labelerApi('fix(code): correct behavior', [], [
+    { filename: 'libs/code/deepagents_code/mcp_tools.py', additions: 1, deletions: 0 },
+  ]);
+  api.events.push(
+    { event: 'unlabeled', actor: { type: 'Bot' }, label: { name: 'topic:mcp' } },
+    { event: 'unlabeled', actor: null, label: { name: 'topic:mcp' } },
+  );
+  await runLabeler('live', api, { action: 'synchronize' });
+  assert.ok(api.assigned.has('topic:mcp'));
+});
+
+test('an unavailable event history fails without reapplying removed topics', async () => {
+  const api = labelerApi('fix(code): correct behavior', [], [
+    { filename: 'libs/code/deepagents_code/mcp_tools.py', additions: 1, deletions: 0 },
+  ]);
+  api.github.rest.issues.listEvents = async () => { throw new Error('History unavailable'); };
+  await assert.rejects(runLabeler('live', api, { action: 'synchronize' }), /History unavailable/);
+  assert.ok(!api.assigned.has('topic:mcp'));
 });
 
 for (const mode of ['live', 'backfill', 'release helper']) {

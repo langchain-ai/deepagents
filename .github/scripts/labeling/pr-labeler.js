@@ -173,6 +173,22 @@ function init(github, owner, repo, config, core) {
     return matchFileLabels(files, buildRules(topicFileRulesDef, 'topicFileRules'));
   }
 
+  async function getTopicFileLabels(prNumber, files) {
+    const labels = matchTopicFileLabels(files);
+    if (!labels.size) return labels;
+    const events = await github.paginate(github.rest.issues.listEvents, {
+      owner, repo, issue_number: prNumber, per_page: 100,
+    });
+    const removed = new Set();
+    for (const event of events) {
+      const name = event.label?.name;
+      if (event.actor?.type !== 'User' || !labels.has(name)) continue;
+      if (event.event === 'unlabeled') removed.add(name);
+      else if (event.event === 'labeled') removed.delete(name);
+    }
+    return new Set([...labels].filter(name => !removed.has(name)));
+  }
+
   // ── Branch-name-based labels ──────────────────────────────────────
 
   function matchBranchLabels(headRef) {
@@ -411,6 +427,7 @@ function init(github, owner, repo, config, core) {
     buildRules,
     matchFileLabels,
     matchTopicFileLabels,
+    getTopicFileLabels,
     matchBranchLabels,
     matchTitleLabels,
     getStaleTitleLabels,

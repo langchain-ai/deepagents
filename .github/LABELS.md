@@ -56,7 +56,7 @@ Package and integration labels are additive: title edits do not remove them. `pr
 
 `topic:async-subagents`, `topic:backends`, `topic:filesystem`, `topic:harness-profiles`, `topic:mcp`, `topic:memory`, `topic:middleware`, `topic:models`, `topic:multimodal`, `topic:performance`, `topic:prompts`, `topic:sandboxes`, `topic:skills`, `topic:streaming`, `topic:subagents`, `topic:tracing`. Any number may apply.
 
-Two signals feed them, both additive. A topic is never removed, so a maintainer's hand-applied topic survives. Issue classification runs on `opened` only, so a removed topic is not re-added by a later edit:
+Two signals feed them, both additive. Automation never removes a topic, so a maintainer's hand-applied topic survives. For PRs, the labeler reads the full label-event history: a human removal suppresses that topic on later pushes and reopenings until a human explicitly re-adds it. Bot label changes do not clear this override. This applies only to `topic:*`; size, title, and package labeling are unchanged. Issue classification runs on `opened` only, so a removed topic is not re-added by a later edit:
 
 - **Changed modules** (`topicFileRules`): a PR touching `middleware/subagents.py` gets `topic:subagents` (and `topic:middleware`, since the whole middleware dir maps too); `backends/sandbox.py` gets `topic:backends` and `topic:sandboxes`; `mcp_*.py` gets `topic:mcp`. Rules name a *module*, not a package, so the label means the diff actually touched that subject.
 - **Issue wording**: `openai/gpt-oss-20b`, an open-weight production model available on Groq's Developer plan, classifies an issue's title and body against the cached `.github/topic-labels.json` manifest. PRs receive automatic topic labels from changed modules only.

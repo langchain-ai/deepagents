@@ -476,20 +476,37 @@ def test_migrated_readback_uses_rebuilt_interpreter(
 
 
 @pytest.mark.parametrize(
-    "error",
+    ("error", "reason"),
     [
-        OSError("missing interpreter"),
-        subprocess.CalledProcessError(1, "python"),
-        subprocess.TimeoutExpired("python", 10),
+        (OSError("missing interpreter"), "missing interpreter"),
+        (
+            subprocess.CalledProcessError(
+                1, "python", stderr="Traceback\nexpected Python 3.14, got 3.13.4\n"
+            ),
+            "expected Python 3.14, got 3.13.4",
+        ),
+        (
+            subprocess.TimeoutExpired("python", 10, stderr=b"still importing\n"),
+            "still importing",
+        ),
     ],
 )
-def test_migrated_readback_refuses_unverified_interpreter(error: Exception) -> None:
-    with patch("subprocess.run", side_effect=error):
-        assert update_check._read_migrated_distribution_version() is None
+def test_migrated_readback_refuses_unverified_interpreter(
+    error: Exception, reason: str
+) -> None:
+    with (
+        patch("subprocess.run", side_effect=error),
+        pytest.raises(update_check._MigrationVerificationError, match=reason),
+    ):
+        update_check._read_migrated_distribution_version()
 
 
 def test_migrated_readback_refuses_invalid_version() -> None:
-    with patch(
-        "subprocess.run", return_value=subprocess.CompletedProcess([], 0, "invalid\n")
+    with (
+        patch(
+            "subprocess.run",
+            return_value=subprocess.CompletedProcess([], 0, "invalid\n"),
+        ),
+        pytest.raises(update_check._MigrationVerificationError),
     ):
-        assert update_check._read_migrated_distribution_version() is None
+        update_check._read_migrated_distribution_version()

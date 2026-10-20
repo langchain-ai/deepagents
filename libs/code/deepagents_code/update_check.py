@@ -2617,7 +2617,11 @@ def _upgrade_python(version: str) -> str | None:
     raise ValueError(msg)
 
 
-def _read_migrated_distribution_version() -> str | None:
+class _MigrationVerificationError(Exception):
+    """The rebuilt environment's interpreter could not confirm the install."""
+
+
+def _read_migrated_distribution_version() -> str:
     """Verify the rebuilt environment using its new interpreter.
 
     Assumes uv rebuilt the tool environment at the same `sys.prefix`. The
@@ -2625,7 +2629,10 @@ def _read_migrated_distribution_version() -> str | None:
     fails verification instead of reporting a stale version.
 
     Returns:
-        The installed version, or None when verification fails.
+        The installed version.
+
+    Raises:
+        _MigrationVerificationError: If verification fails, with the reason.
     """
     import subprocess  # noqa: S404  # Run only the tool's interpreter with fixed code.
 
@@ -2639,8 +2646,11 @@ def _read_migrated_distribution_version() -> str | None:
                 "-I",
                 "-c",
                 (
-                    "import sys; from importlib.metadata import version; "
-                    "assert sys.version_info[:2] == (3, 14); "
+                    "import sys\n"
+                    "if sys.version_info[:2] != (3, 14):\n"
+                    "    got = sys.version.split()[0]\n"
+                    "    sys.exit(f'expected Python 3.14, got {got}')\n"
+                    "from importlib.metadata import version\n"
                     "print(version('deepagents-code'))"
                 ),
             ],
@@ -2653,15 +2663,29 @@ def _read_migrated_distribution_version() -> str | None:
         )
         return str(Version(result.stdout.strip()))
     except (OSError, subprocess.SubprocessError, InvalidVersion) as exc:
-        # The child's stderr names the real cause (wrong interpreter, missing
-        # package); the traceback alone only shows the exit status.
-        stderr = getattr(exc, "stderr", None) or ""
+        reason = _verification_failure_reason(exc)
         logger.warning(
             "Could not verify the migrated tool environment: %s",
-            stderr.strip() or exc,
+            reason,
             exc_info=True,
         )
-        return None
+        raise _MigrationVerificationError(reason) from exc
+
+
+def _verification_failure_reason(exc: Exception) -> str:
+    """Summarize why the migrated interpreter could not verify the install.
+
+    Returns:
+        The last line of the child's stderr when it has one, else the error.
+    """
+    stderr = getattr(exc, "stderr", None) or ""
+    if isinstance(stderr, bytes):
+        # `TimeoutExpired` can carry raw bytes even with `text=True`.
+        stderr = stderr.decode("utf-8", errors="replace")
+    lines = stderr.strip().splitlines()
+    # The last line names the cause (wrong interpreter, missing package);
+    # the exception alone only shows the exit status.
+    return lines[-1] if lines else str(exc) or type(exc).__name__
 
 
 def _sentence(exc: BaseException) -> str:
@@ -2924,12 +2948,15 @@ async def perform_upgrade(
         await _emit_progress(on_notice, guidance)
     installed_version: str | None = None
     if success and method == "uv":
-        reader = (
-            _read_migrated_distribution_version
-            if python is not None
-            else read_installed_distribution_version
-        )
-        installed_version = await asyncio.to_thread(reader)
+        verification_error: str | None = None
+        try:
+            installed_version = await asyncio.to_thread(
+                _read_migrated_distribution_version
+                if python is not None
+                else read_installed_distribution_version
+            )
+        except _MigrationVerificationError as exc:
+            verification_error = str(exc)
         dist_infos = (
             await asyncio.to_thread(_distribution_dist_infos)
             if installed_version is None and python is None
@@ -2955,9 +2982,13 @@ async def perform_upgrade(
         except InvalidVersion:
             verified = False
         if not verified:
+            found = (
+                f"Python 3.14 check failed: {verification_error}"
+                if verification_error is not None
+                else f"found {installed_version or 'no readable installed version'}"
+            )
             failure = (
-                f"Could not verify installation of v{target_version} "
-                f"(found {installed_version or 'no readable installed version'}). "
+                f"Could not verify installation of v{target_version} ({found}). "
                 "Not restarting or reporting success. Check the uv output and "
                 f"retry, or use the updated installer: {recovery_installer}"
             )

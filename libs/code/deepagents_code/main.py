@@ -671,17 +671,16 @@ def _run_startup_auto_update(console: "Console") -> None:
         if should_skip_startup_auto_update_after_failure(latest):
             # A same-version upgrade failed recently; retrying it here would
             # very likely fail again and re-stall every launch (this runs before
-            # the TUI). Skip for the cooldown window and point at a manual
-            # command instead.
-            update_needs_prereleases = release_requires_prereleases(latest)
-            cmd = upgrade_command(
-                include_prereleases=True if update_needs_prereleases else None,
-                version=latest if update_needs_prereleases else None,
-            )
+            # the TUI). Skip for the cooldown window and point at `dcode
+            # update`: unlike a bare uv command, it also handles a Python
+            # migration that startup deferred.
+            from deepagents_code._invocation import invoked_name
+
             console.print(
                 f"[bold yellow]Warning:[/bold yellow] Skipping automatic update to "
-                f"v{latest} after a recent failed attempt. Update manually: "
-                f"[cyan]{cmd}[/cyan]\nContinuing with v{cli_version}.",
+                f"v{latest}; the last attempt did not complete. Run "
+                f"[cyan]{invoked_name()} update[/cyan] to retry.\n"
+                f"Continuing with v{cli_version}.",
                 highlight=False,
             )
             return

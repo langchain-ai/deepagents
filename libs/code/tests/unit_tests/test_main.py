@@ -562,7 +562,8 @@ class TestStartupAutoUpdate:
         upgrade.assert_not_called()
         restart.assert_not_called()
         printed = " ".join(str(c.args[0]) for c in console.print.call_args_list)
-        assert "recent failed attempt" in printed
+        assert "last attempt did not complete" in printed
+        assert " update" in printed
 
     def test_editable_install_skips_update(self) -> None:
         """Editable installs must short-circuit before any PyPI/install work."""

@@ -173,20 +173,58 @@ function init(github, owner, repo, config, core) {
     return matchFileLabels(files, buildRules(topicFileRulesDef, 'topicFileRules'));
   }
 
-  async function getTopicFileLabels(prNumber, files) {
+  async function getTopicFileLabels(prNumber, files, push = {}) {
     const labels = matchTopicFileLabels(files);
     if (!labels.size) return labels;
     const events = await github.paginate(github.rest.issues.listEvents, {
       owner, repo, issue_number: prNumber, per_page: 100,
     });
-    const removed = new Set();
+    const removed = new Map();
     for (const event of events) {
       const name = event.label?.name;
       if (event.actor?.type !== 'User' || !labels.has(name)) continue;
-      if (event.event === 'unlabeled') removed.add(name);
+      if (event.event === 'unlabeled') removed.set(name, event.created_at);
       else if (event.event === 'labeled') removed.delete(name);
     }
-    return new Set([...labels].filter(name => !removed.has(name)));
+    const reconsidered = await reconsiderTopicLabels(removed, push);
+    return new Set([...labels].filter(name => !removed.has(name) || reconsidered.has(name)));
+  }
+
+  async function reconsiderTopicLabels(removed, push) {
+    if (!removed.size || !push.before || !push.head) return new Set();
+    try {
+      const { data } = await github.rest.repos.compareCommitsWithBasehead({
+        owner, repo, basehead: `${push.before}...${push.head}`,
+      });
+      if (data.status !== 'ahead' || !data.files || data.files.length >= 300) return new Set();
+      const files = data.files.filter(file => file.patch &&
+        [...matchTopicFileLabels([file])].some(name => removed.has(name)));
+      const candidates = [...matchTopicFileLabels(files)].filter(name => removed.has(name));
+      if (!candidates.length) return new Set();
+      return await classifyRemovedTopics(candidates, removed, files, push);
+    } catch (error) {
+      core.warning(`Keeping removed topics off: ${error.message}`);
+      return new Set();
+    }
+  }
+
+  async function classifyRemovedTopics(candidates, removed, files, push) {
+    const labels = await github.paginate(github.rest.issues.listLabelsForRepo, {
+      owner, repo, per_page: 100,
+    });
+    const descriptions = Object.fromEntries(labels.filter(label => candidates.includes(label.name) &&
+      label.description?.trim()).map(label => [label.name, label.description]));
+    const input = JSON.stringify({
+      removedTopics: Object.fromEntries(removed),
+      latestPush: files.map(({ filename, patch }) => ({ filename, patch })),
+      title: (push.title ?? '').slice(0, 1000), body: (push.body ?? '').slice(0, 2000),
+    });
+    if (input.length > 20000 || !Object.keys(descriptions).length) return new Set();
+    const classify = push.classify ?? require('./topic-classifier.js').classifyTopicLabels;
+    const selected = await classify(input, Object.keys(descriptions), {
+      descriptions, reapplication: true, debug: core.debug, info: core.info,
+    });
+    return new Set([...selected].filter(name => Object.hasOwn(descriptions, name)));
   }
 
   // ── Branch-name-based labels ──────────────────────────────────────

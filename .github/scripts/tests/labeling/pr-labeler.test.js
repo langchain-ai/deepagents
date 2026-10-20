@@ -322,7 +322,7 @@ function workflowScript(filename, stepName) {
 }
 
 async function runLabeler(mode, api, {
-  action = 'edited', renamedTitle = '',
+  action = 'edited', renamedTitle = '', before,
   warning = message => { throw new Error(message); },
 } = {}) {
   if (mode === 'release helper') return api.h.labelPR(api.pr.number);
@@ -333,7 +333,7 @@ async function runLabeler(mode, api, {
   // The script is checked-in workflow code; PR titles remain data in context.
   await vm.runInNewContext(`(async () => { ${script}\n })()`, {
     github: api.github,
-    context: { repo: { owner: 'owner', repo: 'repo' }, payload: { pull_request: api.pr, action } },
+    context: { repo: { owner: 'owner', repo: 'repo' }, payload: { pull_request: api.pr, action, before } },
     require: spec => {
       if (spec.endsWith('/pr-labeler.js')) return { loadAndInit: () => ({ h: api.h }) };
       throw new Error(`Unexpected module: ${spec}`);
@@ -401,6 +401,73 @@ for (const action of ['synchronize', 'reopened']) {
     assert.ok(!api.assigned.has('topic:mcp'));
   });
 }
+
+function softRemovalApi(classify, comparison = {}) {
+  const file = { filename: 'libs/code/deepagents_code/mcp_tools.py', additions: 1, deletions: 1 };
+  const api = labelerApi('fix(code): update MCP support', ['topic:skills'], [file]);
+  api.pr.head.sha = 'new-head';
+  api.events.push({
+    event: 'unlabeled', actor: { type: 'User' }, label: { name: 'topic:mcp' },
+    created_at: '2026-10-20T12:00:00Z',
+  });
+  api.github.rest.repos = {
+    compareCommitsWithBasehead: async ({ basehead }) => {
+      assert.equal(basehead, 'old-head...new-head');
+      return { data: { status: 'ahead', files: [{ ...file, patch: '+new MCP behavior' }], ...comparison } };
+    },
+  };
+  api.github.rest.issues.listLabelsForRepo = async () => [
+    { name: 'topic:mcp', description: 'Model Context Protocol support and behavior.' },
+  ];
+  const getTopics = api.h.getTopicFileLabels;
+  api.h.getTopicFileLabels = (number, files, push) => getTopics(number, files, { ...push, classify });
+  return api;
+}
+
+for (const readd of [false, true]) {
+  test(`classifier can ${readd ? 'restore' : 'keep off'} a removed topic based on a later push`, async () => {
+    let called = false;
+    const api = softRemovalApi(async (text, allowed, options) => {
+      called = true;
+      const input = JSON.parse(text);
+      assert.equal(input.removedTopics['topic:mcp'], '2026-10-20T12:00:00Z');
+      assert.equal(input.latestPush[0].patch, '+new MCP behavior');
+      assert.equal(input.title, api.pr.title);
+      assert.deepEqual(allowed, ['topic:mcp']);
+      assert.equal(options.reapplication, true);
+      assert.ok(options.descriptions['topic:mcp']);
+      return new Set(readd ? ['topic:mcp', 'topic:models'] : []);
+    });
+    await runLabeler('live', api, { action: 'synchronize', before: 'old-head' });
+    assert.ok(called);
+    assert.equal(api.assigned.has('topic:mcp'), readd);
+    assert.ok(!api.assigned.has('topic:models'));
+    assert.ok(api.assigned.has('topic:skills'));
+    assert.ok(api.assigned.has('type:bug'));
+  });
+}
+
+for (const comparison of [
+  { status: 'diverged' }, { files: [] },
+  { files: [{ filename: 'libs/code/deepagents_code/mcp_tools.py' }] },
+  { files: Array.from({ length: 300 }, () => ({})) },
+  { files: [{ filename: 'libs/code/deepagents_code/mcp_tools.py', patch: 'x'.repeat(21000) }] },
+]) {
+  test(`incomplete or unrelated push evidence preserves removals (${JSON.stringify(comparison).slice(0, 80)})`, async () => {
+    const api = softRemovalApi(async () => assert.fail('must not classify incomplete evidence'), comparison);
+    await runLabeler('live', api, { action: 'synchronize', before: 'old-head' });
+    assert.ok(!api.assigned.has('topic:mcp'));
+    assert.ok(api.assigned.has('package:dcode'));
+  });
+}
+
+test('a classifier outage preserves removals without blocking other labels', async () => {
+  const api = softRemovalApi(async () => { throw new Error('Classifier unavailable'); });
+  await runLabeler('live', api, { action: 'synchronize', before: 'old-head' });
+  assert.ok(!api.assigned.has('topic:mcp'));
+  assert.ok(api.assigned.has('type:bug'));
+  assert.ok(api.assigned.has('package:dcode'));
+});
 
 test('bot and unattributed removals do not suppress automatic topics', async () => {
   const api = labelerApi('fix(code): correct behavior', [], [

@@ -13,10 +13,14 @@ from langchain.agents.middleware.types import (
     TracePolicy,
     omit_payload,
 )
+from langchain.tools import ToolRuntime
+from langchain_core.tools import StructuredTool
 from langgraph.config import get_config
 from langgraph.errors import GraphInterrupt
 from langgraph.runtime import Runtime
+from pydantic import BaseModel, Field
 
+from deepagents.middleware._utils import append_to_system_message
 from deepagents.middleware.async_subagents import (
     _current_run_id,
     _failure_text,
@@ -27,8 +31,12 @@ from deepagents.middleware.async_subagents import (
 )
 
 
+class _MessageParentSchema(BaseModel):
+    message: str = Field(description="A question, blocker, or progress update for the agent that launched this task.")
+
+
 class _ParentNotifierMiddleware(AgentMiddleware[AgentState, ContextT, ResponseT]):
-    """Wake the agent that started this run with `start_async_task`, when the run ends.
+    """Message the agent that started this run with `start_async_task`, including when it ends.
 
     `create_deep_agent` attaches it to every deep agent. It does nothing unless the
     run carries the parent reference, and skips nested runs.
@@ -40,6 +48,40 @@ class _ParentNotifierMiddleware(AgentMiddleware[AgentState, ContextT, ResponseT]
     def __init__(self) -> None:
         super().__init__()
         self._reported: dict[str, None] = {}
+        self.tools = [
+            StructuredTool.from_function(
+                name="message_parent",
+                coroutine=self._amessage_parent,
+                description=(
+                    "Send a question, blocker, or progress update to the agent that launched this async task. "
+                    "This does not finish or pause your task. A busy parent receives it after its current run."
+                ),
+                args_schema=_MessageParentSchema,
+            )
+        ]
+
+    async def _amessage_parent(self, message: str, runtime: ToolRuntime) -> str:
+        """Send an update without marking this run finished."""
+        config = runtime.config
+        if not _launching_agent(config) or not _is_top_level_graph(config):
+            return "No launching agent is available for this graph."
+        metadata = config.get("metadata") or {}
+        name = str(metadata.get("subagent_name") or metadata.get("graph_id") or "subagent")
+        delivered = await _notify_parent(config, _task_event(config, name, "message", message=message), runtime.context)
+        if not delivered:
+            return "Message not delivered: the parent is unavailable or waiting for human input."
+        return "Message queued for your parent. Continue working; this task is still running."
+
+    def _model_request(self, request: ModelRequest[ContextT]) -> ModelRequest[ContextT]:
+        """Expose parent messaging only to a launched, top-level graph."""
+        config = get_config()
+        if not _launching_agent(config) or not _is_top_level_graph(config):
+            return request.override(tools=[tool for tool in request.tools if tool is not self.tools[0]])
+        prompt = (
+            "You are running as an async subagent. Use `message_parent` to ask your launching agent a question "
+            "or flag a blocker while you continue working. Sending a message does not finish or pause your task."
+        )
+        return request.override(system_message=append_to_system_message(request.system_message, prompt))
 
     def after_agent(self, state: AgentState, runtime: Runtime[ContextT]) -> dict[str, Any] | None:  # noqa: ARG002  # signature set by AgentMiddleware
         """Pass through: reporting needs the async path, which the Agent Server uses."""
@@ -55,8 +97,8 @@ class _ParentNotifierMiddleware(AgentMiddleware[AgentState, ContextT, ResponseT]
         request: ModelRequest[ContextT],
         handler: Callable[[ModelRequest[ContextT]], ModelResponse[ResponseT]],
     ) -> ModelResponse[ResponseT]:
-        """Pass through: reporting needs the async path, which the Agent Server uses."""
-        return handler(request)
+        """Expose parent messaging only in a launched, top-level graph."""
+        return handler(self._model_request(request))
 
     async def awrap_model_call(
         self,
@@ -65,7 +107,7 @@ class _ParentNotifierMiddleware(AgentMiddleware[AgentState, ContextT, ResponseT]
     ) -> ModelResponse[ResponseT]:
         """Report a model call that fails the run."""
         try:
-            return await handler(request)
+            return await handler(self._model_request(request))
         except GraphInterrupt:
             raise
         except Exception as e:

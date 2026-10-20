@@ -256,7 +256,8 @@ Available async agent types:
 3. Use `update_async_task` to send new instructions to a running task.
 4. Multiple async subagents can run concurrently — launch several and let them run in the background.
 5. The subagent runs on a remote server, so it has its own tools and capabilities.
-6. A task with status `waiting` is waiting for a human (an approval or an answer). The user answers it directly; you can't answer or approve it for them. Keep working, and tell the user it's waiting if they ask."""  # noqa: E501
+6. A task with status `waiting` is waiting for a human (an approval or an answer). The user answers it directly; you can't answer or approve it for them. Keep working, and tell the user it's waiting if they ask.
+7. A `message` notification is a question or update from a still-running task, not a completion or human approval request. Respond with `update_async_task` when needed."""  # noqa: E501
 
 
 def _resolve_headers(spec: AsyncSubAgent) -> dict[str, str]:
@@ -412,7 +413,7 @@ _MAX_RESULT_CHARS = NUM_CHARS_PER_TOKEN * 20_000
 
 
 class TaskEvent(TypedDict):
-    """How an async subagent's task ended or paused, as reported to the agent that started it.
+    """An async subagent's outcome or mid-task message, reported to the agent that started it.
 
     A notification message carries it in `additional_kwargs["deepagents_notification"]`,
     so apps can tell these messages from the user's.
@@ -428,15 +429,18 @@ class TaskEvent(TypedDict):
     agent_name: str
     """The async subagent's name, as in the task's `AsyncTask.agent_name`."""
 
-    status: Literal["success", "error", "timeout", "cancelled", "waiting"]
-    """`waiting` means the subagent paused for input or approval; `cancelled`, that its run was cancelled on the server."""
+    status: Literal["success", "error", "timeout", "cancelled", "waiting", "message"]
+    """`waiting` means paused for human input; `cancelled`, cancelled on the server; `message`, a mid-task update."""
 
     run_id: NotRequired[str]
-    """The subagent run that ended."""
+    """The subagent run that produced the event."""
 
 
 class _TaskUpdate(TaskEvent, total=False):
     """A task event plus what the parent's model reads about it."""
+
+    message: str
+    """A question or update from a still-running subagent."""
 
     result: list[ContentBlock]
     """The subagent's final answer, as standard content blocks (text, images, ...), when it succeeded."""
@@ -460,6 +464,7 @@ def _notification_content(update: _TaskUpdate) -> list[dict[str, Any]]:
     The result keeps its own content blocks, so an image reaches the model as an image.
     """
     next_step = {
+        "message": "The task is still running. This is a question or update, not a completion. Answer with `update_async_task` if needed.",
         "success": "Use the result to continue; report back to the user if they're waiting on it.",
         "error": "Use `check_async_task` for details, then decide whether to retry, try another approach, or tell the user.",
         "timeout": "The task ran too long and was stopped. Decide whether to retry with a smaller task, or tell the user.",
@@ -475,6 +480,8 @@ def _notification_content(update: _TaskUpdate) -> list[dict[str, Any]]:
             f"<status>{update['status']}</status>\n"
         )
     ]
+    if "message" in update:
+        blocks.append(_text_block(f"<message>{_escape(_clip(update['message']))}</message>\n"))
     if "result" in update:
         blocks += [_text_block("<result>\n"), *_result_blocks(update["result"]), _text_block("\n</result>\n")]
     if details := {key: update[key] for key in ("error", "interrupts") if key in update}:
@@ -534,8 +541,8 @@ def _event(task_id: str, agent_name: str, status: str, run_id: str | None, **det
     return cast("_TaskUpdate", event)
 
 
-def _task_event(config: RunnableConfig, agent_name: str, status: Literal["success", "error", "waiting"], **details: object) -> _TaskUpdate:
-    """Describe how this run's task ended."""
+def _task_event(config: RunnableConfig, agent_name: str, status: Literal["success", "error", "waiting", "message"], **details: object) -> _TaskUpdate:
+    """Describe an outcome or message from this run's task."""
     return _event(str((config.get("configurable") or {}).get("thread_id", "")), agent_name, status, _current_run_id(config), **details)
 
 
@@ -555,39 +562,35 @@ _DELIVERABLE_THREAD_STATUSES = frozenset({"idle", "error"})
 """Parent thread statuses a notification run can start on: neither running nor waiting for a human."""
 
 
-async def _awake_parent(parent_thread_id: str, assistant_id: str, event: _TaskUpdate, context: dict[str, Any] | None = None) -> None:
-    """Start a notification run on the parent's thread only while it's idle (or its last run failed).
-
-    A new run on a thread waiting for a human would cancel that approval; `reject` covers a thread that just became busy.
-    A busy parent picks the update up itself, before its next model call or after its final answer. Never raises.
-    """
+async def _awake_parent(parent_thread_id: str, assistant_id: str, event: _TaskUpdate, context: dict[str, Any] | None = None) -> bool:
+    """Deliver outcomes to idle parents; enqueue messages that polling cannot discover."""
     client = get_client()
     try:
-        if (await client.threads.get(thread_id=parent_thread_id)).get("status") not in _DELIVERABLE_THREAD_STATUSES:
-            return
+        status = (await client.threads.get(thread_id=parent_thread_id)).get("status")
+        allowed = _DELIVERABLE_THREAD_STATUSES | {"busy"} if event["status"] == "message" else _DELIVERABLE_THREAD_STATUSES
+        if status not in allowed:
+            return False
         await client.runs.create(
             thread_id=parent_thread_id,
             assistant_id=assistant_id,
             input={"messages": [_notification_message(event)]},
-            multitask_strategy="reject",
+            multitask_strategy="enqueue" if event["status"] == "message" else "reject",
             **({"context": context} if context is not None else {}),
         )
     except Exception as e:  # noqa: BLE001  # LangGraph SDK raises untyped errors
-        status = getattr(getattr(e, "response", None), "status_code", None)
-        log = logger.debug if status in {404, 409} else logger.warning  # 404: parent gone; 409: became busy
+        status_code = getattr(getattr(e, "response", None), "status_code", None)
+        log = logger.debug if status_code in {404, 409} else logger.warning
         log("Didn't deliver the notification for task %s", event["task_id"], exc_info=True)
+        return False
+    return True
 
 
-async def _notify_parent(config: RunnableConfig, event: _TaskUpdate, context: object = None) -> None:
-    """Wake the parent if it's idle; otherwise it finds out on its own.
-
-    A busy parent sees the status update before its next model call or after its
-    final answer, a paused one after the user answers its approval. The parent's
-    run gets this run's context back. Never raises.
-    """
+async def _notify_parent(config: RunnableConfig, event: _TaskUpdate, context: object = None) -> bool:
+    """Notify the launching agent, returning whether a notification run was accepted."""
     parent = _launching_agent(config) or {}
     if "thread_id" in parent and "assistant_id" in parent:
-        await _awake_parent(parent["thread_id"], parent["assistant_id"], event, _forwarded_context(context))
+        return await _awake_parent(parent["thread_id"], parent["assistant_id"], event, _forwarded_context(context))
+    return False
 
 
 class _ClientCache:
@@ -1417,6 +1420,11 @@ class AsyncSubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         which the Agent Server uses); with `invoke`, only the tools work. This
         may change.
 
+        A deep agent subagent on this deployment can use `message_parent` to send
+        questions or updates without ending its task. Messages enqueue a new parent
+        run, so a busy parent receives them after its current run, not at its next
+        model call. Delivery does not replace a pending human approval.
+
     Args:
         async_subagents: List of async subagent specifications.
 
@@ -1562,7 +1570,7 @@ class AsyncSubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         messages = state.get("messages") or []
         event = _notification_event(messages[-1]) if messages else None
         task = (state.get("async_tasks") or {}).get(event["task_id"]) if event else None
-        if event is None or task is None:
+        if event is None or task is None or event["status"] == "message":
             return None
         run_id = event.get("run_id", task["run_id"])
         # Answering a pause starts a new run; an update cancels the old run before it can report.

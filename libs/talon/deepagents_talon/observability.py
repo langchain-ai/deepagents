@@ -338,7 +338,7 @@ def _parse_json_value(value: object) -> object:
         return value
     try:
         return json.loads(value)
-    except (json.JSONDecodeError, TypeError):
+    except json.JSONDecodeError, TypeError:
         return value
 
 

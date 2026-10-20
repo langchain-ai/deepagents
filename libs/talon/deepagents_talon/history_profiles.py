@@ -227,7 +227,7 @@ def _address(hostname: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | N
         pass
     try:
         return ipaddress.ip_address(socket.inet_aton(hostname))
-    except (OSError, ValueError):
+    except OSError, ValueError:
         return None
 
 

@@ -1001,7 +1001,7 @@ class SlackChannel:
                     if (self.config.include_other_thread_participants or sender in senders)
                     and not _contains_oauth_callback(text)
                 )
-            except (SlackApiError, OSError, TimeoutError, ValueError):
+            except SlackApiError, OSError, TimeoutError, ValueError:
                 logger.warning("Could not read Slack thread context", exc_info=True)
                 context = "[Slack thread history unavailable; ask for context before acting.]"
             if context:
@@ -1032,7 +1032,7 @@ class SlackChannel:
                 return
             try:
                 dm_id = await self._gateway.open_dm(inbound.sender_id)
-            except (SlackApiError, OSError, TimeoutError, ValueError):
+            except SlackApiError, OSError, TimeoutError, ValueError:
                 logger.warning("Could not open Slack DM for sender pairing", exc_info=True)
                 return
             message = ChannelMessage(

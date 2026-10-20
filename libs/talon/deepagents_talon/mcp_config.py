@@ -224,7 +224,7 @@ class MCPConfigStore:
                 "revision": self._revision(raw),
                 "mcpServers": {name: _redact_server(server) for name, server in servers.items()},
             }
-        except (OSError, ValueError, TypeError, RecursionError):
+        except OSError, ValueError, TypeError, RecursionError:
             return {"status": "error", "message": "Cannot read MCP configuration."}
 
     def _update(self, name: str, server: dict[str, object] | None, revision: str) -> dict[str, str]:
@@ -241,7 +241,7 @@ class MCPConfigStore:
             return {"status": "conflict", "message": "Configuration is busy; try again."}
         except (_UnsafeUpdateError, MCPOAuthConfigError) as exc:
             return {"status": "error", "message": str(exc)}
-        except (OSError, ValueError, TypeError, RecursionError):
+        except OSError, ValueError, TypeError, RecursionError:
             return {
                 "status": "error",
                 "message": "Cannot update MCP configuration; check settings.",

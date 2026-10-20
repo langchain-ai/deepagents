@@ -4,8 +4,8 @@ import hashlib
 import json
 import os
 from concurrent.futures import ThreadPoolExecutor
-from pathlib import Path
 from threading import Barrier
+from typing import TYPE_CHECKING
 from unittest.mock import patch
 
 import pytest
@@ -16,6 +16,9 @@ from deepagents_talon.tool_approvals import (
     ApprovalSnapshot,
     ToolApprovalStore,
 )
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 @pytest.mark.parametrize(

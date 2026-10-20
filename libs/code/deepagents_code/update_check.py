@@ -343,6 +343,32 @@ def _latest_from_releases(
     return best_str
 
 
+def _distribution_dist_infos() -> list[Path] | None:
+    """List the running environment's `deepagents_code-*.dist-info` directories.
+
+    Returns:
+        The matching directories, or `None` when site-packages is unreadable.
+    """
+    # `sysconfig`'s purelib resolves the per-platform layout (`lib/pythonX.Y/
+    # site-packages` on POSIX, `Lib\site-packages` on Windows), so the
+    # readback works for uv tool environments on every supported OS.
+    site_packages = Path(sysconfig.get_path("purelib"))
+    try:
+        return [
+            entry
+            for entry in site_packages.iterdir()
+            if entry.name.startswith("deepagents_code-")
+            and entry.name.endswith(".dist-info")
+        ]
+    except OSError:
+        logger.debug(
+            "Could not list site-packages at %s to read the installed version",
+            site_packages,
+            exc_info=True,
+        )
+        return None
+
+
 def read_installed_distribution_version() -> str | None:
     """Read the currently installed `deepagents-code` distribution version.
 
@@ -357,32 +383,17 @@ def read_installed_distribution_version() -> str | None:
             (missing/ambiguous dist-info, unreadable directory, or a version
             this process's `packaging` rejects).
     """
-    # `sysconfig`'s purelib resolves the per-platform layout (`lib/pythonX.Y/
-    # site-packages` on POSIX, `Lib\site-packages` on Windows), so the
-    # readback works for uv tool environments on every supported OS.
-    site_packages = Path(sysconfig.get_path("purelib"))
-    try:
-        candidates = [
-            entry
-            for entry in site_packages.iterdir()
-            if entry.name.startswith("deepagents_code-")
-            and entry.name.endswith(".dist-info")
-        ]
-    except OSError:
-        logger.debug(
-            "Could not list site-packages at %s to read the installed version",
-            site_packages,
-            exc_info=True,
-        )
+    candidates = _distribution_dist_infos()
+    if candidates is None:
         return None
     if len(candidates) != 1:
         # Zero matches means the distribution is missing from this environment;
         # more than one means leftover dist-infos make the installed version
-        # ambiguous. Neither is actionable from the caller — a successful
-        # upgrade just gets a less precise report — so debug is loud enough.
+        # ambiguous. `perform_upgrade` decides how each affects an upgrade,
+        # so debug is loud enough here.
         logger.debug(
             "Expected exactly one deepagents_code dist-info under %s, found %d",
-            site_packages,
+            sysconfig.get_path("purelib"),
             len(candidates),
         )
         return None
@@ -2919,10 +2930,16 @@ async def perform_upgrade(
             else read_installed_distribution_version
         )
         installed_version = await asyncio.to_thread(reader)
-        if installed_version is None and python is None:
+        dist_infos = (
+            await asyncio.to_thread(_distribution_dist_infos)
+            if installed_version is None and python is None
+            else None
+        )
+        if dist_infos is not None and len(dist_infos) > 1:
             # In-place readback is ambiguous when stale dist-info directories
             # remain. uv exited 0 with an exact `==target` pin, so trust the pin
-            # rather than report a landed install as a failure.
+            # rather than report a landed install as a failure. A missing
+            # dist-info or unreadable site-packages is never trusted.
             logger.warning(
                 "Could not read back the installed version; trusting the "
                 "exact uv pin v%s",

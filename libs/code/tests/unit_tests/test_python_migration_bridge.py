@@ -308,17 +308,41 @@ async def test_installer_success_requires_exact_verified_version(
         "_read_migrated_distribution_version",
         lambda: installed if migrating else "2.0.0",
     )
+    monkeypatch.setattr(update_check, "_distribution_dist_infos", list)
     success, output, version = await update_check.perform_upgrade(
         target_version="2.0.0", include_prereleases=False
     )
     uv_install.assert_awaited_once()
-    if installed is None and not migrating:
-        # An ambiguous in-place readback trusts the exact uv pin.
-        assert (success, version) == (True, "2.0.0")
-        return
     assert not success
     assert version is None
     assert output
+
+
+@pytest.mark.parametrize(
+    ("dist_infos", "trusted"), [(None, False), (0, False), (2, True)]
+)
+async def test_in_place_readback_trusts_pin_only_when_ambiguous(
+    uv_install: AsyncMock,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    dist_infos: int | None,
+    trusted: bool,
+) -> None:
+    """Stale dist-infos trust the uv pin; a missing distribution does not."""
+    monkeypatch.setattr(update_check, "_upgrade_python", lambda _version: None)
+    monkeypatch.setattr(
+        update_check, "read_installed_distribution_version", lambda: None
+    )
+    monkeypatch.setattr(
+        update_check,
+        "_distribution_dist_infos",
+        lambda: None if dist_infos is None else [tmp_path] * dist_infos,
+    )
+    success, _, version = await update_check.perform_upgrade(
+        target_version="2.0.0", include_prereleases=False
+    )
+    uv_install.assert_awaited_once()
+    assert (success, version) == ((True, "2.0.0") if trusted else (False, None))
 
 
 @pytest.mark.parametrize(

@@ -1305,12 +1305,15 @@ class TestUpdateSubcommand:
             assert notice in capsys.readouterr().out
             return True, "", "99.0.0"
 
-        code, _, _ = self._run_update(
+        code, _, perform_upgrade_mock = self._run_update(
             editable=False,
             is_update_available_return=(True, "99.0.0"),
             upgrade_side_effect=upgrade,
         )
         assert code == 0
+        # Every deferral points users here, so this path must be able to migrate.
+        kwargs = perform_upgrade_mock.call_args.kwargs
+        assert kwargs.get("allow_python_migration", True) is True
 
     def test_stable_update_with_prerelease_deps_keeps_upgrade_intent_none(
         self,

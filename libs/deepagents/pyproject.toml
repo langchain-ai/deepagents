@@ -161,9 +161,6 @@ markers = [
     "video_extra: pin the read_file video gate on to snapshot the [video]-extra variant",
 ]
 
-[tool.ty.environment]
-python-version = "3.11"
-
 [tool.ty.rules]
 # Most rules are enabled by default. Enable rules that are disabled by default:
 division-by-zero = "error"

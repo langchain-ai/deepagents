@@ -190,12 +190,11 @@ _UPGRADE_COMMANDS: dict[InstallMethod, str] = {
     # original install (or by any prior `dependency_refresh_command` that
     # wrote `deepagents-code==<old_version>` into the receipt). When that
     # requirement is pinned, `uv tool upgrade` "succeeds" but re-installs the
-    # same pinned version, silently leaving the user behind latest. A bare
-    # `uv tool install -U deepagents-code` rewrites the receipt's requirement
-    # to an unpinned `deepagents-code` and re-resolves to the latest stable
-    # release, which is what users running `/update` actually want.
-    # `dependency_refresh_command` builds the inverse command for the
-    # explicit "stay on this version, refresh deps" flow.
+    # same pinned version, silently leaving the user behind latest. This bare
+    # form is the *displayed* manual hint; `perform_upgrade` runs the
+    # receipt-preserving `upgrade_install_command` instead, pinned to the
+    # inspected release. `dependency_refresh_command` builds the inverse
+    # command for the explicit "stay on this version, refresh deps" flow.
     "uv": FALLBACK_UPGRADE_COMMAND,
     "brew": "brew upgrade deepagents-code",
 }
@@ -237,6 +236,11 @@ INSTALL_SCRIPT_COMMAND = "curl -LsSf https://langch.in/dcode | bash"
 _PYTHON_MIGRATION_INSTALL_COMMAND = (
     "curl -LsSf https://langch.in/dcode | DEEPAGENTS_CODE_PYTHON=3.14 bash"
 )
+"""Recovery installer for Python 3.14 migrations.
+
+The plain installer defaults to an older Python, so it cannot install a
+release that requires 3.14.
+"""
 
 UPDATE_LOG_DIR: Path = default_cache_dir() / "deepagents-code" / "update_logs"
 """Directory for persisted update command logs.
@@ -2554,10 +2558,14 @@ def _allows_python_314(requirement: SpecifierSet) -> bool:
 
 
 def _upgrade_python(version: str) -> str | None:
-    """Select only the supported 3.14 migration when the target requires it.
+    """Choose the interpreter for the target release.
+
+    Returns `'3.14'` when the target excludes the running Python but admits a
+    3.14 patch release. A running Python newer than 3.14 is never moved down.
 
     Returns:
-        The migration interpreter, or None to preserve the receipt.
+        The migration interpreter, or None to preserve the receipt (also when
+            the target's metadata is unavailable).
 
     Raises:
         ValueError: If the target's Python requirement cannot be met by 3.14.
@@ -2593,6 +2601,10 @@ def _upgrade_python(version: str) -> str | None:
 
 def _read_migrated_distribution_version() -> str | None:
     """Verify the rebuilt environment using its new interpreter.
+
+    Assumes uv rebuilt the tool environment at the same `sys.prefix`. The
+    child also checks that it runs on Python 3.14, so a wrong interpreter
+    fails verification instead of reporting a stale version.
 
     Returns:
         The installed version, or None when verification fails.
@@ -2656,8 +2668,13 @@ async def perform_upgrade(
             `None`, follows the installed version's channel and the target
             release's dependency metadata. Pre-release upgrades require the uv
             install method; returns failure otherwise.
-        target_version: Exact release to inspect and install for uv upgrades.
-        on_notice: Optional callback explaining an interpreter migration before install.
+        target_version: Exact release to install. For uv, defaults to the
+            latest release on the resolved channel, and its `Requires-Python`
+            decides whether to migrate the interpreter. Also used to detect
+            pinned pre-release dependencies.
+        on_notice: Receives user-facing messages about a Python migration: one
+            before install, and recovery guidance for every migration failure.
+            When it is set, that guidance is not repeated in *output*.
         on_interpreter_change: Called after a successful migration command, even
             if version verification fails. Interactive callers must end the old
             session because its import paths may no longer exist.
@@ -2665,11 +2682,11 @@ async def perform_upgrade(
 
     Returns:
         `(success, output, installed_version)` — *output* is the combined
-        stdout/stderr. *installed_version* is the version the successful
-        install actually resolved to, read back from the tool environment on
-        disk, or `None` when the upgrade failed or the installed version
-        could not be determined. A successful uv installer exit is a failure
-        unless the installed version matches the exact inspected target.
+        stdout/stderr, preceded by a failure explanation where one applies.
+        For uv, *installed_version* is read back from the tool environment on
+        disk, and a successful installer exit is a failure unless it matches
+        the exact target. For other methods it is *target_version*. It is
+        `None` when the upgrade failed.
 
     Raises:
         OSError: Propagated from building the upgrade command or running the
@@ -2760,6 +2777,8 @@ async def perform_upgrade(
             if method == "uv":
                 from deepagents_code.extras_info import ExtrasIntrospectionError
 
+                # Refuse rather than fall back to a bare command: it would drop
+                # extras and, during a migration, the interpreter choice too.
                 try:
                     cmd = upgrade_install_command(
                         include_prereleases=resolved_include_prereleases,
@@ -3429,7 +3448,8 @@ def _uv_tool_install_command(
             not duplicated; genuinely new names are appended after the preserved
             ones. Callers must validate these names before passing them — the
             builder only `shlex.quote`-s them.
-        python: Validated migration interpreter; otherwise preserve the receipt.
+        python: Interpreter to pass as `--python` (e.g. `'3.14'`), overriding
+            the receipt. When `None`, the receipt's interpreter is reused.
         reinstall: When `True`, add `--reinstall` so uv rebuilds the tool
             environment from scratch instead of patching it in place. An
             in-place `-U` upgrade can leave stale files behind (e.g. an old
@@ -3519,10 +3539,9 @@ def _append_uv_prerelease_flags(
 ) -> str:
     """Append targeted `--constraints`/`--prerelease` flags to a uv command.
 
-    Shared by the receipt-aware builder and `perform_upgrade`'s bare-command
-    fallback so both emit the scoped pre-release form identically: a constraints
-    file pinning the exact pre-release dependency plus a non-`allow` strategy
-    (e.g. `if-necessary-or-explicit`). The constraints path is `shlex.quote`-d;
+    Emits the scoped pre-release form: a constraints file pinning the exact
+    pre-release dependency plus a non-`allow` strategy (e.g.
+    `if-necessary-or-explicit`). The constraints path is `shlex.quote`-d;
     the strategy is a fixed internal literal.
 
     Returns:
@@ -3597,29 +3616,25 @@ def upgrade_install_command(
     constraints_path: Path | None = None,
     prerelease_strategy: UvPrereleaseStrategy | None = None,
 ) -> str:
-    """Return the uv command that upgrades dcode while clearing stale pins.
+    """Return the receipt-preserving uv command that upgrades dcode.
 
-    Built specifically to avoid the `uv tool upgrade` receipt-pin trap: when
-    the tool was originally installed via `uv tool install deepagents-code==X.Y.Z`
-    — or when a prior `dependency_refresh_command` rewrote the receipt with a
-    version-pinned requirement — `uv tool upgrade deepagents-code` will only
-    re-resolve *within* that pin and silently keep the user on the same
-    version. Re-running `uv tool install -U deepagents-code[<extras>]` (no
-    version pin) rewrites the receipt's requirement to unpinned so the next
-    upgrade can actually move forward. Callers can still pass `version` when
-    the resolver must allow pre-release dependencies for a stable app target;
-    that prevents the root `deepagents-code` package from floating to a newer
-    app pre-release. Installed extras and `--with` packages are preserved to
-    mirror `dependency_refresh_command`.
+    Uses `uv tool install -U` rather than `uv tool upgrade`, which only
+    re-resolves *within* a version pin already in the receipt and so can
+    silently keep the user on the same version. `perform_upgrade` passes the
+    exact release it inspected as `version`, so the install matches the
+    release it verifies afterward and the receipt records that pin. Installed
+    extras and `--with` packages are preserved to mirror
+    `dependency_refresh_command`.
 
     Args:
         include_prereleases: Whether to include alpha/beta/rc releases. When
             `None`, follows the installed version's channel.
         distribution_name: Name of the installed distribution to inspect for
             already-installed extras.
-        version: Optional exact target version, aligning release metadata checks
-            and pre-release dependency constraints with the installed package.
-        python: Validated migration interpreter; otherwise preserve the receipt.
+        version: Optional exact `deepagents-code` version to pin in the
+            requirement.
+        python: Interpreter to pass as `--python` (e.g. `'3.14'`), overriding
+            the receipt. When `None`, the receipt's interpreter is reused.
         constraints_path: Optional uv constraints file pinning the exact
             pre-release dependency, forwarded as `--constraints <path>`.
         prerelease_strategy: Optional uv `--prerelease` strategy (e.g.
@@ -3632,9 +3647,8 @@ def upgrade_install_command(
     Propagates `ExtrasIntrospectionError` if a receipt-sourced extra name fails
     PEP 508 validation. Also propagates `ToolRequirementIntrospectionError` if the
     uv tool receipt's selected extras, `--with` packages, or interpreter cannot be
-    determined safely from the tool receipt. Callers choose whether to treat
-    those errors as failures or fall back to a simpler unpinned upgrade command
-    with a user-facing warning.
+    determined safely from the tool receipt. `perform_upgrade` refuses on
+    these errors rather than run a bare command that would drop extras.
     """
     return _uv_tool_install_command(
         version=version,

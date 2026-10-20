@@ -7761,10 +7761,8 @@ class DeepAgentsApp(App):
         success, output, installed = result
         if success:
             self._update_available = (False, None)
-            # The install command is unpinned, so the installer may have
-            # resolved a release newer than the one the update check observed
-            # (a release published while the session sat open). Report what
-            # actually landed on disk rather than the stale check result.
+            # Prefer the version `perform_upgrade` verified on disk over the
+            # update check's result.
             upgraded_to = installed or latest
             # uv may have installed the upgraded shim into a directory that
             # isn't first on the user's PATH (e.g. a leftover pre-uv
@@ -27377,11 +27375,8 @@ class DeepAgentsApp(App):
                                 markup=False,
                             )
                             return
-                        # The install command is unpinned, so the installer
-                        # may have resolved a release newer than the one this
-                        # notification advertised (a release published while
-                        # the notice sat open). Report what actually landed on
-                        # disk rather than the stale payload version.
+                        # Prefer the version `perform_upgrade` verified on
+                        # disk over the notification payload.
                         upgraded_to = installed or payload.latest
                         # After `mark_success`: the modal stays un-dismissable
                         # until it is marked done, and this worker runs with

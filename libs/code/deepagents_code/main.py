@@ -232,7 +232,8 @@ def _restart_current_process(*, restart_path: Path | None = None) -> NoReturn:
 
     Args:
         restart_path: The upgraded console-script shim to execute. When omitted,
-            re-executes the current interpreter's `deepagents_code` module.
+            re-executes the `deepagents_code` module with the environment's
+            interpreter.
 
     Raises:
         RuntimeError: If process replacement unexpectedly returns.
@@ -242,6 +243,9 @@ def _restart_current_process(*, restart_path: Path | None = None) -> NoReturn:
 
     if restart_path is None:
         executable = sys.executable
+        # After a Python migration uv rebuilds the venv, so a versioned
+        # `sys.executable` (e.g. `python3.13`) may no longer exist. The venv's
+        # unversioned `python` link points at the new interpreter.
         if sys.prefix != sys.base_prefix:
             bindir = "Scripts" if sys.platform == "win32" else "bin"
             python = "python.exe" if sys.platform == "win32" else "python"
@@ -257,7 +261,7 @@ def _restart_current_process(*, restart_path: Path | None = None) -> NoReturn:
     # and post-update resume hints would fall back to `dcode`. Hand it to the
     # next generation explicitly.
     os.environ[INVOKED_AS] = invoked_name()
-    # Re-exec the trusted current interpreter or uv-managed shim with the
+    # Re-exec the trusted environment interpreter or uv-managed shim with the
     # user's own argv verbatim; the only "input" is the command the user
     # already ran, so S606's concern (untrusted/unsanitized args to a spawned
     # executable) does not apply.

@@ -18614,7 +18614,9 @@ class DeepAgentsApp(App):
         _, conversation = await self._get_context_usage_counts()
         return conversation
 
-    async def _handle_server_offload(self, config: RunnableConfig) -> None:
+    async def _handle_server_offload(
+        self, config: RunnableConfig, *, automatic: bool = False
+    ) -> None:
         """Request and render the built-in server-owned offload operation."""
         from deepagents_code.hooks.client_lifecycle import ClientHookStopError
 
@@ -18641,6 +18643,8 @@ class DeepAgentsApp(App):
             await self._sync_session_cost_from_checkpoint()
 
             status = result.get("status")
+            if automatic and status in {"empty", "noop"}:
+                return
             if status == "empty":
                 await self._mount_message(
                     AppMessage("Nothing to offload — start a conversation first")
@@ -18829,7 +18833,7 @@ class DeepAgentsApp(App):
                     "Compacting idle context before cache expiry.",
                     markup=False,
                 )
-            await self._handle_offload(reserved=True)
+            await self._handle_offload(reserved=True, automatic=idle_window is not None)
         finally:
             self._offload_task_started = False
             self._offload_worker = None
@@ -18837,16 +18841,19 @@ class DeepAgentsApp(App):
             if not self._startup_sequence_running:
                 await self._process_next_from_queue()
 
-    async def _handle_offload(self, *, reserved: bool = False) -> None:
+    async def _handle_offload(
+        self, *, reserved: bool = False, automatic: bool = False
+    ) -> None:
         """Run `/offload`, always releasing its busy-state reservation.
 
         Args:
             reserved: Whether the caller already reserved the turn synchronously.
+            automatic: Suppress no-op feedback for idle cache maintenance.
         """
         if not reserved:
             self._set_agent_running(True)
         try:
-            await self._offload_impl()
+            await self._offload_impl(automatic=automatic)
         finally:
             self._set_agent_running(False)
             try:
@@ -18854,7 +18861,7 @@ class DeepAgentsApp(App):
             except Exception:  # best-effort spinner cleanup
                 logger.exception("Failed to dismiss spinner after offload")
 
-    async def _offload_impl(self) -> None:
+    async def _offload_impl(self, *, automatic: bool = False) -> None:
         """Offload older messages through the dcode server operation."""
         if not self._agent or not self._lc_thread_id:
             await self._mount_message(
@@ -18870,7 +18877,7 @@ class DeepAgentsApp(App):
             return
 
         config: RunnableConfig = {"configurable": {"thread_id": self._lc_thread_id}}
-        await self._handle_server_offload(config)
+        await self._handle_server_offload(config, automatic=automatic)
 
     def _start_plugin_auto_update(self) -> None:
         """Start the plugin auto-update worker."""

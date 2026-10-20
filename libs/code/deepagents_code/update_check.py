@@ -2595,6 +2595,7 @@ async def perform_upgrade(
     include_prereleases: bool | None = None,
     target_version: str | None = None,
     on_notice: UpgradeProgressCallback | None = None,
+    on_interpreter_change: Callable[[], None] | None = None,
 ) -> tuple[bool, str, str | None]:
     """Attempt to upgrade `deepagents-code` using the detected install method.
 
@@ -2610,6 +2611,9 @@ async def perform_upgrade(
             install method; returns failure otherwise.
         target_version: Exact release to inspect and install for uv upgrades.
         on_notice: Optional callback explaining an interpreter migration before install.
+        on_interpreter_change: Called after a successful migration command, even
+            if version verification fails. Interactive callers must end the old
+            session because its import paths may no longer exist.
 
     Returns:
         `(success, output, installed_version)` — *output* is the combined
@@ -2736,6 +2740,8 @@ async def perform_upgrade(
             success, output = await _run_install_subprocess(
                 cmd, progress=progress, log_path=log_path
             )
+            if success and python is not None and on_interpreter_change is not None:
+                on_interpreter_change()
     except OSError as exc:
         if constraints_staged:
             # The constraints file was written successfully, so this OSError

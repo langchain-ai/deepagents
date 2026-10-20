@@ -1141,6 +1141,7 @@ if TYPE_CHECKING:
     )
     from deepagents_code.tui.widgets.restart_prompt import RestartChoice
     from deepagents_code.tui.widgets.update_progress import UpdateProgressScreen
+    from deepagents_code.update_check import UpgradeProgressCallback
 
 _LAUNCH_INIT_CONNECTION_TIMEOUT_SECONDS = 60.0
 """Upper bound on waiting for server readiness during onboarding model switch.
@@ -7613,6 +7614,56 @@ class DeepAgentsApp(App):
                     pin_upgrade_version=pin_upgrade_version,
                 )
 
+    async def _perform_interactive_upgrade(
+        self,
+        *,
+        target_version: str,
+        log_path: Path | None,
+        on_notice: UpgradeProgressCallback,
+        progress: UpgradeProgressCallback | None = None,
+        include_prereleases: bool | None = None,
+    ) -> tuple[bool, str, str | None] | None:
+        """End the old session when an update rebuilds its Python environment.
+
+        Returns:
+            The upgrade outcome, or None when a relaunch is required.
+        """
+        from deepagents_code.update_check import perform_upgrade
+
+        interpreter_changed = False
+
+        def mark_interpreter_changed() -> None:
+            nonlocal interpreter_changed
+            interpreter_changed = True
+
+        try:
+            result = await perform_upgrade(
+                target_version=target_version,
+                log_path=log_path,
+                on_notice=on_notice,
+                progress=progress,
+                include_prereleases=include_prereleases,
+                on_interpreter_change=mark_interpreter_changed,
+            )
+        finally:
+            if interpreter_changed:
+                self._exit_after_python_migration(log_path)
+        return None if interpreter_changed else result
+
+    def _exit_after_python_migration(self, log_path: Path | None) -> None:
+        """Close the old interpreter and leave a usable resume command."""
+        args = [invoked_name()]
+        if self._lc_thread_id:
+            args.extend(["-r", self._lc_thread_id])
+        resume = shlex.join(args)
+        message = (
+            "The update changed Python. A fresh session is required.\n"
+            f"Relaunch to resume this conversation: {resume}"
+        )
+        if log_path is not None:
+            message += f"\nCheck the update result in: {log_path}"
+        self.exit(message=Content(message))
+
     async def _perform_app_upgrade_unlocked(
         self,
         *,
@@ -7646,7 +7697,6 @@ class DeepAgentsApp(App):
             format_log_follow_command,
             format_release_age_parenthetical,
             format_shadowed_dcode_warning,
-            perform_upgrade,
             prerelease_upgrade_supported,
             upgrade_command,
         )
@@ -7696,12 +7746,15 @@ class DeepAgentsApp(App):
         async def show_upgrade_notice(message: str) -> None:
             await self._mount_message(AppMessage(message))
 
-        success, output, installed = await perform_upgrade(
+        result = await self._perform_interactive_upgrade(
             on_notice=show_upgrade_notice,
             log_path=log_path,
             include_prereleases=include_prereleases,
             target_version=latest,
         )
+        if result is None:
+            return
+        success, output, installed = result
         if success:
             self._update_available = (False, None)
             # The install command is unpinned, so the installer may have
@@ -27215,7 +27268,6 @@ class DeepAgentsApp(App):
             format_shadowed_dcode_fix_command,
             format_shadowed_dcode_warning,
             mark_update_notified,
-            perform_upgrade,
             update_install_lock,
         )
 
@@ -27278,12 +27330,15 @@ class DeepAgentsApp(App):
                         screen.append_line(message)
                         self.notify(message, timeout=15, markup=False)
 
-                    success, output, installed = await perform_upgrade(
+                    result = await self._perform_interactive_upgrade(
                         progress=screen.append_line,
                         on_notice=show_upgrade_notice,
                         log_path=log_path,
                         target_version=payload.latest,
                     )
+                    if result is None:
+                        return
+                    success, output, installed = result
                     if success:
                         self._notice_registry.remove(entry.key)
                         # Same shadowing risk as `/update`: if a stale `dcode` is

@@ -27349,15 +27349,18 @@ class DeepAgentsApp(App):
                             markup=False,
                         )
                         return
+                    self._notice_registry.remove(entry.key)
+                    if deferred:
+                        logger.info(
+                            "Deferred the Python migration for v%s", payload.latest
+                        )
+                        screen.mark_warning("Update deferred. See details.")
+                        return
                     logger.warning(
                         "Auto-upgrade failed for v%s. Output:\n%s",
                         payload.latest,
                         output,
                     )
-                    self._notice_registry.remove(entry.key)
-                    if deferred:
-                        screen.mark_warning("Update deferred. See details.")
-                        return
                     if notices:
                         # The notice toast and modal line already carry the
                         # migration-aware recovery steps.

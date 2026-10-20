@@ -694,11 +694,11 @@ def _run_startup_auto_update(console: "Console") -> None:
             )
             return
         if should_skip_startup_auto_update_after_failure(latest):
-            # A same-version upgrade failed recently; retrying it here would
-            # very likely fail again and re-stall every launch (this runs before
-            # the TUI). Skip for the cooldown window and point at `dcode
-            # update`: unlike a bare uv command, it also handles a Python
-            # migration that startup deferred.
+            # A same-version upgrade failed or was deferred recently; retrying
+            # it here would very likely fail again and re-stall every launch
+            # (this runs before the TUI). Skip for the cooldown window and
+            # point at `dcode update`: unlike a bare uv command, it also
+            # handles a Python migration that startup deferred.
             from deepagents_code._invocation import invoked_name
 
             console.print(
@@ -873,11 +873,13 @@ def _run_startup_auto_update(console: "Console") -> None:
                 f"Run manually: [cyan]{cmd}[/cyan]\n"
                 f"Continuing with v{cli_version}."
             )
-        if not persisted:
+        if not persisted and not deferred:
             # The cooldown marker could not be saved (e.g. a read-only state
             # dir), so this same failing upgrade would otherwise be retried on
             # every launch. Surface it rather than silently re-stalling, the
             # way the consent-announce path surfaces its un-persisted state.
+            # After a deferral nothing failed: a lost marker only repeats the
+            # deferral notice, which installs nothing.
             message += _UNPERSISTED_AUTO_UPDATE_FAILURE_NOTE
         console.print(message, markup=True, highlight=False)
     except SystemExit:

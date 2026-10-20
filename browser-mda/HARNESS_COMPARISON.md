@@ -185,6 +185,80 @@ shows, this one for the decomposition.
 **The facade arm is 7.3x cheaper than hosted MCP at higher accuracy** -- $2.46
 against $17.87, a third of the tokens, a quarter of the wall clock.
 
+## WebTailBench-150: three arms, and three surprises
+
+A second benchmark, pulled from the Stagehand evals package: 609 real-world
+"tail" tasks across 11 categories, of which a proportionally stratified 150
+were run. The judge differs from WebVoyager's because the dataset does --
+every row ships a 3-6 item rubric instead of a reference answer, so the score
+is the fraction of criteria met. Partial credit is the normal case here: an
+agent that finds the flights but not the fare difference is not simply wrong.
+
+| arm | graded | **score** | med tokens | **total $** | med steps | med secs |
+|---|---|---|---|---|---|---|
+| **facade-noshot** | 150 | **0.797** | **76,328** | **$10.43** | 17.5 | 51 |
+| agent-browser | 150 | 0.777 | 118,116 | $10.44 | 22.0 | 119 |
+| facade | 149 | 0.769 | 77,061 | $11.85 | 17.0 | 50 |
+
+### 1. Removing screenshots made the facade arm better, not just cheaper
+
+Screenshots were **93.8% of the facade arm's tool output** -- 42 calls across
+11 smoke tasks at a median 89KB of base64 each. Dropping them was expected to
+trade accuracy for cost. It did not: `facade-noshot` scores **0.797 against
+0.769**, at $10.43 against $11.85, on the same tokens and the same wall clock.
+
+The screenshots were not buying sight so much as spending budget. The
+accessibility tree `snapshot` returns is apparently enough for these tasks,
+and the images mostly displaced useful context. This is the one result here
+that is directly actionable: ship the facade without `screenshot` by default.
+
+### 2. The 11-task smoke was wrong about everything that mattered
+
+The smoke said facade **0.80** and agent-browser **0.67** -- a 17-point gap --
+and that agent-browser used 16% *fewer* tokens. At n=150 the gap is 0.769 vs
+0.777, with agent-browser slightly **ahead**, and it uses **53% more** tokens
+(118,116 against 77,061).
+
+Both smoke conclusions inverted. Eleven tasks across eleven categories felt
+like reasonable coverage and was not: one task per category means one draw
+from each of eleven different distributions. Worth remembering before any
+future "the smoke looks good, ship it" -- including the one in this PR's own
+history.
+
+### 3. agent-browser is 2.4x slower, and fixed sleeps are why
+
+119s median against 51s. It is **not** cold start -- the first tool call takes
+a median 1.4s, versus 3.9s for the facade -- and it is not call volume, at
+14.1 calls per task against 15.2. It is the tail:
+
+| | median call | p75 | p90 | calls over 10s |
+|---|---|---|---|---|
+| facade | 2.5s | 4.2s | **7.2s** | 7% |
+| agent-browser | 3.6s | 9.1s | **31.0s** | 23% |
+
+The slowest calls say why outright:
+
+```
+180.3s  agent-browser click @e1532; sleep 5; agent-browser ...
+152.6s  sleep 3; agent-browser snapshot -i 2>&1 | head -6
+129.1s  agent-browser open https://www.americanstandard-us.com/...
+```
+
+**The model writes `sleep` in shell.** 56 of the 81 calls over 10 seconds are
+`open`, whose page-load wait has no cap, and the rest are dominated by
+hand-written sleeps.
+
+The facade arm does not have this problem because `page.waitForTimeout(n)` is
+reinterpreted there as "wait until the page goes quiet, capped at n" -- a
+measured `waitForTimeout(8000)` returns in 0.6s. That override reaches the
+Playwright API and nothing else. **A shell arm can always `sleep`, and no
+amount of tool-level cleverness intercepts it.**
+
+Which sharpens the original finding. Capping fixed sleeps is worth ~30% of
+agent time, but only on a surface where waits are expressed through an API you
+control. Give the model a shell and the remedy is unavailable; the only
+remaining lever is the prompt, which measured *worse* upstream.
+
 ## Playwright MCP: excellent tools, expensive surface
 
 `@playwright/mcp` 1.64.0-alpha exposes **25 tools** -- `browser_snapshot`,

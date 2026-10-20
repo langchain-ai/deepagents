@@ -2220,6 +2220,11 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
                 widget.thread = thread
             self._refresh_cell_labels()
             await self._sync_load_more_row()
+            # The cursor may have moved while the rows stayed in place.
+            for index, row in enumerate(self._selection_rows()):
+                selected = index == self._selected_index
+                if row.has_class("thread-option-selected") != selected:
+                    row.set_selected(selected)
         else:
             await self._build_list()
 

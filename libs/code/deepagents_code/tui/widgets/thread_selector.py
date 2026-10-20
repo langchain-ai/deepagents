@@ -171,6 +171,11 @@ class _WindowSnapshot:
     disk_load_complete: bool
 
 
+def _error_detail(exc: Exception) -> str:
+    """Return an exception's message, or its type name when the message is empty."""
+    return str(exc) or type(exc).__name__
+
+
 def _safe_cwd_string() -> str | None:
     """Return `str(Path.cwd())` or `None` if the working directory is unreadable.
 
@@ -1054,6 +1059,8 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         # thread-derived names so the agent filter mirrors `/agents` even for
         # agents that have not produced any threads yet.
         self._available_agent_names: list[str] = []
+        # Options last set on the agent dropdown, to skip no-op refreshes.
+        self._agent_options: list[tuple[str, str]] | None = None
         self._confirming_delete = False
         self._render_lock = asyncio.Lock()
         self._filter_input: Input | None = None
@@ -1145,9 +1152,11 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         Args:
             thread_id: Thread to highlight.
             fallback: Index to use when the thread is not in the filtered rows.
-                Clamped to the last thread row, or 0 when no thread rows show.
+                Clamped to the last selectable row, so a cursor on "Load more"
+                stays there when a batch adds no rows above it.
         """
-        self._selected_index = min(fallback, max(0, len(self._filtered_threads) - 1))
+        last_row = len(self._filtered_threads) - 1 + int(self._has_more)
+        self._selected_index = min(fallback, max(0, last_row))
         for index, thread in enumerate(self._filtered_threads):
             if thread["thread_id"] == thread_id:
                 self._selected_index = index
@@ -1279,6 +1288,11 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         except NoMatches:
             return False
         options = self._collect_agent_options()
+        if options == self._agent_options:
+            # Usually true for a "Load more" batch. Resetting the options would
+            # post `Select.Changed` twice and can queue an extra list rebuild.
+            return False
+        self._agent_options = options
         valid_values = {value for _, value in options}
         current = agent_select.value
         # `set_options` resets the value to the first option, posting a
@@ -2005,25 +2019,14 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         """Reload every loaded batch, then kick off background enrichment."""
         try:
             threads = await self._fetch_window(self._loaded_limit)
-        except (OSError, sqlite3.Error) as exc:
-            logger.exception("Failed to load threads for thread selector")
-            await self._report_load_failure(exc)
-            return
-        except Exception as exc:
-            # An unexpected error (e.g. a malformed row raising ValueError) must
-            # still mark the load complete and surface the failure; otherwise
-            # the picker stays stuck on the "Loading threads..." placeholder
-            # forever.
-            # CancelledError is a BaseException and is intentionally not caught
-            # here, so a superseding exclusive worker keeps ownership of the flag.
-            logger.exception("Unexpected error loading threads for thread selector")
-            await self._report_load_failure(exc)
-            return
-        try:
             await self._apply_window_or_restore(threads, self._loaded_limit)
         except Exception as exc:
-            # A worker error would otherwise exit the app.
-            logger.exception("Unexpected error showing threads for thread selector")
+            # Any failure (I/O, a malformed row, a render error) must mark the
+            # load complete and surface it: otherwise the picker stays stuck on
+            # "Loading threads..." or the worker error exits the app.
+            # CancelledError is a BaseException and is intentionally not caught
+            # here, so a superseding exclusive worker keeps ownership of the flag.
+            logger.exception("Failed to load threads for thread selector")
             await self._report_load_failure(exc)
             return
         self._shown_sort_by_updated = self._sort_by_updated
@@ -2037,8 +2040,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         """
         if self._disk_load_complete:
             # A sort, scope, or refresh reload: the shown rows are still usable.
-            detail = str(exc) or type(exc).__name__
-            message = f"Could not reload threads: {detail}"
+            message = f"Could not reload threads: {_error_detail(exc)}"
             if self._revert_to_shown_settings():
                 message += ". Kept the previous sort and directory."
             self.notify(message, severity="error", markup=False)
@@ -2077,7 +2079,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             value: Option value to show.
         """
         try:
-            select = self.query_one(f"#{select_id}", Select)
+            select = self._get_select(select_id)
         except NoMatches:
             return
         with self.prevent(Select.Changed):
@@ -2166,7 +2168,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             self._update_filtered_list()
             self._sync_selected_index()
         if load_more:
-            self._keep_batch_selection(selected_id, selected_index)
+            self._select_thread_id(selected_id, selected_index)
         await self._render_window(old_threads)
 
         self._schedule_checkpoint_enrichment()
@@ -2209,26 +2211,6 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
                 exc_info=True,
             )
 
-    def _keep_batch_selection(
-        self, selected_id: str | None, selected_index: int
-    ) -> None:
-        """Keep the row that was highlighted before a batch loaded.
-
-        Args:
-            selected_id: Thread highlighted before the batch, or `None` for
-                the "Load more" row.
-            selected_index: Cursor index before the batch.
-        """
-        if (
-            selected_id is None
-            and self._has_more
-            and selected_index == len(self._filtered_threads)
-        ):
-            # No new matches: keep paging instead of selecting a thread.
-            self._selected_index = selected_index
-        else:
-            self._select_thread_id(selected_id, selected_index)
-
     async def _render_window(self, old_threads: list[ThreadInfo]) -> None:
         """Update the rows in place when they are unchanged, else rebuild.
 
@@ -2265,7 +2247,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             exc: The error from the batch.
             retryable: Whether the error is an I/O error that a retry can fix.
         """
-        detail = str(exc) or type(exc).__name__
+        detail = _error_detail(exc)
         message = (
             f'Could not load more threads: {detail}. Select "Load more" to retry.'
             if retryable
@@ -2875,9 +2857,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             # The loaded rows are only the top of the old order, or a fetch in
             # the old order is still running. Re-fetch so the window and any
             # later "Load more" use the new order.
-            self.run_worker(
-                self._load_threads, exclusive=True, group="thread-selector-load"
-            )
+            self._start_thread_load()
         else:
             self._apply_sort()
             self._shown_sort_by_updated = sort_by_updated

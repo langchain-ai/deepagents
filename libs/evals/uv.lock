@@ -250,20 +250,20 @@ wheels = [
 
 [[package]]
 name = "bsdiff4"
-version = "1.2.6"
+version = "1.3.0"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/53/b9/4559ede9a4c8c4451688303544da84654643fdc7f28790aca85be80b4b7c/bsdiff4-1.2.6.tar.gz", hash = "sha256:2ab57d01a78b39e29e5accc9cfead4130982ded9dccbc4261bd0e9c51d6b751d", size = 13259, upload-time = "2025-02-19T17:42:33.612Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/78/5a/e027dcfc895507fe23c0a4d48668ffdd68c7dedec80ffd8edbb5d0b75466/bsdiff4-1.3.0.tar.gz", hash = "sha256:d22de9ee7372b9f665403d62afce32481362f9a107af9f13583648cdc16ee76d", size = 13085, upload-time = "2026-10-20T06:23:33.742Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/37/a1/70b74154344486bac9bf438ec309ae502f07df8cd7ca713d58f658769ff4/bsdiff4-1.2.6-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:223ae0fc9f386dcf919a09a2029c391a0f0afaf4a5892b9a6e1b622bf42e1ae5", size = 16090, upload-time = "2025-02-19T17:40:11.334Z" },
-    { url = "https://files.pythonhosted.org/packages/1a/90/36531261d8a150fcb8193fe2ad46d939b8a91549976424852f6a2a335689/bsdiff4-1.2.6-cp312-cp312-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:48ea2298a281068d82b78454ee58ac7306ed38c9af55afddb04cf796df932d63", size = 33675, upload-time = "2025-02-19T17:40:13.218Z" },
-    { url = "https://files.pythonhosted.org/packages/88/23/98fc7482f957602c611203a9e485b9dbf4caf9d918e92453e3729cf5f0b4/bsdiff4-1.2.6-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:56c2728c96d1d4eb8e089e4797c018a56be3f905f440fb507773f44c567fcd38", size = 33238, upload-time = "2025-02-19T17:40:16.343Z" },
-    { url = "https://files.pythonhosted.org/packages/c3/a8/73d2abfd98a33cd74a0fc491e527d734c222ae18b499a10689f3adbc8d5c/bsdiff4-1.2.6-cp312-cp312-musllinux_1_2_aarch64.whl", hash = "sha256:e87c67b06ac96af6171b774dc8c03d2bde70c67c6488078eff44e0af4864acf6", size = 33606, upload-time = "2025-02-19T17:40:21.398Z" },
-    { url = "https://files.pythonhosted.org/packages/d6/ad/0968b67aecf00873e0e5c07e97ba2300594505d4dbce62702b9f56a62d66/bsdiff4-1.2.6-cp312-cp312-musllinux_1_2_x86_64.whl", hash = "sha256:701168e2931da777e6e72ae17f22eb519e9ce25ec5108d149c9da7b3b80e1184", size = 32831, upload-time = "2025-02-19T17:40:25.571Z" },
-    { url = "https://files.pythonhosted.org/packages/d8/4c/825a16932605d305501ed144ae5567a3dc90c9164a393c61cc0ed68df3f0/bsdiff4-1.2.6-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:ee4417341712a4bf736694ce9ad3902b8c6fbd3425aadca44df9b66a51bbefa4", size = 16080, upload-time = "2025-02-19T17:40:29.612Z" },
-    { url = "https://files.pythonhosted.org/packages/c2/e2/0cf538a786f47b08e26f3970a6f98c2b7b9d555c01e085425282944a2c7f/bsdiff4-1.2.6-cp313-cp313-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:39ddfa2137de44c9743a611d71d263d0cc8c45e5b18ee84ca5ff6b6240be1740", size = 33664, upload-time = "2025-02-19T17:40:31.646Z" },
-    { url = "https://files.pythonhosted.org/packages/5a/1e/7027849a6dc02b580e352b1528899053bd919029b185fbaa14c6f268180b/bsdiff4-1.2.6-cp313-cp313-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:46313f0eb8f63efb54a3c4219cd7b5b8a7795012b535f9d0838fe3f2b3349849", size = 33238, upload-time = "2025-02-19T17:40:37.165Z" },
-    { url = "https://files.pythonhosted.org/packages/83/03/76a5aaaa0ccc282b239b3f148f6dd6033d37f79c1d1a89846b712224d132/bsdiff4-1.2.6-cp313-cp313-musllinux_1_2_aarch64.whl", hash = "sha256:734552992ecc86749a8ef55d03f999f9a47576cc609d7d4d9a7aec274b43ee4d", size = 33688, upload-time = "2025-02-19T17:40:39.762Z" },
-    { url = "https://files.pythonhosted.org/packages/eb/52/623ee28011b6935f0dfe67397ec27c2a900b9f0bda1b1ec2a5b174c53fb7/bsdiff4-1.2.6-cp313-cp313-musllinux_1_2_x86_64.whl", hash = "sha256:5529731ac88151345a8bb76dad4fdb218af10a8a505161d1aa3d669e49cb7b77", size = 32892, upload-time = "2025-02-19T17:40:45.552Z" },
+    { url = "https://files.pythonhosted.org/packages/65/ea/1d21dca3f0f6732bd1a5742e755676837f460f8a278e3de947e63f75c6dd/bsdiff4-1.3.0-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:d766720469c90a6651dbb774fd9e0ac3c70018ea654d96e77407853477e50de6", size = 16193, upload-time = "2026-10-20T06:22:30.731Z" },
+    { url = "https://files.pythonhosted.org/packages/ed/bb/5187d7ba323f8d8a34dee5b61cdeef85be7021523ecaaae9b0cd75f16070/bsdiff4-1.3.0-cp312-cp312-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:466161621b7928ac0b6e66ce56c7575c0ef991205fb15728cfca55937bfe92e3", size = 34810, upload-time = "2026-10-20T06:22:31.523Z" },
+    { url = "https://files.pythonhosted.org/packages/0a/32/8645563da4e39729abb1c6dfc59247138e19d9bb3ae9aed8285a956fde1a/bsdiff4-1.3.0-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:8cc13a842a1b29aaa00cd6d0528fcaaf78c26f91e5af5cfcb4d8c7dbb6d1d9bf", size = 33768, upload-time = "2026-10-20T06:22:33.93Z" },
+    { url = "https://files.pythonhosted.org/packages/84/a9/50de0e405c26803c0e98ef5425129578a18fed24c7b32e5e542a8832b063/bsdiff4-1.3.0-cp312-cp312-musllinux_1_2_aarch64.whl", hash = "sha256:cef467ef478d14f7117af57c33cfbf4679ba3ee149fc8a799fb2bb2485132eae", size = 33893, upload-time = "2026-10-20T06:22:35.515Z" },
+    { url = "https://files.pythonhosted.org/packages/cf/7e/6cdc2751190d27c1197b5f74dedc653817c93eeca79a3e2b67c1ef89e6b4/bsdiff4-1.3.0-cp312-cp312-musllinux_1_2_x86_64.whl", hash = "sha256:13ae2f66d6a98f2917a32f04245aae8892a763184887d84a3e3e026a8f139809", size = 33568, upload-time = "2026-10-20T06:22:38.968Z" },
+    { url = "https://files.pythonhosted.org/packages/a8/ae/c552e4824500fe9af4ea54b85e0a87e33d2cb15cb9c529355519580e92aa/bsdiff4-1.3.0-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:0a239ae54f10918b4991de7b2d016c4495211cd27bca61b8daf0e2397414f1c4", size = 16181, upload-time = "2026-10-20T06:22:42.907Z" },
+    { url = "https://files.pythonhosted.org/packages/90/74/fe34cff83c88384048511e1b055b13fb8a81f9d9140aa1a8a0a31a599835/bsdiff4-1.3.0-cp313-cp313-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:360a3efc292349795b4d819b8ff9ae0a8580de9921b4cbca14e4ed8931d41ae4", size = 34888, upload-time = "2026-10-20T06:22:43.704Z" },
+    { url = "https://files.pythonhosted.org/packages/22/9e/4fa749a76fc848eed021e9fc941c992ca0b19a55bfe00b4265f5c9b1b3b9/bsdiff4-1.3.0-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:7cfbc85e1f564d060a2d351012cd3101cf26f62ffce8de93aee599f6ff951ce3", size = 33873, upload-time = "2026-10-20T06:22:46.355Z" },
+    { url = "https://files.pythonhosted.org/packages/4c/79/d7a030480d8d72244815d851481c6793c0e33b308ba5e21d69206a4356d5/bsdiff4-1.3.0-cp313-cp313-musllinux_1_2_aarch64.whl", hash = "sha256:8dd950f988c8093352a5dae8cadca7d63319b53dfe175123e6711796e39b1a0c", size = 33966, upload-time = "2026-10-20T06:22:48.119Z" },
+    { url = "https://files.pythonhosted.org/packages/95/91/1c8eae1037475b9c996e38534acc74f16436b3b3bf8520f3ec546abe5471/bsdiff4-1.3.0-cp313-cp313-musllinux_1_2_x86_64.whl", hash = "sha256:a8881b6e2b0271e1836e3a6ad1440cae95662fdec5bd4f37ba674eec44cd8092", size = 33638, upload-time = "2026-10-20T06:22:52.137Z" },
 ]
 
 [[package]]
@@ -523,7 +523,7 @@ wheels = [
 
 [[package]]
 name = "deepagents"
-version = "0.7.28"
+version = "0.7.29"
 source = { editable = "../deepagents" }
 dependencies = [
     { name = "langchain" },
@@ -2033,7 +2033,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "bsdiff4", specifier = ">=1.2.6,<2.0.0" },
+    { name = "bsdiff4", specifier = ">=1.3.0,<2.0.0" },
     { name = "deepagents", editable = "../deepagents" },
     { name = "langchain", specifier = ">=1.4.6,<2.0.0" },
     { name = "langchain-core", specifier = ">=1.6.12,<2.0.0" },

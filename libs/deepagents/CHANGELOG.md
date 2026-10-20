@@ -2,6 +2,14 @@
 
 # Deep Agents Changelog
 
+## [0.7.29](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.28...deepagents==0.7.29) (2026-10-20)
+
+### Bug Fixes
+
+- `CompositeBackend` now handles routes without a trailing slash.
+- Text edits to binary files are now rejected.
+- In-memory `grep` now skips binary files.
+
 ## [0.7.28](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.27...deepagents==0.7.28) (2026-10-16)
 
 ### Bug Fixes

@@ -514,7 +514,11 @@ repo file, so a project `.env` cannot disable itself.
 """
 
 RECENT_THREADS = "DEEPAGENTS_CODE_RECENT_THREADS"
-"""Maximum recent threads (default: `_constants.DEFAULT_THREAD_LIMIT`)."""
+"""Recent threads per batch (default: 100, `_constants.DEFAULT_THREAD_LIMIT`).
+
+The thread switcher loads this many at a time. It is also the default row
+limit for `threads list` (override with `-n`) and `@@` thread completion.
+"""
 
 RECURSION_LIMIT = "DEEPAGENTS_CODE_RECURSION_LIMIT"
 """Override the main agent's LangGraph `recursion_limit` (graph step budget).

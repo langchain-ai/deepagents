@@ -839,7 +839,17 @@ class TestListThreadsWithMessageCount:
 class TestPopulateThreadCheckpointDetails:
     """Tests for combined checkpoint-detail enrichment."""
 
-    async def test_populates_count_and_prompt_from_separate_sources(self) -> None:
+    @pytest.fixture
+    async def conn(self) -> "AsyncIterator[aiosqlite.Connection]":
+        """Yield an empty in-memory database for the mocked loaders."""
+        import aiosqlite
+
+        async with aiosqlite.connect(":memory:") as opened:
+            yield opened
+
+    async def test_populates_count_and_prompt_from_separate_sources(
+        self, conn: "aiosqlite.Connection"
+    ) -> None:
         """Counts come from the checkpoint summary, prompts from the writes table."""
         threads: list[sessions.ThreadInfo] = [
             {
@@ -876,10 +886,7 @@ class TestPopulateThreadCheckpointDetails:
             ) as mock_prompts,
         ):
             await sessions._populate_checkpoint_fields(  # pyright: ignore[reportPrivateUsage]
-                cast(
-                    "aiosqlite.Connection",
-                    object(),  # connection is unused by the mocked loaders
-                ),
+                conn,
                 threads,
                 include_message_count=True,
                 include_initial_prompt=True,
@@ -890,7 +897,9 @@ class TestPopulateThreadCheckpointDetails:
         assert mock_summary.await_count == 1
         assert mock_prompts.await_count == 1
 
-    async def test_skips_prompt_query_when_not_requested(self) -> None:
+    async def test_skips_prompt_query_when_not_requested(
+        self, conn: "aiosqlite.Connection"
+    ) -> None:
         """The writes-table prompt query should be skipped when prompts are off."""
         threads: list[sessions.ThreadInfo] = [
             {
@@ -923,7 +932,7 @@ class TestPopulateThreadCheckpointDetails:
             ) as mock_prompts,
         ):
             await sessions._populate_checkpoint_fields(  # pyright: ignore[reportPrivateUsage]
-                cast("aiosqlite.Connection", object()),
+                conn,
                 threads,
                 include_message_count=True,
                 include_initial_prompt=False,
@@ -932,7 +941,7 @@ class TestPopulateThreadCheckpointDetails:
         mock_prompts.assert_not_awaited()
 
     async def test_falls_back_to_checkpoint_prompt_when_writes_omit_thread(
-        self,
+        self, conn: "aiosqlite.Connection"
     ) -> None:
         """Sessions without message writes still show checkpoint-backed prompts."""
         sessions._initial_prompt_cache.clear()
@@ -972,7 +981,7 @@ class TestPopulateThreadCheckpointDetails:
                 ) as mock_prompts,
             ):
                 await sessions._populate_checkpoint_fields(  # pyright: ignore[reportPrivateUsage]
-                    cast("aiosqlite.Connection", object()),
+                    conn,
                     threads,
                     include_message_count=False,
                     include_initial_prompt=True,
@@ -983,6 +992,125 @@ class TestPopulateThreadCheckpointDetails:
             mock_prompts.assert_awaited_once()
         finally:
             sessions._initial_prompt_cache.clear()
+
+
+class TestSavedMessageCounts:
+    """Message counts saved for later sessions."""
+
+    @staticmethod
+    def _thread(checkpoint_id: str) -> "sessions.ThreadInfo":
+        return {
+            "thread_id": "thread-a",
+            "agent_name": "agent",
+            "updated_at": "2026-03-08T02:00:00+00:00",
+            "latest_checkpoint_id": checkpoint_id,
+        }
+
+    @staticmethod
+    async def _populate(
+        conn: "aiosqlite.Connection", thread: "sessions.ThreadInfo", count: int
+    ) -> AsyncMock:
+        """Populate one row's count as a fresh session would.
+
+        Returns:
+            The mocked checkpoint loader, to check whether it ran.
+        """
+        sessions._message_count_cache.clear()  # pyright: ignore[reportPrivateUsage]
+        with (
+            patch.object(
+                sessions,
+                "_get_jsonplus_serializer",
+                new_callable=AsyncMock,
+                return_value=object(),
+            ),
+            patch.object(
+                sessions,
+                "_load_latest_checkpoint_summaries_batch",
+                new_callable=AsyncMock,
+                return_value={"thread-a": sessions._CheckpointSummary(count, None)},
+            ) as mock_summary,
+        ):
+            await sessions._populate_checkpoint_fields(  # pyright: ignore[reportPrivateUsage]
+                conn,
+                [thread],
+                include_message_count=True,
+                include_initial_prompt=False,
+            )
+        return mock_summary
+
+    async def test_later_session_reuses_saved_count(self, tmp_path: Path) -> None:
+        """A new session reads the saved count instead of recomputing it."""
+        import aiosqlite
+
+        async with aiosqlite.connect(tmp_path / "sessions.db") as conn:
+            await self._populate(conn, self._thread("cp_1"), 4)
+            thread = self._thread("cp_1")
+            mock_summary = await self._populate(conn, thread, 99)
+
+        assert thread["message_count"] == 4
+        mock_summary.assert_not_awaited()
+
+    async def test_new_checkpoint_recomputes_saved_count(self, tmp_path: Path) -> None:
+        """A saved count is ignored once the thread has a newer checkpoint."""
+        import aiosqlite
+
+        async with aiosqlite.connect(tmp_path / "sessions.db") as conn:
+            await self._populate(conn, self._thread("cp_1"), 4)
+            thread = self._thread("cp_2")
+            await self._populate(conn, thread, 5)
+            reread = self._thread("cp_2")
+            mock_summary = await self._populate(conn, reread, 99)
+
+        assert thread["message_count"] == 5
+        assert reread["message_count"] == 5
+        mock_summary.assert_not_awaited()
+
+    async def test_locked_database_skips_save_without_waiting(
+        self, tmp_path: Path
+    ) -> None:
+        """Counts still fill in when another connection holds the write lock."""
+        import aiosqlite
+
+        db_path = tmp_path / "sessions.db"
+        async with aiosqlite.connect(db_path, timeout=30.0) as conn:
+            with closing(sqlite3.connect(db_path)) as writer:
+                writer.execute("BEGIN IMMEDIATE")
+                thread = self._thread("cp_1")
+                await asyncio.wait_for(self._populate(conn, thread, 4), timeout=5)
+                writer.rollback()
+            assert thread["message_count"] == 4
+            # Nothing was saved, so a later session recomputes.
+            mock_summary = await self._populate(conn, self._thread("cp_1"), 4)
+        mock_summary.assert_awaited_once()
+
+    async def test_unreadable_saved_counts_are_recomputed(self, tmp_path: Path) -> None:
+        """A count table in an unexpected shape does not fail the listing."""
+        import aiosqlite
+
+        async with aiosqlite.connect(tmp_path / "sessions.db") as conn:
+            await conn.execute("CREATE TABLE dcode_thread_message_counts (id TEXT)")
+            thread = self._thread("cp_1")
+            await self._populate(conn, thread, 4)
+
+        assert thread["message_count"] == 4
+
+    async def test_delete_thread_removes_saved_count(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Deleting a thread also deletes its saved count."""
+        monkeypatch.setattr(sessions, "get_db_path", lambda: tmp_path / "sessions.db")
+        await sessions.save_thread_seed(
+            "thread-a", {}, agent_name="agent", cwd=str(tmp_path)
+        )
+        async with sessions._connect() as conn:
+            await self._populate(conn, self._thread("cp_1"), 4)
+
+        assert await sessions.delete_thread("thread-a")
+        async with (
+            sessions._connect() as conn,
+            conn.execute("SELECT COUNT(*) FROM dcode_thread_message_counts") as cursor,
+        ):
+            assert await cursor.fetchone() == (0,)
 
 
 class TestApplyCachedThreadMessageCounts:
@@ -1871,8 +1999,8 @@ class TestLoadInitialPromptsFromWritesBatch:
 
         assert results == {"t1": "first"}
 
-    async def test_preserves_namespace_and_channel_selection(self) -> None:
-        """Earliest messages write should win regardless of its namespace."""
+    async def test_reads_root_namespace_messages_writes_only(self) -> None:
+        """The earliest root-namespace messages write wins over subgraph writes."""
         serde = JsonPlusSerializer()
         first = serde.dumps_typed([{"role": "user", "content": "first"}])
         later = serde.dumps_typed([{"role": "user", "content": "later"}])
@@ -1900,7 +2028,7 @@ class TestLoadInitialPromptsFromWritesBatch:
                 conn, ["t1"], serde
             )
 
-        assert results == {"t1": "first"}
+        assert results == {"t1": "later"}
 
     async def test_omits_threads_with_no_messages_writes(self) -> None:
         """Threads without any messages-channel write should be absent from result."""

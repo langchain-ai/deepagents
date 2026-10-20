@@ -32,7 +32,7 @@ dependencies = [
 [project.optional-dependencies]
 aws = ["langchain-aws>=1.9.0,<2.0.0"]
 quickjs = ["langchain-quickjs>=0.3.9"]
-video = ["av>=18.0.0,<19.0.0", "pillow>=12.3.0,<13.0.0"]
+video = ["av>=18.0.0,<19.0.0", "pillow>=12.3.0,<14.0.0"]
 
 [project.urls]
 Homepage = "https://docs.langchain.com/oss/python/deepagents/overview"
@@ -67,7 +67,7 @@ test = [
   # not depend on them. ty still sees the import names and
   # needs stubs, so we install them into the type-checker venv.
   "av>=18.0.0,<19.0.0",
-  "pillow>=12.3.0,<13.0.0",
+  "pillow>=12.3.0,<14.0.0",
 ]
 [build-system]
 requires = ["setuptools>=83.0.0", "wheel"]

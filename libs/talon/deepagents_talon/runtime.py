@@ -50,6 +50,7 @@ from deepagents_talon.background import (
     _SCHEDULED_TURN,
     BackgroundSubagents,
 )
+from deepagents_talon.breakout import BREAKOUT_HANDLER, breakout
 from deepagents_talon.clock import current_time
 from deepagents_talon.config import TalonConfig
 from deepagents_talon.context_doctor import ContextDoctor
@@ -738,6 +739,7 @@ class DeepAgentRuntime:
         # so its delegations keep detaching.
         scheduled_token = _SCHEDULED_TURN.set(request.metadata.get("trigger") == "cron")
         authorization_token = set_authorization_handler(request.authorization_handler)
+        breakout_token = BREAKOUT_HANDLER.set(request.breakout_handler)
         try:
             with (
                 progress_messages(request.message_handler, self.verbosity),
@@ -760,6 +762,7 @@ class DeepAgentRuntime:
             APPROVAL_OPERATOR.reset(operator_token)
             ACTIVE_APPROVALS.reset(policy_token)
             reset_authorization_handler(authorization_token)
+            BREAKOUT_HANDLER.reset(breakout_token)
             _SCHEDULED_TURN.reset(scheduled_token)
             _CRON_ORIGIN.reset(token)
             self._invocation_graph.reset(graph_token)
@@ -976,7 +979,7 @@ class DeepAgentRuntime:
         self,
         runtime_tools: Sequence[BaseTool | Callable[..., object]] | None = None,
     ) -> list[BaseTool | Callable[..., object]]:
-        tools: list[BaseTool | Callable[..., object]] = [current_time]
+        tools: list[BaseTool | Callable[..., object]] = [current_time, breakout]
         if self.verbosity > 1:
             guidance = {
                 2: " Use extremely sparingly: only for significant updates while working, "

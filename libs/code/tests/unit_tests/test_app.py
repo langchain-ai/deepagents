@@ -20261,47 +20261,44 @@ class TestNotificationCenterIntegration:
         assert app._notice_registry.get("dep:ripgrep") is None
         assert any("debug mode" in m for m in notified)
 
-    async def test_slash_update_explains_migration_before_install(
-        self, monkeypatch: pytest.MonkeyPatch
+    @pytest.mark.parametrize("source", ["slash", "notification"])
+    async def test_live_session_update_defers_python_migration(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, source: str
     ) -> None:
-        """The migration notice is mounted before the installer can proceed."""
+        """Both TUI update routes refuse to rebuild the running environment."""
+        from deepagents_code.notifications import ActionId
+
         app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
-        mount = AsyncMock()
-        monkeypatch.setattr(app, "_mount_message", mount)
-        notice = "Python 3.14 is required; migrating the tool environment."
+        entry = _update_entry()
+        app._notice_registry.add(entry)
+        monkeypatch.setattr(app, "_post_paint_init", AsyncMock())
+        monkeypatch.setattr(
+            "deepagents_code.update_check.create_update_log_file",
+            lambda: tmp_path / "update.log",
+        )
+        monkeypatch.setattr(
+            "deepagents_code.update_check.create_update_log_path",
+            lambda: tmp_path / "update.log",
+        )
+        upgrade = AsyncMock(return_value=(False, "deferred", None))
 
-        async def install(
-            *,
-            on_notice: Callable[[str], Awaitable[None]],
-            allow_python_migration: bool,
-            **_kwargs: object,
-        ) -> tuple[bool, str, None]:
-            assert allow_python_migration is False
-            await on_notice(notice)
-            assert mount.call_args.args[0]._content == notice
-            return False, "resolution failed", None
+        with patch("deepagents_code.update_check.perform_upgrade", new=upgrade):
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                if source == "notification":
+                    await app._dispatch_notification_action(entry.key, ActionId.INSTALL)
+                else:
+                    await app._perform_app_upgrade_unlocked(
+                        current="1.0.0",
+                        latest="2.0.0",
+                        include_prereleases=None,
+                        upgrade_include_prereleases=None,
+                        pin_upgrade_version=None,
+                    )
+                await pilot.pause()
 
-        with (
-            patch("deepagents_code.update_check.perform_upgrade", side_effect=install),
-            patch(
-                "deepagents_code.update_check.create_update_log_file", return_value=None
-            ),
-            patch(
-                "deepagents_code.update_check.format_release_age_parenthetical",
-                return_value="",
-            ),
-            patch(
-                "deepagents_code.update_check.format_installed_age_suffix",
-                return_value="",
-            ),
-        ):
-            await app._perform_app_upgrade_unlocked(
-                current="1.0.0",
-                latest="2.0.0",
-                include_prereleases=None,
-                upgrade_include_prereleases=None,
-                pin_upgrade_version=None,
-            )
+        upgrade.assert_awaited_once()
+        assert upgrade.call_args.kwargs["allow_python_migration"] is False
 
     async def test_install_success_marks_modal_without_a_banner(self) -> None:
         """A missing splash banner cannot spoil a successful install.

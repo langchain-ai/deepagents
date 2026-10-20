@@ -2531,6 +2531,28 @@ def _release_python_requirement(version: str) -> SpecifierSet:
     return SpecifierSet(requires_python)
 
 
+def _allows_python_314(requirement: SpecifierSet) -> bool:
+    """Check whether any stable 3.14 patch can satisfy the requirement.
+
+    Specifier boundaries and their next patch cover every interval that can
+    admit a CPython patch release, including individually excluded patches.
+    This checks eligibility; uv still resolves an available interpreter.
+
+    Returns:
+        Whether the requirement admits at least one stable 3.14 patch.
+    """
+    candidates = {Version("3.14")}
+    for specifier in requirement:
+        try:
+            boundary = Version(specifier.version.removesuffix(".*"))
+        except InvalidVersion:
+            continue
+        if boundary.release[:2] == (3, 14):
+            patch = boundary.micro
+            candidates.update(Version(f"3.14.{part}") for part in (patch, patch + 1))
+    return any(requirement.contains(candidate) for candidate in candidates)
+
+
 def _upgrade_python(version: str) -> str | None:
     """Select only the supported 3.14 migration when the target requires it.
 
@@ -2544,7 +2566,7 @@ def _upgrade_python(version: str) -> str | None:
     running = ".".join(str(part) for part in sys.version_info[:3])
     if requirement.contains(running):
         return None
-    if requirement.contains("3.14"):
+    if _allows_python_314(requirement):
         return "3.14"
     msg = (
         f"v{version} requires Python {requirement}; running Python {running} is "

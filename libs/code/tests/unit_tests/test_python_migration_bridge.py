@@ -100,6 +100,14 @@ def test_release_requirement_refuses_http_error() -> None:
     [
         ((3, 12, 9), ">=3.14,<3.15", "3.14"),
         ((3, 13, 4), ">=3.14,<3.15", "3.14"),
+        ((3, 13, 4), ">=3.14.1,<3.15", "3.14"),
+        ((3, 13, 4), ">=3.14,!=3.14.0", "3.14"),
+        ((3, 13, 4), ">=3.14,!=3.14.0,!=3.14.1", "3.14"),
+        ((3, 13, 4), ">3.14.9,<3.15", "3.14"),
+        ((3, 13, 4), "~=3.14.1", "3.14"),
+        ((3, 13, 4), "==3.14.2", "3.14"),
+        ((3, 13, 4), ">=3.14.1,<=3.14.1", "3.14"),
+        ((3, 14, 0), ">=3.14.1,<3.15", "3.14"),
         ((3, 14, 0), ">=3.14,<3.15", None),
         ((3, 13, 4), ">=3.12", None),
     ],
@@ -118,13 +126,24 @@ def test_upgrade_python_only_migrates_incompatible_interpreters(
         assert update_check._upgrade_python("2.0.0") == expected
 
 
-def test_upgrade_python_refuses_unsupported_python_floor() -> None:
+@pytest.mark.parametrize(
+    "requirement",
+    [
+        ">=3.15",
+        ">=3.14,!=3.14.*",
+        ">=3.14.1,<3.14.1",
+        ">=3.14.1,<3.14.2,!=3.14.1",
+        ">3.14.1,<3.14.2",
+        "<3.13",
+    ],
+)
+def test_upgrade_python_refuses_unsupported_requirements(requirement: str) -> None:
     with (
         patch.object(update_check.sys, "version_info", VersionInfo(3, 13, 4)),
         patch.object(
             update_check,
             "_release_python_requirement",
-            return_value=SpecifierSet(">=3.15"),
+            return_value=SpecifierSet(requirement),
         ),
         pytest.raises(ValueError, match="compatible interpreter"),
     ):

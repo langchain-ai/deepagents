@@ -396,13 +396,15 @@ async def test_missing_or_malformed_receipt_refuses_migration(
     assert not success
     assert version is None
     assert "receipt" in output.lower()
+    # The plain installer would resolve an older release on its default Python.
+    assert update_check._PYTHON_MIGRATION_INSTALL_COMMAND in output
     uv_install.assert_not_awaited()
 
 
 async def test_migration_install_failure_has_actionable_recovery(
     uv_install: AsyncMock,
 ) -> None:
-    """Recovery guidance is shown once, with the 3.14 installer."""
+    """Recovery guidance names the 3.14 installer and precedes uv output."""
     notices: list[str] = []
     uv_install.return_value = False, "dependency conflict"
     with patch.object(update_check.sys, "version_info", VersionInfo(3, 13, 4)):
@@ -411,7 +413,7 @@ async def test_migration_install_failure_has_actionable_recovery(
         )
     assert not success
     assert version is None
-    assert output == "dependency conflict"
+    assert output == f"{notices[-1]}\ndependency conflict"
     assert update_check._PYTHON_MIGRATION_INSTALL_COMMAND in notices[-1]
 
 

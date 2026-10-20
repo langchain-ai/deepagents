@@ -2653,6 +2653,15 @@ def _read_migrated_distribution_version() -> str | None:
         return None
 
 
+def _sentence(exc: BaseException) -> str:
+    """Render an exception message as one sentence ending in a period.
+
+    Returns:
+        The message with exactly one trailing period.
+    """
+    return f"{str(exc).rstrip().rstrip('.')}."
+
+
 async def perform_upgrade(
     *,
     progress: UpgradeProgressCallback | None = None,
@@ -2679,9 +2688,10 @@ async def perform_upgrade(
             latest release on the resolved channel, and its `Requires-Python`
             decides whether to migrate the interpreter. Also used to detect
             pinned pre-release dependencies.
-        on_notice: Receives user-facing messages about a Python migration: one
-            before install, and recovery guidance for every migration failure.
-            When it is set, that guidance is not repeated in *output*.
+        on_notice: Receives user-facing messages that must be shown in full:
+            the pre-install migration notice, and every failure that carries
+            its own recovery steps. Callers should show no generic upgrade
+            command after one. *output* also includes the failure text.
         allow_python_migration: Disable in live sessions whose interpreter must survive.
         on_migration_deferred: Called when the target needs a Python migration
             that `allow_python_migration` forbids, so callers can report a
@@ -2731,11 +2741,12 @@ async def perform_upgrade(
         try:
             python = await asyncio.to_thread(_upgrade_python, target_version)
         except (ImportError, ValueError) as exc:
-            return (
-                False,
-                (f"Update stopped before installation: {exc} Nothing was installed."),
-                None,
+            refusal = (
+                f"Update stopped before installation: {_sentence(exc)} "
+                "Nothing was installed."
             )
+            await _emit_progress(on_notice, refusal)
+            return False, refusal, None
     if python is not None:
         # The plain installer defaults to an older Python, which would resolve
         # the newest compatible release instead of this target.
@@ -2801,14 +2812,14 @@ async def perform_upgrade(
                     ToolRequirementIntrospectionError,
                 ) as exc:
                     refusal = (
-                        f"Could not preserve your installation options: {exc}. "
+                        "Could not preserve your installation options: "
+                        f"{_sentence(exc)} "
                         "The existing installation was left unchanged. "
                         "Retry after repairing the uv receipt, or use the updated "
                         "installer and reselect extras and added packages: "
                         f"{recovery_installer}"
                     )
-                    if python is not None:
-                        await _emit_progress(on_notice, refusal)
+                    await _emit_progress(on_notice, refusal)
                     return False, refusal, None
             else:
                 cmd = upgrade_command(
@@ -2871,10 +2882,8 @@ async def perform_upgrade(
             f"{_PYTHON_MIGRATION_INSTALL_COMMAND} "
             "(reselect extras and added packages)."
         )
-        if on_notice is None:
-            output = f"{guidance}\n{output}"
-        else:
-            await _emit_progress(on_notice, guidance)
+        output = f"{guidance}\n{output}"
+        await _emit_progress(on_notice, guidance)
     installed_version: str | None = None
     if success and method == "uv":
         reader = (
@@ -2908,8 +2917,7 @@ async def perform_upgrade(
                 "Not restarting or reporting success. Check the uv output and "
                 f"retry, or use the updated installer: {recovery_installer}"
             )
-            if python is not None:
-                await _emit_progress(on_notice, failure)
+            await _emit_progress(on_notice, failure)
             return False, f"{failure}\n{output}", None
     elif success:
         installed_version = target_version

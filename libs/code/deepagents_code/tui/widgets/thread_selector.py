@@ -2155,8 +2155,11 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             # Prompts may affect fuzzy match results; rebuild the filtered
             # list but preserve the user's cursor position.
             saved_tid = self._selected_thread_id()
+            was_load_more = self._load_more_selected()
             self._update_filtered_list()
-            if saved_tid is not None:
+            if was_load_more and self._has_more:
+                self._selected_index = len(self._filtered_threads)
+            elif saved_tid is not None:
                 self._select_thread_id(saved_tid, self._selected_index)
             self._schedule_list_rebuild()
         else:

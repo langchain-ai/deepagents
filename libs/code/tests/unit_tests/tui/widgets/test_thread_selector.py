@@ -997,6 +997,49 @@ class TestThreadSelectorPagination:
                 await pilot.press("enter")
                 assert app.result == "abc12345"
 
+    async def test_load_more_stays_selected_after_prompt_enrichment(self) -> None:
+        """Prompts loaded after a batch do not move a search off "Load more"."""
+        # Older rows arrive without prompts, so a batch schedules enrichment.
+        older = _numbered_threads(6)
+        for thread in older:
+            thread.pop("initial_prompt", None)
+        threads = [MOCK_THREADS[0], *older]
+
+        def populate(rows: list[ThreadInfo], **_: bool) -> None:
+            for row in rows:
+                row.setdefault("initial_prompt", "unrelated")
+
+        with (
+            _patch_columns(),
+            patch.dict("os.environ", {"DEEPAGENTS_CODE_RECENT_THREADS": "2"}),
+            _patch_list_threads(threads),
+            patch(
+                "deepagents_code.sessions.populate_thread_checkpoint_details",
+                new_callable=AsyncMock,
+                side_effect=populate,
+            ) as populate_mock,
+        ):
+            app = ThreadSelectorTestApp()
+            async with app.run_test(size=(140, 40)) as pilot:
+                screen = ThreadSelectorScreen(
+                    current_thread="abc12345",
+                    filter_cwd=None,
+                    initial_threads=threads[:2],
+                )
+                app.push_screen(screen)
+                await pilot.pause()
+                await pilot.press(*"abc12345")
+                await pilot.pause()
+                await pilot.press("down", "enter")
+                await pilot.pause()
+                await pilot.pause()
+                assert populate_mock.await_count
+                assert len(screen._threads) == 4
+                assert screen._load_more_selected()
+                await pilot.press("enter")
+                await pilot.pause()
+                assert len(screen._threads) == 6
+
     async def test_load_more_survives_queued_rebuild(self) -> None:
         """A queued row sync leaves a rebuilt pagination button usable."""
         threads = _numbered_threads(7)

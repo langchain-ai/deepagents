@@ -1121,6 +1121,30 @@ async def _apply_saved_message_counts(
         _cache_message_count(thread["thread_id"], freshness, entry[1])
 
 
+_message_count_save_warned: list[bool] = [False]
+"""Whether a non-lock failure to save message counts was already logged."""
+
+
+def _log_message_count_save_failure(exc: sqlite3.Error) -> None:
+    """Log a failed save; warn once for errors that will keep recurring.
+
+    A busy or locked database is expected while another process writes. Other
+    errors (a read-only file, a bad schema) make every later save fail too, so
+    they are worth one warning per process.
+    """
+    code = getattr(exc, "sqlite_errorcode", None)
+    # Extended result codes keep the primary code in the low byte.
+    locked = code is not None and (code & 0xFF) in {
+        sqlite3.SQLITE_BUSY,
+        sqlite3.SQLITE_LOCKED,
+    }
+    if locked or _message_count_save_warned[0]:
+        logger.debug("Could not save thread message counts", exc_info=exc)
+        return
+    _message_count_save_warned[0] = True
+    logger.warning("Could not save thread message counts", exc_info=exc)
+
+
 async def _read_saved_message_counts(
     conn: aiosqlite.Connection, thread_ids: list[str]
 ) -> dict[str, tuple[str, int]]:
@@ -1176,8 +1200,8 @@ async def _save_message_counts(
             rows,
         )
         await conn.commit()
-    except sqlite3.Error:
-        logger.debug("Could not save thread message counts", exc_info=True)
+    except sqlite3.Error as exc:
+        _log_message_count_save_failure(exc)
         with contextlib.suppress(sqlite3.Error):
             await conn.rollback()
     finally:

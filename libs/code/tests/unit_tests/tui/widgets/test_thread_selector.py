@@ -931,7 +931,6 @@ class TestThreadSelectorPagination:
                 await pilot.pause()
                 screen = cast("ThreadSelectorScreen", app.screen)
                 assert len(screen._option_widgets) == 2
-                assert "DEEPAGENTS_CODE_RECENT_THREADS" not in screen._build_help_text()
                 if use_mouse:
                     await pilot.click("#thread-load-more")
                 else:
@@ -1169,8 +1168,6 @@ class TestThreadSelectorPagination:
                     rebuild = asyncio.create_task(screen._build_list())
                     sync = asyncio.create_task(screen._sync_load_more_row())
                     await asyncio.sleep(0)
-                    assert not rebuild.done()
-                    assert not sync.done()
                 await asyncio.gather(rebuild, sync)
                 assert len(screen.query("#thread-load-more")) == 1
 

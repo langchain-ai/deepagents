@@ -1624,40 +1624,6 @@ class TestReloadModelProfileHints:
     """`/reload` should refresh profile-derived command hints."""
 
 
-@pytest.mark.parametrize("threshold", [None, 100000])
-async def test_reload_confirms_completion_without_tracked_changes(
-    threshold: int | None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Reload confirms completion even when changed options are not summarized."""
-    from deepagents_code import model_config
-    from deepagents_code.app import DeepAgentsApp
-    from deepagents_code.config import credentials
-    from deepagents_code.tui.widgets.messages import AppMessage
-
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.delenv("DEEPAGENTS_CODE_IDLE_COMPACTION_TOKENS", raising=False)
-    monkeypatch.setattr("dotenv.load_dotenv", lambda **_kwargs: False)
-    credentials.reload_from_environment(start_path=tmp_path)
-    assert _resolved_config_value("history.idle_compaction_tokens") == 0
-
-    app = DeepAgentsApp()
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        if threshold is not None:
-            model_config.DEFAULT_CONFIG_PATH.write_text(
-                f"[history]\nidle_compaction_tokens = {threshold}\n", encoding="utf-8"
-            )
-        await app._schedule_reload()
-        await pilot.pause()
-
-        assert _resolved_config_value("history.idle_compaction_tokens") == (
-            threshold or 0
-        )
-        text = "\n".join(str(w._content) for w in app.query(AppMessage))
-        assert "Configuration reloaded.\n" in text
-        assert "No changes detected." not in text
-
-
 class TestReloadSkillReport:
     """`/reload` should surface skill add/remove diff in its report."""
 

@@ -17,7 +17,7 @@ MAX_INSTRUCTIONS_CHARS = 12_000
 
 @tool
 async def breakout(title: str, instructions: str) -> str:
-    """Start an independent task in a new Slack thread, keeping this conversation active.
+    """Start an independent task in a new Slack or Discord thread, keeping this conversation active.
 
     Use only when the user asks to break out separate work. Provide a self-contained
     task: the new conversation does not inherit this conversation's history.

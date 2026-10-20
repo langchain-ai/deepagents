@@ -45,6 +45,7 @@ from deepagents_talon.authorization import (
 from deepagents_talon.background import (
     _IN_SUBAGENT,
     _INLINE_TIMEOUT_SECONDS,
+    _MAX_RUNNING,
     _SCHEDULED_TURN,
     BackgroundSubagents,
 )
@@ -53,6 +54,7 @@ from deepagents_talon.clock import current_time
 from deepagents_talon.config import TalonConfig
 from deepagents_talon.context_doctor import ContextDoctor
 from deepagents_talon.cron import CronJobStore, CronOrigin, CronTools
+from deepagents_talon.effort import ACTIVE_EFFORT, effort_levels, effort_settings
 from deepagents_talon.interfaces import (
     AgentRequest,
     AgentResult,
@@ -61,7 +63,7 @@ from deepagents_talon.interfaces import (
     ToolApprovalRequest,
 )
 from deepagents_talon.mcp import _cancel_mcp_elicitation
-from deepagents_talon.messaging import MESSAGE_HANDLER, ProgressMessages, send_message
+from deepagents_talon.messaging import ProgressMessages, progress_messages, send_message
 from deepagents_talon.model_selection import (
     ACTIVE_MODEL,
     ModelSelection,
@@ -109,6 +111,7 @@ DEFAULT_MAX_APPROVAL_ROUNDS = 50
 CONTEXT_SIZE_ENV_KEY = "DEEPAGENTS_TALON_CONTEXT_SIZE"
 RECURSION_LIMIT_ENV_KEY = "DEEPAGENTS_TALON_RECURSION_LIMIT"
 INLINE_SUBAGENT_TIMEOUT_ENV_KEY = "DEEPAGENTS_TALON_INLINE_SUBAGENT_TIMEOUT"
+MAX_BACKGROUND_TASKS_ENV_KEY = "DEEPAGENTS_TALON_MAX_BACKGROUND_TASKS"
 _WORKSPACE_ENV = "DEEPAGENTS_TALON_WORKSPACE"
 _HELP_MODEL_ENV = "DEEPAGENTS_TALON_HELP_MODEL"
 _MAX_HELP_QUESTION = 8_000
@@ -319,7 +322,8 @@ class DeepAgentRuntime:
             transport errors.
         max_continuations: Number of continuation nudges after empty responses.
         env: Environment values for model, path, and backend settings.
-            Defaults to `os.environ`.
+            `DEEPAGENTS_TALON_VERBOSITY` selects silent (1, default), sparse (2), or
+            unrestricted (3) interim updates. Defaults to `os.environ`.
         sandbox_working_dir: Working directory inside a remote sandbox `backend`.
             When set, the system prompt tells the agent its tools run there.
     """
@@ -365,6 +369,7 @@ class DeepAgentRuntime:
             msg = "max_continuations cannot be negative"
             raise ValueError(msg)
 
+        self.verbosity = TalonConfig.from_env(values).verbosity
         self.model = model
         self.tools = tuple(tools)
         self.refresh_tools = refresh_tools
@@ -400,7 +405,9 @@ class DeepAgentRuntime:
         )
         self._tools_lock = asyncio.Lock()
         self.background = BackgroundSubagents(
-            inline_timeout=_inline_timeout_from_env(self.env, _INLINE_TIMEOUT_SECONDS)
+            inline_timeout=_inline_timeout_from_env(self.env, _INLINE_TIMEOUT_SECONDS),
+            max_running=_positive_int_from_env(self.env, MAX_BACKGROUND_TASKS_ENV_KEY)
+            or _MAX_RUNNING,
         )
         self._pending_results: contextvars.ContextVar[dict[str, str] | None] = (
             contextvars.ContextVar("talon_subagent_results", default=None)
@@ -594,10 +601,21 @@ class DeepAgentRuntime:
     @contextlib.asynccontextmanager
     async def _turn_models(self, request: AgentRequest) -> AsyncIterator[None]:
         """Bind the chat's selected model for one turn."""
-        model_token = ACTIVE_MODEL.set(await self._turn_model(request))
+        model = await self._turn_model(request)
+        spec = request.model or self.default_model
+        settings = (
+            effort_settings(spec, request.effort)
+            if request.effort is not None
+            and (model is not None or spec == self.default_model)
+            and request.effort in effort_levels(spec)
+            else None
+        )
+        model_token = ACTIVE_MODEL.set(model)
+        effort_token = ACTIVE_EFFORT.set(settings)
         try:
             yield
         finally:
+            ACTIVE_EFFORT.reset(effort_token)
             ACTIVE_MODEL.reset(model_token)
 
     async def _turn_model(self, request: AgentRequest) -> BaseChatModel | None:
@@ -709,10 +727,12 @@ class DeepAgentRuntime:
         # so its delegations keep detaching.
         scheduled_token = _SCHEDULED_TURN.set(request.metadata.get("trigger") == "cron")
         authorization_token = set_authorization_handler(request.authorization_handler)
-        message_token = MESSAGE_HANDLER.set(request.message_handler)
         breakout_token = BREAKOUT_HANDLER.set(request.breakout_handler)
         try:
-            with _history_context(request):
+            with (
+                progress_messages(request.message_handler, self.verbosity),
+                _history_context(request),
+            ):
                 async with (
                     self.checkpointer.protect_session(request.conversation_id)
                     if isinstance(self.checkpointer, ConversationSaver)
@@ -730,7 +750,6 @@ class DeepAgentRuntime:
             APPROVAL_OPERATOR.reset(operator_token)
             ACTIVE_APPROVALS.reset(policy_token)
             reset_authorization_handler(authorization_token)
-            MESSAGE_HANDLER.reset(message_token)
             BREAKOUT_HANDLER.reset(breakout_token)
             _SCHEDULED_TURN.reset(scheduled_token)
             _CRON_ORIGIN.reset(token)
@@ -948,7 +967,19 @@ class DeepAgentRuntime:
         self,
         runtime_tools: Sequence[BaseTool | Callable[..., object]] | None = None,
     ) -> list[BaseTool | Callable[..., object]]:
-        tools: list[BaseTool | Callable[..., object]] = [current_time, send_message, breakout]
+        tools: list[BaseTool | Callable[..., object]] = [current_time, breakout]
+        if self.verbosity > 1:
+            guidance = {
+                2: " Use extremely sparingly: only for significant updates while working, "
+                "at most 1-2 per turn, not per subagent or batch."
+            }
+            tools.append(
+                send_message.model_copy(
+                    update={
+                        "description": send_message.description + guidance.get(self.verbosity, "")
+                    }
+                )
+            )
         if self._smart_model is not None:
             tools.append(self._help_tool(self._smart_model))
         if isinstance(self.checkpointer, ConversationSaver):
@@ -1165,10 +1196,27 @@ class DeepAgentRuntime:
 
     def _resolve_system_prompt(self) -> str | None:
         prompt = self._base_system_prompt()
-        if self.sandbox_working_dir is None:
-            return prompt
-        note = _SANDBOX_PROMPT.format(working_dir=self.sandbox_working_dir)
-        return f"{prompt}\n\n{note}" if prompt else note
+        progress = {
+            1: (
+                "Do not send interim progress updates or narrate tool calls; "
+                "give only the final answer."
+            ),
+            2: (
+                "Use interim updates extremely sparingly: at most 1-2 brief, significant updates "
+                "while working on genuinely long tasks, not per subagent or batch. "
+                "This includes narration alongside tool calls. Otherwise stay silent "
+                "until the final answer."
+            ),
+            3: (
+                "Send brief, useful progress updates as you work, with no fixed message limit. "
+                "Limit them to important updates or notifications about changes in working "
+                "direction, not routine narration. Give the final answer normally."
+            ),
+        }[self.verbosity]
+        parts = [prompt, progress]
+        if self.sandbox_working_dir is not None:
+            parts.append(_SANDBOX_PROMPT.format(working_dir=self.sandbox_working_dir))
+        return "\n\n".join(part for part in parts if part)
 
     def _base_system_prompt(self) -> str | None:
         if self.system_prompt is not None:

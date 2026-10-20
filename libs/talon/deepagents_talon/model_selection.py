@@ -42,6 +42,7 @@ from deepagents_code.model_config import (
     is_langsmith_gateway_host,
 )
 from deepagents_talon.background import _IN_SUBAGENT
+from deepagents_talon.effort import ACTIVE_EFFORT
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Mapping, Sequence
@@ -270,7 +271,24 @@ class ModelSelectionMiddleware(AgentMiddleware[Any, Any, Any]):
 
 def _selected(request: ModelRequest[Any]) -> ModelRequest[Any]:
     model = ACTIVE_MODEL.get()
-    return request if model is None else request.override(model=model)
+    if model is not None:
+        request = request.override(model=model)
+    settings = ACTIVE_EFFORT.get()
+    if settings and not _IN_SUBAGENT.get():
+        merged = {**request.model_settings, **settings}
+        if "extra_body" in settings:
+            previous = request.model_settings.get("extra_body") or {}
+            merged["extra_body"] = {
+                **previous,
+                **settings["extra_body"],
+            }
+            if "thinking" in settings["extra_body"]:
+                merged["extra_body"]["thinking"] = {
+                    **previous.get("thinking", {}),
+                    **settings["extra_body"]["thinking"],
+                }
+        request = request.override(model_settings=merged)
+    return request
 
 
 def _summary_trim_limit(model: BaseChatModel) -> int:

@@ -2,6 +2,34 @@
 
 # Deep Agents Changelog
 
+## [0.7.28](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.27...deepagents==0.7.28) (2026-10-16)
+
+### Bug Fixes
+
+- Fixed `ContextHubBackend.glob` to honor the `path` argument.
+
+## [0.7.27](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.26...deepagents==0.7.27) (2026-10-16)
+
+### Features
+
+- Keep the main agent informed of asynchronous subagent status updates ([#6853](https://github.com/langchain-ai/deepagents/pull/6853)).
+
+### Bug Fixes
+
+- Pass subagent names to subagents ([#6987](https://github.com/langchain-ai/deepagents/pull/6987)).
+
+## [0.7.26](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.25...deepagents==0.7.26) (2026-10-15)
+
+### Features
+
+- Async subagents now report when they’re waiting for a human. ([#6842](https://github.com/langchain-ai/deepagents/pull/6842))
+- Async subagent runs now appear under their parent’s trace and identify the agent that launched them. ([#6823](https://github.com/langchain-ai/deepagents/pull/6823), [#6836](https://github.com/langchain-ai/deepagents/pull/6836))
+- Summarization middleware now exposes its `summarizer`. ([#6900](https://github.com/langchain-ai/deepagents/pull/6900))
+
+### Bug Fixes
+
+- Preserve resolved tool-result paths. ([#6968](https://github.com/langchain-ai/deepagents/pull/6968))
+
 ## [0.7.25](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.24...deepagents==0.7.25) (2026-10-13)
 
 ### Features

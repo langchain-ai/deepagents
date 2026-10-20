@@ -110,12 +110,19 @@ class _Job:
 class BackgroundSubagents(AgentMiddleware):
     """Keep SDK task invocations alive independently of the main conversation turn."""
 
-    def __init__(self, inline_timeout: float = _INLINE_TIMEOUT_SECONDS) -> None:
+    def __init__(
+        self, inline_timeout: float = _INLINE_TIMEOUT_SECONDS, *, max_running: int = _MAX_RUNNING
+    ) -> None:
         """Keep task handles and results in memory only.
 
         Args:
             inline_timeout: Seconds a scheduled run may spend in one delegation.
+            max_running: Background worker limit shared across conversations and configured copies.
         """
+        if max_running <= 0:
+            msg = "max_running must be positive"
+            raise ValueError(msg)
+        self._max_running = max_running
         self._jobs: dict[str, _Job] = {}
         self._lock = asyncio.Lock()
         # Built here rather than per configured copy: `configured` shallow-copies this
@@ -174,6 +181,12 @@ class BackgroundSubagents(AgentMiddleware):
             return await handler(request)
         scheduled = _SCHEDULED_TURN.get()
         instructions = _SCHEDULED_INSTRUCTIONS if scheduled else _INSTRUCTIONS
+        if not scheduled:
+            instructions += (
+                f" You can run at most {self._max_running} background subagents concurrently, "
+                "shared across all conversations. "
+                "Batch or stagger additional work as results arrive; excess launches are refused."
+            )
         hidden = HIDDEN_ASYNC_TOOLS | _SCHEDULED_HIDDEN_TOOLS if scheduled else HIDDEN_ASYNC_TOOLS
         blocks = request.system_message.content_blocks if request.system_message else []
         message = SystemMessage(content_blocks=[*blocks, {"type": "text", "text": instructions}])
@@ -220,7 +233,7 @@ class BackgroundSubagents(AgentMiddleware):
                 or sum(
                     job.worker is not None and not job.worker.done() for job in self._jobs.values()
                 )
-                >= _MAX_RUNNING
+                >= self._max_running
             ):
                 return ToolMessage(
                     "Background subagent capacity reached.", tool_call_id=request.tool_call["id"]

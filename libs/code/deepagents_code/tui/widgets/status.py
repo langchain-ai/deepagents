@@ -724,6 +724,7 @@ class StatusBar(Vertical):
         self.cache_write_tokens = 0
         self.cache_written_at: datetime | None = None
         self.cache_expires_at: datetime | None = None
+        self.cache_window_seconds: int | None = None
         self.cache_retention_confidence: CacheConfidence = "expired"
         self._cache_timer: Timer | None = None
         self._status_by_source: dict[StatusMessageSource, str] = {
@@ -1192,8 +1193,8 @@ class StatusBar(Vertical):
         )
         minutes, seconds = divmod(remaining, 60)
         countdown = (
-            "uncertain"
-            if remaining == 0 and self.cache_retention_confidence == "may_be_cold"
+            "expired"
+            if datetime.now(UTC) >= self.cache_expires_at
             else f"{minutes}:{seconds:02d}"
         )
         return f"{written} / {countdown}" if written else countdown
@@ -1241,6 +1242,11 @@ class StatusBar(Vertical):
             if segment.plain
         )
         cache = self._cache_segment()
+        if (
+            self.cache_expires_at is not None
+            and datetime.now(UTC) >= self.cache_expires_at
+        ):
+            cache = cache.stylize(theme.get_theme_colors(self).error)
         cache_display.segments = (cache,) if cache.plain else ()
         context_display.segments = context_segments
 
@@ -1324,6 +1330,7 @@ class StatusBar(Vertical):
         self._stop_cache_timer()
         self.cache_written_at = written_at
         self.cache_retention_confidence = retention_confidence
+        self.cache_window_seconds = ttl_seconds
         retention_at = retention_at or written_at
         self.cache_expires_at = (
             datetime.fromtimestamp(retention_at.timestamp() + ttl_seconds, UTC)

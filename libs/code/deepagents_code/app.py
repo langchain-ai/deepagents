@@ -2111,6 +2111,9 @@ Two seconds balances responsiveness with avoiding accidental approval
 key presses.
 """
 
+_IDLE_COMPACTION_LEAD_SECONDS = 120
+"""Lead time for automatic idle context compaction."""
+
 _CACHE_EXPIRING_LEAD_SECONDS = 60
 """Lead time for the prompt-cache retention notification."""
 
@@ -2641,6 +2644,38 @@ def _langsmith_gateway_key_mismatch(provider: str | None) -> str | None:
     return resolved_env_var_name(key_env)
 
 
+def _build_resume_workspace_error_body(exc: BaseException) -> str | Content:
+    """Return markup-safe workspace refusal guidance with allowlisted field names."""
+    from deepagents_code.client.remote_client import workspace_conflict_diagnostics
+    from deepagents_code.workspace_diagnostics import (
+        SAFE_SNAPSHOT_FIELDS,
+        FieldChange,
+        WorkspaceDiagnostics,
+        format_diagnostics_content,
+    )
+
+    text = (
+        "Couldn't restore this thread's workspace because the server refused its "
+        "configuration. Model restoration was not attempted. Restore the original "
+        "settings or start a separate server with matching configuration, then "
+        "retry resume."
+    )
+    diagnostics = workspace_conflict_diagnostics(exc)
+    if diagnostics is None:
+        return text
+    safe = WorkspaceDiagnostics(
+        category="unknown",
+        reason="workspace configuration conflict",
+        changes=tuple(
+            FieldChange(name=change.name, state="values_unavailable")
+            for change in diagnostics.changes
+            if change.name in SAFE_SNAPSHOT_FIELDS
+        ),
+        snapshot_status=diagnostics.snapshot_status,
+    )
+    return Content.assemble(text, "\n\n", format_diagnostics_content(safe))
+
+
 def _build_agent_error_body(
     text: str, exc: BaseException, *, key_env: str | None = None
 ) -> str | Content:
@@ -2911,6 +2946,7 @@ _SANDBOX_DISPLAY_NAMES: dict[str, str] = {
     "daytona": "Daytona",
     "langsmith": "LangSmith",
     "modal": "Modal",
+    "openshell": "OpenShell",
     "runloop": "Runloop",
 }
 """Human-readable display names for sandbox providers."""
@@ -4340,6 +4376,7 @@ class DeepAgentsApp(App):
         state and must not appear in scrollback or serialized history.
         """
 
+        self._thread_switch_error_widget: ErrorMessage | None = None
         self._startup_failure_widget: ErrorMessage | None = None
         """Transient chat surface for the most recent server-startup failure.
         Mounted by `on_deep_agents_app_server_start_failed`; removed on
@@ -4545,6 +4582,7 @@ class DeepAgentsApp(App):
         )
         """Minimum estimated cold-versus-warm cost delta that opens the modal."""
 
+        self._idle_compaction_seen: dict[str, datetime] = {}
         self._cache_expiring_seen: dict[str, datetime] = {}
         self._cache_expiring_worker: Worker[None] | None = None
 
@@ -4877,6 +4915,7 @@ class DeepAgentsApp(App):
         header = _StaticHeader(id="app-header")
         header.display = self._header_should_display()
         yield header
+        yield Static("Prompt cache expired", id="cache-expired-banner")
         # Main chat area with scrollable messages
         # VerticalScroll tracks user scroll intent for better auto-scroll behavior.
         # `_ChatScroll` keeps clicks on messages from stealing input focus.
@@ -5981,16 +6020,9 @@ class DeepAgentsApp(App):
         Returns:
             A short user-facing provenance and rationale sentence.
         """
-        if source == "managed config":
-            owner = "Your administrator set this policy through managed config"
-        elif source == "config.toml":
-            owner = "This policy was set in your config.toml"
-        else:
-            owner = "This policy was set by active configuration"
-        return (
-            f"{owner} to keep older threads from restoring stale context after "
-            "model or policy changes."
-        )
+        from deepagents_code.resume_policy import resume_cutoff_explanation
+
+        return resume_cutoff_explanation(source)
 
     @staticmethod
     def _resume_cutoff() -> tuple[datetime, str, bool] | None:
@@ -5999,69 +6031,16 @@ class DeepAgentsApp(App):
         Returns:
             The cutoff, its source, and whether it is rolling, or `None`.
         """
-        from deepagents_code.config_manifest import (
-            _emit_ranked_diagnostics,
-            _ranked_source,
-            get_option,
-            parse_duration_seconds,
-        )
-        from deepagents_code.configuration.resolver import get_config_resolver
+        from deepagents_code.resume_policy import resume_cutoff
 
-        resolver = get_config_resolver()
-        cutoffs: list[tuple[datetime, str, bool]] = []
-        for key in ("threads.resume_after", "threads.max_resume_age"):
-            option = get_option(key)
-            if option is None:
-                continue
-            resolved = resolver.get(option)
-            _emit_ranked_diagnostics(option, resolved)
-            value = resolved.value
-            if key.endswith("resume_after") and isinstance(value, str):
-                cutoffs.append(
-                    (datetime.fromisoformat(value), _ranked_source(resolved), False)
-                )
-            elif key.endswith("max_resume_age") and isinstance(value, str):
-                seconds = parse_duration_seconds(value)
-                if seconds is not None:
-                    cutoff = datetime.min.replace(tzinfo=UTC)
-                    with suppress(OverflowError):
-                        cutoff = datetime.now(UTC) - timedelta(seconds=seconds)
-                    cutoffs.append((cutoff, _ranked_source(resolved), True))
-        return max(cutoffs, default=None)
+        return resume_cutoff()
 
     @staticmethod
     async def _thread_resume_block(thread_id: str) -> str | None:
         """Return why configured policy blocks resuming a thread, if applicable."""
-        from deepagents_code.config_manifest import normalize_iso_datetime
-        from deepagents_code.sessions import get_thread_updated_at
+        from deepagents_code.resume_policy import thread_resume_block
 
-        policy = DeepAgentsApp._resume_cutoff()
-        if policy is None:
-            return None
-        cutoff, source, rolling = policy
-        explanation = DeepAgentsApp._resume_cutoff_explanation(source)
-        updated_value = await get_thread_updated_at(thread_id)
-        normalized = normalize_iso_datetime(updated_value)
-        if normalized is None:
-            logger.warning(
-                "Blocking resume for thread %s: missing or invalid updated_at %r",
-                thread_id,
-                updated_value,
-            )
-            return (
-                f"Thread {thread_id} cannot be resumed because its last-updated "
-                f"time could not be verified.\n\n{explanation}"
-            )
-        if datetime.fromisoformat(normalized) >= cutoff:
-            return None
-        reason = (
-            "it is older than the configured maximum age"
-            if rolling
-            else f"it was last updated before {cutoff.isoformat()}"
-        )
-        return (
-            f"Thread {thread_id} cannot be resumed because {reason}.\n\n{explanation}"
-        )
+        return await thread_resume_block(thread_id, DeepAgentsApp._resume_cutoff())
 
     def _reserve_thread(self, thread_id: str) -> None:
         """Reserve a locally managed thread before reading or adopting it."""
@@ -9716,22 +9695,79 @@ class DeepAgentsApp(App):
         except Exception:
             logger.debug("Cache-expiring notification failed", exc_info=True)
 
-    def _check_cache_expiry(self) -> None:
-        """Offer a handoff once per expired cache window, only when idle.
+    def _refresh_cache_expiry_banner(self) -> None:
+        """Show reconciled cache expiry independently of handoff preferences."""
+        if not self.screen_stack:
+            return
+        banners = self.screen_stack[0].query("#cache-expired-banner")
+        if banners:
+            expires_at = self._status_bar.cache_expires_at if self._status_bar else None
+            banner = banners.first(Static)
+            banner.display = (
+                not self._cache_reconciliation_pending
+                and expires_at is not None
+                and datetime.now(UTC) >= expires_at
+            )
+            if banner.display and expires_at is not None:
+                expired_at = expires_at.astimezone().strftime("%H:%M:%S")
+                elapsed = datetime.now(UTC) - expires_at
+                age = "just now"
+                for unit in ("day", "hour", "minute"):
+                    count = elapsed // timedelta(**{f"{unit}s": 1})
+                    if count:
+                        age = f"{count} {unit}{'s' if count != 1 else ''} ago"
+                        break
+                banner.update(f"Prompt cache expired at {expired_at} ({age})")
 
-        Polled every second from `on_mount`. Acts only when
-        `warnings.cache_prompt` is `expiry` and no cold-cache opt-out applies.
-        """
+    def _check_idle_compaction(self) -> None:
+        """Reserve one offload per warm cache window, without yielding to input."""
+        from deepagents_code.config_manifest import get_option
+        from deepagents_code.configuration.resolver import get_config_resolver
+
+        option = get_option("history.idle_compaction_tokens")
+        threshold = get_config_resolver().get(option).value if option else 0
         expires_at = self._status_bar.cache_expires_at if self._status_bar else None
+        window = self._status_bar.cache_window_seconds if self._status_bar else None
+        lead = min(window * 0.2, _IDLE_COMPACTION_LEAD_SECONDS) if window else 0
         thread_id = self._lc_thread_id
         if (
-            expires_at is None
+            not isinstance(threshold, int)
+            or threshold <= 0
+            or self._tokens_approximate
+            or self._context_tokens < threshold
             or not thread_id
-            or datetime.now(UTC) < expires_at
-            or self._cache_expiry_seen.get(thread_id) == expires_at
-            or not self._agent
+            or expires_at is None
+            or self._idle_compaction_seen.get(thread_id) == expires_at
+            or not 0 < (expires_at - datetime.now(UTC)).total_seconds() <= lead
+            or not self._cache_maintenance_idle()
+            or self._remote_agent() is None
+        ):
+            return
+        self._idle_compaction_seen[thread_id] = expires_at
+        self._set_agent_running(True)
+        try:
+            self._offload_worker = self.run_worker(
+                self._run_offload_task(idle_window=(thread_id, expires_at)),
+                group="offload",
+                exit_on_error=False,
+            )
+        except Exception:
+            self._set_agent_running(False)
+            logger.exception("Failed to schedule idle compaction")
+
+    def _cache_maintenance_idle(self, *, reserved: bool = False) -> bool:
+        """Require a quiescent UI before automatic cache maintenance.
+
+        Args:
+            reserved: Ignore the automatic offload's own busy reservation.
+
+        Returns:
+            Whether no UI activity competes with cache maintenance.
+        """
+        return not (
+            not self._agent
             or not self._session_state
-            or self._agent_running
+            or (self._agent_running and not reserved)
             or self._agent_reconciling
             or self._goal_state_mutating
             or self._shell_running
@@ -9747,6 +9783,25 @@ class DeepAgentsApp(App):
             or self._reloading
             or self._exiting
             or isinstance(self.screen, ModalScreen)
+            or self._cache_reconciliation_pending
+        )
+
+    def _check_cache_expiry(self) -> None:
+        """Offer a handoff once per expired cache window, only when idle.
+
+        Polled every second from `on_mount`. Acts only when
+        `warnings.cache_prompt` is `expiry` and no cold-cache opt-out applies.
+        """
+        self._refresh_cache_expiry_banner()
+        self._check_idle_compaction()
+        expires_at = self._status_bar.cache_expires_at if self._status_bar else None
+        thread_id = self._lc_thread_id
+        if (
+            expires_at is None
+            or not thread_id
+            or datetime.now(UTC) < expires_at
+            or self._cache_expiry_seen.get(thread_id) == expires_at
+            or not self._cache_maintenance_idle()
         ):
             return
         if (
@@ -17723,7 +17778,9 @@ class DeepAgentsApp(App):
                 raise
         elif cmd == "/rename" or cmd.startswith("/rename "):
             await self._rename_current_thread(command.partition(" ")[2])
-        elif cmd == "/threads" or cmd.startswith("/threads "):
+        elif cmd in {"/threads", "/resume"} or cmd.startswith(
+            ("/threads ", "/resume ")
+        ):
             await self._handle_threads_command(command)
         elif cmd == "/trace":
             await self._handle_trace_command(command)
@@ -18259,7 +18316,7 @@ class DeepAgentsApp(App):
                     f"  - {change}" for change in changes
                 )
             else:
-                report = "Configuration reloaded. No changes detected."
+                report = "Configuration reloaded."
             report += "\nModel config caches cleared."
             if theme_reload_ok:
                 report += "\nTheme registry reloaded."
@@ -18752,10 +18809,26 @@ class DeepAgentsApp(App):
                 ErrorMessage(f"Offload failed: {format_agent_exception(exc)}")
             )
 
-    async def _run_offload_task(self) -> None:
+    async def _run_offload_task(
+        self, *, idle_window: tuple[str, datetime] | None = None
+    ) -> None:
         """Run a synchronously reserved `/offload` outside the App message pump."""
         self._offload_task_started = True
         try:
+            if idle_window is not None:
+                if (
+                    self._lc_thread_id != idle_window[0]
+                    or not self._status_bar
+                    or self._status_bar.cache_expires_at != idle_window[1]
+                    or datetime.now(UTC) >= idle_window[1]
+                    or not self._cache_maintenance_idle(reserved=True)
+                ):
+                    self._set_agent_running(False)
+                    return
+                self.notify(
+                    "Compacting idle context before cache expiry.",
+                    markup=False,
+                )
             await self._handle_offload(reserved=True)
         finally:
             self._offload_task_started = False
@@ -21954,6 +22027,7 @@ class DeepAgentsApp(App):
                 self._last_cache_write = activity
             await self._refresh_cache_timing()
         self._cache_reconciliation_pending = pending
+        self._refresh_cache_expiry_banner()
 
     def _set_active_message(self, message_id: str | None) -> None:
         """Set the active streaming message (won't be pruned).
@@ -24651,7 +24725,7 @@ class DeepAgentsApp(App):
                             severity="warning",
                         )
                     return
-                if result is not None and not current_input.insert_at_cursor(result):
+                if result is not None and not current_input.replace_with_prompt(result):
                     self.notify(
                         "Could not insert the prompt: the composer is unavailable",
                         severity="warning",
@@ -29952,7 +30026,24 @@ class DeepAgentsApp(App):
                 "Use /threads to try again.",
                 exc,
             )
-            await self._mount_message(ErrorMessage(body))
+            await self._mount_thread_switch_error(body)
+
+    async def _mount_thread_switch_error(self, body: str | Content) -> None:
+        """Replace transient thread-switch failures without storing them in history."""
+        async with self._transcript_mutation_lock:
+            prior = self._thread_switch_error_widget
+            self._thread_switch_error_widget = None
+            if prior is not None and prior.is_attached:
+                await prior.remove()
+            try:
+                messages = self.query_one("#messages", Container)
+            except NoMatches:
+                return
+            if not messages.is_attached:
+                return
+            widget = ErrorMessage(body)
+            await self._mount_before_queued(messages, widget)
+            self._thread_switch_error_widget = widget
 
     async def _resolve_threads_resume_target(
         self, requested_id: str | None
@@ -30189,11 +30280,9 @@ class DeepAgentsApp(App):
                     "Failed to prefetch cross-agent thread %s",
                     target.thread_id,
                 )
-                await self._mount_message(
-                    ErrorMessage(
-                        f"Could not load thread {target.thread_id}: {exc}. "
-                        "Staying on the current agent."
-                    )
+                await self._mount_thread_switch_error(
+                    f"Could not load thread {target.thread_id}: {exc}. "
+                    "Staying on the current agent."
                 )
                 return
 
@@ -30233,11 +30322,9 @@ class DeepAgentsApp(App):
                 target.thread_id,
                 target.agent_name,
             )
-            await self._mount_message(
-                ErrorMessage(
-                    f"Could not switch to agent {target.agent_name!r} and resume "
-                    f"thread {target.thread_id}."
-                )
+            await self._mount_thread_switch_error(
+                f"Could not switch to agent {target.agent_name!r} and resume "
+                f"thread {target.thread_id}."
             )
 
     def _open_thread_reference_selector(self, initial_query: str) -> None:
@@ -30567,46 +30654,14 @@ class DeepAgentsApp(App):
     ) -> tuple[Literal["match", "unavailable", "mismatch"], Path | None]:
         """Classify a stored thread cwd against the current app cwd.
 
-        Args:
-            raw: The cwd recorded in the thread's checkpoint metadata. May be
-                relative or use `~`; both are normalized here.
-            current_cwd: The app's current working directory.
+        See `resume_policy.classify_thread_cwd`.
 
         Returns:
-            A `(status, path)` pair. `path` is only set when `status` is
-            `"mismatch"`; it is `None` otherwise. `status` is one of:
-
-            - `"match"`: the stored cwd resolves to the current cwd; no action.
-            - `"unavailable"`: the stored cwd is relative/malformed, or names an
-                absolute directory that no longer exists — it cannot be honored,
-                so the caller should warn and stay put.
-            - `"mismatch"`: the stored cwd is a real directory that differs from
-                the current cwd — the caller should offer to switch.
+            A `(status, path)` pair; `path` is set only for `"mismatch"`.
         """
-        target = Path(raw).expanduser()
-        if not target.is_absolute() or not target.is_dir():
-            # Relative/malformed or missing directory: cannot be honored.
-            return "unavailable", None
-        try:
-            current = Path(current_cwd).expanduser().resolve()
-            resolved = target.resolve()
-        except OSError:
-            # Symlink resolution failed (e.g. ELOOP, permission on a path
-            # component). Fall back to a non-resolving comparison, which can
-            # report a spurious mismatch for symlinked-but-equal paths; log so
-            # the degraded comparison is traceable.
-            logger.debug(
-                "Could not resolve cwd paths for mismatch check (%r vs %r); "
-                "falling back to non-resolving comparison",
-                current_cwd,
-                raw,
-                exc_info=True,
-            )
-            current = Path(current_cwd).expanduser().absolute()
-            resolved = target.absolute()
-        if current == resolved:
-            return "match", None
-        return "mismatch", resolved
+        from deepagents_code.resume_policy import classify_thread_cwd
+
+        return classify_thread_cwd(raw, current_cwd)
 
     async def _thread_cwd_mismatch(self, thread_id: str) -> Path | None:
         """Return the thread cwd when it differs from the current app cwd."""
@@ -31468,11 +31523,9 @@ class DeepAgentsApp(App):
                     await self._restore_cwd_after_failed_thread_switch(prev_cwd)
                     if isinstance(exc, asyncio.CancelledError):
                         raise
-                    await self._mount_message(
-                        AppMessage(
-                            f"Failed to switch to thread {thread_id}: {exc}. "
-                            "Use /threads to try again.",
-                        ),
+                    await self._mount_thread_switch_error(
+                        f"Failed to switch to thread {thread_id}: {exc}. "
+                        "Use /threads to try again."
                     )
                     return
                 logger.exception("Failed to switch to thread %s", thread_id)
@@ -31520,7 +31573,7 @@ class DeepAgentsApp(App):
                 if rollback_restore_failed:
                     error_message += " Previous thread history could not be restored."
                 error_message += " Use /threads to try again."
-                await self._mount_message(AppMessage(error_message))
+                await self._mount_thread_switch_error(error_message)
             finally:
                 if self._chat_input:
                     self._chat_input.set_cursor_active(active=not self._agent_running)
@@ -31949,9 +32002,16 @@ class DeepAgentsApp(App):
             except Exception as exc:
                 logger.exception("Failed to resolve model metadata for %s", display)
                 if from_resume:
-                    await self._mount_resume_adoption_failure(
-                        display, "the model could not be initialized"
-                    )
+                    from langgraph_sdk.errors import ConflictError
+
+                    if isinstance(exc, ConflictError):
+                        await self._mount_message(
+                            ErrorMessage(_build_resume_workspace_error_body(exc))
+                        )
+                    else:
+                        await self._mount_resume_adoption_failure(
+                            display, "the model could not be initialized"
+                        )
                 else:
                     await self._mount_message(
                         ErrorMessage(_build_model_switch_error_body(exc)),

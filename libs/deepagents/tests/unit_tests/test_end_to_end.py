@@ -7,7 +7,7 @@ import mimetypes
 from collections.abc import Awaitable, Callable, Iterator, Sequence
 from pathlib import Path
 from typing import Any, cast
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, MagicMock, patch
 
 import pytest
 from langchain.agents import create_agent
@@ -3989,6 +3989,7 @@ class TestAsyncSubagentEndToEnd:
             assistant_id="writer_graph",
             input={"messages": [{"role": "user", "content": "Focus specifically on LLM trends"}]},
             multitask_strategy="interrupt",
+            headers=ANY,  # trace headers are covered in test_async_subagents.py
         )
 
     @patch("deepagents.middleware.async_subagents.get_sync_client")

@@ -69,6 +69,30 @@ make lint
 
 Run `make help` to see every available target.
 
+## Custom Slack MCP app identity
+
+Slack's hosted MCP server attributes sent messages to the OAuth app used to connect. To use your own registered Slack app instead of Deep Agents Code, add an `oauth` object to its `.mcp.json` server entry:
+
+```json
+{
+  "mcpServers": {
+    "slack": {
+      "type": "http",
+      "url": "https://mcp.slack.com/mcp",
+      "auth": "oauth",
+      "oauth": {
+        "client_id": "${SLACK_CLIENT_ID}",
+        "client_secret": "${SLACK_CLIENT_SECRET}"
+      }
+    }
+  }
+}
+```
+
+Enable MCP access for your Slack app and register `http://localhost:3118/callback` as its redirect URL. Set the environment variables and run `dcode mcp login slack` to authorize it. Confidential apps use `client_secret_post`; omit `client_secret` only for an app registered as a public client. Keep secrets in environment variables, not committed config. The registration, including any secret, is saved in the existing restricted local token store.
+
+Credentials are isolated by server name, URL, and configured client ID, so changing apps requires a separate login and never reuses the default app's grant. Re-run login after rotating a client secret. Omitting `oauth` preserves the existing app and credentials. This selects the authenticated app; it does not let a message supply arbitrary attribution or suppress Slack's footer. These settings apply to dcode; Talon's separate OAuth implementation is unchanged.
+
 ## LangSmith tracing projects
 
 When LangSmith tracing is enabled and a `LANGSMITH_API_KEY` is available, `deepagents-code` traces its own agent runs to LangSmith. A key alone is not enough for environment-supplied keys — set `LANGSMITH_TRACING=true`. Keys stored via `/auth` auto- enable tracing unless you explicitly opt out (for example `DEEPAGENTS_CODE_LANGSMITH_TRACING=false`).
@@ -90,6 +114,33 @@ Set the same override for [local dev installs](#local-dev-installs) (`dcode-dev`
 When onboarding a new tracing project to Engine, capture the nature of that project first: a production/GA app warrants high-priority alerts, while a staging or active-dev project should use looser thresholds (or stay off Engine) so it does not generate false positives.
 
 A server keeps the first workspace's tracing configuration for its lifetime. Workspaces sharing that server must use matching tracing credentials, projects, endpoints, profile selectors, tracing flags, and redaction policy. A conflicting workspace is refused before its settings can affect cached or concurrent runs; start a separate server for that workspace. Restart the server to change its tracing configuration.
+
+## Idle context compaction
+
+Idle compaction is disabled by default. When enabled, the interactive client
+automatically uses the existing `/offload` operation for contexts at or above
+the configured token threshold during the final 20% of a known prompt-cache
+retention window, capped at 120 seconds (60 seconds for a 5-minute window). This keeps the same thread and archives older
+messages; it does not create a handoff thread. The configured offload model is
+used, so summarization can incur costs and cache reuse is not guaranteed.
+
+Opt in with a token threshold through the normal layered config:
+
+```toml
+[history]
+idle_compaction_tokens = 100000
+```
+
+Alternatively, set `DEEPAGENTS_CODE_IDLE_COMPACTION_TOKENS=100000` before
+launching dcode.
+
+Set `idle_compaction_tokens = 0` to disable it again. File edits take effect after
+`/reload`. This setting is independent of cold-cache warning preferences.
+Compaction skips busy sessions, queued input, active typing, modals, lifecycle
+transitions, and approximate token counts. It attempts at most once per thread
+and cache window, announces the operation, and supports Escape cancellation.
+Input arriving before the worker starts skips compaction; input arriving after
+it starts uses the normal offload queue and runs once compaction finishes.
 
 ## Debugging
 

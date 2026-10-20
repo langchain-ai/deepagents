@@ -328,6 +328,9 @@ HIDE_SPLASH_TIPS = "DEEPAGENTS_CODE_HIDE_SPLASH_TIPS"
 HIDE_SPLASH_VERSION = "DEEPAGENTS_CODE_HIDE_SPLASH_VERSION"
 """Hide version and local-install details in the splash screen when enabled."""
 
+IDLE_COMPACTION_TOKENS = "DEEPAGENTS_CODE_IDLE_COMPACTION_TOKENS"
+"""Minimum context tokens for opt-in idle compaction; 0 disables it."""
+
 HISTORY_RETENTION_DAYS = "DEEPAGENTS_CODE_HISTORY_RETENTION_DAYS"
 """Days an offloaded conversation-history archive is kept before the startup
 sweep deletes it.
@@ -514,7 +517,11 @@ repo file, so a project `.env` cannot disable itself.
 """
 
 RECENT_THREADS = "DEEPAGENTS_CODE_RECENT_THREADS"
-"""Maximum recent threads (default: `_constants.DEFAULT_THREAD_LIMIT`)."""
+"""Recent threads per batch (default: 100, `_constants.DEFAULT_THREAD_LIMIT`).
+
+The thread switcher loads this many at a time. It is also the default row
+limit for `threads list` (override with `-n`) and `@@` thread completion.
+"""
 
 RECURSION_LIMIT = "DEEPAGENTS_CODE_RECURSION_LIMIT"
 """Override the main agent's LangGraph `recursion_limit` (graph step budget).

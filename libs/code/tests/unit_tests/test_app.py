@@ -496,7 +496,9 @@ class TestStartupSequence:
         assert mounted == "mounted"
         assert order == ["history", "update"]
 
-    async def test_resuming_status_clears_when_session_init_fails(self) -> None:
+    async def test_resuming_status_clears_when_session_init_fails(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Resume progress should clear when startup aborts before history loading."""
         app = DeepAgentsApp(
             agent=MagicMock(),
@@ -506,13 +508,17 @@ class TestStartupSequence:
         app._connecting = False
         app._restoring_resumed_history = True
         app._session_state = None
-        app._init_session_state = AsyncMock(side_effect=RuntimeError("failed"))  # ty: ignore
+        # Drive startup explicitly below; do not run the failing mock in a worker.
+        monkeypatch.setattr(app, "_post_paint_init", AsyncMock())
+        init_session = AsyncMock(side_effect=RuntimeError("failed"))
+        monkeypatch.setattr(app, "_init_session_state", init_session)
 
         async with app.run_test():
             app._sync_status_connection()
             with pytest.raises(RuntimeError, match="failed"):
                 await app._run_session_start_sequence()
 
+            init_session.assert_awaited_once()
             assert app._startup_sequence_running is False
             assert app._restoring_resumed_history is False
             assert app._status_bar is not None
@@ -6236,7 +6242,7 @@ class TestCacheTiming:
                 display = app.query_one("#cache-display")
                 rendered = str(display.render())
                 assert display.visible
-                assert ("3:00" if age_minutes == 2 else "0:00") in rendered
+                assert ("3:00" if age_minutes == 2 else "expired") in rendered
                 assert ("wrote" in rendered) is observed_write
                 assert "0 read" not in rendered
                 assert "0 write" not in rendered
@@ -18541,7 +18547,7 @@ class TestRestartServerForAgentSwap:
                 "_thread_resume_block",
                 AsyncMock(side_effect=OSError("sessions unavailable")),
             ),
-            patch.object(app, "_mount_message", side_effect=mounted.append),
+            patch.object(app, "_mount_thread_switch_error", side_effect=mounted.append),
             patch(
                 "deepagents_code.app.asyncio.to_thread", AsyncMock(return_value=True)
             ),
@@ -18553,7 +18559,7 @@ class TestRestartServerForAgentSwap:
         server_proc.restart.assert_not_awaited()
         assert any(
             "Could not switch to agent 'researcher' and resume thread stale-thread"
-            in str(getattr(message, "_content", message))
+            in str(message)
             for message in mounted
         )
 
@@ -27269,6 +27275,65 @@ class TestResumeThreadCwdSwitch:
         assert app._server_kwargs["cwd"] == str(current)
         assert agent._snapshot_workspace() == original
 
+    @pytest.mark.parametrize(
+        "failure", ["prompt", "prefetch", "cross-prefetch", "cross-policy"]
+    )
+    async def test_resume_errors_replace_previous_failure(
+        self, monkeypatch: pytest.MonkeyPatch, failure: str, tmp_path: Path
+    ) -> None:
+        (tmp_path / "researcher").mkdir()
+        monkeypatch.setattr("deepagents_code.app.user_deepagents_dir", lambda: tmp_path)
+        app = DeepAgentsApp(thread_id="current-thread")
+        monkeypatch.setattr(app, "_thread_resume_block", AsyncMock(return_value=None))
+        monkeypatch.setattr(
+            app, "_offer_thread_cwd_switch", AsyncMock(return_value="continue")
+        )
+        monkeypatch.setattr(app, "_push_screen_wait", AsyncMock(return_value="switch"))
+        failing_method = {
+            "prompt": "_resume_thread",
+            "prefetch": "_fetch_thread_history_data",
+            "cross-prefetch": "_fetch_thread_history_data",
+            "cross-policy": "_thread_resume_block",
+        }[failure]
+        monkeypatch.setattr(
+            app,
+            failing_method,
+            AsyncMock(
+                side_effect=[
+                    RuntimeError("first refusal"),
+                    RuntimeError("second refusal"),
+                ]
+            ),
+        )
+
+        async def resume(thread_id: str) -> None:
+            if failure.startswith("cross-"):
+                await app._confirm_then_resume_cross_agent_thread(
+                    _ThreadsResumeTarget(thread_id, "researcher")
+                )
+            else:
+                await app._resume_same_agent_thread(thread_id)
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            unrelated = ErrorMessage("Keep this error")
+            await app._mount_message(unrelated)
+            app._agent = MagicMock()
+            app._server_kwargs = {}
+            app._server_proc = MagicMock()
+            await resume("first-thread")
+            first = app._thread_switch_error_widget
+            await resume("second-thread")
+            assert first is not None
+            assert not first.is_attached
+            assert unrelated.is_attached
+            errors = list(app.query(ErrorMessage))
+            assert len(errors) == 2
+            assert "second-thread" in errors[-1].render().plain
+            if failure != "cross-policy":
+                assert "second refusal" in errors[-1].render().plain
+            assert app._message_store.total_count == 1
+
     @pytest.mark.parametrize("with_diagnostics", [False, True])
     async def test_picker_bind_conflict_preserves_current_session(
         self,
@@ -31609,6 +31674,45 @@ class TestGoalAutoAcceptPreferenceReportsPolicy:
 
 class TestPromptClipboard:
     """App wiring and priority-key routing for prompt recall."""
+
+    @pytest.mark.parametrize("full_view", [False, True])
+    @pytest.mark.parametrize("key", ["tab", "enter"])
+    @pytest.mark.parametrize("mode", ["normal", "shell", "shell_incognito", "command"])
+    async def test_selection_replaces_draft_and_can_be_undone(
+        self, monkeypatch: pytest.MonkeyPatch, full_view: bool, key: str, mode: str
+    ) -> None:
+        """Both recall tiers replace the whole draft without submitting it."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            chat_input = app._chat_input
+            assert chat_input is not None
+            text_area = chat_input._text_area
+            assert text_area is not None
+            draft = "draft\ntext"
+            prompt = "saved draft\ntext prompt"
+            monkeypatch.setattr(chat_input, "recent_prompts", lambda: (prompt,))
+            text_area.insert(draft)
+            chat_input.mode = mode
+            text_area.move_cursor((0, 2))
+
+            await pilot.press("ctrl+r")
+            if full_view:
+                await pilot.press("ctrl+r")
+            await pilot.pause()
+            await pilot.press(key)
+            await pilot.pause()
+            await pilot.pause()
+
+            assert chat_input.value == prompt
+            assert chat_input.mode == "normal"
+            assert text_area.cursor_location == (1, len("text prompt"))
+            assert app.focused is text_area
+            assert not chat_input._prompt_search_active
+
+            await pilot.press("ctrl+z")
+            await pilot.pause()
+            assert chat_input.value == draft
 
     async def test_tab_inserts_when_approval_arrives_during_prompt_modal(
         self, monkeypatch: pytest.MonkeyPatch

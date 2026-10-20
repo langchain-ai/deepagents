@@ -3,7 +3,7 @@
 # ruff: noqa: E402
 # Imports placed after warning filters to suppress deprecation warnings
 
-# Suppress deprecation warnings from langchain_core (e.g., Pydantic V1 on Python 3.14+)
+# Suppress deprecation warnings from langchain_core
 import warnings
 
 warnings.filterwarnings("ignore", module="langchain_core._api.deprecation")
@@ -44,9 +44,6 @@ if TYPE_CHECKING:
     from deepagents_code.mcp_tools import MCPServerInfo, ProjectServerSummary
     from deepagents_code.notifications import PendingNotification
     from deepagents_code.thread_ownership import ThreadLease
-
-# Suppress Pydantic v1 compatibility warnings from langchain on Python 3.14+
-warnings.filterwarnings("ignore", message=".*Pydantic V1.*", category=UserWarning)
 
 from deepagents_code._env_vars import LAUNCH_TERM_PROGRAM
 from deepagents_code._paths import PATHS, get_deepagents_home

@@ -39,7 +39,7 @@ dependencies = [
     "langchain-anthropic>=1.7.6,<2.0.0",
     "langchain-google-genai>=4.4.2,<5.0.0",
     "langchain-openai>=1.7.2,<2.0.0",
-    "pydantic>=2.12.5,<2.14.0a0",
+    "pydantic>=2.13.0,<3.0.0",
 
     # UI/Terminal
     # Textual 8.2.8 handles colon-separated Kitty associated text.
@@ -352,11 +352,6 @@ timeout = 30  # Default timeout for all tests (can be overridden per-test)
 filterwarnings = [
     # Unexpected warnings fail the run; see "Warnings are errors" in AGENTS.md.
     "error",
-    # `langchain_core` imports `pydantic.v1` during collection on Python 3.14+.
-    # Deliberately unqualified by module: `pydantic` warns with `stacklevel=2`, so
-    # the attributed module is whichever `langchain_core` module imports
-    # `pydantic.v1` first, which is import-order dependent.
-    "ignore:Core Pydantic V1 functionality isn't compatible:UserWarning",
     # `genai_prices.Usage` only warns for a usage key it does not recognize, then
     # drops it -- the request still prices, just without that bucket. A renamed
     # key anywhere in the allowed range would silently undercount, so fail

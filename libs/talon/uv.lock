@@ -867,7 +867,7 @@ requires-dist = [
     { name = "pillow", specifier = ">=12.3.0,<13.0.0" },
     { name = "pillow", marker = "extra == 'media'", specifier = ">=12.3.0,<13.0.0" },
     { name = "prompt-toolkit", specifier = ">=3.0.53,<4.0.0" },
-    { name = "pydantic", specifier = ">=2.12.5,<2.14.0a0" },
+    { name = "pydantic", specifier = ">=2.13.0,<3.0.0" },
     { name = "pyperclip", specifier = ">=1.11.0,<2.0.0" },
     { name = "python-dotenv", specifier = ">=1.2.2,<2.0.0" },
     { name = "pyyaml", specifier = ">=6.0.3" },

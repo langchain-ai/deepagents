@@ -11,7 +11,6 @@ import shutil
 import sqlite3
 import subprocess  # noqa: S404  # Used only to probe resolved dcode Python launchers.
 import sys
-import warnings
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
@@ -636,13 +635,6 @@ def main() -> None:
         raise SystemExit(msg)
 
     _ensure_runtime()
-    warnings.filterwarnings(
-        "ignore",
-        message=(
-            "Core Pydantic V1 functionality isn't compatible with Python 3.14 "
-            "or greater.*"
-        ),
-    )
     collected_warnings: list[str] = []
     result: dict[str, object]
     conn = _connect_read_only(args.db)

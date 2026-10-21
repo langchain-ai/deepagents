@@ -15,7 +15,7 @@ import html
 import json
 import logging
 import urllib.parse
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Collection, Mapping, Sequence
 from copy import deepcopy
 from datetime import UTC, datetime
 from typing import Annotated, Any, Literal, NotRequired, TypedDict, cast
@@ -1392,14 +1392,19 @@ def _mail_event(task: AsyncTask, mail: _Mail) -> _TaskUpdate:
     return _event(task["task_id"], task["agent_name"], "message", mail["run_id"], message_id=mail["id"], message=mail["content"])
 
 
-def _settle_wake(state: Mapping[str, Any], update: dict[str, Any]) -> dict[str, Any]:
-    """Swap a doorbell for the mail it announced, ending the run if there's none; keep an outcome after its task's mail."""
+def _settle_wake(state: Mapping[str, Any], update: dict[str, Any], unreadable: Collection[str] = ()) -> dict[str, Any]:
+    """Swap a doorbell for the mail it announced, ending the run if there's none; keep an outcome after its task's mail.
+
+    A doorbell whose task's mail couldn't be read stays, so the run continues and the next pull retries.
+    """
     messages = state.get("messages") or []
     event = _notification_event(messages[-1]) if messages else None
     if event is None:
         return update
     wake, pulled = messages[-1], update.get("messages", [])
     if event["status"] == "message":
+        if not pulled and event["task_id"] in unreadable:
+            return update
         settled = {**update, "messages": [RemoveMessage(id=wake.id), *pulled]}
         return settled if pulled else {**settled, "jump_to": "end"}
     if not pulled:
@@ -1527,13 +1532,13 @@ class AsyncSubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         """(async) Record the notification that started this run, then add mail and status updates from this agent's tasks."""
         recorded = self._record_notification(state) or {}
         tasks = {**(state.get("async_tasks") or {}), **recorded.get("async_tasks", {})}
-        updates = await self._apull(tasks, state.get("deepagents_inbox") or {})
+        updates, unreadable = await self._apull(tasks, state.get("deepagents_inbox") or {})
         merged = {
             **recorded,
             **updates,
             "async_tasks": {**recorded.get("async_tasks", {}), **updates.get("async_tasks", {})},
         }
-        return _settle_wake(state, merged)
+        return _settle_wake(state, merged, unreadable)
 
     def before_model(self, state: AsyncSubAgentState, runtime: Runtime[ContextT]) -> dict[str, Any] | None:  # noqa: ARG002  # signature set by AgentMiddleware
         """Pass through: checking tasks needs the async path, which the Agent Server uses."""
@@ -1541,7 +1546,8 @@ class AsyncSubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
 
     async def abefore_model(self, state: AsyncSubAgentState, runtime: Runtime[ContextT]) -> dict[str, Any] | None:  # noqa: ARG002  # signature set by AgentMiddleware
         """(async) Add status updates from this agent's tasks before the model call."""
-        return await self._apull(state.get("async_tasks") or {}, state.get("deepagents_inbox") or {}) or None
+        updates, _ = await self._apull(state.get("async_tasks") or {}, state.get("deepagents_inbox") or {})
+        return updates or None
 
     def after_model(self, state: AsyncSubAgentState, runtime: Runtime[ContextT]) -> dict[str, Any] | None:  # noqa: ARG002  # signature set by AgentMiddleware
         """Pass through: checking tasks needs the async path, which the Agent Server uses."""
@@ -1556,17 +1562,18 @@ class AsyncSubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         messages = state.get("messages") or []
         if not messages or getattr(messages[-1], "tool_calls", None):
             return None
-        updates = await self._apull(state.get("async_tasks") or {}, state.get("deepagents_inbox") or {})
+        updates, _ = await self._apull(state.get("async_tasks") or {}, state.get("deepagents_inbox") or {})
         if not updates.get("messages"):
             return updates or None
         return {**updates, "jump_to": "model"}
 
-    async def _apull(self, tasks: Mapping[str, AsyncTask], inbox: Mapping[str, int]) -> dict[str, Any]:
+    async def _apull(self, tasks: Mapping[str, AsyncTask], inbox: Mapping[str, int]) -> tuple[dict[str, Any], set[str]]:
         """Check tasks; return updated records, read cursors, and a notification per new mail or outcome.
 
         Outcomes the agent already saw (through a check, a list, or an earlier
         notification) aren't reported again. A task that can't be checked is
         skipped until the next check. A task's mail comes before its outcome.
+        Also returns the IDs of tasks whose mail couldn't be read.
         """
         unfinished = [task for task in tasks.values() if task["status"] in _UNFINISHED_STATUSES]
         found_runs = await asyncio.gather(*(self._aobserve_task(task) for task in unfinished))
@@ -1576,6 +1583,7 @@ class AsyncSubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         records: dict[str, AsyncTask] = {}
         cursors: dict[str, int] = {}
         messages: list[dict[str, Any]] = []
+        unreadable = {task["task_id"] for task, mail in zip(tasks.values(), unread, strict=True) if mail is None}
         for task, mail in zip(tasks.values(), unread, strict=True):
             if mail:
                 cursors[task["task_id"]] = inbox.get(task["task_id"], 0) + len(mail)
@@ -1594,16 +1602,16 @@ class AsyncSubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
             update["deepagents_inbox"] = cursors
         if messages:
             update["messages"] = messages
-        return update
+        return update, unreadable
 
-    async def _aread_mail(self, task: AsyncTask, cursor: int) -> list[_Mail]:
-        """Read committed mail past `cursor`, including after a completion push marked the task terminal."""
+    async def _aread_mail(self, task: AsyncTask, cursor: int) -> list[_Mail] | None:
+        """Read committed mail past `cursor`, including after a completion push marked the task terminal; `None` if unreadable."""
         try:
             client = self._clients.get_async(task["agent_name"])
             snapshot = await asyncio.wait_for(client.threads.get_state(thread_id=task["thread_id"]), _PULL_TIMEOUT_SECONDS)
         except Exception:  # noqa: BLE001  # a failed read is retried at the next model boundary
             logger.warning("Failed to read mail for task %s", task["task_id"], exc_info=True)
-            return []
+            return None
         return _unread(snapshot.get("values"), cursor)
 
     async def _aobserve_task(self, task: AsyncTask) -> tuple[Run, Thread | None] | None:

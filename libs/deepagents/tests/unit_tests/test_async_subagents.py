@@ -2071,6 +2071,27 @@ class TestMessageParent:
         assert len(model.call_history) == 1
         assert result["messages"][-1].content == "read it"
 
+    async def test_doorbell_survives_failed_read_and_mail_arrives_before_model_call(self) -> None:
+        server = _FakeServer()
+        await _send_parent_message(server)
+        doorbell = next(wake for wake in server.wakes() if wake["input"]["messages"][0]["deepagents_notification"]["status"] == "message")
+        read_state, reads = server.threads.get_state, []
+
+        async def fail_once(**kwargs: Any) -> dict[str, Any]:
+            reads.append(kwargs)
+            if len(reads) == 1:
+                msg = "Read timed out"
+                raise RuntimeError(msg)
+            return await read_state(**kwargs)
+
+        server.threads.get_state = fail_once
+        model = GenericFakeChatModel(messages=iter([AIMessage(content="Use the first file.")]))
+        parent = create_deep_agent(model=model, subagents=[_make_spec("remote", url=None)])
+        with patch("deepagents.middleware.async_subagents.get_client", return_value=server):
+            await parent.ainvoke(_lead_state(messages=[doorbell["input"]["messages"][0]]))
+        notes = [msg for msg in model.call_history[0]["messages"] if msg.additional_kwargs.get("deepagents_notification")]
+        assert "Which file?" in "".join(str(msg.content) for msg in notes)
+
     async def test_pull_delivers_mail_before_the_outcome_that_follows_it(self) -> None:
         server = _ended()
         mail = {"id": "run_xyz:call_message", "run_id": "run_xyz", "content": "Which file?"}

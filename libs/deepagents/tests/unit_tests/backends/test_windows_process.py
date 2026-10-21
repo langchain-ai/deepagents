@@ -18,11 +18,11 @@ from deepagents.backends import local_shell
 from deepagents.backends._windows_process import WindowsProcessReader
 
 
-def _process(*, errors: str = "strict") -> MagicMock:
+def _process(*, encoding: str = "utf-8", errors: str = "strict") -> MagicMock:
     return MagicMock(
         args="command",
-        stdout=io.TextIOWrapper(io.BytesIO(), encoding="utf-8", errors=errors),
-        stderr=io.TextIOWrapper(io.BytesIO(), encoding="utf-8", errors=errors),
+        stdout=io.TextIOWrapper(io.BytesIO(), encoding=encoding, errors=errors),
+        stderr=io.TextIOWrapper(io.BytesIO(), encoding=encoding, errors=errors),
     )
 
 
@@ -56,6 +56,17 @@ def test_retries_preserve_multibyte_output_and_newlines() -> None:
             assert reader.communicate(timeout=1) == ("é\nx\n", "err\n�")
         assert process.stdout.closed
         assert process.stderr.closed
+    finally:
+        process.stdout.close()
+        process.stderr.close()
+
+
+def test_windows_reader_replaces_undefined_locale_bytes() -> None:
+    process = _process(encoding="cp1252", errors="replace")
+    process.poll.return_value = 0
+    try:
+        with patch.object(windows_process, "_read_available", side_effect=[b"\xe9\x81\x8d\x8f\x90\x9d", b"\x81", b"", b""]):
+            assert WindowsProcessReader(process).communicate(timeout=1) == ("é�����", "�")
     finally:
         process.stdout.close()
         process.stderr.close()
@@ -119,7 +130,10 @@ def test_backend_shutdown_does_not_wait_for_inherited_pipe_writer(*, cancel: boo
             if cancel:
                 asyncio.run(_cancel_command(backend, started))
             else:
-                assert backend.execute("command", timeout=1).exit_code == 124
+                result = backend.execute("command", timeout=1)
+                assert result.exit_code == 124
+                assert "may still be running" in result.output
+                assert "Re-running it may start a second copy" in result.output
         except BaseException as error:  # noqa: BLE001  # Report worker assertions and interruptions in the test thread.
             errors.append(error)
         finally:

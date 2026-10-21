@@ -307,7 +307,7 @@ requires-dist = [
     { name = "langchain-quickjs", marker = "extra == 'quickjs'", specifier = ">=0.3.9" },
     { name = "langsmith", specifier = ">=0.14.11" },
     { name = "packaging", specifier = ">=23.2" },
-    { name = "pillow", marker = "extra == 'video'", specifier = ">=12.3.0,<13.0.0" },
+    { name = "pillow", marker = "extra == 'video'", specifier = ">=12.3.0,<14.0.0" },
     { name = "wcmatch", specifier = ">=11.0" },
 ]
 provides-extras = ["aws", "quickjs", "video"]
@@ -319,7 +319,7 @@ test = [
     { name = "langchain-aws", specifier = ">=1.9.0,<2.0.0" },
     { name = "langchain-openai", specifier = ">=1.7.2,<2.0.0" },
     { name = "langchain-tests", specifier = ">=1.1.9" },
-    { name = "pillow", specifier = ">=12.3.0,<13.0.0" },
+    { name = "pillow", specifier = ">=12.3.0,<14.0.0" },
     { name = "pytest" },
     { name = "pytest-asyncio", specifier = ">=1.4.0" },
     { name = "pytest-benchmark" },

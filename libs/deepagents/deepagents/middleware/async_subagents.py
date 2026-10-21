@@ -116,6 +116,7 @@ class AsyncSubAgent(TypedDict):
 
     webhook: NotRequired[str]
     """URL the Agent Server calls whenever a run of this subagent finishes."""
+
     update_strategy: NotRequired[Literal["interrupt", "enqueue"]]
     """How follow-ups are scheduled: interrupt the current run (default), or enqueue behind it."""
 

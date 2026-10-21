@@ -115,6 +115,17 @@ class AsyncSubAgent(TypedDict):
     webhook: NotRequired[str]
     """URL the Agent Server calls whenever a run of this subagent finishes."""
 
+    notify_parent: NotRequired[bool]
+    """Whether this subagent may wake this agent when it finishes while this agent is idle. Defaults to `True`.
+
+    Set it to `False` when the application delivers results itself, for example
+    through `webhook`. This agent still sees the subagent's updates while it runs.
+
+    !!! warning "Beta"
+
+        `notify_parent` may change along with how subagents wake their parent.
+    """
+
     mode: NotRequired[Literal["isolated", "fork"]]
     """When using `mode="fork"`, configure the remote agent to match the parent's model,
     system prompt, tools, and prompt-processing middleware if you want prompt-cache
@@ -335,12 +346,12 @@ def _parent_reference(config: RunnableConfig) -> _ParentReference:
 def _reference_for(spec: AsyncSubAgent, runtime: ToolRuntime) -> _ParentReference:
     """The parent reference sent to `spec`'s runs.
 
-    A subagent on another server (`url`) gets only the parent's thread, to know
-    what started it: the parent's assistant is only for waking the parent, which
-    it can't do from another deployment.
+    A subagent on another server (`url`), or one with `notify_parent=False`, gets
+    only the parent's thread, to know what started it: the parent's assistant is
+    only for waking the parent, which it can't do from another deployment.
     """
     reference = _parent_reference(runtime.config)
-    if spec.get("url"):
+    if spec.get("url") or spec.get("notify_parent") is False:
         reference.pop("assistant_id", None)
     return reference
 

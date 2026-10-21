@@ -47,6 +47,7 @@ Use a **plain tool** when:
 * The tool is specific to a single consumer (e.g. CLI-only)
 """
 
+from deepagents.middleware._parent_notifier import ParentNotifierMiddleware
 from deepagents.middleware.async_subagents import (
     AsyncSubAgent,
     AsyncSubAgentMiddleware,
@@ -96,6 +97,7 @@ __all__ = [
     "GraderResponse",
     "GraderVerdict",
     "MemoryMiddleware",
+    "ParentNotifierMiddleware",
     "RubricEvaluation",
     "RubricMiddleware",
     "RubricResult",

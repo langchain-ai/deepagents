@@ -26,7 +26,7 @@ from langsmith.run_trees import RunTree
 
 from deepagents import create_deep_agent
 from deepagents.backends import CompositeBackend, FilesystemBackend
-from deepagents.middleware._parent_notifier import _ParentNotifierMiddleware
+from deepagents.middleware._parent_notifier import ParentNotifierMiddleware
 from deepagents.middleware.async_subagents import (
     AsyncSubAgent,
     AsyncSubAgentMiddleware,
@@ -1871,8 +1871,8 @@ def _callback_config(parent: dict[str, Any] | None = _PARENT, **configurable_ext
 
 
 async def _call_callback(hook: str, *args: Any, server: _FakeServer, parent: dict[str, Any] | None = _PARENT, **configurable: Any) -> Any:  # noqa: ANN401
-    """Call one of `_ParentNotifierMiddleware`'s hooks; returns its result or the error it raised."""
-    middleware = _ParentNotifierMiddleware()
+    """Call one of `ParentNotifierMiddleware`'s hooks; returns its result or the error it raised."""
+    middleware = ParentNotifierMiddleware()
     with (
         patch("deepagents.middleware._parent_notifier.get_config", return_value=_callback_config(parent, **configurable)),
         patch("deepagents.middleware.async_subagents.get_client", return_value=server),
@@ -1907,7 +1907,7 @@ class TestParentNotifier:
             patch("deepagents.middleware._parent_notifier.get_config", return_value=config),
             patch("deepagents.middleware.async_subagents.get_client", return_value=server),
         ):
-            await _ParentNotifierMiddleware().aafter_agent({"messages": [AIMessage(content="found it")]}, MagicMock())
+            await ParentNotifierMiddleware().aafter_agent({"messages": [AIMessage(content="found it")]}, MagicMock())
 
         assert _woken_event(server)["agent_name"] == "research-graph"
 
@@ -1962,7 +1962,7 @@ class TestParentNotifier:
             patch("deepagents.middleware._parent_notifier.get_config", return_value=config),
             patch("deepagents.middleware.async_subagents.get_client", return_value=server),
         ):
-            await _ParentNotifierMiddleware().aafter_agent({"messages": [AIMessage(content="found it")]}, MagicMock())
+            await ParentNotifierMiddleware().aafter_agent({"messages": [AIMessage(content="found it")]}, MagicMock())
 
         assert "found it" in _woken_text(server)
 

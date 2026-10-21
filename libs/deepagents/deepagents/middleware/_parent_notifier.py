@@ -27,11 +27,20 @@ from deepagents.middleware.async_subagents import (
 )
 
 
-class _ParentNotifierMiddleware(AgentMiddleware[AgentState, ContextT, ResponseT]):
+class ParentNotifierMiddleware(AgentMiddleware[AgentState, ContextT, ResponseT]):
     """Wake the agent that started this run with `start_async_task`, when the run ends.
 
     `create_deep_agent` attaches it to every deep agent. It does nothing unless the
     run carries the parent reference, and skips nested runs.
+
+    To change how a subagent reports back, pass a middleware named
+    `ParentNotifierMiddleware` to the subagent's `create_deep_agent(middleware=...)`;
+    it replaces this one. An application that learns of finished runs another way,
+    such as a run `webhook`, can use this to turn the wake-up off.
+
+    !!! warning "Beta"
+
+        Async subagents are in beta, and how they report back may change.
     """
 
     trace_policy = TracePolicy(process_inputs=omit_payload)

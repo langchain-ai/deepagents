@@ -26,6 +26,7 @@ from langchain.agents.middleware.types import (
     ContextT,
     ModelRequest,
     ModelResponse,
+    PrivateStateAttr,
     ResponseT,
     TracePolicy,
     hook_config,
@@ -45,6 +46,7 @@ from langsmith.run_helpers import get_current_run_tree
 from pydantic import BaseModel, Field
 
 from deepagents.middleware._blob_offload import _BLOB_PAYLOADS_KEY, _ahydrate_tool_messages, _hydrate_tool_messages
+from deepagents.middleware._mailbox import _Mail, _merge_cursors, _unread
 from deepagents.middleware._utils import append_to_system_message
 from deepagents.middleware.filesystem import NUM_CHARS_PER_TOKEN
 from deepagents.middleware.subagents import _fork_messages
@@ -187,9 +189,6 @@ class AsyncTask(TypedDict):
     Format: `YYYY-MM-DDTHH:MM:SSZ` (e.g., `2024-01-15T10:30:00Z`).
     """
 
-    received_message_ids: NotRequired[list[str]]
-    """Checkpointed IDs of child messages already delivered to the parent."""
-
     last_updated_at: str
     """ISO-8601 timestamp (UTC) when the task status changes or when a follow-up message is sent via the update tool.
 
@@ -211,6 +210,9 @@ class AsyncSubAgentState(AgentState):
     """State extension for async subagent task tracking."""
 
     async_tasks: Annotated[NotRequired[dict[str, AsyncTask]], _tasks_reducer]
+
+    deepagents_inbox: Annotated[NotRequired[dict[str, int]], PrivateStateAttr, _merge_cursors]
+    """Per task, how much of the subagent's outbox this agent has read."""
 
 
 class StartAsyncTaskSchema(BaseModel):
@@ -906,7 +908,6 @@ def _build_check_command(
         created_at=task["created_at"],
         last_checked_at=now,
         last_updated_at=now if changed else task["last_updated_at"],
-        received_message_ids=task.get("received_message_ids", []),
     )
     return Command(
         update={
@@ -1050,7 +1051,6 @@ def _build_update_tool(
             return f"Failed to update async subagent: {e}"
         now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
         task: AsyncTask = {
-            **tracked,
             "task_id": tracked["task_id"],
             "agent_name": tracked["agent_name"],
             "thread_id": tracked["thread_id"],
@@ -1091,7 +1091,6 @@ def _build_update_tool(
             return f"Failed to update async subagent: {e}"
         now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
         task: AsyncTask = {
-            **tracked,
             "task_id": tracked["task_id"],
             "agent_name": tracked["agent_name"],
             "thread_id": tracked["thread_id"],
@@ -1153,7 +1152,6 @@ def _build_cancel_tool(
             created_at=tracked["created_at"],
             last_checked_at=now,
             last_updated_at=now,
-            received_message_ids=tracked.get("received_message_ids", []),
         )
         msg = f"Cancelled async subagent task: {tracked['task_id']}"
         return Command(
@@ -1187,7 +1185,6 @@ def _build_cancel_tool(
             created_at=tracked["created_at"],
             last_checked_at=now,
             last_updated_at=now,
-            received_message_ids=tracked.get("received_message_ids", []),
         )
         msg = f"Cancelled async subagent task: {tracked['task_id']}"
         return Command(
@@ -1286,7 +1283,6 @@ def _build_list_command(filtered: list[AsyncTask], live: list[tuple[str, str]], 
             created_at=task["created_at"],
             last_checked_at=now,
             last_updated_at=now if changed else task["last_updated_at"],
-            received_message_ids=task.get("received_message_ids", []),
         )
     msg = f"{len(entries)} tracked task(s):\n" + "\n".join(entries)
     return Command(
@@ -1391,6 +1387,26 @@ def _notification_message(update: _TaskUpdate) -> dict[str, Any]:
     return {"role": "user", "content": _notification_content(update), _NOTIFICATION_KEY: event}
 
 
+def _mail_event(task: AsyncTask, mail: _Mail) -> _TaskUpdate:
+    """Mail from `task` as the update the parent's model reads."""
+    return _event(task["task_id"], task["agent_name"], "message", mail["run_id"], message_id=mail["id"], message=mail["content"])
+
+
+def _settle_wake(state: Mapping[str, Any], update: dict[str, Any]) -> dict[str, Any]:
+    """Swap a doorbell for the mail it announced, ending the run if there's none; keep an outcome after its task's mail."""
+    messages = state.get("messages") or []
+    event = _notification_event(messages[-1]) if messages else None
+    if event is None:
+        return update
+    wake, pulled = messages[-1], update.get("messages", [])
+    if event["status"] == "message":
+        settled = {**update, "messages": [RemoveMessage(id=wake.id), *pulled]}
+        return settled if pulled else {**settled, "jump_to": "end"}
+    if not pulled:
+        return update
+    return {**update, "messages": [RemoveMessage(id=wake.id), *pulled, wake.model_copy(update={"id": None})]}
+
+
 def _observed(task: AsyncTask, status: str, run_id: str) -> AsyncTask:
     """`task` updated to what a check found."""
     now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -1404,7 +1420,6 @@ def _observed(task: AsyncTask, status: str, run_id: str) -> AsyncTask:
         created_at=task["created_at"],
         last_checked_at=now,
         last_updated_at=now if changed else task["last_updated_at"],
-        received_message_ids=task.get("received_message_ids", []),
     )
 
 
@@ -1505,21 +1520,20 @@ class AsyncSubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
     @hook_config(can_jump_to=["end"])
     def before_agent(self, state: AsyncSubAgentState, runtime: Runtime[ContextT]) -> dict[str, Any] | None:  # noqa: ARG002  # signature set by AgentMiddleware
         """Record the task notification that started this run, if one did."""
-        return self._record_notification(state)
+        return _settle_wake(state, self._record_notification(state) or {}) or None
 
     @hook_config(can_jump_to=["end"])
     async def abefore_agent(self, state: AsyncSubAgentState, runtime: Runtime[ContextT]) -> dict[str, Any] | None:  # noqa: ARG002  # signature set by AgentMiddleware
-        """(async) Record the notification that started this run, then add status updates from this agent's tasks."""
+        """(async) Record the notification that started this run, then add mail and status updates from this agent's tasks."""
         recorded = self._record_notification(state) or {}
-        if recorded.get("jump_to") == "end":
-            return recorded
         tasks = {**(state.get("async_tasks") or {}), **recorded.get("async_tasks", {})}
-        updates = await self._apull(tasks)
-        return {
+        updates = await self._apull(tasks, state.get("deepagents_inbox") or {})
+        merged = {
             **recorded,
             **updates,
             "async_tasks": {**recorded.get("async_tasks", {}), **updates.get("async_tasks", {})},
         }
+        return _settle_wake(state, merged)
 
     def before_model(self, state: AsyncSubAgentState, runtime: Runtime[ContextT]) -> dict[str, Any] | None:  # noqa: ARG002  # signature set by AgentMiddleware
         """Pass through: checking tasks needs the async path, which the Agent Server uses."""
@@ -1527,7 +1541,7 @@ class AsyncSubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
 
     async def abefore_model(self, state: AsyncSubAgentState, runtime: Runtime[ContextT]) -> dict[str, Any] | None:  # noqa: ARG002  # signature set by AgentMiddleware
         """(async) Add status updates from this agent's tasks before the model call."""
-        return await self._apull(state.get("async_tasks") or {}) or None
+        return await self._apull(state.get("async_tasks") or {}, state.get("deepagents_inbox") or {}) or None
 
     def after_model(self, state: AsyncSubAgentState, runtime: Runtime[ContextT]) -> dict[str, Any] | None:  # noqa: ARG002  # signature set by AgentMiddleware
         """Pass through: checking tasks needs the async path, which the Agent Server uses."""
@@ -1542,24 +1556,31 @@ class AsyncSubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         messages = state.get("messages") or []
         if not messages or getattr(messages[-1], "tool_calls", None):
             return None
-        updates = await self._apull(state.get("async_tasks") or {})
+        updates = await self._apull(state.get("async_tasks") or {}, state.get("deepagents_inbox") or {})
         if not updates.get("messages"):
             return updates or None
         return {**updates, "jump_to": "model"}
 
-    async def _apull(self, tasks: Mapping[str, AsyncTask]) -> dict[str, Any]:
-        """Check unfinished tasks; return their updated records and a notification per new outcome.
+    async def _apull(self, tasks: Mapping[str, AsyncTask], inbox: Mapping[str, int]) -> dict[str, Any]:
+        """Check tasks; return updated records, read cursors, and a notification per new mail or outcome.
 
         Outcomes the agent already saw (through a check, a list, or an earlier
         notification) aren't reported again. A task that can't be checked is
-        skipped until the next check.
+        skipped until the next check. A task's mail comes before its outcome.
         """
         unfinished = [task for task in tasks.values() if task["status"] in _UNFINISHED_STATUSES]
-        observed = await asyncio.gather(*(self._aobserve_task(task) for task in unfinished))
+        found_runs = await asyncio.gather(*(self._aobserve_task(task) for task in unfinished))
+        observed = dict(zip([task["task_id"] for task in unfinished], found_runs, strict=True))
+        # Read mail after status: a child commits mail before it finishes, so an observed outcome's mail is visible.
+        unread = await asyncio.gather(*(self._aread_mail(task, inbox.get(task["task_id"], 0)) for task in tasks.values()))
         records: dict[str, AsyncTask] = {}
+        cursors: dict[str, int] = {}
         messages: list[dict[str, Any]] = []
-        for task, found in zip(unfinished, observed, strict=True):
-            if found is None:
+        for task, mail in zip(tasks.values(), unread, strict=True):
+            if mail:
+                cursors[task["task_id"]] = inbox.get(task["task_id"], 0) + len(mail)
+                messages.extend(_notification_message(_mail_event(task, item)) for item in mail)
+            if (found := observed.get(task["task_id"])) is None:
                 continue
             run, thread = found
             status = _task_status(run, thread)
@@ -1568,33 +1589,22 @@ class AsyncSubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
             records[task["task_id"]] = _observed(task, status, run["run_id"])
             if status != task["status"] and (event := _check_event(task, run, thread, status)):
                 messages.append(_notification_message(event))
-        outgoing = await asyncio.gather(*(self._amessages(task) for task in tasks.values()))
-        for task, events in zip(tasks.values(), outgoing, strict=True):
-            if events:
-                current = records.get(task["task_id"], task)
-                records[task["task_id"]] = {**current, "received_message_ids": [*task.get("received_message_ids", []), *events]}
-                messages.extend(_notification_message(event) for event in events.values())
         update: dict[str, Any] = {"async_tasks": records} if records else {}
+        if cursors:
+            update["deepagents_inbox"] = cursors
         if messages:
             update["messages"] = messages
         return update
 
-    async def _amessages(self, task: AsyncTask) -> dict[str, _TaskUpdate]:
-        """Read committed child messages, including after a completion push marked the task terminal."""
+    async def _aread_mail(self, task: AsyncTask, cursor: int) -> list[_Mail]:
+        """Read committed mail past `cursor`, including after a completion push marked the task terminal."""
         try:
             client = self._clients.get_async(task["agent_name"])
             snapshot = await asyncio.wait_for(client.threads.get_state(thread_id=task["thread_id"]), _PULL_TIMEOUT_SECONDS)
-            values = snapshot.get("values")
-            outbox = cast("dict[str, _TaskUpdate]", values.get("deepagents_parent_messages", {})) if isinstance(values, Mapping) else {}
-            seen = task.get("received_message_ids", [])
-            return {
-                key: _event(task["task_id"], task["agent_name"], "message", event.get("run_id"), message_id=key, message=event["message"])
-                for key, event in outbox.items()
-                if key not in seen
-            }
         except Exception:  # noqa: BLE001  # a failed read is retried at the next model boundary
-            logger.warning("Failed to read messages for task %s", task["task_id"], exc_info=True)
-            return {}
+            logger.warning("Failed to read mail for task %s", task["task_id"], exc_info=True)
+            return []
+        return _unread(snapshot.get("values"), cursor)
 
     async def _aobserve_task(self, task: AsyncTask) -> tuple[Run, Thread | None] | None:
         try:
@@ -1609,16 +1619,9 @@ class AsyncSubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         messages = state.get("messages") or []
         event = _notification_event(messages[-1]) if messages else None
         task = (state.get("async_tasks") or {}).get(event["task_id"]) if event else None
-        if event is None or task is None:
+        # A doorbell carries no outcome; the pull delivers its mail.
+        if event is None or task is None or event["status"] == "message":
             return None
-        if event["status"] == "message":
-            message_id = event.get("message_id")
-            if not message_id:
-                return None
-            seen = task.get("received_message_ids", [])
-            if message_id in seen:
-                return {"jump_to": "end", "messages": [RemoveMessage(id=messages[-1].id)]}
-            return {"async_tasks": {task["task_id"]: {**task, "received_message_ids": [*seen, message_id]}}}
         run_id = event.get("run_id", task["run_id"])
         # Answering a pause starts a new run; an update cancels the old run before it can report.
         if run_id != task["run_id"] and task["status"] not in _UNFINISHED_STATUSES:

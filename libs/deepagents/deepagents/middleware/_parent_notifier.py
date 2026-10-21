@@ -1,7 +1,7 @@
 """Lets a deep agent started as an async subagent wake the agent that started it."""
 
 from collections.abc import Awaitable, Callable, Mapping
-from typing import Annotated, Any, Literal, NotRequired
+from typing import Any, Literal
 from uuid import uuid4
 
 from langchain.agents.middleware.types import (
@@ -10,7 +10,6 @@ from langchain.agents.middleware.types import (
     ContextT,
     ModelRequest,
     ModelResponse,
-    PrivateStateAttr,
     ResponseT,
     TracePolicy,
     omit_payload,
@@ -24,6 +23,7 @@ from langgraph.runtime import Runtime
 from langgraph.types import Command
 from pydantic import BaseModel, Field
 
+from deepagents.middleware._mailbox import _Mail, _OutboxState, _post, _unannounced
 from deepagents.middleware._utils import append_to_system_message
 from deepagents.middleware.async_subagents import (
     _current_run_id,
@@ -32,24 +32,14 @@ from deepagents.middleware.async_subagents import (
     _launching_agent,
     _notify_parent,
     _task_event,
-    _TaskUpdate,
 )
-
-
-def _merge_parent_messages(existing: dict[str, _TaskUpdate], update: dict[str, _TaskUpdate]) -> dict[str, _TaskUpdate]:
-    return {**existing, **update}
-
-
-class _ParentNotifierState(AgentState):
-    deepagents_parent_messages: Annotated[NotRequired[dict[str, _TaskUpdate]], PrivateStateAttr, _merge_parent_messages]
-    deepagents_parent_messages_notified: Annotated[NotRequired[list[str]], PrivateStateAttr]
 
 
 class _MessageParentSchema(BaseModel):
     message: str = Field(description="A question, blocker, or progress update for the agent that launched this task.")
 
 
-class _ParentNotifierMiddleware(AgentMiddleware[_ParentNotifierState, ContextT, ResponseT]):
+class _ParentNotifierMiddleware(AgentMiddleware[_OutboxState, ContextT, ResponseT]):
     """Message the agent that started this run with `start_async_task`, including when it ends.
 
     `create_deep_agent` attaches it to every deep agent. It does nothing unless the
@@ -59,7 +49,7 @@ class _ParentNotifierMiddleware(AgentMiddleware[_ParentNotifierState, ContextT, 
     trace_policy = TracePolicy(process_inputs=omit_payload)
     """Omit hook inputs from traces by default; set a `TracePolicy` to override."""
 
-    state_schema = _ParentNotifierState
+    state_schema = _OutboxState
 
     def __init__(self) -> None:
         super().__init__()
@@ -81,32 +71,30 @@ class _ParentNotifierMiddleware(AgentMiddleware[_ParentNotifierState, ContextT, 
         config = runtime.config
         if not _launching_agent(config) or not _is_top_level_graph(config):
             return "No launching agent is available for this graph."
-        metadata = config.get("metadata") or {}
-        name = str(metadata.get("subagent_name") or metadata.get("graph_id") or "subagent")
-        message_id = f"{_current_run_id(config)}:{runtime.tool_call_id or uuid4()}"
-        event = _task_event(config, name, "message", message=message, message_id=message_id)
+        run_id = _current_run_id(config)
+        mail = _Mail(id=f"{run_id}:{runtime.tool_call_id or uuid4()}", run_id=run_id, content=message)
         return Command(
             update={
-                "deepagents_parent_messages": {message_id: event},
+                "deepagents_outbox": _post(mail),
                 "messages": [
                     ToolMessage("Message saved for your parent. Continue working; this task is still running.", tool_call_id=runtime.tool_call_id)
                 ],
             }
         )
 
-    def before_model(self, state: _ParentNotifierState, runtime: Runtime[ContextT]) -> None:  # noqa: ARG002  # signature set by AgentMiddleware
+    def before_model(self, state: _OutboxState, runtime: Runtime[ContextT]) -> None:  # noqa: ARG002  # signature set by AgentMiddleware
         """Pass through: parent notifications use the async Agent Server path."""
         return
 
-    async def abefore_model(self, state: _ParentNotifierState, runtime: Runtime[ContextT]) -> dict[str, Any] | None:
-        """Wake an idle parent only after outgoing messages have been checkpointed."""
+    async def abefore_model(self, state: _OutboxState, runtime: Runtime[ContextT]) -> dict[str, Any] | None:
+        """Ring an idle parent's doorbell once new mail has been checkpointed; a busy parent pulls it itself."""
         config = get_config()
-        if not _launching_agent(config) or not _is_top_level_graph(config):
+        rung = _unannounced(state.get("deepagents_outbox"))
+        if rung is None or not _launching_agent(config) or not _is_top_level_graph(config):
             return None
-        notified = state.get("deepagents_parent_messages_notified") or []
-        pending = {key: event for key, event in (state.get("deepagents_parent_messages") or {}).items() if key not in notified}
-        delivered = [key for key, event in pending.items() if await _notify_parent(config, event, runtime.context)]
-        return {"deepagents_parent_messages_notified": [*notified, *delivered]} if delivered else None
+        if not await _notify_parent(config, _task_event(config, _agent_name(config), "message"), runtime.context):
+            return None
+        return {"deepagents_outbox": {"mail": [], "rung": rung}}
 
     def _model_request(self, request: ModelRequest[ContextT]) -> ModelRequest[ContextT]:
         """Expose parent messaging only to a launched, top-level graph."""
@@ -163,9 +151,12 @@ class _ParentNotifierMiddleware(AgentMiddleware[_ParentNotifierState, ContextT, 
         self._reported[run_key] = None
         if len(self._reported) > 1000:  # noqa: PLR2004  # bounded memory in long-lived processes
             del self._reported[next(iter(self._reported))]
-        metadata = config.get("metadata") or {}
-        name = str(metadata.get("subagent_name") or metadata.get("graph_id") or "subagent")
-        await _notify_parent(config, _task_event(config, name, status, **details), context)
+        await _notify_parent(config, _task_event(config, _agent_name(config), status, **details), context)
+
+
+def _agent_name(config: Mapping[str, Any]) -> str:
+    metadata = config.get("metadata") or {}
+    return str(metadata.get("subagent_name") or metadata.get("graph_id") or "subagent")
 
 
 def _is_top_level_graph(config: Mapping[str, Any]) -> bool:

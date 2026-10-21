@@ -1,8 +1,8 @@
 """Mail from an async subagent to the agent that launched it.
 
-The child appends to an outbox in its own checkpointed state and rings the
-parent's doorbell; the parent pulls unread mail past a per-task cursor. Mail is
-delivered only by the pull, so a doorbell carries no content and can be lost.
+The child appends to an outbox in its own checkpointed state and sends the parent
+a mail wake; the parent pulls unread mail past a per-task cursor. Mail is
+delivered only by the pull, so a mail wake carries no content and can be lost.
 """
 
 from collections.abc import Mapping
@@ -23,13 +23,13 @@ class _Outbox(TypedDict):
     mail: list[_Mail]
     """Append-only, so a position is a stable cursor."""
 
-    rung: int
-    """How much of `mail` the child has announced to the parent."""
+    notified_count: int
+    """How much of `mail` the child has notified the parent about."""
 
 
 def _merge_outbox(existing: _Outbox | None, update: _Outbox) -> _Outbox:
     current = existing or {}
-    return {"mail": [*current.get("mail", []), *update["mail"]], "rung": max(current.get("rung", 0), update["rung"])}
+    return {"mail": [*current.get("mail", []), *update["mail"]], "notified_count": max(current.get("notified_count", 0), update["notified_count"])}
 
 
 def _merge_cursors(existing: dict[str, int] | None, update: dict[str, int]) -> dict[str, int]:
@@ -45,13 +45,13 @@ class _OutboxState(AgentState):
 
 def _post(mail: _Mail) -> _Outbox:
     """The state update that appends `mail`."""
-    return {"mail": [mail], "rung": 0}
+    return {"mail": [mail], "notified_count": 0}
 
 
-def _unannounced(outbox: _Outbox | None) -> int | None:
-    """The `rung` to record once the doorbell rings, or `None` when there's nothing new."""
-    mail, rung = (outbox or {}).get("mail", []), (outbox or {}).get("rung", 0)
-    return len(mail) if len(mail) > rung else None
+def _unnotified(outbox: _Outbox | None) -> int | None:
+    """The `notified_count` to record once the mail wake is sent, or `None` when there's nothing new."""
+    mail, notified = (outbox or {}).get("mail", []), (outbox or {}).get("notified_count", 0)
+    return len(mail) if len(mail) > notified else None
 
 
 def _unread(values: object, cursor: int) -> list[_Mail]:

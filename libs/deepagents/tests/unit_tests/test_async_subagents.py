@@ -2058,23 +2058,23 @@ class TestMessageParent:
         assert len(model.call_history) == 1
         assert len([msg for msg in late["messages"] if msg.additional_kwargs.get("deepagents_notification")]) == 1
 
-    async def test_doorbell_with_nothing_unread_ends_without_model_call(self) -> None:
+    async def test_mail_wake_with_nothing_unread_ends_without_model_call(self) -> None:
         server = _FakeServer()
         await _send_parent_message(server)
-        doorbell = next(wake for wake in server.wakes() if wake["input"]["messages"][0]["deepagents_notification"]["status"] == "message")
+        mail_wake = next(wake for wake in server.wakes() if wake["input"]["messages"][0]["deepagents_notification"]["status"] == "message")
         model = GenericFakeChatModel(messages=iter([AIMessage(content="read it"), AIMessage(content="unused")]))
         parent = create_deep_agent(model=model, subagents=[_make_spec("remote", url=None)], checkpointer=InMemorySaver())
         config = {"configurable": {"thread_id": "lead_thread"}}
         with patch("deepagents.middleware.async_subagents.get_client", return_value=server):
             await parent.ainvoke(_lead_state(messages=[HumanMessage(content="continue")]), config)
-            result = await parent.ainvoke({"messages": [doorbell["input"]["messages"][0]]}, config)
+            result = await parent.ainvoke({"messages": [mail_wake["input"]["messages"][0]]}, config)
         assert len(model.call_history) == 1
         assert result["messages"][-1].content == "read it"
 
-    async def test_doorbell_survives_failed_read_and_mail_arrives_before_model_call(self) -> None:
+    async def test_mail_wake_survives_failed_read_and_mail_arrives_before_model_call(self) -> None:
         server = _FakeServer()
         await _send_parent_message(server)
-        doorbell = next(wake for wake in server.wakes() if wake["input"]["messages"][0]["deepagents_notification"]["status"] == "message")
+        mail_wake = next(wake for wake in server.wakes() if wake["input"]["messages"][0]["deepagents_notification"]["status"] == "message")
         read_state, reads = server.threads.get_state, []
 
         async def fail_once(**kwargs: Any) -> dict[str, Any]:
@@ -2088,14 +2088,14 @@ class TestMessageParent:
         model = GenericFakeChatModel(messages=iter([AIMessage(content="Use the first file.")]))
         parent = create_deep_agent(model=model, subagents=[_make_spec("remote", url=None)])
         with patch("deepagents.middleware.async_subagents.get_client", return_value=server):
-            await parent.ainvoke(_lead_state(messages=[doorbell["input"]["messages"][0]]))
+            await parent.ainvoke(_lead_state(messages=[mail_wake["input"]["messages"][0]]))
         notes = [msg for msg in model.call_history[0]["messages"] if msg.additional_kwargs.get("deepagents_notification")]
         assert "Which file?" in "".join(str(msg.content) for msg in notes)
 
     async def test_pull_delivers_mail_before_the_outcome_that_follows_it(self) -> None:
         server = _ended()
         mail = {"id": "run_xyz:call_message", "run_id": "run_xyz", "content": "Which file?"}
-        server.thread_data["thread_abc"]["values"]["deepagents_outbox"] = {"mail": [mail], "rung": 1}
+        server.thread_data["thread_abc"]["values"]["deepagents_outbox"] = {"mail": [mail], "notified_count": 1}
         update = await _pull("abefore_model", _lead_state(), server)
         assert [event["status"] for event in _pulled_events(update)] == ["message", "success"]
 

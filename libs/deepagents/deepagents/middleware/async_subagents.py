@@ -1393,9 +1393,9 @@ def _mail_event(task: AsyncTask, mail: _Mail) -> _TaskUpdate:
 
 
 def _settle_wake(state: Mapping[str, Any], update: dict[str, Any], unreadable: Collection[str] = ()) -> dict[str, Any]:
-    """Swap a doorbell for the mail it announced, ending the run if there's none; keep an outcome after its task's mail.
+    """Swap a mail wake for the mail it announced, ending the run if there's none; keep an outcome after its task's mail.
 
-    A doorbell whose task's mail couldn't be read stays, so the run continues and the next pull retries.
+    A mail wake whose task's mail couldn't be read stays, so the run continues and the next pull retries.
     """
     messages = state.get("messages") or []
     event = _notification_event(messages[-1]) if messages else None
@@ -1627,7 +1627,7 @@ class AsyncSubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         messages = state.get("messages") or []
         event = _notification_event(messages[-1]) if messages else None
         task = (state.get("async_tasks") or {}).get(event["task_id"]) if event else None
-        # A doorbell carries no outcome; the pull delivers its mail.
+        # A mail wake carries no outcome; the pull delivers its mail.
         if event is None or task is None or event["status"] == "message":
             return None
         run_id = event.get("run_id", task["run_id"])

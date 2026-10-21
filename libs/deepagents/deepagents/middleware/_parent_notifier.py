@@ -23,7 +23,7 @@ from langgraph.runtime import Runtime
 from langgraph.types import Command
 from pydantic import BaseModel, Field
 
-from deepagents.middleware._mailbox import _Mail, _OutboxState, _post, _unannounced
+from deepagents.middleware._mailbox import _Mail, _OutboxState, _post, _unnotified
 from deepagents.middleware._utils import append_to_system_message
 from deepagents.middleware.async_subagents import (
     _current_run_id,
@@ -87,14 +87,14 @@ class _ParentNotifierMiddleware(AgentMiddleware[_OutboxState, ContextT, Response
         return
 
     async def abefore_model(self, state: _OutboxState, runtime: Runtime[ContextT]) -> dict[str, Any] | None:
-        """Ring an idle parent's doorbell once new mail has been checkpointed; a busy parent pulls it itself."""
+        """Send an idle parent a mail wake once new mail has been checkpointed; a busy parent pulls it itself."""
         config = get_config()
-        rung = _unannounced(state.get("deepagents_outbox"))
-        if rung is None or not _launching_agent(config) or not _is_top_level_graph(config):
+        notified_count = _unnotified(state.get("deepagents_outbox"))
+        if notified_count is None or not _launching_agent(config) or not _is_top_level_graph(config):
             return None
         if not await _notify_parent(config, _task_event(config, _agent_name(config), "message"), runtime.context):
             return None
-        return {"deepagents_outbox": {"mail": [], "rung": rung}}
+        return {"deepagents_outbox": {"mail": [], "notified_count": notified_count}}
 
     def _model_request(self, request: ModelRequest[ContextT]) -> ModelRequest[ContextT]:
         """Expose parent messaging only to a launched, top-level graph."""

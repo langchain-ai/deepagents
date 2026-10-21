@@ -98,6 +98,28 @@ def test_local_shell_backend_execute_simple_command() -> None:
         assert result.truncated is False
 
 
+@pytest.mark.parametrize("asynchronous", [False, True], ids=["sync", "async"])
+async def test_local_shell_backend_replaces_undefined_locale_bytes(tmp_path: Path, *, asynchronous: bool) -> None:
+    """Undecodable output must not abort a command before its side effects finish."""
+    script = tmp_path / "output.py"
+    script.write_text(
+        "import os, time\n"
+        "from pathlib import Path\n"
+        "os.write(1, bytes([0xe9, 0x81, 0x8d, 0x8f, 0x90, 0x9d]))\n"
+        "os.write(2, bytes([0x81]))\n"
+        "time.sleep(0.2)\n"
+        "Path('finished').touch()\n"
+    )
+    args = [sys.executable, str(script)]
+    command = subprocess.list2cmdline(args) if sys.platform == "win32" else shlex.join(args)
+    backend = LocalShellBackend(root_dir=tmp_path, inherit_env=True)
+    with patch("subprocess._text_encoding", return_value="cp1252"):
+        result = await backend.aexecute(command) if asynchronous else backend.execute(command)
+    assert result.exit_code == 0
+    assert result.output == "é�����\n[stderr] �"
+    assert (tmp_path / "finished").exists()
+
+
 @_POSIX_SHELL_ONLY
 @pytest.mark.parametrize("asynchronous", [False, True], ids=["sync", "async"])
 async def test_local_shell_backend_timeout_stops_descendant(tmp_path: Path, *, asynchronous: bool) -> None:

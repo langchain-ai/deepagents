@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:b14cc9e8a5c3476932d86112fc96016a406d767685eada4dcd261227980819b3",
+  "pageVersion": "sha256:29ebba7a5f4385eac945f548f2641d38ef2676316c0c7f9dc0776b4910e7394d",
   "claims": [
     {
       "id": "claim_c5dfbd9cde8e41eb8280d713c9d71d4f",
@@ -38,7 +38,7 @@
       "evidence": [
         {
           "resource": "repo://libs/deepagents/deepagents/middleware/async_subagents.py",
-          "version": "repo-file-v1:sha256:2a4ce6a5d9a072eb09c8601a9325a5b57cb338914a318e859d5e1f5b554641c2"
+          "version": "repo-file-v1:sha256:93cd697574039314400a50195b76c15860c79266020ae1bfa0d646006a738b40"
         }
       ]
     },
@@ -48,11 +48,11 @@
       "evidence": [
         {
           "resource": "repo://libs/deepagents/deepagents/middleware/async_subagents.py",
-          "version": "repo-file-v1:sha256:2a4ce6a5d9a072eb09c8601a9325a5b57cb338914a318e859d5e1f5b554641c2"
+          "version": "repo-file-v1:sha256:93cd697574039314400a50195b76c15860c79266020ae1bfa0d646006a738b40"
         },
         {
           "resource": "repo://libs/deepagents/tests/unit_tests/test_async_subagents.py",
-          "version": "repo-file-v1:sha256:a73314c11631526641f86727d782d037ea593d7ac563ba99efa817fd4288df0f"
+          "version": "repo-file-v1:sha256:0c43198a6648f11f59c367b1c6e01cc980d4fd7728784db27050841308073524"
         }
       ]
     },
@@ -174,11 +174,11 @@
       "evidence": [
         {
           "resource": "repo://libs/deepagents/deepagents/middleware/async_subagents.py",
-          "version": "repo-file-v1:sha256:2a4ce6a5d9a072eb09c8601a9325a5b57cb338914a318e859d5e1f5b554641c2"
+          "version": "repo-file-v1:sha256:93cd697574039314400a50195b76c15860c79266020ae1bfa0d646006a738b40"
         },
         {
           "resource": "repo://libs/deepagents/tests/unit_tests/test_async_subagents.py",
-          "version": "repo-file-v1:sha256:a73314c11631526641f86727d782d037ea593d7ac563ba99efa817fd4288df0f"
+          "version": "repo-file-v1:sha256:0c43198a6648f11f59c367b1c6e01cc980d4fd7728784db27050841308073524"
         }
       ]
     },
@@ -226,18 +226,22 @@
       "evidence": [
         {
           "resource": "repo://libs/deepagents/deepagents/middleware/async_subagents.py",
-          "version": "repo-file-v1:sha256:2a4ce6a5d9a072eb09c8601a9325a5b57cb338914a318e859d5e1f5b554641c2"
+          "version": "repo-file-v1:sha256:93cd697574039314400a50195b76c15860c79266020ae1bfa0d646006a738b40"
         },
         {
           "resource": "repo://libs/deepagents/tests/unit_tests/test_async_subagents.py",
-          "version": "repo-file-v1:sha256:a73314c11631526641f86727d782d037ea593d7ac563ba99efa817fd4288df0f"
+          "version": "repo-file-v1:sha256:0c43198a6648f11f59c367b1c6e01cc980d4fd7728784db27050841308073524"
         }
       ]
     },
     {
       "id": "claim_a35e1530a6004ebcbb1b0963c5d91e39",
-      "statement": "Every SDK-built Deep Agent includes _ParentNotifierMiddleware, which reports completion or model failure once for a top-level asynchronous task run launched by a parent and can wake an idle parent only when it has both parent thread and assistant identifiers; a paused task is not woken this way.",
+      "statement": "The default SDK-built Deep Agent stack adds _ParentNotifierMiddleware, although a profile class-form exclusion can remove it; when present, it reports completion or model failure once for a top-level asynchronous task run launched by a parent and wakes an idle parent only when it has both parent thread and assistant identifiers, while a paused task is not woken this way.",
       "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/_excluded_middleware.py",
+          "version": "repo-file-v1:sha256:cc7064524e3e782928b4579f9ec1f635183333b7fae4682a7d40ce846918e68c"
+        },
         {
           "resource": "repo://libs/deepagents/deepagents/graph.py",
           "version": "repo-file-v1:sha256:3826c92c9613a30d898d3fb4fb76ab49a6af0537b5ef74ec9e7340673f7f2261"
@@ -248,7 +252,7 @@
         },
         {
           "resource": "repo://libs/deepagents/tests/unit_tests/test_async_subagents.py",
-          "version": "repo-file-v1:sha256:a73314c11631526641f86727d782d037ea593d7ac563ba99efa817fd4288df0f"
+          "version": "repo-file-v1:sha256:0c43198a6648f11f59c367b1c6e01cc980d4fd7728784db27050841308073524"
         }
       ]
     },
@@ -262,13 +266,13 @@
         },
         {
           "resource": "repo://libs/deepagents/deepagents/middleware/async_subagents.py",
-          "version": "repo-file-v1:sha256:2a4ce6a5d9a072eb09c8601a9325a5b57cb338914a318e859d5e1f5b554641c2"
+          "version": "repo-file-v1:sha256:93cd697574039314400a50195b76c15860c79266020ae1bfa0d646006a738b40"
         }
       ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-10-18T08:05:11.339Z"
+    "at": "2026-10-21T08:05:42.350Z"
   }
 }

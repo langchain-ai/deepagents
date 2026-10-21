@@ -3,9 +3,6 @@ type: architecture
 title: SDK Construction and Execution
 description: How create_deep_agent assembles and compiles Deep Agents, isolates synchronous task subagents, and coordinates remote asynchronous Agent Protocol tasks.
 tags: [deepagents, sdk-construction, agent-execution, middleware, subagents, permissions, langgraph]
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-10-18T08:05:11.339Z
 sources:
   - id: openwiki-source-b93533cac55718d75277d1cf
     resource: repo://libs/deepagents/deepagents/_excluded_middleware.py
@@ -37,7 +34,10 @@ sources:
     resource: repo://libs/deepagents/tests/unit_tests/test_permissions.py
   - id: openwiki-source-ca8183c87e6002c442ee2d62
     resource: repo://libs/deepagents/tests/unit_tests/test_subagents.py
-generated: { by: "openwiki/0.4.2", at: "2026-10-18T08:05:11.339Z" }
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-10-21T08:05:42.350Z
+generated: { by: "openwiki/0.4.2", at: "2026-10-21T08:05:42.350Z" }
 ---
 
 # SDK Construction and Execution
@@ -120,7 +120,7 @@ The transport carries deliberately limited linkage. Task-thread metadata identif
 
 A check derives `waiting` when the tracked run is successful but the thread is paused; it can discover a newer run when that successful run's thread became busy or errored. Updating starts a run on the same thread with `multitask_strategy="interrupt"`, replacing the current run and updating the tracked run ID. Cancelling a waiting task does not call remote cancellation because no run is active; it only changes parent-local tracking. Lists filter by cached status first and then refresh selected nonterminal tasks, retaining cached state if a fetch fails.
 
-Async notification is available only through the async hooks. Before an async model call, and once after a final answer, middleware polls unfinished tasks and adds notifications only for newly observed success, error, timeout, or waiting outcomes. A remote Deep Agent assembled by this SDK includes `_ParentNotifierMiddleware`: for its own top-level async run launched by a parent, it reports completion or model failure once and wakes an idle parent thread when it has both parent thread and assistant identifiers. A paused remote task is not woken this way; its user answers on the remote task thread. Synchronous `invoke` exposes the task tools but does not perform these async polls or notifier callbacks.
+Async notification is available only through the async hooks. Before an async model call, and once after a final answer, middleware polls unfinished tasks and adds notifications only for newly observed success, error, timeout, or waiting outcomes. The default SDK stack adds `_ParentNotifierMiddleware` (a profile class-form exclusion can remove it): for its own top-level async run launched by a parent, it reports completion or model failure once and wakes an idle parent thread when it has both parent thread and assistant identifiers. A paused remote task is not woken this way; its user answers on the remote task thread. Synchronous `invoke` exposes the task tools but does not perform these async polls or notifier callbacks.
 
 ## Main middleware order and profile policy
 

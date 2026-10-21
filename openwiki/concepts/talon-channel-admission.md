@@ -3,52 +3,24 @@ type: channel admission and runtime routing
 title: Talon Channel Admission
 description: Talon channel admission, provider routing, pairing, and host-owned conversation controls. Covers the separate per-process verbosity setting for interim channel updates, not access or approval policy.
 tags: [talon, discord, channels, admission-control, pairing, conversation-identity, security, verbosity]
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-10-19T08:10:20.273Z
 sources:
-  - id: openwiki-source-6a038e6e1a11f450bcafce54
-    resource: repo://libs/talon/deepagents_talon/__main__.py
   - id: openwiki-source-0ad7ce4799b63dc215741642
     resource: repo://libs/talon/deepagents_talon/channels/base.py
   - id: openwiki-source-a8e2e928218febcb386206bf
     resource: repo://libs/talon/deepagents_talon/channels/discord.py
-  - id: openwiki-source-553e668943289ec108603518
-    resource: repo://libs/talon/deepagents_talon/channels/slack.py
-  - id: openwiki-source-8b5bca648d1b15423f889af2
-    resource: repo://libs/talon/deepagents_talon/channels/telegram.py
-  - id: openwiki-source-3d157a5857f325aceaade7f1
-    resource: repo://libs/talon/deepagents_talon/channels/whatsapp.py
   - id: openwiki-source-80976c09402c30d4f886a2fa
     resource: repo://libs/talon/deepagents_talon/commands.py
-  - id: openwiki-source-81698d033a5726401d48b135
-    resource: repo://libs/talon/deepagents_talon/config.py
   - id: openwiki-source-6801a88de6305bc8cbdd259f
     resource: repo://libs/talon/deepagents_talon/host.py
   - id: openwiki-source-cebe4ea270e21dce4de9b074
     resource: repo://libs/talon/deepagents_talon/interfaces.py
-  - id: openwiki-source-5b9a69640ff3d94216c614ce
-    resource: repo://libs/talon/deepagents_talon/messaging.py
   - id: openwiki-source-26b7e102f81f5c7bcfdc2424
     resource: repo://libs/talon/deepagents_talon/pairing.py
-  - id: openwiki-source-665a21e2fbd09a89d3f13ac0
-    resource: repo://libs/talon/deepagents_talon/runtime.py
-  - id: openwiki-source-1c86f8e1d9b6cb62f342d9ed
-    resource: repo://libs/talon/tests/channels/test_base.py
   - id: openwiki-source-94758cb9b3302b8f80f516f9
     resource: repo://libs/talon/tests/channels/test_discord.py
-  - id: openwiki-source-6fd40210153ee05d5c26d545
-    resource: repo://libs/talon/tests/integration_tests/test_discord_host.py
-  - id: openwiki-source-a69daa62c9a3eb9a49f09bf9
-    resource: repo://libs/talon/tests/test_host.py
-  - id: openwiki-source-18959cdb729a1a796d950993
-    resource: repo://libs/talon/tests/unit_tests/test_commands.py
-  - id: openwiki-source-e8daeda7e19a9ca643b4d20c
-    resource: repo://libs/talon/tests/unit_tests/test_pairing_slack.py
-  - id: openwiki-source-8614e79d8a8371505c879e50
-    resource: repo://libs/talon/tests/unit_tests/test_pairing.py
-  - id: openwiki-source-1e7998c9f5a94d22f3819721
-    resource: repo://libs/talon/tests/unit_tests/test_verbosity.py
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-10-21T08:05:42.350Z
 generated: { by: "openwiki/0.4.2", at: "2026-10-19T08:10:20.273Z" }
 ---
 

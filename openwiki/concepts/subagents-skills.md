@@ -1,12 +1,16 @@
 ---
 type: delegation and progressive-disclosure concept
-title: Subagents and Skills
+title: Subagents, Skills, and Delegation
 description: Deep Agents separates synchronous local delegation from durable remote async tasks, including task observation and guarded parent wake-ups. Skills progressively disclose instructions and optionally tools, without granting authorization.
 tags: [deepagents, subagents, delegation, async-tasks, skills, middleware, agent-protocol]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-10-18T08:05:11.339Z
+    at: 2026-10-21T08:05:42.350Z
 sources:
+  - id: openwiki-source-590f5ae570ac1e4ef175341c
+    resource: repo://examples/async-subagent-server/README.md
+  - id: openwiki-source-aaa77c489f52896366e1b57c
+    resource: repo://examples/async-subagent-server/server.py
   - id: openwiki-source-0fc0e47059e4d07e23e50be2
     resource: repo://libs/deepagents/deepagents/graph.py
   - id: openwiki-source-41c16d89908bf285e252530e
@@ -21,10 +25,10 @@ sources:
     resource: repo://libs/deepagents/deepagents/middleware/subagents.py
   - id: openwiki-source-6ce85b02eabe462f99e0c912
     resource: repo://libs/deepagents/tests/unit_tests/test_async_subagents.py
-generated: { by: "openwiki/0.4.2", at: "2026-10-18T08:05:11.339Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-10-21T08:05:42.350Z" }
 ---
 
-# Subagents and Skills
+# Subagents, Skills, and Delegation
 
 Deep Agents has two distinct delegation boundaries. The local `task` tool invokes a synchronous child and returns one correlated result in the parent's tool loop. The remote-task tools start an `AsyncSubAgent` on an Agent Protocol server and return a durable task ID so the parent can continue. Skills are a separate progressive-disclosure facility: they reveal instructions and, optionally, tool definitions; they do not grant filesystem access or bypass approval. See [Middleware stack](/openwiki/architecture/middleware-stack.md), [State persistence](/openwiki/concepts/state-persistence.md), and [Permissions and HITL](/openwiki/concepts/permissions-hitl.md).
 
@@ -167,6 +171,8 @@ For models supporting mid-conversation tools, definitions are anchored after the
 Choose an isolated local worker for bounded work with intentionally scoped input. Use a local fork only when effective conversation is necessary and its experimental, nonrecursive semantics are acceptable. Use a compiled worker when another graph owns implementation. Use an async worker when remote work must continue while the parent proceeds and can later be checked, updated, cancelled, or resumed independently.
 
 `test_async_subagents.py` exercises launch and validation, task-map reduction, isolated and fork payloads, headers and context propagation, lifecycle transitions, cached-status fallback, waiting-task recovery and cancellation, the async-only ASGI constraint, notification wake-up and escaping rules, and polling that gives the model another turn. Skill behavior should be tested for source precedence and reload, pins, successful-read detection, resolver stability, provider placement and schema rejection, plus the execution-time gate. See the [Testing guide](/openwiki/testing/testing-guide.md).
+
+The `examples/async-subagent-server` sample is a deliberately minimal self-hosted Agent Protocol peer: its FastAPI routes create threads and runs, poll a run and thread result, and cancel runs; it keeps those records in in-memory SQLite. It is a development pattern, not a production deployment: the example explicitly omits authentication and rate limiting, and its cancel route only records cancellation rather than cancelling the in-flight `asyncio` invocation. Run the server with `uv run uvicorn server:app --port 2024` and the separate supervisor as described in its README; add real authentication, durable storage, rate limits, and true execution cancellation before exposing an equivalent service.
 
 ## Related
 

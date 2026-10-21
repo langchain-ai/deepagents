@@ -3,6 +3,9 @@ type: workflow
 title: Build and Customize a Deep Agent
 description: Assemble a Deep Agents graph safely by selecting a model, backend, middleware, subagents, skills, persistence, and approval policy while preserving the builder's ordering and state invariants.
 tags: [deepagents, langgraph, middleware, skills, subagents, backends, testing]
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-10-21T08:05:42.350Z
 sources:
   - id: openwiki-source-07f9eac13e71bcbdb4e6994b
     resource: repo://libs/deepagents/deepagents/backends/state.py
@@ -10,6 +13,8 @@ sources:
     resource: repo://libs/deepagents/deepagents/graph.py
   - id: openwiki-source-0fb4155c19dd248acd3ffe4f
     resource: repo://libs/deepagents/deepagents/middleware/_fs_interrupt.py
+  - id: openwiki-source-41c16d89908bf285e252530e
+    resource: repo://libs/deepagents/deepagents/middleware/_parent_notifier.py
   - id: openwiki-source-5c9c6a877b43f30407158658
     resource: repo://libs/deepagents/deepagents/middleware/_skill_tools.py
   - id: openwiki-source-e51c4102234507d1529a2440
@@ -20,6 +25,8 @@ sources:
     resource: repo://libs/deepagents/deepagents/middleware/skills.py
   - id: openwiki-source-114a1c7a58992fa867a94ef0
     resource: repo://libs/deepagents/deepagents/middleware/subagents.py
+  - id: openwiki-source-0f308f1610986e2f3ed6d53c
+    resource: repo://libs/deepagents/Makefile
   - id: openwiki-source-13e0ea89aadd1a5e309ac7e3
     resource: repo://libs/deepagents/tests/unit_tests/middleware/test_skill_tools_payload.py
   - id: openwiki-source-c71ac20477155a66b7a8c60a
@@ -30,10 +37,7 @@ sources:
     resource: repo://libs/deepagents/tests/unit_tests/test_graph.py
   - id: openwiki-source-851e3a9c96663d8db5ca3dec
     resource: repo://libs/deepagents/tests/unit_tests/test_permissions.py
-generated: { by: "openwiki/0.4.2", at: "2026-10-16T08:05:35.701Z" }
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-10-16T08:05:35.701Z
+generated: { by: "openwiki/0.4.2", at: "2026-10-21T08:05:42.350Z" }
 ---
 
 # Build and Customize a Deep Agent
@@ -177,13 +181,15 @@ For permission changes, run `tests/unit_tests/test_permissions.py`. It covers ru
 
 ```bash
 cd libs/deepagents
-uv run --group test pytest -vvv tests/unit_tests/test_graph.py
-uv run --group test pytest -vvv tests/unit_tests/test_async_subagents.py
-uv run --group test pytest -vvv tests/unit_tests/test_end_to_end.py -k AsyncSubagent
-uv run --group test pytest -vvv tests/unit_tests/test_permissions.py
-uv run --group test pytest -vvv tests/unit_tests/middleware/test_skill_tools.py
-uv run --group test pytest -vvv tests/unit_tests/middleware/test_skill_tools_payload.py
-uv run --group test pytest -vvv tests/unit_tests/middleware/test_skill_tool_resolver.py
+uv sync --all-groups
+make test TEST_FILE=tests/unit_tests/test_graph.py
+make test TEST_FILE=tests/unit_tests/test_async_subagents.py
+make test TEST_FILE=tests/unit_tests/test_end_to_end.py PYTEST_EXTRA="-k AsyncSubagent"
+make test TEST_FILE=tests/unit_tests/test_permissions.py
+make test TEST_FILE=tests/unit_tests/middleware/test_skill_tools.py
+make test TEST_FILE=tests/unit_tests/middleware/test_skill_tools_payload.py
+make test TEST_FILE=tests/unit_tests/middleware/test_skill_tool_resolver.py
+make lint
 ```
 
 ## Safe-change checklist

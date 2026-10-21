@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:5e1be8269999f32a047a96b6fb5c5d0e01db53d4e1144305a12f6764e2447120",
+  "pageVersion": "sha256:29d80c22c7fbeb20c9c2323e55b06ef11efcb277cb54ad4f5a4f7c8f16714df7",
   "claims": [
     {
       "id": "claim_cd69081ffe3242c191198ed88e2b1a48",
@@ -12,15 +12,15 @@
         },
         {
           "resource": "repo://libs/code/pyproject.toml",
-          "version": "repo-file-v1:sha256:f2f280a8499dc76d371202dda329ba59846fb8e509c3a0902981cb6ee88b24de"
+          "version": "repo-file-v1:sha256:03ef3e26ed62f80fcaebca192dad2eca09b3ec0ce3178c46429998d2442574b8"
         },
         {
           "resource": "repo://libs/deepagents/pyproject.toml",
-          "version": "repo-file-v1:sha256:b3ab370eee9c74b350923154560eac2d90618057cdfae82f572fa53723c5cdbb"
+          "version": "repo-file-v1:sha256:62b29cb12a13a84b1252f1f40944c16a2267391c3f446e85d76df2e6c203f735"
         },
         {
           "resource": "repo://libs/talon/pyproject.toml",
-          "version": "repo-file-v1:sha256:5d2cb61c60626642b8b5d714012b3c0d6f4301bb555285742fcf94c226c6ed96"
+          "version": "repo-file-v1:sha256:8403d592a82d8419c48ff212b4846727bc5519ceded2b0f596925400fe98f048"
         }
       ]
     },
@@ -40,7 +40,7 @@
     },
     {
       "id": "claim_815e3ff555cf445aa9e9f6a315f0bc6c",
-      "statement": "Published dependency constraints are distinct from editable workspace mappings: Code publishes deepagents==0.7.28 while resolving Deep Agents, ACP, and partner packages from sibling editable paths; Code must raise that exact SDK pin in the PR that begins using new SDK functionality.",
+      "statement": "Published dependency constraints are distinct from editable workspace mappings: Code publishes deepagents==0.7.29 while resolving Deep Agents, ACP, and partner packages from sibling editable paths; Code must raise that exact SDK pin in the PR that begins using new SDK functionality.",
       "evidence": [
         {
           "resource": "repo://.github/RELEASING.md#L41-L50",
@@ -48,7 +48,7 @@
         },
         {
           "resource": "repo://libs/code/pyproject.toml",
-          "version": "repo-file-v1:sha256:f2f280a8499dc76d371202dda329ba59846fb8e509c3a0902981cb6ee88b24de"
+          "version": "repo-file-v1:sha256:03ef3e26ed62f80fcaebca192dad2eca09b3ec0ce3178c46429998d2442574b8"
         }
       ]
     },
@@ -94,7 +94,7 @@
     },
     {
       "id": "claim_84c087f65f2749b8bf613b47f43f37ee",
-      "statement": "The release-please manifest has nine independently released package baselines—Deep Agents 0.7.28, ACP 0.0.13, Code 0.1.86, Talon 0.0.9, Daytona 0.0.8, Modal 0.0.6, Runloop 0.0.7, Vercel 0.0.2, and QuickJS 0.3.9—and configuration creates separate draft Python release PRs with pre-1.0 bump behavior while delegating publication to release.yml.",
+      "statement": "The release-please manifest has nine independently released package baselines—Deep Agents 0.7.29, ACP 0.0.13, Code 0.1.87, Talon 0.0.9, Daytona 0.0.8, Modal 0.0.6, Runloop 0.0.7, Vercel 0.0.2, and QuickJS 0.3.9—and configuration creates separate draft Python release PRs with pre-1.0 bump behavior while delegating publication to release.yml.",
       "evidence": [
         {
           "resource": "repo://.github/workflows/release-please.yml",
@@ -102,7 +102,7 @@
         },
         {
           "resource": "repo://.release-please-manifest.json",
-          "version": "repo-file-v1:sha256:49f7fd716935c53332718551b9d0c62972f2f59a2dcb631ba7209e49fa2b42fd"
+          "version": "repo-file-v1:sha256:29eed2cd07e6f170e157c158efd4102de31535def1ba9e57c9d0a88e3d3f31b3"
         },
         {
           "resource": "repo://release-please-config.json",
@@ -120,7 +120,7 @@
         },
         {
           "resource": "repo://.release-please-manifest.json",
-          "version": "repo-file-v1:sha256:49f7fd716935c53332718551b9d0c62972f2f59a2dcb631ba7209e49fa2b42fd"
+          "version": "repo-file-v1:sha256:29eed2cd07e6f170e157c158efd4102de31535def1ba9e57c9d0a88e3d3f31b3"
         },
         {
           "resource": "repo://release-please-config.json#L59-L194",
@@ -213,6 +213,6 @@
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-10-18T08:05:11.339Z"
+    "at": "2026-10-21T08:05:42.350Z"
   }
 }

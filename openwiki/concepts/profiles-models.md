@@ -1,11 +1,11 @@
 ---
-type: model configuration boundaries
-title: Profiles and Models
-description: Explains SDK provider and harness profiles, dcode model construction and retry ownership, package compatibility, and Talon's per-chat model selection. Distinguishes construction-time configuration from graph behavior and model-dependent runtime state.
-tags: [models, sdk-profiles, dcode, talon, provider-configuration, retries]
+type: model configuration concepts
+title: Profiles, Models, and Reasoning Controls
+description: Explains Deep Agents construction and harness profiles, dcode provider model construction, and Talon's per-turn model and reasoning-effort controls. Distinguishes graph assembly, credentialed model creation, and request-scoped overrides.
+tags: [models, sdk-profiles, dcode, talon, reasoning-effort, provider-configuration, retries]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-10-17T08:04:56.296Z
+    at: 2026-10-21T08:05:42.350Z
 sources:
   - id: openwiki-source-15628256fe9cd22197db74ed
     resource: repo://libs/code/AGENTS.md
@@ -13,6 +13,8 @@ sources:
     resource: repo://libs/code/deepagents_code/config.py
   - id: openwiki-source-c101168dc0286ff6c29ed37f
     resource: repo://libs/code/deepagents_code/model_retry.py
+  - id: openwiki-source-bdf7871023d068e30942c1ba
+    resource: repo://libs/code/deepagents_code/reasoning_effort.py
   - id: openwiki-source-7ba50bd13eb62341a2061ef9
     resource: repo://libs/code/pyproject.toml
   - id: openwiki-source-50173942904153d619b9ae0d
@@ -31,37 +33,39 @@ sources:
     resource: repo://libs/deepagents/pyproject.toml
   - id: openwiki-source-38c26264bf4a1dadb3401e80
     resource: repo://libs/deepagents/tests/unit_tests/test_models.py
+  - id: openwiki-source-9ee5b3034d091a886c8fdda4
+    resource: repo://libs/talon/deepagents_talon/effort.py
   - id: openwiki-source-f04ce33d1db21a61b1e6e8b3
     resource: repo://libs/talon/deepagents_talon/model_selection.py
+  - id: openwiki-source-665a21e2fbd09a89d3f13ac0
+    resource: repo://libs/talon/deepagents_talon/runtime.py
   - id: openwiki-source-686a5e2ba1fe4ce0f98b9bf2
     resource: repo://libs/talon/pyproject.toml
   - id: openwiki-source-817808ec0e85107297729a56
     resource: repo://libs/talon/tests/unit_tests/test_model_selection.py
-generated: { by: "openwiki/0.4.2", at: "2026-10-17T08:04:56.296Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-10-21T08:05:42.350Z" }
 ---
 
-# Profiles and Models
+# Profiles, Models, and Reasoning Controls
 
-“Profile” names three different concerns in this repository. A Deep Agents **provider profile** configures how a string model is constructed; a Deep Agents **harness profile** configures the agent assembled around a model; and a model object's capability `profile` supplies metadata such as its input-token limit. dcode also has provider configuration, credentials, policy, and retries. Do not treat a familiar model-name prefix as proof that an integration is installed, credentialed, or selectable.
+This repository uses *profile* for separate layers that must not be conflated. A Deep Agents **provider profile** affects construction from a string model specification; a **harness profile** changes the agent graph assembled around a resolved model; and a model object's capability `profile` reports attributes such as `max_input_tokens`. dcode adds provider configuration, policy, credentials, and retries. Talon then selects a model and reasoning control for an individual turn.
 
-## Compatibility and installation boundary
+## Package and provider boundary
 
-`deepagents-code` 0.1.86 requires Python `>=3.12,<4.0` and pins its SDK dependency exactly to `deepagents==0.7.28`. The checked-out SDK declares the same 0.7.28 version but supports Python `>=3.11,<4.0`; dcode's stricter Python range and exact pin are the release contract. The editable `../deepagents` UV source mapping is for monorepo development only, not a widening of published compatibility.
+`deepagents-code` 0.1.87 requires Python `>=3.12,<4.0` and pins `deepagents==0.7.29`. The checked-out SDK is 0.7.29 and permits Python `>=3.11,<4.0`; the stricter dcode range and exact pin remain its release contract. The editable `../deepagents` UV mapping is only a monorepo development source. When dcode needs new SDK behavior, change its exact pin in the same PR; release CI rejects a pin older than the workspace SDK unless explicitly bypassed, while an intentionally ahead pin is permitted for prerelease coordination.
 
-When a dcode change needs new SDK behavior, update the exact pin in the same PR. Release checking rejects a pin older than the workspace SDK unless `dangerous-skip-sdk-pin-check` is used; an ahead-of-workspace pin is allowed for deliberate prerelease coordination.
+The dcode base installation includes Anthropic, Google GenAI, and OpenAI integrations. Other providers are optional extras, and `deepagents-code[all-providers]` aggregates the declared provider extras. A model-name prefix is therefore not evidence that the integration is installed or credentialed.
 
-The dcode base install carries the Anthropic, Google GenAI, and OpenAI integrations. Other integrations are optional extras—for example, `deepagents-code[fireworks]` and `deepagents-code[openrouter]`—and `deepagents-code[all-providers]` aggregates the declared model-provider extras. Dependency ranges in the manifest, not a model string's spelling, are the compatibility evidence for an integration.
+Talon is an alpha package requiring Python `>=3.12,<4.0`. It declares `deepagents>=0.7.24` and `deepagents-code>=0.1.71,<1.0.0`; its editable sibling mappings do not make Talon an exact SDK-pin consumer.
 
-Talon is separately experimental/alpha: `deepagents-talon` 0.0.9 requires Python `>=3.12`, depends on `deepagents>=0.7.24` and `deepagents-code>=0.1.71,<1.0.0`, and also maps both siblings to editable sources during monorepo work. It therefore does **not** inherit dcode's exact SDK pin as its own declared package contract.
+## SDK profiles: construction versus harness assembly
 
-## Deep Agents SDK profiles
-
-The beta `deepagents.profiles` API has two additive registries. Both accept a provider-wide key such as `openai` or an exact `provider:model` key; only the first colon is structural, so model IDs may contain further colons.
+The beta `deepagents.profiles` API exposes two additive registries. Each key is either a provider such as `openai` or an exact `provider:model` specification; only the first colon separates provider from model, so identifiers may contain more colons.
 
 | Registry | Applies when | Responsibility |
 | --- | --- | --- |
-| `ProviderProfile` | `resolve_model()` receives a string | Supplies `init_chat_model` kwargs, an optional runtime kwargs factory, and an optional `pre_init` hook. |
-| `HarnessProfile` / `HarnessProfileConfig` | `create_deep_agent()` has a resolved model | Adjusts prompt material, tool descriptions and visibility, middleware, and default general-purpose-subagent behavior. |
+| `ProviderProfile` | `resolve_model()` receives a string | Supplies `init_chat_model` kwargs, optional dynamic kwargs, and an optional `pre_init` hook. |
+| `HarnessProfile` / `HarnessProfileConfig` | `create_deep_agent()` has a resolved model | Shapes prompts, tool descriptions and visibility, middleware, and default general-purpose-subagent behavior. |
 
 ```mermaid
 flowchart TD
@@ -75,25 +79,23 @@ flowchart TD
     Assemble --> Agent["Compiled agent"]
 ```
 
-Caption: provider profiles affect string construction; harness profiles affect the graph built around either a constructed or caller-supplied model.
+Caption: provider profiles affect string construction, whereas harness profiles affect the graph around either constructed or supplied models.
 
-`resolve_model()` passes an existing `BaseChatModel` through unchanged. Only string resolution calls `apply_provider_profile()` and then `init_chat_model()`, so register a construction profile before resolving a string; it cannot retrofit a pre-built model. In contrast, a harness profile can still be selected for a pre-built model from its reported provider and identifier.
+`resolve_model()` returns an existing `BaseChatModel` unchanged. Only a string calls `apply_provider_profile()` and `init_chat_model()`, so a provider profile cannot retrofit a pre-built instance. A harness profile can still be selected for such an instance from its reported provider and identifier.
 
-Registration layers over, rather than replaces, prior settings. Exact model profiles layer on provider profiles. For provider profiles, base hooks and factories run first, factory output overrides static defaults, and caller kwargs have final precedence. Harness profile merging is field-specific: scalar prompt values use an explicitly set exact-model value, description maps merge by key, exclusions union, same-type middleware is replaced in place while new middleware is appended, and the general-purpose-subagent settings merge field by field.
+Registration layers rather than replaces. Exact provider profiles overlay provider-wide profiles: their `pre_init` hooks and kwargs factories run base first, factory values override static kwargs, and explicit caller kwargs win last. Hook or factory exceptions stop the remaining chained work and propagate. Harness profile merging is field-specific: explicitly set scalar values replace base values, tool-description maps merge by key, exclusions union, same-type middleware replaces in place while novel middleware appends, and general-purpose-subagent fields merge individually.
 
-`create_deep_agent()` resolves the main string model, selects its harness profile, and performs the same model/profile resolution for each declarative subagent. It applies profile prompt and tool-description changes while assembling middleware. Required filesystem and subagent scaffolding cannot be excluded; invalid, private, ambiguous, or unmatched middleware exclusions fail rather than silently changing the graph.
+`create_deep_agent()` resolves the main model and looks up its harness profile; it repeats that resolution for each declarative subagent before applying profile prompt, tool-description, and middleware changes. Required filesystem and subagent scaffolding cannot be excluded. Private, ambiguous, unmatched, or otherwise invalid middleware exclusions fail instead of silently building a different graph.
 
-Profile bootstrap is lazy and coordinated between threads. Built-ins are registered by direct imports, then third-party zero-argument entry-point hooks in `deepagents.provider_profiles` and `deepagents.harness_profiles` may layer registrations over them. A broken built-in aborts and restores the pre-bootstrap registry state; a broken third-party plugin is warned about and skipped. Plugin ordering is not a supported precedence mechanism.
+Bootstrap is lazy, thread-coordinated, and once per interpreter. Built-ins are registered via direct imports; then zero-argument third-party hooks from `deepagents.provider_profiles` and `deepagents.harness_profiles` can layer registrations over them. A built-in failure restores the pre-bootstrap registries and fails bootstrap. Plugin enumeration, load, or registration failure is logged/warned and skipped; plugin order is not a supported precedence mechanism.
 
-## dcode construction, policy, and retry ownership
+## dcode model construction and retry ownership
 
-dcode's `create_model()` is the inference-host construction entrypoint. It parses or infers the provider, computes the canonical spec, then enforces `models.allowed` **before** credential bridging, provider profile hooks, or provider imports. A rejected request consequently cannot trigger those side effects. After the gate, dcode obtains provider defaults and per-model configuration, applies stored credentials and an SDK `ProviderProfile`, then applies `extra_kwargs`; runtime parameters normally have highest precedence, except that dcode forces off a known provider-owned retry knob.
+`create_model()` is dcode's construction entrypoint. It parses or infers a provider and canonical specification, then applies `models.allowed` **before** credential bridging, provider profiles, or provider imports. A blocked model cannot trigger those side effects. After the gate, dcode derives provider and per-model kwargs, applies stored credentials and the SDK provider profile, applies runtime `extra_kwargs`, resolves its retry budget, and constructs either a configured custom class or a standard integration model.
 
-A configured `class_path` is an explicit custom-provider extension point and imports configured Python; configuration that uses it must be trusted. Missing provider packages, initialization errors, missing credentials, and policy denial are surfaced as model-configuration failures rather than being inferred by a client.
+A configured `class_path` imports configured Python and is an explicit custom-provider extension point; treat that configuration as trusted. Missing provider packages, provider initialization failures, missing credentials, and policy denial are surfaced as model-configuration errors. dcode then overlays the model capability `profile` with `config.toml` overrides and finally CLI profile overrides. `ModelResult` extracts the input limit and explicitly unsupported input modalities from the resulting capability metadata.
 
-Capability metadata is separate from constructor kwargs and harness profiles. dcode overlays upstream model metadata with `config.toml` profile overrides and then CLI/workspace overrides, applying the effective fields to the concrete model. `ModelResult` extracts `max_input_tokens` and unsupported input modalities from that object profile; these values guide runtime behavior but do not themselves establish provider support.
-
-Dcode owns model-node retries so a transient model failure does not replay already completed tools. It stamps the selected model's resolved retry budget, disables a known provider SDK retry loop to avoid multiplying attempts, and has the middleware read the budget from the request model—so a runtime switch carries its provider-specific budget. It retries classified transient failures with exponential backoff or usable `Retry-After`, emits correlated attempt and retry events, and re-raises terminal failures rather than returning error text as a model answer.
+Dcode, rather than a provider SDK, owns the user-visible model-node retry budget. It disables a recognized provider retry knob after merging kwargs to avoid nested attempts, attaches the resolved budget to the concrete model, and has retry middleware read it from the request model. Thus runtime model switching also changes the applicable retry budget. The middleware wraps individual model calls—not completed tools—emits correlated lifecycle and retry events, retries classified transient failures with backoff or usable `Retry-After`, and re-raises terminal provider failures.
 
 ```mermaid
 flowchart TD
@@ -106,51 +108,60 @@ flowchart TD
     Attempt --> Transient{"Transient and budget remains"}
     Transient -->|Yes| Retry["Emit retry event and wait"]
     Retry --> Attempt
-    Transient -->|No| Terminal["Return response or re-raise error"]
+    Transient -->|No| Outcome["Return response or re-raise error"]
 ```
 
-Caption: the policy gate precedes construction side effects; retries wrap one model-node attempt rather than a whole agent turn.
+Caption: policy precedes model-construction side effects, and retries surround one model-node attempt.
 
-## Talon: selectable models and model-dependent runtime surface
+## dcode reasoning effort
 
-Talon's `/model` facility is not a static provider allowlist. `discover_models()` starts from dcode's available-model catalog, retains only providers with the required credential present in **Talon's** environment, and can add models returned by a validated LangSmith unified-gateway catalog. A dcode stored credential alone does not qualify a Talon provider. The default graph model remains selectable even if discovery does not list it.
+The dcode `/effort` support derives the advertised levels and default from the active model's capability profile only when `reasoning_output` is exactly `True`. Malformed profile fields are ignored with warnings. For Anthropic models configured with `thinking.type == "between_tools"`, the offered profile levels are additionally limited to `low`, `medium`, and `high`.
 
-`ModelSelection` requires an exact `provider:model` catalog match before building a non-default model; unknown selections raise `UnknownModelError`. It builds an approved alternative only on first use, caches it under a lock, and returns `None` for the default so no override is needed. Discovery and construction can block, so async callers must run resolution in a thread.
+Per-session model parameters may contain a canonical `reasoning_effort` or provider-native representation. dcode recognizes provider-specific precedence paths—for example `reasoning.effort` before the canonical field for OpenAI/Codex, and native Anthropic or Google fields—and uses their presence to prevent persisted effort restoration. When changing effort, it removes both canonical and native representations without disturbing sibling settings, then stores the canonical `reasoning_effort`; integrations translate that standard constructor parameter into their request format.
 
-For a turn with a selected model, `ModelSelectionMiddleware` substitutes it into every main-agent model call without recompiling the graph. It is outermost, allowing inner middleware such as prompt caching to see the selected model. `ACTIVE_MODEL` is a context variable, keeping the override scoped to the current turn.
+## Talon per-turn model and effort controls
 
-Model selection also changes context management. The SDK summarizer would otherwise size input against the startup model, so `SelectedModelSummarization` occupies the summarizer slot and lazily caches a summarizer per selected model. Its trim limit is 80% of a valid `profile["max_input_tokens"]`, falling back to 4,000 tokens when unavailable. Delegated subagents deliberately retain the startup summarizer and model.
+Talon discovers selectable native models from dcode's installed-provider catalog only when Talon's own environment contains that provider's credential. It may also add validated models from an authenticated LangSmith unified gateway. A credential stored by dcode alone does not qualify a Talon provider. The graph's default model is always added to the catalog even if discovery does not list it.
+
+`ModelSelection` accepts the default without rebuilding it. Any other selection must exactly match a `provider:model` catalog entry before construction, otherwise it raises `UnknownModelError`. Approved alternatives build on first use and are lock-cached. Because discovery and construction can import providers or block, async runtime callers run them in a thread.
+
+A selected-model construction failure during a turn is deliberately non-fatal: Talon logs it once per model and uses the startup default for that turn. `/model` preparation builds earlier, so an operator normally receives build failure at selection time.
+
+For a turn, the runtime binds the selected model in `ACTIVE_MODEL` and valid effort settings in `ACTIVE_EFFORT`, then resets both context variables in `finally`. Outer `ModelSelectionMiddleware` substitutes the selected model into main-agent model calls without recompiling the graph, and merges effort settings into `model_settings`. It does not apply effort to subagents. `extra_body` and nested `extra_body.thinking` merge rather than overwrite existing sibling settings.
+
+Talon obtains ordinary effort labels from dcode's supported-profile levels, with documented fallbacks for selected models. It provides special controls for OpenAI-compatible Qwen and GLM families: Qwen labels map to token-budget and thinking-body settings, while GLM maps `on`/`off` to its native thinking payload and treats GLM-5.3 as forced-on. Unsupported controls raise `ValueError`; spelling variants such as `extra-high` normalize to `xhigh`.
+
+Selected model context limits must also influence summarization. `SelectedModelSummarization` occupies the Deep Agents summarizer slot and caches a summarizer per selected main model, sizing compaction at 80% of a valid `profile["max_input_tokens"]` or 4,000 tokens when unavailable. It swaps the request model before delegating so the summarizer uses that budget. Subagents retain the startup model and startup summarizer.
 
 ```mermaid
 sequenceDiagram
     participant Turn
-    participant Selector as ModelSelection
-    participant Context as ACTIVE_MODEL
-    participant Middleware as ModelSelectionMiddleware
-    participant Summary as SelectedModelSummarization
+    participant Runtime
+    participant Context
+    participant Middleware
+    participant Summary
     participant Agent
-    Turn->>Selector: resolve approved specification
-    Selector-->>Turn: cached or newly built model
-    Turn->>Context: bind model for this turn
+    Turn->>Runtime: request model and effort
+    Runtime->>Context: bind model and settings
     Middleware->>Agent: override main model request
-    Summary->>Summary: use summarizer for selected model
+    Summary->>Summary: select model-specific summarizer
     Agent-->>Turn: response
+    Runtime->>Context: reset in finally
 ```
 
-Caption: Talon validates and lazily resolves the selection, then makes both main calls and summarization follow that turn's model.
+Caption: Talon scopes selection and effort to one turn while both main model calls and summarization follow its selected model.
 
-## Focused verification and change guidance
+## Verification and safe changes
 
-- SDK `test_models.py` covers pass-through of an existing `BaseChatModel` and provider-profile kwargs for strings. Profile code and graph tests cover lookup/merge behavior, bootstrap isolation, and harness application.
-- dcode model-configuration tests should cover the ordering-sensitive policy gate and retry configuration; retry tests cover transient classification, backoff, event correlation, and terminal re-raise behavior.
-- Talon `test_model_selection.py` covers credential-filtered discovery, exact-match rejection, lazy build-and-cache behavior, gateway validation, model-specific context budgets, and startup-model behavior for subagents.
+SDK model tests cover passing through an existing `BaseChatModel` and applying a provider profile for string resolution. Profile and graph tests should preserve lookup, merge, bootstrap-isolation, and harness-application semantics.
 
-When adding a provider, declare its package dependency or extra, credential mapping, discovery behavior, constructor/retry behavior, and tests independently. When adding a profile, decide whether it belongs to construction or graph assembly and test that boundary. When changing Talon selection, preserve the exact catalog validation and ensure any model-dependent middleware—especially summarization—uses the model actually selected for the turn.
+For dcode, test ordering-sensitive policy denial before credential/profile side effects, constructor precedence, capability-profile overlays, and provider retry disablement. Reasoning-effort tests should cover malformed capability data, native-parameter precedence, and cleanup that retains unrelated settings. Talon tests cover credential-filtered discovery, exact catalog validation, lazy cache behavior, gateway validation, request-scoped selection and effort, model-specific summarization, and startup behavior for subagents.
+
+When adding a provider, treat package dependency, credentials, catalog discovery, construction, retry behavior, capability profile, and effort translation as independent concerns. When adding a profile, decide whether it belongs to string construction or graph assembly. When changing Talon selection or effort, preserve catalog validation, context-variable reset, subagent isolation, and model-dependent summarization.
 
 ## Related pages
 
-- [Code agent](/openwiki/architecture/code-agent.md)
-- [Architecture overview](/openwiki/architecture/overview.md)
+- [SDK construction and execution](/openwiki/architecture/sdk-construction-execution.md)
 - [Configuration layering](/openwiki/concepts/config-layering.md)
-- [Development](/openwiki/operations/development.md)
-- [Run a dcode session](/openwiki/workflows/run-dcode-session.md)
+- [Talon](/openwiki/integrations/talon.md)
+- [Costs and sessions](/openwiki/operations/cost-and-sessions.md)

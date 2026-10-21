@@ -1,7 +1,7 @@
 ---
 type: protocol integration
-title: Agent Client Protocol
-description: How deepagents-acp adapts a LangGraph graph to an editor-facing ACP server, including sessions, streaming, interrupts, and optional recovery. It also explains dcode ACP launch and the ownership boundary between its in-process ACP graphs and normal loopback server sessions.
+title: Agent Client Protocol Integration
+description: How deepagents-acp adapts a LangGraph graph to an editor-facing ACP server, including sessions, streaming, interrupts, and optional recovery. It also explains dcode ACP launch and how its in-process ACP graphs differ from remote Agent Protocol delegation.
 tags: [acp, deepagents, langgraph, dcode, stdio, sessions, streaming]
 sources:
   - id: openwiki-source-532ea636a0657c1d2714bd7a
@@ -34,13 +34,13 @@ sources:
     resource: repo://libs/code/tests/integration_tests/test_acp_mode.py
   - id: openwiki-source-e0e6f6b6ce0dbf7a671d682f
     resource: repo://libs/code/tests/unit_tests/test_main_acp_mode.py
+generated: { by: "openwiki/0.4.2", at: "2026-10-21T08:05:42.350Z" }
 verified:
   - by: openwiki/0.4.2
-    at: 2026-10-13T08:11:05.854Z
-generated: { by: "openwiki/0.4.2", at: "2026-10-13T08:11:05.854Z" }
+    at: 2026-10-21T08:05:42.350Z
 ---
 
-# Agent Client Protocol
+# Agent Client Protocol Integration
 
 [Agent Client Protocol (ACP)](https://agentclientprotocol.com/overview/introduction) lets an editor communicate with an agent process over stdio. `deepagents-acp` supplies `AgentServerACP`, an ACP `Agent` implementation that translates ACP session operations and LangGraph stream events. It is an adapter, not another agent runtime: the embedding application owns graph construction, tools, checkpoint storage, and interrupt policy.
 

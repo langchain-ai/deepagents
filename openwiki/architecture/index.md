@@ -1,8 +1,8 @@
 # Files
 
-- [Deep Agents Code Architecture](code-agent.md) - dcode is the Deep Agents SDK reference terminal coding agent. This page explains its client/server boundary, workspace policy, command and completion behavior, retry contract, and sandbox lifecycle.
-- [Middleware Stack and Extension Boundaries](middleware-stack.md) - Exact middleware ordering and extension boundaries for Deep Agents main agents, general-purpose subagents, and declarative subagents. Explains caller replacement, profile exclusions, tail behavior, and final tool exclusion.
+- [Deep Agents Code Architecture](code-agent.md)
+- [Middleware Assembly and Extension Boundaries](middleware-stack.md) - Explains how Deep Agents assembles, customizes, filters, and compiles middleware for main agents and subagents. Covers prompt and tool-surface composition, profile effects, permissions, and ownership boundaries.
 - [Repository Architecture Overview](overview.md) - Architecture and dependency map for the Deep Agents Python monorepo, including Talon's invocation-scoped graph runtime, approval snapshots, host-owned transport, and optional progress delivery.
-- [Runtime Behavior and Failure Boundaries](runtime-behavior.md) - How Deep Agents persists recoverable runtime state, delegates asynchronous work, distinguishes pauses from failure, and reports task outcomes across graph and deployment boundaries. Covers model and host retry policies as well as parent wake-up and polling behavior.
+- [Runtime Behavior and Failure Boundaries](runtime-behavior.md) - How Deep Agents keeps graph state recoverable, compacts model context without discarding the raw log, and manages asynchronous subagent lifecycles. Covers pause, cancellation, notification, and retry boundaries across graph and host runtimes.
 - [SDK Construction and Execution](sdk-construction-execution.md) - How create_deep_agent assembles and compiles Deep Agents, isolates synchronous task subagents, and coordinates remote asynchronous Agent Protocol tasks.
-- [Source Map](source-map.md) - Practical change-routing map for Deep Agents backend compatibility and SDK assembly, plus Talon runtime configuration, progress, approval, and channel seams. Use it to identify the contract owner and focused tests before changing behavior.
+- [System Source Map](source-map.md) - Task-oriented source map for Deep Agents graph assembly, middleware and storage; dcode terminal and ACP boundaries; and Talon host, runtime, protocol, and channel adapters. Use it to locate the contract owner and focused tests before changing behavior.

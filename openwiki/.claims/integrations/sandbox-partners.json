@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:f41549a1eb235c896895f74448c12ada7cecfda5e55c048373c579967b4db2f1",
+  "pageVersion": "sha256:f9e900e25aee2f00233a23c9fc9b30b5179300ae679a57800cd6977f9e9fe158",
   "claims": [
     {
       "id": "claim_348ce521c96a4f32a102f91b81305997",
@@ -62,7 +62,7 @@
       "evidence": [
         {
           "resource": "repo://libs/talon/deepagents_talon/config.py",
-          "version": "repo-file-v1:sha256:0cf902ed6e7f0272692eb044b219acd2a6fc5e5577616249c1dcee2e223daf3d"
+          "version": "repo-file-v1:sha256:daa708f33a2719f3466959c0152820d8504e1f70389475ef52b66d292d9b0026"
         },
         {
           "resource": "repo://libs/talon/deepagents_talon/sandbox.py",
@@ -76,7 +76,7 @@
       "evidence": [
         {
           "resource": "repo://libs/partners/quickjs/pyproject.toml",
-          "version": "repo-file-v1:sha256:1d7d6088d520188901f54b452f6e033e75ef0dc6a188715c4bb12e0efc4ba443"
+          "version": "repo-file-v1:sha256:62f789a5ae76bfc6a926ed521fe622d833fdf4def84e765bcbbf417f77bb760c"
         }
       ]
     },
@@ -257,6 +257,6 @@
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-10-19T08:10:20.273Z"
+    "at": "2026-10-21T08:05:42.350Z"
   }
 }

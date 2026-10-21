@@ -5,17 +5,19 @@ description: Run one bounded, non-interactive dcode task from a GitHub Actions j
 tags: [github-actions, dcode, deepagents-code, ci, automation, memory, mcp, sandbox]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-10-08T08:07:53.482Z
+    at: 2026-10-21T08:05:42.350Z
 sources:
   - id: openwiki-source-b1423dca16677f7643488f74
     resource: repo://.github/scripts/tests/workflows/test_github_action.py
+  - id: openwiki-source-164e2da859b5277df81c7d94
+    resource: repo://.github/workflows/ci.yml
   - id: openwiki-source-96d0addee4aedab20d360121
     resource: repo://action.yml
   - id: openwiki-source-ecf20e7a2684ba0d2ae7d701
     resource: repo://libs/code/deepagents_code/client/non_interactive.py
   - id: openwiki-source-0fc0e47059e4d07e23e50be2
     resource: repo://libs/deepagents/deepagents/graph.py
-generated: { by: "openwiki/0.4.2", at: "2026-10-08T08:07:53.482Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-10-21T08:05:42.350Z" }
 ---
 
 # GitHub Action Integration
@@ -153,4 +155,12 @@ For machine processing, set `json: "true"` and parse the result as data; do not 
 
 ## Change and regression focus
 
-`action.yml` is the compatibility surface to review when changing this integration. Keep its declared input list, run-script flag mapping, defaults, validation, outputs, and cache paths aligned. The focused action tests parse `action.yml` and dcode's root argument parser to detect flag drift and prevent reintroducing `--auto-approve`. They also execute the real run-script body with stubbed `uvx` and `timeout`, covering validation, stdin/skill exclusion, CLI-version command construction, timeout arithmetic including leading zeros, exit propagation, and the stdin SIGPIPE case. For local development and repository CI practices, see [Development, CI, and Releases](/openwiki/operations/development.md).
+`action.yml` is the compatibility surface to review when changing this integration. Keep its declared input list, run-script flag mapping, defaults, validation, outputs, and cache paths aligned. The focused action tests parse `action.yml` and dcode's root argument parser to detect flag drift and prevent reintroducing `--auto-approve`. They also execute the real run-script body with stubbed `uvx` and `timeout`, covering validation, stdin/skill exclusion, CLI-version command construction, timeout arithmetic including leading zeros, exit propagation, and the stdin SIGPIPE case.
+
+Run the focused check from the repository root:
+
+```bash
+python -m pytest .github/scripts/tests/workflows/test_github_action.py -v
+```
+
+Repository CI runs this file as part of `python -m pytest .github/scripts/tests -v` in the `Validate Release Options` job, which installs `packaging`, `pyyaml`, and `pytest`. For local development and repository CI practices, see [Development, CI, and Releases](/openwiki/operations/development.md).

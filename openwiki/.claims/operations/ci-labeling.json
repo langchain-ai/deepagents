@@ -1,0 +1,196 @@
+{
+  "schemaVersion": 1,
+  "pageVersion": "sha256:f691145fb26ccbed739642713fdfc20c54e8f26002167c7787f365c44b71161b",
+  "claims": [
+    {
+      "id": "claim_10c098882c8a4f6ca2ae373df529e738",
+      "statement": "The reusable `_test.yml` workflow validates required JSON matrix inputs before expanding a non-fail-fast build matrix, then checks out code, uses the local uv setup action, synchronizes the test group, runs platform-specific unit-test commands, and verifies a clean working tree.",
+      "evidence": [
+        {
+          "resource": "repo://.github/workflows/_test.yml#L341-L371",
+          "version": "repo-lines-v1:sha256:2375921e87c50b15390c72550318f4c571388f09228e29c93a99880188f87346:eyJzZWxlY3RlZExpbmVDb3VudCI6MzEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjYzMDFmNWFhNDEwMTM3MjM4YzcxOGNhNWNiN2M3ODVhNzlkMTMwZGU1ZTdkY2ZmNDY2YzhiODFkMmM3OWE1NmUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImNjMzMwYzU3MjBjZjQ4Mjg1MGQ0NWFkY2IyZmQ1MmVmNzdmY2VmOTkxNWY0MDE0ZWEwMjJhY2ZjMTU4MzEyMTciLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijc2ZjgwNTJiMzkzZDE3NDJhZjA1OTg5YzU2MDcwMTVjNzMxYWRiMGNmN2I4YmUzNTI0MTU1Mzc5MTIzMGE4MzQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        },
+        {
+          "resource": "repo://.github/workflows/_test.yml#L5-L95",
+          "version": "repo-lines-v1:sha256:c7f90031d8dff865cf718ae883e7737eb9a9ffd1442fedbc839d52300a541197:eyJzZWxlY3RlZExpbmVDb3VudCI6OTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU5NmRjNDgxNDlmNWE4M2QxZWQ2ZGJiMzliYmM3ZTJiOTAyYWEzZDM0ZDZiZDVhZTRiMjkxYjY4ZGYwY2E3OWEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjVhZDQxMTE1OWE2ODM2MWE3YjBjZWQ3OTQwMmVmYWNmN2VjYjlhNzZmMjlkYzNlYjg1NGNhMmMwMzVmOWQ0ZDEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImM2MmY0ZDE5ZmNkY2UzMGVjZmFhNjZmNzFjZjQzMzU2NGIxNzFmNWJjMzg1M2VkNzZhYTE1ZWFkOGVlYTY4M2MiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjIyMjEzMzA2ZjI5Mzk1ZjZiYmNiNjViY2Y2MjRjOWE2M2MzY2Y4MjUzZmMwMzA4NmJhYjYyNjY5NzEzOWUxZTQifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_740e76465c5748d19581a37b076bce93",
+      "statement": "`_test.yml` reads maintainer bypass labels from the live GitHub API only for pull-request runs and fails closed if that lookup fails; `ci:allow-warnings` adds `-W default`, while the narrowly scoped release ripgrep bypass can tolerate an install failure and record an artifact without weakening push or merge-group enforcement.",
+      "evidence": [
+        {
+          "resource": "repo://.github/workflows/_test.yml#L27-L34",
+          "version": "repo-lines-v1:sha256:efe1220d66e56654b74ba901a2b46c76a1fa75dbd3d2bb909b3d2aae338f3734:eyJzZWxlY3RlZExpbmVDb3VudCI6OCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNDA5ZTA4ZTYwZGY0NGU5Nzk1NmMzYmMxZDc4OTA2NGUxMzg2MjA4NGMzY2M5OWU1ODA3OWJhYzJlZmQxNjEwNSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNDM2OThjY2RmZjdlYThlMDFjMzk5YWZjNTI4ZmY4YThmNjQ0MDY1MWQxNDhlZjdiZGRkNzk3N2IyMzE4MzM1MiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiYTcyMzJjNTAwNmYzNDZhODM3OTgxMTI4NGJkZDQ0Y2RjOGZhOTIyYzFhY2M4ZWIzZmFmOWJkYWNiOTlkNmZlYSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiOTYzMGYzZTQwNmE3ZTM0Y2I4Mjk1NDRhMjJhZDIwNDRmNmY1OTMwMjBhNDYxNDdiNDEyZmUwMmFlNDMwZDIwOCJ9"
+        },
+        {
+          "resource": "repo://.github/workflows/_test.yml#L300-L349",
+          "version": "repo-lines-v1:sha256:9bdd2820332ed1284081708121654f065e8c412c55e191e4b6ba0ea96034c4f2:eyJzZWxlY3RlZExpbmVDb3VudCI6NTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjEzOWJhYjgwNmMyNGZlNjBhZDgxYTUzNWQzYThkYzdlMWM4MDliMThhMzQwOGFjYThhNTJjNzRkMzk4ZDg3M2IiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ5NTZmNWUzYWRhZWI4MjE1NmQxNDExMGU5MzUyNmVlZGRmN2Y3MGFhYjJlOTkwNzdiODMyNmFjMDdkNWM1NDciLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijg0MWU3MTdmNWE0MWI4NTBiZmIwZGI0NDI1ZmFlN2FjNjYyNzUwNTI3Njk5YTc2MDZhNzMxMjZhMjAwYjk5ZDMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImQ4MGFjMjU2NDg5MGQ4NDUwYWY2M2ZjNDE5M2RkNmRiZTU1MTAxNjZhYjg3Mjk5MTM2OWQxMmUxMGM0Y2JhYjcifQ"
+        },
+        {
+          "resource": "repo://.github/workflows/_test.yml#L97-L215",
+          "version": "repo-lines-v1:sha256:cb52ff3261faf341abb82899c94b37bdcfeca3207658f99ed1b2600e149ab5f7:eyJzZWxlY3RlZExpbmVDb3VudCI6MTE5LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI0NmZlNDQyYWM3NGIwOWMyODFiOTQ4ZTE3N2M5YmY2NzdmMGU3OTNlYjdjOThmMWY3ZjYwYWJmNzZmMjRjNmExIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI0NjhhYmFiNGRkNDgyYzM0MDVmOTViOWEwNzM1OTlmNGNlNjJhMGI2M2QxMTg1NDA1NGY2ODFlNTY3NzQ0YjRmIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiIwYjc4NWZmOTAyOTY2ODI2N2MwMDk3MTM1NDllYWIyYWU0ZjZlZTUxNGFkMWU1MjE5ZTgxOWViZWYyM2E5ZmNmIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI3ZDg5MzczYWVjNmNkNjY3MWRmY2NmNWRjNzcxY2JmM2VmNzgxYzNlNjZhNTA4YWI5YTMzYjlmNGI4NTU2MjcxIn0"
+        }
+      ]
+    },
+    {
+      "id": "claim_4ca0af8cd1144cdb9d5f77966e11b1ec",
+      "statement": "`pr_labeler.yml` runs on selected `pull_request_target` actions but checks out the base branch rather than PR-head code before loading its helper, preserving the trust boundary for this privileged labeling workflow.",
+      "evidence": [
+        {
+          "resource": "repo://.github/workflows/pr_labeler.yml#L28-L57",
+          "version": "repo-lines-v1:sha256:b3ab35af1a803d24e97386c8bc68fdac291457f4009ddd51bbfd94f1cfd8eee3:eyJzZWxlY3RlZExpbmVDb3VudCI6MzAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImM3Y2E2NmNmM2FlZWQzNmQ1MDk5ZDgxNzJiNTkxMmUxZGZmYzI5YWRiOTk4MTU5MTBkNzQ2MDYxOTNjZGFiMjYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjEzZDRmZGEzNDc1NDk2ODZkYTEwODkzOTc4YzczNTk2ZjI2YzZmM2QzMjQ2NjIyZGRkNDcwMTY1MzIyYjUzMTYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImMyNzczZjVlY2Q0YmM3ODU2NjU0Y2JkMDJlZTVkMDIxOGMzMjFlZjNlMTRiOWNmY2Q2OWM0NDM4MDI0NzhjOTIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImFjMGNiZDBjODUyOWU3MTUwNzQxNzVmNWYxMTZlODhlOGEwZGEyMTc0ZDhlMDllZWRhY2FlMjUyN2VkYmE0YjkifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_5be4be99630c4c26af3b4124309247c3",
+      "statement": "On PR opening, the labeler uses a GitHub App token to classify private organization membership and contributor tier; bots and active members are internal, a 404 is external, non-404 membership failures fail the step, and the App token is used to emit external labels that can trigger downstream workflows.",
+      "evidence": [
+        {
+          "resource": "repo://.github/scripts/labeling/pr-labeler.js#L314-L345",
+          "version": "repo-lines-v1:sha256:ae16f27c65f6a10102cf6691c6cc8cb9d4000a955b7fc11c134c49105ebf1ba8:eyJzZWxlY3RlZExpbmVDb3VudCI6MzIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImYxODA4NTExZWRjM2I5OGMxM2E1MDZlYmEzMDJmNDVhYjIyYTA1OTE0ZTBjMTgzODEyNWI4ZDNmNmM4NDgxOTEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI3ZTU3ODhkNWQ5ZDczZDI0YTgxZGJjMGE1YTc0YmZhODJjOWMzYjNhZjk5ZTUyYWY3OTZlOTBiNDY4YThhM2QiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjI0MDRmNThkNzIxYWQ2OTQwOWM3ZTk1N2U4YTM2OGUwNjRiMDJlN2EwODg2MjNkYzM2ZWE1ZDk2NjE1ZjAwMDIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjZiMWRhMjg3MjM3NjcwNDU1NWFjNmM5MmVkYTYxMDU2NjVlYWVmMGM2MWY5ZDY2YzViODViOTQ5NjBiOTg1MDMifQ"
+        },
+        {
+          "resource": "repo://.github/scripts/labeling/pr-labeler.js#L380-L414",
+          "version": "repo-lines-v1:sha256:6d847ac137218da6647fbfdda99591621eda9bb0e054a6228dce8766a09daa8e:eyJzZWxlY3RlZExpbmVDb3VudCI6MzUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImJkZTY4M2Y4ZjhjM2RiYTBhZDQyMTA1ZDI1ZWJmZTFhYTdkY2I5Y2IwMzFkMWZiNGEyMTZmN2UwYzJlNWE0NjAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI3ZTU3ODhkNWQ5ZDczZDI0YTgxZGJjMGE1YTc0YmZhODJjOWMzYjNhZjk5ZTUyYWY3OTZlOTBiNDY4YThhM2QiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImI3NDQ0ZjU5NzcwNDJkZmFjMGVhODIwMGM0ZjBkZDU1NjY2NzIxNmQ0NDNhMDUwZmNkYTdiZGQzYzA1MWRmZGEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImM2M2JhNzIwOTgyY2VmMjA0NzYzMTk1OGEwYjAyMTljODRlNGI3NDg4NTcxNzZiYjE1ZmJmN2NkMGQxNTZiNGUifQ"
+        },
+        {
+          "resource": "repo://.github/workflows/pr_labeler.yml#L249-L280",
+          "version": "repo-lines-v1:sha256:8508082e5cf3bf2f41cb55630ec420b6de95df122c3d347fd16e2d9763c192b3:eyJzZWxlY3RlZExpbmVDb3VudCI6MzIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImI2ODIyMmI2MjZkYjAyOGYzY2I5ZDNiYWFhNTI4YTJkYjU5NmI2NWU5NzMyYTI5ODhmODUxNDllNDU0NDMyMTIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU2Njc2YzBhMTc5MjdjMTA5Y2Q4YTdlZGQzMjU4NTRjMGNmNGE3MjFmODhhYzMwNjZkNDA2YTNiZGE2MWI1NmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImVhOGY3Y2Y0MDQ2NjU5ZTI2ZGZkMDc3OTc4NjBhMmVmMjY5Y2Q2NDliZDcyZThiNWJmOGUyZDU0NWQxMDQxMDkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        },
+        {
+          "resource": "repo://.github/workflows/pr_labeler.yml#L59-L89",
+          "version": "repo-lines-v1:sha256:f37b2eb803a416a2693b15c9818ca9d2e6fd02f1358b25b0adaef10996922e45:eyJzZWxlY3RlZExpbmVDb3VudCI6MzEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjdkZDVkY2FjOGRkZWNhZmM5MzE5ZjMyZjEwYWU3YWY3YWQ5MTU1MWFiMGE0NTI1YjBkY2U3MGRmMjkzYjhjNDQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM4NzA5MDgwYjM5ZjQ4YjUwMzQzMmYzMTg0MDgxZTk3YzAyY2E4N2I4ZjVmYTk3ZjMwMDZlM2U5YTgzZmRmZGIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjU5OWVmYzA5N2Y4ZmZmMGVhNjkzOTQ1M2EyMDk1YjVjODkwNmQ4ODJhOGNlZDU1Yzc1NDM3YzFmOTQyZDBhZTQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjkzYWNhZjUyYmQwYTk2ZjhiMTc1ZjU5NDMzNjVjYjI1YWVmNWVmMzNmMTY1ODQ0YjU1OWI2ZTJjMDcyOWU3MDgifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_cfb478093eb0477eb713a7e6d6679a3d",
+      "statement": "Before applying PR labels, the workflow canonicalizes configured non-release Conventional Commit scope aliases through the API and passes a successful replacement through a step output because the event payload title remains stale; release titles are explicitly not rewritten.",
+      "evidence": [
+        {
+          "resource": "repo://.github/scripts/labeling/pr-labeler.js#L286-L312",
+          "version": "repo-lines-v1:sha256:5f86b9d1f37c92c3e872c78bad6c1bec2670f52b7f38af04e4b7e05521b9beeb:eyJzZWxlY3RlZExpbmVDb3VudCI6MjcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImVkMzM1ZmUxYzA1NmE3ZjQ3ZTczNDQ2NDM2MmY5ZDQwMWVjZGVhM2E1ZGRhM2Y0NTYwYTU2YjVlNGY5NDdiM2EiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI3ZTU3ODhkNWQ5ZDczZDI0YTgxZGJjMGE1YTc0YmZhODJjOWMzYjNhZjk5ZTUyYWY3OTZlOTBiNDY4YThhM2QiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjQyOGQ5NDI5M2I3YjIyZWE2NGJhODNkZDMxNTg1YWVlN2MxZGU3NTM3ZmQ0NGNiMzY0ZjA1NmQyOWMxMDEzMDkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImM4MDAyYWY5NWFiZmViNGM0M2ZiNTBjNzhiZGNiZmM1N2Q3OGUzNzM0ZTFmN2EzYzRkZWM3NWRmODQ3ZWE5ZTEifQ"
+        },
+        {
+          "resource": "repo://.github/workflows/pr_labeler.yml#L91-L137",
+          "version": "repo-lines-v1:sha256:ac6a3bd2094851b042d684a05dbfae5273d32e1c864caeaa15c82d7fd87d1bcc:eyJzZWxlY3RlZExpbmVDb3VudCI6NDcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ2YThjNzRmZWVmNzQ3YjY0NWRhNDMwMzUxNzlmMmM3NzI5ZTU4OWMxZDg2ZDY3OGNhNWE4NjJlZDVkNTQwZTQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ4NzE2NGM3YjQwNmJkOGFlNGRkODdkMjNmNDdmMjRjNjJiNjgzOWNlMmE0MDRhN2NjMWZmYWI1NzEyNDEzNWMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjVhNGMxZWFkM2E0MTI4Y2Q0MmY5OGU1Mzg4ZjIwMDg5NmQwNDQ3MDFjYjA4YmRiMWJiZmE0YjU2MGMyNjczYWEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjI4ZDI5YWEyYTRmOTc3YmRhYWJkYjg2ZmNmYmM2ZjY1NTc2MzU3YmVmNWVhZGU2MDY1YjQxMjVkZmNmYzgzZGEifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_e2c049bab84541159f90db664d202551",
+      "statement": "The PR labeler's JSON configuration owns required classification inputs, including size thresholds, exclusions, title/type/scope mappings, labels, colors, descriptions, and file/branch/topic rules; the helper validates required keys and creates missing labels with a prefix-derived color and configured description while tolerating a concurrent-create 422.",
+      "evidence": [
+        {
+          "resource": "repo://.github/scripts/labeling/pr-labeler-config.json#L103-L274",
+          "version": "repo-lines-v1:sha256:3edb0dfd09cfcfe08508ef78afa325c1675880b969ee8cacf507528bfa82881a:eyJzZWxlY3RlZExpbmVDb3VudCI6MTcyLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJiMTE3NjJiMTg0ZTAyMTI3MTAzMmY1ZDliNWY4ZDc5YWI5ODBiMmJkNjRhNTljYTk5NWVlYTY0YjVkNDMyNjU1IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiIzMDY0OGY3N2ZkNWE5YzYzYjNjZGQwYWY0OWRhYTEyOTkyMjBiNzU0MWU4OGNhMTdlZmUxYTZhMTE0YjlmZjJhIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJhNjFkM2I4MmU2MzM2YTU4ZGM3OTJhMTRlNWFmMTc5OWExZWYzZjliNmFjNmMwOTA0YTYwNmM2M2EyYTJhZGVhIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MSwiZm9sbG93aW5nQ29udGV4dEhhc2giOiI0MTJjYTM0NWNjZjc1YmY5YzA4MDZiY2U2OTViZThkZTgwOGI3OTk4NDI1MWE3YTU0ZDIwMmNmNjEwMWRkNDUxIn0"
+        },
+        {
+          "resource": "repo://.github/scripts/labeling/pr-labeler-config.json#L17-L63",
+          "version": "repo-lines-v1:sha256:450e5287f728c339044014b03676129cd5d25362823b9678e0585d25951960ef:eyJzZWxlY3RlZExpbmVDb3VudCI6NDcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU2YTU2ZWI5OThjMjg0ZGUxMmNhOWI2ODY0ZDdjYzRkODZhYzhkZDU5MTcxYjA5OTJiMWZmMDNjYjBjY2I2YmYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImM0MzI2ZGI1ZTRjOTYyZjk1Njk0ODgwOTE1NDJhNDlhNjg1MTMyYTBkMDU5ZTYyODBhMGRhZWQ4MjBmNWZhOGQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjczMTM3ZDZjNjA3MWFmOTJjZjYzODdjOGFkZjRkNWQ4NGQwODkzZDJlYmM0ZDA1YjdmZjYwMjE3OWE1NmFhNGUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImU5ZTEyYTBkYjE1ZjBhNDc2ZTc5YmQ3NmNkMjdjYmRmNWNkOWU1ZjY1NWEwNzA5ZjgzYWVhNjkyNWJlNDVmODIifQ"
+        },
+        {
+          "resource": "repo://.github/scripts/labeling/pr-labeler.js#L68-L99",
+          "version": "repo-lines-v1:sha256:d539c035aabae5aed96eb175403ef5a080830cf08af2fbacf88c05ad27804761:eyJzZWxlY3RlZExpbmVDb3VudCI6MzIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijk4NjY4MTcwMGRmNjJiOWVmZmZiMTNjYmQxODY1NWQyZTU3MGI0ZGM3MzgyZmFmM2M3YWZjMjQxNWJjNTZjZmQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI3ZTU3ODhkNWQ5ZDczZDI0YTgxZGJjMGE1YTc0YmZhODJjOWMzYjNhZjk5ZTUyYWY3OTZlOTBiNDY4YThhM2QiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjgyNzViM2YxMjk5ZmU1ZGUyZWY0Y2Q2MDc0MGQ3ZjMzYzAxZGJhYzRkODI2ZTZkNzE4YTAyOTcxMGNhOTExNjciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjRiZWZjZDVjY2Q5OWJlNzY3ODhmN2Y1YTg3YTVlYjhjNGE5OTVjMDAyZjE3Yjk1ZDkxZDEwNDRiNGRhZjFlZTMifQ"
+        },
+        {
+          "resource": "repo://.github/scripts/labeling/pr-labeler.js#L9-L34",
+          "version": "repo-lines-v1:sha256:b0332caf687d89ef2d6625af20cdd081c945c42e7698a004dbecf8f773df76ad:eyJzZWxlY3RlZExpbmVDb3VudCI6MjYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjY4NjYzNTZkMmI4ZjM3YTY4OGQ5OWEyZThjNTA3ZGI2NzE0MGQ1NGJiNjJlNGEwZWZkZmE3MWQyMTAyZWIyZDAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjZiNzg3M2E3MTk3OTY2ZmI5ZmQ3Y2I2NjJjZWZjODVkZjY2OWNiMzA1MzQ4YTE3MjRjMThmZjU4M2JhMWU2ODMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImNjYmRhMzkyYjEzYmY1MWM1MmI1NjcxMWJjYzYzYjA1MWEwNDZlZDkxMTgzNjIzMzQ2NjM2YmEyNmY1NTliYzAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImFiOGVkNzJjNTBkMzJmNTBlM2ExMjlhNzVmN2UwMjRlNzkxNzc0NGMyYTgyZTAzOTE4NzZkYjE2ZTUyNzI0YTcifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_397efeb43d90408d9dd9a4be68fe7214",
+      "statement": "For non-edited PR events, the workflow derives size and changed-path labels from paginated files, replaces stale size labels, adds configured path and module-topic labels, derives title labels from the canonicalized title, and removes only stale managed title labels; additions are ensured before batched application and missing-label removals tolerate 404.",
+      "evidence": [
+        {
+          "resource": "repo://.github/scripts/labeling/pr-labeler.js#L101-L123",
+          "version": "repo-lines-v1:sha256:e4d9cdfa2c32e165d36163fd14846ca359d93bd2bf72e93128760100924c31fc:eyJzZWxlY3RlZExpbmVDb3VudCI6MjMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjIyMDQxNmU5OTAwODFmZmU1ZjdlNmYyMjNiNGEyOTNmN2JmOGVjY2QyNTdhYzA2NGM5Y2E1MmNmN2Y5Mjg5ZjgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI3ZTU3ODhkNWQ5ZDczZDI0YTgxZGJjMGE1YTc0YmZhODJjOWMzYjNhZjk5ZTUyYWY3OTZlOTBiNDY4YThhM2QiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijk3ZDg2MzJlNTRlOTI5OGFiYjk1ODcyN2UyZDUxNDA4YWJhZjEzNjYwMzUzNzkxMDE0MGFiZjY1YjMwYWI2MTMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImVkMTA5ZTgzMWE3Y2I0ZjJhYzg5NDNlMjI4MjU4YTkwOWEyNjQzY2JiMDg0ODkzYjM2Y2EyYzczYTBhMTNkZGIifQ"
+        },
+        {
+          "resource": "repo://.github/scripts/labeling/pr-labeler.js#L253-L284",
+          "version": "repo-lines-v1:sha256:a9bb51be5afec99221781d963cd34dd54210668022a14622fa5908fccfc19e99:eyJzZWxlY3RlZExpbmVDb3VudCI6MzIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImIyNGUzYTA3YzdjYTE5MTIwYmNkMmFkN2JmMGRhOTFhOTg4MzBhOGVmNDYyMTE5ODM2ODg2YjdlMmZlZGYxNzUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI3ZTU3ODhkNWQ5ZDczZDI0YTgxZGJjMGE1YTc0YmZhODJjOWMzYjNhZjk5ZTUyYWY3OTZlOTBiNDY4YThhM2QiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjY4ODE0MTI4YmE2M2ZkYWQzMjVkYTQ4YWUxZDZjMWFiNzZlZjY2OWJjOWVmZGVkYmZmMGZhYjI5MWVjZmUxMzYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImRlOGJjNzA4YWYwM2U5NTU2NTg1NDhkNGJjOGYyNmQ2YWU2YjVlZDdiNzU1OTFmMzVlOTg1YWU5NDM0N2U5OTYifQ"
+        },
+        {
+          "resource": "repo://.github/workflows/pr_labeler.yml#L162-L247",
+          "version": "repo-lines-v1:sha256:e04a3d1e25eee74b12905a2a3b4804878d1cafd7f1879ad7487cb101333213c1:eyJzZWxlY3RlZExpbmVDb3VudCI6ODYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxNTgxNzBlNmU2YzU3YjZhYWM3MjQ5NDNmYWU4NzA3N2NhNzM2OTUwMTRlZWZhNmE2Njk3ZGRmODlmMTNlNTMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjE5MzM1OGIyNmFmZDliNGM3NGQwMDE2ZTNjYTRiMTk4YTc1MWIzMzU3NmVkNjRlYjIyMTY4OTNmOWQwNzdkYmEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjBjYTRkNjBiOTMxMjhjMjc3YjkxYTU5ZjkyODc3ZjE2ODk3NTA3YjA1MmU5MGMzZTNkZGRiMDIzNzUyZjk2OGMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjI4ZDdkMTVmODc4YzcwYzhjMDM2ZGVlZTZlN2EwYTYxNDQzOGNlOTRkYjQxMTc5MDM4MzA0N2MwNmRhNDhlZDQifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_12d8124e763a441f870c1e3a1b751b8c",
+      "statement": "A user removal of a path-derived PR topic suppresses automatic reapplication until a later push supplies bounded, ahead-only, topic-relevant patch evidence and conservative classifier approval; bot removals do not suppress, classifier or comparison failures preserve the removal, and other label categories continue independently.",
+      "evidence": [
+        {
+          "resource": "repo://.github/scripts/labeling/pr-labeler.js#L168-L228",
+          "version": "repo-lines-v1:sha256:2cf10a147b753a743c0c5faa476b3b058c3f104f0d9daff176c903348f7349ef:eyJzZWxlY3RlZExpbmVDb3VudCI6NjEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImYzMWEwMThmNDBiMWYxZThkZDJkYzRiMTliMzgxZjFlZDY0NmM3ZTc1YTNkMmUyNDZhOTBkMmQzOTc4YmQ1NmMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI3ZTU3ODhkNWQ5ZDczZDI0YTgxZGJjMGE1YTc0YmZhODJjOWMzYjNhZjk5ZTUyYWY3OTZlOTBiNDY4YThhM2QiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjY4ODE0MTI4YmE2M2ZkYWQzMjVkYTQ4YWUxZDZjMWFiNzZlZjY2OWJjOWVmZGVkYmZmMGZhYjI5MWVjZmUxMzYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjZkMDhhMjVmN2QyYjJlODk2ZTVhMzQ0MTU4ZjAzNTNjNTY5NjUxODZiZDFiNjRiODdhMmNmYmI0ZDRhNGY0MjMifQ"
+        },
+        {
+          "resource": "repo://.github/scripts/labeling/topic-classifier.js#L4-L72",
+          "version": "repo-lines-v1:sha256:b0d0bdc26897c9c9ab25fc96b3d2d045098b9b323c8207e837107feb015810cd:eyJzZWxlY3RlZExpbmVDb3VudCI6NjksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjRkNWY0YTRkMjAzNGYzYjI5MTJmZmFkNjU5YTA3N2NiMmI5OTZjMjc2Mzg1ZTgwNzg4MmNiOWI4N2JhZGU5YjgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjZhZWU3YWQzNDJhMGRlZDQwNzA4NTA4NjRjNTM2MjVlMjFiNmE1ZjAyMThkYmM1YmE0OWVhZmRjMzc0MWQ0NjIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjoyLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImRkMGRmMTVjZjZhMTUwY2ZkZjRlYTZkODZkYmZjOWE4MWRmMDA1ZTM0M2U0YjJiMTFkZGJjYjJiODczNTNmZjEifQ"
+        },
+        {
+          "resource": "repo://.github/scripts/tests/labeling/pr-labeler.test.js#L375-L490",
+          "version": "repo-lines-v1:sha256:c6b4b151ac84d93a5ed3c2414dc63495ceb68cf8cf67e978849c580a2a1ab439:eyJzZWxlY3RlZExpbmVDb3VudCI6MTE2LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIwMTkxM2NiNjYyZDEwMDBmZGFhZTk1OWY5YzNjNGIzZTVjYzM2ZTI3MjNmYjBhMjE2YzdmZDdhZWQ0MWJlODA3IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI4YWJlNjU3OTk2YWYzOGI2ODcxMzdjZjY3Yjg4ZjYzOTM0NDNiMGM4M2YwMjczZWM0NWRmODVjMjJlN2U1MmIxIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI1N2JmNGNmNWU2ZjU1NjFiNzMyNGNhNjYxOTNhNWI3YjM1MmVlMzc5YjU2ZjJmM2M4MjczMzM1Y2UxMWRjZmUzIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiJkYTlmZTFmZTMzMmE3YTliOGJlNjI4ZWUzNzFjNjFlZWYwOTI4NTExOTA2MzM4NzUzZjYxM2QzODRiMGU2NjlkIn0"
+        }
+      ]
+    },
+    {
+      "id": "claim_2e34cc94b15c4f47816adcb7d90ad63a",
+      "statement": "The PR labeler protects opening-time provenance work from cancellation by giving `opened` runs their own non-cancelled concurrency group, while cancelling superseded update runs for the same PR; the manual backfill reuses shared logic, continues per-PR failures, and fails its job if any item could not be processed.",
+      "evidence": [
+        {
+          "resource": "repo://.github/workflows/pr_labeler.yml#L40-L43",
+          "version": "repo-lines-v1:sha256:43fcc71f496b68a1d2afc251476b8d2051fde8b33b429f57b3c7bb681d368b71:eyJzZWxlY3RlZExpbmVDb3VudCI6NCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiODRhZmUyNGRhZjM0ZDFiNWNmODNmY2FhM2Y1NmFhNGMxMDdjMDU4MDM5Yzg1N2JjYjZkNTE2ZDYyMTk0N2YwNSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiZDQ3YTRiZGJlOTQ4ZTlkM2Y2ODY3MjIwN2NhMTVmZTIxNTg2MzE0NDc3ZDE0NTk0ODg4NmUxNzA3YzYxZWEzYSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNmYxZDcwZDcyYmFkMjMxZDQzYzU3NWFjZWY2OTQ2NTgwZTQzOWM4Nzk3OTRlZDJlYTFmNGE0MDM0MDI0NTE3MiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMDUwMzE5OTVkZjlhMmQ4Zjc5YjM3NmJjMDVmYzY4NTNiNzFmYzI1ODMyNTllOTVjNGI5N2JmNzU1YmQ4ZGM1ZCJ9"
+        },
+        {
+          "resource": "repo://.github/workflows/pr_labeler_backfill.yml#L48-L171",
+          "version": "repo-lines-v1:sha256:4644c95a253bade55e7e0704761c563e8952a7583b482cb140fbeb28aa73c66a:eyJzZWxlY3RlZExpbmVDb3VudCI6MTI0LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIzNDhmNzMxOTQxMGZjN2ZjYjIxYjEyOTFkYjIzNmM4NmViOTcxZmQ0MmViMjljNGRjNTMwMzU2NTFjNWU5ODlkIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI1NTIyYzQyY2QxOWM2ZDAzZDgwOGM0NTI3MjA1NTI4MjViN2VhMWM1YjQ5MWIyMTg1MTFjYWM3NDE1Y2Y5ZDliIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJmN2RkNjAzMDk2MWM2NmVkYTZkNDYxOTMyYjhhZjYxMjU2YWUyODNlYjQzZWY2Yjk5MmQ0NWFmODQ3OTJhMGVmIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MCwiZm9sbG93aW5nQ29udGV4dEhhc2giOiJlM2IwYzQ0Mjk4ZmMxYzE0OWFmYmY0Yzg5OTZmYjkyNDI3YWU0MWU0NjQ5YjkzNGNhNDk1OTkxYjc4NTJiODU1In0"
+        }
+      ]
+    },
+    {
+      "id": "claim_edb6e7507ab24565887e6eb69427f857",
+      "statement": "The PR labeler has a focused Node contract suite, invoked by a pytest shim, that exercises scope canonicalization, configuration and taxonomy drift, title reconciliation, topic removal/reapplication, and rule behavior.",
+      "evidence": [
+        {
+          "resource": "repo://.github/scripts/tests/labeling/pr-labeler.test.js#L129-L155",
+          "version": "repo-lines-v1:sha256:07e817974887656ee44f07a9d5e891acfdf79dc55b0ddb1b91942dfeee5deae6:eyJzZWxlY3RlZExpbmVDb3VudCI6MjcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFkMGEzMzZkYmExOTQ3YjUzNjZiODQ1MWY4ODk1ZTU1YmFiZDljZDNhZmQ1NzYwYWVjZDdiYzdlY2MwZWU3NTEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijk1ZWYwMWJjMDhkYmMzYjYzZTRlNzVlYTNkMjZhNWI5NDE4OTE4NzdlMjdhZDg5MTMyOWM4NDExZDdkOGRjNGQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjM4YmQyYWZjN2ZlZWRjYjhkNGY2NGNiMWI2YjEyY2I0YzQ0ZTNkMTYzZWM5Yjg4ODUyZTkzZGVkODJlOWI5M2IiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImNhMDAyZTViOTcwM2I1MDNiYTRhNWQwOGNjNGI4N2UxNzA1MTMwOTBlNTBkODViNGI5MzAzNzdjN2ZjYzBmZmQifQ"
+        },
+        {
+          "resource": "repo://.github/scripts/tests/labeling/pr-labeler.test.js#L23-L91",
+          "version": "repo-lines-v1:sha256:34d2066dad11210899a1be313646cd43af5c833053772222648afb6007d53ef0:eyJzZWxlY3RlZExpbmVDb3VudCI6NjksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg5YmI1MGNlNDA0NjU0OTM0Njc3ZmEzMDEyMzY5NjVlODljNDAxODk2NGE4YWQ2NWU4ZTU5NzA4ZDUyZWE0ZWIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY2ZjViNDBiMTU4NDU3ZDE3ODY0ZjIxNzkwNzg2ZGQ1YTJlY2RiNjRiNjZhNjUxZjc4OGQ0ZTI1Y2QzMzAzZDIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImJlY2IwYzI3YjlhZDVhY2U0OTk1MWI0OTYyOTVjNWRhZDliNDVlODc3NGYzNWY2NjlmZWU3NDM5YWUwOTI0NDEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjFhOWQ2M2RiODc0OWJkZmIwNGM0MjZkNGE3Nzg2YmE2OTM2MDQzMzQxOGNkZTU2OWNjM2I1MjkxMjIzMDMzYjMifQ"
+        },
+        {
+          "resource": "repo://.github/scripts/tests/labeling/pr-labeler.test.js#L346-L610",
+          "version": "repo-lines-v1:sha256:4322a95250b60f49ed435463d9712385e294c5133bde9c4f42ee4df59bdf4140:eyJzZWxlY3RlZExpbmVDb3VudCI6MjY1LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI4NWJiMzgxYWYwNmQwZGQxNWI2MDAzMGFiMTdlMjRhYmFkOGIwOThkZTY1NmMxNzJiYzc1YzQwMTIwYTU3NDk4IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI3ZWU4NzE1NDM0NDc4Yzg4Mjk1ZDQ1NjEwNGIxMWI0NDA0ZWM3YzhlZTA5Y2ZiNzE5MWVmYzFiYjljOWYyMDk4IiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJiZDBmMmQzYTNhYWRhMjc1ODY0NTc4ZDBhNDM5MTU2MzhkNTQzZmVjYTJjOTQ4NThkYjk0MTIxMWU4NmNlZjJiIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MSwiZm9sbG93aW5nQ29udGV4dEhhc2giOiJmNmY1YjQwYjE1ODQ1N2QxNzg2NGYyMTc5MDc4NmRkNWEyZWNkYjY0YjY2YTY1MWY3ODhkNGUyNWNkMzMwM2QyIn0"
+        },
+        {
+          "resource": "repo://.github/scripts/tests/labeling/test_pr_labeler.py#L1-L15",
+          "version": "repo-lines-v1:sha256:3c8b0c8c59ffd85bb6738522bc379a9c783cf75afb165a3a980a6f15bc64149a:eyJzZWxlY3RlZExpbmVDb3VudCI6MTUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ0NWE4ZTljZWQ3Y2I0ODMwY2VlNjY5MmNiMTA2MzIyOGM3MzJhZWQ4NDNiOWNmNjk5YzY5ZDc5ZDE1OWRkNmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjUxZDY2MTBlMWU3ZWM1ZGVjYWIzN2ZhNDdlMTA0MTBjNjg5NTkzYWFjMTdlYmRjZjdkYzQ4Y2NlOTM1OTlmZDEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjoxLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjMwYzFmMTg4ZjE0MmVkN2E4MjQ2ODBiMjA3MTcyYzU1MTliYzYxNGE0OGZkYTdjZjE2N2VkYjhkZGY3OTk1NmMifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_ee448b61b0e84d9f98e69569c500fc25",
+      "statement": "`ci.yml` is the primary caller context for the reusable test workflow and grants `pull-requests: read` so the called workflow can read live PR labels; it runs on pull requests, pushes to main, and merge-group events.",
+      "evidence": [
+        {
+          "resource": "repo://.github/workflows/ci.yml#L10-L38",
+          "version": "repo-lines-v1:sha256:ef905fadbcfdeea2e3a12156b47594b201001e1c79c24f2cebb4a6b5db6f9db7:eyJzZWxlY3RlZExpbmVDb3VudCI6MjksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjcyMjI1ZjE0NDBiMTRkYzVmMzk2NGZkNjkxZGE4MGNiMjc3MDE4M2MyMjRlYjQxZjZmZmUzYmQ5MmZkYWU5YjciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQzNjk4Y2NkZmY3ZWE4ZTAxYzM5OWFmYzUyOGZmOGE4ZjY0NDA2NTFkMTQ4ZWY3YmRkZDc5NzdiMjMxODMzNTIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImI5MmE2Yzk3MDAwNGY5MGFjODliZDEyNzI3Y2Q0Mzc1OTBlZWEyMTg0YjZkYmViNTlhOGE0NTFmNzc4NGQ4MWYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijk2MzBmM2U0MDZhN2UzNGNiODI5NTQ0YTIyYWQyMDQ0ZjZmNTkzMDIwYTQ2MTQ3YjQxMmZlMDJhZTQzMGQyMDgifQ"
+        },
+        {
+          "resource": "repo://.github/workflows/ci.yml#L341-L423",
+          "version": "repo-lines-v1:sha256:f0d06b15eea502ecef9bec7bf6eb183c38e183ba2691b8d5e7f2ba25f89d0f01:eyJzZWxlY3RlZExpbmVDb3VudCI6ODMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM0YjM5Yjg0NjczOTkzMDMzMmYxNzY2NjA1NDRmZmJlYzYyNTk3YzJmYzhiNGRjNWNkOTM1ZDA4NjM5Y2JjNWUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM0YjM5Yjg0NjczOTkzMDMzMmYxNzY2NjA1NDRmZmJlYzYyNTk3YzJmYzhiNGRjNWNkOTM1ZDA4NjM5Y2JjNWUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjBmZGYyYmM0MjUwOGEzNzA4ZTczMTYxN2YyMzEwYTU3ZjNmZDk3Y2RlNGJhNDNhNDZkMmRjOTkyNmU5NzlmYWMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjhmNDJhNWE2MjExNTQ4ZTZlMTQyYWU4MWJkMzg5NGQ5MjRmNmNjOTQyNTRmYzNhN2UwMWQ4ODM5ZWMxMTIyOGUifQ"
+        }
+      ]
+    }
+  ],
+  "verification": {
+    "by": "openwiki/0.4.2",
+    "at": "2026-10-21T08:05:42.350Z"
+  }
+}

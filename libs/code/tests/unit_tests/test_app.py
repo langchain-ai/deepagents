@@ -26823,7 +26823,9 @@ class TestHookStatusReveal:
             app._update_hook_status("Checking output")
             assert status.display is False
 
-            await pilot.pause(0.05)
+            async with asyncio.timeout(5):
+                while str(status.render()) != "Checking output":
+                    await pilot.pause(0.01)
 
             assert status.display is True
             assert str(status.render()) == "Checking output"
@@ -26843,7 +26845,9 @@ class TestHookStatusReveal:
             status = app.query_one("#status-message", Static)
             app._status_bar.set_status_message("Thinking")
             app._update_hook_status("Checking output")
-            await pilot.pause(0.05)
+            async with asyncio.timeout(5):
+                while str(status.render()) != "Checking output":
+                    await pilot.pause(0.01)
             assert str(status.render()) == "Checking output"
 
             app._update_hook_status("")

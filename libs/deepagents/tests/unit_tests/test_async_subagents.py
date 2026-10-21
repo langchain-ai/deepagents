@@ -1517,6 +1517,26 @@ class TestParentReference:
         assert _sent_reference(client) == {"thread_id": "thread_parent"}
         assert client.threads.create.call_args.kwargs["metadata"] == {"subagent_name": "alpha", "parent_thread_id": "thread_parent"}
 
+    @pytest.mark.parametrize("context", [None, {"team": "eng"}], ids=["reference-in-config", "context-forwarded"])
+    @patch("deepagents.middleware.async_subagents.get_client")
+    async def test_subagent_that_must_not_notify_never_wakes_its_parent(self, mock_get_client: MagicMock, context: object) -> None:
+        """Without the parent's assistant, neither the launched run nor a later run on its thread can wake the parent."""
+        mock_client = MagicMock()
+        mock_client.threads.create = MagicMock(side_effect=_async_return({"thread_id": "thread_abc"}))
+        mock_client.runs.create = MagicMock(side_effect=_async_return({"run_id": "run_xyz"}))
+        mock_get_client.return_value = mock_client
+        runtime = _parent_runtime()
+        runtime.context = context
+        launch = _get_tool(_build_async_subagent_tools([_make_spec("alpha", url=None, notify_parent=False)]), "start_async_task")
+
+        await launch.coroutine(description="analyze data", subagent_type="alpha", runtime=runtime)
+
+        assert mock_client.threads.create.call_args.kwargs["metadata"] == {"subagent_name": "alpha", "parent_thread_id": "thread_parent"}
+        if context is None:
+            server = _FakeServer()
+            await _finish(server, parent=_sent_reference(mock_client))
+            assert server.created == []
+
     @patch("deepagents.middleware.async_subagents.get_sync_client")
     def test_update_resends_parent_reference(self, mock_get_client: MagicMock) -> None:
         mock_client = MagicMock()

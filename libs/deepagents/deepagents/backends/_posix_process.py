@@ -37,6 +37,10 @@ class PosixProcessReader:
         self._pipes = (process.stdout, process.stderr)
         self._chunks: list[list[bytes]] = [[], []]
 
+    def snapshot(self) -> tuple[bytes, bytes]:
+        """Join captured bytes only when execution reaches its final timeout."""
+        return b"".join(self._chunks[0]), b"".join(self._chunks[1])
+
     def _read(self, selector: selectors.BaseSelector, timeout: float) -> None:
         """Drain one bounded chunk per ready pipe without starving either."""
         for key, _ in selector.select(timeout):

@@ -50,7 +50,14 @@ Use a **plain tool** when:
 from deepagents.middleware.async_subagents import (
     AsyncSubAgent,
     AsyncSubAgentMiddleware,
+    AsyncTask,
+    AsyncTaskExecutor,
+    Deliver,
     TaskEvent,
+    TaskRequest,
+    TaskSnapshot,
+    child_config,
+    deliver_to_parent,
 )
 from deepagents.middleware.filesystem import FilesystemMiddleware, FilesystemPermission
 from deepagents.middleware.memory import MemoryMiddleware
@@ -87,10 +94,13 @@ __all__ = [
     "RUBRIC_GRADER_MESSAGE_SOURCE",
     "AsyncSubAgent",
     "AsyncSubAgentMiddleware",
+    "AsyncTask",
+    "AsyncTaskExecutor",
     "CompiledSubAgent",
     "CriterionEval",
     "CriterionFail",
     "CriterionPass",
+    "Deliver",
     "FilesystemMiddleware",
     "FilesystemPermission",
     "GraderResponse",
@@ -109,6 +119,10 @@ __all__ = [
     "SummarizationMiddleware",
     "SummarizationToolMiddleware",
     "TaskEvent",
+    "TaskRequest",
+    "TaskSnapshot",
     "UnsupportedContentMiddleware",
+    "child_config",
     "create_summarization_tool_middleware",
+    "deliver_to_parent",
 ]

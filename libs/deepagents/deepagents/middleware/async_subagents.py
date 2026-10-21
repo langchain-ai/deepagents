@@ -18,7 +18,7 @@ import urllib.parse
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from copy import deepcopy
 from datetime import UTC, datetime
-from typing import Annotated, Any, Literal, NotRequired, TypedDict, cast
+from typing import Annotated, Any, Literal, NotRequired, Protocol, TypedDict, cast
 
 from langchain.agents.middleware.types import (
     AgentMiddleware,
@@ -100,7 +100,10 @@ class AsyncSubAgent(TypedDict):
     """
 
     graph_id: str
-    """The graph name or assistant ID on the remote server."""
+    """The graph name or assistant ID on the remote server.
+
+    With a custom `AsyncTaskExecutor`, any identifier the executor understands.
+    """
 
     url: NotRequired[str]
     """URL of the [Agent Protocol](https://github.com/langchain-ai/agent-protocol) server.
@@ -192,6 +195,103 @@ class AsyncTask(TypedDict):
 
     Format: `YYYY-MM-DDTHH:MM:SSZ` (e.g., `2024-01-15T10:30:00Z`).
     """
+
+
+class TaskRequest(TypedDict):
+    """What an `AsyncTaskExecutor` gets to start a task.
+
+    !!! warning "Experimental"
+
+        Executors may change.
+    """
+
+    agent_name: str
+    """The async subagent's name."""
+
+    spec: AsyncSubAgent
+    """The async subagent's spec, including any fields the executor reads."""
+
+    messages: list[dict[str, Any]]
+    """The task's input messages: the task description, after the parent's conversation in fork mode."""
+
+    parent: dict[str, str]
+    """The launching agent: its `thread_id`, and its `assistant_id` when known.
+
+    Run a deep agent child with `child_config(request, task_id=..., run_id=...)`
+    so it can report to an Agent Server parent itself.
+    """
+
+    context: dict[str, Any] | None
+    """The parent's run context, as JSON data, to run the child with."""
+
+    tool_call_id: str | None
+    """The `start_async_task` call, for idempotent launches."""
+
+
+class TaskSnapshot(TypedDict):
+    """A task's current state, as an `AsyncTaskExecutor` reports it.
+
+    !!! warning "Experimental"
+
+        Executors may change.
+    """
+
+    status: Literal["pending", "running", "waiting", "success", "error", "timeout", "cancelled"]
+    """`waiting` means the task paused for a human."""
+
+    run_id: NotRequired[str]
+    """The task's current run, when the executor has runs."""
+
+    result: NotRequired[list[ContentBlock]]
+    """The final answer, when the task succeeded."""
+
+    error: NotRequired[str]
+    """What went wrong, when the task failed."""
+
+    interrupts: NotRequired[list[dict[str, Any]]]
+    """What the task is asking a human (`id` and `value` each), when it's waiting."""
+
+
+class AsyncTaskExecutor(Protocol):
+    """Runs async subagent tasks somewhere other than an Agent Server, such as a workflow engine or job queue.
+
+    `AsyncSubAgentMiddleware(executor=...)` keeps the tools, the task list in
+    state, and the status checks before model calls, and calls the executor to
+    run tasks. Results reach an idle parent when the application calls
+    `deliver_to_parent`, or when a deep agent child run with `child_config`
+    reports to an Agent Server parent itself; a busy parent sees them at its
+    next check.
+
+    !!! warning "Experimental"
+
+        This interface may change.
+    """
+
+    async def start(self, request: TaskRequest) -> str:
+        """Start a task and return its ID, unique among this executor's tasks.
+
+        A deep agent child that reports to its parent itself must run on a
+        thread with this ID; `child_config` sets it.
+        """
+        ...
+
+    async def status(self, task: AsyncTask) -> TaskSnapshot:
+        """Report a task's current state."""
+        ...
+
+    async def send(self, task: AsyncTask, message: str, *, tool_call_id: str | None = None) -> str | None:
+        """Send a follow-up to a task; return its new run's ID, if the executor has runs.
+
+        The executor decides how the follow-up is applied: interrupting the
+        current work, queuing behind it, or restarting a finished task. The task
+        is tracked as running until the next status check.
+        `tool_call_id` identifies the `update_async_task` call, for idempotency.
+        """
+        ...
+
+    async def cancel(self, task: AsyncTask) -> None:
+        """Stop a task, including one waiting for a human."""
+        ...
 
 
 def _tasks_reducer(
@@ -555,8 +655,8 @@ _DELIVERABLE_THREAD_STATUSES = frozenset({"idle", "error"})
 """Parent thread statuses a notification run can start on: neither running nor waiting for a human."""
 
 
-async def _awake_parent(parent_thread_id: str, assistant_id: str, event: _TaskUpdate, context: dict[str, Any] | None = None) -> None:
-    """Start a notification run on the parent's thread only while it's idle (or its last run failed).
+async def _awake_parent(parent_thread_id: str, assistant_id: str, event: _TaskUpdate, context: dict[str, Any] | None = None) -> bool:
+    """Start a notification run on the parent's thread only while it's idle (or its last run failed); return whether it started.
 
     A new run on a thread waiting for a human would cancel that approval; `reject` covers a thread that just became busy.
     A busy parent picks the update up itself, before its next model call or after its final answer. Never raises.
@@ -564,7 +664,7 @@ async def _awake_parent(parent_thread_id: str, assistant_id: str, event: _TaskUp
     client = get_client()
     try:
         if (await client.threads.get(thread_id=parent_thread_id)).get("status") not in _DELIVERABLE_THREAD_STATUSES:
-            return
+            return False
         await client.runs.create(
             thread_id=parent_thread_id,
             assistant_id=assistant_id,
@@ -576,6 +676,8 @@ async def _awake_parent(parent_thread_id: str, assistant_id: str, event: _TaskUp
         status = getattr(getattr(e, "response", None), "status_code", None)
         log = logger.debug if status in {404, 409} else logger.warning  # 404: parent gone; 409: became busy
         log("Didn't deliver the notification for task %s", event["task_id"], exc_info=True)
+        return False
+    return True
 
 
 async def _notify_parent(config: RunnableConfig, event: _TaskUpdate, context: object = None) -> None:
@@ -588,6 +690,79 @@ async def _notify_parent(config: RunnableConfig, event: _TaskUpdate, context: ob
     parent = _launching_agent(config) or {}
     if "thread_id" in parent and "assistant_id" in parent:
         await _awake_parent(parent["thread_id"], parent["assistant_id"], event, _forwarded_context(context))
+
+
+Deliver = Callable[[Mapping[str, str], dict[str, Any]], Awaitable[bool]]
+"""An application's way to start a parent's turn: called with the parent reference and the run input.
+
+!!! warning "Experimental"
+
+    This type may change.
+"""
+
+
+async def deliver_to_parent(
+    parent: Mapping[str, str],
+    *,
+    task_id: str,
+    agent_name: str,
+    snapshot: TaskSnapshot,
+    context: dict[str, Any] | None = None,
+    deliver: Deliver | None = None,
+) -> bool:
+    """Report a task's outcome to the agent that started it, for runners that learn a task ended on their own.
+
+    The parent gets the same notification message a deep agent child sends.
+    With `deliver`, the application starts the parent's turn itself with that
+    input, for a parent on any infrastructure. Without it, an Agent Server parent
+    is woken only while it's idle.
+
+    !!! warning "Experimental"
+
+        This function may change.
+
+    Args:
+        parent: The launching agent, as given in `TaskRequest["parent"]`.
+        task_id: The task's ID, as returned by `AsyncTaskExecutor.start`.
+        agent_name: The async subagent's name.
+        snapshot: The task's outcome. Only `success`, `error`, `timeout` and
+            `waiting` are delivered.
+        context: The run context for the parent's run.
+        deliver: Starts the parent's turn with the given input; returns whether it did.
+
+    Returns:
+        Whether the parent's turn was started.
+    """
+    event = _outcome_event(task_id, agent_name, snapshot)
+    if event is None or "thread_id" not in parent:
+        return False
+    if deliver is not None:
+        return await deliver(parent, {"messages": [_notification_message(event)]})
+    if "assistant_id" not in parent:
+        return False
+    return await _awake_parent(parent["thread_id"], parent["assistant_id"], event, context)
+
+
+def child_config(request: TaskRequest, *, task_id: str, run_id: str) -> RunnableConfig:
+    """Config to run a deep agent child with, so it reports to its Agent Server parent itself.
+
+    The child runs on a thread named after the task, so its reports match the
+    parent's tracked task, and reports once per run. Pass `request["context"]`
+    as the child's run context separately.
+
+    !!! warning "Experimental"
+
+        This function may change.
+
+    Args:
+        request: The request `AsyncTaskExecutor.start` received.
+        task_id: The task's ID, as `start` returns it.
+        run_id: An ID unique to this run of the child, such as a workflow run ID.
+
+    Returns:
+        A config for the child's `ainvoke` or `astream`.
+    """
+    return {"configurable": {"thread_id": task_id, _PARENT_KEY: dict(request["parent"])}, "metadata": {"run_id": run_id}}
 
 
 class _ClientCache:
@@ -944,6 +1119,24 @@ def _resolve_tracked_task(
     return tracked
 
 
+_CHECK_TOOL_DESCRIPTION = (
+    "Check the status of an async subagent task. Returns the current status and, if complete, the result. "
+    "If the status is `waiting`, it also returns what the subagent is asking the user. "
+    "Statuses shown earlier in the conversation are always stale, so call this to get the current status "
+    "rather than reporting a status from a previous tool result."
+)
+
+_LIST_TOOL_DESCRIPTION = (
+    "List tracked async subagent tasks with their current live statuses. "
+    "By default shows all tasks. Use `status_filter` to narrow by status "
+    "(e.g. 'running', 'waiting', 'success', 'error', 'cancelled'). "
+    "Use `check_async_task` to get the full result of a specific completed task, "
+    "or what a `waiting` task is asking the user. "
+    "Statuses shown earlier in the conversation are always stale, so call this to read current "
+    "statuses rather than reporting one from a previous tool result."
+)
+
+
 def _build_check_tool(
     clients: _ClientCache,
 ) -> StructuredTool:
@@ -981,12 +1174,7 @@ def _build_check_tool(
         name="check_async_task",
         func=check_async_task,
         coroutine=acheck_async_task,
-        description=(
-            "Check the status of an async subagent task. Returns the current status and, if complete, the result. "
-            "If the status is `waiting`, it also returns what the subagent is asking the user. "
-            "Statuses shown earlier in the conversation are always stale, so call this to get the current status "
-            "rather than reporting a status from a previous tool result."
-        ),
+        description=_CHECK_TOOL_DESCRIPTION,
         infer_schema=False,
         args_schema=CheckAsyncTaskSchema,
     )
@@ -1306,27 +1494,200 @@ def _build_list_tasks_tool(clients: _ClientCache) -> StructuredTool:
         name="list_async_tasks",
         func=list_async_tasks,
         coroutine=alist_async_tasks,
-        description=(
-            "List tracked async subagent tasks with their current live statuses. "
-            "By default shows all tasks. Use `status_filter` to narrow by status "
-            "(e.g. 'running', 'waiting', 'success', 'error', 'cancelled'). "
-            "Use `check_async_task` to get the full result of a specific completed task, "
-            "or what a `waiting` task is asking the user. "
-            "Statuses shown earlier in the conversation are always stale, so call this to read current "
-            "statuses rather than reporting one from a previous tool result."
-        ),
+        description=_LIST_TOOL_DESCRIPTION,
         infer_schema=False,
         args_schema=ListAsyncTasksSchema,
     )
 
 
+def _executor_request(spec: AsyncSubAgent, messages: list[dict[str, Any]], runtime: ToolRuntime) -> TaskRequest:
+    """What the executor gets to start `spec`'s task."""
+    return {
+        "agent_name": spec["name"],
+        "spec": spec,
+        "messages": messages,
+        "parent": {key: str(value) for key, value in _parent_reference(runtime.config).items()},
+        "context": _forwarded_context(runtime.context),
+        "tool_call_id": runtime.tool_call_id,
+    }
+
+
+def _build_executor_start_tool(agent_map: dict[str, AsyncSubAgent], executor: AsyncTaskExecutor, description: str) -> StructuredTool:
+    """Build `start_async_task` for a custom executor."""
+
+    async def astart_async_task(description: str, subagent_type: str, runtime: ToolRuntime) -> str | Command:
+        if error := _validate_agent_type(agent_map, subagent_type):
+            return error
+        spec = agent_map[subagent_type]
+        request = _executor_request(spec, await _astart_task_messages(spec, runtime, description), runtime)
+        try:
+            task_id = await executor.start(request)
+        except Exception as e:  # noqa: BLE001  # executors raise their own errors, which may hold credentials
+            logger.warning("Failed to launch async subagent '%s': %s", subagent_type, type(e).__name__)
+            return f"Failed to launch async subagent '{subagent_type}': {type(e).__name__}"
+        now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        task = AsyncTask(
+            task_id=task_id,
+            agent_name=subagent_type,
+            thread_id=task_id,
+            run_id=task_id,
+            status="running",
+            created_at=now,
+            last_checked_at=now,
+            last_updated_at=now,
+        )
+        msg = ToolMessage(f"Launched async subagent. task_id: {task_id}", tool_call_id=runtime.tool_call_id)
+        return Command(update={"messages": [msg], "async_tasks": {task_id: task}})
+
+    return StructuredTool.from_function(
+        name="start_async_task", coroutine=astart_async_task, description=description, infer_schema=False, args_schema=StartAsyncTaskSchema
+    )
+
+
+def _snapshot_result(task: AsyncTask, snapshot: TaskSnapshot) -> dict[str, Any]:
+    """The `check_async_task` result for an executor's snapshot."""
+    result: dict[str, Any] = {"status": snapshot["status"], "thread_id": task["thread_id"]}
+    result.update({key: snapshot[key] for key in ("result", "error", "interrupts") if key in snapshot})
+    if snapshot["status"] == _WAITING:
+        result["note"] = _WAITING_NOTE
+    return result
+
+
+def _build_executor_check_tool(executor: AsyncTaskExecutor) -> StructuredTool:
+    """Build `check_async_task` for a custom executor."""
+
+    async def acheck_async_task(task_id: str, runtime: ToolRuntime) -> str | Command:
+        task = _resolve_tracked_task(task_id, runtime)
+        if isinstance(task, str):
+            return task
+        try:
+            snapshot = await executor.status(task)
+        except Exception as e:  # noqa: BLE001  # executors raise their own errors
+            return f"Failed to get task status: {type(e).__name__}"
+        result = _keep_cancelled(task, _snapshot_result(task, snapshot))
+        return _build_check_command(result, task, snapshot.get("run_id", task["run_id"]), runtime.tool_call_id)
+
+    return StructuredTool.from_function(
+        name="check_async_task",
+        coroutine=acheck_async_task,
+        description=_CHECK_TOOL_DESCRIPTION,
+        infer_schema=False,
+        args_schema=CheckAsyncTaskSchema,
+    )
+
+
+def _build_executor_update_tool(executor: AsyncTaskExecutor) -> StructuredTool:
+    """Build `update_async_task` for a custom executor."""
+
+    async def aupdate_async_task(task_id: str, message: str, runtime: ToolRuntime) -> str | Command:
+        tracked = _resolve_tracked_task(task_id, runtime)
+        if isinstance(tracked, str):
+            return tracked
+        try:
+            run_id = await executor.send(tracked, message, tool_call_id=runtime.tool_call_id)
+        except Exception as e:  # noqa: BLE001  # executors raise their own errors
+            return f"Failed to update async subagent: {type(e).__name__}"
+        task = _observed(tracked, "running", run_id or tracked["run_id"])
+        msg = ToolMessage(_update_message(tracked), tool_call_id=runtime.tool_call_id)
+        return Command(update={"messages": [msg], "async_tasks": {tracked["task_id"]: task}})
+
+    return StructuredTool.from_function(
+        name="update_async_task",
+        coroutine=aupdate_async_task,
+        description="Send updated instructions to an async subagent task. The task_id remains the same.",
+        infer_schema=False,
+        args_schema=UpdateAsyncTaskSchema,
+    )
+
+
+def _build_executor_cancel_tool(executor: AsyncTaskExecutor) -> StructuredTool:
+    """Build `cancel_async_task` for a custom executor."""
+
+    async def acancel_async_task(task_id: str, runtime: ToolRuntime) -> str | Command:
+        tracked = _resolve_tracked_task(task_id, runtime)
+        if isinstance(tracked, str):
+            return tracked
+        try:
+            await executor.cancel(tracked)
+        except Exception as e:  # noqa: BLE001  # executors raise their own errors
+            return f"Failed to cancel task: {type(e).__name__}"
+        msg = ToolMessage(f"Cancelled async subagent task: {tracked['task_id']}", tool_call_id=runtime.tool_call_id)
+        return Command(update={"messages": [msg], "async_tasks": {tracked["task_id"]: _observed(tracked, "cancelled", tracked["run_id"])}})
+
+    return StructuredTool.from_function(
+        name="cancel_async_task",
+        coroutine=acancel_async_task,
+        description="Cancel a running or waiting async subagent task. Use this to stop a task that is no longer needed.",
+        infer_schema=False,
+        args_schema=CancelAsyncTaskSchema,
+    )
+
+
+async def _aexecutor_live_status(executor: AsyncTaskExecutor, task: AsyncTask) -> tuple[str, str]:
+    """A task's current status and run ID from its executor, falling back to the cached values on error."""
+    if task["status"] in _TERMINAL_STATUSES:
+        return task["status"], task["run_id"]
+    try:
+        snapshot = await executor.status(task)
+    except Exception as e:  # noqa: BLE001  # executors raise their own errors
+        _warn_cached_status(task, e)
+        return task["status"], task["run_id"]
+    return snapshot["status"], snapshot.get("run_id", task["run_id"])
+
+
+class _ExecutorListTasksSchema(BaseModel):
+    """Input schema for `list_async_tasks` with a custom executor, which can report every `TaskSnapshot` status."""
+
+    status_filter: Literal["pending", "running", "waiting", "success", "error", "timeout", "cancelled", "all"] | None = Field(
+        default=None,
+        description=(
+            "Filter tasks by status. One of: 'pending', 'running', 'waiting', 'success', 'error', 'timeout', 'cancelled', 'all'. Defaults to 'all'."
+        ),
+    )
+
+
+def _build_executor_list_tool(executor: AsyncTaskExecutor) -> StructuredTool:
+    """Build `list_async_tasks` for a custom executor."""
+
+    async def alist_async_tasks(
+        runtime: ToolRuntime,
+        status_filter: Literal["pending", "running", "waiting", "success", "error", "timeout", "cancelled", "all"] | None = None,
+    ) -> str | Command:
+        filtered = _filter_tasks(runtime.state.get("async_tasks") or {}, status_filter)
+        if not filtered:
+            return "No async subagent tasks tracked."
+        live = await asyncio.gather(*(_aexecutor_live_status(executor, task) for task in filtered))
+        return _build_list_command(filtered, list(live), runtime.tool_call_id)
+
+    return StructuredTool.from_function(
+        name="list_async_tasks",
+        coroutine=alist_async_tasks,
+        description=_LIST_TOOL_DESCRIPTION,
+        infer_schema=False,
+        args_schema=_ExecutorListTasksSchema,
+    )
+
+
+def _build_executor_tools(agent_map: dict[str, AsyncSubAgent], executor: AsyncTaskExecutor, launch_desc: str) -> list[StructuredTool]:
+    """The async subagent tools, running tasks through `executor`. They are async-only."""
+    return [
+        _build_executor_start_tool(agent_map, executor, launch_desc),
+        _build_executor_check_tool(executor),
+        _build_executor_update_tool(executor),
+        _build_executor_cancel_tool(executor),
+        _build_executor_list_tool(executor),
+    ]
+
+
 def _build_async_subagent_tools(
     agents: list[AsyncSubAgent],
+    executor: AsyncTaskExecutor | None = None,
 ) -> list[StructuredTool]:
     """Build the async subagent tools from agent specs.
 
     Args:
         agents: List of async subagent specifications.
+        executor: Runs tasks instead of the Agent Server, when set.
 
     Returns:
         List of `StructuredTools` for launch, check, update, cancel, and list operations.
@@ -1335,6 +1696,8 @@ def _build_async_subagent_tools(
     clients = _ClientCache(agent_map)
     agents_desc = "\n".join(_describe_async_subagent(a) for a in agents)
     launch_desc = ASYNC_TASK_TOOL_DESCRIPTION.format(available_agents=agents_desc)
+    if executor is not None:
+        return _build_executor_tools(agent_map, executor, launch_desc)
 
     return [
         _build_start_tool(agent_map, clients, launch_desc),
@@ -1356,6 +1719,20 @@ def _check_event(task: AsyncTask, run: Run, thread: Thread | None, status: str) 
     if status == "error":
         details["error"] = "The subagent failed."
     return _event(task["task_id"], task["agent_name"], status, run.get("run_id", task["run_id"]), **details)
+
+
+def _outcome_event(task_id: str, agent_name: str, snapshot: TaskSnapshot, run_id: str | None = None) -> _TaskUpdate | None:
+    """The notification for a reported outcome, or `None` for outcomes not worth waking for."""
+    status = snapshot["status"]
+    if status not in {"success", "error", "timeout", _WAITING}:
+        return None
+    details = {key: snapshot[key] for key in ("result", "error", "interrupts") if key in snapshot}
+    return _event(task_id, agent_name, status, snapshot.get("run_id", run_id), **details)
+
+
+def _snapshot_event(task: AsyncTask, snapshot: TaskSnapshot) -> _TaskUpdate | None:
+    """The notification for an outcome an executor reported for a tracked task."""
+    return _outcome_event(task["task_id"], task["agent_name"], snapshot, task["run_id"])
 
 
 _PULL_TIMEOUT_SECONDS = 5
@@ -1418,6 +1795,13 @@ class AsyncSubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
             optional — omit it to use ASGI transport for local servers.
         system_prompt: Instructions appended to the main agent's system prompt
             about how to use the async subagent tools.
+        executor: Runs tasks somewhere other than an Agent Server, such as a
+            workflow engine or job queue. The tools, task tracking and status
+            checks stay the same; the tools become async-only.
+
+            !!! warning "Experimental"
+
+                The `AsyncTaskExecutor` interface may change.
 
     Example:
         ```python
@@ -1446,6 +1830,7 @@ class AsyncSubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         *,
         async_subagents: list[AsyncSubAgent],
         system_prompt: str | None = None,
+        executor: AsyncTaskExecutor | None = None,
     ) -> None:
         """Initialize the `AsyncSubAgentMiddleware`."""
         super().__init__()
@@ -1468,7 +1853,8 @@ class AsyncSubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
             warn_beta(name="forked subagents", obj_type="feature")
 
         self._clients = _ClientCache({a["name"]: a for a in async_subagents})
-        self.tools = _build_async_subagent_tools(async_subagents)
+        self._executor = executor
+        self.tools = _build_async_subagent_tools(async_subagents, executor)
 
         if system_prompt:
             agents_desc = "\n".join(_describe_async_subagent(a) for a in async_subagents)
@@ -1531,24 +1917,29 @@ class AsyncSubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         for task, found in zip(unfinished, observed, strict=True):
             if found is None:
                 continue
-            run, thread = found
-            status = _task_status(run, thread)
-            if status == task["status"] and run["run_id"] == task["run_id"]:
+            status, run_id, event = found
+            if status == task["status"] and run_id == task["run_id"]:
                 continue
-            records[task["task_id"]] = _observed(task, status, run["run_id"])
-            if status != task["status"] and (event := _check_event(task, run, thread, status)):
+            records[task["task_id"]] = _observed(task, status, run_id)
+            if status != task["status"] and event:
                 messages.append(_notification_message(event))
         update: dict[str, Any] = {"async_tasks": records} if records else {}
         if messages:
             update["messages"] = messages
         return update
 
-    async def _aobserve_task(self, task: AsyncTask) -> tuple[Run, Thread | None] | None:
+    async def _aobserve_task(self, task: AsyncTask) -> tuple[str, str, _TaskUpdate | None] | None:
+        """A task's status, run ID and the notification for its outcome, or `None` if it couldn't be checked."""
         try:
-            return await asyncio.wait_for(_aobserve(self._clients.get_async(task["agent_name"]), task), _PULL_TIMEOUT_SECONDS)
-        except Exception:  # noqa: BLE001  # LangGraph SDK raises untyped errors, or it timed out; checked again next time
+            if self._executor is not None:
+                snapshot = await asyncio.wait_for(self._executor.status(task), _PULL_TIMEOUT_SECONDS)
+                return snapshot["status"], snapshot.get("run_id", task["run_id"]), _snapshot_event(task, snapshot)
+            run, thread = await asyncio.wait_for(_aobserve(self._clients.get_async(task["agent_name"]), task), _PULL_TIMEOUT_SECONDS)
+        except Exception:  # noqa: BLE001  # the SDK or executor raised, or it timed out; checked again next time
             logger.warning("Failed to check task %s", task["task_id"], exc_info=True)
             return None
+        status = _task_status(run, thread)
+        return status, run["run_id"], _check_event(task, run, thread, status)
 
     @staticmethod
     def _record_notification(state: Mapping[str, Any]) -> dict[str, Any] | None:

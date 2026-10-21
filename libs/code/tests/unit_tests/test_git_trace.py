@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
+import pytest
 from deepagents.backends.filesystem import FilesystemBackend
 from langchain.agents import create_agent
 from langchain_core.messages import AIMessage
@@ -17,7 +19,6 @@ from deepagents_code._fake_models import _ToolBindingFakeModel
 from deepagents_code.git_trace import GitTraceMiddleware
 
 if TYPE_CHECKING:
-    import pytest
     from langchain_core.runnables import RunnableConfig
 
 
@@ -119,3 +120,88 @@ async def test_disabled_tracing_does_not_probe(
     )
     assert result["messages"][-1].content == "answer"
     probe.assert_not_called()
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize(
+    ("name", "args", "metadata"),
+    [
+        ("read_file", {"file_path": "/repo/file"}, None),
+        ("ls", {"file_path": "/repo"}, None),
+        ("glob", {"file_path": "/repo"}, None),
+        ("grep", {"file_path": "/repo"}, None),
+        ("write_todos", {}, None),
+        ("ask_user", {}, None),
+        ("custom_read", {"file_path": "/repo/file"}, {"readOnlyHint": True}),
+    ],
+)
+async def test_traced_readonly_tools_do_not_touch_backend(
+    monkeypatch: pytest.MonkeyPatch,
+    asynchronous: bool,
+    name: str,
+    args: dict[str, str],
+    metadata: dict[str, bool] | None,
+) -> None:
+    trace = MagicMock()
+    monkeypatch.setattr(git_trace, "capture_turn", lambda _config: trace)
+    backend = MagicMock()
+    middleware = GitTraceMiddleware(backend, "/repo")
+
+    @tool(name)
+    def inspect_file(file_path: str = "") -> str:
+        """Return the requested path without changing the checkout."""
+        return f"read:{file_path}"
+
+    inspect_file.metadata = metadata
+    model = _ToolBindingFakeModel(
+        messages=iter(
+            [
+                AIMessage(
+                    content="", tool_calls=[{"name": name, "args": args, "id": "read"}]
+                ),
+                AIMessage(content="done"),
+            ]
+        )
+    )
+    agent = create_agent(model, tools=[inspect_file], middleware=[middleware])
+    value = {"messages": [{"role": "user", "content": "inspect"}]}
+    result = (
+        await agent.ainvoke(value, _config())
+        if asynchronous
+        else agent.invoke(value, _config())
+    )
+    assert result["messages"][-1].content == "done"
+    assert result["messages"][-2].content == f"read:{args.get('file_path', '')}"
+    backend.assert_not_called()
+
+
+async def test_cancelled_tool_does_not_wait_for_after_probe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(git_trace, "capture_turn", lambda _config: MagicMock())
+    middleware = GitTraceMiddleware(MagicMock(), "/repo")
+    probe = AsyncMock(return_value=[])
+    monkeypatch.setattr(middleware, "_aprobe", probe)
+    request = MagicMock()
+    request.tool_call = {"name": "execute", "args": {"command": "build"}}
+    request.runtime.config = _config()
+    cancelled = asyncio.CancelledError("user cancelled")
+    handler = AsyncMock(side_effect=cancelled)
+    with pytest.raises(asyncio.CancelledError) as error:
+        await middleware.awrap_tool_call(request, handler)
+    assert error.value is cancelled
+    probe.assert_awaited_once()
+
+
+def test_failed_tool_does_not_run_after_probe(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(git_trace, "capture_turn", lambda _config: MagicMock())
+    middleware = GitTraceMiddleware(MagicMock(), "/repo")
+    probe = MagicMock(return_value=[])
+    monkeypatch.setattr(middleware, "_probe", probe)
+    request = MagicMock()
+    request.tool_call = {"name": "execute", "args": {"command": "build"}}
+    request.runtime.config = _config()
+    handler = MagicMock(side_effect=RuntimeError("tool failed"))
+    with pytest.raises(RuntimeError, match="tool failed"):
+        middleware.wrap_tool_call(request, handler)
+    probe.assert_called_once()

@@ -112,6 +112,9 @@ class AsyncSubAgent(TypedDict):
     headers: NotRequired[dict[str, str]]
     """Additional headers to include in requests to the remote server."""
 
+    webhook: NotRequired[str]
+    """URL the Agent Server calls whenever a run of this subagent finishes."""
+
     mode: NotRequired[Literal["isolated", "fork"]]
     """When using `mode="fork"`, configure the remote agent to match the parent's model,
     system prompt, tools, and prompt-processing middleware if you want prompt-cache
@@ -360,11 +363,13 @@ def _thread_metadata(spec: AsyncSubAgent, runtime: ToolRuntime) -> dict[str, str
 
 
 def _run_options(spec: AsyncSubAgent, runtime: ToolRuntime) -> dict[str, Any]:
-    """Keyword arguments for `runs.create` that link a launched run to this agent.
+    """Keyword arguments for `runs.create` that link a run to this agent and set the subagent's webhook.
 
     A subagent on this deployment runs with this agent's context, like a sync subagent.
     """
     options: dict[str, Any] = {"headers": _trace_headers(spec)}
+    if webhook := spec.get("webhook"):
+        options["webhook"] = webhook
     context = None if spec.get("url") else _forwarded_context(runtime.context)
     if context is not None:
         options["context"] = context

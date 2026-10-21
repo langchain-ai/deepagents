@@ -1,0 +1,22 @@
+libs/deepagents/deepagents/middleware/summarization.py
+  s_6522344368f48c::t_e1cea5a4f44526 543
+  s_6522344368f48c::t_705b2cb3e165bc 142
+libs/deepagents/tests/unit_tests/middleware/test_summarization_middleware.py
+  s_6522344368f48c::t_48b92e679e6c3d 2850-2851
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "2a0a0e1716237805719784f77498fdd9a50d6715",
+  "prompts": {},
+  "sessions": {
+    "s_6522344368f48c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "82de6520-048f-4336-848e-a4ffb24afdfa",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Bagatur Askaryan <baskaryan@gmail.com>"
+    }
+  }
+}

@@ -820,11 +820,8 @@ def _observe(client: SyncLangGraphClient, task: AsyncTask) -> tuple[Run, Thread 
         run = next(iter(client.runs.list(thread_id=task["thread_id"], limit=1)), run)
     if run["status"] != "success":
         return run, None
-    try:
-        thread = client.threads.get(thread_id=task["thread_id"])
-    except Exception:  # noqa: BLE001  # LangGraph SDK raises untyped errors
-        logger.warning("Failed to fetch thread for task %s", task["task_id"], exc_info=True)
-        return run, None
+    # A finished run and a paused one look the same without the thread, so let errors propagate.
+    thread = client.threads.get(thread_id=task["thread_id"])
     if _needs_latest_run(run, thread):
         run = next(iter(client.runs.list(thread_id=task["thread_id"], limit=1)), run)
     return run, thread
@@ -837,11 +834,8 @@ async def _aobserve(client: LangGraphClient, task: AsyncTask) -> tuple[Run, Thre
         run = next(iter(await client.runs.list(thread_id=task["thread_id"], limit=1)), run)
     if run["status"] != "success":
         return run, None
-    try:
-        thread = await client.threads.get(thread_id=task["thread_id"])
-    except Exception:  # noqa: BLE001  # LangGraph SDK raises untyped errors
-        logger.warning("Failed to fetch thread for task %s", task["task_id"], exc_info=True)
-        return run, None
+    # A finished run and a paused one look the same without the thread, so let errors propagate.
+    thread = await client.threads.get(thread_id=task["thread_id"])
     if _needs_latest_run(run, thread):
         run = next(iter(await client.runs.list(thread_id=task["thread_id"], limit=1)), run)
     return run, thread

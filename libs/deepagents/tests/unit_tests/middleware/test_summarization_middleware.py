@@ -2847,6 +2847,8 @@ async def test_summary_drops_reasoning_bound_to_replaced_history(use_async: bool
         # Anthropic with `output_version="v1"` returns standard reasoning blocks.
         ("anthropic", {"type": "reasoning", "reasoning": "plan", "extras": {"signature": "sig"}}, True),
         ("bedrock_converse", {"type": "reasoning_content", "reasoning_content": {"text": "plan", "signature": "sig"}}, True),
+        # `ChatBedrock` (InvokeModel) returns Anthropic-format blocks for Claude.
+        ("bedrock", {"type": "thinking", "thinking": "plan", "signature": "sig"}, True),
         # Gemini also uses `thinking` blocks, but does not bind them to earlier history.
         ("google_genai", {"type": "thinking", "thinking": "plan", "signature": "sig"}, False),
         ("openai", {"type": "reasoning", "summary": []}, False),

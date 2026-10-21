@@ -139,7 +139,7 @@ SUMMARIZATION_EVENT_KEY = "_summarization_event"
 SUMMARIZATION_SESSION_ID_KEY = "_summarization_session_id"
 """State key holding the id that names the offload history file."""
 
-_BOUND_REASONING_PROVIDERS = frozenset({"anthropic", "bedrock_converse"})
+_BOUND_REASONING_PROVIDERS = frozenset({"anthropic", "bedrock", "bedrock_converse"})
 """`model_provider` values whose reasoning blocks are bound to the conversation before them."""
 
 _NATIVE_REASONING_BLOCK_TYPES = frozenset({"thinking", "redacted_thinking", "reasoning_content"})
@@ -540,7 +540,7 @@ def _is_context_overflow(exc: Exception) -> bool:
 def _bound_reasoning_types(message: AIMessage) -> frozenset[str]:
     """Return the block types in `message` that carry reasoning bound to earlier history.
 
-    Only Anthropic and Bedrock Converse bind reasoning this way, so messages
+    Only Anthropic and Claude on Bedrock bind reasoning this way, so messages
     tagged with another provider (Gemini, for example, also uses `thinking`
     blocks) keep theirs. Untagged messages, such as those from integrations that
     do not set `model_provider`, are checked for the native block types only.

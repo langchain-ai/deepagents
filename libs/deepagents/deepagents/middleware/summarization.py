@@ -139,8 +139,11 @@ SUMMARIZATION_EVENT_KEY = "_summarization_event"
 SUMMARIZATION_SESSION_ID_KEY = "_summarization_session_id"
 """State key holding the id that names the offload history file."""
 
-_BOUND_REASONING_BLOCK_TYPES = frozenset({"thinking", "redacted_thinking", "reasoning_content"})
-"""Content block types whose signature is bound to the conversation before them."""
+_BOUND_REASONING_PROVIDERS = frozenset({"anthropic", "bedrock_converse"})
+"""`model_provider` values whose reasoning blocks are bound to the conversation before them."""
+
+_NATIVE_REASONING_BLOCK_TYPES = frozenset({"thinking", "redacted_thinking", "reasoning_content"})
+"""Reasoning block types in the Anthropic and Bedrock Converse native formats."""
 
 
 class SummarizationEvent(TypedDict):
@@ -534,6 +537,22 @@ def _is_context_overflow(exc: Exception) -> bool:
     )
 
 
+def _bound_reasoning_types(message: AIMessage) -> frozenset[str]:
+    """Return the block types in `message` that carry reasoning bound to earlier history.
+
+    Only Anthropic and Bedrock Converse bind reasoning this way, so messages
+    tagged with another provider (Gemini, for example, also uses `thinking`
+    blocks) keep theirs. Untagged messages, such as those from integrations that
+    do not set `model_provider`, are checked for the native block types only.
+    """
+    provider = message.response_metadata.get("model_provider")
+    if provider in _BOUND_REASONING_PROVIDERS:
+        return _NATIVE_REASONING_BLOCK_TYPES | {"reasoning"}
+    if provider is None:
+        return _NATIVE_REASONING_BLOCK_TYPES
+    return frozenset()
+
+
 def _drop_bound_reasoning(message: AnyMessage) -> AnyMessage:
     """Return `message` without reasoning blocks bound to the conversation before it.
 
@@ -546,7 +565,8 @@ def _drop_bound_reasoning(message: AnyMessage) -> AnyMessage:
     """
     if not isinstance(message, AIMessage) or not isinstance(message.content, list):
         return message
-    content = [block for block in message.content if not (isinstance(block, dict) and block.get("type") in _BOUND_REASONING_BLOCK_TYPES)]
+    bound = _bound_reasoning_types(message)
+    content = [block for block in message.content if not (isinstance(block, dict) and block.get("type") in bound)]
     if len(content) == len(message.content):
         return message
     return message.model_copy(update={"content": content})

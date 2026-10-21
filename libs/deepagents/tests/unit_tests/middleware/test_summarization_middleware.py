@@ -2841,6 +2841,40 @@ async def test_summary_drops_reasoning_bound_to_replaced_history(use_async: bool
     assert _has_thinking(request.messages[4])
 
 
+@pytest.mark.parametrize(
+    ("provider", "reasoning", "dropped"),
+    [
+        # Anthropic with `output_version="v1"` returns standard reasoning blocks.
+        ("anthropic", {"type": "reasoning", "reasoning": "plan", "extras": {"signature": "sig"}}, True),
+        ("bedrock_converse", {"type": "reasoning_content", "reasoning_content": {"text": "plan", "signature": "sig"}}, True),
+        # Gemini also uses `thinking` blocks, but does not bind them to earlier history.
+        ("google_genai", {"type": "thinking", "thinking": "plan", "signature": "sig"}, False),
+        ("openai", {"type": "reasoning", "summary": []}, False),
+    ],
+)
+def test_summary_drops_reasoning_only_for_providers_that_bind_it(
+    provider: str,
+    reasoning: dict[str, Any],
+    dropped: bool,  # noqa: FBT001
+) -> None:
+    message = AIMessage(
+        content=[reasoning, {"type": "text", "text": "S1"}],
+        id="s1",
+        response_metadata={"model_provider": provider},
+    )
+    event: SummarizationEvent = {
+        "cutoff_index": 1,
+        "summary_message": HumanMessage(content="summary"),
+        "file_path": None,
+        "reasoning_kept_from": 2,
+    }
+
+    effective = SummarizationMiddleware._apply_event_to_messages([HumanMessage(content="S0", id="s0"), message], event)
+
+    expected = [{"type": "text", "text": "S1"}] if dropped else message.content
+    assert effective[1].content == expected
+
+
 def test_summary_event_without_reasoning_index_keeps_reasoning() -> None:
     """Events saved before `reasoning_kept_from` existed leave messages as they were."""
     messages = [HumanMessage(content="S0", id="s0"), _thinking_message(1)]

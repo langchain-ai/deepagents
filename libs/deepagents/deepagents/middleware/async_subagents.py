@@ -174,7 +174,7 @@ class AsyncTask(TypedDict):
     """Earlier runs that may still finish after a follow-up was enqueued."""
 
     status: str
-    """Current task status (e.g., `'running'`, `'waiting'`, `'success'`, `'error'`, `'cancelled'`).
+    """Current task status (e.g., `'pending'`, `'running'`, `'waiting'`, `'success'`, `'error'`, `'cancelled'`).
 
     `'pending'` means the latest follow-up is queued; an earlier run may still be working.
 

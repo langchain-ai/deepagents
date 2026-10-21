@@ -1404,7 +1404,8 @@ class TestCheckEdgeCases:
         assert "no output" in parsed["result"].lower()
 
     @patch("deepagents.middleware.async_subagents.get_sync_client")
-    def test_check_threads_get_failure_still_returns_status(self, mock_get_client: MagicMock) -> None:
+    def test_check_threads_get_failure_is_not_reported_as_success(self, mock_get_client: MagicMock) -> None:
+        """Without the thread, a finished run and one paused for a human look the same."""
         mock_client = MagicMock()
         mock_client.runs.get.return_value = {"run_id": "run_xyz", "status": "success"}
         mock_client.threads.get.side_effect = RuntimeError("network error")
@@ -1415,11 +1416,7 @@ class TestCheckEdgeCases:
         rt = _make_runtime_with_task(tool_call_id="tc_check")
         result = check.func(task_id="thread_abc", runtime=rt)
 
-        assert isinstance(result, Command)
-        parsed = json.loads(result.update["messages"][0].content)
-        assert parsed["status"] == "success"
-        # result should show empty-messages fallback since thread values couldn't be fetched
-        assert "no output" in parsed["result"].lower()
+        assert result == "Failed to get run status: network error"
 
 
 class TestStaleStatusGuidanceInToolDescriptions:
@@ -2014,6 +2011,27 @@ class TestParentPull:
         assert [e["status"] for e in _pulled_events(update)] == ["success"]
         assert "<result>\nremote done\n</result>" in _text(update["messages"][0])
         assert update["async_tasks"]["thread_abc"]["status"] == "success"
+
+    async def test_unreadable_thread_is_checked_again_not_reported_as_success(self) -> None:
+        """A paused subagent's run ends as `success`; only its thread shows the pause, so a failed read can't decide."""
+        server = _FakeServer(
+            {"thread_abc": {"status": "interrupted", "values": {}, "interrupts": {"t": [{"id": "int_q", "value": "Which repo?"}]}}},
+            {"run_id": "run_xyz", "status": "success"},
+        )
+        readable = server.threads.get
+
+        async def unreachable(**_kwargs: Any) -> dict[str, Any]:
+            msg = "network error"
+            raise RuntimeError(msg)
+
+        server.threads.get = unreachable
+        skipped = await _pull("abefore_model", _lead_state(), server)
+        server.threads.get = readable
+        recovered = await _pull("abefore_model", _lead_state(), server)
+
+        assert skipped is None
+        assert [e["status"] for e in _pulled_events(recovered)] == ["waiting"]
+        assert recovered["async_tasks"]["thread_abc"]["status"] == "waiting"
 
     async def test_status_update_is_added_at_the_start_of_a_run(self) -> None:
         update = await _pull("abefore_agent", _lead_state(), _ended())

@@ -814,17 +814,15 @@ def _observe(client: SyncLangGraphClient, task: AsyncTask) -> tuple[Run, Thread 
     A tracked run that another client's run interrupted hands over to the newest run;
     the tracked run is reported `cancelled` only when nothing replaced it. A task the
     parent cancelled isn't followed, so another client's run can't revive it.
+
+    Raises if the thread can't be read, since a paused run also ends as `success`.
     """
     run = client.runs.get(thread_id=task["thread_id"], run_id=task["run_id"])
     if run["status"] == "interrupted" and task["status"] != "cancelled":
         run = next(iter(client.runs.list(thread_id=task["thread_id"], limit=1)), run)
     if run["status"] != "success":
         return run, None
-    try:
-        thread = client.threads.get(thread_id=task["thread_id"])
-    except Exception:  # noqa: BLE001  # LangGraph SDK raises untyped errors
-        logger.warning("Failed to fetch thread for task %s", task["task_id"], exc_info=True)
-        return run, None
+    thread = client.threads.get(thread_id=task["thread_id"])
     if _needs_latest_run(run, thread):
         run = next(iter(client.runs.list(thread_id=task["thread_id"], limit=1)), run)
     return run, thread
@@ -837,11 +835,7 @@ async def _aobserve(client: LangGraphClient, task: AsyncTask) -> tuple[Run, Thre
         run = next(iter(await client.runs.list(thread_id=task["thread_id"], limit=1)), run)
     if run["status"] != "success":
         return run, None
-    try:
-        thread = await client.threads.get(thread_id=task["thread_id"])
-    except Exception:  # noqa: BLE001  # LangGraph SDK raises untyped errors
-        logger.warning("Failed to fetch thread for task %s", task["task_id"], exc_info=True)
-        return run, None
+    thread = await client.threads.get(thread_id=task["thread_id"])
     if _needs_latest_run(run, thread):
         run = next(iter(await client.runs.list(thread_id=task["thread_id"], limit=1)), run)
     return run, thread

@@ -87,7 +87,9 @@ class AsyncSubAgent(TypedDict):
         graph factory can read them from its run's `config["metadata"]`.
         `subagent_name` is this spec's `name`. This may change.
 
-        Subagents on this deployment run with the parent's run context.
+        Launches and updates on this deployment run with the parent's current run
+        context, not the child's prior context. Queued updates capture that context
+        when sent, not when they start. A remote subagent (`url`) receives no context.
     """
 
     name: str
@@ -114,6 +116,8 @@ class AsyncSubAgent(TypedDict):
 
     webhook: NotRequired[str]
     """URL the Agent Server calls whenever a run of this subagent finishes."""
+    update_strategy: NotRequired[Literal["interrupt", "enqueue"]]
+    """How follow-ups are scheduled: interrupt the current run (default), or enqueue behind it."""
 
     mode: NotRequired[Literal["isolated", "fork"]]
     """When using `mode="fork"`, configure the remote agent to match the parent's model,
@@ -163,10 +167,15 @@ class AsyncTask(TypedDict):
     """Thread ID on the remote server."""
 
     run_id: str
-    """Run ID for the current execution on the thread."""
+    """Run ID for the latest execution requested on the thread, which may still be queued."""
+
+    superseded_run_ids: NotRequired[list[str]]
+    """Earlier runs that may still finish after a follow-up was enqueued."""
 
     status: str
     """Current task status (e.g., `'running'`, `'waiting'`, `'success'`, `'error'`, `'cancelled'`).
+
+    `'pending'` means the latest follow-up is queued; an earlier run may still be working.
 
     Typed as `str` rather than a `Literal` because the LangGraph SDK's
     `Run.status` is `str` — using a `Literal` here would require `cast` at every
@@ -242,9 +251,9 @@ class CancelAsyncTaskSchema(BaseModel):
 class ListAsyncTasksSchema(BaseModel):
     """Input schema for the `list_async_tasks` tool."""
 
-    status_filter: Literal["running", "waiting", "success", "error", "cancelled", "all"] | None = Field(
+    status_filter: Literal["running", "pending", "waiting", "success", "error", "cancelled", "all"] | None = Field(
         default=None,
-        description="Filter tasks by status. One of: 'running', 'waiting', 'success', 'error', 'cancelled', 'all'. Defaults to 'all'.",
+        description="Filter tasks by status. One of: 'running', 'pending', 'waiting', 'success', 'error', 'cancelled', 'all'. Defaults to 'all'.",
     )
 
 
@@ -866,7 +875,9 @@ def _build_check_result(run: Run, thread_id: str, thread: Thread | None) -> dict
     """
     status = _task_status(run, thread)
     result: dict[str, Any] = {"status": status, "thread_id": thread_id}
-    if status == "success":
+    if status == "pending":
+        result["note"] = "The latest run is queued; an earlier run on this task may still be working."
+    elif status == "success":
         values = thread.get("values") if thread else None
         result["result"] = _final_content(values if isinstance(values, Mapping) else {})
     elif status == "error":
@@ -888,16 +899,13 @@ def _build_check_command(
     """Build the `Command` update for a check result."""
     now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     changed = result["status"] != task["status"] or run_id != task["run_id"]
-    updated_task = AsyncTask(
-        task_id=task["task_id"],
-        agent_name=task["agent_name"],
-        thread_id=task["thread_id"],
-        run_id=run_id,
-        status=result["status"],
-        created_at=task["created_at"],
-        last_checked_at=now,
-        last_updated_at=now if changed else task["last_updated_at"],
-    )
+    updated_task: AsyncTask = {
+        **task,
+        "run_id": run_id,
+        "status": result["status"],
+        "last_checked_at": now,
+        "last_updated_at": now if changed else task["last_updated_at"],
+    }
     return Command(
         update={
             "messages": [ToolMessage(_check_output(result), tool_call_id=tool_call_id)],
@@ -988,6 +996,7 @@ def _build_check_tool(
         coroutine=acheck_async_task,
         description=(
             "Check the status of an async subagent task. Returns the current status and, if complete, the result. "
+            "If the status is `pending`, the latest follow-up is queued and earlier work may still be running. "
             "If the status is `waiting`, it also returns what the subagent is asking the user. "
             "Statuses shown earlier in the conversation are always stale, so call this to get the current status "
             "rather than reporting a status from a previous tool result."
@@ -997,8 +1006,10 @@ def _build_check_tool(
     )
 
 
-def _update_message(tracked: AsyncTask) -> str:
+def _update_message(tracked: AsyncTask, strategy: str) -> str:
     """Confirm an update, noting when it replaced a pending human request."""
+    if strategy == "enqueue" and tracked["status"] in {"running", "pending"}:
+        return f"Queued follow-up to async subagent without interrupting its current run. task_id: {tracked['task_id']}"
     msg = f"Updated async subagent. task_id: {tracked['task_id']}"
     if tracked["status"] == _WAITING:
         msg += ". It was waiting for a human; that request was dropped."
@@ -1032,7 +1043,7 @@ def _build_update_tool(
                 thread_id=tracked["thread_id"],
                 assistant_id=spec["graph_id"],
                 input={"messages": [{"role": "user", "content": message}]},
-                multitask_strategy="interrupt",
+                multitask_strategy=spec.get("update_strategy", "interrupt"),
                 **_run_options(spec, runtime),
             )
         except Exception as e:  # noqa: BLE001  # LangGraph SDK raises untyped errors
@@ -1040,16 +1051,16 @@ def _build_update_tool(
             return f"Failed to update async subagent: {e}"
         now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
         task: AsyncTask = {
-            "task_id": tracked["task_id"],
-            "agent_name": tracked["agent_name"],
-            "thread_id": tracked["thread_id"],
+            **tracked,
             "run_id": run["run_id"],
             "status": "running",
-            "created_at": tracked["created_at"],
             "last_checked_at": tracked["last_checked_at"],
             "last_updated_at": now,
         }
-        msg = _update_message(tracked)
+        if spec.get("update_strategy") == "enqueue":
+            task["status"] = run["status"]
+            task["superseded_run_ids"] = _superseded_after_update(tracked)
+        msg = _update_message(tracked, spec.get("update_strategy", "interrupt"))
         return Command(
             update={
                 "messages": [ToolMessage(msg, tool_call_id=runtime.tool_call_id)],
@@ -1072,7 +1083,7 @@ def _build_update_tool(
                 thread_id=tracked["thread_id"],
                 assistant_id=spec["graph_id"],
                 input={"messages": [{"role": "user", "content": message}]},
-                multitask_strategy="interrupt",
+                multitask_strategy=spec.get("update_strategy", "interrupt"),
                 **_run_options(spec, runtime),
             )
         except Exception as e:  # noqa: BLE001  # LangGraph SDK raises untyped errors
@@ -1080,16 +1091,16 @@ def _build_update_tool(
             return f"Failed to update async subagent: {e}"
         now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
         task: AsyncTask = {
-            "task_id": tracked["task_id"],
-            "agent_name": tracked["agent_name"],
-            "thread_id": tracked["thread_id"],
+            **tracked,
             "run_id": run["run_id"],
             "status": "running",
-            "created_at": tracked["created_at"],
             "last_checked_at": tracked["last_checked_at"],
             "last_updated_at": now,
         }
-        msg = _update_message(tracked)
+        if spec.get("update_strategy") == "enqueue":
+            task["status"] = run["status"]
+            task["superseded_run_ids"] = _superseded_after_update(tracked)
+        msg = _update_message(tracked, spec.get("update_strategy", "interrupt"))
         return Command(
             update={
                 "messages": [ToolMessage(msg, tool_call_id=runtime.tool_call_id)],
@@ -1097,18 +1108,61 @@ def _build_update_tool(
             }
         )
 
+    description = (
+        "Send updated instructions to an async subagent. Interrupts the current run and starts "
+        "a new one on the same thread, so the subagent sees the full conversation history plus "
+        "your new message. The task_id remains the same."
+    )
+    queued_agents = ", ".join(f"`{name}`" for name, spec in agent_map.items() if spec.get("update_strategy") == "enqueue")
+    if queued_agents:
+        description += (
+            f"\n\nException: for {queued_agents}, follow-ups queue behind the current run without interrupting it. "
+            "A pending status means the latest follow-up is queued and earlier work may still be running."
+        )
+
     return StructuredTool.from_function(
         name="update_async_task",
         func=update_async_task,
         coroutine=aupdate_async_task,
-        description=(
-            "Send updated instructions to an async subagent. Interrupts the current run and starts "
-            "a new one on the same thread, so the subagent sees the full conversation history plus "
-            "your new message. The task_id remains the same."
-        ),
+        description=description,
         infer_schema=False,
         args_schema=UpdateAsyncTaskSchema,
     )
+
+
+def _superseded_after_update(tracked: AsyncTask) -> list[str]:
+    """The runs a queued follow-up leaves behind it.
+
+    Once the latest run has finished, every earlier one has too, so the list restarts
+    with that run rather than growing with every update.
+    """
+    earlier = tracked.get("superseded_run_ids", []) if tracked["status"] in _UNFINISHED_STATUSES else []
+    return [*earlier, tracked["run_id"]]
+
+
+def _cancel_earlier_runs(client: SyncLangGraphClient, task: AsyncTask) -> None:
+    """Cancel outstanding earlier runs after cancelling the newest queued follow-up.
+
+    A run that can't be read or cancelled is skipped, so one stale run doesn't fail the cancel.
+    """
+    for run_id in reversed(task.get("superseded_run_ids", [])):
+        try:
+            run = client.runs.get(thread_id=task["thread_id"], run_id=run_id)
+            if run["status"] in {"running", "pending"}:
+                client.runs.cancel(thread_id=task["thread_id"], run_id=run_id)
+        except Exception:  # noqa: BLE001  # LangGraph SDK raises untyped errors
+            logger.warning("Failed to cancel earlier run %s of task %s", run_id, task["task_id"], exc_info=True)
+
+
+async def _acancel_earlier_runs(client: LangGraphClient, task: AsyncTask) -> None:
+    """Async version of `_cancel_earlier_runs`."""
+    for run_id in reversed(task.get("superseded_run_ids", [])):
+        try:
+            run = await client.runs.get(thread_id=task["thread_id"], run_id=run_id)
+            if run["status"] in {"running", "pending"}:
+                await client.runs.cancel(thread_id=task["thread_id"], run_id=run_id)
+        except Exception:  # noqa: BLE001  # LangGraph SDK raises untyped errors
+            logger.warning("Failed to cancel earlier run %s of task %s", run_id, task["task_id"], exc_info=True)
 
 
 def _build_cancel_tool(
@@ -1129,19 +1183,17 @@ def _build_cancel_tool(
             try:
                 client = clients.get_sync(tracked["agent_name"])
                 client.runs.cancel(thread_id=tracked["thread_id"], run_id=tracked["run_id"])
+                _cancel_earlier_runs(client, tracked)
             except Exception as e:  # noqa: BLE001  # get_sync() may raise ValueError; SDK raises untyped errors
                 return f"Failed to cancel run: {e}"
         now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-        updated = AsyncTask(
-            task_id=tracked["task_id"],
-            agent_name=tracked["agent_name"],
-            thread_id=tracked["thread_id"],
-            run_id=tracked["run_id"],
-            status="cancelled",
-            created_at=tracked["created_at"],
-            last_checked_at=now,
-            last_updated_at=now,
-        )
+        updated: AsyncTask = {
+            **tracked,
+            "run_id": tracked["run_id"],
+            "status": "cancelled",
+            "last_checked_at": now,
+            "last_updated_at": now,
+        }
         msg = f"Cancelled async subagent task: {tracked['task_id']}"
         return Command(
             update={
@@ -1161,20 +1213,19 @@ def _build_cancel_tool(
         # A paused subagent has no active run to cancel; marking the task is enough.
         if tracked["status"] != _WAITING:
             try:
-                await clients.get_async(tracked["agent_name"]).runs.cancel(thread_id=tracked["thread_id"], run_id=tracked["run_id"])
+                client = clients.get_async(tracked["agent_name"])
+                await client.runs.cancel(thread_id=tracked["thread_id"], run_id=tracked["run_id"])
+                await _acancel_earlier_runs(client, tracked)
             except Exception as e:  # noqa: BLE001  # LangGraph SDK raises untyped errors
                 return f"Failed to cancel run: {e}"
         now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-        updated = AsyncTask(
-            task_id=tracked["task_id"],
-            agent_name=tracked["agent_name"],
-            thread_id=tracked["thread_id"],
-            run_id=tracked["run_id"],
-            status="cancelled",
-            created_at=tracked["created_at"],
-            last_checked_at=now,
-            last_updated_at=now,
-        )
+        updated: AsyncTask = {
+            **tracked,
+            "run_id": tracked["run_id"],
+            "status": "cancelled",
+            "last_checked_at": now,
+            "last_updated_at": now,
+        }
         msg = f"Cancelled async subagent task: {tracked['task_id']}"
         return Command(
             update={
@@ -1263,16 +1314,13 @@ def _build_list_command(filtered: list[AsyncTask], live: list[tuple[str, str]], 
     for task, (status, run_id) in zip(filtered, live, strict=True):
         entries.append(_format_task_entry(task, status))
         changed = status != task["status"] or run_id != task["run_id"]
-        updated[task["task_id"]] = AsyncTask(
-            task_id=task["task_id"],
-            agent_name=task["agent_name"],
-            thread_id=task["thread_id"],
-            run_id=run_id,
-            status=status,
-            created_at=task["created_at"],
-            last_checked_at=now,
-            last_updated_at=now if changed else task["last_updated_at"],
-        )
+        updated[task["task_id"]] = {
+            **task,
+            "run_id": run_id,
+            "status": status,
+            "last_checked_at": now,
+            "last_updated_at": now if changed else task["last_updated_at"],
+        }
     msg = f"{len(entries)} tracked task(s):\n" + "\n".join(entries)
     return Command(
         update={
@@ -1287,7 +1335,7 @@ def _build_list_tasks_tool(clients: _ClientCache) -> StructuredTool:
 
     def list_async_tasks(
         runtime: ToolRuntime,
-        status_filter: Literal["running", "waiting", "success", "error", "cancelled", "all"] | None = None,
+        status_filter: Literal["running", "pending", "waiting", "success", "error", "cancelled", "all"] | None = None,
     ) -> str | Command:
         tasks: dict[str, AsyncTask] = runtime.state.get("async_tasks") or {}
         filtered = _filter_tasks(tasks, status_filter)
@@ -1298,7 +1346,7 @@ def _build_list_tasks_tool(clients: _ClientCache) -> StructuredTool:
 
     async def alist_async_tasks(
         runtime: ToolRuntime,
-        status_filter: Literal["running", "waiting", "success", "error", "cancelled", "all"] | None = None,
+        status_filter: Literal["running", "pending", "waiting", "success", "error", "cancelled", "all"] | None = None,
     ) -> str | Command:
         tasks: dict[str, AsyncTask] = runtime.state.get("async_tasks") or {}
         filtered = _filter_tasks(tasks, status_filter)
@@ -1380,16 +1428,13 @@ def _observed(task: AsyncTask, status: str, run_id: str) -> AsyncTask:
     """`task` updated to what a check found."""
     now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     changed = status != task["status"] or run_id != task["run_id"]
-    return AsyncTask(
-        task_id=task["task_id"],
-        agent_name=task["agent_name"],
-        thread_id=task["thread_id"],
-        run_id=run_id,
-        status=status,
-        created_at=task["created_at"],
-        last_checked_at=now,
-        last_updated_at=now if changed else task["last_updated_at"],
-    )
+    return {
+        **task,
+        "run_id": run_id,
+        "status": status,
+        "last_checked_at": now,
+        "last_updated_at": now if changed else task["last_updated_at"],
+    }
 
 
 class AsyncSubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
@@ -1465,6 +1510,10 @@ class AsyncSubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
             raise ValueError(msg)
 
         for spec in async_subagents:
+            strategy = spec.get("update_strategy", "interrupt")
+            if strategy not in ("interrupt", "enqueue"):
+                msg = f"AsyncSubAgent '{spec['name']}' has invalid update_strategy '{strategy}'; expected 'interrupt' or 'enqueue'"
+                raise ValueError(msg)
             mode = spec.get("mode", "isolated")
             if mode not in ("isolated", "fork"):
                 msg = f"AsyncSubAgent '{spec['name']}' has invalid mode '{mode}'; expected 'isolated' or 'fork'"
@@ -1490,6 +1539,8 @@ class AsyncSubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         recorded = self._record_notification(state) or {}
         tasks = {**(state.get("async_tasks") or {}), **recorded.get("async_tasks", {})}
         updates = await self._apull(tasks)
+        if recorded.get("messages"):
+            updates["messages"] = [*recorded["messages"], *updates.get("messages", [])]
         return {
             **recorded,
             **updates,
@@ -1564,7 +1615,16 @@ class AsyncSubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         if event is None or task is None:
             return None
         run_id = event.get("run_id", task["run_id"])
-        # Answering a pause starts a new run; an update cancels the old run before it can report.
+        if run_id in task.get("superseded_run_ids", []):
+            message = messages[-1].model_copy(
+                update={
+                    "content": f"An earlier run of async task {_escape(task['task_id'])} reported {_escape(event['status'])}. "
+                    "Its follow-up is tracked separately; this is not completion of the latest task. "
+                    "Use check_async_task for its current status.",
+                    "additional_kwargs": {},
+                }
+            )
+            return {"messages": [message]}
         if run_id != task["run_id"] and task["status"] not in _UNFINISHED_STATUSES:
             return None
         return {"async_tasks": {task["task_id"]: _observed(task, event["status"], run_id)}}

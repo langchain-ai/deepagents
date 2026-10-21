@@ -42,6 +42,31 @@ logger = logging.getLogger(__name__)
 _MAX_THREADS = 64
 
 
+def _observes_checkout(request: ToolCallRequest) -> bool:
+    name = request.tool_call["name"]
+    if name in {"read_file", "ls", "glob", "grep"}:
+        return False
+    metadata = (request.tool.metadata or {}) if request.tool is not None else {}
+    if (
+        metadata.get("readOnlyHint") is True
+        and metadata.get("destructiveHint") is not True
+    ):
+        return False
+    if metadata.get("destructiveHint") is True or name in {
+        "execute",
+        "write_file",
+        "edit_file",
+        "apply_patch",
+        "js",
+        "task",
+    }:
+        return True
+    return any(
+        isinstance(request.tool_call["args"].get(key), str)
+        for key in ("file_path", "path", "cwd", "command")
+    )
+
+
 @dataclass
 class _Turn:
     trace: TurnTrace
@@ -210,16 +235,17 @@ class GitTraceMiddleware(AgentMiddleware[AgentState, ContextT]):
         Returns:
             The unchanged tool result.
         """
+        if not _observes_checkout(request):
+            return handler(request)
         turn = self._turn(request.runtime.config)
         if turn is None:
             return handler(request)
         order = self._order(turn)
         args = request.tool_call["args"]
         before = self._probe(args)
-        try:
-            return handler(request)
-        finally:
-            self._record(turn, before, self._probe(args), order)
+        result = handler(request)
+        self._record(turn, before, self._probe(args), order)
+        return result
 
     @override
     async def awrap_tool_call(
@@ -232,13 +258,14 @@ class GitTraceMiddleware(AgentMiddleware[AgentState, ContextT]):
         Returns:
             The unchanged tool result.
         """
+        if not _observes_checkout(request):
+            return await handler(request)
         turn = self._turn(request.runtime.config)
         if turn is None:
             return await handler(request)
         order = self._order(turn)
         args = request.tool_call["args"]
         before = await self._aprobe(args)
-        try:
-            return await handler(request)
-        finally:
-            self._record(turn, before, await self._aprobe(args), order)
+        result = await handler(request)
+        self._record(turn, before, await self._aprobe(args), order)
+        return result

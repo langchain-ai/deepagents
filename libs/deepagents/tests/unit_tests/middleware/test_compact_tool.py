@@ -214,6 +214,8 @@ class TestCompactSuccess:
         assert result.update is not None
         event = result.update["_summarization_event"]
         assert event["cutoff_index"] == 4
+        # Every message present when compacting predates the summary.
+        assert event["reasoning_kept_from"] == 10
         # Verify that the summarization event contains the expected values.
         # summary_message is a HumanMessage wrapping the summary text.
         summary_msg = event["summary_message"]

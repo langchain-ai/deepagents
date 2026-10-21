@@ -139,6 +139,9 @@ SUMMARIZATION_EVENT_KEY = "_summarization_event"
 SUMMARIZATION_SESSION_ID_KEY = "_summarization_session_id"
 """State key holding the id that names the offload history file."""
 
+_BOUND_REASONING_BLOCK_TYPES = frozenset({"thinking", "redacted_thinking", "reasoning_content"})
+"""Content block types whose signature is bound to the conversation before them."""
+
 
 class SummarizationEvent(TypedDict):
     """Represents a summarization event."""
@@ -151,6 +154,16 @@ class SummarizationEvent(TypedDict):
 
     file_path: str | None
     """Path where the conversation history was offloaded, or `None` if offload failed."""
+
+    reasoning_kept_from: NotRequired[int]
+    """State index from which AI messages keep their reasoning blocks.
+
+    Messages from `cutoff_index` up to this index were kept verbatim when the
+    summary was created. Anthropic and Amazon Bedrock bind each reasoning block to
+    the conversation before it and can reject a request once that conversation
+    changes, so these blocks are left out of the messages the model sees. Absent
+    on events created before this field existed.
+    """
 
 
 class TriggerClause(TypedDict, total=False):
@@ -521,6 +534,24 @@ def _is_context_overflow(exc: Exception) -> bool:
     )
 
 
+def _drop_bound_reasoning(message: AnyMessage) -> AnyMessage:
+    """Return `message` without reasoning blocks bound to the conversation before it.
+
+    Args:
+        message: A message kept from before a summary.
+
+    Returns:
+        A copy of an AI message with those blocks removed, or `message` unchanged
+            when it has none.
+    """
+    if not isinstance(message, AIMessage) or not isinstance(message.content, list):
+        return message
+    content = [block for block in message.content if not (isinstance(block, dict) and block.get("type") in _BOUND_REASONING_BLOCK_TYPES)]
+    if len(content) == len(message.content):
+        return message
+    return message.model_copy(update={"content": content})
+
+
 class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
     """Summarization middleware with backend for conversation history offloading."""
 
@@ -866,6 +897,8 @@ A condensed summary follows:
 
         When a prior summarization event exists, the effective conversation is
         the summary message followed by all messages from `cutoff_index` onward.
+        Messages kept from before the summary lose their bound reasoning blocks
+        (see `SummarizationEvent.reasoning_kept_from`).
 
         Args:
             messages: Full message list from state.
@@ -892,8 +925,12 @@ A condensed summary follows:
             )
             return [summary_msg]
 
+        kept_from = event.get("reasoning_kept_from")
+        if not isinstance(kept_from, int):
+            kept_from = cutoff_idx
         result: list[AnyMessage] = [summary_msg]
-        result.extend(messages[cutoff_idx:])
+        for index, message in enumerate(messages[cutoff_idx:], start=cutoff_idx):
+            result.append(_drop_bound_reasoning(message) if index < kept_from else message)
         return result
 
     @staticmethod
@@ -1636,10 +1673,11 @@ A condensed summary follows:
             "cutoff_index": state_cutoff_index,
             "summary_message": new_messages[0],  # The HumanMessage with summary  # ty: ignore[invalid-argument-type]
             "file_path": file_path,
+            "reasoning_kept_from": len(request.messages),
         }
 
         # Modify request to use summarized messages
-        modified_messages = [*new_messages, *preserved_messages]
+        modified_messages = [*new_messages, *map(_drop_bound_reasoning, preserved_messages)]
         modified_request = request.override(messages=modified_messages)
         response, new_state_tail = self._call_with_budget(
             modified_request,
@@ -1775,10 +1813,11 @@ A condensed summary follows:
             "cutoff_index": state_cutoff_index,
             "summary_message": new_messages[0],  # The HumanMessage with summary  # ty: ignore[invalid-argument-type]
             "file_path": file_path,
+            "reasoning_kept_from": len(request.messages),
         }
 
         # Modify request to use summarized messages
-        modified_messages = [*new_messages, *preserved_messages]
+        modified_messages = [*new_messages, *map(_drop_bound_reasoning, preserved_messages)]
         modified_request = request.override(messages=modified_messages)
         response, new_state_tail = await self._acall_with_budget(
             modified_request,
@@ -2127,6 +2166,7 @@ class SummarizationToolMiddleware(AgentMiddleware):
             "cutoff_index": state_cutoff,
             "summary_message": summary_msg,  # ty: ignore[invalid-argument-type]
             "file_path": file_path,
+            "reasoning_kept_from": len(runtime.state.get("messages", [])),
         }
 
         return Command(

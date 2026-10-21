@@ -90,6 +90,10 @@ class WindowsProcessReader:
         # Retain chunks separately so each read does not copy all prior output.
         self._chunks: list[list[str]] = [[], []]
 
+    def snapshot(self) -> tuple[str, str]:
+        """Join decoded output only when execution reaches its final timeout."""
+        return "".join(self._chunks[0]), "".join(self._chunks[1])
+
     def _read(self) -> bool:
         """Read one bounded chunk from each open pipe without starving either."""
         progress = False
@@ -121,7 +125,7 @@ class WindowsProcessReader:
 
         Raises:
             subprocess.TimeoutExpired: If output or process completion exceeds the
-                deadline.
+                deadline. Captured output remains available through `snapshot`.
             OSError: If reading a captured pipe fails.
             UnicodeError: If captured output cannot be decoded.
         """
@@ -129,10 +133,7 @@ class WindowsProcessReader:
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                raise subprocess.TimeoutExpired(
-                    self._process.args,
-                    timeout,
-                )
+                raise subprocess.TimeoutExpired(self._process.args, timeout)
             progress = self._read()
             if all(pipe is None or pipe.closed for pipe in self._pipes) and self._process.poll() is not None:
                 return "".join(self._chunks[0]), "".join(self._chunks[1])

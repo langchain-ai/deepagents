@@ -120,6 +120,10 @@ class AsyncSubAgent(TypedDict):
 
     Set it to `False` when the application delivers results itself, for example
     through `webhook`. This agent still sees the subagent's updates while it runs.
+
+    !!! warning "Beta"
+
+        `notify_parent` may change along with how subagents wake their parent.
     """
 
     mode: NotRequired[Literal["isolated", "fork"]]

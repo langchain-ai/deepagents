@@ -975,11 +975,21 @@ class FilesystemBackend(BackendProtocol):
             cmd.extend(["--", pattern, str(base_full)])
 
         try:
+            # ripgrep emits UTF-8 on every platform, so decode its pipes as UTF-8
+            # explicitly. `text=True` on its own defers to
+            # `locale.getpreferredencoding()`, which on Windows with UTF-8 mode
+            # off is the ANSI code page (cp1252, cp936, ...): a non-ASCII path
+            # comes back as mojibake (`résumé.md` -> `rÃ©sumÃ©.md`) and CJK text
+            # raises `UnicodeDecodeError`. `errors="replace"` keeps one stray
+            # undecodable byte from killing the whole search. Same class of bug
+            # as the dcode text-I/O fixes in #6474 / #6501 (#6964).
             proc = subprocess.Popen(  # noqa: S603
                 cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 cwd=rg_cwd,
             )
         except (FileNotFoundError, PermissionError, NotADirectoryError) as e:

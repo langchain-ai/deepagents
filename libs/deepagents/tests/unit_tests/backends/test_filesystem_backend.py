@@ -794,6 +794,59 @@ def test_grep_literal_search_with_special_chars(tmp_path: Path, pattern: str, ex
     assert any(expected_file in m["path"] for m in matches), f"Pattern '{pattern}' not found in {expected_file}"
 
 
+def _force_locale_encoding(monkeypatch: pytest.MonkeyPatch, code_page: str) -> None:
+    """Resolve an unspecified text encoding to a legacy Windows code page."""
+
+    def text_encoding(encoding: str | None, _stacklevel: int = 2) -> str:
+        return code_page if encoding in (None, "locale") else encoding
+
+    monkeypatch.setattr(io, "text_encoding", text_encoding)
+
+
+@pytest.mark.usefixtures("_isolate_rg_cache")
+def test_ripgrep_pipes_are_decoded_as_utf8(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Regression test for #6964.
+
+    ripgrep emits UTF-8 on every platform, so its pipes must not be decoded with
+    the locale. `text=True` alone defers to `locale.getpreferredencoding()`,
+    which on Windows with UTF-8 mode off is the ANSI code page (cp1252, cp936,
+    ...): a non-ASCII path arrives as mojibake (`résumé.md` -> `rÃ©sumÃ©.md`)
+    and CJK text raises `UnicodeDecodeError`. The fix pins the encoding on the
+    pipe, so that is what this asserts.
+    """
+    monkeypatch.setattr(fs_module.shutil, "which", lambda _name: "/opt/fake/bin/rg")
+    captured: dict[str, object] = {}
+
+    def fake_popen(_cmd: list[str], **kwargs: object) -> _FakePopen:
+        captured.update(kwargs)
+        return _FakePopen()
+
+    monkeypatch.setattr(fs_module.subprocess, "Popen", fake_popen)
+    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+
+    be.grep("needle", path="/")
+
+    assert captured["encoding"] == "utf-8"
+    assert captured["errors"] == "replace"
+
+
+def test_grep_returns_non_ascii_matches_under_a_legacy_locale(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Regression test for #6964, end to end through the real binary.
+
+    A cp1252 runner must still get the real path and text back, not mojibake.
+    """
+    require_ripgrep()
+    _force_locale_encoding(monkeypatch, "cp1252")
+    (tmp_path / "résumé.md").write_text("café au lait\n不要\n", encoding="utf-8")
+    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+
+    matches = be.grep("café", path="/").matches
+
+    assert matches, "ripgrep should have matched the non-ASCII line"
+    assert matches[0]["path"].endswith("résumé.md")
+    assert matches[0]["text"] == "café au lait"
+
+
 def test_grep_ripgrep_glob_with_directory_component(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Regression test for #2732.
 
@@ -1277,6 +1330,8 @@ def test_ripgrep_drains_stderr_while_streaming_stdout(tmp_path: Path, monkeypatc
         stdout: int,
         stderr: int,
         text: bool,
+        encoding: str,
+        errors: str,
         cwd: str | None,
     ) -> subprocess.Popen[str]:
         assert text
@@ -1285,6 +1340,8 @@ def test_ripgrep_drains_stderr_while_streaming_stdout(tmp_path: Path, monkeypatc
             stdout=stdout,
             stderr=stderr,
             text=True,
+            encoding=encoding,
+            errors=errors,
             cwd=cwd,
         )
 

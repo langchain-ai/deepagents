@@ -51,6 +51,7 @@ from deepagents_code.agent import (
     get_available_agent_names,
     get_system_prompt,
     list_agents,
+    load_async_subagents,
 )
 from deepagents_code.config import runtime_state
 from deepagents_code.configuration.interpreter import InterpreterConfig
@@ -5993,3 +5994,33 @@ class TestSubagentRetryBudgetResolution:
         with patch("deepagents_code.config.create_model", _fake_create_model):
             _resolve_retry_owned_model("anthropic:claude-haiku-4-5", cli_max_retries)
         return captured
+
+
+class TestLoadAsyncSubagents:
+    """Tests for `load_async_subagents` config parsing."""
+
+    @pytest.mark.parametrize(
+        ("webhook_line", "expected"),
+        [
+            ('webhook = "https://example.com/hook"\n', "https://example.com/hook"),
+            ("", None),
+            ("webhook = 123\n", None),
+            ("webhook = false\n", None),
+        ],
+        ids=["set", "unset", "integer", "boolean"],
+    )
+    def test_webhook_passthrough(
+        self, tmp_path: Path, webhook_line: str, expected: str | None
+    ) -> None:
+        """A string `webhook` is passed through; an absent one is omitted."""
+        config = tmp_path / "config.toml"
+        config.write_text(
+            "[async_subagents.researcher]\n"
+            'description = "Research agent"\n'
+            'graph_id = "agent"\n' + webhook_line
+        )
+
+        [agent] = load_async_subagents(config)
+
+        assert agent.get("webhook") == expected
+        assert ("webhook" in agent) is (expected is not None)

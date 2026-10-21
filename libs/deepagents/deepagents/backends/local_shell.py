@@ -161,7 +161,7 @@ def _kill_and_reap(process: subprocess.Popen[str], process_group: int | None) ->
                 pipe.close()
             except (OSError, ValueError):
                 logger.warning("Failed to close %s for local shell process %s", name, process.pid, exc_info=True)
-    return terminated and reaped
+    return terminated and reaped and not _IS_WINDOWS
 
 
 def _communicate(
@@ -611,6 +611,7 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
                 stderr=subprocess.PIPE,
                 stdin=subprocess.DEVNULL,  # Prevent hanging on commands that read stdin (e.g. python, cat)
                 text=True,
+                errors="replace",
                 env=self._env,
                 cwd=str(self.cwd),  # Use the root_dir from FilesystemBackend
                 start_new_session=start_new_session,
@@ -627,7 +628,6 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
             )
 
             output, truncated = self._combine_output(stdout, stderr)
-
 
             # Add exit code info if non-zero
             if process.returncode != 0:

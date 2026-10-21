@@ -113,14 +113,7 @@ class AsyncSubAgent(TypedDict):
     """Additional headers to include in requests to the remote server."""
 
     webhook: NotRequired[str]
-    """Webhook URL the server calls when each run of this subagent's tasks finishes.
-
-    Set on the runs `start_async_task` and `update_async_task` start. An update
-    interrupts the previous run, so the latest run's call has the task's outcome.
-    A run paused for a human ends as a success.
-
-    The server rejects the run if it refuses the URL (by default, loopback addresses).
-    """
+    """URL the Agent Server calls whenever a run of this subagent finishes."""
 
     mode: NotRequired[Literal["isolated", "fork"]]
     """When using `mode="fork"`, configure the remote agent to match the parent's model,

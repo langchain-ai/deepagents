@@ -27,6 +27,15 @@ if TYPE_CHECKING:
 
 
 @pytest.fixture(autouse=True)
+def unconfigured_runtime_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep startup model selection independent of previously executed tests."""
+    from deepagents_code.config import runtime_state
+
+    monkeypatch.setattr(runtime_state, "model_provider", None)
+    monkeypatch.setattr(runtime_state, "model_name", None)
+
+
+@pytest.fixture(autouse=True)
 def checkpoint_database(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> Iterator[None]:
@@ -1314,7 +1323,6 @@ async def test_expiry_send_action_dispatches_once_in_current_thread(
     outcome: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     app = DeepAgentsApp()
-    monkeypatch.setattr(app, "_cold_cache_estimate", AsyncMock(return_value=None))
 
     async def send(_text: str, _mode: str) -> None:
         assert app._lc_thread_id == "source"
@@ -1364,7 +1372,6 @@ async def test_handoff_pauses_submission_but_keeps_draft_editable(
     outcome: str, submitted: bool, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     app = DeepAgentsApp()
-    monkeypatch.setattr(app, "_cold_cache_estimate", AsyncMock(return_value=None))
     started = asyncio.Event()
     release = asyncio.Event()
 

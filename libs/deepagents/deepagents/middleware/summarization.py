@@ -139,8 +139,8 @@ SUMMARIZATION_EVENT_KEY = "_summarization_event"
 SUMMARIZATION_SESSION_ID_KEY = "_summarization_session_id"
 """State key holding the id that names the offload history file."""
 
-_BOUND_REASONING_PROVIDERS = frozenset({"anthropic", "bedrock", "bedrock_converse"})
-"""`model_provider` values whose reasoning blocks are bound to the conversation before them."""
+_BEDROCK_PROVIDERS = frozenset({"bedrock", "bedrock_converse"})
+"""`model_provider` values for Amazon Bedrock, which serves Claude among other models."""
 
 _NATIVE_REASONING_BLOCK_TYPES = frozenset({"thinking", "redacted_thinking", "reasoning_content"})
 """Reasoning block types in the Anthropic and Bedrock Converse native formats."""
@@ -158,14 +158,14 @@ class SummarizationEvent(TypedDict):
     file_path: str | None
     """Path where the conversation history was offloaded, or `None` if offload failed."""
 
-    reasoning_kept_from: NotRequired[int]
-    """State index from which AI messages keep their reasoning blocks.
+    created_at_index: NotRequired[int]
+    """Number of state messages when the summary was created.
 
-    Messages from `cutoff_index` up to this index were kept verbatim when the
-    summary was created. Anthropic and Amazon Bedrock bind each reasoning block to
-    the conversation before it and can reject a request once that conversation
-    changes, so these blocks are left out of the messages the model sees. Absent
-    on events created before this field existed.
+    Messages from `cutoff_index` up to this index were kept verbatim from before
+    the summary. Claude binds each reasoning block to the conversation before it
+    and can reject a request once that conversation changes, so their reasoning
+    blocks are left out of the messages the model sees. Absent on events created
+    before this field existed.
     """
 
 
@@ -540,16 +540,19 @@ def _is_context_overflow(exc: Exception) -> bool:
 def _bound_reasoning_types(message: AIMessage) -> frozenset[str]:
     """Return the block types in `message` that carry reasoning bound to earlier history.
 
-    Only Anthropic and Claude on Bedrock bind reasoning this way, so messages
-    tagged with another provider (Gemini, for example, also uses `thinking`
-    blocks) keep theirs. Untagged messages, such as those from integrations that
-    do not set `model_provider`, are checked for the native block types only.
+    Only Claude binds reasoning this way. Bedrock messages count when their model
+    is Claude, read from `model_name`, so other Bedrock models such as OpenAI's keep
+    their reasoning. Messages tagged with any other provider keep theirs too
+    (Gemini, for example, also uses `thinking` blocks). Untagged messages, such as
+    those from integrations that do not set `model_provider`, are checked for the
+    native block types only.
     """
     provider = message.response_metadata.get("model_provider")
-    if provider in _BOUND_REASONING_PROVIDERS:
-        return _NATIVE_REASONING_BLOCK_TYPES | {"reasoning"}
     if provider is None:
         return _NATIVE_REASONING_BLOCK_TYPES
+    model = str(message.response_metadata.get("model_name", "")).lower()
+    if provider == "anthropic" or (provider in _BEDROCK_PROVIDERS and ("claude" in model or "anthropic" in model)):
+        return _NATIVE_REASONING_BLOCK_TYPES | {"reasoning"}
     return frozenset()
 
 
@@ -918,7 +921,7 @@ A condensed summary follows:
         When a prior summarization event exists, the effective conversation is
         the summary message followed by all messages from `cutoff_index` onward.
         Messages kept from before the summary lose their bound reasoning blocks
-        (see `SummarizationEvent.reasoning_kept_from`).
+        (see `SummarizationEvent.created_at_index`).
 
         Args:
             messages: Full message list from state.
@@ -945,7 +948,7 @@ A condensed summary follows:
             )
             return [summary_msg]
 
-        kept_from = event.get("reasoning_kept_from")
+        kept_from = event.get("created_at_index")
         if not isinstance(kept_from, int):
             kept_from = cutoff_idx
         result: list[AnyMessage] = [summary_msg]
@@ -1693,7 +1696,7 @@ A condensed summary follows:
             "cutoff_index": state_cutoff_index,
             "summary_message": new_messages[0],  # The HumanMessage with summary  # ty: ignore[invalid-argument-type]
             "file_path": file_path,
-            "reasoning_kept_from": len(request.messages),
+            "created_at_index": len(request.messages),
         }
 
         # Modify request to use summarized messages
@@ -1833,7 +1836,7 @@ A condensed summary follows:
             "cutoff_index": state_cutoff_index,
             "summary_message": new_messages[0],  # The HumanMessage with summary  # ty: ignore[invalid-argument-type]
             "file_path": file_path,
-            "reasoning_kept_from": len(request.messages),
+            "created_at_index": len(request.messages),
         }
 
         # Modify request to use summarized messages
@@ -2186,7 +2189,7 @@ class SummarizationToolMiddleware(AgentMiddleware):
             "cutoff_index": state_cutoff,
             "summary_message": summary_msg,  # ty: ignore[invalid-argument-type]
             "file_path": file_path,
-            "reasoning_kept_from": len(runtime.state.get("messages", [])),
+            "created_at_index": len(runtime.state.get("messages", [])),
         }
 
         return Command(

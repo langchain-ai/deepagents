@@ -2822,7 +2822,7 @@ async def test_summary_drops_reasoning_bound_to_replaced_history(use_async: bool
 
     assert isinstance(result, ExtendedModelResponse)
     event = result.command.update["_summarization_event"]
-    assert event["reasoning_kept_from"] == 8
+    assert event["created_at_index"] == 8
     assert request is not None
     kept = request.messages[-1]
     assert kept.id == "s7"
@@ -2842,33 +2842,41 @@ async def test_summary_drops_reasoning_bound_to_replaced_history(use_async: bool
 
 
 @pytest.mark.parametrize(
-    ("provider", "reasoning", "dropped"),
+    ("provider", "model", "reasoning", "dropped"),
     [
         # Anthropic with `output_version="v1"` returns standard reasoning blocks.
-        ("anthropic", {"type": "reasoning", "reasoning": "plan", "extras": {"signature": "sig"}}, True),
-        ("bedrock_converse", {"type": "reasoning_content", "reasoning_content": {"text": "plan", "signature": "sig"}}, True),
+        ("anthropic", "claude-opus-5-5", {"type": "reasoning", "reasoning": "plan", "extras": {"signature": "sig"}}, True),
+        (
+            "bedrock_converse",
+            "us.anthropic.claude-opus-5-5",
+            {"type": "reasoning_content", "reasoning_content": {"text": "plan", "signature": "sig"}},
+            True,
+        ),
         # `ChatBedrock` (InvokeModel) returns Anthropic-format blocks for Claude.
-        ("bedrock", {"type": "thinking", "thinking": "plan", "signature": "sig"}, True),
+        ("bedrock", "anthropic.claude-opus-5-5", {"type": "thinking", "thinking": "plan", "signature": "sig"}, True),
+        # Bedrock also serves models that do not bind reasoning.
+        ("bedrock_converse", "openai.gpt-oss-120b-1:0", {"type": "reasoning_content", "reasoning_content": {"text": "plan"}}, False),
         # Gemini also uses `thinking` blocks, but does not bind them to earlier history.
-        ("google_genai", {"type": "thinking", "thinking": "plan", "signature": "sig"}, False),
-        ("openai", {"type": "reasoning", "summary": []}, False),
+        ("google_genai", "gemini-3-pro", {"type": "thinking", "thinking": "plan", "signature": "sig"}, False),
+        ("openai", "gpt-6.1", {"type": "reasoning", "summary": []}, False),
     ],
 )
-def test_summary_drops_reasoning_only_for_providers_that_bind_it(
+def test_summary_drops_reasoning_only_for_models_that_bind_it(
     provider: str,
+    model: str,
     reasoning: dict[str, Any],
     dropped: bool,  # noqa: FBT001
 ) -> None:
     message = AIMessage(
         content=[reasoning, {"type": "text", "text": "S1"}],
         id="s1",
-        response_metadata={"model_provider": provider},
+        response_metadata={"model_provider": provider, "model_name": model},
     )
     event: SummarizationEvent = {
         "cutoff_index": 1,
         "summary_message": HumanMessage(content="summary"),
         "file_path": None,
-        "reasoning_kept_from": 2,
+        "created_at_index": 2,
     }
 
     effective = SummarizationMiddleware._apply_event_to_messages([HumanMessage(content="S0", id="s0"), message], event)
@@ -2878,7 +2886,7 @@ def test_summary_drops_reasoning_only_for_providers_that_bind_it(
 
 
 def test_summary_event_without_reasoning_index_keeps_reasoning() -> None:
-    """Events saved before `reasoning_kept_from` existed leave messages as they were."""
+    """Events saved before `created_at_index` existed leave messages as they were."""
     messages = [HumanMessage(content="S0", id="s0"), _thinking_message(1)]
     event: SummarizationEvent = {
         "cutoff_index": 1,

@@ -362,7 +362,7 @@ def _thread_metadata(spec: AsyncSubAgent, runtime: ToolRuntime) -> dict[str, str
 
 
 def _run_options(spec: AsyncSubAgent, runtime: ToolRuntime) -> dict[str, Any]:
-    """Keyword arguments for `runs.create`: the link to this agent, and the subagent's webhook.
+    """Keyword arguments for `runs.create` that link a run to this agent and set the subagent's webhook.
 
     A subagent on this deployment runs with this agent's context, like a sync subagent.
     """

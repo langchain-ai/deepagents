@@ -1,10 +1,10 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:5e9e5f2d3a4e1f3d16755a41c4497116c217165bec00dc6cc8c3266376185e2f",
+  "pageVersion": "sha256:c07dc8b6c446d8c236f1ffb256d4681e3f8b07f31a0662fcae30a3de0497dac2",
   "claims": [
     {
       "id": "claim_7e77f7ec620944c29e36936e3abea92f",
-      "statement": "The repository is an independently versioned Python monorepo: the SDK is deepagents 0.7.29, dcode is 0.1.87, ACP is 0.0.13, Talon is 0.0.9, and evals is 0.0.1; Release Please has release lines for the first four and five partners but not evals, creates separate draft release pull requests, and delegates PyPI and GitHub release creation to the release workflow after a release PR is merged.",
+      "statement": "The repository is an independently versioned Python monorepo: the SDK is deepagents 0.7.30, dcode is 0.1.88, ACP is 0.0.13, Talon is 0.0.9, and evals is 0.0.1; Release Please has release lines for the first four and five partners but not evals, creates separate draft release pull requests, and delegates PyPI and GitHub release creation to the release workflow after a release PR is merged.",
       "evidence": [
         {
           "resource": "repo://.github/RELEASING.md",
@@ -12,7 +12,7 @@
         },
         {
           "resource": "repo://.release-please-manifest.json",
-          "version": "repo-file-v1:sha256:29eed2cd07e6f170e157c158efd4102de31535def1ba9e57c9d0a88e3d3f31b3"
+          "version": "repo-file-v1:sha256:adf2f323386af9001383391519b921aed5e5b800ec9f3869fcb0616d52946c07"
         },
         {
           "resource": "repo://libs/acp/pyproject.toml",
@@ -20,11 +20,11 @@
         },
         {
           "resource": "repo://libs/code/pyproject.toml",
-          "version": "repo-file-v1:sha256:03ef3e26ed62f80fcaebca192dad2eca09b3ec0ce3178c46429998d2442574b8"
+          "version": "repo-file-v1:sha256:b330fc92d350a85671935c20a1928f90dbed15f5ac96e0ca5070f006d589aea5"
         },
         {
           "resource": "repo://libs/deepagents/pyproject.toml",
-          "version": "repo-file-v1:sha256:62b29cb12a13a84b1252f1f40944c16a2267391c3f446e85d76df2e6c203f735"
+          "version": "repo-file-v1:sha256:4a34e095b3d2050a8f94fc03dcad5adcd0e8a0fdf447b50e99521beb42dfc948"
         },
         {
           "resource": "repo://libs/evals/pyproject.toml",
@@ -42,7 +42,7 @@
     },
     {
       "id": "claim_c476cf01e3534db9823db06bc72373e9",
-      "statement": "Published dependencies flow from ACP to the SDK, dcode to ACP, QuickJS, and pinned deepagents==0.7.29, Talon to the SDK and dcode, evals to the SDK, dcode, and QuickJS, and QuickJS to the 0.7.x SDK; separate `uv` source mappings replace selected dependencies with sibling monorepo source during development, and only mappings marked `editable = true` are editable installs.",
+      "statement": "Published dependencies flow from ACP to the SDK, dcode to ACP, QuickJS, and pinned deepagents==0.7.30, Talon to the SDK and dcode, evals to the SDK, dcode, and QuickJS, and QuickJS to the 0.7.x SDK; separate `uv` source mappings replace selected dependencies with sibling monorepo source during development, and only mappings marked `editable = true` are editable installs.",
       "evidence": [
         {
           "resource": "repo://libs/acp/pyproject.toml",
@@ -50,7 +50,7 @@
         },
         {
           "resource": "repo://libs/code/pyproject.toml",
-          "version": "repo-file-v1:sha256:03ef3e26ed62f80fcaebca192dad2eca09b3ec0ce3178c46429998d2442574b8"
+          "version": "repo-file-v1:sha256:b330fc92d350a85671935c20a1928f90dbed15f5ac96e0ca5070f006d589aea5"
         },
         {
           "resource": "repo://libs/evals/pyproject.toml",
@@ -94,7 +94,7 @@
         },
         {
           "resource": "repo://libs/deepagents/deepagents/middleware/async_subagents.py",
-          "version": "repo-file-v1:sha256:93cd697574039314400a50195b76c15860c79266020ae1bfa0d646006a738b40"
+          "version": "repo-file-v1:sha256:238ca0289ce3987e2e2335da2c42419bd80fcb0bdff0297a68677dcd58c65f9b"
         }
       ]
     },
@@ -299,6 +299,6 @@
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-10-21T08:05:42.350Z"
+    "at": "2026-10-22T08:05:54.651Z"
   }
 }

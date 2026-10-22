@@ -1,15 +1,18 @@
 ---
-type: "Reference"
-title: "Deep Agents Code Architecture"
-openwiki_generated: true
+type: architecture
+title: Deep Agents Code Architecture
+description: Product architecture for dcode, its terminal client and agent-server runtime, and the CLI-owned version and resilient self-update subsystem.
+tags: [dcode, deepagents, cli, agent-runtime, updates]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-10-21T08:05:42.350Z
+    at: 2026-10-22T08:05:54.651Z
 sources:
   - id: openwiki-source-6f5b1b7a043ee1d414708793
     resource: repo://libs/code/ARCHITECTURE.md
   - id: openwiki-source-1728494bdd59604ce9b5f65b
     resource: repo://libs/code/deepagents_code/_server_config.py
+  - id: openwiki-source-ac769408e1d61a20b9874382
+    resource: repo://libs/code/deepagents_code/_version.py
   - id: openwiki-source-fdf5afeb1dd1d11652374e88
     resource: repo://libs/code/deepagents_code/app.py
   - id: openwiki-source-b9ef532d79a0667acf40e58b
@@ -26,19 +29,24 @@ sources:
     resource: repo://libs/code/deepagents_code/server_graph.py
   - id: openwiki-source-2c41bc0b19795204a48854ee
     resource: repo://libs/code/deepagents_code/tui/widgets/status.py
+  - id: openwiki-source-116a1f598e2b0900a09761fc
+    resource: repo://libs/code/deepagents_code/update_check.py
   - id: openwiki-source-7ba50bd13eb62341a2061ef9
     resource: repo://libs/code/pyproject.toml
-generated: { by: "openwiki/0.4.2", at: "2026-10-21T08:05:42.350Z" }
+  - id: openwiki-source-103d356d5a4b15ce2fd743f9
+    resource: repo://libs/code/tests/unit_tests/test_main.py
+  - id: openwiki-source-9df15351ca01df061757cb11
+    resource: repo://libs/code/tests/unit_tests/test_update_check.py
+generated: { by: "openwiki/0.4.2", at: "2026-10-22T08:05:54.651Z" }
 ---
-
 
 # Deep Agents Code Architecture
 
-`deepagents-code` (`dcode`) is a prebuilt terminal coding agent and reference implementation of the `deepagents` SDK harness. It combines that harness with a terminal experience, persistence, tools, skills, approval controls, and optional sandboxed execution.
+`deepagents-code` (`dcode`) is a prebuilt terminal coding agent and reference implementation that packages the reusable `deepagents` SDK harness with a terminal experience, persistence, tools, skills, approval controls, and optional sandboxed execution. The SDK supplies reusable agent-building primitives; dcode owns the end-user CLI, terminal UX, server launch, workspace policy, and distribution update behavior.
 
 ## Runtime boundary
 
-Dcode deliberately separates the terminal client from the agent server. The client owns input, interactive rendering or headless console output, and collecting approvals. The server owns the compiled coding-agent graph, model, tools, MCP connections, skills, backend, and graph state. This division makes UI work independent of graph construction and means that a presentation change should not quietly become an execution-policy change.
+Dcode deliberately separates the terminal client from the agent server, which run as separate processes. The client owns input, interactive rendering or headless console output, and approval collection. The server owns the compiled coding-agent graph, model, tools, MCP connections, skills, backend, and graph state. This keeps presentation work separate from graph construction and execution policy.
 
 ```mermaid
 sequenceDiagram
@@ -54,35 +62,31 @@ sequenceDiagram
     Client-->>CLI: render output or request approval
 ```
 
-*Both modes use the server-side agent runtime; they differ at the client presentation and approval boundary.*
+*Both modes use the server-side dcode runtime; only the presentation and approval boundary differs.*
 
 ### Process launch and configuration handoff
 
-The package publishes both `dcode` and `deepagents-code`, pointing to `cli_main`. The CLI has a lightweight `--version` path before heavyweight imports, then parses arguments, permits a small set of diagnostic commands without a managed-policy gate, and rejects other policy-aware commands when managed configuration is unhealthy.
+The distribution publishes both `dcode` and `deepagents-code` for the same `cli_main` entrypoint. The launcher creates the server environment and returns a remote agent to the client. `ServerConfig` is the process-boundary schema: the launcher serializes its mapping to `DEEPAGENTS_CODE_SERVER_*`, and the server reconstructs it with `from_env`. Relative paths are normalized before serialization because the server has a different working directory.
 
-The launcher creates a temporary `langgraph dev` workspace containing a generated `langgraph.json` and SQLite checkpointer module, starts the server, and returns a `RemoteAgent` to the client. `ServerConfig` is the shared process-boundary schema: the launcher serializes it to `DEEPAGENTS_CODE_SERVER_*` variables and the server reads it back through `from_env`. Because the subprocess has its own working directory, relative paths must be normalized before serialization.
+The server, rather than the client, authorizes project-scoped execution. It rejects client-claimed project fields, verifies the client-claimable session-policy fingerprint, resolves policy for the canonical directory, and persists the server-authoritative workspace payload with the thread binding. Moving to a different workspace fails closed: launch-project MCP configuration, sandbox setup, and extension paths are dropped, then extension trust is re-read for the target project.
 
-## CLI modes
+## Client startup surfaces
 
 ### Interactive terminal mode
 
-The normal CLI path resolves trust decisions and initial approval mode, generates a new thread ID unless resuming, and runs `run_textual_cli_async`. Auto is downgraded to Manual when a remote sandbox is selected; a YOLO request without acknowledgement is also downgraded to Manual. The Textual application can start before the server is ready: it exposes a connection state and starts server construction in background work after its first paint.
+The normal path runs Textual. `DeepAgentsApp` composes the startup tip, goal-status panel, chat input, and docked status bar. Mount work is intentionally light; after first paint `_post_paint_init` constructs `TextualUIAdapter` and starts independent background initialization. The adapter is the UI boundary: it provides callbacks for rendering, status, approvals, questions, skills, subagent events, cache/accounting, and Auto-mode fallback instead of letting graph code manipulate Textual widgets.
 
-`DeepAgentsApp` composes the chat transcript, startup tip, goal-status panel, chat input, and docked status bar. Mount-time work is intentionally light; after branch detection and a refresh, `_post_paint_init` creates the `TextualUIAdapter`, then starts independent workers for session initialization, skills, server startup, cache checks, history sweeping, and UI prewarming. The adapter is the UI boundary: it receives agent-side streaming callbacks and exposes callbacks for message mounting, status, approval, user questions, skills, subagent events, cache/accounting, and mode fallback rather than allowing graph code to manipulate Textual widgets directly.
-
-The two-line status bar is a small example of that boundary discipline. It keeps hook and agent status messages independently, gives a nonempty hook message display priority without losing the agent message, renders externally configured status text as plain `Content`, and uses one spinner for connection and busy states. Its unmount hook stops both the spinner and cache timer.
+The status bar keeps hook and agent messages in separate slots. A nonempty hook message temporarily takes display priority, configured hook text is rendered as plain `Content`, and one spinner serves connection and busy indications; unmount stops the spinner and cache timer.
 
 ### Headless mode
 
-`dcode -n` dispatches one task through `run_non_interactive` and exits. It still starts the same server through `server_session`, obtains the server's model metadata, and runs a streaming agent loop, but uses Rich/stdout rather than Textual. `--quiet` redirects diagnostic console output to stderr so response text remains suitable for piping; response streaming can be disabled to buffer it instead.
+`dcode -n` dispatches a single task through `run_non_interactive`. It still starts a server session and streams the remote agent, but renders through a console loop rather than Textual. It passes `interactive=False` to the agent, which changes the generated prompt and enables the headless terminal-stall recovery wiring. Headless mode has no human approval conversation: with no shell allow-list, shell access is disabled; with a restrictive allow-list, shell commands are checked by middleware while other tools are auto-approved.
 
-Headless operation deliberately has no human-approval conversation. With no shell allow-list, shell access is disabled and other tools are auto-approved. A restrictive allow-list enables shell execution but gates it through middleware; `all` permits any shell command. Project hooks require an explicit headless trust flag: an interactive trust grant is not inherited by CI. A headless resume is fail-closed: it never starts a replacement thread, and the thread must remain compatible with its saved workspace policy.
+## Server graph and lifecycle
 
-## Server graph and workspace ownership
+The server constructs a runtime by snapshotting workspace environment and credentials, configuring tracing, resolving the model and tools, optionally opening a sandbox, and compiling the CLI agent. `create_cli_agent` is the dcode-configured assembly boundary: it combines the SDK graph with dcode middleware, tool policy, memory, skills, subagents, project context, and persistence. Its public parameters make it usable by external callers, but dcode-specific policy and UX behavior should not be inferred as SDK behavior.
 
-The server graph factory reconstructs `ServerConfig`, snapshots the workspace environment and credentials, configures process-wide tracing compatibility, resolves a model, builds built-in and MCP tools, optionally acquires a sandbox, and calls `create_cli_agent`. It returns a `ServerRuntime` containing the compiled agent, its composite backend, the server-owned offload operation, MCP metadata, and model metadata.
-
-The graph factory is cached because runtime construction has ownership effects: MCP discovery, sandbox creation, and `atexit` registration must happen once. A server can maintain bounded workspace-specific runtimes as well. Their cache key includes both workspace identity and runtime fingerprint, so a model/runtime change can rebuild the executable runtime without discarding an otherwise valid durable binding.
+A runtime contains the compiled graph, composite backend, server-owned offload operation, and metadata. The graph factory caches runtime construction because MCP discovery, sandbox creation, and `atexit` ownership effects must happen once. Workspace runtimes are keyed by workspace identity and runtime fingerprint: a runtime-only change can rebuild an executable runtime without discarding a durable thread binding.
 
 ```mermaid
 flowchart TD
@@ -96,23 +100,59 @@ flowchart TD
     Graph --> Checkpoint["execute with thread checkpoint"]
 ```
 
-*The persisted binding authorizes execution context; a runtime cache is only a reuse mechanism.*
+*The durable binding authorizes execution context; runtime caching only reuses construction work.*
 
-Workspace policy is server-authoritative. The client supplies a session-claimable policy and fingerprint when it binds a remote agent, but the server canonicalizes the target directory, resolves project policy itself, rejects client-supplied project fields, and persists the resulting authoritative payload with the thread binding. On every bound request, the server resolves current policy again and rejects project-policy or access-policy drift. Model and other runtime-only changes are not automatically refusals: their changed runtime fingerprint causes a rebuild. A process-wide sandbox is reserved to the first workspace that claims it, so a conflicting workspace is refused rather than sharing that execution resource.
+For a request with execution context, the graph factory requires a thread ID and workspace context, validates the binding, and selects a workspace runtime. Policy drift is rejected, whereas a runtime-fingerprint-only change rebuilds the runtime without invalidating the binding. Checkpoints preserve graph state; the binding preserves the directory and execution-policy assumptions needed to resume it safely.
 
-This is why a thread is more than a chat identifier. Checkpoints preserve graph state, while the workspace binding preserves the directory and execution-policy assumptions under which that state is safe to continue. The remote client also treats HTTP thread registration separately from checkpoint persistence, and makes registration idempotent after a server restart.
+Shutdown is ownership-aware. `server_session` cleans MCP sessions and stops the child in a `finally` block. `ServerProcess.stop()` is idempotent and concurrency-safe; on POSIX teardown signals the detached server process group with `SIGTERM` before escalation. Headless teardown drains pending hook work and releases its held thread lease.
 
-## Shutdown and failure behavior
+## Product version and update subsystem
 
-The CLI installs POSIX termination handlers that raise `SystemExit` so normal `finally` cleanup can run. The server-session context manager cleans MCP sessions, stops the child server, and emits any deferred debug-log notices after the terminal is available. Headless mode drains fire-and-forget hooks and releases a held thread lease in its final cleanup path.
+### Version ownership and reporting
 
-`ServerProcess.stop()` is idempotent and concurrency-safe. On POSIX, the launcher gives the server a separate process group and shutdown first sends `SIGTERM` to the group, waits for the whole group, then escalates to `SIGKILL`; it never targets dcode's own process group. Windows requests Ctrl+Break where possible and ultimately terminates the root process, with the documented limitation that a surviving descendant can be orphaned. The app restores terminal resources on exit, and the top-level CLI can then render thread/resume hints for a thread with checkpointed content.
+`deepagents_code._version.__version__` is the dcode distribution version, kept in sync with `pyproject.toml` by release-please. `--version` reports both the CLI distribution and the installed `deepagents` SDK version, then optional dependencies; it is intentionally offline and consults only fresh local cache for any update hint.
 
-## Safe extension and change guidance
+The update subsystem belongs to the dcode product, not to the SDK. It can read `deepagents` PyPI metadata solely to label the installed SDK release age. It does **not** check for, download, or independently update the SDK. Updating dcode installs the dcode distribution and its resolved dependencies as one tool environment.
 
-- Add flags at the CLI/config schema boundary, and classify them in workspace policy and runtime fingerprints. A setting that changes trust, tools, sandboxing, or approval must not be accidentally treated as cosmetic.
-- Keep server graph construction free of Textual knowledge. Add client rendering or approval behavior through the adapter callback boundary.
-- Treat project MCP, hooks, and extensions as trust-sensitive inputs. Headless invocations should require their own explicit authorization.
-- Test lifecycle changes at the ownership boundary: startup failure must not orphan a server, cancellation must preserve cleanup, workspace drift must be rejected, and a model-only switch must rebuild rather than invalidate a valid thread.
+### Best-effort discovery and local state
 
-See [Run a dcode session](/openwiki/workflows/run-dcode-session.md) for operation, [Configuration layering](/openwiki/concepts/config-layering.md) for precedence, [MCP integration](/openwiki/integrations/mcp.md) and [ACP integration](/openwiki/integrations/acp.md) for protocol surfaces, and [Security](/openwiki/operations/security.md) for trust and execution policy.
+Update discovery is advisory and must never prevent a session from starting. `latest_version.json` caches stable and prerelease dcode versions, release timestamps, and targeted prerequisite metadata for 24 hours. Startup reads this cache only: missing, stale, corrupt, invalid, or ambiguous data returns no answer without contacting PyPI. The interactive app performs its PyPI check in a background worker after first paint; errors leave the current session running and preserve an existing on-screen result rather than retracting it.
+
+```mermaid
+flowchart TD
+    Start["dcode starts"] --> Gate{"checks and auto-update enabled"}
+    Gate -->|no| Launch["launch current version"]
+    Gate -->|yes| Cache{"fresh local update cache"}
+    Cache -->|no| Launch
+    Cache -->|yes| Available{"newer dcode release"}
+    Available -->|no| Launch
+    Available -->|yes| Lock{"install lock acquired"}
+    Lock -->|no| Launch
+    Lock -->|yes| Install["install inspected dcode release"]
+    Install -->|failure| Record["record retry cooldown"]
+    Record --> Launch
+    Install -->|success| Restart["re-exec process"]
+```
+
+*The startup path acts only on a fresh local answer; network refresh is deferred to the running application.*
+
+`update_state.json` records notification throttling, “what's new” acknowledgement, and startup-update retry/defer markers. Read failures degrade to empty state; write failures are logged and generally allow a later retry. Cache writes for fetched version data use a sibling temporary file and atomic replacement so readers never observe a partial JSON cache. The state is product-local UX and recovery data, not agent or SDK state.
+
+### Install safety and failure semantics
+
+Managed configuration can disable checks or automatic updates. An unreadable, corrupt, or invalid managed update policy fails closed because the feature reaches the network and can install binaries; editable installs never auto-update. User configuration and environment settings follow the configuration layering described in [Configuration layering](/openwiki/concepts/config-layering.md).
+
+When automatic updates are enabled, startup only uses the fresh cached result. A cross-process advisory install lock serializes changes to the shared tool environment, with a profile-scoped fallback when the installation lock directory is unwritable. An installer preserves the inspected dcode release, existing extras, receipt-managed packages, and interpreter rather than guessing a different environment. If an install fails, dcode reports it and launches the installed version; same-version failures receive a cooldown to avoid stalling every launch.
+
+A successful install is different: the process must re-exec before launching the TUI, because already imported modules and newly rewritten site-packages would otherwise make a mixed-version process. The restart sentinel prevents restart loops, and a failure after an install exits rather than launching mixed code. In-session checks do not install: they surface a durable restart/update action, so a running agent session is not interrupted.
+
+## Change guidance and focused tests
+
+- Treat CLI/UI behavior, server workspace policy, and reusable SDK capabilities as separate ownership layers. Add graph behavior through `create_cli_agent` and server configuration, not by coupling agent code to Textual.
+- Preserve the workspace-binding distinction: a runtime cache may be rebuilt, but a thread must not be reused across incompatible execution policy.
+- Keep update checks best-effort. Do not put network I/O on `--version` or the startup critical path, and do not turn SDK release-age metadata into an SDK updater.
+- Preserve updater invariants when changing install code: an update targets the running tool environment, concurrent installers are serialized, failed installs remain launchable, and successful installs re-exec.
+
+Focused tests cover the split startup behavior: fresh cache answers do not make HTTP requests, stale/missing/corrupt timestamps fail safely, cached prerequisite constraints reject unsafe values, and on-disk distribution metadata—not the already imported module—verifies an installed update. Startup tests verify lock contention, lock coverage during installation, and lock release before restart. Version tests verify the offline CLI report includes CLI, SDK, and optional-dependency facts.
+
+For operation, see [Run a dcode session](/openwiki/workflows/run-dcode-session.md) and [Quickstart](/openwiki/quickstart.md). For local development and test execution, see [Development](/openwiki/operations/development.md). For agent memory and compaction behavior, see [Context management](/openwiki/concepts/context-management.md).

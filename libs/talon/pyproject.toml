@@ -27,7 +27,7 @@ dependencies = [
     "aiohttp>=3.14.5",
     "aiosqlite>=0.22.1",
     "deepagents>=0.7.24",
-    "deepagents-code>=0.1.71",
+    "deepagents-code>=0.1.71,<1.0.0",
     "discord.py>=2.7.1",
     "fastmcp>=4.1.0",
     "httpx>=0.28.1",
@@ -35,13 +35,13 @@ dependencies = [
     # objects and implements `httpx2.Auth`. Arrives transitively via `mcp`;
     # declared here because we import it directly.
     "httpx2>=2.13.1",
-    "langchain>=1.4.6",
-    "langchain-core>=1.6.12",
-    "langgraph>=1.2.16",
-    "langgraph-checkpoint>=4.3.0",
-    "langgraph-checkpoint-sqlite>=3.1.2",
-    "langgraph-prebuilt>=1.1.1",
-    "langgraph-sdk>=0.4.8",
+    "langchain>=1.4.6,<2.0.0",
+    "langchain-core>=1.6.12,<2.0.0",
+    "langgraph>=1.2.16,<2.0.0",
+    "langgraph-checkpoint>=4.3.0,<5.0.0",
+    "langgraph-checkpoint-sqlite>=3.1.2,<4.0.0",
+    "langgraph-prebuilt>=1.1.1,<2.0.0",
+    "langgraph-sdk>=0.4.8,<1.0.0",
     "langsmith>=0.14.11",
     "mcp>=2.3.0",
     "pydantic>=2.13.5",
@@ -56,18 +56,18 @@ history-local = [
     "transformers>=5.19.0",
 ]
 history-voyage = [
-    "langchain-voyageai>=0.4.1",
+    "langchain-voyageai>=0.4.1,<0.5.0",
     # `history_voyage.py` replaces the base class's clients with
     # `voyageai.Client`/`AsyncClient` directly.
     "voyageai>=0.5.0",
 ]
-history-openai = ["langchain-openai>=1.7.2"]
+history-openai = ["langchain-openai>=1.7.2,<2.0.0"]
 # NVIDIA OpenShell sandbox (`DEEPAGENTS_TALON_SANDBOX=openshell`). The provider
 # lives in `deepagents-code`; this extra pulls in its backend package.
-openshell = ["deepagents-code[openshell]>=0.1.71"]
+openshell = ["deepagents-code[openshell]>=0.1.71,<1.0.0"]
 mongodb = [
-    "langgraph-checkpoint-mongodb>=0.5.1",
-    "langgraph-store-mongodb>=0.4.0",
+    "langgraph-checkpoint-mongodb>=0.5.1,<0.6.0",
+    "langgraph-store-mongodb>=0.4.0,<0.5.0",
 ]
 postgres = [
     # Pinned to one minor rather than the usual <4.0.0: history_postgres.py drives
@@ -78,7 +78,7 @@ postgres = [
     "psycopg[binary]>=3.3.6",
 ]
 media = [
-    "deepagents-code[media]>=0.1.71",
+    "deepagents-code[media]>=0.1.71,<1.0.0",
     "librosa>=0.11.0",
     "numpy>=2.5.4",
     "phonemizer>=3.3.0",

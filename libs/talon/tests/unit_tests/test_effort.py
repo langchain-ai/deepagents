@@ -36,10 +36,16 @@ class EffortAgent(SelectableAgent):
 
     def __init__(self) -> None:
         super().__init__()
-        self.catalog = {"openai": ["gpt-6.1-sol"], "baseten": ["zai-org/GLM-5.3-Flash"]}
+        self.catalog = {
+            "openai": ["gpt-6.1-sol", "baseten/zai-org/GLM-5.3-Flash"],
+            "baseten": ["zai-org/GLM-5.3-Flash"],
+        }
 
 
-async def test_effort_persists_per_model_and_captures_each_turn(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "spec", ["baseten:zai-org/GLM-5.3-Flash", "openai:baseten/zai-org/GLM-5.3-Flash"]
+)
+async def test_effort_persists_per_model_and_captures_each_turn(tmp_path: Path, spec: str) -> None:
     config = _config(tmp_path)
     agent, channel = EffortAgent(), _operator_channel()
     host = TalonHost(config=config, agent=agent, channels=[channel])
@@ -52,7 +58,7 @@ async def test_effort_persists_per_model_and_captures_each_turn(tmp_path: Path) 
         await host.receive_message(channel, _from("op", "second", "second"))
         await _wait_for_request(agent, "second")
         assert [r.effort for r in agent.requests] == ["xhigh", "low"]
-        await host.receive_message(channel, _from("op", "/model baseten:zai-org/GLM-5.3-Flash"))
+        await host.receive_message(channel, _from("op", f"/model {spec}"))
         await host.receive_message(channel, _from("op", "/effort"))
         assert "default" in channel.sent[-1][1]
         assert "none, low, high, max, default" in channel.sent[-1][1]
@@ -62,21 +68,19 @@ async def test_effort_persists_per_model_and_captures_each_turn(tmp_path: Path) 
 
     assert json.loads(config.effort_state_path.read_text()) == {
         "openai:gpt-6.1-sol": "low",
-        "baseten:zai-org/GLM-5.3-Flash": "high",
+        spec: "high",
     }
     assert config.effort_state_path.stat().st_mode & 0o777 == 0o600
     host = TalonHost(config=config, agent=EffortAgent(), channels=[channel])
     await host.start()
     try:
         await host.receive_message(channel, _from("op", "/effort"))
-        assert "baseten:zai-org/GLM-5.3-Flash: high" in channel.sent[-1][1]
+        assert f"{spec}: high" in channel.sent[-1][1]
         await host.receive_message(channel, _from("op", "/model default"))
         await host.receive_message(channel, _from("op", "/effort"))
         assert "openai:gpt-6.1-sol: low" in channel.sent[-1][1]
         await host.receive_message(channel, _from("op", "/effort default"))
-        assert json.loads(config.effort_state_path.read_text()) == {
-            "baseten:zai-org/GLM-5.3-Flash": "high"
-        }
+        assert json.loads(config.effort_state_path.read_text()) == {spec: "high"}
     finally:
         await host.stop()
 
@@ -142,9 +146,11 @@ def test_documented_levels_survive_missing_profile_metadata(monkeypatch) -> None
     assert effort_levels("openai:gpt-6.1-sol") == ("low", "medium", "high", "xhigh", "max")
     assert effort_levels("openai:openai/gpt-6.1-sol") == effort_levels("openai:gpt-6.1-sol")
     assert effort_levels("baseten:zai-org/GLM-5.3-Flash") == ("none", "low", "high", "max")
+    assert effort_levels("openai:baseten/zai-org/GLM-5.3-Flash") == ("none", "low", "high", "max")
     for spec, invalid in (
         ("openai:gpt-6.1-sol", "none"),
         ("baseten:zai-org/GLM-5.3-Flash", "xhigh"),
+        ("openai:baseten/zai-org/GLM-5.3-Flash", "xhigh"),
     ):
         with pytest.raises(ValueError, match="Unsupported"):
             effort_settings(spec, invalid)
@@ -168,6 +174,10 @@ def test_openai_responses_serializes_effort() -> None:
         ("openai:glm-4.7", "off", {"thinking": {"type": "disabled"}}),
         ("openai:gpt-6.1-sol", "xhigh", {"reasoning_effort": "xhigh"}),
         ("baseten:zai-org/GLM-5.3-Flash", "high", {"reasoning_effort": "high"}),
+        ("openai:baseten/zai-org/GLM-5.3-Flash", "high", {"reasoning_effort": "high"}),
+        ("openai:baseten/zai-org/GLM-5.3-Flash", "max", {"reasoning_effort": "max"}),
+        ("openai:openai/gpt-6.1-sol", "xhigh", {"reasoning_effort": "xhigh"}),
+        ("openai:anthropic/claude-opus-4-6", "high", {"reasoning_effort": "high"}),
     ],
 )
 def test_openai_compatible_wire_payload(spec: str, level: str, expected: dict) -> None:

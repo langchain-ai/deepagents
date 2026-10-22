@@ -5,7 +5,7 @@ from __future__ import annotations
 import errno
 import os
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import anyio
@@ -15,7 +15,7 @@ from deepagents_code.client.launch import server as server_module
 from deepagents_code.client.launch.server import ServerProcess
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Callable, Iterator
     from typing import TextIO
 
 pytestmark = pytest.mark.skipif(os.name != "posix", reason="POSIX pipe ownership")
@@ -146,3 +146,32 @@ async def test_replacement_closes_old_pipe_and_log(
         os.read(children[-1][0], 1)
     server.stop()
     assert os.read(children[-1][0], 1) == b""
+
+
+async def test_server_inherits_the_session_lock(
+    launched_server: tuple[ServerProcess, list[tuple[int, MagicMock, TextIO]]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A server that outlives its client must keep the install marked in use."""
+    from deepagents_code._session_lock import hold_session_lock, session_lock_fds
+
+    hold_session_lock()
+    (lock_fd,) = session_lock_fds()
+    server, _ = launched_server
+    # The fixture already swapped in its fake.
+    fake_popen = cast("Callable[..., MagicMock]", server_module.subprocess.Popen)
+    launches: list[tuple[list[str], tuple[int, ...]]] = []
+
+    def popen(
+        command: list[str], *, pass_fds: tuple[int, ...], **kwargs: object
+    ) -> MagicMock:
+        launches.append((command, pass_fds))
+        return fake_popen(command, pass_fds=pass_fds, **kwargs)
+
+    monkeypatch.setattr(server_module.subprocess, "Popen", popen)
+    await server.start()
+
+    ((command, pass_fds),) = launches
+    assert lock_fd in pass_fds
+    # The bootstrap must learn the descriptor too, to keep it from grandchildren.
+    assert command[3].split(",")[1:] == [str(lock_fd)]

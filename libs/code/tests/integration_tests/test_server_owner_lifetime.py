@@ -157,6 +157,10 @@ def _wait_for_file(path: Path, owner: subprocess.Popen[str], output: IO[str]) ->
 
 @contextlib.contextmanager
 def _running_owner(directory: Path) -> Iterator[tuple[subprocess.Popen[str], int, str]]:
+    # `pytestmark` already skips other platforms at runtime; this guard is what
+    # lets `ty` resolve the Linux-only pidfd APIs when run on macOS.
+    if sys.platform != "linux":
+        pytest.skip("pidfd APIs are Linux-only")
     (directory / "graph.py").write_text(_GRAPH)
     (directory / "langgraph.json").write_text(
         json.dumps(

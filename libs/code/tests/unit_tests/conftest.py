@@ -739,6 +739,28 @@ def _isolate_state_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _isolate_session_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> Iterator[None]:
+    """Redirect the session lock `cli_main` takes and release it afterwards.
+
+    Installation-scoped like `UPDATE_LOCK_FILE`, so unpatched it would register
+    tests as sessions of this checkout's real tool environment. Closing the
+    descriptor keeps one test's registration, and its stale lock path, from
+    leaking into the next.
+    """
+    from deepagents_code import _session_lock
+
+    monkeypatch.setattr(
+        _session_lock, "SESSION_LOCK_FILE", tmp_path / ".state" / "sessions.lock"
+    )
+    yield
+    if _session_lock._held_fd is not None:
+        os.close(_session_lock._held_fd)
+        _session_lock._held_fd = None
+
+
+@pytest.fixture(autouse=True)
 def _isolate_history(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Redirect ChatInput history to a temp file.
 

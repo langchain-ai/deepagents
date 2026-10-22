@@ -1039,17 +1039,22 @@ class ServerProcess:
                 creationflags=_WINDOWS_CREATE_NEW_PROCESS_GROUP,
             )
 
+        from deepagents_code._session_lock import session_lock_fds
+
         reader, writer = os.pipe()  # Both ends are non-inheritable by default.
         self._parent_pipe_writer = writer
         # Abandoning the manager must not leak its writer. Explicit teardown
         # invokes this same finalizer so a reused descriptor is never closed twice.
         self._parent_pipe_finalizer = weakref.finalize(self, os.close, writer)
+        # The session lock keeps the install marked in use while the server
+        # runs, so a migration does not rebuild it underneath.
+        inherited = (reader, *session_lock_fds())
         try:
             return subprocess.Popen(  # noqa: S603  # argv is built internally
                 [
                     *cmd[:2],
                     "deepagents_code.client.launch._server_bootstrap",
-                    str(reader),
+                    ",".join(map(str, inherited)),
                     str(_SHUTDOWN_TIMEOUT),
                     *cmd[3:],
                 ],
@@ -1059,7 +1064,7 @@ class ServerProcess:
                 stderr=subprocess.STDOUT,
                 start_new_session=True,
                 creationflags=0,
-                pass_fds=(reader,),
+                pass_fds=inherited,
             )
         finally:
             os.close(reader)

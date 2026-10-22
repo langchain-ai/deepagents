@@ -2,6 +2,16 @@
 
 # Deep Agents Code Changelog
 
+## [0.2.0](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.88...deepagents-code==0.2.0) (2026-10-22)
+
+### ⚠ BREAKING CHANGES
+
+- `deepagents-code` now requires Python 3.14 (`>=3.14,<3.15`). If you have auto-upgrade enabled, this should be handled for you automatically. Otherwise, re-run the dcode installer or recreate your environment with Python 3.14.
+
+### Bug Fixes
+
+- Decode Git output as UTF-8.
+
 ## [0.1.88](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.87...deepagents-code==0.1.88) (2026-10-22)
 
 ### Bug Fixes

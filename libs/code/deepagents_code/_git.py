@@ -431,7 +431,12 @@ def read_git_branch_from_filesystem(path: str | Path) -> str | None:
         return ""
     if head.startswith(_GIT_HEAD_REF_PREFIX):
         ref = head.removeprefix(_GIT_HEAD_REF_PREFIX).strip()
-        return _abbreviate_git_ref(ref) if ref else None
+        abbrev = _abbreviate_git_ref(ref) if ref else None
+        # Git reftable backend records `ref: refs/heads/.invalid` in HEAD; return
+        # None so resolve_git_branch falls back to `git rev-parse`.
+        if abbrev == ".invalid":
+            return None
+        return abbrev
     return "HEAD"
 
 

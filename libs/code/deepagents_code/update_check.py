@@ -2593,6 +2593,10 @@ class _PythonRequirementUnavailableError(ValueError):
     """The target's `Requires-Python` metadata could not be read."""
 
 
+class _PythonMigrationRefusedError(ValueError):
+    """No supported interpreter change can satisfy the target release."""
+
+
 def _upgrade_python(version: str) -> str | None:
     """Choose the interpreter for the target release.
 
@@ -2605,8 +2609,8 @@ def _upgrade_python(version: str) -> str | None:
     Raises:
         _PythonRequirementUnavailableError: If the target's metadata cannot be
             read.
-        ValueError: If the running Python is newer than 3.14 and incompatible,
-            or no 3.14 patch satisfies the requirement.
+        _PythonMigrationRefusedError: If the running Python is newer than 3.14
+            and incompatible, or no 3.14 patch satisfies the requirement.
     """
     try:
         requirement = _release_python_requirement(version)
@@ -2623,7 +2627,7 @@ def _upgrade_python(version: str) -> str | None:
             "is incompatible, and dcode does not move to an older interpreter. "
             "Install a compatible interpreter manually."
         )
-        raise ValueError(msg)
+        raise _PythonMigrationRefusedError(msg)
     if _allows_python_314(requirement):
         return "3.14"
     msg = (
@@ -2631,7 +2635,7 @@ def _upgrade_python(version: str) -> str | None:
         "incompatible and the supported migration to Python 3.14 cannot satisfy it. "
         "Install a compatible interpreter manually."
     )
-    raise ValueError(msg)
+    raise _PythonMigrationRefusedError(msg)
 
 
 class _MigrationVerificationError(Exception):
@@ -3013,7 +3017,7 @@ async def perform_upgrade(
             python, requirement_unknown = await asyncio.to_thread(
                 _target_python, target_version
             )
-        except ValueError as exc:
+        except _PythonMigrationRefusedError as exc:
             logger.warning("Refused to install v%s: %s", target_version, exc)
             refusal = (
                 f"Update stopped before installation: {_sentence(exc)} "

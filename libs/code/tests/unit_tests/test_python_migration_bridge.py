@@ -386,7 +386,7 @@ async def test_in_place_readback_trusts_pin_only_when_ambiguous(
 @pytest.mark.parametrize(
     "failure",
     [
-        ValueError("requirement unsatisfiable"),
+        update_check._PythonMigrationRefusedError("requirement unsatisfiable"),
         ExtrasIntrospectionError("missing extras"),
         update_check.ToolRequirementIntrospectionError("missing receipt"),
     ],

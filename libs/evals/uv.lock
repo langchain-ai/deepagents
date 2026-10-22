@@ -1,5 +1,5 @@
 version = 1
-revision = 5
+revision = 3
 requires-python = ">=3.12, <3.14"
 resolution-markers = [
     "platform_machine == 'arm64' and sys_platform == 'darwin'",
@@ -524,7 +524,7 @@ wheels = [
 
 [[package]]
 name = "deepagents"
-version = "0.7.29"
+version = "0.7.30"
 source = { editable = "../deepagents" }
 dependencies = [
     { name = "langchain" },

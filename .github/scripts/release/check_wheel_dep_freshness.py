@@ -715,6 +715,32 @@ def _file_python_constraints(files: Sequence[object]) -> tuple[str, ...]:
     return tuple(constraints)
 
 
+def _python_constraints_equivalent(published: str, expected: str) -> bool:
+    """Whether two `Requires-Python` values admit the same current-major versions.
+
+    Sibling metadata is compared by the versions it admits rather than by its
+    spelling, so adding a redundant next-major ceiling (`>=3.11` vs.
+    `>=3.11,<4.0`) does not demand a sibling release. Every minor of the
+    expected constraint's major plus each boundary of either constraint is
+    probed, so any real narrowing or widening still produces a witness.
+    """
+    published_specifier = SpecifierSet(published)
+    expected_specifier = SpecifierSet(expected)
+    minimum = extract_minimum(expected_specifier)
+    if minimum is None:
+        return published_specifier == expected_specifier
+    major = minimum.release[0]
+    probes = {Version(f"{major}.{minor}") for minor in range(PYTHON_MINOR_PROBE_LIMIT)}
+    probes.update(_constraint_probe_versions(published))
+    probes.update(_constraint_probe_versions(expected))
+    return all(
+        published_specifier.contains(version, prereleases=True)
+        == expected_specifier.contains(version, prereleases=True)
+        for version in probes
+        if version.major == major
+    )
+
+
 def _python_constraints_match(
     constraints: Sequence[str],
     *,
@@ -723,16 +749,14 @@ def _python_constraints_match(
 ) -> bool:
     try:
         specifiers = tuple(SpecifierSet(constraint) for constraint in constraints)
-        expected = (
-            SpecifierSet(expected_constraint)
-            if expected_constraint is not None
-            else None
-        )
+        if not specifiers:
+            return False
+        if expected_constraint is not None and not all(
+            _python_constraints_equivalent(constraint, expected_constraint)
+            for constraint in constraints
+        ):
+            return False
     except InvalidSpecifier:
-        return False
-    if not specifiers:
-        return False
-    if expected is not None and any(specifier != expected for specifier in specifiers):
         return False
     return all(
         any(specifier.contains(version, prereleases=True) for specifier in specifiers)

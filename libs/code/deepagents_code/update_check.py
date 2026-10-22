@@ -3161,7 +3161,7 @@ async def perform_upgrade(
         if found is not None:
             failure = (
                 f"Could not verify installation of v{target_version} ({found}). "
-                "Not restarting or reporting success. Check the update log and "
+                "The installed files may have changed. Check the update log and "
                 f"retry, or rerun the installer: {recovery_installer}"
             )
             await _emit_progress(on_notice, failure)

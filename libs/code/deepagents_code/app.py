@@ -7695,6 +7695,7 @@ class DeepAgentsApp(App):
 
         notices: list[str] = []
         deferred: list[bool] = []
+        unverified: list[bool] = []
 
         async def show_upgrade_notice(message: str) -> None:
             notices.append(message)
@@ -7709,6 +7710,7 @@ class DeepAgentsApp(App):
             target_version=latest,
             allow_python_migration=False,
             on_migration_deferred=lambda: deferred.append(True),
+            on_unverified_install=lambda: unverified.append(True),
         )
         if success:
             self._update_available = (False, None)
@@ -7740,6 +7742,14 @@ class DeepAgentsApp(App):
                 await self._mount_message(
                     ErrorMessage(format_shadowed_dcode_warning(shadow)),
                 )
+        elif unverified:
+            # This session lazily imports modules that uv may have replaced.
+            await self._mount_message(
+                ErrorMessage(
+                    "Update could not be verified; see above. Quit and relaunch "
+                    "dcode before continuing."
+                ),
+            )
         elif deferred:
             # Nothing ran, so there is no failure or log to point at.
             await self._mount_message(AppMessage("Update deferred; see above."))
@@ -27292,6 +27302,7 @@ class DeepAgentsApp(App):
 
                     notices: list[str] = []
                     deferred: list[bool] = []
+                    unverified: list[bool] = []
 
                     def show_upgrade_notice(message: str) -> None:
                         notices.append(message)
@@ -27306,6 +27317,7 @@ class DeepAgentsApp(App):
                         target_version=payload.latest,
                         allow_python_migration=False,
                         on_migration_deferred=lambda: deferred.append(True),
+                        on_unverified_install=lambda: unverified.append(True),
                     )
                     if success:
                         self._notice_registry.remove(entry.key)
@@ -27362,6 +27374,18 @@ class DeepAgentsApp(App):
                         payload.latest,
                         output,
                     )
+                    if unverified:
+                        # This session lazily imports modules that uv may have
+                        # replaced.
+                        restart = (
+                            "Update could not be verified. Quit and relaunch dcode "
+                            "before continuing."
+                        )
+                        screen.mark_warning(restart)
+                        self.notify(
+                            restart, severity="warning", timeout=20, markup=False
+                        )
+                        return
                     if notices:
                         # The notice toast and modal line already carry the
                         # notice's own recovery steps.

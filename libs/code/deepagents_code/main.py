@@ -562,10 +562,10 @@ def _exit_after_unrestartable_update(
 
 
 def _exit_after_unverified_update(console: "Console", *, persisted: bool) -> NoReturn:
-    """Exit after uv changed the tool environment but verification failed.
+    """Exit after uv reported success but the install could not be verified.
 
-    The installed files no longer match the code this process has loaded, so
-    launching would mix releases. The failure notice is already printed.
+    The installed files may no longer match the code this process has loaded,
+    so launching could mix releases. The failure notice is already printed.
 
     Args:
         console: Console to print the notice to.
@@ -577,8 +577,9 @@ def _exit_after_unverified_update(console: "Console", *, persisted: bool) -> NoR
     from deepagents_code._invocation import invoked_name
 
     message = (
-        "uv changed the installed files, so this session cannot start on the "
-        f"previous version. Run [cyan]{invoked_name()}[/cyan] again."
+        "The installed files may have changed, so this session cannot start on "
+        f"the previous version. Run [cyan]{invoked_name()}[/cyan] again; if it "
+        "fails to start, rerun the installer named above."
     )
     if not persisted:
         message += _UNPERSISTED_AUTO_UPDATE_FAILURE_NOTE

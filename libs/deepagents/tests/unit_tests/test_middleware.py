@@ -3802,6 +3802,49 @@ class TestPatchToolCallsMiddleware:
         assert patched_messages[7].type == "human"
         assert patched_messages[7].content == "What is the weather in Tokyo?"
 
+    def test_history_spliced_from_two_executions(self) -> None:
+        # Two executions of one step each wrote an AI turn; the surviving history kept one
+        # execution's call and the other's result.
+        input_messages = [
+            HumanMessage(content="Push the branch", id="1"),
+            AIMessage(content="", tool_calls=[ToolCall(id="kept", name="shell", args={})], id="2"),
+            ToolMessage(content="pushed", tool_call_id="lost", id="3"),
+            AIMessage(content="Done", id="4"),
+            HumanMessage(content="Thanks", id="5"),
+        ]
+        state_update = PatchToolCallsMiddleware().before_agent({"messages": input_messages}, None)
+        assert state_update is not None
+        patched = state_update["messages"][1:]
+        assert [(m.type, getattr(m, "tool_call_id", None)) for m in patched] == [
+            ("human", None),
+            ("ai", None),
+            ("tool", "kept"),
+            ("ai", None),
+            ("human", None),
+        ]
+        assert patched[2].status == "error"
+
+    def test_results_move_after_their_calls_and_duplicates_drop(self) -> None:
+        input_messages = [
+            HumanMessage(content="Run both", id="1"),
+            AIMessage(content="", tool_calls=[ToolCall(id="a", name="first", args={})], id="2"),
+            AIMessage(content="", tool_calls=[ToolCall(id="b", name="second", args={})], id="3"),
+            ToolMessage(content="a done", tool_call_id="a", id="4"),
+            ToolMessage(content="b done", tool_call_id="b", id="5"),
+            ToolMessage(content="a again", tool_call_id="a", id="6"),
+        ]
+        state_update = PatchToolCallsMiddleware().before_agent({"messages": input_messages}, None)
+        assert state_update is not None
+        assert [m.id for m in state_update["messages"][1:]] == ["1", "2", "4", "3", "5"]
+
+    def test_result_for_content_block_call_is_kept(self) -> None:
+        input_messages = [
+            HumanMessage(content="Look it up", id="1"),
+            AIMessage(content=[{"type": "function_call", "call_id": "fc", "name": "search", "arguments": "{}"}], id="2"),
+            ToolMessage(content="found", tool_call_id="fc", id="3"),
+        ]
+        assert PatchToolCallsMiddleware().before_agent({"messages": input_messages}, None) is None
+
 
 class TestTruncation:
     def test_truncate_list_result_no_truncation(self):

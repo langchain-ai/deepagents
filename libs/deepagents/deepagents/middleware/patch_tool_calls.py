@@ -1,52 +1,89 @@
-"""Middleware to patch dangling tool calls in the messages history."""
+"""Middleware to repair tool call and tool result pairing in the messages history."""
 
+from collections.abc import Iterator
 from typing import Any
 
 from langchain.agents.middleware import AgentMiddleware, AgentState, TracePolicy, omit_payload
-from langchain_core.messages import AIMessage, AnyMessage, RemoveMessage, ToolMessage
+from langchain_core.messages import AIMessage, AnyMessage, InvalidToolCall, RemoveMessage, ToolCall, ToolMessage
 from langgraph.graph.message import REMOVE_ALL_MESSAGES
 from langgraph.runtime import Runtime
 
+_CALL_BLOCK_ID_KEYS = {"tool_use": "id", "tool_call": "id", "function_call": "call_id"}
+"""Content block types that carry a tool call, mapped to the key holding its id."""
+
+
+def _block_call_ids(message: AIMessage) -> Iterator[str]:
+    """Yield ids of tool calls carried only in provider-native content blocks."""
+    if not isinstance(message.content, list):
+        return
+    for block in message.content:
+        if isinstance(block, dict) and (key := _CALL_BLOCK_ID_KEYS.get(block.get("type"))):
+            call_id = block.get(key)
+            if isinstance(call_id, str):
+                yield call_id
+
+
+def _synthetic_result(tool_call: ToolCall | InvalidToolCall) -> ToolMessage:
+    """Build the error result recorded for a tool call that has none."""
+    tool_call_id = tool_call["id"]
+    name = tool_call["name"] or "unknown"
+    if tool_call.get("type") == "invalid_tool_call":
+        content = f"Tool call {name} with id {tool_call_id} could not be executed - arguments were malformed or truncated."
+    else:
+        content = f"Tool call {name} with id {tool_call_id} did not complete - no result was recorded. It may have been cancelled or interrupted."
+    return ToolMessage(content=content, name=name, tool_call_id=tool_call_id, status="error")
+
+
+def _results_for(message: AIMessage, results: dict[str, ToolMessage]) -> list[ToolMessage]:
+    """Claim each of the message's tool call results, synthesizing any that are missing."""
+    paired: list[ToolMessage] = []
+    for tool_call in (*message.tool_calls, *message.invalid_tool_calls):
+        if tool_call["id"] is None:
+            continue
+        result = results.pop(tool_call["id"], None)
+        paired.append(result if result is not None else _synthetic_result(tool_call))
+    # Calls the content carries without a parsed `tool_calls` entry keep a recorded result
+    # but get no synthetic one, since their name and kind are unknown.
+    paired.extend(result for call_id in _block_call_ids(message) if (result := results.pop(call_id, None)) is not None)
+    return paired
+
+
+def _repair(messages: list[AnyMessage]) -> list[AnyMessage]:
+    """Place each tool result directly after its call, dropping results that answer no call."""
+    results: dict[str, ToolMessage] = {}
+    for msg in messages:
+        if isinstance(msg, ToolMessage):
+            results.setdefault(msg.tool_call_id, msg)
+    repaired: list[AnyMessage] = []
+    for msg in messages:
+        if isinstance(msg, ToolMessage):
+            continue
+        repaired.append(msg)
+        if isinstance(msg, AIMessage):
+            repaired.extend(_results_for(msg, results))
+    return repaired
+
 
 class PatchToolCallsMiddleware(AgentMiddleware):
-    """Middleware to patch dangling tool calls in the messages history."""
+    """Middleware to repair tool call and tool result pairing in the messages history.
+
+    Providers reject a history in which a tool call has no result, a result answers no
+    call, or a result is separated from its call. Any of these can be persisted by an
+    interrupted or concurrently executed run, and every later model call on the thread
+    then fails the same way. Before the agent runs, this middleware records an error
+    result for each unanswered call, moves each result directly after its call, and drops
+    results that answer no call and duplicate results.
+    """
 
     trace_policy = TracePolicy(process_inputs=omit_payload)
     """Omit hook inputs from traces by default; set a `TracePolicy` to override."""
 
     def before_agent(self, state: AgentState, runtime: Runtime[Any]) -> dict[str, Any] | None:  # noqa: ARG002
-        """Before the agent runs, handle dangling tool calls from any AIMessage."""
+        """Before the agent runs, repair tool call and tool result pairing."""
         messages = state["messages"]
         if not messages:
             return None
-
-        answered_ids = {msg.tool_call_id for msg in messages if msg.type == "tool"}
-
-        if not any(
-            tool_call["id"] is not None and tool_call["id"] not in answered_ids
-            for msg in messages
-            if isinstance(msg, AIMessage)
-            for tool_call in (*msg.tool_calls, *msg.invalid_tool_calls)
-        ):
+        repaired = _repair(messages)
+        if len(repaired) == len(messages) and all(left is right for left, right in zip(repaired, messages, strict=True)):
             return None
-
-        patched_messages: list[AnyMessage] = []
-        for msg in messages:
-            patched_messages.append(msg)
-            if not isinstance(msg, AIMessage):
-                continue
-            for tool_call in (*msg.tool_calls, *msg.invalid_tool_calls):
-                tool_call_id = tool_call["id"]
-                if tool_call_id is None or tool_call_id in answered_ids:
-                    continue
-                name = tool_call["name"] or "unknown"
-                if tool_call.get("type") == "invalid_tool_call":
-                    content = f"Tool call {name} with id {tool_call_id} could not be executed - arguments were malformed or truncated."
-                else:
-                    content = (
-                        f"Tool call {name} with id {tool_call_id} did not complete - no result was recorded. "
-                        "It may have been cancelled or interrupted."
-                    )
-                patched_messages.append(ToolMessage(content=content, name=name, tool_call_id=tool_call_id, status="error"))
-
-        return {"messages": [RemoveMessage(id=REMOVE_ALL_MESSAGES), *patched_messages]}
+        return {"messages": [RemoveMessage(id=REMOVE_ALL_MESSAGES), *repaired]}

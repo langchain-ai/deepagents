@@ -1325,12 +1325,16 @@ def clear_resume_auto_update_deferral() -> None:
 
 
 def should_skip_startup_auto_update_after_failure(version: str) -> bool:
-    """Return whether startup auto-update should skip a recently failed version."""
+    """Return whether startup auto-update should skip a recently failed version.
+
+    A deferred migration is not a failure, so it never starts the cooldown.
+    """
     data = _read_update_state()
     failed_version = data.get(_STARTUP_AUTO_UPDATE_FAILED_VERSION_KEY)
     failed_at = data.get(_STARTUP_AUTO_UPDATE_FAILED_AT_KEY)
     return bool(
         failed_version == version
+        and data.get(_STARTUP_AUTO_UPDATE_DEFERRED_KEY) is not True
         and isinstance(failed_at, (int, float))
         and time.time() - failed_at < STARTUP_AUTO_UPDATE_FAILURE_COOLDOWN
     )

@@ -716,12 +716,10 @@ def _run_startup_auto_update(console: Console) -> None:
             )
             return
         # A deferred migration is retried as soon as no other session is
-        # running, so it skips the failure cooldown below; the install lock
-        # section decides between migrating and repeating the deferral.
+        # running; the install lock section decides between migrating and
+        # repeating the deferral.
         retrying_deferral = startup_auto_update_was_deferred(latest)
-        if not retrying_deferral and should_skip_startup_auto_update_after_failure(
-            latest
-        ):
+        if should_skip_startup_auto_update_after_failure(latest):
             # A same-version upgrade failed recently; retrying it here would
             # very likely fail again and re-stall every launch (this runs
             # before the TUI). Skip for the cooldown window and point at

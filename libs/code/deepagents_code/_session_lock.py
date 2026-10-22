@@ -31,6 +31,9 @@ from typing import TYPE_CHECKING
 
 from deepagents_code._paths import PATHS
 
+if sys.platform != "win32":
+    import fcntl
+
 if TYPE_CHECKING:
     from pathlib import Path
 
@@ -62,8 +65,6 @@ def hold_session_lock() -> None:
     global _held_fd  # noqa: PLW0603  # one registration per process
     if _held_fd is not None or sys.platform == "win32":
         return
-    import fcntl
-
     try:
         SESSION_LOCK_FILE.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         fd = os.open(SESSION_LOCK_FILE, os.O_RDWR | os.O_CREAT, 0o600)
@@ -121,8 +122,6 @@ def is_sole_session() -> bool:
     """
     if _held_fd is None:
         return False
-    import fcntl
-
     check_file = SESSION_LOCK_FILE.with_name("sessions.check.lock")
     try:
         guard = os.open(check_file, os.O_RDWR | os.O_CREAT, 0o600)
@@ -132,9 +131,8 @@ def is_sole_session() -> bool:
     try:
         fcntl.flock(guard, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
-        os.close(guard)
         return False
-    try:
+    else:
         return _probe_exclusive(_held_fd)
     finally:
         os.close(guard)
@@ -146,8 +144,6 @@ def _probe_exclusive(fd: int) -> bool:
     Returns:
         Whether the exclusive attempt succeeded and the shared lock is back.
     """
-    import fcntl
-
     try:
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
@@ -171,8 +167,6 @@ def _restore_shared(fd: int) -> bool:
         Whether this process is still registered.
     """
     global _held_fd  # noqa: PLW0603  # unregister a lock this process lost
-    import fcntl
-
     try:
         # Blocking is safe: the check lock is held, so no other process holds
         # this lock exclusively.

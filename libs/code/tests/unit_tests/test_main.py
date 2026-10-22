@@ -528,10 +528,6 @@ class TestStartupAutoUpdate:
                 "deepagents_code.update_check.startup_auto_update_was_deferred",
                 return_value=deferred_before,
             ),
-            patch(
-                "deepagents_code.update_check.should_skip_startup_auto_update_after_failure",
-                return_value=deferred_before,
-            ),
             patch("deepagents_code._session_lock.is_sole_session", return_value=sole),
             patch(
                 "deepagents_code.update_check.format_release_age_parenthetical",
@@ -549,13 +545,17 @@ class TestStartupAutoUpdate:
         ):
             yield mark_failed
 
-    def test_sole_session_allows_migration(self) -> None:
+    @pytest.mark.parametrize("deferred_before", [False, True])
+    def test_sole_session_allows_migration(self, *, deferred_before: bool) -> None:
         """With no other session running, startup may migrate Python."""
         upgrade = AsyncMock(return_value=(False, "", None))
 
-        with self._pending_migration(deferred_before=False, sole=True, upgrade=upgrade):
+        with self._pending_migration(
+            deferred_before=deferred_before, sole=True, upgrade=upgrade
+        ):
             _run_startup_auto_update(MagicMock())
 
+        upgrade.assert_awaited_once()
         assert upgrade.call_args.kwargs["allow_python_migration"] is True
 
     def test_deferred_migration_waits_while_other_sessions_run(self) -> None:
@@ -575,16 +575,6 @@ class TestStartupAutoUpdate:
         assert "Continuing with v" in printed
         assert "Updating dcode" not in printed
         assert "did not complete" not in printed
-
-    def test_deferred_migration_runs_once_sole_despite_cooldown(self) -> None:
-        """Closing the other sessions lets the next launch migrate."""
-        upgrade = AsyncMock(return_value=(False, "", None))
-
-        with self._pending_migration(deferred_before=True, sole=True, upgrade=upgrade):
-            _run_startup_auto_update(MagicMock())
-
-        upgrade.assert_awaited_once()
-        assert upgrade.call_args.kwargs["allow_python_migration"] is True
 
     def test_unverified_install_exits_instead_of_launching(self) -> None:
         """A changed but unverified environment stops startup instead of launching."""

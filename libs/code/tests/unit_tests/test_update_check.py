@@ -3239,6 +3239,8 @@ class TestStartupAutoUpdateFailureCooldown:
         mark_startup_auto_update_failed("2.0.0", deferred=True)
         assert startup_auto_update_was_deferred("2.0.0") is True
         assert startup_auto_update_was_deferred("2.0.1") is False
+        # A deferral is retried once sole, so it starts no cooldown.
+        assert should_skip_startup_auto_update_after_failure("2.0.0") is False
 
         mark_startup_auto_update_failed("2.0.0")
         assert startup_auto_update_was_deferred("2.0.0") is False

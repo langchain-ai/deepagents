@@ -1900,6 +1900,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         grep_max_count: int | None = 1000,
         tools: list[FsToolName] | Literal["all"] | None = None,
         offload_binary_content: bool = False,
+        permissions: list[FilesystemPermission] | None = None,
         _permissions: list[FilesystemPermission] | None = None,
     ) -> None:
         """Initialize the filesystem middleware.
@@ -1944,13 +1945,25 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 input write stays in checkpoint history.
                 Useful with sandbox backends. Has no effect when `blobs/`
                 routes to a `StateBackend`.
-            _permissions: Optional filesystem permission rules enforced directly
-                by this middleware's tool implementations.
-
-                Marked private for now because this is an internal
-                implementation detail and may move to the backend layer in a
-                future change.
+            permissions: Filesystem rules enforced by this middleware's tools.
+                `create_deep_agent` supplies its rules when this list is empty;
+                conflicting non-empty rule lists raise `ValueError`.
+                Interrupt rules require `create_deep_agent(permissions=...)`
+                to configure human-in-the-loop approval.
+            _permissions: Deprecated alias for `permissions`; do not pass both.
         """
+        if permissions is not None and _permissions is not None:
+            msg = "Pass only permissions, not both permissions and _permissions."
+            raise ValueError(msg)
+        if _permissions is not None:
+            warn_deprecated(
+                since="0.7.31",
+                removal="0.9.0",
+                name="FilesystemMiddleware(_permissions=...)",
+                alternative="FilesystemMiddleware(permissions=...)",
+                package="deepagents",
+            )
+            permissions = _permissions
         if isinstance(tools, list) and "read_file" not in tools:
             msg = "read_file must be included in tools; it is required by FilesystemMiddleware"
             raise ValueError(msg)
@@ -1973,14 +1986,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             "type[FilesystemState]",
             _FilesystemBlobPayloadState if _uses_state_backend(self.backend) else _BlobPayloadState,
         )
-        if _permissions and supports_execution(self.backend) and not _all_paths_scoped_to_routes(_permissions, self.backend):
-            msg = (
-                "FilesystemMiddleware does not yet support permissions with backends that "
-                "provide command execution (SandboxBackendProtocol). Tool-level permissions "
-                "for the execute tool are not implemented. Either remove permissions or use "
-                "a backend without execution support."
-            )
-            raise NotImplementedError(msg)
+        self._set_permissions(permissions)
 
         artifacts_root = self.backend.artifacts_root if isinstance(self.backend, CompositeBackend) else "/"
         _root = artifacts_root.rstrip("/")
@@ -2006,7 +2012,6 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             self._enabled_tools = frozenset(_ALL_FS_TOOL_NAMES)
         else:  # None -- user did not specify, defaults to all tools opted-in
             self._enabled_tools = None
-        self._permissions = list(_permissions or [])
 
         # Shared executor for enforcing GLOB_TIMEOUT on the sync glob tool.
         # Timed-out worker threads keep running until the backend call returns,
@@ -2031,6 +2036,18 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         # model's schema, so a tool name outside `tools=` never reaches the
         # dispatchable tool node
         self.tools = [factory() for name, factory in tool_factories if self._enabled_tools is None or name in self._enabled_tools]
+
+    def _set_permissions(self, permissions: list[FilesystemPermission] | None) -> None:
+        """Validate and copy rules against this middleware's backend."""
+        if permissions and supports_execution(self.backend) and not _all_paths_scoped_to_routes(permissions, self.backend):
+            msg = (
+                "FilesystemMiddleware does not yet support permissions with backends that "
+                "provide command execution (SandboxBackendProtocol). Tool-level permissions "
+                "for the execute tool are not implemented. Either remove permissions or use "
+                "a backend without execution support."
+            )
+            raise NotImplementedError(msg)
+        self._permissions = list(permissions or [])
 
     def _create_ls_tool(self) -> BaseTool:
         """Create the ls (list files) tool."""

@@ -235,7 +235,13 @@ def _apply_custom_middleware(
     result = list(base)
     for i, m in enumerate(result):
         if m.name in replacements:
-            result[i] = replacements[m.name]
+            replacement = replacements[m.name]
+            if isinstance(m, FilesystemMiddleware) and m._permissions and isinstance(replacement, FilesystemMiddleware):
+                if replacement._permissions and replacement._permissions != m._permissions:
+                    msg = "FilesystemMiddleware permissions conflict with the agent permissions; use the same rules or omit middleware permissions."
+                    raise ValueError(msg)
+                replacement._set_permissions(m._permissions)
+            result[i] = replacement
     if to_append and core_names is not None:
         # Land new middleware after the last core entry, ahead of the tail.
         pos = max((i for i, m in enumerate(result) if m.name in core_names), default=len(result) - 1) + 1
@@ -371,7 +377,10 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             See [Prompt assembly](https://docs.langchain.com/oss/deepagents/customization#prompt-assembly)
             for the full case-by-case breakdown.
         middleware: Additional middleware to apply after the base stack
-            but before the tail middleware. The full ordering is:
+            but before the tail middleware. A replacement `FilesystemMiddleware`
+            with no rules inherits the agent's `permissions`. Conflicting
+            non-empty permission lists raise `ValueError`. Other middleware
+            configuration is not inherited. The full ordering is:
 
             Base stack:
 
@@ -724,7 +733,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
                 FilesystemMiddleware(
                     backend=backend,
                     custom_tool_descriptions=_subagent_profile.tool_description_overrides,
-                    _permissions=subagent_permissions,
+                    permissions=subagent_permissions,
                 ),
                 create_summarization_middleware(subagent_model, backend),
                 PatchToolCallsMiddleware(),
@@ -830,7 +839,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             FilesystemMiddleware(
                 backend=backend,
                 custom_tool_descriptions=_profile.tool_description_overrides,
-                _permissions=permissions,
+                permissions=permissions,
             ),
             create_summarization_middleware(model, backend),
             PatchToolCallsMiddleware(),
@@ -895,7 +904,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         FilesystemMiddleware(
             backend=backend,
             custom_tool_descriptions=_profile.tool_description_overrides,
-            _permissions=permissions,
+            permissions=permissions,
         ),
     ]
     sub_agent_middleware: SubAgentMiddleware | None = None

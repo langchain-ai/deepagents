@@ -208,14 +208,17 @@ async def test_live_session_defers_migration_without_touching_environment(
     receipt = tmp_path / "uv-receipt.toml"
     original = receipt.read_bytes()
     notices: list[str] = []
+    deferred = MagicMock()
     with patch.object(update_check.sys, "version_info", VersionInfo(3, 13, 4)):
         success, output, installed = await update_check.perform_upgrade(
             target_version="2.0.0",
             on_notice=notices.append,
             allow_python_migration=False,
+            on_migration_deferred=deferred,
         )
     assert not success
     assert installed is None
+    deferred.assert_called_once_with()
     assert notices == [output]
     assert "Quit every dcode session" in output
     assert " update`" in output
@@ -347,12 +350,17 @@ async def test_installer_success_requires_exact_verified_version(
         lambda: installed if migrating else "2.0.0",
     )
     monkeypatch.setattr(update_check, "_distribution_dist_infos", list)
+    unverified = MagicMock()
     success, output, version = await update_check.perform_upgrade(
-        target_version="2.0.0", include_prereleases=False
+        target_version="2.0.0",
+        include_prereleases=False,
+        on_unverified_install=unverified,
     )
     uv_install.assert_awaited_once()
     assert not success
     assert version is None
+    # Startup relies on this to exit instead of launching on mixed code.
+    unverified.assert_called_once_with()
     assert output
 
 
@@ -376,11 +384,15 @@ async def test_in_place_readback_trusts_pin_only_when_ambiguous(
         "_distribution_dist_infos",
         lambda: None if dist_infos is None else [tmp_path] * dist_infos,
     )
+    unverified = MagicMock()
     success, _, version = await update_check.perform_upgrade(
-        target_version="2.0.0", include_prereleases=False
+        target_version="2.0.0",
+        include_prereleases=False,
+        on_unverified_install=unverified,
     )
     uv_install.assert_awaited_once()
     assert (success, version) == ((True, "2.0.0") if trusted else (False, None))
+    assert unverified.called is not trusted
 
 
 @pytest.mark.parametrize(

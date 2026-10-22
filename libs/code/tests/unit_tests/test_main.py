@@ -33,6 +33,7 @@ from deepagents_code.app import (
 )
 from deepagents_code.config import reset_langsmith_url_cache
 from deepagents_code.main import (
+    _UNPERSISTED_AUTO_UPDATE_FAILURE_NOTE,
     _auto_install_ripgrep_cli,
     _install_termination_signal_handlers,
     _print_session_stats,
@@ -389,8 +390,8 @@ class TestStartupAutoUpdate:
 
         assert os.environ[INVOKED_AS] == "abc"
 
-    def test_failed_migration_continues_without_generic_command(self) -> None:
-        """A migration notice is printed once and no conflicting command follows."""
+    def test_failure_with_notice_suppresses_generic_command(self) -> None:
+        """A failure notice is printed and no conflicting command follows."""
         console = MagicMock()
         notice = "Python 3.14 is required; migrating [tool] environment."
 
@@ -444,6 +445,60 @@ class TestStartupAutoUpdate:
         assert "before startup" not in printed
         assert "Run manually" not in printed
         assert "pip exploded" not in printed
+
+    def test_deferred_migration_continues_without_failure(self) -> None:
+        """A deferral launches the current version and is not a failure."""
+        console = MagicMock()
+
+        def install(
+            *,
+            on_notice: Callable[[str], None],
+            on_migration_deferred: Callable[[], None],
+            **_kwargs: object,
+        ) -> tuple[bool, str, None]:
+            on_migration_deferred()
+            on_notice("v9.9.9 requires migrating dcode to Python 3.14.")
+            return False, "v9.9.9 requires migrating dcode to Python 3.14.", None
+
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch(
+                "deepagents_code.update_check.is_auto_update_enabled",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_code.update_check.get_cached_update_available",
+                return_value=(True, "9.9.9"),
+            ),
+            patch(
+                "deepagents_code.update_check.format_release_age_parenthetical",
+                return_value="",
+            ),
+            patch(
+                "deepagents_code.update_check.create_update_log_file",
+                return_value=None,
+            ),
+            patch(
+                "deepagents_code.update_check.perform_upgrade",
+                AsyncMock(side_effect=install),
+            ),
+            patch(
+                "deepagents_code.update_check.mark_startup_auto_update_failed",
+                return_value=False,
+            ) as mark_failed,
+            patch("deepagents_code.main._restart_current_process") as restart,
+        ):
+            _run_startup_auto_update(console)
+
+        # The cooldown keeps the deferral notice from repeating every launch.
+        mark_failed.assert_called_once_with("9.9.9")
+        restart.assert_not_called()
+        printed = " ".join(str(c.args[0]) for c in console.print.call_args_list)
+        assert "Continuing with v" in printed
+        assert "failed" not in printed
+        assert "Run manually" not in printed
+        # A lost marker only repeats the deferral, which installs nothing.
+        assert _UNPERSISTED_AUTO_UPDATE_FAILURE_NOTE not in printed
 
     def test_unverified_install_exits_instead_of_launching(self) -> None:
         """A changed but unverified environment stops startup instead of launching."""

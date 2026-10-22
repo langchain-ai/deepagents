@@ -3,45 +3,17 @@ type: context-management concept
 title: Context Management
 description: Deep Agents limits model-context pressure with recoverable result and binary offload, event-based conversation compaction, and bounded overflow recovery. Deep Agents Code adds server-owned manual and idle offload with durable local archive handling.
 tags: [context-management, summarization, compaction, eviction, blob-offload, overflow-recovery, middleware]
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-10-21T08:05:42.350Z
 sources:
-  - id: openwiki-source-fdf5afeb1dd1d11652374e88
-    resource: repo://libs/code/deepagents_code/app.py
-  - id: openwiki-source-2fb89d2b59c886d0cb3ee3ea
-    resource: repo://libs/code/deepagents_code/config_manifest.py
-  - id: openwiki-source-9b6cab59e92c8914079f0f53
-    resource: repo://libs/code/deepagents_code/offload.py
-  - id: openwiki-source-359dab1054eb0c26067ce930
-    resource: repo://libs/code/tests/unit_tests/test_idle_compaction.py
-  - id: openwiki-source-a1549ea98d425efea270be93
-    resource: repo://libs/deepagents/deepagents/backends/composite.py
-  - id: openwiki-source-0fc0e47059e4d07e23e50be2
-    resource: repo://libs/deepagents/deepagents/graph.py
-  - id: openwiki-source-303a7196a0e1a36cc078621b
-    resource: repo://libs/deepagents/deepagents/middleware/_blob_offload.py
-  - id: openwiki-source-9841bc6daf811e4615c54a88
-    resource: repo://libs/deepagents/deepagents/middleware/_message_eviction.py
-  - id: openwiki-source-64b92f60456305edc143f48a
-    resource: repo://libs/deepagents/deepagents/middleware/_overflow_clip.py
-  - id: openwiki-source-fed4b84a38685f37e58018c5
-    resource: repo://libs/deepagents/deepagents/middleware/filesystem.py
-  - id: openwiki-source-13b8cea81b8a29f0950cc836
-    resource: repo://libs/deepagents/deepagents/middleware/patch_tool_calls.py
   - id: openwiki-source-f763e99e439a1356866a7aa4
     resource: repo://libs/deepagents/deepagents/middleware/summarization.py
   - id: openwiki-source-69c260914d2dd18b60ad5900
     resource: repo://libs/deepagents/tests/unit_tests/middleware/test_compact_tool.py
   - id: openwiki-source-6228ff9cf1d681a771797121
     resource: repo://libs/deepagents/tests/unit_tests/middleware/test_compaction_recovery.py
-  - id: openwiki-source-530f1194888c9c15f9c71332
-    resource: repo://libs/deepagents/tests/unit_tests/middleware/test_summarization_factory.py
-  - id: openwiki-source-f445d59792df76394a37a768
-    resource: repo://libs/deepagents/tests/unit_tests/test_artifacts_root.py
-  - id: openwiki-source-10e4084b6aa57e5cc82620b3
-    resource: repo://libs/deepagents/tests/unit_tests/test_end_to_end.py
-generated: { by: "openwiki/0.4.2", at: "2026-10-21T08:05:42.350Z" }
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-10-22T08:05:54.651Z
+generated: { by: "openwiki/0.4.2", at: "2026-10-22T08:05:54.651Z" }
 ---
 
 # Context Management
@@ -57,21 +29,21 @@ Context management changes what the model sees; it does not necessarily delete t
 
 ```mermaid
 flowchart TD
-    Raw["Raw checkpointed messages"] --> Evict["Evict large text and optional blobs"]
-    Evict --> Effective["Apply summary event"]
-    Effective --> Budget{"Trigger or request budget exceeded"}
-    Budget -->|No| Model["Invoke model"]
-    Budget -->|Yes| Media["Offload archive media"]
-    Media --> Archive["Append older raw messages"]
-    Archive --> Summary["Create summary event"]
-    Summary --> Effective
-    Model -->|"recognized overflow"| Clip["Clip trailing tool-result batch"]
-    Clip --> Retry["One smaller retry"]
-    Retry --> Model
-    Model -->|"other error"| Raise["Propagate error"]
+    Raw["Raw checkpointed messages"] --> Shape["Build effective history from summary event"]
+    Shape --> Check{"Trigger or request budget exceeded"}
+    Check -->|"No"| Initial["Invoke model"]
+    Check -->|"Yes"| Media["Offload media from older effective messages"]
+    Initial -->|"recognized overflow"| Media
+    Media --> Archive["Append older messages to archive"]
+    Archive --> Summarize["Create summary event"]
+    Summarize --> Effective["Summary plus retained raw suffix"]
+    Effective --> Clip["Clip trailing tool-result batch if needed"]
+    Clip --> Retry["One strictly smaller retry"]
+    Retry --> Done["Return response or terminal overflow"]
+    Initial -->|"other error"| Raise["Propagate error"]
 ```
 
-*The model receives a shaped effective history; raw messages and recovery artifacts remain distinct state and storage concerns.*
+*Automatic compaction records an event over raw checkpoint state. The event, rather than destructive replacement of that state, produces the model-visible history; a recognized initial overflow enters the same compaction path and permits only one reduced retry.*
 
 ## Recoverable text eviction and artifact routing
 
@@ -97,7 +69,9 @@ Before a model call, blob references are hydrated from the cache or by backend d
 
 ## Conversation compaction: raw history versus effective history
 
-`SummarizationMiddleware` records compaction in private state instead of deleting `messages`. A `SummarizationEvent` contains an absolute `cutoff_index`, a summary `HumanMessage`, and an optional archive `file_path`. For each model call, it reconstructs effective history as the summary followed by raw messages at the cutoff. Repeated compactions translate an effective cutoff back to the raw index, and a persisted internal session ID names the archive reused by later compactions. Malformed events safely fall back to raw messages; an oversized cutoff produces the summary alone.
+`SummarizationMiddleware` records compaction in private state instead of deleting `messages`. A `SummarizationEvent` contains an absolute `cutoff_index`, a summary `HumanMessage`, an optional archive `file_path`, and—on new events—`created_at_index`. For each model call, it reconstructs effective history as the summary followed by raw messages at the cutoff. Repeated compactions translate an effective cutoff back to the raw index, and a persisted internal session ID names the archive reused by later compactions. Malformed events safely fall back to raw messages; an oversized cutoff produces the summary alone.
+
+`created_at_index` protects provider protocol validity after history replacement. In the retained suffix that already existed when the event was made, Deep Agents removes only reasoning blocks bound to the prior conversation: Anthropic and Claude-on-Bedrock native `thinking`, `redacted_thinking`, or `reasoning_content` forms (and Anthropic `reasoning`). It leaves raw checkpoint messages unchanged and leaves reasoning generated after the event intact. Untagged messages are conservatively treated as native-bound; non-Claude Bedrock, Gemini, and OpenAI reasoning remains visible. Events written before this field existed preserve the prior behavior and keep reasoning.
 
 Before a full summary, optional argument truncation can shorten old `write_file` and `edit_file` arguments while preserving the configured recent keep window. This is model-request shaping rather than mutation of the raw checkpoint history.
 
@@ -111,7 +85,9 @@ When compaction is selected, older non-summary messages are rendered into a time
 
 Inline `data:` media is decoded, content-addressed, uploaded once, and rewritten as a path reference before it reaches the archive or summary prompt. Decode and upload failures become visible `failed_to_offload` placeholders, not silent omission. This lets an operator distinguish an irrecoverable archive block from a message that never contained media.
 
-`SummarizationToolMiddleware` exposes the eligibility-gated `compact_conversation` tool and reuses a configured `SummarizationMiddleware`; it writes the same event and session-id state as automatic compaction. Ineligible calls and a zero cutoff return a correlated “nothing to compact” tool result. A `None` archive path is a successful but non-recoverable compaction. In contrast, an archival exception or summary-generation exception returns a correlated failure `ToolMessage` and does not write a partial event.
+`SummarizationToolMiddleware` exposes `compact_conversation` and reuses a configured `SummarizationMiddleware`; it writes the same event and session-id state as automatic compaction. It is an eligibility gate, not a background trigger: one configured trigger clause must reach roughly half its automatic threshold, using reported usage for token or fraction clauses; every threshold in a dict clause must hold. Ineligible calls and a zero cutoff return a correlated “nothing to compact” tool result.
+
+The tool first produces the summary and then attempts the archive. An archive operation that returns `None` is a successful but non-recoverable compaction. If either step raises, it returns a correlated failure `ToolMessage` without event or session-id state—so a thrown archive failure cannot leave a partial compaction event. The async implementation has the same contract.
 
 ## Overflow recovery and history integrity
 
@@ -138,4 +114,4 @@ Idle compaction is disabled by default through `history.idle_compaction_tokens`.
 5. Preserve trailing-tool-batch boundaries, one-smaller-retry recovery, and tool-call/result pairing when changing context logic.
 6. For Deep Agents Code, set a retention policy suitable for the sensitivity and lifetime of archives, and consider temporary fallback storage nonpersistent.
 
-Focused coverage includes `test_compact_tool.py` for shared event state, eligibility, no-archive success, and exception behavior; compaction recovery and end-to-end tests for retry and recovery-path behavior; artifact-root tests for routed placement; and `test_idle_compaction.py` for cache-window guards, input races, and cancellation. Blob-offload behavior is exercised at the filesystem middleware boundary: upload failure must retain inline payloads and hydration must verify downloaded bytes before restoring them.
+Focused coverage includes `test_compact_tool.py` for shared event state, half-trigger eligibility, no-archive success, and exception atomicity; `test_summarization_middleware.py` for absolute cutoff chaining and removal of reasoning bound to replaced history; compaction recovery and end-to-end tests for retry and recovery-path behavior; artifact-root tests for routed placement; and `test_idle_compaction.py` plus `test_cache_expiry.py` for cache-window guards, input races, cancellation, and cache-expiry UI behavior. Blob-offload behavior is exercised at the filesystem middleware boundary: upload failure must retain inline payloads and hydration must verify downloaded bytes before restoring them.

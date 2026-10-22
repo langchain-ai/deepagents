@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:7c9ba4287d4e0b61351dfed299a687125e34f464f29ec19ab9570846adf9e954",
+  "pageVersion": "sha256:499f06b2d79a757a0f9ea34fb2571c0407889cd1a0ba7fea2573f94c1ef85525",
   "claims": [
     {
       "id": "claim_3f6e4d8c4f6f470a94669778d16a96b1",
@@ -42,11 +42,11 @@
     },
     {
       "id": "claim_97cb9b66aab64e77b94505384ed90475",
-      "statement": "Async subagents launch Agent Protocol runs in remote threads and persist task metadata in `async_tasks`; dedicated tools then check results, replace a running task's run on update, cancel it, or list refreshed status, while URL-less ASGI transport requires an async parent invocation.",
+      "statement": "Async subagents launch Agent Protocol runs in remote threads and persist task metadata in `async_tasks`; dedicated tools check results, update by interrupting or enqueuing a follow-up, cancel tracked work, or list refreshed status, while URL-less ASGI transport requires an async parent invocation.",
       "evidence": [
         {
           "resource": "repo://libs/deepagents/deepagents/middleware/async_subagents.py",
-          "version": "repo-file-v1:sha256:93cd697574039314400a50195b76c15860c79266020ae1bfa0d646006a738b40"
+          "version": "repo-file-v1:sha256:238ca0289ce3987e2e2335da2c42419bd80fcb0bdff0297a68677dcd58c65f9b"
         }
       ]
     },
@@ -86,7 +86,7 @@
     },
     {
       "id": "claim_4a7cacd501d346db8ab63a690c558647",
-      "statement": "Async launches attach the parent thread ID to remote thread metadata; same-deployment launches can forward run context or a `deepagents_parent` reference containing parent thread and assistant IDs, whereas cross-deployment launches deliberately omit the assistant ID and retain only the parent thread reference.",
+      "statement": "Async launches attach the parent thread ID and subagent name to remote thread metadata; same-deployment launches eligible for notification can also carry the parent assistant ID and forward run context or a `deepagents_parent` reference, whereas cross-deployment launches and `notify_parent=False` retain only the parent thread reference.",
       "evidence": [
         {
           "resource": "repo://libs/deepagents/deepagents/graph.py",
@@ -94,11 +94,11 @@
         },
         {
           "resource": "repo://libs/deepagents/deepagents/middleware/async_subagents.py",
-          "version": "repo-file-v1:sha256:93cd697574039314400a50195b76c15860c79266020ae1bfa0d646006a738b40"
+          "version": "repo-file-v1:sha256:238ca0289ce3987e2e2335da2c42419bd80fcb0bdff0297a68677dcd58c65f9b"
         },
         {
           "resource": "repo://libs/deepagents/tests/unit_tests/test_async_subagents.py",
-          "version": "repo-file-v1:sha256:0c43198a6648f11f59c367b1c6e01cc980d4fd7728784db27050841308073524"
+          "version": "repo-file-v1:sha256:19d2a0f0570273e2870d52a0a9894895cb8e6f13d33105b106660687db94c8bd"
         }
       ]
     },
@@ -108,11 +108,11 @@
       "evidence": [
         {
           "resource": "repo://libs/deepagents/deepagents/middleware/async_subagents.py",
-          "version": "repo-file-v1:sha256:93cd697574039314400a50195b76c15860c79266020ae1bfa0d646006a738b40"
+          "version": "repo-file-v1:sha256:238ca0289ce3987e2e2335da2c42419bd80fcb0bdff0297a68677dcd58c65f9b"
         },
         {
           "resource": "repo://libs/deepagents/tests/unit_tests/test_async_subagents.py",
-          "version": "repo-file-v1:sha256:0c43198a6648f11f59c367b1c6e01cc980d4fd7728784db27050841308073524"
+          "version": "repo-file-v1:sha256:19d2a0f0570273e2870d52a0a9894895cb8e6f13d33105b106660687db94c8bd"
         }
       ]
     },
@@ -130,21 +130,21 @@
         },
         {
           "resource": "repo://libs/deepagents/tests/unit_tests/test_async_subagents.py",
-          "version": "repo-file-v1:sha256:0c43198a6648f11f59c367b1c6e01cc980d4fd7728784db27050841308073524"
+          "version": "repo-file-v1:sha256:19d2a0f0570273e2870d52a0a9894895cb8e6f13d33105b106660687db94c8bd"
         }
       ]
     },
     {
       "id": "claim_0822e09ac02e45ce842f3f47140485fc",
-      "statement": "On async invocations, `AsyncSubAgentMiddleware` polls unfinished tasks at agent start, before model calls, and after a final answer; changed success, error, timeout, or waiting outcomes are inserted as marked user messages framed as system notifications, and a post-answer notification sends the model for another turn.",
+      "statement": "On async invocations, `AsyncSubAgentMiddleware` polls unfinished tasks at agent start, before model calls, and after a final answer; changed terminal, timeout, or waiting outcomes are inserted as marked user messages framed as system notifications, and a post-answer notification sends the model for another turn.",
       "evidence": [
         {
           "resource": "repo://libs/deepagents/deepagents/middleware/async_subagents.py",
-          "version": "repo-file-v1:sha256:93cd697574039314400a50195b76c15860c79266020ae1bfa0d646006a738b40"
+          "version": "repo-file-v1:sha256:238ca0289ce3987e2e2335da2c42419bd80fcb0bdff0297a68677dcd58c65f9b"
         },
         {
           "resource": "repo://libs/deepagents/tests/unit_tests/test_async_subagents.py",
-          "version": "repo-file-v1:sha256:0c43198a6648f11f59c367b1c6e01cc980d4fd7728784db27050841308073524"
+          "version": "repo-file-v1:sha256:19d2a0f0570273e2870d52a0a9894895cb8e6f13d33105b106660687db94c8bd"
         }
       ]
     },
@@ -164,7 +164,7 @@
       "evidence": [
         {
           "resource": "repo://libs/deepagents/deepagents/middleware/async_subagents.py",
-          "version": "repo-file-v1:sha256:93cd697574039314400a50195b76c15860c79266020ae1bfa0d646006a738b40"
+          "version": "repo-file-v1:sha256:238ca0289ce3987e2e2335da2c42419bd80fcb0bdff0297a68677dcd58c65f9b"
         }
       ]
     },
@@ -223,10 +223,52 @@
           "version": "repo-file-v1:sha256:af157f3b5f70cac3bab91b10def0c72f7a4bdfafc3289450070e74db535d1182"
         }
       ]
+    },
+    {
+      "id": "claim_5e7c4d7841184c19bacba7731f920d8e",
+      "statement": "`AsyncSubAgent.webhook` is forwarded to Agent Protocol run creation for both launches and updates, providing a server-to-application completion callback rather than a parent-state update or replacement for task polling.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/CHANGELOG.md",
+          "version": "repo-file-v1:sha256:39e50203b2aebe2e4a1861854fa0e6b510657a4e11b87f195dabc190bef435f1"
+        },
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/async_subagents.py",
+          "version": "repo-file-v1:sha256:238ca0289ce3987e2e2335da2c42419bd80fcb0bdff0297a68677dcd58c65f9b"
+        }
+      ]
+    },
+    {
+      "id": "claim_c93c2184f16e43539d47307e60598c7c",
+      "statement": "With `update_strategy=\"enqueue\"`, a follow-up is tracked as `pending` until it starts and records earlier runs as `superseded_run_ids`; notifications from those older runs are rewritten so they cannot be mistaken for the latest follow-up outcome, and cancellation attempts to stop earlier pending or running runs as well.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/async_subagents.py",
+          "version": "repo-file-v1:sha256:238ca0289ce3987e2e2335da2c42419bd80fcb0bdff0297a68677dcd58c65f9b"
+        },
+        {
+          "resource": "repo://libs/deepagents/tests/unit_tests/test_async_subagents.py",
+          "version": "repo-file-v1:sha256:19d2a0f0570273e2870d52a0a9894895cb8e6f13d33105b106660687db94c8bd"
+        }
+      ]
+    },
+    {
+      "id": "claim_3172ed6bc8ae49f88b33d4d9cb0f9b57",
+      "statement": "`notify_parent` defaults to allowing a same-deployment child to wake an eligible idle or failed parent, but setting it to `False` removes the parent assistant reference while preserving parent-thread linkage and task observation, allowing an application webhook or other delivery mechanism to own delivery.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/CHANGELOG.md",
+          "version": "repo-file-v1:sha256:39e50203b2aebe2e4a1861854fa0e6b510657a4e11b87f195dabc190bef435f1"
+        },
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/async_subagents.py",
+          "version": "repo-file-v1:sha256:238ca0289ce3987e2e2335da2c42419bd80fcb0bdff0297a68677dcd58c65f9b"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-10-21T08:05:42.350Z"
+    "at": "2026-10-22T08:05:54.651Z"
   }
 }

@@ -20261,6 +20261,45 @@ class TestNotificationCenterIntegration:
         assert app._notice_registry.get("dep:ripgrep") is None
         assert any("debug mode" in m for m in notified)
 
+    @pytest.mark.parametrize("source", ["slash", "notification"])
+    async def test_live_session_update_defers_python_migration(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, source: str
+    ) -> None:
+        """Both TUI update routes refuse to rebuild the running environment."""
+        from deepagents_code.notifications import ActionId
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        entry = _update_entry()
+        app._notice_registry.add(entry)
+        monkeypatch.setattr(app, "_post_paint_init", AsyncMock())
+        monkeypatch.setattr(
+            "deepagents_code.update_check.create_update_log_file",
+            lambda: tmp_path / "update.log",
+        )
+        monkeypatch.setattr(
+            "deepagents_code.update_check.create_update_log_path",
+            lambda: tmp_path / "update.log",
+        )
+        upgrade = AsyncMock(return_value=(False, "deferred", None))
+
+        with patch("deepagents_code.update_check.perform_upgrade", new=upgrade):
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                if source == "notification":
+                    await app._dispatch_notification_action(entry.key, ActionId.INSTALL)
+                else:
+                    await app._perform_app_upgrade_unlocked(
+                        current="1.0.0",
+                        latest="2.0.0",
+                        include_prereleases=None,
+                        upgrade_include_prereleases=None,
+                        pin_upgrade_version=None,
+                    )
+                await pilot.pause()
+
+        upgrade.assert_awaited_once()
+        assert upgrade.call_args.kwargs["allow_python_migration"] is False
+
     async def test_install_success_marks_modal_without_a_banner(self) -> None:
         """A missing splash banner cannot spoil a successful install.
 

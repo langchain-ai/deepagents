@@ -561,6 +561,32 @@ def _exit_after_unrestartable_update(
     raise SystemExit(0 if cause is None else 1)
 
 
+def _exit_after_unverified_update(console: "Console", *, persisted: bool) -> NoReturn:
+    """Exit after uv reported success but the install could not be verified.
+
+    The installed files may no longer match the code this process has loaded,
+    so launching could mix releases. The failure notice is already printed.
+
+    Args:
+        console: Console to print the notice to.
+        persisted: Whether the startup cooldown marker was saved.
+
+    Raises:
+        SystemExit: Always, to stop the launch.
+    """
+    from deepagents_code._invocation import invoked_name
+
+    message = (
+        "The installed files may have changed, so this session cannot start on "
+        f"the previous version. Run [cyan]{invoked_name()}[/cyan] again; if it "
+        "fails to start, rerun the installer named above."
+    )
+    if not persisted:
+        message += _UNPERSISTED_AUTO_UPDATE_FAILURE_NOTE
+    console.print(message, markup=True, highlight=False)
+    raise SystemExit(1)
+
+
 def _run_startup_auto_update(console: "Console") -> None:
     """Apply enabled auto-updates before the TUI and server start.
 
@@ -669,19 +695,18 @@ def _run_startup_auto_update(console: "Console") -> None:
             )
             return
         if should_skip_startup_auto_update_after_failure(latest):
-            # A same-version upgrade failed recently; retrying it here would
-            # very likely fail again and re-stall every launch (this runs before
-            # the TUI). Skip for the cooldown window and point at a manual
-            # command instead.
-            update_needs_prereleases = release_requires_prereleases(latest)
-            cmd = upgrade_command(
-                include_prereleases=True if update_needs_prereleases else None,
-                version=latest if update_needs_prereleases else None,
-            )
+            # A same-version upgrade failed or was deferred recently; retrying
+            # it here would very likely fail again and re-stall every launch
+            # (this runs before the TUI). Skip for the cooldown window and
+            # point at `dcode update`: unlike a bare uv command, it also
+            # handles a Python migration that startup deferred.
+            from deepagents_code._invocation import invoked_name
+
             console.print(
                 f"[bold yellow]Warning:[/bold yellow] Skipping automatic update to "
-                f"v{latest} after a recent failed attempt. Update manually: "
-                f"[cyan]{cmd}[/cyan]\nContinuing with v{cli_version}.",
+                f"v{latest}; the last attempt did not complete. Run "
+                f"[cyan]{invoked_name()} update[/cyan] to retry.\n"
+                f"Continuing with v{cli_version}.",
                 highlight=False,
             )
             return
@@ -749,8 +774,26 @@ def _run_startup_auto_update(console: "Console") -> None:
                     markup=False,
                 )
             pending_failure_version = latest
+            notices: list[str] = []
+            deferred: list[bool] = []
+            unverified: list[bool] = []
+
+            def show_notice(message: str) -> None:
+                notices.append(message)
+                console.print(message, markup=False, highlight=False)
+
+            # A Python migration rebuilds the shared tool environment, which
+            # would break dcode sessions running in other terminals. Defer it
+            # to an explicit `dcode update`.
             success, output, _installed = asyncio.run(
-                perform_upgrade(log_path=log_path, target_version=latest)
+                perform_upgrade(
+                    on_notice=show_notice,
+                    log_path=log_path,
+                    target_version=latest,
+                    allow_python_migration=False,
+                    on_migration_deferred=lambda: deferred.append(True),
+                    on_unverified_install=lambda: unverified.append(True),
+                )
             )
         if success:
             pending_failure_version = None
@@ -806,22 +849,38 @@ def _run_startup_auto_update(console: "Console") -> None:
                 _exit_after_unrestartable_update(console, latest)
             return
         persisted = mark_startup_auto_update_failed(latest)
-        update_needs_prereleases = release_requires_prereleases(latest)
-        cmd = upgrade_command(
-            include_prereleases=True if update_needs_prereleases else None,
-            version=latest if update_needs_prereleases else None,
-        )
-        detail = f": {escape(output[:200])}" if output else ""
-        message = (
-            f"[bold red]Auto-update failed{detail}[/bold red]\n"
-            f"Run manually: [cyan]{cmd}[/cyan]\n"
-            f"Continuing with v{cli_version}."
-        )
-        if not persisted:
+        if unverified:
+            _exit_after_unverified_update(console, persisted=persisted)
+        if deferred:
+            # Nothing failed: the notice above explains how to migrate.
+            message = f"Continuing with v{cli_version}."
+        elif notices:
+            # The notice above carries its own recovery steps; a generic
+            # command here would contradict them.
+            log_line = f"Log: {escape(str(log_path))}\n" if log_path else ""
+            message = (
+                "[bold red]Auto-update failed; see the message above.[/bold red]\n"
+                f"{log_line}Continuing with v{cli_version}."
+            )
+        else:
+            update_needs_prereleases = release_requires_prereleases(latest)
+            cmd = upgrade_command(
+                include_prereleases=True if update_needs_prereleases else None,
+                version=latest if update_needs_prereleases else None,
+            )
+            detail = f": {escape(output[:200])}" if output else ""
+            message = (
+                f"[bold red]Auto-update failed{detail}[/bold red]\n"
+                f"Run manually: [cyan]{cmd}[/cyan]\n"
+                f"Continuing with v{cli_version}."
+            )
+        if not persisted and not deferred:
             # The cooldown marker could not be saved (e.g. a read-only state
             # dir), so this same failing upgrade would otherwise be retried on
             # every launch. Surface it rather than silently re-stalling, the
             # way the consent-announce path surfaces its un-persisted state.
+            # After a deferral nothing failed: a lost marker only repeats the
+            # deferral notice, which installs nothing.
             message += _UNPERSISTED_AUTO_UPDATE_FAILURE_NOTE
         console.print(message, markup=True, highlight=False)
     except SystemExit:
@@ -6030,15 +6089,37 @@ def cli_main() -> None:
                             highlight=False,
                             markup=False,
                         )
+                    notices: list[str] = []
+                    deferred: list[bool] = []
+
+                    def show_notice(message: str) -> None:
+                        notices.append(message)
+                        console.print(message, markup=False, highlight=False)
+
                     success, output, _installed = asyncio.run(
                         perform_upgrade(
+                            on_notice=show_notice,
                             log_path=log_path,
                             include_prereleases=include_prereleases,
                             target_version=latest,
+                            on_migration_deferred=lambda: deferred.append(True),
                         )
                     )
                 if success:
                     console.print(f"[green]Updated to v{latest}.[/green]")
+                elif deferred:
+                    # Windows: the notice names the command to run outside
+                    # dcode, and nothing ran, so there is no log to show.
+                    sys.exit(1)
+                elif notices:
+                    # The notice carries its own recovery steps; a generic
+                    # command here would contradict them.
+                    log_line = f"\nLog: {escape(str(log_path))}" if log_path else ""
+                    console.print(
+                        "[bold red]Update failed; see the message above."
+                        f"[/bold red]{log_line}"
+                    )
+                    sys.exit(1)
                 else:
                     cmd = upgrade_command(
                         include_prereleases=upgrade_include_prereleases,

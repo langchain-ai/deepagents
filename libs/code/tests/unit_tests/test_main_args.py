@@ -1292,6 +1292,29 @@ class TestUpdateSubcommand:
             "the install ran without holding the update lock"
         )
 
+    def test_update_explains_migration_before_install(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """`dcode update` prints notices as they arrive and permits migration."""
+        notice = "Python 3.14 is required; migrating [tool] environment."
+
+        def upgrade(
+            *, on_notice: Callable[[str], None], **_kwargs: object
+        ) -> tuple[bool, str, str]:
+            on_notice(notice)
+            assert notice in capsys.readouterr().out
+            return True, "", "99.0.0"
+
+        code, _, perform_upgrade_mock = self._run_update(
+            editable=False,
+            is_update_available_return=(True, "99.0.0"),
+            upgrade_side_effect=upgrade,
+        )
+        assert code == 0
+        # Every deferral points users here, so this path must be able to migrate.
+        kwargs = perform_upgrade_mock.call_args.kwargs
+        assert kwargs.get("allow_python_migration", True) is True
+
     def test_stable_update_with_prerelease_deps_keeps_upgrade_intent_none(
         self,
     ) -> None:
@@ -1307,11 +1330,10 @@ class TestUpdateSubcommand:
             bypass_cache=True,
             include_prereleases=None,
         )
-        perform_upgrade_mock.assert_awaited_once_with(
-            log_path="/tmp/deepagents-update.log",
-            include_prereleases=None,
-            target_version="99.0.0",
-        )
+        perform_upgrade_mock.assert_awaited_once()
+        kwargs = perform_upgrade_mock.call_args.kwargs
+        assert kwargs["include_prereleases"] is None
+        assert kwargs["target_version"] == "99.0.0"
 
     def test_prerelease_unsupported_install_refuses_before_pypi(
         self, capsys: pytest.CaptureFixture[str]

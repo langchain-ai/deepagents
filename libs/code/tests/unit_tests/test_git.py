@@ -1,5 +1,6 @@
 """Unit tests for the deepagents_code._git module."""
 
+import locale
 import subprocess
 from collections.abc import Iterator
 from pathlib import Path
@@ -13,7 +14,9 @@ from deepagents_code._git import (
     find_git_common_dir,
     parse_repository_metadata,
     read_git_branch_from_filesystem,
+    read_git_branch_via_subprocess,
     read_git_remote_url_from_filesystem,
+    read_git_remote_url_via_subprocess,
 )
 
 _FULL_SHA = "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0"
@@ -332,6 +335,37 @@ class TestReadGitRemoteUrlFromFilesystem:
         (forged / ".git").write_text(f"gitdir: {git_dir}\n")
 
         assert read_git_remote_url_from_filesystem(forged) == ""
+
+
+class TestGitSubprocessFallbacks:
+    """Regression tests for #7119: git's output is decoded as UTF-8.
+
+    Git writes branch names and paths as UTF-8, but Windows decodes text pipes
+    with the ANSI code page by default. Forcing cp1252 reproduces that on any
+    platform: `č` is `c4 8d` in UTF-8 and cp1252 has no `0x8d`.
+    """
+
+    def test_branch_name_is_decoded_as_utf8(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        repo = tmp_path / "repo"
+        _init_git_repo(repo)
+        _run_git(repo, "branch", "-m", "oprava-kočí")
+        # `subprocess` resolves an unspecified text encoding through this function.
+        monkeypatch.setattr(locale, "getencoding", lambda: "cp1252")
+
+        assert read_git_branch_via_subprocess(repo) == "oprava-kočí"
+
+    def test_remote_url_is_decoded_as_utf8(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        repo = tmp_path / "repo"
+        remote = str(tmp_path / "Kočí" / "remote.git")
+        _init_git_repo(repo)
+        _run_git(repo, "remote", "add", "origin", remote)
+        monkeypatch.setattr(locale, "getencoding", lambda: "cp1252")
+
+        assert read_git_remote_url_via_subprocess(repo) == remote
 
 
 class TestParseRepositoryMetadata:

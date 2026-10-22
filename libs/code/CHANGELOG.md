@@ -2,6 +2,14 @@
 
 # Deep Agents Code Changelog
 
+## [0.1.88](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.87...deepagents-code==0.1.88) (2026-10-22)
+
+### Bug Fixes
+
+- Fixed async subagents to pass through `webhook` configuration.
+- Fixed bridge compatibility with Python 3.14.
+- Silenced no-op automatic cache offloads.
+
 ## [0.1.87](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.86...deepagents-code==0.1.87) (2026-10-20)
 
 ### Features

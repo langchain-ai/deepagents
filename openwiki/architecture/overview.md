@@ -1,11 +1,11 @@
 ---
 type: system architecture
 title: Repository Architecture Overview
-description: Architecture and dependency map for the Deep Agents Python monorepo, including Talon's invocation-scoped graph runtime, approval snapshots, host-owned transport, and optional progress delivery.
+description: Architecture and dependency map for the Deep Agents Python monorepo, including published and development-only package relationships, SDK graph assembly, and product hosting boundaries.
 tags: [architecture, deepagents, langgraph, sdk, talon, integrations]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-10-21T08:05:42.350Z
+    at: 2026-10-22T08:05:54.651Z
 sources:
   - id: openwiki-source-9a1c436646ef8c4f6dde787a
     resource: repo://.github/RELEASING.md
@@ -69,7 +69,7 @@ sources:
     resource: repo://README.md
   - id: openwiki-source-482fa4ca84f42b04ba025fc1
     resource: repo://release-please-config.json
-generated: { by: "openwiki/0.4.2", at: "2026-10-21T08:05:42.350Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-10-22T08:05:54.651Z" }
 ---
 
 # Repository Architecture Overview
@@ -86,9 +86,9 @@ This repository is a monorepo of independently versioned Python packages, not on
 
 | Package | Source version and Python range | Architectural role |
 | --- | --- | --- |
-| `deepagents` | `0.7.29`; `>=3.11,<4.0` | Core SDK: graph construction, middleware, and backends. |
+| `deepagents` | `0.7.30`; `>=3.11,<4.0` | Core SDK: graph construction, middleware, and backends. |
 | `deepagents-acp` | `0.0.13`; `>=3.11,<4.0` | Agent Client Protocol server bridge. |
-| `deepagents-code` (`dcode`) | `0.1.87`; `>=3.12,<4.0` | Reference terminal coding-agent product and agent server. |
+| `deepagents-code` (`dcode`) | `0.1.88`; `>=3.12,<4.0` | Reference terminal coding-agent product and agent server. |
 | `deepagents-talon` | `0.0.9`; `>=3.12` | Experimental local host for channels, turns, and cron schedules. |
 | `deepagents-evals` | `0.0.1`; `>=3.12,<3.14` | Behavioral evaluation and Harbor benchmark suite. |
 | `langchain-quickjs` | `0.3.9`; `>=3.11,<4.0` | Optional JavaScript REPL middleware integration. |
@@ -97,7 +97,7 @@ Release Please has independent managed release lines for the SDK, ACP, dcode, Ta
 
 ### Published constraints are not monorepo source mappings
 
-Published dependencies flow toward lower layers. ACP declares `deepagents`; dcode pins exactly `deepagents==0.7.29`, depends on ACP and QuickJS; Talon requires the SDK and dcode; evals requires the SDK, dcode, and QuickJS; and QuickJS supports the SDK's `0.7.x` line. Those are distribution constraints consumed outside this checkout.
+Published dependencies flow toward lower layers. ACP declares `deepagents`; dcode pins exactly `deepagents==0.7.30`, depends on ACP and QuickJS; Talon requires the SDK and dcode; evals requires the SDK, dcode, and QuickJS; and QuickJS supports the SDK's `0.7.x` line. Those are distribution constraints consumed outside this checkout.
 
 Each package may separately use `[tool.uv.sources]` for local development. Such a mapping replaces resolution of that dependency with a sibling source tree; mappings explicitly marked `editable = true` are editable installs. For example, dcode maps the SDK, ACP, and partner packages to editable siblings; Talon maps the SDK and dcode to editable siblings; ACP maps the SDK; and evals maps the SDK and QuickJS as editable but maps dcode by path without the editable flag. Do not infer a published pin from a `uv` mapping, or assume that every local source mapping is editable.
 

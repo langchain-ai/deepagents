@@ -1,0 +1,577 @@
+"""Python compatibility checks and receipt-preserving uv tool migrations."""
+
+from __future__ import annotations
+
+import asyncio
+import os
+import shlex
+import subprocess
+from contextlib import nullcontext
+from pathlib import Path
+from typing import NamedTuple
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+import requests
+from packaging.specifiers import SpecifierSet
+
+from deepagents_code import update_check
+from deepagents_code.extras_info import ExtrasIntrospectionError
+
+
+class VersionInfo(NamedTuple):
+    major: int
+    minor: int
+    micro: int
+
+
+def _response(info: object) -> MagicMock:
+    response = MagicMock()
+    response.json.return_value = {"info": info}
+    return response
+
+
+@pytest.mark.parametrize("version", ["2.0.0", "2.0.0rc1"])
+def test_release_requirement_reads_exact_target(version: str) -> None:
+    with patch(
+        "requests.get",
+        return_value=_response({"version": version, "requires_python": ">=3.14,<3.15"}),
+    ) as get:
+        requirement = update_check._release_python_requirement(version)
+    assert requirement == SpecifierSet(">=3.14,<3.15")
+    assert get.call_args.args[0].endswith(f"/{version}/json")
+
+
+def _http_error() -> MagicMock:
+    response = _response({"version": "2.0.0", "requires_python": ">=3.14,<3.15"})
+    response.raise_for_status.side_effect = requests.HTTPError("503 unavailable")
+    return response
+
+
+@pytest.mark.parametrize(
+    "get",
+    [
+        MagicMock(side_effect=requests.ConnectionError("offline")),
+        MagicMock(return_value=_http_error()),
+        MagicMock(return_value=MagicMock(json=MagicMock(return_value=[]))),
+        MagicMock(return_value=_response({"version": "2.0.1"})),
+        MagicMock(return_value=_response({"version": "2.0.0"})),
+        MagicMock(
+            return_value=_response(
+                {"version": "2.0.0", "requires_python": "not a specifier"}
+            )
+        ),
+    ],
+)
+def test_release_requirement_refuses_unusable_metadata(get: MagicMock) -> None:
+    """Every unusable response raises, so the caller keeps the interpreter."""
+    with (
+        patch("requests.get", get),
+        pytest.raises(ValueError, match=r"metadata|specifier"),
+    ):
+        update_check._release_python_requirement("2.0.0")
+
+
+@pytest.mark.parametrize(
+    ("running", "requirement", "expected"),
+    [
+        ((3, 13, 4), ">=3.14,<3.15", "3.14"),
+        ((3, 13, 4), ">=3.14.1,<3.15", "3.14"),
+        ((3, 13, 4), ">=3.14,!=3.14.0", "3.14"),
+        ((3, 13, 4), ">=3.14,!=3.14.0,!=3.14.1", "3.14"),
+        ((3, 13, 4), ">3.14.9,<3.15", "3.14"),
+        ((3, 13, 4), "==3.14.2", "3.14"),
+        ((3, 13, 4), ">=3.14.1,<=3.14.1", "3.14"),
+        ((3, 14, 0), ">=3.14.1,<3.15", "3.14"),
+        ((3, 14, 0), ">=3.14,<3.15", None),
+        ((3, 13, 4), ">=3.12", None),
+    ],
+)
+def test_upgrade_python_only_migrates_incompatible_interpreters(
+    running: tuple[int, int, int], requirement: str, expected: str | None
+) -> None:
+    with (
+        patch.object(update_check.sys, "version_info", running),
+        patch.object(
+            update_check,
+            "_release_python_requirement",
+            return_value=SpecifierSet(requirement),
+        ),
+    ):
+        assert update_check._upgrade_python("2.0.0") == expected
+
+
+@pytest.mark.parametrize(
+    ("running", "requirement"),
+    [
+        ((3, 13, 4), ">=3.15"),
+        ((3, 13, 4), ">=3.14,!=3.14.*"),
+        ((3, 13, 4), ">3.14.1,<3.14.2"),
+        ((3, 13, 4), "<3.13"),
+        # A newer interpreter is never downgraded to the 3.14 bridge.
+        ((3, 15, 0), ">=3.12,<3.15"),
+    ],
+)
+def test_upgrade_python_refuses_unsupported_requirements(
+    running: tuple[int, int, int], requirement: str
+) -> None:
+    with (
+        patch.object(update_check.sys, "version_info", VersionInfo(*running)),
+        patch.object(
+            update_check,
+            "_release_python_requirement",
+            return_value=SpecifierSet(requirement),
+        ),
+        pytest.raises(ValueError, match="compatible interpreter"),
+    ):
+        update_check._upgrade_python("2.0.0")
+
+
+@pytest.fixture
+def uv_install(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> AsyncMock:
+    tmp_path.joinpath("uv-receipt.toml").write_text(
+        '[tool]\npython = "3.13"\nrequirements = ['
+        '{ name = "deepagents-code", extras = ["openai", "quickjs"] }, '
+        '{ name = "langchain-custom" }]\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(update_check.sys, "prefix", str(tmp_path))
+    monkeypatch.setattr(update_check, "detect_install_method", lambda: "uv")
+    # Windows always defers migrations; pin POSIX so the Windows CI leg runs them.
+    monkeypatch.setattr(update_check, "_is_windows", lambda: False)
+    monkeypatch.setattr(update_check, "update_install_lock", lambda: nullcontext(True))
+    monkeypatch.setattr(update_check, "release_prerelease_pins", lambda _version: [])
+    monkeypatch.setattr(
+        update_check,
+        "_release_python_requirement",
+        lambda _version: SpecifierSet(">=3.14,<3.15"),
+    )
+    monkeypatch.setattr(
+        update_check, "read_installed_distribution_version", lambda: "2.0.0"
+    )
+    monkeypatch.setattr(
+        update_check, "_read_migrated_distribution_version", lambda: "2.0.0"
+    )
+    run = AsyncMock(return_value=(True, "installed"))
+    monkeypatch.setattr(update_check, "_run_install_subprocess", run)
+    return run
+
+
+async def test_migration_preserves_install_context_and_announces_before_install(
+    uv_install: AsyncMock,
+) -> None:
+    notices: list[str] = []
+
+    def install(command: str, **_kwargs: object) -> tuple[bool, str]:
+        assert notices
+        assert "3.14" in notices[0]
+        args = shlex.split(command)
+        assert args[:4] == ["uv", "tool", "install", "-U"]
+        assert args[args.index("--python") + 1] == "3.14"
+        assert "deepagents-code[openai,quickjs]==2.0.0" in args
+        assert args[args.index("--with") + 1] == "langchain-custom"
+        return True, "installed"
+
+    uv_install.side_effect = install
+    with patch.object(update_check.sys, "version_info", VersionInfo(3, 13, 4)):
+        result = await update_check.perform_upgrade(
+            target_version="2.0.0", include_prereleases=False, on_notice=notices.append
+        )
+    assert result == (True, "installed", "2.0.0")
+    uv_install.assert_awaited_once()
+
+
+async def test_interrupted_migration_gives_recovery_steps(
+    uv_install: AsyncMock,
+) -> None:
+    """Ctrl+C kills uv mid-rebuild, so recovery steps must still reach the user."""
+    notices: list[str] = []
+    uv_install.side_effect = asyncio.CancelledError
+    with (
+        patch.object(update_check.sys, "version_info", VersionInfo(3, 13, 4)),
+        pytest.raises(asyncio.CancelledError),
+    ):
+        await update_check.perform_upgrade(
+            target_version="2.0.0", include_prereleases=False, on_notice=notices.append
+        )
+    assert "interrupted" in notices[-1]
+    assert update_check._PYTHON_MIGRATION_INSTALL_COMMAND in notices[-1]
+
+
+async def test_live_session_defers_migration_without_touching_environment(
+    uv_install: AsyncMock, tmp_path: Path
+) -> None:
+    receipt = tmp_path / "uv-receipt.toml"
+    original = receipt.read_bytes()
+    notices: list[str] = []
+    deferred = MagicMock()
+    with patch.object(update_check.sys, "version_info", VersionInfo(3, 13, 4)):
+        success, output, installed = await update_check.perform_upgrade(
+            target_version="2.0.0",
+            on_notice=notices.append,
+            allow_python_migration=False,
+            on_migration_deferred=deferred,
+        )
+    assert not success
+    assert installed is None
+    deferred.assert_called_once_with()
+    assert notices == [output]
+    assert "Quit every dcode session" in output
+    assert " update`" in output
+    assert receipt.read_bytes() == original
+    uv_install.assert_not_awaited()
+
+
+async def test_windows_defers_migration_with_outside_command(
+    uv_install: AsyncMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Windows locks the running interpreter, so even `dcode update` defers."""
+    monkeypatch.setattr(update_check, "_is_windows", lambda: True)
+    deferred = MagicMock()
+    with patch.object(update_check.sys, "version_info", VersionInfo(3, 13, 4)):
+        success, output, _ = await update_check.perform_upgrade(
+            target_version="2.0.0", on_migration_deferred=deferred
+        )
+    assert not success
+    deferred.assert_called_once_with()
+    args = shlex.split(output.rsplit("your shell: ", 1)[1])
+    assert args[args.index("--python") + 1] == "3.14"
+    assert "deepagents-code[openai,quickjs]==2.0.0" in args
+    uv_install.assert_not_awaited()
+
+
+@pytest.mark.parametrize("allow_migration", [False, True])
+async def test_compatible_upgrade_keeps_receipt_interpreter(
+    uv_install: AsyncMock, monkeypatch: pytest.MonkeyPatch, allow_migration: bool
+) -> None:
+    monkeypatch.setattr(
+        update_check,
+        "_release_python_requirement",
+        lambda _version: SpecifierSet(">=3.12"),
+    )
+    notice = MagicMock()
+    with patch.object(update_check.sys, "version_info", VersionInfo(3, 13, 4)):
+        success, _, version = await update_check.perform_upgrade(
+            target_version="2.0.0",
+            include_prereleases=False,
+            on_notice=notice,
+            allow_python_migration=allow_migration,
+        )
+    assert success
+    assert version == "2.0.0"
+    args = shlex.split(uv_install.call_args.args[0])
+    assert args[args.index("--python") + 1] == "3.13"
+    notice.assert_not_called()
+
+
+async def test_missing_target_is_resolved_then_pinned(
+    uv_install: AsyncMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    latest = MagicMock(return_value="2.0.0")
+    monkeypatch.setattr(update_check, "get_latest_version", latest)
+    with patch.object(update_check.sys, "version_info", VersionInfo(3, 13, 4)):
+        success, _, version = await update_check.perform_upgrade(
+            include_prereleases=False
+        )
+    assert success
+    assert version == "2.0.0"
+    assert "deepagents-code[openai,quickjs]==2.0.0" in shlex.split(
+        uv_install.call_args.args[0]
+    )
+    latest.assert_called_once()
+
+
+async def test_prerelease_migration_remains_exactly_pinned(
+    uv_install: AsyncMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        update_check, "_read_migrated_distribution_version", lambda: "2.0.0rc1"
+    )
+    with patch.object(update_check.sys, "version_info", VersionInfo(3, 13, 4)):
+        result = await update_check.perform_upgrade(
+            target_version="2.0.0rc1", include_prereleases=True
+        )
+    assert result[0]
+    assert result[2] == "2.0.0rc1"
+    args = shlex.split(uv_install.call_args.args[0])
+    assert "deepagents-code[openai,quickjs]==2.0.0rc1" in args
+    assert args[args.index("--prerelease") + 1] == "allow"
+
+
+async def test_migration_preserves_targeted_prerelease_constraints(
+    uv_install: AsyncMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        update_check,
+        "release_prerelease_pins",
+        lambda _version: ["deepagents==0.7.0a7"],
+    )
+
+    def install(command: str, **_kwargs: object) -> tuple[bool, str]:
+        args = shlex.split(command)
+        assert args[args.index("--python") + 1] == "3.14"
+        assert "deepagents-code[openai,quickjs]==2.0.0" in args
+        assert args[args.index("--prerelease") + 1] == "if-necessary-or-explicit"
+        constraints = Path(args[args.index("--constraints") + 1])
+        assert "deepagents==0.7.0a7" in constraints.read_text(encoding="utf-8")
+        return True, "installed"
+
+    uv_install.side_effect = install
+    with patch.object(update_check.sys, "version_info", VersionInfo(3, 13, 4)):
+        result = await update_check.perform_upgrade(target_version="2.0.0")
+    assert result == (True, "installed", "2.0.0")
+
+
+@pytest.mark.parametrize("migrating", [False, True])
+@pytest.mark.parametrize("installed", [None, "invalid", "1.9.9"])
+async def test_installer_success_requires_exact_verified_version(
+    uv_install: AsyncMock,
+    monkeypatch: pytest.MonkeyPatch,
+    migrating: bool,
+    installed: str | None,
+) -> None:
+    monkeypatch.setattr(
+        update_check, "_upgrade_python", lambda _version: "3.14" if migrating else None
+    )
+    # The unused reader reports the target, so reading the wrong environment
+    # (e.g. the old interpreter's site-packages after a migration) would pass.
+    monkeypatch.setattr(
+        update_check,
+        "read_installed_distribution_version",
+        lambda: "2.0.0" if migrating else installed,
+    )
+    monkeypatch.setattr(
+        update_check,
+        "_read_migrated_distribution_version",
+        lambda: installed if migrating else "2.0.0",
+    )
+    monkeypatch.setattr(update_check, "_distribution_dist_infos", list)
+    unverified = MagicMock()
+    success, output, version = await update_check.perform_upgrade(
+        target_version="2.0.0",
+        include_prereleases=False,
+        on_unverified_install=unverified,
+    )
+    uv_install.assert_awaited_once()
+    assert not success
+    assert version is None
+    # Startup relies on this to exit instead of launching on mixed code.
+    unverified.assert_called_once_with()
+    assert output
+
+
+@pytest.mark.parametrize(
+    ("dist_infos", "trusted"), [(None, False), (0, False), (2, True)]
+)
+async def test_in_place_readback_trusts_pin_only_when_ambiguous(
+    uv_install: AsyncMock,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    dist_infos: int | None,
+    trusted: bool,
+) -> None:
+    """Stale dist-infos trust the uv pin; a missing distribution does not."""
+    monkeypatch.setattr(update_check, "_upgrade_python", lambda _version: None)
+    monkeypatch.setattr(
+        update_check, "read_installed_distribution_version", lambda: None
+    )
+    monkeypatch.setattr(
+        update_check,
+        "_distribution_dist_infos",
+        lambda: None if dist_infos is None else [tmp_path] * dist_infos,
+    )
+    unverified = MagicMock()
+    success, _, version = await update_check.perform_upgrade(
+        target_version="2.0.0",
+        include_prereleases=False,
+        on_unverified_install=unverified,
+    )
+    uv_install.assert_awaited_once()
+    assert (success, version) == ((True, "2.0.0") if trusted else (False, None))
+    assert unverified.called is not trusted
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        update_check._PythonMigrationRefusedError("requirement unsatisfiable"),
+        ExtrasIntrospectionError("missing extras"),
+        update_check.ToolRequirementIntrospectionError("missing receipt"),
+    ],
+)
+async def test_preflight_failure_never_runs_bare_installer(
+    uv_install: AsyncMock, monkeypatch: pytest.MonkeyPatch, failure: Exception
+) -> None:
+    helper = (
+        "_upgrade_python"
+        if isinstance(failure, ValueError)
+        else "upgrade_install_command"
+    )
+    monkeypatch.setattr(update_check, helper, MagicMock(side_effect=failure))
+    # Pin the interpreter so receipt failures always take the migration path.
+    with patch.object(update_check.sys, "version_info", VersionInfo(3, 13, 4)):
+        success, output, version = await update_check.perform_upgrade(
+            target_version="2.0.0", include_prereleases=False
+        )
+    assert not success
+    assert version is None
+    assert str(failure) in output
+    uv_install.assert_not_awaited()
+
+
+async def test_metadata_failure_upgrades_without_migration(
+    uv_install: AsyncMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed metadata fetch keeps the interpreter instead of blocking."""
+    monkeypatch.setattr(
+        update_check,
+        "_release_python_requirement",
+        MagicMock(side_effect=ValueError("metadata unavailable")),
+    )
+    notice = MagicMock()
+    with patch.object(update_check.sys, "version_info", VersionInfo(3, 13, 4)):
+        success, _, version = await update_check.perform_upgrade(
+            target_version="2.0.0", include_prereleases=False, on_notice=notice
+        )
+    assert (success, version) == (True, "2.0.0")
+    args = shlex.split(uv_install.call_args.args[0])
+    assert args[args.index("--python") + 1] == "3.13"
+    notice.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("uv_output", "names_migration"),
+    [
+        (
+            (
+                "Because the current Python version (3.13.4) does not satisfy "
+                "Python>=3.14 and deepagents-code==2.0.0 depends on Python>=3.14"
+            ),
+            True,
+        ),
+        ("error: Failed to fetch: dns error", False),
+    ],
+)
+async def test_metadata_failure_names_migration_only_for_python_conflicts(
+    uv_install: AsyncMock,
+    monkeypatch: pytest.MonkeyPatch,
+    uv_output: str,
+    names_migration: bool,
+) -> None:
+    """Without metadata, only a Python conflict points at the 3.14 installer."""
+    monkeypatch.setattr(
+        update_check,
+        "_release_python_requirement",
+        MagicMock(side_effect=ValueError("metadata unavailable")),
+    )
+    uv_install.return_value = False, uv_output
+    notices: list[str] = []
+    with patch.object(update_check.sys, "version_info", VersionInfo(3, 13, 4)):
+        success, output, _ = await update_check.perform_upgrade(
+            target_version="2.0.0", include_prereleases=False, on_notice=notices.append
+        )
+    assert not success
+    assert output.endswith(uv_output)
+    named = any(update_check._PYTHON_MIGRATION_INSTALL_COMMAND in n for n in notices)
+    assert named is names_migration
+
+
+async def test_unresolved_target_refuses_install(
+    uv_install: AsyncMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(update_check, "get_latest_version", lambda **_kwargs: None)
+    success, output, version = await update_check.perform_upgrade(
+        include_prereleases=False
+    )
+    assert not success
+    assert version is None
+    assert output
+    uv_install.assert_not_awaited()
+
+
+@pytest.mark.parametrize("receipt", [None, '[tool]\nrequirements = ["broken"]\n'])
+async def test_missing_or_malformed_receipt_refuses_migration(
+    uv_install: AsyncMock, tmp_path: Path, receipt: str | None
+) -> None:
+    path = tmp_path / "uv-receipt.toml"
+    if receipt is None:
+        path.unlink()
+    else:
+        path.write_text(receipt, encoding="utf-8")
+    with patch.object(update_check.sys, "version_info", VersionInfo(3, 13, 4)):
+        success, output, version = await update_check.perform_upgrade(
+            target_version="2.0.0", include_prereleases=False
+        )
+    assert not success
+    assert version is None
+    assert "receipt" in output.lower()
+    # The plain installer would resolve an older release on its default Python.
+    assert update_check._PYTHON_MIGRATION_INSTALL_COMMAND in output
+    uv_install.assert_not_awaited()
+
+
+async def test_migration_install_failure_has_actionable_recovery(
+    uv_install: AsyncMock,
+) -> None:
+    """Recovery guidance names the 3.14 installer and precedes uv output."""
+    notices: list[str] = []
+    uv_install.return_value = False, "dependency conflict"
+    with patch.object(update_check.sys, "version_info", VersionInfo(3, 13, 4)):
+        success, output, version = await update_check.perform_upgrade(
+            target_version="2.0.0", include_prereleases=False, on_notice=notices.append
+        )
+    assert not success
+    assert version is None
+    assert output == f"{notices[-1]}\ndependency conflict"
+    assert update_check._PYTHON_MIGRATION_INSTALL_COMMAND in notices[-1]
+
+
+def test_migrated_readback_uses_rebuilt_interpreter(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(update_check.sys, "prefix", str(tmp_path))
+    with patch(
+        "subprocess.run", return_value=subprocess.CompletedProcess([], 0, "2.0.0\n")
+    ) as run:
+        assert update_check._read_migrated_distribution_version() == "2.0.0"
+    args = run.call_args.args[0]
+    assert args[0] == str(
+        tmp_path / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    )
+
+
+@pytest.mark.parametrize(
+    ("error", "reason"),
+    [
+        (OSError("missing interpreter"), "missing interpreter"),
+        (
+            subprocess.CalledProcessError(
+                1, "python", stderr="Traceback\nexpected Python 3.14, got 3.13.4\n"
+            ),
+            "expected Python 3.14, got 3.13.4",
+        ),
+        (
+            subprocess.TimeoutExpired("python", 10, stderr=b"still importing\n"),
+            "still importing",
+        ),
+    ],
+)
+def test_migrated_readback_refuses_unverified_interpreter(
+    error: Exception, reason: str
+) -> None:
+    with (
+        patch("subprocess.run", side_effect=error),
+        pytest.raises(update_check._MigrationVerificationError, match=reason),
+    ):
+        update_check._read_migrated_distribution_version()
+
+
+def test_migrated_readback_refuses_invalid_version() -> None:
+    with (
+        patch(
+            "subprocess.run",
+            return_value=subprocess.CompletedProcess([], 0, "invalid\n"),
+        ),
+        pytest.raises(update_check._MigrationVerificationError),
+    ):
+        update_check._read_migrated_distribution_version()

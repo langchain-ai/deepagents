@@ -2916,7 +2916,12 @@ async def _verify_uv_install(
         ):
             return installed_version, None
     except InvalidVersion:
-        pass
+        logger.warning(
+            "Could not compare installed version %r with target v%s",
+            installed_version,
+            target_version,
+            exc_info=True,
+        )
     if verification_error is not None:
         return None, (
             f"check with the migrated interpreter failed: {verification_error}"

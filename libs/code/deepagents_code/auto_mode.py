@@ -3092,8 +3092,15 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
                 # the schema. Forced tool calling only suggests it, and Claude
                 # intermittently wraps a valid verdict list in a JSON string or
                 # a placeholder key, which strict validation rejects and the
-                # fail-closed path turns into a denied batch.
-                if getattr(model, "_llm_type", None) == "anthropic-chat":
+                # fail-closed path turns into a denied batch. Models without
+                # native support (Claude 4.1 and earlier) reject the request
+                # outright, so they keep forced tool calling.
+                profile = getattr(model, "profile", None)
+                if (
+                    getattr(model, "_llm_type", None) == "anthropic-chat"
+                    and isinstance(profile, dict)
+                    and profile.get("structured_output") is True
+                ):
                     structured = model.with_structured_output(
                         _ClassifierBatch, method="json_schema"
                     )

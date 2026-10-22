@@ -11,7 +11,7 @@ import threading
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any, Literal, cast
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
 from unittest.mock import patch
 from uuid import uuid4
 
@@ -207,6 +207,7 @@ class _StructuredModel:
 
 class _ThinkingAnthropicModel(_StructuredModel):
     _llm_type = "anthropic-chat"
+    profile: ClassVar[dict[str, object]] = {"structured_output": True}
 
     def __init__(self, result: object) -> None:
         super().__init__(result)
@@ -2654,6 +2655,14 @@ async def test_sensitive_write_requires_classifier(
 
 class _AnthropicModel(_StructuredModel):
     _llm_type = "anthropic-chat"
+    profile: ClassVar[dict[str, object]] = {"structured_output": True}
+
+
+class _LegacyAnthropicModel(_StructuredModel):
+    """An Anthropic model whose profile does not advertise native support."""
+
+    _llm_type = "anthropic-chat"
+    profile: ClassVar[dict[str, object]] = {}
 
 
 @pytest.mark.parametrize(
@@ -2661,6 +2670,7 @@ class _AnthropicModel(_StructuredModel):
     [
         (_ThinkingAnthropicModel, {"method": "json_schema"}),
         (_AnthropicModel, {"method": "json_schema"}),
+        (_LegacyAnthropicModel, {}),
         (_StructuredModel, {}),
     ],
 )
@@ -2669,7 +2679,7 @@ async def test_anthropic_classifier_uses_native_structured_output(
     model_cls: type[_StructuredModel],
     expected_kwargs: dict[str, object],
 ) -> None:
-    """Anthropic classifiers get schema-constrained output, thinking or not."""
+    """Anthropic models with native support get schema-constrained output."""
     model = model_cls(_allow_result())
     middleware = _middleware(tmp_path)
     request, _store, _key = _request(

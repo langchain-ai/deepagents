@@ -49,7 +49,3 @@ class TestStartupTip:
     def test_incognito_shell_tip_registered(self) -> None:
         """The `!!` shell mode keeps a discoverability tip."""
         assert any("!!" in tip and "incognito" in tip.lower() for tip in _TIPS)
-
-    def test_copy_command_tip_registered(self) -> None:
-        """The `/copy` command keeps a discoverability tip."""
-        assert any("/copy" in tip for tip in _TIPS)

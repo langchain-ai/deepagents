@@ -35,7 +35,7 @@ dependencies = [
     "langgraph-sdk>=0.4.8,<1.0.0",
     "langgraph-cli[inmem]>=0.4.37,<1.0.0",
     "langgraph-runtime-inmem>=0.36.4,<1.0.0",
-    "httpx>=0.28.1,<1.0.0",
+    "httpx>=0.28.1",
 
     # Core model providers - others are added as optional
     "langchain-anthropic>=1.7.6,<2.0.0",
@@ -51,17 +51,17 @@ dependencies = [
     # `Content._wrap_and_format` and the compositor's offset metadata contract
     # to repeat a diff row's gutter on wrapped lines.
     "textual>=8.2.8,<9.0.0",
-    "textual-autocomplete>=4.0.6,<5.0.0",
-    "textual-speedups>=0.2.1,<1.0.0",
-    "prompt-toolkit>=3.0.53,<4.0.0",
-    "rich>=15.0.0,<16.0.0",
-    "markdownify>=1.2.3,<2.0.0",
+    "textual-autocomplete>=4.0.6",
+    "textual-speedups>=0.2.1",
+    "prompt-toolkit>=3.0.53",
+    "rich>=15.0.0",
+    "markdownify>=1.2.3",
 
     # Sandbox integrations
     "langsmith[sandbox]>=0.14.12",
 
     # Tools
-    "tavily-python>=0.7.26,<1.0.0",
+    "tavily-python>=0.7.26",
     "langchain-quickjs>=0.3.4,<0.4.0",
 
     # Cost estimation (bundled offline pricing data).
@@ -74,22 +74,22 @@ dependencies = [
     "genai-prices>=0.1.13,<0.2.0",
 
     # Clipboard
-    "pyperclip>=1.11.0,<2.0.0",
+    "pyperclip>=1.11.0",
 
     # Version parsing
     "packaging>=26.2",
 
     # Utilities
-    "uuid-utils>=0.17.0,<1.0.0",
-    "python-dotenv>=1.2.2,<2.0.0",
-    "requests>=2.34.2,<3.0.0",
-    "pillow>=13.0.0,<14.0.0",
+    "uuid-utils>=0.17.0",
+    "python-dotenv>=1.2.2",
+    "requests>=2.34.2",
+    "pillow>=13.0.0",
     "pyyaml>=6.0.3",
-    "aiosqlite>=0.22.1,<1.0.0",
-    "tomli-w>=1.2.0,<2.0.0",
+    "aiosqlite>=0.22.1",
+    "tomli-w>=1.2.0",
 
     # MCP
-    "fastmcp>=4.0.0b4,<5.0.0",
+    "fastmcp>=4.0.0b4",
     # Cross-process lock serializing MCP OAuth token refreshes.
     # Capped below 3.30: it runs a blocking temp-dir probe at import time
     # (_probe_link_follow_symlinks), which trips Blockbuster's os.getcwd guard
@@ -98,11 +98,11 @@ dependencies = [
     # `CancelScope` shields MCP token writes/lock ops from cancellation in
     # mcp_auth.py. Always installed transitively via mcp/httpx; declared here
     # because we import it directly.
-    "anyio>=4.14.2,<5.0.0",
+    "anyio>=4.14.2",
 
     # ACP
     "deepagents-acp>=0.0.10,<1.0.0",
-    "mcp>=2.0.0,<3.0.0",
+    "mcp>=2.0.0",
 ]
 
 [project.optional-dependencies]
@@ -121,7 +121,7 @@ litellm = ["langchain-litellm>=0.11.1,<2.0.0"]
 meta = ["langchain-meta>=0.5.0,<2.0.0"]
 mistralai = ["langchain-mistralai>=1.1.6,<2.0.0"]
 nvidia = [
-    "aiohttp>=3.14.3,<3.15.0",
+    "aiohttp>=3.14.3",
     "langchain-nvidia-ai-endpoints>=1.5.0,<2.0.0",
 ]
 ollama = ["langchain-ollama>=1.1.0,<2.0.0"]
@@ -147,7 +147,7 @@ all-sandboxes = [
 ]
 
 # Standalone integrations
-media = ["av>=18.0.0,<19.0.0", "pillow>=13.0.0,<14.0.0"]
+media = ["av>=18.0.0", "pillow>=13.0.0"]
 # (quickjs kept for backwards-compatible install commands)
 quickjs = []
 

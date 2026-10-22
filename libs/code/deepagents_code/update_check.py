@@ -2804,6 +2804,47 @@ def _windows_migration_command(target_version: str) -> str:
         )
 
 
+_MIGRATION_RECOVERY = (
+    "Do not uninstall dcode first. "
+    f"Recovery installer: {_PYTHON_MIGRATION_INSTALL_COMMAND} "
+    "(reselect extras and added packages)."
+)
+"""Recovery steps for a migration that stopped partway."""
+
+
+async def _run_migration_subprocess(
+    cmd: str,
+    *,
+    progress: UpgradeProgressCallback | None,
+    log_path: Path | None,
+    on_notice: UpgradeProgressCallback | None,
+) -> tuple[bool, str]:
+    """Run a migration install, giving recovery steps if it is cancelled.
+
+    Cancellation (Ctrl+C) kills uv mid-rebuild, which can leave the tool
+    environment broken, so the recovery notice is sent before the
+    cancellation propagates.
+
+    Returns:
+        The `_run_install_subprocess` result.
+    """
+    try:
+        return await _run_install_subprocess(
+            cmd, progress=progress, log_path=log_path, max_seconds=_MIGRATION_TIMEOUT
+        )
+    except asyncio.CancelledError:
+        logger.warning("Python 3.14 migration was interrupted")
+        try:
+            await _emit_progress(
+                on_notice,
+                f"Python 3.14 migration was interrupted. {_MIGRATION_RECOVERY}",
+            )
+        except Exception:
+            # The cancellation must still propagate.
+            logger.warning("Could not show migration recovery steps", exc_info=True)
+        raise
+
+
 def _install_failure_guidance(
     target_version: str, *, migrating: bool, requirement_unknown: bool, output: str
 ) -> str | None:
@@ -2817,9 +2858,7 @@ def _install_failure_guidance(
             "Python 3.14 migration failed. Check the update log for a timeout, "
             "network errors, or dependency conflicts. If Python downloads are "
             "disabled, provision Python 3.14 with uv or your administrator, or "
-            "allow uv downloads and retry. Do not uninstall dcode first. "
-            f"Recovery installer: {_PYTHON_MIGRATION_INSTALL_COMMAND} "
-            "(reselect extras and added packages)."
+            f"allow uv downloads and retry. {_MIGRATION_RECOVERY}"
         )
     if not requirement_unknown or not _UV_PYTHON_CONFLICT_PATTERN.search(output):
         return None
@@ -3061,12 +3100,17 @@ async def perform_upgrade(
 
             if python is not None and target_version:
                 await _emit_progress(on_notice, _migration_notice(target_version))
-            success, output = await _run_install_subprocess(
-                cmd,
-                progress=progress,
-                log_path=log_path,
-                max_seconds=_UPGRADE_TIMEOUT if python is None else _MIGRATION_TIMEOUT,
-            )
+            if python is None:
+                success, output = await _run_install_subprocess(
+                    cmd,
+                    progress=progress,
+                    log_path=log_path,
+                    max_seconds=_UPGRADE_TIMEOUT,
+                )
+            else:
+                success, output = await _run_migration_subprocess(
+                    cmd, progress=progress, log_path=log_path, on_notice=on_notice
+                )
     except OSError as exc:
         if constraints_staged:
             # The constraints file was written successfully, so this OSError

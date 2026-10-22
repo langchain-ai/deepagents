@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import shlex
 import subprocess
@@ -182,6 +183,23 @@ async def test_migration_preserves_install_context_and_announces_before_install(
         )
     assert result == (True, "installed", "2.0.0")
     uv_install.assert_awaited_once()
+
+
+async def test_interrupted_migration_gives_recovery_steps(
+    uv_install: AsyncMock,
+) -> None:
+    """Ctrl+C kills uv mid-rebuild, so recovery steps must still reach the user."""
+    notices: list[str] = []
+    uv_install.side_effect = asyncio.CancelledError
+    with (
+        patch.object(update_check.sys, "version_info", VersionInfo(3, 13, 4)),
+        pytest.raises(asyncio.CancelledError),
+    ):
+        await update_check.perform_upgrade(
+            target_version="2.0.0", include_prereleases=False, on_notice=notices.append
+        )
+    assert "interrupted" in notices[-1]
+    assert update_check._PYTHON_MIGRATION_INSTALL_COMMAND in notices[-1]
 
 
 async def test_live_session_defers_migration_without_touching_environment(

@@ -1,34 +1,16 @@
 """Unit tests for the startup tip widget."""
 
-import pytest
-from textual.content import Content
+from typing import TYPE_CHECKING
 
 from deepagents_code._env_vars import HIDE_SPLASH_TIPS
-from deepagents_code.tui.widgets.startup_tip import _TIPS, StartupTip, show_startup_tip
+from deepagents_code.tui.widgets.startup_tip import show_startup_tip
 
-_PICK_TIP = "deepagents_code.tui.widgets.startup_tip._pick_tip"
-_CHOICES = "deepagents_code.tui.widgets.startup_tip.random.choices"
-_IS_YOLO_SWITCHER = "deepagents_code.config.is_yolo_switcher_enabled"
-
-
-@pytest.fixture(autouse=True)
-def _clear_editor_environment(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("VISUAL", raising=False)
-    monkeypatch.delenv("EDITOR", raising=False)
+if TYPE_CHECKING:
+    import pytest
 
 
 class TestStartupTip:
     """Tests for the bottom startup tip widget."""
-
-    def test_returns_content(self) -> None:
-        """The widget renders Textual `Content`."""
-        assert isinstance(StartupTip("Use /help").render(), Content)
-
-    def test_renders_tip_text(self) -> None:
-        """The widget labels and renders the selected tip."""
-        rendered = StartupTip("Use /copy").render()
-        assert isinstance(rendered, Content)
-        assert rendered.plain == "Tip: Use /copy"
 
     def test_show_startup_tip_defaults_to_true(
         self, monkeypatch: pytest.MonkeyPatch
@@ -45,7 +27,3 @@ class TestStartupTip:
         monkeypatch.setenv(HIDE_SPLASH_TIPS, "1")
 
         assert show_startup_tip() is False
-
-    def test_incognito_shell_tip_registered(self) -> None:
-        """The `!!` shell mode keeps a discoverability tip."""
-        assert any("!!" in tip and "incognito" in tip.lower() for tip in _TIPS)

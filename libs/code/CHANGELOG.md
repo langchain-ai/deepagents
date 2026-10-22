@@ -4,12 +4,11 @@
 
 ## [0.1.88](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.87...deepagents-code==0.1.88) (2026-10-22)
 
-
 ### Bug Fixes
 
-* **code:** bridge upgrades to Python 3.14 ([#7081](https://github.com/langchain-ai/deepagents/issues/7081)) ([914de8b](https://github.com/langchain-ai/deepagents/commit/914de8be68ff48b22418ceb2f9c6baf801f41afa))
-* **code:** pass through async subagent `webhook` configuration ([#7130](https://github.com/langchain-ai/deepagents/issues/7130)) ([6f6002c](https://github.com/langchain-ai/deepagents/commit/6f6002c08c4efa12b847ce319c36bd41df5f3b72))
-* **code:** silence no-op automatic cache offloads ([#7078](https://github.com/langchain-ai/deepagents/issues/7078)) ([215392a](https://github.com/langchain-ai/deepagents/commit/215392aa3dfa08d21bc30a696b2347dcfbd44ebf))
+- Fixed async subagents to pass through `webhook` configuration.
+- Fixed bridge compatibility with Python 3.14.
+- Silenced no-op automatic cache offloads.
 
 ## [0.1.87](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.86...deepagents-code==0.1.87) (2026-10-20)
 

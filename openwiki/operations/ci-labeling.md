@@ -1,11 +1,11 @@
 ---
 type: operations guide
-title: CI and Pull-Request Labeling Operations
-description: Operational guide to the reusable unit-test workflow and the secure, config-driven pull-request labeler, including classification lifecycle, human overrides, and concurrency behavior.
+title: CI and Pull-Request Labeling
+description: How the main CI workflow selects and gates work, including curated-notes inherited-result diagnostics, and how the privileged pull-request labeler safely applies configuration-driven metadata.
 tags: [ci, github-actions, pull-requests, labeling, testing, security]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-10-21T08:05:42.350Z
+    at: 2026-10-22T08:05:54.651Z
 sources:
   - id: openwiki-source-0b91f453f677e9b0a2cf7828
     resource: repo://.github/scripts/labeling/pr-labeler-config.json
@@ -17,6 +17,8 @@ sources:
     resource: repo://.github/scripts/tests/labeling/pr-labeler.test.js
   - id: openwiki-source-13010c24e32f7e95e2a6fdce
     resource: repo://.github/scripts/tests/labeling/test_pr_labeler.py
+  - id: openwiki-source-5ec08fb431e595bde89de502
+    resource: repo://.github/scripts/tests/workflows/test_inherited_ci_diagnostics.py
   - id: openwiki-source-4d9cccca7700db7220ec055e
     resource: repo://.github/workflows/_test.yml
   - id: openwiki-source-164e2da859b5277df81c7d94
@@ -25,107 +27,119 @@ sources:
     resource: repo://.github/workflows/pr_labeler_backfill.yml
   - id: openwiki-source-f8781d847f6481a966a44a68
     resource: repo://.github/workflows/pr_labeler.yml
-generated: { by: "openwiki/0.4.2", at: "2026-10-21T08:05:42.350Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-10-22T08:05:54.651Z" }
 ---
 
-# CI and Pull-Request Labeling Operations
+# CI and Pull-Request Labeling
 
-The repository treats CI execution and PR metadata as separate but connected operational systems. The reusable test workflow gives package callers a validated matrix and a consistent test environment. `pr_labeler.yml` owns mutations to PR labels in one sequential workflow so size, title, changed-path, provenance, and contributor classification do not race each other. The label taxonomy and the configuration are the operational contract; do not copy mappings or thresholds into a workflow.
+CI execution and pull-request metadata are related but separate operational systems. `ci.yml` selects package work and produces the required `✅ CI Success` result; `_test.yml` provides a validated reusable test matrix. `pr_labeler.yml` is the single sequential writer for PR size, title, path, provenance, and contributor labels, avoiding competing label mutations. The label taxonomy in [`.github/LABELS.md`](../../.github/LABELS.md) and the labeler configuration are the operational contract; do not duplicate mappings or thresholds in workflows.
 
-For package-local developer commands, see [Development](development.md); for focused product tests, see the [Testing Guide](../testing/testing-guide.md). The authoritative taxonomy is [`.github/LABELS.md`](../../.github/LABELS.md).
+For local commands, see [Development](development.md); for test guidance, see the [Testing Guide](../testing/testing-guide.md). The `.github` structure distinguishes event entry workflows from reusable `_*.yml` workflows and places workflow contracts under `.github/scripts/tests/workflows/`.
 
-## Reusable unit-test workflow
+## Main CI: selection, inherited results, and gate
 
-`.github/workflows/_test.yml` is a reusable `workflow_call` workflow, not an event entrypoint. A caller supplies a required `working-directory` and JSON array of quoted `python-versions`; it may override the primary runner OS and add explicit `{python-version, os}` matrix legs. A short validation job rejects malformed JSON and non-string version or leg fields before matrix expansion. The build job waits for that validation, runs every requested primary-version/OS pair plus extras, and has `fail-fast: false`, so one bad leg does not cancel diagnostic results from the others.
+`ci.yml` runs for pull requests, pushes to `main`, and merge-group events. It grants `checks: read`, `contents: read`, and `pull-requests: read`; the latter is passed through to the reusable test workflow, whose token can narrow but cannot widen the caller's permissions. The change-detection job feeds package-specific lint/test jobs, while pushes run package jobs unconditionally. The final `✅ CI Success` job runs regardless of predecessors and is the decision point for the lockfile result and non-skipped job results.
 
-Each build leg has a 20-minute limit, checks out the selected ref, invokes the local `./.github/actions/uv_setup` action with a working-directory-specific cache suffix, and runs `uv sync --group test` under `UV_NO_SYNC=true` and `UV_FROZEN=true`. The workflow conditionally installs Node 24 for `libs/talon`; it runs the package `make test` route on non-Windows runners and a direct `uv run --group test pytest -n auto -vvv tests/unit_tests/` route on Windows because the Makefile's sandbox path needs POSIX `sh`. The final clean-tree check catches tests or generators that modify tracked files.
+### Curated-notes apply optimization
 
-### Live-label test escape hatch
+A narrowly constrained release-bot PR can be recognized as a changelog-only curated-notes apply. For that determination, `changes` checks out the detector and release configuration from the trusted base ref, rather than treating PR changes as policy. When the detector says the commit is eligible, CI looks up the parent commit's `✅ CI Success` check. It skips ordinary package jobs **only** when that parent result is conclusively `success` or `failure`; an absent, malformed, unavailable, cancelled, or otherwise inconclusive result falls back to the normal package jobs.
 
-The reusable workflow grants only `contents: read` and `pull-requests: read`. On a `pull_request`, it reads current labels from the GitHub API instead of the webhook payload: a rerun retains the original payload and could otherwise miss a recently applied maintainer override. A failed label lookup is announced and **fails closed**—the override remains disabled.
+The decision and parent metadata travel through `changes` outputs to `ci_success`. A successful parent permits the curated apply; a failed parent makes the new `✅ CI Success` result fail. Consequently, skipped package jobs never turn a failed parent into a passing head.
 
-`ci:allow-warnings` supplies `-W default`, which takes precedence over pytest INI warning filters for that PR run. Push and merge-queue runs lack PR label context and always enforce the normal warning policy. The `ci:skip-ripgrep` override is narrower: it is consulted only for Linux `libs/deepagents` release-sensitive PR runs. Those runs normally require successful `apt` installation of ripgrep and set `DEEPAGENTS_RIPGREP_EXPECTED=1`; the override tolerates a failed install, records a one-day marker artifact when no usable `rg` exists, and allows the affected ripgrep-gated tests to skip. In contrast, normal PR installs have a two-minute bound: timeout statuses are recovered with bounded `dpkg --configure -a`, then either proceed if `rg` is usable or emit the same marker artifact. Non-timeout installation failures remain failures.
+When that inherited failure occurs, a non-gating diagnostic step reports the parent commit, the parent CI run/check when safely available, and currently unsuccessful sibling checks. It accepts only same-repository Actions job URLs and escapes check names before rendering them, so API metadata cannot inject markup or untrusted links. Failure to retrieve diagnostic details merely preserves the inherited failure message: `continue-on-error` means diagnostics cannot replace the shell gate. The recovery sequence is deliberate: fix or rerun the parent CI first, then **re-run all jobs** on the curated head so change detection is re-evaluated; re-running only failed head jobs reuses the old output.
 
 ```mermaid
 flowchart TD
-    Caller["CI caller"] --> Validate["Validate JSON matrix inputs"]
-    Validate --> Matrix["Build matrix legs"]
-    Matrix --> Setup["Checkout UV setup and test dependency sync"]
-    Setup --> Bypass{"Pull request label override"}
-    Bypass --> Tests["Run package tests"]
-    Tests --> Clean["Verify clean working tree"]
+    Event["Pull request push or merge-group event"] --> Changes["Detect changed packages"]
+    Changes --> Curated{"Eligible curated-notes apply"}
+    Curated -->|"No or inconclusive parent"| Jobs["Run normal package jobs"]
+    Curated -->|"Parent CI success or failure"| Parent["Pass parent result to CI Success"]
+    Jobs --> Gate["CI Success gate"]
+    Parent --> Gate
+    Gate -->|"Inherited failure"| Diagnostic["Report parent failure safely"]
+    Gate -->|"Inherited success or passing jobs"| Success["Required CI result"]
 ```
 
-*The reusable workflow validates inputs before fan-out and uses live PR labels only for narrowly scoped test-policy overrides.*
+*The curated-notes path inherits a conclusive parent result; its diagnostic explains a failure but never changes the gate decision.*
 
-## PR labeler: trust boundary and lifecycle
+### Reusable unit-test workflow
 
-The `PR Labeler` listens to `pull_request_target` actions `opened`, `synchronize`, `reopened`, and `edited`. This event has repository authority, so its central security invariant is that it checks out the base branch—not PR-head code—before loading `pr-labeler.js` and its JSON configuration. Never change that checkout to an untrusted head ref or execute PR-provided scripts in this job.
+`.github/workflows/_test.yml` is a `workflow_call` workflow, not an event entrypoint. Callers provide a required `working-directory`, a JSON array of quoted `python-versions`, and optionally a primary OS plus explicit `{python-version, os}` legs. A validation job rejects malformed JSON and non-string fields before expansion. The build waits for validation, combines primary and extra legs with `fail-fast: false`, then checks out code, invokes the local `./.github/actions/uv_setup` action, synchronizes `--group test` dependencies, runs platform-specific tests, and verifies a clean tree.
 
-The labeling job runs in the `labeling` environment with only contents read plus pull-request and issue write permissions. On `opened`, it generates a GitHub App token and verifies it before asking the private organization-membership endpoint whether the author is external. Bots and active members are internal; a 404 is external; any other membership error fails rather than treating an unknown author as external. The App token is also used for the external label and tier step because labels written with the default `GITHUB_TOKEN` do not trigger downstream label-event workflows.
+Every build has a 20-minute limit. Talon additionally installs Node 24. Non-Windows legs use `make test`; Windows calls `uv run --group test pytest -n auto -vvv tests/unit_tests/` because the Makefile sandbox route requires POSIX `sh`.
 
-Before ordinary label application, non-release Conventional Commit scopes are canonicalized using `scopeAliases`: for example, `deepagents-code` becomes `code`. Release titles are deliberately excluded because their scopes are canonical release records. If the title update API call fails, the run warns and still labels the original title; if it succeeds, the corrected title is passed through a step output because the event payload remains stale.
+### Live-label test overrides
+
+The reusable workflow has only `contents: read` and `pull-requests: read`. On pull-request runs it queries the live labels API rather than using the webhook payload, since a rerun retains the original payload. A lookup failure is loud and fails closed: no bypass is enabled.
+
+`ci:allow-warnings` adds `-W default`, which overrides pytest INI warning filters for that run. Push and merge-group runs have no PR-label context and retain normal warning enforcement. `ci:skip-ripgrep` is still narrower: only Linux `libs/deepagents` release-sensitive PR legs consult it. Such legs normally require ripgrep installation and set `DEEPAGENTS_RIPGREP_EXPECTED=1`; the label can tolerate an installation failure, record a one-day marker artifact when `rg` remains unavailable, and allow ripgrep-gated tests to skip. The non-release PR installer instead has a two-minute bound, performs bounded `dpkg --configure -a` recovery after a timeout, then proceeds only if `rg` is usable or records the same marker; non-timeout installation failures fail.
+
+## PR labeler: privileged boundary and lifecycle
+
+`PR Labeler` receives `pull_request_target` actions `opened`, `synchronize`, `reopened`, and `edited`. This is a privileged event, so its essential invariant is that `actions/checkout` obtains the base branch before `actions/github-script` loads `pr-labeler.js` and its configuration. PR-head code is never checked out or executed by this workflow; the PR title, body, paths, and event fields are data passed to trusted base-branch logic.
+
+The `label` job uses the `labeling` environment with `contents: read`, `pull-requests: write`, and `issues: write`. Opening-time provenance additionally creates and verifies a GitHub App token. The private membership request treats bots and active members as internal, a 404 as external, and any other error as fatal. The App token applies external and contributor-tier labels because events made with the default `GITHUB_TOKEN` do not trigger downstream workflows.
 
 ```mermaid
 sequenceDiagram
-    participant Event as PR event
-    participant Flow as PR Labeler
-    participant Base as Base branch checkout
-    participant Api as GitHub API
-    participant App as GitHub App
-    Event->>Flow: opened synchronize reopened or edited
-    Flow->>Base: checkout trusted base branch
+    participant Event as Pull request target event
+    participant Flow as PR Labeler workflow
+    participant Base as Trusted base checkout
+    participant API as GitHub API
+    participant App as GitHub App token
+    Event->>Flow: opened synchronize reopened or edited payload
+    Flow->>Base: checkout base branch only
+    Flow->>Base: load label helper and configuration
     alt opened
-        Flow->>App: create token and check membership
-        App->>Api: apply external and tier labels
+        Flow->>App: create and verify token
+        Flow->>API: check private membership with App token
     end
-    Flow->>Api: optionally canonicalize title
-    Flow->>Api: read labels and changed files
-    Flow->>Api: remove stale managed labels then add labels
+    Flow->>API: optionally update canonical title
+    Flow->>API: read labels files and event history
+    Flow->>API: remove stale managed labels then add labels
+    alt external opened
+        Flow->>API: apply tier and external labels with App token
+    end
 ```
 
-*PR-head content remains data; the privileged workflow loads its executable labeling logic only from the base branch.*
+*The privileged workflow executes only trusted base-branch helper code; untrusted PR-head content is API payload data.*
 
-## Classification is configuration-driven
+Before normal labeling, the workflow canonicalizes non-release Conventional Commit scope aliases through the API. If the update succeeds, it passes the replacement title through a step output because the event payload title is immutable; if it fails, labeling continues with the original title. `release(...)` titles are intentionally not rewritten.
 
-`.github/scripts/labeling/pr-labeler-config.json` is the shared source of truth for label colors and descriptions, size thresholds, ignored files and paths, title scope mappings and aliases, branch/path/topic rules, Conventional Commit type mappings, release marker, and contributor threshold. `pr-labeler.js` refuses a configuration missing any required group. `ensureLabel` creates a missing label with its prefix color and configured description; a concurrent creator producing HTTP 422 is accepted as an already-created label. New automatic labels therefore need both an applicable rule and a description.
+## Configuration-driven classification
 
-### Size, title, paths, and branches
+`.github/scripts/labeling/pr-labeler-config.json` owns the classification inputs: size thresholds and exclusions; title types, scope mappings and aliases; release, tier, color, and description metadata; and file, branch, and topic rules. `pr-labeler.js` rejects configurations missing required groups. It also creates missing labels on demand with the longest matching taxonomy-prefix color and configured description; a create-time 422 is tolerated as a concurrent creation.
 
-On every event except `edited` (where the file set is unchanged), the workflow paginates PR files. Size is additions plus deletions excluding any basename `uv.lock` and every `docs/` path. Thresholds are exclusive upper bounds: `size: XS` below 50, `S` below 200, `M` below 500, `L` below 1000, and catch-all `XL`. The calculated size replaces other size labels; it is the principal automatically reconciled file-derived classification.
+For non-`edited` events, the workflow paginates changed files. It calculates size from additions plus deletions after excluding any `uv.lock` basename and `docs/` paths, then replaces stale size labels. Configured path rules add package/integration labels, and more-specific topic rules add module topics. Branch rules are additive. Title parsing recognizes `type(scope): subject` and a `!` immediately before the colon, maps known types and comma-separated scopes, and gives release titles the configured release label. A recognized title removes only stale managed type, breaking, or release labels; an unrecognized title preserves previous title classification. Before a batch add, all additions are ensured; removals tolerate 404 and never remove a label also being added.
 
-The title parser recognizes `type(scope): subject` and a `!` immediately before the colon. It maps recognized types—including `release` to `auto:release-pr`—and comma-separated scopes to configured `type:*`, `package:*`, or `integration:*` labels. A recognized title edit removes only stale managed type/breaking/release labels; an unrecognized title preserves the previous title classification. Scope and changed-path labels are additive, so title changes do not remove package or integration evidence. Branch rules add `org:open-swe` for an `open-swe/` head branch.
+### Human topic authority
 
-Path rules identify package and integration ownership by configured prefix and normally ignore lockfile-only changes. Topic path rules are intentionally more specific: they classify modules such as a middleware subagent implementation or an MCP module, rather than inferring a topic from an entire package. The labeler ensures every label to be added exists before submitting its batch, avoiding GitHub's all-or-nothing 422 failure when one label is missing; removals tolerate an already-absent 404.
+Topic labels begin with deterministic changed-module rules, but a user's removal is meaningful. The helper reads paginated issue events: a user `unlabeled` event suppresses a matching auto topic until a later user `labeled` event clears it; bot or unattributed events do not create that override.
 
-### Topics and human authority
+Only a later synchronize event with `before` and head SHAs can reconsider removal. The compared history must be ahead-only, contain fewer than 300 files, and provide topic-relevant patches. Missing label descriptions or contextual input beyond 20,000 characters also preserve removal. The classifier receives removal history, relevant patches, and bounded title/body context and is directed to treat embedded content as untrusted and re-add only for substantive new topic-specific evidence. Classifier/comparison failure warns and preserves the removal without preventing size, path, or title labels.
 
-PR topic labels begin with changed-module rules, not PR prose. Existing topics are additive, and a human removal has special meaning. The labeler reads the complete issue-event history: a user `unlabeled` event suppresses that topic, while a later human `labeled` event clears the suppression. Bot or unattributed events do not establish the override.
+The default classifier uses Groq's OpenAI-compatible endpoint, `openai/gpt-oss-20b`, temperature zero, JSON output, and a 15-second abort timeout; `TOPIC_CLASSIFIER_PROVIDER=semif` selects the alternative provider. Returned labels are deduplicated, restricted to allowed labels, and capped at three.
 
-Only a later `synchronize` event can reconsider a human removal. It compares the event's `before` SHA to the PR head and declines to re-add if history is not simply ahead, the comparison has no patches or has 300 or more files, the changed files do not match a removed topic, candidate descriptions are missing, or contextual input exceeds 20,000 characters. Otherwise the topic classifier receives the removed-topic history, latest relevant patches, and bounded title/body context; it is explicitly instructed to require a substantive new topic-specific change and to treat embedded text as untrusted. Classifier errors warn and preserve the removal, so topic reapplication is conservative without blocking size, package, or type labels.
+### Provenance, tiers, cancellation, and backfill
 
-The default classifier uses the Groq OpenAI-compatible endpoint with `openai/gpt-oss-20b`, temperature zero, JSON output, and a 15-second abort timeout; `TOPIC_CLASSIFIER_PROVIDER=semif` selects the alternative provider. Results are deduplicated, filtered to allowed labels, and capped at three. The issue labeler uses the cached `.github/topic-labels.json` manifest and model classification on issue opening; PR topic classification is path-driven except for the removal-reconsideration case.
+On opening, internal authors receive `org:internal`. External authors receive `org:external` plus `auto:new-contributor` at zero merged repository PRs or `auto:trusted-contributor` at the configured threshold (five). A 422 from the contributor search skips tier inference rather than guessing. These are opening-time labels, not a continuous reconciliation.
 
-### Provenance and contributor tier
+Concurrency is keyed by workflow, PR number, and phase. `opened` has a separate non-cancelled group so provenance work survives rapid updates; synchronize/reopen/edit runs share an update group and cancel a superseded predecessor. Keep PR label mutations in this unified workflow rather than adding competing writers.
 
-On opening, internally classified authors receive `org:internal`. External authors receive `org:external` and, after a search for their merged PRs in this repository, `auto:new-contributor` at zero merges or `auto:trusted-contributor` at the configured threshold of five or more. A malformed search query (HTTP 422) means the tier is skipped rather than inferred. These labels are opening-time provenance, not a periodic reconciliation of all PRs.
-
-## Ordering, cancellation, and repair
-
-All main label calculations first accumulate `toAdd` and `toRemove`. The workflow ensures additions, removes stale labels that are not also being added, then adds the remaining batch. It handles the title canonicalization output before title matching, and it performs external tiering and external-label delivery after the standard mutation step. This ordering keeps a corrected title and its resulting labels coherent within one run.
-
-Concurrency is per workflow, PR number, and phase. `opened` has its own group and is never cancelled; all non-open updates share an `update` group and cancel an in-progress predecessor. Thus a rapid series of synchronize/edit/reopen updates converges on the newest run without allowing an update cancellation to discard the one-time provenance work on opening. Consolidating the formerly separate label workflows is intentional: do not add another PR-label mutation workflow, because independent writers can race on the same label set.
-
-For existing open PRs, manually dispatch `pr_labeler_backfill.yml` with a positive `max_items` value. It reuses the shared helper and processes up to that many PRs, pre-creates size/tier labels, caches contributor lookup per author, and continues after individual failures while marking the job failed at the end if any occurred. It reconciles stale sizes and title labels; when contributor-tier lookup is unknown, it deliberately leaves tier labels untouched rather than turning uncertainty into a removal.
+For existing PRs, manually dispatch `pr_labeler_backfill.yml` with a positive `max_items`. It uses the helper, pre-creates size/tier labels, caches authors, processes each PR independently, and marks the job failed after the loop if any item failed. When tier lookup is unknown, it leaves tier labels untouched instead of converting uncertainty into removal.
 
 ## Safe changes and focused tests
 
-When extending taxonomy, update the config rather than embedding thresholds, scope aliases, colors, or labels in `pr_labeler.yml`. Add a description for every potentially created label, a prefix color for each automatic taxonomy family, and focused rules only when an automatic match is truly deterministic. Preserve release-title scope exemption and update the tests when crossing a workflow/helper boundary.
+Add or alter automatic taxonomy in the JSON configuration, not in `pr_labeler.yml`. A potentially created label needs a description and a matching prefix color; a new rule needs deterministic evidence. Preserve the release-title exemption, base-branch checkout, and conservative human-topic removal behavior.
 
-The Node contract suite in `.github/scripts/tests/labeling/pr-labeler.test.js`, run through `test_pr_labeler.py`, covers canonical scope rewrites, release-title preservation, config reachability and descriptions, tier thresholds and workflow/config drift, title stale-label semantics, path-based topic selection, human topic removals and conservative reapplication, label creation/colors, and workflow-script behavior. Run the focused wrapper from the repository root:
+The focused Node contract suite is run by a pytest shim and covers alias canonicalization, configuration reachability and taxonomy drift, title reconciliation, label creation/colors, deterministic topic rules, topic removal/reapplication, and workflow/helper behavior:
 
 ```bash
 python .github/scripts/tests/labeling/test_pr_labeler.py
 ```
 
-Changes to `_test.yml` should additionally be exercised by its callers through CI: its reusable interface is consumed by `ci.yml`, whose PR, push-to-main, and merge-group executions pass the read permission needed for live override lookup.
+`test_inherited_ci_diagnostics.py` exercises the curated-notes detector/gate contract and the diagnostic script: it verifies inherited success/failure behavior, malformed lookup fallback, safe links and escaped output, and the fact that diagnostics use no write permission and cannot replace the final gate. Run it with:
+
+```bash
+python -m pytest .github/scripts/tests/workflows/test_inherited_ci_diagnostics.py
+```

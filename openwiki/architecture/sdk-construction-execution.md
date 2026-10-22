@@ -1,7 +1,7 @@
 ---
 type: architecture
 title: SDK Construction and Execution
-description: How create_deep_agent assembles and compiles Deep Agents, isolates synchronous task subagents, and coordinates remote asynchronous Agent Protocol tasks.
+description: How create_deep_agent builds the Deep Agents middleware stack, partitions synchronous and remote subagents, and exposes task execution and tracking surfaces.
 tags: [deepagents, sdk-construction, agent-execution, middleware, subagents, permissions, langgraph]
 sources:
   - id: openwiki-source-b93533cac55718d75277d1cf
@@ -36,126 +36,120 @@ sources:
     resource: repo://libs/deepagents/tests/unit_tests/test_subagents.py
 verified:
   - by: openwiki/0.4.2
-    at: 2026-10-21T08:05:42.350Z
-generated: { by: "openwiki/0.4.2", at: "2026-10-21T08:05:42.350Z" }
+    at: 2026-10-22T08:05:54.651Z
+generated: { by: "openwiki/0.4.2", at: "2026-10-22T08:05:54.651Z" }
 ---
 
 # SDK Construction and Execution
 
-`create_deep_agent` is the public assembly boundary. It builds middleware and task policy around LangChain's `create_agent()` rather than implementing an independent agent loop. The resulting compiled graph owns normal model/tool execution, interrupts, checkpoints, and state persistence; remote asynchronous work remains an Agent Protocol server concern.
+`create_deep_agent()` is the SDK assembly boundary, not a separate agent loop. It resolves the model and harness profile, establishes backend and policy, builds a LangChain middleware list, and returns a configured LangGraph compiled by `create_agent()`. The compiled graph owns ordinary agent execution, state, checkpoints, and interrupts. Remote async work is instead executed by an Agent Protocol server; the parent graph persists only its tracking records.
 
-## Construction flow
+## Construction and partitioning
 
 ```mermaid
 flowchart TD
     App["Application"] --> Build["create_deep_agent"]
-    Build --> Resolve["Resolve model profile tools and backend"]
-    Resolve --> Classify["Classify subagent specifications"]
-    Classify --> Inline["Prepare inline task subagents"]
-    Classify --> Remote["Collect remote async specifications"]
+    Build --> Resolve["Resolve model profile tools backend"]
+    Resolve --> Split["Partition subagent specifications"]
+    Split --> Inline["Declarative or compiled task subagents"]
+    Split --> Remote["Async Agent Protocol subagents"]
     Inline --> GP["Add general-purpose subagent when enabled"]
-    GP --> Stack["Assemble child and main middleware"]
-    Remote --> Stack
-    Stack --> FilterOne["Apply profile exclusions"]
-    FilterOne --> Custom["Replace or splice caller middleware"]
-    Custom --> FilterTwo["Apply exclusions again"]
-    FilterTwo --> Private["Set private task state keys"]
-    Private --> Compile["LangChain create_agent"]
-    Compile --> Graph["Configured compiled graph"]
+    GP --> Core["Build main core middleware"]
+    Remote --> Core
+    Core --> ExcludeOne["Apply profile exclusions"]
+    ExcludeOne --> Custom["Replace or splice caller middleware"]
+    Custom --> ExcludeTwo["Apply exclusions again"]
+    ExcludeTwo --> Compile["create_agent and graph configuration"]
 ```
 
-Caption: Profile exclusions bracket caller middleware processing, and excluded-tool filtering is appended only after the final stack is known.
+Caption: `graph.py` classifies a specification with `graph_id` as remote; only inline specifications create the synchronous `task` surface.
 
-## Entry point and compiled graph
+A `SubAgent` is declarative, a mapping with `runnable` is a `CompiledSubAgent`, and a mapping with `graph_id` is an `AsyncSubAgent`. Unless disabled by the active profile or replaced by an inline specification of the same name, the builder prepends the default `general-purpose` synchronous subagent. Consequently, remote subagents do not cause `task` to appear, and disabling all inline/default subagents does not remove async task tools.
 
-The builder resolves a model and harness profile, rewrites supplied tool descriptions according to that profile, and uses `StateBackend()` when no backend is supplied. A string model identifier is retained for profile selection while `resolve_model()` creates the usable model. `model=None` is a deprecated compatibility path that warns and builds `ChatAnthropic(model_name="claude-sonnet-4-6")`. Profile prompt material is appended to a string prompt, or added as a text block after the existing blocks of a caller-provided `SystemMessage`.
+The default backend is `StateBackend()`. The `model=None` compatibility path is deprecated; otherwise the builder resolves the model and selects its harness profile. It rewrites supplied tool descriptions according to the profile, appends profile prompt material to a string prompt or to a new text content block of a supplied `SystemMessage`, and forwards the final model, prompt, tools, middleware, response format, context schema, checkpointer, store, debug, name, cache, and state schema to `create_agent()`.
 
-At the main boundary, `create_agent()` receives the resolved model, final prompt, rewritten tools, assembled middleware, response format, context schema, checkpointer, store, debug setting, name, cache, and either the supplied schema or `DeepAgentState`. The returned graph is configured with recursion limit `9999` and Deep Agents integration, version, and agent-name metadata. Checkpointer and store are passed at this main compilation boundary, not separately to synchronous child compilation.
+The returned graph has recursion limit `9999` and Deep Agents integration, version, and agent-name metadata. Checkpointer and store are passed at that outer compilation boundary; they are not separately injected into synchronous child compilation.
 
-### Message and state ownership
+## Middleware composition
 
-`DeepAgentState.messages` uses a `DeltaChannel` with `_messages_delta_reducer` and snapshot frequency 50. The reducer accepts raw message-like values, treats missing replay state as empty, replaces or removes messages by ID, and recognizes remove-all. This reduces checkpoint growth without changing the observable message channel.
+The order below is constructed in `graph.py`; it is not inferred from public middleware types.
 
-A custom main `state_schema` is forwarded when a declarative task subagent is compiled. A `CompiledSubAgent` supplies an already-built runnable and therefore owns its schema; an `AsyncSubAgent` uses the remote graph's schema. Once the complete main middleware stack exists, private fields declared by that schema and middleware schemas are attached to every installed `SubAgentMiddleware` boundary, preventing those fields from crossing synchronous task boundaries.
+1. `FilesystemMiddleware`;
+2. `SubAgentMiddleware` only when an inline pool exists;
+3. `_ParentNotifierMiddleware`;
+4. summarization middleware;
+5. `PatchToolCallsMiddleware`;
+6. `AsyncSubAgentMiddleware` only when remote specifications exist.
 
-Synchronous children run with LangGraph ambient configuration. Parent callbacks, tags, configurable values, and metadata propagate; a child runnable's bound configuration wins conflicts. The task bridge only adds the subagent tracing marker, avoiding duplicate explicit forwarding.
+Profile-provided middleware, optional `SkillsMiddleware`, prompt-caching middleware, optional `MemoryMiddleware`, derived `HumanInTheLoopMiddleware`, and `UnsupportedContentMiddleware` form the tail. The builder applies profile exclusions, processes caller middleware, then applies exclusions again. A caller instance with the same name replaces a surviving entry in place; a new name is inserted after the last surviving core entry and before the tail. `_ToolExclusionMiddleware`, when needed, is appended last, so custom middleware cannot restore a profile-excluded tool.
 
-## Synchronous task subagents
+`FilesystemMiddleware` and `SubAgentMiddleware` are protected scaffolding. Exact class/name exclusions of them, collisions between a string exclusion and distinct middleware classes, and exclusions matching nowhere across the main and general-purpose stacks raise during construction. A profile may, however, exclude `_ParentNotifierMiddleware` by its class.
 
-A mapping with `runnable` is used as a `CompiledSubAgent`; other non-remote mappings are declarative `SubAgent` specifications. Declarative children resolve their own model and harness profile, inherit parent permissions and `interrupt_on` only when absent, and inherit parent tools only when `tools` is omitted. A fork also mirrors parent prompt-producing middleware to reconstruct the inherited prompt.
+The automatically added general-purpose child deliberately has a narrower stack: filesystem, summarization, patching, profile middleware, optional skills, and caching. Caller middleware reaches it only by replacing one of that stack's original slots, rather than by copying the entire main stack.
 
-Unless the active profile disables it or an inline specification is already named `general-purpose`, construction prepends the default general-purpose declarative subagent. Its stack begins with filesystem, summarization, and patch middleware, followed by profile middleware, skills when configured, and prompt caching. It is deliberately not a wholesale copy of the main stack: caller middleware reaches it only when it replaces an original general-purpose stack slot.
+## State and synchronous task boundaries
 
-`SubAgentMiddleware` is installed only if there is an inline pool and exposes `task`. It validates names and modes, compiles declarative specs via `create_sub_agent()`, adds `HumanInTheLoopMiddleware` when the child has `interrupt_on`, and ensures `UnsupportedContentMiddleware` exists.
+`DeepAgentState.messages` uses `DeltaChannel` and the message-delta reducer. It accepts raw message-like input, treats absent replay state as empty, updates/removes messages by ID, and supports remove-all; the channel is configured for snapshot frequency 50.
 
-An isolated task gets allowed parent state and a fresh `HumanMessage` containing the delegated description. A fork receives effective parent history after summarization plus the task message. Declarative forks retain state needed to rebuild their prompt and set a private fork marker, so recursive `task` delegation is refused. On completion, the bridge requires `messages`, removes message/private/excluded/unchanged values from the child update, and returns one `ToolMessage`: JSON for a `structured_response`, otherwise the last nonempty AI text.
+When a custom `state_schema` is supplied, it is used for the main graph and declarative child compilation. Precompiled children retain their own schema. After the complete main stack is known, fields private to the main schema or installed middleware schemas are assigned to each installed `SubAgentMiddleware` boundary and are withheld from task handoff.
 
-## Remote asynchronous tasks
+A declarative child has its own resolved model/profile and child middleware. It inherits parent permissions and `interrupt_on` only when the specification does not provide them, and inherits parent tools only when `tools` is omitted. A fork mirrors prompt-producing parent middleware in order to reconstruct the inherited prompt. Synchronous child runs use ambient LangGraph configuration: callbacks, tags, configurable values, and metadata propagate, while a child runnable's bound configuration wins a collision.
 
-An `AsyncSubAgent` is identified by `graph_id` and is installed through `AsyncSubAgentMiddleware`, independently of the synchronous `task` pool. It provides `start_async_task`, `check_async_task`, `update_async_task`, `cancel_async_task`, and `list_async_tasks`. Launch creates a remote thread and run, then records an `AsyncTask` in parent state; its task ID is the remote thread ID, and launch returns immediately. The local record has a reducer and holds task type, current remote run/thread IDs, status, and timestamps. It is tracking data, not a copy of the remote graph's state.
+The `task` tool invokes a child synchronously. Isolated tasks receive permitted state plus a fresh task `HumanMessage`; forks receive effective post-summarization parent history plus the task and carry a private fork marker. That marker makes recursive task delegation fail. A child must return `messages`; the bridge removes messages, private/excluded fields, and unchanged values from its state update, then returns a single `ToolMessage` containing structured output JSON or the last nonempty AI text.
+
+## Remote asynchronous task contract
+
+`AsyncSubAgentMiddleware` is independent of `SubAgentMiddleware` and contributes five tools: `start_async_task`, `check_async_task`, `update_async_task`, `cancel_async_task`, and `list_async_tasks`. It validates unique names, `mode` (`isolated` or experimental `fork`), and `update_strategy` (`interrupt` or `enqueue`). It adds `async_tasks` to parent state, merged by task ID. An `AsyncTask` records the remote thread ID, latest run ID, subagent type, status, timestamps, and—only for queued follow-ups—earlier `superseded_run_ids`.
 
 ```mermaid
 sequenceDiagram
     participant Parent as Parent graph
-    participant AsyncTools as Async task tools
+    participant Tools as Async task tools
     participant Server as Agent Protocol server
-    participant Notifier as Parent notifier
-    Parent->>AsyncTools: start_async_task
-    AsyncTools->>Server: create thread and run
-    AsyncTools-->>Parent: task record and task ID
-    Parent->>AsyncTools: check or list task
-    AsyncTools->>Server: read run and thread
-    AsyncTools-->>Parent: refreshed local record
-    Parent->>AsyncTools: update or cancel task
-    AsyncTools->>Server: create interrupting run or cancel run
-    Server->>Notifier: deep agent task finishes or fails
-    Notifier->>Parent: wake idle parent with notification
+    participant Track as Parent async_tasks state
+    Parent->>Tools: start_async_task
+    Tools->>Server: create thread and run
+    Tools->>Track: store running task by thread ID
+    Tools-->>Parent: return task ID immediately
+    Parent->>Tools: check list update or cancel
+    Tools->>Server: inspect or mutate remote run
+    Tools->>Track: update local tracking record
 ```
 
-Caption: The parent persists tracking records; the remote Agent Protocol server owns task threads and runs, while a compatible remote Deep Agent can notify an idle parent.
+Caption: Remote threads and runs belong to the Agent Protocol server; the parent only stores a durable, reducer-merged tracking projection.
 
-For `mode="isolated"`, launch sends only the delegated task. For experimental `mode="fork"`, it snapshots effective parent history, appends the task, removes parent-local artifacts and eviction markers, hydrates portable media, and serializes the snapshot for the remote input. Forking shares conversation content at launch, not a synchronized model, prompt, tools, or filesystem. Therefore remote authorization, permissions, and persistence must be configured and evaluated by the remote graph; they cannot be inferred from local synchronous-subagent inheritance.
+Starting creates a remote thread with subagent and parent-thread metadata, launches a run, and immediately writes a local `running` record keyed by that thread ID. Failed SDK calls return a tool error rather than create a record. An isolated launch sends only the delegated task. A fork snapshots effective parent history at launch, appends a background-task preamble and the delegated task, clears parent-local tool artifacts and eviction markers, hydrates portable media, then serializes the snapshot. Forking shares conversation content once; it does not synchronize model, system prompt, tools, filesystem, or state.
 
-The transport carries deliberately limited linkage. Task-thread metadata identifies the subagent and parent thread; on the same deployment it can also identify the parent assistant. A same-deployment launch forwards JSON-compatible run context (excluding the Deep Agents parent reference) when present, or sends a parent reference in configurable data. A launch to a `url` sends only the parent thread reference and does not forward parent context; trace headers are similarly limited to same-deployment launches. Authentication is supplied by the SDK environment for managed deployments or by the specification's `headers` for self-hosted servers. Omitting `url` selects local ASGI transport and requires an async parent entrypoint such as `ainvoke`; synchronous invocation requires a reachable URL.
+A same-deployment launch can forward JSON-compatible run context after removing the Deep Agents parent reference. If no usable context is forwarded, it sends that reference in `configurable`; task-thread metadata retains linkage. A URL-targeted remote launch never forwards parent context and receives only the parent thread reference, not the parent assistant ID, because it cannot wake the parent cross-deployment. Trace headers are likewise limited to same-deployment launches. Managed authentication comes from SDK environment credentials; self-hosted deployments use the specification's `headers`. Omitting `url` selects local ASGI transport and therefore requires `ainvoke` or another async entrypoint; synchronous invocation requires a reachable URL.
 
-A check derives `waiting` when the tracked run is successful but the thread is paused; it can discover a newer run when that successful run's thread became busy or errored. Updating starts a run on the same thread with `multitask_strategy="interrupt"`, replacing the current run and updating the tracked run ID. Cancelling a waiting task does not call remote cancellation because no run is active; it only changes parent-local tracking. Lists filter by cached status first and then refresh selected nonterminal tasks, retaining cached state if a fetch fails.
+### Checks, updates, cancellation, and notification
 
-Async notification is available only through the async hooks. Before an async model call, and once after a final answer, middleware polls unfinished tasks and adds notifications only for newly observed success, error, timeout, or waiting outcomes. The default SDK stack adds `_ParentNotifierMiddleware` (a profile class-form exclusion can remove it): for its own top-level async run launched by a parent, it reports completion or model failure once and wakes an idle parent thread when it has both parent thread and assistant identifiers. A paused remote task is not woken this way; its user answers on the remote task thread. Synchronous `invoke` exposes the task tools but does not perform these async polls or notifier callbacks.
+A successful tracked run is `waiting` when its thread is paused, and `check_async_task` includes that thread's pending interrupts. If a successful run's thread has become busy or errored, observation discovers the newer run. `check_async_task` returns the current status and result when complete; `list_async_tasks` first filters cached records, then refreshes selected nonterminal records, retaining cached status if fetching fails.
 
-## Main middleware order and profile policy
+`update_async_task` starts a follow-up on the same remote thread. The default `interrupt` strategy replaces the tracked run and interrupts current work. With `update_strategy="enqueue"`, the follow-up is queued (`pending`) behind active work and prior run IDs are retained so their completion cannot be mistaken for the follow-up result. Only one enqueue update for a task is accepted in one model turn, avoiding parallel calls that would lose tracking. Cancelling cancels the latest and any tracked active/pending earlier runs; cancelling `waiting` changes only local tracking because no run is active. A specification can also attach its `webhook` to every start and follow-up run.
 
-The main core is ordered as follows:
+Polling is async-only. `abefore_agent` records a notification that started a run and polls unfinished tasks, `abefore_model` polls again, and `aafter_model` polls after a final answer and gives the model another turn only when it has a new notification. New success, error, timeout, cancelled, or waiting outcomes are surfaced once; failed/timed-out polling is skipped until the next check. Sync `invoke` still exposes the five tools but does not poll.
 
-1. `FilesystemMiddleware`;
-2. `SubAgentMiddleware` when inline synchronous subagents exist;
-3. `_ParentNotifierMiddleware`;
-4. summarization middleware;
-5. `PatchToolCallsMiddleware`;
-6. `AsyncSubAgentMiddleware` when remote specifications exist.
+The normal SDK stack adds `_ParentNotifierMiddleware`. For a top-level asynchronous Deep Agent run launched by a parent, it reports final success or a model failure once. The shared wake-up helper starts a notification run only when the parent thread is idle or errored and the task linkage contains both parent thread and assistant identifiers; busy parents learn via their own poll, and waiting parents are not disturbed. A remote deployment or `notify_parent=False` deliberately omits that assistant reference, so it cannot wake the parent. A remote task waiting for approval/input must be answered on its own thread.
 
-The builder then adds profile middleware, optional `SkillsMiddleware`, prompt-caching middleware, optional `MemoryMiddleware`, derived `HumanInTheLoopMiddleware`, and `UnsupportedContentMiddleware`. Profile exclusions first filter this stack. Caller middleware replaces a surviving same-name entry in place; a new name is spliced after the last surviving core entry and before the tail. Exclusions run again, then `_ToolExclusionMiddleware` is appended last. Thus a profile-forbidden tool cannot be reintroduced by caller middleware. The same two-pass exclusion pattern applies to declarative children; the general-purpose stack applies it around its intentionally limited replacement inheritance.
+## Permissions, skills, and paths
 
-`FilesystemMiddleware` and `SubAgentMiddleware` are protected scaffolding: a profile cannot exclude them by exact class or exact middleware name. Construction fails for protected exclusions, collisions between a string exclusion and distinct middleware classes, or exclusions that match nowhere across the main and general-purpose stacks rather than silently producing a degraded agent.
+Filesystem enforcement and review are separate. `FilesystemMiddleware` independently enforces deny rules. The builder converts interrupt-mode filesystem rules into path-sensitive `HumanInTheLoopMiddleware.interrupt_on` predicates; caller settings for the same tool win. These controls are installed on the main agent and constructed declarative children, not transmitted to remote async graphs. Remote authorization, persistence, filesystem controls, and approvals belong to the remote deployment.
 
-Skills use backend sources. A caller middleware named `SkillsMiddleware` supplies sources to the normal skills slot when `skills` is omitted rather than creating a second layer. Metadata is cached per thread; later sources override earlier same-name entries, resetting `skills_metadata` to `None` reloads sources, and load errors are retained as warnings. Inline skill-tool disclosure follows its related read result without splitting a tool-result batch or preceding queued user content, and uses the model selected after fallback.
+The derived predicates distinguish exact-path and bulk operations, conservatively interrupt pathless/current-directory bulk calls, account for a `glob` pattern that redirects outside its nominal path, and match a backend-resolved symlink target when available. A deny decision wins rather than becoming an approval prompt. Persisting/resuming such human interrupts requires a checkpointer.
 
-## Filesystem permissions and approval
+Skills are loaded from backend sources. Metadata is cached per thread, later same-name sources override earlier sources, reset to `None` reloads, and source errors become warnings. A caller `SkillsMiddleware` supplies the normal skills slot when `skills` is omitted. Inline skill-tool disclosure follows the relevant read result without splitting a tool-result batch or moving ahead of queued user content, and uses the model selected after fallback.
 
-Filesystem enforcement is separate from approval. `FilesystemMiddleware` enforces deny rules itself. The builder converts interrupt-mode filesystem permissions into path-sensitive `HumanInTheLoopMiddleware.interrupt_on` predicates and merges caller entries afterward, so a caller configuration for the same tool wins. This derived policy is applied to the main graph and constructed declarative children; it is not a policy transfer mechanism for a remote `AsyncSubAgent`.
+`CompositeBackend.artifacts_root` defaults to `/`. Filesystem large-result eviction and summarization-history offload derive their directories from that root after trailing-slash normalization.
 
-Generated predicates cover filesystem operations including `ls`, `read_file`, `write_file`, `edit_file`, `delete`, `glob`, and `grep` when an interrupt rule applies. They distinguish exact-path from bulk operations, conservatively gate pathless and current-directory bulk calls, recognize glob patterns that can escape a supplied path, and use symlink-resolved targets when supported by the backend. Approval never overrides a later filesystem deny check. A checkpointer is required to persist and resume human interrupts.
+## Verification focus
 
-## Backend paths and verification
-
-`CompositeBackend.artifacts_root` defaults to `/`. Filesystem large-result eviction and summarization history offload derive paths from that root after trailing-slash normalization, such as `/workspace/large_tool_results` and `/workspace/conversation_history`.
-
-Focused tests in `test_graph.py` cover stack construction, exclusions, state schemas, and general-purpose composition. `test_subagents.py` covers task handoff, state isolation, fork behavior, and ambient configuration. `test_async_subagents.py` covers remote launch, context/linkage boundaries, task status transitions, local-ASGI constraints, polling, notifications, and parent wake-up behavior. Permission tests exercise generated path predicates, while artifact-root tests cover root normalization and eviction paths.
+`test_graph.py` covers stack order, conditional installation, exclusions, schemas, and general-purpose composition. `test_subagents.py` exercises isolation, forks, returned state, and ambient configuration. `test_async_subagents.py` covers local/remote transport, context and parent linkage, pause states, polling/notifier behavior, webhooks, and both update strategies—including queued-run tracking and cancellation. Permission tests cover generated path predicates; artifacts-root tests cover normalized offload paths.
 
 ## Related pages
 
 - [Middleware stack](middleware-stack.md) — hook responsibilities and ordering.
+- [Architecture overview](overview.md) — component boundaries.
 - [Runtime behavior](runtime-behavior.md) — runtime execution and operations.
-- [Permissions and human review](../concepts/permissions-hitl.md) — approval and enforcement semantics.
-- [State persistence](../concepts/state-persistence.md) — checkpoint and store concerns.
 - [Subagents and skills](../concepts/subagents-skills.md) — delegation configuration.
-- [Testing guide](../testing/testing-guide.md) — test conventions.
+- [Build a Deep Agent](../workflows/build-a-deep-agent.md) — SDK usage workflow.

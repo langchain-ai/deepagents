@@ -3,9 +3,6 @@ type: operations guide
 title: Development, Dependencies, and Releases
 description: Package-scoped uv development, dependency and lockfile maintenance, local-source consumer closure, and the release-please publication process for Deep Agents packages.
 tags: [development, dependencies, uv, lockfiles, releases, release-please]
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-10-21T08:05:42.350Z
 sources:
   - id: openwiki-source-9a1c436646ef8c4f6dde787a
     resource: repo://.github/RELEASING.md
@@ -45,7 +42,10 @@ sources:
     resource: repo://libs/talon/pyproject.toml
   - id: openwiki-source-482fa4ca84f42b04ba025fc1
     resource: repo://release-please-config.json
-generated: { by: "openwiki/0.4.2", at: "2026-10-21T08:05:42.350Z" }
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-10-22T08:05:54.651Z
+generated: { by: "openwiki/0.4.2", at: "2026-10-22T08:05:54.651Z" }
 ---
 
 # Development, Dependencies, and Releases
@@ -84,7 +84,7 @@ External contributors must link an approved issue or discussion and be assigned 
 
 ## Published requirements versus workspace sources
 
-A dependency declaration is the package's PyPI contract. A `[tool.uv.sources]` entry is a development-only resolution mapping. For example, Code publishes the exact requirement `deepagents==0.7.29`, while its workspace mapping resolves Deep Agents, ACP, and partner packages from editable sibling paths. Do not loosen an exact public pin merely to make sibling development convenient.
+A dependency declaration is the package's PyPI contract. A `[tool.uv.sources]` entry is a development-only resolution mapping. Code currently publishes the exact requirement `deepagents==0.7.30`, while its workspace mapping resolves Deep Agents, ACP, and partner packages from editable sibling paths. Do not loosen an exact public pin merely to make sibling development convenient.
 
 The exact Code SDK pin is a minimum-SDK contract: if Code starts using a new SDK capability, raise the pin in that same PR. The daily minimums updater does not change exact pins. The release workflow enforces that Code's pin is not older than the workspace SDK; the release-PR label `ci:dcode-skip-sdk-pin` and the manual `dangerous-skip-sdk-pin-check` input are explicit exceptions for intentionally older pins.
 
@@ -126,17 +126,17 @@ CI invokes the reusable lockfile workflow from pull requests, pushes to `main`, 
 
 The updater preserves upper bounds, extras, markers, and compatible-release ceilings, leaves exact pins alone, and does not lower an intentionally higher floor. It plans all manifest changes before writing any; unavailable PyPI metadata, an unrewritable requirement, or an invalid narrowed request causes failure rather than a misleading successful no-op. If there are edits, the workflow regenerates every affected consumer-closure lock before opening or refreshing its `chore(deps):` PR. `skip-dependent-locks` is an intentional exception that leaves reverse-consumer locks stale for separate repair.
 
-## Release ownership and managed lines
+## Release ownership, baselines, and working tree versions
 
 Release-please manages a package only when it has both a `release-please-config.json` package entry and a `.release-please-manifest.json` released baseline. The manifest is release state, not a requested source version, and should not be manually edited for an established line. A never-published source package at `0.0.1` needs a `0.0.0` manifest baseline; otherwise release-please treats `0.0.1` as shipped and proposes `0.0.2` first.
 
-Nine independently released lines are presently managed:
+The released baselines presently tracked in the manifest are:
 
 | Component / distribution | Path | Released baseline |
 | --- | --- | --- |
-| `deepagents` | `libs/deepagents` | `0.7.29` |
+| `deepagents` | `libs/deepagents` | `0.7.30` |
 | `deepagents-acp` | `libs/acp` | `0.0.13` |
-| `deepagents-code` | `libs/code` | `0.1.87` |
+| `deepagents-code` | `libs/code` | `0.1.88` |
 | `deepagents-talon` | `libs/talon` | `0.0.9` |
 | `langchain-daytona` | `libs/partners/daytona` | `0.0.8` |
 | `langchain-modal` | `libs/partners/modal` | `0.0.6` |
@@ -144,13 +144,15 @@ Nine independently released lines are presently managed:
 | `langchain-vercel-sandbox` | `libs/partners/vercel` | `0.0.2` |
 | `langchain-quickjs` | `libs/partners/quickjs` | `0.3.9` |
 
+Released baselines are not automatically the same thing as a working-tree package version: the former is release-please state, whereas the latter is declared in the package manifest and may be ahead on an open release branch. In the current `main` working tree, `libs/deepagents/pyproject.toml` declares `0.7.30` and `libs/code/pyproject.toml` declares `0.1.88`; Code also pins `deepagents==0.7.30`.
+
 Release-please creates separate draft Python release PRs, maintains package version files and `CHANGELOG.md`, and titles each PR `release(${component}): ${version}`. All configured lines are pre-1.0: a `feat` produces a patch bump and a breaking feature produces a minor bump. Generated changelogs expose `feat`, `fix`, `perf`, and `revert`; configured documentation, style, chore, refactor, test, CI, and hotfix types are hidden.
 
 Release-please has `skip-github-release` enabled. It prepares the release PR; `release.yml` owns artifact publication, tag creation, and the GitHub release. The release detector requires both a matching `release(component): version` commit title and that component's `CHANGELOG.md` among the commit's changed files.
 
 Do not push an ordinary empty commit to `main`. Because component attribution uses changed paths, a pathless commit could fan out to every managed component. The workflow rejects it before release-please runs, except for the narrowly validated history-repair form of an empty `hotfix(repo):` merge whose introduced commits all touch files.
 
-## Release PR lifecycle
+## Release PR lifecycle and curated notes
 
 After releasable commits land on `main`, wait for release-please to refresh the package release PR **and** for its `Update lockfiles` job. Release-please changes package versions but does not itself regenerate `uv.lock`. Do not rebase a release branch, merge `main` into it, or edit it while that automation is queued or running: the automation can replace the change, invalidate reviewed notes, or race note application.
 
@@ -170,9 +172,9 @@ flowchart TD
 
 The generated PR body is a preview. The merged package `CHANGELOG.md` supplies the published GitHub release body. Keep a release PR in draft while changes accumulate. When it is ready, mark it ready for review, revise the `release-bot` draft comment while retaining its version heading, then comment `@release-bot apply`. The bot writes the package changelog and mirrors the notes into the PR body. Merge only after the `curated release notes` check passes. In a fan-out, repeat this for each package PR.
 
-Run `@release-bot draft` if automatic drafting failed or new `main` changes touch the package. A release-branch lockfile-only refresh due to unrelated work does not invalidate a draft. `ci:skip-curated-notes` is the explicit opt-out when the generated changelog is intentionally being shipped without maintainer curation. Changelog-only apply commits may skip package lint and test jobs, but their CI gate reuses a successful parent result.
+Run `@release-bot draft` if automatic drafting failed or new `main` changes touch the package. A release-branch lockfile-only refresh due to unrelated work does not invalidate a draft. `ci:skip-curated-notes` is the explicit opt-out when the generated changelog is intentionally being shipped without maintainer curation. Curation derives the component from the release branch, runs automation from trusted `main`, and reads release-PR content through the GitHub API as untrusted data rather than checking it out or executing it. Commands are serialized per PR without cancelling in-flight drafting or application.
 
-Curation is designed as a trust boundary: it derives the component from the release branch, checks out automation from trusted `main`, and reads release-PR content through the GitHub API as untrusted data rather than checking it out or executing it. Commands are serialized per PR without cancelling in-flight drafting or application.
+A changelog-only `@release-bot apply` commit from the trusted bot on a release-please branch is a special CI path: CI reads the detector from the trusted base ref, verifies it can find one conclusive parent `✅ CI Success` result, then suppresses package lint and test selection for that apply commit. The current head still receives its own CI success result, derived from the parent; if the parent is not conclusively successful or failed, normal package jobs run or the gate fails. Skipped package jobs in this narrow case are therefore expected, not a waiver for an untested release branch.
 
 ## Publishing and recovery
 

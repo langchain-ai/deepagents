@@ -1,11 +1,8 @@
 ---
 type: capability reference
-title: Middleware Capability Catalog
-description: A feature-to-module map for Deep Agents middleware, including graph assembly, filesystem and planning controls, context management, delegation, and provider adaptation.
-tags: [middleware, deepagents, filesystem, summarization, skills, subagents, permissions]
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-10-21T08:05:42.350Z
+title: Middleware Catalog
+description: A catalog of Deep Agents middleware, with ordered graph assembly and focused guidance for automatic or manual context compaction and optional remote asynchronous delegation.
+tags: [middleware, deepagents, filesystem, summarization, compaction, async-tasks, skills, subagents, permissions]
 sources:
   - id: openwiki-source-0fc0e47059e4d07e23e50be2
     resource: repo://libs/deepagents/deepagents/graph.py
@@ -41,12 +38,17 @@ sources:
     resource: repo://libs/deepagents/tests/unit_tests/middleware/test_compact_tool.py
   - id: openwiki-source-530f1194888c9c15f9c71332
     resource: repo://libs/deepagents/tests/unit_tests/middleware/test_summarization_factory.py
+  - id: openwiki-source-6ce85b02eabe462f99e0c912
+    resource: repo://libs/deepagents/tests/unit_tests/test_async_subagents.py
   - id: openwiki-source-6d183faf1a4bc5a5ba451aba
     resource: repo://libs/deepagents/tests/unit_tests/test_graph.py
-generated: { by: "openwiki/0.4.2", at: "2026-10-21T08:05:42.350Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-10-22T08:05:54.651Z" }
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-10-22T08:05:54.651Z
 ---
 
-# Middleware Capability Catalog
+# Middleware Catalog
 
 `deepagents.middleware` is the public import surface for middleware that changes a model request, tool execution, or cross-turn state. The package exports filesystem, memory, skills, summarization, synchronous and asynchronous subagent, rubric, and unsupported-content middleware, plus their public configuration and result types. Graph-only helpers—such as prompt caching, tool-call repair, parent notification, and tool exclusion—are implementation components rather than public extension APIs.
 
@@ -145,15 +147,36 @@ flowchart TD
 
 This automatic path changes effective request context without rewriting the raw log. It also truncates older large write/edit arguments before full compaction and handles provider context-overflow rejection by compacting and retrying. The default summary prompt instructs the model to retain offloaded-media references rather than invent their visual content.
 
-`SummarizationToolMiddleware` exposes `compact_conversation` but does not compact by itself. It shares the automatic engine's event/session state, waits until usage is about half the automatic trigger, and emits a no-op or error `ToolMessage` without updating the event when it cannot compact. `create_summarization_tool_middleware()` builds only this explicit tool layer; pair it with automatic summarization when automatic behavior is desired.
+`SummarizationToolMiddleware` exposes `compact_conversation` but does not compact by itself. It shares the automatic engine's event/session state, waits until usage is about half the automatic trigger, and emits a no-op or error `ToolMessage` without updating the event when it cannot compact. On success it writes the same event, session ID, and correlated confirmation as automatic compaction; an archive operation that returns `None` is still a successful but non-recoverable compaction, whereas an exception returns the error result without state updates. `create_summarization_tool_middleware()` resolves a model string if necessary and registers only this explicit tool layer; pair it with `SummarizationMiddleware` when automatic behavior is desired.
 
 ## Delegation and completion control
 
 The synchronous `task` tool runs a selected declarative or compiled subagent and returns one parent `ToolMessage`: it serializes `structured_response` when present, otherwise selects the last non-empty `AIMessage` text. A forked declarative worker receives the parent's effective compacted history and cannot recursively delegate through `task`; an isolated worker starts from the delegated description.
 
-`AsyncSubAgentMiddleware` instead exposes `start_async_task`, `check_async_task`, `update_async_task`, `cancel_async_task`, and `list_async_tasks` for Agent Protocol servers. It persists task records under `async_tasks`; construction rejects empty specifications, duplicate names, and unsupported modes. An isolated launch sends only the description. Experimental `fork` serializes effective summarized conversation and task after removing artifacts and rehydrating offloaded media; the remote agent owns its own prompt, tools, and runtime.
+`AsyncSubAgentMiddleware` instead exposes `start_async_task`, `check_async_task`, `update_async_task`, `cancel_async_task`, and `list_async_tasks` for Agent Protocol servers. It persists a merge-reduced `async_tasks` map keyed by task ID. Each record identifies the remote thread and newest run, names the agent type, stores a string status, and records creation, check, and update timestamps; queued follow-ups also retain superseded run IDs. Construction rejects an empty specification list, duplicate names, invalid `isolated`/experimental `fork` modes, and invalid `interrupt`/`enqueue` update strategies. An isolated launch sends only the description. Experimental `fork` serializes effective summarized conversation and task after removing artifacts and rehydrating offloaded media; the remote agent owns its own prompt, tools, and runtime.
 
-Async lifecycle polling is meaningful only on the async path: before agent/model calls it refreshes unfinished tasks, and after a natural final response a new outcome adds a notification and jumps back to the model for another turn. Per-task check failures or timeouts are logged and deferred to a later poll. A missing remote URL selects local ASGI transport and requires asynchronous parent invocation; synchronous invocation needs a reachable server URL.
+```mermaid
+stateDiagram-v2
+    [*] --> running: start task
+    running --> success: completed run
+    running --> error: failed run
+    running --> timeout: timed out run
+    running --> waiting: child needs input
+    running --> pending: queued update
+    pending --> running: newest run starts
+    waiting --> running: update or child resumes
+    running --> cancelled: cancel
+    pending --> cancelled: cancel
+    waiting --> cancelled: cancel
+    success --> [*]
+    error --> [*]
+    timeout --> [*]
+    cancelled --> [*]
+```
+
+*The parent persists its view of the remote task; `waiting` is nonterminal because the child thread awaits its own user or approval.*
+
+`update_async_task` either interrupts the active run or, for a specification configured with `enqueue`, queues a follow-up and temporarily reports `pending`. Async lifecycle polling is meaningful only on the async path: at agent start and before model calls it refreshes unfinished `running`, `pending`, and `waiting` tasks. After a natural final response, a newly observed outcome is added as a marked notification and the middleware jumps back to `model` for another turn. Per-task check failures or five-second timeouts are logged and deferred to a later poll; synchronous hooks pass through. A missing remote URL selects local ASGI transport and requires asynchronous parent invocation; synchronous invocation needs a reachable server URL.
 
 `RubricMiddleware` is dormant without a `rubric` in invocation state. When present, it initializes private iteration state, grades natural completion, and can return to the model with revision feedback. Failed grading, grader errors, and exhausted iterations leave the last model response unchanged; callers that need a decision should inspect rubric state, callbacks, or stream events.
 

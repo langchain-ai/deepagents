@@ -33,6 +33,7 @@ from deepagents.middleware.async_subagents import (
     AsyncSubAgentState,
     AsyncTask,
     _build_async_subagent_tools,
+    _notification_message,
     _resolve_headers,
     _tasks_reducer,
 )
@@ -2327,17 +2328,17 @@ class TestQueuedUpdates:
         replaced = update["messages"][0]
         assert replaced.id == message.id
         assert replaced.text.startswith("[SYSTEM NOTIFICATION - NOT USER INPUT]")
-        assert "not completion of the latest task" in replaced.text
+        assert "not the result of the follow-up" in replaced.text
         assert replaced.additional_kwargs["deepagents_notification"] == event
         server = _FakeServer(run={"run_id": "run_followup", "status": "pending"})
         queued = await _pull("abefore_agent", state, server)
         assert not queued["async_tasks"]
-        assert "not completion of the latest task" in queued["messages"][0].text
+        assert "not the result of the follow-up" in queued["messages"][0].text
         finished = _FakeServer({"thread_abc": _child("follow-up done")}, {"run_id": "run_followup", "status": "success"})
         simultaneous = await _pull("abefore_agent", state, finished)
         replacement, completion = simultaneous["messages"]
         assert replacement.id == message.id
-        assert "not completion of the latest task" in replacement.text
+        assert "not the result of the follow-up" in replacement.text
         assert completion["deepagents_notification"]["run_id"] == "run_followup"
         assert simultaneous["async_tasks"]["thread_abc"]["status"] == "success"
         running = await _pull("abefore_model", state, _FakeServer(run={"run_id": "run_followup", "status": "running"}))
@@ -2351,6 +2352,40 @@ class TestQueuedUpdates:
         assert "follow-up done" in _text(ended["messages"][0])
         state["async_tasks"] = ended["async_tasks"]
         assert await _pull("abefore_model", state, _ended()) is None
+
+    def test_earlier_run_notification_keeps_its_result(self) -> None:
+        event = {"task_id": "thread_abc", "agent_name": "remote", "status": "success", "run_id": "run_xyz"}
+        notification = _notification_message({**event, "result": [{"type": "text", "text": "FULL REPORT"}]})
+        message = HumanMessage(id="notification", content=notification["content"], additional_kwargs={"deepagents_notification": event})
+        state = _lead_state("pending", messages=[message])
+        state["async_tasks"]["thread_abc"].update(run_id="run_followup", superseded_run_ids=["run_xyz"])
+        middleware = AsyncSubAgentMiddleware(async_subagents=[_make_spec("remote", url=None, update_strategy="enqueue")])
+        replaced = middleware.before_agent(state, MagicMock())["messages"][0]
+        assert "FULL REPORT" in replaced.text
+        assert "not the result of the follow-up" in replaced.text
+        assert "Use the result to continue" not in replaced.text
+        assert replaced.text.count("</task-notification>") == 1
+
+    @pytest.mark.parametrize("asynchronous", [False, True])
+    async def test_parallel_follow_ups_to_one_task_send_only_the_first(self, *, asynchronous: bool) -> None:
+        turn = AIMessage(
+            content="",
+            tool_calls=[{"name": "update_async_task", "args": {"task_id": "thread_abc", "message": m}, "id": f"tc_{m}"} for m in ("first", "second")],
+        )
+        client = MagicMock()
+        client.runs.create = (AsyncMock if asynchronous else MagicMock)(return_value={"run_id": "run_followup", "status": "pending"})
+        update = _get_tool(_build_async_subagent_tools([_make_spec(update_strategy="enqueue")]), "update_async_task")
+        results = []
+        with patch(f"deepagents.middleware.async_subagents.{'get_client' if asynchronous else 'get_sync_client'}", return_value=client):
+            for tool_call_id in ("tc_first", "tc_second"):
+                runtime = _make_runtime_with_task(tool_call_id=tool_call_id)
+                runtime.state["messages"] = [turn]
+                kwargs = {"task_id": "thread_abc", "message": "Keep going", "runtime": runtime}
+                results.append(await update.coroutine(**kwargs) if asynchronous else update.func(**kwargs))
+        first, second = results
+        assert first.update["async_tasks"]["thread_abc"]["run_id"] == "run_followup"
+        assert second.startswith("Not sent")
+        client.runs.create.assert_called_once()
 
     @pytest.mark.parametrize("asynchronous", [False, True])
     async def test_cancel_stops_queued_and_earlier_active_runs(self, *, asynchronous: bool) -> None:

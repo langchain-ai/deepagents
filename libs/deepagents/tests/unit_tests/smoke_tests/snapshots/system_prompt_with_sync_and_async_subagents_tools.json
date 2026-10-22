@@ -314,7 +314,7 @@
   },
   {
     "function": {
-      "description": "Cancel a running or waiting async subagent task. Use this to stop a task that is no longer needed.",
+      "description": "Cancel a running, pending, or waiting async subagent task. Use this to stop a task that is no longer needed.",
       "name": "cancel_async_task",
       "parameters": {
         "properties": {
@@ -333,7 +333,7 @@
   },
   {
     "function": {
-      "description": "List tracked async subagent tasks with their current live statuses. By default shows all tasks. Use `status_filter` to narrow by status (e.g. 'running', 'waiting', 'success', 'error', 'cancelled'). Use `check_async_task` to get the full result of a specific completed task, or what a `waiting` task is asking the user. Statuses shown earlier in the conversation are always stale, so call this to read current statuses rather than reporting one from a previous tool result.",
+      "description": "List tracked async subagent tasks with their current live statuses. By default shows all tasks. Use `status_filter` to narrow by status (e.g. 'running', 'pending', 'waiting', 'success', 'error', 'cancelled'). Use `check_async_task` to get the full result of a specific completed task, or what a `waiting` task is asking the user. Statuses shown earlier in the conversation are always stale, so call this to read current statuses rather than reporting one from a previous tool result.",
       "name": "list_async_tasks",
       "parameters": {
         "properties": {

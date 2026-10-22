@@ -33,7 +33,7 @@ from langchain.agents.middleware.types import (
 )
 from langchain.tools import ToolRuntime
 from langchain_core._api.beta_decorator import warn_beta
-from langchain_core.messages import AnyMessage, BaseMessage, ContentBlock, ToolMessage, convert_to_messages
+from langchain_core.messages import AIMessage, AnyMessage, BaseMessage, ContentBlock, ToolMessage, convert_to_messages
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import StructuredTool
 from langgraph.runtime import Runtime
@@ -118,7 +118,17 @@ class AsyncSubAgent(TypedDict):
     """URL the Agent Server calls whenever a run of this subagent finishes."""
 
     update_strategy: NotRequired[Literal["interrupt", "enqueue"]]
-    """How follow-ups are scheduled: interrupt the current run (default), or enqueue behind it."""
+    """How `update_async_task` sends a follow-up while a run is active. Defaults to `'interrupt'`.
+
+    - `interrupt`: stop the current run and start the follow-up.
+    - `enqueue`: queue the follow-up behind the current run. The task is `pending`
+        until the follow-up starts. If the current run stops to ask its user for
+        approval or input, the follow-up still starts, and that request is dropped.
+
+    !!! warning "Beta"
+
+        `update_strategy` may change along with how queued follow-ups are tracked.
+    """
 
     notify_parent: NotRequired[bool]
     """Whether this subagent may wake this agent when it finishes while this agent is idle. Defaults to `True`.
@@ -182,15 +192,20 @@ class AsyncTask(TypedDict):
     """Thread ID on the remote server."""
 
     run_id: str
-    """Run ID for the latest execution requested on the thread, which may still be queued."""
+    """Run ID of the newest run this task knows of on its thread. A queued follow-up's run may not have started yet."""
 
     superseded_run_ids: NotRequired[list[str]]
-    """Earlier runs that may still finish after a follow-up was enqueued."""
+    """Earlier runs of this task, oldest first, from before a queued follow-up.
+
+    Their notifications don't complete the task, and cancelling the task also
+    cancels any that are still active. Set only with `update_strategy='enqueue'`.
+    """
 
     status: str
     """Current task status (e.g., `'pending'`, `'running'`, `'waiting'`, `'success'`, `'error'`, `'cancelled'`).
 
-    `'pending'` means the latest follow-up is queued; an earlier run may still be working.
+    `'pending'` means the latest run hasn't started yet. After a queued follow-up,
+    an earlier run may still be working.
 
     Typed as `str` rather than a `Literal` because the LangGraph SDK's
     `Run.status` is `str` — using a `Literal` here would require `cast` at every
@@ -504,14 +519,24 @@ def _notification_content(update: _TaskUpdate) -> list[dict[str, Any]]:
     return blocks
 
 
-def _superseded_notification_content(event: TaskEvent) -> list[dict[str, Any]]:
-    """Frame an earlier run's outcome so the model doesn't take it for its queued follow-up finishing."""
+def _superseded_notification_content(message: BaseMessage, event: TaskEvent) -> list[dict[str, Any]]:
+    """Reframe an earlier run's notification so the model doesn't think the queued follow-up finished.
+
+    Only the closing next step changes. The earlier run's result and details stay,
+    since `check_async_task` reads only the latest run.
+    """
+    content = message.content
+    closing = content[-1] if isinstance(content, list) and content else None
+    if isinstance(closing, dict) and str(closing.get("text", "")).startswith("</task-notification>"):
+        body = [block for block in content[:-1] if isinstance(block, dict)]
+    else:
+        body = [_notification_header(event)]
     return [
-        _notification_header(event),
+        *body,
         _text_block(
             "</task-notification>\n"
-            "This was an earlier run. Its queued follow-up is tracked separately, so this is not completion of the latest task. "
-            "Use `check_async_task` for its current status."
+            "This update is from an earlier run of this task, before your latest follow-up. "
+            "It is not the result of the follow-up. Use `check_async_task` to get the current status of the task."
         ),
     ]
 
@@ -905,7 +930,7 @@ def _build_check_result(run: Run, thread_id: str, thread: Thread | None) -> dict
     status = _task_status(run, thread)
     result: dict[str, Any] = {"status": status, "thread_id": thread_id}
     if status == "pending":
-        result["note"] = "The latest run is queued; an earlier run on this task may still be working."
+        result["note"] = "The latest run hasn't started yet. If it is a queued follow-up, an earlier run may still be working."
     elif status == "success":
         values = thread.get("values") if thread else None
         result["result"] = _final_content(values if isinstance(values, Mapping) else {})
@@ -1035,7 +1060,7 @@ def _build_check_tool(
 
 
 def _update_message(tracked: AsyncTask, strategy: _UpdateStrategy) -> str:
-    """Confirm an update, noting when it replaced a pending human request."""
+    """Confirm an update: queued behind an active run, or started, noting when it dropped a waiting human request."""
     if strategy == "enqueue" and tracked["status"] in {"running", "pending"}:
         return f"Queued follow-up to async subagent without interrupting its current run. task_id: {tracked['task_id']}"
     msg = f"Updated async subagent. task_id: {tracked['task_id']}"
@@ -1044,8 +1069,29 @@ def _update_message(tracked: AsyncTask, strategy: _UpdateStrategy) -> str:
     return msg
 
 
+def _parallel_update_error(task_id: str, runtime: ToolRuntime) -> str | None:
+    """Refuse every queued follow-up to a task after the first in one model turn.
+
+    Parallel tool calls read the same state, so each would record its run as the only
+    queued follow-up, and the task would lose track of the others.
+    """
+    messages = runtime.state.get("messages") or []
+    turn = next((m for m in reversed(messages) if isinstance(m, AIMessage)), None)
+    ids = [
+        call["id"]
+        for call in (turn.tool_calls if turn else [])
+        if call["name"] == "update_async_task" and str(call["args"].get("task_id", "")).strip() == task_id
+    ]
+    if runtime.tool_call_id not in ids[1:]:
+        return None
+    return (
+        f"Not sent: an earlier `update_async_task` call in this turn already queues a follow-up for task {task_id}. "
+        "Send this follow-up in a later turn, or combine the two into one message."
+    )
+
+
 def _build_update_command(tracked: AsyncTask, run: Run, strategy: _UpdateStrategy, tool_call_id: str | None) -> Command:
-    """Build the `Command` update for a follow-up that started `run`."""
+    """Build the `Command` update for a follow-up that created `run`, which may still be queued."""
     task: AsyncTask = {
         **tracked,
         "run_id": run["run_id"],
@@ -1066,8 +1112,9 @@ def _build_update_command(tracked: AsyncTask, run: Run, strategy: _UpdateStrateg
 def _superseded_after_update(tracked: AsyncTask) -> list[str]:
     """The runs a queued follow-up leaves behind it.
 
-    Once the latest run has finished, every earlier one has too, so the list restarts
-    with that run rather than growing with every update.
+    The list grows while the task is unfinished. Otherwise it restarts with the tracked
+    run: enqueued runs start in order, so earlier runs ended before that run started.
+    A follow-up cancelled before it started is the exception; an earlier run may still be active.
     """
     earlier = tracked.get("superseded_run_ids", []) if tracked["status"] in _UNFINISHED_STATUSES else []
     return [*earlier, tracked["run_id"]]
@@ -1082,7 +1129,8 @@ def _build_update_tool(
     Sends a follow-up message to an async subagent by creating a new run on the
     same thread. The subagent sees the full conversation history (including the
     original task and any prior results) plus the new message. The `task_id`
-    remains the same; only the internal `run_id` is updated.
+    remains the same. The subagent's `update_strategy` decides whether the new run
+    interrupts the current run or queues behind it.
     """
 
     def update_async_task(
@@ -1095,6 +1143,8 @@ def _build_update_tool(
             return tracked
         spec = agent_map[tracked["agent_name"]]
         strategy = spec.get("update_strategy", "interrupt")
+        if strategy == "enqueue" and (error := _parallel_update_error(tracked["task_id"], runtime)):
+            return error
         try:
             client = clients.get_sync(tracked["agent_name"])
             run = client.runs.create(
@@ -1119,6 +1169,8 @@ def _build_update_tool(
             return tracked
         spec = agent_map[tracked["agent_name"]]
         strategy = spec.get("update_strategy", "interrupt")
+        if strategy == "enqueue" and (error := _parallel_update_error(tracked["task_id"], runtime)):
+            return error
         try:
             client = clients.get_async(tracked["agent_name"])
             run = await client.runs.create(
@@ -1142,7 +1194,9 @@ def _build_update_tool(
     if queued_agents:
         description += (
             f"\n\nException: for {queued_agents}, follow-ups queue behind the current run without interrupting it. "
-            "A pending status means the latest follow-up is queued and earlier work may still be running."
+            "A pending status means the latest follow-up is queued and earlier work may still be running. "
+            "If the current run stops to ask the user something, the queued follow-up still starts and that request is dropped. "
+            "Send one follow-up per task per turn; combine several into one message."
         )
 
     return StructuredTool.from_function(
@@ -1156,8 +1210,9 @@ def _build_update_tool(
 
 
 def _cancel_earlier_runs(client: SyncLangGraphClient, task: AsyncTask) -> None:
-    """Cancel outstanding earlier runs after cancelling the newest queued follow-up.
+    """Cancel earlier runs that are still pending or running, newest first.
 
+    Newest first, so cancelling an active run doesn't let a queued run behind it start.
     A run that can't be read or cancelled is skipped, so one stale run doesn't fail the cancel.
     """
     for run_id in reversed(task.get("superseded_run_ids", [])):
@@ -1251,7 +1306,7 @@ def _build_cancel_tool(
         name="cancel_async_task",
         func=cancel_async_task,
         coroutine=acancel_async_task,
-        description="Cancel a running or waiting async subagent task. Use this to stop a task that is no longer needed.",
+        description="Cancel a running, pending, or waiting async subagent task. Use this to stop a task that is no longer needed.",
         infer_schema=False,
         args_schema=CancelAsyncTaskSchema,
     )
@@ -1375,7 +1430,7 @@ def _build_list_tasks_tool(clients: _ClientCache) -> StructuredTool:
         description=(
             "List tracked async subagent tasks with their current live statuses. "
             "By default shows all tasks. Use `status_filter` to narrow by status "
-            "(e.g. 'running', 'waiting', 'success', 'error', 'cancelled'). "
+            "(e.g. 'running', 'pending', 'waiting', 'success', 'error', 'cancelled'). "
             "Use `check_async_task` to get the full result of a specific completed task, "
             "or what a `waiting` task is asking the user. "
             "Statuses shown earlier in the conversation are always stale, so call this to read current "
@@ -1621,7 +1676,11 @@ class AsyncSubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
 
     @staticmethod
     def _record_notification(state: Mapping[str, Any]) -> dict[str, Any] | None:
-        """When a task notification started this run, record the task's outcome so checks don't report it again."""
+        """When a task notification started this run, record the task's outcome so checks don't report it again.
+
+        A notification from an earlier run that a queued follow-up replaced is rewritten
+        instead, so the model doesn't take it as the task's outcome.
+        """
         messages = state.get("messages") or []
         event = _notification_event(messages[-1]) if messages else None
         task = (state.get("async_tasks") or {}).get(event["task_id"]) if event else None
@@ -1629,8 +1688,10 @@ class AsyncSubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
             return None
         run_id = event.get("run_id", task["run_id"])
         if run_id in task.get("superseded_run_ids", []):
-            # Same ID, so this replaces the notification; it keeps its marker so apps still see a notification.
-            return {"messages": [messages[-1].model_copy(update={"content": _superseded_notification_content(event)})]}
+            # The copy keeps the message ID, so the reducer replaces the original. It keeps the marker, so apps still see a notification.
+            return {"messages": [messages[-1].model_copy(update={"content": _superseded_notification_content(messages[-1], event)})]}
+        # Answering a pause starts a new run, so a new run ID still counts while the task is unfinished.
+        # An interrupting update cancels the old run before it can report.
         if run_id != task["run_id"] and task["status"] not in _UNFINISHED_STATUSES:
             return None
         return {"async_tasks": {task["task_id"]: _observed(task, event["status"], run_id)}}

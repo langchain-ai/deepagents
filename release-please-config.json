@@ -76,6 +76,7 @@
       "release-type": "python",
       "package-name": "deepagents-acp",
       "component": "deepagents-acp",
+      "release-as": "0.0.14",
       "bump-minor-pre-major": true,
       "bump-patch-for-minor-pre-major": true,
       "extra-files": [

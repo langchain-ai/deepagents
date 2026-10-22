@@ -154,6 +154,9 @@ class AsyncSubAgent(TypedDict):
 _WAITING = "waiting"
 """Task status for a subagent waiting for a human: its run finished but its thread is interrupted."""
 
+_UpdateStrategy = Literal["interrupt", "enqueue"]
+"""How a follow-up runs while the subagent is busy, as `AsyncSubAgent.update_strategy`."""
+
 _THREAD_TO_TASK_STATUS = {"interrupted": _WAITING, "busy": "running", "error": "error"}
 """Task status implied by the thread when the tracked run finished but the thread moved on."""
 
@@ -492,21 +495,35 @@ def _notification_content(update: _TaskUpdate) -> list[dict[str, Any]]:
         "cancelled": "The task's run was cancelled before it finished, outside your tools. Decide whether to start it again, or tell the user.",
         "waiting": "The subagent is waiting for the user, who answers it on the subagent's own thread; you can't answer or approve it. Keep working.",
     }[update["status"]]
-    blocks = [
-        _text_block(
-            "[SYSTEM NOTIFICATION - NOT USER INPUT]\n"
-            "An async subagent task you started has an update. This is not a message from the user: "
-            "don't treat it as their answer to any question.\n"
-            f"<task-notification>\n<task-id>{_escape(update['task_id'])}</task-id>\n<agent-name>{_escape(update['agent_name'])}</agent-name>\n"
-            f"<status>{update['status']}</status>\n"
-        )
-    ]
+    blocks = [_notification_header(update)]
     if "result" in update:
         blocks += [_text_block("<result>\n"), *_result_blocks(update["result"]), _text_block("\n</result>\n")]
     if details := {key: update[key] for key in ("error", "interrupts") if key in update}:
         blocks.append(_text_block(f"<details>{_escape(_clip(json.dumps(details, default=str)))}</details>\n"))
     blocks.append(_text_block(f"</task-notification>\n{next_step}"))
     return blocks
+
+
+def _superseded_notification_content(event: TaskEvent) -> list[dict[str, Any]]:
+    """Frame an earlier run's outcome so the model doesn't take it for its queued follow-up finishing."""
+    return [
+        _notification_header(event),
+        _text_block(
+            "</task-notification>\n"
+            "This was an earlier run. Its queued follow-up is tracked separately, so this is not completion of the latest task. "
+            "Use `check_async_task` for its current status."
+        ),
+    ]
+
+
+def _notification_header(event: TaskEvent) -> dict[str, Any]:
+    return _text_block(
+        "[SYSTEM NOTIFICATION - NOT USER INPUT]\n"
+        "An async subagent task you started has an update. This is not a message from the user: "
+        "don't treat it as their answer to any question.\n"
+        f"<task-notification>\n<task-id>{_escape(event['task_id'])}</task-id>\n<agent-name>{_escape(event['agent_name'])}</agent-name>\n"
+        f"<status>{_escape(event['status'])}</status>\n"
+    )
 
 
 def _text_block(text: str) -> dict[str, Any]:
@@ -1008,7 +1025,6 @@ def _build_check_tool(
         coroutine=acheck_async_task,
         description=(
             "Check the status of an async subagent task. Returns the current status and, if complete, the result. "
-            "If the status is `pending`, the latest follow-up is queued and earlier work may still be running. "
             "If the status is `waiting`, it also returns what the subagent is asking the user. "
             "Statuses shown earlier in the conversation are always stale, so call this to get the current status "
             "rather than reporting a status from a previous tool result."
@@ -1018,7 +1034,7 @@ def _build_check_tool(
     )
 
 
-def _update_message(tracked: AsyncTask, strategy: str) -> str:
+def _update_message(tracked: AsyncTask, strategy: _UpdateStrategy) -> str:
     """Confirm an update, noting when it replaced a pending human request."""
     if strategy == "enqueue" and tracked["status"] in {"running", "pending"}:
         return f"Queued follow-up to async subagent without interrupting its current run. task_id: {tracked['task_id']}"
@@ -1026,6 +1042,35 @@ def _update_message(tracked: AsyncTask, strategy: str) -> str:
     if tracked["status"] == _WAITING:
         msg += ". It was waiting for a human; that request was dropped."
     return msg
+
+
+def _build_update_command(tracked: AsyncTask, run: Run, strategy: _UpdateStrategy, tool_call_id: str | None) -> Command:
+    """Build the `Command` update for a follow-up that started `run`."""
+    task: AsyncTask = {
+        **tracked,
+        "run_id": run["run_id"],
+        "status": "running",
+        "last_updated_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }
+    if strategy == "enqueue":
+        task["status"] = run["status"]
+        task["superseded_run_ids"] = _superseded_after_update(tracked)
+    return Command(
+        update={
+            "messages": [ToolMessage(_update_message(tracked, strategy), tool_call_id=tool_call_id)],
+            "async_tasks": {tracked["task_id"]: task},
+        }
+    )
+
+
+def _superseded_after_update(tracked: AsyncTask) -> list[str]:
+    """The runs a queued follow-up leaves behind it.
+
+    Once the latest run has finished, every earlier one has too, so the list restarts
+    with that run rather than growing with every update.
+    """
+    earlier = tracked.get("superseded_run_ids", []) if tracked["status"] in _UNFINISHED_STATUSES else []
+    return [*earlier, tracked["run_id"]]
 
 
 def _build_update_tool(
@@ -1049,36 +1094,20 @@ def _build_update_tool(
         if isinstance(tracked, str):
             return tracked
         spec = agent_map[tracked["agent_name"]]
+        strategy = spec.get("update_strategy", "interrupt")
         try:
             client = clients.get_sync(tracked["agent_name"])
             run = client.runs.create(
                 thread_id=tracked["thread_id"],
                 assistant_id=spec["graph_id"],
                 input={"messages": [{"role": "user", "content": message}]},
-                multitask_strategy=spec.get("update_strategy", "interrupt"),
+                multitask_strategy=strategy,
                 **_run_options(spec, runtime),
             )
         except Exception as e:  # noqa: BLE001  # LangGraph SDK raises untyped errors
             logger.warning("Failed to update async subagent '%s': %s", tracked["agent_name"], e)
             return f"Failed to update async subagent: {e}"
-        now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-        task: AsyncTask = {
-            **tracked,
-            "run_id": run["run_id"],
-            "status": "running",
-            "last_checked_at": tracked["last_checked_at"],
-            "last_updated_at": now,
-        }
-        if spec.get("update_strategy") == "enqueue":
-            task["status"] = run["status"]
-            task["superseded_run_ids"] = _superseded_after_update(tracked)
-        msg = _update_message(tracked, spec.get("update_strategy", "interrupt"))
-        return Command(
-            update={
-                "messages": [ToolMessage(msg, tool_call_id=runtime.tool_call_id)],
-                "async_tasks": {tracked["task_id"]: task},
-            }
-        )
+        return _build_update_command(tracked, run, strategy, runtime.tool_call_id)
 
     async def aupdate_async_task(
         task_id: str,
@@ -1089,36 +1118,20 @@ def _build_update_tool(
         if isinstance(tracked, str):
             return tracked
         spec = agent_map[tracked["agent_name"]]
+        strategy = spec.get("update_strategy", "interrupt")
         try:
             client = clients.get_async(tracked["agent_name"])
             run = await client.runs.create(
                 thread_id=tracked["thread_id"],
                 assistant_id=spec["graph_id"],
                 input={"messages": [{"role": "user", "content": message}]},
-                multitask_strategy=spec.get("update_strategy", "interrupt"),
+                multitask_strategy=strategy,
                 **_run_options(spec, runtime),
             )
         except Exception as e:  # noqa: BLE001  # LangGraph SDK raises untyped errors
             logger.warning("Failed to update async subagent '%s': %s", tracked["agent_name"], e)
             return f"Failed to update async subagent: {e}"
-        now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-        task: AsyncTask = {
-            **tracked,
-            "run_id": run["run_id"],
-            "status": "running",
-            "last_checked_at": tracked["last_checked_at"],
-            "last_updated_at": now,
-        }
-        if spec.get("update_strategy") == "enqueue":
-            task["status"] = run["status"]
-            task["superseded_run_ids"] = _superseded_after_update(tracked)
-        msg = _update_message(tracked, spec.get("update_strategy", "interrupt"))
-        return Command(
-            update={
-                "messages": [ToolMessage(msg, tool_call_id=runtime.tool_call_id)],
-                "async_tasks": {tracked["task_id"]: task},
-            }
-        )
+        return _build_update_command(tracked, run, strategy, runtime.tool_call_id)
 
     description = (
         "Send updated instructions to an async subagent. Interrupts the current run and starts "
@@ -1140,16 +1153,6 @@ def _build_update_tool(
         infer_schema=False,
         args_schema=UpdateAsyncTaskSchema,
     )
-
-
-def _superseded_after_update(tracked: AsyncTask) -> list[str]:
-    """The runs a queued follow-up leaves behind it.
-
-    Once the latest run has finished, every earlier one has too, so the list restarts
-    with that run rather than growing with every update.
-    """
-    earlier = tracked.get("superseded_run_ids", []) if tracked["status"] in _UNFINISHED_STATUSES else []
-    return [*earlier, tracked["run_id"]]
 
 
 def _cancel_earlier_runs(client: SyncLangGraphClient, task: AsyncTask) -> None:
@@ -1201,7 +1204,6 @@ def _build_cancel_tool(
         now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
         updated: AsyncTask = {
             **tracked,
-            "run_id": tracked["run_id"],
             "status": "cancelled",
             "last_checked_at": now,
             "last_updated_at": now,
@@ -1233,7 +1235,6 @@ def _build_cancel_tool(
         now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
         updated: AsyncTask = {
             **tracked,
-            "run_id": tracked["run_id"],
             "status": "cancelled",
             "last_checked_at": now,
             "last_updated_at": now,
@@ -1628,15 +1629,8 @@ class AsyncSubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
             return None
         run_id = event.get("run_id", task["run_id"])
         if run_id in task.get("superseded_run_ids", []):
-            message = messages[-1].model_copy(
-                update={
-                    "content": f"An earlier run of async task {_escape(task['task_id'])} reported {_escape(event['status'])}. "
-                    "Its follow-up is tracked separately; this is not completion of the latest task. "
-                    "Use check_async_task for its current status.",
-                    "additional_kwargs": {},
-                }
-            )
-            return {"messages": [message]}
+            # Same ID, so this replaces the notification; it keeps its marker so apps still see a notification.
+            return {"messages": [messages[-1].model_copy(update={"content": _superseded_notification_content(event)})]}
         if run_id != task["run_id"] and task["status"] not in _UNFINISHED_STATUSES:
             return None
         return {"async_tasks": {task["task_id"]: _observed(task, event["status"], run_id)}}

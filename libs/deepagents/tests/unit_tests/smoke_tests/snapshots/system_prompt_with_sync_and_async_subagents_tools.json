@@ -271,7 +271,7 @@
   },
   {
     "function": {
-      "description": "Check the status of an async subagent task. Returns the current status and, if complete, the result. If the status is `pending`, the latest follow-up is queued and earlier work may still be running. If the status is `waiting`, it also returns what the subagent is asking the user. Statuses shown earlier in the conversation are always stale, so call this to get the current status rather than reporting a status from a previous tool result.",
+      "description": "Check the status of an async subagent task. Returns the current status and, if complete, the result. If the status is `waiting`, it also returns what the subagent is asking the user. Statuses shown earlier in the conversation are always stale, so call this to get the current status rather than reporting a status from a previous tool result.",
       "name": "check_async_task",
       "parameters": {
         "properties": {

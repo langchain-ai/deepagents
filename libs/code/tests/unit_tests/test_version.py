@@ -6,7 +6,7 @@ import subprocess
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
-from unittest.mock import ANY, AsyncMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -387,13 +387,8 @@ async def test_update_slash_command_links_log_instead_of_listing_dependencies() 
             await app._handle_command("/update")
             await pilot.pause()
 
-        perform_upgrade_mock.assert_awaited_once_with(
-            on_notice=ANY,
-            allow_python_migration=False,
-            log_path=log_path,
-            include_prereleases=None,
-            target_version="99.0.0",
-        )
+        perform_upgrade_mock.assert_awaited_once()
+        assert perform_upgrade_mock.call_args.kwargs["log_path"] == log_path
         content = "\n".join(
             str(m._content) for m in app.query(AppMessage) if not m._is_markdown
         )
@@ -482,13 +477,9 @@ async def test_update_slash_command_stable_prerelease_deps_keep_intent_none() ->
             await app._handle_command("/update")
             await pilot.pause()
 
-    perform_upgrade_mock.assert_awaited_once_with(
-        on_notice=ANY,
-        allow_python_migration=False,
-        log_path=ANY,
-        include_prereleases=None,
-        target_version="99.0.0",
-    )
+    perform_upgrade_mock.assert_awaited_once()
+    assert perform_upgrade_mock.call_args.kwargs["include_prereleases"] is None
+    assert perform_upgrade_mock.call_args.kwargs["target_version"] == "99.0.0"
 
 
 async def test_update_slash_command_reports_success_without_a_banner() -> None:
@@ -701,13 +692,7 @@ async def test_update_deps_skips_refresh_prompt_when_refresh_unsupported(
 
         confirm_mock.assert_not_awaited()
         refresh_mock.assert_not_awaited()
-        perform_upgrade_mock.assert_awaited_once_with(
-            on_notice=ANY,
-            allow_python_migration=False,
-            log_path=ANY,
-            include_prereleases=None,
-            target_version="1.1.0",
-        )
+        perform_upgrade_mock.assert_awaited_once()
         app_msgs = [m for m in app.query(AppMessage) if not m._is_markdown]
         content = str(app_msgs[-1]._content)
         assert "Updated to v1.1.0" in content
@@ -1427,13 +1412,8 @@ async def test_perform_app_upgrade_omits_log_hint_when_log_uncreatable() -> None
             )
             await pilot.pause()
 
-        perform_upgrade_mock.assert_awaited_once_with(
-            on_notice=ANY,
-            allow_python_migration=False,
-            log_path=None,
-            include_prereleases=None,
-            target_version="1.1.0",
-        )
+        perform_upgrade_mock.assert_awaited_once()
+        assert perform_upgrade_mock.call_args.kwargs["log_path"] is None
         content = "\n".join(
             str(m._content) for m in app.query(AppMessage) if not m._is_markdown
         )

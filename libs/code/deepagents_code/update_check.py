@@ -3032,9 +3032,11 @@ async def perform_upgrade(
     ):
         logger.info("Deferred the Python 3.14 migration for v%s", target_version)
         guidance = _migration_deferral_message(target_version)
-        await _emit_progress(on_notice, guidance)
+        # Flag first: if showing the notice raises, the caller must still
+        # report a deferral rather than a failure.
         if on_migration_deferred is not None:
             on_migration_deferred()
+        await _emit_progress(on_notice, guidance)
         return False, guidance, None
     # Targeted pre-release admission: a *stable* dcode target that mandates an
     # exact pre-release dependency (e.g. `deepagents==0.7.0a7`). Rather than opt

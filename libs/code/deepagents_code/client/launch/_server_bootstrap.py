@@ -76,7 +76,12 @@ class _ParentGuard:
 
 
 def _main() -> None:
-    guard = _ParentGuard(int(sys.argv[1]), float(sys.argv[2]))
+    reader, *held = (int(fd) for fd in sys.argv[1].split(","))
+    for fd in held:
+        # Keep the session lock in this process only, so a long-lived
+        # grandchild cannot hold the install in use after the server exits.
+        os.set_inheritable(fd, False)
+    guard = _ParentGuard(reader, float(sys.argv[2]))
     guard.start()
     if not guard.begin_dispatch():
         return

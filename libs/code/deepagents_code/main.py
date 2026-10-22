@@ -52,6 +52,11 @@ _UNPERSISTED_AUTO_UPDATE_FAILURE_NOTE = (
     "\n[yellow]Note:[/yellow] this failure could not be recorded, so dcode will "
     "retry this update on the next launch until the state directory becomes writable."
 )
+_UNPERSISTED_AUTO_UPDATE_DEFERRAL_NOTE = (
+    "\n[yellow]Note:[/yellow] this deferral could not be recorded, so dcode will "
+    "announce this update again on the next launch until the state directory "
+    "becomes writable."
+)
 
 
 class _TrustAction(Enum):
@@ -457,6 +462,27 @@ def _confirm_update_after_restart(console: Console, version: str) -> None:
     console.print(f"[green]Updated to v{version}.[/green]", highlight=False)
 
 
+def _session_lock_unavailable_note() -> str:
+    """Explain a migration deferral that quitting other sessions cannot fix.
+
+    Returns:
+        A line ending in a newline, or an empty string when the session lock
+            works and the deferral notice alone is accurate.
+    """
+    from deepagents_code._session_lock import (
+        SESSION_LOCK_FILE,
+        session_lock_unavailable,
+    )
+
+    if not session_lock_unavailable():
+        return ""
+    return (
+        f"dcode could not lock {SESSION_LOCK_FILE}, so it cannot tell whether "
+        "other sessions are running and will not migrate on its own. Run "
+        "`dcode update` instead.\n"
+    )
+
+
 def _mark_startup_auto_update_failed_safe(version: str) -> None:
     """Record the auto-update cooldown for *version*, never raising.
 
@@ -760,16 +786,16 @@ def _run_startup_auto_update(console: Console) -> None:
                 return
             # A migration rebuilds the shared tool environment, which would
             # break dcode sessions running in other terminals, so it only runs
-            # here when this process is the install's sole session. Checked
-            # under the update lock, which `is_sole_session` requires.
+            # here when no other session was found at this check.
             from deepagents_code._session_lock import is_sole_session
 
             sole_session = is_sole_session()
             if retrying_deferral and not sole_session:
-                # Repeat the deferral without re-fetching release metadata or
-                # announcing an update that will not happen.
+                # Repeat the deferral without re-fetching the release's Python
+                # requirement or announcing an update that will not happen.
                 console.print(
                     f"{migration_deferral_message(latest)}\n"
+                    f"{_session_lock_unavailable_note()}"
                     f"Continuing with v{cli_version}.",
                     markup=False,
                     highlight=False,
@@ -867,7 +893,8 @@ def _run_startup_auto_update(console: Console) -> None:
             _exit_after_unverified_update(console, persisted=persisted)
         if deferred:
             # Nothing failed: the notice above explains how to migrate.
-            message = f"Continuing with v{cli_version}."
+            note = escape(_session_lock_unavailable_note())
+            message = f"{note}Continuing with v{cli_version}."
         elif notices:
             # The notice above carries its own recovery steps; a generic
             # command here would contradict them.
@@ -888,14 +915,16 @@ def _run_startup_auto_update(console: Console) -> None:
                 f"Run manually: [cyan]{cmd}[/cyan]\n"
                 f"Continuing with v{cli_version}."
             )
-        if not persisted and not deferred:
-            # The cooldown marker could not be saved (e.g. a read-only state
-            # dir), so this same failing upgrade would otherwise be retried on
-            # every launch. Surface it rather than silently re-stalling, the
-            # way the consent-announce path surfaces its un-persisted state.
-            # After a deferral nothing failed: a lost marker only repeats the
-            # deferral notice, which installs nothing.
-            message += _UNPERSISTED_AUTO_UPDATE_FAILURE_NOTE
+        if not persisted:
+            # The marker could not be saved (e.g. a read-only state dir), so
+            # this same upgrade would otherwise be retried on every launch.
+            # Surface it rather than silently re-stalling, the way the
+            # consent-announce path surfaces its un-persisted state.
+            message += (
+                _UNPERSISTED_AUTO_UPDATE_DEFERRAL_NOTE
+                if deferred
+                else _UNPERSISTED_AUTO_UPDATE_FAILURE_NOTE
+            )
         console.print(message, markup=True, highlight=False)
     except SystemExit:
         # Process replacement (and test doubles that simulate it), plus the

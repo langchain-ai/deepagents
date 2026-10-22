@@ -746,8 +746,8 @@ def _isolate_session_lock(
 
     Installation-scoped like `UPDATE_LOCK_FILE`, so unpatched it would register
     tests as sessions of this checkout's real tool environment. Closing the
-    descriptor keeps one test's registration from leaking into the next, and
-    keeps hundreds of `cli_main` tests from exhausting the fd limit.
+    descriptor keeps one test's registration, and its stale lock path, from
+    leaking into the next.
     """
     from deepagents_code import _session_lock
 

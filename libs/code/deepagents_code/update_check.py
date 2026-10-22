@@ -1337,7 +1337,10 @@ def should_skip_startup_auto_update_after_failure(version: str) -> bool:
 
 
 def mark_startup_auto_update_failed(version: str, *, deferred: bool = False) -> bool:
-    """Persist a same-version startup auto-update retry cooldown marker.
+    """Persist a same-version marker for a failed or deferred startup auto-update.
+
+    Only a failure starts a retry cooldown; a deferral is retried on the next
+    launch that finds no other session running.
 
     Args:
         version: Target version the attempt did not install.

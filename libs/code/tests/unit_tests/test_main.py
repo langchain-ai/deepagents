@@ -509,7 +509,7 @@ class TestStartupAutoUpdate:
     def _pending_migration(
         *, deferred_before: bool, sole: bool, upgrade: AsyncMock
     ) -> Iterator[MagicMock]:
-        """Patch a launch with v9.9.9 available behind a deferral cooldown.
+        """Patch a launch with v9.9.9 available, optionally after a deferral.
 
         Yields:
             The `mark_startup_auto_update_failed` mock.

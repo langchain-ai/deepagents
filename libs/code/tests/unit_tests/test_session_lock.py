@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import fcntl
 import os
 import subprocess
 import sys
@@ -17,12 +16,14 @@ from deepagents_code._session_lock import (
     session_lock_fds,
 )
 
+if sys.platform == "win32":
+    pytest.skip("the session lock is POSIX-only", allow_module_level=True)
+
+import fcntl  # POSIX-only; must follow the Windows skip
+
 if TYPE_CHECKING:
     from collections.abc import Iterator
-
-pytestmark = pytest.mark.skipif(
-    sys.platform == "win32", reason="the session lock is POSIX-only"
-)
+    from pathlib import Path
 
 
 @pytest.fixture
@@ -105,8 +106,8 @@ def test_child_given_the_fd_shares_this_session() -> None:
     try:
         assert is_sole_session() is True
         # The client exits first; its server still marks the install in use.
-        os.close(fd)
         _session_lock._held_fd = None
+        os.close(fd)
         with pytest.raises(BlockingIOError):
             fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
     finally:
@@ -118,7 +119,7 @@ def test_child_given_the_fd_shares_this_session() -> None:
 
 
 def test_unwritable_lock_location_fails_closed(
-    monkeypatch: pytest.MonkeyPatch, tmp_path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """When the lock file cannot be created, the process is never sole."""
     blocker = tmp_path / "not-a-dir"

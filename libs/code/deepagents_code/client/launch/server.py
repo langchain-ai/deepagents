@@ -1051,7 +1051,7 @@ class ServerProcess:
                 [
                     *cmd[:2],
                     "deepagents_code.client.launch._server_bootstrap",
-                    str(reader),
+                    ",".join(map(str, (reader, *session_lock_fds()))),
                     str(_SHUTDOWN_TIMEOUT),
                     *cmd[3:],
                 ],

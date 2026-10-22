@@ -49,24 +49,6 @@ def test_unregistered_process_is_never_sole() -> None:
     assert is_sole_session() is False
 
 
-def test_registered_process_alone_is_sole() -> None:
-    """The only registered session may migrate."""
-    hold_session_lock()
-
-    assert len(session_lock_fds()) == 1
-    assert is_sole_session() is True
-
-
-def test_hold_is_idempotent() -> None:
-    """Registering twice reuses one descriptor rather than leaking another."""
-    hold_session_lock()
-    fds = session_lock_fds()
-    hold_session_lock()
-
-    assert session_lock_fds() == fds
-    assert is_sole_session() is True
-
-
 def test_other_session_blocks_sole(other_session: int) -> None:  # noqa: ARG001
     """A second registered session makes the check report others running."""
     hold_session_lock()

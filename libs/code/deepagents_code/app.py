@@ -7758,7 +7758,7 @@ class DeepAgentsApp(App):
             # command here would contradict them.
             log_line = f"\nLog: {log_path}" if log_path is not None else ""
             await self._mount_message(
-                AppMessage(f"Auto-update failed; see the message above.{log_line}"),
+                AppMessage(f"Update failed; see the message above.{log_line}"),
             )
         else:
             cmd = upgrade_command(

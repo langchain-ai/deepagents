@@ -1295,7 +1295,7 @@ class TestUpdateSubcommand:
     def test_update_explains_migration_before_install(
         self, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        """The explicit CLI update shows notices without a prompt."""
+        """`dcode update` prints notices as they arrive and permits migration."""
         notice = "Python 3.14 is required; migrating [tool] environment."
 
         def upgrade(

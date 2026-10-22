@@ -189,13 +189,13 @@ _UPGRADE_COMMANDS: dict[InstallMethod, str] = {
     # *respects* the requirement string baked into the uv tool receipt by the
     # original install (or by any prior `perform_upgrade` or
     # `dependency_refresh_command`, which both write `deepagents-code==<version>`
-    # into the receipt). When that
-    # requirement is pinned, `uv tool upgrade` "succeeds" but re-installs the
-    # same pinned version, silently leaving the user behind latest. This bare
-    # form is the *displayed* manual hint; `perform_upgrade` runs the
-    # receipt-preserving `upgrade_install_command` instead, pinned to the
-    # inspected release. `dependency_refresh_command` builds the inverse
-    # command for the explicit "stay on this version, refresh deps" flow.
+    # into the receipt). When that requirement is pinned, `uv tool upgrade`
+    # "succeeds" but re-installs the same pinned version, silently leaving the
+    # user behind latest. This bare form is the *displayed* manual hint;
+    # `perform_upgrade` runs the receipt-preserving `upgrade_install_command`
+    # instead, pinned to the inspected release. `dependency_refresh_command`
+    # builds the same pinned form at the current version for the explicit
+    # "stay on this version, refresh deps" flow.
     "uv": FALLBACK_UPGRADE_COMMAND,
     "brew": "brew upgrade deepagents-code",
 }
@@ -226,8 +226,10 @@ since that one-liner is the path we promote.
 """
 
 _UPGRADE_TIMEOUT = 120  # seconds
-"""Wall-clock cap for `perform_upgrade` without a migration (see
-`_MIGRATION_TIMEOUT`) and for `perform_install_extra`."""
+"""Default wall-clock cap for install subprocesses.
+
+A Python migration uses `_MIGRATION_TIMEOUT` instead.
+"""
 
 _MIGRATION_TIMEOUT = 600  # seconds
 """Wall-clock cap for a Python migration.
@@ -247,8 +249,8 @@ _PYTHON_MIGRATION_INSTALL_COMMAND = (
 )
 """Recovery installer for Python 3.14 migrations.
 
-The plain installer defaults to an older Python, so it cannot install a
-release that requires 3.14.
+The plain installer defaults to an older Python, so it would resolve the
+newest release compatible with that Python instead of one that requires 3.14.
 """
 
 UPDATE_LOG_DIR: Path = default_cache_dir() / "deepagents-code" / "update_logs"
@@ -378,7 +380,7 @@ def read_installed_distribution_version() -> str | None:
     imported at launch: it reads the running tool environment's
     `deepagents_code-*.dist-info` directory name from disk, so it reflects the
     install even after an in-session upgrade rewrote the environment. Used to
-    report what an upgrade actually installed.
+    verify what an upgrade actually installed.
 
     Returns:
         The installed version string, or `None` when it cannot be determined
@@ -391,8 +393,8 @@ def read_installed_distribution_version() -> str | None:
     if len(candidates) != 1:
         # Zero matches means the distribution is missing from this environment;
         # more than one means leftover dist-infos make the installed version
-        # ambiguous. `perform_upgrade` decides how each affects an upgrade,
-        # so debug is loud enough here.
+        # ambiguous. `_verify_uv_install` decides how each affects an
+        # upgrade, so debug is loud enough here.
         logger.debug(
             "Expected exactly one deepagents_code dist-info under %s, found %d",
             sysconfig.get_path("purelib"),
@@ -2065,11 +2067,11 @@ def create_update_log_file() -> Path | None:
     Callers that *advertise* the log to a user — "Update log: tail -f <path>" —
     must use this rather than `create_update_log_path`, which only computes a
     path. `perform_upgrade` refuses some upgrades before ever spawning an
-    installer (unknown or unsupported install method, `brew` missing from
-    `PATH`, the pre-release gate), and `_run_install_subprocess` degrades to
-    not persisting output when the log cannot be opened. In all of those cases
-    the path alone would name a file that never comes into existence, leaving
-    the user tailing an `ENOENT`.
+    installer (e.g. an unsupported install method, `brew` missing from `PATH`,
+    the pre-release gate, or a deferred Python migration), and
+    `_run_install_subprocess` degrades to not persisting output when the log
+    cannot be opened. In all of those cases the path alone would name a file
+    that never comes into existence, leaving the user tailing an `ENOENT`.
 
     Returns:
         The created log path, or `None` if it could not be created — callers
@@ -2952,14 +2954,15 @@ async def perform_upgrade(
             `None`, follows the installed version's channel and the target
             release's dependency metadata. Pre-release upgrades require the uv
             install method; returns failure otherwise.
-        target_version: Exact release to install. For uv, defaults to the
-            latest release on the resolved channel, and its `Requires-Python`
-            decides whether to migrate the interpreter. Also used to detect
-            pinned pre-release dependencies.
+        target_version: Release to install. For uv, the install is pinned to
+            it exactly; it defaults to the latest release on the resolved
+            channel, and its `Requires-Python` decides whether to migrate the
+            interpreter. Other methods install their latest release and report
+            this value. Also used to detect pinned pre-release dependencies.
         on_notice: Receives user-facing messages that must be shown in full:
-            the pre-install migration notice, and every failure that carries
-            its own recovery steps. Callers should show no generic upgrade
-            command after one. *output* also includes the failure text.
+            the pre-install migration notice, and failures that carry their
+            own recovery steps. Callers should show no generic upgrade command
+            after one. *output* also includes the failure text.
         allow_python_migration: When `False` and the target needs a Python
             migration, install nothing and return failure with deferral
             guidance (also sent to `on_notice`). Disable wherever a rebuilt

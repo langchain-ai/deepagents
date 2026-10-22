@@ -855,8 +855,8 @@ def _run_startup_auto_update(console: "Console") -> None:
             # Nothing failed: the notice above explains how to migrate.
             message = f"Continuing with v{cli_version}."
         elif notices:
-            # The notice above carries its own recovery steps and points at the
-            # log; a generic command here would contradict them.
+            # The notice above carries its own recovery steps; a generic
+            # command here would contradict them.
             log_line = f"Log: {escape(str(log_path))}\n" if log_path else ""
             message = (
                 "[bold red]Auto-update failed; see the message above.[/bold red]\n"
@@ -6112,11 +6112,11 @@ def cli_main() -> None:
                     # dcode, and nothing ran, so there is no log to show.
                     sys.exit(1)
                 elif notices:
-                    # The notice carries its own recovery steps and points at
-                    # the log, so repeat where the log is.
+                    # The notice carries its own recovery steps; a generic
+                    # command here would contradict them.
                     log_line = f"\nLog: {escape(str(log_path))}" if log_path else ""
                     console.print(
-                        "[bold red]Auto-update failed; see the message above."
+                        "[bold red]Update failed; see the message above."
                         f"[/bold red]{log_line}"
                     )
                     sys.exit(1)

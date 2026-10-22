@@ -1600,12 +1600,8 @@ class TestAsyncFilesystemMiddlewarePermissions:
         assert "/secrets/b.txt" not in result
 
 
-def _filesystem_permissions_for(agent, subagent_name: str | None = None):
-    """Walk a compiled deep agent to fetch a `FilesystemMiddleware._permissions`.
-
-    When `subagent_name` is None, returns the main agent's permissions.
-    Otherwise descends into the named subagent registered on the `task` tool.
-    """
+def _filesystem_middleware_for(agent, subagent_name: str | None = None):
+    """Find the filesystem middleware on the main agent or a named subagent."""
     if subagent_name is not None:
         task_tool = agent.nodes["tools"].bound._tools_by_name["task"]
         agents_dict = next(
@@ -1614,11 +1610,48 @@ def _filesystem_permissions_for(agent, subagent_name: str | None = None):
         agent = agents_dict[subagent_name]
 
     read_tool = agent.nodes["tools"].bound._tools_by_name["read_file"]
-    fs = next(cell.cell_contents for cell in read_tool.func.__closure__ if isinstance(cell.cell_contents, FilesystemMiddleware))
-    return fs._permissions
+    return next(cell.cell_contents for cell in read_tool.func.__closure__ if isinstance(cell.cell_contents, FilesystemMiddleware))
+
+
+def _filesystem_permissions_for(agent, subagent_name: str | None = None):
+    """Fetch the permission rules for the main agent or a named subagent."""
+    return _filesystem_middleware_for(agent, subagent_name)._permissions
 
 
 class TestCustomFilesystemPermissions:
+    @pytest.mark.parametrize("shared_subagents", [False, True])
+    async def test_reusing_unconfigured_middleware_keeps_rules_local(self, shared_subagents):
+        backend = _make_backend({"/a/key.txt": "alpha", "/b/key.txt": "beta"})
+        shared = FilesystemMiddleware(backend=backend, tools=["read_file"], custom_tool_descriptions={"read_file": "Read a file"})
+        rules = [[FilesystemPermission(operations=["read"], paths=[f"/{name}/**"], mode="deny")] for name in ["a", "b"]]
+        model = GenericFakeChatModel(messages=iter([AIMessage(content="done")]))
+        if shared_subagents:
+            agent = create_deep_agent(
+                model=model,
+                backend=backend,
+                subagents=[
+                    {"name": name, "description": name, "permissions": permissions, "middleware": [shared]}
+                    for name, permissions in zip(["a", "b"], rules, strict=True)
+                ],
+            )
+            configured = [_filesystem_middleware_for(agent, name) for name in ["a", "b"]]
+        else:
+            configured = [
+                _filesystem_middleware_for(create_deep_agent(model=model, backend=backend, permissions=permissions, middleware=[shared]))
+                for permissions in rules
+            ]
+        assert not shared._permissions
+        for index, middleware in enumerate(configured):
+            assert [tool.name for tool in middleware.tools] == ["read_file"]
+            tool = middleware.tools[0]
+            assert tool.description == "Read a file"
+            for path_index, name in enumerate(["a", "b"]):
+                args = {"file_path": f"/{name}/key.txt", "runtime": _runtime("read")}
+                result = tool.invoke(args)
+                async_result = await tool.ainvoke(args)
+                expected_status = "error" if index == path_index else "success"
+                assert result.status == async_result.status == expected_status
+
     @pytest.mark.parametrize("target", ["main", "general-purpose", "custom"])
     @pytest.mark.parametrize("configured", [False, True])
     async def test_replacement_enforces_agent_rules(self, target, configured):
@@ -1637,12 +1670,13 @@ class TestCustomFilesystemPermissions:
             middleware=[middleware] if target == "main" else [],
             subagents=[] if target == "main" else [{"name": target, "description": "test", "middleware": [middleware]}],
         )
-        assert _filesystem_permissions_for(agent, None if target == "main" else target) == rules
-        read_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
+        configured_middleware = _filesystem_middleware_for(agent, None if target == "main" else target)
+        assert configured_middleware._permissions == rules
+        read_tool = next(tool for tool in configured_middleware.tools if tool.name == "read_file")
         read = read_tool.invoke({"file_path": "/secrets/key.txt", "runtime": _runtime("read")})
         assert read.status == "error"
         assert "permission denied" in read.content
-        write_tool = next(tool for tool in middleware.tools if tool.name == "write_file")
+        write_tool = next(tool for tool in configured_middleware.tools if tool.name == "write_file")
         write = await write_tool.ainvoke({"file_path": "/secrets/new.txt", "content": "data", "runtime": _runtime("write")})
         assert write.status == "error"
         assert "permission denied" in write.content

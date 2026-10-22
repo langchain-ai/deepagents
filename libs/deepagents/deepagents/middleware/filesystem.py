@@ -12,6 +12,7 @@ import uuid
 import warnings
 from binascii import Error as BinasciiError
 from collections.abc import Awaitable, Callable, Mapping, Sequence
+from copy import copy
 from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 from typing import Annotated, Any, Final, Literal, NotRequired, cast
@@ -2022,6 +2023,10 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         )
         self._glob_slots = threading.BoundedSemaphore(_SYNC_GLOB_WORKERS)
 
+        self.tools = self._create_tools()
+
+    def _create_tools(self) -> list[BaseTool]:
+        """Bind enabled filesystem tools to this middleware instance."""
         tool_factories: tuple[tuple[str, Callable[[], BaseTool]], ...] = (
             ("ls", self._create_ls_tool),
             ("read_file", self._create_read_file_tool),
@@ -2035,7 +2040,14 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         # Excluded tools are omitted here entirely, not just hidden from the
         # model's schema, so a tool name outside `tools=` never reaches the
         # dispatchable tool node
-        self.tools = [factory() for name, factory in tool_factories if self._enabled_tools is None or name in self._enabled_tools]
+        return [factory() for name, factory in tool_factories if self._enabled_tools is None or name in self._enabled_tools]
+
+    def _with_permissions(self, permissions: list[FilesystemPermission]) -> "FilesystemMiddleware[ContextT, ResponseT]":
+        """Copy the middleware with agent-local rules and bound tools."""
+        configured = copy(self)
+        configured._set_permissions(permissions)
+        configured.tools = configured._create_tools()
+        return configured
 
     def _set_permissions(self, permissions: list[FilesystemPermission] | None) -> None:
         """Validate and copy rules against this middleware's backend."""

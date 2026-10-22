@@ -240,7 +240,7 @@ def _apply_custom_middleware(
                 if replacement._permissions and replacement._permissions != m._permissions:
                     msg = "FilesystemMiddleware permissions conflict with the agent permissions; use the same rules or omit middleware permissions."
                     raise ValueError(msg)
-                replacement._set_permissions(m._permissions)
+                replacement = replacement._with_permissions(m._permissions)
             result[i] = replacement
     if to_append and core_names is not None:
         # Land new middleware after the last core entry, ahead of the tail.

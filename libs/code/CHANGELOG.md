@@ -4,19 +4,13 @@
 
 ## [0.2.0](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.88...deepagents-code==0.2.0) (2026-10-22)
 
-
 ### ⚠ BREAKING CHANGES
 
-* **deps:** `deepagents-code` and `deepagents-talon` now require Python 3.14 (`>=3.14,<3.15`). Re-run the dcode installer, or recreate your environment on Python 3.14.
-
-### Features
-
-* **deps:** require Python 3.14 ([#7052](https://github.com/langchain-ai/deepagents/issues/7052)) ([96eca0b](https://github.com/langchain-ai/deepagents/commit/96eca0b2e13db0b9e3dd9822d062ad316ba0b5fa))
-
+- `deepagents-code` now requires Python 3.14 (`>=3.14,<3.15`). If you have auto-upgrade enabled, this should be handled for you automatically. Otherwise, re-run the dcode installer or recreate your environment with Python 3.14.
 
 ### Bug Fixes
 
-* **code:** decode git output as UTF-8 ([#7142](https://github.com/langchain-ai/deepagents/issues/7142)) ([4f3ca06](https://github.com/langchain-ai/deepagents/commit/4f3ca06ef1dad7a8a03c9ead515860f52ab1de4d))
+- Decode Git output as UTF-8.
 
 ## [0.1.88](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.87...deepagents-code==0.1.88) (2026-10-22)
 

@@ -140,6 +140,8 @@ def uv_install(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> AsyncMock:
     )
     monkeypatch.setattr(update_check.sys, "prefix", str(tmp_path))
     monkeypatch.setattr(update_check, "detect_install_method", lambda: "uv")
+    # Windows always defers migrations; pin POSIX so the Windows CI leg runs them.
+    monkeypatch.setattr(update_check, "_is_windows", lambda: False)
     monkeypatch.setattr(update_check, "update_install_lock", lambda: nullcontext(True))
     monkeypatch.setattr(update_check, "release_prerelease_pins", lambda _version: [])
     monkeypatch.setattr(
@@ -200,6 +202,24 @@ async def test_live_session_defers_migration_without_touching_environment(
     assert "Quit every dcode session" in output
     assert " update`" in output
     assert receipt.read_bytes() == original
+    uv_install.assert_not_awaited()
+
+
+async def test_windows_defers_migration_with_outside_command(
+    uv_install: AsyncMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Windows locks the running interpreter, so even `dcode update` defers."""
+    monkeypatch.setattr(update_check, "_is_windows", lambda: True)
+    deferred = MagicMock()
+    with patch.object(update_check.sys, "version_info", VersionInfo(3, 13, 4)):
+        success, output, _ = await update_check.perform_upgrade(
+            target_version="2.0.0", on_migration_deferred=deferred
+        )
+    assert not success
+    deferred.assert_called_once_with()
+    args = shlex.split(output.rsplit("your shell: ", 1)[1])
+    assert args[args.index("--python") + 1] == "3.14"
+    assert "deepagents-code[openai,quickjs]==2.0.0" in args
     uv_install.assert_not_awaited()
 
 

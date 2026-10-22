@@ -6089,6 +6089,7 @@ def cli_main() -> None:
                             markup=False,
                         )
                     notices: list[str] = []
+                    deferred: list[bool] = []
 
                     def show_notice(message: str) -> None:
                         notices.append(message)
@@ -6100,10 +6101,15 @@ def cli_main() -> None:
                             log_path=log_path,
                             include_prereleases=include_prereleases,
                             target_version=latest,
+                            on_migration_deferred=lambda: deferred.append(True),
                         )
                     )
                 if success:
                     console.print(f"[green]Updated to v{latest}.[/green]")
+                elif deferred:
+                    # Windows: the notice names the command to run outside
+                    # dcode, and nothing ran, so there is no log to show.
+                    sys.exit(1)
                 elif notices:
                     # The notice carries its own recovery steps and points at
                     # the log, so repeat where the log is.

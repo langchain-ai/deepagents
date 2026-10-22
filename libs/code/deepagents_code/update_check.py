@@ -2759,8 +2759,18 @@ def _migration_deferral_message(target_version: str) -> str:
     """Return the guidance for a migration that this caller may not run.
 
     Returns:
-        A user-facing message that names the safe `update` command.
+        A user-facing message that names the safe `update` command, or on
+        Windows the uv command to run outside dcode.
     """
+    if _is_windows():
+        # Windows locks the running interpreter, so uv cannot delete the
+        # environment that `dcode update` itself runs from.
+        return (
+            f"v{target_version} requires migrating dcode to Python 3.14. "
+            "On Windows, dcode cannot rebuild the environment it runs from. "
+            "Nothing was installed. Quit every dcode session, then run from "
+            f"your shell: {_windows_migration_command(target_version)}"
+        )
     from deepagents_code._invocation import invoked_name
 
     return (
@@ -2770,6 +2780,28 @@ def _migration_deferral_message(target_version: str) -> str:
         f"Quit every dcode session, then run `{invoked_name()} update` from "
         "your shell to migrate safely."
     )
+
+
+def _windows_migration_command(target_version: str) -> str:
+    """Return the uv command that migrates dcode from outside its environment.
+
+    Returns:
+        The receipt-preserving command, or a bare one with a reminder when
+        the receipt cannot be read.
+    """
+    from deepagents_code.extras_info import ExtrasIntrospectionError
+
+    try:
+        return upgrade_install_command(version=target_version, python="3.14")
+    except (ExtrasIntrospectionError, ToolRequirementIntrospectionError):
+        logger.warning(
+            "Could not read the uv receipt for the migration command",
+            exc_info=True,
+        )
+        return (
+            f"uv tool install -U --python 3.14 deepagents-code=={target_version} "
+            "(reselect extras and added packages)"
+        )
 
 
 def _install_failure_guidance(
@@ -2883,7 +2915,9 @@ async def perform_upgrade(
         allow_python_migration: When `False` and the target needs a Python
             migration, install nothing and return failure with deferral
             guidance (also sent to `on_notice`). Disable wherever a rebuilt
-            environment could break a running session.
+            environment could break a running session. Always treated as
+            `False` on Windows, where uv cannot replace the environment of a
+            running interpreter.
         on_migration_deferred: Called when the target needs a Python migration
             that `allow_python_migration` forbids, so callers can report a
             deferral rather than a failure.
@@ -2952,7 +2986,11 @@ async def perform_upgrade(
         # The plain installer defaults to an older Python, which would resolve
         # the newest compatible release instead of this target.
         recovery_installer = _PYTHON_MIGRATION_INSTALL_COMMAND
-    if python is not None and target_version and not allow_python_migration:
+    if (
+        python is not None
+        and target_version
+        and (not allow_python_migration or _is_windows())
+    ):
         logger.info("Deferred the Python 3.14 migration for v%s", target_version)
         guidance = _migration_deferral_message(target_version)
         await _emit_progress(on_notice, guidance)

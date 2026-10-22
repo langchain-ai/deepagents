@@ -2,6 +2,23 @@
 
 # Deep Agents Changelog
 
+## [0.7.30](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.29...deepagents==0.7.30) (2026-10-22)
+
+
+### Features
+
+* **sdk:** add `notify_parent` to `AsyncSubAgent` ([#7132](https://github.com/langchain-ai/deepagents/issues/7132)) ([3ae25ff](https://github.com/langchain-ai/deepagents/commit/3ae25ff85f94f15815c377e73841173a722299d6))
+* **sdk:** add `webhook` to `AsyncSubAgent` ([#7072](https://github.com/langchain-ai/deepagents/issues/7072)) ([7a7c4e3](https://github.com/langchain-ai/deepagents/commit/7a7c4e3708981568f96eb7fbc86aaef696c03001))
+* **sdk:** queue async subagent follow-ups without interrupting active work ([#7082](https://github.com/langchain-ai/deepagents/issues/7082)) ([a7e1e25](https://github.com/langchain-ai/deepagents/commit/a7e1e2575c1e96b721a0a3e0ecde6e85612ac30d))
+
+
+### Bug Fixes
+
+* **sdk:** drop reasoning blocks bound to history a summary replaced ([#7127](https://github.com/langchain-ai/deepagents/issues/7127)) ([6032a5a](https://github.com/langchain-ai/deepagents/commit/6032a5ade4908d75eb2662e602f1f61a1d7a9bcf))
+* **sdk:** enforce `LocalShellBackend` output limits in UTF-8 bytes ([#7074](https://github.com/langchain-ai/deepagents/issues/7074)) ([953d5dd](https://github.com/langchain-ai/deepagents/commit/953d5dda8bd866663f49dfa0659a87c3f2cf0c26))
+* **sdk:** report async subagent runs cancelled on the server, and drop reasoning from check results ([#7060](https://github.com/langchain-ai/deepagents/issues/7060)) ([ac8d8e9](https://github.com/langchain-ai/deepagents/commit/ac8d8e942a46bbc8e1f078fcb6b8d6393534abe2))
+* **sdk:** retry an async subagent check when its thread can't be read ([#7124](https://github.com/langchain-ai/deepagents/issues/7124)) ([d57b09b](https://github.com/langchain-ai/deepagents/commit/d57b09b1a7a9890fee2db649e6418416f039df14))
+
 ## [0.7.29](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.28...deepagents==0.7.29) (2026-10-20)
 
 ### Bug Fixes

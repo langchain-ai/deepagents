@@ -19,38 +19,38 @@ classifiers = [
 dependencies = [
     # SDK — local editable in dev (see [tool.uv.sources]), versioned for published package
     "deepagents>=0.6.12",
-    "langchain[mcp]>=1.4.1,<2.0.0",
+    "langchain[mcp]>=1.4.1",
     "deepagents-code>=0.1.27",
     # Harbor runtime, with the built-in LangSmith sandbox env (`-e langsmith`, introduced in harbor 0.13.2).
     # 0.20+: managed-Python agent venv. harbor-langsmith 0.3.0+ is the piece that honors
     # experiment_name (no job-id suffix), so shards of a leaf converge on one queryable experiment;
     # pin its floor explicitly since harbor's extra leaves it unconstrained.
-    "harbor[langsmith]>=0.20.0,<0.21.0",
-    "harbor-langsmith>=0.3.0,<0.4.0",
+    "harbor[langsmith]>=0.20.0",
+    "harbor-langsmith>=0.3.0",
     # LangSmith for observability
     "langsmith>=0.10.9",
     # Sandbox runtimes
     "dockerfile-parse>=2.0.1",
     "modal>=1.4.3",
     # LangChain model providers (evals run against many providers)
-    "langchain-anthropic>=1.5.4,<2.0.0",
-    "langchain-baseten>=0.2.1,<0.3.0",
-    "langchain-deepseek>=1.1.0,<1.2.0",
-    "langchain-fireworks>=1.4.4,<1.5.0",
-    "langchain-google-genai>=4.3.0,<5.0.0",
-    "langchain-groq>=1.1.3,<1.2.0",
-    "langchain-mistralai>=1.1.6,<1.2.0",
-    "langchain-nvidia-ai-endpoints>=1.4.3,<1.5.0",
-    "langchain-ollama>=1.1.0,<1.2.0",
-    "langchain-openai>=1.4.0,<2.0.0",
-    "langchain-openrouter>=0.2.6,<0.3.0",
-    "langchain-xai>=1.2.2,<1.3.0",
+    "langchain-anthropic>=1.5.4",
+    "langchain-baseten>=0.2.1",
+    "langchain-deepseek>=1.1.0",
+    "langchain-fireworks>=1.4.4",
+    "langchain-google-genai>=4.3.0",
+    "langchain-groq>=1.1.3",
+    "langchain-mistralai>=1.1.6",
+    "langchain-nvidia-ai-endpoints>=1.4.3",
+    "langchain-ollama>=1.1.0",
+    "langchain-openai>=1.4.0",
+    "langchain-openrouter>=0.2.6",
+    "langchain-xai>=1.2.2",
     # Eval-specific dependencies
     "datasets>=5.0.1",
     "nltk>=3.10.3",
     "openevals>=0.2.0",
     "tiktoken>=0.13.0",
-    "langchain-quickjs>=0.3.3,<0.4.0",
+    "langchain-quickjs>=0.3.3",
 ]
 
 [project.scripts]

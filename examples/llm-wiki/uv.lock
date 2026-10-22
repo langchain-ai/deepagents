@@ -298,16 +298,16 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "av", marker = "extra == 'video'", specifier = ">=18.0.0,<19.0.0" },
-    { name = "langchain", specifier = ">=1.4.6,<2.0.0" },
-    { name = "langchain-anthropic", specifier = ">=1.7.6,<2.0.0" },
-    { name = "langchain-aws", marker = "extra == 'aws'", specifier = ">=1.9.0,<2.0.0" },
-    { name = "langchain-core", specifier = ">=1.6.12,<2.0.0" },
-    { name = "langchain-google-genai", specifier = ">=4.4.2,<5.0.0" },
+    { name = "av", marker = "extra == 'video'", specifier = ">=18.0.0" },
+    { name = "langchain", specifier = ">=1.4.6" },
+    { name = "langchain-anthropic", specifier = ">=1.7.6" },
+    { name = "langchain-aws", marker = "extra == 'aws'", specifier = ">=1.9.0" },
+    { name = "langchain-core", specifier = ">=1.6.12" },
+    { name = "langchain-google-genai", specifier = ">=4.4.2" },
     { name = "langchain-quickjs", marker = "extra == 'quickjs'", specifier = ">=0.3.9" },
     { name = "langsmith", specifier = ">=0.14.11" },
     { name = "packaging", specifier = ">=23.2" },
-    { name = "pillow", marker = "extra == 'video'", specifier = ">=12.3.0,<14.0.0" },
+    { name = "pillow", marker = "extra == 'video'", specifier = ">=12.3.0" },
     { name = "wcmatch", specifier = ">=11.0" },
 ]
 provides-extras = ["aws", "quickjs", "video"]

@@ -4685,7 +4685,7 @@ def resolve_auto_classifier_model_with_problem() -> tuple[str | None, str | None
 
 
 _DEFAULT_AUTO_CLASSIFIER_MODELS = {
-    "anthropic": "anthropic:claude-sonnet-5-5",
+    "anthropic": "anthropic:claude-sonnet-5",
     "google_genai": "google_genai:gemini-3.8-flash",
     "google_vertexai": "google_vertexai:gemini-3.8-flash",
     "openai": "openai:gpt-5.6-luna",

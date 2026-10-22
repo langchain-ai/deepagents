@@ -243,7 +243,7 @@ _DEFERRED_START_NOTICE = (
 
 _AUTO_CLASSIFIER_RECOMMENDED_MODELS = {
     "anthropic:claude-haiku-5-5": "Claude Haiku 5.5",
-    "anthropic:claude-sonnet-5-5": "Claude Sonnet 5.5",
+    "anthropic:claude-sonnet-5": "Claude Sonnet 5",
     "google_genai:gemini-3.8-flash": "Gemini 3.8 Flash",
     "openai:gpt-6-luna": "GPT-6 Luna",
 }

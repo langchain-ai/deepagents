@@ -2678,7 +2678,7 @@ def parse_args() -> argparse.Namespace:
         dest="auto_classifier_model",
         metavar="MODEL",
         help="Model the Auto approval classifier reviews actions with "
-        "(e.g. anthropic:claude-sonnet-5-5). Local TUI or ACP only. Defaults to "
+        "(e.g. anthropic:claude-sonnet-5). Local TUI or ACP only. Defaults to "
         "DEEPAGENTS_CODE_AUTO_CLASSIFIER_MODEL, then [models].auto_classifier, "
         "then a provider-specific model or the main agent model. A weaker model "
         "weakens Auto's review.",

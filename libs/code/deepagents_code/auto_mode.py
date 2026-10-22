@@ -2864,8 +2864,7 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
                         selected,
                         # Classifier history never replays thinking blocks,
                         # so the Anthropic preserved-thinking binding would only
-                        # cost it the forced tool call `with_structured_output`
-                        # relies on.
+                        # add latency and cost to every review.
                         bind_preserved_thinking=False,
                         **retry_kwargs,
                     )
@@ -3089,13 +3088,12 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         timeout_cm = asyncio.timeout(self._classifier_timeout_seconds)
         try:
             async with timeout_cm:
-                thinking = getattr(model, "thinking", None)
-                if (
-                    spec is None
-                    and getattr(model, "_llm_type", None) == "anthropic-chat"
-                    and isinstance(thinking, dict)
-                    and thinking.get("type") in {"adaptive", "enabled"}
-                ):
+                # Anthropic's native structured output constrains decoding to
+                # the schema. Forced tool calling only suggests it, and Claude
+                # intermittently wraps a valid verdict list in a JSON string or
+                # a placeholder key, which strict validation rejects and the
+                # fail-closed path turns into a denied batch.
+                if getattr(model, "_llm_type", None) == "anthropic-chat":
                     structured = model.with_structured_output(
                         _ClassifierBatch, method="json_schema"
                     )

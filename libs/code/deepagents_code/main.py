@@ -622,10 +622,12 @@ def _run_startup_auto_update(console: Console) -> None:
         is_update_check_enabled,
         mark_auto_update_default_acknowledged,
         mark_startup_auto_update_failed,
+        migration_deferral_message,
         perform_upgrade,
         release_requires_prereleases,
         should_announce_auto_update_default,
         should_skip_startup_auto_update_after_failure,
+        startup_auto_update_was_deferred,
         update_install_lock,
         upgrade_command,
     )
@@ -687,12 +689,17 @@ def _run_startup_auto_update(console: Console) -> None:
                 highlight=False,
             )
             return
-        if should_skip_startup_auto_update_after_failure(latest):
-            # A same-version upgrade failed or was deferred recently; retrying
-            # it here would very likely fail again and re-stall every launch
-            # (this runs before the TUI). Skip for the cooldown window and
-            # point at `dcode update`: unlike a bare uv command, it also
-            # handles a Python migration that startup deferred.
+        # A deferred migration is retried as soon as no other session is
+        # running, so it skips the failure cooldown below; the install lock
+        # section decides between migrating and repeating the deferral.
+        retrying_deferral = startup_auto_update_was_deferred(latest)
+        if not retrying_deferral and should_skip_startup_auto_update_after_failure(
+            latest
+        ):
+            # A same-version upgrade failed recently; retrying it here would
+            # very likely fail again and re-stall every launch (this runs
+            # before the TUI). Skip for the cooldown window and point at
+            # `dcode update`.
             from deepagents_code._invocation import invoked_name
 
             console.print(
@@ -751,6 +758,23 @@ def _run_startup_auto_update(console: Console) -> None:
                     highlight=False,
                 )
                 return
+            # A migration rebuilds the shared tool environment, which would
+            # break dcode sessions running in other terminals, so it only runs
+            # here when this process is the install's sole session. Checked
+            # under the update lock, which `is_sole_session` requires.
+            from deepagents_code._session_lock import is_sole_session
+
+            sole_session = is_sole_session()
+            if retrying_deferral and not sole_session:
+                # Repeat the deferral without re-fetching release metadata or
+                # announcing an update that will not happen.
+                console.print(
+                    f"{migration_deferral_message(latest)}\n"
+                    f"Continuing with v{cli_version}.",
+                    markup=False,
+                    highlight=False,
+                )
+                return
             release_age = format_release_age_parenthetical(latest)
             console.print(
                 f"Updating dcode from v{cli_version} to v{latest}{release_age}..."
@@ -775,15 +799,12 @@ def _run_startup_auto_update(console: Console) -> None:
                 notices.append(message)
                 console.print(message, markup=False, highlight=False)
 
-            # A Python migration rebuilds the shared tool environment, which
-            # would break dcode sessions running in other terminals. Defer it
-            # to an explicit `dcode update`.
             success, output, _installed = asyncio.run(
                 perform_upgrade(
                     on_notice=show_notice,
                     log_path=log_path,
                     target_version=latest,
-                    allow_python_migration=False,
+                    allow_python_migration=sole_session,
                     on_migration_deferred=lambda: deferred.append(True),
                     on_unverified_install=lambda: unverified.append(True),
                 )
@@ -841,7 +862,7 @@ def _run_startup_auto_update(console: Console) -> None:
                 _mark_startup_auto_update_failed_safe(latest)
                 _exit_after_unrestartable_update(console, latest)
             return
-        persisted = mark_startup_auto_update_failed(latest)
+        persisted = mark_startup_auto_update_failed(latest, deferred=bool(deferred))
         if unverified:
             _exit_after_unverified_update(console, persisted=persisted)
         if deferred:
@@ -5520,9 +5541,22 @@ def cli_main() -> None:
         # accessor triggers `_ensure_bootstrap()` (dotenv loading), and
         # commands dispatched below — notably `auth status` — resolve
         # credentials from the environment expecting `.env` to be loaded.
-        from deepagents_code.config import _get_credentials, console
+        from deepagents_code.config import (
+            _get_credentials,
+            _is_editable_install,
+            console,
+        )
 
         _get_credentials()
+
+        # Mark this install as in use before anything can migrate it, so a
+        # concurrent launch's auto-update does not rebuild the environment out
+        # from under this process. Editable installs never auto-update, so
+        # nothing reads their registration.
+        if not _is_editable_install():
+            from deepagents_code._session_lock import hold_session_lock
+
+            hold_session_lock()
 
         if command is None:
             # The health gate already ran above, for every command, so the

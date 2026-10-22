@@ -84,6 +84,7 @@ from deepagents_code.update_check import (
     should_defer_startup_auto_update_for_resume,
     should_notify_update,
     should_skip_startup_auto_update_after_failure,
+    startup_auto_update_was_deferred,
     update_install_lock,
     upgrade_install_command,
 )
@@ -3231,6 +3232,16 @@ class TestStartupAutoUpdateFailureCooldown:
         assert data["seen_version"] == "1.0.0"
         assert "startup_auto_update_failed_version" not in data
         assert "startup_auto_update_failed_at" not in data
+        assert "startup_auto_update_deferred" not in data
+
+    def test_deferral_is_recorded_per_version(self, state_file) -> None:  # noqa: ARG002
+        """A deferral marker names its version and is replaced by a failure."""
+        mark_startup_auto_update_failed("2.0.0", deferred=True)
+        assert startup_auto_update_was_deferred("2.0.0") is True
+        assert startup_auto_update_was_deferred("2.0.1") is False
+
+        mark_startup_auto_update_failed("2.0.0")
+        assert startup_auto_update_was_deferred("2.0.0") is False
 
     def test_clear_ignores_different_version(self, state_file) -> None:
         """Clearing a different version leaves the failure marker intact."""

@@ -277,9 +277,11 @@ RESUME_AUTO_UPDATE_GRACE_PERIOD = 7 * 24 * 60 * 60
 
 _STARTUP_AUTO_UPDATE_FAILED_VERSION_KEY = "startup_auto_update_failed_version"
 _STARTUP_AUTO_UPDATE_FAILED_AT_KEY = "startup_auto_update_failed_at"
+_STARTUP_AUTO_UPDATE_DEFERRED_KEY = "startup_auto_update_deferred"
 _STARTUP_AUTO_UPDATE_FAILURE_KEYS: tuple[str, ...] = (
     _STARTUP_AUTO_UPDATE_FAILED_VERSION_KEY,
     _STARTUP_AUTO_UPDATE_FAILED_AT_KEY,
+    _STARTUP_AUTO_UPDATE_DEFERRED_KEY,
 )
 _RESUME_AUTO_UPDATE_DEFERRED_AT_KEY = "resume_auto_update_deferred_at"
 
@@ -1334,8 +1336,14 @@ def should_skip_startup_auto_update_after_failure(version: str) -> bool:
     )
 
 
-def mark_startup_auto_update_failed(version: str) -> bool:
+def mark_startup_auto_update_failed(version: str, *, deferred: bool = False) -> bool:
     """Persist a same-version startup auto-update retry cooldown marker.
+
+    Args:
+        version: Target version the attempt did not install.
+        deferred: Whether the attempt deliberately deferred a Python migration
+            rather than failing, so the next launch can say so and retry once
+            no other session is running.
 
     Returns:
         `True` if the marker was written, `False` otherwise.
@@ -1344,7 +1352,17 @@ def mark_startup_auto_update_failed(version: str) -> bool:
         {
             _STARTUP_AUTO_UPDATE_FAILED_VERSION_KEY: version,
             _STARTUP_AUTO_UPDATE_FAILED_AT_KEY: time.time(),
+            _STARTUP_AUTO_UPDATE_DEFERRED_KEY: deferred,
         }
+    )
+
+
+def startup_auto_update_was_deferred(version: str) -> bool:
+    """Return whether the last startup attempt at `version` deferred a migration."""
+    data = _read_update_state()
+    return (
+        data.get(_STARTUP_AUTO_UPDATE_FAILED_VERSION_KEY) == version
+        and data.get(_STARTUP_AUTO_UPDATE_DEFERRED_KEY) is True
     )
 
 
@@ -2761,7 +2779,7 @@ def _migration_notice(target_version: str) -> str:
     )
 
 
-def _migration_deferral_message(target_version: str) -> str:
+def migration_deferral_message(target_version: str) -> str:
     """Return the guidance for a migration that this caller may not run.
 
     Returns:
@@ -3043,7 +3061,7 @@ async def perform_upgrade(
         and (not allow_python_migration or _is_windows())
     ):
         logger.info("Deferred the Python 3.14 migration for v%s", target_version)
-        guidance = _migration_deferral_message(target_version)
+        guidance = migration_deferral_message(target_version)
         # Flag first: if showing the notice raises, the caller must still
         # report a deferral rather than a failure.
         if on_migration_deferred is not None:

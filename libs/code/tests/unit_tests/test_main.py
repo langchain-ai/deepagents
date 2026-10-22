@@ -4,6 +4,7 @@ import asyncio
 import os
 import signal
 import sys
+from contextlib import contextmanager
 from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
@@ -435,9 +436,10 @@ class TestStartupAutoUpdate:
             _run_startup_auto_update(console)
 
         upgrade.assert_awaited_once()
-        # Migrating here would break sessions running in other terminals.
+        # Unregistered, so presence is unknown: migrating could break
+        # sessions running in other terminals.
         assert upgrade.call_args.kwargs["allow_python_migration"] is False
-        mark_failed.assert_called_once_with("9.9.9")
+        mark_failed.assert_called_once_with("9.9.9", deferred=False)
         restart.assert_not_called()
         console.print.assert_any_call(notice, markup=False, highlight=False)
         printed = " ".join(str(c.args[0]) for c in console.print.call_args_list)
@@ -491,8 +493,9 @@ class TestStartupAutoUpdate:
         ):
             _run_startup_auto_update(console)
 
-        # The cooldown keeps the deferral notice from repeating every launch.
-        mark_failed.assert_called_once_with("9.9.9")
+        # Recorded as a deferral, so the next launch retries the migration
+        # once it is the only session instead of reporting a failure.
+        mark_failed.assert_called_once_with("9.9.9", deferred=True)
         restart.assert_not_called()
         printed = " ".join(str(c.args[0]) for c in console.print.call_args_list)
         assert "Continuing with v" in printed
@@ -500,6 +503,88 @@ class TestStartupAutoUpdate:
         assert "Run manually" not in printed
         # A lost marker only repeats the deferral, which installs nothing.
         assert _UNPERSISTED_AUTO_UPDATE_FAILURE_NOTE not in printed
+
+    @staticmethod
+    @contextmanager
+    def _pending_migration(
+        *, deferred_before: bool, sole: bool, upgrade: AsyncMock
+    ) -> Iterator[MagicMock]:
+        """Patch a launch with v9.9.9 available behind a deferral cooldown.
+
+        Yields:
+            The `mark_startup_auto_update_failed` mock.
+        """
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch(
+                "deepagents_code.update_check.is_auto_update_enabled",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_code.update_check.get_cached_update_available",
+                return_value=(True, "9.9.9"),
+            ),
+            patch(
+                "deepagents_code.update_check.startup_auto_update_was_deferred",
+                return_value=deferred_before,
+            ),
+            patch(
+                "deepagents_code.update_check.should_skip_startup_auto_update_after_failure",
+                return_value=deferred_before,
+            ),
+            patch("deepagents_code._session_lock.is_sole_session", return_value=sole),
+            patch(
+                "deepagents_code.update_check.format_release_age_parenthetical",
+                return_value="",
+            ),
+            patch(
+                "deepagents_code.update_check.create_update_log_file",
+                return_value=None,
+            ),
+            patch("deepagents_code.update_check.perform_upgrade", upgrade),
+            patch(
+                "deepagents_code.update_check.mark_startup_auto_update_failed"
+            ) as mark_failed,
+            patch("deepagents_code.main._restart_current_process"),
+        ):
+            yield mark_failed
+
+    def test_sole_session_allows_migration(self) -> None:
+        """With no other session running, startup may migrate Python."""
+        upgrade = AsyncMock(return_value=(False, "", None))
+
+        with self._pending_migration(deferred_before=False, sole=True, upgrade=upgrade):
+            _run_startup_auto_update(MagicMock())
+
+        assert upgrade.call_args.kwargs["allow_python_migration"] is True
+
+    def test_deferred_migration_waits_while_other_sessions_run(self) -> None:
+        """A deferred migration repeats its guidance without re-attempting."""
+        console = MagicMock()
+        upgrade = AsyncMock()
+
+        with self._pending_migration(
+            deferred_before=True, sole=False, upgrade=upgrade
+        ) as mark_failed:
+            _run_startup_auto_update(console)
+
+        upgrade.assert_not_called()
+        mark_failed.assert_not_called()
+        printed = " ".join(str(c.args[0]) for c in console.print.call_args_list)
+        assert "requires migrating dcode to Python 3.14" in printed
+        assert "Continuing with v" in printed
+        assert "Updating dcode" not in printed
+        assert "did not complete" not in printed
+
+    def test_deferred_migration_runs_once_sole_despite_cooldown(self) -> None:
+        """Closing the other sessions lets the next launch migrate."""
+        upgrade = AsyncMock(return_value=(False, "", None))
+
+        with self._pending_migration(deferred_before=True, sole=True, upgrade=upgrade):
+            _run_startup_auto_update(MagicMock())
+
+        upgrade.assert_awaited_once()
+        assert upgrade.call_args.kwargs["allow_python_migration"] is True
 
     def test_unverified_install_exits_instead_of_launching(self) -> None:
         """A changed but unverified environment stops startup instead of launching."""
@@ -548,7 +633,7 @@ class TestStartupAutoUpdate:
 
         assert exc_info.value.code == 1
         # The cooldown stops the next launch from repeating the install.
-        mark_failed.assert_called_once_with("9.9.9")
+        mark_failed.assert_called_once_with("9.9.9", deferred=False)
         restart.assert_not_called()
         printed = " ".join(str(c.args[0]) for c in console.print.call_args_list)
         assert "Continuing with" not in printed

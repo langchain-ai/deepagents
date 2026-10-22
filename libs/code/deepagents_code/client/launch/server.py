@@ -1039,6 +1039,8 @@ class ServerProcess:
                 creationflags=_WINDOWS_CREATE_NEW_PROCESS_GROUP,
             )
 
+        from deepagents_code._session_lock import session_lock_fds
+
         reader, writer = os.pipe()  # Both ends are non-inheritable by default.
         self._parent_pipe_writer = writer
         # Abandoning the manager must not leak its writer. Explicit teardown
@@ -1059,7 +1061,9 @@ class ServerProcess:
                 stderr=subprocess.STDOUT,
                 start_new_session=True,
                 creationflags=0,
-                pass_fds=(reader,),
+                # The session lock keeps the install marked in use while the
+                # server runs, so a migration does not rebuild it underneath.
+                pass_fds=(reader, *session_lock_fds()),
             )
         finally:
             os.close(reader)

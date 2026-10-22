@@ -1,6 +1,6 @@
 [project]
 name = "deepagents"
-version = "0.7.29"
+version = "0.7.30"
 
 description = "Production-ready, extensible agent harness with a built-in filesystem and context management, sub-agent delegation, skills, and long-term memory."
 readme = "README.md"
@@ -20,11 +20,11 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 dependencies = [
-    "langchain>=1.4.6,<2.0.0",
-    "langchain-core>=1.6.12,<2.0.0",
+    "langchain>=1.4.7,<2.0.0",
+    "langchain-core>=1.6.13,<2.0.0",
     "langchain-anthropic>=1.7.6,<2.0.0",
     "langchain-google-genai>=4.4.2,<5.0.0",
-    "langsmith>=0.14.11",
+    "langsmith>=0.14.12",
     "packaging>=23.2",
     "wcmatch>=11.0",
 ]
@@ -32,7 +32,7 @@ dependencies = [
 [project.optional-dependencies]
 aws = ["langchain-aws>=1.9.0,<2.0.0"]
 quickjs = ["langchain-quickjs>=0.3.9"]
-video = ["av>=18.0.0,<19.0.0", "pillow>=12.3.0,<13.0.0"]
+video = ["av>=18.0.0,<19.0.0", "pillow>=12.3.0,<14.0.0"]
 
 [project.urls]
 Homepage = "https://docs.langchain.com/oss/python/deepagents/overview"
@@ -67,7 +67,7 @@ test = [
   # not depend on them. ty still sees the import names and
   # needs stubs, so we install them into the type-checker venv.
   "av>=18.0.0,<19.0.0",
-  "pillow>=12.3.0,<13.0.0",
+  "pillow>=12.3.0,<14.0.0",
 ]
 [build-system]
 requires = ["setuptools>=83.0.0", "wheel"]

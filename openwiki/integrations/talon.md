@@ -1,59 +1,47 @@
 ---
 type: runtime host
 title: Talon Runtime Integration
-description: Talon is an experimental, local host for long-running Deep Agents, channel adapters, schedules, persistence, and optional dcode sandboxes. This page explains process ownership, state boundaries, lifecycle choices, and operating constraints.
-tags: [talon, runtime, channels, scheduling, persistence, sandboxing, mcp]
+description: Talon is an experimental local host that turns admitted channel input into Deep Agents turns, managing media, approvals, progress, history, schedules, and background-result follow-up. This page explains ownership boundaries, request flow, and operating constraints.
+tags: [talon, runtime, channels, media, scheduling, persistence, sandboxing, mcp]
 sources:
   - id: openwiki-source-6a038e6e1a11f450bcafce54
     resource: repo://libs/talon/deepagents_talon/__main__.py
-  - id: openwiki-source-8763dd662d69eb266f3bcaf0
-    resource: repo://libs/talon/deepagents_talon/authorization.py
-  - id: openwiki-source-cd45145a8c3a51b52eab3c2b
-    resource: repo://libs/talon/deepagents_talon/background.py
+  - id: openwiki-source-8a4e357da1dab3192e01eb13
+    resource: repo://libs/talon/deepagents_talon/attachments.py
   - id: openwiki-source-c2be68f237284dc06b9c12f7
     resource: repo://libs/talon/deepagents_talon/checkpoint_backends.py
   - id: openwiki-source-81698d033a5726401d48b135
     resource: repo://libs/talon/deepagents_talon/config.py
-  - id: openwiki-source-363e56d368aecc6ab73d3e2f
-    resource: repo://libs/talon/deepagents_talon/cron/scheduler.py
-  - id: openwiki-source-88cbc494aafea029472ecfab
-    resource: repo://libs/talon/deepagents_talon/data_lifecycle.py
   - id: openwiki-source-470e982344d3fb19aa4cd0a7
     resource: repo://libs/talon/deepagents_talon/history_backends.py
   - id: openwiki-source-6801a88de6305bc8cbdd259f
     resource: repo://libs/talon/deepagents_talon/host.py
-  - id: openwiki-source-31e40ff79779f51cafd03f01
-    resource: repo://libs/talon/deepagents_talon/mcp_auth.py
-  - id: openwiki-source-82cac27adeecff8a900a40fa
-    resource: repo://libs/talon/deepagents_talon/mcp.py
+  - id: openwiki-source-cebe4ea270e21dce4de9b074
+    resource: repo://libs/talon/deepagents_talon/interfaces.py
+  - id: openwiki-source-ccdb88feadbc25be2fc7b63b
+    resource: repo://libs/talon/deepagents_talon/media.py
   - id: openwiki-source-5b9a69640ff3d94216c614ce
     resource: repo://libs/talon/deepagents_talon/messaging.py
   - id: openwiki-source-665a21e2fbd09a89d3f13ac0
     resource: repo://libs/talon/deepagents_talon/runtime.py
-  - id: openwiki-source-580d91c607e0a09e0659e565
-    resource: repo://libs/talon/deepagents_talon/sandbox.py
   - id: openwiki-source-267468fe937003d4716fe6c2
     resource: repo://libs/talon/deepagents_talon/tool_approvals.py
-  - id: openwiki-source-df8e616d4a20b5878bc1a05e
-    resource: repo://libs/talon/tests/test_mcp_auth.py
+  - id: openwiki-source-e0db085f967450f48196d999
+    resource: repo://libs/talon/tests/test_media.py
   - id: openwiki-source-4d6726e17c8a0c78539a7d33
     resource: repo://libs/talon/tests/test_runtime.py
+  - id: openwiki-source-48cf5b0cf5d5f183ac033f43
+    resource: repo://libs/talon/tests/unit_tests/test_attachments.py
   - id: openwiki-source-1698129adea358c8813da5a5
     resource: repo://libs/talon/tests/unit_tests/test_messaging.py
-  - id: openwiki-source-caa081bf22565f9bef5bc7d1
-    resource: repo://libs/talon/tests/unit_tests/test_oauth_transport.py
-  - id: openwiki-source-57a0613315e23277d358df76
-    resource: repo://libs/talon/tests/unit_tests/test_sandbox.py
-  - id: openwiki-source-8de0ff38635f214c7268d8e7
-    resource: repo://libs/talon/tests/unit_tests/test_tool_approval_authorization.py
   - id: openwiki-source-242a21b2da46507f58415265
     resource: repo://libs/talon/tests/unit_tests/test_tool_approval_runtime.py
   - id: openwiki-source-1e7998c9f5a94d22f3819721
     resource: repo://libs/talon/tests/unit_tests/test_verbosity.py
-generated: { by: "openwiki/0.4.2", at: "2026-10-19T08:10:20.273Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-10-21T08:05:42.350Z" }
 verified:
   - by: openwiki/0.4.2
-    at: 2026-10-19T08:10:20.273Z
+    at: 2026-10-21T08:05:42.350Z
 ---
 
 # Talon Runtime Integration
@@ -134,6 +122,45 @@ Cron uses a persistent minute ticker. It removes finished jobs before a scan, cl
 
 Scheduled turns, background subagents, and background-result follow-up turns have no authorization handler; a channel-less OAuth prompt fails with guidance to authorize from a chat or use `deepagents-talon mcp login <server>` instead of leaving an interactive flow stranded. Scheduled work also cannot initiate background delegation that needs a later channel follow-up. This is an authority boundary, not just a UX choice.
 
+## Channel turn, media, and delivery flow
+
+A channel adapter supplies a `ChannelMessage`; it does not invoke a graph itself. The host serializes work by its conversation root, interrupts a prior turn for a new message when possible, and constructs trusted turn metadata after inbound metadata so channel input cannot overwrite host-set routing and trigger fields. It maintains the reply destination in closures rather than asking the model to supply one. The optional runtime media hook runs before model content is built; it is the integration point that makes an attachment reachable in the selected execution environment.
+
+```mermaid
+sequenceDiagram
+    participant Channel as Channel adapter
+    participant Host as TalonHost
+    participant Runtime as DeepAgentRuntime
+    participant Graph as Deep Agents graph
+    Channel->>Host: ChannelMessage
+    Host->>Runtime: prepare inbound media
+    Host->>Host: build text and model content
+    Host->>Runtime: AgentRequest with bound handlers
+    Runtime->>Graph: invoke captured graph
+    Graph-->>Runtime: AgentResult
+    Runtime-->>Host: text and consumed result ids
+    Host->>Channel: final text or media
+    Host->>Runtime: record delivered reply
+```
+
+This shows the interactive route from an admitted channel message through request-local handlers to final delivery. Background-result follow-up re-enters the same host turn path, but intentionally has no approval or authorization handler.
+
+### Inbound media is data, not prompt text
+
+Before the turn, Talon transcribes voice when configured and asks an `InboundMediaRuntime` to prepare the message. In sandbox mode, `DeepAgentRuntime` stages only document attachments in `.talon/attachments/` under the sandbox working directory. It accepts bytes only from the configured inbound-media root (or a provider-specific override), opens a bounded regular non-symlink file, and replaces host aliases with the staged path. A failed validation or upload removes the advertised path and gives the model only the generic unavailable-attachment notice; it must not imply that a document is accessible when it is not.
+
+Documents are represented as a JSON-quoted path plus an explicit instruction to treat both the path and attachment as untrusted data, not as instructions. Their contents are therefore read on demand by an appropriate file or execution tool rather than inlined into the prompt. For images, the host adds standard base64 image blocks only for recognized image MIME values and files at or below the 5 MiB inbound-image cap; non-image binary media receives a textual fallback. This keeps document contents and unsafe attachment metadata out of the initial model input while retaining multimodal images where supported.
+
+### Outbound files and history acknowledge delivery
+
+The final `AgentResult.text` is separate from progress updates. The host extracts Markdown image references outside code spans, removes them from the text, and attempts channel media sends. With `DEEPAGENTS_TALON_OUTBOUND_MEDIA_DIR` configured, references must be relative regular files contained by that root after symlink resolution; absolute paths, `~`, URLs, traversal, escapes, and unsupported types are rejected. Image and video references are supported. If no attachment can be sent, Talon falls back to the cleaned text; if only some sends fail, it reports their names without converting arbitrary model paths into file access.
+
+`ConversationDeliveryRuntime.record_delivered_reply` is called only after a successful final delivery, so searchable archive delivery records mean that a channel accepted a reply rather than merely that the graph generated one. The runtime returns the IDs of background results it has consumed. If its resulting reply is superseded, cancelled before delivery, or cannot be delivered, the host requeues those IDs instead of losing work the user never received.
+
+### Background-result follow-up
+
+For runtimes with `BackgroundRuntime`, the host starts a one-second dispatcher after startup. It skips a conversation while its turn/history lock is held, and only claims a follow-up slot when the owning conversation remains current and has pending results. The synthetic prompt then runs a main-agent turn with `background_delivery`; the runtime inserts pending results as user messages before the follow-up instruction and acknowledges them only after successful invocation. Repeated dispatch attempts use exponential backoff capped at 60 seconds; runtime failure counts delivery failures and eventually marks persistently undeliverable results rather than retrying forever.
+
 ## Optional dcode sandbox reuse
 
 Without `DEEPAGENTS_TALON_SANDBOX`, filesystem and shell tools use the host workspace (the current directory unless `DEEPAGENTS_TALON_WORKSPACE` is set). Set a provider name such as `langsmith` to use the `deepagents-code` sandbox factory. Providers including `agentcore`, `daytona`, `modal`, `openshell`, `runloop`, and `vercel` may require their matching dcode extra; credentials stay in the Talon process rather than being forwarded to the sandbox.
@@ -158,7 +185,7 @@ From `libs/talon`, install the test group and run the focused runtime regression
 
 ```bash
 uv sync --group test
-uv run --group test pytest tests/test_runtime.py tests/unit_tests/test_messaging.py tests/unit_tests/test_tool_approval_runtime.py tests/unit_tests/test_verbosity.py
+uv run --group test pytest tests/test_runtime.py tests/test_media.py tests/unit_tests/test_attachments.py tests/unit_tests/test_messaging.py tests/unit_tests/test_tool_approval_runtime.py tests/unit_tests/test_verbosity.py
 ```
 
-`test_verbosity.py` verifies accepted values, rejects malformed values in both configuration and runtime construction, confirms conditional progress-tool assembly, checks the level-specific prompt/tool guidance, and exercises per-turn sparse budgets under parallel calls. `test_messaging.py` covers narration ordering, explicit-message de-duplication, channel-bound delivery, transport-error redaction, concurrent request isolation, and expiration before final delivery. `test_tool_approval_runtime.py` covers approval before progress delivery, snapshot visibility across edits, concurrent old/new graphs, operator boundaries, and failed activation preserving the prior graph. `test_runtime.py` covers tool refresh and transactional MCP replacement; together these tests are the focused regression layer for safe graph rebuild behavior. Sandbox, history, OAuth transport, host, MCP-auth, and approval/authorization suites continue to cover their respective lifecycle and security boundaries.
+`test_media.py` verifies that document contents are not inlined, images use bounded multimodal blocks, Markdown references in code remain literal, and outbound paths cannot escape a configured root. `test_attachments.py` verifies sandbox document staging, including rejection of outside, symlinked, missing, oversized, or rejected uploads. `test_verbosity.py` verifies accepted values, rejects malformed values in both configuration and runtime construction, confirms conditional progress-tool assembly, checks the level-specific prompt/tool guidance, and exercises per-turn sparse budgets under parallel calls. `test_messaging.py` covers narration ordering, explicit-message de-duplication, channel-bound delivery, transport-error redaction, concurrent request isolation, and expiration before final delivery. `test_tool_approval_runtime.py` covers approval before progress delivery, snapshot visibility across edits, concurrent old/new graphs, operator boundaries, and failed activation preserving the prior graph. `test_runtime.py` covers tool refresh and transactional MCP replacement; together these tests are the focused regression layer for safe graph rebuild behavior. Sandbox, history, OAuth transport, host, MCP-auth, and approval/authorization suites continue to cover their respective lifecycle and security boundaries.

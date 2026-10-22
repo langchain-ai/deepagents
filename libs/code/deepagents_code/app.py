@@ -7692,17 +7692,30 @@ class DeepAgentsApp(App):
             await self._mount_message(
                 AppMessage(f"Update log: {format_log_follow_command(log_path)}"),
             )
+
+        notices: list[str] = []
+        deferred: list[bool] = []
+        unverified: list[bool] = []
+
+        async def show_upgrade_notice(message: str) -> None:
+            notices.append(message)
+            await self._mount_message(AppMessage(message))
+
+        # A Python migration rebuilds the environment this session imports
+        # from, so the TUI defers it to `dcode update` from the shell.
         success, output, installed = await perform_upgrade(
+            on_notice=show_upgrade_notice,
             log_path=log_path,
             include_prereleases=include_prereleases,
             target_version=latest,
+            allow_python_migration=False,
+            on_migration_deferred=lambda: deferred.append(True),
+            on_unverified_install=lambda: unverified.append(True),
         )
         if success:
             self._update_available = (False, None)
-            # The install command is unpinned, so the installer may have
-            # resolved a release newer than the one the update check observed
-            # (a release published while the session sat open). Report what
-            # actually landed on disk rather than the stale check result.
+            # uv installs are pinned and verified, and other methods report
+            # the target, so this matches `latest`; the fallback is defensive.
             upgraded_to = installed or latest
             # uv may have installed the upgraded shim into a directory that
             # isn't first on the user's PATH (e.g. a leftover pre-uv
@@ -7729,6 +7742,24 @@ class DeepAgentsApp(App):
                 await self._mount_message(
                     ErrorMessage(format_shadowed_dcode_warning(shadow)),
                 )
+        elif unverified:
+            # This session lazily imports modules that uv may have replaced.
+            await self._mount_message(
+                ErrorMessage(
+                    "Update could not be verified; see above. Quit and relaunch "
+                    "dcode before continuing."
+                ),
+            )
+        elif deferred:
+            # Nothing ran, so there is no failure or log to point at.
+            await self._mount_message(AppMessage("Update deferred; see above."))
+        elif notices:
+            # The notice already carries its own recovery steps; a generic
+            # command here would contradict them.
+            log_line = f"\nLog: {log_path}" if log_path is not None else ""
+            await self._mount_message(
+                AppMessage(f"Update failed; see the message above.{log_line}"),
+            )
         else:
             cmd = upgrade_command(
                 include_prereleases=upgrade_include_prereleases,
@@ -26431,7 +26462,7 @@ class DeepAgentsApp(App):
             cli_version="0.1.0",
             release_age=" (released 2 days ago)",
             installed_age="",
-            upgrade_cmd="uv tool upgrade deepagents-code",
+            upgrade_cmd="uv tool install -U deepagents-code",
         )
         self._notice_registry.add(update_notification)
         self._update_modal_pending.set()
@@ -27268,10 +27299,25 @@ class DeepAgentsApp(App):
                             show_toast=not progress_modal_visible,
                         )
                         return
+
+                    notices: list[str] = []
+                    deferred: list[bool] = []
+                    unverified: list[bool] = []
+
+                    def show_upgrade_notice(message: str) -> None:
+                        notices.append(message)
+                        screen.append_line(message)
+                        self.notify(message, timeout=15, markup=False)
+
+                    # Same live-session constraint as `/update`.
                     success, output, installed = await perform_upgrade(
                         progress=screen.append_line,
+                        on_notice=show_upgrade_notice,
                         log_path=log_path,
                         target_version=payload.latest,
+                        allow_python_migration=False,
+                        on_migration_deferred=lambda: deferred.append(True),
+                        on_unverified_install=lambda: unverified.append(True),
                     )
                     if success:
                         self._notice_registry.remove(entry.key)
@@ -27296,11 +27342,9 @@ class DeepAgentsApp(App):
                                 markup=False,
                             )
                             return
-                        # The install command is unpinned, so the installer
-                        # may have resolved a release newer than the one this
-                        # notification advertised (a release published while
-                        # the notice sat open). Report what actually landed on
-                        # disk rather than the stale payload version.
+                        # uv installs are pinned and verified, and other
+                        # methods report the target, so this matches the
+                        # payload; the fallback is defensive.
                         upgraded_to = installed or payload.latest
                         # After `mark_success`: the modal stays un-dismissable
                         # until it is marked done, and this worker runs with
@@ -27318,12 +27362,35 @@ class DeepAgentsApp(App):
                             markup=False,
                         )
                         return
+                    self._notice_registry.remove(entry.key)
+                    if deferred:
+                        logger.info(
+                            "Deferred the Python migration for v%s", payload.latest
+                        )
+                        screen.mark_warning("Update deferred. See details.")
+                        return
                     logger.warning(
                         "Auto-upgrade failed for v%s. Output:\n%s",
                         payload.latest,
                         output,
                     )
-                    self._notice_registry.remove(entry.key)
+                    if unverified:
+                        # This session lazily imports modules that uv may have
+                        # replaced.
+                        restart = (
+                            "Update could not be verified. Quit and relaunch dcode "
+                            "before continuing."
+                        )
+                        screen.mark_warning(restart)
+                        self.notify(
+                            restart, severity="warning", timeout=20, markup=False
+                        )
+                        return
+                    if notices:
+                        # The notice toast and modal line already carry the
+                        # notice's own recovery steps.
+                        screen.mark_warning("Update did not complete. See details.")
+                        return
                     screen.mark_failure(cmd)
                     snippet = _truncate(output, limit=160) if output else ""
                     message = f"Auto-update failed. Run manually: {cmd}"

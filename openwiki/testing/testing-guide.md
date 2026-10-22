@@ -5,60 +5,32 @@ description: Focused, deterministic regression routing for Deep Agents state and
 tags: [testing, pytest, deepagents, backends, dcode, context-hub, talon, approvals, verbosity, discord]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-10-19T08:10:20.273Z
+    at: 2026-10-21T08:05:42.350Z
 sources:
+  - id: openwiki-source-fdd2d72dbde1890f8376a48d
+    resource: repo://.github/workflows/_benchmark_nightly.yml
+  - id: openwiki-source-896a86077424a743b6627f69
+    resource: repo://.github/workflows/_benchmark.yml
+  - id: openwiki-source-4d9cccca7700db7220ec055e
+    resource: repo://.github/workflows/_test.yml
+  - id: openwiki-source-164e2da859b5277df81c7d94
+    resource: repo://.github/workflows/ci.yml
   - id: openwiki-source-8037e2358a2c4f9b2c722a11
     resource: repo://AGENTS.md
   - id: openwiki-source-006b62af9993da1b48c11de8
     resource: repo://libs/code/Makefile
-  - id: openwiki-source-6684124c441015e6f9246319
-    resource: repo://libs/code/tests/unit_tests/conftest.py
-  - id: openwiki-source-11d6c59d85493653aee76558
-    resource: repo://libs/code/tests/unit_tests/test_app.py
-  - id: openwiki-source-42e76fc26f690f7d6dab298d
-    resource: repo://libs/code/tests/unit_tests/test_cache_expiry.py
-  - id: openwiki-source-dbf986bbfdd9750d4d02f16d
-    resource: repo://libs/code/tests/unit_tests/test_interpreter_workspace_policy.py
-  - id: openwiki-source-b6c121d977850bad8b8c8068
-    resource: repo://libs/code/tests/unit_tests/test_sandbox_factory.py
-  - id: openwiki-source-97e242977ea97fdae74a7989
-    resource: repo://libs/code/tests/unit_tests/test_threads_resume.py
-  - id: openwiki-source-b7beeddb49bcfbe0565494c8
-    resource: repo://libs/code/tests/unit_tests/tui/widgets/test_autocomplete.py
+  - id: openwiki-source-36838b2ce6fb7679d6e662cb
+    resource: repo://libs/code/tests/integration_tests/test_headless_resume.py
   - id: openwiki-source-0f308f1610986e2f3ed6d53c
     resource: repo://libs/deepagents/Makefile
-  - id: openwiki-source-ab8bfe29057131f7fc94fb78
-    resource: repo://libs/deepagents/tests/unit_tests/backends/test_composite_backend.py
-  - id: openwiki-source-97b09ca9987a984f1b37f8c8
-    resource: repo://libs/deepagents/tests/unit_tests/backends/test_context_hub_backend.py
-  - id: openwiki-source-fb022ddbcc554eaabedfa8cd
-    resource: repo://libs/deepagents/tests/unit_tests/backends/test_state_backend.py
-  - id: openwiki-source-e11958a6a68a079be57552fc
-    resource: repo://libs/deepagents/tests/unit_tests/backends/test_store_backend.py
-  - id: openwiki-source-6ce85b02eabe462f99e0c912
-    resource: repo://libs/deepagents/tests/unit_tests/test_async_subagents.py
   - id: openwiki-source-fb60ee46c55b974b8341651c
     resource: repo://libs/DEVELOPMENT.md
-  - id: openwiki-source-ba53b2ab73965694b2510a58
-    resource: repo://libs/talon/Makefile
-  - id: openwiki-source-94758cb9b3302b8f80f516f9
-    resource: repo://libs/talon/tests/channels/test_discord.py
-  - id: openwiki-source-6fd40210153ee05d5c26d545
-    resource: repo://libs/talon/tests/integration_tests/test_discord_host.py
-  - id: openwiki-source-4d6726e17c8a0c78539a7d33
-    resource: repo://libs/talon/tests/test_runtime.py
-  - id: openwiki-source-1698129adea358c8813da5a5
-    resource: repo://libs/talon/tests/unit_tests/test_messaging.py
-  - id: openwiki-source-242a21b2da46507f58415265
-    resource: repo://libs/talon/tests/unit_tests/test_tool_approval_runtime.py
-  - id: openwiki-source-1e7998c9f5a94d22f3819721
-    resource: repo://libs/talon/tests/unit_tests/test_verbosity.py
-generated: { by: "openwiki/0.4.2", at: "2026-10-19T08:10:20.273Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-10-21T08:05:42.350Z" }
 ---
 
 # Testing Guide
 
-Test from the package that owns the changed observable boundary. `libs/` packages have independent environments and `Makefile`s: synchronize in the package, then use its target (or `make help`). Put network-free tests in `tests/unit_tests/`; reserve `tests/integration_tests/` for a composed boundary that requires it. Pytest asyncio mode is automatic and unaccepted warnings fail the suite. Prefer controlled clients, gateways, filesystems, events, and UI pilots to live services, sleeps, or assertions about incidental internal call order.
+Test from the package that owns the changed observable boundary. `libs/` packages have independent environments and `Makefile`s: synchronize in the package, then use its target (or `make help`). Put network-free tests in `tests/unit_tests/`; reserve `tests/integration_tests/` for a composed boundary that requires it. Pytest asyncio mode is automatic and unaccepted warnings fail the suite. Prefer controlled clients, gateways, filesystems, events, subprocesses, and UI pilots to live services, sleeps, or assertions about incidental internal call order.
 
 See [Development](../operations/development.md), [Backends](../concepts/backends.md), [Subagents and Skills](../concepts/subagents-skills.md), [Talon channel admission](../concepts/talon-channel-admission.md), and [Run a dcode session](../workflows/run-dcode-session.md) for runtime context.
 
@@ -93,7 +65,7 @@ make test TEST_FILE=tests/integration_tests/test_discord_host.py
 make lint
 ```
 
-`deepagents` and `code` unit targets run socket-restricted parallel pytest with coverage; their integration targets select `tests/integration_tests/` and have a 30-second timeout. Talon's target runs its WhatsApp bridge tests before socket-restricted Python pytest with a 10-second timeout. Pass extra pytest options in `PYTEST_EXTRA`.
+`deepagents` and `code` unit targets run socket-restricted parallel pytest with coverage; their integration targets select `tests/integration_tests/` and have a 30-second timeout. Talon's `test` target runs its WhatsApp bridge tests before socket-restricted Python pytest with a 10-second timeout; it does not define a separate integration target. Pass extra pytest options in `PYTEST_EXTRA`. `coverage` is the explicit XML/terminal coverage target in deepagents and dcode; use `COV_ARGS=` in CI when coverage collection is intentionally omitted.
 
 ## Route the regression to its observable seam
 
@@ -175,6 +147,30 @@ Discord channel tests use a recording gateway to verify admission and routing: s
 Discord interaction tests require authorized slash commands to be deferred and dispatched as their typed equivalent with replies sent through the interaction, while unauthorized, unknown, or contextless commands are rejected without dispatch and handler failures receive one generic response. Test long interaction replies through the recorder so Discord-limit chunking is observable without Discord.
 
 Use the host integration file only when channel conversion must compose with real host behavior. Discord host integration tests verify that slash commands reach real host semantics: `/new` starts a fresh conversation and answers the interaction, `/stop` and `/help` return host responses, and unauthorized interactions do not reach the agent. Discord host integration tests verify that public Discord threads can share a parent history archive for discovery without sharing each thread's agent-state messages, and that resetting public parent history coordinates sibling work before new turns proceed.
+
+## dcode headless integration: isolate the process boundary
+
+`tests/integration_tests/test_headless_resume.py` is intentionally integration coverage even though it supplies a deterministic test model: dcode captures profile paths and its sessions database during import. Its helper creates a fresh `HOME` and `DEEPAGENTS_HOME` for every CLI and state-helper subprocess, with a throwaway project/profile and no stdin. This proves resume behavior across the real CLI/server/session boundary without a developer profile leaking into the test. Use this pattern when import-time state, a child process, or persistence ownership is the behavior under test; use a unit test when a controlled in-process seam is sufficient.
+
+The integration tests verify observable resume contracts: `-r` reuses the thread and restores its saved model unless explicitly overridden; stale rubric state is cleared; unknown, wrong-directory, incompatible-setting, or already-open threads fail closed and do not append work; an unfinished historical tool call is abandoned rather than executed on resume.
+
+## CI matrix and warning policy
+
+The reusable unit-test workflow validates that Python versions are quoted JSON strings and that extra matrix legs specify string `python-version` and `os`; it runs all legs with `fail-fast: false`. CI selects changed packages on pull requests (including dependent packages for editable SDK changes), while pushes to `main` run package jobs unconditionally. The core matrix is: deepagents on Python 3.11–3.14 on Ubuntu plus Python 3.13 on Windows; dcode and Talon on Python 3.12–3.14 on Ubuntu. Windows invokes pytest directly because the POSIX shell backend cannot run there, and skips sandbox tests.
+
+Every package begins its pytest warning filters with `error`. Fix an actionable warning before adding a narrow per-test `@pytest.mark.filterwarnings`; package-level filters are reviewed exceptions, and `default::` is preferred over `ignore::` where pytest must still expose a swallowed thread or finalizer failure. A maintainer can label a pull request `ci:allow-warnings`, after which the reusable workflow adds `-W default`; this is a temporary PR-only escape hatch. Push and merge-queue runs remain strict, and the label is read live so a rerun sees labels added after the original event.
+
+## Benchmarks
+
+`deepagents`, dcode, and the QuickJS partner define `bench` (wall time) and `bench-memory` (heap) targets. Run the owning Make target rather than reconstructing pytest arguments:
+
+```bash
+make -C libs/deepagents bench
+make -C libs/deepagents benchmark
+make -C libs bench-all
+```
+
+`bench` uses CodSpeed instrumentation; `benchmark` is plain `pytest-benchmark` for local tuning; and `bench-memory` selects `memory_benchmark`. The reusable benchmark workflow installs the test group and invokes those Make targets under CodSpeed with OIDC. It runs memory benchmarks only when its `has-memory-benchmarks` input is true. The nightly workflow, which is also manually dispatchable, currently sweeps deepagents and dcode daily; benchmark thresholds are maintained in the CodSpeed dashboard rather than in the repository.
 
 ## Completion checklist
 

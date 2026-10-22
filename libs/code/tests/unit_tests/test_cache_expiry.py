@@ -1315,6 +1315,7 @@ async def test_expiry_send_action_dispatches_once_in_current_thread(
     outcome: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     app = DeepAgentsApp()
+    monkeypatch.setattr(app, "_cold_cache_estimate", AsyncMock(return_value=None))
 
     async def send(_text: str, _mode: str) -> None:
         assert app._lc_thread_id == "source"
@@ -1364,6 +1365,7 @@ async def test_handoff_pauses_submission_but_keeps_draft_editable(
     outcome: str, submitted: bool, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     app = DeepAgentsApp()
+    monkeypatch.setattr(app, "_cold_cache_estimate", AsyncMock(return_value=None))
     started = asyncio.Event()
     release = asyncio.Event()
 
@@ -1431,6 +1433,7 @@ async def test_cancel_handoff_restores_submission(
     cancel: str, submitted: bool, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     app = DeepAgentsApp()
+    monkeypatch.setattr(app, "_cold_cache_estimate", AsyncMock(return_value=None))
     started = asyncio.Event()
     release = asyncio.Event()
 
@@ -1490,6 +1493,7 @@ async def test_handoff_does_not_restore_draft_into_unrelated_thread(
     other_draft: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     app = DeepAgentsApp()
+    monkeypatch.setattr(app, "_cold_cache_estimate", AsyncMock(return_value=None))
 
     def summarize(**_kwargs: object) -> dict[str, str]:
         # The user leaves the source while its summary is being generated.
@@ -1718,6 +1722,7 @@ async def test_resumed_thread_with_lapsed_window_does_not_prompt(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     app = DeepAgentsApp()
+    monkeypatch.setattr(app, "_cold_cache_estimate", AsyncMock(return_value=None))
 
     async def restore_timing() -> None:  # noqa: RUF029  # mock contract
         # The checkpoint's last request is well past its retention window.

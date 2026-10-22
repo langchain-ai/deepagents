@@ -501,11 +501,13 @@ async def test_summary_default_scope_writes_only_summary_preference(
         app.push_screen(screen)
         await pilot.pause()
         await pilot.press("ctrl+s")
+        await app.workers.wait_for_complete()
         await pilot.pause()
         config = model_config.ModelConfig.load()
         assert config.default_model == "remote:main"
         assert config.summarization_default_model == "remote:resolved"
         await pilot.press("ctrl+s")
+        await app.workers.wait_for_complete()
         await pilot.pause()
         config = model_config.ModelConfig.load()
         assert config.summarization_default_model is None

@@ -4,244 +4,101 @@ title: "Permissions and Human-in-the-Loop"
 openwiki_generated: true
 verified:
   - by: openwiki/0.4.2
-    at: 2026-10-19T08:10:20.273Z
+    at: 2026-10-22T08:05:54.651Z
 sources:
-  - id: openwiki-source-05106e66a949150d557266a2
-    resource: repo://libs/code/deepagents_code/agent.py
-  - id: openwiki-source-fdf5afeb1dd1d11652374e88
-    resource: repo://libs/code/deepagents_code/app.py
-  - id: openwiki-source-a9143c1c174362216a1cfa2c
-    resource: repo://libs/code/deepagents_code/approval_mode.py
-  - id: openwiki-source-18abc7e59899514f067032b2
-    resource: repo://libs/code/deepagents_code/auto_mode.py
-  - id: openwiki-source-f820645728a7602f14195650
-    resource: repo://libs/code/deepagents_code/tui/widgets/auto_mode_notice.py
-  - id: openwiki-source-1e08095c051ecc153fadc178
-    resource: repo://libs/code/deepagents_code/tui/widgets/yolo_mode_notice.py
-  - id: openwiki-source-11d6c59d85493653aee76558
-    resource: repo://libs/code/tests/unit_tests/test_app.py
-  - id: openwiki-source-b93533cac55718d75277d1cf
-    resource: repo://libs/deepagents/deepagents/_excluded_middleware.py
   - id: openwiki-source-0fc0e47059e4d07e23e50be2
     resource: repo://libs/deepagents/deepagents/graph.py
   - id: openwiki-source-0fb4155c19dd248acd3ffe4f
     resource: repo://libs/deepagents/deepagents/middleware/_fs_interrupt.py
-  - id: openwiki-source-8b1aaf77fc0430fd00711a73
-    resource: repo://libs/deepagents/deepagents/middleware/_tool_exclusion.py
   - id: openwiki-source-e51c4102234507d1529a2440
     resource: repo://libs/deepagents/deepagents/middleware/async_subagents.py
   - id: openwiki-source-fed4b84a38685f37e58018c5
     resource: repo://libs/deepagents/deepagents/middleware/filesystem.py
   - id: openwiki-source-114a1c7a58992fa867a94ef0
     resource: repo://libs/deepagents/deepagents/middleware/subagents.py
-  - id: openwiki-source-bf922bb2704cfd50154e92e5
-    resource: repo://libs/deepagents/README.md
+  - id: openwiki-source-6ce85b02eabe462f99e0c912
+    resource: repo://libs/deepagents/tests/unit_tests/test_async_subagents.py
   - id: openwiki-source-851e3a9c96663d8db5ca3dec
     resource: repo://libs/deepagents/tests/unit_tests/test_permissions.py
-  - id: openwiki-source-f1280171b9d75cd28add0ec3
-    resource: repo://libs/deepagents/THREAT_MODEL.md
-  - id: openwiki-source-cd45145a8c3a51b52eab3c2b
-    resource: repo://libs/talon/deepagents_talon/background.py
-  - id: openwiki-source-6801a88de6305bc8cbdd259f
-    resource: repo://libs/talon/deepagents_talon/host.py
-  - id: openwiki-source-5b9a69640ff3d94216c614ce
-    resource: repo://libs/talon/deepagents_talon/messaging.py
-  - id: openwiki-source-665a21e2fbd09a89d3f13ac0
-    resource: repo://libs/talon/deepagents_talon/runtime.py
-  - id: openwiki-source-267468fe937003d4716fe6c2
-    resource: repo://libs/talon/deepagents_talon/tool_approvals.py
-  - id: openwiki-source-fdd0c2c3830b8e9a88502a57
-    resource: repo://libs/talon/README.md
-  - id: openwiki-source-a69daa62c9a3eb9a49f09bf9
-    resource: repo://libs/talon/tests/test_host.py
-  - id: openwiki-source-82dab853903c3a574614fd1e
-    resource: repo://libs/talon/tests/unit_tests/test_background.py
-  - id: openwiki-source-1698129adea358c8813da5a5
-    resource: repo://libs/talon/tests/unit_tests/test_messaging.py
-  - id: openwiki-source-8de0ff38635f214c7268d8e7
-    resource: repo://libs/talon/tests/unit_tests/test_tool_approval_authorization.py
-  - id: openwiki-source-242a21b2da46507f58415265
-    resource: repo://libs/talon/tests/unit_tests/test_tool_approval_runtime.py
-  - id: openwiki-source-d4964daa078854bf4438d764
-    resource: repo://libs/talon/tests/unit_tests/test_tool_approvals.py
-generated: { by: "openwiki/0.4.2", at: "2026-10-19T08:10:20.273Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-10-22T08:05:54.651Z" }
 ---
 
 
 # Permissions and Human-in-the-Loop
 
-Tool visibility, tool-level permission enforcement, a graph interrupt, a human decision, and backend containment answer different questions. A visible tool can deny one call; an allowed call can pause; and a human approval is neither an operating-system sandbox nor a durable authorization grant. See [filesystem tools](/openwiki/concepts/tools-filesystem.md), [middleware stack](/openwiki/architecture/middleware-stack.md), [subagents and skills](/openwiki/concepts/subagents-skills.md), and [security](/openwiki/operations/security.md).
+Deep Agents deliberately separates three concerns: filesystem policy, a graph-level human review interruption, and the remote child agent's own configuration. A filesystem rule governs the built-in filesystem tools in the graph where it is installed. An `interrupt` rule routes a matching call to `HumanInTheLoopMiddleware`; it is not a denial. A remote `AsyncSubAgent` is a separate Agent Protocol run, so its tools, permissions, and approval workflow are its own. See [Tool Surface and Filesystem Policy](/openwiki/concepts/tools-filesystem.md), [Subagents, Skills, and Delegation](/openwiki/concepts/subagents-skills.md), and [Security](/openwiki/operations/security.md).
 
-> **Talon is experimental.** Talon is an alpha runtime, not a production or enterprise security boundary. It lacks complete production-grade HITL policy, channel-administrator controls, and multi-tenant isolation. Its opt-in sandbox does not cover MCP tools. Channel prompts and channel exposure are therefore not complete security boundaries; treat channel access as access to the agent, its credentials, MCP tools, and host resources.
+## Filesystem policy is enforced by filesystem middleware
 
-## Choose the control that matches the need
+`FilesystemPermission` describes one or more absolute glob paths, the `read` and/or `write` operations it covers, and an `allow`, `deny`, or `interrupt` mode. Paths must begin with `/`; patterns containing `..` are rejected and `~` is unsupported. Rules are evaluated in declaration order: the first matching rule wins, and a path with no matching rule is allowed.
 
-| Need | Mechanism | It does not provide |
-| --- | --- | --- |
-| Hide a tool from the model and reject calls by that name | Harness profile `excluded_tools` | A sandbox or policy for direct backend use |
-| Deny selected built-in filesystem operations | `FilesystemPermission(mode="deny")` | A human prompt or OS isolation |
-| Pause selected SDK tool calls | `HumanInTheLoopMiddleware` / `interrupt_on` | A deny rule or durable authorization |
-| Require a Talon decision for an exact tool name | `ToolApprovalStore` policy and Talon runtime | Tool availability, wildcard matching, or sandboxing |
-| Select dcode interactive review behavior | Manual, classifier-backed Auto, or YOLO mode | A sandbox or an OS permission boundary |
-| Restrict what code can do after a tool runs | A constrained tool/backend or sandbox | Protection supplied by a prompt or approval dialog |
+`FilesystemMiddleware` enforces `deny` before its built-in filesystem tool implementation reaches the backend. With `FilesystemBackend`, including a routed `CompositeBackend` filesystem backend, it evaluates both the requested path and its symlink-resolved target. A denial of either form blocks the operation; a result that resolves to a denied target is also filtered from listings and searches. This is tool middleware, not a universal backend ACL: code that calls a backend directly does not acquire these checks.
 
-Deep Agents follows a **trust-the-LLM** model: containment belongs in installed tools, backends, or sandboxes. HITL is opt-in and protects only calls routed through it. `StateBackend` has no shell execution; using `LocalShellBackend` is an explicit higher-power choice.
-
-## dcode approval modes: session policy, not containment
-
-The interactive dcode client has three approval modes. **Manual** pauses gated actions for a person. **Auto** applies deterministic checks and then a classifier to eligible gated actions, using human review when the policy requires it or falls back. **YOLO** bypasses dcode's approval review for calls not denied by another hook; it is deliberately unrestricted, not an assertion that filesystem, shell, network, MCP, or host effects are sandboxed.
-
-The server, rather than an untrusted client mode value alone, resolves a live per-thread mode. The client writes a `mode` record under the `("deepagents_code", "approval_mode")` namespace keyed by the SHA-256 of the thread ID. Typed Auto and YOLO need a valid, thread-bound Store key and record. A malformed context, invalid key/value, missing Store, or failed read resolves to Manual; legacy `auto_approve=True` remains a compatibility route to YOLO. This makes loss of control state conservative rather than silently autonomous.
+A recursive or potentially recursive `delete` is intentionally stricter than the ordinary first-match result. If its subtree could overlap any deny-write pattern, deletion is refused, protecting a denied descendant from being removed through an allowed parent directory. Permissions cannot presently represent policy for `execute`: configuring non-route-scoped permissions with an execution-capable backend raises `NotImplementedError` rather than implying shell execution is constrained.
 
 ```mermaid
 flowchart TD
-    Proposed["Gated tool call"] --> Resolve["Resolve validated live mode"]
-    Resolve -->|"Manual or unavailable"| Human["Human approval interrupt"]
-    Resolve -->|YOLO| Hooks["Apply other hook decisions"]
-    Resolve -->|Auto| Policy["Deterministic policy and classifier"]
-    Policy -->|Allow| Hooks
-    Policy -->|Deny| Deny["Synthetic denial does not execute"]
-    Policy -->|Uncertain or fallback| Human
-    Human -->|Approve| Hooks
-    Human -->|Reject| Deny
-    Hooks --> Execute["Run allowed call"]
-```
-
-Caption: dcode selects review routing after a gated call is proposed; neither Auto nor YOLO replaces containment or an independent hook denial.
-
-`AutoModeHITLMiddleware` replaces the stock HITL middleware by name and uses the same interrupt map as Manual, augmented with protected temporary-artifact operations. It validates positive finite classifier budgets, can use a separate lazily constructed classifier model, and keeps its decision plan and bounded classifier conversation in private state. The classifier must return exactly one indexed, schema-valid decision for every reviewed call before dcode binds results to tool-call IDs. Failures are not converted to allow: unavailable classifier batches receive error tool messages without execution, while invalid control/decision state routes to Manual approval. A broken configured classifier is latched so later batches escalate to human review rather than repeating silent denials; a successful review clears the latch.
-
-### Auto and YOLO acknowledgement lifecycle
-
-Auto is only selectable when eligible; for example, the interactive switcher omits it for a remote sandbox. Its first enablement shows an educational confirmation before activating the mode. The disclosure says that Auto can approve routine gated actions, that it is not a sandbox, and which classifier reviews uncertain actions. When a separate classifier is configured, the modal names it and says it is not the model writing code. Enter records a versioned install-local notice and then the client must persist the live Auto mode; Escape leaves both mode and notice unchanged so the prompt can recur. A failed modal presentation or live-mode write likewise leaves Auto inactive.
-
-Entering YOLO from the switcher requires an explicit acknowledgement of the current warning policy version. The modal's Enter enables and records acknowledgement; `m` selects Manual and Escape preserves the previous mode, neither persisting it. The acknowledgement is stored in private `approval.json` state with a process lock and cross-process file lock, atomic replacement, and restrictive directory/file permissions where supported. Corrupt or unreadable state is treated as absent, so it re-prompts rather than authorizing YOLO. Muting the recurring YOLO toast is cosmetic: it does not bypass acknowledgement, the `startup.yolo_switcher` setting, or the active status indicator.
-
-## Filesystem permissions: enforce at the tool boundary
-
-A `FilesystemPermission` has read and/or write operations, absolute glob paths, and `allow`, `deny`, or `interrupt` mode. Paths must start with `/`; `..` is rejected and `~` is unsupported. Rules use declaration-order, first-match semantics, with `allow` when no rule matches.
-
-`FilesystemMiddleware` enforces `deny` for its built-in filesystem tools before backend execution. With `FilesystemBackend`, including one behind a `CompositeBackend` route, it evaluates both the requested path and its symlink-resolved target; a denial on either blocks the call, and an unresolvable target produces an error rather than an access decision. Listing, globbing, and grep results remove entries denied by either form rather than exposing them. Permissions are tool middleware, **not** a backend-wide access-control layer: direct backend calls do not acquire these rules.
-
-`delete` distinguishes a confirmed leaf from a directory or a target that may have descendants. A leaf uses ordinary first-match resolution. For a recursive or potentially recursive deletion, however, every deny-write pattern is considered: a pattern that could overlap the removed subtree blocks the operation even where a preceding broad allow would otherwise win. This preserves all-or-nothing deletion while still allowing a nonmatching sibling file glob.
-
-There is an intentional execution boundary: a nonempty permission set is rejected when the backend supports command execution, because tool-level policy for `execute` is not implemented. The narrow exception is a `CompositeBackend` whose permission patterns are all scoped to configured route prefixes; that permits policy on those routed filesystem operations without representing it as a policy for the execution-capable default. Do not combine filesystem permissions with a shell-capable backend and assume that `execute` is constrained.
-
-### Interrupt is routing, not enforcement
-
-An `interrupt` rule does not deny access. During `create_deep_agent` assembly, filesystem interrupt rules are transformed into `HumanInTheLoopMiddleware` `interrupt_on` entries with per-call `when` predicates. A caller's explicit `interrupt_on` entry wins for the same tool name, so it can deliberately replace the generated filesystem routing; deny enforcement remains in `FilesystemMiddleware` either way.
-
-Exact tools (`read_file`, `write_file`, and `edit_file`) resolve the requested path and, when available, its symlink target. They route only when an `interrupt` decision is present and neither candidate is denied, so a deny wins over review. Bulk tools (`ls`, `glob`, `grep`, and `delete`) compare their potential search or deletion subtree with the literal anchor of each applicable interrupt pattern; this intentionally errs toward review rather than attempting to enumerate all glob matches. A missing bulk path or current-directory alias is treated as the root. For `glob`, an absolute pattern is independently checked because it can ignore `path`, and a relative pattern containing `..` is treated as unlocalizable and routed to review. Invalid paths and malformed non-string arguments do not create a synthetic interrupt.
-
-The graph passes the configured backend to these predicates, so symlink aliases can also route to review. Generated filesystem interrupts allow `approve`, `edit`, `reject`, and `respond`; approved and edited calls still re-enter the tool, where deny rules are checked. `reject` and `respond` do not execute the operation.
-
-```mermaid
-flowchart TD
-    Call["Filesystem tool call"] --> Route{"Explicit user entry for this tool"}
-    Route -->|Yes| UserRoute["Apply user interrupt_on entry"]
-    Route -->|No| Generated["Evaluate generated filesystem predicate"]
-    Generated --> Gate{"Review is required"}
-    UserRoute --> Gate
-    Gate -->|Yes| Pause["Graph interrupt"]
-    Gate -->|No| Check["Filesystem tool denial check"]
+    Call["Filesystem tool call"] --> Review{"Interrupt rule matches"}
+    Review -->|"Yes"| Pause["HITL interrupt"]
+    Review -->|"No"| Check["Check deny rules"]
     Pause --> Decision{"Human decision"}
-    Decision -->|Reject or respond| Halt["Do not run operation"]
-    Decision -->|Approve or edit| Check
-    Check -->|Denied| Denied["Permission error"]
-    Check -->|Allowed| Run["Backend operation"]
+    Decision -->|"Approve or edit"| Check
+    Decision -->|"Reject or respond"| Stop["Do not execute"]
+    Check -->|"Denied"| Error["Permission error"]
+    Check -->|"Allowed"| Backend["Backend operation"]
 ```
 
-Caption: A user entry overrides generated routing by tool name; whether routed or not, an executed filesystem call reaches tool-level denial enforcement.
+*An interrupt chooses review before the call; an executed call still passes the filesystem deny check.*
 
-## Subagents: inheritance is explicit and type-dependent
+## `interrupt` turns a matching filesystem call into HITL routing
 
-For declarative `SubAgent` specifications, including experimental `mode="fork"`, omitted `permissions` inherits the parent list; a supplied list, including `[]`, replaces it completely. The graph constructs each declarative subagent with its own `FilesystemMiddleware` and builds filesystem-derived interrupt routing from that subagent's effective rules.
+`FilesystemMiddleware` itself enforces denials and filters denied results. During `create_deep_agent` assembly, `interrupt` permissions are converted into an `interrupt_on` configuration for `HumanInTheLoopMiddleware`. The generated entries cover `ls`, `read_file`, `write_file`, `edit_file`, `delete`, `glob`, and `grep`, and allow the human decisions `approve`, `edit`, `reject`, and `respond`.
 
-The auto-added `general-purpose` subagent is constructed separately, rather than passing through the declarative-default path, but it receives the parent `permissions` and the same merged top-level `interrupt_on` map. It is added unless the harness profile disables it or a supplied inline subagent already has that name. It only inherits caller middleware which replaces a default general-purpose middleware slot; main-agent-specific middleware is not copied wholesale.
+For exact-path tools, the predicate interrupts only when the validated requested path—or its resolved target when a backend is available—matches an interrupt rule. A matching deny takes precedence, so it returns a permission error instead of requesting approval. For bulk tools, the predicate conservatively interrupts when the search or deletion subtree can overlap an interrupt rule. A pathless bulk operation is treated as potentially reaching any protected path; `glob` also checks an absolute pattern because it can redirect the search away from `path`. A relative glob containing `..` is likewise treated as unlocalizable and routed to review. Literal leading anchors such as `/secrets/**` make this scope more precise than an unanchored pattern such as `/**/secrets`.
 
-Top-level `interrupt_on` is inherited by declarative subagents unless their specification supplies its own map. The effective map merges generated filesystem interrupts first and then user configuration, so the relevant user map takes precedence on name conflicts. `CompiledSubAgent` and remote `AsyncSubAgent` specifications instead pass through as already-built or separately deployed agents: they inherit neither the parent's filesystem permissions nor its top-level `interrupt_on`. Configure filesystem enforcement and approval behavior in the compiled or remote graph itself. Do not infer a common enforcement boundary merely because the parent delegates work.
+A caller-supplied `interrupt_on` entry overrides a generated entry with the same tool name. This lets an application choose its own review routing, but it does not disable `FilesystemMiddleware` denial enforcement. Conversely, approval is not a sandbox or a durable authorization grant: it controls only the interrupted graph call.
 
-A default declarative subagent is isolated and receives the delegated task rather than the parent conversation. Experimental `mode="fork"` continues the parent conversation and state, rebuilds prompt-producing middleware, appends the fork's prompt, and cannot define separate skills. It follows the same declarative permission and interrupt defaults above; fork mode is a context and composition decision, not a privilege reduction. Choose tools, permissions, and HITL for each subagent deliberately.
+## Child configuration: inherit local rules deliberately, configure remote rules independently
 
-### Remote async children are autonomous approval domains
+A declarative local `SubAgent` that omits `permissions` inherits the parent list. A supplied list—including `[]`—replaces it. The factory creates a `FilesystemMiddleware` for that child and merges filesystem-derived interruption entries with its effective `interrupt_on`; the relevant user-provided `interrupt_on` wins on a name collision. The auto-added `general-purpose` local subagent also receives the parent's permissions and top-level review map.
 
-An `AsyncSubAgent` is different from a local declarative child: the parent launches a run on an Agent Protocol server, receives a task ID immediately, and tracks the remote thread/run in `async_tasks`. That child uses its own graph, system prompt, tools, runtime, permissions, and HITL configuration. `mode="fork"` only snapshots portable parent conversation content at launch; it does not synchronize settings or turn the remote runtime into an extension of the parent's policy boundary.
+A `CompiledSubAgent` is already built by the caller, and an `AsyncSubAgent` targets another graph. Neither inherits the parent filesystem permissions or top-level `interrupt_on`. Configure their filesystem middleware and HITL policy in their own graph or deployment. `mode="fork"` on an async specification copies a snapshot of the parent conversation at launch, but the child still uses its own system prompt and tools; sharing context is not sharing authorization.
 
-A remote task whose run finishes at `interrupt()` is reported as `waiting` by inspecting the remote thread. The parent can see the interrupt details through task status, but the task protocol explicitly requires that the user answer or approve the child directly; the parent agent cannot approve it. Updating a waiting task starts a new remote run with `multitask_strategy="interrupt"`, which drops its pending human request. Treat this as remote lifecycle control, not authority to resume a child approval.
+## Remote async children own their interruptions
 
-## Profile exclusion is separate from permissions
+`AsyncSubAgentMiddleware` exposes `start_async_task`, `check_async_task`, `update_async_task`, `cancel_async_task`, and `list_async_tasks`. Starting a task creates a remote Agent Protocol thread and run, returns immediately, and stores an `AsyncTask` record in the parent state under `async_tasks`. The record uses the child thread ID as its task ID and tracks the current run ID, status, and observation timestamps.
 
-A harness profile's `excluded_tools` appends `_ToolExclusionMiddleware` after tool-injecting middleware. It removes matching names from the model request and returns an unavailable-tool error if a tool call still names one. This is useful for controlling the model-facing capability set, but it is expressly not a security surface or a substitute for backend containment.
-
-Profile `excluded_middleware` is a different mechanism again: it removes selected middleware instances by exact class or name. Core `FilesystemMiddleware` and `SubAgentMiddleware` are protected scaffolding and cannot be excluded; attempting to do so raises instead of producing a silently degraded graph. Consequently, do not use visibility exclusion as a claim that a path is denied, or use a filesystem rule as a claim that an arbitrary custom tool is unavailable.
-
-## Talon approvals: persisted exact-name interrupt policy
-
-Talon maintains an assistant-local `tools.json` map of exact tool names to booleans. An enabled name generates approve/reject `interrupt_on` configuration; an absent or false name generates no prompt. Names are not patterns. When the file is first missing, the defaults enable `update_tool_approvals`, `delete_conversations`, `update_mcp_server`, `start_async_task`, and `send_message`; an existing valid file is retained.
-
-This policy selects graph routing, not an ACL. It neither adds a tool to the graph nor grants an identity, permission, or containment boundary. Disabling a prompt does not expose a hidden tool or authorize its effects. Policy self-edit is separately guarded: `update_tool_approvals` requires both an active invocation snapshot and operator context.
-
-`ToolApprovalStore` validates a bounded regular, non-symlink JSON file and freezes its exact-name boolean policy in an `ApprovalSnapshot`; its revision hashes persisted bytes. Updates lock the file, validate the complete merge, compare the expected revision, and atomically replace only on a match. At invocation entry, the runtime reads the snapshot under its tools lock. If it differs from the active one, it builds and installs a graph configured with that snapshot, then binds that graph and snapshot in invocation-local context. Thus a concurrent older invocation continues to use its bound graph and policy-management closures while a later invocation can use the rebuilt graph; saved changes take effect only on a later invocation. An invalid saved policy or graph rebuild failure blocks that new invocation and leaves the last active graph and snapshot intact.
-
-## From policy snapshot and interruption to a channel decision
-
-At invocation entry, Talon reads the persisted policy before it calls the graph. A changed snapshot produces a rebuilt graph and is then bound to that invocation; an in-flight invocation retains its previously bound graph. An enabled exact name can therefore produce a LangGraph interrupt. Talon validates unique nonempty resumable IDs before seeking approval. It cancels valid MCP elicitation separately, aggregates ordinary interrupted action requests into one `ToolApprovalRequest`, obtains one approve/reject decision, expands that decision into explicit resume payloads, and resumes the invocation-bound graph. Malformed batches and the 50-round ceiling fail rather than being implicitly resumed.
+A remote run that reaches `interrupt()` normally has a successful run status; the child thread's `interrupted` status and pending interrupts reveal that it is actually waiting. The middleware reports this as task status `waiting` and includes the pending interrupt IDs and values in `check_async_task` output. This state means the child is waiting for **its user**—for an answer or an approval—on the child's own thread. The parent can inspect the request and continue working, but cannot resume, answer, or approve it.
 
 ```mermaid
 sequenceDiagram
-    participant Store as Tool approval store
-    participant Runtime as Talon runtime
-    participant Graph as Invocation graph
-    participant Host as Talon host
-    participant Channel as Origin channel
-    Runtime->>Store: Read approval snapshot
-    Runtime->>Runtime: Rebuild graph if snapshot changed
-    Runtime->>Graph: Invoke with bound snapshot
-    Graph->>Runtime: Interrupt batch
-    Runtime->>Runtime: Validate and separate MCP elicitation
-    Runtime->>Host: Ordinary action batch
-    Host->>Channel: Approval prompt
-    Channel->>Host: Accepted reply or reaction
-    Host->>Runtime: Approve or reject
-    Runtime->>Graph: Explicit resume payload
+    participant Parent as Parent agent
+    participant Tasks as Parent async_tasks
+    participant Child as Remote child thread
+    participant Human as Child user
+    Parent->>Child: start_async_task creates thread and run
+    Parent->>Tasks: Store task and current run ID
+    Child->>Child: Tool asks for approval or input
+    Child->>Tasks: Observation maps thread interruption to waiting
+    Parent->>Tasks: check_async_task reads request details
+    Human->>Child: Answer or approve on child thread
+    Child->>Tasks: Later observation sees resumed run or result
 ```
 
-Caption: A policy snapshot selects the invocation graph before an exact-name interrupt can be routed; one channel decision resumes the ordinary batch, while valid MCP elicitation is cancelled separately.
+*The task record gives the parent observability and lifecycle controls; the child thread retains approval authority.*
 
-The host holds one pending approval future per agent conversation and removes it after resolution. A known initiating sender is required for text reply approval; reaction approval additionally matches provider, conversation, prompt message, and sender. That binds a response to a pending prompt, not to general tool authorization.
+`update_async_task` starts another run on the same child thread. Its default `update_strategy="interrupt"` replaces active work; when the task is waiting, this drops the outstanding human request rather than answering it. The beta `update_strategy="enqueue"` queues behind an active run, but a queued follow-up still starts if that run pauses for a person, also dropping the request. `cancel_async_task` marks a waiting task cancelled without trying to cancel a non-active paused run. Use updates and cancellation as lifecycle actions, not as a way to supply an approval decision.
 
-Operator authority for policy changes is also separate from the approval handler. The host calculates `tool_approval_operator` from trusted channel exposure and passes its boolean result to the request; the runtime only accepts that flag while active invocation context exists and clears it for cron and background delivery. Do not treat arbitrary `AgentRequest.metadata` supplied directly to the runtime as a trust boundary.
+## Parent notification is optional and never replaces child approval
 
-## Protected progress delivery and invocation-context cleanup
+`notify_parent` defaults to `True` for an async subagent. For a child on the same deployment, the launch metadata can include the parent's assistant and thread so `_ParentNotifierMiddleware` can wake an idle parent with a success or error notification. A busy parent instead discovers status during its async pull cycle; a parent thread waiting for human input is not awakened because a new run could cancel that approval. A child pause does not wake the parent—the parent observes `waiting` on a later check or pull—and a resumed child may later report its outcome.
 
-`send_message` is an explicit progress tool, not a general channel-routing API: it sends only through the request-scoped handler, whose host destination is the chat that started the turn. The runtime adds that tool only at verbosity 2 or 3. Because the default policy contains the same exact name, an exposed `send_message` enters the ordinary approval map and pauses before delivery when its active snapshot enables it; approval executes it and rejection leaves the message undelivered. The policy key does not expose the tool at verbosity 1, authorize arbitrary recipients, establish sender identity, or contain text effects. Separately, `ProgressMessages` may forward nonempty main-agent narration before other tool calls; it suppresses that automatic narration for explicit `send_message` calls and for subagents. That middleware delivery is not itself a `send_message` tool call and therefore is not an approval interrupt.
+Set `notify_parent=False` when an application, for example through a `webhook`, delivers outcomes itself. The launch retains the parent thread as provenance but omits the parent assistant reference, preventing both the launched child and later runs on that child thread from waking the parent. A child with a remote `url` similarly receives no parent assistant reference because it cannot wake a parent in another deployment. Notification is therefore convenience and observability, not delegation of the child's approval authority.
 
-At the start of each `DeepAgentRuntime.invoke`, Talon selects the invocation graph and immutable approval snapshot, consumes the host-provided operator boolean subject to cron/background restrictions, and installs request-scoped context for pending background results, cron origin, scheduled-turn status, OAuth authorization, and progress delivery. The `progress_messages` context manager resets its message handler and shared verbosity budget; the invocation's `finally` block resets the approval, operator, authorization, scheduling, graph, and pending-result context variables. A later request therefore cannot inherit an earlier request's approval policy, operator authority, authorization callback, scheduled status, graph, progress destination or budget, or delivery state—even if the earlier graph call raises or is cancelled.
+## Operational guidance and focused tests
 
-This scoping is important but narrow: it prevents accidental cross-turn context leakage inside the runtime; it does not turn metadata supplied outside the host into trusted authority. The host remains responsible for deriving `tool_approval_operator` from trusted channel exposure and for clearing authorization records after a turn.
-
-## Unattended and delegated work fails closed
-
-For cron, background-result delivery, or requests without an approval handler, Talon rejects protected ordinary actions rather than waiting for an unavailable person; this holds even if a handler is injected for an unattended request. The host withholds interactive approval and OAuth paths for scheduled and background-result work. The runtime independently clears operator authority when metadata identifies cron or background delivery.
-
-Detached background subagents clear operator and authorization context and report an interrupted protected action as not run. Cron-only inline delegation instead runs in its already unattended caller, disallows nested delegation, and cannot inherit an interactive approval or authorization handler. This fail-closed behavior applies to calls that the active policy routes through approval; it is not a blanket claim that every tool or integration is protected.
-
-### Scheduled turns have explicit bounds
-
-A scheduled job runs under a per-job conversation lock, so two fires of the same job do not overlap. Each fire receives a fresh cron thread ID and is bounded to 1,800 seconds. On timeout, the host asks the runtime to repair the interrupted thread and re-raises the timeout; the next fire uses a new thread rather than resuming the timed-out one. This limit protects the sequential scheduler from one indefinitely running job, but it is a liveness bound rather than a permission control.
-
-Within a scheduled turn, delegation is inline rather than detached: it waits for the result, marks the subagent context to prevent nested delegation, and has its own bounded concurrency slots and per-delegation deadline. Parallel delegations from one assistant message can run concurrently up to that slot limit; additional work queues rather than escaping into the background job table. Do not expect a later background-delivery turn to provide an approval or OAuth interaction for this work.
-
-## Operating and testing safely
-
-- Treat tool visibility, permission denial, interrupt routing, dcode mode selection, channel approval, operator authority, and sandbox/backend containment as independent layers.
-- For dcode, regard failure to persist or resolve a typed Auto/YOLO mode as a safety event: it should leave the session in Manual rather than be worked around by client-side state. Test mode-key binding, corrupt Store records, classifier schema coverage, unavailable-classifier denial, and Manual escalation.
-- Require deliberate local configuration for every declarative child, and deploy filesystem/HITL policy independently on every remote async child. A parent task ID is observability and lifecycle control, not approval authority.
-- Give interrupt rules literal leading anchors where possible. Broad patterns such as `/**/secrets` intentionally over-interrupt bulk tools.
-- Review every declarative subagent's replacement `permissions` and `interrupt_on`; configure compiled and remote agents independently.
-- Use exact names and the revision from `get_tool_approvals` when changing Talon policy. Expect a new invocation before saved changes apply.
-- Keep Talon approval UIs batch-oriented and validate interrupt IDs and actions before calling an external handler. Do not treat a channel decision as an identity or authorization system.
-- In `test_tool_approval_runtime.py`, cover a `send_message` call at verbosity 3: approval must occur before delivery and rejection must leave it undelivered. In `test_messaging.py`, cover the separately scoped handler and budget, automatic narration ordering, explicit-message de-duplication, and concurrent-request cleanup.
-- Focus regression coverage on `test_permissions.py` for first-match decisions, confirmed-leaf versus recursive deletion, symlink target enforcement, bulk/glob routing bypasses, and inheritance behavior. Use `test_filesystem_backend.py` to cover the backend's virtual-root and symlink-containment behavior separately; permission middleware does not turn backend path handling into a sandbox.
-- Cover Talon policy validation, snapshots, batch fan-out, unattended rejection, trusted sender handling, reaction matching, and request-context reset in its tool-approval and host authorization tests.
-- In `test_host.py`, exercise scheduled timeout repair and same-job serialization. In `test_background.py`, cover inline scheduled delegation, its nested-delegation guard, fan-out, slot queueing, and deadline behavior.
+- Put enforcement in each graph that can execute a sensitive tool. Treat an async child as an independently configured approval domain, even when it receives forked conversation history.
+- Use `deny` for actions that must not run; use `interrupt` only when a person should decide a matching call. Keep permission paths absolute and make interrupt patterns anchored where possible.
+- Do not use `update_async_task` to answer a waiting child. Direct the user to the child thread; an update can discard the pending request.
+- If application delivery owns task completion, set `notify_parent=False` and test that no parent assistant reference is sent. Do not assume `webhook` alone suppresses built-in parent wake-up behavior.
+- Regression coverage in `test_permissions.py` exercises first-match rules, recursive deletion protection, symlink-target enforcement, generated interrupt predicates, and local subagent inheritance. `test_async_subagents.py` covers task creation and observation, waiting questions and approvals, updates that drop a waiting request, notification suppression, and the rule that a paused child does not wake its parent.

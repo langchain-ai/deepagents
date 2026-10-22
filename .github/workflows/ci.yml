@@ -788,7 +788,9 @@ jobs:
             const parentUrl = `${repoUrl}/commit/${process.env.PARENT_SHA}`;
             const message = 'This curated-notes-only commit inherits failed parent CI. Package jobs were skipped, not passed; the CI Success gate remains failed.';
             core.error(`${message} Parent commit: ${parentUrl}`);
+            const currentRunUrl = `${repoUrl}/actions/runs/${context.runId}`;
             const lines = [message, '', `Parent commit: ${parentUrl}`];
+            let parentRunId;
             const jobUrl = value => {
               const prefix = `${repoUrl}/actions/runs/`;
               return typeof value === 'string' && value.startsWith(prefix) &&
@@ -801,6 +803,7 @@ jobs:
               const check = JSON.parse(process.env.PARENT_CHECK);
               const url = jobUrl(check.details_url);
               if (url) {
+                parentRunId = url.split('/job/')[0].split('/').pop();
                 lines.push(`Parent CI run: ${url.split('/job/')[0]}`, `Parent CI Success check: ${url}`);
                 core.info(lines.slice(-2).join('\n'));
               }
@@ -813,7 +816,9 @@ jobs:
               lines.push('', 'Unsuccessful checks currently reported by the parent CI suite (may change after reruns):');
               for (const candidate of failed) {
                 const link = jobUrl(candidate.details_url);
-                core.info(`${JSON.stringify(candidate.name)}: ${candidate.conclusion}${link ? ` — ${link}` : ''}`);
+                core.error(`Parent job ${JSON.stringify(candidate.name)} concluded ${candidate.conclusion}. Inspect ${link || parentUrl}`, {
+                  title: 'Inherited parent CI failure',
+                });
                 lines.push(`- <code>${escape(candidate.name)}</code>: ${candidate.conclusion}${link ? ` — ${link}` : ''}`);
               }
               if (!failed.length) {
@@ -826,7 +831,11 @@ jobs:
               core.warning(fallback);
               lines.push('', fallback);
             }
-            lines.push('', 'Resolve the parent CI failure, then rerun this workflow to re-evaluate the parent result.');
+            lines.push('', '### Troubleshoot and retry',
+              '1. Open the unsuccessful parent job above and inspect its failing step. Fix a real failure through the normal PR/release refresh flow; retry only if the failure is transient.',
+              `2. For a transient failure, open the parent CI run and choose **Re-run failed jobs**${parentRunId ? ` (\`gh run rerun ${parentRunId} --failed --repo ${owner}/${repo}\`)` : ''}. Wait for its **CI Success** check to pass.`,
+              `3. Open [this head workflow run](${currentRunUrl}) and choose **Re-run all jobs** (\`gh run rerun ${context.runId} --repo ${owner}/${repo}\`) to re-read the parent result. **Re-run failed jobs** alone reuses the old detection output and will still inherit the failure.`,
+              '', 'Skipped package jobs are not passing tests. This head is only green after its own CI Success check passes.');
             await core.summary.addHeading('Inherited parent CI failure').addRaw(lines.join('\n')).write();
 
       - name: "🎉 All Checks Passed"

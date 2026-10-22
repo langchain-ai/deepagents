@@ -451,6 +451,9 @@ def read_git_branch_via_subprocess(path: str | Path) -> str:
             ["git", "rev-parse", "--abbrev-ref", "HEAD"],  # noqa: S607
             capture_output=True,
             text=True,
+            # Branch names are UTF-8, not in the Windows ANSI code page.
+            encoding="utf-8",
+            errors="replace",
             timeout=2,
             check=False,
             cwd=path,
@@ -653,6 +656,9 @@ def read_git_remote_url_via_subprocess(path: str | Path) -> str:
             ["git", "config", "--get", "remote.origin.url"],  # noqa: S607
             capture_output=True,
             text=True,
+            # Local-path remotes are UTF-8, not in the Windows ANSI code page.
+            encoding="utf-8",
+            errors="replace",
             timeout=2,
             check=False,
             cwd=path,

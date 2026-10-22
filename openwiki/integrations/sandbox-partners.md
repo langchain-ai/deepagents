@@ -1,11 +1,10 @@
 ---
-type: integration guide
-title: Sandbox and Partner Integrations
-description: How dcode discovers and owns remote sandbox providers, how Talon consumes that surface for filesystem and shell execution, and how the QuickJS partner differs from a remote sandbox.
-tags: [sandbox, providers, dcode, talon, partners, quickjs]
+type: "Reference"
+title: "Sandbox and Partner Integrations"
+openwiki_generated: true
 verified:
   - by: openwiki/0.4.2
-    at: 2026-10-19T08:10:20.273Z
+    at: 2026-10-22T08:05:54.651Z
 sources:
   - id: openwiki-source-9f207ab48c42b84dcfd05f43
     resource: repo://libs/code/deepagents_code/integrations/sandbox_config.py
@@ -27,6 +26,12 @@ sources:
     resource: repo://libs/deepagents/deepagents/backends/sandbox.py
   - id: openwiki-source-5132c2eb08d294721cb871ff
     resource: repo://libs/deepagents/tests/unit_tests/backends/test_sandbox_backend.py
+  - id: openwiki-source-667fd72e0b93552f91d3888d
+    resource: repo://libs/partners/AGENTS.md
+  - id: openwiki-source-da577cbe81ec29338f1388b2
+    resource: repo://libs/partners/daytona/pyproject.toml
+  - id: openwiki-source-936554ac5f0a201f8696be25
+    resource: repo://libs/partners/modal/pyproject.toml
   - id: openwiki-source-f774b021a408b0156ed93a4b
     resource: repo://libs/partners/quickjs/langchain_quickjs/_repl.py
   - id: openwiki-source-e93ea9e1f8eb3113683abb76
@@ -35,14 +40,19 @@ sources:
     resource: repo://libs/partners/quickjs/pyproject.toml
   - id: openwiki-source-649816c915bd7d9b306918d3
     resource: repo://libs/partners/quickjs/tests/unit_tests/test_repl_middleware.py
+  - id: openwiki-source-8d2c8381956c1c023bcdb565
+    resource: repo://libs/partners/runloop/pyproject.toml
+  - id: openwiki-source-03a39f44d8ccfde2fd47e57a
+    resource: repo://libs/partners/vercel/pyproject.toml
   - id: openwiki-source-81698d033a5726401d48b135
     resource: repo://libs/talon/deepagents_talon/config.py
   - id: openwiki-source-580d91c607e0a09e0659e565
     resource: repo://libs/talon/deepagents_talon/sandbox.py
   - id: openwiki-source-fdd0c2c3830b8e9a88502a57
     resource: repo://libs/talon/README.md
-generated: { by: "openwiki/0.4.2", at: "2026-10-19T08:10:20.273Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-10-22T08:05:54.651Z" }
 ---
+
 
 # Sandbox and Partner Integrations
 
@@ -97,7 +107,13 @@ region = "us-east-1"
 
 `class_path` is trusted operator configuration: resolving it imports Python. A configured default is only used after a dcode caller has explicitly selected sandbox mode; it does not itself enable remote execution. Invalid or unreadable user configuration becomes a visible configuration error while unrelated startup can continue, and non-table provider entries are ignored.
 
-The curated names are `agentcore`, `daytona`, `langsmith`, `modal`, `openshell`, `runloop`, and `vercel`. `langsmith[sandbox]` and `langchain-quickjs` are normal dcode dependencies. The other six adapters are optional provider-specific extras and can be installed together with `deepagents-code[all-sandboxes]`; the `deepagents-code[quickjs]` extra remains empty for backwards-compatible install commands. Metadata can support a lightweight missing-dependency probe and an appropriate `dcode install …` or `/install …` hint.
+The curated names are `agentcore`, `daytona`, `langsmith`, `modal`, `openshell`, `runloop`, and `vercel`. `langsmith[sandbox]` and `langchain-quickjs` are normal dcode dependencies. The other six adapters are optional provider-specific extras and can be installed together with `deepagents-code[all-sandboxes]`; the `deepagents-code[quickjs]` extra remains empty for backwards-compatible install commands. In particular, the current `openshell` extra installs `langchain-nvidia-openshell>=0.1.1`, and OpenShell is included in `all-sandboxes`. Metadata can support a lightweight missing-dependency probe and an appropriate `dcode install …` or `/install …` hint.
+
+### Package ownership and local development
+
+A curated provider name is a dcode discovery and lifecycle surface, not ownership of its adapter package. Partner packages are independently versioned and each owns its environment, `pyproject.toml`, `Makefile`, and tests. The checked-in sandbox adapter packages are `langchain-daytona`, `langchain-modal`, `langchain-runloop`, and `langchain-vercel-sandbox`; each depends on Deep Agents and its provider SDK. Their backend APIs can be used directly, while dcode supplies the registry selection, setup, parameter merge, and cleanup policy described above.
+
+For repository development, dcode's `[tool.uv.sources]` replaces `langchain-daytona`, `langchain-modal`, `langchain-quickjs`, `langchain-runloop`, and `langchain-vercel-sandbox` with editable local paths under `../partners/`. The same five directories are `ty` extra paths. This is a development-resolution convenience, not a change to package ownership or the optional-install contract. `agentcore` and `openshell` are not given local editable source mappings in dcode; OpenShell remains an optional published dependency selected by its extra.
 
 ### Factory ownership rules
 

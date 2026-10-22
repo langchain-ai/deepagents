@@ -1,39 +1,23 @@
 ---
 type: storage and routing concept
 title: Backends and Durable File State
-description: BackendProtocol provides a common virtual file interface. StateBackend keeps files in a graph thread's state, while StoreBackend scopes durable cross-thread records by namespace and both safely read legacy list-based content until a write or edit migrates it.
-tags: [backends, file-format, state, durable-storage, storage-routing, context-hub, composite-backend]
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-10-19T08:10:20.273Z
+description: BackendProtocol unifies virtual file operations while separating shell-capable backends from state and store persistence. This guide covers file compatibility, routing, durable scopes, Context Hub commits, and the severe operational risks of local shell execution.
+tags: [backends, file-format, state, durable-storage, storage-routing, context-hub, composite-backend, local-shell, security]
 sources:
-  - id: openwiki-source-a1549ea98d425efea270be93
-    resource: repo://libs/deepagents/deepagents/backends/composite.py
-  - id: openwiki-source-d70fe6f8bf81e2aa641a4950
-    resource: repo://libs/deepagents/deepagents/backends/context_hub.py
-  - id: openwiki-source-e3efb5f3e4a9e8517eb6d8f5
-    resource: repo://libs/deepagents/deepagents/backends/protocol.py
   - id: openwiki-source-07f9eac13e71bcbdb4e6994b
     resource: repo://libs/deepagents/deepagents/backends/state.py
   - id: openwiki-source-21e2b0401425a427d8cea9c1
     resource: repo://libs/deepagents/deepagents/backends/store.py
   - id: openwiki-source-c972622237a22631e36f3625
     resource: repo://libs/deepagents/deepagents/backends/utils.py
-  - id: openwiki-source-0fc0e47059e4d07e23e50be2
-    resource: repo://libs/deepagents/deepagents/graph.py
-  - id: openwiki-source-241b6d854a4556d611c320e7
-    resource: repo://libs/deepagents/tests/integration_tests/test_context_hub_backend.py
-  - id: openwiki-source-ab8bfe29057131f7fc94fb78
-    resource: repo://libs/deepagents/tests/unit_tests/backends/test_composite_backend.py
-  - id: openwiki-source-97b09ca9987a984f1b37f8c8
-    resource: repo://libs/deepagents/tests/unit_tests/backends/test_context_hub_backend.py
-  - id: openwiki-source-ff7e5dfd747aa11f43332e1b
-    resource: repo://libs/deepagents/tests/unit_tests/backends/test_file_format.py
   - id: openwiki-source-fb022ddbcc554eaabedfa8cd
     resource: repo://libs/deepagents/tests/unit_tests/backends/test_state_backend.py
   - id: openwiki-source-e11958a6a68a079be57552fc
     resource: repo://libs/deepagents/tests/unit_tests/backends/test_store_backend.py
-generated: { by: "openwiki/0.4.2", at: "2026-10-19T08:10:20.273Z" }
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-10-21T08:05:42.350Z
+generated: { by: "openwiki/0.4.2", at: "2026-10-21T08:05:42.350Z" }
 ---
 
 # Backends and Durable File State
@@ -151,6 +135,40 @@ Root `glob` has an additional path-semantics rule. A leading `/` anchors the pat
 
 `execute()` is intentionally outside this routing scheme. It delegates exclusively to `default` when it implements `SandboxBackendProtocol`, forwarding an explicitly supplied timeout only to defaults that accept one. Otherwise it raises `NotImplementedError`. A mounted store or Context Hub route therefore remains reachable through file tools, not through the shell. Routing selects storage for an operation; it is not an authorization mechanism or execution sandbox.
 
+## LocalShellBackend: host execution, not a sandbox
+
+`LocalShellBackend` combines `FilesystemBackend` with `SandboxBackendProtocol`, but its protocol conformance must not be mistaken for containment. Its file operations use the filesystem backend rooted at `root_dir`; `execute()` runs the supplied command through the host shell with `shell=True`, the same working directory, and the process user's permissions. It can read arbitrary accessible paths, change the host, make network connections, spawn processes, and install software. File changes and executed commands are not reversible by this backend.
+
+> **Danger:** Do not expose `LocalShellBackend` to untrusted users, production services, or multi-tenant workloads. It is intended for trusted local development and carefully controlled CI. For execution in a service, use an actually isolated sandbox implementation instead. See [security operations](/openwiki/operations/security.md), [permissions and HITL](/openwiki/concepts/permissions-hitl.md), and [sandbox partners](/openwiki/integrations/sandbox-partners.md).
+
+`virtual_mode=True` is the default and makes filesystem-tool paths relative to a virtual root; it blocks traversal such as `..` for those file operations. It does **not** constrain commands: a shell command can still refer to `/etc/passwd` or any other host path available to the process. Likewise, composing it under `CompositeBackend` does not restrict command visibility beyond the fact that Composite sends commands to its default backend only. Treat filesystem permissions and virtual paths as usability controls here, not as shell security boundaries.
+
+### Execution controls and observable results
+
+Construction rejects a non-positive default timeout. `execute()` also rejects a non-empty-invalid command with an error response and validates an explicitly supplied timeout; otherwise it uses the per-call timeout or the 120-second default. A timed-out command produces exit code `124`. Standard output is combined with standard error, with each stderr line prefixed `[stderr]`; nonzero command exits retain a response and append the exit code. The output budget is measured in UTF-8 bytes, and truncation decodes with error handling so it does not return a partial Unicode character.
+
+By default the command environment is empty except for values passed as `env`; `inherit_env=True` copies the parent environment and then overlays `env`. This reduces accidental ambient configuration only when callers leave inheritance off—it does not make arbitrary commands safe. Commands receive `stdin=DEVNULL` to avoid waiting for interactive input and start a new session on non-Windows platforms, so a child cannot open the parent's controlling terminal. The local-shell tests are skipped on Windows because they require `sh`.
+
+```mermaid
+sequenceDiagram
+    participant Caller
+    participant Local as LocalShellBackend
+    participant Host as Host shell
+    Caller->>Local: execute command and optional timeout
+    Local->>Local: select timeout and environment
+    Local->>Host: subprocess run with shell enabled
+    alt process completes
+        Host-->>Local: stdout stderr and exit status
+        Local->>Local: prefix stderr and apply output byte budget
+        Local-->>Caller: ExecuteResponse
+    else timeout expires
+        Host-->>Local: timeout
+        Local-->>Caller: exit code 124 response
+    end
+```
+
+This shows the execution path: `root_dir`, environment selection, timeout, and output clipping are controls around a host-shell invocation, not isolation.
+
 ## Context Hub as a commit-backed text backend
 
 `ContextHubBackend(identifier, client=None)` uses `pull_agent` and `push_agent` to present a Hub agent repository as a file backend. It has no shell capability. The identifier accepts an `owner/name` or `-/name` Hub handle, and a `langsmith.Client` is created when no client is provided.
@@ -213,4 +231,6 @@ A missing file remains an ordinary operation-specific not-found result. `LangSmi
 
 For State and Store backends, test the shared format contract from both persistence boundaries: legacy string lists normalize for read/list/search/size/download without mutating storage; successful write and edit persist strings; invalid list members fail; UTF-8 byte size is reported; and binary upload/download round-trips without grep matches. Also cover StateBackend's graph-context error and StoreBackend namespace validation, runtime-factory failure modes, paging, literal wildcard deletion, and batched recursive deletes.
 
-Focused composite tests cover longest-prefix routing, route-root handling with and without a trailing slash, restored result paths, root listing, grouped batch transfers, global grep budgets, root-anchored glob behavior, result truncation, error propagation, and default-only execution. Context Hub unit tests cover cold-cache and missing-repository handling, linked entries, accepted-mutation overlays, coalescing, commit-hash recovery, upload partial success, conflict rematerialization and exhaustion, plus cache invalidation after failure. Integration tests, skipped unless `LANGSMITH_API_KEY` is configured, exercise lazy repository creation, persistence between backend instances, real conflict recovery, and single-commit uploads. See the [testing guide](/openwiki/testing/testing-guide.md) for package-local commands and conventions.
+Focused composite tests cover longest-prefix routing, route-root handling with and without a trailing slash, restored result paths, root listing, grouped batch transfers, global grep budgets, root-anchored glob behavior, result truncation, error propagation, and default-only execution. Context Hub unit tests cover cold-cache and missing-repository handling, linked entries, accepted-mutation overlays, coalescing, commit-hash recovery, upload partial success, conflict rematerialization and exhaustion, plus cache invalidation after failure. Integration tests, skipped unless `LANGSMITH_API_KEY` is configured, exercise lazy repository creation, persistence between backend instances, real conflict recovery, and single-commit uploads.
+
+`test_local_shell_backend.py` is deliberately focused on the host-execution contract: working-directory sharing with file operations, empty-command and timeout responses, stdout/stderr formatting, output byte truncation including multibyte text, explicit and inherited environments, virtual file-path traversal rejection versus unrestricted shell paths, and the detached controlling-terminal behavior. Those tests document behavior, not a safety guarantee—review LocalShellBackend use as a high-risk deployment decision. See the [testing guide](/openwiki/testing/testing-guide.md) for package-local commands and conventions.

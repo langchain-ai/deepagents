@@ -3,13 +3,12 @@ type: workflow
 title: Build and Customize a Deep Agent
 description: Assemble a Deep Agents graph safely by selecting a model, backend, middleware, subagents, skills, persistence, and approval policy while preserving the builder's ordering and state invariants.
 tags: [deepagents, langgraph, middleware, skills, subagents, backends, testing]
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-10-22T08:05:54.651Z
 sources:
-  - id: openwiki-source-07f9eac13e71bcbdb4e6994b
-    resource: repo://libs/deepagents/deepagents/backends/state.py
   - id: openwiki-source-0fc0e47059e4d07e23e50be2
     resource: repo://libs/deepagents/deepagents/graph.py
-  - id: openwiki-source-0fb4155c19dd248acd3ffe4f
-    resource: repo://libs/deepagents/deepagents/middleware/_fs_interrupt.py
   - id: openwiki-source-5c9c6a877b43f30407158658
     resource: repo://libs/deepagents/deepagents/middleware/_skill_tools.py
   - id: openwiki-source-e51c4102234507d1529a2440
@@ -18,22 +17,13 @@ sources:
     resource: repo://libs/deepagents/deepagents/middleware/filesystem.py
   - id: openwiki-source-66cf9d0832d3cb55bec2b5ed
     resource: repo://libs/deepagents/deepagents/middleware/skills.py
-  - id: openwiki-source-114a1c7a58992fa867a94ef0
-    resource: repo://libs/deepagents/deepagents/middleware/subagents.py
-  - id: openwiki-source-13e0ea89aadd1a5e309ac7e3
-    resource: repo://libs/deepagents/tests/unit_tests/middleware/test_skill_tools_payload.py
-  - id: openwiki-source-c71ac20477155a66b7a8c60a
-    resource: repo://libs/deepagents/tests/unit_tests/middleware/test_skill_tools.py
-  - id: openwiki-source-10e4084b6aa57e5cc82620b3
-    resource: repo://libs/deepagents/tests/unit_tests/test_end_to_end.py
-  - id: openwiki-source-6d183faf1a4bc5a5ba451aba
-    resource: repo://libs/deepagents/tests/unit_tests/test_graph.py
-  - id: openwiki-source-851e3a9c96663d8db5ca3dec
-    resource: repo://libs/deepagents/tests/unit_tests/test_permissions.py
-generated: { by: "openwiki/0.4.2", at: "2026-10-16T08:05:35.701Z" }
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-10-16T08:05:35.701Z
+  - id: openwiki-source-f763e99e439a1356866a7aa4
+    resource: repo://libs/deepagents/deepagents/middleware/summarization.py
+  - id: openwiki-source-69c260914d2dd18b60ad5900
+    resource: repo://libs/deepagents/tests/unit_tests/middleware/test_compact_tool.py
+  - id: openwiki-source-6ce85b02eabe462f99e0c912
+    resource: repo://libs/deepagents/tests/unit_tests/test_async_subagents.py
+generated: { by: "openwiki/0.4.2", at: "2026-10-22T08:05:54.651Z" }
 ---
 
 # Build and Customize a Deep Agent
@@ -105,30 +95,51 @@ Prefer a middleware `state_schema` for new state. A graph-wide schema must be a 
 
 ### Run remote work through the async-task lifecycle
 
-Each `AsyncSubAgent` needs a unique `name`, `description`, and `graph_id`; `url` and `headers` are optional. Its `mode` is `isolated` (the default, only the delegated description is sent) or experimental `fork` (a snapshot of effective parent conversation plus the task is sent). Forking a remote agent does **not** copy its model, prompt, tools, or middleware: configure the remote graph itself to match if that is required. A spec without `url` uses local ASGI transport and therefore requires an async parent entry point such as `ainvoke`; synchronous `invoke` requires a reachable URL.
+Each `AsyncSubAgent` needs a unique `name`, `description`, and `graph_id`; `url`, `headers`, `webhook`, `notify_parent`, and `update_strategy` are optional. Its `mode` is `isolated` (the default, only the delegated description is sent) or experimental `fork` (a snapshot of the effective parent conversation plus the task is sent). Forking transfers portable message content only: the child retains ownership of its graph, model, prompt, tools, middleware, backend resources, approvals, and checkpoint/thread state. Configure the remote graph itself; do not assume the parent graph's resources exist there. A spec without `url` uses local ASGI transport and therefore requires an async parent entry point such as `ainvoke`; synchronous `invoke` requires a reachable URL.
 
 ```mermaid
 sequenceDiagram
-    participant Parent as Parent agent
+    participant Parent as Parent graph
     participant AsyncMW as AsyncSubAgentMiddleware
     participant Server as Agent Protocol server
+    participant Child as Remote child graph
     Parent->>AsyncMW: start_async_task description and type
-    AsyncMW->>Server: create task thread and run
-    Server-->>AsyncMW: thread ID and run ID
-    AsyncMW-->>Parent: tool result and async_tasks running record
-    Parent->>AsyncMW: check update cancel or list
-    AsyncMW->>Server: query or modify remote run
-    Server-->>AsyncMW: status or result
-    AsyncMW-->>Parent: task state update and notification
+    AsyncMW->>Server: create child thread and launch run
+    Server->>Child: run with child-owned resources
+    Server-->>AsyncMW: child thread ID and run ID
+    AsyncMW-->>Parent: async_tasks running record
+    Parent->>AsyncMW: update_async_task follow-up
+    alt update_strategy interrupt
+        AsyncMW->>Server: interrupt current child run and start follow-up
+    else update_strategy enqueue
+        AsyncMW->>Server: enqueue follow-up on child thread
+        AsyncMW-->>Parent: latest run is pending
+    end
+    Server-->>AsyncMW: outcome or webhook delivery
+    AsyncMW-->>Parent: notification and task state update
 ```
 
-Caption: Async delegation returns promptly and persists the remote task record in parent graph state instead of blocking the agent loop.
+Caption: The parent tracks remote work by child thread/run identifiers, while the remote child exclusively owns its runtime resources and human-interrupt lifecycle.
 
-The middleware supplies `start_async_task`, `check_async_task`, `update_async_task`, `cancel_async_task`, and `list_async_tasks`. Launch stores an `async_tasks` record keyed by task/thread ID with the agent name, current run ID, timestamps, and status; its reducer merges records so independently launched tasks coexist. A completion, failure, timeout, or remote HITL pause is represented as a notification, not user input. A paused remote task is `waiting` and must be answered on its own thread; the parent cannot approve it.
+The middleware supplies `start_async_task`, `check_async_task`, `update_async_task`, `cancel_async_task`, and `list_async_tasks`. Launch creates a child thread with parent-identifying metadata and stores an `async_tasks` record keyed by that thread/task ID; its reducer merges records so independently launched tasks coexist. The record tracks the newest run, timestamps, and status. A completion, failure, timeout, cancellation, or remote HITL pause is a marked system notification, not user input. `waiting` means the child paused for a human: answer or approve on the **child's** thread, never through the parent.
 
-The synchronous tools can launch, inspect, update, cancel, and list tasks, but automatic polling and extra model turns occur only on the async path. In `ainvoke`, the middleware checks unfinished tasks before an agent/model step and after a final answer; a new outcome adds a system notification and returns control to the model. Failed status checks are logged and retried later rather than failing the parent run. On an Agent Server, an idle parent may also be awakened by a notification run; a busy parent picks up the update on its normal checks.
+`update_async_task` starts a new run on the same child thread. The default `update_strategy="interrupt"` stops active work. With `update_strategy="enqueue"`, a follow-up waits behind active work and is recorded as `pending`; the record retains `superseded_run_ids` so an earlier run's notification cannot be mistaken for the latest follow-up's completion. Send at most one queued follow-up per task in one model turn—the middleware rejects later parallel updates because they would otherwise race to overwrite tracking. Cancelling an enqueued task cancels its newest run and any still-active earlier runs. If an enqueued follow-up starts after the child paused for human input, that child request is dropped.
 
-## 4. Add skills as progressive disclosure
+Set `webhook` when the Agent Server should call an application endpoint whenever a child run finishes; the middleware sends it on both launch and follow-up runs. `notify_parent` defaults to `True` and permits a same-deployment child to wake an idle parent with a notification run. Set it to `False` when the application delivers results itself, for example through the webhook. Remote-server children do not receive parent context; same-deployment launches and updates can receive the current parent run context, while queued updates capture it when sent.
+
+The synchronous tools can launch, inspect, update, cancel, and list tasks, but automatic polling and extra model turns occur only on the async path. In `ainvoke`, the middleware checks unfinished tasks before the agent/model step and after a final answer; a new outcome adds a system notification and returns control to the model. Failed or timed-out status checks are logged and deferred. On an Agent Server, an idle eligible parent may instead be awakened by a notification run; a busy parent picks up the update during normal polling, and a parent waiting for approval is deliberately not awakened so its approval is not cancelled.
+
+## 4. Configure compaction without losing operational state
+
+`create_deep_agent` installs model-aware `SummarizationMiddleware` by default. It chooses fraction-based trigger and retention thresholds when the resolved model exposes `max_input_tokens`, otherwise conservative fixed thresholds; it also truncates large old tool-call arguments before full compaction. The raw `messages` state remains intact: the private `_summarization_event` makes model calls see a summary plus the retained tail, while preserving the log for replay, evaluation, and manual compaction.
+
+Evicted history is appended to `/conversation_history/{session_id}.md` through the configured backend before it is replaced, and the summary contains the recovery path. Inline media is offloaded separately and referenced from that markdown. Do not treat this archive as a child runtime resource: a remote child has its own backend and cannot read a parent-local offload path unless the application deliberately exposes it. In a remote fork, the launch serializes portable effective conversation and strips parent-local eviction metadata; it rehydrates offloaded tool media only for that fork snapshot.
+
+To expose deliberate compaction, add `create_summarization_tool_middleware(model, backend)` alongside the builder's automatic middleware. Its `compact_conversation` tool shares `_summarization_event` with automatic compaction but does not compact autonomously; it refuses early calls until reported usage reaches about half the automatic trigger. A failed summary or history-offload operation returns an error tool result without changing the event, while a malformed stored event falls back to raw messages. For providers whose reasoning blocks are bound to replaced history, the summary event records its creation boundary so stale bound reasoning is not sent with the newly summarized conversation.
+
+**Validation guardrails:** test the automatic and manual paths separately; assert that a successful compact updates the event and archive path, that early calls report nothing to compact, and that model/offload failures leave no event. Also test a fork after compaction: its child input must contain the effective summary/tail snapshot, not parent backend file references or shared parent state.
+
+## 5. Add skills as progressive disclosure
 
 Pass `skills=` with POSIX backend paths to install `SkillsMiddleware`, or pass a same-named custom middleware to control its sources, prompt template, or skill tools. Sources may be paths or `(path, label)` pairs. The middleware lists each source through the selected backend, loads child `SKILL.md` metadata, and lets later sources override duplicate names. Metadata is cached per thread in `skills_metadata`; set it to `None` in graph input or with `update_state` to reload. Source failures are retained as state errors, logged, and rendered as untrusted diagnostics in the default skills prompt.
 
@@ -157,7 +168,7 @@ Provider-payload tests additionally verify the placement of disclosure blocks: i
 
 Skills are scoped to their middleware instance. An isolated declarative subagent gets skills only from its own `skills` or matching middleware configuration. A fork mirrors parent prompt-producing middleware, including skills, but starts with its own disclosure record.
 
-## 5. Treat capability, permission, and approval as separate controls
+## 6. Treat capability, permission, and approval as separate controls
 
 Filesystem operations run through the backend. `execute` works only when it implements `SandboxBackendProtocol`; otherwise its tool returns an error. A state-backed backend adds the `files` state channel, including when a `CompositeBackend` route uses `StateBackend`. Backend selection is therefore both a persistence and shell-capability choice.
 
@@ -167,23 +178,27 @@ Filesystem permissions are ordered, first-match `allow`, `deny`, or `interrupt` 
 
 Recursive deletion is stricter than ordinary first-match resolution: it is all-or-nothing and refuses a directory deletion if a deny-write pattern overlaps the target subtree in either direction. A known leaf can use normal first-match behavior. Permissions are unsupported when the backend’s execution default is sandbox-capable, because the filesystem policy does not govern shell execution; configure containment at the tool/backend boundary. Permissions and HITL are therefore not sandboxing.
 
-## 6. Verify the final graph and invocation path
+## 7. Verify the final graph and invocation path
 
 For builder, profile, ordering, or inheritance changes, begin with `tests/unit_tests/test_graph.py`. Its focused cases inspect assembled middleware and the compiled tool node, including default delegation, prompt assembly, provider caching placement, exclusions, skills replacement/placement, and fork behavior. Test both sides of the changed branch: default general-purpose enabled/disabled, matching-name replacement/new insertion, and exclusion after custom middleware.
 
-For async-subagent changes, run `tests/unit_tests/test_async_subagents.py` for middleware-level state, fork, remote-client, and notification behavior, then the `TestAsyncSubagentEndToEnd` cases in `tests/unit_tests/test_end_to_end.py`. The end-to-end tests use mocked LangGraph SDK clients to exercise the full graph loop from a model tool call through remote launch or control and the resulting `async_tasks` state. They also prove synchronous `task` and all five asynchronous controls coexist when both kinds of subagent are configured.
+For async-subagent changes, run `tests/unit_tests/test_async_subagents.py` for middleware-level state, local/remote-client behavior, fork snapshots, child-owned waiting/approval behavior, notification delivery, and webhooks. Its queued-update cases verify `pending` state, accumulated `superseded_run_ids`, rejection of parallel same-turn follow-ups, non-terminal earlier notifications, and cancellation of queued and earlier active runs. Then run the `TestAsyncSubagentEndToEnd` cases in `tests/unit_tests/test_end_to_end.py`; they use mocked LangGraph SDK clients to exercise the complete graph loop from a model tool call through remote launch or control and the resulting `async_tasks` state, including coexistence of synchronous `task` and all five asynchronous controls.
 
-For permission changes, run `tests/unit_tests/test_permissions.py`. It covers rule validation and first-match behavior, deny enforcement, recursive-delete containment, sandbox-backend rejection, path-aware interrupt predicates including pathless/current-directory and absolute-glob bypass cases, and symlink-resolved enforcement. For skill tools, run the semantic suite and the provider-payload suite; the latter validates actual Anthropic and OpenAI request placement, not just in-memory model history.
+For compaction changes, run `tests/unit_tests/middleware/test_compact_tool.py` for manual-tool registration, eligibility, successful event/archive updates, cumulative cutoffs, corrupt-event fallback, and no-state-change failure handling. Pair it with `tests/unit_tests/middleware/test_summarization_middleware.py` when changing automatic summaries, offload/media handling, overflow recovery, or reasoning-boundary behavior. For permission changes, run `tests/unit_tests/test_permissions.py`. It covers rule validation and first-match behavior, deny enforcement, recursive-delete containment, sandbox-backend rejection, path-aware interrupt predicates including pathless/current-directory and absolute-glob bypass cases, and symlink-resolved enforcement. For skill tools, run the semantic suite and the provider-payload suite; the latter validates actual Anthropic and OpenAI request placement, not just in-memory model history.
 
 ```bash
 cd libs/deepagents
-uv run --group test pytest -vvv tests/unit_tests/test_graph.py
-uv run --group test pytest -vvv tests/unit_tests/test_async_subagents.py
-uv run --group test pytest -vvv tests/unit_tests/test_end_to_end.py -k AsyncSubagent
-uv run --group test pytest -vvv tests/unit_tests/test_permissions.py
-uv run --group test pytest -vvv tests/unit_tests/middleware/test_skill_tools.py
-uv run --group test pytest -vvv tests/unit_tests/middleware/test_skill_tools_payload.py
-uv run --group test pytest -vvv tests/unit_tests/middleware/test_skill_tool_resolver.py
+uv sync --all-groups
+make test TEST_FILE=tests/unit_tests/test_graph.py
+make test TEST_FILE=tests/unit_tests/test_async_subagents.py
+make test TEST_FILE=tests/unit_tests/middleware/test_compact_tool.py
+make test TEST_FILE=tests/unit_tests/middleware/test_summarization_middleware.py
+make test TEST_FILE=tests/unit_tests/test_end_to_end.py PYTEST_EXTRA="-k AsyncSubagent"
+make test TEST_FILE=tests/unit_tests/test_permissions.py
+make test TEST_FILE=tests/unit_tests/middleware/test_skill_tools.py
+make test TEST_FILE=tests/unit_tests/middleware/test_skill_tools_payload.py
+make test TEST_FILE=tests/unit_tests/middleware/test_skill_tool_resolver.py
+make lint
 ```
 
 ## Safe-change checklist
@@ -192,6 +207,7 @@ uv run --group test pytest -vvv tests/unit_tests/middleware/test_skill_tool_reso
 2. Inspect the selected profile and final middleware order. `tools=` is not the final model-visible surface.
 3. Keep protected filesystem/task scaffolding intact, preserve `DeepAgentState` reduction, and prefer middleware-private state.
 4. Choose isolated versus forked subagents deliberately; configure compiled and remote workers independently.
-5. For remote workers, use `ainvoke` if no `url` is supplied, retain `async_tasks` state, and test launch, control, notification, and a waiting task.
-6. For skills, test reload, read/pin-gated disclosure, compaction withdrawal, resolver stability, checkpoint rebuilding, and real provider payloads.
-7. Treat filesystem permissions, HITL approval, and backend sandboxing as distinct safeguards; test recursive deletion and symlink paths.
+5. For remote workers, use `ainvoke` if no `url` is supplied; retain `async_tasks`; configure the child graph's state, resources, and approvals independently; and test launch, waiting, webhook/notification, control, enqueue, superseded outcomes, and cancellation.
+6. For compaction, test automatic and manual paths, eligibility, archive failure, malformed events, reasoning boundaries, and fork snapshots after compaction.
+7. For skills, test reload, read/pin-gated disclosure, compaction withdrawal, resolver stability, checkpoint rebuilding, and real provider payloads.
+8. Treat filesystem permissions, HITL approval, and backend sandboxing as distinct safeguards; test recursive deletion and symlink paths.

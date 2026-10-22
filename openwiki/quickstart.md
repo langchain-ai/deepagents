@@ -1,11 +1,11 @@
 ---
 type: maintainer quickstart
 title: Deep Agents Monorepo Quickstart
-description: Task-routing entry point for Deep Agents maintainers. Find the package that owns a contract, run its narrowest deterministic regression seam, and then use the linked system guide for cross-package work.
-tags: [deepagents, maintenance, backends, talon, testing, releases]
+description: Task-routing entry point for Deep Agents maintainers. Find the owning package, run its narrowest deterministic regression seam, and follow the linked guide for cross-package behavior, CI, and releases.
+tags: [deepagents, maintenance, delegation, context-management, testing, releases]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-10-19T08:10:20.273Z
+    at: 2026-10-22T08:05:54.651Z
 sources:
   - id: openwiki-source-9a1c436646ef8c4f6dde787a
     resource: repo://.github/RELEASING.md
@@ -25,10 +25,18 @@ sources:
     resource: repo://libs/code/pyproject.toml
   - id: openwiki-source-c972622237a22631e36f3625
     resource: repo://libs/deepagents/deepagents/backends/utils.py
+  - id: openwiki-source-e51c4102234507d1529a2440
+    resource: repo://libs/deepagents/deepagents/middleware/async_subagents.py
+  - id: openwiki-source-f763e99e439a1356866a7aa4
+    resource: repo://libs/deepagents/deepagents/middleware/summarization.py
   - id: openwiki-source-fb022ddbcc554eaabedfa8cd
     resource: repo://libs/deepagents/tests/unit_tests/backends/test_state_backend.py
   - id: openwiki-source-e11958a6a68a079be57552fc
     resource: repo://libs/deepagents/tests/unit_tests/backends/test_store_backend.py
+  - id: openwiki-source-69c260914d2dd18b60ad5900
+    resource: repo://libs/deepagents/tests/unit_tests/middleware/test_compact_tool.py
+  - id: openwiki-source-6ce85b02eabe462f99e0c912
+    resource: repo://libs/deepagents/tests/unit_tests/test_async_subagents.py
   - id: openwiki-source-fb60ee46c55b974b8341651c
     resource: repo://libs/DEVELOPMENT.md
   - id: openwiki-source-7da6afe7fe64c6589cf1fed0
@@ -51,62 +59,94 @@ sources:
     resource: repo://libs/talon/tests/unit_tests/test_tool_approval_runtime.py
   - id: openwiki-source-1e7998c9f5a94d22f3819721
     resource: repo://libs/talon/tests/unit_tests/test_verbosity.py
-generated: { by: "openwiki/0.4.2", at: "2026-10-19T08:10:20.273Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-10-22T08:05:54.651Z" }
 ---
 
 # Deep Agents Monorepo Quickstart
 
-Start with the package that owns the contract—not necessarily the product where its behavior is visible. `libs/` contains independently versioned packages for the reusable `deepagents` SDK, dcode, ACP, evals, Talon, and provider integrations. Package-local source, tests, `pyproject.toml`, and `Makefile` are authoritative; this page is a router, not a replacement for them.
+Start with the package that owns the contract, not necessarily the product where behavior appears. `libs/` contains independently versioned packages for the reusable `deepagents` SDK, dcode, ACP, evals, the experimental Talon host, and provider integrations. Each package's source, tests, `pyproject.toml`, and `Makefile` are authoritative. This is a routing map, not a replacement for those local instructions.
 
-For package boundaries, see [Repository Architecture Overview](./architecture/overview.md). For an entry point or a more granular test seam, use the [Source Map](./architecture/source-map.md).
+For package relationships, see [Repository Architecture Overview](./architecture/overview.md); for symbols and narrower tests, see the [System Source Map](./architecture/source-map.md).
 
-## Route the task
+## Route a change request
 
-| If the change concerns… | Contract owner and entry seam | Start with this deterministic regression seam | Then read |
+| Change request | Owner and first inspection point | Narrow validation first | Detailed guide |
 | --- | --- | --- | --- |
-| SDK file-data compatibility, including legacy `content: list[str]` | `libs/deepagents/`; shared normalization begins in `deepagents/backends/utils.py`, while `StateBackend` and `StoreBackend` own their storage adapters. Reads, listing/search sizing, and download normalize without persisting a conversion; successful writes/edits migrate to string content. | `cd libs/deepagents && make test TEST_FILE=tests/unit_tests/backends/test_state_backend.py`; repeat with `tests/unit_tests/backends/test_store_backend.py`. | [Backends and Durable File State](./concepts/backends.md), [Testing Guide](./testing/testing-guide.md) |
-| Reusable graph assembly, middleware, filesystem policy, skills, state, or delegation beyond that compatibility seam | `libs/deepagents/` owns the SDK harness. It composes its graph through LangChain `create_agent`; do not put product transport behavior here. | Nearest SDK `tests/unit_tests/` test, then `make lint`. | [SDK construction and execution](./architecture/sdk-construction-execution.md), [Source Map](./architecture/source-map.md) |
-| Terminal CLI, Textual UI, session/workspace policy, commands, interactive approvals, retries, or sandbox choice | `libs/code/` owns dcode, the terminal client and agent-server surface. | Nearest `libs/code/tests/unit_tests/` seam, then `make lint` or `make check`. | [Run a dcode Session](./workflows/run-dcode-session.md), [Code Agent Architecture](./architecture/code-agent.md) |
-| Editor-facing Agent Client Protocol behavior or `dcode --acp` | `libs/acp/` owns generic protocol/session translation; dcode owns its terminal-specific ACP specialization. | `cd libs/acp && make test TEST_FILE=tests/<affected_test>.py`; validate dcode too when its ACP mode changes. | [Repository Architecture Overview](./architecture/overview.md) |
-| Talon verbosity, interim updates, `send_message`, or narration before tools | `libs/talon/`; configuration is in `deepagents_talon/config.py`, and invocation-scoped progress delivery is in `messaging.py`. Verbosity `1` omits progress updates, `2` shares a two-update budget per turn, and `3` is unrestricted. | `cd libs/talon && make test TEST_FILE=tests/unit_tests/test_verbosity.py`; use `tests/unit_tests/test_messaging.py` for delivery, isolation, and cleanup. | [Talon Runtime Integration](./integrations/talon.md), [Talon Channel Admission](./concepts/talon-channel-admission.md) |
-| Talon graph refresh/rebuild, MCP/runtime tools, approval policy, or operator authority | `libs/talon/`; `DeepAgentRuntime` owns graph construction and invocation-scoped context, while the approval store supplies the snapshot used to build a graph. | `cd libs/talon && make test TEST_FILE=tests/test_runtime.py`; use `tests/unit_tests/test_tool_approval_runtime.py` for snapshot concurrency, fail-closed reload, and unattended-request behavior. | [Permissions and Human-in-the-Loop](./concepts/permissions-hitl.md), [Talon Runtime Integration](./integrations/talon.md) |
-| Long-running channel lifecycle, scheduling, persistence, or channel delivery | `libs/talon/` owns the experimental local host and channel adapters, downstream of SDK and dcode. | Nearest Talon test, then `make lint`. | [Talon Runtime Integration](./integrations/talon.md), [Talon Channel Admission](./concepts/talon-channel-admission.md) |
-| A sandbox provider or provider-specific integration | The relevant `libs/partners/<provider>/` package owns the provider; dcode and Talon consume it at their product boundary. | Provider tests, then affected dcode, Talon, or SDK consumer coverage. | [Sandbox Partners](./integrations/sandbox-partners.md) |
-| Real-model quality, trajectories, scoring, or a sandbox benchmark | `libs/evals/` owns behavioral evaluation and Harbor integration; it is not Release Please-managed. | Add/run deterministic regression coverage first; then use `make evals MODEL=<id>` or the applicable Harbor job. | [Testing Guide](./testing/testing-guide.md) |
-| Dependency bounds, editable siblings, locks, CI, or publication | The changed manifest owns its compatibility contract; CI and release automation determine consumer and publication work. | Refresh affected locks, run package checks, and use `cd libs && make lock-check` when lock scope is uncertain. | [Development, Dependencies, and Releases](./operations/development.md) |
+| Build or customize an agent; change graph assembly, middleware, profiles, permissions, skills, subagents, filesystem behavior, state, or a backend | `libs/deepagents/` owns the reusable harness. It delegates graph assembly to LangChain's `create_agent`; CLI, protocol, and host behavior belong in products. | `cd libs/deepagents && make test TEST_FILE=<nearest test>` then `make lint` | [Build and Customize a Deep Agent](./workflows/build-a-deep-agent.md), [SDK Construction and Execution](./architecture/sdk-construction-execution.md) |
+| Change remote background delegation, task updates, completion notification, or child approvals | `libs/deepagents/deepagents/middleware/async_subagents.py` owns the remote Agent Protocol task contract. | `cd libs/deepagents && make test TEST_FILE=tests/unit_tests/test_async_subagents.py` | [Subagents, Skills, and Delegation](./concepts/subagents-skills.md), [Runtime Behavior and Failure Boundaries](./architecture/runtime-behavior.md), [Permissions and Human-in-the-Loop](./concepts/permissions-hitl.md) |
+| Change automatic or manual conversation compaction, retained history, offload, or overflow recovery | `libs/deepagents/deepagents/middleware/summarization.py` owns the summarization state and `compact_conversation` tool. | `cd libs/deepagents && make test TEST_FILE=tests/unit_tests/middleware/test_compact_tool.py` | [Context Management](./concepts/context-management.md), [Middleware Catalog](./concepts/middleware-catalog.md) |
+| Change dcode startup, TUI, sessions, commands, MCP, sandboxes, approvals, or headless execution | `libs/code/` owns `deepagents-code`, launched as `dcode`. | `cd libs/code && make test TEST_FILE=tests/unit_tests/<nearest test>.py`, then `make check` | [Deep Agents Code Architecture](./architecture/code-agent.md) |
+| Change the generic editor-facing Agent Client Protocol integration | `libs/acp/` owns ACP translation; `dcode --acp` also crosses dcode's specialization. | `cd libs/acp && make test TEST_FILE=tests/<nearest test>.py`; validate dcode if its ACP mode changed. | [Agent Client Protocol Integration](./integrations/acp.md) |
+| Change channels, schedules, runtime graph invocation, delivery, or approvals in the local host | `libs/talon/` owns the experimental Talon host, downstream of the SDK and dcode. | `cd libs/talon && make test TEST_FILE=<nearest test>` then `make lint` | [Talon Runtime Integration](./integrations/talon.md) |
+| Change a provider or sandbox adapter | The matching `libs/partners/<provider>/` package owns the adapter; dcode and Talon consume it at their product boundary. | Run provider coverage, then the affected consumer seam. | [Sandbox and Partner Integrations](./integrations/sandbox-partners.md) |
+| Change scoring, trajectories, Harbor integration, or benchmarks | `libs/evals/` owns evaluations and Harbor integration; it is not Release Please-managed. | Add/run deterministic regression coverage, then the applicable eval workflow. | [Testing Guide](./testing/testing-guide.md) |
+| Change locks, CI scope, versions, or publication | The edited package manifest owns compatibility; CI and release automation own fan-out and publication. | Refresh affected locks and run package checks; use `cd libs && make lock-check` when scope is uncertain. | [Development, Dependencies, and Releases](./operations/development.md), [CI and Pull-Request Labeling](./operations/ci-labeling.md) |
 
-## Guardrails for the two current high-change areas
+## Two SDK regression seams
 
-- **Backend compatibility is a shared observable contract.** Keep legacy normalization centralized; test both state and store adapters because their persistence and graph-context mechanics differ. `StateBackend` is thread-local graph state and must run in graph execution; `StoreBackend` is cross-thread storage scoped by its namespace factory.
-- **Talon state is scoped to an invocation.** `DeepAgentRuntime.invoke()` refreshes tools, snapshots approvals, rebuilds when the persisted approval snapshot changes, then binds the chosen graph and request contexts. It resets approval, authorization, progress, graph, and pending-result context even when invocation fails. A reload must construct a replacement graph before replacing the usable one, so a failed rebuild leaves the old graph active.
-- **Progress is delivery, not authorization.** `send_message` has a host-fixed destination and returns a generic failure to the model when delivery cannot occur. It enters the exact-name Talon approval policy when protected; neither that approval nor verbosity is sandboxing or channel admission.
+### Async remote delegation
+
+`AsyncSubAgentMiddleware` launches remote Agent Protocol runs and immediately returns a task ID; task records live in `async_tasks`, so they survive conversation compaction. It exposes `start_async_task`, `check_async_task`, `update_async_task`, `cancel_async_task`, and `list_async_tasks`. A remote child has its own tools, credentials, and human interrupts: a parent may report a `waiting` task but cannot answer or approve it.
+
+Default updates interrupt the active run. With `update_strategy="enqueue"`, the follow-up is `pending`, earlier run IDs are recorded as superseded, and only one queued follow-up per task may be sent in a model turn. Cancellation attempts the latest run and any active superseded runs; status-observation failures retain cached status rather than destroying task state. Configure `notify_parent=False` when an application-owned webhook or delivery path should handle completion instead of waking an idle parent.
+
+Run the full focused seam after changing lifecycle, notification, update, or cancellation behavior:
+
+```bash
+cd libs/deepagents
+make test TEST_FILE=tests/unit_tests/test_async_subagents.py
+```
+
+### Manual compaction
+
+`SummarizationToolMiddleware` adds `compact_conversation` but does not compact by itself; it shares `_summarization_event` state with `SummarizationMiddleware`, which performs automatic compaction. The tool first constructs effective history from the prior event and only proceeds when reported usage reaches roughly half of the configured automatic trigger. On success it creates a summary, attempts to offload older history through the configured backend, and atomically returns the new event plus a confirmation. A failed summary or offload returns an error `ToolMessage` without changing the event; an offload operation that reports no path can still produce a valid summary event.
+
+```bash
+cd libs/deepagents
+make test TEST_FILE=tests/unit_tests/middleware/test_compact_tool.py
+```
+
+### Backend file-data compatibility
+
+`StateBackend` and `StoreBackend` accept legacy `content: list[str]` data and normalize it for reads, listings, searches, sizes, and downloads. A read must not rewrite that legacy representation; a successful write or edit persists current string content. Treat both adapters as one observable compatibility contract:
+
+```bash
+cd libs/deepagents
+make test TEST_FILE=tests/unit_tests/backends/test_state_backend.py
+make test TEST_FILE=tests/unit_tests/backends/test_store_backend.py
+```
 
 ## Work and test in the owning package
 
-Use `uv` for interpreters, environments, and dependencies, and use each package's `Makefile` as the command authority. `uv` provisions the appropriate interpreter, so there is no repository-wide Python version to pin.
+Use `uv` for interpreters, environments, and dependencies, and use the package `Makefile` as the command authority. `uv` provisions the applicable interpreter, so there is no repository-wide Python version to pin.
 
 ```bash
 cd libs/deepagents
 uv sync --all-groups
-make test TEST_FILE=tests/unit_tests/backends/test_state_backend.py
+make test TEST_FILE=tests/unit_tests/middleware/test_compact_tool.py
 make lint
 ```
 
-Keep deterministic, network-free coverage in `tests/unit_tests/`; reserve `tests/integration_tests/` for networked contracts. Unaccepted pytest warnings fail the suite. ACP and Talon's normal `make test` targets disable network sockets; Talon's target runs WhatsApp bridge Node tests before Python tests.
+Keep deterministic, network-free coverage in `tests/unit_tests/`; reserve `tests/integration_tests/` for networked contracts. Unaccepted pytest warnings fail the suite. SDK, dcode, ACP, and Talon normal test targets disable network sockets; Talon's target first runs its WhatsApp bridge Node tests.
 
-Local sibling dependencies are editable; consequently, a shared-interface change must be validated in affected consumers, and CI path filters schedule dependent coverage when the SDK changes. Package manifests establish the local development dependency direction: ACP consumes the SDK; dcode consumes the SDK, ACP, and partner integrations; Talon consumes the SDK and dcode through editable sibling sources.
+Local sibling dependencies are editable. Validate shared-interface changes in affected consumers: ACP consumes the SDK; dcode consumes the SDK, ACP, and partner integrations; Talon consumes the SDK and dcode. CI path filters schedule dependent coverage for SDK changes, including dcode, ACP, Talon, evals, and partners where applicable.
 
-## Release handoff
+## Release and CI handoff
 
-`deepagents-code` pins `deepagents==0.7.28` exactly. A change requiring new SDK behavior must update that pin in the same pull request. The release manifest versions `deepagents` at `0.7.28`, `deepagents-acp` at `0.0.13`, `deepagents-code` at `0.1.86`, and `deepagents-talon` at `0.0.9`; it also versions Daytona `0.0.8`, Modal `0.0.6`, Runloop `0.0.7`, Vercel `0.0.2`, and QuickJS `0.3.9`.
+The current Release Please baselines are `deepagents` `0.7.30`, `deepagents-acp` `0.0.13`, `deepagents-code` `0.1.88`, and `deepagents-talon` `0.0.9`. Managed partner baselines are Daytona `0.0.8`, Modal `0.0.6`, Runloop `0.0.7`, Vercel `0.0.2`, and QuickJS `0.3.9`. `deepagents-code` pins `deepagents==0.7.30` exactly: update the pin in the same PR whenever dcode requires new SDK behavior.
 
-Release Please creates a separate draft release PR for each managed package after releasable commits reach `main`. Review the generated changelog, draft/review/edit curated notes, and use `@release-bot apply` unless intentionally skipping curation; merging the reviewed release PR triggers its GitHub and PyPI publication workflow.
+After releasable commits reach `main`, Release Please creates or updates a separate draft release PR per managed package. Wait for both its refresh and lockfile update; do not manually race its branch. Review the generated changelog, mark the PR ready, review or edit the curated-notes draft, and use `@release-bot apply` unless intentionally using the skip label. Merging the reviewed release PR triggers the GitHub and PyPI release workflow.
 
-## Follow the detailed guide
+A trusted changelog-only `@release-bot apply` commit deliberately skips package jobs only when its parent has a conclusive CI result; the CI Success gate reuses that parent's result. Verify the current head SHA and its workflow/check status before merging rather than treating skipped package jobs as independent success.
 
-- **Find an owner, entry point, or focused test:** [Source Map](./architecture/source-map.md)
-- **Change shared backend representation or persistence scope:** [Backends and Durable File State](./concepts/backends.md)
-- **Change Talon runtime, progress, configuration, or graph lifecycle:** [Talon Runtime Integration](./integrations/talon.md)
-- **Change Talon approvals or operator authority:** [Permissions and Human-in-the-Loop](./concepts/permissions-hitl.md)
-- **Choose deterministic, integration, or real-model coverage:** [Testing Guide](./testing/testing-guide.md)
-- **Change dependencies, locks, CI, or releases:** [Development, Dependencies, and Releases](./operations/development.md)
+## Talon operational seams
+
+For every Talon request, `DeepAgentRuntime` refreshes runtime tools, reads the approval snapshot, rebuilds the graph when that snapshot changes, pins graph and request contexts for the invocation, and resets them in `finally`. Construct replacement tools/graph before swapping active state. For delivery changes, verify `DEEPAGENTS_TALON_VERBOSITY`: `1`, `2`, or `3`; only levels above `1` add `send_message`, level `2` has a shared two-message turn budget, and level `3` is unbounded. Progress is request- and originating-handler-scoped, rejects blank or unavailable delivery, hides transport errors from the model, and is cleaned up per invocation.
+
+## Pick the next detailed guide
+
+- **Find an owner, entry point, or focused test:** [System Source Map](./architecture/source-map.md)
+- **Understand package boundaries and dependency direction:** [Repository Architecture Overview](./architecture/overview.md)
+- **Build or extend an SDK agent:** [Build and Customize a Deep Agent](./workflows/build-a-deep-agent.md)
+- **Choose deterministic, integration, or behavioral coverage:** [Testing Guide](./testing/testing-guide.md)
+- **Change dependencies, locks, CI, or publication:** [Development, Dependencies, and Releases](./operations/development.md)

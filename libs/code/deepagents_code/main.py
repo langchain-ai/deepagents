@@ -1,13 +1,6 @@
 """Main entry point and loop."""
 
 # ruff: noqa: E402
-# Imports placed after warning filters to suppress deprecation warnings
-
-# Suppress deprecation warnings from langchain_core
-import warnings
-
-warnings.filterwarnings("ignore", module="langchain_core._api.deprecation")
-
 import argparse
 import asyncio
 import contextlib

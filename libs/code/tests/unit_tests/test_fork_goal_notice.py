@@ -75,7 +75,7 @@ def inspect_piece() -> str:
 
 
 @pytest.mark.filterwarnings(
-    "default:The feature `forked subagents` is in beta:"
+    "ignore:The feature `forked subagents` is in beta:"
     "langchain_core._api.LangChainBetaWarning"
 )
 @pytest.mark.parametrize("mode", ["fork", "isolated"])

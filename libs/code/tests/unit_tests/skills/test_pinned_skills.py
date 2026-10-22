@@ -1,11 +1,9 @@
 """Server-side skill pinning resolves, trust-checks, and reads the skill."""
 
-from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 import pytest
 from deepagents.backends.filesystem import FilesystemBackend
-from deepagents.middleware.skills import SkillsState
 from langchain.agents import create_agent
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage
@@ -22,6 +20,9 @@ from deepagents_code.skills.invocation import build_skill_invocation_envelope
 from deepagents_code.tui.widgets.message_store import MessageType
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
+    from deepagents.middleware.skills import SkillsState
     from langchain_core.runnables import RunnableConfig
 
 

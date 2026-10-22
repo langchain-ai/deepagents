@@ -259,7 +259,7 @@ jobs:
     uses: ./.github/workflows/_lint.yml
     with:
       working-directory: "libs/code"
-      python-version: "3.12"
+      python-version: "3.14"
 
   lint-talon:
     name: "🧹 Lint talon"
@@ -268,7 +268,7 @@ jobs:
     uses: ./.github/workflows/_lint.yml
     with:
       working-directory: "libs/talon"
-      python-version: "3.12"
+      python-version: "3.14"
 
   lint-evals:
     name: "🧹 Lint evals"
@@ -277,7 +277,7 @@ jobs:
     uses: ./.github/workflows/_lint.yml
     with:
       working-directory: "libs/evals"
-      python-version: "3.13"
+      python-version: "3.14"
 
   lint-acp:
     name: "🧹 Lint acp"
@@ -351,7 +351,7 @@ jobs:
     uses: ./.github/workflows/_test.yml
     with:
       working-directory: "libs/code"
-      python-versions: '["3.12", "3.13", "3.14"]'
+      python-versions: '["3.14"]'
 
   test-talon:
     name: "🧪 Test deepagents-talon"
@@ -360,7 +360,7 @@ jobs:
     uses: ./.github/workflows/_test.yml
     with:
       working-directory: "libs/talon"
-      python-versions: '["3.12", "3.13", "3.14"]'
+      python-versions: '["3.14"]'
 
   test-evals:
     name: "🧪 Test evals"
@@ -369,7 +369,7 @@ jobs:
     uses: ./.github/workflows/_test.yml
     with:
       working-directory: "libs/evals"
-      python-versions: '["3.12", "3.13"]'
+      python-versions: '["3.14"]'
 
   test-acp:
     name: "🧪 Test acp"
@@ -527,10 +527,10 @@ jobs:
       - name: "📋 Checkout Code"
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: "🐍 Set up Python 3.12 + UV"
+      - name: "🐍 Set up Python 3.14 + UV"
         uses: "./.github/actions/uv_setup"
         with:
-          python-version: "3.12"
+          python-version: "3.14"
           cache-suffix: drbench-dataset
           working-directory: "libs/evals"
 
@@ -565,10 +565,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: "🐍 Setup Python 3.11"
+      - name: "🐍 Setup Python 3.14"
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: "3.11"
+          python-version: "3.14"
       # test_release_notes.py shells out to `node --test`; pin Node so the
       # helper-script tests don't rely on whatever the runner image preinstalls.
       - name: "🟢 Setup Node"

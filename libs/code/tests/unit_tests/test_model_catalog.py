@@ -2,8 +2,7 @@
 
 import asyncio
 import threading
-from collections.abc import Iterator
-from pathlib import Path
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, Mock
 
 import pytest
@@ -22,6 +21,10 @@ from deepagents_code.tui.widgets.model_selector import (
     DefaultModelScope,
     ModelSelectorScreen,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+    from pathlib import Path
 
 
 @pytest.fixture

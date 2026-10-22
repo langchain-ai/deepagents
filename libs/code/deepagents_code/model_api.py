@@ -33,7 +33,7 @@ async def startup_model_metadata(_request: Request) -> JSONResponse:
         runtime = await get_server_runtime()
         if runtime.model_metadata is not None:
             return JSONResponse(runtime.model_metadata.to_payload())
-    except (Exception, SystemExit):
+    except Exception, SystemExit:
         logger.exception("Server startup model metadata is unavailable")
     return JSONResponse(
         {"detail": "Startup model metadata is unavailable. Restart the server."},
@@ -138,7 +138,7 @@ async def model_metadata(request: Request) -> JSONResponse:
         return JSONResponse({"detail": str(exc)}, status_code=409)
     except (ModelConfigError, TypeError, ValueError) as exc:
         return JSONResponse({"detail": str(exc)}, status_code=422)
-    except (Exception, SystemExit):
+    except Exception, SystemExit:
         logger.exception("Server model metadata resolution failed")
         return JSONResponse(
             {
@@ -218,7 +218,7 @@ async def model_catalog(request: Request) -> JSONResponse:
         return JSONResponse({"detail": str(exc)}, status_code=409)
     except (ModelConfigError, TypeError, ValueError) as exc:
         return JSONResponse({"detail": str(exc)}, status_code=422)
-    except (Exception, SystemExit):
+    except Exception, SystemExit:
         logger.exception("Server model catalog discovery failed")
         return JSONResponse(
             {"detail": "Model catalog is unavailable. Check the server log and retry."},

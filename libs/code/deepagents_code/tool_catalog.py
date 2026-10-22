@@ -333,7 +333,7 @@ def collect_tools_from_agent(agent: object) -> list[ToolEntry] | None:
         description = getattr(tool, "description", None)
         try:
             schema = convert_to_openai_tool(tool)
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             logger.warning(
                 "Could not serialize tool schema for %s", name, exc_info=True
             )
@@ -496,7 +496,7 @@ async def _load_mcp_server_info(
 
     try:
         project_context = ProjectContext.from_user_cwd(Path.cwd())
-    except (OSError, RuntimeError):
+    except OSError, RuntimeError:
         # `Path.cwd()`/`.resolve()` raise OSError for a missing cwd and
         # RuntimeError on a symlink loop (3.12 only); match the codebase's own
         # convention in `project_utils` and fall back to no project context.

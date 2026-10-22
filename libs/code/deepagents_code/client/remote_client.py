@@ -1568,7 +1568,7 @@ def _convert_ai_message(data: dict[str, Any]) -> Any:  # noqa: ANN401
 
     try:
         chunk = AIMessageChunk(**kwargs)
-    except (TypeError, ValueError, KeyError):
+    except TypeError, ValueError, KeyError:
         logger.warning(
             "Failed to construct AIMessageChunk from server data (id=%s)",
             data.get("id"),
@@ -1604,7 +1604,7 @@ def _convert_human_message(data: dict[str, Any]) -> Any:  # noqa: ANN401
                 additional_kwargs if isinstance(additional_kwargs, dict) else {}
             ),
         )
-    except (TypeError, ValueError, KeyError):
+    except TypeError, ValueError, KeyError:
         logger.warning(
             "Failed to construct HumanMessage from server data (id=%s)",
             data.get("id"),
@@ -1642,7 +1642,7 @@ def _convert_tool_message(data: dict[str, Any]) -> Any:  # noqa: ANN401
                 additional_kwargs if isinstance(additional_kwargs, dict) else {}
             ),
         )
-    except (TypeError, ValueError, KeyError):
+    except TypeError, ValueError, KeyError:
         logger.warning(
             "Failed to construct ToolMessage from server data (id=%s)",
             data.get("id"),

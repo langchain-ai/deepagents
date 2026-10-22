@@ -219,7 +219,7 @@ That lets you compare released behavior against local, and fall back to a known-
 
 ```bash
 # 1. Create an isolated venv for the dev binary
-uv venv ~/.local/share/dcode-dev --python 3.13
+uv venv ~/.local/share/dcode-dev --python 3.14
 
 # 2. Install your checkout into it, editable
 uv pip install --python ~/.local/share/dcode-dev/bin/python -e <repo>/libs/code
@@ -228,7 +228,7 @@ uv pip install --python ~/.local/share/dcode-dev/bin/python -e <repo>/libs/code
 ln -sf ~/.local/share/dcode-dev/bin/dcode ~/.local/bin/dcode-dev
 ```
 
-The `--python 3.13` is illustrative — any interpreter satisfying the package's `requires-python` (currently `>=3.12`) works; omit the flag to let `uv` pick.
+The `--python 3.14` is illustrative — any interpreter satisfying the package's `requires-python` (currently `>=3.14,<3.15`) works; omit the flag to let `uv` pick.
 
 > **Why `uv venv` + `uv pip install -e` rather than `uv sync` or `uv tool install --editable`?** This builds an isolated venv *outside* the workspace's locked environment, so the dev binary can be re-resolved on demand without disturbing the released tool or the repo's `uv.lock`. (`uv pip` and `uv venv` are first-class `uv` subcommands here, not bare `pip`.)
 

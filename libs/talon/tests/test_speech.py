@@ -1,5 +1,5 @@
-from pathlib import Path
 from types import SimpleNamespace
+from typing import TYPE_CHECKING
 from unittest.mock import Mock
 
 import pytest
@@ -14,6 +14,9 @@ from deepagents_talon.speech import (
     build_voice_transcriber,
     transcribe_voice_message,
 )
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 def _config(env: dict[str, str], tmp_path: Path) -> TalonConfig:

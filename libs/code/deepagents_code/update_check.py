@@ -307,7 +307,7 @@ def is_installed_version_at_least(version: str) -> bool:
 
         installed = _parse_version(pkg_version("deepagents-code"))
         target = _parse_version(version)
-    except (InvalidVersion, PackageNotFoundError):
+    except InvalidVersion, PackageNotFoundError:
         return False
     return installed >= target
 
@@ -428,7 +428,7 @@ def cached_release_requires_prereleases(version: str | None) -> bool | None:
             return None
         pins = [_canonical_prerelease_pin(pin) for pin in cached]
         return bool(pins) if all(pin is not None for pin in pins) else None
-    except (OSError, json.JSONDecodeError, TypeError):
+    except OSError, json.JSONDecodeError, TypeError:
         logger.debug("Failed to read cached release pre-release pins", exc_info=True)
         return None
 
@@ -472,7 +472,7 @@ def get_cached_update_available() -> tuple[bool, str | None]:
         if not isinstance(value, str):
             return False, None
         return _parse_version(value) > installed, value
-    except (OSError, json.JSONDecodeError, TypeError, InvalidVersion):
+    except OSError, json.JSONDecodeError, TypeError, InvalidVersion:
         logger.debug("Failed to read cache-only update answer", exc_info=True)
         return False, None
 
@@ -486,7 +486,7 @@ def _coerce_checked_at(value: object) -> float | None:
         return None
     try:
         datetime.fromtimestamp(checked_at, tz=UTC)
-    except (OverflowError, OSError, ValueError):
+    except OverflowError, OSError, ValueError:
         return None
     return checked_at
 
@@ -507,7 +507,7 @@ def get_last_update_check_time() -> float | None:
         if not isinstance(data, dict):
             return None
         checked_at = data.get("checked_at")
-    except (OSError, json.JSONDecodeError, TypeError):
+    except OSError, json.JSONDecodeError, TypeError:
         logger.debug("Failed to read last update check time", exc_info=True)
         return None
     return _coerce_checked_at(checked_at)
@@ -675,7 +675,7 @@ def _write_release_prerelease_pins(version: str, pins: Sequence[str]) -> None:
         data[_RELEASE_PRERELEASE_PINS_KEY] = values
         data.setdefault("checked_at", time.time())
         _atomic_write_cache(data)
-    except (OSError, json.JSONDecodeError, TypeError):
+    except OSError, json.JSONDecodeError, TypeError:
         logger.debug(
             "Failed to write release pre-release pins cache",
             exc_info=True,
@@ -745,7 +745,7 @@ def get_latest_version(
             )
             if fresh and cache_key in data and has_installed_release_time:
                 return cached_version
-    except (OSError, json.JSONDecodeError, TypeError):
+    except OSError, json.JSONDecodeError, TypeError:
         logger.debug("Failed to read update-check cache", exc_info=True)
 
     try:
@@ -780,7 +780,7 @@ def get_latest_version(
             logger.debug("PyPI response missing or empty 'releases' key")
         prerelease = _latest_from_releases(releases, include_prereleases=True)
         stable_prerelease_pins = _prerelease_pin_requirements(info.get("requires_dist"))
-    except (requests.RequestException, OSError, KeyError, json.JSONDecodeError):
+    except requests.RequestException, OSError, KeyError, json.JSONDecodeError:
         logger.debug("Failed to fetch latest version from PyPI", exc_info=True)
         return cached_version
 
@@ -801,7 +801,7 @@ def get_latest_version(
                 cached_pins = existing.get(_RELEASE_PRERELEASE_PINS_KEY)
                 if isinstance(cached_pins, dict):
                     prerelease_pins = cached_pins
-    except (OSError, json.JSONDecodeError, TypeError):
+    except OSError, json.JSONDecodeError, TypeError:
         logger.debug(
             "Failed to read cached pre-release pins before refresh", exc_info=True
         )
@@ -883,7 +883,7 @@ def release_prerelease_pins(
                                 revalidated.add(pin)
                         if len(revalidated) == len(cached):
                             return sorted(revalidated)
-    except (OSError, json.JSONDecodeError, TypeError):
+    except OSError, json.JSONDecodeError, TypeError:
         logger.debug(
             "Failed to read release pre-release pins cache",
             exc_info=True,
@@ -911,7 +911,7 @@ def release_prerelease_pins(
         info = payload.get("info")
         requires = info.get("requires_dist") if isinstance(info, dict) else None
         pins = _prerelease_pin_requirements(requires)
-    except (requests.RequestException, OSError, KeyError, json.JSONDecodeError):
+    except requests.RequestException, OSError, KeyError, json.JSONDecodeError:
         logger.warning(
             "Failed to fetch dependency metadata for v%s from PyPI; assuming "
             "no pre-release admission",
@@ -1013,7 +1013,7 @@ def get_release_time(version: str | None) -> str | None:
                     value = times.get(version)
                     if isinstance(value, str):
                         return value
-    except (OSError, json.JSONDecodeError):
+    except OSError, json.JSONDecodeError:
         logger.debug("Failed to read release_times from cache", exc_info=True)
     return None
 
@@ -1061,7 +1061,7 @@ def _days_old_from_iso(iso: str | None) -> int | None:
         return None
     try:
         dt = datetime.fromisoformat(iso).astimezone()
-    except (ValueError, TypeError):
+    except ValueError, TypeError:
         logger.debug(
             "Failed to parse release timestamp %r for installed age",
             iso,
@@ -1156,7 +1156,7 @@ def get_sdk_release_time(
                     cached = times.get(version)
                     if isinstance(cached, str):
                         return cached
-    except (OSError, json.JSONDecodeError):
+    except OSError, json.JSONDecodeError:
         logger.debug("Failed to read sdk release_times from cache", exc_info=True)
 
     try:
@@ -1180,7 +1180,7 @@ def get_sdk_release_time(
         if not isinstance(files, list) or not files:
             return None
         iso = _upload_time(files[0])
-    except (requests.RequestException, OSError, json.JSONDecodeError):
+    except requests.RequestException, OSError, json.JSONDecodeError:
         logger.debug("Failed to fetch SDK release time from PyPI", exc_info=True)
         return None
 
@@ -1262,7 +1262,7 @@ def _read_update_state() -> dict[str, object]:
             raw = json.loads(UPDATE_STATE_FILE.read_text(encoding="utf-8"))
             if isinstance(raw, dict):
                 return raw
-    except (OSError, json.JSONDecodeError):
+    except OSError, json.JSONDecodeError:
         logger.debug("Failed to read update state file", exc_info=True)
     return {}
 
@@ -2799,7 +2799,7 @@ def _windows_migration_command(target_version: str) -> str:
 
     try:
         return upgrade_install_command(version=target_version, python="3.14")
-    except (ExtrasIntrospectionError, ToolRequirementIntrospectionError):
+    except ExtrasIntrospectionError, ToolRequirementIntrospectionError:
         logger.warning(
             "Could not read the uv receipt for the migration command",
             exc_info=True,

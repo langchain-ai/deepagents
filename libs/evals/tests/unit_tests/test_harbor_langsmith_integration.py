@@ -34,6 +34,7 @@ def test_langsmith_make_target_uses_harbor_plugin_and_langgraph_agent() -> None:
     assert "HARBOR_AGENT_ARGS = --agent langgraph" in makefile
     assert "HARBOR_LANGGRAPH_PROJECT = deepagents_harbor/langgraph_project" in makefile
     assert "--agent-kwarg project_path=$(HARBOR_LANGGRAPH_PROJECT)" in makefile
+    assert "--agent-kwarg python_version=3.14" in makefile
     assert "--agent-kwarg config=langgraph.json" in makefile
     assert "--agent-kwarg graph=$(HARBOR_AGENT_GRAPH)" in makefile
     assert "stage-harbor-local-deps:" in makefile
@@ -96,6 +97,7 @@ def test_harbor_workflow_uses_plugin_instead_of_manual_experiment_steps() -> Non
 
     # Agent is the langgraph deep agent wired to the selected graph.
     assert "--agent langgraph" in run_step
+    assert "--agent-kwarg python_version=3.14" in run_step
     assert '--agent-kwarg graph="$HARBOR_AGENT_GRAPH"' in run_step
     # Dataset and per-task attempts come from the dispatch inputs.
     assert '--dataset "$HARBOR_DATASET"' in run_step

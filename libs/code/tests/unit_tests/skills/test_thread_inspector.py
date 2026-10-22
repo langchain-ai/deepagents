@@ -4,9 +4,12 @@ import importlib.util
 import json
 import sqlite3
 from pathlib import Path
-from types import ModuleType
+from typing import TYPE_CHECKING
 
 import pytest
+
+if TYPE_CHECKING:
+    from types import ModuleType
 
 _SCRIPT = (
     Path(__file__).resolve().parents[3]

@@ -1584,7 +1584,7 @@ class TestUpdateInstallLock:
                 try:
                     proc.stdin.close()
                     proc.wait(timeout=30)
-                except (OSError, subprocess.TimeoutExpired):
+                except OSError, subprocess.TimeoutExpired:
                     proc.kill()
                     proc.wait(timeout=30)
 

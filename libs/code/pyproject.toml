@@ -10,7 +10,7 @@ readme = "README.md"
 license = { text = "MIT" }
 authors = [{ name = "LangChain" }]
 maintainers = [{ name = "LangChain" }]
-requires-python = ">=3.12,<4.0"
+requires-python = ">=3.14,<3.15"
 keywords = ["agents", "ai", "cli", "terminal", "llm", "langgraph", "langchain", "deep-agent"]
 classifiers = [
     "Development Status :: 4 - Beta",
@@ -18,8 +18,6 @@ classifiers = [
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.12",
-    "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Topic :: Software Development :: Libraries :: Python Modules",
@@ -41,7 +39,8 @@ dependencies = [
     "langchain-anthropic>=1.7.6,<2.0.0",
     "langchain-google-genai>=4.4.2,<5.0.0",
     "langchain-openai>=1.7.2,<2.0.0",
-    "pydantic>=2.12.5,<2.14.0a0",
+    # Require Pydantic 2.13+ explicitly to avoid Python 3.14 warnings from LangChain's v1 imports.
+    "pydantic>=2.13.0,<3.0.0",
 
     # UI/Terminal
     # Textual 8.2.8 handles colon-separated Kitty associated text.
@@ -221,7 +220,6 @@ langchain-runloop = { path = "../partners/runloop", editable = true }
 langchain-vercel-sandbox = { path = "../partners/vercel", editable = true }
 
 [tool.ty.environment]
-python-version = "3.12"
 extra-paths = [
     "../deepagents",
     "../partners/daytona",
@@ -272,6 +270,12 @@ extend-safe-fixes = ["PLR6201"]
 
 flake8-annotations.allow-star-arg-any = true
 flake8-annotations.mypy-init-return = true
+
+[tool.ruff.lint.flake8-type-checking]
+# Pydantic resolves these fake models' field types at runtime, so keep their imports.
+runtime-evaluated-base-classes = [
+    "langchain_core.language_models.fake_chat_models.GenericFakeChatModel",
+]
 
 [tool.ruff.lint.flake8-tidy-imports]
 ban-relative-imports = "all"
@@ -350,11 +354,6 @@ timeout = 30  # Default timeout for all tests (can be overridden per-test)
 filterwarnings = [
     # Unexpected warnings fail the run; see "Warnings are errors" in AGENTS.md.
     "error",
-    # `langchain_core` imports `pydantic.v1` during collection on Python 3.14+.
-    # Deliberately unqualified by module: `pydantic` warns with `stacklevel=2`, so
-    # the attributed module is whichever `langchain_core` module imports
-    # `pydantic.v1` first, which is import-order dependent.
-    "ignore:Core Pydantic V1 functionality isn't compatible:UserWarning",
     # `genai_prices.Usage` only warns for a usage key it does not recognize, then
     # drops it -- the request still prices, just without that bucket. A renamed
     # key anywhere in the allowed range would silently undercount, so fail

@@ -5,7 +5,6 @@ import logging
 import os
 import sys
 import warnings
-from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, fields
 from pathlib import Path
@@ -14,16 +13,18 @@ from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import Mock, patch
 
 import pytest
-from langchain_core.language_models import BaseChatModel
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage
 from langgraph.errors import GraphInterrupt
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator, Mapping
+
     from deepagents.backends.sandbox import SandboxBackendProtocol
     from langchain.agents.middleware.human_in_the_loop import InterruptOnConfig
     from langchain.agents.middleware.types import AgentMiddleware, AgentState
     from langchain.messages import ToolCall
+    from langchain_core.language_models import BaseChatModel
     from langgraph.prebuilt.tool_node import ToolCallRequest
     from langgraph.runtime import Runtime
 
@@ -401,7 +402,7 @@ def _request_with_context(
     context: object,
     *,
     store: object | None = None,
-) -> "ToolCallRequest":
+) -> ToolCallRequest:
     return cast(
         "ToolCallRequest",
         SimpleNamespace(runtime=SimpleNamespace(context=context, store=store)),
@@ -548,7 +549,7 @@ def test_typed_autonomous_mode_requires_live_store_key() -> None:
 
 def _request_with_state(
     state: object, context: object, store: object
-) -> "ToolCallRequest":
+) -> ToolCallRequest:
     return cast(
         "ToolCallRequest",
         SimpleNamespace(
@@ -1012,7 +1013,7 @@ _EXECUTE_TOOL_CALL = cast(
 )
 
 
-def _execute_runtime(context: object) -> "Runtime[Any]":
+def _execute_runtime(context: object) -> Runtime[Any]:
     return cast("Runtime[Any]", SimpleNamespace(context=context))
 
 

@@ -1,7 +1,7 @@
 import asyncio
 import json
 import logging
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 
@@ -11,6 +11,9 @@ from deepagents_talon.host import TalonHost
 from deepagents_talon.interfaces import ChannelMessage, ChannelReaction, ReactionChannelAdapter
 from tests.channels.test_whatsapp import RecordingTransport
 from tests.test_host import ApprovalAgent, _config
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 @pytest.mark.parametrize(

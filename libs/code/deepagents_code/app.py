@@ -514,7 +514,7 @@ def _coerce_session_cost_usd(value: object) -> float:
         return 0.0
     try:
         cost_usd = float(value)
-    except (OverflowError, ValueError):
+    except OverflowError, ValueError:
         logger.warning("Discarding a persisted session cost that is out of range.")
         return 0.0
     if not math.isfinite(cost_usd) or cost_usd < 0:
@@ -558,7 +558,7 @@ def _coerce_provisional_cost_delta_usd(value: object) -> float | None:
         return None
     try:
         delta_usd = float(value)
-    except (OverflowError, ValueError):
+    except OverflowError, ValueError:
         logger.warning("Discarding a provisional cost delta that is out of range.")
         return None
     if not math.isfinite(delta_usd):
@@ -5642,7 +5642,7 @@ class DeepAgentsApp(App):
             root = await asyncio.to_thread(project_root_for, Path(self._cwd))
             config_path = project_hooks_path(root)
             has_project_hooks = await asyncio.to_thread(config_path.is_file)
-        except (OSError, ValueError):
+        except OSError, ValueError:
             logger.warning(
                 "Could not inspect project hooks after cwd switch",
                 exc_info=True,
@@ -6687,7 +6687,7 @@ class DeepAgentsApp(App):
 
             try:
                 messages = self.query_one("#messages", Container)
-            except (NoMatches, ScreenStackError):
+            except NoMatches, ScreenStackError:
                 return
             if not messages.is_attached:
                 return
@@ -8881,7 +8881,7 @@ class DeepAgentsApp(App):
             # composes its own rack, and modals must not retune the main one.
             screen = chrome.screen
             rack = screen.get_child_by_id("textual-toastrack")
-        except (NoMatches, NoScreen):
+        except NoMatches, NoScreen:
             return
         region = chrome.region
         if not region:
@@ -10857,7 +10857,7 @@ class DeepAgentsApp(App):
         """
         try:
             messages = self.query_one("#messages", Container)
-        except (NoMatches, ScreenStackError):
+        except NoMatches, ScreenStackError:
             logger.debug(
                 "Messages container unavailable; skipping transient status %r",
                 content,
@@ -11505,7 +11505,7 @@ class DeepAgentsApp(App):
         """
         try:
             await widget.remove()
-        except (AttributeError, RuntimeError):
+        except AttributeError, RuntimeError:
             logger.debug(
                 "Failed to remove %s widget during %s",
                 prompt_name,
@@ -14058,7 +14058,7 @@ class DeepAgentsApp(App):
                     proc.kill()
             with suppress(ProcessLookupError, OSError):
                 await proc.wait()
-        except (ProcessLookupError, OSError):
+        except ProcessLookupError, OSError:
             pass
 
     async def _open_url_command(self, command: str, cmd: str) -> None:
@@ -18284,7 +18284,7 @@ class DeepAgentsApp(App):
 
                 clear_caches()
                 self._sync_status_model()
-            except (OSError, ValueError):
+            except OSError, ValueError:
                 logger.exception("Failed to reload configuration")
                 await self._mount_message(
                     AppMessage(
@@ -21023,7 +21023,7 @@ class DeepAgentsApp(App):
         try:
             resumable = await thread_exists(previous_thread_id)
             owner = await get_thread_agent(previous_thread_id) if resumable else None
-        except (sqlite3.Error, OSError):
+        except sqlite3.Error, OSError:
             # Keep store failures visible because they are not routine suppression.
             logger.info(
                 "Could not check whether previous thread %s is resumable",
@@ -22503,18 +22503,18 @@ class DeepAgentsApp(App):
         if self._pending_approval_widget:
             try:
                 self._pending_approval_widget.action_select_reject()
-            except (AttributeError, RuntimeError):
+            except AttributeError, RuntimeError:
                 logger.exception("force-clear: failed to reject pending approval")
         if self._pending_ask_user_widget:
             try:
                 self._pending_ask_user_widget.action_cancel()
-            except (AttributeError, RuntimeError):
+            except AttributeError, RuntimeError:
                 logger.exception("force-clear: failed to cancel pending ask-user")
         self._cancel_goal_proposal_worker()
         if self._pending_goal_review_widget:
             try:
                 self._pending_goal_review_widget.action_cancel()
-            except (AttributeError, RuntimeError):
+            except AttributeError, RuntimeError:
                 logger.exception("force-clear: failed to cancel pending goal review")
         if self._shell_running and self._shell_worker:
             self._shell_worker.cancel()
@@ -23514,14 +23514,14 @@ class DeepAgentsApp(App):
                                 asyncio.shield(worker.wait()),
                                 timeout=_GRACEFUL_EXIT_WAIT_SECONDS,
                             )
-                        except (asyncio.CancelledError, WorkerCancelled):
+                        except asyncio.CancelledError, WorkerCancelled:
                             # Expected: exit() cancelled the worker above, so
                             # its cancellation handler ran to completion.
                             logger.debug(
                                 "Agent worker cancelled cleanly before app exit",
                                 exc_info=True,
                             )
-                        except (TimeoutError, WorkerFailed):
+                        except TimeoutError, WorkerFailed:
                             # The worker did not finish within the window, so
                             # the in-flight run's server-side trace may be
                             # incomplete. Surface above debug so the loss isn't
@@ -26063,7 +26063,7 @@ class DeepAgentsApp(App):
                 if self._pending_ask_user_widget is not None:
                     try:
                         self._pending_ask_user_widget.action_cancel()
-                    except (AttributeError, RuntimeError):
+                    except AttributeError, RuntimeError:
                         logger.debug(
                             "Failed to cancel pending ask-user during agent swap",
                             exc_info=True,
@@ -27933,7 +27933,7 @@ class DeepAgentsApp(App):
         """
         try:
             banner = self.query_one("#welcome-banner", WelcomeBanner)
-        except (NoMatches, ScreenStackError):
+        except NoMatches, ScreenStackError:
             logger.debug("Welcome banner not mounted during MCP count refresh")
             return
         banner.set_connected(
@@ -30195,7 +30195,7 @@ class DeepAgentsApp(App):
 
             msg = f"No previous threads for '{active_agent}' to resume."
             await self._mount_message(AppMessage(msg))
-        except (sqlite3.Error, OSError):
+        except sqlite3.Error, OSError:
             # Expected thread-store failures: log for a debug session and tell
             # the user to retry. Mirrors the launch-time resolver's handling.
             logger.warning(
@@ -31037,7 +31037,7 @@ class DeepAgentsApp(App):
                 credentials.preview_reload_from_environment,
                 start_path=cwd,
             )
-        except (OSError, ValueError):
+        except OSError, ValueError:
             # Environmental failures (unreadable dotenv, malformed values) are
             # expected and non-fatal for a best-effort preview. Programming
             # errors (KeyError/TypeError/ImportError) are left to propagate so a
@@ -32257,7 +32257,7 @@ class DeepAgentsApp(App):
             self._retry_status_widget = None
         try:
             messages = self.query_one("#messages", Container)
-        except (NoMatches, ScreenStackError):
+        except NoMatches, ScreenStackError:
             messages = None
         if messages is not None and messages.is_attached:
             new_widget = AppMessage(

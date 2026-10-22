@@ -2,8 +2,8 @@
 
 import locale
 import subprocess
-from collections.abc import Iterator
 from pathlib import Path
+from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -18,6 +18,9 @@ from deepagents_code._git import (
     read_git_remote_url_from_filesystem,
     read_git_remote_url_via_subprocess,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 _FULL_SHA = "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0"
 """A valid 40-char SHA-1 used across the commit-resolution tests."""

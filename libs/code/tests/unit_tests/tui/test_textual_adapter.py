@@ -2,8 +2,6 @@
 
 import asyncio
 from asyncio import Future
-from collections.abc import AsyncIterator, Awaitable, Callable, Generator, Mapping
-from pathlib import Path
 from time import time
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Literal, cast
@@ -75,7 +73,9 @@ from deepagents_code.tui.widgets.messages import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncIterator, Awaitable, Callable, Generator, Mapping
     from contextlib import AbstractContextManager
+    from pathlib import Path
 
     from langchain_core.runnables import RunnableConfig
 
@@ -87,7 +87,7 @@ def _session_state(
     thread_id: str = "thread-1",
     approval_mode: ApprovalMode | str = "manual",
     auto_approve: bool | None = None,
-) -> "TextualSessionState":
+) -> TextualSessionState:
     """Build real session state so the adapter sees its full contract."""
     from deepagents_code.app import TextualSessionState
 
@@ -98,7 +98,7 @@ def _session_state(
     )
 
 
-def _handlers_for(*events: HookEvent) -> "AbstractContextManager[object]":
+def _handlers_for(*events: HookEvent) -> AbstractContextManager[object]:
     """Make every `HooksManager` report handlers for exactly `events`."""
     return patch.object(
         HooksManager,
@@ -1021,7 +1021,7 @@ class TestBuildStreamConfig:
         config_module._repo_metadata_cache.clear()
 
     @pytest.fixture(autouse=True)
-    def _hermetic_git(self) -> Generator[None, None, None]:
+    def _hermetic_git(self) -> Generator[None]:
         """Stub git/repo lookups so tests don't read the host repo's real `.git`.
 
         These tests assert on the identity/turn keys, not on git attribution, so
@@ -1397,7 +1397,7 @@ class TestFormatRubricEvent:
     """Tests for rubric custom-stream event formatting."""
 
     @pytest.fixture(autouse=True)
-    def _pin_unicode_glyphs(self) -> Generator[None, None, None]:
+    def _pin_unicode_glyphs(self) -> Generator[None]:
         """Pin Unicode glyphs so literal assertions hold on any terminal.
 
         `_format_rubric_event` resolves glyphs via `get_glyphs()`, which depends
@@ -6104,7 +6104,7 @@ class _MutatingItemsDict(dict):  # noqa: FURB189  # must subclass dict to overri
     need to override the C-level iteration that triggers the error.
     """
 
-    def items(self) -> Generator[tuple[str, Any], None, None]:  # ty: ignore
+    def items(self) -> Generator[tuple[str, Any]]:  # ty: ignore
         """Yield items while mutating the dict mid-iteration."""
         it = iter(dict.items(self))
         first = next(it)
@@ -6123,7 +6123,7 @@ class _MutatingValuesDict(dict):  # noqa: FURB189  # must subclass dict to overr
     need to override the C-level iteration that triggers the error.
     """
 
-    def values(self) -> Generator[Any, None, None]:  # ty: ignore
+    def values(self) -> Generator[Any]:  # ty: ignore
         """Yield values while mutating the dict mid-iteration."""
         it = iter(dict.values(self))
         first = next(it)

@@ -1,9 +1,10 @@
 """Tests for the MCP viewer modal screen."""
 
+from typing import TYPE_CHECKING
+
 import pytest
 from textual.app import App, ComposeResult
 from textual.containers import Vertical
-from textual.widget import Widget
 from textual.widgets import Static
 
 from deepagents_code.mcp_tools import MCPServerInfo, MCPToolInfo
@@ -13,6 +14,9 @@ from deepagents_code.tui.widgets.mcp_viewer import (
     MCPToolItem,
     MCPViewerScreen,
 )
+
+if TYPE_CHECKING:
+    from textual.widget import Widget
 
 
 def _widget_text(widget: Widget) -> str:

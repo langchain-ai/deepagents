@@ -143,7 +143,7 @@ def _artifacts_root() -> _ArtifactsStorage:
     try:
         _harden_dir(root)
         _probe_writable(root)
-    except (OSError, RuntimeError):
+    except OSError, RuntimeError:
         logger.warning(
             "Predictable per-user artifacts directory is unavailable; routing "
             "large results from a stable virtual prefix to private temporary storage",
@@ -223,7 +223,7 @@ def _offload_fallback_root() -> Path:
         return _UNIQUE_OFFLOAD_FALLBACK_ROOT
     try:
         root = _prepare_user_dir()
-    except (RuntimeError, OSError):
+    except RuntimeError, OSError:
         logger.warning(
             "User data directory is not writable; falling back to temporary "
             "offload storage, which may not persist across restarts",
@@ -241,7 +241,7 @@ def _offload_fallback_root() -> Path:
     path = temp_root / f"deepagents-{suffix}"
     try:
         return _prepare_temp_dir(path)
-    except (OSError, RuntimeError):
+    except OSError, RuntimeError:
         logger.warning(
             "Per-user temporary offload directory is unavailable; creating "
             "a private unique directory",
@@ -334,7 +334,7 @@ def _sweep_offloaded_history(retention_days: int) -> int:
     try:
         archive_dir = _offload_fallback_root() / CONVERSATION_HISTORY_DIRNAME
         candidates = list(archive_dir.iterdir())
-    except (OSError, RuntimeError):
+    except OSError, RuntimeError:
         logger.warning(
             "Could not resolve offloaded history archives for sweep", exc_info=True
         )
@@ -444,7 +444,7 @@ def delete_offloaded_history(thread_id: str) -> bool:
         return False
     try:
         archive_dir = _offload_fallback_root() / CONVERSATION_HISTORY_DIRNAME
-    except (OSError, RuntimeError):
+    except OSError, RuntimeError:
         logger.warning(
             "Could not resolve offload root to clean history for thread %s",
             thread_id,

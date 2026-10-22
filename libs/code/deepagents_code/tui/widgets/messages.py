@@ -3135,12 +3135,12 @@ class ToolCallMessage(Vertical):
         if list_match:
             try:
                 return ast.literal_eval("[" + list_match.group(1) + "]")
-            except (ValueError, SyntaxError):
+            except ValueError, SyntaxError:
                 return None
         try:
             items = ast.literal_eval(output)
             return items if isinstance(items, list) else None
-        except (ValueError, SyntaxError):
+        except ValueError, SyntaxError:
             return None
 
     def _build_todo_stats(self, items: list) -> Content:
@@ -3306,7 +3306,7 @@ class ToolCallMessage(Vertical):
                 return FormattedOutput(
                     content=Content("\n").join(lines), truncation=truncation
                 )
-        except (ValueError, SyntaxError):
+        except ValueError, SyntaxError:
             pass
 
         # Fallback: plain text
@@ -3545,7 +3545,7 @@ class ToolCallMessage(Vertical):
         # bug in `_format_search_lines` can't silently reroute to the fallback.
         try:
             items = ast.literal_eval(output.strip())
-        except (ValueError, SyntaxError):
+        except ValueError, SyntaxError:
             items = None
 
         if isinstance(items, list):
@@ -3807,7 +3807,7 @@ class ToolCallMessage(Vertical):
             if output.strip().startswith("{"):
                 return json.loads(output)
             return ast.literal_eval(output)
-        except (ValueError, SyntaxError, json.JSONDecodeError):
+        except ValueError, SyntaxError, json.JSONDecodeError:
             return None
 
     def _format_web_dict(self, data: dict, *, is_preview: bool) -> FormattedOutput:

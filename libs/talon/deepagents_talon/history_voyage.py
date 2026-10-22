@@ -2,12 +2,14 @@
 
 import asyncio
 import inspect
-from collections.abc import Generator
-from typing import Self
+from typing import TYPE_CHECKING, Self
 
 import voyageai
 from langchain_voyageai import VoyageAIEmbeddings
 from pydantic import model_validator
+
+if TYPE_CHECKING:
+    from collections.abc import Generator
 
 _MAX_BATCH_TOKENS = 120_000
 
@@ -43,7 +45,7 @@ class HistoryVoyageEmbeddings(VoyageAIEmbeddings):
                         await result
                     break
 
-    def _build_batches(self, texts: list[str]) -> Generator[tuple[list[str], int], None, None]:
+    def _build_batches(self, texts: list[str]) -> Generator[tuple[list[str], int]]:
         # Upstream's batching downloads tokenizers synchronously, even for async calls.
         batch: list[str] = []
         size = 0

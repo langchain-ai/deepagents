@@ -693,7 +693,7 @@ async def _request_json(
             content.extend(chunk)
     try:
         value = json.loads(content)
-    except (UnicodeDecodeError, json.JSONDecodeError):
+    except UnicodeDecodeError, json.JSONDecodeError:
         return None
     return value if isinstance(value, dict) else None
 

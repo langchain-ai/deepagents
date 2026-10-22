@@ -186,7 +186,7 @@ async def _open_text_stream(
     messages: list[BaseMessage],
     config: RunnableConfig,
     settings: Mapping[str, Any],
-) -> tuple[AsyncGenerator[AIMessageChunk, None], str]:
+) -> tuple[AsyncGenerator[AIMessageChunk], str]:
     """Open one attempt through its first visible fragment, closing failures.
 
     Returns:
@@ -194,7 +194,7 @@ async def _open_text_stream(
     """
     # BaseChatModel.astream is an async generator, annotated as an iterator.
     stream = cast(
-        "AsyncGenerator[AIMessageChunk, None]",
+        "AsyncGenerator[AIMessageChunk]",
         model.astream(messages, config=config, **settings),
     )
     try:

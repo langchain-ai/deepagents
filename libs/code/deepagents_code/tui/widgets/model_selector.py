@@ -1807,7 +1807,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                 return None
             try:
                 text = f"{format_token_count(int(val))} {suffix}"
-            except (ValueError, TypeError, OverflowError):
+            except ValueError, TypeError, OverflowError:
                 text = f"{val} {suffix}"
             return _mark(key, text)
 
@@ -1945,7 +1945,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         entry = self._profiles.get(spec)
         try:
             text = self._format_footer(entry, get_glyphs())
-        except (KeyError, ValueError, TypeError):  # Resilient footer rendering
+        except KeyError, ValueError, TypeError:  # Resilient footer rendering
             logger.warning("Failed to format footer for %s", spec, exc_info=True)
             text = Content.styled("Could not load profile details\n\n\n", "dim")
         footer.update(text)

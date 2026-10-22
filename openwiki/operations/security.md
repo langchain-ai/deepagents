@@ -1,163 +1,137 @@
 ---
 type: security operations guide
-title: Security Boundaries and Operational Safeguards
-description: Operational security boundaries for Deep Agents, dcode, Talon, MCP, sandboxes, and privileged GitHub automation. Explains where authority actually resides and how to operate approval and credential controls safely.
-tags: [security, operations, deepagents, filesystem, mcp, oauth, approvals, sandboxing, ci]
+title: Security Boundaries and Operational Safety
+description: Operational trust boundaries for privileged PR labeling and Deep Agents delegation, including untrusted repository input, remote child authority, approvals, credentials, and safe failure behavior.
+tags: [security, operations, ci, delegation, approvals, credentials, sandboxing]
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-10-22T08:05:54.651Z
 sources:
   - id: openwiki-source-f8781d847f6481a966a44a68
     resource: repo://.github/workflows/pr_labeler.yml
-  - id: openwiki-source-1728494bdd59604ce9b5f65b
-    resource: repo://libs/code/deepagents_code/_server_config.py
-  - id: openwiki-source-7f6b98925b5f1ba065df3a04
-    resource: repo://libs/code/deepagents_code/config.py
-  - id: openwiki-source-3b8cd1fe0dfb6ca543e059b2
-    resource: repo://libs/code/deepagents_code/extensions/runtime.py
-  - id: openwiki-source-bcf1f68e7989964d2fcec7aa
-    resource: repo://libs/code/deepagents_code/integrations/sandbox_factory.py
-  - id: openwiki-source-2e03fee957625ca21a1c21af
-    resource: repo://libs/code/deepagents_code/main.py
-  - id: openwiki-source-a97cce048cd7efd394ae7dca
-    resource: repo://libs/code/deepagents_code/mcp_auth.py
-  - id: openwiki-source-216ca680d81dc35eb4d3e76e
-    resource: repo://libs/code/deepagents_code/mcp_config.py
-  - id: openwiki-source-4a7b6def251b42596a410ebc
-    resource: repo://libs/code/deepagents_code/model_config.py
-  - id: openwiki-source-52062c280ae38e9e9acab191
-    resource: repo://libs/code/deepagents_code/thread_titles.py
-  - id: openwiki-source-030d8bd153a9c3ea2a99cb7d
-    resource: repo://libs/code/deepagents_code/workspace.py
-  - id: openwiki-source-53083c05d51a08d395327737
-    resource: repo://libs/code/tests/unit_tests/test_thread_titles.py
-  - id: openwiki-source-877b53371bf970f1b38a1809
-    resource: repo://libs/code/tests/unit_tests/test_workspace.py
-  - id: openwiki-source-f84c83d6fab6028c94be90bc
-    resource: repo://libs/deepagents/deepagents/backends/local_shell.py
-  - id: openwiki-source-0fc0e47059e4d07e23e50be2
-    resource: repo://libs/deepagents/deepagents/graph.py
-  - id: openwiki-source-0fb4155c19dd248acd3ffe4f
-    resource: repo://libs/deepagents/deepagents/middleware/_fs_interrupt.py
-  - id: openwiki-source-fed4b84a38685f37e58018c5
-    resource: repo://libs/deepagents/deepagents/middleware/filesystem.py
-  - id: openwiki-source-851e3a9c96663d8db5ca3dec
-    resource: repo://libs/deepagents/tests/unit_tests/test_permissions.py
-  - id: openwiki-source-6801a88de6305bc8cbdd259f
-    resource: repo://libs/talon/deepagents_talon/host.py
-  - id: openwiki-source-31e40ff79779f51cafd03f01
-    resource: repo://libs/talon/deepagents_talon/mcp_auth.py
-  - id: openwiki-source-111101dcd1462ff54277b1fc
-    resource: repo://libs/talon/deepagents_talon/mcp_config.py
-  - id: openwiki-source-a69daa62c9a3eb9a49f09bf9
-    resource: repo://libs/talon/tests/test_host.py
-  - id: openwiki-source-caa081bf22565f9bef5bc7d1
-    resource: repo://libs/talon/tests/unit_tests/test_oauth_transport.py
-  - id: openwiki-source-23775c3de52f3ab95a13cb8b
-    resource: repo://README.md
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-10-21T08:05:42.350Z
-generated: { by: "openwiki/0.4.2", at: "2026-10-21T08:05:42.350Z" }
+  - id: openwiki-source-e51c4102234507d1529a2440
+    resource: repo://libs/deepagents/deepagents/middleware/async_subagents.py
+  - id: openwiki-source-6ce85b02eabe462f99e0c912
+    resource: repo://libs/deepagents/tests/unit_tests/test_async_subagents.py
+generated: { by: "openwiki/0.4.2", at: "2026-10-22T08:05:54.651Z" }
 ---
 
-# Security Boundaries and Operational Safeguards
+# Security Boundaries and Operational Safety
 
-## Start with authority, not prompts
+Security controls in this repository are boundaries around authority, not instructions to a model. Deep Agents follows a trust-the-LLM model: an agent can use every capability its configured tools and backend make available. Treat prompts, repository text, tool results, MCP results, and child results as untrusted input; enforce confidentiality, integrity, execution, and egress limits with the tool policy, backend or sandbox, network policy, operating-system identity, and narrowly scoped credentials.
 
-Deep Agents uses a **trust-the-LLM** model: an agent can do whatever its configured tools and backend permit. Prompts, repository instructions, tool output, MCP responses, and model self-restraint are therefore not access controls. Put hard confidentiality, integrity, process, and egress limits in the operating-system identity, backend, sandbox, network policy, and credential scope.
+## Privileged PR labeling: data may be untrusted, code may not
+
+`PR Labeler` handles `opened`, `synchronize`, `reopened`, and `edited` through `pull_request_target`. That event has base-repository authority for fork pull requests, so the non-negotiable rule is: **checkout only the trusted base branch and execute only the base branch's labeling code**. The workflow then loads `.github/scripts/labeling/pr-labeler.js` and its configuration from that checkout. It must never checkout, require, run, or interpolate shell from a PR head in this job.
+
+PR titles, bodies, branch names, changed paths, patches, event fields, and authors remain input data for that trusted code. The job runs in the `labeling` environment with deployment disabled and needs `contents: read`, `pull-requests: write`, and `issues: write`; workflow-level permissions are only `contents: read`. Keep action pins immutable full SHAs, minimize secrets, and treat any change to the workflow or loaded labeling helper as a privileged-code change.
+
+```mermaid
+sequenceDiagram
+    participant Event as Pull request target event
+    participant Flow as PR Labeler workflow
+    participant Base as Trusted base checkout
+    participant API as GitHub API
+    participant App as GitHub App token
+    Event->>Flow: PR payload is untrusted data
+    Flow->>Base: checkout base branch only
+    Flow->>Base: load trusted helper and configuration
+    Flow->>API: read PR data and mutate labels
+    alt opened
+        Flow->>App: create and verify token
+        Flow->>API: check membership with App token
+        Flow->>API: apply external and tier labels
+    end
+```
+
+*`pull_request_target` authority is confined to code from the trusted base checkout; PR-controlled content is data passed to that code.*
+
+### Tokens, provenance, and failure behavior
+
+For an opened PR, the job generates and verifies a GitHub App token before using it to look up private organization membership. The helper classifies bots and active members as internal, a 404 as external, and rethrows other membership errors rather than silently guessing. External opened PRs receive contributor-tier and `org:external` labels through the App token; the workflow comments that this token is needed because events created by the default `GITHUB_TOKEN` do not trigger downstream workflows. That event-propagation behavior is **notification linkage**, not cross-deployment authorization: it does not grant a downstream workflow permission to trust PR code, remote agent input, or a child deployment.
+
+The labeler also chooses safe degradation for uncertain classification. Title-renaming API failure warns and continues with the original title. A failed topic comparison or classifier preserves a human-removed topic label rather than reapplying it. Membership failures other than 404 stop the classification step; they must not become an internal classification. Configuration loading fails if required groups are absent or malformed. These choices avoid converting an unavailable dependency into an assertion of trust.
+
+Concurrency separates non-cancelled `opened` work from cancellable update work for the same PR. This preserves opening-time provenance work while allowing a newer synchronization, reopen, or edit run to replace an obsolete update run. Keep label mutations in the unified workflow rather than adding another concurrent writer.
+
+## Delegation creates a new authority domain
+
+An async subagent is a remote Agent Protocol run, not a continuation of the parent process. `start_async_task` creates a remote thread and run, returns its thread ID immediately as `task_id`, and records that identity, current run, status, and timestamps in the parent `async_tasks` state. The parent owns this observation record; the remote graph owns its own tools, backend, credentials, network access, prompt, approval workflow, checkpointer, and policy. A child configured with a remote `url` may receive caller-provided headers, while managed deployments can obtain SDK authentication from environment variables. Treat both as credentials for the child deployment, not as implicit parent permissions.
 
 ```mermaid
 flowchart TD
-    Input["Prompt repository text MCP result"] --> Agent["Agent graph"]
-    Agent --> FSTool["Filesystem tool"]
-    Agent --> Shell["Shell backend"]
-    Agent --> MCP["MCP server"]
-    FSTool --> Rules{"Filesystem policy"}
-    Rules -->|"deny"| Refuse["Permission error"]
-    Rules -->|"interrupt"| Human["Authenticated human decision"]
-    Rules -->|"allow"| Backend["Configured backend"]
-    Human --> Backend
-    Shell --> Host["Host or sandbox identity"]
-    MCP --> Remote["MCP process or remote service"]
+    Parent["Parent agent state"] --> Start["start_async_task"]
+    Start --> Remote["Remote thread and run"]
+    Remote --> Child["Child tools credentials and approvals"]
+    Start --> Record["Parent async_tasks record"]
+    Child --> Outcome["Success error timeout or waiting"]
+    Outcome --> Observe["Check list poll or notification"]
+    Observe --> Record
+    Record --> Parent
 ```
 
-*Tool middleware can mediate a call, but the selected backend, process identity, credentials, and network ultimately determine authority.*
+*The parent tracks lifecycle state, while the child deployment remains responsible for execution authority and approval decisions.*
 
-This distinction prevents common category errors:
+The default async launch is isolated and sends only the delegated description. Experimental `mode="fork"` sends a snapshot of reconstructed conversation history, but it does not copy the parent's system prompt, tools, filesystem permissions, credentials, or HITL configuration. Forked text and media are therefore information flow, not authorization flow. Before forwarding, the middleware removes local artifacts and local eviction metadata, restores blob-backed tool content for the snapshot, and serializes portable messages. Design remote child prompts and retention policies on the assumption that forked content can contain untrusted user, repository, tool, or model text.
 
-- Filesystem permissions constrain built-in filesystem tools, not a direct backend call or a shell command.
-- Approval pauses a configured action; it is not a sandbox, credential vault, or policy enforcement point for unmediated actions.
-- A workspace binding prevents a reconnecting client from substituting server-selected policy; it does not make execution in that workspace safe.
-- Repository configuration is input. It needs an external trust decision before it can cause code execution, credential use, or network access.
+The middleware exposes `start_async_task`, `check_async_task`, `update_async_task`, `cancel_async_task`, and `list_async_tasks`. It validates configured agent names and duplicate names; a bad task ID or unknown type is an error without changing tracked state. Client instances are cached by URL and resolved headers. URL-less local ASGI transport requires an async parent entrypoint such as `ainvoke`; synchronous invocation requires a reachable URL.
 
-## Filesystem rules and execution are different boundaries
+### Lifecycle is not approval delegation
 
-`FilesystemPermission` applies ordered `allow`, `deny`, and `interrupt` decisions to the SDK's built-in filesystem tools. Rules use absolute, non-traversing patterns; the first matching leaf rule applies and an unmatched operation is allowed. For a restrictive policy, pair narrow allows with a later catch-all deny.
+A successful child run whose thread is interrupted is represented as `waiting`, not `success`: the child is paused for its own human's input or approval. The parent can inspect the pending interrupt and continue other work, but cannot answer or approve it. A remote child's filesystem rules and `interrupt_on` configuration must be installed in that child graph. Sharing a parent conversation, trace relationship, or task ID does not share approval authority.
 
-The middleware handles bulk operations defensively. It removes denied paths from bulk reads, evaluates requested paths and resolved symlink targets on filesystem backends, and filters aliases that resolve into denied trees. For deletion, a confirmed leaf follows first-match behavior, but recursive or potentially recursive deletion uses conservative all-or-nothing overlap checks so an applicable deny cannot be bypassed by deleting a parent directory. Interrupt rules become HITL predicates: exact and bulk tools are scoped differently, current-directory or missing bulk paths are treated conservatively, and `glob` cannot use an absolute or `..` pattern to redirect a search outside a reviewed path.
+`update_async_task` starts a new run on the same child thread. The default `interrupt` strategy replaces active work; if the child is waiting, it drops the human request rather than resolving it. The `enqueue` strategy queues behind current work and can report `pending`; it retains earlier run IDs so an earlier completion cannot be mistaken for the latest request. Only one queued update per task is accepted per model turn, preventing parallel calls from losing tracking. If earlier work pauses for a human, a queued follow-up still starts and the pause is dropped. Cancellation marks a waiting task cancelled without cancelling a completed paused run; otherwise it cancels the latest run and attempts earlier pending or running queued runs newest-first.
 
-A nonempty filesystem-permission policy is rejected on an execution-capable backend because `execute` is outside that middleware's enforcement. The limited `CompositeBackend` route-prefix exception protects routed file operations only; it does not contain the default executable route. Subagents can replace inherited permissions, and remote async subagents need their own approval policy.
+```mermaid
+stateDiagram-v2
+    [*] --> running: launch
+    running --> success: completed
+    running --> error: failed
+    running --> timeout: timed out
+    running --> waiting: child needs its human
+    running --> pending: queued update
+    pending --> running: queued run starts
+    waiting --> running: child human resumes
+    running --> cancelled: cancel
+    pending --> cancelled: cancel
+    waiting --> cancelled: record cancellation
+```
 
-### Local shell is host authority
+*`waiting` belongs to the child thread's human workflow; an update or cancellation is lifecycle management, not a parent approval.*
 
-`LocalShellBackend` deliberately runs `subprocess.run(..., shell=True)` on the host. Its working directory, virtual filesystem mode, timeout, output truncation, and optional environment shaping do not sandbox a command: it can access arbitrary paths, start processes, connect to the network, and act with the launching user's permissions. In particular, `virtual_mode=True` does not restrict `execute()`.
+On asynchronous execution, status pulls occur at agent start, before model calls, and after a final answer. Checks are time-bounded; failed observation is logged and skipped until later, rather than inventing a terminal outcome. `list_async_tasks` filters cached state before refreshing selected nonterminal work and retains cached status on refresh failure. Completion notifications mark child text as a system notification, escape text that could close its framing tags, clip long results, and keep only text and supported media blocks; reasoning and tool-call blocks are excluded. A notification from a superseded run is rewritten so it cannot be treated as the latest result.
 
-Use it only for suitably trusted local development. For untrusted inputs, shared services, or production, select an isolated sandbox/backend and an identity with no ambient secrets. HITL is useful defense in depth, but a user approval cannot undo a command's inherited authority.
+Same-deployment children may wake an idle or errored parent only when their launch reference contains both parent thread and assistant identity; a reject-on-conflict strategy avoids replacing a newly busy parent run. A parent waiting for a human is not awakened because that could cancel its approval. A remote child, or one with `notify_parent=False`, keeps at most parent-thread provenance and cannot wake the parent. A `webhook` is an Agent Server callback to the configured application endpoint, not an authorization channel and not a replacement for durable parent-side checking. Set `notify_parent=False` when the application owns delivery, and authenticate, authorize, and replay-protect that webhook endpoint independently.
 
-## Sandboxes are provider boundaries with trusted setup
+## Filesystem permissions and HITL are mediated controls
 
-dcode creates or attaches to a selected sandbox through its registry. A fresh sandbox is normally cleaned up when the context exits; an attached `sandbox_id` is not treated as owned. Snapshot use is validated against provider capability and cannot be combined with attaching an existing sandbox.
+`FilesystemPermission` applies ordered `allow`, `deny`, and `interrupt` rules to built-in filesystem tools. Absolute non-traversing patterns are required; the first matching leaf rule wins and no matching rule allows the call. Direct backend access is outside this policy. Denied paths are removed from bulk read results, and recursive or potentially recursive deletion uses conservative all-or-nothing overlap checks so an allowed parent cannot delete a denied descendant. On `FilesystemBackend` and routed filesystem paths, both the requested path and a symlink-resolved target are checked; resolution failures deny or produce errors, and listings filter aliases into denied trees.
 
-Sandbox setup is itself executable authority: dcode reads the specified script, expands it against the workspace environment, and executes it with `bash -c` inside the sandbox. Treat setup scripts and provider parameters as trusted deployment inputs, not repository conveniences. A sandbox only supplies the isolation its provider and its configured credentials, mounts, and egress controls actually provide; it does not sanitize model instructions or make a broad provider identity least-privileged.
+Interrupt rules become HITL predicates, with separate exact and bulk scopes. Missing or current-directory bulk paths are treated conservatively, symlink targets are checked where a backend is available, and `glob` patterns cannot redirect a reviewed path outside its scope without review. Approval controls that particular mediated graph call; it is neither a sandbox nor a credential grant.
 
-## Project extensions are code execution
+A nonempty filesystem permission policy is rejected for an execution-capable backend because `execute` has no equivalent permission enforcement, except when every rule is scoped to a `CompositeBackend` route prefix. `LocalShellBackend` executes with `shell=True` under the launching user's host authority; virtual filesystem mode changes filesystem methods but does not restrict command execution. Use an isolated execution backend, least-privileged identity, restricted mounts and egress, and credentials unavailable to the shell whenever untrusted input can influence commands.
 
-Python extensions are experimental and disabled unless the experimental flag and extension setting allow them. User, installed-plugin, configured, and explicit CLI extension sources are already user-authorized under this model. Project `.deepagents/extensions/` is different: dcode loads it only after an explicit per-run grant, an `always` trust policy, or a persisted trust record for that project; interactive startup explains that it runs arbitrary Python and offers once, remember, or skip.
+## Repository configuration, extensions, and sandbox setup
 
-Trust is workspace-specific. When server configuration is resolved for another project, dcode drops launch-project MCP and sandbox-setup policy and does not carry explicit extension paths across; it re-reads only that target project's stored extension trust. A later grant is not silently applied to an already bound thread that was created without it. Operators should review extensions as local code, use a separate profile for experiments, and revoke project trust when changing ownership or switching clones.
+A checkout is input, not a trust source. Deep Agents Code blocks high-risk process-execution variables from project dotenv files and prevents them from injecting MCP trust, auto-review, subagent, or recursion controls. If trusted global dotenv configuration cannot be read, project dotenv loading is skipped rather than assumed enabled.
 
-## Treat dotenv and MCP definitions as untrusted project input
+Project MCP server trust is resolved from managed or user configuration and selected process environment, not repository files. Approvals bind a definition fingerprint to a repository or worktree as appropriate; denies accumulate, and malformed trust configuration is surfaced for fail-closed handling. MCP interpolation accepts only supported braced environment references in command, URL, arguments, environment, headers, and OAuth fields, rejecting malformed references and missing required values. Syntax validation does not reduce the authority of an approved command or remote service.
 
-dcode blocks high-risk process-execution variables from dotenv layers and prevents project dotenv from setting MCP trust, Auto-review, subagent, and recursion controls. The project dotenv gate comes from trusted global configuration; if that cannot be read, project dotenv loading is skipped. Keep secrets and policy decisions in the launch environment, managed/user configuration, or a secret-injection system—not in a checkout.
+Project Python extensions execute only when experimental extensions are enabled and trust comes from an explicit run grant, always-trust policy, or stored trust. Switching projects deliberately drops launch-project MCP, sandbox-setup, and explicit extension-path policy instead of carrying it forward. A configured sandbox setup script is trusted deployment input: the sandbox factory validates provider snapshot capability and executes the configured script after expansion in the workspace environment. It cleans up sandboxes it created, not attached sandboxes.
 
-A project `.mcp.json` can name a local command or remote endpoint and interpolate environment values. Its trust lists are consequently loaded only from managed/user configuration and selected process environment, never from repository configuration. Server approvals bind a definition fingerprint to a repository or worktree as appropriate; changed definitions and changed workspaces require fresh approval, denies accumulate, and malformed trust configuration is surfaced for fail-closed handling. The dangerous project-MCP environment option is an intentional process-level bypass, never a repository setting.
+## Credentials, persistence, and secondary processing
 
-`resolve_mcp_server_env` expands only braced `${VAR}` and `${VAR:-default}` syntax in supported command, URL, argument, environment, header, and OAuth fields. It rejects malformed references and unset required values rather than passing ambiguous text through. This validates interpolation syntax and types; approving a stdio server still authorizes its command and environment, while approving a remote server authorizes its connection and request data.
+MCP OAuth state is secret-bearing JSON. Deep Agents Code uses safe server-derived paths, in-process mutation locks, atomic replacement, and owner-only permission hardening where supported, but operators must still protect the profile/state location. Talon uses analogous derived credential storage and preserves a refresh token omitted in a refresh response, but warns that workspace placement and file permissions do not provide confidentiality against its default shell backend. Talon OAuth metadata fetching accepts safe public HTTPS endpoints through an HTTPS-only, proxy-ignoring, redirect-disabled SSRF-safe transport with bounded DNS/HTTP work and a 64 KiB JSON limit; it rejects mixed public/private DNS resolution.
 
-## OAuth tokens: protected files, not a vault
+In server mode, dcode binds each thread to a canonical server-resolved workspace and policy in SQLite. Later runs reject unbound, substituted, fingerprint-mismatched, unsupported-schema, or identity-changed context; persisted workspace policy intentionally excludes secret model credentials and prompts. Thread-title generation similarly treats conversation content as untrusted: it uses bounded visible human/AI content, excludes system/internal/control and user-shell messages, makes a tool-free, callback-free secondary call with a timeout, and normalizes output.
 
-Deep Agents Code stores MCP OAuth state in profile state under `mcp-tokens`. Safe server-name validation and URL/client identity hashing prevent path traversal and separate same-named servers at distinct endpoints. The JSON envelope can contain access and refresh tokens, expiry, OAuth metadata, and client registration, so it is secret material and must not be logged, committed, or placed on a shared volume.
+## Operational checklist and focused tests
 
-Mutations take an in-process per-path lock, create a private directory where supported, write a `0600` temporary file, atomically replace the destination, and harden the resulting file. This protects complete-file publication and same-process updates, not a different process or principal that can read the account's files. Corrupt, non-object, or unsupported-version files fail with instructions to remove the file and log in again. Token representations may expose bearer values, so errors and logs must report structural facts rather than token objects.
+1. **Protect CI privilege.** Preserve the base-only checkout invariant in every `pull_request_target` job. Pass PR-controlled values only as data to trusted code; do not execute PR paths, actions, or shell fragments alongside secrets or write tokens.
+2. **Install controls where execution occurs.** Configure each remote child graph's tools, filesystem policy, sandbox, network, credentials, and HITL independently. Do not infer authorization from a parent link, notification, webhook, or forked context.
+3. **Fail safe under uncertainty.** Stop privileged membership classification on unexpected API failure; retain human removals; report unavailable child status as cached/unknown rather than completed; make application callbacks independently authenticated.
+4. **Use durable task observation.** Test launch, check, waiting, resume, interrupt and enqueue updates, cancellation of latest and superseded work, polling timeout/failure, notification escaping, and webhook ownership separately.
+5. **Treat local execution and configuration as code.** Keep project dotenv, MCP definitions, extensions, and sandbox setup from self-authorizing. Keep secrets out of repository and shell-visible environments.
+6. **Run focused regression tests.** `python .github/scripts/tests/labeling/test_pr_labeler.py` exercises labeler contracts. `libs/deepagents/tests/unit_tests/test_async_subagents.py` covers task validation, isolated/fork payloads, status lifecycle, waiting, updates, cancellation, and notification behavior.
 
-Talon applies the same operational principle to its credential file and additionally guards OAuth discovery: its transport accepts safe public HTTPS endpoints, ignores proxy environment settings, disables redirects, bounds DNS/HTTP work and JSON response size, and rejects mixed public/private DNS resolution. These controls reduce SSRF exposure for OAuth metadata; they do not make an approved MCP service trustworthy or reduce an OAuth grant's scope.
-
-## Workspace binding and secondary-model input handling
-
-In server mode, dcode binds a thread to a canonical server-resolved workspace and policy in SQLite. Later runs reject unbound, substituted, incompatible, unsupported-schema, or identity-changed contexts. Policy fingerprints detect durable policy drift, while persisted workspace policy deliberately excludes model credentials and prompts. Protect the SQLite database and deployment tenancy separately.
-
-Untrusted repository text, shell output, MCP results, and conversations can still influence a model. The thread-title generator limits its secondary call to bounded visible human/AI content, excludes system/internal/control and user-shell messages, disables callbacks, uses a tool-free model, times out, and normalizes output. Apply the same pattern to new summarizers and classifiers: explicit data allowlist, size limit, no tools/callbacks, bounded runtime, validated output, and no-secret assumption.
-
-## Talon channels and approvals
-
-Talon is a long-running host around channel adapters, an agent runtime, and optionally a scheduler. It serializes each conversation, replaces an active turn only after cancellation handling, and starts/stops channels and scheduler around the agent lifecycle. Treat inbound chat, thread history, media, reactions, and authorization callbacks as untrusted input to the agent rather than as operator instructions.
-
-A pending tool approval is bound to the agent conversation, originating channel conversation, and initiating sender. A textual `approve` or `deny` from another sender is rejected and re-prompts; valid replies resolve the pending future. Reaction approvals additionally require a matching provider, conversation, prompt message, and authorized sender before they are accepted. The host audits matched or ignored reactions without logging raw identifiers unless the explicit diagnostic environment switch is enabled.
-
-Channel exposure configuration is part of the security perimeter. Operator-only commands such as model selection require a configured operator identity (with the self-channel exception), while sender pairing and revocation can cancel the revoked sender's active work and pause jobs they created. Configure channel allowlists/pairing before enabling powerful tools, protect operator accounts, and regard channel approval as a human decision layer rather than a replacement for sandboxing.
-
-## Privileged GitHub automation: `pull_request_target`
-
-The PR labeler runs on `pull_request_target`, so it can label fork PRs with base-repository permissions and, for an opened PR, obtain a GitHub App token to check private organization membership. Its security invariant is explicit: it checks out the **base branch**, then loads the base branch's labeling script. It must never check out or execute the PR head in this privileged context.
-
-The job requests only read contents plus pull-request/issue write permissions, uses the App token only where membership checks or downstream event propagation require it, and otherwise uses `GITHUB_TOKEN` for labeling. Secrets supplied to topic classification are another boundary: do not add PR-controlled code, actions, paths, or shell interpolation to a job that receives them. Preserve pinned action SHAs and review changes to this workflow as privileged-code changes.
-
-## Operational checklist
-
-1. **Choose hard boundaries first.** Use sandbox isolation, least-privileged OS/service identities, read-only mounts, restricted egress, and narrowly scoped credentials.
-2. **Keep mediation honest.** Test filesystem order, symlinks, bulk filtering, recursive-delete overlap, glob redirection, approval/edit/reject paths, and direct-shell bypass assumptions.
-3. **Treat repositories as hostile.** Do not permit project dotenv, MCP, extension, hook, or sandbox-setup content to grant itself trust.
-4. **Operate credentials as secrets.** Monitor permission-hardening warnings, avoid token logging, test corruption recovery and endpoint separation, and protect profile/state directories.
-5. **Secure human channels.** Authenticate operators, configure exposure and sender pairing, test mismatched text/reaction approvals, and plan revocation/cancellation behavior.
-6. **Protect CI privilege.** In every `pull_request_target` job, execute only trusted base-repository code and minimize permissions, tokens, secrets, and write operations.
-7. **Test injection boundaries.** Include adversarial repository text, tool output, shell output, MCP responses, channel messages, and extension/setup files in focused tests.
-
-See [permissions and HITL](/openwiki/concepts/permissions-hitl.md), [filesystem tools](/openwiki/concepts/tools-filesystem.md), [MCP](/openwiki/integrations/mcp.md), [sandbox partners](/openwiki/integrations/sandbox-partners.md), and [CI labeling](/openwiki/operations/ci-labeling.md) for adjacent guidance.
+See [CI labeling](/openwiki/operations/ci-labeling.md), [permissions and HITL](/openwiki/concepts/permissions-hitl.md), [subagents and skills](/openwiki/concepts/subagents-skills.md), and [runtime behavior](/openwiki/architecture/runtime-behavior.md).

@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:f691145fb26ccbed739642713fdfc20c54e8f26002167c7787f365c44b71161b",
+  "pageVersion": "sha256:d3a5ab1f5ef7a3b1afd19f56e22763e28f665a54087e2fdca03ca4d764f33e73",
   "claims": [
     {
       "id": "claim_10c098882c8a4f6ca2ae373df529e738",
@@ -40,7 +40,7 @@
       "evidence": [
         {
           "resource": "repo://.github/workflows/pr_labeler.yml#L28-L57",
-          "version": "repo-lines-v1:sha256:b3ab35af1a803d24e97386c8bc68fdac291457f4009ddd51bbfd94f1cfd8eee3:eyJzZWxlY3RlZExpbmVDb3VudCI6MzAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImM3Y2E2NmNmM2FlZWQzNmQ1MDk5ZDgxNzJiNTkxMmUxZGZmYzI5YWRiOTk4MTU5MTBkNzQ2MDYxOTNjZGFiMjYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjEzZDRmZGEzNDc1NDk2ODZkYTEwODkzOTc4YzczNTk2ZjI2YzZmM2QzMjQ2NjIyZGRkNDcwMTY1MzIyYjUzMTYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImMyNzczZjVlY2Q0YmM3ODU2NjU0Y2JkMDJlZTVkMDIxOGMzMjFlZjNlMTRiOWNmY2Q2OWM0NDM4MDI0NzhjOTIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImFjMGNiZDBjODUyOWU3MTUwNzQxNzVmNWYxMTZlODhlOGEwZGEyMTc0ZDhlMDllZWRhY2FlMjUyN2VkYmE0YjkifQ"
+          "version": "repo-lines-v1:sha256:b47985aace495955c8ada58a616533181d5e76302871d6769823582a1578ee94:eyJzZWxlY3RlZExpbmVDb3VudCI6MzIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImM3Y2E2NmNmM2FlZWQzNmQ1MDk5ZDgxNzJiNTkxMmUxZGZmYzI5YWRiOTk4MTU5MTBkNzQ2MDYxOTNjZGFiMjYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjEzZDRmZGEzNDc1NDk2ODZkYTEwODkzOTc4YzczNTk2ZjI2YzZmM2QzMjQ2NjIyZGRkNDcwMTY1MzIyYjUzMTYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImMyNzczZjVlY2Q0YmM3ODU2NjU0Y2JkMDJlZTVkMDIxOGMzMjFlZjNlMTRiOWNmY2Q2OWM0NDM4MDI0NzhjOTIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImFjMGNiZDBjODUyOWU3MTUwNzQxNzVmNWYxMTZlODhlOGEwZGEyMTc0ZDhlMDllZWRhY2FlMjUyN2VkYmE0YjkifQ"
         }
       ]
     },
@@ -187,10 +187,46 @@
           "version": "repo-lines-v1:sha256:f0d06b15eea502ecef9bec7bf6eb183c38e183ba2691b8d5e7f2ba25f89d0f01:eyJzZWxlY3RlZExpbmVDb3VudCI6ODMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM0YjM5Yjg0NjczOTkzMDMzMmYxNzY2NjA1NDRmZmJlYzYyNTk3YzJmYzhiNGRjNWNkOTM1ZDA4NjM5Y2JjNWUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM0YjM5Yjg0NjczOTkzMDMzMmYxNzY2NjA1NDRmZmJlYzYyNTk3YzJmYzhiNGRjNWNkOTM1ZDA4NjM5Y2JjNWUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjBmZGYyYmM0MjUwOGEzNzA4ZTczMTYxN2YyMzEwYTU3ZjNmZDk3Y2RlNGJhNDNhNDZkMmRjOTkyNmU5NzlmYWMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjhmNDJhNWE2MjExNTQ4ZTZlMTQyYWU4MWJkMzg5NGQ5MjRmNmNjOTQyNTRmYzNhN2UwMWQ4ODM5ZWMxMTIyOGUifQ"
         }
       ]
+    },
+    {
+      "id": "claim_d075ceb97b3f4fd1a2c02a2200003133",
+      "statement": "For a trusted release-bot changelog-only curated-notes apply, `ci.yml` carries a conclusive parent CI Success result into the head gate: a parent success permits the skip, a parent failure keeps CI Success failed, and unavailable or nonconclusive parent lookup runs normal package jobs.",
+      "evidence": [
+        {
+          "resource": "repo://.github/scripts/tests/workflows/test_inherited_ci_diagnostics.py#L164-L260",
+          "version": "repo-lines-v1:sha256:294e570529324b867aadf07d3e29b55d7ee3f08ec87f58305e2a84d124369a1d:eyJzZWxlY3RlZExpbmVDb3VudCI6OTcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFmMzQ1ODNhNTk4NzY3YmY1NmFlZmViNjVlMjAzM2ExNjUxY2M0YzhkN2U2ZjBhZjNlNWNmZDMyOTNmOTMzYjMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBiMzhiNTcwMTVkODRiYjQ3MmFjYjAzMDRmYzhlZGEyYzZmNzg3NzZiN2FhMDVlYWU0OTg2NmVhOGVlOTU2MmEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjBjYzgxNDMzYzM2NzdjNTMwNjI3Mjg3NWQ4NjI2ZDIwYmFmZjFlYTFjMjYwZDdkMGE3NzgzMmNmMGNjMzYxZjciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImNmYjVhMjZjMGEyMDNiZjhlMzdkMTY5Yjg2MTk2N2QxY2VhOTU3ZmU1ODk4ODdkMmU5OWE5MTU4MmJlNjBiNmIifQ"
+        },
+        {
+          "resource": "repo://.github/workflows/ci.yml#L78-L137",
+          "version": "repo-lines-v1:sha256:d633e8523bd6d94a7df228a29c617718bbbc8c34c861ae1c2cbaa9fd92555b41:eyJzZWxlY3RlZExpbmVDb3VudCI6NjAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjY3YjMzZjQ5ZGM0MDk4NDA3YzdjZDgwYzEyMTNkNjg0OTJlN2VhYzIzODkwZWNkOWFhZWVmM2ZiODA3MzE2YTUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU3ZWUzMjI4NDA0YWU0MTY0NTIyMzhiYzIwYTRkNmEwMzk4ZTMxOTBmYmY4MWJlYWU1MGMxMGQxOWZkMDkwZGQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjM2MGFkNjRhNzc2N2YyNmFjNDRhMjcxNzgwN2E4NjAzYzQ5ZmQxZTAwMDE1MWZhYzgzYjk1OWE4MDBlYjAzNzEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImZmYjUwY2U5ZDVlZTE4Njg3YmQzMjBmYTJjNjU1OTQ4NzcyZTM0Y2RjYjA0YmZjZDRkMzkzNTVjMWUzOGZiZGMifQ"
+        },
+        {
+          "resource": "repo://.github/workflows/ci.yml#L841-L865",
+          "version": "repo-lines-v1:sha256:0a1f1be8044ff7a683170ea1efe4ffd6e792540c36defe111d322a51ad783fa8:eyJzZWxlY3RlZExpbmVDb3VudCI6MjUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjlhYzQ3OGEyMjE0NTJiNzAyZWRiOTZjNjRlNmEwMjQ3YTljZmZjYThhMzU4ZDdlNWM4ZWQyZjBhODBkODI4MWMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjhjZmM2YWYxNzhlNTVjNjZhODhhMGY5NDg0OGMwNzNmYWYyYjMwZDc0OWRmNGRkNzlmOWNhZDA4YzVhMmFkMzgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjAxZTNiNTgwYTljMTlkZjA0YTMwNzQxYmY4OGI2ZmVkZTgzYzYxOWI2NDA1NmEzMWFjNmNiNzExOGYzNmRhZjEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjJjN2Q2OGM1MTI3ZTQ2Y2ZlYzNhNDU2NmUwMTg1NTIxZjdlYWVkYzFmNGE4OGU0YTNmY2FlOTk5YjBhZjIxYWMifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_05a6dcf3e96440c584b2b5cb4ad2c158",
+      "statement": "When a curated-notes apply inherits failed CI, a continue-on-error diagnostic reports sanitized same-repository parent check information and retry guidance, but cannot replace the CI Success gate or require write permissions.",
+      "evidence": [
+        {
+          "resource": "repo://.github/scripts/tests/workflows/test_inherited_ci_diagnostics.py#L263-L282",
+          "version": "repo-lines-v1:sha256:25f6b07e9d1fc64e6e8a9bfeda7ccf64b2455d72639859c43979bdb3eaea91df:eyJzZWxlY3RlZExpbmVDb3VudCI6MjAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ0MmRmMGVjOGRmZGJlOTYzOGJlMWVkOTVlNTNiNmVjNjU1MzJjMmU5NmUwMmM0YjRmMGQ3MDQyNTM4OWQ1MzgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU5MDlhNTNhNjE4ZDAyOGUxZDMwMDBjMGE3YWJjZWVjYmU1ZmIzN2Y0ZTUxMWVmZTQ2NjQzZmFkNmU2Njg3MmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjJhMWQzMmRkMWU4YzE2MTBjODE1NzliM2I0Y2YxNmQ4ZWYxNDNlZmQ3NWFkYzlkY2RmOTU3MmNmNjZhMmE3MjIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        },
+        {
+          "resource": "repo://.github/scripts/tests/workflows/test_inherited_ci_diagnostics.py#L73-L161",
+          "version": "repo-lines-v1:sha256:4ab3d474508e6e1ea37a37f9676672078d051d2c512669ce89e1ff102cc37ab3:eyJzZWxlY3RlZExpbmVDb3VudCI6ODksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE2NmUyOWQxNjY1ZTQyOWE4YTljYmQzMTVlNzAyY2ZjOTA5OGM1YjZlMDVhZDYwMDlhYjQzMDM2MTRhNWNmMGUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBjYjA0YTdiNTI5ZTg0MTRhYWZkNTNlNmIzN2U4MjM0ZTc3N2I2YmRhNjgyM2Y5ZTRjYjA5OThmZmQ3NmI2YTciLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijk2ZGIwN2Q0YWY3MDU5Y2YwYjk1N2IzZjllMDYzOTAwZWE5M2QxOTRiZDI1NDAxZjVkZTE4MzE1NDZlYmJjZjAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjU2ODBiMGYyOTI4YWMwZGJmM2RkNGEzMWQ1YzE2ZTkxOThhMjlhNjA4NmQzOWNmYjU3YzIwZjYwYmUzM2E2NWQifQ"
+        },
+        {
+          "resource": "repo://.github/workflows/ci.yml#L775-L839",
+          "version": "repo-lines-v1:sha256:0bc794b56f1e8e87656d06c7d0bd8b28af751ef485255f7c0490de101cd91683:eyJzZWxlY3RlZExpbmVDb3VudCI6NjUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImVjZTQ5ZjYxOGQ4YjFhM2VjODMzNGU0MjMxMDQxZTI2MDJhNTU2ZjE4ZDliOTFkODM5M2ZmNjBlZjQzMWVhMzkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjlmYzIyNjMzNjAzNjEzMjY0NmMyYThjMzYyZjE3ZWRkYTBlZDkyMWViMzAzNmYyYjg5YzdlM2YxY2Q0NDU3MDIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImU5ZjIxMGI2N2I2MmY3ZmQ1OWQ1MGQ2YzFiMTRlMjdhZDcwZDJkN2M4ZmM4MDhhYjNiMGJiZDU0YjZmOWM5ZmUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjZmOTk1MTEyZjVjN2VlZjQ0MjA2NTlmYTg4MjVmNzNmMTk1Y2NlNjUyMzI5ZjBjYzdiYmIxYmRmZWVjOGI0MTgifQ"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-10-21T08:05:42.350Z"
+    "at": "2026-10-22T08:05:54.651Z"
   }
 }

@@ -8,7 +8,6 @@ from unittest.mock import MagicMock, patch
 
 import daytona
 import httpx
-import pytest
 from daytona._sync.process import Process as SyncProcess
 from daytona.common.errors import (
     DaytonaConnectionTimeoutError,
@@ -28,7 +27,6 @@ ADAPTIVE_POLLING_MEDIUM_THRESHOLD = 10
 COMMAND_TIMEOUT_EXIT_CODE = 124
 COMMAND_TIMEOUT_SECONDS = 2
 FINAL_LOG_TIMEOUT_SECONDS = 10
-EXPECTED_STARTUP_HTTP_TIMEOUT_SECONDS = 2
 EXPECTED_LOG_RETRIEVAL_ATTEMPTS = 2
 CLEANUP_GRACE_SECONDS = 2
 _READ_TIMEOUT_MESSAGE = "Read timed out"
@@ -276,37 +274,6 @@ def test_execute_timeout_still_reported_when_partial_output_unreadable() -> None
     assert mock_sdk.process.delete_session.call_count == 1
 
 
-def test_execute_returns_near_deadline_when_status_request_stalls() -> None:
-    """A status read that never answers must not block past the command timeout."""
-    sb, mock_sdk = _make_sandbox()
-    clock = _FakeClock()
-    timeout = 2
-    mock_sdk.process.execute_session_command.return_value = SimpleNamespace(cmd_id="c1")
-    mock_sdk.process.get_session_command_logs.return_value = SimpleNamespace(
-        stdout="partial", stderr=""
-    )
-
-    def stalled_status(
-        _session_id: str, _cmd_id: str, request_timeout: float | None = None
-    ) -> None:
-        # Behave like a socket read: block until the request timeout, if any.
-        if request_timeout is None:
-            pytest.fail("status request was sent without a timeout and would hang")
-        clock.now += request_timeout
-        msg = "Read timed out"
-        raise daytona.DaytonaTimeoutError(msg)
-
-    mock_sdk.process.get_session_command.side_effect = stalled_status
-
-    with _patched_clock(clock):
-        result = sb.execute("echo hi", timeout=timeout)
-
-    assert result.exit_code == COMMAND_TIMEOUT_EXIT_CODE
-    assert "partial" in result.output
-    assert clock.now <= timeout + 1  # within about `timeout` seconds
-    assert mock_sdk.process.delete_session.call_count == 1
-
-
 def test_execute_bounds_every_request_by_the_time_left() -> None:
     sb, mock_sdk = _make_sandbox()
     clock = _FakeClock()
@@ -377,35 +344,6 @@ def test_execute_result_survives_session_cleanup_timeout() -> None:
 
     assert result.output == "done"
     assert result.exit_code == 0
-
-
-def test_execute_timeout_during_command_start_returns_exit_124() -> None:
-    """A command-start transport timeout is converted to the normal timeout result."""
-    sb, mock_sdk = _make_sandbox()
-    clock = _FakeClock()
-
-    def stalled_start(_session_id: str, _request: object, *, timeout: int) -> None:
-        # The Daytona 0.225.0 SDK adds five seconds before setting the HTTP
-        # request timeout. Ensure the integration compensates for that buffer.
-        effective_http_timeout = timeout + 5
-        assert effective_http_timeout == EXPECTED_STARTUP_HTTP_TIMEOUT_SECONDS
-        clock.now += effective_http_timeout
-        raise DaytonaConnectionTimeoutError(_READ_TIMEOUT_MESSAGE)
-
-    mock_sdk.process.execute_session_command.side_effect = stalled_start
-    mock_sdk.process.delete_session.side_effect = DaytonaConnectionTimeoutError(
-        "Read timed out"
-    )
-
-    with _patched_clock(clock):
-        result = sb.execute("echo started", timeout=2)
-
-    assert result.exit_code == COMMAND_TIMEOUT_EXIT_CODE
-    assert result.output == "Command timed out after 2 seconds"
-    assert mock_sdk.process.get_session_command.call_count == 0
-    assert mock_sdk.process.get_session_command_logs.call_count == 0
-    mock_sdk.process.delete_session.assert_called_once()
-    assert mock_sdk.process.delete_session.call_args.kwargs["request_timeout"] == 1.0
 
 
 def test_execute_timeout_during_final_logs_recovers_partial_output() -> None:

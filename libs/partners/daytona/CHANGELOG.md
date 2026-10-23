@@ -4,10 +4,9 @@
 
 ## [0.0.9](https://github.com/langchain-ai/deepagents/compare/langchain-daytona==0.0.8...langchain-daytona==0.0.9) (2026-10-23)
 
-
 ### Bug Fixes
 
-* **daytona:** apply request timeouts and keep partial output on timeout ([#7121](https://github.com/langchain-ai/deepagents/issues/7121)) ([10c02fe](https://github.com/langchain-ai/deepagents/commit/10c02fe01678b976eb2ce6a73e17820215700955))
+- Apply request timeouts and preserve partial output when a timeout occurs ([#7121](https://github.com/langchain-ai/deepagents/pull/7121)).
 
 ## [0.0.8](https://github.com/langchain-ai/deepagents/compare/langchain-daytona==0.0.7...langchain-daytona==0.0.8) (2026-07-29)
 

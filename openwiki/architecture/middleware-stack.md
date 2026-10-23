@@ -1,8 +1,11 @@
 ---
 type: architecture pattern
-title: Middleware Assembly and Extension Boundaries
-description: Explains how Deep Agents assembles, customizes, filters, and compiles middleware for main agents and subagents. Covers prompt and tool-surface composition, profile effects, permissions, and ownership boundaries.
+title: SDK Middleware Assembly
+description: Documents the exact middleware composition, replacement, exclusion, and tail-safeguard rules used when the Deep Agents SDK compiles main, declarative, forked, and general-purpose agents.
 tags: [middleware, deepagents, agent-construction, harness-profile, subagents, tool-surface]
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-10-23T08:06:06.503Z
 sources:
   - id: openwiki-source-b93533cac55718d75277d1cf
     resource: repo://libs/deepagents/deepagents/_excluded_middleware.py
@@ -14,6 +17,8 @@ sources:
     resource: repo://libs/deepagents/deepagents/middleware/_tool_exclusion.py
   - id: openwiki-source-114a1c7a58992fa867a94ef0
     resource: repo://libs/deepagents/deepagents/middleware/subagents.py
+  - id: openwiki-source-f763e99e439a1356866a7aa4
+    resource: repo://libs/deepagents/deepagents/middleware/summarization.py
   - id: openwiki-source-837c84a3f3120bc778033547
     resource: repo://libs/deepagents/deepagents/middleware/unsupported_content.py
   - id: openwiki-source-59612eea63cbfafbd628feda
@@ -22,13 +27,10 @@ sources:
     resource: repo://libs/deepagents/tests/unit_tests/middleware/test_skill_tools_payload.py
   - id: openwiki-source-851e3a9c96663d8db5ca3dec
     resource: repo://libs/deepagents/tests/unit_tests/test_permissions.py
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-10-21T08:05:42.350Z
-generated: { by: "openwiki/0.4.2", at: "2026-10-21T08:05:42.350Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-10-23T08:06:06.503Z" }
 ---
 
-# Middleware Assembly and Extension Boundaries
+# SDK Middleware Assembly
 
 `create_deep_agent()` resolves the model and its `HarnessProfile`, assembles middleware and subagent specifications, then gives the main list to LangChain `create_agent()`. Middleware is therefore the request-time extension surface: it can intercept each model request, change request messages or tools, inject prompt context, and own typed state. A callable in `tools=` runs only after the model selects it; it is additive to built-ins and cannot alter that model request.
 

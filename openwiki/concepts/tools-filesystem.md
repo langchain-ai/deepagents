@@ -1,9 +1,25 @@
 ---
 type: architecture concept
-title: Tool Surface and Filesystem Policy
-description: FilesystemMiddleware exposes backend-backed file tools while separately applying model-surface filtering, filesystem policy, human approval, and content lifecycle controls. Composite routing remaps file paths across backends, whereas execution remains attached to the composite default backend.
+title: Tools and Filesystem Policy
+description: Deep Agents and dcode compose built-in filesystem, caller, MCP, managed helper, and shell tools into an agent-specific surface. Filesystem policy, backend capabilities, trust gates, and runtime enforcement remain separate concerns.
 tags: [tools, filesystem, execution, middleware, backends, persistence, multimodal, permissions]
 sources:
+  - id: openwiki-source-1728494bdd59604ce9b5f65b
+    resource: repo://libs/code/deepagents_code/_server_config.py
+  - id: openwiki-source-05106e66a949150d557266a2
+    resource: repo://libs/code/deepagents_code/agent.py
+  - id: openwiki-source-a12868876b60484607797187
+    resource: repo://libs/code/deepagents_code/file_ops.py
+  - id: openwiki-source-2e03fee957625ca21a1c21af
+    resource: repo://libs/code/deepagents_code/main.py
+  - id: openwiki-source-752b52e8fedb86515652254d
+    resource: repo://libs/code/deepagents_code/managed_tools.py
+  - id: openwiki-source-f6d553e7afdf54acac36e7d3
+    resource: repo://libs/code/deepagents_code/mcp_tools.py
+  - id: openwiki-source-3300d75e0c132882e2e3b4ce
+    resource: repo://libs/code/deepagents_code/tool_catalog.py
+  - id: openwiki-source-8ccbc389e8d6198afea76baa
+    resource: repo://libs/code/tests/unit_tests/test_file_ops.py
   - id: openwiki-source-a1549ea98d425efea270be93
     resource: repo://libs/deepagents/deepagents/backends/composite.py
   - id: openwiki-source-e483ff4cfd25918c8107d575
@@ -22,13 +38,13 @@ sources:
     resource: repo://libs/deepagents/deepagents/middleware/filesystem.py
 verified:
   - by: openwiki/0.4.2
-    at: 2026-10-21T08:05:42.350Z
-generated: { by: "openwiki/0.4.2", at: "2026-10-21T08:05:42.350Z" }
+    at: 2026-10-23T08:06:06.503Z
+generated: { by: "openwiki/0.4.2", at: "2026-10-23T08:06:06.503Z" }
 ---
 
-# Tool Surface and Filesystem Policy
+# Tools and Filesystem Policy
 
-`FilesystemMiddleware` is the model-facing adapter over an initialized `BackendProtocol`: it creates tools, validates and formats their results, applies middleware-owned filesystem policy, and manages large or binary message content. The backend owns storage and operation implementation. A visible tool is not a guarantee that the backend implements it, and neither a tool allowlist nor a profile exclusion is an authorization boundary. See [Backends](backends.md) for storage and routing, and [Permissions & HITL](permissions-hitl.md) for approval configuration.
+`FilesystemMiddleware` is the model-facing adapter over an initialized `BackendProtocol`: it creates tools, validates and formats their results, applies middleware-owned filesystem policy, and manages large or binary message content. The backend owns storage and operation implementation. A visible tool is not a guarantee that the backend implements it. SDK profile exclusions are model-surface controls rather than authorization, while dcode treats its explicitly configured filesystem allowlist as a security control and carries it into configurable subagents. See [Backends](backends.md) for storage and routing, [Permissions & HITL](permissions-hitl.md) for approval configuration, and [MCP](../integrations/mcp.md) for remote tools.
 
 ## Tool surface and request boundary
 
@@ -53,6 +69,38 @@ flowchart TD
 This flow separates construction-time registration, request-time capability and profile filtering, tool-call exclusion rejection, per-call policy, and backend behavior.
 
 `BackendProtocol` returns structured results rather than presentation strings. `ReadResult` rejects incoherent pagination metadata; the middleware owns line-number formatting and long-line continuation rows. `grep` and `glob` can be successful yet incomplete, so `truncated=True` means absence from returned matches is not proof of absence from storage. The agent-facing `grep` is literal, not regex; its configured default total cap is 1,000 matches, and a positive per-call `max_count` can override it. Set `grep_max_count=None` when constructing the middleware to disable the default cap.
+
+## dcode composition, enumeration, and trust
+
+At runtime, dcode supplies caller tools (for example, `fetch_url`, `get_current_thread_id`, and credential-gated `web_search`) to its agent construction, and separately loads MCP tools. The filesystem tools remain SDK middleware tools rather than a parallel dcode implementation. An MCP-enabled agent wraps those remote calls with dcode's MCP timeout middleware; MCP loading can be disabled entirely with `no_mcp`.
+
+MCP availability is deliberately not inferred from configuration alone. Project MCP servers, including remote HTTP/SSE servers, are trust-gated because discovery may reach a server or interpolate headers. Whole-project trust, scoped user approvals keyed to project root and server fingerprint, and explicit user denial are applied before loading; plugin-provided servers are treated as install-trusted but still obey user denial and fail closed if that policy cannot be read.
+
+```mermaid
+flowchart TD
+    Config["dcode configuration"] --> Builtin["SDK filesystem middleware"]
+    Config --> Caller["Caller supplied tools"]
+    Config --> McpConfig["MCP configuration and trust gate"]
+    McpConfig --> Mcp["Loaded MCP tools"]
+    Builtin --> Agent["Bound agent tool node"]
+    Caller --> Agent
+    Mcp --> Agent
+    Agent --> Catalog["tools list or slash command"]
+```
+
+This shows composition, not equivalent trust: caller tools are supplied by the application, while MCP tools must pass configuration and trust resolution before they enter the bound set.
+
+`dcode tools list` and interactive `/tools` derive the built-in listing from the actual tools bound on an agent compiled with an offline placeholder model, rather than maintaining a display catalog. It forwards the session filesystem allowlist into that compilation and deliberately reports an allowlist leak rather than cosmetically filtering it. MCP tools are grouped by server; non-`ok` servers with no tools are surfaced as unavailable, and a discovery-wide failure leaves built-ins visible with a generic notice rather than leaking exception details.
+
+`--allow-fs-tools` accepts `all` or a case-insensitive comma-separated subset of the eight SDK filesystem names. Omission and `all` leave the SDK's unrestricted default middleware in place; an explicit empty list, unknown name, mixed `all`, or subset without `read_file` is rejected. dcode installs a restricted replacement middleware for an explicit subset and appends equivalent middleware to raw subagent specifications. It rejects compiled subagents instead of silently letting delegation bypass that restriction.
+
+## Managed helper and local presentation lifecycle
+
+The `grep` filesystem tool is backend functionality; dcode optionally provisions its `rg` helper. `ensure_ripgrep` first honors a `system` installer choice, accepts a current checksum-verified managed binary, can use a system binary when no managed copy exists, and otherwise downloads a pinned platform asset, verifies archive SHA-256, extracts it, then atomically installs and exposes it on `PATH`. Offline mode returns no managed binary; unsupported platforms may use a system `rg` or raise a remediation-oriented availability error. A profile fallback binary directory is never put directly on `PATH`: dcode copies a verified `rg` into a process-private shim so repository-controlled sibling executables cannot be shadowed in.
+
+The terminal and non-interactive dcode surfaces also track `read_file`, `write_file`, `edit_file`, and `delete` calls for diffs, metrics, and approval presentation. A tracker captures a pre-image through the configured backend when available and reads a post-image after a successful write or edit. It distinguishes a trustworthy diff from an unavailable pre-image, unavailable post-image, and a line-terminator-only change; it therefore suppresses invented diff counts instead of representing unknown content as an empty file. Sensitive filename heuristics redact display of `.env` variants, known credential names, and private-key/keystore suffixes, failing closed when the path cannot be parsed. This is a UI/transcript safeguard, not filesystem authorization.
+
+Focused unit tests cover the failure semantics: a missing pre-image is normal only when creating with `write_file`; malformed backend responses and failed reads are marked untrustworthy; a successful write with failed read-back retains request-derived metrics and its reason; delete previews distinguish text, directories, and unreadable targets; and credential-like paths are classified for redaction.
 
 ## Composite routes are a path namespace, not a shell namespace
 

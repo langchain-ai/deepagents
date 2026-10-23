@@ -1,11 +1,11 @@
 ---
 type: operator workflow guide
 title: Run a dcode Session
-description: Trace how dcode turns CLI input into an interactive, headless, or ACP session, including trust decisions, local server lifecycle, durable workspace binding, resume, streaming, and cleanup.
+description: Trace how dcode resolves launch input, trust, and configuration into interactive, headless, or ACP execution, then binds durable workspace state, streams work, resumes threads, and cleans up local resources.
 tags: [dcode, cli, sessions, workspace, security, headless]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-10-21T08:05:42.350Z
+    at: 2026-10-23T08:06:06.503Z
 sources:
   - id: openwiki-source-1728494bdd59604ce9b5f65b
     resource: repo://libs/code/deepagents_code/_server_config.py
@@ -23,10 +23,6 @@ sources:
     resource: repo://libs/code/deepagents_code/client/non_interactive.py
   - id: openwiki-source-b7d66cbdbe9dae9f133a7c5e
     resource: repo://libs/code/deepagents_code/client/remote_client.py
-  - id: openwiki-source-fcc71dc507b62bee0432e12e
-    resource: repo://libs/code/deepagents_code/command_registry.py
-  - id: openwiki-source-e8b977ddb8991121f6e15077
-    resource: repo://libs/code/deepagents_code/configuration/interpreter.py
   - id: openwiki-source-2e03fee957625ca21a1c21af
     resource: repo://libs/code/deepagents_code/main.py
   - id: openwiki-source-c101168dc0286ff6c29ed37f
@@ -35,16 +31,12 @@ sources:
     resource: repo://libs/code/deepagents_code/resume_policy.py
   - id: openwiki-source-a9eb680bb6bdae179f52a3ac
     resource: repo://libs/code/deepagents_code/server_graph.py
-  - id: openwiki-source-d45b105016df62ad3c6e485f
-    resource: repo://libs/code/deepagents_code/tui/widgets/autocomplete.py
-  - id: openwiki-source-5591528eb639f4f37e8bd77a
-    resource: repo://libs/code/deepagents_code/tui/widgets/chat_input.py
+  - id: openwiki-source-030d8bd153a9c3ea2a99cb7d
+    resource: repo://libs/code/deepagents_code/workspace.py
   - id: openwiki-source-36838b2ce6fb7679d6e662cb
     resource: repo://libs/code/tests/integration_tests/test_headless_resume.py
   - id: openwiki-source-11d6c59d85493653aee76558
     resource: repo://libs/code/tests/unit_tests/test_app.py
-  - id: openwiki-source-42e76fc26f690f7d6dab298d
-    resource: repo://libs/code/tests/unit_tests/test_cache_expiry.py
   - id: openwiki-source-dbf986bbfdd9750d4d02f16d
     resource: repo://libs/code/tests/unit_tests/test_interpreter_workspace_policy.py
   - id: openwiki-source-367158c802f149f08ef8801f
@@ -55,152 +47,130 @@ sources:
     resource: repo://libs/code/tests/unit_tests/test_remote_client.py
   - id: openwiki-source-fc1ede0a0c305964314fa256
     resource: repo://libs/code/tests/unit_tests/test_resume_workspace_errors.py
-  - id: openwiki-source-37f4238508940c4be67643d1
-    resource: repo://libs/code/tests/unit_tests/test_thread_naming_app.py
-  - id: openwiki-source-97e242977ea97fdae74a7989
-    resource: repo://libs/code/tests/unit_tests/test_threads_resume.py
-  - id: openwiki-source-b7beeddb49bcfbe0565494c8
-    resource: repo://libs/code/tests/unit_tests/tui/widgets/test_autocomplete.py
-generated: { by: "openwiki/0.4.2", at: "2026-10-21T08:05:42.350Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-10-23T08:06:06.503Z" }
 ---
 
 # Run a dcode Session
 
-`dcode` has three execution surfaces: the interactive Textual UI, one-task headless execution (`-n` or piped input), and an ACP service (`--acp`). The UI and headless paths both own a temporary local LangGraph server and use `RemoteAgent` to invoke its `agent` graph; ACP runs its protocol server on standard input/output. See [code agent architecture](../architecture/code-agent.md), [configuration layering](../concepts/config-layering.md), [MCP](../integrations/mcp.md), [cost and sessions](../operations/cost-and-sessions.md), and [security](../operations/security.md).
+`dcode` offers three execution surfaces: the interactive Textual UI, one-task headless execution, and an ACP service. Interactive and headless runs start a local LangGraph server and invoke its `agent` graph through `RemoteAgent`; ACP instead constructs and runs an ACP agent server. Configuration determines capabilities, but the server remains the authority for the durable workspace binding and graph runtime. See [code agent architecture](../architecture/code-agent.md), [configuration layering](../concepts/config-layering.md), [state persistence](../concepts/state-persistence.md), [ACP](../integrations/acp.md), [MCP](../integrations/mcp.md), and [security](../operations/security.md).
 
-## Choose the mode and shape input
+## Choose a launch surface
 
 ```bash
-# Interactive UI, with an initial prompt
- dcode -M anthropic:claude-sonnet-4-5 -m "review this repository"
+# Interactive UI with an initial prompt
+dcode -M anthropic:claude-sonnet-4-5 -m "review this repository"
 
-# One bounded task
- dcode -n "run the focused tests" --max-turns 8 --timeout 600
+# One bounded, headless task
+dcode -n "run the focused tests" --max-turns 8 --timeout 600
 
-# Headless task from standard input
- git diff | dcode --stdin --skill code-review -q
+# Send piped context to a headless skill invocation
+git diff | dcode --stdin --skill code-review -q
 
-# Agent Client Protocol service
- dcode --acp
+# Start the Agent Client Protocol service
+dcode --acp
 ```
 
-`cli_main` first parses arguments, dispatches lightweight commands where possible, requires enforceable managed configuration for remaining operations, then resolves model/profile/retry settings before selecting ACP, headless, or TUI execution. `--acp` is selected before stdin handling and avoids the Textual dependency check. For actual session launches, the headless predicate is a final nonempty `non_interactive_message`; therefore `-n` and most piped input use the same runner.
+`cli_main` resolves startup settings before it chooses a session surface. ACP is an early branch: it resolves the effective approval mode, rejects unacknowledged YOLO and an Auto-only classifier in other ACP modes, checks the MCP flag combination, and then runs the ACP server. It does **not** first consume stdin. ACP loads persisted sessions, creates an agent graph for each session context, and releases any thread-ownership leases when its protocol loop ends.
 
-Piped text is trimmed and capped at 10 MiB. It is prepended to `-n` or `-m` text; a bare pipe becomes a headless prompt. A pipe plus `--skill` normally seeds the interactive UI, while explicit `--stdin` routes it to headless skill execution. An explicit `--stdin` without readable non-TTY input is an error rather than a silent empty task.
-
-Use `-q` only for headless runs when a script needs response text on stdout: status, errors, tool activity, and the machine-readable `Thread: <id>` line go to stderr. `--no-stream` buffers response text until completion. `--max-turns`, `--timeout`, rubric options, `-q`, and `--no-stream` are rejected outside headless mode. A timeout exits 124; a turn/HITL iteration limit also uses 124, while Ctrl-C uses 130.
+All other launches call `apply_stdin_pipe` before the final branch. A nonempty `non_interactive_message` selects `run_non_interactive`; otherwise the root-mode path starts the TUI. Piped input is trimmed and limited to 10 MiB. It is prepended to `-n` or `-m`; without either it becomes a headless task. A detected pipe used with `--skill` can instead seed the interactive initial prompt, while explicit `--stdin` makes that skill invocation headless. This distinction matters to automation: headless-only controls apply to the final message predicate, not merely whether standard input is a TTY.
 
 ```mermaid
 flowchart TD
-    Args["Parse arguments"] --> Gate["Apply managed-policy gate"]
-    Gate --> ACP{"ACP mode"}
-    ACP -->|yes| ACPServer["Run ACP service"]
-    ACP -->|no| Input["Merge piped input"]
-    Input --> Headless{"Headless prompt"}
-    Headless -->|yes| HeadlessRun["Run one task"]
-    Headless -->|no| Trust["Check project trust"]
-    Trust --> TUI["Run Textual UI"]
+    Args["Resolve arguments and startup configuration"] --> ACP{"ACP requested"}
+    ACP -->|yes| ACPService["Run ACP protocol service"]
+    ACP -->|no| Stdin["Normalize piped stdin"]
+    Stdin --> Task{"Nonempty headless message"}
+    Task -->|yes| Headless["Run one headless task"]
+    Task -->|no| Trust["Resolve interactive project trust"]
+    Trust --> TUI["Start Textual UI"]
 ```
 
-*CLI dispatch determines the mode after input normalization; ACP is a separate early branch.*
+*Mode selection gives ACP its own early path, while stdin normalization determines whether the remaining launch is headless or interactive.*
 
-## Establish authority before starting code
+In headless mode, `-q` routes console status, errors, tool activity, and the durable `Thread: <id>` notice to stderr, leaving agent response text on stdout. `--no-stream` buffers response text until the turn completes. A top-level `--timeout` exits with 124, and a headless turn or HITL iteration limit also returns 124; Ctrl-C returns 130.
 
-Project configuration is executable authority, not passive metadata. Decide independently whether to trust project hooks, MCP, Python extensions, workspace policy, and a sandbox. Project-scoped MCP can start stdio or remote servers, sandbox setup executes in the sandbox, and extensions execute Python. A sandbox does not grant trust to MCP, hooks, extensions, or credentials held by the dcode process.
+## Resolve trust and executable authority
 
-For an interactive launch, dcode asks for project MCP, hook, and extension trust before mounting the TUI; cancellation aborts the launch. Headless hooks are explicit opt-in (`--trust-project-hooks`), and project MCP/extension flags are passed into the server configuration. `--no-mcp` and `--mcp-config` are mutually exclusive. An explicit MCP config is validated before a server subprocess is created.
+A project configuration is executable authority rather than display metadata: project MCP may start servers, hooks may run commands, extensions execute Python, and sandbox setup can execute setup code. A sandbox does not itself trust project MCP, hooks, extensions, or credentials in the dcode process.
 
-`--sandbox` without a value resolves `[sandboxes].default`; no flag means `none` and runs on the host. The provider must be registered and support any supplied sandbox ID or snapshot option. A managed default identifies the backend for a sandboxed invocation; it does not put an invocation that omitted `--sandbox` into a sandbox.
+The interactive path checks project MCP, hook, and extension trust before it mounts the TUI; cancellation stops the launch. Headless project hooks require explicit `--trust-project-hooks`. `--no-mcp` and `--mcp-config` are mutually exclusive, and an explicit MCP config is validated before the local server subprocess is created.
 
-In headless mode, shell access is disabled unless `--shell-allow-list` enables it. A restrictive list is enforced through shell middleware; `all` permits unrestricted shell execution. Interactive approval flags do not provide headless approvals and are warned/ignored there. `--allow-fs-tools` independently controls filesystem middleware: omission and `all` retain the SDK default, while a restricted list must be recognized and include `read_file`.
+The sandbox default is `none`. A bare `--sandbox` resolves the configured default, then validates the provider and any requested ID or snapshot capability. A managed sandbox setting does not force an invocation that omitted `--sandbox` into a sandbox. Similarly, headless shell access is disabled unless `--shell-allow-list` enables it: a restricted list is enforced by middleware, while `all` allows shell commands without restriction. Filesystem-tool policy is independent: omitted `--allow-fs-tools` and `all` retain the SDK default, whereas a restricted list must contain recognized tools including `read_file`.
 
-## Bootstrap the local runtime and bind a workspace
+Server configuration separates client-claimable session policy from project-resolved fields. When a thread moves to a different or unresolvable project, the server fails closed: it drops project-derived MCP, sandbox setup, launch extensions, and project MCP trust, then re-reads extension trust. Interpreter PTC and its unsafe acknowledgement resolve together; effective values become durable workspace policy, so incompatible permission or acknowledgement changes refuse resume rather than silently escalating authority.
+
+## Start the local server and bind the workspace
 
 ```mermaid
 sequenceDiagram
-    participant User
     participant Client as TUI or headless client
-    participant Server as Local LangGraph server
-    participant Agent as RemoteAgent
-    participant Graph as Workspace graph
-    User->>Client: launch with resolved options
-    Client->>Server: start on loopback ephemeral port
-    Server-->>Client: agent graph ready
-    Client->>Agent: set workspace claim
-    Agent->>Server: bind thread workspace
-    Client->>Agent: stream turn with thread context
-    Agent->>Server: invoke agent graph
-    Server->>Graph: choose bound runtime
-    Graph-->>Agent: events and interrupts
-    Agent-->>Client: render or print events
+    participant Manager as server manager
+    participant Server as local LangGraph server
+    participant Remote as RemoteAgent
+    participant Graph as workspace graph
+    Client->>Manager: start session with resolved options
+    Manager->>Server: start on loopback ephemeral port
+    Server-->>Manager: agent graph ready
+    Manager->>Remote: configure workspace claim
+    Client->>Remote: stream turn with thread ID
+    Remote->>Server: bind or verify workspace
+    Server->>Graph: select durable workspace runtime
+    Graph-->>Remote: messages updates and interrupts
+    Remote-->>Client: normalized stream events
     Client->>Server: stop owned process
 ```
 
-*The client owns process lifetime; the server owns graph execution and durable workspace validation.*
+*The client owns local-process lifetime, while the server validates the durable workspace binding and selects the graph runtime.*
 
-Interactive and headless clients start a temporary, loopback LangGraph runtime on an ephemeral port, wait for the `agent` graph, construct `RemoteAgent`, and set the resolved workspace claim. Startup failure or cancellation before handoff stops the server. `server_session` encloses headless execution and always stops the server and cleans up any MCP session manager.
+`start_server_and_get_agent` captures the launch project context, preflights explicit MCP configuration, derives `ServerConfig`, scaffolds a temporary server configuration directory, and starts `ServerProcess` on loopback with port `0`. It waits specifically for the `agent` graph before constructing `RemoteAgent` and configuring its workspace claim. If server start, readiness, or client setup fails—or the task is cancelled—before handoff, its `finally` block stops the server. `server_session` wraps the headless handoff and stops the process on every exit; it also cleans up an MCP session manager if one is present.
 
-The subprocess server also has a POSIX parent-lifetime guard: EOF on an inherited pipe means its launching client has disappeared, so it terminates itself after dispatch. Ordinary stop is designed to be repeatable and escalates shutdown if necessary; debug-preserved log locations are queued and announced only after the terminal is usable.
+`RemoteAgent` does not treat a cwd as enough authority. It requires a configured workspace before it can bind a thread, posts the configured policy and fingerprint to the workspace endpoint, and caches only the server-validated descriptor. A workspace switch updates active cwd and cache only after the request succeeds. For each streamed run, it injects that descriptor in server context, forwards thread ownership headers, delegates SSE negotiation and routing to `RemoteGraph`, and normalizes message dictionaries and interrupts into client-facing events.
 
-A workspace is more than the UI cwd. `RemoteAgent` caches server-validated workspace descriptors per thread, requires a configured workspace before binding, and changes its active cwd/cache only after a successful switch. `make_graph` requires thread and workspace context, verifies the durable binding, and selects a runtime using binding identity and its runtime fingerprint. Access-policy drift is rejected; runtime-only drift can rebuild the graph.
+The server persists an immutable, canonical workspace binding per thread. It validates absolute, existing directories, fingerprints policy separately from full runtime identity, and requires the context echoed by the client to match the binding. `make_graph` rejects an execution lacking a thread ID or workspace context, obtains that durable binding, and selects the workspace runtime. Access-policy or project-policy drift is rejected; a runtime-only change such as a model change rebuilds the cached graph without replacing the binding.
 
-The workspace payload divides authority: session fields are client claims for an invocation, while project fields (MCP configuration, sandbox setup, extension paths, and project trust) are resolved by the server for the target directory. Moving to a different or unresolvable project drops sensitive project-derived configuration and re-reads extension trust, so a grant from one checkout does not cross into another.
+On POSIX, the server bootstrap also inherits a parent-lifetime pipe. EOF means the launching client disappeared: after dispatch begins, the guard sends `SIGTERM` and eventually `SIGKILL`. The process manager closes pipe descriptors and logs during normal stop, failed launch, and replacement, so ownership does not leave a server accidentally alive.
 
-Interpreter options resolve together. Invocation-scoped PTC and unsafe acknowledgement overrides are rejected when lower-precedence policy supplies them; an effective acknowledgement can enable unsafe PTC. Effective PTC and acknowledgement are stored in the durable workspace policy, so unsafe or incompatible policy changes conflict on resume.
+## Headless execution and resume
 
-## Run a headless task and resume safely
+A headless run selects its thread before it executes `--startup-cmd`. A new run gets a generated ID. For `-r <id>`, dcode verifies that the thread exists and passes resume-age policy, that its durable cwd is the current usable directory, and—unless the caller explicitly selected an agent—adopts the stored agent. It then reserves the resumed thread before starting the server, preventing concurrent use and a deletion race. Any resume failure returns an error; it never falls back to a new thread.
 
-Headless execution selects or creates its thread before `--startup-cmd`, so a bad `-r` request produces no startup-command side effect. A new run creates an ID; `-r <id>` checks existence, resume-age policy, and working directory, optionally adopts the saved agent unless `-a` was supplied, then reserves the thread before it starts the server. There is no fallback to a new thread. The reservation closes the delete race and prevents concurrent writers; deletion after initial lookup fails the run rather than silently creating or changing a thread.
+`--startup-cmd` is deliberately non-fatal and is local output, not model context. It runs before server startup, restores user LangSmith environment values in its shell child, warns on spawn failure, timeout, or nonzero exit, and continues. Cancellation terminates the child process or process group before propagating.
 
-The thread's stored directory must resolve to the current directory. Missing, malformed, or unavailable directories are rejected, and a real but different directory tells the user where to relaunch. Once connected, a resume normally adopts the saved model unless `-M` overrides it. Model resolution failure warns and continues with the launch model, but a workspace conflict aborts because it signals a durable policy mismatch. Resume also cannot be combined with `--rubric` in headless mode.
+After the local server starts, a resumed headless run reads its persisted state. It adopts the persisted model unless `-M` supplied an override. A model that no longer resolves produces a warning and leaves the launch model active; a workspace conflict remains a resume failure because it identifies a policy mismatch. The run creates a fresh turn identity, establishes hooks and shell/HITL policy, builds stream configuration, and streams the task. A skill is sent as an invocation envelope so the server, not the client, resolves and trust-checks the skill.
 
-A headless run creates one turn identity, creates client hooks, derives shell/HITL behavior, builds stream configuration, starts the server, obtains server model metadata, and streams the task. It turns an initial skill into a server-resolved invocation envelope, so server-side skill resolution and trust remain authoritative. On successful completion it ends the hook session; stream cleanup commits a completed attempt or drops uncommitted transcript state after an aborted stream.
+The stream requests `messages`, `updates`, and `custom` events, including subgraphs. The client processes output incrementally, handles interrupts/HITL continuation, tracks usage and file operations, and finalizes its request ledger even for an aborted round so replayed chunks do not double-count cost. Model retry is scoped to the model node, avoiding replay of completed tool calls; retry events let clients reconcile partial output.
 
-`--startup-cmd` is deliberately non-fatal and is not model context. It runs before server startup, restores user LangSmith values for its shell child, prints output locally, and warns on launch failure, timeout, or a nonzero exit. Cancellation terminates its child and propagates.
+## Interactive lifecycle
 
-## TUI startup, streaming, and session operations
+The TUI follows the same server/bootstrap/binding boundary but keeps the process for multiple turns. Its first `ServerReady` serializes session initialization: install server state, restore resumed history when necessary, restore a persisted model when appropriate, run session-start work and `--startup-cmd`, submit an initial prompt or skill, then drain deferred actions and queued input. On the initial resume connection, it latches the resuming indicator through history restoration; reconnects do not repeat one-shot setup.
 
 ```mermaid
 flowchart TD
-    Ready["ServerReady"] --> State["Install server state"]
-    State --> History["Restore resumed history if required"]
-    History --> Model["Adopt persisted model if needed"]
+    Ready["First ServerReady"] --> Install["Install server state"]
+    Install --> Restore["Restore resumed history"]
+    Restore --> Model["Adopt persisted model"]
     Model --> Hook["Run session start hook"]
-    Hook --> Setup["Run startup command once"]
-    Setup --> Initial["Submit initial prompt or skill"]
-    Initial --> Drain["Drain deferred actions and queued input"]
+    Hook --> Command["Run startup command once"]
+    Command --> Initial["Submit initial prompt or skill"]
+    Initial --> Queue["Drain deferred actions and queued messages"]
 ```
 
-*First-connect initialization is serialized; a reconnect does not repeat one-shot session work.*
+*Interactive first-connect work is ordered so restoration and one-time initialization finish before user work is drained.*
 
-On initial resume connection, `ServerReady` latches `_resuming` into `_restoring_resumed_history` before clearing connection state, retaining resuming status through history restoration. It installs server state and schedules deferred-action draining. The TUI then restores history, runs session-start/startup work, submits the initial prompt or skill, and drains queued user work. Restore workspace before persisted-model adoption: a bind conflict blocks model restoration; an endpoint failure retains the fallback model without exposing server diagnostics.
-
-In the TUI, `--startup-cmd` runs once after resumed history and the session-start hook but before initial submission and queue draining. Output is local application output, and command failure does not end the session.
-
-Model retry wraps only the model node, so completed tool calls are not replayed. It classifies transient failures, controls backoff and visible retry status, and emits events that clients use to reconcile partial output. Prompt-cache expiry is checked once per second; the TUI warns once in its final retention window and, when configured, offers idle-only user-directed handoff that preserves the draft on handoff or cancellation.
-
-## Commands and durable thread operations
-
-Static slash commands are declared once in `COMMANDS`. The command registry derives aliases, queue-bypass sets, and autocomplete entries, omitting experimental commands unless enabled. `ChatInput` initializes completion and argument hints from the registry and can replace its list to add discovered skill commands; insertion uses the machine name to keep namespaced skills unambiguous.
-
-`@@` completion searches durable thread name, ID, initial prompt, agent, branch, and cwd. It displays a saved name preferentially but inserts an ID-only `@@(thread:...)` token. `/threads -r [ID]` resolves a previous or explicit thread, gives near-match hints and expected-store retry handling, and uses separate transitions for cross-agent or remote-server targets.
-
-Explicit `/rename NAME` persists immediately. Generated names are detached proposals: automatic naming is once per thread after its first response, captures its model settings at scheduling time, writes only unnamed threads, and discards stale proposals or waits behind modals so it cannot overwrite newer choices or steal input. Confirmation continuations likewise run outside Textual's message pump, where awaiting them would prevent Enter/Esc from reaching the modal.
+A workspace bind conflict during model adoption is a workspace failure and blocks restoration. If the model endpoint fails later, the fallback launch model remains active and the UI reports the fallback without surfacing server diagnostic secrets. Interactive startup-command failure is also non-fatal and its output stays local to the app.
 
 ## Focused validation
 
-Run focused tests from `libs/code` before a broad suite:
+Run focused tests from `libs/code` when changing this workflow:
 
 ```bash
+make test TEST_FILE=tests/unit_tests/test_non_interactive.py
+make test TEST_FILE=tests/unit_tests/test_server_pipe.py
 make test TEST_FILE=tests/unit_tests/test_main_args.py
-make test TEST_FILE=tests/unit_tests/test_headless_resume.py
 make test TEST_FILE=tests/integration_tests/test_headless_resume.py
+make test TEST_FILE=tests/unit_tests/test_remote_client.py
 make test TEST_FILE=tests/unit_tests/test_interpreter_workspace_policy.py
-make test TEST_FILE=tests/unit_tests/test_resume_workspace_errors.py
-make test TEST_FILE=tests/unit_tests/test_thread_naming_app.py
-make test TEST_FILE=tests/unit_tests/test_threads_resume.py
-make test TEST_FILE=tests/unit_tests/tui/widgets/test_autocomplete.py
 make check
 ```
 
-For CLI changes, test mode selection after piped-input handling and reject headless-only options in the UI. For resume changes, cover missing IDs, age cutoff, cwd mismatch/unavailability, ownership contention, deletion during startup, policy conflicts, model override/adoption, and the invariant that failure never creates a new thread. For bootstrap changes, cover graph readiness, cancellation cleanup, parent-death cleanup, and normal context-manager teardown. For trust changes, prove that a declined or changed project cannot retain MCP, extension, sandbox, or hook authority from another directory.
+For launch changes, cover ACP-before-stdin dispatch and the pipe combinations that distinguish an initial interactive prompt from a headless task. For bootstrap changes, test graph readiness, cancellation cleanup, normal context-manager teardown, failed spawn descriptor cleanup, and POSIX owner-pipe EOF. For resume changes, cover missing IDs, age/cwd failures, ownership contention, deletion during startup, model adoption and override, and workspace conflicts. For workspace changes, preserve the core invariant: a client can request a workspace, but the server validates and durably owns the thread binding and access policy.

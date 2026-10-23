@@ -3,6 +3,9 @@ type: protocol integration
 title: Agent Client Protocol Integration
 description: How deepagents-acp adapts a LangGraph graph to an editor-facing ACP server, including sessions, streaming, interrupts, and optional recovery. It also explains dcode ACP launch and how its in-process ACP graphs differ from remote Agent Protocol delegation.
 tags: [acp, deepagents, langgraph, dcode, stdio, sessions, streaming]
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-10-23T08:06:06.503Z
 sources:
   - id: openwiki-source-532ea636a0657c1d2714bd7a
     resource: repo://libs/acp/CHANGELOG.md
@@ -35,9 +38,6 @@ sources:
   - id: openwiki-source-e0e6f6b6ce0dbf7a671d682f
     resource: repo://libs/code/tests/unit_tests/test_main_acp_mode.py
 generated: { by: "openwiki/0.4.2", at: "2026-10-21T08:05:42.350Z" }
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-10-21T08:05:42.350Z
 ---
 
 # Agent Client Protocol Integration

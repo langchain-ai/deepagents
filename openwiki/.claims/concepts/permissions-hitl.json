@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:6162f5628cf05e5e950fce40316f92b5d9dd2f426faab4e879df14d179c14f7c",
+  "pageVersion": "sha256:366abdd3b0bb745eef6378ed481c167c654976a2e80768830b99a11d2470ac17",
   "claims": [
     {
       "id": "claim_9a6a90cd63aa429db705187a810725d2",
@@ -151,10 +151,68 @@
           "version": "repo-lines-v1:sha256:a7cf963fc0224f2ae7f5ef31c19196d48bf4595fe7431178ca437571768f666e:eyJzZWxlY3RlZExpbmVDb3VudCI6MjAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjZlOTViOWFiMWRjYjVkNDk1YjQ1NmFjOGQ0NmRhYzY3MTU3OWQ5YmJmZDcwMDNiOTIzNTBhZTMzNTVkYzdmNGMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImRhMWIwZDY4YzhkMzA3ZDAwNWZkZTMxMmFjNDA0MmMzYTFlM2E3YjVhNDI1ODM1ZDY0MThhZTcwMDVjZmE5NGYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImIyZDM0MWJhMWM4Mjg1YTM0N2QwMjkzY2FmN2Y1MGY0MGQxN2ZlOGU3Nzg4MWM2NTcyYjRiYTFhZmQyZjZjZTkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjkxYjM3YjUxMzZkNDQ2NDk4NDFlMzQzZjg0NTdiZWIwMTU3NGM4YjYxOWY4MjA4YTFmZGZlZTU3NTQ0ODVhNjUifQ"
         }
       ]
+    },
+    {
+      "id": "claim_1f6697f3721149dba9be71160a118134",
+      "statement": "Talon stores an exact-name boolean tool-approval policy in a bounded regular JSON file without following symlinks; enabled names become approve-or-reject HITL entries, while unspecified names are not prompted.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/deepagents_talon/tool_approvals.py#L27-L39",
+          "version": "repo-lines-v1:sha256:0a3c7633463b446f023adf7b1a2f6cef8de25538e2ea8a7f68d50cedba078c1c:eyJzZWxlY3RlZExpbmVDb3VudCI6MTMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjlmNzhjNGU2NmMwNzVhNmM4NTUyNjRhNThiYTFlODNlOGUzYzBmMDFkYmRmNjQ5MThiZDhhMDVmMjJlMDIxOWYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZhZmJhMDUyN2MzOTUzYzRiNmUwZTViNTczOWJhODM2MTJmODA1M2JjZGM5NDY2NzMwMTkzY2QxZDU5MGI0MDgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjNjNTM5YmIxODY3NDgyYWE3ZDAyZDQ0NmY4ZDcwNDlmOWNjODZhNzZjYTdmNTRkYTBlZGZiODZjNDA3NmM4ZWEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImFhNzQ3YjFkNjBkZDVmMTIyZDllYWYxMTNlNTQ2ZTgxODM2MzY0YmQ2MmZkZWM4ZDg5MzBhNmUxZGU0NTQyZTkifQ"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/tool_approvals.py#L42-L89",
+          "version": "repo-lines-v1:sha256:7b2ae1ae8ec09782b1b9f3185aa319da3e54d86c9f936f3ec82224e3362e76a2:eyJzZWxlY3RlZExpbmVDb3VudCI6NDgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ2MDliYTVjNWFhZjllNWQxYzY2YzEyNDdmODA3NzVmYTQyNTVmYWNkZjllMmVkNmI5OTVlMDI1MzI1OGM5MTEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU2YjA0NDkxNDY5NzIyZTgzNjNhOTRlNDA0NDUzOGUwMTNhMmEyMTdlMzZiMWU1NjhiYTYwYWNiN2I0YzhmMmUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImE5OGIwNjNkOWI0N2U2NTM3OTYyNTU3MmNjZTE5NzY2OWQ1NzY3ZTEyYzE4YmUwNzU2NTJiOGNkOTgxY2U4ZDUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjU3YmY5YjQ2NjZmMjY5YmNmODkyOTMxMzc3YTMzYjkwMzhkNmM4ZWFiZGEyZTgwMDE2ZmRhYjFhNWQxNDI5NjkifQ"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/tool_approvals.py#L96-L125",
+          "version": "repo-lines-v1:sha256:7c6e28e4067c506a88f6c831eb4b38831faf048e0bcbaf8cf0dbc46b0817c75a:eyJzZWxlY3RlZExpbmVDb3VudCI6MzAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjVjMzE5YjkzNzZlNGYxOWZhZTk3ZTJhMzFiYjhlNGMxN2MzZDBmMzFiM2RjZmRmYTU4ZWI5M2ExZGZmYTk1MzkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjUzYTRmZWQ4MjgwYjM3YjA1NWM0M2VkMjQxYTdkMmRlNDEyNTUxYjEwMzdlZmZlYTA5M2MzZDQ5ODcxMGExYzMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjRkMjUxODIyZjM3Njc1Y2NkYTRkYjM0MjU2NjY5ZjY0YzkyMDA2YTFmYTUxMTUyZGM0YTg2Y2E4YzFhN2Y4ZTEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImE4YTVkMzlmZWE2YzE3OTc3ZTk2Mzk2NTExZDQwYmY3NWNmM2ZkZmVhYjVhYTQyYTM4N2ZhMjAzYjI1NzFjYmIifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_7cfc02418a1d4d91b35989d08509ca0d",
+      "statement": "Talon approval-policy updates use a locked revision compare-and-swap and immutable invocation snapshots: a runtime binds the loaded snapshot for a turn and rebuilds its graph when the persisted snapshot changes, so saved policy changes take effect on a later invocation.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/deepagents_talon/runtime.py#L717-L730",
+          "version": "repo-lines-v1:sha256:a9af6ed7f4502adce1320d919c4401ba7379540ef6ff9f09bfa24f975d767568:eyJzZWxlY3RlZExpbmVDb3VudCI6MTQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImNiZTI3ZjIzNWM1MzliN2Q5MGViNDUxMDhlODU3OTU1Y2NlZWZkOTI4MjFmNDdmMjJkYjVhMjc5Nzc1YzI2MzMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU5MDlhNTNhNjE4ZDAyOGUxZDMwMDBjMGE3YWJjZWVjYmU1ZmIzN2Y0ZTUxMWVmZTQ2NjQzZmFkNmU2Njg3MmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImFiYWNkMzkxMTBlMmY0MTM1MTc3NDUzZTFlNjY5YTM3Y2FiOGVhMWRhOTQzNTlhNDg5MmZkOGEwYjNjYWU4N2MiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjI4M2Y0MWJhYmJhZjAzY2NkMGEwMDVmZTAxODQ2ZWY2ZTYyYTUzYTVmNTM0NzY5YmQ0YzEyYTg1NzlhNmRhMGQifQ"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/tool_approvals.py#L127-L169",
+          "version": "repo-lines-v1:sha256:00bcaa99ffd4a64c7506a2c30a60edd3d34be7952d8dedca67a20ea7d30c5870:eyJzZWxlY3RlZExpbmVDb3VudCI6NDMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg4Yzk0ODE1ZmMwYTZhOWU4ZjY4MWJlM2M2ODA3Y2MwY2FmNzVhNDkzNTVhOTQwNTNlNzY1N2U1YzNkOTgwNTIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU2YjA0NDkxNDY5NzIyZTgzNjNhOTRlNDA0NDUzOGUwMTNhMmEyMTdlMzZiMWU1NjhiYTYwYWNiN2I0YzhmMmUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjdhMGRiMWMwOWJhNGUzMmVjNjM0ZjQxZjE4NGIzMmQ1ZDdkNDQzZmQxNjdmM2YyMzM5NWFiZTFmYWZkOTM0Y2MiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjdjMzU2NjllZWI0ZWY0M2U1YWM5NTZkNDNmNzc3YmRlMGE1NTFjMDQzMjQzMGVlYTc0Nzk0YTYyN2IzODYxZDgifQ"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/tool_approvals.py#L71-L89",
+          "version": "repo-lines-v1:sha256:00f6a7c5be5f3707e591b32ab9db68abe5e928b5e8efc2fe435968816ece8fe4:eyJzZWxlY3RlZExpbmVDb3VudCI6MTksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY2OWExMzk3NWMyNTZlYzgzMjBlMjAxNjA4M2M5NmRmNjM3Y2EzZDM1YmViZGUyMzE0YmVlM2E0NzExYjU2Y2EiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU2YjA0NDkxNDY5NzIyZTgzNjNhOTRlNDA0NDUzOGUwMTNhMmEyMTdlMzZiMWU1NjhiYTYwYWNiN2I0YzhmMmUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImQ3MjIzMTA2ZmQ4NzQyYjcwZWEyMzNmOWRjMzU5ZjRiMDJiYmIwNjliNzI4M2VlZjc2MjQ5OTUxNmJkN2I5YzgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjU3YmY5YjQ2NjZmMjY5YmNmODkyOTMxMzc3YTMzYjkwMzhkNmM4ZWFiZGEyZTgwMDE2ZmRhYjFhNWQxNDI5NjkifQ"
+        },
+        {
+          "resource": "repo://libs/talon/tests/unit_tests/test_tool_approval_runtime.py#L99-L170",
+          "version": "repo-lines-v1:sha256:be08037ace79aaefa38a76e4baa1f244cc7fc347d3a0e53b49d1a9950e5193d7:eyJzZWxlY3RlZExpbmVDb3VudCI6NzIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjczNzlhYmFlZmVmNzYwNTU2NDU5NzRlNzNlN2E0MWY3ZTFiMjU0NjI5ZjBiNzc1N2NmZDRkNGU0ZGYxMTA1MzEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZlYjY5Nzg0NmM1Njk2Nzk2NTAwYzA1MmE5MzVjYzVjYmQyYjg5OGY3MjU1NmFmYzI0YTdhODAxODgzODBkMmQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjlmZTA0MjM0ODIyNGQ5NThhYWRkY2E4ZGU4NDZiMjBlY2VlNGRmODBiYmM1MWFjMDdkNjI4ODRhYTg5NjcyZDciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImRkZTNhMDIwY2E1YjkzNmZjZjdmOTZkOWY2MDYyN2E5NDRkNjBhMjM3MGQ1M2JiMzRhYzM5YTdkNmZkMTMzYzAifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_6a09d3b174184b0f97bfef7ff4f82fec",
+      "statement": "Talon permits the update_tool_approvals tool to persist changes only when both an active approval snapshot and an operator context are present; cron and background-delivery turns are explicitly not operator contexts.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/deepagents_talon/runtime.py#L725-L730",
+          "version": "repo-lines-v1:sha256:61f313c83a244c4cf70dca9bf4f54f16d6c6a3f3ad7ccf208824db32e5dcf3ec:eyJzZWxlY3RlZExpbmVDb3VudCI6NiwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiZmI0MDVmYzM4ZWYzZGRiOWUzZTUxNzk0NzFkNjgzYjQ5NDM4NDI0ODI4N2RkNjk2ZmViZmI3MTQ5YmJjNDc0YiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNTkwOWE1M2E2MThkMDI4ZTFkMzAwMGMwYTdhYmNlZWNiZTVmYjM3ZjRlNTExZWZlNDY2NDNmYWQ2ZTY2ODcyZiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiODFlODg2MjRjMzM4YzNlYzZjYmFkYWM1Yjc2YTMwMWVmMjMzZDJlM2QwNDEzNjNkZTNmZDVhMTVjOTQ2NDliNCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMjgzZjQxYmFiYmFmMDNjY2QwYTAwNWZlMDE4NDZlZjZlNjJhNTNhNWY1MzQ3NjliZDRjMTJhODU3OWE2ZGEwZCJ9"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/tool_approvals.py#L193-L217",
+          "version": "repo-lines-v1:sha256:748d7b5d5f1b442c97c5e7d7660d0c653aa731ea00490ea8cbc667e777012d1e:eyJzZWxlY3RlZExpbmVDb3VudCI6MjUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjNhNTc1YzY5ZDE2ZjJlMTMyYzBlMDg4M2YzYjNhYTU2M2IyZDExYTZmNDgxMzc1MTE1ZWE2ZTEyN2YwNjJiNTciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImYzYmE5OWQ0ODc1ZDA1NDE0MWE2NjYxYjE5MmM4YTBiZTYxYjEwMjNkMWU1ODE1MDEyMDgyY2QwMTRjYzk1YmEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjYwZWNkNmFiYmM1YWJjOGZjNDM5ZTY1ODViMjZmZDdjMmE5MjAzNTgwZjlkNTk4ODRlYjRhNjgxZDEwMjVkNzciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjoyLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjVmNTc2MzllODY1ZTY1ODgzZGFhMGM2YWRlYjRiYWNkNjI3ZDZjZmM4MDNhZTY5M2E2MzBmZTE1MzhiZWJkMGQifQ"
+        },
+        {
+          "resource": "repo://libs/talon/tests/unit_tests/test_tool_approvals.py#L184-L201",
+          "version": "repo-lines-v1:sha256:3fa057aae2c4836c7d2948c6f15a4057335f7afb7150a0079fe902989e56c1ba:eyJzZWxlY3RlZExpbmVDb3VudCI6MTgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImVjMmE4Njg4ZGI5NDFhZGNiYTRiMzZlMGE3ZjU2ZjlmMmIzYTI2YjMxMjZkZTAyMTFmMjk4ZTBjMzRlMGY3YTgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjdkNzJjOWM0ZDM5MmMxZWFkYzcyMDU2NDg3NmViY2Q0N2M3MGJkMjEzODA2MTM5YmM0ZWQ3MWYzYmUyOGVkOGIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijg3Zjg3MDhkYjEyZThmMTAxZjI5OTkwNWRkZDc1ZDUxYjg2Y2VjMWE5YzdhYTdkOGVhZmQxNDYyMDUxYzU0NmIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-10-22T08:05:54.651Z"
+    "at": "2026-10-23T08:06:06.503Z"
   }
 }

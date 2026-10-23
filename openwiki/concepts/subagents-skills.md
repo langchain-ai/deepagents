@@ -3,11 +3,24 @@ type: delegation and progressive-disclosure concept
 title: Subagents, Skills, and Delegation
 description: Deep Agents separates isolated local delegation from durable Agent Protocol async tasks, with distinct polling, direct wake-up, and webhook delivery paths. Skills progressively disclose instructions and optional tools without granting authorization.
 tags: [deepagents, subagents, delegation, async-tasks, skills, middleware, agent-protocol]
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-10-23T08:06:06.503Z
 sources:
   - id: openwiki-source-590f5ae570ac1e4ef175341c
     resource: repo://examples/async-subagent-server/README.md
   - id: openwiki-source-aaa77c489f52896366e1b57c
     resource: repo://examples/async-subagent-server/server.py
+  - id: openwiki-source-dc1e984fa4e6a51458e9ff9d
+    resource: repo://libs/code/deepagents_code/plugins/adapters/skills_middleware.py
+  - id: openwiki-source-090c6e0a873de04d273989ad
+    resource: repo://libs/code/deepagents_code/skills/load.py
+  - id: openwiki-source-7315c344b29bd7441321ac75
+    resource: repo://libs/code/deepagents_code/skills/trust.py
+  - id: openwiki-source-07ceaf2cb5ec707fa4d2010f
+    resource: repo://libs/code/tests/unit_tests/skills/test_load.py
+  - id: openwiki-source-dc6ee09317ebb7c0a7509f64
+    resource: repo://libs/code/tests/unit_tests/skills/test_skill_trust.py
   - id: openwiki-source-c9abc2e44d0ff92f3de72601
     resource: repo://libs/deepagents/CHANGELOG.md
   - id: openwiki-source-0fc0e47059e4d07e23e50be2
@@ -24,10 +37,7 @@ sources:
     resource: repo://libs/deepagents/deepagents/middleware/subagents.py
   - id: openwiki-source-6ce85b02eabe462f99e0c912
     resource: repo://libs/deepagents/tests/unit_tests/test_async_subagents.py
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-10-22T08:05:54.651Z
-generated: { by: "openwiki/0.4.2", at: "2026-10-22T08:05:54.651Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-10-23T08:06:06.503Z" }
 ---
 
 # Subagents, Skills, and Delegation
@@ -159,11 +169,19 @@ sequenceDiagram
 
 At execution, registered tools take precedence. An otherwise unregistered tool must appear in the latest disclosure record and resolve again to a same-named tool. Calls before disclosure, in the triggering turn, after compaction removes the trigger, or after resolver output changes take ordinary invalid-tool handling. An async resolver requires an async entrypoint and should be stable and inexpensive. For models that support mid-conversation tools, definitions are anchored after the complete read-result batch using Anthropic `tool_addition` or OpenAI Responses `additional_tools`; unsupported Anthropic root combinator schemas are withheld so recorded availability matches model visibility. Disclosure does not bypass filesystem permissions or human approval.
 
+### Code CLI discovery and local trust
+
+The Code CLI adapts the SDK skill loader for local filesystem discovery. It loads built-in, plugin, user, `.agents`, project, and experimental Claude sources in increasing precedence, so a later source replaces an earlier same-named skill; a failed source is logged but does not prevent the remaining sources from being discovered. Plugin sources are recursively discovered and namespace their skill names. This is a CLI/runtime integration layer: agent middleware itself continues to use the configured backend rather than direct paths.
+
+The CLI treats following a skill symlink as a trust decision. `load_skill_content` resolves `SKILL.md` and, when given an allowlist, refuses a result outside all approved roots. The static allowlist can be extended through `DEEPAGENTS_CODE_EXTRA_SKILLS_DIRS` or `[skills].extra_allowed_dirs`. In the plugin skills adapter, a rejected selected skill interrupts with a `skill_trust` request naming its resolved directory; approval persists that canonical directory in `~/.deepagents/.state/skill_trust.json` and the read is retried. Denial, an unwritable trust store, no roots, or a location change between approval and retry prevents the skill from running.
+
+Trust is deliberately fail-closed. The versioned store is atomically replaced on successful writes; normal enforcement treats corrupt, unreadable, or newer-format stores as empty, while strict audit callers surface the error. Before adding a saved directory to the containment allowlist, `load_trusted_skill_dirs` verifies that the stored path still resolves to itself. That means both a discovery symlink retarget and a later replacement of an approved directory by a symlink require fresh approval rather than granting the new target access. Trust permits reading skill instructions; it is neither a model-tool disclosure nor an authorization bypass.
+
 ## Operations and focused tests
 
 Use isolated local work for tightly scoped work, a local fork only when effective conversation is needed, and a compiled worker when another graph owns its implementation. Use async work when remote execution must survive beyond a parent turn and be checked, updated, cancelled, or independently resumed. Choose `enqueue` only when preserving current work is more important than immediate follow-up; account for `pending`, superseded results, and dropped child prompts. Use a webhook for application integration, not as the parent-state authority channel, and disable direct wake-up if the application owns delivery.
 
-`test_async_subagents.py` covers launch and validation, isolated and fork payloads, state reduction, headers and linkage, live-status fallback, waiting recovery and cancellation, async-only ASGI, parent notifications and notification escaping, polling extra turns, queued follow-ups, and superseded-run notification handling. Test integrations should separately exercise interrupt and enqueue behavior, cancellation of both latest and earlier queued runs, webhook receipt, and the intended parent observation path.
+`test_async_subagents.py` covers launch and validation, isolated and fork payloads, state reduction, headers and linkage, live-status fallback, waiting recovery and cancellation, async-only ASGI, parent notifications and notification escaping, polling extra turns, queued follow-ups, and superseded-run notification handling. The Code skill tests cover source precedence and failure isolation plus trust-store CRUD, strict/error behavior, atomic-write failure, and post-approval symlink-swap rejection. Test integrations should separately exercise interrupt and enqueue behavior, cancellation of both latest and earlier queued runs, webhook receipt, the intended parent observation path, and trust interruption/resume through the actual client UI.
 
 The `examples/async-subagent-server` sample is a minimal FastAPI Agent Protocol peer with in-memory SQLite. It demonstrates thread and run creation, polling, result fetch, cancellation, and health endpoints, but it has no authentication or rate limiting. Its cancel route records cancellation without cancelling the in-flight coroutine. Run it with `uv run uvicorn server:app --port 2024`; production equivalents need authentication, durable storage, rate limits, and actual execution cancellation.
 

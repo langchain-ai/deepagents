@@ -4,7 +4,7 @@ okf_version: "0.2"
 
 # Files
 
-- [Deep Agents Monorepo Quickstart](quickstart.md) - Task-routing entry point for Deep Agents maintainers. Find the owning package, run its narrowest deterministic regression seam, and follow the linked guide for cross-package behavior, CI, and releases.
+- [Deep Agents Monorepo Quickstart](quickstart.md) - Route a Deep Agents change to its owning package, the right detailed guide, and the narrowest useful validation command. Use this page to identify dependency handoffs before expanding validation across consumers.
 
 # Directories
 

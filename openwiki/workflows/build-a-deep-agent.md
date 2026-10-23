@@ -5,8 +5,14 @@ description: Assemble a Deep Agents graph safely by selecting a model, backend, 
 tags: [deepagents, langgraph, middleware, skills, subagents, backends, testing]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-10-22T08:05:54.651Z
+    at: 2026-10-23T08:06:06.503Z
 sources:
+  - id: openwiki-source-68ae2141dbec1e0915410ac3
+    resource: repo://libs/ARCHITECTURE.md
+  - id: openwiki-source-fd64c1b88759a3b897a5452c
+    resource: repo://libs/deepagents/deepagents/__init__.py
+  - id: openwiki-source-07f9eac13e71bcbdb4e6994b
+    resource: repo://libs/deepagents/deepagents/backends/state.py
   - id: openwiki-source-0fc0e47059e4d07e23e50be2
     resource: repo://libs/deepagents/deepagents/graph.py
   - id: openwiki-source-5c9c6a877b43f30407158658
@@ -21,8 +27,14 @@ sources:
     resource: repo://libs/deepagents/deepagents/middleware/summarization.py
   - id: openwiki-source-69c260914d2dd18b60ad5900
     resource: repo://libs/deepagents/tests/unit_tests/middleware/test_compact_tool.py
+  - id: openwiki-source-c71ac20477155a66b7a8c60a
+    resource: repo://libs/deepagents/tests/unit_tests/middleware/test_skill_tools.py
   - id: openwiki-source-6ce85b02eabe462f99e0c912
     resource: repo://libs/deepagents/tests/unit_tests/test_async_subagents.py
+  - id: openwiki-source-6d183faf1a4bc5a5ba451aba
+    resource: repo://libs/deepagents/tests/unit_tests/test_graph.py
+  - id: openwiki-source-851e3a9c96663d8db5ca3dec
+    resource: repo://libs/deepagents/tests/unit_tests/test_permissions.py
 generated: { by: "openwiki/0.4.2", at: "2026-10-22T08:05:54.651Z" }
 ---
 

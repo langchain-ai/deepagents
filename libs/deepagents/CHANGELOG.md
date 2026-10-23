@@ -2,6 +2,12 @@
 
 # Deep Agents Changelog
 
+## [0.7.32](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.31...deepagents==0.7.32) (2026-10-23)
+
+### Performance Improvements
+
+- Avoid importing `langchain_anthropic` and `langchain_openai` at SDK import time ([#7204](https://github.com/langchain-ai/deepagents/pull/7204), [#7185](https://github.com/langchain-ai/deepagents/pull/7185)).
+
 ## [0.7.31](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.30...deepagents==0.7.31) (2026-10-23)
 
 ### Features

@@ -85,6 +85,11 @@ def _main() -> None:
     guard.start()
     if not guard.begin_dispatch():
         return
+    # The launcher sets `PYTHONDONTWRITEBYTECODE` so processes the server spawns
+    # inherit it, but this interpreter should still cache bytecode: installs
+    # such as `uv tool install` ship no `.pyc` files, so without this every
+    # launch recompiles the server-only packages (`langgraph_api` and friends).
+    sys.dont_write_bytecode = False
     sys.argv = ["langgraph_cli", *sys.argv[3:]]
     runpy.run_module("langgraph_cli", run_name="__main__", alter_sys=True)
 

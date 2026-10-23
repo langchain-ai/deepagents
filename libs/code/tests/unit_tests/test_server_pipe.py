@@ -175,3 +175,39 @@ async def test_server_inherits_the_session_lock(
     assert lock_fd in pass_fds
     # The bootstrap must learn the descriptor too, to keep it from grandchildren.
     assert command[3].split(",")[1:] == [str(lock_fd)]
+
+
+def test_server_interpreter_caches_bytecode(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The server writes `.pyc` files even though its children are told not to.
+
+    Installs such as `uv tool install` ship without bytecode, so a server that
+    honored the inherited `PYTHONDONTWRITEBYTECODE` would recompile its
+    server-only dependencies on every launch.
+    """
+    import sys
+
+    from deepagents_code.client.launch import _server_bootstrap as bootstrap
+
+    class _Guard:
+        def __init__(self, _reader: int, _timeout: float) -> None:
+            pass
+
+        def start(self) -> None:
+            pass
+
+        def begin_dispatch(self) -> bool:
+            return True
+
+    seen: list[bool] = []
+    monkeypatch.setattr(bootstrap, "_ParentGuard", _Guard)
+    monkeypatch.setattr(
+        bootstrap.runpy,
+        "run_module",
+        lambda *_args, **_kwargs: seen.append(sys.dont_write_bytecode),
+    )
+    monkeypatch.setattr(sys, "dont_write_bytecode", True)
+    monkeypatch.setattr(sys, "argv", ["bootstrap", "0", "5", "dev"])
+
+    bootstrap._main()
+
+    assert seen == [False]

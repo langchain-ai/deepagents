@@ -33,6 +33,7 @@ else:
 
 from langchain_core.messages import (
     AIMessage,
+    AIMessageChunk,
     BaseMessage,
     BaseMessageChunk,
     HumanMessage,
@@ -40,6 +41,7 @@ from langchain_core.messages import (
     ToolMessage,
     message_chunk_to_message,
 )
+from langchain_core.messages.ai import add_ai_message_chunks
 from pydantic import BaseModel, ConfigDict
 
 from deepagents_code._constants import LOCAL_CONTEXT_MESSAGE_SOURCE
@@ -346,7 +348,7 @@ class TranscriptRecorder:
 
     runtime: _TranscriptRuntime
     thread_id: str
-    _chunks: dict[tuple[str | None, str], BaseMessageChunk] = field(
+    _chunks: dict[tuple[str | None, str], list[BaseMessageChunk]] = field(
         default_factory=dict
     )
     _attempts: dict[str | None, _AttemptScope] = field(default_factory=dict)
@@ -379,12 +381,10 @@ class TranscriptRecorder:
             return
         if isinstance(message, BaseMessageChunk):
             key = (agent_id, message.id or type(message).__name__)
-            previous = self._chunks.get(key)
-            combined = message if previous is None else previous + message
-            self._chunks[key] = combined
+            self._chunks.setdefault(key, []).append(message)
             if getattr(message, "chunk_position", None) != "last":
                 return
-            self._chunks.pop(key, None)
+            combined = _merge_chunks(self._chunks.pop(key))
             self._append(message_chunk_to_message(combined), agent_id=agent_id)
             return
         if isinstance(message, BaseMessage):
@@ -538,6 +538,25 @@ class TranscriptRecorder:
         append_messages = getattr(self.runtime, "append_messages", None)
         if callable(append_messages):
             append_messages(self.thread_id, messages)
+
+
+def _merge_chunks(chunks: Sequence[BaseMessageChunk]) -> BaseMessageChunk:
+    """Merge one message's streamed chunks in a single pass.
+
+    Folding chunks with `+` builds a new `AIMessageChunk` per step, and each
+    one re-parses the accumulated tool-call args. That is quadratic in the
+    args size and stalls the UI while a large tool call streams.
+
+    Returns:
+        The same chunk that folding `chunks` with `+` would produce.
+    """
+    ai_chunks = [chunk for chunk in chunks if isinstance(chunk, AIMessageChunk)]
+    if len(ai_chunks) == len(chunks):
+        return add_ai_message_chunks(ai_chunks[0], *ai_chunks[1:])
+    combined = chunks[0]
+    for chunk in chunks[1:]:
+        combined += chunk
+    return combined
 
 
 def _stream_agent_id(metadata: Mapping[str, object] | None) -> str | None:

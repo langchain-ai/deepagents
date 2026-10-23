@@ -159,6 +159,16 @@ async def _wait_for_branch(app: DeepAgentsApp, branch: str) -> None:
     raise AssertionError(msg)
 
 
+async def _await_server_stop(app: DeepAgentsApp) -> None:
+    """Wait for the server stop that the deferred teardown starts.
+
+    The teardown releases the terminal without awaiting the stop, so a test
+    that checks `stop()` must wait for this task, not only the teardown task.
+    """
+    assert app._server_stop_task is not None
+    await asyncio.wait_for(app._server_stop_task, timeout=2.0)
+
+
 def _rubric_status_label(glyph_name: str, text: str) -> str:
     """Return the expected rubric status label for the active charset."""
     from deepagents_code.config import get_glyphs
@@ -15735,10 +15745,48 @@ class TestExitGracefulWorkerHandoff:
 
                 agent_release.set()
                 await asyncio.wait_for(app._graceful_exit_task, timeout=2.0)
+                await _await_server_stop(app)
 
             assert server_stopped.is_set()
             server_proc.stop.assert_called_once_with()
             super_exit.assert_called_once()
+
+    async def test_terminal_is_released_before_server_stop_finishes(self) -> None:
+        """Textual exits while the server is still shutting down.
+
+        Uvicorn takes about 0.2s to stop even when idle. `run_textual_app`
+        waits for the stop after the terminal is restored, so the teardown
+        must not hold the screen for it.
+        """
+        stop_started = threading.Event()
+        release_stop = threading.Event()
+        server_proc = MagicMock()
+        server_proc.stop = MagicMock(
+            side_effect=lambda: (
+                stop_started.set(),
+                release_stop.wait(timeout=2.0),
+            ),
+        )
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._server_proc = server_proc
+
+            with patch.object(App, "exit") as super_exit:
+                app.exit()
+                assert app._graceful_exit_task is not None
+                await asyncio.wait_for(app._graceful_exit_task, timeout=2.0)
+
+                assert await asyncio.to_thread(stop_started.wait, 2.0)
+                super_exit.assert_called_once()
+                assert app._server_stop_task is not None
+                assert not app._server_stop_task.done()
+
+                release_stop.set()
+                await _await_server_stop(app)
+
+            server_proc.stop.assert_called_once_with()
 
     async def test_force_quit_can_drop_pending_session_end(self) -> None:
         """A force-quit second exit() can drop an in-flight `session.end`.
@@ -15821,6 +15869,7 @@ class TestExitGracefulWorkerHandoff:
                 server_proc.stop.assert_not_called()
                 release_cleanup.set()
                 await asyncio.wait_for(app._graceful_exit_task, timeout=2.0)
+                await _await_server_stop(app)
 
             server_proc.stop.assert_called_once_with()
             super_exit.assert_called_once()
@@ -15895,6 +15944,7 @@ class TestExitGracefulWorkerHandoff:
 
                 release_cleanup.set()
                 await asyncio.wait_for(app._graceful_exit_task, timeout=2.0)
+                await _await_server_stop(app)
 
             assert restart_task.done()
             server_proc.stop.assert_called_once_with()
@@ -15934,6 +15984,7 @@ class TestExitGracefulWorkerHandoff:
                 assert app._graceful_exit_task is not None
                 await asyncio.wait_for(cleanup_started.wait(), timeout=2.0)
                 await asyncio.wait_for(app._graceful_exit_task, timeout=2.0)
+                await _await_server_stop(app)
 
             server_proc.stop.assert_called_once_with()
             super_exit.assert_called_once()
@@ -16077,6 +16128,7 @@ class TestExitGracefulWorkerHandoff:
                 assert app._graceful_exit_task is not None
                 await wait_started.wait()
                 await asyncio.wait_for(app._graceful_exit_task, timeout=2.0)
+                await _await_server_stop(app)
 
             server_proc.stop.assert_called_once_with()
             super_exit.assert_called_once()

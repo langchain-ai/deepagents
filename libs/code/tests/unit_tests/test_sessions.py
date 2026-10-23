@@ -1758,6 +1758,68 @@ class TestListThreadsCwdFilter:
         assert ids == {"thread_b"}
 
 
+class TestListThreadsQueryPlan:
+    """The `list_threads` query must never read the blob-bearing table rows."""
+
+    @pytest.fixture
+    def db_path(self, tmp_path: Path) -> Path:
+        """Database that mirrors `SqliteSaver`, with the state blob before metadata."""
+        db_path = tmp_path / "plan.db"
+        with closing(sqlite3.connect(str(db_path))) as conn:
+            conn.execute("""
+                CREATE TABLE checkpoints (
+                    thread_id TEXT NOT NULL,
+                    checkpoint_ns TEXT NOT NULL DEFAULT '',
+                    checkpoint_id TEXT NOT NULL,
+                    parent_checkpoint_id TEXT,
+                    type TEXT,
+                    checkpoint BLOB,
+                    metadata BLOB,
+                    PRIMARY KEY (thread_id, checkpoint_ns, checkpoint_id)
+                )
+            """)
+            metadata = {"agent_name": "bot", "updated_at": "2025-06-01T12:00:00+00:00"}
+            conn.execute(
+                "INSERT INTO checkpoints (thread_id, checkpoint_id, checkpoint, "
+                "metadata) VALUES ('t1', 'cp1', x'00', ?)",
+                (json.dumps(metadata),),
+            )
+            conn.commit()
+        return db_path
+
+    @pytest.mark.parametrize(
+        ("sort_by", "agent_name", "cwd"),
+        [("updated", None, None), ("created", None, None), ("updated", "bot", "/w")],
+    )
+    def test_uses_covering_index(
+        self, db_path: Path, sort_by: str, agent_name: str | None, cwd: str | None
+    ) -> None:
+        """Every list query plan is an index-only scan."""
+        statements: list[str] = []
+        real_connect = sessions._connect
+
+        @asynccontextmanager
+        async def traced_connect() -> AsyncIterator[aiosqlite.Connection]:
+            async with real_connect() as conn:
+                await conn.set_trace_callback(statements.append)
+                yield conn
+
+        with (
+            patch.object(sessions, "get_db_path", return_value=db_path),
+            patch.object(sessions, "_connect", traced_connect),
+        ):
+            asyncio.run(
+                sessions.list_threads(agent_name=agent_name, sort_by=sort_by, cwd=cwd)
+            )
+
+        listing = [sql for sql in statements if "GROUP BY thread_id" in sql]
+        assert len(listing) == 1
+        with closing(sqlite3.connect(str(db_path))) as conn:
+            plan = conn.execute(f"EXPLAIN QUERY PLAN {listing[0]}").fetchall()
+        details = [row[3] for row in plan]
+        assert any("COVERING INDEX" in detail for detail in details), details
+
+
 class TestListThreadsCommandConfigDefaults:
     """Tests for list_threads_command reading config defaults."""
 

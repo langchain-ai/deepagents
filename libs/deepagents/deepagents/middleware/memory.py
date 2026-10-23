@@ -77,10 +77,9 @@ from langchain.agents.middleware.types import (
     TracePolicy,
     omit_payload,
 )
-from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import ContentBlock, SystemMessage
 
-from deepagents.middleware._utils import append_to_system_message
+from deepagents.middleware._utils import append_to_system_message, is_anthropic_chat_model
 
 logger = logging.getLogger(__name__)
 
@@ -366,7 +365,7 @@ class MemoryMiddleware(AgentMiddleware[MemoryState, ContextT, ResponseT]):
         # fragment still get the prompt-cache breakpoint they asked for.
         if (
             self._add_cache_control
-            and isinstance(request.model, ChatAnthropic)
+            and is_anthropic_chat_model(request.model)
             and new_system_message is not None
             and new_system_message.content_blocks
         ):

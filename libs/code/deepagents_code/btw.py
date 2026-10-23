@@ -22,6 +22,8 @@ from langchain.agents.middleware.types import (
     ModelRequest,
     ModelResponse,
     PrivateStateAttr,
+    TracePolicy,
+    omit_payload,
 )
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import (
@@ -376,6 +378,9 @@ class BtwOperation(AgentMiddleware):
     """
 
     state_schema = _BtwState
+
+    trace_policy = TracePolicy(process_inputs=omit_payload)
+    """Omit hook inputs from traces by default; set a `TracePolicy` to override."""
 
     def __init__(
         self,

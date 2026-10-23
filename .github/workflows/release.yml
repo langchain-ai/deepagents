@@ -759,26 +759,37 @@ jobs:
           # `uv pip`; unset it so the install targets the existing `.venv`.
           env -u UV_PYTHON VIRTUAL_ENV=.venv uv pip install "${INSTALL_ARGS[@]}"
 
+      # The installer comes from the workflow's own revision, not the release
+      # SHA, which may predate it (same pattern as the release-notes script).
+      - name: Check out ripgrep installer
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          path: _workflow
+          sparse-checkout: |
+            .github/scripts/release/install_ripgrep.sh
+          sparse-checkout-cone-mode: false
+
       # The install itself has no timeout: release artifacts must be validated
       # with the real ripgrep path exercised. `DEEPAGENTS_RIPGREP_EXPECTED=1`
       # makes the rg-gated tests fail rather than skip if `rg` goes missing
       # anyway. A dispatch carrying `dangerous-skip-ripgrep-check=true` (set
       # from the `ci:skip-ripgrep` label on the merged release PR)
-      # tolerates an apt failure instead: the install still runs, but a failure
-      # neither fails the job nor promises ripgrep, so the gated tests skip
-      # rather than error.
+      # tolerates an install failure instead: the install still runs, but a
+      # failure neither fails the job nor promises ripgrep, so the gated tests
+      # skip rather than error.
       #
-      # The failure path mirrors `_test.yml`'s strict step: unwind dpkg, then
-      # probe for a usable `rg`. Without the probe a publish run would discard
-      # ripgrep coverage that is actually available whenever apt reports
-      # failure but the binary landed (or was already on the image) -- and this
-      # is the run where losing the symlink containment check matters most.
+      # The failure path mirrors `_test.yml`'s strict step: probe for a usable
+      # `rg`. Without the probe a publish run would discard ripgrep coverage
+      # that is actually available whenever the install reports failure but
+      # the binary landed (or was already on the image) -- and this is the run
+      # where losing the symlink containment check matters most.
       - name: Install ripgrep
         env:
           SKIP_RIPGREP_CHECK: ${{ inputs.dangerous-skip-ripgrep-check }}
         run: |
           set +e
-          sudo apt-get update && sudo apt-get install -y ripgrep
+          bash "$GITHUB_WORKSPACE/_workflow/.github/scripts/release/install_ripgrep.sh"
           status=$?
           set -e
           if [ "$status" -eq 0 ]; then
@@ -786,28 +797,23 @@ jobs:
             exit 0
           fi
           if [ "$SKIP_RIPGREP_CHECK" != "true" ]; then
-            echo "::error::ripgrep install failed (apt exit $status) and dangerous-skip-ripgrep-check is not set."
+            echo "::error::ripgrep install failed (exit $status) and dangerous-skip-ripgrep-check is not set."
             exit "$status"
           fi
-          # A killed or half-applied apt transaction can leave dpkg holding the
-          # lock, which would surface as an unrelated failure in a later step.
-          # A failed recovery is tolerated; the `rg` probe is what decides.
-          sudo timeout --signal=TERM --kill-after=10s 60s \
-            dpkg --configure -a || true
           if rg --version >/dev/null 2>&1; then
             echo "DEEPAGENTS_RIPGREP_EXPECTED=1" >> "$GITHUB_ENV"
-            echo "::notice::ripgrep install reported failure (apt exit $status) but a usable rg is present; continuing with ripgrep"
+            echo "::notice::ripgrep install reported failure (exit $status) but a usable rg is present; continuing with ripgrep"
             exit 0
           fi
-          echo "::warning::ripgrep install failed (apt exit $status); dangerous-skip-ripgrep-check set — the rg-gated artifact tests will skip"
+          echo "::warning::ripgrep install failed (exit $status); dangerous-skip-ripgrep-check set — the rg-gated artifact tests will skip"
           # A step annotation alone is not a record: the dispatch-inputs summary
-          # says only that the *input* was set, which cannot distinguish "apt
-          # succeeded, full coverage" from "apt failed, tests skipped". Write
+          # says only that the *input* was set, which cannot distinguish "the install
+          # succeeded, full coverage" from "the install failed, tests skipped". Write
           # the degraded outcome where an operator reviewing the release sees it.
           {
             echo "### ⚠️ Published without ripgrep coverage"
             echo ""
-            echo "\`apt-get\` failed (exit $status) and \`dangerous-skip-ripgrep-check\` was set, so the job continued."
+            echo "The ripgrep install failed (exit $status) and \`dangerous-skip-ripgrep-check\` was set, so the job continued."
             echo "The real-binary grep tests did **not** run against this artifact, including the symlink containment check."
           } >> "$GITHUB_STEP_SUMMARY" || echo "::warning::Failed to write ripgrep-bypass summary to GITHUB_STEP_SUMMARY (non-fatal, continuing)"
           exit 0

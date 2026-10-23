@@ -25,7 +25,7 @@ from langchain_core.tools import BaseTool, StructuredTool
 from langgraph.errors import GraphInterrupt
 from langgraph.types import Interrupt
 from pydantic import BaseModel, Field
-from quickjs_rs import Runtime, ThreadWorker
+from quickjs_rs import Context, Runtime, ThreadWorker
 
 from langchain_quickjs import CodeInterpreterMiddleware
 from langchain_quickjs._format import format_outcome
@@ -1662,3 +1662,41 @@ def test_subagent_prompt_uses_configured_concurrency() -> None:
     prompt = render_subagent_system_prompt(max_subagent_concurrency=100)
     assert "cap of 100 concurrent subagent calls" in prompt
     assert "recommendation, not a required limit" in prompt
+
+
+@pytest.mark.parametrize("timeout", [0.0, -1.0, float("-inf"), float("nan")])
+def test_rejects_invalid_timeout(timeout: float) -> None:
+    with pytest.raises(ValueError, match="`timeout` must be > 0 or None"):
+        CodeInterpreterMiddleware(timeout=timeout)
+
+
+@pytest.mark.parametrize("timeout", [None, 0.25, float("inf")])
+async def test_timeout_runtime_boundary(timeout: float | None) -> None:
+    mw = CodeInterpreterMiddleware(timeout=timeout, subagents=False)
+    assert mw._timeout == timeout
+    assert mw._registry.timeout == timeout
+    expected = float("inf") if timeout is None else timeout
+    new_context = Runtime.new_context
+    try:
+        with patch.object(
+            Runtime, "new_context", autospec=True, side_effect=new_context
+        ) as create:
+            repl = mw._registry.get("timeout")
+            assert create.call_args.kwargs["timeout"] == expected
+        assert repl.eval_sync("1 + 1").result == "2"
+        evaluate = Context.eval_handle_async
+        with patch.object(
+            Context, "eval_handle_async", autospec=True, side_effect=evaluate
+        ) as run:
+            assert (await repl.eval_async("2 + 2")).result == "4"
+            assert run.call_args.kwargs["timeout"] == expected
+        mw._registry.reset_repl("timeout")
+        assert mw._registry.get("timeout").eval_sync("3 + 3").result == "6"
+    finally:
+        await mw._registry.aevict("timeout")
+
+
+def test_default_timeout_is_unchanged() -> None:
+    mw = CodeInterpreterMiddleware()
+    assert mw._timeout == 5.0
+    assert "Timeout: 5.0s per call." in mw._base_prompt(ptc_attached=False)

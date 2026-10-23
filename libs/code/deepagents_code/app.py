@@ -4713,6 +4713,12 @@ class DeepAgentsApp(App):
         cancellation, server stop, pending-hook drain, or `session.end` — so it
         may run with no agent worker at all (e.g. only to stop the server)."""
 
+        self._server_stop_task: asyncio.Task[None] | None = None
+        """Server stop started by the deferred teardown.
+
+        The teardown does not await it before Textual exits; `run_textual_app`
+        waits for the stop after the terminal is restored."""
+
         self._exiting = False
         """Whether shutdown has begun.
 
@@ -23594,20 +23600,26 @@ class DeepAgentsApp(App):
 
                     # Agent cleanup has finished or hit its window; only now is
                     # it safe to finish cancellation of any detached restart,
-                    # then stop the server. Server shutdown and the pending-hook
-                    # drain are independent, so overlap them. Each coroutine
-                    # swallows its own `Exception`s, and `return_exceptions=True`
-                    # keeps a stray one from cancelling its sibling; a
-                    # `CancelledError` (force-quit) still propagates and is
-                    # handled by the `finally` below. Inspect the results anyway
-                    # so a future edit that lets an exception escape a child
-                    # coroutine is surfaced rather than silently swallowed.
+                    # then stop the server.
                     await _finish_restart()
-                    # The modal-command unwind touches only the tool env, so it
-                    # overlaps server shutdown and the hook drain rather than
-                    # serializing behind them.
+                    # Start the server stop, but do not hold the terminal for
+                    # it: uvicorn's shutdown takes about 0.2s even when idle.
+                    # `run_textual_app` calls `stop()` again after Textual
+                    # restores the terminal. `stop()` is serialized and
+                    # idempotent, so that call waits for this one, and the
+                    # server is still reaped before the session summary prints.
+                    # This overlaps server shutdown with Textual's own teardown
+                    # and with the phases below.
+                    self._server_stop_task = asyncio.ensure_future(_stop_server())
+                    # The pending-hook drain and the modal-command unwind are
+                    # independent, so overlap them. Each coroutine swallows its
+                    # own `Exception`s, and `return_exceptions=True` keeps a
+                    # stray one from cancelling its sibling; a `CancelledError`
+                    # (force-quit) still propagates and is handled by the
+                    # `finally` below. Inspect the results anyway so a future
+                    # edit that lets an exception escape a child coroutine is
+                    # surfaced rather than silently swallowed.
                     results = await asyncio.gather(
-                        _stop_server(),
                         _drain_hooks(),
                         _finish_modal_commands(),
                         return_exceptions=True,
@@ -32734,6 +32746,8 @@ async def run_textual_app(
         # Guarantee server cleanup regardless of how the app exits.
         # Covers both the pre-started server_proc path and the deferred
         # server_kwargs path (where the background worker sets _server_proc).
+        # A graceful exit has usually started this stop already without
+        # waiting for it; this call blocks until that stop finishes.
         from deepagents_code.client.launch.server import emit_preserved_log_notices
 
         if app._server_proc is not None:

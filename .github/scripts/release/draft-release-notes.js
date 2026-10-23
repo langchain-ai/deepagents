@@ -322,6 +322,42 @@ function responseText(provider, payload) {
   return `${output.join('\n\n')}\n`;
 }
 
+// release-please links PRs through `/issues/N`, which resolves to the PR;
+// normalizeEntry rewrites model output to `/pull/N`. Match both and key on the
+// repository-qualified number so the two forms compare equal.
+const PULL_REQUEST_LINK = /https:\/\/github\.com\/([^/\s()<>]+)\/([^/\s()<>]+)\/(?:issues|pull)\/(\d+)/g;
+
+function pullRequestRefs(text) {
+  return new Set([...text.matchAll(PULL_REQUEST_LINK)].map(([, owner, repo, number]) => `${owner}/${repo}#${number}`));
+}
+
+// prepareDraft writes a header (Package/Version/optional Instructions) ending at
+// the first blank line. Only the changelog after it defines which PRs must be
+// linked, so maintainer instructions cannot add or remove a required link.
+function changelogSource(source) {
+  const end = source.indexOf('\n\n');
+  return end === -1 ? source : source.slice(end + 2);
+}
+
+// The prompt asks the model to keep every PR link, but nothing else enforces it,
+// and a dropped link silently ships an unattributed release note. Fail closed
+// unless the draft links exactly the PRs the changelog does.
+function assertPullRequestCoverage(source, notes) {
+  const expected = pullRequestRefs(changelogSource(source));
+  const actual = pullRequestRefs(notes);
+  const missing = [...expected].filter(ref => !actual.has(ref));
+  const unexpected = [...actual].filter(ref => !expected.has(ref));
+  if (!missing.length && !unexpected.length) return;
+  const details = [
+    ...(missing.length ? [`dropped ${missing.join(', ')}`] : []),
+    ...(unexpected.length ? [`added ${unexpected.join(', ')} not in the changelog`] : []),
+  ];
+  throw new Error(
+    `The drafted release notes do not link exactly the changelog's pull requests (${details.join('; ')}). `
+    + 'Re-run the draft command, or edit the notes by hand.',
+  );
+}
+
 // Generating up to MAX_OUTPUT_TOKENS tokens — reasoning included — on a single
 // non-streaming request can take many minutes on a large changelog, so this
 // budget is reachable rather than theoretical. It stays inside the job's
@@ -375,7 +411,9 @@ async function draftReleaseNotes({ modelSpec, key, inputFile, outputFile, fetchI
     );
   }
   const payload = await response.json();
-  fs.writeFileSync(outputFile, responseText(provider, payload), { encoding: 'utf8', mode: 0o600 });
+  const notes = responseText(provider, payload);
+  assertPullRequestCoverage(source, notes);
+  fs.writeFileSync(outputFile, notes, { encoding: 'utf8', mode: 0o600 });
 }
 
 async function main() {
@@ -397,6 +435,7 @@ if (require.main === module) {
 module.exports = {
   MAX_OUTPUT_TOKENS,
   REQUEST_TIMEOUT_MS,
+  assertPullRequestCoverage,
   draftReleaseNotes,
   openaiModelUsesResponsesApiOnly,
   parseModelSpec,

@@ -20,7 +20,7 @@ def _workflow() -> dict:
 
 
 def _resolve_sha_step() -> str:
-    steps = _workflow()["jobs"]["setup"]["steps"]
+    steps = _workflow()["jobs"]["build"]["steps"]
     return next(step["run"] for step in steps if step.get("id") == "resolve-sha")
 
 
@@ -121,8 +121,8 @@ def _run_resolve_sha_step(
     return summary.read_text(), result, requests.read_text()
 
 
-def test_setup_job_can_read_pull_requests() -> None:
-    permissions = _workflow()["jobs"]["setup"]["permissions"]
+def test_build_job_can_read_pull_requests() -> None:
+    permissions = _workflow()["jobs"]["build"]["permissions"]
     assert permissions["contents"] == "read"
     assert permissions["pull-requests"] == "read"
 

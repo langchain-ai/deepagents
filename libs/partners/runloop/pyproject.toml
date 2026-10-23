@@ -22,7 +22,7 @@ classifiers = [
 version = "0.0.7"
 requires-python = ">=3.11,<4.0"
 dependencies = [
-    "deepagents>=0.7.0,<0.8.0",
+    "deepagents>=0.7.32,<0.8.0",
     "runloop-api-client",
 ]
 

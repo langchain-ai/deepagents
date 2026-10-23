@@ -3,7 +3,7 @@
 /* Define layers for z-ordering */
 Screen {
     layout: vertical;
-    layers: base autocomplete;
+    layers: base autocomplete selection-action;
 }
 
 /* Thin scrollbars app-wide */

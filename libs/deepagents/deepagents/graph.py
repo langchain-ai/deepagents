@@ -7,7 +7,7 @@ subagent, and summarization middleware.
 
 import logging
 from collections.abc import Callable, Sequence
-from typing import Annotated, Any, Required, cast
+from typing import TYPE_CHECKING, Annotated, Any, Required, cast
 
 from langchain.agents import AgentState, create_agent
 from langchain.agents.middleware import HumanInTheLoopMiddleware, InterruptOnConfig
@@ -19,7 +19,6 @@ from langchain.agents.middleware.types import (
     StateT_co,
 )
 from langchain.agents.structured_output import ResponseFormat
-from langchain_anthropic import ChatAnthropic
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AnyMessage, SystemMessage
 from langchain_core.tools import BaseTool
@@ -68,6 +67,9 @@ from deepagents.profiles.harness.harness_profiles import (
     _apply_profile_prompt,
     _harness_profile_for_model,
 )
+
+if TYPE_CHECKING:
+    from langchain_anthropic import ChatAnthropic
 
 logger = logging.getLogger(__name__)
 
@@ -142,7 +144,7 @@ def __getattr__(name: str) -> str:
     raise AttributeError(msg)
 
 
-def _build_default_model() -> ChatAnthropic:
+def _build_default_model() -> "ChatAnthropic":
     """Construct the default model without emitting a deprecation warning.
 
     Internal helper used by `create_deep_agent` so the parameter-level
@@ -150,6 +152,9 @@ def _build_default_model() -> ChatAnthropic:
     from `get_default_model`. Direct user calls go through `get_default_model`,
     which keeps its decorator and warns once per process.
     """
+    # Deferred: only the default model needs the `anthropic` SDK.
+    from langchain_anthropic import ChatAnthropic  # noqa: PLC0415
+
     return ChatAnthropic(model_name="claude-sonnet-4-6")
 
 
@@ -165,7 +170,7 @@ def _build_default_model() -> ChatAnthropic:
     ),
     package="deepagents",
 )
-def get_default_model() -> ChatAnthropic:
+def get_default_model() -> "ChatAnthropic":
     """Get the default model for Deep Agents.
 
     !!! deprecated
@@ -235,7 +240,13 @@ def _apply_custom_middleware(
     result = list(base)
     for i, m in enumerate(result):
         if m.name in replacements:
-            result[i] = replacements[m.name]
+            replacement = replacements[m.name]
+            if isinstance(m, FilesystemMiddleware) and m._permissions and isinstance(replacement, FilesystemMiddleware):
+                if replacement._permissions and replacement._permissions != m._permissions:
+                    msg = "FilesystemMiddleware permissions conflict with the agent permissions; use the same rules or omit middleware permissions."
+                    raise ValueError(msg)
+                replacement = replacement._with_permissions(m._permissions)
+            result[i] = replacement
     if to_append and core_names is not None:
         # Land new middleware after the last core entry, ahead of the tail.
         pos = max((i for i, m in enumerate(result) if m.name in core_names), default=len(result) - 1) + 1
@@ -371,7 +382,9 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             See [Prompt assembly](https://docs.langchain.com/oss/deepagents/customization#prompt-assembly)
             for the full case-by-case breakdown.
         middleware: Additional middleware to apply after the base stack
-            but before the tail middleware. The full ordering is:
+            but before the tail middleware. Replacement `FilesystemMiddleware`
+            inherits agent permissions when unconfigured; conflicting non-empty
+            rules raise `ValueError`. The full ordering is:
 
             Base stack:
 
@@ -724,7 +737,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
                 FilesystemMiddleware(
                     backend=backend,
                     custom_tool_descriptions=_subagent_profile.tool_description_overrides,
-                    _permissions=subagent_permissions,
+                    permissions=subagent_permissions,
                 ),
                 create_summarization_middleware(subagent_model, backend),
                 PatchToolCallsMiddleware(),
@@ -830,7 +843,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             FilesystemMiddleware(
                 backend=backend,
                 custom_tool_descriptions=_profile.tool_description_overrides,
-                _permissions=permissions,
+                permissions=permissions,
             ),
             create_summarization_middleware(model, backend),
             PatchToolCallsMiddleware(),
@@ -895,7 +908,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         FilesystemMiddleware(
             backend=backend,
             custom_tool_descriptions=_profile.tool_description_overrides,
-            _permissions=permissions,
+            permissions=permissions,
         ),
     ]
     sub_agent_middleware: SubAgentMiddleware | None = None

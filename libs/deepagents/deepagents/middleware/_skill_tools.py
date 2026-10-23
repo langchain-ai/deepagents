@@ -14,17 +14,18 @@ from __future__ import annotations
 
 import inspect
 import logging
+import sys
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, TypeGuard, cast
 
-from langchain_anthropic import ChatAnthropic, convert_to_anthropic_tool
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.runnables import RunnableBinding
 from langchain_core.tools import BaseTool, tool as create_tool
 from langchain_core.utils.function_calling import convert_to_openai_tool
 
 from deepagents.backends.utils import validate_path
+from deepagents.middleware._utils import is_anthropic_chat_model
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
@@ -33,13 +34,6 @@ if TYPE_CHECKING:
     from langgraph.runtime import Runtime
 
     from deepagents.middleware.skills import SkillMetadata, SkillToolResolver
-
-try:
-    from langchain_openai.chat_models.base import BaseChatOpenAI as _BaseChatOpenAI
-except ImportError:
-    _BASE_CHAT_OPENAI_TYPE: type[BaseChatOpenAI] | None = None
-else:
-    _BASE_CHAT_OPENAI_TYPE = _BaseChatOpenAI
 
 logger = logging.getLogger(__name__)
 
@@ -367,8 +361,11 @@ def _discard_rejected_schemas(disclosure: _Disclosure, model: object) -> None:
     withholding it on every path keeps the record equal to what the model was
     shown.
     """
-    if not isinstance(_unwrap_bound(model), ChatAnthropic):
+    if not is_anthropic_chat_model(_unwrap_bound(model)):
         return
+    # Already loaded: the model is a `ChatAnthropic`.
+    from langchain_anthropic import convert_to_anthropic_tool  # noqa: PLC0415
+
     for name, tool in disclosure.tools().items():
         schema = convert_to_anthropic_tool(tool).get("input_schema")
         keys = [key for key in _ANTHROPIC_ROOT_COMBINATORS if isinstance(schema, dict) and key in schema]
@@ -382,13 +379,24 @@ def _discard_rejected_schemas(disclosure: _Disclosure, model: object) -> None:
 def _inline_block_builder(model: object) -> Callable[[BaseTool], _ToolDisclosure] | None:
     """Return how `model` is given a tool mid-conversation, or `None` if it can't be."""
     chat_model = _unwrap_bound(model)
-    if isinstance(chat_model, ChatAnthropic):
+    if is_anthropic_chat_model(chat_model):
         build = _anthropic_tool_addition
-    elif _BASE_CHAT_OPENAI_TYPE is not None and isinstance(chat_model, _BASE_CHAT_OPENAI_TYPE):
+    elif _is_openai_chat_model(chat_model):
         build = _openai_additional_tools
     else:
         return None
     return build if (chat_model.profile or {}).get("mid_conversation_tools") else None
+
+
+def _is_openai_chat_model(model: object) -> TypeGuard[BaseChatOpenAI]:
+    """Return whether `model` is a `langchain_openai` chat model.
+
+    Reads `sys.modules` rather than importing `langchain_openai`: an instance of
+    its classes implies the module is loaded, and importing it eagerly would add
+    the `openai` SDK to every `deepagents` import.
+    """
+    base = sys.modules.get("langchain_openai.chat_models.base")
+    return base is not None and isinstance(model, base.BaseChatOpenAI)
 
 
 def _unwrap_bound(model: object) -> object:
@@ -401,6 +409,9 @@ def _unwrap_bound(model: object) -> object:
 
 def _anthropic_tool_addition(tool: BaseTool) -> _ToolDisclosure:
     """Build the Anthropic `tool_addition` block carrying `tool`'s full definition."""
+    # Deferred: only an Anthropic model needs this, and it loads the `anthropic` SDK.
+    from langchain_anthropic import convert_to_anthropic_tool  # noqa: PLC0415
+
     definition: dict[str, Any] = dict(convert_to_anthropic_tool(tool))
     definition.pop(_DEFER_LOADING, None)
     definition.pop("cache_control", None)

@@ -146,10 +146,10 @@ jobs:
       # Release-sensitive runs must exercise the real ripgrep code path rather
       # than the Python fallback, so the install has no timeout here and a
       # failure reds the job — unless the PR carries `ci:skip-ripgrep`,
-      # which turns an apt failure into a tolerated continue (see
+      # which turns an install failure into a tolerated continue (see
       # RELEASING.md > "Release Failed: Ripgrep Install"). `merge_group` and
       # `push` stay strict even then: they have no PR label context to read,
-      # so an apt flake there still fails (for the merge queue, ejection is
+      # so a download flake there still fails (for the merge queue, ejection is
       # recoverable, whereas a silent skip at the last gate is not).
       #
       # `DEEPAGENTS_RIPGREP_EXPECTED=1` is consumed by `require_ripgrep` in
@@ -173,38 +173,35 @@ jobs:
           BYPASS: ${{ steps.ripgrep-bypass.outputs.bypass }}
         run: |
           set +e
-          sudo apt-get update && sudo apt-get install -y ripgrep
+          bash "$GITHUB_WORKSPACE/.github/scripts/release/install_ripgrep.sh"
           status=$?
           set -e
           if [ "$status" -eq 0 ]; then
             echo "DEEPAGENTS_RIPGREP_EXPECTED=1" >> "$GITHUB_ENV"
             exit 0
           fi
-          # apt failed. Tolerate it only when the PR is labeled; otherwise
+          # The install failed. Tolerate it only when the PR is labeled; otherwise
           # fail as before. The label only exists on a `pull_request`, so
           # `push`/`merge_group` always take the strict path.
           if [ "$BYPASS" != "true" ]; then
-            echo "::error::ripgrep install failed (apt exit $status) on a release-sensitive run and no 'ci:skip-ripgrep' label is present."
+            echo "::error::ripgrep install failed (exit $status) on a release-sensitive run and no 'ci:skip-ripgrep' label is present."
             exit "$status"
           fi
-          # Bypassed: run the same dpkg unwind and `rg` probe as the
-          # non-release path, then record the same artifact so the timeout
-          # comment workflow reports these legs too. `DEEPAGENTS_RIPGREP_EXPECTED`
-          # is only set when `rg` is actually usable, so a genuinely missing
-          # binary lets `require_ripgrep` skip the gated tests rather than
-          # fail them.
-          sudo timeout --signal=TERM --kill-after=10s 60s \
-            dpkg --configure -a || true
+          # Bypassed: run the same `rg` probe as the non-release path, then
+          # record the same artifact so the timeout comment workflow reports
+          # these legs too. `DEEPAGENTS_RIPGREP_EXPECTED` is only set when `rg`
+          # is actually usable, so a genuinely missing binary lets
+          # `require_ripgrep` skip the gated tests rather than fail them.
           if rg --version >/dev/null 2>&1; then
             echo "DEEPAGENTS_RIPGREP_EXPECTED=1" >> "$GITHUB_ENV"
             echo "::notice::ripgrep install reported failure but a usable rg is present; continuing with ripgrep"
             exit 0
           fi
           echo "timed-out=true" >> "$GITHUB_OUTPUT"
-          # Log the apt status: the bypass tolerates every non-zero status, so
-          # the status is the only thing that separates a mirror flake from a
+          # Log the exit status: the bypass tolerates every non-zero status, so
+          # the status is the only thing that separates a download flake from a
           # permanently broken install that will be bypassed on every re-run.
-          echo "::warning::ripgrep install failed (apt exit $status) on release PR; 'ci:skip-ripgrep' present — continuing without ripgrep (rg-gated tests will skip)"
+          echo "::warning::ripgrep install failed (exit $status) on release PR; 'ci:skip-ripgrep' present — continuing without ripgrep (rg-gated tests will skip)"
           package="${WORKING_DIRECTORY//\//-}"
           artifact="ripgrep-timeout-${package}-${MATRIX_OS}-${MATRIX_PYTHON}"
           marker="$RUNNER_TEMP/$artifact/warning.txt"
@@ -230,19 +227,18 @@ jobs:
         run: |
           set +e
           # `sudo timeout`, not `timeout sudo`: `timeout` must run as root to
-          # signal the root-owned `apt-get`. An unprivileged `timeout` gets
-          # EPERM, leaves the install orphaned holding the dpkg lock, and the
-          # bound silently does nothing.
+          # signal the root-owned installer. An unprivileged `timeout` gets
+          # EPERM, leaves the install orphaned, and the bound silently does
+          # nothing.
           sudo timeout --signal=TERM --kill-after=10s 120s \
-            bash -c 'apt-get update && apt-get install -y ripgrep'
+            bash "$GITHUB_WORKSPACE/.github/scripts/release/install_ripgrep.sh"
           status=$?
           set -e
 
           # coreutils `timeout` reports 124 when the command dies from the
           # initial TERM and 137 (128+9) when `--kill-after` escalates to
-          # KILL. apt defers TERM mid-transaction, so 137 is the likely status
-          # for a genuinely wedged install. Both mean "hit the bound"; every
-          # other non-zero status is a real apt failure that must fail the job.
+          # KILL. Both mean "hit the bound"; every other non-zero status is a
+          # real install failure that must fail the job.
           if [ "$status" -ne 124 ] && [ "$status" -ne 137 ]; then
             echo "timed-out=false" >> "$GITHUB_OUTPUT"
             if [ "$status" -eq 0 ]; then
@@ -251,17 +247,8 @@ jobs:
             exit "$status"
           fi
 
-          # A killed apt can leave dpkg mid-transaction. Unwind it so later
-          # steps don't trip over the lock, then check what actually landed:
-          # "the bound was hit" and "ripgrep is missing" are different facts,
-          # and only the second one should warn. The recovery itself is
-          # bounded: `dpkg --configure -a` can wait on the same lock or
-          # maintainer script that stalled the install, and without its own
-          # timeout the supposedly bounded step can burn the rest of the job's
-          # 20 minutes. A failed recovery is tolerated here — the
-          # `rg --version` probe below is what decides the warning.
-          sudo timeout --signal=TERM --kill-after=10s 60s \
-            dpkg --configure -a || true
+          # Check what actually landed: "the bound was hit" and "ripgrep is
+          # missing" are different facts, and only the second one should warn.
           if rg --version >/dev/null 2>&1; then
             echo "timed-out=false" >> "$GITHUB_OUTPUT"
             echo "DEEPAGENTS_RIPGREP_EXPECTED=1" >> "$GITHUB_ENV"

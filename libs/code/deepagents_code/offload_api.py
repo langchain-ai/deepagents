@@ -23,7 +23,7 @@ from starlette.routing import Route
 
 from deepagents_code._async import _join_task_deferring_cancellation
 from deepagents_code._cli_context import CLIContextSchema
-from deepagents_code.btw_api import btw, btw_cost
+from deepagents_code.btw_api import btw, btw_cost, thread_usage
 from deepagents_code.cost_tracking import prepare_operation_cost
 from deepagents_code.hooks.interrupt import build_hook_interrupt_payload
 from deepagents_code.hooks.server_middleware import (
@@ -170,9 +170,46 @@ async def _flush_traces() -> None:
         )
 
 
+def _log_prebuild_failure(task: asyncio.Task[object]) -> None:
+    """Retrieve a failed runtime prebuild so asyncio does not report it.
+
+    The first request retries the build, so it surfaces the error to the
+    client. `SystemExit` is not handled here: asyncio re-raises it out of the
+    event loop, and `get_server_runtime` has already emitted the startup-error
+    marker by then.
+    """
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if isinstance(exc, Exception):
+        logger.warning(
+            "Server runtime prebuild failed; the first request retries it",
+            exc_info=exc,
+        )
+
+
+def _start_runtime_prebuild() -> asyncio.Task[object]:
+    """Start building the default runtime while the client polls for health.
+
+    The client asks for the graph only after `/ok` answers. Building here
+    overlaps the build with that poll interval. `get_server_runtime` caches the
+    result under a lock, so the first request joins this build.
+
+    Returns:
+        The background build task.
+    """
+    from deepagents_code.server_graph import get_server_runtime
+
+    task: asyncio.Task[object] = asyncio.create_task(
+        get_server_runtime(), name="dcode-runtime-prebuild"
+    )
+    task.add_done_callback(_log_prebuild_failure)
+    return task
+
+
 @asynccontextmanager
 async def _lifespan(_app: Starlette) -> AsyncIterator[None]:
-    """Flush buffered traces once the server stops serving.
+    """Prebuild the runtime, then flush buffered traces once serving stops.
 
     `Client` registers an `atexit` handler that only closes its session, never
     flushes, so without this hook anything still queued when dcode signals the
@@ -185,10 +222,15 @@ async def _lifespan(_app: Starlette) -> AsyncIterator[None]:
     Yields:
         Control for the lifetime of the application.
     """
+    prebuild = _start_runtime_prebuild()
     try:
         yield
     finally:
         try:
+            # Join the cancelled build so its own cleanup finishes before
+            # extensions shut down.
+            prebuild.cancel()
+            await asyncio.wait((prebuild,))
             from deepagents_code.extensions.runtime import shutdown_server_extensions
 
             await shutdown_server_extensions()
@@ -1395,6 +1437,7 @@ app = Starlette(
         ),
         Route("/dcode/threads/{thread_id:str}/btw", btw, methods=["POST"]),
         Route("/dcode/threads/{thread_id:str}/cost", btw_cost, methods=["GET"]),
+        Route("/dcode/threads/{thread_id:str}/usage", thread_usage, methods=["GET"]),
         Route(
             "/dcode/threads/{thread_id:str}/workspace",
             workspace,

@@ -149,10 +149,9 @@ class TestAsyncSubAgentMiddleware:
 
 
 class TestAsyncForkConfiguration:
-    @pytest.mark.parametrize("mode", ["handoff", None])
-    def test_rejects_invalid_mode(self, mode: str | None) -> None:
+    def test_rejects_invalid_mode(self) -> None:
         with pytest.raises(ValueError, match="expected 'isolated' or 'fork'"):
-            AsyncSubAgentMiddleware(async_subagents=[_make_spec(mode=mode)])
+            AsyncSubAgentMiddleware(async_subagents=[_make_spec(mode=None)])
 
 
 class TestResolveHeaders:

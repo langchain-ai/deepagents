@@ -2889,6 +2889,48 @@ class TestGetProviderProfileModules:
 class TestGetBuiltinProviders:
     """Tests for _get_builtin_providers() forward-compat helper."""
 
+    def test_source_read_matches_imported_registry(self) -> None:
+        """Reading the source must agree with the installed langchain registry.
+
+        Catches a langchain release that reshapes the literal: the source read
+        must then return `None` (falling back to the import), never a stale or
+        partial mapping.
+        """
+        from langchain.chat_models import base
+
+        parsed = model_config._read_builtin_providers_from_source()
+
+        assert parsed is not None
+        assert parsed == {
+            name: (package, class_name)
+            for name, (package, class_name, *_rest) in base._BUILTIN_PROVIDERS.items()
+        }
+
+    def test_falls_back_to_import_when_source_unreadable(self) -> None:
+        from langchain.chat_models import base
+
+        with patch.object(
+            model_config, "_read_builtin_providers_from_source", return_value=None
+        ):
+            assert model_config._get_builtin_providers() is base._BUILTIN_PROVIDERS
+
+    @pytest.mark.parametrize(
+        "literal",
+        [
+            '{"a": ("pkg", make_class(), _call)}',
+            '{"a": "pkg"}',
+            '{"a": ("pkg",)}',
+            "{**OTHER}",
+        ],
+    )
+    def test_rejects_non_literal_entries(self, literal: str) -> None:
+        import ast
+
+        node = ast.parse(literal, mode="eval").body
+
+        assert isinstance(node, ast.Dict)
+        assert model_config._provider_entries(node) is None
+
 
 class TestLoadProviderProfiles:
     """Tests for _load_provider_profiles() direct-file loading."""

@@ -26,14 +26,14 @@ INTEGRATION_ENV = {
     "RUNLOOP_API_KEY": "${{ (matrix.working-directory == 'libs/partners/runloop' || matrix.working-directory == 'libs/code') && secrets.RUNLOOP_API_KEY || '' }}",
 }
 RELEASE_INTEGRATION_ENV = {
-    "ANTHROPIC_API_KEY": "${{ (needs.setup.outputs.package == 'deepagents' || needs.setup.outputs.package == 'langchain-quickjs') && secrets.ANTHROPIC_API_KEY || '' }}",
-    "DAYTONA_API_KEY": "${{ needs.setup.outputs.package == 'langchain-daytona' && secrets.DAYTONA_API_KEY || '' }}",
-    "LANGSMITH_API_KEY": "${{ needs.setup.outputs.package == 'deepagents' && secrets.LANGSMITH_API_KEY || '' }}",
-    "MODAL_TOKEN_ID": "${{ needs.setup.outputs.package == 'langchain-modal' && secrets.MODAL_TOKEN_ID || '' }}",
-    "MODAL_TOKEN_SECRET": "${{ needs.setup.outputs.package == 'langchain-modal' && secrets.MODAL_TOKEN_SECRET || '' }}",
-    "OPENAI_API_KEY": "${{ needs.setup.outputs.package == 'deepagents' && secrets.OPENAI_API_KEY || '' }}",
-    "RUNLOOP_API_KEY": "${{ needs.setup.outputs.package == 'langchain-runloop' && secrets.RUNLOOP_API_KEY || '' }}",
-    "VERCEL_TOKEN": "${{ needs.setup.outputs.package == 'langchain-vercel-sandbox' && secrets.VERCEL_TOKEN || '' }}",
+    "ANTHROPIC_API_KEY": "${{ (needs.build.outputs.package == 'deepagents' || needs.build.outputs.package == 'langchain-quickjs') && secrets.ANTHROPIC_API_KEY || '' }}",
+    "DAYTONA_API_KEY": "${{ needs.build.outputs.package == 'langchain-daytona' && secrets.DAYTONA_API_KEY || '' }}",
+    "LANGSMITH_API_KEY": "${{ needs.build.outputs.package == 'deepagents' && secrets.LANGSMITH_API_KEY || '' }}",
+    "MODAL_TOKEN_ID": "${{ needs.build.outputs.package == 'langchain-modal' && secrets.MODAL_TOKEN_ID || '' }}",
+    "MODAL_TOKEN_SECRET": "${{ needs.build.outputs.package == 'langchain-modal' && secrets.MODAL_TOKEN_SECRET || '' }}",
+    "OPENAI_API_KEY": "${{ needs.build.outputs.package == 'deepagents' && secrets.OPENAI_API_KEY || '' }}",
+    "RUNLOOP_API_KEY": "${{ needs.build.outputs.package == 'langchain-runloop' && secrets.RUNLOOP_API_KEY || '' }}",
+    "VERCEL_TOKEN": "${{ needs.build.outputs.package == 'langchain-vercel-sandbox' && secrets.VERCEL_TOKEN || '' }}",
 }
 OVERRIDE_ONLY_INTEGRATION_TARGETS = {
     "libs/code",

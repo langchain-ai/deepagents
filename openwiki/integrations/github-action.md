@@ -1,23 +1,31 @@
 ---
 type: composite-action integration
 title: GitHub Action Integration
-description: Run one bounded, non-interactive dcode task from a GitHub Actions job. Documents the public action contract, credential and workspace handoff, memory cache lifecycle, and headless tool controls.
+description: Run one bounded, non-interactive dcode task from a GitHub Actions job. Documents the public action contract, runner execution boundary, package-release relationship, memory cache lifecycle, and CI coverage.
 tags: [github-actions, dcode, deepagents-code, ci, automation, memory, mcp, sandbox]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-10-21T08:05:42.350Z
+    at: 2026-10-23T08:06:06.503Z
 sources:
   - id: openwiki-source-b1423dca16677f7643488f74
     resource: repo://.github/scripts/tests/workflows/test_github_action.py
   - id: openwiki-source-164e2da859b5277df81c7d94
     resource: repo://.github/workflows/ci.yml
+  - id: openwiki-source-46fa34397e41ebf7491c7359
+    resource: repo://.github/workflows/release-please.yml
+  - id: openwiki-source-4d1d392666be6dfdd7a91a2e
+    resource: repo://.github/workflows/release.yml
   - id: openwiki-source-96d0addee4aedab20d360121
     resource: repo://action.yml
   - id: openwiki-source-ecf20e7a2684ba0d2ae7d701
     resource: repo://libs/code/deepagents_code/client/non_interactive.py
+  - id: openwiki-source-16a7ceeef9313200258d31eb
+    resource: repo://libs/code/hatch_build.py
   - id: openwiki-source-0fc0e47059e4d07e23e50be2
     resource: repo://libs/deepagents/deepagents/graph.py
-generated: { by: "openwiki/0.4.2", at: "2026-10-21T08:05:42.350Z" }
+  - id: openwiki-source-482fa4ca84f42b04ba025fc1
+    resource: repo://release-please-config.json
+generated: { by: "openwiki/0.4.2", at: "2026-10-23T08:06:06.503Z" }
 ---
 
 # GitHub Action Integration
@@ -153,6 +161,12 @@ The action pipes combined output through `tee`, but captures `PIPESTATUS[0]` so 
 
 For machine processing, set `json: "true"` and parse the result as data; do not treat agent-generated JSON or text as trusted code or commands.
 
+## Packaging and release alignment
+
+The composite action and dcode have separate version selectors. A workflow's `uses: langchain-ai/deepagents@<ref>` chooses the root `action.yml` implementation, while `cli_version` chooses the `deepagents-code` distribution resolved by `uvx`; an empty `cli_version` resolves the current package rather than building the checkout. This is why a wrapper change that adds a flag must remain compatible with the selected dcode version, and why action consumers that need repeatability should pin both the action ref and `cli_version`.
+
+`deepagents-code` is the release-please component rooted at `libs/code`: its configuration updates the package manifest, version module, and changelog. When a release commit changes `libs/code/CHANGELOG.md` and is named `release(deepagents-code):`, `release-please.yml` identifies a Code release and dispatches the separate `release.yml` publisher for `deepagents-code`; that publisher maps it back to `libs/code`. The package build can stamp the exact release commit into the wheel for `dcode doctor`. Thus publishing a new CLI changes what an unpinned action can resolve, while changing root `action.yml` changes the action behavior at whatever repository ref a workflow selected; neither boundary substitutes for testing their compatibility.
+
 ## Change and regression focus
 
 `action.yml` is the compatibility surface to review when changing this integration. Keep its declared input list, run-script flag mapping, defaults, validation, outputs, and cache paths aligned. The focused action tests parse `action.yml` and dcode's root argument parser to detect flag drift and prevent reintroducing `--auto-approve`. They also execute the real run-script body with stubbed `uvx` and `timeout`, covering validation, stdin/skill exclusion, CLI-version command construction, timeout arithmetic including leading zeros, exit propagation, and the stdin SIGPIPE case.
@@ -163,4 +177,4 @@ Run the focused check from the repository root:
 python -m pytest .github/scripts/tests/workflows/test_github_action.py -v
 ```
 
-Repository CI runs this file as part of `python -m pytest .github/scripts/tests -v` in the `Validate Release Options` job, which installs `packaging`, `pyyaml`, and `pytest`. For local development and repository CI practices, see [Development, CI, and Releases](/openwiki/operations/development.md).
+Repository CI runs this file as part of `python -m pytest .github/scripts/tests -v` in the `Validate Release Options` job, which installs `packaging`, `pyyaml`, and `pytest`. Separately, changes under `libs/code` select the Code lint and unit-test jobs on Python 3.14. For local development and repository CI practices, see [Development, CI, and Releases](/openwiki/operations/development.md).

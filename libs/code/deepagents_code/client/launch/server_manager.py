@@ -15,6 +15,7 @@ duplicate try/finally teardown.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import tempfile
@@ -24,7 +25,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncIterator, Awaitable, Callable
 
     from deepagents import FsToolName
 
@@ -35,6 +36,7 @@ if TYPE_CHECKING:
 from deepagents_code._env_vars import SERVER_ENV_PREFIX
 from deepagents_code._server_config import ServerConfig
 from deepagents_code.client.launch.server import (
+    _ABANDONED_START_GRACE,
     _EPHEMERAL_PORT,
     emit_preserved_log_notices,
 )
@@ -327,6 +329,7 @@ async def start_server_and_get_agent(
     host: str = "127.0.0.1",
     port: int = _EPHEMERAL_PORT,
     cwd: str | None = None,
+    after_spawn: Callable[[], Awaitable[None]] | None = None,
 ) -> tuple[RemoteAgent, ServerProcess, MCPSessionManager | None]:
     """Start a LangGraph server and return a connected remote agent client.
 
@@ -372,6 +375,8 @@ async def start_server_and_get_agent(
             pick a free ephemeral port instead of the well-known `langgraph dev`
             port 2024.
         cwd: Explicit project workspace to bind to new threads.
+        after_spawn: Awaited once the server subprocess is spawned, before
+            the health check. See `ServerProcess.start`.
 
     Returns:
         Tuple of `(remote_agent, server_process, mcp_session_manager)`.
@@ -444,7 +449,7 @@ async def start_server_and_get_agent(
     )
     started = False
     try:
-        await server.start()
+        await server.start(after_spawn=after_spawn)
         await server.wait_for_graph_ready("agent")
         agent = RemoteAgent(
             url=server.url,
@@ -473,6 +478,19 @@ async def start_server_and_get_agent(
             # and orphan the process. The inner guard stops a `stop()` error
             # from masking the exception already propagating.
             #
+            # Offload `stop()`: it blocks for up to `_SHUTDOWN_TIMEOUT` plus the
+            # SIGKILL grace while the server finishes its in-flight graph build.
+            # Quitting the TUI during startup cancels this coroutine on Textual's
+            # event loop, so a blocking call here freezes the screen until the
+            # server exits. If a second cancellation interrupts the await, the
+            # thread keeps running and `asyncio.run` joins it before the process
+            # exits, so the server is still reaped.
+            #
+            # The server never reached the caller, so it holds no session state
+            # and gets only a short graceful window. A sandbox is the exception:
+            # the graph build may be creating one, and the server deletes it only
+            # when it exits gracefully.
+            #
             # `stop()` only *queues* any debug-preserved log path; it is not
             # announced here. This helper is awaited by callers that still own
             # the terminal (the initial TUI startup worker and the in-session
@@ -480,8 +498,9 @@ async def start_server_and_get_agent(
             # alternate screen. The queue is process-global, so the outer
             # terminal teardown (`run_textual_app` / `server_session` finally)
             # drains this failed server's path once the terminal is restored.
+            grace = None if config.sandbox_type else _ABANDONED_START_GRACE
             try:
-                server.stop()
+                await asyncio.to_thread(server.stop, grace=grace)
             except Exception:
                 logger.exception(
                     "Error stopping server during startup cleanup",

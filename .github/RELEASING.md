@@ -68,7 +68,7 @@ Keep the release PR in draft while changes are still accumulating. When it is re
 3. After reviewing & finalizing, comment `@release-bot apply`. The bot updates that package's `CHANGELOG.md` (e.g. `libs/code/CHANGELOG.md` for `deepagents-code`) and mirrors the notes to the PR body.
 4. Merge normally after the `curated release notes` CI check passes.
 
-Drafts use a fixed section order matching `release-please`: `⚠ BREAKING CHANGES`, `Features`, `Bug Fixes`, `Performance Improvements`, and `Reverted Changes`. Empty sections are omitted, entries are bullets, and references include pull request links only—not commit hashes or other links.
+Drafts use a fixed section order matching `release-please`: `⚠ BREAKING CHANGES`, `Features`, `Bug Fixes`, `Performance Improvements`, and `Reverted Changes`. Empty sections are omitted, entries are bullets, and references include pull request links only—not commit hashes or other links. A draft must link every pull request in the generated changelog section and no link outside it; if the model drops a pull request or adds a link, the draft fails and nothing is posted. Links to issues that a commit closes are optional.
 
 > [!NOTE]
 > When `@release-bot apply` adds a trusted commit that changes only the package's managed `CHANGELOG.md`, the main CI workflow intentionally skips its package lint and test jobs. The `✅ CI Success` gate reuses the result from the apply commit's parent, where the same release-PR contents already ran through normal CI. Skipped package jobs on the apply commit are therefore expected; inspect the parent's `✅ CI Success` check and linked workflow run to see the reused tests. If the parent did not pass CI, the apply commit does not pass the gate.
@@ -709,7 +709,7 @@ Check these common causes first:
 
 This most commonly bites when someone tries to "fix up" a merged PR's changelog entry by pushing an empty commit with a corrected conventional-commit subject (e.g., adding a missing `!` for a breaking change). The corrected subject does land in `git log`, but release-please reads file paths, not commit subjects, when deciding scope.
 
-The `guard-empty-commit` job in [`release-please.yml`](https://github.com/langchain-ai/deepagents/blob/main/.github/workflows/release-please.yml) blocks this at CI time: any push to `main` whose `HEAD` commit changes zero files fails fast with a clear error before the release-please action runs.
+The empty-commit guard (the first step of the `detect-release-commit` job) in [`release-please.yml`](https://github.com/langchain-ai/deepagents/blob/main/.github/workflows/release-please.yml) blocks this at CI time: any push to `main` whose `HEAD` commit changes zero files fails fast with a clear error before the release-please action runs.
 
 There is one narrow exception for history repair: an empty merge commit titled `hotfix(repo): ...` may pass if each commit introduced by the merged branch touches files. This covers cases where the final file tree is intentionally unchanged, but preserving the individual commits matters. For example, release-please reads commit history to decide package scope, version bumps, and changelog entries, so restoring a lost `feat(sdk)!` commit with a `BREAKING CHANGE:` footer can be necessary even when the files already match `main`.
 
@@ -843,7 +843,7 @@ Use when something measurable has already happened off `main` (downstream consum
 #### Don'ts
 
 - **No force-push to `main`** — branch protection blocks it and would drop unrelated commits anyway.
-- **No empty commits** to "fix up" the changelog — `guard-empty-commit` fails them, and even if it didn't, the empty fan-out would open release PRs for every package (see [Empty commit fan-out](#empty-commit-fan-out)).
+- **No empty commits** to "fix up" the changelog — the empty-commit guard in `release-please.yml` fails them, and even if it didn't, the empty fan-out would open release PRs for every package (see [Empty commit fan-out](#empty-commit-fan-out)).
 - **Don't edit the release PR body to remove the entry directly** — release-please regenerates the body from merged-PR commits on every sync, so manual edits persist only until the next push to `main`. The override on the original PR is the durable mechanism.
 - **Don't edit `.release-please-manifest.json`** — manifest edits only matter for [Yanking a Release](#yanking-a-release) (versions that already shipped).
 
@@ -1037,12 +1037,12 @@ If the older pin is intentional, add the `ci:dcode-skip-sdk-pin` label to the re
 
 ### Release Failed: Ripgrep Install
 
-On release-sensitive paths, the ripgrep install itself runs with no timeout. This applies to the strict step in CI and to the `Install ripgrep` step in `release.yml`. The rg-gated tests must exercise the real binary, not the Python fallback; one of them checks symlink containment. An apt or mirror failure therefore fails the job even though the code is fine.
+On release-sensitive paths, the ripgrep install itself runs with no timeout. This applies to the strict step in CI and to the `Install ripgrep` step in `release.yml`. The rg-gated tests must exercise the real binary, not the Python fallback; one of them checks symlink containment. The install downloads a pinned ripgrep release from GitHub (`.github/scripts/release/install_ripgrep.sh`) and verifies its checksum. A download failure therefore fails the job even though the code is fine.
 
-If the apt log shows a mirror or network error, add the `ci:skip-ripgrep` label to the release PR and re-run CI. With the label present:
+If the install log shows a network or download error, add the `ci:skip-ripgrep` label to the release PR and re-run CI. With the label present:
 
-- **In CI** (`_test.yml`): the strict install still runs, but a failure becomes a tolerated continue. The step then unwinds `dpkg` and probes for a usable `rg`. If one is present, the leg keeps full coverage. If not, `DEEPAGENTS_RIPGREP_EXPECTED` is left unset, so `require_ripgrep()` skips the gated tests on that leg instead of failing them. The run posts a sticky comment on the PR that records which legs ran without ripgrep.
-- **At dispatch** (`release-please.yml`): the automatic release dispatch passes `dangerous-skip-ripgrep-check=true` to `release.yml`. The publish run's `Install ripgrep` step then tolerates the same apt failure. It applies the same `rg` probe, and when the binary really is missing it writes a "Published without ripgrep coverage" block to the run summary.
+- **In CI** (`_test.yml`): the strict install still runs, but a failure becomes a tolerated continue. The step then probes for a usable `rg`. If one is present, the leg keeps full coverage. If not, `DEEPAGENTS_RIPGREP_EXPECTED` is left unset, so `require_ripgrep()` skips the gated tests on that leg instead of failing them. The run posts a sticky comment on the PR that records which legs ran without ripgrep.
+- **At dispatch** (`release-please.yml`): the automatic release dispatch passes `dangerous-skip-ripgrep-check=true` to `release.yml`. The publish run's `Install ripgrep` step then tolerates the same install failure. It applies the same `rg` probe, and when the binary really is missing it writes a "Published without ripgrep coverage" block to the run summary.
 
 The label is honored only on release PRs — a `pull_request` with a `release-please--` branch or a `release(` title. `push`-to-`main` and merge-queue runs have no PR label to read, so they always enforce the strict install. The dispatch reads the label at merge time: remove it before merging and the publish run enforces the strict install again. Remove the label and re-run CI to restore full ripgrep coverage before you rely on the result.
 

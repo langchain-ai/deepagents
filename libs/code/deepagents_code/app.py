@@ -44,7 +44,7 @@ from textual.containers import Container, VerticalScroll
 from textual.content import Content
 from textual.css.query import NoMatches
 from textual.dom import NoScreen
-from textual.events import Click
+from textual.events import Click, Key
 from textual.message import Message
 from textual.notifications import Notification as _Notification, Notify as _Notify
 from textual.screen import ModalScreen, Screen
@@ -173,6 +173,12 @@ from deepagents_code.tui.widgets.messages import (
     ToolGroupSummary,
     UserMessage,
 )
+from deepagents_code.tui.widgets.selection_action import (
+    SELECTION_ACTION_WIDTH,
+    SelectionAction,
+    is_transcript_selection,
+    quote_after,
+)
 from deepagents_code.tui.widgets.startup_tip import StartupTip, show_startup_tip
 from deepagents_code.tui.widgets.status import StatusBar
 from deepagents_code.tui.widgets.subagent_panel import SubagentPanel
@@ -243,7 +249,7 @@ _DEFERRED_START_NOTICE = (
 
 _AUTO_CLASSIFIER_RECOMMENDED_MODELS = {
     "anthropic:claude-haiku-5-5": "Claude Haiku 5.5",
-    "anthropic:claude-sonnet-5": "Claude Sonnet 5",
+    "anthropic:claude-sonnet-5-5": "Claude Sonnet 5.5",
     "google_genai:gemini-3.8-flash": "Gemini 3.8 Flash",
     "openai:gpt-6-luna": "GPT-6 Luna",
 }
@@ -1073,7 +1079,7 @@ if TYPE_CHECKING:
     from langchain_core.runnables import RunnableConfig
     from langgraph.pregel import Pregel
     from textual.app import ComposeResult
-    from textual.events import MouseUp, Paste, Resize
+    from textual.events import Event, MouseUp, Paste, Resize
     from textual.geometry import Size
     from textual.layout import DockArrangeResult
     from textual.timer import Timer
@@ -1086,6 +1092,7 @@ if TYPE_CHECKING:
     from deepagents_code.approval_mode import ApprovalMode
     from deepagents_code.client.launch.server import ServerProcess
     from deepagents_code.client.remote_client import RemoteAgent
+    from deepagents_code.client.session_cost import SessionCost
     from deepagents_code.cold_cache import (
         CacheActivity,
         ColdCacheReason,
@@ -4121,6 +4128,24 @@ class DeepAgentsApp(App):
         `[ui].show_scrollbar` and re-persisted on toggle. Off by default.
         """
 
+        self._ask_about_selection = _load_bool_display_preference(
+            "display.ask_about_selection", fallback=True
+        )
+        """Whether selecting conversation text shows "Ask about this".
+
+        Read at startup and on `/reload` from `DEEPAGENTS_CODE_ASK_ABOUT_SELECTION`
+        or `[ui].ask_about_selection`. On by default.
+        """
+
+        self._selection_action: SelectionAction | None = None
+        """The mounted "Ask about this" action, if one is showing."""
+
+        self._selection_anchor: tuple[Widget, int, int] | None = None
+        """A selected widget's top row and the selection's row when last seen.
+
+        Both are screen rows, so the action can follow its selection on scroll.
+        """
+
         self._debug_console_click_to_copy = _load_debug_console_click_to_copy()
         r"""Whether the `Ctrl+\` Debug Console copies on click.
 
@@ -4689,6 +4714,12 @@ class DeepAgentsApp(App):
         cancellation, server stop, pending-hook drain, or `session.end` — so it
         may run with no agent worker at all (e.g. only to stop the server)."""
 
+        self._server_stop_task: asyncio.Task[None] | None = None
+        """Server stop started by the deferred teardown.
+
+        The teardown does not await it before Textual exits; `run_textual_app`
+        waits for the stop after the terminal is restored."""
+
         self._exiting = False
         """Whether shutdown has begun.
 
@@ -5053,14 +5084,25 @@ class DeepAgentsApp(App):
             exclusive=True,
             group="startup-import-prewarm",
         )
+        self.run_worker(
+            self._install_deferred_langsmith_redaction(),
+            group="startup-langsmith-redaction",
+        )
 
         # Start branch resolution immediately — the thread launches now
         # (during on_mount) so by the time the first frame finishes painting
         # the filesystem probe is already done. _post_paint_init fires the
-        # heavier workers (server, model creation) afterward.
+        # remaining startup workers afterward.
         self._startup_task = asyncio.create_task(
             self._resolve_git_branch_and_continue(),
         )
+
+        # Start the server right after first paint, without waiting on the
+        # git probe and `_post_paint_init`. The subprocess is the slowest
+        # startup step, so any work queued ahead of it delays the prompt.
+        if self._server_kwargs is not None and not self._server_startup_deferred:
+            self.call_after_refresh(self._start_server_worker)
+
         self._maybe_start_external_event_source()
 
         # Non-essential advisory: defer past first paint so it never delays
@@ -5335,6 +5377,20 @@ class DeepAgentsApp(App):
 
         refresh_task.add_done_callback(_finalize_git_branch_refresh)
 
+    def _start_server_worker(self) -> None:
+        """Run `_start_server_background` in the startup server worker."""
+        if self._lc_thread_id:
+            # Session state binds the per-thread debug log later; bind now so
+            # the server launch lines reach the file too.
+            from deepagents_code._debug import bind_debug_logging_to_thread
+
+            bind_debug_logging_to_thread(self._lc_thread_id)
+        self.run_worker(
+            self._start_server_background,
+            exclusive=True,
+            group="server-startup",
+        )
+
     async def _resolve_git_branch_and_continue(self) -> None:
         """Resolve git branch, then schedule remaining init workers.
 
@@ -5347,18 +5403,22 @@ class DeepAgentsApp(App):
             await self._refresh_git_branch()
         finally:
             # Always schedule post-paint init — even if branch resolution
-            # fails, the app must still start the server, session, etc.
+            # fails, the app must still start the session, skills, etc.
             self.call_after_refresh(self._post_paint_init)
 
-    async def _post_paint_init(self) -> None:
-        """Fire background workers for remaining startup work.
+    async def _build_ui_adapter_after_prewarm(self) -> None:
+        """Build the UI adapter without blocking on the prewarm's import locks."""
+        await self._await_prewarm_imports()
+        self._ensure_ui_adapter()
 
-        Everything here is non-blocking: workers and thread-offloaded calls
-        so the UI stays responsive.
+    def _ensure_ui_adapter(self) -> None:
+        """Create the UI adapter once.
+
+        The adapter only holds UI callbacks and does not depend on the agent.
+        The agent is injected later at `execute_task_textual()` call time.
         """
-        # Create UI adapter unconditionally — it only holds UI callbacks and
-        # doesn't depend on the agent. The agent is injected later at
-        # execute_task_textual() call time.
+        if self._ui_adapter is not None:
+            return
         from deepagents_code.tui.textual_adapter import TextualUIAdapter
 
         self._ui_adapter = TextualUIAdapter(
@@ -5391,6 +5451,21 @@ class DeepAgentsApp(App):
         self._ui_adapter._on_usage_update = self._refresh_cache_display
         self._ui_adapter._on_stream_complete = self._mark_thread_turn_completed
 
+    async def _post_paint_init(self) -> None:
+        """Fire background workers for remaining startup work.
+
+        Everything here is non-blocking: workers and thread-offloaded calls
+        so the UI stays responsive.
+        """
+        # Build the UI adapter once the import prewarm finishes. Importing
+        # `textual_adapter` here while the prewarm thread still holds its
+        # module locks would freeze the event loop right after first paint.
+        self.run_worker(
+            self._build_ui_adapter_after_prewarm(),
+            exclusive=True,
+            group="startup-ui-adapter",
+        )
+
         if self._server_startup_deferred:
             await self._mount_deferred_start_notice()
 
@@ -5415,14 +5490,6 @@ class DeepAgentsApp(App):
             exclusive=True,
             group="startup-history-sweep",
         )
-
-        # Server startup (model creation + server process)
-        if self._server_kwargs is not None and not self._server_startup_deferred:
-            self.run_worker(
-                self._start_server_background,
-                exclusive=True,
-                group="server-startup",
-            )
 
         # Background update check and what's-new banner
         # (opt-out via env var or config.toml [update].check)
@@ -6345,8 +6412,6 @@ class DeepAgentsApp(App):
                     markup=False,
                 )
 
-        await self._await_prewarm_imports()
-
         # Install the managed `rg` and prepend it to `PATH` BEFORE spawning
         # the langgraph subprocess: `ServerProcess.start()` snapshots
         # `os.environ` into the child, so an install that lands after the
@@ -6361,12 +6426,26 @@ class DeepAgentsApp(App):
         if self._server_kwargs is None:
             return
         self._server_kwargs["cwd"] = self._cwd
-        coros: list[Any] = [start_server_and_get_agent(**self._server_kwargs)]  # ty: ignore[invalid-argument-type]
+        # Spawn the server without waiting for the import prewarm: the
+        # subprocess boots in parallel, and only the health check that follows
+        # imports into the prewarm's module graph on this thread.
+        coros: list[Any] = [
+            start_server_and_get_agent(
+                **self._server_kwargs,  # ty: ignore[invalid-argument-type]
+                after_spawn=self._await_prewarm_imports,
+            )
+        ]
 
         if self._mcp_preload_kwargs is not None:
             from deepagents_code.main import _preload_session_mcp_server_info
 
-            coros.append(_preload_session_mcp_server_info(**self._mcp_preload_kwargs))
+            preload_kwargs = self._mcp_preload_kwargs
+
+            async def _preload_mcp() -> list[MCPServerInfo] | None:
+                await self._await_prewarm_imports()
+                return await _preload_session_mcp_server_info(**preload_kwargs)
+
+            coros.append(_preload_mcp())
 
         try:
             results = await asyncio.gather(*coros, return_exceptions=True)
@@ -6425,6 +6504,10 @@ class DeepAgentsApp(App):
                 exc_info=results[1],
             )
 
+        # The server can win the race against `_post_paint_init`; make sure
+        # the adapter exists before the agent becomes usable.
+        await self._await_prewarm_imports()
+        self._ensure_ui_adapter()
         self.post_message(
             self.ServerReady(
                 agent=agent,
@@ -6736,6 +6819,26 @@ class DeepAgentsApp(App):
             # failure originating outside that guard (e.g. the worker
             # machinery itself) so a failed prewarm never propagates here.
             logger.warning("Import prewarm worker failed", exc_info=True)
+
+    async def _install_deferred_langsmith_redaction(self) -> None:
+        """Install the redacting LangSmith client that startup deferred.
+
+        Runs on a worker thread after the import prewarm, so it delays neither
+        first paint nor the server health wait that follows the prewarm. This
+        is only a warm-up: `create_model` installs the client first if a model
+        is needed sooner, and retries an install that failed here.
+        """
+        await self._await_prewarm_imports()
+        from deepagents_code.config import ensure_langsmith_secret_redaction
+
+        try:
+            await asyncio.to_thread(ensure_langsmith_secret_redaction)
+        except Exception:
+            logger.warning(
+                "Deferred LangSmith redaction install failed; retrying on first "
+                "model use",
+                exc_info=True,
+            )
 
     @staticmethod
     def _prewarm_deferred_imports() -> None:
@@ -8833,8 +8936,12 @@ class DeepAgentsApp(App):
         """Hydrate history in both directions whenever the chat scrolls.
 
         Driven by `_ChatScroll.Scrolled` (see that message for why hydration
-        keys off the scroll offset rather than the scrollbar messages).
+        keys off the scroll offset rather than the scrollbar messages). Also
+        moves the "Ask about this" action with its selection once the scroll
+        has been laid out.
         """
+        if self._selection_action is not None:
+            self.call_after_refresh(self._follow_selection_action)
         if (
             self._transcript_prune_timer is not None
             and not self._message_store.hard_window_exceeded()
@@ -8844,7 +8951,12 @@ class DeepAgentsApp(App):
         self._check_hydration_below_needed()
 
     def on_resize(self, _event: Resize) -> None:
-        """Scale cached message heights when terminal width changes."""
+        """Scale cached message heights when terminal width changes.
+
+        Also dismisses the "Ask about this" action, whose position no longer
+        matches the reflowed selection.
+        """
+        self._dismiss_selection_action()
         # A terminal resize moves the bottom chrome even when its height is
         # unchanged, so re-anchor before the early returns below.
         self._anchor_toast_rack()
@@ -10292,14 +10404,10 @@ class DeepAgentsApp(App):
         thread_id = self._lc_thread_id
         if not self._agent or not thread_id:
             return
-        try:
-            state_values = await self._get_thread_state_values(thread_id)
-        except Exception:
-            logger.debug(
-                "Could not load thread state while reconciling cost and cache state",
-                exc_info=True,
-            )
+        usage = await self._read_thread_usage(thread_id)
+        if usage is None:
             return
+        state_values, cost = usage
         # Separate server storage leaves only a discovery seed locally. Keep
         # resume policy tied to actual activity, even if the UI switched threads
         # during the read. A stale checkpoint must not make a thread look fresh.
@@ -10311,17 +10419,6 @@ class DeepAgentsApp(App):
                 logger.warning("Could not refresh thread activity", exc_info=True)
         if self._lc_thread_id != thread_id:
             return
-        remote = self._remote_agent()
-        cost = (
-            await remote.aget_session_cost(
-                {"configurable": {"thread_id": thread_id}},
-                checkpoint=state_values,
-            )
-            if remote is not None
-            else None
-        )
-        if self._lc_thread_id != thread_id:
-            return
         if cost is not None:
             self._set_session_cost(
                 cost["total"],
@@ -10331,6 +10428,38 @@ class DeepAgentsApp(App):
         else:
             self._sync_session_cost_from_state(state_values)
         self._sync_cache_state_from_state(state_values)
+
+    async def _read_thread_usage(
+        self, thread_id: str
+    ) -> tuple[Mapping[str, Any], SessionCost | None] | None:
+        """Read cost and cache state, preferring the server's usage route.
+
+        Full thread state is the fallback for local agents and servers
+        without the route. It also rebuilds the message history, which is
+        slow and large on a long thread.
+
+        Returns:
+            Checkpoint values and the combined server cost, or `None` when
+                state cannot be read.
+        """
+        remote = self._remote_agent()
+        config: RunnableConfig = {"configurable": {"thread_id": thread_id}}
+        usage = await remote.aget_usage_state(config) if remote else None
+        if usage is not None:
+            return usage
+        try:
+            state_values = await self._get_thread_state_values(thread_id)
+        except Exception:
+            logger.debug(
+                "Could not load thread state while reconciling cost and cache state",
+                exc_info=True,
+            )
+            return None
+        if remote is None:
+            return state_values, None
+        return state_values, await remote.aget_session_cost(
+            config, checkpoint=state_values
+        )
 
     def _notify_hydration_failure(self) -> None:
         """Surface transcript hydration failures to the user, once per session.
@@ -11934,6 +12063,10 @@ class DeepAgentsApp(App):
         self._startup_sequence_running = True
         initial_submitted = False
         try:
+            # Startup submissions need the adapter, which `_post_paint_init`
+            # builds in a worker that may not have run yet.
+            await self._await_prewarm_imports()
+            self._ensure_ui_adapter()
             if self._session_state is None:
                 # Initialize inline rather than waiting on the session-init worker:
                 # under Textual's worker scheduling an in-flight worker may not
@@ -18284,6 +18417,11 @@ class DeepAgentsApp(App):
 
                 clear_caches()
                 self._sync_status_model()
+                self._ask_about_selection = _load_bool_display_preference(
+                    "display.ask_about_selection", fallback=True
+                )
+                if not self._ask_about_selection:
+                    self._dismiss_selection_action()
             except OSError, ValueError:
                 logger.exception("Failed to reload configuration")
                 await self._mount_message(
@@ -23544,20 +23682,26 @@ class DeepAgentsApp(App):
 
                     # Agent cleanup has finished or hit its window; only now is
                     # it safe to finish cancellation of any detached restart,
-                    # then stop the server. Server shutdown and the pending-hook
-                    # drain are independent, so overlap them. Each coroutine
-                    # swallows its own `Exception`s, and `return_exceptions=True`
-                    # keeps a stray one from cancelling its sibling; a
-                    # `CancelledError` (force-quit) still propagates and is
-                    # handled by the `finally` below. Inspect the results anyway
-                    # so a future edit that lets an exception escape a child
-                    # coroutine is surfaced rather than silently swallowed.
+                    # then stop the server.
                     await _finish_restart()
-                    # The modal-command unwind touches only the tool env, so it
-                    # overlaps server shutdown and the hook drain rather than
-                    # serializing behind them.
+                    # Start the server stop, but do not hold the terminal for
+                    # it: uvicorn's shutdown takes about 0.2s even when idle.
+                    # `run_textual_app` calls `stop()` again after Textual
+                    # restores the terminal. `stop()` is serialized and
+                    # idempotent, so that call waits for this one, and the
+                    # server is still reaped before the session summary prints.
+                    # This overlaps server shutdown with Textual's own teardown
+                    # and with the phases below.
+                    self._server_stop_task = asyncio.ensure_future(_stop_server())
+                    # The pending-hook drain and the modal-command unwind are
+                    # independent, so overlap them. Each coroutine swallows its
+                    # own `Exception`s, and `return_exceptions=True` keeps a
+                    # stray one from cancelling its sibling; a `CancelledError`
+                    # (force-quit) still propagates and is handled by the
+                    # `finally` below. Inspect the results anyway so a future
+                    # edit that lets an exception escape a child coroutine is
+                    # surfaced rather than silently swallowed.
                     results = await asyncio.gather(
-                        _stop_server(),
                         _drain_hooks(),
                         _finish_modal_commands(),
                         return_exceptions=True,
@@ -24837,12 +24981,7 @@ class DeepAgentsApp(App):
             return
         if isinstance(self.screen, ModalScreen):
             return
-        if (
-            self._pending_approval_widget
-            or self._pending_ask_user_widget
-            or self._pending_goal_review_widget
-            or self._is_input_focused()
-        ):
+        if self._inline_prompt_pending() or self._is_input_focused():
             return
         if self._chat_input.handle_external_paste(event.text):
             event.prevent_default()
@@ -24860,13 +24999,7 @@ class DeepAgentsApp(App):
             return
         self._chat_input._notify_app_focus()
         self._chat_input.set_cursor_blink(blink=self._cursor_blink_enabled)
-        if isinstance(self.screen, ModalScreen):
-            return
-        if (
-            self._pending_approval_widget
-            or self._pending_ask_user_widget
-            or self._pending_goal_review_widget
-        ):
+        if isinstance(self.screen, ModalScreen) or self._inline_prompt_pending():
             return
         self._chat_input.focus_input()
 
@@ -24910,18 +25043,14 @@ class DeepAgentsApp(App):
         if isinstance(self.screen, ModalScreen):
             return
         # Don't steal focus from active inline prompt widgets.
-        if (
-            self._pending_approval_widget
-            or self._pending_ask_user_widget
-            or self._pending_goal_review_widget
-        ):
+        if self._inline_prompt_pending():
             return
         self.call_after_refresh(self._chat_input.focus_input)
 
-    def on_mouse_up(self, event: MouseUp) -> None:  # noqa: ARG002  # Textual event handler signature
-        """Copy selection to clipboard after click-chain selection updates.
+    def on_mouse_up(self, event: MouseUp) -> None:
+        """Copy the selection and offer "Ask about this" after selection updates.
 
-        The scan is pinned to the active screen captured here, not resolved
+        The clipboard scan is pinned to the active screen captured here, not resolved
         inside the deferred callback. Textual routes mouse events only to the
         top of the screen stack (`App.on_event` forwards to `self.screen`), so
         that is necessarily where the release landed. Without pinning, a
@@ -24932,6 +25061,11 @@ class DeepAgentsApp(App):
         `self.screen` needs no empty-stack guard: `App.on_event` already
         dereferenced it to forward this `MouseUp`, and the only code that
         empties the stack runs after the message loop has stopped.
+
+        The same screen goes to `_show_selection_action`, which skips
+        any screen that is no longer active by then. A modal needs no check of
+        its own: only the main screen holds `#messages`, so no selection on a
+        modal counts as transcript text.
         """
         from deepagents_code.clipboard import copy_selection_to_clipboard
 
@@ -24940,6 +25074,131 @@ class DeepAgentsApp(App):
             self,
             screen=self.screen,
         )
+        self.call_after_refresh(
+            self._show_selection_action, self.screen, event.screen_x, event.screen_y
+        )
+
+    async def _show_selection_action(self, screen: Screen, x: int, y: int) -> None:
+        """Replace any existing "Ask about this" action with one for the selection.
+
+        The old action is always removed first, so a click that leaves no
+        transcript selection also clears a stale one.
+        """
+        self._dismiss_selection_action()
+        if (
+            not self._ask_about_selection
+            or screen is not self.screen
+            or not self._chat_input
+            or self._inline_prompt_pending()
+            or not is_transcript_selection(screen.selections)
+        ):
+            return
+        text = screen.get_selected_text()
+        if not text or not text.strip():
+            return
+        action = SelectionAction(text)
+        action.styles.offset = (
+            max(0, min(x, screen.size.width - SELECTION_ACTION_WIDTH)),
+            max(0, y - 1),
+        )
+        self._selection_action = action
+        anchor = next(iter(screen.selections))
+        self._selection_anchor = (anchor, anchor.region.y, y)
+        await screen.mount(action)
+
+    def _follow_selection_action(self) -> None:
+        """Move the action by as many rows as its selection has scrolled.
+
+        Streaming output scrolls a bottom-anchored chat on every chunk, so
+        dismissing on any scroll would make the action unusable during a run.
+        The action is dismissed once the selection leaves the visible chat, or
+        when its widget or the chat is no longer laid out.
+        """
+        action, anchor = self._selection_action, self._selection_anchor
+        if action is None or anchor is None:
+            return
+        widget, last_top, last_row = anchor
+        region = widget.region
+        try:
+            chat = self.query_one("#chat", VerticalScroll).region
+        except NoMatches:
+            self._dismiss_selection_action()
+            return
+        row = last_row + region.y - last_top
+        if not region or not chat.y <= row < chat.bottom:
+            self._dismiss_selection_action()
+            return
+        x = action.styles.offset.resolve(action.size, self.screen.size).x
+        action.styles.offset = (x, max(0, row - 1))
+        self._selection_anchor = (widget, region.y, row)
+
+    def on_selection_action_ask(self, event: SelectionAction.Ask) -> None:
+        """Append the selected text to the draft as a Markdown blockquote.
+
+        Shows a warning instead while an inline prompt is pending, a modal is
+        open, or a shell or command draft is typed. An empty shell or command
+        draft switches back to normal mode first. Also warns when the chat
+        input cannot take the text.
+        """
+        self._dismiss_selection_action()
+        chat_input = self._chat_input
+        if not chat_input:
+            logger.warning("Ask about this: chat input is not mounted")
+            return
+        blocker = self._selection_ask_blocker(chat_input)
+        if blocker:
+            self.notify(blocker, severity="warning")
+            return
+        # Only an empty draft gets here in shell or command mode.
+        chat_input.mode = "normal"
+        if not chat_input.insert_at_end(quote_after(chat_input.value, event.text)):
+            logger.warning("Ask about this: chat input text area is not mounted")
+            self.notify(
+                "Could not add the selection to the chat input. "
+                "Copy and paste it instead.",
+                severity="warning",
+            )
+            return
+        chat_input.focus_input()
+
+    def _selection_ask_blocker(self, chat_input: ChatInput) -> str | None:
+        """Return why the selection cannot be quoted right now, if anything."""
+        if self._inline_prompt_pending():
+            # The action is hidden while a prompt waits, but one can arrive
+            # between showing the action and the click.
+            return "Answer the pending prompt before adding the selection"
+        if isinstance(self.screen, ModalScreen):
+            return "Close the open dialog before adding the selection"
+        if chat_input.mode != "normal" and chat_input.value:
+            # A quote line starts with `>`, which a shell reads as a redirect
+            # and a slash command would take as its arguments.
+            return "Clear the shell or command input before adding the selection"
+        return None
+
+    def _inline_prompt_pending(self) -> bool:
+        """Return whether an approval, question, or goal review awaits input."""
+        return bool(
+            self._pending_approval_widget
+            or self._pending_ask_user_widget
+            or self._pending_goal_review_widget
+        )
+
+    def _dismiss_selection_action(self) -> None:
+        """Remove the "Ask about this" action if one is showing."""
+        action, self._selection_action = self._selection_action, None
+        self._selection_anchor = None
+        if action is not None and action.is_attached:
+            action.remove()
+
+    async def on_event(self, event: Event) -> None:
+        """Dismiss the "Ask about this" action on any key before it is dispatched.
+
+        The focused chat input stops most keys, including ordinary typing,
+        before they bubble, so an `on_key` handler on the app would miss them.
+        """
+        if self._selection_action is not None and isinstance(event, Key):
+            self._dismiss_selection_action()
+        await super().on_event(event)
 
     # =========================================================================
     # Model Switching
@@ -32569,6 +32828,8 @@ async def run_textual_app(
         # Guarantee server cleanup regardless of how the app exits.
         # Covers both the pre-started server_proc path and the deferred
         # server_kwargs path (where the background worker sets _server_proc).
+        # A graceful exit has usually started this stop already without
+        # waiting for it; this call blocks until that stop finishes.
         from deepagents_code.client.launch.server import emit_preserved_log_notices
 
         if app._server_proc is not None:

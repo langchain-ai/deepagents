@@ -5,6 +5,9 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import sqlite3
+from contextlib import closing
+from functools import cache
 from typing import TYPE_CHECKING, cast, override
 
 from starlette.requests import ClientDisconnect
@@ -12,11 +15,16 @@ from starlette.responses import JSONResponse, Response
 
 from deepagents_code.btw import BTW_OPERATION_ATTR, BtwOperation
 from deepagents_code.btw_cost import answer_with_cost, load_cost
-from deepagents_code.workspace import WorkspaceConflictError, require_thread_workspace
+from deepagents_code.workspace import (
+    WorkspaceConflictError,
+    _database_path,
+    require_thread_workspace,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Coroutine
 
+    from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
     from starlette.requests import Request
     from starlette.types import Receive, Scope, Send
 
@@ -246,3 +254,74 @@ async def btw_cost(request: Request) -> JSONResponse:
     """
     cost = await asyncio.to_thread(load_cost, request.path_params["thread_id"])
     return JSONResponse({"cost": cost})
+
+
+_USAGE_CHANNELS = (
+    "_session_cost_usd",
+    "_session_cost_breakdown",
+    "_last_model_request_at",
+    "_last_cache_write",
+    "_last_cache_use",
+    "_last_cache_model_spec",
+    "_last_cache_params",
+    "_last_cache_endpoint",
+    "_model_spec",
+)
+"""Checkpoint channels the client reads to settle cost and prompt-cache state."""
+
+
+def _read_usage_channels(thread_id: str) -> dict[str, object]:
+    """Read usage channels from the latest root checkpoint row.
+
+    The row stores these channels inline. Delta channels such as `messages`
+    are not replayed, so the cost does not grow with the thread.
+
+    Returns:
+        The usage channels present in the checkpoint; empty without one.
+    """
+    path = _database_path()
+    if not path.exists():
+        return {}
+    with closing(
+        sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True, timeout=0.05)
+    ) as conn:
+        if not conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'checkpoints'"
+        ).fetchone():
+            return {}
+        row = conn.execute(
+            "SELECT type, checkpoint FROM checkpoints "
+            "WHERE thread_id = ? AND checkpoint_ns = '' "
+            "ORDER BY checkpoint_id DESC LIMIT 1",
+            (thread_id,),
+        ).fetchone()
+    if row is None or not row[0] or not row[1]:
+        return {}
+    values = _serializer().loads_typed((row[0], row[1])).get("channel_values", {})
+    return {key: values[key] for key in _USAGE_CHANNELS if key in values}
+
+
+@cache
+def _serializer() -> JsonPlusSerializer:
+    from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
+
+    return JsonPlusSerializer()
+
+
+def _load_usage(thread_id: str) -> dict[str, object]:
+    return {"cost": load_cost(thread_id), "checkpoint": _read_usage_channels(thread_id)}
+
+
+async def thread_usage(request: Request) -> JSONResponse:
+    """Read cost and prompt-cache state without the message history.
+
+    The client settles its display after every turn. Full thread state
+    rebuilds and sends every message, which is megabytes on a long thread.
+    This route sends only the channels the client reads, plus side spend.
+
+    Returns:
+        Side-question spend under `cost` and checkpoint usage channels under
+            `checkpoint`.
+    """
+    usage = await asyncio.to_thread(_load_usage, request.path_params["thread_id"])
+    return JSONResponse(usage)

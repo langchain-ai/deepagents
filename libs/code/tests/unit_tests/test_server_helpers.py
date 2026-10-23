@@ -41,6 +41,11 @@ class TestBuildServerEnv:
         env = _build_server_env()
         assert env["LANGGRAPH_AUTH_TYPE"] == "noop"
 
+    def test_disables_langgraph_api_version_check(self) -> None:
+        with patch.dict(os.environ, {"LANGGRAPH_NO_VERSION_CHECK": "false"}):
+            env = _build_server_env()
+        assert env["LANGGRAPH_NO_VERSION_CHECK"] == "1"
+
     def test_strips_auth_variables(self) -> None:
         with patch.dict(
             os.environ,

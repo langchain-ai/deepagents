@@ -30,11 +30,13 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.tools import StructuredTool, tool
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+from langgraph.errors import GraphInterrupt, NodeCancelledError, ParentCommand
+from langgraph.prebuilt.tool_node import ToolRuntime
 from langgraph.types import Command, interrupt
 
 from deepagents_code import cost_tracking
 from deepagents_code._fake_models import _ToolBindingFakeModel
-from deepagents_code._js_cost import CostAwareCodeInterpreterMiddleware
+from deepagents_code._js_cost import CostAwareCodeInterpreterMiddleware, _cost_task
 from deepagents_code.cost_tracking import CostTrackingMiddleware
 
 _INTERPRETERS: list[CostAwareCodeInterpreterMiddleware] = []
@@ -480,6 +482,97 @@ async def test_failed_child_preserves_checkpointed_cost() -> None:
     await _assert_accounting(agent, 3)
 
 
+@pytest.mark.parametrize(
+    "error",
+    [
+        asyncio.CancelledError(),
+        GraphInterrupt(()),
+        NodeCancelledError("cancelled"),
+        ParentCommand(Command(goto="parent")),
+    ],
+)
+async def test_dispatch_preserves_control_flow(error: BaseException) -> None:
+    @tool
+    async def task(description: str, subagent_type: str) -> str:  # noqa: ARG001  # Task tool signature.
+        """Raise a graph control-flow signal."""
+        await asyncio.sleep(0)
+        raise error
+
+    runtime = ToolRuntime(
+        state={},
+        context=None,
+        config={},
+        stream_writer=lambda _value: None,
+        tool_call_id="task",
+        store=None,
+    )
+    assert isinstance(task, StructuredTool)
+    proxy = _cost_task(task, runtime, "owner", set())
+    assert proxy.coroutine is not None
+    with pytest.raises(type(error)) as caught:
+        await proxy.coroutine("work", "child", runtime)
+    assert caught.value is error
+
+
+@pytest.mark.parametrize("durability", ["async", "exit"])
+async def test_failed_dispatch_preserves_successful_siblings(durability) -> None:
+    started = {name: asyncio.Event() for name in ("one", "two")}
+    release = asyncio.Event()
+    completed = []
+    cancelled = []
+
+    @tool
+    async def wait(name: str) -> str:
+        """Finish after the failed child has been dispatched."""
+        started[name].set()
+        try:
+            await release.wait()
+            await asyncio.sleep(0.05)
+        except asyncio.CancelledError:
+            cancelled.append(name)
+            raise
+        completed.append(name)
+        return name
+
+    @tool
+    async def fail() -> str:
+        """Fail while both healthy siblings are still running."""
+        await asyncio.gather(*(event.wait() for event in started.values()))
+        release.set()
+        msg = "child unavailable"
+        raise RuntimeError(msg)
+
+    children = {
+        name: _child(
+            _tool_call("wait", {"name": name}),
+            AIMessage(content="RESULT_" + name, id=name, usage_metadata=_usage()),
+            tools=[wait],
+        )
+        for name in started
+    }
+    children["fail"] = _child(_tool_call("fail"), tools=[fail])
+    agent = _parent(
+        "const results = await Promise.all(["
+        'task({description:"one",subagentType:"one"}),'
+        'task({description:"fail",subagentType:"fail"}),'
+        'task({description:"two",subagentType:"two"})]);'
+        "JSON.stringify([results[0], JSON.parse(results[1]), results[2]])",
+        children,
+        InMemorySaver(),
+    )
+    result = await agent.ainvoke(
+        {"messages": [HumanMessage("go")]}, _CONFIG, durability=durability
+    )
+    output = result["messages"][-2].content
+    assert "RESULT_one" in output
+    assert "RESULT_two" in output
+    assert "Subagent 'fail' failed: RuntimeError: child unavailable" in output
+    assert '"failed":true' in output
+    assert sorted(completed) == ["one", "two"]
+    assert cancelled == []
+    await _assert_accounting(agent, 7)
+
+
 @pytest.mark.parametrize("durability", ["async", "exit"])
 @pytest.mark.parametrize("nested", [False, True])
 async def test_dispatch_failure_cancels_sibling_without_losing_durable_cost(
@@ -503,7 +596,8 @@ async def test_dispatch_failure_cancels_sibling_without_losing_durable_cost(
 
     code = (
         'await Promise.all([task({description:"wait",subagentType:"wait"}),'
-        'task({description:"fail",subagentType:"fail"})])'
+        'task({description:"fail",subagentType:"fail"}).then(result => {'
+        "throw new Error(JSON.parse(result).error);})])"
     )
     waiter = _child(_tool_call("wait"), tools=[wait])
     if nested:

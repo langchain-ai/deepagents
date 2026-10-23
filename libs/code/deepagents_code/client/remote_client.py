@@ -381,6 +381,8 @@ class RemoteAgent:
         self._workspace_config_fingerprint: str | None = None
         self._workspace_cwd: str | None = None
         self._session_costs: dict[str, SessionCostTracker] = {}
+        # Servers without the usage route return 404 every time; stop asking.
+        self._usage_route_missing = False
 
     def _get_graph(self) -> Any:  # noqa: ANN401
         """Lazily create the `RemoteGraph` instance.
@@ -633,6 +635,48 @@ class RemoteAgent:
         )
         await self._refresh_side_cost(_require_thread_id(config))
         return tracker.snapshot(cached=not settled)
+
+    async def aget_usage_state(
+        self, config: Mapping[str, Any]
+    ) -> tuple[dict[str, object], SessionCost | None] | None:
+        """Read cost and prompt-cache channels and side spend in one request.
+
+        Full thread state also rebuilds and sends the message history, which
+        is megabytes on a long thread. This read sends only usage channels.
+
+        Args:
+            config: Config with `configurable.thread_id`.
+
+        Returns:
+            The checkpoint's usage channels and the combined usage, or `None`
+                when the server cannot answer. Callers then read full state.
+        """
+        from langgraph_sdk.errors import NotFoundError
+
+        thread_id = _require_thread_id(config)
+        if self._usage_route_missing:
+            return None
+        try:
+            async with asyncio.timeout(2):
+                response = await self._get_graph().client.http.get(
+                    f"/dcode/threads/{thread_id}/usage"
+                )
+            checkpoint = response["checkpoint"]
+            if not isinstance(checkpoint, dict):
+                return None
+            tracker = self._cost_tracker(thread_id)
+            tracker.update_side(response["cost"])
+        except NotFoundError:
+            self._usage_route_missing = True
+            return None
+        except Exception:  # full state is the fallback
+            logger.debug("Could not read thread usage", exc_info=True)
+            return None
+        settled = tracker.update_graph(
+            checkpoint.get("_session_cost_usd"),
+            checkpoint.get("_session_cost_breakdown"),
+        )
+        return checkpoint, tracker.snapshot(cached=not settled)
 
     async def _refresh_side_cost(
         self, thread_id: str, *, breakdown: CostBreakdown | None = None

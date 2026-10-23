@@ -2678,7 +2678,7 @@ def parse_args() -> argparse.Namespace:
         dest="auto_classifier_model",
         metavar="MODEL",
         help="Model the Auto approval classifier reviews actions with "
-        "(e.g. anthropic:claude-sonnet-5). Local TUI or ACP only. Defaults to "
+        "(e.g. anthropic:claude-sonnet-5-5). Local TUI or ACP only. Defaults to "
         "DEEPAGENTS_CODE_AUTO_CLASSIFIER_MODEL, then [models].auto_classifier, "
         "then a provider-specific model or the main agent model. A weaker model "
         "weakens Auto's review.",
@@ -5572,7 +5572,20 @@ def cli_main() -> None:
             _get_credentials,
             _is_editable_install,
             console,
+            defer_langsmith_secret_redaction,
         )
+
+        # A launch that can open the TUI installs the redacting LangSmith client
+        # on a worker thread after first paint, not before it. Nothing in this
+        # process traces before then: `create_model` installs it first if a
+        # model is needed earlier. The agent runs in the server process, which
+        # installs its own client.
+        if (
+            command is None
+            and not getattr(args, "acp", False)
+            and not args.non_interactive_message
+        ):
+            defer_langsmith_secret_redaction()
 
         _get_credentials()
 
@@ -5758,6 +5771,12 @@ def cli_main() -> None:
             sys.exit(exit_code)
 
         apply_stdin_pipe(args)
+        if args.non_interactive_message:
+            # Piped stdin turned this launch headless. It gets no prewarm
+            # thread, so install the redacting client now, as bootstrap would.
+            from deepagents_code.config import ensure_langsmith_secret_redaction
+
+            ensure_langsmith_secret_redaction()
 
         # Gate on stale editable-install dependencies. Choose the channel from
         # the launch mode, not from `sys.stdout.isatty()`: a TTY does not imply
@@ -6853,6 +6872,14 @@ def cli_main() -> None:
                         mark_update_notified(latest)
             except Exception:
                 logger.warning("Failed to display exit update banner", exc_info=True)
+
+            # The session leaves a large heap, and the interpreter's final full
+            # GC pass over it adds about 0.3s to every exit after the terminal
+            # is restored. Nothing durable remains to run, so move the heap into
+            # the permanent generation and let shutdown skip it.
+            import gc
+
+            gc.freeze()
     except KeyboardInterrupt:
         # Suppress the traceback while preserving the conventional SIGINT status.
         # `console` may not be bound if Ctrl+C arrives during config import.

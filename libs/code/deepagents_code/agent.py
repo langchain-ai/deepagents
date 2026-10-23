@@ -2772,6 +2772,28 @@ def create_cli_agent(
     ):
         extension_registry = None
     mcp_tools = tuple(mcp_tools or ())
+    skill_tools = tuple(
+        item
+        for item in mcp_tools
+        if (item.metadata or {}).get("_deepagents_code_skill_only") is True
+    )
+    skill_tool_ids = {id(item) for item in skill_tools}
+    tools = [item for item in tools if id(item) not in skill_tool_ids]
+    if skill_tools and mcp_server_info:
+        skill_tool_names = {item.name for item in skill_tools}
+        mcp_server_info = [
+            replace(
+                server,
+                tools=tuple(
+                    item for item in server.tools if item.name not in skill_tool_names
+                ),
+            )
+            for server in mcp_server_info
+        ]
+    if skill_tools and not enable_skills:
+        logger.warning(
+            "Skill-only MCP tools are unavailable because skills are disabled"
+        )
     if auto_mode_enabled and sandbox is not None:
         logger.warning(
             "Classifier-backed Auto is unavailable with a sandbox; using Manual HITL"
@@ -2791,6 +2813,12 @@ def create_cli_agent(
             # Create empty file for user customizations
             # Base instructions are loaded fresh from get_system_prompt()
             agent_md.touch()
+
+    skill_sources = (
+        get_skill_sources(assistant_id=assistant_id, project_context=project_context)
+        if enable_skills
+        else []
+    )
 
     # Load custom subagents from filesystem
     custom_subagents: list[SubAgent | CompiledSubAgent] = []
@@ -2891,6 +2919,16 @@ def create_cli_agent(
 
             middleware.append(
                 ManagedMemoryGuardMiddleware([get_user_agent_md_path(assistant_id)])
+            )
+        if enable_skills and skill_tools:
+            middleware.insert(
+                0,
+                PluginSkillsMiddleware(
+                    backend=FilesystemBackend(virtual_mode=False),
+                    sources=skill_sources,
+                    path_base=effective_cwd,
+                    tools=skill_tools,
+                ),
             )
         return middleware
 
@@ -3097,14 +3135,11 @@ def create_cli_agent(
 
     # Add skills middleware
     if enable_skills:
-        sources = get_skill_sources(
-            assistant_id=assistant_id,
-            project_context=project_context,
-        )
         skills_middleware = PluginSkillsMiddleware(
             backend=FilesystemBackend(virtual_mode=False),
-            sources=sources,
+            sources=skill_sources,
             path_base=effective_cwd,
+            tools=skill_tools,
         )
         agent_middleware.append(skills_middleware)
         instruction_middleware.append(skills_middleware)

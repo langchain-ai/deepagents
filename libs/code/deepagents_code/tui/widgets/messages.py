@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import ast
+import asyncio
 import json
 import logging
 import re
 import textwrap
 from dataclasses import dataclass
 from pathlib import Path
-from time import time
+from time import monotonic, time
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, NamedTuple, cast
 
 from textual import on
@@ -71,6 +72,7 @@ from deepagents_code.tui.widgets._links import (
     open_checked_url_async,
     open_style_link,
 )
+from deepagents_code.tui.widgets._static_update import update_in_place
 from deepagents_code.tui.widgets.diff import (
     compose_diff_lines,
     format_diff_stats,
@@ -1461,17 +1463,74 @@ class _StreamedTextParts:
             self._flush_timer = None
 
 
+_TOP_LEVEL_BLOCK_TOKENS = frozenset(
+    {
+        "blockquote_open",
+        "bullet_list_open",
+        "code_block",
+        "fence",
+        "heading_open",
+        "hr",
+        "ordered_list_open",
+        "paragraph_open",
+        "table_open",
+    }
+)
+"""Token types for which `Markdown` mounts one top-level `MarkdownBlock`."""
+
+
+def _stream_diverged(markdown: Markdown, source: str) -> bool:
+    """Report whether streamed blocks differ from a full parse of `source`.
+
+    `Markdown.append` freezes every block before the last one. A flush that
+    ends mid-line can parse the partial line as its own block (a bare `2` is
+    a paragraph), which closes a list early, so the rest of the list mounts
+    as a second list. Table rows that arrive while streaming mount as plain
+    `Static` cells, which do not forward link clicks. Later reference
+    definitions also leave links in frozen blocks unresolved. A parse is cheap
+    but a full `Markdown.update()` remounts every block, so callers rebuild only
+    when this returns `True`.
+
+    Args:
+        markdown: The widget the stream wrote to.
+        source: The complete message source.
+
+    Returns:
+        `True` when a full re-render would change the widget tree.
+    """
+    if markdown.source != source:
+        return True
+    from markdown_it import MarkdownIt
+    from textual.widgets.markdown import MarkdownBlock
+
+    environment: dict[str, object] = {}
+    tokens = MarkdownIt("gfm-like").parse(source, environment)
+    if environment.get("references") or any(
+        token.type == "table_open" for token in tokens
+    ):
+        return True
+    expected = [
+        (token.type, tuple(token.map))
+        for token in tokens
+        if token.level == 0
+        and token.map is not None
+        and token.type in _TOP_LEVEL_BLOCK_TOKENS
+    ]
+    actual = [
+        (block.name, block.source_range)
+        for block in markdown.query_children(MarkdownBlock)
+    ]
+    return expected != actual
+
+
 class AssistantMessage(_StreamedTextParts, Vertical):
     """Widget displaying an assistant message with markdown support.
 
     Uses MarkdownStream for smoother streaming instead of re-rendering
     the full content on each update. Once a stream finishes, the message
-    is re-rendered from the complete source via `Markdown.update()` to
-    work around Textualize/textual#6518: `MarkdownFence._update_from_block`
-    refreshes the visible `Label` but leaves `_highlighted_code` pinned to
-    the first chunk, so any later recompose (click, focus change, theme
-    update) re-yields the stale value and wrapped fenced-code bodies vanish.
-    A full re-parse rebuilds every fence with correct internal state.
+    is re-rendered from the complete source via `Markdown.update()` only
+    when the streamed blocks differ from a full parse (see
+    `_stream_diverged`).
 
     The first streamed fragment is written immediately so the response appears
     without waiting for `_STREAM_FLUSH_INTERVAL`. Later tokens are coalesced in
@@ -1479,7 +1538,16 @@ class AssistantMessage(_StreamedTextParts, Vertical):
     Writing every token immediately forced a markdown re-parse per chunk on the
     UI event loop, which starved keyboard input while the model streamed;
     batching subsequent writes keeps typing responsive.
+
+    Each flush re-parses the last top-level block, so a long list or code fence
+    costs more per flush as it grows. The timer waits twice the last render
+    time before the next flush (bounded by `_STREAM_FLUSH_MAX_INTERVAL`), so
+    the event loop stays at least half free for input however slow rendering
+    gets.
     """
+
+    _STREAM_FLUSH_MAX_INTERVAL: ClassVar[float] = 1.0
+    """Upper bound in seconds on the render-cost-scaled flush interval."""
 
     DEFAULT_CSS = """
     AssistantMessage {
@@ -1577,8 +1645,9 @@ class AssistantMessage(_StreamedTextParts, Vertical):
         """Append streamed content, then coalesce later writes on a timer.
 
         The first fragment is written immediately. Later fragments are buffered
-        and written at most once per `_STREAM_FLUSH_INTERVAL` so the UI event
-        loop stays free to process keypresses while the model streams.
+        and written on a timer that waits at least `_STREAM_FLUSH_INTERVAL`,
+        and longer when rendering is slow, so the UI event loop stays free to
+        process keypresses while the model streams.
 
         Args:
             text: Text to append
@@ -1589,9 +1658,41 @@ class AssistantMessage(_StreamedTextParts, Vertical):
         self._pending_append += text
         if self._flush_timer is None:
             await self._flush_pending_append()
-            self._flush_timer = self.set_interval(
-                self._STREAM_FLUSH_INTERVAL, self._flush_pending_append
-            )
+            self._schedule_flush(self._STREAM_FLUSH_INTERVAL)
+
+    def _schedule_flush(self, delay: float) -> None:
+        """Arm a one-shot timer for the next coalesced flush.
+
+        Args:
+            delay: Seconds to wait before the flush.
+        """
+        self._flush_timer = self.set_timer(delay, self._on_flush_timer)
+
+    async def _on_flush_timer(self) -> None:
+        """Flush buffered text, then re-arm the timer scaled to render cost.
+
+        The next delay is twice the time the markdown took to render this
+        flush, so the event loop spends at most half its time on streamed
+        markdown. `stop_stream` cancels this timer and flushes at once, so a
+        long delay never holds back the end of the message.
+        """
+        start = monotonic()
+        if self._pending_append:
+            await self._flush_pending_append()
+            await self._wait_for_render()
+        delay = max(self._STREAM_FLUSH_INTERVAL, 2 * (monotonic() - start))
+        self._schedule_flush(min(delay, self._STREAM_FLUSH_MAX_INTERVAL))
+
+    async def _wait_for_render(self) -> None:
+        """Wait until the markdown widget finishes the append in progress.
+
+        `MarkdownStream.write` only queues text; the stream's task renders it
+        under `Markdown.lock`. One loop pass lets that task take the lock, so
+        acquiring it here returns once the render is done.
+        """
+        await asyncio.sleep(0)
+        async with self._get_markdown().lock:
+            pass
 
     async def _flush_pending_append(self) -> None:
         """Write any buffered streamed text to the markdown stream.
@@ -1619,13 +1720,20 @@ class AssistantMessage(_StreamedTextParts, Vertical):
             await self._get_markdown().update(self._content)
 
     async def stop_stream(self) -> None:
-        """Stop the streaming and finalize the content."""
+        """Stop the streaming and finalize the content.
+
+        Re-renders from the full source only when the streamed blocks differ
+        from a full parse. Most messages match, which skips a remount of
+        every block at each text-to-tool boundary and at turn end.
+        """
         self._stop_flush_timer()
         await self._flush_pending_append()
         if self._stream is not None:
             await self._stream.stop()
             self._stream = None
-            await self._get_markdown().update(self._content)
+            markdown = self._get_markdown()
+            if _stream_diverged(markdown, self._content):
+                await markdown.update(self._content)
 
     async def set_content(self, content: str) -> None:
         """Set the full message content.
@@ -2272,6 +2380,11 @@ class ToolCallMessage(Vertical):
         """Update the running spinner animation."""
         if self._status != "running" or self._status_widget is None:
             return
+        if not self.display:
+            # Folded into a collapsed tool group. The group shows its own
+            # spinner; expanding the group relayouts, and the next tick
+            # repaints this row.
+            return
 
         spinner_frames = get_glyphs().spinner_frames
         frame = spinner_frames[self._spinner_position]
@@ -2286,7 +2399,7 @@ class ToolCallMessage(Vertical):
         text = f"{frame} Running...{elapsed}"
         colors = theme.get_theme_colors(self)
         color = colors.skill if self.has_class("-skill-read") else colors.warning
-        self._status_widget.update(Content.styled(text, color))
+        update_in_place(self._status_widget, Content.styled(text, color))
 
     def pause_running(self) -> None:
         """Pause the running spinner while the tool awaits a user decision.

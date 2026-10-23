@@ -498,6 +498,81 @@ class TestServerProcess:
         assert not config_dir.exists()
         assert not log_path.exists()
 
+    async def test_after_spawn_runs_between_spawn_and_health_check(
+        self, tmp_path: Path
+    ) -> None:
+        """`after_spawn` overlaps server boot but finishes before health checks."""
+        config_dir = tmp_path / "runtime"
+        config_dir.mkdir()
+        (config_dir / "langgraph.json").write_text("{}")
+        events: list[str] = []
+
+        def spawn(*_args: object, **_kwargs: object) -> MagicMock:
+            events.append("spawn")
+            process = MagicMock()
+            process.poll.return_value = None
+            return process
+
+        async def after_spawn() -> None:  # noqa: RUF029  # matches the awaited hook
+            events.append("after_spawn")
+
+        async def healthy(*_args: object, **_kwargs: object) -> None:  # noqa: RUF029
+            events.append("health_check")
+
+        server = ServerProcess(config_dir=config_dir)
+        with (
+            patch(
+                "deepagents_code.client.launch.server._find_free_port",
+                return_value=12345,
+            ),
+            patch(
+                "deepagents_code.client.launch.server.subprocess.Popen",
+                side_effect=spawn,
+            ),
+            patch(
+                "deepagents_code.client.launch.server.wait_for_server_healthy",
+                new=healthy,
+            ),
+        ):
+            await server.start(after_spawn=after_spawn)
+
+        assert events == ["spawn", "after_spawn", "health_check"]
+
+    async def test_after_spawn_cancellation_reaps_subprocess(
+        self, tmp_path: Path
+    ) -> None:
+        """Cancelling during `after_spawn` must not orphan the spawned server."""
+        config_dir = tmp_path / "runtime"
+        config_dir.mkdir()
+        (config_dir / "langgraph.json").write_text("{}")
+        process = MagicMock()
+        process.poll.return_value = None
+        health_check = AsyncMock()
+
+        server = ServerProcess(config_dir=config_dir)
+        with (
+            patch(
+                "deepagents_code.client.launch.server._find_free_port",
+                return_value=12345,
+            ),
+            patch(
+                "deepagents_code.client.launch.server.subprocess.Popen",
+                return_value=process,
+            ),
+            patch(
+                "deepagents_code.client.launch.server.wait_for_server_healthy",
+                new=health_check,
+            ),
+            pytest.raises(asyncio.CancelledError),
+        ):
+            await server.start(
+                after_spawn=AsyncMock(side_effect=asyncio.CancelledError)
+            )
+
+        health_check.assert_not_awaited()
+        process.send_signal.assert_called_once_with(signal.SIGTERM)
+        assert server._process is None
+
     async def test_start_cleanup_error_does_not_mask_startup_error(
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture
     ) -> None:
@@ -1070,7 +1145,9 @@ class TestServerProcessStopIdempotency:
         """Repeated `stop()` calls tear the process down only once."""
         server = ServerProcess(host="127.0.0.1", port=2024)
         calls: list[int] = []
-        monkeypatch.setattr(server, "_stop_process_locked", lambda: calls.append(1))
+        monkeypatch.setattr(
+            server, "_stop_process_locked", lambda **_kwargs: calls.append(1)
+        )
 
         server.stop()
         server.stop()
@@ -1090,7 +1167,7 @@ class TestServerProcessStopIdempotency:
         release = threading.Event()
         calls: list[int] = []
 
-        def slow_stop_process() -> None:
+        def slow_stop_process(*, grace: float | None = None) -> None:  # noqa: ARG001
             calls.append(1)
             entered.set()
             release.wait(timeout=2.0)
@@ -1468,6 +1545,42 @@ class TestTerminateServerProcess:
         ]
         process.wait.assert_called_once_with()
         process.kill.assert_not_called()
+
+    def test_grace_overrides_shutdown_timeout(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An explicit `grace` replaces the full graceful window.
+
+        Abandoned startups pass a short grace so a server stuck in its graph
+        build is killed without holding the full `_SHUTDOWN_TIMEOUT`.
+        """
+        self._patch_own_group(monkeypatch)
+        group_killed = False
+
+        def _killpg(_pgid: int, sig: int) -> None:
+            nonlocal group_killed
+            if sig == signal.SIGKILL:
+                group_killed = True
+            elif sig == 0 and group_killed:
+                raise ProcessLookupError
+
+        def _no_wait(_seconds: float) -> None:
+            msg = "a zero grace must escalate without waiting"
+            raise AssertionError(msg)
+
+        killpg = MagicMock(side_effect=_killpg)
+        monkeypatch.setattr("deepagents_code.client.launch.server.os.killpg", killpg)
+        monkeypatch.setattr("deepagents_code.client.launch.server.time.sleep", _no_wait)
+        process = self._own_group_process()
+
+        _terminate_server_process(process, grace=0)
+
+        assert killpg.call_args_list == [
+            ((4321, signal.SIGTERM),),
+            ((4321, 0),),
+            ((4321, signal.SIGKILL),),
+            ((4321, 0),),
+        ]
 
     def test_group_wait_ignores_exited_leader(
         self, monkeypatch: pytest.MonkeyPatch

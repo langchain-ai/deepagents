@@ -159,6 +159,16 @@ async def _wait_for_branch(app: DeepAgentsApp, branch: str) -> None:
     raise AssertionError(msg)
 
 
+async def _await_server_stop(app: DeepAgentsApp) -> None:
+    """Wait for the server stop that the deferred teardown starts.
+
+    The teardown releases the terminal without awaiting the stop, so a test
+    that checks `stop()` must wait for this task, not only the teardown task.
+    """
+    assert app._server_stop_task is not None
+    await asyncio.wait_for(app._server_stop_task, timeout=2.0)
+
+
 def _rubric_status_label(glyph_name: str, text: str) -> str:
     """Return the expected rubric status label for the active charset."""
     from deepagents_code.config import get_glyphs
@@ -1269,6 +1279,60 @@ class TestStartupSequence:
                 assert isinstance(app.screen, LaunchNameScreen)
                 app.screen.action_cancel()
                 await asyncio.wait_for(launch_task, timeout=2)
+
+    async def test_server_startup_does_not_wait_for_post_paint_init(self) -> None:
+        """The server should spawn even while git and post-paint init are pending."""
+        app = DeepAgentsApp(
+            server_kwargs={"assistant_id": "agent", "model_name": None},
+            model_kwargs={"model_spec": None},
+        )
+        branch_gate = asyncio.Event()
+
+        async def stalled_branch_resolution() -> None:
+            await branch_gate.wait()
+
+        app._resolve_git_branch_and_continue = stalled_branch_resolution  # ty: ignore
+        app._post_paint_init = AsyncMock()  # ty: ignore
+        started_groups: list[str | None] = []
+
+        def fake_run_worker(work: object, *args: object, **kwargs: object) -> MagicMock:
+            del args
+            group = kwargs.get("group")
+            started_groups.append(group if isinstance(group, str) else None)
+            if inspect.iscoroutine(work):
+                work.close()
+            return MagicMock()
+
+        app.run_worker = fake_run_worker  # ty: ignore
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            assert "server-startup" in started_groups
+            app._post_paint_init.assert_not_awaited()
+            branch_gate.set()
+
+    async def test_session_start_builds_ui_adapter_before_submission(self) -> None:
+        """Startup work must not see a missing UI adapter if post-paint init lags."""
+        app = DeepAgentsApp(agent=MagicMock())
+        app._post_paint_init = AsyncMock()  # ty: ignore
+        adapter_at_session_init: list[object] = []
+
+        async def record_session_init() -> None:  # noqa: RUF029
+            adapter_at_session_init.append(app._ui_adapter)
+            app._session_state = MagicMock()
+
+        app._init_session_state = record_session_init  # ty: ignore
+        app._run_session_start_hook = AsyncMock(return_value=False)  # ty: ignore
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._ui_adapter is None
+
+            await app._run_session_start_sequence()
+
+            assert adapter_at_session_init
+            assert adapter_at_session_init[0] is not None
 
     async def test_build_launch_dependencies_prompt_screen_tracks_flag(
         self,
@@ -15735,10 +15799,48 @@ class TestExitGracefulWorkerHandoff:
 
                 agent_release.set()
                 await asyncio.wait_for(app._graceful_exit_task, timeout=2.0)
+                await _await_server_stop(app)
 
             assert server_stopped.is_set()
             server_proc.stop.assert_called_once_with()
             super_exit.assert_called_once()
+
+    async def test_terminal_is_released_before_server_stop_finishes(self) -> None:
+        """Textual exits while the server is still shutting down.
+
+        Uvicorn takes about 0.2s to stop even when idle. `run_textual_app`
+        waits for the stop after the terminal is restored, so the teardown
+        must not hold the screen for it.
+        """
+        stop_started = threading.Event()
+        release_stop = threading.Event()
+        server_proc = MagicMock()
+        server_proc.stop = MagicMock(
+            side_effect=lambda: (
+                stop_started.set(),
+                release_stop.wait(timeout=2.0),
+            ),
+        )
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._server_proc = server_proc
+
+            with patch.object(App, "exit") as super_exit:
+                app.exit()
+                assert app._graceful_exit_task is not None
+                await asyncio.wait_for(app._graceful_exit_task, timeout=2.0)
+
+                assert await asyncio.to_thread(stop_started.wait, 2.0)
+                super_exit.assert_called_once()
+                assert app._server_stop_task is not None
+                assert not app._server_stop_task.done()
+
+                release_stop.set()
+                await _await_server_stop(app)
+
+            server_proc.stop.assert_called_once_with()
 
     async def test_force_quit_can_drop_pending_session_end(self) -> None:
         """A force-quit second exit() can drop an in-flight `session.end`.
@@ -15821,6 +15923,7 @@ class TestExitGracefulWorkerHandoff:
                 server_proc.stop.assert_not_called()
                 release_cleanup.set()
                 await asyncio.wait_for(app._graceful_exit_task, timeout=2.0)
+                await _await_server_stop(app)
 
             server_proc.stop.assert_called_once_with()
             super_exit.assert_called_once()
@@ -15895,6 +15998,7 @@ class TestExitGracefulWorkerHandoff:
 
                 release_cleanup.set()
                 await asyncio.wait_for(app._graceful_exit_task, timeout=2.0)
+                await _await_server_stop(app)
 
             assert restart_task.done()
             server_proc.stop.assert_called_once_with()
@@ -15934,6 +16038,7 @@ class TestExitGracefulWorkerHandoff:
                 assert app._graceful_exit_task is not None
                 await asyncio.wait_for(cleanup_started.wait(), timeout=2.0)
                 await asyncio.wait_for(app._graceful_exit_task, timeout=2.0)
+                await _await_server_stop(app)
 
             server_proc.stop.assert_called_once_with()
             super_exit.assert_called_once()
@@ -16077,6 +16182,7 @@ class TestExitGracefulWorkerHandoff:
                 assert app._graceful_exit_task is not None
                 await wait_started.wait()
                 await asyncio.wait_for(app._graceful_exit_task, timeout=2.0)
+                await _await_server_stop(app)
 
             server_proc.stop.assert_called_once_with()
             super_exit.assert_called_once()
@@ -16183,6 +16289,8 @@ class TestExitGracefulWorkerHandoff:
                 app.exit()
                 assert app._graceful_exit_task is not None
                 await asyncio.wait_for(app._graceful_exit_task, timeout=2.0)
+                assert app._server_stop_task is not None
+                await asyncio.wait_for(app._server_stop_task, timeout=2.0)
 
         debug_messages = [
             record.message

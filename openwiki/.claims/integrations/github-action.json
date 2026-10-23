@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:89e4aacb45771574839ac9bb52cc519d1c44daf9f217e0e475db3323ab33df97",
+  "pageVersion": "sha256:35c7e59d58d0d7e834781b27a8b83353b805551d13cb27420c45f3dd05668a9f",
   "claims": [
     {
       "id": "claim_66c8cdf2e322499f9163f44abcb9af36",
@@ -209,14 +209,82 @@
       "statement": "Repository CI runs the GitHub-action tests with the repository helper-script suite in the `Validate Release Options` job after installing `packaging`, `pyyaml`, and `pytest`.",
       "evidence": [
         {
-          "resource": "repo://.github/workflows/ci.yml#L559-L581",
-          "version": "repo-lines-v1:sha256:03484b8ce92ad9a1782221c4f7832cd1ead69e47d4c77e6c200ac50f5893dd39:eyJzZWxlY3RlZExpbmVDb3VudCI6MjMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImRlODc2YTJhNWYwY2E3M2I2YWY2YmE4N2IyYzU0MjM2YzQyZDNlZGNjOTBlNWE5YWVhMjFkNWE1OTVkMTBkYWMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjFiYzEyZTI1M2NkZWFmODJmYzViOWEyMWE5ODhhYzEzZTAwYTk4NzZiY2MyNzQ2OGI3NmIwYTBhNWRmZTQ5YTIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImJkNWQxNTcxZTU1MTZjMThmNjVjNmMzMTFkNmMyNzNiMWY4NGQ2YTc4NTA3ZDAxYjU5YTg0ODYwYjhiNGZlZmMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjcyMDRlZWRmYTlkOTgzY2UyY2JkNWNlODc0NWI4NmRkMDE5Zjc5YTRhYzk4NDRjZGU4YWQwZGUzZWQ3MzU1ZTEifQ"
+          "resource": "repo://.github/workflows/ci.yml",
+          "version": "repo-file-v1:sha256:e0d03033c9a04ad401b9a77e9186ba6fd6a7fb8d68a88a3e3f1a4fd809316893"
+        }
+      ]
+    },
+    {
+      "id": "claim_f9b38df0ed9241a385b9ce91ed57ec9e",
+      "statement": "The action ref and `cli_version` select independent artifacts: the root composite action is selected by `uses:`, while its install and run steps resolve either the latest `deepagents-code` package or the exact version supplied to `uvx`.",
+      "evidence": [
+        {
+          "resource": "repo://action.yml#L227-L248",
+          "version": "repo-lines-v1:sha256:ef0b45e47d6515a792bb94fe33cbff27e5204218322b28564483ffe5bcd2aa88:eyJzZWxlY3RlZExpbmVDb3VudCI6MjIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImM2MjlmZmUyYzE3ZjcyYzA2NGI1YjU5MDUxMWI1MjFiZWUwODg2NTYyODBhNzE4Njc3YWU0ZmM5OWM0NzViYTEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjA5NTE0ZmU4NGFkY2Q1ODQxZjk5M2ExNmQwM2ZkMGUzOTcxYTU5YmYyODNlMGFlZTNiZTk2ZWM0NGFlYzhmMDgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImE0NGQ1ODI3YmM5OTU4NzU2NzI2NTA4NGMxNGRlMjI3MDUxY2U4ZjE5ZWFiMjk5YWEzMTYyMWE3ZmJjZmZmY2QiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjZhOWQyYzA0MWZmNTM2ZDk1MjI2MmI3OWE5OWJhNTI0ZGYxMDAxODkwY2ZjYjI5ZjI5YTNlZTliN2E1ZDA4YjAifQ"
+        },
+        {
+          "resource": "repo://action.yml#L398-L402",
+          "version": "repo-lines-v1:sha256:59094de5bc621078dd02480cfde7e5f82136f86d2567d36a784eabfbe4edb057:eyJzZWxlY3RlZExpbmVDb3VudCI6NSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiZjdjNDE3ODY3Y2NiZWI0M2FhZjc0NmY4YTRhNTQ1ZDdmYmZiOWYxZjAwZTI0ZTUxZjY3MjYyOTAxNjg4NzgzMyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMDk1MTRmZTg0YWRjZDU4NDFmOTkzYTE2ZDAzZmQwZTM5NzFhNTliZjI4M2UwYWVlM2JlOTZlYzQ0YWVjOGYwOCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMjFjMDIwMzdhMDk3NWQzYWQxOTY3ZDNmNmZiMTRiZmQxMmQxNmFmMTNjMDY3ZmNhM2JkY2ZjMDcxYWJjOTI1ZCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMDVmMzAwZTM3MmUzOTdkYjU4MzY2YjQwODJmODc5MzJkNmU4MzMwNTcyNDkyMmZlMDdmMWY3Y2NmYjBjZDY5OSJ9"
+        },
+        {
+          "resource": "repo://action.yml#L44-L47",
+          "version": "repo-lines-v1:sha256:118362ed290ebe2ee39030778abd5c9f2e7c76782d4b7a91f7b33abfaaf27bb8:eyJzZWxlY3RlZExpbmVDb3VudCI6NCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiOTAzZGQzZDQwMGQ5NWU1MGRmNmIwYTg1MDQ1NjViNGEwODM3NTM0ZmY3NTQ3NDNhMWM3NTIwMDA2MGZiNWU3OCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNzY2YTMzZDc5Yjk2NmUzNzNlYWNiZDE2Yjc1NGMwYzJiMzJlYmE1ZmRkNWJhMzhmOWY2NzkyODg3NGY2ZjViYyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMWQ1M2Q0MjAyMDllMjU0MWZkN2NlNjgzYjA3ZjFkZTA3ODZmOGU1OTFjMWQ2ZTg3ODUzZWQxZTgxZDU0ZTNlMCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNTBiNGI0MjU1NWRhMWM5MzEzZjI0NjI3Mzg0NDY5MjdkMmQwMmExMmFiZTMxYmZkNzY4MTk4MjM5ZmM4ZmU3NCJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_3262d6c3e6e8479d8c51da58672cf1c9",
+      "statement": "Release-please manages `libs/code` as the `deepagents-code` component and, after recognizing its release commit from the Code changelog and commit title, dispatches the separate package release workflow; that workflow maps `deepagents-code` back to `libs/code`.",
+      "evidence": [
+        {
+          "resource": "repo://.github/workflows/release-please.yml#L1321-L1329",
+          "version": "repo-lines-v1:sha256:fdcf3115f295d13913aeff91d8a18104d7e39c85a72a2fb6f4ce02deadd5b475:eyJzZWxlY3RlZExpbmVDb3VudCI6OSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiOThmZDU0MTNiNDI1M2I4MzAxMzkyMTJjOWI4Y2I4NGYwOGMwODQzOGY5NGM5Njg2YjBhNzNkNmRmYjRjMGU2ZiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMzE1YmM2MmIyYjEzMGNlZmVjNzE1NjdkNjdmOGJhMjFkMmNmMTkxZWJmMzZjZjgwZThjMmZiMGJlOTA5NTBhZCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNGYxNDQ4NTAwNmI1YTJjYTJlODM1NzU3MjUxMjVkOTc3N2YzY2UwMzE4YjA3NTM3YjIyZjZjNDkxMzA2MTVlYSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMDYwNDg5NmVkNzkyNWM4ZGRkYTQyN2UzZWUwN2YyYTBjN2QxMzhkYTMyM2IzYWUwODMyMGRkMjgzNjIxZDRjZiJ9"
+        },
+        {
+          "resource": "repo://.github/workflows/release-please.yml#L207-L213",
+          "version": "repo-lines-v1:sha256:7f128d46ddf9a5e9d88b49bf0f903476b8c03737a580807c86b7b1e14da63466:eyJzZWxlY3RlZExpbmVDb3VudCI6NywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNzhlYjhkMTFiNDUzNjZjNWI2NTIyZjI1YzMwYmYwMWVkNDZjZmMxYTU1Njc0NDQyYTNlODliODdjMDEzNWMyYyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiYmY1NTk3OWNlNzMwMjAzM2U2YjJmZDdkODhmNTM3YTNiOGUwOTFlYTMwNWM4MTFmZmExMjc0YmY1NzY0ZWE1ZSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiYzNhMzk4YTE3Y2M5ZTZkMzRiZjE5NzUwOWUzNWQ2ZGZmOWY2YjZkNzBlNjBiN2MxOTk5NTIxODIzYTAxM2IwMyIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZDI1MjM3NzUxNTk3NjU2MGU5NDA5M2QxMTczZGFhY2RiYjYxNThiN2IxOTk5ZjE3Yzc0MjA3ODViNTQ1NjEyNSJ9"
+        },
+        {
+          "resource": "repo://.github/workflows/release.yml#L122-L132",
+          "version": "repo-lines-v1:sha256:fe76f0ece86d3ac8240672053bee5cb565ac81185e395400d414d2396ee53639:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg4ZDUwNGE5NzhjM2M0M2FlMzRlMTU4ZDQ2ZDE2MmIzMjk1MjE4N2VhOTBkYzQ5MjM1NWJiYWNkNjlhMmMzZWUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjZlMDZjZWFjOThkYzI0NWZjNzA4MGVlNTE5ZGYyZjVlZjg2ZjMzZDE5YTMzZTRhNGI5NjA3MGE3ZGZmMDgxYzUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijc0MzdjYzdhMzNiMDhmNGZjYTI0MWQzMTIzYjdjNTc1YjZhMWZkNGM4NjY3MTFmNTliNDNlMjA5MzRhMzU2NDgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImVjYTJkZmQ5OTVjMmVmZjVkNTA4N2M2ZTA4ZWZjMmY2ZTg3Njg5NTc2NzEwYmNmY2I3Y2U1NDAwNjVhYzZjZDAifQ"
+        },
+        {
+          "resource": "repo://release-please-config.json#L90-L103",
+          "version": "repo-lines-v1:sha256:dea4852f8dff9aafb818947211694e01a40bc609193a4198c5ab50dae7026455:eyJzZWxlY3RlZExpbmVDb3VudCI6MTQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjA3ZmUwZGRkMmMyNDhmYWZkNjA5N2ZmZjgyOTJhYjNkMTQxNWMyOTVmMjI1ODY2NjM2NTFlYzVmOWI2NjZiMmUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImI0MjIzOWIxYmQ4MmI4NWVkNTBjMThhYmU2YjhlOTk3ODc1NWRhYzZmZDgwNDA5MjRjOGE4ODBjNTJmMDY1ZDIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImNjM2EzYWI3ZDYwNWRhMjQzOWUwNmEyZWEzMTExMjQyY2VhZjFhYjNkZThjMmVmOWMwZGFhYzVkYjUzNDgzYzAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImQwMGVjZTlhNDQyYzAxNjQ3MzgzMGQ1Yzc0ZDBjYTdiY2Q3ZWJjYzg2OGZmODE5ZmUyNTU0YjY5ZThkNmYyOGYifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_7e41a94394004ceb8323ca1b7804ab8f",
+      "statement": "A release build of `deepagents-code` can stamp its validated release commit into a generated wheel artifact for later reporting, while local and editable builds omit that artifact.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/hatch_build.py#L2-L7",
+          "version": "repo-lines-v1:sha256:2e61d183728e032a75d09e9fa566d2f9b1614f81ca0578749946b776d1e7a17e:eyJzZWxlY3RlZExpbmVDb3VudCI6NiwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMDFiYTQ3MTljODBiNmZlOTExYjA5MWE3YzA1MTI0YjY0ZWVlY2U5NjRlMDljMDU4ZWY4Zjk4MDVkYWNhNTQ2YiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMGIxNDUwNWIzMTIyM2YwN2RlYWQ5N2MyYWUwYjA5MTExNjU2YjgxMWE1YjNiYjVmMDIwYzc1ZjlmOWIxODJlOCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjEsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMGNjYjRkZWI5ZTVkMGY3NTY4YjhkYzgwY2YzODRiOTk0ZDZiNjI3Y2NmNjcwZTVjOWQyYzJmNTJlMmZlMGRiNCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMWFhZjc2MzdjYjZlN2U1ZGI4NWQ2MzQyNzQ2MDE0ZGYwNDFjY2Q1NThhOTIwYjI5ZWI2YWM3MTlkN2JhZjVjMiJ9"
+        },
+        {
+          "resource": "repo://libs/code/hatch_build.py#L26-L67",
+          "version": "repo-lines-v1:sha256:13c2e4f2e336b29746115de1353351608774ec83ae0c57120edae6f6fac17496:eyJzZWxlY3RlZExpbmVDb3VudCI6NDIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjhlYmEwOGEyNDRkNmNhN2I1NDBlNzNjYTBjN2M0NzE2MWVhNjg3NThlMDcxMDUwMTJmZWEyN2ZiOTNiMDAxYmYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjlmODU5YjJiNTMxNzBkNWM4NThkYjQ2NGQ2YzYyMmYzYmM4MzgyY2E0MTM4NWRmZDhmYWQ0N2I0ZDBjYzNkMTkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjkxYjYzMTA0YzNhMzg5ODZiOTMyZWVmY2M1MWM0ZDI4MDFiZWU1YzQwMDdiMmU4MzY1ZTMwYzYwZjJiNjAzMWMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_eba1cb041c5540dd8e0a341a91b40742",
+      "statement": "CI selects `libs/code` changes for dedicated Code lint and unit-test reusable workflows on Python 3.14.",
+      "evidence": [
+        {
+          "resource": "repo://.github/workflows/ci.yml#L255-L262",
+          "version": "repo-lines-v1:sha256:974877930aa9b58a43c6258175659acf6138029d310d9e2b39465b4f9dd31bc8:eyJzZWxlY3RlZExpbmVDb3VudCI6OCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiOTY4NmUxMjM4YmM5ODY2Zjc3MWQxZTdiOTIzMWVhMTg4NjE0OTNiMWEzYzE1YjU5YTgwODdlMGIxYjRhYzRjZSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiYWJhODkyNDBmZTI3MWRlZTMwYWZkYjUxM2M3NWRhMjk3YzY5YmQxNzIzNzQwNzBlZjA2M2IzZWE5OTg1M2JkNSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiYmE5NTcxNTRkZmQ5MmY2ZDgzODQ2ZDM2ZGIzM2RkYjZkYWZiYTk1YjZjYTEzZTE2YzQyYThmMzFlYzY2ZDc5YiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNGJiNDZhMzk4M2Y1N2VmZGVmNjVhNmVmN2ZkNDkzNjZmMjNmOWY2OGEzYmIxZDY3MTQ2YWViNGYwZmEzNWI2OSJ9"
+        },
+        {
+          "resource": "repo://.github/workflows/ci.yml#L347-L354",
+          "version": "repo-lines-v1:sha256:1f2a198e870d20b516425c4ee64aa79b38aa8cd5b04eee4f4f0340f1421cd055:eyJzZWxlY3RlZExpbmVDb3VudCI6OCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMjEyOWIwM2I0YjliMGY2YmExNTY3ZjA3NTIwZmEwZDg4MDM4MTNmZDUyMjc2ZjlhOTNlOWFjMDMwNjg0YTU4NiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMmNiYzM3ZDI4MzZhOTkwMzJmYzA1Y2Q2MjhjYWU0ZDU2OTllNTdhNGJiNjYzNjI4Mjk1NmEzMWY2ZDI0ZDMxYyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZDc4ODkyOWI4YTk0ZmE4NzdiOTIwOTE4M2QxNzhmZDMwODc1NjcyYTQ3MmY5OTRhNjFmODBlMTUzZGYzYTNlYiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMTllZDc4NWRmYjUxNDJmN2RiYWM0OGIzMzM1MGYxYmI3OTNiNWZmYWU0Y2UzMzI1ZjA0N2EyMTYxMzY3OWY0MyJ9"
         }
       ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-10-21T08:05:42.350Z"
+    "at": "2026-10-23T08:06:06.503Z"
   }
 }

@@ -1,12 +1,13 @@
 ---
 type: operations reference
-title: dcode Sessions, Resume, and Cost Operations
-description: Operate dcode's persistent SQLite threads, interactive and headless resume safeguards, checkpoint migration, and estimated-cost accounting. Covers ownership fencing, selector behavior, pricing overrides, diagnostics, and failure handling.
-tags: [dcode, sessions, resume, cost-tracking, sqlite, pricing]
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-10-21T08:05:42.350Z
+title: dcode Costs, Sessions, and Updates
+description: Operate dcode's persistent SQLite threads, resume safeguards, estimated-cost accounting, model-price overrides, and update lifecycle. Covers ownership fencing, usage statistics, cache and retention behavior, and failure handling.
+tags: [dcode, sessions, resume, cost-tracking, sqlite, pricing, updates]
 sources:
+  - id: openwiki-source-858a770d7d203979f196c65b
+    resource: repo://libs/code/deepagents_code/_session_lock.py
+  - id: openwiki-source-dc8749c06f6da0ecc0666f26
+    resource: repo://libs/code/deepagents_code/_session_stats.py
   - id: openwiki-source-b044ed8f5923ae8730e26602
     resource: repo://libs/code/deepagents_code/client/headless_resume.py
   - id: openwiki-source-ecf20e7a2684ba0d2ae7d701
@@ -25,16 +26,21 @@ sources:
     resource: repo://libs/code/deepagents_code/state_migration.py
   - id: openwiki-source-91c9283d1547adfffd627c43
     resource: repo://libs/code/deepagents_code/thread_ownership.py
+  - id: openwiki-source-116a1f598e2b0900a09761fc
+    resource: repo://libs/code/deepagents_code/update_check.py
   - id: openwiki-source-36838b2ce6fb7679d6e662cb
     resource: repo://libs/code/tests/integration_tests/test_headless_resume.py
   - id: openwiki-source-a1c23c211325ea69f28f8ca0
     resource: repo://libs/code/tests/unit_tests/test_cost_tracking.py
   - id: openwiki-source-cd2a5280cf3ca3ab491d7a8e
     resource: repo://libs/code/tests/unit_tests/test_sessions.py
-generated: { by: "openwiki/0.4.2", at: "2026-10-21T08:05:42.350Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-10-23T08:06:06.503Z" }
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-10-23T08:06:06.503Z
 ---
 
-# dcode Sessions, Resume, and Cost Operations
+# dcode Costs, Sessions, and Updates
 
 ## Operating model
 
@@ -139,6 +145,42 @@ Direct server-owned calls outside ordinary middleware must use `prepare_operatio
 
 Side-question and title spend is persisted as a separate sessions-database subtotal, not placed back into graph cost channels. A deletion tombstone prevents a late completion or retry from resurrecting spend after thread deletion. The `/btw` route reads checkpoint state only as a pricing fallback, runs its isolated operation through `answer_with_cost`, and exposes the cumulative side subtotal through the thread-cost endpoint. Title generation sends bounded visible human/assistant text to a tool-free model without callbacks, normalizes its output through the thread-name rules, and waits for model initialization if cancellation arrives.
 
+## Client usage statistics
+
+`SessionStats` is process-local display telemetry, not a replacement for the checkpointed session total. It counts completed requests, tokens, cache reads/writes, and priceable estimates globally, per `(provider, model)` and by usage kind (`assistant`, `subagent`, `offload`, or `auto`). A missing price leaves token counts intact and does not add to dollar totals.
+
+Streaming usage is a correction ledger rather than an append-only counter. Chunks for one invocation retract and replace the prior running contribution; a completed message replaces partial chunk data, and a later model identity can re-price the whole request. Stable invocation identity is preferred, with message identity and retry attempt scope as fallbacks. Thus a provider that emits incremental chunks does not appear as multiple requests, while a duplicate completed message cannot double count.
+
+Nested `model_usage` events are only provisional client display input. The consumer checks the event type and schema version, request/thread/scope identifiers, and usage shape before accepting it; an unsupported event loses only the provisional display because the durable server total still arrives separately. Do not use the session-statistics table as a billing system: both it and durable cost use estimates.
+
+## Update checking and installation safety
+
+Update discovery is best effort. `get_latest_version()` uses `latest_version.json` for 24 hours, fetches PyPI with a three-second timeout only when necessary, and returns the cached answer or `None` on malformed cache/data, unavailable `requests`, or network failure. Stable installs consider stable releases unless configured otherwise; an update result distinguishes an up-to-date checked release from an unavailable check. Notification state is separate in `update_state.json` and suppresses a repeat notice for the same version for the same TTL.
+
+```mermaid
+flowchart TD
+    Start["Launch or explicit update check"] --> Cache["Read version cache"]
+    Cache --> Fresh{"Fresh cached version"}
+    Fresh -->|Yes| Compare["Compare installed and available versions"]
+    Fresh -->|No| PyPI["Fetch PyPI metadata"]
+    PyPI --> Compare
+    PyPI -->|Failure| Fallback["Use cached answer or report no answer"]
+    Compare --> Notice["Throttle notification state"]
+    Notice --> Install["Acquire installation update lock before install"]
+```
+
+*Update discovery degrades to cached or no-result behavior; installation is a separately serialized operation.*
+
+`[update].check`, `DEEPAGENTS_CODE_NO_UPDATE_CHECK`, and managed configuration control checking; checking defaults on, but an unreadable managed policy disables it. Auto-update defaults on for a non-editable install, but editable installs never auto-update. Managed policy has precedence; an unreadable user configuration disables auto-update rather than assuming permission to install. `set_auto_update()` is intentionally different from most update helpers: it raises if it cannot atomically persist the requested setting.
+
+All paths that replace the tool environment—startup auto-update, `dcode update`, `/update`, and update-notification actions—compete for the nonblocking installation-scoped `update.lock`. A loser continues running its launch version and sees the installed update on a later launch. An unavailable lock fails open with a warning, so it preserves pre-lock availability at the cost of losing concurrent-install serialization.
+
+A `uv` upgrade is pinned to the inspected target and must pass post-install readback; an installer exit alone is not success. dcode refuses an unknown or unsupported install method instead of trying another package manager. If a target requires Python 3.14, startup paths that cannot safely rebuild an environment defer with instructions to quit sessions and run `dcode update`; Windows always defers. An interrupted migration emits recovery guidance because a half-rebuilt environment may no longer run dcode.
+
+### Installation presence versus thread ownership
+
+The session lock used by update migration is deliberately distinct from the per-thread checkpoint lease. On POSIX, every process of a non-editable installation holds a shared `sessions.lock` for its lifetime and passes its descriptor to spawned servers. A prospective migration serializes its check and tries an exclusive lock; it treats Windows, lock failure, and contention as “not alone,” thereby deferring migration. Kernel lock release on process death avoids stale presence markers, but the result remains a race-time snapshot and cannot cover older versions or a session launched during migration.
+
 ## Cost diagnostics and offload failure handling
 
 The full-thread breakdown formatter refuses to render unless it receives a version-one breakdown with `historical_complete` true. This prevents legacy dollar-only history or malformed detail from being presented as a complete token table. For valid breakdowns, the table labels missing/invalid values as unavailable, marks incomplete categories partial, identifies directionless cost, and warns when some requests are unpriceable.
@@ -153,6 +195,8 @@ Server `/offload` serializes work per thread, requires a registered idle thread 
 - Run `tests/unit_tests/test_headless_resume.py`, `test_non_interactive.py`, and resume-policy cases in `test_app.py` after changing headless selection, cutoff, cwd, or adoption behavior.
 - Run `tests/unit_tests/test_sessions.py` and ownership-transition tests after changing listing, naming, deletion, caching, or checkpoint writes.
 - Run `tests/unit_tests/test_cost_tracking.py` for pricing fallback/updating, recorder ownership, breakdown completeness, middleware charging, and prepared settlement; run `test_cost_breakdown.py` and relevant app/Debug Console tests for diagnostic eligibility and modal failure behavior.
+- Run `tests/unit_tests/test_update_check.py` after changing caching, version selection, policy precedence, lock behavior, upgrade command construction, migration, or verification; its cases cover corrupt state, prerelease constraints, and safe failure paths.
+- Run the `SessionStats` unit cases when changing streamed usage identities, correction/re-pricing, retry scope, or nested usage events.
 - Run `tests/unit_tests/skills/test_thread_inspector.py` for read-only inspection and malformed-state reconstruction, and offload API tests after changing checkpoint guards, cost settlement, cancellation, or archive linking.
 
 Related material: [Code agent architecture](../architecture/code-agent.md), [Context management](../concepts/context-management.md), [State persistence](../concepts/state-persistence.md), and [Run a dcode session](../workflows/run-dcode-session.md).

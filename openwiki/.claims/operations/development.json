@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:56a60a4141966f1605ecfb4ad57d6a5a52e3db4b2c109e73140eaf1bf70be6cd",
+  "pageVersion": "sha256:cc571b9dea285b09a22bb7811df50303ab5c419663ece319fd7a7ed48788bd80",
   "claims": [
     {
       "id": "claim_cd69081ffe3242c191198ed88e2b1a48",
@@ -12,15 +12,15 @@
         },
         {
           "resource": "repo://libs/code/pyproject.toml",
-          "version": "repo-file-v1:sha256:b330fc92d350a85671935c20a1928f90dbed15f5ac96e0ca5070f006d589aea5"
+          "version": "repo-file-v1:sha256:1871b11190006641f22a53928644cffb85e14d574be9080c167baba1a57e9c61"
         },
         {
           "resource": "repo://libs/deepagents/pyproject.toml",
-          "version": "repo-file-v1:sha256:4a34e095b3d2050a8f94fc03dcad5adcd0e8a0fdf447b50e99521beb42dfc948"
+          "version": "repo-file-v1:sha256:5b39f0c7f96935564388d93f36642f9ece93c2deb6952360d49c03ee92594d81"
         },
         {
           "resource": "repo://libs/talon/pyproject.toml",
-          "version": "repo-file-v1:sha256:8403d592a82d8419c48ff212b4846727bc5519ceded2b0f596925400fe98f048"
+          "version": "repo-file-v1:sha256:4d1eeeee5951872ee3a601aa22f5f82bedb66d9c4b3c61dd81ae199e591233df"
         }
       ]
     },
@@ -48,17 +48,17 @@
         },
         {
           "resource": "repo://libs/code/pyproject.toml",
-          "version": "repo-file-v1:sha256:b330fc92d350a85671935c20a1928f90dbed15f5ac96e0ca5070f006d589aea5"
+          "version": "repo-file-v1:sha256:1871b11190006641f22a53928644cffb85e14d574be9080c167baba1a57e9c61"
         }
       ]
     },
     {
       "id": "claim_8b5a3d75727b407ba49a21226b65259c",
-      "statement": "A changed package manifest requires relocking its transitive reverse closure of editable local-source consumers, because consumer locks embed producer requirements; checker and refresh helpers use Python 3.14 for ACP and Python 3.12 otherwise, and CI enforces this on pull requests, main pushes, and merge groups.",
+      "statement": "A changed package manifest requires relocking its transitive reverse closure of editable local-source consumers because consumer locks embed producer requirements; checker and refresh helpers use Python 3.14 for first-party ACP, Code, Evals, and Talon, and Python 3.12 otherwise, while CI invokes the checker for pull requests, main pushes, and merge groups.",
       "evidence": [
         {
           "resource": "repo://.github/scripts/checks/check_lockfiles_pre_commit.py",
-          "version": "repo-file-v1:sha256:1a7f0e5ee1f16a1235d704221fc72fc1ab8ad15161cc5847a420b56b6d0e7a22"
+          "version": "repo-file-v1:sha256:06179e3332dbee392bde04770570c2d75e59d62877bfce07c7d642de87cfa213"
         },
         {
           "resource": "repo://.github/scripts/checks/refresh_lockfiles.py",
@@ -70,7 +70,7 @@
         },
         {
           "resource": "repo://.github/workflows/ci.yml",
-          "version": "repo-file-v1:sha256:d2c136046f603649420ad35a181cca5ffd13c25d681eba74e431e175c94758e0"
+          "version": "repo-file-v1:sha256:e0d03033c9a04ad401b9a77e9186ba6fd6a7fb8d68a88a3e3f1a4fd809316893"
         }
       ]
     },
@@ -94,15 +94,15 @@
     },
     {
       "id": "claim_84c087f65f2749b8bf613b47f43f37ee",
-      "statement": "The release-please manifest has nine independently released package baselines—Deep Agents 0.7.30, ACP 0.0.13, Code 0.1.88, Talon 0.0.9, Daytona 0.0.8, Modal 0.0.6, Runloop 0.0.7, Vercel 0.0.2, and QuickJS 0.3.9—and configuration creates separate draft Python release PRs with pre-1.0 bump behavior while delegating publication to release.yml.",
+      "statement": "The release-please manifest has nine independently released package baselines—Deep Agents 0.7.30, ACP 0.0.13, Code 0.2.0, Talon 0.1.0, Daytona 0.0.8, Modal 0.0.6, Runloop 0.0.7, Vercel 0.0.2, and QuickJS 0.3.9—and configuration creates separate draft Python release PRs with pre-1.0 bump behavior while delegating publication to release.yml.",
       "evidence": [
         {
           "resource": "repo://.github/workflows/release-please.yml",
-          "version": "repo-file-v1:sha256:0d9580c8ea677c613d81ba84d817c918348694baabb3479a38d72d7fe5e74152"
+          "version": "repo-file-v1:sha256:926b4df06a7a41c8e1ac17a2c780665f91e8e2ec8a0a1426f38b67eac2259a27"
         },
         {
           "resource": "repo://.release-please-manifest.json",
-          "version": "repo-file-v1:sha256:adf2f323386af9001383391519b921aed5e5b800ec9f3869fcb0616d52946c07"
+          "version": "repo-file-v1:sha256:f39119c78e8c4d7fe074275b6b03ac9dd0d3fb6a4b63e4163d53f7f0712afa84"
         },
         {
           "resource": "repo://release-please-config.json",
@@ -120,7 +120,7 @@
         },
         {
           "resource": "repo://.release-please-manifest.json",
-          "version": "repo-file-v1:sha256:adf2f323386af9001383391519b921aed5e5b800ec9f3869fcb0616d52946c07"
+          "version": "repo-file-v1:sha256:f39119c78e8c4d7fe074275b6b03ac9dd0d3fb6a4b63e4163d53f7f0712afa84"
         },
         {
           "resource": "repo://release-please-config.json#L59-L194",
@@ -142,7 +142,7 @@
         },
         {
           "resource": "repo://.github/workflows/release-please.yml",
-          "version": "repo-file-v1:sha256:0d9580c8ea677c613d81ba84d817c918348694baabb3479a38d72d7fe5e74152"
+          "version": "repo-file-v1:sha256:926b4df06a7a41c8e1ac17a2c780665f91e8e2ec8a0a1426f38b67eac2259a27"
         }
       ]
     },
@@ -223,10 +223,24 @@
           "version": "repo-lines-v1:sha256:d633e8523bd6d94a7df228a29c617718bbbc8c34c861ae1c2cbaa9fd92555b41:eyJzZWxlY3RlZExpbmVDb3VudCI6NjAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjY3YjMzZjQ5ZGM0MDk4NDA3YzdjZDgwYzEyMTNkNjg0OTJlN2VhYzIzODkwZWNkOWFhZWVmM2ZiODA3MzE2YTUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU3ZWUzMjI4NDA0YWU0MTY0NTIyMzhiYzIwYTRkNmEwMzk4ZTMxOTBmYmY4MWJlYWU1MGMxMGQxOWZkMDkwZGQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjM2MGFkNjRhNzc2N2YyNmFjNDRhMjcxNzgwN2E4NjAzYzQ5ZmQxZTAwMDE1MWZhYzgzYjk1OWE4MDBlYjAzNzEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImZmYjUwY2U5ZDVlZTE4Njg3YmQzMjBmYTJjNjU1OTQ4NzcyZTM0Y2RjYjA0YmZjZDRkMzkzNTVjMWUzOGZiZGMifQ"
         }
       ]
+    },
+    {
+      "id": "claim_c266a86f335e4a24a90da0a494d60bac",
+      "statement": "Pre-commit installs commit-message and pre-push hooks, runs package-specific format/lint targets and lock, extras, and version consistency checks for matching changes, and delegates branch-name enforcement to `.githooks/pre-push`.",
+      "evidence": [
+        {
+          "resource": "repo://.pre-commit-config.yaml",
+          "version": "repo-file-v1:sha256:ffc397ec4aad17f610881809cb54d33ac13849cab7bec0cb93c9d35f2bfa9966"
+        },
+        {
+          "resource": "repo://libs/DEVELOPMENT.md#L146-L175",
+          "version": "repo-lines-v1:sha256:dbf1634bec67a34c23a5321abcf5e3067d0a6e6cee8cc80e394a1990efd96c9b:eyJzZWxlY3RlZExpbmVDb3VudCI6MzAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU3Y2Q4MDNiYTAxODIxMWVmZmE0OTRjZjM1YzY5YzY1NDc0Mzk0MDgyNGNkYzUyYzQ1MmMyZTBmYWUxYjY3MWQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjRkYzRlOGRmZDk3MWFlOTExOWQzZGM5MWUzOWEwN2M2ZWZjOTUxMDQ1NDA0MmMwMzA4MjFmMjIyYWY2OGRlM2UiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjE0ZTcxNzJhZTNlZWUyZDg1NmE4YjgwMDAxZDliMmIwNDRmODBlNWFhY2YwZDY5MGIwNzI2ZmY3ZWY4YjI1ZTciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjVlZGFiN2Y5MzY4MjE4NTJkMjIwNjYzZjE1NzAxMjJjYjhiNDQ3MTI4OTM2OWY2OWI3MDYyNDViMTQ4OTMyMzEifQ"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-10-22T08:05:54.651Z"
+    "at": "2026-10-23T08:06:06.503Z"
   }
 }

@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:e3eb3880905447ac720306c61f389efa44dbd889e7da4826334240217cb65cc8",
+  "pageVersion": "sha256:e52ea01f3fe2aa4083f7d9a89940cb234b5d824d90812d49c9e6e41e9a4bf6c1",
   "claims": [
     {
       "id": "claim_c5dfbd9cde8e41eb8280d713c9d71d4f",
@@ -28,7 +28,7 @@
       "evidence": [
         {
           "resource": "repo://libs/deepagents/deepagents/middleware/subagents.py",
-          "version": "repo-file-v1:sha256:f4a40887da485863f593be6d242fe3bb663943c55f6f49116db49a02789505d6"
+          "version": "repo-file-v1:sha256:66d1a30c8669309a306db73f0ce7376ee9ca1e627e7a4456b57bde7f84fec2e5"
         }
       ]
     },
@@ -52,7 +52,7 @@
         },
         {
           "resource": "repo://libs/deepagents/tests/unit_tests/test_async_subagents.py",
-          "version": "repo-file-v1:sha256:19d2a0f0570273e2870d52a0a9894895cb8e6f13d33105b106660687db94c8bd"
+          "version": "repo-file-v1:sha256:c35a3b6977a03f38f0b067591e40c67dc895b847e8488d755461376edcd33dcb"
         }
       ]
     },
@@ -142,7 +142,7 @@
         },
         {
           "resource": "repo://libs/deepagents/deepagents/middleware/subagents.py",
-          "version": "repo-file-v1:sha256:f4a40887da485863f593be6d242fe3bb663943c55f6f49116db49a02789505d6"
+          "version": "repo-file-v1:sha256:66d1a30c8669309a306db73f0ce7376ee9ca1e627e7a4456b57bde7f84fec2e5"
         },
         {
           "resource": "repo://libs/deepagents/tests/unit_tests/test_subagents.py",
@@ -160,7 +160,7 @@
         },
         {
           "resource": "repo://libs/deepagents/deepagents/middleware/subagents.py",
-          "version": "repo-file-v1:sha256:f4a40887da485863f593be6d242fe3bb663943c55f6f49116db49a02789505d6"
+          "version": "repo-file-v1:sha256:66d1a30c8669309a306db73f0ce7376ee9ca1e627e7a4456b57bde7f84fec2e5"
         },
         {
           "resource": "repo://libs/deepagents/tests/unit_tests/test_graph.py",
@@ -178,7 +178,7 @@
         },
         {
           "resource": "repo://libs/deepagents/tests/unit_tests/test_async_subagents.py",
-          "version": "repo-file-v1:sha256:19d2a0f0570273e2870d52a0a9894895cb8e6f13d33105b106660687db94c8bd"
+          "version": "repo-file-v1:sha256:c35a3b6977a03f38f0b067591e40c67dc895b847e8488d755461376edcd33dcb"
         }
       ]
     },
@@ -230,7 +230,7 @@
         },
         {
           "resource": "repo://libs/deepagents/tests/unit_tests/test_async_subagents.py",
-          "version": "repo-file-v1:sha256:19d2a0f0570273e2870d52a0a9894895cb8e6f13d33105b106660687db94c8bd"
+          "version": "repo-file-v1:sha256:c35a3b6977a03f38f0b067591e40c67dc895b847e8488d755461376edcd33dcb"
         }
       ]
     },
@@ -252,7 +252,7 @@
         },
         {
           "resource": "repo://libs/deepagents/tests/unit_tests/test_async_subagents.py",
-          "version": "repo-file-v1:sha256:19d2a0f0570273e2870d52a0a9894895cb8e6f13d33105b106660687db94c8bd"
+          "version": "repo-file-v1:sha256:c35a3b6977a03f38f0b067591e40c67dc895b847e8488d755461376edcd33dcb"
         }
       ]
     },
@@ -301,10 +301,24 @@
           "version": "repo-lines-v1:sha256:530578d48db1d9a50e79bfa74739ce020a5146242b977f45891dcb53221c4b61:eyJzZWxlY3RlZExpbmVDb3VudCI6MTcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ4NTg0NmU5OThjNTFlNWYzN2M2MWRkMzgyYjgzNjMwODJjOWE0MzAxMmY4NDU4ODg1OGIyYjM1NzFmNTlmYWMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijk0YTMzMjU3NzM1MmE3MzhmZDExZmRhMjA5MmI5MDRiZWEyOGU0NWZkMmE0ZmEyOGMwOTIzODhhZDdhMjllOWMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImM0MDRhNjhmNjM4ZTdiODk1YTU2Yzk3MzlmYTkyYTViOTcxMWNhMjdmMDY1ZThiZGE4YjAwNmY5OGQ4ZWRjYmQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImY0NTIyN2E5Mzk2YTkyMmM3NzMwNDY4ZDQ5YmI5MDE3YWRmZWI4ZjlkYzRmZGFkMThhNDQwMjlkZWEzYWRiNDMifQ"
         }
       ]
+    },
+    {
+      "id": "claim_1f603c7d8a7d4f2fbc55e4032cf56342",
+      "statement": "BackendProtocol provides the common file-operation interface for pluggable agent backends, while SandboxBackendProtocol separately adds shell execution; therefore shell execution is optional rather than implied by filesystem support.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/backends/protocol.py#L403-L448",
+          "version": "repo-lines-v1:sha256:2ae519e7bf7629115ccaa34ca4decf25c5d1d0f9f40f3e943822e710e15068b3:eyJzZWxlY3RlZExpbmVDb3VudCI6NDYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjNlNmViMTBmMGRmMTg2MzAzZjVkZmJmZjFjMjg5YTQ5NDE3Y2RjYzYwNDNhZDBhMDBmYTQ0MTAyNmM3NjY5YTAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI3YjQ4Nzk3YmM1N2JkZGEzOGQ4MTE5NjhkMTE0YjgzNTZkN2I0YmUzMzFhMTQyZmY4ZDgzNWUwMzc3NjVlYzAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjI1M2EwYjg5ODkzZjIxOGE3YTI5NjllZWEwZWFkOTJiMTEwNWJkOWRhNDVkYWE2MTJjYmQ5OWZiYTVhYTExYjYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImRjNDU5YWVkZjY0OTRkMDljZjg5NmIyYWQ3MjY4MjBjYjY2NGM4MzI4NjRiYjM0NjEzMTM5OTA0NDgzOWFjMmMifQ"
+        },
+        {
+          "resource": "repo://libs/deepagents/deepagents/backends/protocol.py#L886-L941",
+          "version": "repo-lines-v1:sha256:d932d8ff369664b783dc63885d1c58f4dfbbfd867371840a46159124067ae74a:eyJzZWxlY3RlZExpbmVDb3VudCI6NTYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImYwYmJiZTVlZDM5ZDEzOGRhNWU4M2NmM2YwNjllZDYwNWIyYjk4NzlmYWIwMGRiZWU3MmQzZWNjNWIzNjhhMzIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFmMWNhMDcwNzA5YTk3ZTJiNjEyMmYzYjA5N2FlMDE1MmI3OWNjNWQxNjE1NDVhNThlZmNmOTNiYmY2MTg4NjgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjAyYjI1NzhkODVmMDU0N2ZhOTE3ZGE3YjE4ZDIwNzg5OTE4MjlhNTM4MmM3OTEyOGJlMTZmNmYxMDg4ZjdhYjUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImM1YjVlYmNjNjIxNDU1MWExYWFkYTNmNTE4OGE3MWE3Y2I5NTBlNjg2NTI0MDUzZTUxZmI4NWVmNzI1MDE1ZDEifQ"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-10-22T08:05:54.651Z"
+    "at": "2026-10-23T08:06:06.503Z"
   }
 }

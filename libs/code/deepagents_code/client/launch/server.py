@@ -39,7 +39,7 @@ from deepagents_code.config import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterator, Mapping
+    from collections.abc import Awaitable, Callable, Iterator, Mapping
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +74,16 @@ teardown before dcode escalates; `TestFlushBudget` guards that margin.
 
 _SIGKILL_TIMEOUT = 2
 """Seconds to wait for the group/process to exit after SIGKILL."""
+
+_ABANDONED_START_GRACE = 0.5
+"""Graceful-exit window for a server whose startup was abandoned.
+
+A server that never reached its caller holds no runs, checkpoints, or traces
+worth flushing. Uvicorn answers SIGTERM by waiting for in-flight requests, so a
+server still building its graph (for example, connecting to remote MCP
+servers) would hold the full `_SHUTDOWN_TIMEOUT`. This window still lets an
+idle server, and descendants such as stdio MCP servers, exit on SIGTERM.
+"""
 
 _WINDOWS_CREATE_NEW_PROCESS_GROUP = 0x00000200
 """Windows creation flag required for targeted console control signals.
@@ -419,6 +429,9 @@ def _build_server_env() -> dict[str, str]:
     export_profile_env(env)
     env["PYTHONDONTWRITEBYTECODE"] = "1"
     env["LANGGRAPH_AUTH_TYPE"] = "noop"
+    # dcode pins `langgraph-api`, so the PyPI upgrade check only costs a network
+    # fetch at startup and logs a `pip install -U` hint users cannot act on.
+    env["LANGGRAPH_NO_VERSION_CHECK"] = "1"
     env[INVOKED_AS] = invoked_name()
 
     # Capture a launch-time PYTHONPATH before stripping it. Never trust inherited
@@ -600,10 +613,12 @@ def _signal_windows_server(process: subprocess.Popen[Any]) -> None:
         process.terminate()
 
 
-def _terminate_server_process(process: subprocess.Popen[Any]) -> None:
+def _terminate_server_process(
+    process: subprocess.Popen[Any], *, grace: float | None = None
+) -> None:
     """Terminate the `langgraph dev` server and its descendants.
 
-    Signals the server for a graceful exit, waits `_SHUTDOWN_TIMEOUT`, then
+    Signals the server for a graceful exit, waits `grace`, then
     escalates to a hard kill: SIGTERM then SIGKILL on POSIX, Ctrl+Break then
     `TerminateProcess` on Windows.
 
@@ -624,7 +639,11 @@ def _terminate_server_process(process: subprocess.Popen[Any]) -> None:
 
     Args:
         process: The running server subprocess to terminate.
+        grace: Seconds to wait for a graceful exit before the hard kill.
+
+            `None` uses `_SHUTDOWN_TIMEOUT`, read at call time.
     """
+    timeout = _SHUTDOWN_TIMEOUT if grace is None else grace
     pid = process.pid
     pgid = _server_process_group(pid)
     # Windows resolves no pgid, but Ctrl+Break still reaches the whole console
@@ -640,14 +659,14 @@ def _terminate_server_process(process: subprocess.Popen[Any]) -> None:
     try:
         if pgid is not None:
             os.killpg(pgid, signal.SIGTERM)
-            stopped = _wait_for_process_group_exit(process, pgid, _SHUTDOWN_TIMEOUT)
+            stopped = _wait_for_process_group_exit(process, pgid, timeout)
         else:
             if sys.platform == "win32":
                 _signal_windows_server(process)
             else:
                 process.send_signal(signal.SIGTERM)
             try:
-                process.wait(timeout=_SHUTDOWN_TIMEOUT)
+                process.wait(timeout=timeout)
             except subprocess.TimeoutExpired:
                 stopped = False
             else:
@@ -868,23 +887,28 @@ class ServerProcess:
         self,
         *,
         timeout: float = _HEALTH_TIMEOUT,  # noqa: ASYNC109
+        after_spawn: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
         """Start the `langgraph dev` server and wait for it to be healthy.
 
         Args:
             timeout: Max seconds to wait for the server to become healthy.
+            after_spawn: Awaited once the subprocess is spawned, before the
+                health check. Lets callers overlap work with server boot that
+                must finish before the health check's imports run.
 
         Raises:
             RuntimeError: If the server fails to start or become healthy.
         """  # noqa: DOC502  # `RuntimeError` propagates from `_start`
         async with self._lifecycle_lock:
-            await self._start(timeout=timeout)
+            await self._start(timeout=timeout, after_spawn=after_spawn)
 
     async def _start(
         self,
         *,
         timeout: float,  # noqa: ASYNC109
         expected_stop_generation: int | None = None,
+        after_spawn: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
         """Start while the caller owns `_lifecycle_lock`.
 
@@ -893,6 +917,8 @@ class ServerProcess:
             expected_stop_generation: Generation captured before a restart's
                 stop phase. If synchronous terminal shutdown ran meanwhile,
                 abort instead of resurrecting the subprocess.
+            after_spawn: Awaited once the subprocess is spawned, before the
+                health check.
         """
         process = self._spawn_process(
             expected_stop_generation=expected_stop_generation,
@@ -901,6 +927,8 @@ class ServerProcess:
             return
         started = False
         try:
+            if after_spawn is not None:
+                await after_spawn()
             await wait_for_server_healthy(
                 self.url,
                 timeout=timeout,
@@ -922,8 +950,10 @@ class ServerProcess:
                 # `stop()` error from masking the exception already propagating;
                 # `stop()` is effectively non-raising today, so if it does fire it
                 # signals an unexpected leak — hence `error`, not `warning`.
+                # The server has not built its graph yet, so nothing needs the
+                # full graceful window.
                 try:
-                    await asyncio.to_thread(self.stop)
+                    await asyncio.to_thread(self.stop, grace=_ABANDONED_START_GRACE)
                 except Exception:
                     logger.exception(
                         "Error stopping server during startup cleanup",
@@ -1161,11 +1191,17 @@ class ServerProcess:
         with self._state_lock:
             self._stop_process_locked()
 
-    def _stop_process_locked(self) -> None:
-        """Stop the subprocess while `_state_lock` is held."""
+    def _stop_process_locked(self, *, grace: float | None = None) -> None:
+        """Stop the subprocess while `_state_lock` is held.
+
+        Args:
+            grace: Seconds to wait for a graceful exit before the hard kill.
+
+                `None` uses `_SHUTDOWN_TIMEOUT`.
+        """
         try:
             if self._process is not None and self._process.poll() is None:
-                _terminate_server_process(self._process)
+                _terminate_server_process(self._process, grace=grace)
                 # Best-effort termination may fail, for example with EPERM.
                 if self._process.poll() is None:
                     logger.warning(
@@ -1208,13 +1244,19 @@ class ServerProcess:
                     logger.debug("Failed to clean up log file", exc_info=True)
             self._log_file = None
 
-    def stop(self) -> None:
+    def stop(self, *, grace: float | None = None) -> None:
         """Stop the server process and clean up all resources.
 
         Idempotent and safe to call concurrently. The synchronous state lock
         prevents process teardown and resource cleanup from interleaving, while
         the generation counter prevents an in-flight async restart from
         spawning a replacement after this terminal stop wins the race.
+
+        Args:
+            grace: Seconds to wait for a graceful exit before the hard kill.
+
+                `None` uses `_SHUTDOWN_TIMEOUT`. Only the first call's value
+                applies; later calls wait for that stop to finish.
         """
         with self._state_lock:
             if self._stopped:
@@ -1222,7 +1264,7 @@ class ServerProcess:
             self._stopped = True
             self._stop_generation += 1
 
-            self._stop_process_locked()
+            self._stop_process_locked(grace=grace)
 
             if self._temp_dir is not None:
                 try:

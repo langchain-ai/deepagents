@@ -100,6 +100,19 @@ class _BootstrapState:
     user_langsmith_env: dict[str, str | None] = dataclass_field(default_factory=dict)
     """Launch and project-dotenv LangSmith values intended for user commands."""
 
+    defer_redaction: bool = False
+    """Whether bootstrap leaves the redacting LangSmith client uninstalled.
+
+    Set by `defer_langsmith_secret_redaction` before bootstrap runs.
+    """
+
+    redaction_pending: bool = False
+    """Whether a deferred redacting LangSmith client still needs installing.
+
+    While this is set, no traced run may start in this process.
+    `ensure_langsmith_secret_redaction` installs the client and clears it.
+    """
+
     error: BaseException | None = None
     """Why bootstrap did not finish, when it was cut short.
 
@@ -116,6 +129,10 @@ _bootstrap_state = _BootstrapState()
 _bootstrap_lock = threading.Lock()
 """Guards `_ensure_bootstrap()` against concurrent access from the main thread
 and the prewarm worker thread."""
+
+_redaction_lock = threading.Lock()
+"""Serializes redacting-client installs so a deferred install cannot replace a
+newer one built from rotated `/auth` credentials."""
 
 _singleton_lock = threading.Lock()
 """Guards lazy construction of process-wide config, runtime, and console state."""
@@ -1096,9 +1113,12 @@ def reconcile_tracing_environment(environ: Mapping[str, str]) -> None:
 
 def _clear_langsmith_env_caches() -> None:
     """Drop the LangSmith SDK's cached environment reads."""
+    ls_utils = sys.modules.get("langsmith.utils")
+    if ls_utils is None:
+        # The caches live on the module, so an SDK that has not been imported
+        # has read nothing yet. Importing it here would only cost startup time.
+        return
     try:
-        from langsmith import utils as ls_utils
-
         ls_utils.get_env_var.cache_clear()
         ls_utils.get_tracer_project.cache_clear()
     except Exception:  # cache shape is upstream's, not ours
@@ -1326,7 +1346,7 @@ def _load_langsmith_profile_config(
     if profiles is None:
         return None
 
-    if env is None:
+    if env is None or env is os.environ:
         return profiles.load_profile_client_config()
 
     from unittest.mock import patch
@@ -1686,6 +1706,21 @@ def apply_stored_langsmith_auth(*, replace_project: bool = False) -> None:
             save path sets it true because the saved project is the newest user
             choice for the already-running session.
     """
+    _apply_stored_langsmith_env(replace_project=replace_project)
+    with _redaction_lock:
+        configure_langsmith_secret_redaction()
+        # This install supersedes a deferred one. Without clearing the flag,
+        # the deferred install could later replace this client with one built
+        # from older credentials.
+        _bootstrap_state.redaction_pending = False
+
+
+def _apply_stored_langsmith_env(*, replace_project: bool = False) -> None:
+    """Apply the environment part of `apply_stored_langsmith_auth`.
+
+    Args:
+        replace_project: See `apply_stored_langsmith_auth`.
+    """
     from deepagents_code.model_config import apply_stored_service_credentials
 
     _apply_prefixed_langsmith_env()
@@ -1696,7 +1731,46 @@ def apply_stored_langsmith_auth(*, replace_project: bool = False) -> None:
     _apply_stored_langsmith_tracing(replace_project=replace_project)
     _disable_orphaned_tracing()
     _apply_default_langsmith_project()
-    configure_langsmith_secret_redaction()
+
+
+def defer_langsmith_secret_redaction() -> None:
+    """Defer the redacting LangSmith client install out of bootstrap.
+
+    Bootstrap still applies all LangSmith environment state. Only the client
+    install waits, because its `langsmith` import costs about 150-250 ms on the
+    startup path. The install then happens on the first call to
+    `ensure_langsmith_secret_redaction`. Every path in this process that can
+    start a traced run must call it first; `create_model` does.
+
+    Has no effect once bootstrap has run.
+    """
+    _bootstrap_state.defer_redaction = True
+
+
+def ensure_langsmith_secret_redaction() -> None:
+    """Install the redacting LangSmith client if bootstrap deferred it.
+
+    Idempotent and thread-safe. A caller blocks until the install is done, so
+    it cannot start a traced run before the redacting client is in place. If
+    the install raises, the flag stays set and the next caller tries again.
+    """
+    if _bootstrap_state.defer_redaction:
+        # Bootstrap decides whether an install is pending. Run it first so a
+        # caller that arrives before it cannot slip past an unset flag.
+        _ensure_bootstrap()
+    if not _bootstrap_state.redaction_pending:
+        return
+    with _redaction_lock:
+        if not _bootstrap_state.redaction_pending:
+            return
+        # Read the process environment, as bootstrap does, not a snapshot
+        # that a caller such as `create_model` scoped for its own use.
+        token = _active_environment.set(None)
+        try:
+            configure_langsmith_secret_redaction()
+        finally:
+            _active_environment.reset(token)
+        _bootstrap_state.redaction_pending = False
 
 
 def _warn_on_prefixed_langsmith_override(canonical: str, prefixed: str) -> None:
@@ -1903,6 +1977,11 @@ def _ensure_bootstrap() -> None:
             return
 
         try:
+            # Mark a deferred install pending before any step that can raise, so
+            # a partial bootstrap still installs the redacting client before
+            # the first traced run.
+            _bootstrap_state.redaction_pending = _bootstrap_state.defer_redaction
+
             # First, because this needs nothing but `os.environ`. Anything below
             # can raise into the handler, which this contract says to survive;
             # leaving the snapshot empty instead makes `_encode_user_langsmith_env`
@@ -1959,7 +2038,10 @@ def _ensure_bootstrap() -> None:
             # tracing defaults, disable orphaned tracing, and route active tracing
             # to the displayed project. Keeping this in one helper lets `/auth`
             # save apply the same state inside an already-running TUI session.
-            apply_stored_langsmith_auth()
+            if _bootstrap_state.defer_redaction:
+                _apply_stored_langsmith_env()
+            else:
+                apply_stored_langsmith_auth()
         except Exception as exc:
             _bootstrap_state.error = exc
             logger.exception(
@@ -4685,7 +4767,7 @@ def resolve_auto_classifier_model_with_problem() -> tuple[str | None, str | None
 
 
 _DEFAULT_AUTO_CLASSIFIER_MODELS = {
-    "anthropic": "anthropic:claude-sonnet-5",
+    "anthropic": "anthropic:claude-sonnet-5-5",
     "google_genai": "google_genai:gemini-3.8-flash",
     "google_vertexai": "google_vertexai:gemini-3.8-flash",
     "openai": "openai:gpt-5.6-luna",
@@ -4809,14 +4891,15 @@ def configure_langsmith_secret_redaction() -> bool:
             return False
 
         from langsmith import Client, configure
-        from langsmith.anonymizer import create_secret_anonymizer
+
+        from deepagents_code._trace_redaction import create_cached_secret_anonymizer
 
         api_key = _resolve_env_var_from(
             env,
             "LANGSMITH_API_KEY",
         ) or _resolve_env_var_from(env, "LANGCHAIN_API_KEY")
         api_url = _tracing_endpoint_from(env)
-        kwargs: dict[str, Any] = {"anonymizer": create_secret_anonymizer()}
+        kwargs: dict[str, Any] = {"anonymizer": create_cached_secret_anonymizer()}
         if api_key:
             kwargs["api_key"] = api_key
         if api_url:
@@ -6834,6 +6917,9 @@ def create_model(
         >>> model = create_model("gpt-5.5")  # Auto-detects openai
         >>> model = create_model()  # Uses environment defaults
     """  # noqa: DOC502 - `ModelNotAllowedError` propagates from `require_model_allowed`
+    # A model is how this process starts traced runs, so none may exist before
+    # a deferred redacting client is installed.
+    ensure_langsmith_secret_redaction()
     from deepagents_code.model_config import (
         IMPLICIT_AUTH_PROVIDERS,
         ModelConfig,

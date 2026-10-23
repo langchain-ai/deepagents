@@ -36,6 +36,7 @@ if TYPE_CHECKING:
 from deepagents_code._env_vars import SERVER_ENV_PREFIX
 from deepagents_code._server_config import ServerConfig
 from deepagents_code.client.launch.server import (
+    _ABANDONED_START_GRACE,
     _EPHEMERAL_PORT,
     emit_preserved_log_notices,
 )
@@ -485,6 +486,11 @@ async def start_server_and_get_agent(
             # thread keeps running and `asyncio.run` joins it before the process
             # exits, so the server is still reaped.
             #
+            # The server never reached the caller, so it holds no session state
+            # and gets only a short graceful window. A sandbox is the exception:
+            # the graph build may be creating one, and the server deletes it only
+            # when it exits gracefully.
+            #
             # `stop()` only *queues* any debug-preserved log path; it is not
             # announced here. This helper is awaited by callers that still own
             # the terminal (the initial TUI startup worker and the in-session
@@ -492,8 +498,9 @@ async def start_server_and_get_agent(
             # alternate screen. The queue is process-global, so the outer
             # terminal teardown (`run_textual_app` / `server_session` finally)
             # drains this failed server's path once the terminal is restored.
+            grace = None if config.sandbox_type else _ABANDONED_START_GRACE
             try:
-                await asyncio.to_thread(server.stop)
+                await asyncio.to_thread(server.stop, grace=grace)
             except Exception:
                 logger.exception(
                     "Error stopping server during startup cleanup",

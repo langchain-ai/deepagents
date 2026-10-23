@@ -1130,11 +1130,27 @@ class TestBuildStreamConfig:
         ):
             assert _get_deepagents_version() is None
 
+        _get_deepagents_version.cache_clear()
         with patch(
             "deepagents_code.extras_info.resolve_sdk_version",
             return_value=("1.2.3", "resolved"),
         ):
             assert _get_deepagents_version() == "1.2.3"
+
+    def test_sdk_version_resolved_once_across_turns(self) -> None:
+        """Repeated stream configs reuse one SDK version lookup.
+
+        `build_stream_config` runs on every turn, and the lookup scans installed
+        distributions, so it must not repeat per turn.
+        """
+        with patch(
+            "deepagents_code.extras_info.resolve_sdk_version",
+            return_value=("1.2.3", "resolved"),
+        ) as resolver:
+            for turn in range(3):
+                config = build_stream_config(f"t-{turn}", assistant_id=None)
+                assert config["metadata"]["dcode_client_deepagents_version"] == "1.2.3"
+        resolver.assert_called_once()
 
     def test_versions_editable_with_resolved_sdk_version(self) -> None:
         """Editable suffix and SDK diagnostic version are populated independently."""

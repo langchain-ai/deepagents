@@ -814,6 +814,18 @@ def _clear_kitty_kbd_probe_cache() -> None:
     supports_kitty_keyboard_protocol.cache_clear()
 
 
+@pytest.fixture(autouse=True)
+def _clear_deepagents_version_cache() -> None:
+    """Reset the process-lifetime cache on the SDK version lookup.
+
+    Tests patch `resolve_sdk_version` to drive `_get_deepagents_version`, so a
+    value cached by an earlier test would mask the patch.
+    """
+    from deepagents_code.config import _get_deepagents_version
+
+    _get_deepagents_version.cache_clear()
+
+
 @pytest.fixture
 def drain_modal_commands() -> DrainModalCommands:
     """Await the confirmation continuations that slash commands detach.

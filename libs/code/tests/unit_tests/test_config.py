@@ -3122,6 +3122,53 @@ class TestLangsmithKeyShadowedByEmptyOverride:
 class TestLangsmithSecretRedaction:
     """Tests for LangSmith trace secret redaction configuration."""
 
+    def test_deferred_install_preserves_live_environment(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import os
+        from concurrent.futures import ThreadPoolExecutor
+        from threading import Event
+
+        from langsmith import client as client_module
+
+        entered = Event()
+        updated = Event()
+
+        def load_profile() -> None:
+            entered.set()
+            assert updated.wait(timeout=5)
+
+        monkeypatch.setattr(
+            config_module,
+            "_bootstrap_state",
+            config_module._BootstrapState(done=True, redaction_pending=True),
+        )
+        monkeypatch.setenv("LANGSMITH_TRACING", "true")
+        monkeypatch.setenv("LANGSMITH_API_KEY", "lsv2_test")
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_REDACT", "true")
+        monkeypatch.setenv("DCODE_ENV_UPDATE", "before")
+        monkeypatch.setattr(
+            client_module._profiles, "load_profile_client_config", load_profile
+        )
+        with (
+            patch("langsmith.Client"),
+            patch("langsmith.configure") as configure,
+            patch.object(os.environ, "clear", wraps=os.environ.clear) as clear,
+            ThreadPoolExecutor(max_workers=1) as executor,
+        ):
+            worker = executor.submit(config_module.ensure_langsmith_secret_redaction)
+            try:
+                assert entered.wait(timeout=5)
+                os.environ["DCODE_ENV_UPDATE"] = "after"
+            finally:
+                updated.set()
+            worker.result(timeout=5)
+
+        clear.assert_not_called()
+        assert os.environ["DCODE_ENV_UPDATE"] == "after"
+        assert not config_module._bootstrap_state.redaction_pending
+        configure.assert_called_once()
+
     def test_redaction_can_be_disabled_by_env(
         self,
         monkeypatch: pytest.MonkeyPatch,

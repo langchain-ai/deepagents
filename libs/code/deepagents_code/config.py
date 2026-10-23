@@ -1346,7 +1346,7 @@ def _load_langsmith_profile_config(
     if profiles is None:
         return None
 
-    if env is None:
+    if env is None or env is os.environ:
         return profiles.load_profile_client_config()
 
     from unittest.mock import patch

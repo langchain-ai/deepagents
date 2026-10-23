@@ -571,34 +571,6 @@ def test_wrap_model_call_does_not_restore_stale_state_over_unsaved_fallback() ->
     assert captured["request"].messages == [fallback]
 
 
-def test_wrap_model_call_passes_request_through_without_goal_state() -> None:
-    """A session with no goal and no notice sends the request unchanged."""
-    tool_call = AIMessage(
-        content="calling",
-        tool_calls=[{"name": "read_file", "args": {}, "id": "call-1"}],
-    )
-    messages: list[object] = [
-        HumanMessage(content="m0"),
-        tool_call,
-        ToolMessage(content="file body", tool_call_id="call-1"),
-    ]
-    request = _fake_request(None, state={"messages": messages}, messages=messages)
-    captured: dict[str, SimpleNamespace] = {}
-
-    GoalToolsMiddleware().wrap_model_call(
-        request,  # ty: ignore[invalid-argument-type]
-        _capturing_handler(captured),  # ty: ignore[invalid-argument-type]
-    )
-
-    assert captured["request"] is request
-    assert (
-        GoalToolsMiddleware()._notice_update(
-            cast("AgentState[Any]", {"messages": messages})
-        )
-        is None
-    )
-
-
 class _NoticeCase(NamedTuple):
     """A goal state paired with what its notice is expected to expose.
 

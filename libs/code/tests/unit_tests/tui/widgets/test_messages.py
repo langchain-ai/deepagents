@@ -311,6 +311,22 @@ class TestAssistantMessageStreamCoalescing:
             assert msg._flush_timer is None
             assert msg._pending_append == ""
 
+    async def test_stop_stream_renders_all_text_without_waiting_for_timer(
+        self,
+    ) -> None:
+        """A long flush delay never holds back or drops the end of a message."""
+        with patch.object(AssistantMessage, "_STREAM_FLUSH_INTERVAL", 60.0):
+            async with _AssistantMessageApp().run_test() as pilot:
+                msg = pilot.app.query_one("#assistant", AssistantMessage)
+                chunks = ["- one\n", "- two\n", "- three\n\n", "```py\nx = 1\n```\n"]
+
+                for chunk in chunks:
+                    await msg.append_content(chunk)
+                await asyncio.wait_for(msg.stop_stream(), timeout=5)
+
+                assert msg._get_markdown().source == "".join(chunks)
+                assert msg._flush_timer is None
+
     async def test_set_content_drains_and_cancels_active_timer(self) -> None:
         """`set_content` cancels a live flush timer and drops the buffer."""
         async with _AssistantMessageApp().run_test() as pilot:

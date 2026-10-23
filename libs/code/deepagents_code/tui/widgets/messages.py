@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import ast
+import asyncio
 import json
 import logging
 import re
 import textwrap
 from dataclasses import dataclass
 from pathlib import Path
-from time import time
+from time import monotonic, time
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, NamedTuple, cast
 
 from textual import on
@@ -1479,7 +1480,16 @@ class AssistantMessage(_StreamedTextParts, Vertical):
     Writing every token immediately forced a markdown re-parse per chunk on the
     UI event loop, which starved keyboard input while the model streamed;
     batching subsequent writes keeps typing responsive.
+
+    Each flush re-parses the last top-level block, so a long list or code fence
+    costs more per flush as it grows. The timer waits twice the last render
+    time before the next flush (bounded by `_STREAM_FLUSH_MAX_INTERVAL`), so
+    the event loop stays at least half free for input however slow rendering
+    gets.
     """
+
+    _STREAM_FLUSH_MAX_INTERVAL: ClassVar[float] = 1.0
+    """Upper bound in seconds on the render-cost-scaled flush interval."""
 
     DEFAULT_CSS = """
     AssistantMessage {
@@ -1577,8 +1587,9 @@ class AssistantMessage(_StreamedTextParts, Vertical):
         """Append streamed content, then coalesce later writes on a timer.
 
         The first fragment is written immediately. Later fragments are buffered
-        and written at most once per `_STREAM_FLUSH_INTERVAL` so the UI event
-        loop stays free to process keypresses while the model streams.
+        and written on a timer that waits at least `_STREAM_FLUSH_INTERVAL`,
+        and longer when rendering is slow, so the UI event loop stays free to
+        process keypresses while the model streams.
 
         Args:
             text: Text to append
@@ -1589,9 +1600,41 @@ class AssistantMessage(_StreamedTextParts, Vertical):
         self._pending_append += text
         if self._flush_timer is None:
             await self._flush_pending_append()
-            self._flush_timer = self.set_interval(
-                self._STREAM_FLUSH_INTERVAL, self._flush_pending_append
-            )
+            self._schedule_flush(self._STREAM_FLUSH_INTERVAL)
+
+    def _schedule_flush(self, delay: float) -> None:
+        """Arm a one-shot timer for the next coalesced flush.
+
+        Args:
+            delay: Seconds to wait before the flush.
+        """
+        self._flush_timer = self.set_timer(delay, self._on_flush_timer)
+
+    async def _on_flush_timer(self) -> None:
+        """Flush buffered text, then re-arm the timer scaled to render cost.
+
+        The next delay is twice the time the markdown took to render this
+        flush, so the event loop spends at most half its time on streamed
+        markdown. `stop_stream` cancels this timer and flushes at once, so a
+        long delay never holds back the end of the message.
+        """
+        start = monotonic()
+        if self._pending_append:
+            await self._flush_pending_append()
+            await self._wait_for_render()
+        delay = max(self._STREAM_FLUSH_INTERVAL, 2 * (monotonic() - start))
+        self._schedule_flush(min(delay, self._STREAM_FLUSH_MAX_INTERVAL))
+
+    async def _wait_for_render(self) -> None:
+        """Wait until the markdown widget finishes the append in progress.
+
+        `MarkdownStream.write` only queues text; the stream's task renders it
+        under `Markdown.lock`. One loop pass lets that task take the lock, so
+        acquiring it here returns once the render is done.
+        """
+        await asyncio.sleep(0)
+        async with self._get_markdown().lock:
+            pass
 
     async def _flush_pending_append(self) -> None:
         """Write any buffered streamed text to the markdown stream.

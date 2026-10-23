@@ -7,7 +7,7 @@ subagent, and summarization middleware.
 
 import logging
 from collections.abc import Callable, Sequence
-from typing import Annotated, Any, Required, cast
+from typing import TYPE_CHECKING, Annotated, Any, Required, cast
 
 from langchain.agents import AgentState, create_agent
 from langchain.agents.middleware import HumanInTheLoopMiddleware, InterruptOnConfig
@@ -19,7 +19,6 @@ from langchain.agents.middleware.types import (
     StateT_co,
 )
 from langchain.agents.structured_output import ResponseFormat
-from langchain_anthropic import ChatAnthropic
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AnyMessage, SystemMessage
 from langchain_core.tools import BaseTool
@@ -68,6 +67,9 @@ from deepagents.profiles.harness.harness_profiles import (
     _apply_profile_prompt,
     _harness_profile_for_model,
 )
+
+if TYPE_CHECKING:
+    from langchain_anthropic import ChatAnthropic
 
 logger = logging.getLogger(__name__)
 
@@ -142,7 +144,7 @@ def __getattr__(name: str) -> str:
     raise AttributeError(msg)
 
 
-def _build_default_model() -> ChatAnthropic:
+def _build_default_model() -> "ChatAnthropic":
     """Construct the default model without emitting a deprecation warning.
 
     Internal helper used by `create_deep_agent` so the parameter-level
@@ -150,6 +152,9 @@ def _build_default_model() -> ChatAnthropic:
     from `get_default_model`. Direct user calls go through `get_default_model`,
     which keeps its decorator and warns once per process.
     """
+    # Deferred: only the default model needs the `anthropic` SDK.
+    from langchain_anthropic import ChatAnthropic  # noqa: PLC0415
+
     return ChatAnthropic(model_name="claude-sonnet-4-6")
 
 
@@ -165,7 +170,7 @@ def _build_default_model() -> ChatAnthropic:
     ),
     package="deepagents",
 )
-def get_default_model() -> ChatAnthropic:
+def get_default_model() -> "ChatAnthropic":
     """Get the default model for Deep Agents.
 
     !!! deprecated

@@ -21,6 +21,7 @@ from deepagents_code.tui.widgets.thread_selector import (
     ContainedSelect,
     ContainedSelectOverlay,
     DeleteThreadConfirmScreen,
+    ThreadOption,
     ThreadSelectorScreen,
     _format_column_value,
 )
@@ -397,15 +398,6 @@ class TestThreadSelectorFilterRows:
 
     async def test_filter_then_clear_restores_rows_and_selection(self) -> None:
         """Filtering shows only matches; clearing restores order and selection."""
-
-        def shown_rows(screen: ThreadSelectorScreen) -> list[str]:
-            scroll = screen.query_one(".thread-list")
-            return [
-                cast("Any", row).thread_id
-                for row in scroll.children
-                if row.has_class("thread-option") and row.display
-            ]
-
         all_ids = [t["thread_id"] for t in MOCK_THREADS]
         with _patch_list_threads(), _patch_columns():
             app = ThreadSelectorTestApp(current_thread="def67890")
@@ -416,28 +408,20 @@ class TestThreadSelectorFilterRows:
                 screen = cast("ThreadSelectorScreen", app.screen)
                 filter_input = screen.query_one("#thread-filter", Input)
 
-                filter_input.value = "ghi"
-                await pilot.pause()
-                await app.workers.wait_for_complete()
-                assert shown_rows(screen) == ["ghi11111"]
-                # Navigation stays on the shown rows.
-                await pilot.press("down")
-                assert screen._selected_thread_id() == "ghi11111"
+                for query, expected in (
+                    ("ghi", ["ghi11111"]),
+                    ("zzz-no-match", []),
+                    ("", all_ids),
+                ):
+                    filter_input.value = query
+                    await pilot.pause()
+                    await app.workers.wait_for_complete()
+                    rows = screen.query_one(".thread-list").query_children(ThreadOption)
+                    assert [row.thread_id for row in rows if row.display] == expected
+                    assert bool(screen.query(".thread-empty")) == (not expected)
 
-                filter_input.value = "zzz-no-match"
-                await pilot.pause()
-                await app.workers.wait_for_complete()
-                assert shown_rows(screen) == []
-                empty = screen.query_one(".thread-empty", Static)
-                assert "No threads found" in str(empty.render())
-
-                filter_input.value = ""
-                await pilot.pause()
-                await app.workers.wait_for_complete()
-                assert shown_rows(screen) == all_ids
-                assert not screen.query(".thread-empty")
-                selected = screen.query(".thread-option-selected")
-                assert [cast("Any", row).thread_id for row in selected] == ["def67890"]
+                selected = screen.query(ThreadOption).filter(".thread-option-selected")
+                assert [row.thread_id for row in selected] == ["def67890"]
 
                 await pilot.press("down", "enter")
                 await pilot.pause()

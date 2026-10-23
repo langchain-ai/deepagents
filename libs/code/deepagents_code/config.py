@@ -1096,9 +1096,12 @@ def reconcile_tracing_environment(environ: Mapping[str, str]) -> None:
 
 def _clear_langsmith_env_caches() -> None:
     """Drop the LangSmith SDK's cached environment reads."""
+    ls_utils = sys.modules.get("langsmith.utils")
+    if ls_utils is None:
+        # The caches live on the module, so an SDK that has not been imported
+        # has read nothing yet. Importing it here would only cost startup time.
+        return
     try:
-        from langsmith import utils as ls_utils
-
         ls_utils.get_env_var.cache_clear()
         ls_utils.get_tracer_project.cache_clear()
     except Exception:  # cache shape is upstream's, not ours

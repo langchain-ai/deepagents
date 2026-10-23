@@ -5952,6 +5952,31 @@ class TestTracingOptOut:
             assert auth_store.get_stored_key("langsmith") == "stored-key"
 
 
+class TestClearLangSmithEnvCaches:
+    """Env changes must reach the SDK without importing it at startup."""
+
+    def test_clears_loaded_sdk_cache(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from langsmith import utils as ls_utils
+
+        monkeypatch.setenv("LANGSMITH_PROJECT", "before")
+        assert ls_utils.get_env_var("PROJECT") == "before"
+        monkeypatch.setenv("LANGSMITH_PROJECT", "after")
+
+        config_module._clear_langsmith_env_caches()
+
+        assert ls_utils.get_env_var("PROJECT") == "after"
+
+    def test_does_not_import_unloaded_sdk(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An SDK that was never imported has no cache to clear."""
+        monkeypatch.delitem(sys.modules, "langsmith.utils")
+
+        config_module._clear_langsmith_env_caches()
+
+        assert "langsmith.utils" not in sys.modules
+
+
 class TestTracingEnvironmentReconcile:
     """The LangSmith SDK reads `os.environ`, so the snapshot is published."""
 

@@ -452,6 +452,22 @@ test('pull request coverage requires exactly the changelog PRs, in either link f
   assert.doesNotThrow(() => draft.assertPullRequestCoverage('untrusted source', '- No links.\n'));
 });
 
+test('pull request coverage treats closed-issue links as optional', () => {
+  const source = [
+    'Package: deepagents-code',
+    'Version: 0.1.48',
+    '',
+    '* require an AGENTS.md marker (closes [#4991](https://github.com/langchain-ai/deepagents/issues/4991)) ([#5076](https://github.com/langchain-ai/deepagents/issues/5076))',
+  ].join('\n');
+  const pr = `- Require an AGENTS.md marker ([#5076](${PR_URL(5076)})).\n`;
+  assert.doesNotThrow(() => draft.assertPullRequestCoverage(source, pr));
+  assert.doesNotThrow(() => draft.assertPullRequestCoverage(source, `- Require an AGENTS.md marker ([#5076](${PR_URL(5076)}), closes [#4991](${PR_URL(4991)})).\n`));
+  assert.throws(
+    () => draft.assertPullRequestCoverage(source, `- Require an AGENTS.md marker (closes [#4991](${PR_URL(4991)})).\n`),
+    /dropped langchain-ai\/deepagents#5076/,
+  );
+});
+
 test('drafting writes nothing when the model drops a changelog PR link', async () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'release-notes-'));
   const inputFile = path.join(directory, 'input.md');

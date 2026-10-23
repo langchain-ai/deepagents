@@ -325,10 +325,14 @@ function responseText(provider, payload) {
 // release-please links PRs through `/issues/N`, which resolves to the PR;
 // normalizeEntry rewrites model output to `/pull/N`. Match both and key on the
 // repository-qualified number so the two forms compare equal.
-const PULL_REQUEST_LINK = /https:\/\/github\.com\/([^/\s()<>]+)\/([^/\s()<>]+)\/(?:issues|pull)\/(\d+)/g;
+const GITHUB_LINK = /https:\/\/github\.com\/([^/\s()<>]+)\/([^/\s()<>]+)\/(?:issues|pull)\/(\d+)/g;
+// release-please appends each commit's PR as a `([#N](url))` suffix. An issue
+// that a commit closes is also linked (`closes [#N](url)`), but it is not a PR,
+// so only the suffix form makes a link required.
+const PULL_REQUEST_SUFFIX = new RegExp(`\\(\\[#\\d+\\]\\(${GITHUB_LINK.source}\\)\\)`, 'g');
 
-function pullRequestRefs(text) {
-  return new Set([...text.matchAll(PULL_REQUEST_LINK)].map(([, owner, repo, number]) => `${owner}/${repo}#${number}`));
+function linkRefs(text, pattern = GITHUB_LINK) {
+  return new Set([...text.matchAll(pattern)].map(([, owner, repo, number]) => `${owner}/${repo}#${number}`));
 }
 
 // prepareDraft writes a header (Package/Version/optional Instructions) ending at
@@ -341,19 +345,21 @@ function changelogSource(source) {
 
 // The prompt asks the model to keep every PR link, but nothing else enforces it,
 // and a dropped link silently ships an unattributed release note. Fail closed
-// unless the draft links exactly the PRs the changelog does.
+// unless the draft links every changelog PR and nothing outside the changelog.
 function assertPullRequestCoverage(source, notes) {
-  const expected = pullRequestRefs(changelogSource(source));
-  const actual = pullRequestRefs(notes);
-  const missing = [...expected].filter(ref => !actual.has(ref));
-  const unexpected = [...actual].filter(ref => !expected.has(ref));
+  const changelog = changelogSource(source);
+  const required = linkRefs(changelog, PULL_REQUEST_SUFFIX);
+  const allowed = linkRefs(changelog);
+  const actual = linkRefs(notes);
+  const missing = [...required].filter(ref => !actual.has(ref));
+  const unexpected = [...actual].filter(ref => !allowed.has(ref));
   if (!missing.length && !unexpected.length) return;
   const details = [
     ...(missing.length ? [`dropped ${missing.join(', ')}`] : []),
     ...(unexpected.length ? [`added ${unexpected.join(', ')} not in the changelog`] : []),
   ];
   throw new Error(
-    `The drafted release notes do not link exactly the changelog's pull requests (${details.join('; ')}). `
+    `The drafted release notes do not match the changelog's pull request links (${details.join('; ')}). `
     + 'Re-run the draft command, or edit the notes by hand.',
   );
 }

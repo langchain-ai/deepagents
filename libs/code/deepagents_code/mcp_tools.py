@@ -438,6 +438,12 @@ def _validate_server_config(server_name: str, server_config: dict[str, Any]) -> 
         error_msg = f"Server '{server_name}' config must be a dictionary"
         raise TypeError(error_msg)
 
+    if "skillOnly" in server_config and not isinstance(
+        server_config["skillOnly"], bool
+    ):
+        error_msg = f"Server '{server_name}' 'skillOnly' must be a boolean"
+        raise TypeError(error_msg)
+
     server_type = _resolve_server_type(server_config)
 
     if server_type in _SUPPORTED_REMOTE_TYPES:
@@ -2295,6 +2301,11 @@ async def _load_tools_from_config(
             for tool in server_tools:
                 original_name = (tool.metadata or {})[_MCP_ORIGINAL_TOOL_NAME_KEY]
                 tool.name = tool_names[server_name, original_name]
+                if server_config.get("skillOnly"):
+                    tool.metadata = {
+                        **(tool.metadata or {}),
+                        "_deepagents_code_skill_only": True,
+                    }
             server_tools = _apply_tool_filter(server_tools, server_name, server_config)
 
             # Pair each schema by the server-side name retained in the adapted

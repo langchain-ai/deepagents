@@ -4,7 +4,7 @@ The release-notes job's body-construction steps (resolve-refs, generate-git-log,
 generate-release-body, finalize-release-body) have been extracted into the
 shared script at .github/scripts/release/build_release_notes.py. Their behavior
 is covered by test_build_release_notes.py. This file retains tests for workflow
-steps that are still inline bash, such as the setup job's resolve-sha step.
+steps that are still inline bash, such as the build job's resolve-sha step.
 """
 
 import os
@@ -130,7 +130,7 @@ def test_resolve_release_sha_outputs_canonical_target_summary(
     }
 
     subprocess.run(
-        ["bash", "-eo", "pipefail", "-c", _workflow_step("resolve-sha", job="setup")],
+        ["bash", "-eo", "pipefail", "-c", _workflow_step("resolve-sha", job="build")],
         cwd=tmp_path,
         env=env,
         check=True,
@@ -168,7 +168,7 @@ def test_resolve_release_sha_rejects_unresolvable_sha(tmp_path: Path) -> None:
     }
 
     result = subprocess.run(
-        ["bash", "-eo", "pipefail", "-c", _workflow_step("resolve-sha", job="setup")],
+        ["bash", "-eo", "pipefail", "-c", _workflow_step("resolve-sha", job="build")],
         cwd=tmp_path,
         env=env,
         check=False,

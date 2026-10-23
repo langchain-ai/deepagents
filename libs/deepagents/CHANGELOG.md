@@ -4,16 +4,14 @@
 
 ## [0.7.31](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.30...deepagents==0.7.31) (2026-10-23)
 
-
 ### Features
 
-* **sdk:** expose execution output retention metadata ([#6876](https://github.com/langchain-ai/deepagents/issues/6876)) ([8b8e70a](https://github.com/langchain-ai/deepagents/commit/8b8e70a1c5858e44cc4b8e7c499265c90a8c5786))
-
+- Expose execution output retention metadata in tracing ([#6876](https://github.com/langchain-ai/deepagents/pull/6876)).
 
 ### Bug Fixes
 
-* **sdk:** omit async task IDs from user replies by default ([#7174](https://github.com/langchain-ai/deepagents/issues/7174)) ([a551c88](https://github.com/langchain-ai/deepagents/commit/a551c88389e390454e8363a4f1b74d41fd6b8c80))
-* **sdk:** preserve filesystem permissions in middleware overrides ([#7166](https://github.com/langchain-ai/deepagents/issues/7166)) ([6ae83f4](https://github.com/langchain-ai/deepagents/commit/6ae83f4bc3ac444a6555f3cdd3878c4559fe5b81))
+- Omit async task IDs from user replies by default ([#7174](https://github.com/langchain-ai/deepagents/pull/7174)).
+- Preserve filesystem permissions in SDK middleware overrides ([#7166](https://github.com/langchain-ai/deepagents/pull/7166)).
 
 ## [0.7.30](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.29...deepagents==0.7.30) (2026-10-22)
 

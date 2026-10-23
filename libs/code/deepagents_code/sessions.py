@@ -2005,7 +2005,11 @@ async def delete_thread(thread_id: str) -> bool:
         deleted = False
         async with _connect() as conn:
             await delete_cost(conn, thread_id)
-            for table in ("dcode_thread_names", _MESSAGE_COUNTS_TABLE):
+            for table in (
+                "dcode_btw_prompts",
+                "dcode_thread_names",
+                _MESSAGE_COUNTS_TABLE,
+            ):
                 if await _table_exists(conn, table):
                     await conn.execute(
                         f"DELETE FROM {table} WHERE thread_id = ?",  # noqa: S608  # constant table names

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from copy import deepcopy
 from typing import TYPE_CHECKING
 from unittest.mock import MagicMock
@@ -16,7 +15,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.config import get_config
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command, interrupt
-from langsmith import Client, tracing_context
+from langsmith import Client, agent_address, tracing_context
 from pydantic import BaseModel
 
 from deepagents_code import turn_trace
@@ -112,9 +111,12 @@ def test_backfills_root_llm_tool_and_nested_runs_across_hitl(traced_graph):
     updates.clear()
     first.update({"ls_git_repo": "work-repo", "ls_git_branch": "work-branch"})
     assert len(updates) == len(runs)
-    for args, patch in updates:
-        assert set(patch) == {"extra", "end_time", "trace_id", "dotted_order"}
-        assert patch["end_time"] == before[args[0]][0]
+    for _, patch in updates:
+        identity = patch["run_id"]
+        assert patch["end_time"] == before[identity][0]
+        assert patch["inputs"] is None
+        assert patch["outputs"] == before[identity][1] or not before[identity][1]
+        assert patch["error"] == before[identity][2]
         metadata = patch["extra"]["metadata"]
         assert metadata["unrelated"] == "keep"
         assert metadata["git_repo"] == "legacy"
@@ -143,7 +145,7 @@ def test_active_runs_are_not_ended_and_telemetry_failure_is_silent(traced_graph)
     updates.clear()
     trace.update({"ls_git_repo": "work"})
     assert root.end_time is None
-    assert all(args[0] != root.id for args, _ in updates)
+    assert all(patch["run_id"] != root.id for _, patch in updates)
     tracer.client.update_run.side_effect = RuntimeError("telemetry unavailable")
     trace.update({"ls_git_repo": "still-work"})
     assert all(run.metadata["ls_git_repo"] == "still-work" for run in _runs([root]))
@@ -169,22 +171,31 @@ def test_replica_backfill_preserves_completed_payload_and_timing(traced_graph):
         [run.end_time for run in runs] * 2
     )
     for _, patch in updates:
-        assert "outputs" not in patch
-        assert "error" not in patch
-        assert "inputs" not in patch
+        assert patch["inputs"] is None
         assert patch["extra"]["metadata"]["ls_git_repo"] == "work"
 
 
-def test_real_sdk_payload_preserves_span_timing(monkeypatch):
+@pytest.mark.filterwarnings("ignore:Addressing runs with.*is in beta")
+@pytest.mark.parametrize("destination", ["project", "address"])
+def test_real_sdk_payload_preserves_destination_and_timing(monkeypatch, destination):
     from langsmith.run_trees import RunTree
 
     transport = MagicMock()
-    monkeypatch.setattr(Client, "request_with_retries", transport)
+    monkeypatch.setattr(Client, "_update_run", transport)
     client = Client(
         api_url="https://example.invalid", api_key="test", auto_batch_tracing=False
     )
     try:
-        completed = RunTree(name="completed", run_type="chain", ls_client=client)
+        completed = RunTree(
+            name="completed",
+            run_type="chain",
+            ls_client=client,
+            inputs={"excluded": "input"},
+            project_name="source" if destination == "project" else None,
+            address=agent_address("dcode", "production")
+            if destination == "address"
+            else None,
+        )
         completed.end(outputs={"unchanged": True})
         original_end = completed.end_time
         assert original_end is not None
@@ -193,10 +204,17 @@ def test_real_sdk_payload_preserves_span_timing(monkeypatch):
             {"ls_git_repo": "example/repo"}
         )
         transport.assert_called_once()
-        body = json.loads(transport.call_args.kwargs["request_kwargs"]["data"])
+        body = transport.call_args.args[0]
         assert body["end_time"] == original_end.isoformat()
         assert live.end_time is None
-        assert not {"inputs", "outputs", "error"}.intersection(body)
+        assert "inputs" not in body
+        assert body["outputs"] == {"unchanged": True}
+        assert completed.outputs == {"unchanged": True}
+        assert body["extra"]["metadata"]["ls_git_repo"] == "example/repo"
+        if destination == "project":
+            assert body["session_name"] == "source"
+        else:
+            assert body["address"] == "lrn:agents/dcode/environments/production"
     finally:
         client.close()
 

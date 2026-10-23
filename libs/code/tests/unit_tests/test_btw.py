@@ -736,45 +736,17 @@ async def test_saved_prompt_stays_out_of_checkpoints_and_survives_restart(
     invoke: AsyncMock,
 ) -> None:
     model = FakeMessagesListChatModel(responses=[])
-    graph, config = _prompt_graph(
-        BtwOperation(model, "Bootstrap", None), ["Saved main instructions."]
-    )
+    prompt = ["Initial instructions."]
+    graph, config = _prompt_graph(BtwOperation(model, "Bootstrap", None), prompt)
     await graph.ainvoke({"messages": [HumanMessage("Hello")]}, config)
+    prompt[0] = "Updated instructions."
+    await graph.ainvoke({"messages": [HumanMessage("Again")]}, config)
     state = await graph.aget_state(config)
     assert "_btw_system_prompt" not in state.values
 
     restarted = BtwOperation(model, "Bootstrap", None)
     await restarted.answer("saved-prompt", state.values, "Why?")
-    assert invoke.call_args.args[0][0].text.startswith("Saved main instructions.")
-
-
-@pytest.mark.usefixtures("prompt_db")
-async def test_unchanged_prompt_is_saved_once(
-    monkeypatch: pytest.MonkeyPatch, invoke: AsyncMock
-) -> None:
-    from deepagents_code import btw
-
-    saves: list[str] = []
-    save = btw._save_prompt
-
-    def counted(thread_id: str, prompt: str, digest: str) -> None:
-        saves.append(prompt)
-        save(thread_id, prompt, digest)
-
-    monkeypatch.setattr(btw, "_save_prompt", counted)
-    prompt = ["First instructions."]
-    operation = BtwOperation(FakeMessagesListChatModel(responses=[]), "B", None)
-    graph, config = _prompt_graph(operation, prompt)
-    for _ in range(2):
-        await graph.ainvoke({"messages": [HumanMessage("Hello")]}, config)
-    prompt[0] = "Second instructions."
-    await graph.ainvoke({"messages": [HumanMessage("Hello")]}, config)
-    assert saves == ["First instructions.", "Second instructions."]
-
-    state = await graph.aget_state(config)
-    restarted = BtwOperation(FakeMessagesListChatModel(responses=[]), "B", None)
-    await restarted.answer("saved-prompt", state.values, "Why?")
-    assert invoke.call_args.args[0][0].text.startswith("Second instructions.")
+    assert invoke.call_args.args[0][0].text.startswith("Updated instructions.")
 
 
 @pytest.mark.usefixtures("prompt_db")

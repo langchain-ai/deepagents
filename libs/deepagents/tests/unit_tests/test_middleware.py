@@ -3122,7 +3122,7 @@ class TestFilesystemMiddleware:
         assert "Hello world\nLine 2" in result.content
         assert "succeeded" in result.content
         assert "exit code 0" in result.content
-        assert result.artifact == {"exit_code": 0}
+        assert result.artifact == {"exit_code": 0, "truncated": False}
 
     def test_execute_tool_output_formatting_with_failure(self):
         """Test execute tool formats failure output correctly."""
@@ -3159,7 +3159,7 @@ class TestFilesystemMiddleware:
         assert "Error: command not found" in result.content
         assert "failed" in result.content
         assert "exit code 127" in result.content
-        assert result.artifact == {"exit_code": 127}
+        assert result.artifact == {"exit_code": 127, "truncated": False}
 
     def test_execute_tool_omits_artifact_exit_code_when_unknown(self):
         """Test execute tool omits `exit_code` when the backend reports none."""
@@ -3192,7 +3192,7 @@ class TestFilesystemMiddleware:
         # The content omits the status line entirely for an unknown exit code, so the
         # artifact must not imply one either.
         assert "exit code" not in result.content
-        assert result.artifact == {}
+        assert result.artifact == {"truncated": False}
 
     def test_execute_tool_error_paths_carry_no_artifact(self):
         """Test execute tool returns no artifact when no command ran."""
@@ -3266,6 +3266,7 @@ class TestFilesystemMiddleware:
 
         assert "Very long output..." in result.content
         assert "truncated" in result.content
+        assert result.artifact == {"exit_code": 0, "truncated": True}
 
     def testsupports_execution_helper_with_composite_backend(self):
         """Test supports_execution correctly identifies CompositeBackend capabilities."""

@@ -1092,6 +1092,7 @@ if TYPE_CHECKING:
     from deepagents_code.approval_mode import ApprovalMode
     from deepagents_code.client.launch.server import ServerProcess
     from deepagents_code.client.remote_client import RemoteAgent
+    from deepagents_code.client.session_cost import SessionCost
     from deepagents_code.cold_cache import (
         CacheActivity,
         ColdCacheReason,
@@ -10343,14 +10344,10 @@ class DeepAgentsApp(App):
         thread_id = self._lc_thread_id
         if not self._agent or not thread_id:
             return
-        try:
-            state_values = await self._get_thread_state_values(thread_id)
-        except Exception:
-            logger.debug(
-                "Could not load thread state while reconciling cost and cache state",
-                exc_info=True,
-            )
+        usage = await self._read_thread_usage(thread_id)
+        if usage is None:
             return
+        state_values, cost = usage
         # Separate server storage leaves only a discovery seed locally. Keep
         # resume policy tied to actual activity, even if the UI switched threads
         # during the read. A stale checkpoint must not make a thread look fresh.
@@ -10362,17 +10359,6 @@ class DeepAgentsApp(App):
                 logger.warning("Could not refresh thread activity", exc_info=True)
         if self._lc_thread_id != thread_id:
             return
-        remote = self._remote_agent()
-        cost = (
-            await remote.aget_session_cost(
-                {"configurable": {"thread_id": thread_id}},
-                checkpoint=state_values,
-            )
-            if remote is not None
-            else None
-        )
-        if self._lc_thread_id != thread_id:
-            return
         if cost is not None:
             self._set_session_cost(
                 cost["total"],
@@ -10382,6 +10368,38 @@ class DeepAgentsApp(App):
         else:
             self._sync_session_cost_from_state(state_values)
         self._sync_cache_state_from_state(state_values)
+
+    async def _read_thread_usage(
+        self, thread_id: str
+    ) -> tuple[Mapping[str, Any], SessionCost | None] | None:
+        """Read cost and cache state, preferring the server's usage route.
+
+        Full thread state is the fallback for local agents and servers
+        without the route. It also rebuilds the message history, which is
+        slow and large on a long thread.
+
+        Returns:
+            Checkpoint values and the combined server cost, or `None` when
+                state cannot be read.
+        """
+        remote = self._remote_agent()
+        config: RunnableConfig = {"configurable": {"thread_id": thread_id}}
+        usage = await remote.aget_usage_state(config) if remote else None
+        if usage is not None:
+            return usage
+        try:
+            state_values = await self._get_thread_state_values(thread_id)
+        except Exception:
+            logger.debug(
+                "Could not load thread state while reconciling cost and cache state",
+                exc_info=True,
+            )
+            return None
+        if remote is None:
+            return state_values, None
+        return state_values, await remote.aget_session_cost(
+            config, checkpoint=state_values
+        )
 
     def _notify_hydration_failure(self) -> None:
         """Surface transcript hydration failures to the user, once per session.

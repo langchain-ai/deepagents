@@ -4812,14 +4812,15 @@ def configure_langsmith_secret_redaction() -> bool:
             return False
 
         from langsmith import Client, configure
-        from langsmith.anonymizer import create_secret_anonymizer
+
+        from deepagents_code._trace_redaction import create_cached_secret_anonymizer
 
         api_key = _resolve_env_var_from(
             env,
             "LANGSMITH_API_KEY",
         ) or _resolve_env_var_from(env, "LANGCHAIN_API_KEY")
         api_url = _tracing_endpoint_from(env)
-        kwargs: dict[str, Any] = {"anonymizer": create_secret_anonymizer()}
+        kwargs: dict[str, Any] = {"anonymizer": create_cached_secret_anonymizer()}
         if api_key:
             kwargs["api_key"] = api_key
         if api_url:

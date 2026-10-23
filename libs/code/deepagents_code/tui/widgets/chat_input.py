@@ -3842,12 +3842,25 @@ class ChatInput(Vertical):
     def insert_at_cursor(self, text: str) -> bool:
         """Insert text at the current cursor through the undoable edit path.
 
+        Leaves the cursor after the inserted text and keeps it visible once the
+        chat input reflows.
+
         Returns:
             Whether the text area was available for insertion.
         """
         if not self._text_area:
             return False
-        self._text_area.insert(text)
+        # The edit is visible to any paint at once, but the composer only grows
+        # once the screen processes its relayout. A paint in between (cursor
+        # blink, toast) shows a multi-line insert crammed into the old height
+        # for a frame, so hold painting briefly (`delay_update` waits 50 ms)
+        # while the relayout lands. Only inserts with a newline take the hold:
+        # a long single line can soft-wrap and grow the composer too, but
+        # holding every insert would delay ordinary typing-sized edits.
+        if "\n" in text:
+            self.app.delay_update()
+        self._text_area.insert(text, maintain_selection_offset=False)
+        self._text_area.call_after_refresh(self._settle_cursor_after_insert)
         return True
 
     def replace_with_prompt(self, text: str) -> bool:
@@ -3863,6 +3876,35 @@ class ChatInput(Vertical):
             text, (0, 0), self._text_area.document.end, maintain_selection_offset=False
         )
         return True
+
+    def insert_at_end(self, text: str) -> bool:
+        """Append text after the draft through the undoable edit path.
+
+        Closes an open prompt search first: the search panel hides the input
+        row, so the text would otherwise land out of view.
+
+        Returns:
+            Whether the text area was available for insertion.
+        """
+        if not self._text_area:
+            return False
+        if self._prompt_search_active:
+            self._close_prompt_search(restore_draft=False, refocus=False)
+        self._text_area.move_cursor_to_end()
+        return self.insert_at_cursor(text)
+
+    def _settle_cursor_after_insert(self) -> None:
+        """Reveal the cursor and re-place the terminal cursor after layout.
+
+        `TextArea` sets `app.cursor_position` and scrolls to the cursor during
+        the edit, before an insert grows the chat input. Without redoing both
+        once layout settles, the terminal cursor stays at the pre-resize
+        offset, outside the chat input, and the cursor line can sit out of view.
+        """
+        if not self._text_area:
+            return
+        self._text_area.scroll_cursor_visible(animate=False)
+        self.app.cursor_position = self._text_area.cursor_screen_offset
 
     @property
     def _prompt_search_active(self) -> bool:

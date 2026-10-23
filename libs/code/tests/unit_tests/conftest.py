@@ -192,10 +192,20 @@ def _clear_langsmith_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
     Each test that *needs* LangSmith variables should set them explicitly via
     `monkeypatch.setenv` or `patch.dict("os.environ", ...)`.
+
+    The launch snapshot is reset to "all unset" too. Pytest collection can
+    bootstrap `credentials` before this fixture runs, which captures the
+    developer's shell LangSmith exports. A reload then restores those exports
+    over the values a test sets, so a test can pass in CI and fail locally.
     """
     import deepagents_code.config as config_mod
 
     monkeypatch.setattr(config_mod, "_reconciled_tracing_values", {})
+    monkeypatch.setattr(
+        config_mod._bootstrap_state,
+        "launch_langsmith_env",
+        config_mod._langsmith_selectors_from({}),
+    )
     for key in (
         "LANGSMITH_API_KEY",
         "LANGCHAIN_API_KEY",

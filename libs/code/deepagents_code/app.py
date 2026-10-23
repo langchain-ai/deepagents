@@ -44,7 +44,7 @@ from textual.containers import Container, VerticalScroll
 from textual.content import Content
 from textual.css.query import NoMatches
 from textual.dom import NoScreen
-from textual.events import Click
+from textual.events import Click, Key
 from textual.message import Message
 from textual.notifications import Notification as _Notification, Notify as _Notify
 from textual.screen import ModalScreen, Screen
@@ -172,6 +172,12 @@ from deepagents_code.tui.widgets.messages import (
     ToolCallMessage,
     ToolGroupSummary,
     UserMessage,
+)
+from deepagents_code.tui.widgets.selection_action import (
+    SELECTION_ACTION_WIDTH,
+    SelectionAction,
+    is_transcript_selection,
+    quote_after,
 )
 from deepagents_code.tui.widgets.startup_tip import StartupTip, show_startup_tip
 from deepagents_code.tui.widgets.status import StatusBar
@@ -1073,7 +1079,7 @@ if TYPE_CHECKING:
     from langchain_core.runnables import RunnableConfig
     from langgraph.pregel import Pregel
     from textual.app import ComposeResult
-    from textual.events import MouseUp, Paste, Resize
+    from textual.events import Event, MouseUp, Paste, Resize
     from textual.geometry import Size
     from textual.layout import DockArrangeResult
     from textual.timer import Timer
@@ -4119,6 +4125,24 @@ class DeepAgentsApp(App):
 
         Restored from `DEEPAGENTS_CODE_SHOW_SCROLLBAR` env var or
         `[ui].show_scrollbar` and re-persisted on toggle. Off by default.
+        """
+
+        self._ask_about_selection = _load_bool_display_preference(
+            "display.ask_about_selection", fallback=True
+        )
+        """Whether selecting conversation text shows "Ask about this".
+
+        Read at startup and on `/reload` from `DEEPAGENTS_CODE_ASK_ABOUT_SELECTION`
+        or `[ui].ask_about_selection`. On by default.
+        """
+
+        self._selection_action: SelectionAction | None = None
+        """The mounted "Ask about this" action, if one is showing."""
+
+        self._selection_anchor: tuple[Widget, int, int] | None = None
+        """A selected widget's top row and the selection's row when last seen.
+
+        Both are screen rows, so the action can follow its selection on scroll.
         """
 
         self._debug_console_click_to_copy = _load_debug_console_click_to_copy()
@@ -8833,8 +8857,12 @@ class DeepAgentsApp(App):
         """Hydrate history in both directions whenever the chat scrolls.
 
         Driven by `_ChatScroll.Scrolled` (see that message for why hydration
-        keys off the scroll offset rather than the scrollbar messages).
+        keys off the scroll offset rather than the scrollbar messages). Also
+        moves the "Ask about this" action with its selection once the scroll
+        has been laid out.
         """
+        if self._selection_action is not None:
+            self.call_after_refresh(self._follow_selection_action)
         if (
             self._transcript_prune_timer is not None
             and not self._message_store.hard_window_exceeded()
@@ -8844,7 +8872,12 @@ class DeepAgentsApp(App):
         self._check_hydration_below_needed()
 
     def on_resize(self, _event: Resize) -> None:
-        """Scale cached message heights when terminal width changes."""
+        """Scale cached message heights when terminal width changes.
+
+        Also dismisses the "Ask about this" action, whose position no longer
+        matches the reflowed selection.
+        """
+        self._dismiss_selection_action()
         # A terminal resize moves the bottom chrome even when its height is
         # unchanged, so re-anchor before the early returns below.
         self._anchor_toast_rack()
@@ -18284,6 +18317,11 @@ class DeepAgentsApp(App):
 
                 clear_caches()
                 self._sync_status_model()
+                self._ask_about_selection = _load_bool_display_preference(
+                    "display.ask_about_selection", fallback=True
+                )
+                if not self._ask_about_selection:
+                    self._dismiss_selection_action()
             except OSError, ValueError:
                 logger.exception("Failed to reload configuration")
                 await self._mount_message(
@@ -24837,12 +24875,7 @@ class DeepAgentsApp(App):
             return
         if isinstance(self.screen, ModalScreen):
             return
-        if (
-            self._pending_approval_widget
-            or self._pending_ask_user_widget
-            or self._pending_goal_review_widget
-            or self._is_input_focused()
-        ):
+        if self._inline_prompt_pending() or self._is_input_focused():
             return
         if self._chat_input.handle_external_paste(event.text):
             event.prevent_default()
@@ -24860,13 +24893,7 @@ class DeepAgentsApp(App):
             return
         self._chat_input._notify_app_focus()
         self._chat_input.set_cursor_blink(blink=self._cursor_blink_enabled)
-        if isinstance(self.screen, ModalScreen):
-            return
-        if (
-            self._pending_approval_widget
-            or self._pending_ask_user_widget
-            or self._pending_goal_review_widget
-        ):
+        if isinstance(self.screen, ModalScreen) or self._inline_prompt_pending():
             return
         self._chat_input.focus_input()
 
@@ -24910,18 +24937,14 @@ class DeepAgentsApp(App):
         if isinstance(self.screen, ModalScreen):
             return
         # Don't steal focus from active inline prompt widgets.
-        if (
-            self._pending_approval_widget
-            or self._pending_ask_user_widget
-            or self._pending_goal_review_widget
-        ):
+        if self._inline_prompt_pending():
             return
         self.call_after_refresh(self._chat_input.focus_input)
 
-    def on_mouse_up(self, event: MouseUp) -> None:  # noqa: ARG002  # Textual event handler signature
-        """Copy selection to clipboard after click-chain selection updates.
+    def on_mouse_up(self, event: MouseUp) -> None:
+        """Copy the selection and offer "Ask about this" after selection updates.
 
-        The scan is pinned to the active screen captured here, not resolved
+        The clipboard scan is pinned to the active screen captured here, not resolved
         inside the deferred callback. Textual routes mouse events only to the
         top of the screen stack (`App.on_event` forwards to `self.screen`), so
         that is necessarily where the release landed. Without pinning, a
@@ -24932,6 +24955,11 @@ class DeepAgentsApp(App):
         `self.screen` needs no empty-stack guard: `App.on_event` already
         dereferenced it to forward this `MouseUp`, and the only code that
         empties the stack runs after the message loop has stopped.
+
+        The same screen goes to `_show_selection_action`, which skips
+        any screen that is no longer active by then. A modal needs no check of
+        its own: only the main screen holds `#messages`, so no selection on a
+        modal counts as transcript text.
         """
         from deepagents_code.clipboard import copy_selection_to_clipboard
 
@@ -24940,6 +24968,131 @@ class DeepAgentsApp(App):
             self,
             screen=self.screen,
         )
+        self.call_after_refresh(
+            self._show_selection_action, self.screen, event.screen_x, event.screen_y
+        )
+
+    async def _show_selection_action(self, screen: Screen, x: int, y: int) -> None:
+        """Replace any existing "Ask about this" action with one for the selection.
+
+        The old action is always removed first, so a click that leaves no
+        transcript selection also clears a stale one.
+        """
+        self._dismiss_selection_action()
+        if (
+            not self._ask_about_selection
+            or screen is not self.screen
+            or not self._chat_input
+            or self._inline_prompt_pending()
+            or not is_transcript_selection(screen.selections)
+        ):
+            return
+        text = screen.get_selected_text()
+        if not text or not text.strip():
+            return
+        action = SelectionAction(text)
+        action.styles.offset = (
+            max(0, min(x, screen.size.width - SELECTION_ACTION_WIDTH)),
+            max(0, y - 1),
+        )
+        self._selection_action = action
+        anchor = next(iter(screen.selections))
+        self._selection_anchor = (anchor, anchor.region.y, y)
+        await screen.mount(action)
+
+    def _follow_selection_action(self) -> None:
+        """Move the action by as many rows as its selection has scrolled.
+
+        Streaming output scrolls a bottom-anchored chat on every chunk, so
+        dismissing on any scroll would make the action unusable during a run.
+        The action is dismissed once the selection leaves the visible chat, or
+        when its widget or the chat is no longer laid out.
+        """
+        action, anchor = self._selection_action, self._selection_anchor
+        if action is None or anchor is None:
+            return
+        widget, last_top, last_row = anchor
+        region = widget.region
+        try:
+            chat = self.query_one("#chat", VerticalScroll).region
+        except NoMatches:
+            self._dismiss_selection_action()
+            return
+        row = last_row + region.y - last_top
+        if not region or not chat.y <= row < chat.bottom:
+            self._dismiss_selection_action()
+            return
+        x = action.styles.offset.resolve(action.size, self.screen.size).x
+        action.styles.offset = (x, max(0, row - 1))
+        self._selection_anchor = (widget, region.y, row)
+
+    def on_selection_action_ask(self, event: SelectionAction.Ask) -> None:
+        """Append the selected text to the draft as a Markdown blockquote.
+
+        Shows a warning instead while an inline prompt is pending, a modal is
+        open, or a shell or command draft is typed. An empty shell or command
+        draft switches back to normal mode first. Also warns when the chat
+        input cannot take the text.
+        """
+        self._dismiss_selection_action()
+        chat_input = self._chat_input
+        if not chat_input:
+            logger.warning("Ask about this: chat input is not mounted")
+            return
+        blocker = self._selection_ask_blocker(chat_input)
+        if blocker:
+            self.notify(blocker, severity="warning")
+            return
+        # Only an empty draft gets here in shell or command mode.
+        chat_input.mode = "normal"
+        if not chat_input.insert_at_end(quote_after(chat_input.value, event.text)):
+            logger.warning("Ask about this: chat input text area is not mounted")
+            self.notify(
+                "Could not add the selection to the chat input. "
+                "Copy and paste it instead.",
+                severity="warning",
+            )
+            return
+        chat_input.focus_input()
+
+    def _selection_ask_blocker(self, chat_input: ChatInput) -> str | None:
+        """Return why the selection cannot be quoted right now, if anything."""
+        if self._inline_prompt_pending():
+            # The action is hidden while a prompt waits, but one can arrive
+            # between showing the action and the click.
+            return "Answer the pending prompt before adding the selection"
+        if isinstance(self.screen, ModalScreen):
+            return "Close the open dialog before adding the selection"
+        if chat_input.mode != "normal" and chat_input.value:
+            # A quote line starts with `>`, which a shell reads as a redirect
+            # and a slash command would take as its arguments.
+            return "Clear the shell or command input before adding the selection"
+        return None
+
+    def _inline_prompt_pending(self) -> bool:
+        """Return whether an approval, question, or goal review awaits input."""
+        return bool(
+            self._pending_approval_widget
+            or self._pending_ask_user_widget
+            or self._pending_goal_review_widget
+        )
+
+    def _dismiss_selection_action(self) -> None:
+        """Remove the "Ask about this" action if one is showing."""
+        action, self._selection_action = self._selection_action, None
+        self._selection_anchor = None
+        if action is not None and action.is_attached:
+            action.remove()
+
+    async def on_event(self, event: Event) -> None:
+        """Dismiss the "Ask about this" action on any key before it is dispatched.
+
+        The focused chat input stops most keys, including ordinary typing,
+        before they bubble, so an `on_key` handler on the app would miss them.
+        """
+        if self._selection_action is not None and isinstance(event, Key):
+            self._dismiss_selection_action()
+        await super().on_event(event)
 
     # =========================================================================
     # Model Switching

@@ -23,17 +23,37 @@ permissions:
   contents: read
 
 jobs:
-  # Block empty commits before release-please ever sees them. An empty commit
-  # has no file paths for release-please to scope to, so it falls back to
+  # Release commits are the only runs that can dispatch release.yml, so detect
+  # them before the wait/serialized release-please maintenance path. This job is
+  # intentionally short-lived and not in the `release-please` concurrency group.
+  #
+  # It first blocks empty commits before release-please ever sees them. An empty
+  # commit has no file paths for release-please to scope to, so it falls back to
   # bumping every package — see the "Empty commit fan-out" entry in
-  # .github/RELEASING.md.
-  guard-empty-commit:
-    name: Block empty commits on main
+  # .github/RELEASING.md. Both checks share one job so the release dispatch
+  # waits on one runner start-up, not two.
+  detect-release-commit:
+    name: Block empty commits and detect merged release PR
     runs-on: ubuntu-latest
+    outputs:
+      release-commit: ${{ steps.check-releases.outputs.release-commit }}
+      sdk-release: ${{ steps.check-releases.outputs.sdk-release }}
+      acp-release: ${{ steps.check-releases.outputs.acp-release }}
+      code-release: ${{ steps.check-releases.outputs.code-release }}
+      talon-release: ${{ steps.check-releases.outputs.talon-release }}
+      daytona-release: ${{ steps.check-releases.outputs.daytona-release }}
+      modal-release: ${{ steps.check-releases.outputs.modal-release }}
+      runloop-release: ${{ steps.check-releases.outputs.runloop-release }}
+      vercel-release: ${{ steps.check-releases.outputs.vercel-release }}
+      quickjs-release: ${{ steps.check-releases.outputs.quickjs-release }}
+      release-version: ${{ steps.check-releases.outputs.release-version }}
     steps:
+      # Full history: the empty-commit guard walks the second parent of
+      # repo-hotfix merge commits.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+
       - name: Reject empty commits
         run: |
           if [ "$(git rev-list --count HEAD)" -lt 2 ]; then
@@ -114,30 +134,6 @@ jobs:
           echo "::error::release-please scopes commits to packages by changed file paths. An empty commit has none, so every package gets bumped."
           echo "::error::Recovery: revert this commit on main, then push a non-empty commit scoped to a single package directory. See .github/RELEASING.md -> \"Empty commit fan-out\"."
           exit 1
-
-  # Release commits are the only runs that can dispatch release.yml, so detect
-  # them before the wait/serialized release-please maintenance path. This job is
-  # intentionally short-lived and not in the `release-please` concurrency group.
-  detect-release-commit:
-    needs: guard-empty-commit
-    name: Detect merged release PR
-    runs-on: ubuntu-latest
-    outputs:
-      release-commit: ${{ steps.check-releases.outputs.release-commit }}
-      sdk-release: ${{ steps.check-releases.outputs.sdk-release }}
-      acp-release: ${{ steps.check-releases.outputs.acp-release }}
-      code-release: ${{ steps.check-releases.outputs.code-release }}
-      talon-release: ${{ steps.check-releases.outputs.talon-release }}
-      daytona-release: ${{ steps.check-releases.outputs.daytona-release }}
-      modal-release: ${{ steps.check-releases.outputs.modal-release }}
-      runloop-release: ${{ steps.check-releases.outputs.runloop-release }}
-      vercel-release: ${{ steps.check-releases.outputs.vercel-release }}
-      quickjs-release: ${{ steps.check-releases.outputs.quickjs-release }}
-      release-version: ${{ steps.check-releases.outputs.release-version }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 2
 
       - name: Check if release PRs were merged
         id: check-releases
@@ -335,7 +331,6 @@ jobs:
   #     for 45 min and stranding commits.
   guard-pending-release:
     needs:
-      - guard-empty-commit
       - detect-release-commit
       - trigger-releases
     name: Check for in-flight publish
@@ -346,7 +341,6 @@ jobs:
     # detector output fails closed rather than looking like a normal push.
     if: |
       !cancelled() &&
-      needs.guard-empty-commit.result == 'success' &&
       needs.detect-release-commit.result == 'success' &&
       (
         needs.detect-release-commit.outputs.release-commit == 'false' ||
@@ -658,7 +652,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   release-please:
-    needs: [guard-empty-commit, detect-release-commit, guard-pending-release]
+    needs: [detect-release-commit, guard-pending-release]
     # #5161 put `trigger-releases` behind the guard so release commits can refresh
     # sibling release PRs after dispatch. On ordinary pushes `trigger-releases` is
     # legitimately skipped, and Actions' default `success()` gate on this job then
@@ -670,7 +664,6 @@ jobs:
     # hard timeout stays blocked).
     if: |
       !cancelled() &&
-      needs.guard-empty-commit.result == 'success' &&
       needs.detect-release-commit.result == 'success' &&
       needs.guard-pending-release.result == 'success' &&
       needs.guard-pending-release.outputs.skip == 'false'
@@ -756,7 +749,7 @@ jobs:
     # context only carries direct dependencies, so checking an undeclared
     # ancestor's result compares an empty string against 'success' and the
     # condition always fails.
-    needs: [guard-empty-commit, detect-release-commit, guard-pending-release, release-please]
+    needs: [detect-release-commit, guard-pending-release, release-please]
     # Same skip poison as #5161/#5169: `release-please` transitively needs
     # `trigger-releases` (via the guard), which is legitimately skipped on
     # ordinary pushes, and this job's bare `if:` kept Actions' implicit
@@ -772,7 +765,6 @@ jobs:
     # the poison.
     if: |
       !cancelled() &&
-      needs.guard-empty-commit.result == 'success' &&
       needs.detect-release-commit.result == 'success' &&
       needs.guard-pending-release.result == 'success' &&
       needs.release-please.result == 'success' &&
@@ -910,11 +902,10 @@ jobs:
   dispatch-release-notes-check:
     # `needs` must list every job the `if:` references (see update-lockfiles);
     # `update-lockfiles` is sequencing-only, so its result is not checked.
-    needs: [guard-empty-commit, detect-release-commit, guard-pending-release, release-please, update-lockfiles]
+    needs: [detect-release-commit, guard-pending-release, release-please, update-lockfiles]
     if: |
       always() &&
       !cancelled() &&
-      needs.guard-empty-commit.result == 'success' &&
       needs.detect-release-commit.result == 'success' &&
       needs.guard-pending-release.result == 'success' &&
       needs.release-please.result == 'success' &&

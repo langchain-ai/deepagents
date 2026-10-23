@@ -8,6 +8,8 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    from deepagents_code.plugins.models import PluginUpdate, PluginUpdateResult
+
 from deepagents_code.plugins import (
     add_marketplace_source,
     install_plugin,
@@ -15,6 +17,7 @@ from deepagents_code.plugins import (
     remove_marketplace,
     set_installed_plugin_enabled,
     uninstall_plugin,
+    update_plugins,
 )
 from deepagents_code.plugins.marketplace import (
     MarketplaceError,
@@ -68,6 +71,16 @@ def setup_plugin_parser(
     uninstall_parser = plugin_sub.add_parser("uninstall", help="Uninstall a plugin")
     uninstall_parser.add_argument("plugin_id")
 
+    update_parser = plugin_sub.add_parser(
+        "update", help="Update installed plugins from their marketplaces"
+    )
+    update_parser.add_argument("plugin_ids", nargs="*", metavar="plugin_id")
+    update_parser.add_argument(
+        "--check", action="store_true", help="Only report available updates"
+    )
+    if add_output_args is not None:
+        add_output_args(update_parser)
+
     enable_parser = plugin_sub.add_parser("enable", help="Enable a plugin")
     enable_parser.add_argument("plugin_id")
     disable_parser = plugin_sub.add_parser("disable", help="Disable a plugin")
@@ -96,6 +109,59 @@ def _plugin_list_rows() -> list[dict[str, object]]:
         {"id": plugin_id, "description": description, "enabled": enabled}
         for plugin_id, description, enabled in list_available_plugins()
     ]
+
+
+def _update_row(update: PluginUpdate) -> dict[str, object]:
+    return {
+        "id": update.plugin_id,
+        "installed_version": update.installed_version,
+        "available_version": update.available_version,
+    }
+
+
+def _update_lines(result: PluginUpdateResult) -> list[str]:
+    lines = [
+        f"Updated {u.plugin_id} {u.installed_version} -> {u.available_version}."
+        for u in result.updated
+    ]
+    lines.extend(
+        f"Update available: {u.plugin_id} {u.installed_version} -> "
+        f"{u.available_version}"
+        for u in result.available
+    )
+    if result.updated:
+        lines.append("Run /reload to apply.")
+    elif not result.available and not result.errors:
+        lines.append("All plugins are up to date.")
+    lines.extend(result.errors)
+    return lines
+
+
+def _execute_update(args: argparse.Namespace, output_format: str) -> str | None:
+    try:
+        result = update_plugins(args.plugin_ids, check_only=args.check)
+    except (MarketplaceError, OSError, ValueError) as exc:
+        text = f"Failed to update plugins: {redact_urls_in_text(str(exc))}"
+        print(text)  # noqa: T201
+        raise SystemExit(1) from exc
+    if output_format == "json":
+        from deepagents_code.output import write_json
+
+        write_json(
+            "plugin update",
+            {
+                "updated": [_update_row(u) for u in result.updated],
+                "available": [_update_row(u) for u in result.available],
+                "errors": list(result.errors),
+            },
+        )
+        text = None
+    else:
+        text = "\n".join(_update_lines(result))
+        print(text)  # noqa: T201
+    if result.errors:
+        raise SystemExit(1)
+    return text
 
 
 def execute_plugin_command(args: argparse.Namespace) -> str | None:
@@ -149,6 +215,8 @@ def execute_plugin_command(args: argparse.Namespace) -> str | None:
         )
         print(text)  # noqa: T201
         return text
+    if command == "update":
+        return _execute_update(args, output_format)
     if command == "uninstall":
         uninstall_plugin(args.plugin_id)
         text = f"Uninstalled plugin {args.plugin_id}."
@@ -220,6 +288,6 @@ def execute_plugin_command(args: argparse.Namespace) -> str | None:
             )
             print(text)  # noqa: T201
             return text
-    text = "Usage: plugin {list,install,uninstall,enable,disable,marketplace}"
+    text = "Usage: plugin {list,install,update,uninstall,enable,disable,marketplace}"
     print(text)  # noqa: T201
     return text

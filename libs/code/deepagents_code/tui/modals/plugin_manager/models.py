@@ -52,6 +52,7 @@ class _PluginRow:
     unsupported_components: tuple[UnsupportedComponent, ...] = ()
     session_loaded: bool = False
     load_error: str | None = None
+    available_version: str | None = None
 
     @property
     def load_state(self) -> PluginLoadState:

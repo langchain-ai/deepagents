@@ -2,6 +2,28 @@
 
 # Deep Agents Changelog
 
+## [0.7.30](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.29...deepagents==0.7.30) (2026-10-22)
+
+### Features
+
+- Async subagent follow-ups can now queue without interrupting active work ([#7082](https://github.com/langchain-ai/deepagents/pull/7082)).
+- Added `notify_parent` ([#7132](https://github.com/langchain-ai/deepagents/pull/7132)) and `webhook` ([#7072](https://github.com/langchain-ai/deepagents/pull/7072)) to `AsyncSubAgent`.
+
+### Bug Fixes
+
+- Async subagent checks now report runs cancelled on the server and omit reasoning from results ([#7060](https://github.com/langchain-ai/deepagents/pull/7060)).
+- Async subagent checks now retry when a thread cannot be read ([#7124](https://github.com/langchain-ai/deepagents/pull/7124)).
+- Summaries now remove reasoning blocks associated with the history they replace ([#7127](https://github.com/langchain-ai/deepagents/pull/7127)).
+- `LocalShellBackend` now enforces output limits in UTF-8 bytes ([#7074](https://github.com/langchain-ai/deepagents/pull/7074)).
+
+## [0.7.29](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.28...deepagents==0.7.29) (2026-10-20)
+
+### Bug Fixes
+
+- `CompositeBackend` now handles routes without a trailing slash.
+- Text edits to binary files are now rejected.
+- In-memory `grep` now skips binary files.
+
 ## [0.7.28](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.27...deepagents==0.7.28) (2026-10-16)
 
 ### Bug Fixes

@@ -70,7 +70,7 @@ def _list_plugin_skill_names(instance: PluginInstance) -> tuple[str, ...]:
                 skill["name"]
                 for skill in load_namespaced_skills(backend, str(source), namespace)
             )
-        except (OSError, RuntimeError):
+        except OSError, RuntimeError:
             logger.warning(
                 "Could not list skills for plugin %s", instance.plugin_id, exc_info=True
             )

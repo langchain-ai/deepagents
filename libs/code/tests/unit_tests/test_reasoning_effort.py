@@ -6,8 +6,7 @@ Support data comes from LangChain model profiles, so most tests mock
 
 import asyncio
 import logging
-from collections.abc import Iterator
-from pathlib import Path
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, Mock
 
 import pytest
@@ -32,6 +31,10 @@ from deepagents_code.reasoning_effort import (
 from deepagents_code.tui.widgets.chat_input import ChatInput
 from deepagents_code.tui.widgets.effort_selector import EffortSelectorScreen
 from deepagents_code.tui.widgets.messages import ErrorMessage
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+    from pathlib import Path
 
 
 @pytest.fixture(autouse=True)
@@ -288,7 +291,8 @@ async def test_effort_selected_during_offload_applies_before_queued_prompt(
     finish = asyncio.Event()
     next_turn_efforts: list[object] = []
 
-    async def offload() -> None:
+    async def offload(*, automatic: bool = False) -> None:
+        assert not automatic
         started.set()
         await finish.wait()
 

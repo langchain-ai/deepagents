@@ -1,9 +1,7 @@
 """Tests for extension entries in the configuration catalog."""
 
-from pathlib import Path
+from typing import TYPE_CHECKING
 from unittest.mock import patch
-
-import pytest
 
 from deepagents_code._env_vars import EXTENSIONS, EXTENSIONS_TRUST
 from deepagents_code.config_manifest import (
@@ -11,6 +9,11 @@ from deepagents_code.config_manifest import (
     get_option,
 )
 from unit_tests.conftest import resolve_option_for_test
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+    import pytest
 
 
 def test_extension_options_are_cataloged() -> None:

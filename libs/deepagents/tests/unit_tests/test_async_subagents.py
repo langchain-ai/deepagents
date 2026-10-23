@@ -33,6 +33,7 @@ from deepagents.middleware.async_subagents import (
     AsyncSubAgentState,
     AsyncTask,
     _build_async_subagent_tools,
+    _notification_message,
     _resolve_headers,
     _tasks_reducer,
 )
@@ -148,10 +149,9 @@ class TestAsyncSubAgentMiddleware:
 
 
 class TestAsyncForkConfiguration:
-    @pytest.mark.parametrize("mode", ["handoff", None])
-    def test_rejects_invalid_mode(self, mode: str | None) -> None:
+    def test_rejects_invalid_mode(self) -> None:
         with pytest.raises(ValueError, match="expected 'isolated' or 'fork'"):
-            AsyncSubAgentMiddleware(async_subagents=[_make_spec(mode=mode)])
+            AsyncSubAgentMiddleware(async_subagents=[_make_spec(mode=None)])
 
 
 class TestResolveHeaders:
@@ -234,6 +234,15 @@ class TestBuildAsyncSubagentTools:
         launch_tool = tools[0]
         assert "researcher" in launch_tool.description
         assert "Research agent" in launch_tool.description
+
+    def test_update_description_names_only_enqueue_agents(self) -> None:
+        specs = [_make_spec("researcher"), _make_spec("coder", update_strategy="enqueue"), _make_spec("tester", update_strategy="enqueue")]
+        update = _get_tool(_build_async_subagent_tools(specs), "update_async_task")
+        default = _get_tool(_build_async_subagent_tools([_make_spec()]), "update_async_task")
+        assert update.description.startswith(default.description)
+        assert "for `coder`, `tester`, follow-ups queue behind the current run without interrupting it" in update.description
+        assert "researcher" not in update.description
+        assert "pending" in update.description
 
 
 class TestLaunchTool:
@@ -614,7 +623,7 @@ async def test_fork_preserves_evicted_human_content(tmp_path: Path) -> None:
 
 
 class TestCheckTool:
-    def _make_check_runtime(self, tool_call_id: str = "tc_check") -> ToolRuntime:
+    def _make_check_runtime(self, tool_call_id: str = "tc_check", status: str = "running") -> ToolRuntime:
         """Create a runtime with a tracked task in state."""
         tasks: dict[str, AsyncTask] = {
             "thread_abc": {
@@ -622,7 +631,7 @@ class TestCheckTool:
                 "agent_name": "test-agent",
                 "thread_id": "thread_abc",
                 "run_id": "run_xyz",
-                "status": "running",
+                "status": status,
                 "created_at": "2024-01-15T10:30:00Z",
                 "last_checked_at": "2024-01-15T10:30:00Z",
                 "last_updated_at": "2024-01-15T10:30:00Z",
@@ -688,6 +697,90 @@ class TestCheckTool:
         tasks = result.update["async_tasks"]
         assert tasks["thread_abc"]["status"] == "success"
         assert tasks["thread_abc"]["last_updated_at"] != "2024-01-15T10:30:00Z"
+
+    def _check(self, mock_client: MagicMock, status: str = "running") -> Command:
+        check = _build_async_subagent_tools([_make_spec()])[1]
+        with patch("deepagents.middleware.async_subagents.get_sync_client", return_value=mock_client):
+            result = check.func(task_id="thread_abc", runtime=self._make_check_runtime("tc_check", status))
+        assert isinstance(result, Command)
+        return result
+
+    @staticmethod
+    def _answered(content: Any) -> MagicMock:  # noqa: ANN401
+        client = MagicMock()
+        client.runs.get.return_value = {"run_id": "run_xyz", "status": "success"}
+        client.threads.get.return_value = {"values": {"messages": [content]}}
+        return client
+
+    def test_check_result_drops_reasoning_and_keeps_images(self) -> None:
+        answer = [
+            {"type": "reasoning", "reasoning": "secret plan"},
+            {"type": "text", "text": "Here's the look."},
+            {"type": "image", "base64": "aGVsbG8=", "mime_type": "image/png"},
+        ]
+
+        status, text, image = self._check(self._answered({"role": "assistant", "content": answer})).update["messages"][0].content
+
+        assert json.loads(status["text"])["status"] == "success"
+        assert text["text"] == "Here's the look."
+        assert (image["type"], image["base64"]) == ("image", "aGVsbG8=")
+        assert "secret plan" not in json.dumps([status, text])
+
+    def test_check_result_keeps_each_image_by_its_text(self) -> None:
+        answer = [
+            {"type": "text", "text": "Version one:"},
+            {"type": "image", "base64": "b25l", "mime_type": "image/png"},
+            {"type": "text", "text": "Version two:"},
+            {"type": "image", "base64": "dHdv", "mime_type": "image/png"},
+        ]
+
+        _, *blocks = self._check(self._answered({"role": "assistant", "content": answer})).update["messages"][0].content
+
+        assert [block.get("text") or block["base64"] for block in blocks] == ["Version one:", "b25l", "Version two:", "dHdv"]
+
+    def test_check_result_of_a_media_only_answer(self) -> None:
+        answer = [{"type": "image", "base64": "aGVsbG8=", "mime_type": "image/png"}]
+
+        status, image = self._check(self._answered({"role": "assistant", "content": answer})).update["messages"][0].content
+
+        assert "result" not in json.loads(status["text"])
+        assert image["type"] == "image"
+
+    def test_check_reads_a_message_langchain_cannot(self) -> None:
+        parsed = json.loads(self._check(self._answered({"content": "raw answer"})).update["messages"][0].content)
+
+        assert (parsed["status"], parsed["result"]) == ("success", "raw answer")
+
+    def test_check_follows_a_run_another_client_started(self) -> None:
+        client = MagicMock()
+        client.runs.get.return_value = {"run_id": "run_xyz", "status": "interrupted"}
+        client.runs.list.return_value = [{"run_id": "run_newer", "status": "running"}]
+
+        update = self._check(client).update
+
+        assert json.loads(update["messages"][0].content)["status"] == "running"
+        assert update["async_tasks"]["thread_abc"]["run_id"] == "run_newer"
+
+    def test_check_reports_a_run_cancelled_on_the_server(self) -> None:
+        client = MagicMock()
+        client.runs.get.return_value = {"run_id": "run_xyz", "status": "interrupted"}
+        client.runs.list.return_value = []
+
+        update = self._check(client).update
+
+        assert json.loads(update["messages"][0].content)["status"] == "cancelled"
+        assert update["async_tasks"]["thread_abc"]["status"] == "cancelled"
+
+    def test_check_keeps_a_cancelled_task_cancelled(self) -> None:
+        client = MagicMock()
+        client.runs.get.return_value = {"run_id": "run_xyz", "status": "interrupted"}
+        client.runs.list.return_value = [{"run_id": "run_newer", "status": "running"}]
+
+        update = self._check(client, status="cancelled").update
+
+        assert json.loads(update["messages"][0].content)["status"] == "cancelled"
+        assert update["async_tasks"]["thread_abc"]["status"] == "cancelled"
+        client.runs.list.assert_not_called()
 
     @patch("deepagents.middleware.async_subagents.get_sync_client")
     def test_check_errored_task(self, mock_get_client: MagicMock) -> None:
@@ -1320,7 +1413,8 @@ class TestCheckEdgeCases:
         assert "no output" in parsed["result"].lower()
 
     @patch("deepagents.middleware.async_subagents.get_sync_client")
-    def test_check_threads_get_failure_still_returns_status(self, mock_get_client: MagicMock) -> None:
+    def test_check_threads_get_failure_is_not_reported_as_success(self, mock_get_client: MagicMock) -> None:
+        """Without the thread, a finished run and one paused for a human look the same."""
         mock_client = MagicMock()
         mock_client.runs.get.return_value = {"run_id": "run_xyz", "status": "success"}
         mock_client.threads.get.side_effect = RuntimeError("network error")
@@ -1331,11 +1425,7 @@ class TestCheckEdgeCases:
         rt = _make_runtime_with_task(tool_call_id="tc_check")
         result = check.func(task_id="thread_abc", runtime=rt)
 
-        assert isinstance(result, Command)
-        parsed = json.loads(result.update["messages"][0].content)
-        assert parsed["status"] == "success"
-        # result should show empty-messages fallback since thread values couldn't be fetched
-        assert "no output" in parsed["result"].lower()
+        assert result == "Failed to get run status: network error"
 
 
 class TestStaleStatusGuidanceInToolDescriptions:
@@ -1417,6 +1507,26 @@ class TestParentReference:
         assert _sent_reference(client) == {"thread_id": "thread_parent"}
         assert client.threads.create.call_args.kwargs["metadata"] == {"subagent_name": "alpha", "parent_thread_id": "thread_parent"}
 
+    @pytest.mark.parametrize("context", [None, {"team": "eng"}], ids=["reference-in-config", "context-forwarded"])
+    @patch("deepagents.middleware.async_subagents.get_client")
+    async def test_subagent_that_must_not_notify_never_wakes_its_parent(self, mock_get_client: MagicMock, context: object) -> None:
+        """Without the parent's assistant, neither the launched run nor a later run on its thread can wake the parent."""
+        mock_client = MagicMock()
+        mock_client.threads.create = MagicMock(side_effect=_async_return({"thread_id": "thread_abc"}))
+        mock_client.runs.create = MagicMock(side_effect=_async_return({"run_id": "run_xyz"}))
+        mock_get_client.return_value = mock_client
+        runtime = _parent_runtime()
+        runtime.context = context
+        launch = _get_tool(_build_async_subagent_tools([_make_spec("alpha", url=None, notify_parent=False)]), "start_async_task")
+
+        await launch.coroutine(description="analyze data", subagent_type="alpha", runtime=runtime)
+
+        assert mock_client.threads.create.call_args.kwargs["metadata"] == {"subagent_name": "alpha", "parent_thread_id": "thread_parent"}
+        if context is None:
+            server = _FakeServer()
+            await _finish(server, parent=_sent_reference(mock_client))
+            assert server.created == []
+
     @patch("deepagents.middleware.async_subagents.get_sync_client")
     def test_update_resends_parent_reference(self, mock_get_client: MagicMock) -> None:
         mock_client = MagicMock()
@@ -1474,6 +1584,25 @@ class TestForwardedContext:
 
         assert "context" not in mock_client.runs.create.call_args.kwargs
         assert _sent_reference(mock_client) == {"thread_id": "thread_parent"}
+
+
+class TestWebhook:
+    @pytest.mark.parametrize("tool", ["start_async_task", "update_async_task"])
+    @pytest.mark.parametrize("webhook", ["https://app.example.com/webhooks/subagent-finished", None], ids=["set", "unset"])
+    @patch("deepagents.middleware.async_subagents.get_sync_client")
+    def test_runs_of_a_task_carry_the_subagents_webhook(self, mock_get_client: MagicMock, tool: str, webhook: str | None) -> None:
+        mock_client = MagicMock()
+        mock_client.threads.create.return_value = {"thread_id": "thread_abc"}
+        mock_client.runs.create.return_value = {"run_id": "run_xyz"}
+        mock_get_client.return_value = mock_client
+        tools = _build_async_subagent_tools([_make_spec(**({"webhook": webhook} if webhook else {}))])
+
+        if tool == "start_async_task":
+            _get_tool(tools, tool).func(description="analyze data", subagent_type="test-agent", runtime=_parent_runtime())
+        else:
+            _get_tool(tools, tool).func(task_id="thread_abc", message="more", runtime=_make_runtime_with_task())
+
+        assert mock_client.runs.create.call_args.kwargs.get("webhook") == webhook
 
 
 @patch("deepagents.middleware.async_subagents.get_client")
@@ -1897,12 +2026,60 @@ def _pulled_events(update: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 class TestParentPull:
+    async def test_run_cancelled_on_the_server_is_reported(self) -> None:
+        server = _FakeServer(run={"run_id": "run_xyz", "status": "interrupted"})
+
+        update = await _pull("abefore_model", _lead_state(), server)
+
+        assert [e["status"] for e in _pulled_events(update)] == ["cancelled"]
+        assert "cancelled before it finished" in _text(update["messages"][0])
+        assert update["async_tasks"]["thread_abc"]["status"] == "cancelled"
+
+    async def test_task_the_parent_cancelled_is_not_reported(self) -> None:
+        server = _FakeServer(run={"run_id": "run_xyz", "status": "interrupted"})
+
+        assert await _pull("abefore_model", _lead_state("cancelled"), server) is None
+
+    async def test_run_replaced_by_another_client_is_followed_not_reported(self) -> None:
+        server = _FakeServer(run={"run_id": "run_xyz", "status": "interrupted"})
+
+        async def newer(**_kwargs: Any) -> list[dict[str, Any]]:
+            return [{"run_id": "run_newer", "status": "running"}]
+
+        server.runs.list = newer
+
+        update = await _pull("abefore_model", _lead_state(), server)
+
+        assert "messages" not in (update or {})
+        assert update["async_tasks"]["thread_abc"]["run_id"] == "run_newer"
+
     async def test_status_update_is_added_before_the_model_call(self) -> None:
         update = await _pull("abefore_model", _lead_state(), _ended())
 
         assert [e["status"] for e in _pulled_events(update)] == ["success"]
         assert "<result>\nremote done\n</result>" in _text(update["messages"][0])
         assert update["async_tasks"]["thread_abc"]["status"] == "success"
+
+    async def test_unreadable_thread_is_checked_again_not_reported_as_success(self) -> None:
+        """A paused subagent's run ends as `success`; only its thread shows the pause, so a failed read can't decide."""
+        server = _FakeServer(
+            {"thread_abc": {"status": "interrupted", "values": {}, "interrupts": {"t": [{"id": "int_q", "value": "Which repo?"}]}}},
+            {"run_id": "run_xyz", "status": "success"},
+        )
+        readable = server.threads.get
+
+        async def unreachable(**_kwargs: Any) -> dict[str, Any]:
+            msg = "network error"
+            raise RuntimeError(msg)
+
+        server.threads.get = unreachable
+        skipped = await _pull("abefore_model", _lead_state(), server)
+        server.threads.get = readable
+        recovered = await _pull("abefore_model", _lead_state(), server)
+
+        assert skipped is None
+        assert [e["status"] for e in _pulled_events(recovered)] == ["waiting"]
+        assert recovered["async_tasks"]["thread_abc"]["status"] == "waiting"
 
     async def test_status_update_is_added_at_the_start_of_a_run(self) -> None:
         update = await _pull("abefore_agent", _lead_state(), _ended())
@@ -2047,3 +2224,188 @@ class TestParentPull:
 
         assert _woken_event(server)["status"] == "success"
         assert "found it" in _woken_text(server)
+
+
+async def _send_update(spec: AsyncSubAgent, status: str = "running", *, asynchronous: bool = False) -> Any:  # noqa: ANN401
+    """Send a follow-up to a tracked `run_xyz` task; the server returns it as `run_followup`, queued."""
+    client = MagicMock()
+    client.runs.create = (AsyncMock if asynchronous else MagicMock)(return_value={"run_id": "run_followup", "status": "pending"})
+    runtime = _make_runtime_with_task(status=status)
+    update = _get_tool(_build_async_subagent_tools([spec]), "update_async_task")
+    with patch(f"deepagents.middleware.async_subagents.{'get_client' if asynchronous else 'get_sync_client'}", return_value=client):
+        if asynchronous:
+            result = await update.coroutine(task_id="thread_abc", message="Keep going", runtime=runtime)
+        else:
+            result = update.func(task_id="thread_abc", message="Keep going", runtime=runtime)
+    assert client.runs.create.call_args.kwargs["multitask_strategy"] == spec.get("update_strategy", "interrupt")
+    return result
+
+
+class TestQueuedUpdates:
+    @pytest.mark.parametrize("strategy", [None, "interrupt"])
+    @pytest.mark.parametrize("asynchronous", [False, True])
+    async def test_default_update_interrupts_the_current_run(self, strategy: str | None, *, asynchronous: bool) -> None:
+        result = await _send_update(_make_spec(**({"update_strategy": strategy} if strategy else {})), asynchronous=asynchronous)
+        task = result.update["async_tasks"]["thread_abc"]
+        assert task["run_id"] == "run_followup"
+        assert task["status"] == "running"
+        assert "superseded_run_ids" not in task
+        assert result.update["messages"][0].content.startswith("Updated async subagent")
+
+    @pytest.mark.parametrize("asynchronous", [False, True])
+    async def test_enqueued_update_waits_behind_the_current_run(self, *, asynchronous: bool) -> None:
+        result = await _send_update(_make_spec(update_strategy="enqueue"), asynchronous=asynchronous)
+        task = result.update["async_tasks"]["thread_abc"]
+        assert task["run_id"] == "run_followup"
+        assert task["status"] == "pending"
+        assert task["superseded_run_ids"] == ["run_xyz"]
+        assert "without interrupting" in result.update["messages"][0].content
+
+    @pytest.mark.parametrize("status", ["waiting", "success", "error"])
+    async def test_enqueued_update_with_no_active_run_is_a_plain_update(self, status: str) -> None:
+        result = await _send_update(_make_spec(update_strategy="enqueue"), status)
+        confirmation = result.update["messages"][0].content
+        assert confirmation.startswith("Updated async subagent")
+        assert ("request was dropped" in confirmation) == (status == "waiting")
+
+    async def test_superseded_runs_accumulate_until_the_latest_run_finishes(self) -> None:
+        client = MagicMock()
+        client.runs.create = AsyncMock(side_effect=[{"run_id": f"run_{n}", "status": "pending"} for n in ("first", "second", "third")])
+        runtime = _make_runtime_with_task()
+        update = _get_tool(_build_async_subagent_tools([_make_spec(update_strategy="enqueue")]), "update_async_task")
+        with patch("deepagents.middleware.async_subagents.get_client", return_value=client):
+            first = await update.coroutine(task_id="thread_abc", message="First follow-up", runtime=runtime)
+            runtime.state["async_tasks"] = first.update["async_tasks"]
+            second = await update.coroutine(task_id="thread_abc", message="Second follow-up", runtime=runtime)
+            assert second.update["async_tasks"]["thread_abc"]["superseded_run_ids"] == ["run_xyz", "run_first"]
+            # Once the latest run has finished, the next follow-up leaves only that run behind.
+            runtime.state["async_tasks"] = {"thread_abc": {**second.update["async_tasks"]["thread_abc"], "status": "success"}}
+            third = await update.coroutine(task_id="thread_abc", message="Third follow-up", runtime=runtime)
+        assert third.update["async_tasks"]["thread_abc"]["superseded_run_ids"] == ["run_second"]
+
+    @pytest.mark.parametrize("asynchronous", [False, True])
+    async def test_check_and_list_keep_queued_run(self, *, asynchronous: bool) -> None:
+        client = MagicMock()
+        mock = AsyncMock if asynchronous else MagicMock
+        client.runs.get = mock(return_value={"run_id": "run_followup", "status": "pending"})
+        runtime = _make_runtime_with_task(run_id="run_followup", status="pending")
+        runtime.state["async_tasks"]["thread_abc"]["superseded_run_ids"] = ["run_xyz"]
+        tools = _build_async_subagent_tools([_make_spec(update_strategy="enqueue")])
+        with patch(
+            "deepagents.middleware.async_subagents.get_client" if asynchronous else "deepagents.middleware.async_subagents.get_sync_client",
+            return_value=client,
+        ):
+            check = tools[1]
+            checked = (
+                await check.coroutine(task_id="thread_abc", runtime=runtime) if asynchronous else check.func(task_id="thread_abc", runtime=runtime)
+            )
+            runtime.state["async_tasks"] = checked.update["async_tasks"]
+            listing = tools[4]
+            listed = (
+                await listing.coroutine(status_filter="pending", runtime=runtime)
+                if asynchronous
+                else listing.func(status_filter="pending", runtime=runtime)
+            )
+        result = json.loads(checked.update["messages"][0].content)
+        assert result["status"] == "pending"
+        assert "earlier run" in result["note"]
+        assert "result" not in result
+        assert "status: pending" in listed.update["messages"][0].content
+        assert listed.update["async_tasks"]["thread_abc"]["superseded_run_ids"] == ["run_xyz"]
+        client.threads.get.assert_not_called()
+
+    @pytest.mark.parametrize("earlier_status", ["success", "error", "waiting"])
+    async def test_earlier_notification_cannot_complete_queued_task(self, earlier_status: str) -> None:
+        event = {"task_id": "thread_abc", "agent_name": "remote", "status": earlier_status, "run_id": "run_xyz"}
+        message = HumanMessage(id="notification", content="old outcome", additional_kwargs={"deepagents_notification": event})
+        state = _lead_state("pending", messages=[message])
+        task = state["async_tasks"]["thread_abc"]
+        task.update(run_id="run_followup", superseded_run_ids=["run_xyz"])
+        middleware = AsyncSubAgentMiddleware(async_subagents=[_make_spec("remote", url=None, update_strategy="enqueue")])
+        update = middleware.before_agent(state, MagicMock())
+        assert "async_tasks" not in update
+        replaced = update["messages"][0]
+        assert replaced.id == message.id
+        assert replaced.text.startswith("[SYSTEM NOTIFICATION - NOT USER INPUT]")
+        assert "not the result of the follow-up" in replaced.text
+        assert replaced.additional_kwargs["deepagents_notification"] == event
+        server = _FakeServer(run={"run_id": "run_followup", "status": "pending"})
+        queued = await _pull("abefore_agent", state, server)
+        assert not queued["async_tasks"]
+        assert "not the result of the follow-up" in queued["messages"][0].text
+        finished = _FakeServer({"thread_abc": _child("follow-up done")}, {"run_id": "run_followup", "status": "success"})
+        simultaneous = await _pull("abefore_agent", state, finished)
+        replacement, completion = simultaneous["messages"]
+        assert replacement.id == message.id
+        assert "not the result of the follow-up" in replacement.text
+        assert completion["deepagents_notification"]["run_id"] == "run_followup"
+        assert simultaneous["async_tasks"]["thread_abc"]["status"] == "success"
+        running = await _pull("abefore_model", state, _FakeServer(run={"run_id": "run_followup", "status": "running"}))
+        assert "messages" not in running
+        assert running["async_tasks"]["thread_abc"]["run_id"] == "run_followup"
+        state["async_tasks"] = running["async_tasks"]
+        ended = await _pull(
+            "abefore_model", state, _FakeServer({"thread_abc": _child("follow-up done")}, {"run_id": "run_followup", "status": "success"})
+        )
+        assert [e["run_id"] for e in _pulled_events(ended)] == ["run_followup"]
+        assert "follow-up done" in _text(ended["messages"][0])
+        state["async_tasks"] = ended["async_tasks"]
+        assert await _pull("abefore_model", state, _ended()) is None
+
+    def test_earlier_run_notification_keeps_its_result(self) -> None:
+        event = {"task_id": "thread_abc", "agent_name": "remote", "status": "success", "run_id": "run_xyz"}
+        notification = _notification_message({**event, "result": [{"type": "text", "text": "FULL REPORT"}]})
+        message = HumanMessage(id="notification", content=notification["content"], additional_kwargs={"deepagents_notification": event})
+        state = _lead_state("pending", messages=[message])
+        state["async_tasks"]["thread_abc"].update(run_id="run_followup", superseded_run_ids=["run_xyz"])
+        middleware = AsyncSubAgentMiddleware(async_subagents=[_make_spec("remote", url=None, update_strategy="enqueue")])
+        replaced = middleware.before_agent(state, MagicMock())["messages"][0]
+        assert "FULL REPORT" in replaced.text
+        assert "not the result of the follow-up" in replaced.text
+        assert "Use the result to continue" not in replaced.text
+        assert replaced.text.count("</task-notification>") == 1
+
+    @pytest.mark.parametrize("asynchronous", [False, True])
+    async def test_parallel_follow_ups_to_one_task_send_only_the_first(self, *, asynchronous: bool) -> None:
+        turn = AIMessage(
+            content="",
+            tool_calls=[{"name": "update_async_task", "args": {"task_id": "thread_abc", "message": m}, "id": f"tc_{m}"} for m in ("first", "second")],
+        )
+        client = MagicMock()
+        client.runs.create = (AsyncMock if asynchronous else MagicMock)(return_value={"run_id": "run_followup", "status": "pending"})
+        update = _get_tool(_build_async_subagent_tools([_make_spec(update_strategy="enqueue")]), "update_async_task")
+        results = []
+        with patch(f"deepagents.middleware.async_subagents.{'get_client' if asynchronous else 'get_sync_client'}", return_value=client):
+            for tool_call_id in ("tc_first", "tc_second"):
+                runtime = _make_runtime_with_task(tool_call_id=tool_call_id)
+                runtime.state["messages"] = [turn]
+                kwargs = {"task_id": "thread_abc", "message": "Keep going", "runtime": runtime}
+                results.append(await update.coroutine(**kwargs) if asynchronous else update.func(**kwargs))
+        first, second = results
+        assert first.update["async_tasks"]["thread_abc"]["run_id"] == "run_followup"
+        assert second.startswith("Not sent")
+        client.runs.create.assert_called_once()
+
+    @pytest.mark.parametrize("asynchronous", [False, True])
+    async def test_cancel_stops_queued_and_earlier_active_runs(self, *, asynchronous: bool) -> None:
+        client = MagicMock()
+        mock = AsyncMock if asynchronous else MagicMock
+        client.runs.get = mock(side_effect=[{"status": "pending"}, RuntimeError("thread gone"), {"status": "running"}, {"status": "success"}])
+        client.runs.cancel = mock()
+        runtime = _make_runtime_with_task(run_id="run_latest", status="pending")
+        runtime.state["async_tasks"]["thread_abc"]["superseded_run_ids"] = ["run_done", "run_active", "run_stale", "run_queued"]
+        cancel = _get_tool(_build_async_subagent_tools([_make_spec(update_strategy="enqueue")]), "cancel_async_task")
+        with patch(
+            "deepagents.middleware.async_subagents.get_client" if asynchronous else "deepagents.middleware.async_subagents.get_sync_client",
+            return_value=client,
+        ):
+            result = (
+                await cancel.coroutine(task_id="thread_abc", runtime=runtime) if asynchronous else cancel.func(task_id="thread_abc", runtime=runtime)
+            )
+        assert result.update["async_tasks"]["thread_abc"]["status"] == "cancelled"
+        assert [call.kwargs["run_id"] for call in client.runs.cancel.call_args_list] == ["run_latest", "run_queued", "run_active"]
+
+    @pytest.mark.parametrize("strategy", ["reject", None])
+    def test_invalid_strategy(self, strategy: str | None) -> None:
+        with pytest.raises(ValueError, match="invalid update_strategy"):
+            AsyncSubAgentMiddleware(async_subagents=[_make_spec(update_strategy=strategy)])

@@ -432,7 +432,7 @@ class RepositoryBounds:
         body, separator, notes = content.partition("\n\n")
         try:
             paths = ast.literal_eval(body)
-        except (SyntaxError, ValueError):
+        except SyntaxError, ValueError:
             return content
         if not isinstance(paths, list) or not all(
             isinstance(path, str) for path in paths

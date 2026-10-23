@@ -320,7 +320,7 @@ _SubAgentSpec = SubAgent | CompiledSubAgent
 def _validate_subagent_mode(spec: _SubAgentSpec) -> None:
     """Reject unsupported context modes before a subagent can run."""
     mode = spec.get("mode")
-    if mode not in (None, "isolated", "fork", "handoff"):  # "handoff" is legacy alias for "isolated"
+    if mode not in (None, "isolated", "fork"):
         msg = f"SubAgent '{spec['name']}' has invalid mode '{mode}'; expected 'isolated' or 'fork'"
         raise ValueError(msg)
     if mode == "fork" and spec.get("skills"):

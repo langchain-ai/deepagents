@@ -34,7 +34,7 @@ async def open_checkpointer(config: TalonConfig) -> AsyncIterator[BaseCheckpoint
         try:
             factory = _checkpoint_factory(urlsplit(uri).scheme)
             saver = await stack.enter_async_context(factory(uri))
-        except (TalonConfigError, ImportError):
+        except TalonConfigError, ImportError:
             raise
         except Exception:  # noqa: BLE001  # Driver errors can contain URI credentials.
             msg = "Could not initialize checkpointer; check installation, URI, and permissions"

@@ -243,7 +243,7 @@ _DEFERRED_START_NOTICE = (
 
 _AUTO_CLASSIFIER_RECOMMENDED_MODELS = {
     "anthropic:claude-haiku-5-5": "Claude Haiku 5.5",
-    "anthropic:claude-sonnet-5": "Claude Sonnet 5",
+    "anthropic:claude-sonnet-5-5": "Claude Sonnet 5.5",
     "google_genai:gemini-3.8-flash": "Gemini 3.8 Flash",
     "openai:gpt-6-luna": "GPT-6 Luna",
 }
@@ -514,7 +514,7 @@ def _coerce_session_cost_usd(value: object) -> float:
         return 0.0
     try:
         cost_usd = float(value)
-    except (OverflowError, ValueError):
+    except OverflowError, ValueError:
         logger.warning("Discarding a persisted session cost that is out of range.")
         return 0.0
     if not math.isfinite(cost_usd) or cost_usd < 0:
@@ -558,7 +558,7 @@ def _coerce_provisional_cost_delta_usd(value: object) -> float | None:
         return None
     try:
         delta_usd = float(value)
-    except (OverflowError, ValueError):
+    except OverflowError, ValueError:
         logger.warning("Discarding a provisional cost delta that is out of range.")
         return None
     if not math.isfinite(delta_usd):
@@ -2110,6 +2110,9 @@ a pending approval widget can be shown.
 Two seconds balances responsiveness with avoiding accidental approval
 key presses.
 """
+
+_IDLE_COMPACTION_LEAD_SECONDS = 120
+"""Lead time for automatic idle context compaction."""
 
 _CACHE_EXPIRING_LEAD_SECONDS = 60
 """Lead time for the prompt-cache retention notification."""
@@ -4579,6 +4582,7 @@ class DeepAgentsApp(App):
         )
         """Minimum estimated cold-versus-warm cost delta that opens the modal."""
 
+        self._idle_compaction_seen: dict[str, datetime] = {}
         self._cache_expiring_seen: dict[str, datetime] = {}
         self._cache_expiring_worker: Worker[None] | None = None
 
@@ -5638,7 +5642,7 @@ class DeepAgentsApp(App):
             root = await asyncio.to_thread(project_root_for, Path(self._cwd))
             config_path = project_hooks_path(root)
             has_project_hooks = await asyncio.to_thread(config_path.is_file)
-        except (OSError, ValueError):
+        except OSError, ValueError:
             logger.warning(
                 "Could not inspect project hooks after cwd switch",
                 exc_info=True,
@@ -6016,16 +6020,9 @@ class DeepAgentsApp(App):
         Returns:
             A short user-facing provenance and rationale sentence.
         """
-        if source == "managed config":
-            owner = "Your administrator set this policy through managed config"
-        elif source == "config.toml":
-            owner = "This policy was set in your config.toml"
-        else:
-            owner = "This policy was set by active configuration"
-        return (
-            f"{owner} to keep older threads from restoring stale context after "
-            "model or policy changes."
-        )
+        from deepagents_code.resume_policy import resume_cutoff_explanation
+
+        return resume_cutoff_explanation(source)
 
     @staticmethod
     def _resume_cutoff() -> tuple[datetime, str, bool] | None:
@@ -6034,69 +6031,16 @@ class DeepAgentsApp(App):
         Returns:
             The cutoff, its source, and whether it is rolling, or `None`.
         """
-        from deepagents_code.config_manifest import (
-            _emit_ranked_diagnostics,
-            _ranked_source,
-            get_option,
-            parse_duration_seconds,
-        )
-        from deepagents_code.configuration.resolver import get_config_resolver
+        from deepagents_code.resume_policy import resume_cutoff
 
-        resolver = get_config_resolver()
-        cutoffs: list[tuple[datetime, str, bool]] = []
-        for key in ("threads.resume_after", "threads.max_resume_age"):
-            option = get_option(key)
-            if option is None:
-                continue
-            resolved = resolver.get(option)
-            _emit_ranked_diagnostics(option, resolved)
-            value = resolved.value
-            if key.endswith("resume_after") and isinstance(value, str):
-                cutoffs.append(
-                    (datetime.fromisoformat(value), _ranked_source(resolved), False)
-                )
-            elif key.endswith("max_resume_age") and isinstance(value, str):
-                seconds = parse_duration_seconds(value)
-                if seconds is not None:
-                    cutoff = datetime.min.replace(tzinfo=UTC)
-                    with suppress(OverflowError):
-                        cutoff = datetime.now(UTC) - timedelta(seconds=seconds)
-                    cutoffs.append((cutoff, _ranked_source(resolved), True))
-        return max(cutoffs, default=None)
+        return resume_cutoff()
 
     @staticmethod
     async def _thread_resume_block(thread_id: str) -> str | None:
         """Return why configured policy blocks resuming a thread, if applicable."""
-        from deepagents_code.config_manifest import normalize_iso_datetime
-        from deepagents_code.sessions import get_thread_updated_at
+        from deepagents_code.resume_policy import thread_resume_block
 
-        policy = DeepAgentsApp._resume_cutoff()
-        if policy is None:
-            return None
-        cutoff, source, rolling = policy
-        explanation = DeepAgentsApp._resume_cutoff_explanation(source)
-        updated_value = await get_thread_updated_at(thread_id)
-        normalized = normalize_iso_datetime(updated_value)
-        if normalized is None:
-            logger.warning(
-                "Blocking resume for thread %s: missing or invalid updated_at %r",
-                thread_id,
-                updated_value,
-            )
-            return (
-                f"Thread {thread_id} cannot be resumed because its last-updated "
-                f"time could not be verified.\n\n{explanation}"
-            )
-        if datetime.fromisoformat(normalized) >= cutoff:
-            return None
-        reason = (
-            "it is older than the configured maximum age"
-            if rolling
-            else f"it was last updated before {cutoff.isoformat()}"
-        )
-        return (
-            f"Thread {thread_id} cannot be resumed because {reason}.\n\n{explanation}"
-        )
+        return await thread_resume_block(thread_id, DeepAgentsApp._resume_cutoff())
 
     def _reserve_thread(self, thread_id: str) -> None:
         """Reserve a locally managed thread before reading or adopting it."""
@@ -6743,7 +6687,7 @@ class DeepAgentsApp(App):
 
             try:
                 messages = self.query_one("#messages", Container)
-            except (NoMatches, ScreenStackError):
+            except NoMatches, ScreenStackError:
                 return
             if not messages.is_attached:
                 return
@@ -7748,17 +7692,30 @@ class DeepAgentsApp(App):
             await self._mount_message(
                 AppMessage(f"Update log: {format_log_follow_command(log_path)}"),
             )
+
+        notices: list[str] = []
+        deferred: list[bool] = []
+        unverified: list[bool] = []
+
+        async def show_upgrade_notice(message: str) -> None:
+            notices.append(message)
+            await self._mount_message(AppMessage(message))
+
+        # A Python migration rebuilds the environment this session imports
+        # from, so the TUI defers it to `dcode update` from the shell.
         success, output, installed = await perform_upgrade(
+            on_notice=show_upgrade_notice,
             log_path=log_path,
             include_prereleases=include_prereleases,
             target_version=latest,
+            allow_python_migration=False,
+            on_migration_deferred=lambda: deferred.append(True),
+            on_unverified_install=lambda: unverified.append(True),
         )
         if success:
             self._update_available = (False, None)
-            # The install command is unpinned, so the installer may have
-            # resolved a release newer than the one the update check observed
-            # (a release published while the session sat open). Report what
-            # actually landed on disk rather than the stale check result.
+            # uv installs are pinned and verified, and other methods report
+            # the target, so this matches `latest`; the fallback is defensive.
             upgraded_to = installed or latest
             # uv may have installed the upgraded shim into a directory that
             # isn't first on the user's PATH (e.g. a leftover pre-uv
@@ -7785,6 +7742,24 @@ class DeepAgentsApp(App):
                 await self._mount_message(
                     ErrorMessage(format_shadowed_dcode_warning(shadow)),
                 )
+        elif unverified:
+            # This session lazily imports modules that uv may have replaced.
+            await self._mount_message(
+                ErrorMessage(
+                    "Update could not be verified; see above. Quit and relaunch "
+                    "dcode before continuing."
+                ),
+            )
+        elif deferred:
+            # Nothing ran, so there is no failure or log to point at.
+            await self._mount_message(AppMessage("Update deferred; see above."))
+        elif notices:
+            # The notice already carries its own recovery steps; a generic
+            # command here would contradict them.
+            log_line = f"\nLog: {log_path}" if log_path is not None else ""
+            await self._mount_message(
+                AppMessage(f"Update failed; see the message above.{log_line}"),
+            )
         else:
             cmd = upgrade_command(
                 include_prereleases=upgrade_include_prereleases,
@@ -8906,7 +8881,7 @@ class DeepAgentsApp(App):
             # composes its own rack, and modals must not retune the main one.
             screen = chrome.screen
             rack = screen.get_child_by_id("textual-toastrack")
-        except (NoMatches, NoScreen):
+        except NoMatches, NoScreen:
             return
         region = chrome.region
         if not region:
@@ -9775,23 +9750,55 @@ class DeepAgentsApp(App):
                         break
                 banner.update(f"Prompt cache expired at {expired_at} ({age})")
 
-    def _check_cache_expiry(self) -> None:
-        """Offer a handoff once per expired cache window, only when idle.
+    def _check_idle_compaction(self) -> None:
+        """Reserve one offload per warm cache window, without yielding to input."""
+        from deepagents_code.config_manifest import get_option
+        from deepagents_code.configuration.resolver import get_config_resolver
 
-        Polled every second from `on_mount`. Acts only when
-        `warnings.cache_prompt` is `expiry` and no cold-cache opt-out applies.
-        """
-        self._refresh_cache_expiry_banner()
+        option = get_option("history.idle_compaction_tokens")
+        threshold = get_config_resolver().get(option).value if option else 0
         expires_at = self._status_bar.cache_expires_at if self._status_bar else None
+        window = self._status_bar.cache_window_seconds if self._status_bar else None
+        lead = min(window * 0.2, _IDLE_COMPACTION_LEAD_SECONDS) if window else 0
         thread_id = self._lc_thread_id
         if (
-            expires_at is None
+            not isinstance(threshold, int)
+            or threshold <= 0
+            or self._tokens_approximate
+            or self._context_tokens < threshold
             or not thread_id
-            or datetime.now(UTC) < expires_at
-            or self._cache_expiry_seen.get(thread_id) == expires_at
-            or not self._agent
+            or expires_at is None
+            or self._idle_compaction_seen.get(thread_id) == expires_at
+            or not 0 < (expires_at - datetime.now(UTC)).total_seconds() <= lead
+            or not self._cache_maintenance_idle()
+            or self._remote_agent() is None
+        ):
+            return
+        self._idle_compaction_seen[thread_id] = expires_at
+        self._set_agent_running(True)
+        try:
+            self._offload_worker = self.run_worker(
+                self._run_offload_task(idle_window=(thread_id, expires_at)),
+                group="offload",
+                exit_on_error=False,
+            )
+        except Exception:
+            self._set_agent_running(False)
+            logger.exception("Failed to schedule idle compaction")
+
+    def _cache_maintenance_idle(self, *, reserved: bool = False) -> bool:
+        """Require a quiescent UI before automatic cache maintenance.
+
+        Args:
+            reserved: Ignore the automatic offload's own busy reservation.
+
+        Returns:
+            Whether no UI activity competes with cache maintenance.
+        """
+        return not (
+            not self._agent
             or not self._session_state
-            or self._agent_running
+            or (self._agent_running and not reserved)
             or self._agent_reconciling
             or self._goal_state_mutating
             or self._shell_running
@@ -9807,6 +9814,25 @@ class DeepAgentsApp(App):
             or self._reloading
             or self._exiting
             or isinstance(self.screen, ModalScreen)
+            or self._cache_reconciliation_pending
+        )
+
+    def _check_cache_expiry(self) -> None:
+        """Offer a handoff once per expired cache window, only when idle.
+
+        Polled every second from `on_mount`. Acts only when
+        `warnings.cache_prompt` is `expiry` and no cold-cache opt-out applies.
+        """
+        self._refresh_cache_expiry_banner()
+        self._check_idle_compaction()
+        expires_at = self._status_bar.cache_expires_at if self._status_bar else None
+        thread_id = self._lc_thread_id
+        if (
+            expires_at is None
+            or not thread_id
+            or datetime.now(UTC) < expires_at
+            or self._cache_expiry_seen.get(thread_id) == expires_at
+            or not self._cache_maintenance_idle()
         ):
             return
         if (
@@ -10831,7 +10857,7 @@ class DeepAgentsApp(App):
         """
         try:
             messages = self.query_one("#messages", Container)
-        except (NoMatches, ScreenStackError):
+        except NoMatches, ScreenStackError:
             logger.debug(
                 "Messages container unavailable; skipping transient status %r",
                 content,
@@ -11479,7 +11505,7 @@ class DeepAgentsApp(App):
         """
         try:
             await widget.remove()
-        except (AttributeError, RuntimeError):
+        except AttributeError, RuntimeError:
             logger.debug(
                 "Failed to remove %s widget during %s",
                 prompt_name,
@@ -14032,7 +14058,7 @@ class DeepAgentsApp(App):
                     proc.kill()
             with suppress(ProcessLookupError, OSError):
                 await proc.wait()
-        except (ProcessLookupError, OSError):
+        except ProcessLookupError, OSError:
             pass
 
     async def _open_url_command(self, command: str, cmd: str) -> None:
@@ -18258,7 +18284,7 @@ class DeepAgentsApp(App):
 
                 clear_caches()
                 self._sync_status_model()
-            except (OSError, ValueError):
+            except OSError, ValueError:
                 logger.exception("Failed to reload configuration")
                 await self._mount_message(
                     AppMessage(
@@ -18321,7 +18347,7 @@ class DeepAgentsApp(App):
                     f"  - {change}" for change in changes
                 )
             else:
-                report = "Configuration reloaded. No changes detected."
+                report = "Configuration reloaded."
             report += "\nModel config caches cleared."
             if theme_reload_ok:
                 report += "\nTheme registry reloaded."
@@ -18619,7 +18645,9 @@ class DeepAgentsApp(App):
         _, conversation = await self._get_context_usage_counts()
         return conversation
 
-    async def _handle_server_offload(self, config: RunnableConfig) -> None:
+    async def _handle_server_offload(
+        self, config: RunnableConfig, *, automatic: bool = False
+    ) -> None:
         """Request and render the built-in server-owned offload operation."""
         from deepagents_code.hooks.client_lifecycle import ClientHookStopError
 
@@ -18646,6 +18674,8 @@ class DeepAgentsApp(App):
             await self._sync_session_cost_from_checkpoint()
 
             status = result.get("status")
+            if automatic and status in {"empty", "noop"}:
+                return
             if status == "empty":
                 await self._mount_message(
                     AppMessage("Nothing to offload — start a conversation first")
@@ -18814,11 +18844,27 @@ class DeepAgentsApp(App):
                 ErrorMessage(f"Offload failed: {format_agent_exception(exc)}")
             )
 
-    async def _run_offload_task(self) -> None:
+    async def _run_offload_task(
+        self, *, idle_window: tuple[str, datetime] | None = None
+    ) -> None:
         """Run a synchronously reserved `/offload` outside the App message pump."""
         self._offload_task_started = True
         try:
-            await self._handle_offload(reserved=True)
+            if idle_window is not None:
+                if (
+                    self._lc_thread_id != idle_window[0]
+                    or not self._status_bar
+                    or self._status_bar.cache_expires_at != idle_window[1]
+                    or datetime.now(UTC) >= idle_window[1]
+                    or not self._cache_maintenance_idle(reserved=True)
+                ):
+                    self._set_agent_running(False)
+                    return
+                self.notify(
+                    "Compacting idle context before cache expiry.",
+                    markup=False,
+                )
+            await self._handle_offload(reserved=True, automatic=idle_window is not None)
         finally:
             self._offload_task_started = False
             self._offload_worker = None
@@ -18826,16 +18872,19 @@ class DeepAgentsApp(App):
             if not self._startup_sequence_running:
                 await self._process_next_from_queue()
 
-    async def _handle_offload(self, *, reserved: bool = False) -> None:
+    async def _handle_offload(
+        self, *, reserved: bool = False, automatic: bool = False
+    ) -> None:
         """Run `/offload`, always releasing its busy-state reservation.
 
         Args:
             reserved: Whether the caller already reserved the turn synchronously.
+            automatic: Suppress no-op feedback for idle cache maintenance.
         """
         if not reserved:
             self._set_agent_running(True)
         try:
-            await self._offload_impl()
+            await self._offload_impl(automatic=automatic)
         finally:
             self._set_agent_running(False)
             try:
@@ -18843,7 +18892,7 @@ class DeepAgentsApp(App):
             except Exception:  # best-effort spinner cleanup
                 logger.exception("Failed to dismiss spinner after offload")
 
-    async def _offload_impl(self) -> None:
+    async def _offload_impl(self, *, automatic: bool = False) -> None:
         """Offload older messages through the dcode server operation."""
         if not self._agent or not self._lc_thread_id:
             await self._mount_message(
@@ -18859,7 +18908,7 @@ class DeepAgentsApp(App):
             return
 
         config: RunnableConfig = {"configurable": {"thread_id": self._lc_thread_id}}
-        await self._handle_server_offload(config)
+        await self._handle_server_offload(config, automatic=automatic)
 
     def _start_plugin_auto_update(self) -> None:
         """Start the plugin auto-update worker."""
@@ -20974,7 +21023,7 @@ class DeepAgentsApp(App):
         try:
             resumable = await thread_exists(previous_thread_id)
             owner = await get_thread_agent(previous_thread_id) if resumable else None
-        except (sqlite3.Error, OSError):
+        except sqlite3.Error, OSError:
             # Keep store failures visible because they are not routine suppression.
             logger.info(
                 "Could not check whether previous thread %s is resumable",
@@ -22454,18 +22503,18 @@ class DeepAgentsApp(App):
         if self._pending_approval_widget:
             try:
                 self._pending_approval_widget.action_select_reject()
-            except (AttributeError, RuntimeError):
+            except AttributeError, RuntimeError:
                 logger.exception("force-clear: failed to reject pending approval")
         if self._pending_ask_user_widget:
             try:
                 self._pending_ask_user_widget.action_cancel()
-            except (AttributeError, RuntimeError):
+            except AttributeError, RuntimeError:
                 logger.exception("force-clear: failed to cancel pending ask-user")
         self._cancel_goal_proposal_worker()
         if self._pending_goal_review_widget:
             try:
                 self._pending_goal_review_widget.action_cancel()
-            except (AttributeError, RuntimeError):
+            except AttributeError, RuntimeError:
                 logger.exception("force-clear: failed to cancel pending goal review")
         if self._shell_running and self._shell_worker:
             self._shell_worker.cancel()
@@ -23465,14 +23514,14 @@ class DeepAgentsApp(App):
                                 asyncio.shield(worker.wait()),
                                 timeout=_GRACEFUL_EXIT_WAIT_SECONDS,
                             )
-                        except (asyncio.CancelledError, WorkerCancelled):
+                        except asyncio.CancelledError, WorkerCancelled:
                             # Expected: exit() cancelled the worker above, so
                             # its cancellation handler ran to completion.
                             logger.debug(
                                 "Agent worker cancelled cleanly before app exit",
                                 exc_info=True,
                             )
-                        except (TimeoutError, WorkerFailed):
+                        except TimeoutError, WorkerFailed:
                             # The worker did not finish within the window, so
                             # the in-flight run's server-side trace may be
                             # incomplete. Surface above debug so the loss isn't
@@ -26014,7 +26063,7 @@ class DeepAgentsApp(App):
                 if self._pending_ask_user_widget is not None:
                     try:
                         self._pending_ask_user_widget.action_cancel()
-                    except (AttributeError, RuntimeError):
+                    except AttributeError, RuntimeError:
                         logger.debug(
                             "Failed to cancel pending ask-user during agent swap",
                             exc_info=True,
@@ -26413,7 +26462,7 @@ class DeepAgentsApp(App):
             cli_version="0.1.0",
             release_age=" (released 2 days ago)",
             installed_age="",
-            upgrade_cmd="uv tool upgrade deepagents-code",
+            upgrade_cmd="uv tool install -U deepagents-code",
         )
         self._notice_registry.add(update_notification)
         self._update_modal_pending.set()
@@ -27250,10 +27299,25 @@ class DeepAgentsApp(App):
                             show_toast=not progress_modal_visible,
                         )
                         return
+
+                    notices: list[str] = []
+                    deferred: list[bool] = []
+                    unverified: list[bool] = []
+
+                    def show_upgrade_notice(message: str) -> None:
+                        notices.append(message)
+                        screen.append_line(message)
+                        self.notify(message, timeout=15, markup=False)
+
+                    # Same live-session constraint as `/update`.
                     success, output, installed = await perform_upgrade(
                         progress=screen.append_line,
+                        on_notice=show_upgrade_notice,
                         log_path=log_path,
                         target_version=payload.latest,
+                        allow_python_migration=False,
+                        on_migration_deferred=lambda: deferred.append(True),
+                        on_unverified_install=lambda: unverified.append(True),
                     )
                     if success:
                         self._notice_registry.remove(entry.key)
@@ -27278,11 +27342,9 @@ class DeepAgentsApp(App):
                                 markup=False,
                             )
                             return
-                        # The install command is unpinned, so the installer
-                        # may have resolved a release newer than the one this
-                        # notification advertised (a release published while
-                        # the notice sat open). Report what actually landed on
-                        # disk rather than the stale payload version.
+                        # uv installs are pinned and verified, and other
+                        # methods report the target, so this matches the
+                        # payload; the fallback is defensive.
                         upgraded_to = installed or payload.latest
                         # After `mark_success`: the modal stays un-dismissable
                         # until it is marked done, and this worker runs with
@@ -27300,12 +27362,35 @@ class DeepAgentsApp(App):
                             markup=False,
                         )
                         return
+                    self._notice_registry.remove(entry.key)
+                    if deferred:
+                        logger.info(
+                            "Deferred the Python migration for v%s", payload.latest
+                        )
+                        screen.mark_warning("Update deferred. See details.")
+                        return
                     logger.warning(
                         "Auto-upgrade failed for v%s. Output:\n%s",
                         payload.latest,
                         output,
                     )
-                    self._notice_registry.remove(entry.key)
+                    if unverified:
+                        # This session lazily imports modules that uv may have
+                        # replaced.
+                        restart = (
+                            "Update could not be verified. Quit and relaunch dcode "
+                            "before continuing."
+                        )
+                        screen.mark_warning(restart)
+                        self.notify(
+                            restart, severity="warning", timeout=20, markup=False
+                        )
+                        return
+                    if notices:
+                        # The notice toast and modal line already carry the
+                        # notice's own recovery steps.
+                        screen.mark_warning("Update did not complete. See details.")
+                        return
                     screen.mark_failure(cmd)
                     snippet = _truncate(output, limit=160) if output else ""
                     message = f"Auto-update failed. Run manually: {cmd}"
@@ -27848,7 +27933,7 @@ class DeepAgentsApp(App):
         """
         try:
             banner = self.query_one("#welcome-banner", WelcomeBanner)
-        except (NoMatches, ScreenStackError):
+        except NoMatches, ScreenStackError:
             logger.debug("Welcome banner not mounted during MCP count refresh")
             return
         banner.set_connected(
@@ -30110,7 +30195,7 @@ class DeepAgentsApp(App):
 
             msg = f"No previous threads for '{active_agent}' to resume."
             await self._mount_message(AppMessage(msg))
-        except (sqlite3.Error, OSError):
+        except sqlite3.Error, OSError:
             # Expected thread-store failures: log for a debug session and tell
             # the user to retry. Mirrors the launch-time resolver's handling.
             logger.warning(
@@ -30643,46 +30728,14 @@ class DeepAgentsApp(App):
     ) -> tuple[Literal["match", "unavailable", "mismatch"], Path | None]:
         """Classify a stored thread cwd against the current app cwd.
 
-        Args:
-            raw: The cwd recorded in the thread's checkpoint metadata. May be
-                relative or use `~`; both are normalized here.
-            current_cwd: The app's current working directory.
+        See `resume_policy.classify_thread_cwd`.
 
         Returns:
-            A `(status, path)` pair. `path` is only set when `status` is
-            `"mismatch"`; it is `None` otherwise. `status` is one of:
-
-            - `"match"`: the stored cwd resolves to the current cwd; no action.
-            - `"unavailable"`: the stored cwd is relative/malformed, or names an
-                absolute directory that no longer exists — it cannot be honored,
-                so the caller should warn and stay put.
-            - `"mismatch"`: the stored cwd is a real directory that differs from
-                the current cwd — the caller should offer to switch.
+            A `(status, path)` pair; `path` is set only for `"mismatch"`.
         """
-        target = Path(raw).expanduser()
-        if not target.is_absolute() or not target.is_dir():
-            # Relative/malformed or missing directory: cannot be honored.
-            return "unavailable", None
-        try:
-            current = Path(current_cwd).expanduser().resolve()
-            resolved = target.resolve()
-        except OSError:
-            # Symlink resolution failed (e.g. ELOOP, permission on a path
-            # component). Fall back to a non-resolving comparison, which can
-            # report a spurious mismatch for symlinked-but-equal paths; log so
-            # the degraded comparison is traceable.
-            logger.debug(
-                "Could not resolve cwd paths for mismatch check (%r vs %r); "
-                "falling back to non-resolving comparison",
-                current_cwd,
-                raw,
-                exc_info=True,
-            )
-            current = Path(current_cwd).expanduser().absolute()
-            resolved = target.absolute()
-        if current == resolved:
-            return "match", None
-        return "mismatch", resolved
+        from deepagents_code.resume_policy import classify_thread_cwd
+
+        return classify_thread_cwd(raw, current_cwd)
 
     async def _thread_cwd_mismatch(self, thread_id: str) -> Path | None:
         """Return the thread cwd when it differs from the current app cwd."""
@@ -30984,7 +31037,7 @@ class DeepAgentsApp(App):
                 credentials.preview_reload_from_environment,
                 start_path=cwd,
             )
-        except (OSError, ValueError):
+        except OSError, ValueError:
             # Environmental failures (unreadable dotenv, malformed values) are
             # expected and non-fatal for a best-effort preview. Programming
             # errors (KeyError/TypeError/ImportError) are left to propagate so a
@@ -32204,7 +32257,7 @@ class DeepAgentsApp(App):
             self._retry_status_widget = None
         try:
             messages = self.query_one("#messages", Container)
-        except (NoMatches, ScreenStackError):
+        except NoMatches, ScreenStackError:
             messages = None
         if messages is not None and messages.is_attached:
             new_widget = AppMessage(

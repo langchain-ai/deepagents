@@ -44,7 +44,7 @@ def test_discovers_new_transitive_consumers(
     ]
     assert commands == [
         ["uv", "lock", "--directory", "libs/acp", "--python", "3.14"],
-        ["uv", "lock", "--directory", "libs/code", "--python", "3.12"],
+        ["uv", "lock", "--directory", "libs/code", "--python", "3.14"],
         ["uv", "lock", "--directory", "libs/new", "--python", "3.12"],
     ]
 

@@ -205,7 +205,13 @@ async def test_runtime_scopes_progress_to_concurrent_requests(
         return ProgressGraph()
 
     monkeypatch.setattr("deepagents_talon.runtime.create_deep_agent", create_graph)
-    runtime = DeepAgentRuntime(model="test:model", include_web_tools=False, skills=(), memory=())
+    runtime = DeepAgentRuntime(
+        model="test:model",
+        include_web_tools=False,
+        skills=(),
+        memory=(),
+        env={"DEEPAGENTS_TALON_VERBOSITY": "3"},
+    )
     await runtime.start()
     channels = [RecordingChannel(), RecordingChannel()]
     try:

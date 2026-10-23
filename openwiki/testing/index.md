@@ -1,3 +1,3 @@
 # Files
 
-- [Testing Guide](testing-guide.md) - Deterministic, package-local test routing for Deep Agents middleware and async-task contracts, dcode Textual UI behavior, Talon OAuth transport security, and lockfile automation. Select the narrowest test that observes the public boundary and its failure behavior.
+- [Testing Guide](testing-guide.md) - Route a change to the owning package Makefile and the narrowest unit, integration, UI, protocol, host, or evaluation seam. This guide covers deterministic test conventions, warning policy, CI correspondence, benchmarks, and evaluation runs.

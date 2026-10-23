@@ -2,9 +2,8 @@
 
 import json
 import tomllib
-from collections.abc import Iterator
-from pathlib import Path
 from types import SimpleNamespace
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
@@ -17,6 +16,10 @@ from deepagents_code.model_api import model_metadata
 from deepagents_code.model_config import ModelConfigError
 from deepagents_code.model_metadata import ModelMetadata, ModelPurpose
 from deepagents_code.workspace import WorkspaceConflictError
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+    from pathlib import Path
 
 
 @pytest.fixture(autouse=True)

@@ -977,7 +977,7 @@ def _same_config_location(first: Path, second: Path) -> MCPConfigIdentity:
         return MCPConfigIdentity.SAME
     try:
         identity_match = first.samefile(second)
-    except (OSError, RuntimeError):
+    except OSError, RuntimeError:
         logger.warning(
             "Could not determine whether %s and %s are the same MCP config; "
             "the pair cannot be told apart",
@@ -2133,7 +2133,7 @@ async def _load_tools_from_config(
         # relabeled as a per-server config skip.
         try:
             server_config = resolve_mcp_server_env(server_name, server_config)
-        except (RuntimeError, TypeError) as exc:
+        except (RuntimeError, TypeError, ValueError) as exc:
             logger.warning(
                 "MCP server '%s' skipped: config error: %s",
                 server_name,
@@ -2170,6 +2170,7 @@ async def _load_tools_from_config(
                 storage = FileTokenStorage(
                     server_name,
                     server_url=server_config["url"],
+                    oauth_client_id=(server_config.get("oauth") or {}).get("client_id"),
                 )
                 stored_tokens = await storage.get_tokens()
 
@@ -2199,6 +2200,7 @@ async def _load_tools_from_config(
                         server_url=server_config["url"],
                         storage=storage,
                         interactive=False,
+                        oauth=server_config.get("oauth"),
                     )
 
                 return _build_transport(
@@ -2330,7 +2332,7 @@ async def _load_tools_from_config(
                 )
                 for tool in server_tools
             ]
-        except (asyncio.CancelledError, KeyboardInterrupt, SystemExit):
+        except asyncio.CancelledError, KeyboardInterrupt, SystemExit:
             raise
         except Exception as exc:
             error = (

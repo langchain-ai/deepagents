@@ -310,7 +310,7 @@ def discover_skill_dirs(
         current, path_segments = stack.pop()
         try:
             resolved = Path(current).resolve()
-        except (OSError, RuntimeError):
+        except OSError, RuntimeError:
             logger.warning("Could not resolve plugin skill directory %s", current)
             continue
         if not resolved.is_relative_to(source_root) or resolved in visited:
@@ -345,7 +345,7 @@ async def adiscover_skill_dirs(
         current, path_segments = stack.pop()
         try:
             resolved = await asyncio.to_thread(Path(current).resolve)
-        except (OSError, RuntimeError):
+        except OSError, RuntimeError:
             logger.warning("Could not resolve plugin skill directory %s", current)
             continue
         if not resolved.is_relative_to(source_root) or resolved in visited:

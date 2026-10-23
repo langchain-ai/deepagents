@@ -235,7 +235,7 @@ def _python_extensions(
     for path in paths:
         try:
             is_file = path.is_file()
-        except (OSError, RuntimeError):
+        except OSError, RuntimeError:
             logger.debug(
                 "Could not inspect Python extension path %s", path, exc_info=True
             )

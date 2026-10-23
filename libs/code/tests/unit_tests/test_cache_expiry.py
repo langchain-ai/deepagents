@@ -1,10 +1,8 @@
 """Behavioral coverage for cache-expiry handoffs."""
 
 import asyncio
-from collections.abc import Iterator
 from copy import deepcopy
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock
 
@@ -23,6 +21,9 @@ from deepagents_code.tui.widgets.messages import ErrorMessage
 from deepagents_code.tui.widgets.status import StatusBar
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
+    from pathlib import Path
+
     from langchain_core.runnables import RunnableConfig
 
 
@@ -39,7 +40,7 @@ def checkpoint_database(
     release_all()
 
 
-def _owned_config(config: "RunnableConfig") -> "RunnableConfig":
+def _owned_config(config: RunnableConfig) -> RunnableConfig:
     """Supply the reservation normally attached by the local HTTP client."""
     from deepagents_code.thread_ownership import OWNER_KEY, ensure_owned
 
@@ -737,7 +738,7 @@ async def test_handoff_child_is_discoverable_and_resumable(
         )
 
         async def update_state(
-            config: "RunnableConfig", values: dict[str, object] | None, *, as_node: str
+            config: RunnableConfig, values: dict[str, object] | None, *, as_node: str
         ) -> None:
             # The HTTP state API forwards the thread ID, but drops config metadata.
             await graph.aupdate_state(
@@ -884,7 +885,7 @@ async def test_handoff_with_separate_server_checkpoints(
     )
 
     async def update_state(
-        config: "RunnableConfig", values: dict[str, object] | None, *, as_node: str
+        config: RunnableConfig, values: dict[str, object] | None, *, as_node: str
     ) -> None:
         await graph.aupdate_state(
             {"configurable": config["configurable"]}, values, as_node=as_node
@@ -1016,7 +1017,7 @@ async def test_handoff_preserves_shell_context(
         )
 
         async def update_state(
-            config: "RunnableConfig",
+            config: RunnableConfig,
             values: dict[str, object] | None,
             *,
             as_node: str | None = None,
@@ -1314,6 +1315,7 @@ async def test_expiry_send_action_dispatches_once_in_current_thread(
     outcome: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     app = DeepAgentsApp()
+    monkeypatch.setattr(app, "_cold_cache_estimate", AsyncMock(return_value=None))
 
     async def send(_text: str, _mode: str) -> None:
         assert app._lc_thread_id == "source"
@@ -1363,6 +1365,7 @@ async def test_handoff_pauses_submission_but_keeps_draft_editable(
     outcome: str, submitted: bool, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     app = DeepAgentsApp()
+    monkeypatch.setattr(app, "_cold_cache_estimate", AsyncMock(return_value=None))
     started = asyncio.Event()
     release = asyncio.Event()
 
@@ -1430,6 +1433,7 @@ async def test_cancel_handoff_restores_submission(
     cancel: str, submitted: bool, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     app = DeepAgentsApp()
+    monkeypatch.setattr(app, "_cold_cache_estimate", AsyncMock(return_value=None))
     started = asyncio.Event()
     release = asyncio.Event()
 
@@ -1489,6 +1493,7 @@ async def test_handoff_does_not_restore_draft_into_unrelated_thread(
     other_draft: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     app = DeepAgentsApp()
+    monkeypatch.setattr(app, "_cold_cache_estimate", AsyncMock(return_value=None))
 
     def summarize(**_kwargs: object) -> dict[str, str]:
         # The user leaves the source while its summary is being generated.
@@ -1717,6 +1722,7 @@ async def test_resumed_thread_with_lapsed_window_does_not_prompt(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     app = DeepAgentsApp()
+    monkeypatch.setattr(app, "_cold_cache_estimate", AsyncMock(return_value=None))
 
     async def restore_timing() -> None:  # noqa: RUF029  # mock contract
         # The checkpoint's last request is well past its retention window.

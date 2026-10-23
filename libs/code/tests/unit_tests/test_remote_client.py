@@ -1802,7 +1802,7 @@ async def test_btw_stream_delivers_fragments_and_closes_transport(
     cost.update(total_cost_usd=0.5, request_count=1)
 
     class Body(AsyncByteStream):
-        async def __aiter__(self) -> AsyncGenerator[bytes, None]:
+        async def __aiter__(self) -> AsyncGenerator[bytes]:
             yield b'event: text\ndata: "First "\n\n'
             await release.wait()
             if outcome == "complete":

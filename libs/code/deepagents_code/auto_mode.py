@@ -548,7 +548,7 @@ def _validate_temp_artifact(value: object) -> AutoTempArtifact | None:
         return None
     try:
         file_path = Path(cast("str", raw_file_path))
-    except (OSError, TypeError, ValueError):
+    except OSError, TypeError, ValueError:
         return None
     if not file_path.is_absolute() or not file_path.name.startswith(
         _TEMP_ARTIFACT_PREFIX
@@ -794,7 +794,7 @@ def _known_credential_values(
                     and len(value) >= _MIN_SECRET_LENGTH
                 ):
                     values.add(value)
-    except (OSError, RuntimeError, TypeError, ValueError):
+    except OSError, RuntimeError, TypeError, ValueError:
         logger.debug("Could not load stored credential values for Auto redaction")
     return tuple(sorted(values, key=len, reverse=True))
 
@@ -2033,7 +2033,7 @@ def _resolve_path(root: Path, raw: object) -> Path | None:
         if not candidate.is_absolute():
             candidate = root / candidate
         return candidate.resolve(strict=False)
-    except (OSError, RuntimeError, ValueError):
+    except OSError, RuntimeError, ValueError:
         return None
 
 
@@ -2662,7 +2662,7 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         if not targets_managed_artifact:
             try:
                 candidate_stat = candidate.stat()
-            except (OSError, ValueError):
+            except OSError, ValueError:
                 pass
             else:
                 targets_managed_artifact = any(
@@ -2864,8 +2864,7 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
                         selected,
                         # Classifier history never replays thinking blocks,
                         # so the Anthropic preserved-thinking binding would only
-                        # cost it the forced tool call `with_structured_output`
-                        # relies on.
+                        # add latency and cost to every review.
                         bind_preserved_thinking=False,
                         **retry_kwargs,
                     )
@@ -3089,12 +3088,18 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         timeout_cm = asyncio.timeout(self._classifier_timeout_seconds)
         try:
             async with timeout_cm:
-                thinking = getattr(model, "thinking", None)
+                # Anthropic's native structured output constrains decoding to
+                # the schema. Forced tool calling only suggests it, and Claude
+                # intermittently wraps a valid verdict list in a JSON string or
+                # a placeholder key, which strict validation rejects and the
+                # fail-closed path turns into a denied batch. Models without
+                # native support (Claude 4.1 and earlier) reject the request
+                # outright, so they keep forced tool calling.
+                profile = getattr(model, "profile", None)
                 if (
-                    spec is None
-                    and getattr(model, "_llm_type", None) == "anthropic-chat"
-                    and isinstance(thinking, dict)
-                    and thinking.get("type") in {"adaptive", "enabled"}
+                    getattr(model, "_llm_type", None) == "anthropic-chat"
+                    and isinstance(profile, dict)
+                    and profile.get("structured_output") is True
                 ):
                     structured = model.with_structured_output(
                         _ClassifierBatch, method="json_schema"

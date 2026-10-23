@@ -1,11 +1,31 @@
 ---
 type: architecture concept
-title: Tools and Filesystem
-description: FilesystemMiddleware exposes backend-backed file tools while separately applying model-surface filtering, filesystem policy, human approval, and content lifecycle controls. Composite routing remaps file paths across backends, whereas execution remains attached to the composite default backend.
+title: Tools and Filesystem Policy
+description: Deep Agents and dcode compose built-in filesystem, caller, MCP, managed helper, and shell tools into an agent-specific surface. Filesystem policy, backend capabilities, trust gates, and runtime enforcement remain separate concerns.
 tags: [tools, filesystem, execution, middleware, backends, persistence, multimodal, permissions]
 sources:
+  - id: openwiki-source-1728494bdd59604ce9b5f65b
+    resource: repo://libs/code/deepagents_code/_server_config.py
+  - id: openwiki-source-05106e66a949150d557266a2
+    resource: repo://libs/code/deepagents_code/agent.py
+  - id: openwiki-source-a12868876b60484607797187
+    resource: repo://libs/code/deepagents_code/file_ops.py
+  - id: openwiki-source-2e03fee957625ca21a1c21af
+    resource: repo://libs/code/deepagents_code/main.py
+  - id: openwiki-source-752b52e8fedb86515652254d
+    resource: repo://libs/code/deepagents_code/managed_tools.py
+  - id: openwiki-source-f6d553e7afdf54acac36e7d3
+    resource: repo://libs/code/deepagents_code/mcp_tools.py
+  - id: openwiki-source-3300d75e0c132882e2e3b4ce
+    resource: repo://libs/code/deepagents_code/tool_catalog.py
+  - id: openwiki-source-8ccbc389e8d6198afea76baa
+    resource: repo://libs/code/tests/unit_tests/test_file_ops.py
   - id: openwiki-source-a1549ea98d425efea270be93
     resource: repo://libs/deepagents/deepagents/backends/composite.py
+  - id: openwiki-source-e483ff4cfd25918c8107d575
+    resource: repo://libs/deepagents/deepagents/backends/filesystem.py
+  - id: openwiki-source-f84c83d6fab6028c94be90bc
+    resource: repo://libs/deepagents/deepagents/backends/local_shell.py
   - id: openwiki-source-0fc0e47059e4d07e23e50be2
     resource: repo://libs/deepagents/deepagents/graph.py
   - id: openwiki-source-303a7196a0e1a36cc078621b
@@ -18,17 +38,17 @@ sources:
     resource: repo://libs/deepagents/deepagents/middleware/filesystem.py
 verified:
   - by: openwiki/0.4.2
-    at: 2026-10-16T08:05:35.701Z
-generated: { by: "openwiki/0.4.2", at: "2026-10-16T08:05:35.701Z" }
+    at: 2026-10-23T08:06:06.503Z
+generated: { by: "openwiki/0.4.2", at: "2026-10-23T08:06:06.503Z" }
 ---
 
-# Tools and Filesystem
+# Tools and Filesystem Policy
 
-`FilesystemMiddleware` is the model-facing adapter over an initialized `BackendProtocol`: it creates tools, validates and formats their results, applies middleware-owned permission policy, and manages large or binary message content. The backend owns storage and operation implementation. A visible tool is not a guarantee that the backend implements it, and neither a tool allowlist nor a profile exclusion is an authorization boundary. See [Backends](backends.md) for storage and routing, and [Permissions & HITL](permissions-hitl.md) for approval configuration.
+`FilesystemMiddleware` is the model-facing adapter over an initialized `BackendProtocol`: it creates tools, validates and formats their results, applies middleware-owned filesystem policy, and manages large or binary message content. The backend owns storage and operation implementation. A visible tool is not a guarantee that the backend implements it. SDK profile exclusions are model-surface controls rather than authorization, while dcode treats its explicitly configured filesystem allowlist as a security control and carries it into configurable subagents. See [Backends](backends.md) for storage and routing, [Permissions & HITL](permissions-hitl.md) for approval configuration, and [MCP](../integrations/mcp.md) for remote tools.
 
 ## Tool surface and request boundary
 
-The built-in vocabulary is `ls`, `read_file`, `write_file`, `edit_file`, `delete`, `glob`, `grep`, and `execute`. `tools=None` and `tools="all"` build all of them; an explicit list must include `read_file`, and tools absent from that list are not registered with the dispatchable tool node. At model-request time, filesystem middleware removes `delete` when the backend does not implement the optional operation and removes `execute` unless the backend is execution capable. It also adjusts the default `grep` and `execute` guidance to the remaining visible tools.
+The built-in vocabulary is `ls`, `read_file`, `write_file`, `edit_file`, `delete`, `glob`, `grep`, and `execute`. `tools=None` and `tools="all"` build all of them; an explicit list must include `read_file`, and tools absent from that list are not registered with the dispatchable tool node. At model-request time, filesystem middleware removes `delete` when the backend does not implement the optional operation and removes `execute` unless the backend is execution capable. It also adjusts the `grep` and `execute` descriptions to the remaining visible tools.
 
 A harness profile's `excluded_tools` is a later, independent model-surface control. Graph construction appends `_ToolExclusionMiddleware` after profile and caller middleware so it removes named tools after all injection has happened; it also rejects a model call that still names an excluded tool. This makes the advertised and executable surfaces agree for that agent/profile, but it is explicitly not a security control. It is distinct from an absent construction-time tool, capability filtering, a filesystem permission denial, and a HITL interruption.
 
@@ -48,7 +68,39 @@ flowchart TD
 
 This flow separates construction-time registration, request-time capability and profile filtering, tool-call exclusion rejection, per-call policy, and backend behavior.
 
-`BackendProtocol` returns structured results, not presentation strings. `ReadResult` rejects incoherent pagination metadata; backends must tolerate negative offsets and non-positive limits, while middleware owns line-number formatting and long-line continuation rows. `grep` and `glob` can be successful yet incomplete, so `truncated=True` means absence from returned matches is not proof of absence from storage. The agent-facing `grep` is literal, not regex; its configured default total cap is 1,000 matches, and a positive per-call `max_count` can override it. Set `grep_max_count=None` when constructing the middleware to disable the default cap.
+`BackendProtocol` returns structured results rather than presentation strings. `ReadResult` rejects incoherent pagination metadata; the middleware owns line-number formatting and long-line continuation rows. `grep` and `glob` can be successful yet incomplete, so `truncated=True` means absence from returned matches is not proof of absence from storage. The agent-facing `grep` is literal, not regex; its configured default total cap is 1,000 matches, and a positive per-call `max_count` can override it. Set `grep_max_count=None` when constructing the middleware to disable the default cap.
+
+## dcode composition, enumeration, and trust
+
+At runtime, dcode supplies caller tools (for example, `fetch_url`, `get_current_thread_id`, and credential-gated `web_search`) to its agent construction, and separately loads MCP tools. The filesystem tools remain SDK middleware tools rather than a parallel dcode implementation. An MCP-enabled agent wraps those remote calls with dcode's MCP timeout middleware; MCP loading can be disabled entirely with `no_mcp`.
+
+MCP availability is deliberately not inferred from configuration alone. Project MCP servers, including remote HTTP/SSE servers, are trust-gated because discovery may reach a server or interpolate headers. Whole-project trust, scoped user approvals keyed to project root and server fingerprint, and explicit user denial are applied before loading; plugin-provided servers are treated as install-trusted but still obey user denial and fail closed if that policy cannot be read.
+
+```mermaid
+flowchart TD
+    Config["dcode configuration"] --> Builtin["SDK filesystem middleware"]
+    Config --> Caller["Caller supplied tools"]
+    Config --> McpConfig["MCP configuration and trust gate"]
+    McpConfig --> Mcp["Loaded MCP tools"]
+    Builtin --> Agent["Bound agent tool node"]
+    Caller --> Agent
+    Mcp --> Agent
+    Agent --> Catalog["tools list or slash command"]
+```
+
+This shows composition, not equivalent trust: caller tools are supplied by the application, while MCP tools must pass configuration and trust resolution before they enter the bound set.
+
+`dcode tools list` and interactive `/tools` derive the built-in listing from the actual tools bound on an agent compiled with an offline placeholder model, rather than maintaining a display catalog. It forwards the session filesystem allowlist into that compilation and deliberately reports an allowlist leak rather than cosmetically filtering it. MCP tools are grouped by server; non-`ok` servers with no tools are surfaced as unavailable, and a discovery-wide failure leaves built-ins visible with a generic notice rather than leaking exception details.
+
+`--allow-fs-tools` accepts `all` or a case-insensitive comma-separated subset of the eight SDK filesystem names. Omission and `all` leave the SDK's unrestricted default middleware in place; an explicit empty list, unknown name, mixed `all`, or subset without `read_file` is rejected. dcode installs a restricted replacement middleware for an explicit subset and appends equivalent middleware to raw subagent specifications. It rejects compiled subagents instead of silently letting delegation bypass that restriction.
+
+## Managed helper and local presentation lifecycle
+
+The `grep` filesystem tool is backend functionality; dcode optionally provisions its `rg` helper. `ensure_ripgrep` first honors a `system` installer choice, accepts a current checksum-verified managed binary, can use a system binary when no managed copy exists, and otherwise downloads a pinned platform asset, verifies archive SHA-256, extracts it, then atomically installs and exposes it on `PATH`. Offline mode returns no managed binary; unsupported platforms may use a system `rg` or raise a remediation-oriented availability error. A profile fallback binary directory is never put directly on `PATH`: dcode copies a verified `rg` into a process-private shim so repository-controlled sibling executables cannot be shadowed in.
+
+The terminal and non-interactive dcode surfaces also track `read_file`, `write_file`, `edit_file`, and `delete` calls for diffs, metrics, and approval presentation. A tracker captures a pre-image through the configured backend when available and reads a post-image after a successful write or edit. It distinguishes a trustworthy diff from an unavailable pre-image, unavailable post-image, and a line-terminator-only change; it therefore suppresses invented diff counts instead of representing unknown content as an empty file. Sensitive filename heuristics redact display of `.env` variants, known credential names, and private-key/keystore suffixes, failing closed when the path cannot be parsed. This is a UI/transcript safeguard, not filesystem authorization.
+
+Focused unit tests cover the failure semantics: a missing pre-image is normal only when creating with `write_file`; malformed backend responses and failed reads are marked untrustworthy; a successful write with failed read-back retains request-derived metrics and its reason; delete previews distinguish text, directories, and unreadable targets; and credential-like paths are classified for redaction.
 
 ## Composite routes are a path namespace, not a shell namespace
 
@@ -56,32 +108,22 @@ This flow separates construction-time registration, request-time capability and 
 
 Search has deliberate cross-route semantics. With `path` omitted or `/`, `grep` searches the default and routes under one global match budget, remapping route result paths; if an earlier backend fills the budget, later routes are skipped and the result is conservatively marked truncated. `glob` also merges and remaps results, but rewrites a route-targeting anchored pattern relative to that route, forwards a bare pattern into every route, and skips routes for a root-anchored pattern that cannot match beneath their prefix. An error from any searched backend is surfaced rather than represented as a successful partial glob. These details matter when interpreting an empty or truncated search result.
 
-File operations route individually, but `execute` does not: a composite always delegates execution to its default backend. Consequently, a route prefix is a file-tool addressing mechanism, not evidence that the default shell can access the same path; the execution section describes the limited prompt-only host mapping.
+File operations route individually, but `execute` does not: a composite always delegates execution to its default backend. Consequently, a route prefix is a file-tool addressing mechanism, not evidence that the default shell can access the same path.
 
-## FilesystemBackend and virtual paths
+## Direct filesystem access and permission policy
 
-`FilesystemBackend` reads and writes the host filesystem directly. Its default `virtual_mode=True` treats `root_dir` (or the process working directory) as a virtual root: `/x` maps below that root, relative inputs are normalized into that virtual namespace, and traversal through `..` or `~` is refused. Resolved paths must remain under the root; agent-visible listing and glob paths use virtual absolute form and do not reveal the host root. Symlink loops are handled as operation errors, and virtual-mode glob output filters targets that resolve outside the root.
+`FilesystemBackend` reads and writes the host filesystem directly. Its default `virtual_mode=True` treats `root_dir` (or the process working directory) as a virtual root: `/x` maps below that root, relative inputs are normalized into that virtual namespace, and traversal through `..` or `~` is refused. Resolved paths must remain under the root; agent-visible paths use virtual absolute form and do not reveal the host root. `virtual_mode` provides stable path semantics—especially when `CompositeBackend` strips a route prefix before forwarding a path—but is not a sandbox or process-isolation boundary. With `virtual_mode=False`, absolute paths are used as-is and relative paths can escape `root_dir`.
 
-`virtual_mode` provides stable path semantics—especially when `CompositeBackend` strips a route prefix before forwarding a path—but is not a sandbox or general security boundary. With `virtual_mode=False`, absolute paths are used as-is and relative paths can escape `root_dir`. Even in virtual mode, deploy this direct host backend only where giving an agent access to files under its root is appropriate; writes are permanent and recursive deletion can partly complete if the underlying filesystem fails partway through.
+`FilesystemPermission` rules classify operations as `read` or `write` and have `allow`, `deny`, or `interrupt` mode. Patterns must be absolute and may not contain `..` or `~`. For ordinary exact operations, declaration order is significant: the first matching rule decides. Middleware checks both the requested normalized path and, for `FilesystemBackend` including routed composites, its symlink-resolved target; an unresolved target is refused when rules are configured. List and search results filter denied entries, including aliases that resolve to denied targets.
 
-The backend's `ls` is non-recursive and sorts entries. Text `read` returns raw UTF-8 content and pagination metadata; a recognized binary extension returns full base64 data instead. Writes create parent directories. Edits are exact replacements: without `replace_all`, the old string must identify one occurrence. Local reads preserve trailing-newline state so an edit can report an EOF-newline mismatch instead of silently failing. Batch upload/download return one ordered result per requested path, allowing partial success; upload/download map traversal and common filesystem failures to standard error codes.
-
-The local backend's `glob` uses the shared backend contract: bare patterns match basenames at any depth, slash-containing patterns are relative to the search root, and leading `/` anchors to that root. Dot names require an explicit dot pattern; in particular, `**` does not descend into dot-directories. The walk has a five-second backend budget and returns accumulated matches with `truncated=True` and reason `budget`; malformed/refused patterns, including `..`, are reported as result errors. `grep` prefers fixed-string ripgrep and falls back to Python when unavailable; both paths preserve literal matching and bound or label partial output.
-
-## Permission and HITL policy
-
-`FilesystemPermission` rules classify operations as `read` or `write` and have `allow`, `deny`, or `interrupt` mode. Patterns must be absolute and may not contain a traversal component or `~`. For exact ordinary operations, declaration order is significant: the first matching rule decides. Middleware checks both the requested normalized path and, for `FilesystemBackend` including routed composites, its symlink-resolved target; an unresolved target is refused when rules are configured. List and search results filter only denied entries, including aliases that resolve to denied targets.
-
-`interrupt` is not enforced inside a filesystem tool. During `create_deep_agent` assembly, `_fs_interrupt` turns interrupt rules into `HumanInTheLoopMiddleware` predicates. Exact tools (`read_file`, `write_file`, `edit_file`) prompt only for matching paths, unless a matching deny wins. Bulk tools (`ls`, `glob`, `grep`, and recursive `delete`) prompt if their target subtree could overlap an interrupt rule; a missing path or current-directory alias is treated as root. The glob predicate also examines absolute patterns and conservatively prompts for relative patterns containing `..`, preventing a benign `path` argument from bypassing a protected target.
-
-Deletion has deliberately stricter policy only when a target may have descendants. A recursive or ambiguous delete fails closed if any deny-write pattern could overlap its subtree, regardless of rule order. A confirmed plain file instead uses normal first-match rule ordering. This distinction protects a denied descendant without making an earlier allow unusable for an identified leaf.
+`interrupt` is not enforced inside a filesystem tool. During `create_deep_agent` assembly, `_fs_interrupt` turns interrupt rules into `HumanInTheLoopMiddleware` predicates. Exact tools (`read_file`, `write_file`, `edit_file`) prompt only for matching paths unless a matching deny wins. Bulk tools (`ls`, `glob`, `grep`, and `delete`) prompt if their target subtree could overlap an interrupt rule; an omitted path or current-directory alias is treated as root. The glob predicate also examines absolute patterns and conservatively prompts for relative patterns containing `..`, preventing a benign `path` argument from bypassing a protected target.
 
 ```mermaid
 flowchart TD
     Call["Filesystem tool call"] --> Validate["Normalize and validate path"]
-    Validate --> Exact{"Exact or bulk scope"}
-    Exact -->|Exact| Match["Check requested and resolved paths"]
-    Exact -->|Bulk| Overlap["Check possible subtree overlap"]
+    Validate --> Scope{"Exact or bulk scope"}
+    Scope -->|Exact| Match["Check requested and resolved paths"]
+    Scope -->|Bulk| Overlap["Check possible subtree overlap"]
     Overlap --> Interrupt["HITL predicate may pause"]
     Match --> Deny{"Deny rule"}
     Deny -->|Yes| Refuse["Permission error"]
@@ -90,25 +132,25 @@ flowchart TD
     Operation --> Filter["Filter denied bulk results"]
 ```
 
-This policy flow shows the boundary: graph assembly owns approval predicates, while filesystem middleware denies calls and filters results.
+This policy flow shows the boundary: graph assembly owns approval predicates, while filesystem middleware denies calls and filters results. A recursive or ambiguous delete is stricter: it fails closed if a deny-write pattern could overlap its subtree, while a confirmed leaf uses the normal first-match rule.
 
 ## Execution is a separate trust boundary
 
-`execute` requires `SandboxBackendProtocol`; for a composite, only the default backend supplies execution. The middleware validates a supplied timeout against both its positive `max_execute_timeout` setting (default 3,600 seconds) and the backend's timeout support. A command invocation that completes gets a successful tool message and an exit-code artifact even if the command exits nonzero; callers must inspect that exit code. Capture-capable sandbox execution may write oversized command output at the source, otherwise generic message eviction applies.
+`execute` requires `SandboxBackendProtocol`; for a composite, only the default backend supplies execution. The middleware validates a supplied timeout against its positive `max_execute_timeout` setting (default 3,600 seconds) and whether the backend accepts per-command overrides. A command invocation that completes gets a successful tool message and an exit-code artifact even if the command exits nonzero; callers must inspect that exit code. Capture-capable sandbox execution can write oversized command output at the source; otherwise generic message eviction applies.
 
-Filesystem permission patterns do not parse or constrain command syntax. Consequently permissions combined with an execution-capable backend are rejected unless every permission pattern is scoped beneath a `CompositeBackend` route; that exception isolates governed file-tool routes from the default executor but does not authorize or confine shell commands. A `LocalShellBackend` runs `shell=True` on the host as the current user, with no isolation, and its virtual paths restrict only inherited file operations—not commands. Use an isolated sandbox and HITL for untrusted work.
+Filesystem permission patterns do not parse or constrain command syntax. Therefore, middleware rejects permissions combined with an execution-capable backend unless every permission pattern is scoped beneath a `CompositeBackend` route; that exception separates governed file-tool routes from the default executor but does not authorize or confine shell commands. A `LocalShellBackend` runs `shell=True` on the host as the current user, with no isolation, and its virtual paths restrict only inherited file operations—not commands. Use an isolated sandbox and HITL for untrusted work.
 
-A composite can expose paths that are not meaningful to its default shell. When execution is active, middleware adds route-to-host mapping guidance only for routes that share a local `LocalShellBackend` filesystem; remote, sandbox, and store-backed routes have no shell mapping and must be accessed through file tools. It does not rewrite commands.
+When execution is active, middleware adds route-to-host mapping guidance only for composite routes that share a local `LocalShellBackend` filesystem. Remote, sandbox, and store-backed routes have no shell mapping and must be accessed through file tools. It does not rewrite commands.
 
-## Read media, model compatibility, and content lifecycle
+## Read media and content lifecycle
 
 For text, `read_file` produces a paginated line-numbered result. For backend-declared base64, it emits a multimodal block selected from the extension (`image`, `audio`, `video`, or generic `file`) rather than line-numbered text, retaining the validated source path and MIME type in metadata. Video decoding, when optional dependencies are available, samples frames into a synthetic `HumanMessage`; middleware moves that message after the entire preceding `ToolMessage` batch to satisfy provider ordering.
 
-`UnsupportedContentMiddleware`, automatically placed after the core, memory, and HITL stack before later profile/caller stack shaping, copies model-request messages and replaces only blocks the active model explicitly cannot accept with a `read_file` path placeholder. Persisted message history remains unchanged. As a fallback, filesystem middleware retries once after a `ModelInvalidRequestError` only when the latest tool turn contains multimodal `read_file` material; it replaces that material with an unsupported-content notice and re-raises unrelated request errors.
+`UnsupportedContentMiddleware`, placed after the core, memory, and HITL stack before later profile/caller stack shaping, copies model-request messages and replaces only blocks the active model explicitly cannot accept with a `read_file` path placeholder. Persisted message history remains unchanged. As a fallback, filesystem middleware retries once after a `ModelInvalidRequestError` only when the latest tool turn contains multimodal `read_file` material; it replaces that material with an unsupported-content notice and re-raises unrelated request errors.
 
 Large text and binary payloads have separate lifecycles:
 
-- **Text eviction:** oversized human text and ordinary tool text are written under the backend artifact paths with a preview for the model request. Filesystem tools are excluded from generic tool-result eviction because their output is already paginated, bounded, or compact. An artifact-write failure leaves the original content intact.
+- **Text eviction:** oversized human text and ordinary tool text are written under backend artifact paths with a preview for the model request. Filesystem tools are excluded from generic tool-result eviction because their output is already paginated, bounded, or compact. An artifact-write failure leaves the original content intact.
 - **Binary offload:** with `offload_binary_content=True`, valid inline base64 from `read_file` results and eligible human media are SHA-256-addressed under `blobs/`; history stores a reference instead of bytes, and the model request receives rehydrated media. Offload is disabled with a warning if the blob path routes to `StateBackend`, because that would preserve bytes in checkpoint state.
 
 ```mermaid
@@ -125,15 +167,13 @@ sequenceDiagram
     MW->>Model: Send verified Base64 media
 ```
 
-The binary lifecycle stores references in history but restores verified payloads only for a model request.
+The binary lifecycle stores references in history but restores verified payloads only for a model request. Binary offload is best effort: failed uploads keep inline content. Rehydration uses an in-run untracked cache when possible and verifies every downloaded payload against its digest because blobs are agent-writable. Missing, malformed, failed, or digest-mismatched references become a text notice rather than untrusted media.
 
-Binary offload is best effort: failed uploads keep inline content. Rehydration uses an in-run untracked cache when possible and verifies every downloaded payload against its digest because blobs are agent-writable. Missing, malformed, failed, or digest-mismatched references become a text notice rather than untrusted media.
-
-## Operational checks and focused tests
+## Operational guidance
 
 Keep `read_file` in explicit tool lists, and treat missing `delete` or `execute` as a backend capability issue rather than an allowlist issue. Use a harness profile exclusion to suppress a tool for a particular agent surface, not to authorize storage or isolate execution. Treat composite search truncation as incomplete output and do not assume file-tool route paths are shell paths. Configure binary offload only when the blob route supports upload/download outside checkpoint state. For direct host backends, keep virtual mode enabled unless trusted local workflows explicitly need host paths; do not mistake it for sandboxing.
 
-Focused tests cover virtual-root mapping and traversal rejection, virtual-path output, symlink-loop errors and containment, literal search and dot-glob rules, composite routing/remapping and merged-search error/truncation behavior, pagination and binary reads, recursive deletion, ordered batch upload/download partial failure, and trailing-newline edit behavior. Middleware and graph tests cover request-time capability filtering, profile exclusion visibility and tool-call rejection, compatibility fallback, and the distinction between permission denial and generated HITL predicates. Permission tests cover first-match ordering, resolved symlink targets, recursive-delete fail-closed behavior, and bulk HITL bypass cases including root aliases and absolute glob patterns.
+When changing this area, exercise the focused behavior rather than only tool registration: virtual-root containment and symlink resolution; composite routing and merged search errors/truncation; request-time capability filtering and excluded-call rejection; permission first-match, recursive-delete, and bulk HITL cases; execution timeout/exit-code behavior; and offload upload, digest verification, and state-backed-route disablement.
 
 ## Related pages
 

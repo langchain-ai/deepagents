@@ -56,6 +56,52 @@ def test_binary_round_trip() -> None:
 
 @pytest.mark.parametrize("backend_type", [StateBackend, StoreBackend])
 @pytest.mark.parametrize("mode", ["sync", "async"])
+@pytest.mark.parametrize("payload", [b"\xff\xfe\xfd", b"//79"])
+@pytest.mark.parametrize("replace_all", [False, True])
+async def test_text_edit_preserves_binary_uploads(
+    backend_type: type[StateBackend] | type[StoreBackend], mode: str, payload: bytes, *, replace_all: bool
+) -> None:
+    backend = StoreBackend(store=InMemoryStore(), namespace=NS) if backend_type is StoreBackend else StateBackend()
+    path = "/attachment.bin"
+
+    async def exercise(_state: FilesystemState) -> dict:
+        uploaded = await backend.aupload_files([(path, payload)]) if mode == "async" else backend.upload_files([(path, payload)])
+        assert uploaded[0].error is None
+        original = await backend.aread(path) if mode == "async" else backend.read(path)
+        assert original.file_data is not None
+        result = (
+            await backend.aedit(path, "//79", "replacement text", replace_all=replace_all)
+            if mode == "async"
+            else backend.edit(path, "//79", "replacement text", replace_all=replace_all)
+        )
+        after = await backend.aread(path) if mode == "async" else backend.read(path)
+        if payload == b"\xff\xfe\xfd":
+            assert result.error is not None
+            assert "binary" in result.error.lower()
+            assert result.path is None
+            assert result.occurrences is None
+            assert after.file_data == original.file_data
+            expected = payload
+        else:
+            assert result.error is None
+            assert result.occurrences == 1
+            assert after.file_data is not None
+            assert after.file_data["encoding"] == "utf-8"
+            expected = b"replacement text"
+        downloaded = await backend.adownload_files([path]) if mode == "async" else backend.download_files([path])
+        assert downloaded[0].error is None
+        assert downloaded[0].content == expected
+        return {}
+
+    builder = StateGraph(FilesystemState)
+    builder.add_node("exercise", exercise)
+    builder.add_edge(START, "exercise")
+    builder.add_edge("exercise", END)
+    await builder.compile().ainvoke({"messages": []})
+
+
+@pytest.mark.parametrize("backend_type", [StateBackend, StoreBackend])
+@pytest.mark.parametrize("mode", ["sync", "async"])
 @pytest.mark.parametrize("replacement", ["ordinary replacement text", "café\n日本語", "aGVsbG8=", ""])
 async def test_text_write_replaces_binary_encoding(backend_type: type[StateBackend] | type[StoreBackend], mode: str, replacement: str) -> None:
     backend = StoreBackend(store=InMemoryStore(), namespace=NS) if backend_type is StoreBackend else StateBackend()

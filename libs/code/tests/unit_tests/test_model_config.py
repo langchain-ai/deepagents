@@ -6,17 +6,15 @@ import logging
 import sys
 import threading
 import tomllib
-from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager, suppress
 from dataclasses import replace
 from pathlib import Path
-from typing import Any, ClassVar, cast
+from typing import TYPE_CHECKING, Any, ClassVar, cast
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from deepagents_code import model_config
-from deepagents_code.json_types import JsonObject
 from deepagents_code.model_config import (
     IMPLICIT_AUTH_PROVIDERS,
     NO_AUTH_REQUIRED_PROVIDERS,
@@ -67,6 +65,12 @@ from deepagents_code.model_config import (
     touch_recent_model,
     unsuppress_warning,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Iterator
+    from urllib.request import Request
+
+    from deepagents_code.json_types import JsonObject
 
 
 def _create_git_common_dir(common_dir: Path) -> Path:
@@ -2499,7 +2503,6 @@ class TestFetchOllamaInstalledModelProfiles:
     ) -> None:
         """Profile discovery does not send credentials to non-local endpoints."""
         import json
-        from urllib.request import Request
 
         captured_headers: list[dict[str, str]] = []
 

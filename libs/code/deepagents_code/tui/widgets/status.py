@@ -364,7 +364,7 @@ def _home_relative(path: str) -> str:
         if candidate.is_relative_to(home):
             relative = candidate.relative_to(home).as_posix()
             return "~" if relative == "." else f"~/{relative}"
-    except (ValueError, RuntimeError):
+    except ValueError, RuntimeError:
         pass
     return path
 
@@ -724,6 +724,7 @@ class StatusBar(Vertical):
         self.cache_write_tokens = 0
         self.cache_written_at: datetime | None = None
         self.cache_expires_at: datetime | None = None
+        self.cache_window_seconds: int | None = None
         self.cache_retention_confidence: CacheConfidence = "expired"
         self._cache_timer: Timer | None = None
         self._status_by_source: dict[StatusMessageSource, str] = {
@@ -1329,6 +1330,7 @@ class StatusBar(Vertical):
         self._stop_cache_timer()
         self.cache_written_at = written_at
         self.cache_retention_confidence = retention_confidence
+        self.cache_window_seconds = ttl_seconds
         retention_at = retention_at or written_at
         self.cache_expires_at = (
             datetime.fromtimestamp(retention_at.timestamp() + ttl_seconds, UTC)

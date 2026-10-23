@@ -3,9 +3,8 @@
 import argparse
 import io
 import re
-from collections.abc import Iterator
 from contextlib import contextmanager
-from pathlib import Path
+from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -22,6 +21,10 @@ from deepagents_code.skills.commands import (
     _validate_name,
     _validate_skill_path,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+    from pathlib import Path
 
 
 @contextmanager
@@ -1104,7 +1107,7 @@ class TestSkillsTrustCommand:
     """Unit tests for `_trust` and its dispatch in `execute_skills_command`."""
 
     @staticmethod
-    def _capture() -> tuple[list[str], "object"]:
+    def _capture() -> tuple[list[str], object]:
         output: list[str] = []
 
         def capture_print(*args_p: object, **_: object) -> None:

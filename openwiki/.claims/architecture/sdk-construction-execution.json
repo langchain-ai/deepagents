@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:7c1504911628ee2050961ac79136f6701c26df0b5f829a4af644547e199adcde",
+  "pageVersion": "sha256:e52ea01f3fe2aa4083f7d9a89940cb234b5d824d90812d49c9e6e41e9a4bf6c1",
   "claims": [
     {
       "id": "claim_c5dfbd9cde8e41eb8280d713c9d71d4f",
@@ -28,27 +28,31 @@
       "evidence": [
         {
           "resource": "repo://libs/deepagents/deepagents/middleware/subagents.py",
-          "version": "repo-file-v1:sha256:f4a40887da485863f593be6d242fe3bb663943c55f6f49116db49a02789505d6"
+          "version": "repo-file-v1:sha256:66d1a30c8669309a306db73f0ce7376ee9ca1e627e7a4456b57bde7f84fec2e5"
         }
       ]
     },
     {
       "id": "claim_1b5641eb13cc4cf2bfa39ef1de6f6548",
-      "statement": "AsyncSubAgentMiddleware exposes launch, status, update, cancellation, and list tools for Agent Protocol graphs; launch immediately stores an async task record in state with remote thread and run identifiers while the parent continues.",
+      "statement": "AsyncSubAgentMiddleware exposes start, check, update, cancellation, and list tools for Agent Protocol graphs; launch creates a remote thread and run, then immediately stores a parent-local async task record keyed by that thread ID while the parent continues.",
       "evidence": [
         {
           "resource": "repo://libs/deepagents/deepagents/middleware/async_subagents.py",
-          "version": "repo-file-v1:sha256:1e89c0dbff1203444693e639800cece2c843458de2c54472e2dc72f01b53fc5e"
+          "version": "repo-file-v1:sha256:238ca0289ce3987e2e2335da2c42419bd80fcb0bdff0297a68677dcd58c65f9b"
         }
       ]
     },
     {
       "id": "claim_8067f8923a1d4512ad174350c26a8863",
-      "statement": "Async subagent fork mode sends a snapshot of effective parent history plus the delegated task to the remote graph, whereas isolated mode sends only the task; it does not transfer parent configuration, and local ASGI transport without a URL requires asynchronous invocation.",
+      "statement": "Async subagent fork mode serializes a launch-time snapshot of effective parent history plus the delegated task after removing parent-local artifacts, whereas isolated mode sends only the task; a same-deployment launch may forward JSON-compatible run context, but a URL-targeted remote launch does not, and local ASGI transport without a URL requires asynchronous invocation.",
       "evidence": [
         {
           "resource": "repo://libs/deepagents/deepagents/middleware/async_subagents.py",
-          "version": "repo-file-v1:sha256:1e89c0dbff1203444693e639800cece2c843458de2c54472e2dc72f01b53fc5e"
+          "version": "repo-file-v1:sha256:238ca0289ce3987e2e2335da2c42419bd80fcb0bdff0297a68677dcd58c65f9b"
+        },
+        {
+          "resource": "repo://libs/deepagents/tests/unit_tests/test_async_subagents.py",
+          "version": "repo-file-v1:sha256:c35a3b6977a03f38f0b067591e40c67dc895b847e8488d755461376edcd33dcb"
         }
       ]
     },
@@ -138,7 +142,7 @@
         },
         {
           "resource": "repo://libs/deepagents/deepagents/middleware/subagents.py",
-          "version": "repo-file-v1:sha256:f4a40887da485863f593be6d242fe3bb663943c55f6f49116db49a02789505d6"
+          "version": "repo-file-v1:sha256:66d1a30c8669309a306db73f0ce7376ee9ca1e627e7a4456b57bde7f84fec2e5"
         },
         {
           "resource": "repo://libs/deepagents/tests/unit_tests/test_subagents.py",
@@ -156,7 +160,7 @@
         },
         {
           "resource": "repo://libs/deepagents/deepagents/middleware/subagents.py",
-          "version": "repo-file-v1:sha256:f4a40887da485863f593be6d242fe3bb663943c55f6f49116db49a02789505d6"
+          "version": "repo-file-v1:sha256:66d1a30c8669309a306db73f0ce7376ee9ca1e627e7a4456b57bde7f84fec2e5"
         },
         {
           "resource": "repo://libs/deepagents/tests/unit_tests/test_graph.py",
@@ -166,15 +170,15 @@
     },
     {
       "id": "claim_5a0d1071a8394f09a53c9ca382dc12ea",
-      "statement": "Async task tracking is parent-local state, while the Agent Protocol server owns remote threads and runs: checks derive waiting from a successful run whose thread is paused, updates interrupt the current run and create a new one on the same thread, and cancellation of a waiting task only updates local tracking.",
+      "statement": "Async task tracking is parent-local state while the Agent Protocol server owns remote threads and runs: checks infer waiting from a successful run whose thread is paused, updates create an interrupting or queued replacement run on the same thread according to update_strategy, and cancellation of a waiting task only updates local tracking.",
       "evidence": [
         {
           "resource": "repo://libs/deepagents/deepagents/middleware/async_subagents.py",
-          "version": "repo-file-v1:sha256:1e89c0dbff1203444693e639800cece2c843458de2c54472e2dc72f01b53fc5e"
+          "version": "repo-file-v1:sha256:238ca0289ce3987e2e2335da2c42419bd80fcb0bdff0297a68677dcd58c65f9b"
         },
         {
           "resource": "repo://libs/deepagents/tests/unit_tests/test_async_subagents.py",
-          "version": "repo-file-v1:sha256:1af6f9f14e9c91cc22c813a5a1be348d46441ccf1c0acc706fa57a4827fa1cc6"
+          "version": "repo-file-v1:sha256:c35a3b6977a03f38f0b067591e40c67dc895b847e8488d755461376edcd33dcb"
         }
       ]
     },
@@ -215,10 +219,106 @@
           "version": "repo-file-v1:sha256:f9c76a0cb02ea94f5b1ab204be371ebd677afb40ccace47cb389d8af6577e5cb"
         }
       ]
+    },
+    {
+      "id": "claim_b1bdbeb09129499cbdf406dbfc10b3f9",
+      "statement": "Async polling runs only on the middleware asynchronous hooks, reporting newly observed terminal or waiting outcomes before model calls and after a final answer; synchronous invocation still exposes task tools but does not poll.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/async_subagents.py",
+          "version": "repo-file-v1:sha256:238ca0289ce3987e2e2335da2c42419bd80fcb0bdff0297a68677dcd58c65f9b"
+        },
+        {
+          "resource": "repo://libs/deepagents/tests/unit_tests/test_async_subagents.py",
+          "version": "repo-file-v1:sha256:c35a3b6977a03f38f0b067591e40c67dc895b847e8488d755461376edcd33dcb"
+        }
+      ]
+    },
+    {
+      "id": "claim_a35e1530a6004ebcbb1b0963c5d91e39",
+      "statement": "The default SDK-built Deep Agent stack adds _ParentNotifierMiddleware, although a profile class-form exclusion can remove it; when present, it reports completion or model failure once for a top-level asynchronous task run launched by a parent and wakes an idle parent only when it has both parent thread and assistant identifiers, while a paused task is not woken this way.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/_excluded_middleware.py",
+          "version": "repo-file-v1:sha256:cc7064524e3e782928b4579f9ec1f635183333b7fae4682a7d40ce846918e68c"
+        },
+        {
+          "resource": "repo://libs/deepagents/deepagents/graph.py",
+          "version": "repo-file-v1:sha256:3826c92c9613a30d898d3fb4fb76ab49a6af0537b5ef74ec9e7340673f7f2261"
+        },
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/_parent_notifier.py",
+          "version": "repo-file-v1:sha256:99c09d664713da8d7d4eba1cd430c876f185961393b0885b1a23608fd894e2cf"
+        },
+        {
+          "resource": "repo://libs/deepagents/tests/unit_tests/test_async_subagents.py",
+          "version": "repo-file-v1:sha256:c35a3b6977a03f38f0b067591e40c67dc895b847e8488d755461376edcd33dcb"
+        }
+      ]
+    },
+    {
+      "id": "claim_de93d5325a7246c998d3a42f1aa8c0ec",
+      "statement": "Remote async tasks do not inherit local filesystem permissions or human-interrupt configuration; those controls, authorization, and remote persistence are owned by the remote graph and its Agent Protocol deployment.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/graph.py",
+          "version": "repo-file-v1:sha256:3826c92c9613a30d898d3fb4fb76ab49a6af0537b5ef74ec9e7340673f7f2261"
+        },
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/async_subagents.py",
+          "version": "repo-file-v1:sha256:238ca0289ce3987e2e2335da2c42419bd80fcb0bdff0297a68677dcd58c65f9b"
+        }
+      ]
+    },
+    {
+      "id": "claim_80507ad9fe1044889a147005bf61a0f2",
+      "statement": "AsyncSubAgent update_strategy defaults to interrupt, while enqueue tracks pending follow-ups and superseded runs, rejects multiple queued follow-ups for the same task in one model turn, and cancellation also attempts to stop tracked active or pending earlier runs.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/async_subagents.py#L1062-L1120",
+          "version": "repo-lines-v1:sha256:c4eaa0056da31a74f7dd6c9a1e8f0723d1aedae996056866642115989ee5b633:eyJzZWxlY3RlZExpbmVDb3VudCI6NTksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjcxYzUzZjA0ZTYyMDgxNDY0N2I4ZTE1ZGJhYzUwYzk1MWU3NTAyZTI0YTgwZDUyODE4NTM2OGQzOGU2OGRjYWQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc2Y2NlYjk0N2VkZmI0NGIwZDY5NmQzNDFiMDU0MjkxYWY4OWU5ZjQ1OTBlYWFjODkwYjk0OWVkYjA2ZWE5YWIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjhjYzRhN2QxY2M3OTZhYmEzZTQ2NzIzMzI3ZjUxN2U5ZjgxMTk4MmQyNTBmMDcwMjk4NmU0YjU3NjRhZDk1ODkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjZkMWMzNjlmMDk0MjU4NzcwMzE5MjcwM2M4NWY3OGMyMzIyZDg5Y2M2ZTEzNDZiM2MzOTdhOGVlNjY5N2ZhYWQifQ"
+        },
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/async_subagents.py#L1212-L1303",
+          "version": "repo-lines-v1:sha256:cdb8453d077b4bbd0cf3ae01291fae4050f224234b443304cafb78c743a570b4:eyJzZWxlY3RlZExpbmVDb3VudCI6OTIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE3MjFjZmJkMDZiZDA0ZmE2NmIyYmQ5MTMyZmZhYjNiNjQ2Y2IwMDJhZWZkMzdkMWNhMTk0NGNhMDViMGJlMzgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU5MDlhNTNhNjE4ZDAyOGUxZDMwMDBjMGE3YWJjZWVjYmU1ZmIzN2Y0ZTUxMWVmZTQ2NjQzZmFkNmU2Njg3MmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjhjYzRhN2QxY2M3OTZhYmEzZTQ2NzIzMzI3ZjUxN2U5ZjgxMTk4MmQyNTBmMDcwMjk4NmU0YjU3NjRhZDk1ODkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjA1NDRmYjM5ZGY5ZjQwYTMxOGQyZDgxYzdkYTRiZTdhMDUwMmI3ZGQ0Y2YzMzE0MzhjMDI3OGIwMmNjZmI1MjIifQ"
+        },
+        {
+          "resource": "repo://libs/deepagents/tests/unit_tests/test_async_subagents.py#L2245-L2407",
+          "version": "repo-lines-v1:sha256:61d08a246ef4c3882b16c4871889a7c5d4b68a6e06becd36d2f886b157d01330:eyJzZWxlY3RlZExpbmVDb3VudCI6MTYzLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI1ZDFkZGQxNDM2ODNjZTZhMzlkNTJkZWYxMGY4ZDk5NzExZGJhMDY4ZTcyNDA1ZDIxODVhNGJmNzExMDBjNzc0IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJlYzA4NmUzYzkzOGFkNDgxZWU0Mzc1YmQ2OTM4OTIwNTA4ZjhkNDYzMzgzODZlNmZlZmIxYmNmMjgyMjM0Nzg1IiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJkNzIyMzEwNmZkODc0MmI3MGVhMjMzZjlkYzM1OWY0YjAyYmJiMDY5YjcyODNlZWY3NjI0OTk1MTZiZDdiOWM4IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiIyZDgwMmY4YTk0NDAxMjkzMjljNTA3YTljYTVmMTcyZDNkMGRjMmJmYmY1ZDJjNThiZWQwYzEzMDI0Y2JiMDAzIn0"
+        }
+      ]
+    },
+    {
+      "id": "claim_1b8809daf8d440bfb3af0638a1d4ae5d",
+      "statement": "An AsyncSubAgent can attach a webhook to each launched or follow-up remote run; same-deployment parent linkage retains the assistant ID for possible wake-up, whereas URL-targeted or notify_parent-disabled launches omit it.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/async_subagents.py#L374-L417",
+          "version": "repo-lines-v1:sha256:0ef92ab60bc98478b8956a3f6b3b927497b8a82df46295126d8ad0d8cbc5031b:eyJzZWxlY3RlZExpbmVDb3VudCI6NDQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImUwMjY3MWI5MDYwMGJlYTZiY2RlMjExNTg2NzY2MzEyMmU3NTVkOTc1NTZlMmRiNTliOGU3MDc0ZGU5ODIzMGEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjJmMTY1ZmIyNDNjM2U4ZjAwOTNkZDU5MmUzNTIxZDg3YjRhMmY4NGVhZGRjYmU5MTU5MjFhOWU2MmU0YWI5YTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUyZTFmNDI2ZTgzNDRmZTk5NzYyZDc5NzM5NWUzYzU4MTA3ZTcwNzE3YjdlMmRiOTExMzI5NzRiZjVjZDgzMTAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjM5OTYxMzM2NTM5MWZhZjgyMTgyMGZlMjllNjU3YTg2YjFjZjUwZTE4YmUzZTNiNzE5NTM1ODUzMGViZDUxOGMifQ"
+        },
+        {
+          "resource": "repo://libs/deepagents/tests/unit_tests/test_async_subagents.py#L1590-L1606",
+          "version": "repo-lines-v1:sha256:530578d48db1d9a50e79bfa74739ce020a5146242b977f45891dcb53221c4b61:eyJzZWxlY3RlZExpbmVDb3VudCI6MTcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ4NTg0NmU5OThjNTFlNWYzN2M2MWRkMzgyYjgzNjMwODJjOWE0MzAxMmY4NDU4ODg1OGIyYjM1NzFmNTlmYWMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijk0YTMzMjU3NzM1MmE3MzhmZDExZmRhMjA5MmI5MDRiZWEyOGU0NWZkMmE0ZmEyOGMwOTIzODhhZDdhMjllOWMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImM0MDRhNjhmNjM4ZTdiODk1YTU2Yzk3MzlmYTkyYTViOTcxMWNhMjdmMDY1ZThiZGE4YjAwNmY5OGQ4ZWRjYmQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImY0NTIyN2E5Mzk2YTkyMmM3NzMwNDY4ZDQ5YmI5MDE3YWRmZWI4ZjlkYzRmZGFkMThhNDQwMjlkZWEzYWRiNDMifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_1f603c7d8a7d4f2fbc55e4032cf56342",
+      "statement": "BackendProtocol provides the common file-operation interface for pluggable agent backends, while SandboxBackendProtocol separately adds shell execution; therefore shell execution is optional rather than implied by filesystem support.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/backends/protocol.py#L403-L448",
+          "version": "repo-lines-v1:sha256:2ae519e7bf7629115ccaa34ca4decf25c5d1d0f9f40f3e943822e710e15068b3:eyJzZWxlY3RlZExpbmVDb3VudCI6NDYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjNlNmViMTBmMGRmMTg2MzAzZjVkZmJmZjFjMjg5YTQ5NDE3Y2RjYzYwNDNhZDBhMDBmYTQ0MTAyNmM3NjY5YTAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI3YjQ4Nzk3YmM1N2JkZGEzOGQ4MTE5NjhkMTE0YjgzNTZkN2I0YmUzMzFhMTQyZmY4ZDgzNWUwMzc3NjVlYzAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjI1M2EwYjg5ODkzZjIxOGE3YTI5NjllZWEwZWFkOTJiMTEwNWJkOWRhNDVkYWE2MTJjYmQ5OWZiYTVhYTExYjYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImRjNDU5YWVkZjY0OTRkMDljZjg5NmIyYWQ3MjY4MjBjYjY2NGM4MzI4NjRiYjM0NjEzMTM5OTA0NDgzOWFjMmMifQ"
+        },
+        {
+          "resource": "repo://libs/deepagents/deepagents/backends/protocol.py#L886-L941",
+          "version": "repo-lines-v1:sha256:d932d8ff369664b783dc63885d1c58f4dfbbfd867371840a46159124067ae74a:eyJzZWxlY3RlZExpbmVDb3VudCI6NTYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImYwYmJiZTVlZDM5ZDEzOGRhNWU4M2NmM2YwNjllZDYwNWIyYjk4NzlmYWIwMGRiZWU3MmQzZWNjNWIzNjhhMzIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFmMWNhMDcwNzA5YTk3ZTJiNjEyMmYzYjA5N2FlMDE1MmI3OWNjNWQxNjE1NDVhNThlZmNmOTNiYmY2MTg4NjgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjAyYjI1NzhkODVmMDU0N2ZhOTE3ZGE3YjE4ZDIwNzg5OTE4MjlhNTM4MmM3OTEyOGJlMTZmNmYxMDg4ZjdhYjUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImM1YjVlYmNjNjIxNDU1MWExYWFkYTNmNTE4OGE3MWE3Y2I5NTBlNjg2NTI0MDUzZTUxZmI4NWVmNzI1MDE1ZDEifQ"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-10-16T08:05:35.701Z"
+    "at": "2026-10-23T08:06:06.503Z"
   }
 }

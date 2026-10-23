@@ -28,7 +28,7 @@ def _repo_path(path: Path) -> str:
 
 def python_version(package: Path) -> str:
     """Return the interpreter version `package`'s lockfile must be resolved with."""
-    if package == LIBS_ROOT / "acp":
+    if package.name in {"acp", "code", "evals", "talon"} and package.parent == LIBS_ROOT:
         return "3.14"
     return "3.12"
 

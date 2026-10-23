@@ -116,7 +116,7 @@ def discover_plugin_skill_state() -> tuple[
         )
         plugin_roots = tuple(plugin_skill_roots(plugins))
         plugin_ids = frozenset(plugin.plugin_id for plugin in plugins)
-    except (OSError, RuntimeError):
+    except OSError, RuntimeError:
         logger.warning("Could not discover plugin skills", exc_info=True)
         return (), (), frozenset()
 

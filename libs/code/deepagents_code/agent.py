@@ -1160,6 +1160,7 @@ def load_async_subagents(config_path: Path | None = None) -> list[AsyncSubAgent]
     description = "Research agent"
     url = "https://my-deployment.langsmith.dev"
     graph_id = "agent"
+    webhook = "https://example.com/webhooks/subagent-finished"
     ```
 
     Args:
@@ -1225,6 +1226,8 @@ def load_async_subagents(config_path: Path | None = None) -> list[AsyncSubAgent]
         }
         if "url" in spec and isinstance(spec["url"], str):
             agent["url"] = spec["url"]
+        if "webhook" in spec and isinstance(spec["webhook"], str):
+            agent["webhook"] = spec["webhook"]
         if "headers" in spec and isinstance(spec["headers"], dict):
             agent["headers"] = spec["headers"]
         agents.append(agent)

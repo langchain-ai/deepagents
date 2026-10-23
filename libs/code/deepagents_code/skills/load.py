@@ -216,7 +216,7 @@ def load_skill_content(
 
     try:
         return path.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
+    except OSError, UnicodeDecodeError:
         logger.warning(
             "Could not read skill content from %s", skill_path, exc_info=True
         )

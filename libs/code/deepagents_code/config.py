@@ -673,7 +673,7 @@ def _dotenv_environment(
             return
         try:
             values = _dotenv_values_from(dotenv_path, baseline)
-        except (OSError, ValueError):
+        except OSError, ValueError:
             logger.warning(
                 "Could not read dotenv at %s; environment may be incomplete",
                 dotenv_path,
@@ -735,7 +735,7 @@ def _dotenv_environment(
             )
             if raw is not None:
                 global_toggle[READ_PROJECT_DOTENV] = raw
-    except (OSError, ValueError):
+    except OSError, ValueError:
         # Fail closed. `resolve_read_project_dotenv` defaults to true, so an
         # unreadable global file would silently discard the user's opt-out and
         # load the untrusted project `.env` instead. Skipping the project file
@@ -1432,7 +1432,7 @@ def _decode_user_langsmith_env(
     """
     try:
         decoded = json.loads(encoded)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return None
     if not isinstance(decoded, dict) or decoded.keys() != {"launch", "user"}:
         return None
@@ -2290,7 +2290,7 @@ def _resolve_editable_info() -> tuple[bool, str | None]:
                 url = data.get("url", "")
                 if url.startswith("file://"):
                     path = _contract_editable_path(url2pathname(urlparse(url).path))
-    except (PackageNotFoundError, FileNotFoundError, json.JSONDecodeError, TypeError):
+    except PackageNotFoundError, FileNotFoundError, json.JSONDecodeError, TypeError:
         logger.debug(
             "Failed to read editable install info from PEP 610 metadata",
             exc_info=True,
@@ -3561,7 +3561,7 @@ def _sync_reload_overrides(
                 continue
             try:
                 candidate = resolver.get_without_ranks(option, {RELOAD_RANK}).value
-            except (OSError, RuntimeError, ValueError):
+            except OSError, RuntimeError, ValueError:
                 candidate = object()
             if candidate != values[field]:
                 retained[key] = values[field]
@@ -3986,7 +3986,7 @@ class Credentials:
                     if skills_managed or not env_skills
                     else _parse_extra_skills_dirs(env_skills)
                 )
-        except (OSError, RuntimeError, ValueError):
+        except OSError, RuntimeError, ValueError:
             logger.warning(
                 "Could not resolve %s during reload; keeping previous value",
                 EXTRA_SKILLS_DIRS,
@@ -4685,7 +4685,7 @@ def resolve_auto_classifier_model_with_problem() -> tuple[str | None, str | None
 
 
 _DEFAULT_AUTO_CLASSIFIER_MODELS = {
-    "anthropic": "anthropic:claude-sonnet-5",
+    "anthropic": "anthropic:claude-sonnet-5-5",
     "google_genai": "google_genai:gemini-3.8-flash",
     "google_vertexai": "google_vertexai:gemini-3.8-flash",
     "openai": "openai:gpt-5.6-luna",
@@ -5061,7 +5061,7 @@ def _langsmith_runs_endpoint_urls_from(env: Mapping[str, str]) -> tuple[str, ...
 
     try:
         parsed = json.loads(raw)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return ()
 
     if isinstance(parsed, list):

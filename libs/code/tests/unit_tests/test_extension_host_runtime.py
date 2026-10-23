@@ -1,6 +1,6 @@
 """Tests for registrations made after extension initialization."""
 
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 from deepagents.backends import (
@@ -16,6 +16,9 @@ from deepagents_code.extensions.registry import (
     RegisteredUnit,
     SourceInfo,
 )
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 @tool("late")

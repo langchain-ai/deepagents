@@ -1,5 +1,6 @@
 # Files
 
-- [Cost Tracking and Session Operations](cost-and-sessions.md) - Operate dcode's checkpointed estimated-cost accounting, isolated side-task subtotals, pricing catalog behavior, and SQLite session lifecycle. Covers cost diagnostics, remote presentation, safe local inspection, thread ownership, and server-side offload settlement.
-- [Development, Dependencies, and Releases](development.md) - Package-scoped uv development, lockfile closure, scheduled dependency-floor maintenance, dcode pricing updates, and release-please baselines for the Deep Agents monorepo.
-- [Security Boundaries and Operational Safety](security.md) - Operational security boundaries for Deep Agents, dcode, and Talon, covering tool authority, approval limits, OAuth transport and token handling, and safe terminal rendering.
+- [CI, Change Selection, and Labels](ci-labeling.md) - How CI selects monorepo work, routes reusable tests and evaluations, validates lockfiles, aggregates results, and uses maintainer labels safely. Also describes the privileged pull-request labeling lifecycle and the release-bot curated-notes path.
+- [dcode Costs, Sessions, and Updates](cost-and-sessions.md) - Operate dcode's persistent SQLite threads, resume safeguards, estimated-cost accounting, model-price overrides, and update lifecycle. Covers ownership fencing, usage statistics, cache and retention behavior, and failure handling.
+- [Development, Dependencies, Lockfiles, and Releases](development.md) - Package-scoped uv setup and validation, editable dependency and lockfile propagation, and the release-please-to-PyPI release lifecycle for Deep Agents distributions.
+- [Security and Trust Boundaries](security.md) - Operational boundaries for Deep Agents tools, local execution, dcode workspace trust, extensions and MCP, ACP approvals, Talon channels, credentials, and plugins.

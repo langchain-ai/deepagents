@@ -55,7 +55,7 @@ def _notify(
         kwargs["timeout"] = timeout
     try:
         notify(message, **kwargs)
-    except (AttributeError, TypeError):
+    except AttributeError, TypeError:
         logger.debug("Could not send notification", exc_info=True)
 
 
@@ -99,7 +99,7 @@ def _link_action_url(click: object) -> str | None:
         return None
     try:
         url = ast.literal_eval(click[len("link(") : -1].strip())
-    except (SyntaxError, ValueError):
+    except SyntaxError, ValueError:
         return None
     return url if isinstance(url, str) and url else None
 

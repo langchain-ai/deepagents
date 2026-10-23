@@ -88,6 +88,9 @@ _ALLOWLIST: dict[CallSite, str] = {
         "2956b508",
     ): "The client captures the directory used to launch or bind the server.",
     CallSite(
+        "client/non_interactive.py", "_select_thread", "Path.cwd", "3f41895f"
+    ): "Headless resume compares a thread's directory with the client's own.",
+    CallSite(
         "client/non_interactive.py", "_run_startup_command", "Path.cwd", "c745df8c"
     ): "The headless client runs startup commands in its active local workspace.",
     CallSite(

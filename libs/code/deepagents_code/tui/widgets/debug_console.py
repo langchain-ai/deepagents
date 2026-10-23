@@ -1062,7 +1062,7 @@ class DebugConsoleScreen(ModalScreen[None]):
                 asyncio.to_thread(build_langsmith_thread_url, thread_id),
                 timeout=2.0,
             )
-        except (TimeoutError, OSError):
+        except TimeoutError, OSError:
             # Expected: the outer timeout fired or a network error escaped the
             # helper. A passive convenience link merely fails to appear.
             logger.debug(

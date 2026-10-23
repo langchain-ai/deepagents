@@ -1,8 +1,8 @@
 """Tests for ThreadSelectorScreen."""
 
 import asyncio
-from collections.abc import Coroutine
-from typing import Any, ClassVar, cast
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, ClassVar, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -17,7 +17,6 @@ from textual.widgets._select import SelectCurrent
 
 from deepagents_code.app import DeepAgentsApp, _ThreadHistoryPayload
 from deepagents_code.hooks.manager import HooksManager
-from deepagents_code.sessions import ThreadInfo
 from deepagents_code.tui.widgets.thread_selector import (
     ContainedSelect,
     ContainedSelectOverlay,
@@ -25,6 +24,11 @@ from deepagents_code.tui.widgets.thread_selector import (
     ThreadSelectorScreen,
     _format_column_value,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Coroutine
+
+    from deepagents_code.sessions import ThreadInfo
 
 MOCK_THREADS: list[ThreadInfo] = [
     {
@@ -81,14 +85,22 @@ def _patch_list_threads(threads: list[ThreadInfo] | None = None) -> Any:  # noqa
     """Return a patch context manager for `list_threads`.
 
     Args:
-        threads: Thread list to return. Defaults to `MOCK_THREADS`.
+        threads: Thread list to return, cut to the requested `limit`.
+            Defaults to `MOCK_THREADS`.
     """
     data = threads if threads is not None else MOCK_THREADS
     return patch(
         "deepagents_code.sessions.list_threads",
         new_callable=AsyncMock,
-        return_value=data,
+        side_effect=lambda **kwargs: data[: kwargs.get("limit")],
     )
+
+
+def _numbered_threads(count: int) -> list[ThreadInfo]:
+    """Return `count` copies of a mock thread with IDs `thread-0`, `thread-1`, ..."""
+    return [
+        {**MOCK_THREADS[0], "thread_id": f"thread-{index}"} for index in range(count)
+    ]
 
 
 def _patch_columns(columns: dict[str, bool] | None = None) -> Any:  # noqa: ANN401
@@ -899,6 +911,359 @@ class TestThreadSelectorErrorHandling:
 
                 assert app.dismissed is True
                 assert app.result is None
+
+
+class TestThreadSelectorPagination:
+    """Loading older threads through the picker."""
+
+    @pytest.mark.parametrize("use_mouse", [False, True])
+    async def test_load_more_and_select_older_thread(self, use_mouse: bool) -> None:
+        """Both input methods reveal older rows and stop at the end.
+
+        The keyboard path also checks that copy and delete do nothing on the
+        "Load more" row.
+        """
+        with (
+            _patch_columns(),
+            patch.dict("os.environ", {"DEEPAGENTS_CODE_RECENT_THREADS": "2"}),
+            _patch_list_threads(),
+        ):
+            app = ThreadSelectorTestApp()
+            async with app.run_test(size=(140, 40)) as pilot:
+                app.show_selector()
+                await pilot.pause()
+                screen = cast("ThreadSelectorScreen", app.screen)
+                assert len(screen._option_widgets) == 2
+                if use_mouse:
+                    await pilot.click("#thread-load-more")
+                else:
+                    await pilot.press("down", "down", "ctrl+c", "ctrl+d", "enter")
+                await pilot.pause()
+                assert len(screen._option_widgets) == 3
+                assert not screen.query("#thread-load-more")
+                assert not app.dismissed
+                if use_mouse:
+                    await pilot.press("down", "down")
+                await pilot.press("enter")
+                assert app.result == "ghi11111"
+
+    async def test_load_more_with_no_search_matches(self) -> None:
+        """Older matching rows remain discoverable from an empty filtered list."""
+        with (
+            _patch_columns(),
+            patch.dict("os.environ", {"DEEPAGENTS_CODE_RECENT_THREADS": "2"}),
+            _patch_list_threads(),
+        ):
+            app = ThreadSelectorTestApp()
+            async with app.run_test(size=(140, 40)) as pilot:
+                app.show_selector()
+                await pilot.pause()
+                await pilot.press("g", "h", "i")
+                await pilot.pause()
+                screen = cast("ThreadSelectorScreen", app.screen)
+                assert not screen._option_widgets
+                assert screen.query("#thread-load-more")
+                await pilot.press("enter")
+                await pilot.pause()
+                assert len(screen._option_widgets) == 1
+                await pilot.press("enter")
+                assert app.result == "ghi11111"
+
+    async def test_load_more_keeps_selection_without_new_search_matches(self) -> None:
+        """Enter keeps paging through nonmatching batches until the end."""
+        threads = [MOCK_THREADS[0], *_numbered_threads(6)]
+        with (
+            _patch_columns(),
+            patch.dict("os.environ", {"DEEPAGENTS_CODE_RECENT_THREADS": "2"}),
+            _patch_list_threads(threads),
+        ):
+            app = ThreadSelectorTestApp()
+            async with app.run_test(size=(140, 40)) as pilot:
+                app.show_selector()
+                await pilot.pause()
+                await pilot.press(*"abc12345")
+                await pilot.pause()
+                screen = cast("ThreadSelectorScreen", app.screen)
+                assert len(screen._option_widgets) == 1
+                await pilot.press("down")
+                for loaded in (4, 6):
+                    await pilot.press("enter")
+                    await pilot.pause()
+                    assert not app.dismissed
+                    assert len(screen._threads) == loaded
+                    assert screen._load_more_selected()
+                    assert "Ctrl+D delete" not in screen._build_help_text()
+                await pilot.press("enter")
+                await pilot.pause()
+                assert not app.dismissed
+                assert len(screen._threads) == len(threads)
+                assert not screen.query("#thread-load-more")
+                await pilot.press("enter")
+                assert app.result == "abc12345"
+
+    async def test_load_more_stays_selected_after_prompt_enrichment(self) -> None:
+        """Prompts loaded after a batch do not move a search off "Load more"."""
+        # Older rows arrive without prompts, so a batch schedules enrichment.
+        older = _numbered_threads(6)
+        for thread in older:
+            thread.pop("initial_prompt", None)
+        threads = [MOCK_THREADS[0], *older]
+
+        def populate(rows: list[ThreadInfo], **_: bool) -> None:
+            for row in rows:
+                row.setdefault("initial_prompt", "unrelated")
+
+        with (
+            _patch_columns(),
+            patch.dict("os.environ", {"DEEPAGENTS_CODE_RECENT_THREADS": "2"}),
+            _patch_list_threads(threads),
+            patch(
+                "deepagents_code.sessions.populate_thread_checkpoint_details",
+                new_callable=AsyncMock,
+                side_effect=populate,
+            ) as populate_mock,
+        ):
+            app = ThreadSelectorTestApp()
+            async with app.run_test(size=(140, 40)) as pilot:
+                screen = ThreadSelectorScreen(
+                    current_thread="abc12345",
+                    filter_cwd=None,
+                    initial_threads=threads[:2],
+                )
+                app.push_screen(screen)
+                await pilot.pause()
+                await pilot.press(*"abc12345")
+                await pilot.pause()
+                await pilot.press("down", "enter")
+                await pilot.pause()
+                await pilot.pause()
+                assert populate_mock.await_count
+                assert len(screen._threads) == 4
+                assert screen._load_more_selected()
+                await pilot.press("enter")
+                await pilot.pause()
+                assert len(screen._threads) == 6
+
+    async def test_load_more_waits_for_prompts_before_rendering_rows(self) -> None:
+        """A batch's rows first render with prompts, not "Loading" cells."""
+        # Only the second batch lacks prompts, so the first needs no enrichment.
+        older = _numbered_threads(3)
+        for thread in older[1:]:
+            thread.pop("initial_prompt", None)
+        threads = [MOCK_THREADS[0], *older]
+        rows_at_populate: list[int] = []
+
+        def populate(rows: list[ThreadInfo], **_: bool) -> None:
+            rows_at_populate.append(len(screen._option_widgets))
+            for row in rows:
+                row.setdefault("initial_prompt", "older prompt")
+
+        with (
+            _patch_columns(),
+            patch.dict("os.environ", {"DEEPAGENTS_CODE_RECENT_THREADS": "2"}),
+            _patch_list_threads(threads),
+            patch(
+                "deepagents_code.sessions.populate_thread_checkpoint_details",
+                new_callable=AsyncMock,
+                side_effect=populate,
+            ),
+        ):
+            app = ThreadSelectorTestApp()
+            async with app.run_test(size=(140, 40)) as pilot:
+                screen = ThreadSelectorScreen(
+                    current_thread="abc12345",
+                    filter_cwd=None,
+                    initial_threads=threads[:2],
+                )
+                app.push_screen(screen)
+                await pilot.pause()
+                await pilot.press("down", "down", "enter")
+                await pilot.pause()
+                await pilot.pause()
+                assert len(screen._option_widgets) == 4
+                # Populated while only the first batch's two rows were shown.
+                assert rows_at_populate == [2]
+
+    async def test_load_more_renders_rows_when_prompts_are_slow(self) -> None:
+        """A batch renders after the wait times out, then prompts fill in."""
+        # Only the second batch lacks prompts, so the first needs no enrichment.
+        older = _numbered_threads(3)
+        for thread in older[1:]:
+            thread.pop("initial_prompt", None)
+        threads = [MOCK_THREADS[0], *older]
+        release = asyncio.Event()
+
+        async def populate(rows: list[ThreadInfo], **_: bool) -> None:
+            await release.wait()
+            for row in rows:
+                row.setdefault("initial_prompt", "older prompt")
+
+        with (
+            _patch_columns(),
+            patch.dict("os.environ", {"DEEPAGENTS_CODE_RECENT_THREADS": "2"}),
+            _patch_list_threads(threads),
+            patch(
+                "deepagents_code.sessions.populate_thread_checkpoint_details",
+                side_effect=populate,
+            ),
+            patch(
+                "deepagents_code.tui.widgets.thread_selector._LOAD_MORE_DETAILS_TIMEOUT",
+                0.01,
+            ),
+        ):
+            app = ThreadSelectorTestApp()
+            async with app.run_test(size=(140, 40)) as pilot:
+                screen = ThreadSelectorScreen(
+                    current_thread="abc12345",
+                    filter_cwd=None,
+                    initial_threads=threads[:2],
+                )
+                app.push_screen(screen)
+                await pilot.pause()
+                await pilot.press("down", "down", "enter")
+                await pilot.pause(0.1)
+                assert len(screen._option_widgets) == 4
+                assert not screen._loading_more
+                release.set()
+                await pilot.pause()
+                await pilot.pause()
+                assert all("initial_prompt" in t for t in screen._threads)
+
+    async def test_reload_during_load_more_keeps_rows_in_sync(self) -> None:
+        """A reload that cancels a batch mid-render shows only rendered rows."""
+        # The second batch lacks prompts, so its render waits on enrichment.
+        threads = _numbered_threads(5)
+        for thread in threads[2:]:
+            thread.pop("initial_prompt", None)
+        release = asyncio.Event()
+
+        async def populate(rows: list[ThreadInfo], **_: bool) -> None:
+            await release.wait()
+            for row in rows:
+                row.setdefault("initial_prompt", "older prompt")
+
+        with (
+            _patch_columns(),
+            patch.dict("os.environ", {"DEEPAGENTS_CODE_RECENT_THREADS": "2"}),
+            _patch_list_threads(threads),
+            patch(
+                "deepagents_code.sessions.populate_thread_checkpoint_details",
+                new_callable=AsyncMock,
+                side_effect=populate,
+            ),
+        ):
+            app = ThreadSelectorTestApp()
+            async with app.run_test(size=(140, 40)) as pilot:
+                screen = ThreadSelectorScreen(
+                    current_thread="thread-0",
+                    filter_cwd=None,
+                    initial_threads=threads[:2],
+                )
+                app.push_screen(screen)
+                await pilot.pause()
+                await pilot.press("down", "down", "enter")
+                await pilot.pause()
+                assert screen._loading_more
+                screen.refresh_threads()
+                await pilot.pause()
+                release.set()
+                await pilot.pause()
+                await pilot.pause()
+                assert not screen._loading_more
+                assert len(screen._option_widgets) == len(screen._filtered_threads)
+                await pilot.click("#thread-load-more")
+                await pilot.pause()
+                assert len(screen._option_widgets) == 4
+
+    async def test_sort_change_during_reload_fetches_new_order(self) -> None:
+        """A sort change while a reload runs re-fetches in the new order."""
+        release = asyncio.Event()
+        calls: list[dict[str, Any]] = []
+
+        async def list_threads(**kwargs: Any) -> list[ThreadInfo]:
+            calls.append(kwargs)
+            if kwargs.get("cwd") is None:
+                await release.wait()
+                return _numbered_threads(3)[: kwargs["limit"]]
+            return MOCK_THREADS[:1]
+
+        with (
+            _patch_columns(),
+            patch.dict("os.environ", {"DEEPAGENTS_CODE_RECENT_THREADS": "2"}),
+            patch(
+                "deepagents_code.sessions.list_threads",
+                new_callable=AsyncMock,
+                side_effect=list_threads,
+            ),
+            patch("deepagents_code.model_config.save_thread_scope", return_value=True),
+            patch(
+                "deepagents_code.model_config.save_thread_sort_order",
+                return_value=True,
+            ),
+        ):
+            app = _ThreadSelectorScopedTestApp(filter_cwd=str(Path.cwd()))
+            async with app.run_test(size=(140, 40)) as pilot:
+                app.show_selector()
+                await pilot.pause()
+                screen = cast("ThreadSelectorScreen", app.screen)
+                screen.query_one("#thread-scope-select", Select).value = "all"
+                await pilot.pause()
+                screen.query_one("#thread-sort-select", Select).value = "created_at"
+                await pilot.pause()
+                release.set()
+                await app.workers.wait_for_complete()
+                assert calls[-1]["cwd"] is None
+                assert calls[-1]["sort_by"] == "created"
+
+    async def test_no_load_more_for_exact_batch(self) -> None:
+        """An exact batch does not imply another page exists."""
+        with (
+            _patch_columns(),
+            patch.dict("os.environ", {"DEEPAGENTS_CODE_RECENT_THREADS": "2"}),
+            _patch_list_threads(MOCK_THREADS[:2]),
+        ):
+            app = ThreadSelectorTestApp()
+            async with app.run_test() as pilot:
+                app.show_selector()
+                await pilot.pause()
+                assert not app.screen.query("#thread-load-more")
+
+    async def test_load_more_failure_can_be_retried(self) -> None:
+        """A failed batch retains the visible rows and retries the same batch."""
+        threads = _numbered_threads(7)
+        results: list[list[ThreadInfo] | OSError] = [
+            threads,
+            OSError("database unavailable"),
+        ]
+
+        def list_threads(**kwargs: int) -> list[ThreadInfo]:
+            result = results.pop(0) if results else threads
+            if isinstance(result, OSError):
+                raise result
+            return result[: kwargs["limit"]]
+
+        with (
+            _patch_columns(),
+            patch.dict("os.environ", {"DEEPAGENTS_CODE_RECENT_THREADS": "2"}),
+            patch(
+                "deepagents_code.sessions.list_threads",
+                new_callable=AsyncMock,
+                side_effect=list_threads,
+            ),
+        ):
+            app = ThreadSelectorTestApp()
+            async with app.run_test(size=(140, 40)) as pilot:
+                app.show_selector()
+                await pilot.pause()
+                await pilot.press("down", "down", "enter")
+                await pilot.pause()
+                screen = cast("ThreadSelectorScreen", app.screen)
+                assert len(screen._option_widgets) == 2
+                assert screen.query("#thread-load-more")
+                await pilot.press("enter")
+                await pilot.pause()
+                assert len(screen._option_widgets) == 4
+                assert screen.query("#thread-load-more")
 
 
 class TestThreadSelectorLimit:

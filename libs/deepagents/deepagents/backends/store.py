@@ -495,6 +495,9 @@ class StoreBackend(BackendProtocol):
         except ValueError as e:
             return EditResult(error=f"Error: {e}")
 
+        if file_data.get("encoding") == "base64":
+            return EditResult(error="Error: Cannot edit binary files with text replacements.")
+
         content = file_data_to_string(file_data)
         result = perform_string_replacement(content, old_string, new_string, replace_all)
 
@@ -532,6 +535,9 @@ class StoreBackend(BackendProtocol):
             file_data = self._convert_store_item_to_file_data(item)
         except ValueError as e:
             return EditResult(error=f"Error: {e}")
+
+        if file_data.get("encoding") == "base64":
+            return EditResult(error="Error: Cannot edit binary files with text replacements.")
 
         content = file_data_to_string(file_data)
         result = perform_string_replacement(content, old_string, new_string, replace_all)

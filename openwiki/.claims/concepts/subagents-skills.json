@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:8e94323aeed800c516834a7adfb81e5e752bd243642b49f6331a455bc2a85aa0",
+  "pageVersion": "sha256:2eb7571c072ffb927e5c51be04cea0a470b6e591d737d1b8533a696ae0ac1784",
   "claims": [
     {
       "id": "claim_3f6e4d8c4f6f470a94669778d16a96b1",
@@ -22,7 +22,7 @@
         },
         {
           "resource": "repo://libs/deepagents/deepagents/middleware/subagents.py",
-          "version": "repo-file-v1:sha256:f4a40887da485863f593be6d242fe3bb663943c55f6f49116db49a02789505d6"
+          "version": "repo-file-v1:sha256:66d1a30c8669309a306db73f0ce7376ee9ca1e627e7a4456b57bde7f84fec2e5"
         }
       ]
     },
@@ -36,17 +36,17 @@
         },
         {
           "resource": "repo://libs/deepagents/deepagents/middleware/subagents.py",
-          "version": "repo-file-v1:sha256:f4a40887da485863f593be6d242fe3bb663943c55f6f49116db49a02789505d6"
+          "version": "repo-file-v1:sha256:66d1a30c8669309a306db73f0ce7376ee9ca1e627e7a4456b57bde7f84fec2e5"
         }
       ]
     },
     {
       "id": "claim_97cb9b66aab64e77b94505384ed90475",
-      "statement": "Async subagents launch Agent Protocol runs in remote threads and persist task metadata in `async_tasks`; dedicated tools then check results, replace a running task's run on update, cancel it, or list refreshed status, while URL-less ASGI transport requires an async parent invocation.",
+      "statement": "Async subagents launch Agent Protocol runs in remote threads and persist task metadata in `async_tasks`; dedicated tools check results, update by interrupting or enqueuing a follow-up, cancel tracked work, or list refreshed status, while URL-less ASGI transport requires an async parent invocation.",
       "evidence": [
         {
           "resource": "repo://libs/deepagents/deepagents/middleware/async_subagents.py",
-          "version": "repo-file-v1:sha256:1e89c0dbff1203444693e639800cece2c843458de2c54472e2dc72f01b53fc5e"
+          "version": "repo-file-v1:sha256:238ca0289ce3987e2e2335da2c42419bd80fcb0bdff0297a68677dcd58c65f9b"
         }
       ]
     },
@@ -86,19 +86,19 @@
     },
     {
       "id": "claim_4a7cacd501d346db8ab63a690c558647",
-      "statement": "Async launches attach the parent thread ID to remote thread metadata; same-deployment launches can forward run context or a `deepagents_parent` reference containing parent thread and assistant IDs, whereas cross-deployment launches deliberately omit the assistant ID and retain only the parent thread reference.",
+      "statement": "Async launches attach the parent thread ID and subagent name to remote thread metadata; same-deployment launches eligible for notification can also carry the parent assistant ID and forward run context or a `deepagents_parent` reference, whereas cross-deployment launches and `notify_parent=False` retain only the parent thread reference.",
       "evidence": [
         {
-          "resource": "repo://libs/deepagents/deepagents/graph.py#L518-L529",
-          "version": "repo-lines-v1:sha256:22cf669498193c8d94ebf1c7bf73cd2ef2f5d3e5634013774acffeacd97579ca:eyJzZWxlY3RlZExpbmVDb3VudCI6MTIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc0ZWJmY2MwYjdkZWMxYjIwMjk2MDI3MjE1NDY0OGVjZTkxNmY1NDgwYjBiNzczYWQwMTAwYjQwNjAxZmI2OTgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI1Y2I3OWE1NDM0NDRlODQzYWEwZGRlNjI4MTVhYTk0YTNlMjU0YjkyZmQwNTNiNWE0ODcxNTZiM2FlMzNmODkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImEwNDJhMzUzZGE2NGRlNmY5ZTY0NjU0ODZkMTAzMGIxMTI4OGRiODgzMWQ4MWFlMjA2NjViNDhhMDY1MWNlNjgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjM4NGU2OGVhNGY2NzJhZjI4ZmMzOTZjMjAxMTc0ZmU5MTMyYWFmMTk1YWYyYjAwOGM2YmYzMGU5ZGY3N2I0ZjIifQ"
+          "resource": "repo://libs/deepagents/deepagents/graph.py",
+          "version": "repo-file-v1:sha256:3826c92c9613a30d898d3fb4fb76ab49a6af0537b5ef74ec9e7340673f7f2261"
         },
         {
-          "resource": "repo://libs/deepagents/deepagents/middleware/async_subagents.py#L283-L321",
-          "version": "repo-lines-v1:sha256:4edae368965796b4a080746ccb9268ca82b4f29585750bbbe8f1f3043c19b24b:eyJzZWxlY3RlZExpbmVDb3VudCI6MjgyLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI5NmYzMTNiNDU5Nzk4MmFlOTI2MWNjMDIyZWJiOTgwMzUwNzY1MTdmN2NhY2FmOGYxNDc1MDcxZDE2NjAyNTZjIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI2OTg3OThmMDQxYWI3MWI2YjAwM2ViNTU2ZTZmNzc2Yzc3NzU4NWQyYzQ1YjA2NDY0ZDQ2MWFkM2Y1MDg4OGRjIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiIyMTU4YTc2OGMyYTk5OTFmNDQyMmQxNmNlMWM1MzNjNGU3NWM1NTdiOTQ3MTdjODg3NTNkN2FlZGUyMGRiYWFjIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI5MzUyZjRiZjhjZmRhNTExNGY1Yjc3NTVjYzJkYzQwZTE2ODVhNDJlZWY2YmZkNWRkZWNjNmUwZDhhODE1ZjI2In0"
+          "resource": "repo://libs/deepagents/deepagents/middleware/async_subagents.py",
+          "version": "repo-file-v1:sha256:238ca0289ce3987e2e2335da2c42419bd80fcb0bdff0297a68677dcd58c65f9b"
         },
         {
           "resource": "repo://libs/deepagents/tests/unit_tests/test_async_subagents.py",
-          "version": "repo-file-v1:sha256:1af6f9f14e9c91cc22c813a5a1be348d46441ccf1c0acc706fa57a4827fa1cc6"
+          "version": "repo-file-v1:sha256:c35a3b6977a03f38f0b067591e40c67dc895b847e8488d755461376edcd33dcb"
         }
       ]
     },
@@ -107,20 +107,12 @@
       "statement": "A successful remote run whose thread is interrupted is tracked as nonterminal `waiting`; checks return its pending interrupts, an external resume can be recovered by adopting the newest run, and cancellation or update of a waiting task respectively preserves cancellation or replaces the outstanding human request.",
       "evidence": [
         {
-          "resource": "repo://libs/deepagents/deepagents/middleware/async_subagents.py#L118-L129",
-          "version": "repo-lines-v1:sha256:71cf68b1c62ff1d7bae24297a99b4c673b7f15789790adfdbb8f5c48d33b02ef:eyJzZWxlY3RlZExpbmVDb3VudCI6MTIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjIyZDZkMDQyMDFlOTZmMjgzYmQ0NmMwMTdiMjMwZDUxMjE1ODZjYWRjNzE1ZjBjZjM4NjU3OTNjNjNjMDJmY2UiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImEzMDNlY2RkNGE0ZDEwZjE5YzczZmQ0MmZkMTI0MzdmZDMzNTRhODI2ODE2MDVkYTUyNTVhOTdhMzkwNjhkYmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjAyYjI1NzhkODVmMDU0N2ZhOTE3ZGE3YjE4ZDIwNzg5OTE4MjlhNTM4MmM3OTEyOGJlMTZmNmYxMDg4ZjdhYjUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjM4MTc4YTc3ZjE2YjJjYWUxMTdiYmQ0MmVjNTljNzZmNGY3NmRkMGVlZmVjMDI0NWRkMTkyYzdjYTYyZGI4YTgifQ"
-        },
-        {
-          "resource": "repo://libs/deepagents/deepagents/middleware/async_subagents.py#L524-L635",
-          "version": "repo-lines-v1:sha256:9cb072388e05f3b370dd9d17d3f2ccf68cc7993ffb3b986411badbe4f3234bee:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEyLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJkZjBhZDU1N2Y3OTcxMzk5NDYyNjE3YTRiODI1MThmMTNjZGI3MzA1ODExMmYzMjM2M2MyMzc4NDBhYzA4NGUyIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJmYTExYzA1NjdkMGE1ZjllOWIxMzVmNjVjZDI1MzcyZGZkNjI4Nzc1ZjdjMWVkMjUzZjhiYWQ0MmRkMmQ2NjY5IiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI4Y2M0YTdkMWNjNzk2YWJhM2U0NjcyMzMyN2Y1MTdlOWY4MTE5ODJkMjUwZjA3MDI5ODZlNGI1NzY0YWQ5NTg5IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiJlY2EwZDFiZDczMWJkOWU2MjQyZGQ4NmY0YzRmZDZiODY3ZmE2M2I5NzQ4N2VhOTEzYzdlNzczMjA3MTIzMTM5In0"
-        },
-        {
-          "resource": "repo://libs/deepagents/deepagents/middleware/async_subagents.py#L702-L895",
-          "version": "repo-lines-v1:sha256:8e6d856b6a9d0924778a7f40dcb91a86fd82af5cd31a5e00196fdb6233d6c808:eyJzZWxlY3RlZExpbmVDb3VudCI6MTk0LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI2NTA3NGI2MDk3OGVjMDM5NzlkMDY2YmNiNTZmZjI4OWMwMWYzMTdlYTkwYjkyZDg1YjlkMDVlNjQzY2YzM2M2IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiIzMGMxZjE4OGYxNDJlZDdhODI0NjgwYjIwNzE3MmM1NTE5YmM2MTRhNDhmZGE3Y2YxNjdlZGI4ZGRmNzk5NTZjIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI4Y2M0YTdkMWNjNzk2YWJhM2U0NjcyMzMyN2Y1MTdlOWY4MTE5ODJkMjUwZjA3MDI5ODZlNGI1NzY0YWQ5NTg5IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiIxZjY2ODQ5NGExNGFkMDNlODY1ZWIwZjE3NTZlYWM0MjJhN2ZkOTBiZDMwZmUzODBhMDAxNGE5MGE2NjgyYjNlIn0"
+          "resource": "repo://libs/deepagents/deepagents/middleware/async_subagents.py",
+          "version": "repo-file-v1:sha256:238ca0289ce3987e2e2335da2c42419bd80fcb0bdff0297a68677dcd58c65f9b"
         },
         {
           "resource": "repo://libs/deepagents/tests/unit_tests/test_async_subagents.py",
-          "version": "repo-file-v1:sha256:1af6f9f14e9c91cc22c813a5a1be348d46441ccf1c0acc706fa57a4827fa1cc6"
+          "version": "repo-file-v1:sha256:c35a3b6977a03f38f0b067591e40c67dc895b847e8488d755461376edcd33dcb"
         }
       ]
     },
@@ -129,36 +121,200 @@
       "statement": "Every graph installs `_ParentNotifierMiddleware`; for a top-level Deep Agent child with a parent reference, the async hooks report success or model failure once and attempt to wake only an idle same-deployment parent, while pauses do not notify and delivery failures do not fail the child.",
       "evidence": [
         {
-          "resource": "repo://libs/deepagents/deepagents/graph.py#L893-L920",
-          "version": "repo-lines-v1:sha256:656f47e9ad96cb89a78b364ad2aadd700f05c3b87679d78ddfad9738578a6af1:eyJzZWxlY3RlZExpbmVDb3VudCI6MjgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjczZDQyN2Q4MzdjM2M5NTZhNzA2NmQ5NTQ3Y2ZkNzNlYWFiNWJiZjM1MDlhNzI1OTJjMTE1OTg5NmFhOWNjODAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImJhYWU4YTBjYTc2Zjk4ZjdiN2RjNzk4NDk1MWQ2M2U1N2RiM2M2NDU1NzljYTUxYmFkNmE1MzlkNjE0ZWRiYmUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImExNjQ5YWQxOWU3NDQ1YWYwZjY0NDA0ZTBkMDViZGY1OWM5MTdhODU4ODMzMTU4ZGM4YjUwODM0ZjM3ZjllN2IiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQyOTFiN2Y2M2NmYjhkYTM1YmZhMzQ4ZWQxMzk2NGM4N2ZiZTc2NjEwZWM4ZDVkYzc1MmE0ODM3NWU4ZWMwYzcifQ"
+          "resource": "repo://libs/deepagents/deepagents/graph.py",
+          "version": "repo-file-v1:sha256:3826c92c9613a30d898d3fb4fb76ab49a6af0537b5ef74ec9e7340673f7f2261"
         },
         {
-          "resource": "repo://libs/deepagents/deepagents/middleware/_parent_notifier.py#L30-L94",
-          "version": "repo-lines-v1:sha256:3e008401adfa943522ce6e0dfd91d81344c8265619910445647f54337ef42bce:eyJzZWxlY3RlZExpbmVDb3VudCI6NjUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjIyZGFjYmM5Y2U2NjQ3YTkwMjAxZTIyNzRkMjI0MjEzNmMxOWY3ODE3NjEzODczMGIzZDZmODdlNWVkZDhjNmEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImI5ZjIwYTBiMDIwNzYzY2YzNjhjY2IwYTMyYjFhOGRmMzVhMmM4ODE5ZWE1M2JlYWRiODUzZWRkZjMyMDQ1YjQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImE5OGIwNjNkOWI0N2U2NTM3OTYyNTU3MmNjZTE5NzY2OWQ1NzY3ZTEyYzE4YmUwNzU2NTJiOGNkOTgxY2U4ZDUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+          "resource": "repo://libs/deepagents/deepagents/middleware/_parent_notifier.py",
+          "version": "repo-file-v1:sha256:99c09d664713da8d7d4eba1cd430c876f185961393b0885b1a23608fd894e2cf"
         },
         {
-          "resource": "repo://libs/deepagents/tests/unit_tests/test_async_subagents.py#L1782-L1856",
-          "version": "repo-lines-v1:sha256:13601363af4721b97ecff508036a879e38e0ab4723437453818bc6c53e29fe8e:eyJzZWxlY3RlZExpbmVDb3VudCI6NzUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjEwNGU5MzA1NmFiNDE1NmZlNjlkM2NmMGY4Zjk1M2UzNmNmYzEyNTI5Njk2MjY1OWNmMTBjODdiYWUyZTA2MTYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImRhMWIwZDY4YzhkMzA3ZDAwNWZkZTMxMmFjNDA0MmMzYTFlM2E3YjVhNDI1ODM1ZDY0MThhZTcwMDVjZmE5NGYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjJiYjQ4YWJmY2Y4OTMzMDAyMmQzNDRlMWRkZjMwYTgwNjM5MzkwMTk0NzY3ZThhOTZiMzNmNDljMWE1MmMxOTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImNiMTg1OGE3MzRkZDFlOWUwOTI5Yzk4MTc3MjlkM2Y0N2Y4YjkwNzQyYTg2MGUyOGFkYjQ5NTZiY2MxZTk0NGYifQ"
+          "resource": "repo://libs/deepagents/tests/unit_tests/test_async_subagents.py",
+          "version": "repo-file-v1:sha256:c35a3b6977a03f38f0b067591e40c67dc895b847e8488d755461376edcd33dcb"
         }
       ]
     },
     {
       "id": "claim_0822e09ac02e45ce842f3f47140485fc",
-      "statement": "On async invocations, `AsyncSubAgentMiddleware` polls unfinished tasks at agent start, before model calls, and after a final answer; changed success, error, timeout, or waiting outcomes are inserted as marked notifications, and a post-answer notification sends the model for another turn.",
+      "statement": "On async invocations, `AsyncSubAgentMiddleware` polls unfinished tasks at agent start, before model calls, and after a final answer; changed terminal, timeout, or waiting outcomes are inserted as marked user messages framed as system notifications, and a post-answer notification sends the model for another turn.",
       "evidence": [
         {
-          "resource": "repo://libs/deepagents/deepagents/middleware/async_subagents.py#L1446-L1518",
-          "version": "repo-lines-v1:sha256:512f7ac91b13b62d2374b34bc42868b91c3be0f9f069dd2b491db2638b383a9e:eyJzZWxlY3RlZExpbmVDb3VudCI6NzMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImJiMmZlNmU0YzkxYTAzMmYyODIxMzVkNDA4MWNiNjM3NWZiMmU2OWQ4OGIwNTk1NDk5NjgwMDkyN2UxNTlmYTEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQyMDc4MzkyZmZlOTM1MTNhNGNlYzA2MjQ2ODZhOTcyM2Y4MzgxYjM4YTNjNjBmYWQ0NmYzYjEwYTc2NjVlN2UiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImFiMDMzMzZjMmYzYTkxMTg3Njk0NDFkM2Q5NTY5OTVjMDIxNGVmNDY4YmFkYWEwYTk2Yjk3ZWFjNGJlMzdlZDgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUxOWFjMTc5YTdiZDcwZmFhMDIxNmFhNTZmMTgxNjFjYTcyYzhkMzY0YmVlMTJkZjhjNmQ1YjEwZGFhNDQyNzAifQ"
+          "resource": "repo://libs/deepagents/deepagents/middleware/async_subagents.py",
+          "version": "repo-file-v1:sha256:238ca0289ce3987e2e2335da2c42419bd80fcb0bdff0297a68677dcd58c65f9b"
         },
         {
-          "resource": "repo://libs/deepagents/tests/unit_tests/test_async_subagents.py#L1881-L1908",
-          "version": "repo-lines-v1:sha256:c6e0059962b480345c521d623fbb43a015e748a46ada9bcd5588efc60f44d5c0:eyJzZWxlY3RlZExpbmVDb3VudCI6MjgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMxOTY2MGI0YjIxMTdiZTU0NTU3ZDBkMjUyMTAzYjAwMGU5MTk2OTE4MWU4N2ZhMWQwYmYxOGJjYTJmZTVmZWMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ0ZDQ4ODRkYjUyOGI3ZmIwNWY3MDMxMTZhZmQzMmMzNDk1ZjFiNTY3OWYxMTRkOWUwODg0MGY1YjkwOWQxMDgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImY0MDdhYzQ3NGQ1MDJkZTE4ZmIxNzhiOWE0ZDJlYTkxYzAxODRmNmU0YTM4ZDNmODlmZmVjZWU5YjJjNjUxMDIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjZkOWNlYzUyOTEyMWNjYjA3NGY0YWJmYzE4ZTY5NjU3ZDViYjRmNTJjYzU1ODYzOTVjZTI0NDkyZWFmNTE2NDIifQ"
+          "resource": "repo://libs/deepagents/tests/unit_tests/test_async_subagents.py",
+          "version": "repo-file-v1:sha256:c35a3b6977a03f38f0b067591e40c67dc895b847e8488d755461376edcd33dcb"
+        }
+      ]
+    },
+    {
+      "id": "claim_c9279dffeead4b24aaa64a3ed477e532",
+      "statement": "The local `task` boundary rejects unknown model arguments, requires a tool-call ID, and returns either JSON-serialized structured output or the last nonempty child AI text in one correlated `ToolMessage`, filtering excluded, private, and unchanged state updates.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/subagents.py",
+          "version": "repo-file-v1:sha256:66d1a30c8669309a306db73f0ce7376ee9ca1e627e7a4456b57bde7f84fec2e5"
+        }
+      ]
+    },
+    {
+      "id": "claim_834706c2f03c49f3892b73e9b95cc5a1",
+      "statement": "Remote async task records are merge-reduced by task ID and retain task/thread identity, agent and run IDs, cached status, and lifecycle timestamps; list filtering uses cached status before refreshing nonterminal tasks, and SDK refresh failures preserve the cached status.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/async_subagents.py",
+          "version": "repo-file-v1:sha256:238ca0289ce3987e2e2335da2c42419bd80fcb0bdff0297a68677dcd58c65f9b"
+        }
+      ]
+    },
+    {
+      "id": "claim_e9824677bbc94d0fb00c1f6460738e6d",
+      "statement": "Pins are consumed before a model call: known distinct skills are read in first-seen order, their frontmatter-free bodies become attributed `HumanMessage` snapshots, and `pinned_skills` is cleared; unavailable or unreadable skills are skipped.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/skills.py",
+          "version": "repo-file-v1:sha256:f3cc2139f2b77bd599bf99df032efe27774462b2ecc80f6e58b7ea7edd2d7895"
+        }
+      ]
+    },
+    {
+      "id": "claim_de16b5f6612f4dc4ab358884adbf4a83",
+      "statement": "Skill disclosure controls model visibility and tool availability rather than authorization: after a read or pin, the middleware records exactly the gated tools shown to the model, but any disclosed tool remains subject to the ordinary permission and human-in-the-loop middleware stack.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/graph.py",
+          "version": "repo-file-v1:sha256:3826c92c9613a30d898d3fb4fb76ab49a6af0537b5ef74ec9e7340673f7f2261"
+        },
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/_skill_tools.py",
+          "version": "repo-file-v1:sha256:2d99b6159b5181f59ae6f97e5d65f5d8776851658aad70417334fdc1fcec08b9"
+        },
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/skills.py",
+          "version": "repo-file-v1:sha256:f3cc2139f2b77bd599bf99df032efe27774462b2ecc80f6e58b7ea7edd2d7895"
+        }
+      ]
+    },
+    {
+      "id": "claim_4b5a5cd762fe429b8ee01d36197c47ef",
+      "statement": "For models that support mid-conversation tools, skill disclosures are anchored after the read's complete tool-result batch using Anthropic `tool_addition` or OpenAI Responses `additional_tools` blocks; unsupported Anthropic root combinator schemas are withheld so the disclosure record matches model-visible definitions.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/_skill_tools.py",
+          "version": "repo-file-v1:sha256:2d99b6159b5181f59ae6f97e5d65f5d8776851658aad70417334fdc1fcec08b9"
+        },
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/skills.py",
+          "version": "repo-file-v1:sha256:f3cc2139f2b77bd599bf99df032efe27774462b2ecc80f6e58b7ea7edd2d7895"
+        }
+      ]
+    },
+    {
+      "id": "claim_97152fb4a48340d99ea16b7df5fbfdfc",
+      "statement": "The self-hosted async-subagent example implements the Agent Protocol thread, run, polling, result-fetch, cancellation, and health endpoints over FastAPI with in-memory SQLite; it is explicitly demonstration-only, without authentication or rate limiting, and its cancellation route records cancellation without cancelling the in-flight agent coroutine.",
+      "evidence": [
+        {
+          "resource": "repo://examples/async-subagent-server/README.md",
+          "version": "repo-file-v1:sha256:5993458ae009fdcd244d14f5f97e6ade624fb2f51a1877a930f4095c7da56188"
+        },
+        {
+          "resource": "repo://examples/async-subagent-server/server.py",
+          "version": "repo-file-v1:sha256:af157f3b5f70cac3bab91b10def0c72f7a4bdfafc3289450070e74db535d1182"
+        }
+      ]
+    },
+    {
+      "id": "claim_5e7c4d7841184c19bacba7731f920d8e",
+      "statement": "`AsyncSubAgent.webhook` is forwarded to Agent Protocol run creation for both launches and updates, providing a server-to-application completion callback rather than a parent-state update or replacement for task polling.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/CHANGELOG.md",
+          "version": "repo-file-v1:sha256:39e50203b2aebe2e4a1861854fa0e6b510657a4e11b87f195dabc190bef435f1"
+        },
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/async_subagents.py",
+          "version": "repo-file-v1:sha256:238ca0289ce3987e2e2335da2c42419bd80fcb0bdff0297a68677dcd58c65f9b"
+        }
+      ]
+    },
+    {
+      "id": "claim_c93c2184f16e43539d47307e60598c7c",
+      "statement": "With `update_strategy=\"enqueue\"`, a follow-up is tracked as `pending` until it starts and records earlier runs as `superseded_run_ids`; notifications from those older runs are rewritten so they cannot be mistaken for the latest follow-up outcome, and cancellation attempts to stop earlier pending or running runs as well.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/async_subagents.py",
+          "version": "repo-file-v1:sha256:238ca0289ce3987e2e2335da2c42419bd80fcb0bdff0297a68677dcd58c65f9b"
+        },
+        {
+          "resource": "repo://libs/deepagents/tests/unit_tests/test_async_subagents.py",
+          "version": "repo-file-v1:sha256:c35a3b6977a03f38f0b067591e40c67dc895b847e8488d755461376edcd33dcb"
+        }
+      ]
+    },
+    {
+      "id": "claim_3172ed6bc8ae49f88b33d4d9cb0f9b57",
+      "statement": "`notify_parent` defaults to allowing a same-deployment child to wake an eligible idle or failed parent, but setting it to `False` removes the parent assistant reference while preserving parent-thread linkage and task observation, allowing an application webhook or other delivery mechanism to own delivery.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/CHANGELOG.md",
+          "version": "repo-file-v1:sha256:39e50203b2aebe2e4a1861854fa0e6b510657a4e11b87f195dabc190bef435f1"
+        },
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/async_subagents.py",
+          "version": "repo-file-v1:sha256:238ca0289ce3987e2e2335da2c42419bd80fcb0bdff0297a68677dcd58c65f9b"
+        }
+      ]
+    },
+    {
+      "id": "claim_c0db9b90d3fd48099b5886825c3ca4cd",
+      "statement": "The Code CLI loads skills from ordered built-in, plugin, user, `.agents`, project, and experimental Claude filesystem sources, with later sources overriding same-named skills and individual source failures isolated; plugin skill discovery is recursive and namespaces names.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/skills/load.py",
+          "version": "repo-file-v1:sha256:383804e40498e406934c9a090c6207da6dd850642142b0a036cd43c35e99f78a"
+        },
+        {
+          "resource": "repo://libs/code/tests/unit_tests/skills/test_load.py",
+          "version": "repo-file-v1:sha256:e884c9b2f0dee479dcf431fa46b36336e2e39ceebd2045cf4eabf14a92c00a76"
+        }
+      ]
+    },
+    {
+      "id": "claim_8f1349ae7a6741678970a46cd7c687d6",
+      "statement": "The Code plugin skills adapter enforces containment when reading selected `SKILL.md` files: an outside resolved path triggers a `skill_trust` interrupt, and an approved directory is persisted then retried, while denial, failed persistence, empty roots, or a post-approval path change prevents the read.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/plugins/adapters/skills_middleware.py",
+          "version": "repo-file-v1:sha256:8049feb266707460e3b81125dff56f205060a17d2736d0efe0eb7135fee689e2"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/skills/load.py",
+          "version": "repo-file-v1:sha256:383804e40498e406934c9a090c6207da6dd850642142b0a036cd43c35e99f78a"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/skills/trust.py",
+          "version": "repo-file-v1:sha256:060cc32e3bbb40abde600958f4402bd33016014a25255ebf4b85ba540aa59ad2"
+        }
+      ]
+    },
+    {
+      "id": "claim_10e6429f838a44018de1b99814ac7e17",
+      "statement": "Code skill-directory trust is persisted as a versioned store under `~/.deepagents/.state/skill_trust.json` with atomic writes and fail-closed enforcement; verified trusted roots must still resolve to their stored canonical paths, so corrupt or incompatible stores and post-approval symlink swaps do not grant access.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/skills/trust.py",
+          "version": "repo-file-v1:sha256:060cc32e3bbb40abde600958f4402bd33016014a25255ebf4b85ba540aa59ad2"
+        },
+        {
+          "resource": "repo://libs/code/tests/unit_tests/skills/test_skill_trust.py",
+          "version": "repo-file-v1:sha256:f426e7cdbd2a9766282088590eb5b8e24804cf9cf718d0ab74a1c8f62d380c88"
         }
       ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-10-16T08:05:35.701Z"
+    "at": "2026-10-23T08:06:06.503Z"
   }
 }

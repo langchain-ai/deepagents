@@ -574,7 +574,9 @@ git add libs/code/<changed-file>
 git commit -m "chore(code): release 0.0.35" -m "Release-As: 0.0.35"
 ```
 
-If there is no meaningful package-file edit to make, use the config-file form instead: temporarily add `"release-as": "0.0.35"` to the `libs/code` package entry in `release-please-config.json`:
+The footer is what makes this work: release-please skips a package whose release notes would be empty, and every type except `feat`, `fix`, `perf`, and `revert` is hidden from the changelog. A commit carrying a `Release-As` footer always gets a changelog entry, even as `chore`, so it clears that check.
+
+The config-file form below (`"release-as"` in `release-please-config.json`) does **not** work here. It only sets the version; it adds no changelog entry, and the config file is not under `libs/code`, so release-please still finds nothing user-facing and opens no release PR. Use it only when the package already has a visible (`feat`/`fix`/`perf`/`revert`) commit since the last release and you just need a different version number. In that case, temporarily add `"release-as": "0.0.35"` to the `libs/code` package entry in `release-please-config.json`:
 
 ```diff
  "libs/code": {
@@ -676,10 +678,10 @@ When the new line is ready to become `main`:
        git commit -m "feat(sdk): release X.Y.Z" -m "Release-As: X.Y.Z"
        ```
 
-     - **`release-as` config key** — set `"release-as": "X.Y.Z"` on the package's entry in [`release-please-config.json`](https://github.com/langchain-ai/deepagents/blob/main/release-please-config.json). Same effect, but it lives in config rather than a commit message. It's a standing override, so **delete the key once the release PR is open!** — otherwise every later run keeps pinning that same version.
+     - **`release-as` config key** — set `"release-as": "X.Y.Z"` on the package's entry in [`release-please-config.json`](https://github.com/langchain-ai/deepagents/blob/main/release-please-config.json). Same version override, but it lives in config rather than a commit message. Unlike the footer, it adds no changelog entry, so it only works when the package already has a visible (`feat`/`fix`/`perf`/`revert`) commit; on its own it will not open a release PR. It's a standing override, so **delete the key once the release PR is open!** — otherwise every later run keeps pinning that same version.
 
    > [!CAUTION]
-   > Don't put the `Release-As` footer on an `--allow-empty` commit on `main` — an empty commit touches no package paths and triggers the [empty-commit fan-out](#empty-commit-fan-out) guard, opening a release PR for *every* package. That's why the footer goes on a commit that actually edits the package's files; the `release-as` config key sidesteps this since editing the config file is itself a non-empty change.
+   > Don't put the `Release-As` footer on an `--allow-empty` commit on `main` — an empty commit touches no package paths and triggers the [empty-commit fan-out](#empty-commit-fan-out) guard, opening a release PR for *every* package. That's why the footer goes on a commit that actually edits the package's files; the `release-as` config key avoids the fan-out since editing the config file is itself a non-empty change (but see the visible-commit caveat above).
 
 ### Maintenance branch (patching the old line after cutover)
 

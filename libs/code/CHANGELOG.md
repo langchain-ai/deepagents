@@ -2,6 +2,39 @@
 
 # Deep Agents Code Changelog
 
+## [0.2.0](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.88...deepagents-code==0.2.0) (2026-10-22)
+
+### ⚠ BREAKING CHANGES
+
+- `deepagents-code` now requires Python 3.14 (`>=3.14,<3.15`). If you have auto-upgrade enabled, this should be handled for you automatically. Otherwise, re-run the dcode installer or recreate your environment with Python 3.14.
+
+### Bug Fixes
+
+- Decode Git output as UTF-8.
+
+## [0.1.88](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.87...deepagents-code==0.1.88) (2026-10-22)
+
+### Bug Fixes
+
+- Fixed async subagents to pass through `webhook` configuration.
+- Fixed bridge compatibility with Python 3.14.
+- Silenced no-op automatic cache offloads.
+
+## [0.1.87](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.86...deepagents-code==0.1.87) (2026-10-20)
+
+### Features
+
+- Resume threads in non-interactive mode ([#7011](https://github.com/langchain-ai/deepagents/pull/7011)).
+- Compact large idle sessions before the prompt cache expires ([#6956](https://github.com/langchain-ai/deepagents/pull/6956)) and show the prompt-cache expiration time ([#7005](https://github.com/langchain-ai/deepagents/pull/7005)).
+- Support custom Slack OAuth app identity ([#7061](https://github.com/langchain-ai/deepagents/pull/7061)).
+- Load older threads from the thread switcher ([#7051](https://github.com/langchain-ai/deepagents/pull/7051)).
+
+### Bug Fixes
+
+- Stop the local server when its owner dies ([#7038](https://github.com/langchain-ai/deepagents/pull/7038)).
+- Support non-ASCII file names in `@` mentions ([#7023](https://github.com/langchain-ai/deepagents/pull/7023)).
+- Correct misleading `/reload` change summaries ([#7063](https://github.com/langchain-ai/deepagents/pull/7063)).
+
 ## [0.1.86](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.85...deepagents-code==0.1.86) (2026-10-16)
 
 ### Features

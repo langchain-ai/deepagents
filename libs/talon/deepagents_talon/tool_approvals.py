@@ -159,7 +159,7 @@ class ToolApprovalStore:
                 saved = self.read()
         except TimeoutError:
             return {"status": "conflict", "message": "Tool approvals are busy; try again."}
-        except (OSError, ValueError, TypeError, RecursionError):
+        except OSError, ValueError, TypeError, RecursionError:
             return {"status": "error", "message": "Cannot update tool approvals."}
         return {
             "status": "updated",
@@ -176,7 +176,7 @@ class ToolApprovalStore:
         }
         try:
             saved = self.read()
-        except (OSError, ValueError, TypeError, RecursionError):
+        except OSError, ValueError, TypeError, RecursionError:
             return result | {
                 "status": "error",
                 "message": "Cannot read persisted tool approvals.",

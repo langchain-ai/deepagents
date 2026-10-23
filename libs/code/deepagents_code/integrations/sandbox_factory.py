@@ -91,7 +91,7 @@ def create_sandbox(
     snapshot_name: str | None = None,
     setup_script_path: str | None = None,
     params: dict[str, Any] | None = None,
-) -> Generator[SandboxBackendProtocol, None, None]:
+) -> Generator[SandboxBackendProtocol]:
     """Create or connect to a sandbox of the specified provider.
 
     This is the unified interface for sandbox creation using the
@@ -1520,7 +1520,7 @@ def verify_sandbox_deps(provider: str) -> None:
 
     try:
         found = importlib.util.find_spec(metadata.backend_module) is not None
-    except (ImportError, ValueError):
+    except ImportError, ValueError:
         found = False
 
     if not found:

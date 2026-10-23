@@ -127,6 +127,8 @@ def _discord(
 
 
 def _dm(sender: str, text: str, *, channel_id: str | None = None, is_dm: bool = True):
+    # A guild message here mentions the bot inside a thread, so it is a turn and
+    # its replies stay in `channel_id`.
     return _DiscordInboundMessage(
         channel_id=channel_id or (OPERATOR_DM if sender == OPERATOR else STRANGER_DM),
         message_id="m1",
@@ -134,6 +136,8 @@ def _dm(sender: str, text: str, *, channel_id: str | None = None, is_dm: bool = 
         text=text,
         is_dm=is_dm,
         from_self=False,
+        mentioned=not is_dm,
+        parent_id=None if is_dm else "guild-parent",
     )
 
 

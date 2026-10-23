@@ -1,34 +1,38 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:d26a70ce7613bd61793e67df474b5e9dc811844c54b18721636d758bc151d82a",
+  "pageVersion": "sha256:a99d8b042cbde3397136a453eaeff46c6c6257bc2d1560f3df96d238927aea07",
   "claims": [
     {
       "id": "claim_7e77f7ec620944c29e36936e3abea92f",
-      "statement": "The repository is an independently versioned Python monorepo: the SDK is deepagents 0.7.26, dcode is 0.1.85, ACP is 0.0.13, Talon is 0.0.9, and evals is 0.0.1; Release Please has release lines for the first four and five partners but not evals, and is configured for separate draft pull requests without automatic GitHub releases.",
+      "statement": "The repository is an independently versioned Python monorepo: the SDK is deepagents 0.7.30, dcode is 0.2.0, ACP is 0.0.13, Talon is 0.1.0, and evals is 0.0.1; Release Please has independent release lines for the first four and five partners but not evals, creates separate draft release pull requests, and delegates PyPI and GitHub release creation to the release workflow after a release PR is merged.",
       "evidence": [
         {
+          "resource": "repo://.github/RELEASING.md",
+          "version": "repo-file-v1:sha256:749efa1279c7f94badb420f4c2ed0c39f6fe89fcc503bc0f6ea85a28da8689fe"
+        },
+        {
           "resource": "repo://.release-please-manifest.json",
-          "version": "repo-file-v1:sha256:4d0df6ad2af63f32a255a02210eb4df1b06ffffb39830d4dda66b0eb0abec096"
+          "version": "repo-file-v1:sha256:f39119c78e8c4d7fe074275b6b03ac9dd0d3fb6a4b63e4163d53f7f0712afa84"
         },
         {
           "resource": "repo://libs/acp/pyproject.toml",
-          "version": "repo-file-v1:sha256:b81b86ee6a7c3ba9f74e1e9598b88fc998772c1641f190defbaf82db114cc5cf"
+          "version": "repo-file-v1:sha256:f0c5215618b921ef1a72d9bacf95ad9b56634a5259b39bb8908ba33551432569"
         },
         {
           "resource": "repo://libs/code/pyproject.toml",
-          "version": "repo-file-v1:sha256:c55fd6125a04af4124e625ed4ea44331c28d9bc353787fda5e0350aced8dbb07"
+          "version": "repo-file-v1:sha256:1871b11190006641f22a53928644cffb85e14d574be9080c167baba1a57e9c61"
         },
         {
           "resource": "repo://libs/deepagents/pyproject.toml",
-          "version": "repo-file-v1:sha256:a23e84bfcbfb2c749306d7003dba7c855aa4b71b2023000fb3a0cabc0d41c84c"
+          "version": "repo-file-v1:sha256:5b39f0c7f96935564388d93f36642f9ece93c2deb6952360d49c03ee92594d81"
         },
         {
           "resource": "repo://libs/evals/pyproject.toml",
-          "version": "repo-file-v1:sha256:2133729fb13320242ac78d95455bd4a911a23f0f000f0519384b9889690b1a0c"
+          "version": "repo-file-v1:sha256:fd96234e90e3dd36e96476718a61dc29d12adec568ab66f46cd9aa8553d11da5"
         },
         {
           "resource": "repo://libs/talon/pyproject.toml",
-          "version": "repo-file-v1:sha256:56ee3c71d27439faad3f70971172e89dd661d8d7d83697f5f2296c5c96b90aa4"
+          "version": "repo-file-v1:sha256:4d1eeeee5951872ee3a601aa22f5f82bedb66d9c4b3c61dd81ae199e591233df"
         },
         {
           "resource": "repo://release-please-config.json",
@@ -38,27 +42,27 @@
     },
     {
       "id": "claim_c476cf01e3534db9823db06bc72373e9",
-      "statement": "Published dependencies flow from ACP to the SDK, dcode to ACP and pinned deepagents==0.7.26, Talon to the SDK and dcode, evals to the SDK and dcode, and QuickJS to the 0.7.x SDK; `uv` source mappings replace selected dependencies with editable local checkouts during monorepo development.",
+      "statement": "Published dependencies flow from ACP to the SDK, dcode to ACP, QuickJS, and pinned deepagents==0.7.30, Talon to the SDK and dcode, evals to the SDK, dcode, and QuickJS, and QuickJS to the 0.7.x SDK; separate `uv` source mappings replace selected dependencies with sibling monorepo source during development, and only mappings marked `editable = true` are editable installs.",
       "evidence": [
         {
           "resource": "repo://libs/acp/pyproject.toml",
-          "version": "repo-file-v1:sha256:b81b86ee6a7c3ba9f74e1e9598b88fc998772c1641f190defbaf82db114cc5cf"
+          "version": "repo-file-v1:sha256:f0c5215618b921ef1a72d9bacf95ad9b56634a5259b39bb8908ba33551432569"
         },
         {
           "resource": "repo://libs/code/pyproject.toml",
-          "version": "repo-file-v1:sha256:c55fd6125a04af4124e625ed4ea44331c28d9bc353787fda5e0350aced8dbb07"
+          "version": "repo-file-v1:sha256:1871b11190006641f22a53928644cffb85e14d574be9080c167baba1a57e9c61"
         },
         {
           "resource": "repo://libs/evals/pyproject.toml",
-          "version": "repo-file-v1:sha256:2133729fb13320242ac78d95455bd4a911a23f0f000f0519384b9889690b1a0c"
+          "version": "repo-file-v1:sha256:fd96234e90e3dd36e96476718a61dc29d12adec568ab66f46cd9aa8553d11da5"
         },
         {
           "resource": "repo://libs/partners/quickjs/pyproject.toml",
-          "version": "repo-file-v1:sha256:1d7d6088d520188901f54b452f6e033e75ef0dc6a188715c4bb12e0efc4ba443"
+          "version": "repo-file-v1:sha256:cb81f7b6acdd64fd1b3d06e46413cec5415e4c30f659486407b77ff461c29b62"
         },
         {
           "resource": "repo://libs/talon/pyproject.toml",
-          "version": "repo-file-v1:sha256:56ee3c71d27439faad3f70971172e89dd661d8d7d83697f5f2296c5c96b90aa4"
+          "version": "repo-file-v1:sha256:4d1eeeee5951872ee3a601aa22f5f82bedb66d9c4b3c61dd81ae199e591233df"
         }
       ]
     },
@@ -77,20 +81,6 @@
         {
           "resource": "repo://libs/deepagents/deepagents/graph.py",
           "version": "repo-file-v1:sha256:3826c92c9613a30d898d3fb4fb76ab49a6af0537b5ef74ec9e7340673f7f2261"
-        }
-      ]
-    },
-    {
-      "id": "claim_5175a8e3d7014cff86f8077dc1b9a354",
-      "statement": "Deep Agents distinguishes synchronous task subagents from AsyncSubAgent remote background runs: the latter use the LangGraph SDK and Agent Protocol, return task IDs, and persist remote thread, run, and status state for checking, updating, cancellation, and listing.",
-      "evidence": [
-        {
-          "resource": "repo://libs/deepagents/deepagents/graph.py",
-          "version": "repo-file-v1:sha256:3826c92c9613a30d898d3fb4fb76ab49a6af0537b5ef74ec9e7340673f7f2261"
-        },
-        {
-          "resource": "repo://libs/deepagents/deepagents/middleware/async_subagents.py",
-          "version": "repo-file-v1:sha256:1e89c0dbff1203444693e639800cece2c843458de2c54472e2dc72f01b53fc5e"
         }
       ]
     },
@@ -118,55 +108,51 @@
     },
     {
       "id": "claim_39c3b528bd8c4f30a3eb1bb03952894b",
-      "statement": "Talon is an experimental single-event-loop local host rather than a production containment boundary. Its runtime builds and invokes an SDK graph with request-scoped context, rebuilds on approval changes, and avoids closing resources if background cancellation fails; the host coordinates runtime, channels, and optional scheduler lifecycle.",
+      "statement": "Talon is an experimental single-event-loop local host rather than a production or multi-tenant containment boundary; it owns channel adapters, cron scheduling, and runtime lifecycle, while its opt-in sandbox moves shell and filesystem work but leaves MCP tools and channel media handling on the host.",
       "evidence": [
         {
           "resource": "repo://libs/talon/README.md",
-          "version": "repo-file-v1:sha256:bce54cf55524dcc4ae03727f3ae9cc6858919c1ea6d519fbf70cd8480b791f91"
+          "version": "repo-file-v1:sha256:6326fad8c0835a98d9255aa098dba1699a0ef137077ed43e4a5ffa99aaf9b864"
         },
         {
-          "resource": "repo://libs/talon/deepagents_talon/host.py",
-          "version": "repo-file-v1:sha256:5ec7f046c478ed1c0276918bad474d4ba24b65cdd8766f6ad3f47b7f606ac13c"
-        },
-        {
-          "resource": "repo://libs/talon/deepagents_talon/runtime.py",
-          "version": "repo-file-v1:sha256:3810c6d2eaffdbb4a1a64e8841df1ae475caed9d597f3b1a9ad9ec1a65dc1d7c"
-        },
-        {
-          "resource": "repo://libs/talon/tests/test_host.py",
-          "version": "repo-file-v1:sha256:78e8024cc75f6975ede0af4224c19697e0d42cc83aec641d4c51fbe4091418eb"
+          "resource": "repo://libs/talon/pyproject.toml",
+          "version": "repo-file-v1:sha256:4d1eeeee5951872ee3a601aa22f5f82bedb66d9c4b3c61dd81ae199e591233df"
         }
       ]
     },
     {
       "id": "claim_e4c70c513dd74546905f4bc3eded2c72",
-      "statement": "Talon keeps graph checkpoints, backend capabilities, conversation archive, and cron persistence distinct; checkpoint URIs select built-in SQLite, PostgreSQL, or MongoDB before trusted plugins, and channel adapters support the documented transport lifecycle and built-in WhatsApp, Telegram, Discord, and Slack integrations.",
+      "statement": "Talon selects built-in SQLite, PostgreSQL, or MongoDB checkpoint storage by URI, while other checkpoint schemes are supplied through trusted installed entry-point plugins; checkpoint and conversation-history persistence are independent and remote checkpoint thread IDs are not automatically namespaced by assistant ID.",
       "evidence": [
         {
-          "resource": "repo://libs/deepagents/deepagents/graph.py",
-          "version": "repo-file-v1:sha256:3826c92c9613a30d898d3fb4fb76ab49a6af0537b5ef74ec9e7340673f7f2261"
-        },
+          "resource": "repo://libs/talon/README.md",
+          "version": "repo-file-v1:sha256:6326fad8c0835a98d9255aa098dba1699a0ef137077ed43e4a5ffa99aaf9b864"
+        }
+      ]
+    },
+    {
+      "id": "claim_dbc655d84ad449cab9d6b7ccf6eed6a0",
+      "statement": "Synchronous subagents are integrated through `SubAgentMiddleware` and the main graph's `task` tool, while an `AsyncSubAgent` specification is routed to `AsyncSubAgentMiddleware` for a non-blocking deployed run rather than in-process delegation.",
+      "evidence": [
         {
-          "resource": "repo://libs/talon/deepagents_talon/__main__.py",
-          "version": "repo-file-v1:sha256:bc9f97c16989202db7c4c5b7ddea9983473996ac18de652b2225a4bd178915fd"
-        },
+          "resource": "repo://libs/deepagents/deepagents/graph.py#L891-L926",
+          "version": "repo-lines-v1:sha256:6ccae0c0d305c9ca593488ddde384223b2b2704235244bd90ed086d963b400b4:eyJzZWxlY3RlZExpbmVDb3VudCI6MzYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE1NjgyN2JjZmQ3YjlkYjNjNzE4N2Q1ZTM4YzY5NmU5MWU2YTU5ZTYzZjQwNGI4ZGUwYjI4MGQyNjIyZGEzYTUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjEwNjY3MzFjMWY3MTZjM2QzYWEyNzNkMGRmZGFhZDY5MGQ4MmNhNTQwNmExODQ1YWI4YWE3N2Y0MzRkMGNmMWYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjVjMGUzNjc0ZjRjMjAyMDZkNTMwMGU0YWEzZDUxZTY3NTNjNjk4NTY1MWNiYjRiNDY5NGU3NmNjYzhiNjAwOTEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjYzNmZjYmZkOTIxZWFhMzg4MTc2Mjg0YTJkYTdmNjNhYzgwMGJjYjhjOWFjMzA2OGViMzNlNjFiMzk2ZTU0NWIifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_ab0b32bd7238402bb18285ea3a5a1066",
+      "statement": "The SDK base distribution keeps AWS, QuickJS, and video support as optional extras, so products and hosts choose integration dependencies rather than imposing them on all SDK consumers.",
+      "evidence": [
         {
-          "resource": "repo://libs/talon/deepagents_talon/channels/__init__.py",
-          "version": "repo-file-v1:sha256:e012db150256e5ac3502acf90b6c2b7ee81bed90594782436291c4713a632830"
-        },
-        {
-          "resource": "repo://libs/talon/deepagents_talon/checkpoint_backends.py",
-          "version": "repo-file-v1:sha256:12a6a302d806d09be9990faa167d4e208c9009d3d03343d60a85dcb409c7d69f"
-        },
-        {
-          "resource": "repo://libs/talon/deepagents_talon/interfaces.py",
-          "version": "repo-file-v1:sha256:29e905a67a663b38cdebadded219fd797b01ceb12d9d0bcdb73377df61650d06"
+          "resource": "repo://libs/deepagents/pyproject.toml#L22-L35",
+          "version": "repo-lines-v1:sha256:b2470d90554db3772c67ee900fc92c8367df013c40ad38c24e8d26f443d161fa:eyJzZWxlY3RlZExpbmVDb3VudCI6MTQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFkOTVmNWU5ZWRlMDE4MTYwNDNjMDc5N2FjZThkYTJhYzRlOTlhOGE2YTYxMGZhOTg1NzBlZjM0YjkzNTYxMDkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY3Njk4NTcwNTkwZTBhZGNhNTM0ZDM5ODVmNmZhNmQ4NDc2OTVlMjdjOGQzYjU3YWMzYjY3OTVhNzRkYWJmOWIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjA5M2ViZjNhZWE3MzgxN2NmZTQzNmY4YTVhOWIxNGVhMDI4NmE2MmVhNDRhMWYyZTk4ZjUxODBhZTUyODNiY2MiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImQ4ODI2YmMxODkyZTllMTM5Y2MxOTczZjc5MTkxYzkyMTg2NjIzZjA4ZjdmMTgxYzI2NTFlYmNiZmU2ZmE0YmYifQ"
         }
       ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-10-16T08:05:35.701Z"
+    "at": "2026-10-23T08:06:06.503Z"
   }
 }

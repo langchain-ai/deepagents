@@ -1,6 +1,8 @@
 """Tests for autocomplete fuzzy search functionality."""
 
+import locale
 import logging
+import os
 import subprocess
 from pathlib import Path
 from typing import cast
@@ -292,6 +294,35 @@ class TestSlashCommandControllerDisplaySeparation:
         return SlashCommandController(commands, mock_view)
 
 
+@pytest.mark.parametrize(
+    "control",
+    ["\n", "\t", "\x1b", "\x85", "\u2028", "\u2029", "\u202e", "\u200b", "\u034f"],
+)
+@pytest.mark.parametrize("warm", [False, True])
+async def test_file_completion_rejects_unsafe_names(
+    control: str, warm: bool, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Unsafe repository filenames never enter the popup or chat input."""
+    view = MagicMock()
+    controller = FuzzyFileController(view, cwd=tmp_path)
+    monkeypatch.setattr(
+        autocomplete_module,
+        "_get_project_files",
+        lambda _root: [f"unsafe{control}@secret.txt", "re\u0301sume\u0301.md"],
+    )
+
+    if warm:
+        await controller.warm_cache(force=True)
+    controller.on_text_changed("@", 1)
+    view.render_completion_suggestions.assert_called_once_with(
+        [("@re\u0301sume\u0301.md", "md")], 0
+    )
+    assert controller.apply_selection(0, "@", 1)
+    view.replace_completion_range.assert_called_once_with(
+        0, 1, "@re\u0301sume\u0301.md"
+    )
+
+
 class TestGetProjectFiles:
     """Tests for _get_project_files."""
 
@@ -358,6 +389,56 @@ class TestGetProjectFiles:
         files = _get_project_files(tmp_path)
 
         assert files == []
+
+    def test_non_ascii_names_are_returned_verbatim(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Regression test for #6965: non-ASCII names come back as real paths.
+
+        Under `core.quotePath`, plain `git ls-files` prints such names C-quoted
+        with octal escapes. Unquoted output must still be decoded as UTF-8: a
+        legacy Windows code page is simulated through `locale.getencoding`,
+        which `subprocess` consults when no encoding is given.
+        """
+        self._init_repo(tmp_path)
+        # Pin git's default so a global `core.quotePath=false` can't mask it.
+        subprocess.run(
+            ["git", "config", "core.quotePath", "true"],
+            cwd=tmp_path,
+            check=True,
+            capture_output=True,
+        )
+        (tmp_path / "résumé.md").write_text("tracked\n")
+        subprocess.run(
+            ["git", "add", "résumé.md"], cwd=tmp_path, check=True, capture_output=True
+        )
+        (tmp_path / "naïve.py").write_text("untracked\n")
+        monkeypatch.setattr(locale, "getencoding", lambda: "cp1252")
+
+        files = _get_project_files(tmp_path)
+
+        assert files == ["résumé.md", "naïve.py"]
+
+    @pytest.mark.skipif(os.name == "nt", reason="Windows filenames are Unicode")
+    def test_non_utf8_names_do_not_alias_valid_files(self, tmp_path: Path) -> None:
+        """Invalid UTF-8 names must not become a different selectable filename."""
+        self._init_repo(tmp_path)
+        invalid_name = os.fsdecode(b"bad-\xff.md")
+        valid_name = "bad-\ufffd.md"
+        (tmp_path / invalid_name).write_text("invalid name")
+        (tmp_path / valid_name).write_text("valid name")
+
+        files = _get_project_files(tmp_path)
+        assert set(files) == {invalid_name, valid_name}
+
+        view = MagicMock()
+        controller = FuzzyFileController(view, cwd=tmp_path)
+        controller.on_text_changed("@", 1)
+        view.render_completion_suggestions.assert_called_once_with(
+            [(f"@{valid_name}", "md")], 0
+        )
+        assert controller.apply_selection(0, "@", 1)
+        view.replace_completion_range.assert_called_once_with(0, 1, f"@{valid_name}")
 
     def test_deduplicates_repeated_paths(self, tmp_path: Path) -> None:
         """A path emitted more than once by git ls-files appears only once.

@@ -153,6 +153,27 @@ def test_compare_requires_newest_eligible_sibling_metadata_to_match() -> None:
     assert "deepagents-code 0.1.57 (latest on PyPI)" in checks[0].message
 
 
+def test_compare_accepts_sibling_metadata_differing_only_by_next_major_cap() -> None:
+    checks = compare_wheel_with_pypi(
+        _metadata(),
+        {"deepagents-code": _payload(("0.1.57", ">=3.12"))},
+        sibling_requires_python={"deepagents-code": ">=3.12,<4.0"},
+    )
+
+    assert checks[0].passed
+
+
+def test_compare_flags_sibling_metadata_with_patch_level_floor_change() -> None:
+    checks = compare_wheel_with_pypi(
+        _metadata(),
+        {"deepagents-code": _payload(("0.1.57", ">=3.12"))},
+        sibling_requires_python={"deepagents-code": ">=3.12.1,<4.0"},
+    )
+
+    assert not checks[0].passed
+    assert "Release deepagents-code first" in checks[0].message
+
+
 def test_compare_rejects_direct_url_dependency() -> None:
     checks = compare_wheel_with_pypi(
         _metadata(requirements=("demo @ https://example.test/demo.whl",)),
@@ -551,12 +572,12 @@ def test_resolve_release_target_matches_release_please_component(
 
     assert target.package_name == "deepagents-talon"
     assert target.package_path == "libs/talon"
-    assert target.python_version == "3.12"
+    assert target.python_version == "3.14"
 
 
 def test_release_python_version_matches_release_workflow() -> None:
-    assert release_python_version("deepagents-code") == "3.12"
-    assert release_python_version("deepagents-talon") == "3.12"
+    assert release_python_version("deepagents-code") == "3.14"
+    assert release_python_version("deepagents-talon") == "3.14"
     assert release_python_version("deepagents") == "3.11"
 
 
@@ -773,7 +794,7 @@ def test_target_cli_writes_actions_outputs(tmp_path: Path, monkeypatch) -> None:
     assert "package_path" in written
     assert "libs/talon" in written
     assert "python_version" in written
-    assert "3.12" in written
+    assert "3.14" in written
 
 
 def test_workflow_mirrors_release_install_flags() -> None:

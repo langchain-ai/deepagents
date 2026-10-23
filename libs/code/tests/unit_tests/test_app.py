@@ -16289,6 +16289,8 @@ class TestExitGracefulWorkerHandoff:
                 app.exit()
                 assert app._graceful_exit_task is not None
                 await asyncio.wait_for(app._graceful_exit_task, timeout=2.0)
+                assert app._server_stop_task is not None
+                await asyncio.wait_for(app._server_stop_task, timeout=2.0)
 
         debug_messages = [
             record.message

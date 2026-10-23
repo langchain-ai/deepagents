@@ -64,6 +64,17 @@ def _validate_excluded_middleware_config(
         raise ValueError(_format_scaffolding_rejection(labels))
 
 
+def _exclusion_type(middleware: AgentMiddleware[Any, Any, Any]) -> type[AgentMiddleware[Any, Any, Any]]:
+    """Return the class a class-form exclusion must name to drop `middleware`.
+
+    A lazy stand-in (such as the default Anthropic prompt-caching middleware)
+    reports the class it defers to through `excluded_as`, so excluding that
+    class still drops it.
+    """
+    excluded_as = getattr(middleware, "excluded_as", None)
+    return excluded_as if isinstance(excluded_as, type) else type(middleware)
+
+
 def _raise_on_name_collisions(
     name_matched_types: dict[str, set[type[AgentMiddleware[Any, Any, Any]]]],
 ) -> None:
@@ -138,7 +149,7 @@ def _apply_excluded_middleware(
     filtered: list[AgentMiddleware[Any, Any, Any]] = []
     name_matched_types: dict[str, set[type[AgentMiddleware[Any, Any, Any]]]] = {}
     for mw in stack:
-        mw_type = type(mw)
+        mw_type = _exclusion_type(mw)
         mw_name = mw.name
         if mw_type in excluded_classes:
             if matched_classes is not None:

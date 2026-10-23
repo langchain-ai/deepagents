@@ -240,6 +240,38 @@ class TestPlanManifest:
 
         assert scope.requirements == ()
 
+    def test_published_local_sources_are_raised_up_to_the_local_version(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A path source only applies locally; PyPI users get the declared floor.
+
+        The floor stops at the local checkout's version, so `uv lock` can still
+        resolve the path source when PyPI is ahead of this branch.
+        """
+        monkeypatch.setattr(raise_langchain_minimums, "REPO_ROOT", tmp_path)
+        (tmp_path / "vercel").mkdir()
+        (tmp_path / "vercel" / "pyproject.toml").write_text(
+            '[project]\nname = "langchain-vercel-sandbox"\nversion = "0.0.2"\n',
+            encoding="utf-8",
+        )
+        scope = self._scope(
+            tmp_path,
+            '[project]\nname = "x"\n'
+            "[project.optional-dependencies]\n"
+            'vercel = ["langchain-vercel-sandbox>=0.0.1"]\n'
+            "\n"
+            "[tool.uv.sources]\n"
+            'langchain-vercel-sandbox = { path = "vercel", editable = true }\n',
+        )
+
+        plan = _plan_manifest(
+            scope, {"langchain-vercel-sandbox": _versions("0.0.1", "0.0.2", "0.0.3")}
+        )
+
+        assert [edit.new_requirement for edit in plan.edits] == [
+            "langchain-vercel-sandbox>=0.0.2"
+        ]
+
     def test_exact_pins_are_left_alone(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

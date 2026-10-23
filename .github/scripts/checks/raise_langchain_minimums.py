@@ -10,6 +10,12 @@ are left alone — raising a floor only applies to range floors. A bound already
 ahead of the latest stable release (intentional prerelease coordination) is
 respected and never lowered.
 
+A dependency that `[tool.uv.sources]` maps to a local path (a sibling package in
+this repository) is still raised: the path only applies to local development,
+while the published floor is what PyPI users install against. The new floor is
+capped at the version the local checkout declares so `uv lock` keeps resolving
+the path source. A local source whose version cannot be read is skipped.
+
 A dependency whose PyPI metadata could not be fetched, or a manifest that could
 not be rewritten, is reported as a failure rather than silently omitted: an
 unattended daily cron must never render "PyPI was unreachable" as "everything
@@ -32,13 +38,13 @@ import sys
 import tomllib
 from collections.abc import Collection, Iterable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 
 from packaging.requirements import InvalidRequirement, Requirement
 from packaging.specifiers import Specifier, SpecifierSet
 from packaging.utils import canonicalize_name
-from packaging.version import Version
+from packaging.version import InvalidVersion, Version
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
@@ -77,7 +83,8 @@ RAISEABLE_OPERATORS = frozenset({">=", "~="})
 # integrations (langchain-*, the base langchain/langgraph/langsmith packages,
 # and langgraph-* companion packages) plus the deepagents-* workspace packages
 # that one package pulls from PyPI (e.g. deepagents-code -> deepagents-acp).
-# Workspace-local sources and a package's own name are excluded per manifest.
+# A package's own name, URL requirements, and local sources without a readable
+# version are excluded per manifest.
 # Matching is a bare name prefix with no hyphen boundary, so an unrelated
 # third-party distribution such as `langchainhub` is also in scope.
 IN_SCOPE_PREFIXES = ("langchain", "langgraph", "langsmith", "deepagents")
@@ -128,9 +135,13 @@ class ManifestScope:
         requirements: `(raw_string, parsed_requirement)` pairs for every
             in-scope dependency, in manifest declaration order.
         workspace_names: Canonical names declared here but resolved from the
-            workspace rather than PyPI (a URL, a `[tool.uv.sources]` path, or
-            the package itself). They have no PyPI floor to raise, which a
-            narrowed run must report differently from a name that is absent.
+            workspace rather than PyPI (a URL, a local `[tool.uv.sources]` entry
+            with no readable version, or the package itself). They have no PyPI
+            floor to raise, which a narrowed run must report differently from a
+            name that is absent.
+        local_versions: Versions declared by the local checkouts that
+            `[tool.uv.sources]` paths point at. A raised floor must not pass
+            these, or `uv lock` could no longer resolve the path source.
 
     """
 
@@ -138,6 +149,7 @@ class ManifestScope:
     text: str
     requirements: tuple[tuple[str, Requirement], ...]
     workspace_names: frozenset[str] = frozenset()
+    local_versions: Mapping[str, Version] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -300,16 +312,53 @@ def _self_name(project: Mapping[str, object]) -> str | None:
     return canonicalize_name(name) if isinstance(name, str) else None
 
 
+def _path_source_version(directory: Path, source: object) -> Version | None:
+    """Return the static version of the package a `[tool.uv.sources]` path names.
+
+    Returns `None` for non-path sources and for checkouts whose version is
+    missing, dynamic, or unreadable.
+    """
+    if not isinstance(source, Mapping) or not isinstance(source.get("path"), str):
+        return None
+    pyproject = directory / source["path"] / "pyproject.toml"
+    try:
+        project = tomllib.loads(pyproject.read_text(encoding="utf-8"))["project"]
+        return Version(project["version"])
+    except (OSError, tomllib.TOMLDecodeError, KeyError, TypeError, InvalidVersion):
+        return None
+
+
+def _local_versions(
+    manifest_path: str, manifest: Mapping[str, object], local_names: frozenset[str]
+) -> dict[str, Version]:
+    """Map each local-path dependency to the version its checkout declares."""
+    tool = manifest.get("tool")
+    uv = tool.get("uv") if isinstance(tool, Mapping) else None
+    sources = uv.get("sources") if isinstance(uv, Mapping) else None
+    if not isinstance(sources, Mapping):
+        return {}
+    directory = (REPO_ROOT / manifest_path).parent
+    versions: dict[str, Version] = {}
+    for name, source in sources.items():
+        canonical_name = canonicalize_name(str(name))
+        if canonical_name not in local_names:
+            continue
+        version = _path_source_version(directory, source)
+        if version is not None:
+            versions[canonical_name] = version
+    return versions
+
+
 def _resolved_from_pypi(
     requirement: Requirement,
     canonical_name: str,
     local_names: frozenset[str],
     self_name: str | None,
 ) -> bool:
-    """Return whether a requirement resolves from PyPI rather than the workspace.
+    """Return whether a requirement has a published PyPI floor to raise.
 
-    A URL requirement, a `[tool.uv.sources]` path dependency, and the package's
-    own name all have no PyPI floor to raise. Kept separate from `_in_scope` so
+    A URL requirement, the package's own name, and each name in `local_names`
+    (local sources with no readable version) have no PyPI floor to raise. Kept separate from `_in_scope` so
     a caller can tell *why* a name was excluded, which is what lets a narrowed
     run say "resolved locally" instead of "not declared".
     """
@@ -357,6 +406,10 @@ def _load_scope(
         raise TypeError(msg)
 
     local_names = local_dependency_names(manifest)
+    local_versions = _local_versions(manifest_path, manifest, local_names)
+    # A versioned local source is a published sibling package, so its floor is
+    # raised like any other; only unversioned local sources stay excluded.
+    local_names -= local_versions.keys()
     self_name = _self_name(project)
     requirements: list[tuple[str, Requirement]] = []
     workspace_names: set[str] = set()
@@ -388,6 +441,7 @@ def _load_scope(
         text=text,
         requirements=tuple(requirements),
         workspace_names=frozenset(workspace_names),
+        local_versions=local_versions,
     )
 
 
@@ -504,7 +558,13 @@ def _plan_manifest(
         versions = available.get(canonical_name)
         if not versions:
             continue
-        new_minimum = _latest_compatible_version(requirement, versions)
+        local_version = scope.local_versions.get(canonical_name)
+        candidates = (
+            versions
+            if local_version is None
+            else [version for version in versions if version <= local_version]
+        )
+        new_minimum = _latest_compatible_version(requirement, candidates)
         if new_minimum is None or new_minimum <= minimum:
             continue
 
@@ -668,8 +728,9 @@ def _run(
                 )
             if workspace:
                 reasons.append(
-                    "declared but resolved from the workspace (a URL or a "
-                    "[tool.uv.sources] path), so there is no PyPI floor to "
+                    "declared but resolved from the workspace (a URL, the "
+                    "package itself, or a [tool.uv.sources] entry without a "
+                    "readable local version), so there is no PyPI floor to "
                     f"raise: {', '.join(sorted(workspace))}"
                 )
             _error(

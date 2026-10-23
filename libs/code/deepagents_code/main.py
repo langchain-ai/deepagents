@@ -6853,6 +6853,14 @@ def cli_main() -> None:
                         mark_update_notified(latest)
             except Exception:
                 logger.warning("Failed to display exit update banner", exc_info=True)
+
+            # The session leaves a large heap, and the interpreter's final full
+            # GC pass over it adds about 0.3s to every exit after the terminal
+            # is restored. Nothing durable remains to run, so move the heap into
+            # the permanent generation and let shutdown skip it.
+            import gc
+
+            gc.freeze()
     except KeyboardInterrupt:
         # Suppress the traceback while preserving the conventional SIGINT status.
         # `console` may not be bound if Ctrl+C arrives during config import.

@@ -6,6 +6,7 @@ structured way to define available models and providers.
 
 from __future__ import annotations
 
+import ast
 import contextlib
 import hashlib
 import importlib.util
@@ -1368,15 +1369,75 @@ def _get_builtin_providers() -> dict[str, Any]:
     if _builtin_providers_cache is not None:
         return _builtin_providers_cache
 
-    # Deferred: langchain.chat_models pulls in heavy provider registry,
-    # only needed when resolving provider names for model config.
-    from langchain.chat_models import base
-
-    registry: dict[str, Any] | None = getattr(base, "_BUILTIN_PROVIDERS", None)
+    registry: dict[str, Any] | None = _read_builtin_providers_from_source()
     if registry is None:
-        registry = getattr(base, "_SUPPORTED_PROVIDERS", None)
+        # Deferred: langchain.chat_models pulls in heavy provider registry,
+        # only needed when resolving provider names for model config.
+        from langchain.chat_models import base
+
+        registry = getattr(base, "_BUILTIN_PROVIDERS", None)
+        if registry is None:
+            registry = getattr(base, "_SUPPORTED_PROVIDERS", None)
     _builtin_providers_cache = registry if registry is not None else {}
     return _builtin_providers_cache
+
+
+def _read_builtin_providers_from_source() -> dict[str, tuple[str, str]] | None:
+    """Read langchain's provider registry without importing its module.
+
+    `langchain.chat_models.base` imports `langchain_core` and the LangSmith SDK,
+    and the status bar resolves a model profile through this registry before
+    the first frame. The registry is a dict literal of
+    `(package, class_name, creator)` tuples, so parsing the source recovers the
+    string fields callers use at a fraction of the import cost.
+
+    Returns:
+        Provider name to `(package, class_name)`, or `None` when the source is
+            unavailable or no longer has that shape, so the caller imports it.
+    """
+    spec = importlib.util.find_spec("langchain")
+    if spec is None or not spec.submodule_search_locations:
+        return None
+    package_dir = Path(next(iter(spec.submodule_search_locations)))
+    try:
+        source = (package_dir / "chat_models" / "base.py").read_text(encoding="utf-8")
+        tree = ast.parse(source)
+    except OSError, SyntaxError, ValueError:
+        return None
+    for node in tree.body:
+        if (
+            isinstance(node, ast.AnnAssign)
+            and isinstance(node.target, ast.Name)
+            and node.target.id == "_BUILTIN_PROVIDERS"
+            and isinstance(node.value, ast.Dict)
+        ):
+            return _provider_entries(node.value)
+    return None
+
+
+def _provider_entries(node: ast.Dict) -> dict[str, tuple[str, str]] | None:
+    """Return the string fields of a parsed provider registry literal.
+
+    Returns:
+        Provider name to `(package, class_name)`, or `None` if any entry is not
+            a string key mapped to a tuple starting with two strings.
+    """
+    entries: dict[str, tuple[str, str]] = {}
+    for key, value in zip(node.keys, node.values, strict=True):
+        if not (isinstance(key, ast.Constant) and isinstance(key.value, str)):
+            return None
+        if not isinstance(value, ast.Tuple) or len(value.elts) < 2:  # noqa: PLR2004  # package and class name
+            return None
+        package, class_name = value.elts[:2]
+        if not (
+            isinstance(package, ast.Constant)
+            and isinstance(package.value, str)
+            and isinstance(class_name, ast.Constant)
+            and isinstance(class_name.value, str)
+        ):
+            return None
+        entries[key.value] = (package.value, class_name.value)
+    return entries
 
 
 def _get_provider_profile_modules() -> list[tuple[str, str]]:

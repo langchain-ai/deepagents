@@ -821,7 +821,7 @@ class TestFilesystemMiddlewareAsync:
         backend, mem_store = _make_backend(files)
         middleware = FilesystemMiddleware(
             backend=backend,
-            _permissions=[FilesystemPermission(operations=["write"], paths=["/**"], mode="deny")],
+            permissions=[FilesystemPermission(operations=["write"], paths=["/**"], mode="deny")],
         )
         delete_tool = next(tool for tool in middleware.tools if tool.name == "delete")
         result = await delete_tool.ainvoke(

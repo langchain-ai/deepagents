@@ -1203,7 +1203,7 @@ class TestFilesystemMiddleware:
         backend, _ = _make_backend(files)
         middleware = FilesystemMiddleware(
             backend=backend,
-            _permissions=[FilesystemPermission(operations=["read"], paths=["/secret.py"], mode="deny")],
+            permissions=[FilesystemPermission(operations=["read"], paths=["/secret.py"], mode="deny")],
         )
         grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
         result = grep_search_tool.invoke(

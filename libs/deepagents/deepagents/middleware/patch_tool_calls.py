@@ -1,9 +1,18 @@
 """Middleware to repair tool call and tool result pairing in the messages history."""
 
-from collections.abc import Iterator
+from collections.abc import Awaitable, Callable, Iterator
 from typing import Any
 
-from langchain.agents.middleware import AgentMiddleware, AgentState, TracePolicy, omit_payload
+from langchain.agents.middleware.types import (
+    AgentMiddleware,
+    AgentState,
+    ContextT,
+    ModelRequest,
+    ModelResponse,
+    ResponseT,
+    TracePolicy,
+    omit_payload,
+)
 from langchain_core.messages import AIMessage, AnyMessage, InvalidToolCall, RemoveMessage, ToolCall, ToolMessage
 from langgraph.graph.message import REMOVE_ALL_MESSAGES
 from langgraph.runtime import Runtime
@@ -85,26 +94,82 @@ def _repair(messages: list[AnyMessage]) -> list[AnyMessage]:
     return repaired
 
 
-class PatchToolCallsMiddleware(AgentMiddleware):
+def _patch_dangling(messages: list[AnyMessage]) -> list[AnyMessage] | None:
+    """Return `messages` with an error result after each unanswered call, or `None` if none are unanswered."""
+    answered = {msg.tool_call_id for msg in messages if isinstance(msg, ToolMessage)}
+    patched: list[AnyMessage] = []
+    changed = False
+    for msg in messages:
+        patched.append(msg)
+        if not isinstance(msg, AIMessage):
+            continue
+        for tool_call in (*msg.tool_calls, *msg.invalid_tool_calls):
+            if tool_call["id"] is not None and tool_call["id"] not in answered:
+                patched.append(_synthetic_result(tool_call))
+                changed = True
+    return patched if changed else None
+
+
+class PatchToolCallsMiddleware(AgentMiddleware[AgentState[ResponseT], ContextT, ResponseT]):
     """Middleware to repair tool call and tool result pairing in the messages history.
 
     Providers reject a history in which a tool call has no result, a result answers no
     call, or a result is separated from its call. Any of these can be persisted by an
     interrupted or concurrently executed run, and every later model call on the thread
-    then fails the same way. Before the agent runs, this middleware records an error
-    result for each unanswered call, moves each result directly after its call, and drops
-    results that answer no call and duplicate results.
+    then fails the same way.
+
+    Before the agent runs, this middleware records an error result in the thread for each
+    unanswered call. On every model request, it also moves each result directly after its
+    call and drops results that answer no call and duplicate results. That repair applies
+    only to the request, so the thread keeps every recorded message.
     """
 
     trace_policy = TracePolicy(process_inputs=omit_payload)
     """Omit hook inputs from traces by default; set a `TracePolicy` to override."""
 
-    def before_agent(self, state: AgentState, runtime: Runtime[Any]) -> dict[str, Any] | None:  # noqa: ARG002
-        """Before the agent runs, repair tool call and tool result pairing."""
-        messages = state["messages"]
-        if not messages:
+    def before_agent(self, state: AgentState[ResponseT], runtime: Runtime[ContextT]) -> dict[str, Any] | None:  # noqa: ARG002
+        """Before the agent runs, record an error result for each unanswered tool call."""
+        patched = _patch_dangling(state["messages"])
+        if patched is None:
             return None
-        repaired = _repair(messages)
-        if len(repaired) == len(messages) and all(left is right for left, right in zip(repaired, messages, strict=True)):
-            return None
-        return {"messages": [RemoveMessage(id=REMOVE_ALL_MESSAGES), *repaired]}
+        return {"messages": [RemoveMessage(id=REMOVE_ALL_MESSAGES), *patched]}
+
+    @staticmethod
+    def _repair_request(request: ModelRequest[ContextT]) -> ModelRequest[ContextT]:
+        """Return `request`, or an override whose messages pair every call with its result."""
+        repaired = _repair(request.messages)
+        if len(repaired) == len(request.messages) and all(left is right for left, right in zip(repaired, request.messages, strict=True)):
+            return request
+        return request.override(messages=repaired)
+
+    def wrap_model_call(
+        self,
+        request: ModelRequest[ContextT],
+        handler: Callable[[ModelRequest[ContextT]], ModelResponse[ResponseT]],
+    ) -> ModelResponse[ResponseT]:
+        """Repair tool call and tool result pairing in the request, then invoke the model.
+
+        Args:
+            request: Model request to execute.
+            handler: Callback that executes the model request.
+
+        Returns:
+            The result of invoking the handler.
+        """
+        return handler(self._repair_request(request))
+
+    async def awrap_model_call(
+        self,
+        request: ModelRequest[ContextT],
+        handler: Callable[[ModelRequest[ContextT]], Awaitable[ModelResponse[ResponseT]]],
+    ) -> ModelResponse[ResponseT]:
+        """Repair tool call and tool result pairing in the request, then invoke the model.
+
+        Args:
+            request: Model request to execute.
+            handler: Async callback that executes the model request.
+
+        Returns:
+            The result of invoking the handler.
+        """
+        return await handler(self._repair_request(request))

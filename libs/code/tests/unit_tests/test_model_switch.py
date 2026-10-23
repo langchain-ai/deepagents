@@ -2,9 +2,7 @@
 
 import asyncio
 import tomllib
-from collections.abc import Iterator
-from pathlib import Path
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
@@ -23,9 +21,14 @@ from deepagents_code.model_config import (
     ProviderAuthStatus,
 )
 from deepagents_code.model_metadata import ModelMetadata
-from deepagents_code.tui.modals.model_switch import ModelSwitchWarningScreen
 from deepagents_code.tui.widgets.messages import AppMessage, ErrorMessage
 from deepagents_code.tui.widgets.status import StatusBar
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+    from pathlib import Path
+
+    from deepagents_code.tui.modals.model_switch import ModelSwitchWarningScreen
 
 _CONFIGURED_AUTH_STATUS = ProviderAuthStatus(
     state=ProviderAuthState.CONFIGURED,

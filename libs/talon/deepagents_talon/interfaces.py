@@ -14,6 +14,8 @@ if TYPE_CHECKING:
 
     from deepagents_talon.authorization import AuthorizationHandler
     from deepagents_talon.background import BackgroundSubagents
+    from deepagents_talon.breakout import BreakoutHandler
+    from deepagents_talon.config import TalonConfig
 
 
 @dataclass(frozen=True, slots=True)
@@ -136,11 +138,13 @@ class AgentRequest:
         approval_handler: Optional callback used by runtimes that surface
             tool approval interrupts over the originating channel.
         message_handler: Optional callback for progress updates to the originating chat.
+        breakout_handler: Optional host callback for independent channel tasks.
         authorization_handler: Optional callback used for authorization events
             that must be handled outside model context.
         model: `provider:model` spec the conversation selected with `/model`, or
             `None` for the runtime's default. Set only by the host, never from
             channel metadata.
+        effort: Reasoning control captured by the host for this turn's model.
     """
 
     conversation_id: str
@@ -165,7 +169,11 @@ class AgentRequest:
         repr=False,
         compare=False,
     )
+    breakout_handler: BreakoutHandler | None = field(
+        default=None, kw_only=True, repr=False, compare=False
+    )
     model: str | None = field(default=None, kw_only=True)
+    effort: str | None = field(default=None, kw_only=True)
 
 
 @dataclass(frozen=True, slots=True)
@@ -288,6 +296,16 @@ class CronScheduler(Protocol):
 
     async def stop(self) -> None:
         """Stop the scheduler ticker and release resources."""
+
+
+@runtime_checkable
+class InboundMediaRuntime(Protocol):
+    """Optional runtime preparation of attachments for its execution environment."""
+
+    async def prepare_inbound_media(
+        self, message: ChannelMessage, *, config: TalonConfig
+    ) -> ChannelMessage:
+        """Make downloaded documents accessible before building model content."""
 
 
 class AgentRuntime(Protocol):

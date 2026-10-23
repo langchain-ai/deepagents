@@ -2,10 +2,13 @@
 
 import json
 from io import StringIO
-from pathlib import Path
+from typing import TYPE_CHECKING
 from unittest.mock import patch
 
 from deepagents_code.skills.commands import _create, _delete, _info, _list
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 class TestSkillsListJson:

@@ -43,6 +43,7 @@ from mcp.shared.auth import (
 from mcp.types import LATEST_PROTOCOL_VERSION
 from pydantic import AnyHttpUrl, BaseModel, ConfigDict, SecretStr, ValidationError
 
+from deepagents_talon._version import __version__
 from deepagents_talon.authorization import (
     AuthorizationBinding,
     AuthorizationURL,
@@ -692,7 +693,7 @@ async def _request_json(
             content.extend(chunk)
     try:
         value = json.loads(content)
-    except (UnicodeDecodeError, json.JSONDecodeError):
+    except UnicodeDecodeError, json.JSONDecodeError:
         return None
     return value if isinstance(value, dict) else None
 
@@ -780,7 +781,12 @@ class _OAuthSafeTransport(SSRFSafeTransport):
 
 
 def _oauth_http_client() -> httpx.AsyncClient:
+    """Identify OAuth requests; DEEPAGENTS_TALON_MCP_USER_AGENT overrides the default."""
     return httpx.AsyncClient(
+        headers={
+            "User-Agent": os.environ.get("DEEPAGENTS_TALON_MCP_USER_AGENT")
+            or f"deepagents-talon/{__version__}"
+        },
         transport=_OAuthSafeTransport(),
         timeout=_HTTP_TIMEOUT_SECONDS,
         follow_redirects=False,
@@ -840,7 +846,7 @@ class _PersistedExpiryOAuthProvider(OAuthClientProvider):
         await _validate_oauth_url(str(request.url))
         try:
             async with asyncio.timeout(_HTTP_TIMEOUT_SECONDS), _oauth_http_client() as client:
-                guarded = httpx.Request(
+                guarded = client.build_request(
                     request.method,
                     str(request.url),
                     headers=request.headers.raw,

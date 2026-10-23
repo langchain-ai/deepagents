@@ -243,7 +243,7 @@ _DEFERRED_START_NOTICE = (
 
 _AUTO_CLASSIFIER_RECOMMENDED_MODELS = {
     "anthropic:claude-haiku-5-5": "Claude Haiku 5.5",
-    "anthropic:claude-sonnet-5": "Claude Sonnet 5",
+    "anthropic:claude-sonnet-5-5": "Claude Sonnet 5.5",
     "google_genai:gemini-3.8-flash": "Gemini 3.8 Flash",
     "openai:gpt-6-luna": "GPT-6 Luna",
 }
@@ -292,6 +292,9 @@ The SDK currently has a package-to-backend circular import that is safe when a
 single thread imports it re-entrantly, but can trip CPython's per-module import
 deadlock detector when two threads cold-import overlapping modules.
 """
+
+_SKILL_NOT_LOADED_BODY = "*The skill's instructions were not loaded for this turn.*"
+"""Resumed skill-row body when the SDK never pinned the invoked skill."""
 
 _TOOL_GROUP_EXCLUSIONS = frozenset({"ask_user", "edit_file", "write_todos"})
 """Tools kept out of the collapsing step summaries.
@@ -511,7 +514,7 @@ def _coerce_session_cost_usd(value: object) -> float:
         return 0.0
     try:
         cost_usd = float(value)
-    except (OverflowError, ValueError):
+    except OverflowError, ValueError:
         logger.warning("Discarding a persisted session cost that is out of range.")
         return 0.0
     if not math.isfinite(cost_usd) or cost_usd < 0:
@@ -555,7 +558,7 @@ def _coerce_provisional_cost_delta_usd(value: object) -> float | None:
         return None
     try:
         delta_usd = float(value)
-    except (OverflowError, ValueError):
+    except OverflowError, ValueError:
         logger.warning("Discarding a provisional cost delta that is out of range.")
         return None
     if not math.isfinite(delta_usd):
@@ -759,11 +762,6 @@ def _goal_state_change_notice(
     if goal_state_fingerprint(previous) == goal_state_fingerprint(current):
         return None
     return build_goal_state_notice(current, prior_blocker=prior_blocker)
-
-
-def _resolve_parent_dir(path: str | Path) -> str:
-    """Return the resolved parent directory for a path."""
-    return str(Path(path).resolve().parent)
 
 
 def _extra_is_ready(extra: str) -> bool | None:
@@ -1484,9 +1482,9 @@ def _load_show_reasoning() -> bool:
     """Resolve whether local output shows provider-visible reasoning.
 
     Returns:
-        The resolved preference, defaulting to `False`.
+        The resolved preference, defaulting to `True`.
     """
-    return _load_bool_display_preference("display.show_reasoning", fallback=False)
+    return _load_bool_display_preference("display.show_reasoning", fallback=True)
 
 
 def _load_show_scrollbar() -> bool:
@@ -2113,6 +2111,9 @@ Two seconds balances responsiveness with avoiding accidental approval
 key presses.
 """
 
+_IDLE_COMPACTION_LEAD_SECONDS = 120
+"""Lead time for automatic idle context compaction."""
+
 _CACHE_EXPIRING_LEAD_SECONDS = 60
 """Lead time for the prompt-cache retention notification."""
 
@@ -2643,6 +2644,38 @@ def _langsmith_gateway_key_mismatch(provider: str | None) -> str | None:
     return resolved_env_var_name(key_env)
 
 
+def _build_resume_workspace_error_body(exc: BaseException) -> str | Content:
+    """Return markup-safe workspace refusal guidance with allowlisted field names."""
+    from deepagents_code.client.remote_client import workspace_conflict_diagnostics
+    from deepagents_code.workspace_diagnostics import (
+        SAFE_SNAPSHOT_FIELDS,
+        FieldChange,
+        WorkspaceDiagnostics,
+        format_diagnostics_content,
+    )
+
+    text = (
+        "Couldn't restore this thread's workspace because the server refused its "
+        "configuration. Model restoration was not attempted. Restore the original "
+        "settings or start a separate server with matching configuration, then "
+        "retry resume."
+    )
+    diagnostics = workspace_conflict_diagnostics(exc)
+    if diagnostics is None:
+        return text
+    safe = WorkspaceDiagnostics(
+        category="unknown",
+        reason="workspace configuration conflict",
+        changes=tuple(
+            FieldChange(name=change.name, state="values_unavailable")
+            for change in diagnostics.changes
+            if change.name in SAFE_SNAPSHOT_FIELDS
+        ),
+        snapshot_status=diagnostics.snapshot_status,
+    )
+    return Content.assemble(text, "\n\n", format_diagnostics_content(safe))
+
+
 def _build_agent_error_body(
     text: str, exc: BaseException, *, key_env: str | None = None
 ) -> str | Content:
@@ -2913,6 +2946,7 @@ _SANDBOX_DISPLAY_NAMES: dict[str, str] = {
     "daytona": "Daytona",
     "langsmith": "LangSmith",
     "modal": "Modal",
+    "openshell": "OpenShell",
     "runloop": "Runloop",
 }
 """Human-readable display names for sandbox providers."""
@@ -4342,6 +4376,7 @@ class DeepAgentsApp(App):
         state and must not appear in scrollback or serialized history.
         """
 
+        self._thread_switch_error_widget: ErrorMessage | None = None
         self._startup_failure_widget: ErrorMessage | None = None
         """Transient chat surface for the most recent server-startup failure.
         Mounted by `on_deep_agents_app_server_start_failed`; removed on
@@ -4547,6 +4582,7 @@ class DeepAgentsApp(App):
         )
         """Minimum estimated cold-versus-warm cost delta that opens the modal."""
 
+        self._idle_compaction_seen: dict[str, datetime] = {}
         self._cache_expiring_seen: dict[str, datetime] = {}
         self._cache_expiring_worker: Worker[None] | None = None
 
@@ -4754,19 +4790,15 @@ class DeepAgentsApp(App):
         read against its own open-time snapshot, not this attribute.
         """
 
-        self._skill_allowed_roots: list[Path] = []
-        """Pre-resolved skill root directories for containment checks in
-        `load_skill_content`.
-
-        Built alongside `_discovered_skills`.
-        """
-
         self._skill_trust_denied: set[str] = set()
         """Resolved skill directories the user declined to trust this session.
 
         Prevents re-prompting for the same untrusted location after a deny
         within a single run.
         """
+
+        self._pending_skill_row: SkillMessage | None = None
+        """Latest invoked skill row, waiting for the server's pinned message."""
 
         # Media
         # Lazily imported here to avoid pulling image dependencies into
@@ -4883,6 +4915,7 @@ class DeepAgentsApp(App):
         header = _StaticHeader(id="app-header")
         header.display = self._header_should_display()
         yield header
+        yield Static("Prompt cache expired", id="cache-expired-banner")
         # Main chat area with scrollable messages
         # VerticalScroll tracks user scroll intent for better auto-scroll behavior.
         # `_ChatScroll` keeps clicks on messages from stealing input focus.
@@ -5346,6 +5379,8 @@ class DeepAgentsApp(App):
             on_auto_mode_event=self._on_auto_mode_event,
             on_approval_mode_fallback=self._on_approval_mode_fallback,
             show_diff_line_numbers=self._show_diff_line_numbers,
+            request_skill_trust=self._request_skill_trust,
+            on_skill_pinned=self._on_skill_pinned,
         )
         # Wire token display callbacks
         self._ui_adapter._on_tokens_update = self._on_tokens_update
@@ -5607,7 +5642,7 @@ class DeepAgentsApp(App):
             root = await asyncio.to_thread(project_root_for, Path(self._cwd))
             config_path = project_hooks_path(root)
             has_project_hooks = await asyncio.to_thread(config_path.is_file)
-        except (OSError, ValueError):
+        except OSError, ValueError:
             logger.warning(
                 "Could not inspect project hooks after cwd switch",
                 exc_info=True,
@@ -5888,7 +5923,7 @@ class DeepAgentsApp(App):
             # graph in separate workers. Let prewarm finish first so CPython's
             # per-module import locks cannot form a cycle.
             await self._await_prewarm_imports()
-            skills, roots = await asyncio.to_thread(
+            skills, _roots = await asyncio.to_thread(
                 self._discover_skills_and_roots_with_import_lock,
             )
         except OSError:
@@ -5917,7 +5952,6 @@ class DeepAgentsApp(App):
             return False
 
         self._discovered_skills = skills
-        self._skill_allowed_roots = roots
         if skills:
             skill_commands = build_skill_commands(skills)
             if self._chat_input:
@@ -5986,16 +6020,9 @@ class DeepAgentsApp(App):
         Returns:
             A short user-facing provenance and rationale sentence.
         """
-        if source == "managed config":
-            owner = "Your administrator set this policy through managed config"
-        elif source == "config.toml":
-            owner = "This policy was set in your config.toml"
-        else:
-            owner = "This policy was set by active configuration"
-        return (
-            f"{owner} to keep older threads from restoring stale context after "
-            "model or policy changes."
-        )
+        from deepagents_code.resume_policy import resume_cutoff_explanation
+
+        return resume_cutoff_explanation(source)
 
     @staticmethod
     def _resume_cutoff() -> tuple[datetime, str, bool] | None:
@@ -6004,69 +6031,16 @@ class DeepAgentsApp(App):
         Returns:
             The cutoff, its source, and whether it is rolling, or `None`.
         """
-        from deepagents_code.config_manifest import (
-            _emit_ranked_diagnostics,
-            _ranked_source,
-            get_option,
-            parse_duration_seconds,
-        )
-        from deepagents_code.configuration.resolver import get_config_resolver
+        from deepagents_code.resume_policy import resume_cutoff
 
-        resolver = get_config_resolver()
-        cutoffs: list[tuple[datetime, str, bool]] = []
-        for key in ("threads.resume_after", "threads.max_resume_age"):
-            option = get_option(key)
-            if option is None:
-                continue
-            resolved = resolver.get(option)
-            _emit_ranked_diagnostics(option, resolved)
-            value = resolved.value
-            if key.endswith("resume_after") and isinstance(value, str):
-                cutoffs.append(
-                    (datetime.fromisoformat(value), _ranked_source(resolved), False)
-                )
-            elif key.endswith("max_resume_age") and isinstance(value, str):
-                seconds = parse_duration_seconds(value)
-                if seconds is not None:
-                    cutoff = datetime.min.replace(tzinfo=UTC)
-                    with suppress(OverflowError):
-                        cutoff = datetime.now(UTC) - timedelta(seconds=seconds)
-                    cutoffs.append((cutoff, _ranked_source(resolved), True))
-        return max(cutoffs, default=None)
+        return resume_cutoff()
 
     @staticmethod
     async def _thread_resume_block(thread_id: str) -> str | None:
         """Return why configured policy blocks resuming a thread, if applicable."""
-        from deepagents_code.config_manifest import normalize_iso_datetime
-        from deepagents_code.sessions import get_thread_updated_at
+        from deepagents_code.resume_policy import thread_resume_block
 
-        policy = DeepAgentsApp._resume_cutoff()
-        if policy is None:
-            return None
-        cutoff, source, rolling = policy
-        explanation = DeepAgentsApp._resume_cutoff_explanation(source)
-        updated_value = await get_thread_updated_at(thread_id)
-        normalized = normalize_iso_datetime(updated_value)
-        if normalized is None:
-            logger.warning(
-                "Blocking resume for thread %s: missing or invalid updated_at %r",
-                thread_id,
-                updated_value,
-            )
-            return (
-                f"Thread {thread_id} cannot be resumed because its last-updated "
-                f"time could not be verified.\n\n{explanation}"
-            )
-        if datetime.fromisoformat(normalized) >= cutoff:
-            return None
-        reason = (
-            "it is older than the configured maximum age"
-            if rolling
-            else f"it was last updated before {cutoff.isoformat()}"
-        )
-        return (
-            f"Thread {thread_id} cannot be resumed because {reason}.\n\n{explanation}"
-        )
+        return await thread_resume_block(thread_id, DeepAgentsApp._resume_cutoff())
 
     def _reserve_thread(self, thread_id: str) -> None:
         """Reserve a locally managed thread before reading or adopting it."""
@@ -6713,7 +6687,7 @@ class DeepAgentsApp(App):
 
             try:
                 messages = self.query_one("#messages", Container)
-            except (NoMatches, ScreenStackError):
+            except NoMatches, ScreenStackError:
                 return
             if not messages.is_attached:
                 return
@@ -7718,17 +7692,30 @@ class DeepAgentsApp(App):
             await self._mount_message(
                 AppMessage(f"Update log: {format_log_follow_command(log_path)}"),
             )
+
+        notices: list[str] = []
+        deferred: list[bool] = []
+        unverified: list[bool] = []
+
+        async def show_upgrade_notice(message: str) -> None:
+            notices.append(message)
+            await self._mount_message(AppMessage(message))
+
+        # A Python migration rebuilds the environment this session imports
+        # from, so the TUI defers it to `dcode update` from the shell.
         success, output, installed = await perform_upgrade(
+            on_notice=show_upgrade_notice,
             log_path=log_path,
             include_prereleases=include_prereleases,
             target_version=latest,
+            allow_python_migration=False,
+            on_migration_deferred=lambda: deferred.append(True),
+            on_unverified_install=lambda: unverified.append(True),
         )
         if success:
             self._update_available = (False, None)
-            # The install command is unpinned, so the installer may have
-            # resolved a release newer than the one the update check observed
-            # (a release published while the session sat open). Report what
-            # actually landed on disk rather than the stale check result.
+            # uv installs are pinned and verified, and other methods report
+            # the target, so this matches `latest`; the fallback is defensive.
             upgraded_to = installed or latest
             # uv may have installed the upgraded shim into a directory that
             # isn't first on the user's PATH (e.g. a leftover pre-uv
@@ -7755,6 +7742,24 @@ class DeepAgentsApp(App):
                 await self._mount_message(
                     ErrorMessage(format_shadowed_dcode_warning(shadow)),
                 )
+        elif unverified:
+            # This session lazily imports modules that uv may have replaced.
+            await self._mount_message(
+                ErrorMessage(
+                    "Update could not be verified; see above. Quit and relaunch "
+                    "dcode before continuing."
+                ),
+            )
+        elif deferred:
+            # Nothing ran, so there is no failure or log to point at.
+            await self._mount_message(AppMessage("Update deferred; see above."))
+        elif notices:
+            # The notice already carries its own recovery steps; a generic
+            # command here would contradict them.
+            log_line = f"\nLog: {log_path}" if log_path is not None else ""
+            await self._mount_message(
+                AppMessage(f"Update failed; see the message above.{log_line}"),
+            )
         else:
             cmd = upgrade_command(
                 include_prereleases=upgrade_include_prereleases,
@@ -8876,7 +8881,7 @@ class DeepAgentsApp(App):
             # composes its own rack, and modals must not retune the main one.
             screen = chrome.screen
             rack = screen.get_child_by_id("textual-toastrack")
-        except (NoMatches, NoScreen):
+        except NoMatches, NoScreen:
             return
         region = chrome.region
         if not region:
@@ -9721,22 +9726,79 @@ class DeepAgentsApp(App):
         except Exception:
             logger.debug("Cache-expiring notification failed", exc_info=True)
 
-    def _check_cache_expiry(self) -> None:
-        """Offer a handoff once per expired cache window, only when idle.
+    def _refresh_cache_expiry_banner(self) -> None:
+        """Show reconciled cache expiry independently of handoff preferences."""
+        if not self.screen_stack:
+            return
+        banners = self.screen_stack[0].query("#cache-expired-banner")
+        if banners:
+            expires_at = self._status_bar.cache_expires_at if self._status_bar else None
+            banner = banners.first(Static)
+            banner.display = (
+                not self._cache_reconciliation_pending
+                and expires_at is not None
+                and datetime.now(UTC) >= expires_at
+            )
+            if banner.display and expires_at is not None:
+                expired_at = expires_at.astimezone().strftime("%H:%M:%S")
+                elapsed = datetime.now(UTC) - expires_at
+                age = "just now"
+                for unit in ("day", "hour", "minute"):
+                    count = elapsed // timedelta(**{f"{unit}s": 1})
+                    if count:
+                        age = f"{count} {unit}{'s' if count != 1 else ''} ago"
+                        break
+                banner.update(f"Prompt cache expired at {expired_at} ({age})")
 
-        Polled every second from `on_mount`. Acts only when
-        `warnings.cache_prompt` is `expiry` and no cold-cache opt-out applies.
-        """
+    def _check_idle_compaction(self) -> None:
+        """Reserve one offload per warm cache window, without yielding to input."""
+        from deepagents_code.config_manifest import get_option
+        from deepagents_code.configuration.resolver import get_config_resolver
+
+        option = get_option("history.idle_compaction_tokens")
+        threshold = get_config_resolver().get(option).value if option else 0
         expires_at = self._status_bar.cache_expires_at if self._status_bar else None
+        window = self._status_bar.cache_window_seconds if self._status_bar else None
+        lead = min(window * 0.2, _IDLE_COMPACTION_LEAD_SECONDS) if window else 0
         thread_id = self._lc_thread_id
         if (
-            expires_at is None
+            not isinstance(threshold, int)
+            or threshold <= 0
+            or self._tokens_approximate
+            or self._context_tokens < threshold
             or not thread_id
-            or datetime.now(UTC) < expires_at
-            or self._cache_expiry_seen.get(thread_id) == expires_at
-            or not self._agent
+            or expires_at is None
+            or self._idle_compaction_seen.get(thread_id) == expires_at
+            or not 0 < (expires_at - datetime.now(UTC)).total_seconds() <= lead
+            or not self._cache_maintenance_idle()
+            or self._remote_agent() is None
+        ):
+            return
+        self._idle_compaction_seen[thread_id] = expires_at
+        self._set_agent_running(True)
+        try:
+            self._offload_worker = self.run_worker(
+                self._run_offload_task(idle_window=(thread_id, expires_at)),
+                group="offload",
+                exit_on_error=False,
+            )
+        except Exception:
+            self._set_agent_running(False)
+            logger.exception("Failed to schedule idle compaction")
+
+    def _cache_maintenance_idle(self, *, reserved: bool = False) -> bool:
+        """Require a quiescent UI before automatic cache maintenance.
+
+        Args:
+            reserved: Ignore the automatic offload's own busy reservation.
+
+        Returns:
+            Whether no UI activity competes with cache maintenance.
+        """
+        return not (
+            not self._agent
             or not self._session_state
-            or self._agent_running
+            or (self._agent_running and not reserved)
             or self._agent_reconciling
             or self._goal_state_mutating
             or self._shell_running
@@ -9752,6 +9814,25 @@ class DeepAgentsApp(App):
             or self._reloading
             or self._exiting
             or isinstance(self.screen, ModalScreen)
+            or self._cache_reconciliation_pending
+        )
+
+    def _check_cache_expiry(self) -> None:
+        """Offer a handoff once per expired cache window, only when idle.
+
+        Polled every second from `on_mount`. Acts only when
+        `warnings.cache_prompt` is `expiry` and no cold-cache opt-out applies.
+        """
+        self._refresh_cache_expiry_banner()
+        self._check_idle_compaction()
+        expires_at = self._status_bar.cache_expires_at if self._status_bar else None
+        thread_id = self._lc_thread_id
+        if (
+            expires_at is None
+            or not thread_id
+            or datetime.now(UTC) < expires_at
+            or self._cache_expiry_seen.get(thread_id) == expires_at
+            or not self._cache_maintenance_idle()
         ):
             return
         if (
@@ -10776,7 +10857,7 @@ class DeepAgentsApp(App):
         """
         try:
             messages = self.query_one("#messages", Container)
-        except (NoMatches, ScreenStackError):
+        except NoMatches, ScreenStackError:
             logger.debug(
                 "Messages container unavailable; skipping transient status %r",
                 content,
@@ -11424,7 +11505,7 @@ class DeepAgentsApp(App):
         """
         try:
             await widget.remove()
-        except (AttributeError, RuntimeError):
+        except AttributeError, RuntimeError:
             logger.debug(
                 "Failed to remove %s widget during %s",
                 prompt_name,
@@ -13977,7 +14058,7 @@ class DeepAgentsApp(App):
                     proc.kill()
             with suppress(ProcessLookupError, OSError):
                 await proc.wait()
-        except (ProcessLookupError, OSError):
+        except ProcessLookupError, OSError:
             pass
 
     async def _open_url_command(self, command: str, cmd: str) -> None:
@@ -17728,7 +17809,9 @@ class DeepAgentsApp(App):
                 raise
         elif cmd == "/rename" or cmd.startswith("/rename "):
             await self._rename_current_thread(command.partition(" ")[2])
-        elif cmd == "/threads" or cmd.startswith("/threads "):
+        elif cmd in {"/threads", "/resume"} or cmd.startswith(
+            ("/threads ", "/resume ")
+        ):
             await self._handle_threads_command(command)
         elif cmd == "/trace":
             await self._handle_trace_command(command)
@@ -17964,28 +18047,20 @@ class DeepAgentsApp(App):
         *,
         command: str | None = None,
     ) -> None:
-        """Load a skill, render its widget, and send its prompt to the agent.
+        """Render a skill row and ask the agent server to pin the skill.
 
-        Looks up the skill from cached metadata (populated at startup), falling
-        back to a fresh filesystem walk on cache miss. Reads the `SKILL.md`
-        body, wraps it in a prompt envelope with any user-provided arguments,
-        and sends the composed message to the agent.
+        The server resolves, trust-checks, and reads the skill, and reports any
+        failure as a turn error. The row's instructions fill in when the pinned
+        message streams back.
 
         Args:
             skill_name: Skill name to invoke.
-            args: Optional user request to append after the skill body.
+            args: Optional user request sent with the skill.
             command: Original slash command text for UI echo, if any.
         """
         from deepagents_code.skills.invocation import build_skill_invocation_envelope
-        from deepagents_code.skills.load import load_skill_content
 
         normalized_name = skill_name.strip().lower()
-
-        async def _mount_error(message: str) -> None:
-            if command is not None:
-                await self._mount_message(UserMessage(command))
-            await self._mount_message(AppMessage(message))
-
         if not normalized_name:
             if command is not None:
                 await self._mount_message(UserMessage(command))
@@ -17994,255 +18069,65 @@ class DeepAgentsApp(App):
                 await self._mount_message(AppMessage("Skill name is required."))
             return
 
-        # Fast path: look up from the cached discovery results
-        cached = next(
-            (s for s in self._discovered_skills if s["name"] == normalized_name),
-            None,
-        )
-        allowed_roots = self._skill_allowed_roots
-
-        # Cache miss — fall back to fresh discovery (offloaded to thread)
-        if cached is None:
-            try:
-                skills, allowed_roots = await asyncio.to_thread(
-                    self._discover_skills_and_roots_with_import_lock,
-                )
-                # Backfill cache so subsequent invocations are fast
-                self._discovered_skills = skills
-                self._skill_allowed_roots = allowed_roots
-                cached = next((s for s in skills if s["name"] == normalized_name), None)
-            except OSError as exc:
-                logger.warning(
-                    "Filesystem error loading skill %r",
-                    normalized_name,
-                    exc_info=True,
-                )
-                await _mount_error(
-                    f"Could not load skill: {normalized_name}. Filesystem error: {exc}",
-                )
-                return
-            except Exception as exc:
-                logger.warning(
-                    "Error searching for skill %r",
-                    normalized_name,
-                    exc_info=True,
-                )
-                await _mount_error(
-                    f"Error loading skill: {normalized_name}. "
-                    f"Unexpected error: {type(exc).__name__}: {exc}",
-                )
-                return
-
-        if cached is None:
-            logger.warning("Skill not found: %r", normalized_name)
-            await _mount_error(f"Skill not found: {normalized_name}")
-            return
-
-        # Load SKILL.md content (filesystem I/O offloaded to thread)
-        skill_path = cached["path"]
-
-        def _load() -> str | None:
-            return load_skill_content(str(skill_path), allowed_roots=allowed_roots)
-
-        try:
-            content = await asyncio.to_thread(_load)
-        except PermissionError as exc:
-            logger.warning(
-                "Containment check failed for skill %r",
-                normalized_name,
-                exc_info=True,
-            )
-            content = await self._prompt_skill_trust_and_retry(
-                normalized_name,
-                skill_path,
-                allowed_roots,
-                fallback_error=str(exc),
-                mount_error=_mount_error,
-            )
-            if content is None:
-                return
-        except OSError as exc:
-            logger.warning(
-                "Filesystem error loading skill %r",
-                normalized_name,
-                exc_info=True,
-            )
-            await _mount_error(
-                f"Could not load skill: {normalized_name}. Filesystem error: {exc}",
-            )
-            return
-        except Exception as exc:
-            logger.warning("Error reading skill %r", normalized_name, exc_info=True)
-            await _mount_error(
-                f"Error loading skill: {normalized_name}. "
-                f"Unexpected error: {type(exc).__name__}: {exc}",
-            )
-            return
-
-        if content is None:
-            await _mount_error(
-                f"Could not read content for skill: {normalized_name}. "
-                "Check that the SKILL.md file exists, is readable, "
-                "and is saved as UTF-8.",
-            )
-            return
-
-        if not content.strip():
-            await _mount_error(
-                f"Skill '{normalized_name}' has an empty SKILL.md file. "
-                "Add instructions to the file before invoking.",
-            )
-            return
-
-        envelope = build_skill_invocation_envelope(cached, content, args)
-
-        await self._mount_message(
-            SkillMessage(
-                skill_name=cached["name"],
-                description=str(cached.get("description", "")),
-                source=str(cached.get("source", "")),
-                body=content,
-                args=args,
-            ),
-        )
+        envelope = build_skill_invocation_envelope(normalized_name, args)
+        row = SkillMessage(skill_name=normalized_name, args=args)
+        self._pending_skill_row = row
+        await self._mount_message(row)
         await self._send_to_agent(
             envelope.prompt,
             message_kwargs=envelope.message_kwargs,
             skill_name=envelope.skill_name,
         )
 
-    async def _prompt_skill_trust_and_retry(
-        self,
-        skill_name: str,
-        skill_path: str | Path,
-        allowed_roots: list[Path],
-        *,
-        fallback_error: str,
-        mount_error: Callable[[str], Awaitable[None]],
-    ) -> str | None:
-        """Prompt to trust an out-of-bounds skill directory, then reload it.
-
-        Mirrors the MCP project-trust flow: when containment fails, the user is
-        asked once to allow the resolved target directory. Allowing persists the
-        decision, extends the in-session containment allowlist, and retries the
-        read. Denying (or a prior deny this session) shows the original error.
+    def _on_skill_pinned(self, name: str, description: str, body: str) -> None:
+        """Fill the pending skill row with the instructions the server pinned.
 
         Args:
-            skill_name: Normalized skill name, for messaging.
-            skill_path: Path to the skill's `SKILL.md`.
-            allowed_roots: Containment roots to extend on approval.
-            fallback_error: Original `PermissionError` message to show on deny.
-            mount_error: Callback to surface an error in the chat log.
+            name: Pinned skill name.
+            description: Skill description from its frontmatter.
+            body: Pinned `SKILL.md` body.
+        """
+        row, self._pending_skill_row = self._pending_skill_row, None
+        if row is None or row._skill_name != name:
+            return
+        row.set_instructions(description, body)
+        if row.id:
+            self._message_store.update_message(
+                row.id, skill_description=description, skill_body=body
+            )
+
+    async def _request_skill_trust(self, skill_name: str, directory: str) -> bool:
+        """Ask whether to trust a skill directory for the agent server.
+
+        The server saves an approval. A denial is remembered for the session so
+        the same directory is not asked about again.
+
+        Args:
+            skill_name: Skill the user invoked, for the prompt.
+            directory: Resolved directory the server asks to trust.
 
         Returns:
-            The skill content on approval and successful reload, or `None` when
-                the user declined or the retry failed (an error was mounted).
+            Whether the user approved the directory.
         """
-        from deepagents_code.skills.load import load_skill_content
-        from deepagents_code.skills.trust import trust_skill_dir
         from deepagents_code.tui.widgets.skill_trust import SkillTrustScreen
 
-        try:
-            target_dir = await asyncio.to_thread(_resolve_parent_dir, skill_path)
-        except (OSError, RuntimeError):
-            # Resolving the skill path can fail (e.g. a symlink loop introduced
-            # in the window after the first containment check raised). Fail
-            # closed with the original error rather than letting the worker
-            # exception escape unhandled — this mirrors the retry block below,
-            # which already guards its own resolve.
-            logger.warning(
-                "Could not resolve skill path %r for the trust prompt; refusing",
-                skill_path,
-                exc_info=True,
-            )
-            await mount_error(fallback_error)
-            return None
-
-        if target_dir in self._skill_trust_denied:
-            await mount_error(fallback_error)
-            return None
-
+        if directory in self._skill_trust_denied:
+            return False
         try:
             allowed = await self._push_screen_wait(
-                SkillTrustScreen(skill_name, target_dir)
+                SkillTrustScreen(skill_name, directory)
             )
         except Exception:
-            # This runs inside `_invoke_skill`'s `except PermissionError` block,
-            # so an error escaping the modal push would not be caught by that
-            # method's sibling handlers and would surface as an unhandled worker
-            # crash. Fail closed: treat a modal failure as a deny.
+            # Fail closed: a prompt that cannot display is a deny.
             logger.warning(
                 "Skill trust prompt failed to display for %s; refusing",
-                target_dir,
+                directory,
                 exc_info=True,
             )
-            self._skill_trust_denied.add(target_dir)
-            await mount_error(fallback_error)
-            return None
+            allowed = False
         if not allowed:
-            self._skill_trust_denied.add(target_dir)
-            await mount_error(fallback_error)
-            return None
-
-        if not await asyncio.to_thread(trust_skill_dir, target_dir):
-            # The modal told the user this location would be remembered for
-            # future sessions. Persisting failed (read-only/full `.state`), so
-            # surface that: we honor the approval this session, but they will be
-            # asked again next launch. Logging alone would silently break that
-            # promise.
-            logger.warning("Could not persist skill trust for %s", target_dir)
-            self.notify(
-                "Approved for this session, but the decision could not be "
-                "saved — you may be asked again next time.",
-                severity="warning",
-                markup=False,
-            )
-
-        target_path = Path(target_dir)
-        for roots in (allowed_roots, self._skill_allowed_roots):
-            if target_path not in roots:
-                roots.append(target_path)
-
-        def _retry() -> str | None:
-            return load_skill_content(str(skill_path), allowed_roots=allowed_roots)
-
-        try:
-            content = await asyncio.to_thread(_retry)
-        except PermissionError:
-            # Containment failed *after* the target dir was allowlisted, so the
-            # skill path must now resolve somewhere else — a symlink swap during
-            # the prompt window. Refuse and flag it distinctly from a plain read
-            # error. (PermissionError is an OSError subclass, so this must come
-            # first.)
-            logger.warning(
-                "Skill %r resolved outside the approved directory on retry "
-                "(target may have changed since approval); refusing",
-                skill_name,
-                exc_info=True,
-            )
-            await mount_error(
-                f"Could not load skill: {skill_name}. Its location changed "
-                "after you approved it, so it was not read.",
-            )
-            return None
-        except OSError:
-            logger.warning(
-                "Retry load failed for skill %r after trust",
-                skill_name,
-                exc_info=True,
-            )
-            await mount_error(
-                f"Could not load skill: {skill_name} after granting trust.",
-            )
-            return None
-
-        if content is None:
-            await mount_error(
-                f"Could not read content for skill: {skill_name}. "
-                "Check that the SKILL.md file exists, is readable, "
-                "and is saved as UTF-8.",
-            )
-        return content
+            self._skill_trust_denied.add(directory)
+        return bool(allowed)
 
     def _schedule_reload(self) -> asyncio.Task[None]:
         """Run `/reload` off the Textual message pump.
@@ -18399,7 +18284,7 @@ class DeepAgentsApp(App):
 
                 clear_caches()
                 self._sync_status_model()
-            except (OSError, ValueError):
+            except OSError, ValueError:
                 logger.exception("Failed to reload configuration")
                 await self._mount_message(
                     AppMessage(
@@ -18462,7 +18347,7 @@ class DeepAgentsApp(App):
                     f"  - {change}" for change in changes
                 )
             else:
-                report = "Configuration reloaded. No changes detected."
+                report = "Configuration reloaded."
             report += "\nModel config caches cleared."
             if theme_reload_ok:
                 report += "\nTheme registry reloaded."
@@ -18478,8 +18363,10 @@ class DeepAgentsApp(App):
                 # Diff is meaningless when discovery failed: prior cache
                 # was preserved, so old vs. new is identical and
                 # `Skills reloaded. No changes detected.` would be a lie.
+                # The agent rescans its own skills, so its list can differ.
                 report += (
-                    "\nSkill re-discovery failed; existing /skill: list left as-is."
+                    "\nSkill re-discovery failed; /skill: autocomplete left as-is. "
+                    "The agent's skill list may differ."
                 )
             elif added_skills or removed_skills:
                 skill_lines = []
@@ -18494,6 +18381,8 @@ class DeepAgentsApp(App):
             from deepagents_code.plugins.adapters.hooks import plugin_hook_event_names
             from deepagents_code.plugins.adapters.mcp import plugin_mcp_configs
 
+            # The agent rescans its skills only in a new server process.
+            server_fresh = False
             try:
                 plugin_result, new_plugin_fingerprints = await asyncio.to_thread(
                     self._discover_plugins_with_fingerprints
@@ -18601,6 +18490,7 @@ class DeepAgentsApp(App):
                             self._pending_messages.extendleft(reversed(preserved))
                             self._sync_status_queued()
                     if restart_result.restarted:
+                        server_fresh = True
                         self._session_plugin_ids = discovered_plugin_ids
                         report += "\nAgent server restarted for plugin MCP."
                         if restart_result.mcp_status == "disabled":
@@ -18641,12 +18531,14 @@ class DeepAgentsApp(App):
                 # preload kwargs so the reason matches how `_respawn_server`
                 # derives the same status.
                 elif self._server_kwargs.get("no_mcp"):
+                    server_fresh = True
                     # Mirrors the `--no-mcp` line in the restart branch.
                     report += (
                         "\nMCP is disabled for this session (--no-mcp); "
                         "no servers were loaded."
                     )
                 else:
+                    server_fresh = True
                     report += (
                         "\nMCP server changes couldn't be determined; the "
                         "local server hasn't started yet. If startup "
@@ -18654,6 +18546,10 @@ class DeepAgentsApp(App):
                         "to check."
                     )
 
+            if not server_fresh:
+                report += (
+                    "\nThe agent keeps its current skills until its server restarts."
+                )
             await self._mount_message(AppMessage(report))
             await self._maybe_start_deferred_server_from_default()
         except Exception:
@@ -18749,7 +18645,9 @@ class DeepAgentsApp(App):
         _, conversation = await self._get_context_usage_counts()
         return conversation
 
-    async def _handle_server_offload(self, config: RunnableConfig) -> None:
+    async def _handle_server_offload(
+        self, config: RunnableConfig, *, automatic: bool = False
+    ) -> None:
         """Request and render the built-in server-owned offload operation."""
         from deepagents_code.hooks.client_lifecycle import ClientHookStopError
 
@@ -18776,6 +18674,8 @@ class DeepAgentsApp(App):
             await self._sync_session_cost_from_checkpoint()
 
             status = result.get("status")
+            if automatic and status in {"empty", "noop"}:
+                return
             if status == "empty":
                 await self._mount_message(
                     AppMessage("Nothing to offload — start a conversation first")
@@ -18944,11 +18844,27 @@ class DeepAgentsApp(App):
                 ErrorMessage(f"Offload failed: {format_agent_exception(exc)}")
             )
 
-    async def _run_offload_task(self) -> None:
+    async def _run_offload_task(
+        self, *, idle_window: tuple[str, datetime] | None = None
+    ) -> None:
         """Run a synchronously reserved `/offload` outside the App message pump."""
         self._offload_task_started = True
         try:
-            await self._handle_offload(reserved=True)
+            if idle_window is not None:
+                if (
+                    self._lc_thread_id != idle_window[0]
+                    or not self._status_bar
+                    or self._status_bar.cache_expires_at != idle_window[1]
+                    or datetime.now(UTC) >= idle_window[1]
+                    or not self._cache_maintenance_idle(reserved=True)
+                ):
+                    self._set_agent_running(False)
+                    return
+                self.notify(
+                    "Compacting idle context before cache expiry.",
+                    markup=False,
+                )
+            await self._handle_offload(reserved=True, automatic=idle_window is not None)
         finally:
             self._offload_task_started = False
             self._offload_worker = None
@@ -18956,16 +18872,19 @@ class DeepAgentsApp(App):
             if not self._startup_sequence_running:
                 await self._process_next_from_queue()
 
-    async def _handle_offload(self, *, reserved: bool = False) -> None:
+    async def _handle_offload(
+        self, *, reserved: bool = False, automatic: bool = False
+    ) -> None:
         """Run `/offload`, always releasing its busy-state reservation.
 
         Args:
             reserved: Whether the caller already reserved the turn synchronously.
+            automatic: Suppress no-op feedback for idle cache maintenance.
         """
         if not reserved:
             self._set_agent_running(True)
         try:
-            await self._offload_impl()
+            await self._offload_impl(automatic=automatic)
         finally:
             self._set_agent_running(False)
             try:
@@ -18973,7 +18892,7 @@ class DeepAgentsApp(App):
             except Exception:  # best-effort spinner cleanup
                 logger.exception("Failed to dismiss spinner after offload")
 
-    async def _offload_impl(self) -> None:
+    async def _offload_impl(self, *, automatic: bool = False) -> None:
         """Offload older messages through the dcode server operation."""
         if not self._agent or not self._lc_thread_id:
             await self._mount_message(
@@ -18989,7 +18908,7 @@ class DeepAgentsApp(App):
             return
 
         config: RunnableConfig = {"configurable": {"thread_id": self._lc_thread_id}}
-        await self._handle_server_offload(config)
+        await self._handle_server_offload(config, automatic=automatic)
 
     def _start_plugin_auto_update(self) -> None:
         """Start the plugin auto-update worker."""
@@ -20569,7 +20488,7 @@ class DeepAgentsApp(App):
 
     @staticmethod
     def _convert_messages_to_data(
-        messages: list[Any], *, show_reasoning: bool = False
+        messages: list[Any], *, show_reasoning: bool = True
     ) -> list[MessageData]:
         """Convert LangChain messages into lightweight `MessageData` objects.
 
@@ -20587,10 +20506,14 @@ class DeepAgentsApp(App):
         from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
         from deepagents_code.file_ops import compute_unified_diff, format_display_path
+        from deepagents_code.skills.invocation import pinned_skill_parts
 
         result: list[MessageData] = []
         # Maps tool_call_id -> index into result list
         pending_tool_indices: dict[str, int] = {}
+        # Latest row from an explicit invocation. An SDK pin directly after it
+        # fills in its body instead of adding a row.
+        invocation: MessageData | None = None
 
         for msg in messages:
             if is_internal_message(msg):
@@ -20600,20 +20523,45 @@ class DeepAgentsApp(App):
                     msg.content if isinstance(msg.content, str) else str(msg.content)
                 )
 
-                # Detect skill invocations persisted via additional_kwargs
+                pinned = pinned_skill_parts(msg)
                 skill_meta = (msg.additional_kwargs or {}).get("__skill")
-                if isinstance(skill_meta, dict) and skill_meta.get("name"):
-                    result.append(
-                        MessageData(
-                            type=MessageType.SKILL,
-                            content="",
-                            skill_name=skill_meta["name"],
-                            skill_description=str(skill_meta.get("description", "")),
-                            skill_source=str(skill_meta.get("source", "")),
-                            skill_args=str(skill_meta.get("args", "")),
-                            skill_body=content,
+                if pinned is not None:
+                    name, description, body = pinned
+                    if (
+                        invocation is not None
+                        and result[-1] is invocation
+                        and invocation.skill_name == name
+                    ):
+                        invocation.skill_body = body
+                        invocation.skill_description = description
+                    else:
+                        result.append(
+                            MessageData(
+                                type=MessageType.SKILL,
+                                content="",
+                                skill_name=name,
+                                skill_description=description,
+                                skill_body=body,
+                            )
+                        )
+                elif isinstance(skill_meta, dict) and skill_meta.get("name"):
+                    # Older invocations embedded the instructions. Pinned ones
+                    # rely on the SDK message after them to fill the body, so
+                    # this placeholder stays only if the pin never happened.
+                    invocation = MessageData(
+                        type=MessageType.SKILL,
+                        content="",
+                        skill_name=skill_meta["name"],
+                        skill_description=str(skill_meta.get("description", "")),
+                        skill_source=str(skill_meta.get("source", "")),
+                        skill_args=str(skill_meta.get("args", "")),
+                        skill_body=(
+                            _SKILL_NOT_LOADED_BODY
+                            if skill_meta.get("pinned")
+                            else content
                         ),
                     )
+                    result.append(invocation)
                 else:
                     result.append(MessageData(type=MessageType.USER, content=content))
 
@@ -20801,7 +20749,7 @@ class DeepAgentsApp(App):
 
     @staticmethod
     def _prepare_thread_history_messages(
-        messages: list[Any], *, show_reasoning: bool = False
+        messages: list[Any], *, show_reasoning: bool = True
     ) -> tuple[list[MessageData], tuple[BaseMessage, ...]]:
         """Deserialize and project checkpoint messages for a resumed thread.
 
@@ -21075,7 +21023,7 @@ class DeepAgentsApp(App):
         try:
             resumable = await thread_exists(previous_thread_id)
             owner = await get_thread_agent(previous_thread_id) if resumable else None
-        except (sqlite3.Error, OSError):
+        except sqlite3.Error, OSError:
             # Keep store failures visible because they are not routine suppression.
             logger.info(
                 "Could not check whether previous thread %s is resumable",
@@ -22117,6 +22065,7 @@ class DeepAgentsApp(App):
                 self._last_cache_write = activity
             await self._refresh_cache_timing()
         self._cache_reconciliation_pending = pending
+        self._refresh_cache_expiry_banner()
 
     def _set_active_message(self, message_id: str | None) -> None:
         """Set the active streaming message (won't be pruned).
@@ -22554,18 +22503,18 @@ class DeepAgentsApp(App):
         if self._pending_approval_widget:
             try:
                 self._pending_approval_widget.action_select_reject()
-            except (AttributeError, RuntimeError):
+            except AttributeError, RuntimeError:
                 logger.exception("force-clear: failed to reject pending approval")
         if self._pending_ask_user_widget:
             try:
                 self._pending_ask_user_widget.action_cancel()
-            except (AttributeError, RuntimeError):
+            except AttributeError, RuntimeError:
                 logger.exception("force-clear: failed to cancel pending ask-user")
         self._cancel_goal_proposal_worker()
         if self._pending_goal_review_widget:
             try:
                 self._pending_goal_review_widget.action_cancel()
-            except (AttributeError, RuntimeError):
+            except AttributeError, RuntimeError:
                 logger.exception("force-clear: failed to cancel pending goal review")
         if self._shell_running and self._shell_worker:
             self._shell_worker.cancel()
@@ -23565,14 +23514,14 @@ class DeepAgentsApp(App):
                                 asyncio.shield(worker.wait()),
                                 timeout=_GRACEFUL_EXIT_WAIT_SECONDS,
                             )
-                        except (asyncio.CancelledError, WorkerCancelled):
+                        except asyncio.CancelledError, WorkerCancelled:
                             # Expected: exit() cancelled the worker above, so
                             # its cancellation handler ran to completion.
                             logger.debug(
                                 "Agent worker cancelled cleanly before app exit",
                                 exc_info=True,
                             )
-                        except (TimeoutError, WorkerFailed):
+                        except TimeoutError, WorkerFailed:
                             # The worker did not finish within the window, so
                             # the in-flight run's server-side trace may be
                             # incomplete. Surface above debug so the loss isn't
@@ -24814,7 +24763,7 @@ class DeepAgentsApp(App):
                             severity="warning",
                         )
                     return
-                if result is not None and not current_input.insert_at_cursor(result):
+                if result is not None and not current_input.replace_with_prompt(result):
                     self.notify(
                         "Could not insert the prompt: the composer is unavailable",
                         severity="warning",
@@ -26114,7 +26063,7 @@ class DeepAgentsApp(App):
                 if self._pending_ask_user_widget is not None:
                     try:
                         self._pending_ask_user_widget.action_cancel()
-                    except (AttributeError, RuntimeError):
+                    except AttributeError, RuntimeError:
                         logger.debug(
                             "Failed to cancel pending ask-user during agent swap",
                             exc_info=True,
@@ -26513,7 +26462,7 @@ class DeepAgentsApp(App):
             cli_version="0.1.0",
             release_age=" (released 2 days ago)",
             installed_age="",
-            upgrade_cmd="uv tool upgrade deepagents-code",
+            upgrade_cmd="uv tool install -U deepagents-code",
         )
         self._notice_registry.add(update_notification)
         self._update_modal_pending.set()
@@ -27350,10 +27299,25 @@ class DeepAgentsApp(App):
                             show_toast=not progress_modal_visible,
                         )
                         return
+
+                    notices: list[str] = []
+                    deferred: list[bool] = []
+                    unverified: list[bool] = []
+
+                    def show_upgrade_notice(message: str) -> None:
+                        notices.append(message)
+                        screen.append_line(message)
+                        self.notify(message, timeout=15, markup=False)
+
+                    # Same live-session constraint as `/update`.
                     success, output, installed = await perform_upgrade(
                         progress=screen.append_line,
+                        on_notice=show_upgrade_notice,
                         log_path=log_path,
                         target_version=payload.latest,
+                        allow_python_migration=False,
+                        on_migration_deferred=lambda: deferred.append(True),
+                        on_unverified_install=lambda: unverified.append(True),
                     )
                     if success:
                         self._notice_registry.remove(entry.key)
@@ -27378,11 +27342,9 @@ class DeepAgentsApp(App):
                                 markup=False,
                             )
                             return
-                        # The install command is unpinned, so the installer
-                        # may have resolved a release newer than the one this
-                        # notification advertised (a release published while
-                        # the notice sat open). Report what actually landed on
-                        # disk rather than the stale payload version.
+                        # uv installs are pinned and verified, and other
+                        # methods report the target, so this matches the
+                        # payload; the fallback is defensive.
                         upgraded_to = installed or payload.latest
                         # After `mark_success`: the modal stays un-dismissable
                         # until it is marked done, and this worker runs with
@@ -27400,12 +27362,35 @@ class DeepAgentsApp(App):
                             markup=False,
                         )
                         return
+                    self._notice_registry.remove(entry.key)
+                    if deferred:
+                        logger.info(
+                            "Deferred the Python migration for v%s", payload.latest
+                        )
+                        screen.mark_warning("Update deferred. See details.")
+                        return
                     logger.warning(
                         "Auto-upgrade failed for v%s. Output:\n%s",
                         payload.latest,
                         output,
                     )
-                    self._notice_registry.remove(entry.key)
+                    if unverified:
+                        # This session lazily imports modules that uv may have
+                        # replaced.
+                        restart = (
+                            "Update could not be verified. Quit and relaunch dcode "
+                            "before continuing."
+                        )
+                        screen.mark_warning(restart)
+                        self.notify(
+                            restart, severity="warning", timeout=20, markup=False
+                        )
+                        return
+                    if notices:
+                        # The notice toast and modal line already carry the
+                        # notice's own recovery steps.
+                        screen.mark_warning("Update did not complete. See details.")
+                        return
                     screen.mark_failure(cmd)
                     snippet = _truncate(output, limit=160) if output else ""
                     message = f"Auto-update failed. Run manually: {cmd}"
@@ -27948,7 +27933,7 @@ class DeepAgentsApp(App):
         """
         try:
             banner = self.query_one("#welcome-banner", WelcomeBanner)
-        except (NoMatches, ScreenStackError):
+        except NoMatches, ScreenStackError:
             logger.debug("Welcome banner not mounted during MCP count refresh")
             return
         banner.set_connected(
@@ -30115,7 +30100,24 @@ class DeepAgentsApp(App):
                 "Use /threads to try again.",
                 exc,
             )
-            await self._mount_message(ErrorMessage(body))
+            await self._mount_thread_switch_error(body)
+
+    async def _mount_thread_switch_error(self, body: str | Content) -> None:
+        """Replace transient thread-switch failures without storing them in history."""
+        async with self._transcript_mutation_lock:
+            prior = self._thread_switch_error_widget
+            self._thread_switch_error_widget = None
+            if prior is not None and prior.is_attached:
+                await prior.remove()
+            try:
+                messages = self.query_one("#messages", Container)
+            except NoMatches:
+                return
+            if not messages.is_attached:
+                return
+            widget = ErrorMessage(body)
+            await self._mount_before_queued(messages, widget)
+            self._thread_switch_error_widget = widget
 
     async def _resolve_threads_resume_target(
         self, requested_id: str | None
@@ -30193,7 +30195,7 @@ class DeepAgentsApp(App):
 
             msg = f"No previous threads for '{active_agent}' to resume."
             await self._mount_message(AppMessage(msg))
-        except (sqlite3.Error, OSError):
+        except sqlite3.Error, OSError:
             # Expected thread-store failures: log for a debug session and tell
             # the user to retry. Mirrors the launch-time resolver's handling.
             logger.warning(
@@ -30352,11 +30354,9 @@ class DeepAgentsApp(App):
                     "Failed to prefetch cross-agent thread %s",
                     target.thread_id,
                 )
-                await self._mount_message(
-                    ErrorMessage(
-                        f"Could not load thread {target.thread_id}: {exc}. "
-                        "Staying on the current agent."
-                    )
+                await self._mount_thread_switch_error(
+                    f"Could not load thread {target.thread_id}: {exc}. "
+                    "Staying on the current agent."
                 )
                 return
 
@@ -30396,11 +30396,9 @@ class DeepAgentsApp(App):
                 target.thread_id,
                 target.agent_name,
             )
-            await self._mount_message(
-                ErrorMessage(
-                    f"Could not switch to agent {target.agent_name!r} and resume "
-                    f"thread {target.thread_id}."
-                )
+            await self._mount_thread_switch_error(
+                f"Could not switch to agent {target.agent_name!r} and resume "
+                f"thread {target.thread_id}."
             )
 
     def _open_thread_reference_selector(self, initial_query: str) -> None:
@@ -30730,46 +30728,14 @@ class DeepAgentsApp(App):
     ) -> tuple[Literal["match", "unavailable", "mismatch"], Path | None]:
         """Classify a stored thread cwd against the current app cwd.
 
-        Args:
-            raw: The cwd recorded in the thread's checkpoint metadata. May be
-                relative or use `~`; both are normalized here.
-            current_cwd: The app's current working directory.
+        See `resume_policy.classify_thread_cwd`.
 
         Returns:
-            A `(status, path)` pair. `path` is only set when `status` is
-            `"mismatch"`; it is `None` otherwise. `status` is one of:
-
-            - `"match"`: the stored cwd resolves to the current cwd; no action.
-            - `"unavailable"`: the stored cwd is relative/malformed, or names an
-                absolute directory that no longer exists — it cannot be honored,
-                so the caller should warn and stay put.
-            - `"mismatch"`: the stored cwd is a real directory that differs from
-                the current cwd — the caller should offer to switch.
+            A `(status, path)` pair; `path` is set only for `"mismatch"`.
         """
-        target = Path(raw).expanduser()
-        if not target.is_absolute() or not target.is_dir():
-            # Relative/malformed or missing directory: cannot be honored.
-            return "unavailable", None
-        try:
-            current = Path(current_cwd).expanduser().resolve()
-            resolved = target.resolve()
-        except OSError:
-            # Symlink resolution failed (e.g. ELOOP, permission on a path
-            # component). Fall back to a non-resolving comparison, which can
-            # report a spurious mismatch for symlinked-but-equal paths; log so
-            # the degraded comparison is traceable.
-            logger.debug(
-                "Could not resolve cwd paths for mismatch check (%r vs %r); "
-                "falling back to non-resolving comparison",
-                current_cwd,
-                raw,
-                exc_info=True,
-            )
-            current = Path(current_cwd).expanduser().absolute()
-            resolved = target.absolute()
-        if current == resolved:
-            return "match", None
-        return "mismatch", resolved
+        from deepagents_code.resume_policy import classify_thread_cwd
+
+        return classify_thread_cwd(raw, current_cwd)
 
     async def _thread_cwd_mismatch(self, thread_id: str) -> Path | None:
         """Return the thread cwd when it differs from the current app cwd."""
@@ -31071,7 +31037,7 @@ class DeepAgentsApp(App):
                 credentials.preview_reload_from_environment,
                 start_path=cwd,
             )
-        except (OSError, ValueError):
+        except OSError, ValueError:
             # Environmental failures (unreadable dotenv, malformed values) are
             # expected and non-fatal for a best-effort preview. Programming
             # errors (KeyError/TypeError/ImportError) are left to propagate so a
@@ -31631,11 +31597,9 @@ class DeepAgentsApp(App):
                     await self._restore_cwd_after_failed_thread_switch(prev_cwd)
                     if isinstance(exc, asyncio.CancelledError):
                         raise
-                    await self._mount_message(
-                        AppMessage(
-                            f"Failed to switch to thread {thread_id}: {exc}. "
-                            "Use /threads to try again.",
-                        ),
+                    await self._mount_thread_switch_error(
+                        f"Failed to switch to thread {thread_id}: {exc}. "
+                        "Use /threads to try again."
                     )
                     return
                 logger.exception("Failed to switch to thread %s", thread_id)
@@ -31683,7 +31647,7 @@ class DeepAgentsApp(App):
                 if rollback_restore_failed:
                     error_message += " Previous thread history could not be restored."
                 error_message += " Use /threads to try again."
-                await self._mount_message(AppMessage(error_message))
+                await self._mount_thread_switch_error(error_message)
             finally:
                 if self._chat_input:
                     self._chat_input.set_cursor_active(active=not self._agent_running)
@@ -32112,9 +32076,16 @@ class DeepAgentsApp(App):
             except Exception as exc:
                 logger.exception("Failed to resolve model metadata for %s", display)
                 if from_resume:
-                    await self._mount_resume_adoption_failure(
-                        display, "the model could not be initialized"
-                    )
+                    from langgraph_sdk.errors import ConflictError
+
+                    if isinstance(exc, ConflictError):
+                        await self._mount_message(
+                            ErrorMessage(_build_resume_workspace_error_body(exc))
+                        )
+                    else:
+                        await self._mount_resume_adoption_failure(
+                            display, "the model could not be initialized"
+                        )
                 else:
                     await self._mount_message(
                         ErrorMessage(_build_model_switch_error_body(exc)),
@@ -32286,7 +32257,7 @@ class DeepAgentsApp(App):
             self._retry_status_widget = None
         try:
             messages = self.query_one("#messages", Container)
-        except (NoMatches, ScreenStackError):
+        except NoMatches, ScreenStackError:
             messages = None
         if messages is not None and messages.is_attached:
             new_widget = AppMessage(

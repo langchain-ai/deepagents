@@ -4,16 +4,31 @@ import socket
 import ssl
 
 import httpcore
+import httpx2
 import pytest
 from anyio._core._sockets import idna2008_resolve
 from httpcore._backends.auto import AutoBackend
 from langchain_core._security import SSRFBlockedError
+from mcp.shared.auth import OAuthClientMetadata
 
-from deepagents_talon.mcp_auth import _oauth_http_client
+from deepagents_talon._version import __version__
+from deepagents_talon.mcp_auth import (
+    FileTokenStorage,
+    _oauth_http_client,
+    _PersistedExpiryOAuthProvider,
+)
 
 
 @pytest.mark.parametrize("hostname", ["mcp.slack.com", "auth.slack.com"])
-async def test_oauth_tls_preserves_hostname_and_pinned_address(monkeypatch, hostname):
+@pytest.mark.parametrize("user_agent", [None, "", "custom-talon/1.0"])
+@pytest.mark.parametrize("sdk_request", [False, True])
+async def test_oauth_tls_preserves_hostname_and_pinned_address(
+    monkeypatch, tmp_path, hostname, user_agent, sdk_request
+):
+    if user_agent is None:
+        monkeypatch.delenv("DEEPAGENTS_TALON_MCP_USER_AGENT", raising=False)
+    else:
+        monkeypatch.setenv("DEEPAGENTS_TALON_MCP_USER_AGENT", user_agent)
     connected = []
     written = []
     tls_names = []
@@ -50,9 +65,20 @@ async def test_oauth_tls_preserves_hostname_and_pinned_address(monkeypatch, host
     )
     monkeypatch.setattr(AutoBackend, "connect_tcp", connect_tcp)
 
-    async with _oauth_http_client() as client:
-        response = await client.get(f"https://{hostname}/metadata")
+    url = f"https://{hostname}/metadata"
+    if sdk_request:
+        provider = _PersistedExpiryOAuthProvider(
+            server_url=url,
+            client_metadata=OAuthClientMetadata(redirect_uris=["http://localhost:3000/callback"]),
+            storage=FileTokenStorage("test", server_url=url, agent_root=tmp_path),
+        )
+        response = await provider._send_oauth_request(httpx2.Request("GET", url))
+    else:
+        async with _oauth_http_client() as client:
+            response = await client.get(url)
 
+    expected_user_agent = user_agent or f"deepagents-talon/{__version__}"
+    assert f"User-Agent: {expected_user_agent}\r\n".encode() in b"".join(written)
     assert response.json() == {}
     assert connected == [("93.184.216.34", 443)]
     assert tls_names == [hostname.encode("ascii")]

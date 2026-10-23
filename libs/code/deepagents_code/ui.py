@@ -157,6 +157,7 @@ def show_help() -> None:
     console.print(
         "  -r, --resume [ID]          Resume thread: -r for most recent, -r ID for specific"  # noqa: E501
     )
+    console.print("                             With -n, an ID is required")
     console.print("  -a, --agent NAME           Agent to use")
     console.print("  -M, --model MODEL          Model to use (e.g., gpt-5.5)")
     console.print(
@@ -264,6 +265,7 @@ def show_help() -> None:
         "  --no-stream                Buffer full response instead of streaming"
     )
     console.print("  --show-reasoning           Show provider-visible reasoning")
+    console.print("                             On in the TUI, off by default with -n")
     console.print(
         "  --max-turns N              Max agentic turns before stopping (needs -n)"
     )

@@ -10,7 +10,7 @@ import pytest
 from textual.app import App, ComposeResult
 from textual.containers import VerticalScroll
 from textual.screen import ModalScreen
-from textual.widgets import Button, Checkbox, Select, Static
+from textual.widgets import Button, Checkbox, Markdown, Select, Static
 
 import deepagents_code.tui.modals.cost_breakdown as cost_breakdown_mod
 import deepagents_code.tui.modals.mcp_servers as mcp_servers_mod
@@ -373,8 +373,9 @@ class TestDebugConsoleScreen:
             await pilot.pause()
 
             assert isinstance(app.screen, CostBreakdownScreen)
-            assert breakdown in _widget_text(
-                app.screen.query_one(".cost-breakdown-body", Static)
+            assert (
+                breakdown
+                == app.screen.query_one(".cost-breakdown-body", Markdown)._markdown
             )
             await pilot.press("escape")
             await pilot.pause()
@@ -400,12 +401,12 @@ class TestDebugConsoleScreen:
             await pilot.click(console.query_one("#debug-cost-breakdown", Button))
             await pilot.pause()
             modal = cast("CostBreakdownScreen", app.screen)
-            assert "12" in _widget_text(modal.query_one(".cost-breakdown-body", Static))
+            assert "12" in modal.query_one(".cost-breakdown-body", Markdown)._markdown
 
             breakdown = "Input  24  0.02"
             await pilot.pause(delay=0.6)
-            assert breakdown in _widget_text(
-                modal.query_one(".cost-breakdown-body", Static)
+            assert (
+                breakdown == modal.query_one(".cost-breakdown-body", Markdown)._markdown
             )
             await pilot.press("c")
             assert copied == [breakdown]

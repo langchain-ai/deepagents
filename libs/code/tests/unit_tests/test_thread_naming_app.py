@@ -102,6 +102,14 @@ async def test_naming_uses_the_selected_models_endpoint(
 ) -> None:
     """Inherit the chat endpoint only when no dedicated naming model is set."""
     requests: list[tuple[str, str]] = []
+    mounted = asyncio.Event()
+    on_mount = ThreadNameScreen.on_mount
+
+    def signal_mounted(screen: ThreadNameScreen) -> None:
+        on_mount(screen)
+        mounted.set()
+
+    monkeypatch.setattr(ThreadNameScreen, "on_mount", signal_mounted)
 
     def respond(request: httpx.Request) -> httpx.Response:
         requests.append((str(request.url), json.loads(request.content)["model"]))
@@ -165,6 +173,7 @@ async def test_naming_uses_the_selected_models_endpoint(
             await asyncio.gather(*naming_app._thread_name_tasks.values())
             await pilot.pause()
             if not automatic:
+                await asyncio.wait_for(mounted.wait(), timeout=5)
                 assert isinstance(naming_app.screen, ThreadNameScreen)
                 await pilot.press("enter")
                 await pilot.pause()

@@ -6,17 +6,15 @@ import logging
 import sys
 import threading
 import tomllib
-from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager, suppress
 from dataclasses import replace
 from pathlib import Path
-from typing import Any, ClassVar, cast
+from typing import TYPE_CHECKING, Any, ClassVar, cast
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from deepagents_code import model_config
-from deepagents_code.json_types import JsonObject
 from deepagents_code.model_config import (
     IMPLICIT_AUTH_PROVIDERS,
     NO_AUTH_REQUIRED_PROVIDERS,
@@ -67,6 +65,12 @@ from deepagents_code.model_config import (
     touch_recent_model,
     unsuppress_warning,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Iterator
+    from urllib.request import Request
+
+    from deepagents_code.json_types import JsonObject
 
 
 def _create_git_common_dir(common_dir: Path) -> Path:
@@ -2499,7 +2503,6 @@ class TestFetchOllamaInstalledModelProfiles:
     ) -> None:
         """Profile discovery does not send credentials to non-local endpoints."""
         import json
-        from urllib.request import Request
 
         captured_headers: list[dict[str, str]] = []
 
@@ -4523,6 +4526,36 @@ class TestLoadMcpServerTrustLists:
 
 class TestGetModelProfiles:
     """Tests for get_model_profiles() function."""
+
+    def test_anthropic_fallback_fills_only_missing_profile_fields(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        profiles_path = tmp_path / "data" / "_profiles.py"
+        profiles_path.parent.mkdir()
+        profiles_path.write_text(
+            "_PROFILES = {'claude-haiku-5-5': {'structured_output': False, "
+            "'reasoning_effort_default': 'high'}}"
+        )
+        spec = importlib.util.spec_from_file_location(
+            "langchain_anthropic", tmp_path / "__init__.py"
+        )
+        monkeypatch.setattr(importlib.util, "find_spec", lambda _: spec)
+        clear_caches()
+
+        profiles = model_config._load_provider_profiles(
+            "langchain_anthropic.data._profiles"
+        )
+
+        assert profiles["claude-haiku-5-5"]["structured_output"] is False
+        assert profiles["claude-haiku-5-5"]["reasoning_effort_default"] == "high"
+        assert profiles["claude-haiku-5-5"]["reasoning_effort_levels"] == [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max",
+        ]
+        clear_caches()
 
     def test_haiku_discovery_and_effort_without_upstream_profile(self) -> None:
         from deepagents_code.reasoning_effort import (

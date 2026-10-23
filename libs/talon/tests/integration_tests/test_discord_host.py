@@ -77,6 +77,14 @@ class StubGateway:
     async def trigger_typing(self, channel_id):
         del channel_id
 
+    async def create_thread(self, channel_id, message_id, name):
+        del channel_id, name
+        return f"thread-{message_id}"
+
+    async def thread_context(self, thread_id, before_message_id):
+        del thread_id, before_message_id
+        return []
+
 
 class CapturingResponder:
     """Records how one interaction was answered."""
@@ -155,7 +163,14 @@ async def test_guild_threads_share_history_without_sharing_context(
         await host.start()
         try:
 
-            async def send(chat: str, text: str, *, parent: str | None = None, dm: bool = False):
+            async def send(
+                chat: str,
+                text: str,
+                *,
+                parent: str | None = None,
+                private_parent: str | None = None,
+                dm: bool = False,
+            ):
                 await gateway._handle_message(
                     _DiscordInboundMessage(
                         channel_id=chat,
@@ -165,6 +180,8 @@ async def test_guild_threads_share_history_without_sharing_context(
                         is_dm=dm,
                         from_self=False,
                         history_chat=parent,
+                        mentioned=not dm,
+                        parent_id=parent or private_parent,
                     )
                 )
                 await asyncio.gather(*host._tasks.values())
@@ -173,7 +190,8 @@ async def test_guild_threads_share_history_without_sharing_context(
             await send("thread-2", "second", parent="100")
             await send("thread-3", "other", parent="200")
             await send("dm-1", "dm", dm=True)
-            await send("private-thread", "private")
+            await send("private-thread", "private", private_parent="100")
+            # A mention in the channel itself opens a public thread under it.
             await send("100", "channel")
             sessions = await saver.archive.conversations(
                 {"talon_history_channel": "discord", "talon_history_chat": "100"},
@@ -202,7 +220,7 @@ async def test_guild_threads_share_history_without_sharing_context(
                 "thread-3",
                 "dm-1",
                 "private-thread",
-                "100",
+                "thread-channel",
             ]
         finally:
             await host.stop()
@@ -241,6 +259,8 @@ async def test_public_thread_reset_clears_parent_history(tmp_path: Path) -> None
                 is_dm=False,
                 from_self=False,
                 history_chat="100",
+                mentioned=True,
+                parent_id="100",
             )
         )
         assert agent.cleared == [("discord", "100")]
@@ -255,6 +275,7 @@ async def test_public_thread_reset_clears_parent_history(tmp_path: Path) -> None
                 is_dm=False,
                 responder=responder,
                 history_chat="100",
+                parent_id="100",
             )
         )
         assert agent.cleared == [("discord", "100"), ("discord", "100")]
@@ -310,6 +331,8 @@ async def test_public_thread_reset_cancels_siblings_and_blocks_new_turns(tmp_pat
                 is_dm=False,
                 from_self=False,
                 history_chat=parent,
+                mentioned=True,
+                parent_id=parent,
             )
         )
 

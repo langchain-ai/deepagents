@@ -1879,7 +1879,7 @@ class TestReloadPluginsViaReload:
         link = skills_root / "linked"
         try:
             link.symlink_to(outside, target_is_directory=True)
-        except (NotImplementedError, OSError):
+        except NotImplementedError, OSError:
             pytest.skip("directory symlinks are unavailable")
         plugin = PluginInstance(
             plugin_id="demo@tools",
@@ -2209,6 +2209,7 @@ class TestReloadPluginsViaReload:
 
             text = "\n".join(str(w._content) for w in app.query(AppMessage))
             assert "Couldn't read plugin state; run /reload to be safe." in text
+            assert "keeps its current skills" in text
             # The reload still completed: the config-reload header is present and
             # no plugin summary line was emitted.
             assert "Configuration reloaded." in text
@@ -2275,6 +2276,7 @@ class TestReloadPluginsViaReload:
             # claim anything about MCP — the two lines would contradict.
             text = "\n".join(str(w._content) for w in app.query(AppMessage))
             assert ("MCP server changes" in text) is restarted
+            assert ("keeps its current skills" in text) is not restarted
 
     @pytest.mark.parametrize(
         ("mcp_status", "expected", "forbidden"),
@@ -2445,6 +2447,7 @@ class TestReloadPluginsViaReload:
 
             text = "\n".join(str(w._content) for w in app.query(AppMessage))
             assert "cannot reload MCP config" in text
+            assert "keeps its current skills" in text
 
     @pytest.mark.parametrize("no_mcp", [False, True])
     async def test_reload_deferred_local_startup_is_not_labeled_remote(
@@ -2503,6 +2506,7 @@ class TestReloadPluginsViaReload:
             text = "\n".join(str(w._content) for w in app.query(AppMessage))
             assert "remote" not in text
             assert "cannot reload MCP config" not in text
+            assert "keeps its current skills" not in text
             if no_mcp:
                 assert "MCP is disabled for this session (--no-mcp)" in text
             else:

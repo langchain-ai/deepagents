@@ -4,13 +4,13 @@ build-backend = "hatchling.build"
 
 [project]
 name = "deepagents-code"
-version = "0.1.83"
+version = "0.2.0"
 description = "Terminal coding agent built on the Deep Agents SDK - works with any model, with persistent memory, customizable skills, subagents, and approval controls."
 readme = "README.md"
 license = { text = "MIT" }
 authors = [{ name = "LangChain" }]
 maintainers = [{ name = "LangChain" }]
-requires-python = ">=3.12,<4.0"
+requires-python = ">=3.14,<3.15"
 keywords = ["agents", "ai", "cli", "terminal", "llm", "langgraph", "langchain", "deep-agent"]
 classifiers = [
     "Development Status :: 4 - Beta",
@@ -18,8 +18,6 @@ classifiers = [
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.12",
-    "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Topic :: Software Development :: Libraries :: Python Modules",
@@ -27,21 +25,22 @@ classifiers = [
 ]
 dependencies = [
     # Framework
-    "deepagents==0.7.23",
-    "langchain>=1.4.3,<2.0.0",
-    "langgraph-checkpoint-sqlite>=3.1.1,<4.0.0",
+    "deepagents==0.7.30",
+    "langchain>=1.4.7,<2.0.0",
+    "langgraph-checkpoint-sqlite>=3.1.2,<4.0.0",
 
     # Client-server architecture
-    "langgraph-sdk>=0.4.6,<1.0.0",
-    "langgraph-cli[inmem]>=0.4.33,<1.0.0",
-    "langgraph-runtime-inmem>=0.35.3,<1.0.0",
-    "httpx>=0.28.1,<1.0.0",
+    "langgraph-sdk>=0.4.8,<1.0.0",
+    "langgraph-cli[inmem]>=0.4.37,<1.0.0",
+    "langgraph-runtime-inmem>=0.36.5,<1.0.0",
+    "httpx>=0.28.1",
 
     # Core model providers - others are added as optional
-    "langchain-anthropic>=1.7.5,<2.0.0",
-    "langchain-google-genai>=4.4.0,<5.0.0",
-    "langchain-openai>=1.6.7,<2.0.0",
-    "pydantic>=2.12.5,<2.14.0a0",
+    "langchain-anthropic>=1.7.6,<2.0.0",
+    "langchain-google-genai>=4.4.2,<5.0.0",
+    "langchain-openai>=1.7.2,<2.0.0",
+    # Require Pydantic 2.13+ explicitly to avoid Python 3.14 warnings from LangChain's v1 imports.
+    "pydantic>=2.13.0,<3.0.0",
 
     # UI/Terminal
     # Textual 8.2.8 handles colon-separated Kitty associated text.
@@ -51,17 +50,17 @@ dependencies = [
     # `Content._wrap_and_format` and the compositor's offset metadata contract
     # to repeat a diff row's gutter on wrapped lines.
     "textual>=8.2.8,<9.0.0",
-    "textual-autocomplete>=4.0.6,<5.0.0",
-    "textual-speedups>=0.2.1,<1.0.0",
-    "prompt-toolkit>=3.0.53,<4.0.0",
-    "rich>=15.0.0,<16.0.0",
-    "markdownify>=1.2.3,<2.0.0",
+    "textual-autocomplete>=4.0.6",
+    "textual-speedups>=0.2.1",
+    "prompt-toolkit>=3.0.53",
+    "rich>=15.0.0",
+    "markdownify>=1.2.3",
 
     # Sandbox integrations
-    "langsmith[sandbox]>=0.14.4",
+    "langsmith[sandbox]>=0.14.12",
 
     # Tools
-    "tavily-python>=0.7.26,<1.0.0",
+    "tavily-python>=0.7.26",
     "langchain-quickjs>=0.3.4,<0.4.0",
 
     # Cost estimation (bundled offline pricing data).
@@ -71,25 +70,25 @@ dependencies = [
     # compatibility promise, and this range spans every 0.1.x patch, so re-verify
     # both against `cost_tracking._build_price_overrides` and
     # `cost_tracking._find_override_model` when widening it.
-    "genai-prices>=0.1.9,<0.2.0",
+    "genai-prices>=0.1.13,<0.2.0",
 
     # Clipboard
-    "pyperclip>=1.11.0,<2.0.0",
+    "pyperclip>=1.11.0",
 
     # Version parsing
     "packaging>=26.2",
 
     # Utilities
-    "uuid-utils>=0.17.0,<1.0.0",
-    "python-dotenv>=1.2.2,<2.0.0",
-    "requests>=2.34.2,<3.0.0",
-    "pillow>=12.3.0,<13.0.0",
+    "uuid-utils>=0.17.0",
+    "python-dotenv>=1.2.2",
+    "requests>=2.34.2",
+    "pillow>=13.0.0",
     "pyyaml>=6.0.3",
-    "aiosqlite>=0.22.1,<1.0.0",
-    "tomli-w>=1.2.0,<2.0.0",
+    "aiosqlite>=0.22.1",
+    "tomli-w>=1.2.0",
 
     # MCP
-    "fastmcp>=4.0.0b4,<5.0.0",
+    "fastmcp>=4.0.0b4",
     # Cross-process lock serializing MCP OAuth token refreshes.
     # Capped below 3.30: it runs a blocking temp-dir probe at import time
     # (_probe_link_follow_symlinks), which trips Blockbuster's os.getcwd guard
@@ -98,36 +97,36 @@ dependencies = [
     # `CancelScope` shields MCP token writes/lock ops from cancellation in
     # mcp_auth.py. Always installed transitively via mcp/httpx; declared here
     # because we import it directly.
-    "anyio>=4.14.2,<5.0.0",
+    "anyio>=4.14.2",
 
     # ACP
     "deepagents-acp>=0.0.10,<1.0.0",
-    "mcp>=2.0.0,<3.0.0",
+    "mcp>=2.0.0",
 ]
 
 [project.optional-dependencies]
 # Model providers
-anthropic = ["langchain-anthropic>=1.7.5,<2.0.0"]
+anthropic = ["langchain-anthropic>=1.7.6,<2.0.0"]
 baseten = ["langchain-baseten>=0.2.5,<1.0.0"]
-bedrock = ["langchain-aws>=1.8.1,<2.0.0"]
+bedrock = ["langchain-aws>=1.9.0,<2.0.0"]
 cohere = ["langchain-cohere>=0.6.0,<1.0.0"]
 deepseek = ["langchain-deepseek>=1.1.1,<2.0.0"]
 fireworks = ["langchain-fireworks>=1.7.1,<2.0.0"]
-google-genai = ["langchain-google-genai>=4.4.0,<5.0.0"]
+google-genai = ["langchain-google-genai>=4.4.2,<5.0.0"]
 groq = ["langchain-groq>=1.1.3,<2.0.0"]
 huggingface = ["langchain-huggingface>=1.2.3,<2.0.0"]
 ibm = ["langchain-ibm>=1.1.2,<2.0.0"]
-litellm = ["langchain-litellm>=0.11.0,<2.0.0"]
+litellm = ["langchain-litellm>=0.11.1,<2.0.0"]
 meta = ["langchain-meta>=0.5.0,<2.0.0"]
 mistralai = ["langchain-mistralai>=1.1.6,<2.0.0"]
 nvidia = [
-    "aiohttp>=3.14.3,<3.15.0",
-    "langchain-nvidia-ai-endpoints>=1.4.3,<2.0.0",
+    "aiohttp>=3.14.3",
+    "langchain-nvidia-ai-endpoints>=1.5.0,<2.0.0",
 ]
 ollama = ["langchain-ollama>=1.1.0,<2.0.0"]
-openai = ["langchain-openai>=1.6.7,<2.0.0"]
+openai = ["langchain-openai>=1.7.2,<2.0.0"]
 openrouter = ["langchain-openrouter>=0.2.9,<2.0.0"]
-perplexity = ["langchain-perplexity>=1.4.1,<2.0.0"]
+perplexity = ["langchain-perplexity>=1.4.2,<2.0.0"]
 together = ["langchain-together>=0.4.0,<2.0.0"]
 vertex = ["langchain-google-vertexai>=3.2.4,<4.0.0"]
 xai = ["langchain-xai>=1.3.0,<2.0.0"]
@@ -139,14 +138,15 @@ all-providers = [
 agentcore = ["langchain-agentcore-codeinterpreter>=0.0.5,<1.0.0"]
 daytona = ["langchain-daytona>=0.0.7"]
 modal = ["langchain-modal>=0.0.5"]
+openshell = ["langchain-nvidia-openshell>=0.1.1"]
 runloop = ["langchain-runloop>=0.0.6"]
 vercel = ["langchain-vercel-sandbox>=0.0.1"]
 all-sandboxes = [
-    "deepagents-code[agentcore,daytona,modal,runloop,vercel]",
+    "deepagents-code[agentcore,daytona,modal,openshell,runloop,vercel]",
 ]
 
 # Standalone integrations
-media = ["av>=18.0.0,<19.0.0", "pillow>=12.3.0,<13.0.0"]
+media = ["av>=18.0.0", "pillow>=13.0.0"]
 # (quickjs kept for backwards-compatible install commands)
 quickjs = []
 
@@ -220,7 +220,6 @@ langchain-runloop = { path = "../partners/runloop", editable = true }
 langchain-vercel-sandbox = { path = "../partners/vercel", editable = true }
 
 [tool.ty.environment]
-python-version = "3.12"
 extra-paths = [
     "../deepagents",
     "../partners/daytona",
@@ -271,6 +270,12 @@ extend-safe-fixes = ["PLR6201"]
 
 flake8-annotations.allow-star-arg-any = true
 flake8-annotations.mypy-init-return = true
+
+[tool.ruff.lint.flake8-type-checking]
+# Pydantic resolves these fake models' field types at runtime, so keep their imports.
+runtime-evaluated-base-classes = [
+    "langchain_core.language_models.fake_chat_models.GenericFakeChatModel",
+]
 
 [tool.ruff.lint.flake8-tidy-imports]
 ban-relative-imports = "all"
@@ -349,11 +354,6 @@ timeout = 30  # Default timeout for all tests (can be overridden per-test)
 filterwarnings = [
     # Unexpected warnings fail the run; see "Warnings are errors" in AGENTS.md.
     "error",
-    # `langchain_core` imports `pydantic.v1` during collection on Python 3.14+.
-    # Deliberately unqualified by module: `pydantic` warns with `stacklevel=2`, so
-    # the attributed module is whichever `langchain_core` module imports
-    # `pydantic.v1` first, which is import-order dependent.
-    "ignore:Core Pydantic V1 functionality isn't compatible:UserWarning",
     # `genai_prices.Usage` only warns for a usage key it does not recognize, then
     # drops it -- the request still prices, just without that bucket. A renamed
     # key anywhere in the allowed range would silently undercount, so fail

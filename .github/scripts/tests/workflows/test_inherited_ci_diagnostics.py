@@ -30,15 +30,19 @@ def _report(checks: list[dict], *, error: bool = False, metadata: str = "") -> d
     script = _step("ci_success", "Report inherited CI failure")["with"]["script"]
     harness = """
 const input = JSON.parse(process.argv[1]);
-const result = {info: [], error: [], warning: [], summary: ''};
+const result = {info: [], error: [], warning: [], annotations: [], summary: ''};
 const core = Object.fromEntries(['info', 'error', 'warning'].map(level =>
   [level, message => result[level].push(message)]));
+core.error = (message, properties) => {
+  result.error.push(message);
+  if (properties) result.annotations.push({message, ...properties});
+};
 core.summary = {
   addHeading(text) { result.summary += text + '\\n'; return this; },
   addRaw(text) { result.summary += text; return this; },
   async write() {},
 };
-const context = {repo: {owner: 'langchain-ai', repo: 'deepagents'}};
+const context = {repo: {owner: 'langchain-ai', repo: 'deepagents'}, runId: 321};
 const github = {
   rest: {checks: {listForSuite: 'listForSuite'}},
   async paginate(method, params) {
@@ -92,9 +96,21 @@ def test_report_links_parent_run_and_unsuccessful_jobs() -> None:
     assert "skipped job" not in summary
     assert "<script>" not in summary
     assert "&lt;script&gt;" in summary
-    assert "\n::error::" not in "\n".join(result["info"])
-    assert len(result["error"]) == 1
+    assert "\n::error::" not in "\n".join(result["error"])
+    assert len(result["error"]) == 3
     assert "skipped, not passed" in result["error"][0]
+    assert result["annotations"][0] == {
+        "title": "Inherited parent CI failure",
+        "message": (
+            f"Parent job {json.dumps(failed['name'])} concluded failure. "
+            f"Inspect {failed['details_url']}"
+        ),
+    }
+    assert "gh run rerun 123 --failed --repo langchain-ai/deepagents" in summary
+    assert "gh run rerun 321 --repo langchain-ai/deepagents" in summary
+    assert "**Re-run all jobs**" in summary
+    assert "reuses the old detection output" in summary
+    assert f"{REPO_URL}/actions/runs/321" in summary
     assert result["request"]["params"] == {
         "owner": "langchain-ai",
         "repo": "deepagents",
@@ -102,6 +118,23 @@ def test_report_links_parent_run_and_unsuccessful_jobs() -> None:
         "filter": "latest",
         "per_page": 100,
     }
+
+
+def test_report_rejects_untrusted_job_links_in_annotations() -> None:
+    result = _report(
+        [
+            {
+                "id": 100,
+                "name": "failed job",
+                "conclusion": "failure",
+                "details_url": "https://example.com/untrusted",
+            }
+        ]
+    )
+    annotation = result["annotations"][0]
+    assert 'Parent job "failed job" concluded failure' in annotation["message"]
+    assert f"{REPO_URL}/commit/abc123" in annotation["message"]
+    assert "https://example.com" not in json.dumps(result)
 
 
 @pytest.mark.parametrize("case", ["unavailable", "empty", "malformed", "unknown-url"])
@@ -121,6 +154,8 @@ def test_report_keeps_failure_visible_when_details_are_missing(case: str) -> Non
     assert "inherited failure is unchanged" in result["summary"]
     assert "private API response" not in json.dumps(result)
     assert "https://example.com" not in result["summary"]
+    assert "**Re-run all jobs**" in result["summary"]
+    assert "gh run rerun 321 --repo langchain-ai/deepagents" in result["summary"]
     if case == "unavailable":
         assert RUN_URL in result["summary"]
         assert result["warning"]
@@ -169,6 +204,7 @@ def test_detection_and_gate_preserve_parent_result(
         ["bash", "-e", "-c", gate["run"]],
         env={
             **env,
+            "LOCKFILES_RESULT": "success",
             "CURATED_APPLY_ONLY": outputs["only"],
             "CURATED_APPLY_PARENT_CONCLUSION": outputs["prior-conclusion"],
         },

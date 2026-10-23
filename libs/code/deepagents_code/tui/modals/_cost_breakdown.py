@@ -1,7 +1,13 @@
-"""Plain-text formatting for the token and cost breakdown modal."""
+"""Markdown formatting for the token and cost breakdown modal."""
 
 import math
 from collections.abc import Mapping
+
+_SMALL_COST = 0.0001
+
+
+def _format_usd(value: float) -> str:
+    return f"{value:.4g}" if 0 < value < _SMALL_COST else f"{value:.4f}"
 
 
 def format_cost_breakdown_table(
@@ -10,7 +16,7 @@ def format_cost_breakdown_table(
     """Build the copyable entire-thread estimated token/cost table.
 
     Returns:
-        A plain-text table, or an empty string when historical detail is missing.
+        A Markdown table, or an empty string when historical detail is missing.
     """
     if (
         not isinstance(breakdown, Mapping)
@@ -31,14 +37,14 @@ def format_cost_breakdown_table(
         if not isinstance(value, int) or isinstance(value, bool) or value < 0:
             return "unavailable"
         if complete_key and breakdown.get(complete_key) is not True:
-            return f"{value} (partial)"
-        return str(value)
+            return f"{value:,} (partial)"
+        return f"{value:,}"
 
     def _cost(key: str, complete_key: str | None = None) -> str:
         value = _number(key)
         if value is None:
             return "unavailable"
-        text = repr(value)
+        text = _format_usd(value)
         if complete_key and breakdown.get(complete_key) is not True:
             return f"{text} (partial)"
         return text
@@ -47,77 +53,70 @@ def format_cost_breakdown_table(
         value = _number(key)
         if value is None or total_usd <= 0:
             return "n/a"
-        return f"{value / total_usd * 100:.6g}%"
+        return f"{value / total_usd * 100:.1f}%"
 
+    total_tokens = int(_number("input_tokens") or 0) + int(
+        _number("output_tokens") or 0
+    )
     rows = [
         (
-            "Input",
+            "**Input**",
             _percent("input_cost_usd"),
             _tokens("input_tokens", "input_tokens_complete"),
             _cost("input_cost_usd", "input_cost_complete"),
         ),
         (
-            "  cache creation",
+            "cache creation",
             _percent("cache_creation_cost_usd"),
             _tokens("cache_creation_tokens", "cache_creation_tokens_complete"),
             _cost("cache_creation_cost_usd", "cache_creation_cost_complete"),
         ),
         (
-            "  cache read",
+            "cache read",
             _percent("cache_read_cost_usd"),
             _tokens("cache_read_tokens", "cache_read_tokens_complete"),
             _cost("cache_read_cost_usd", "cache_read_cost_complete"),
         ),
         (
-            "Output",
+            "**Output**",
             _percent("output_cost_usd"),
             _tokens("output_tokens", "output_tokens_complete"),
             _cost("output_cost_usd", "output_cost_complete"),
         ),
         (
-            "  reasoning",
+            "reasoning",
             _percent("reasoning_cost_usd"),
             _tokens("reasoning_tokens", "reasoning_tokens_complete"),
             _cost("reasoning_cost_usd", "reasoning_cost_complete"),
         ),
         (
-            "Total",
+            "**Total**",
             "100%" if total_usd > 0 else "n/a",
-            str(int(_number("input_tokens") or 0) + int(_number("output_tokens") or 0)),
-            repr(total_usd),
+            f"{total_tokens:,}",
+            _format_usd(total_usd),
         ),
     ]
-    widths = [
-        max(
-            len(row[index])
-            for row in [("Category", "% cost", "Tokens", "Cost (USD)"), *rows]
-        )
-        for index in range(4)
-    ]
     rendered = [
-        "  ".join(
-            value.ljust(widths[index])
-            for index, value in enumerate(
-                ("Category", "% cost", "Tokens", "Cost (USD)")
-            )
-        ).rstrip()
+        "| Category | % cost | Tokens | Cost (USD) |",
+        "| :--- | ---: | ---: | ---: |",
+        *("| " + " | ".join(row) + " |" for row in rows),
     ]
-    rendered.append("  ".join("-" * width for width in widths))
-    rendered.extend(
-        "  ".join(
-            value.ljust(widths[index]) for index, value in enumerate(row)
-        ).rstrip()
-        for row in rows
-    )
-    notes: list[str] = ["Parent rows are inclusive; indented rows are subsets."]
+    notes: list[str] = [
+        "Input and Output are inclusive; cache and reasoning rows are subsets."
+    ]
     attributed = (_number("input_cost_usd") or 0.0) + (
         _number("output_cost_usd") or 0.0
     )
     if not math.isclose(attributed, total_usd, rel_tol=1e-12, abs_tol=1e-15):
         notes.append(
-            f"Partial attribution: {max(total_usd - attributed, 0.0)!r} USD is "
-            "directionless/unattributed."
+            f"Partial attribution: {_format_usd(max(total_usd - attributed, 0.0))} "
+            "USD is directionless/unattributed."
         )
     if breakdown.get("priced_request_count") != breakdown.get("request_count"):
         notes.append("Some requests were unpriceable; costs are partial.")
-    return "Entire-thread estimated breakdown\n" + "\n".join(rendered + notes)
+    return (
+        "Entire-thread estimated breakdown\n\n"
+        + "\n".join(rendered)
+        + "\n\n"
+        + "\n\n".join(notes)
+    )

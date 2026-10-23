@@ -4,7 +4,7 @@ okf_version: "0.2"
 
 # Files
 
-- [Deep Agents Maintainer Quickstart](quickstart.md) - A routing map for maintainers of the independently versioned Deep Agents packages. Start with the behavior owner and runtime boundary, then run the narrowest package-local validation.
+- [Deep Agents Monorepo Quickstart](quickstart.md) - Route a Deep Agents change to its owning package, the right detailed guide, and the narrowest useful validation command. Use this page to identify dependency handoffs before expanding validation across consumers.
 
 # Directories
 

@@ -133,7 +133,7 @@ class _BtwStreamingResponse(Response):
             await emit("error", {"detail": "Side question timed out. Try again."})
         except ClientDisconnect:
             raise  # A closed transport cannot receive an error event.
-        except (Exception, SystemExit):
+        except Exception, SystemExit:
             logger.exception("Side question failed")
             await emit(
                 "error",
@@ -230,7 +230,7 @@ async def btw(request: Request) -> Response:
         return JSONResponse(
             {"detail": "Side question timed out. Try again."}, status_code=504
         )
-    except (Exception, SystemExit):
+    except Exception, SystemExit:
         logger.exception("Side question failed")
         return JSONResponse(
             {"detail": "Side question failed on the server; see the server log."},

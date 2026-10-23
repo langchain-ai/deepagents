@@ -127,7 +127,7 @@ def _iterm_profile_cursor_guide_enabled() -> bool:
     try:
         with _ITERM_PREFS_PATH.expanduser().open("rb") as f:
             prefs = plistlib.load(f)
-    except (OSError, plistlib.InvalidFileException, ValueError):
+    except OSError, plistlib.InvalidFileException, ValueError:
         return False
 
     if not isinstance(prefs, dict):

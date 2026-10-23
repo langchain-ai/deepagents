@@ -1,141 +1,189 @@
 ---
 type: runtime architecture
-title: Runtime Behavior and State Boundaries
-description: How a Deep Agents graph is assembled, evolves its checkpointed state, executes tools and subagents, and pauses or resumes around human approval. Covers message reduction, middleware-owned state, and the boundaries between parent, inline, forked, compiled, and remote graphs.
-tags: [deepagents, runtime, state, middleware, checkpoints, subagents, tools]
+title: Runtime Behavior and Failure Boundaries
+description: Execution-time state, compaction, asynchronous subagent lifecycle, notification delivery, and retry boundaries in Deep Agents. Distinguishes checkpointed state and remote task records from best-effort observation and delivery.
+tags: [deepagents, runtime, middleware, state, persistence, async-subagents, retries, notifications]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-10-08T08:07:53.482Z
+    at: 2026-10-23T08:06:06.503Z
 sources:
+  - id: openwiki-source-c101168dc0286ff6c29ed37f
+    resource: repo://libs/code/deepagents_code/model_retry.py
   - id: openwiki-source-822ae989625ba99d4c7cc08b
     resource: repo://libs/deepagents/deepagents/_messages_reducer.py
   - id: openwiki-source-0fc0e47059e4d07e23e50be2
     resource: repo://libs/deepagents/deepagents/graph.py
-  - id: openwiki-source-421bc4b065189ae1165ca326
-    resource: repo://libs/deepagents/deepagents/middleware/_state.py
+  - id: openwiki-source-41c16d89908bf285e252530e
+    resource: repo://libs/deepagents/deepagents/middleware/_parent_notifier.py
   - id: openwiki-source-e51c4102234507d1529a2440
     resource: repo://libs/deepagents/deepagents/middleware/async_subagents.py
   - id: openwiki-source-13b8cea81b8a29f0950cc836
     resource: repo://libs/deepagents/deepagents/middleware/patch_tool_calls.py
-  - id: openwiki-source-114a1c7a58992fa867a94ef0
-    resource: repo://libs/deepagents/deepagents/middleware/subagents.py
+  - id: openwiki-source-f763e99e439a1356866a7aa4
+    resource: repo://libs/deepagents/deepagents/middleware/summarization.py
+  - id: openwiki-source-6228ff9cf1d681a771797121
+    resource: repo://libs/deepagents/tests/unit_tests/middleware/test_compaction_recovery.py
+  - id: openwiki-source-6ce85b02eabe462f99e0c912
+    resource: repo://libs/deepagents/tests/unit_tests/test_async_subagents.py
   - id: openwiki-source-dc64f28a66d10932b86fcd61
     resource: repo://libs/deepagents/tests/unit_tests/test_messages_reducer.py
-  - id: openwiki-source-ca8183c87e6002c442ee2d62
-    resource: repo://libs/deepagents/tests/unit_tests/test_subagents.py
-generated: { by: "openwiki/0.4.2", at: "2026-10-08T08:07:53.482Z" }
+  - id: openwiki-source-665a21e2fbd09a89d3f13ac0
+    resource: repo://libs/talon/deepagents_talon/runtime.py
+generated: { by: "openwiki/0.4.2", at: "2026-10-23T08:06:06.503Z" }
 ---
 
-# Runtime Behavior and State Boundaries
+# Runtime Behavior and Failure Boundaries
 
-`create_deep_agent()` is the runtime entrypoint. It produces a LangGraph `CompiledStateGraph` by calling LangChain's `create_agent()` with a Deep Agents state schema, a composed middleware stack, caller tools, and optional persistence facilities. The returned graph is the agent loop: model output can call tools, tool results return to the message state, and the loop continues until the underlying agent finishes. Deep Agents configures a high recursion limit (`9_999`) and attaches integration/version metadata, but leaves the choice of model, checkpointer, store, cache, and invocation `thread_id` to the caller.
+`create_deep_agent()` is the composition boundary for a LangGraph agent: it combines the caller's tools, model, backend, ordered Deep Agents middleware, and optional checkpointer, store, cache, context, and state schemas. The resulting graph has a recursion limit of `9_999` and Deep Agents integration/version metadata. The constructor does not itself make state durable; a caller-provided LangGraph checkpointer does. See [SDK Construction and Execution](/openwiki/architecture/sdk-construction-execution.md) and [State Persistence](/openwiki/concepts/state-persistence.md).
 
-This page describes runtime ownership. For context compaction and offloading policies, see [Context Management](/openwiki/concepts/context-management.md). For permission rules and human approval configuration, see [Permissions and Human-in-the-Loop](/openwiki/concepts/permissions-hitl.md). For choosing and operating persistence, see [State Persistence](/openwiki/concepts/state-persistence.md).
+## Checkpointed state and resumable history
 
-## Assembly: one graph, ordered middleware
-
-A deep agent starts with a `StateBackend` unless a backend is supplied. Its built-in filesystem middleware supplies file operations and, when the backend implements the sandbox protocol, shell execution. Caller-supplied `tools=` are additive; they do not remove built-ins. The `task` tool exists when there are synchronous subagents, including the default `general-purpose` subagent unless the active harness profile disables it. Remote async subagents are a separate capability and add their own task-management tools.
-
-The main stack is assembled in a deliberate order:
-
-1. `FilesystemMiddleware` establishes file and execution tools and applies filesystem permissions.
-2. `SubAgentMiddleware`, when inline subagents exist, exposes `task`.
-3. Summarization and `PatchToolCallsMiddleware` manage context and repair incomplete historical tool exchanges before a run.
-4. `AsyncSubAgentMiddleware`, if configured, adds non-blocking remote-task controls.
-5. Caller middleware is inserted after those core layers and before the profile, skills, caching, and memory tail (unless it replaces a named built-in in place).
-6. Human-in-the-loop, unsupported-content handling, and profile tool exclusion are installed at the end; exclusion runs after custom middleware so a wrapper cannot restore an excluded tool.
-
-A harness profile can replace middleware by name, contribute extra middleware, rewrite tool descriptions, or exclude optional middleware/tools. It cannot remove the required filesystem or synchronous-subagent scaffolding: invalid, ambiguous, private-name, protected, or unmatched exclusions fail construction rather than silently creating a degraded graph.
+The main graph installs filesystem and optional inline-subagent middleware first, followed by parent notification, summarization, and dangling-tool-call repair. Async-subagent middleware is installed only when configured. Profile middleware, skills, prompt caching, memory, human approval, and unsupported-content handling follow; custom middleware can replace or be inserted before named core layers. A final excluded-tool filter prevents later wrappers from reintroducing an excluded tool.
 
 ```mermaid
 flowchart TD
-    Build["create_deep_agent"] --> Backend["Select backend"]
-    Backend --> Core["Filesystem and subagent middleware"]
-    Core --> Loop["Summarization and tool-call repair"]
-    Loop --> Custom["Insert caller middleware"]
-    Custom --> Tail["Profile, skills, caching, and memory"]
-    Tail --> Guard["Approval, content, and tool exclusion"]
-    Guard --> Compile["create_agent compiles graph"]
-    Compile --> Invoke["Invoke or resume by thread ID"]
+    Build["create_deep_agent"] --> FS["Filesystem and inline task middleware"]
+    FS --> Notifier["Parent notifier"]
+    Notifier --> Context["Summarization and tool repair"]
+    Context --> Async["Async middleware when configured"]
+    Async --> Tail["Profile skills cache and memory"]
+    Tail --> Guards["Approval and content guards"]
+    Guards --> Filter["Final excluded tool filter"]
+    Filter --> Agent["Configured LangGraph agent"]
 ```
 
-This is the assembly and invocation path; a middleware's position determines which request and state transformations it observes.
+Caption: construction fixes the middleware order; async task tools are present only for configured async subagents.
 
-### Tool and permission boundary
+`DeepAgentState.messages` uses a `DeltaChannel` with snapshot frequency 50 to avoid quadratic checkpoint growth. Its reducer coerces message-like writes, replaces or deduplicates messages by stable ID, applies removals, honors the last `REMOVE_ALL_MESSAGES` reset, and treats a missing replay base as an empty history. Stable IDs are assigned before checkpoint serialization by LangGraph, rather than during replay; assigning them in the reducer would make replay nondeterministic.
 
-Permissions are enforced by `FilesystemMiddleware` around its built-in filesystem tools, not by direct use of the backend. Filesystem rules are evaluated in declaration order and the first matching rule wins; unmatched calls are allowed. A rule can allow, deny with a tool error, or interrupt for review. Interrupt-mode rules are translated into tool-specific `interrupt_on` entries and then merged with explicit `interrupt_on`; explicit entries win for the same tool name.
+Before each run, `PatchToolCallsMiddleware` finds AI tool calls—valid or invalid—that lack a corresponding `ToolMessage`. It appends an error result for each and returns a message reset plus the repaired sequence. Thus a resumed checkpoint does not send an invalid dangling-call history to a provider; histories with all results are unchanged.
 
-The resulting `HumanInTheLoopMiddleware` pauses at configured tool calls. A checkpointer is therefore necessary when the application expects to preserve an interrupted run for later resume. Deep Agents passes the caller's checkpointer unchanged to the compiled LangGraph agent; it does not choose an implicit durable checkpointer.
+## Compaction preserves the raw log
 
-## State, reducer, and checkpoints
+Summarization changes the **effective request history**, not the raw `messages` state. It stores `_summarization_event`, containing a summary, raw cutoff, and optional backend history path; the next model request is constructed from that event plus preserved messages. Evicted history is offloaded to the configured backend before it is summarized when possible. If that write fails, summarization can still proceed, but the older history has no recovery path.
 
-`DeepAgentState` uses a LangGraph `DeltaChannel` for `messages`, with a snapshot frequency of 50. Rather than repeatedly checkpointing a full growing transcript, the channel replays message deltas between snapshots. This changes the growth pattern for message checkpoint data from quadratic to linear while retaining a normal `messages` state interface.
+```mermaid
+flowchart TD
+    Raw["Raw checkpointed messages"] --> Effective["Apply summary event"]
+    Effective --> Count["Count request with system and tools"]
+    Count --> Decision{"Over trigger or budget"}
+    Decision -- "no" --> Model["Call model"]
+    Decision -- "yes or overflow" --> Save["Offload older history when possible"]
+    Save --> Summary["Create summary event"]
+    Summary --> Request["Summary plus preserved tail"]
+    Request --> Model
+    Model --> State["Persist event and any tail replacements"]
+```
 
-The local `_messages_delta_reducer` is the replay invariant:
+Caption: compaction shapes the next request while the checkpoint retains the raw message log and records the summary event separately.
 
-- It accepts message-like values from API/over-the-wire inputs and coerces them to typed messages.
-- A message with a new stable ID is appended; a later write with the same ID replaces the earlier message instead of duplicating it.
-- `RemoveMessage` deletes a matching ID. `REMOVE_ALL_MESSAGES` discards the base state and all earlier writes in that batch; only writes after the last sentinel survive.
-- It treats an absent replay base (`None`) as empty, which allows recovery of threads whose earliest checkpoint did not explicitly seed `messages: []`.
+When creating summarized effective history, preserved AI messages lose only reasoning blocks that are bound to preceding Claude history: native Claude reasoning blocks, plus `reasoning` blocks for Claude on Bedrock. Other identified providers retain their reasoning blocks. This is request shaping, not deletion from raw state.
 
-Stable IDs are assigned by LangGraph before checkpoint serialization, not by the reducer. That is essential for deterministic replay: generating IDs in a reducer would assign different IDs when reapplying stored writes. Tests exercise sync and async resumed threads, dict-style input, no-base replay, and eviction replacement to ensure state reads retain stable IDs and do not duplicate messages.
+The middleware reserves configured output tokens and five-percent headroom when a model advertises an input limit. A recognized context-overflow response can trigger summarization and **at most one strictly smaller** recovery request. It refuses to resend unchanged input, rejects known irreducible requests before sending them, and surfaces `ContextOverflowError` when recovery is exhausted; unrelated bad requests are not treated as context overflow.
+
+`SummarizationToolMiddleware` exposes manual `compact_conversation`; it never compacts in the background. The tool shares the automatic middleware's engine and `_summarization_event`, but is eligible only around half the automatic trigger. A successful call records a new event and confirmation `ToolMessage`; no eligible cutoff or a summary failure returns a tool message without changing the event. See [Context Management](/openwiki/concepts/context-management.md).
+
+## Async subagents: durable tracking, remote observation
+
+`AsyncSubAgentMiddleware` exposes `start_async_task`, `check_async_task`, `update_async_task`, `cancel_async_task`, and `list_async_tasks`. Starting a task creates a child thread and run through the LangGraph SDK, returns the child thread ID as the stable `task_id`, and stores an `async_tasks` record in parent graph state. The record contains the configured agent, thread, tracked run, status, and timestamps. It is durable parent-side tracking, not the remote server's source of truth: checks and lists refresh it when possible, while an SDK failure returns an error or cached status rather than removing it.
 
 ```mermaid
 sequenceDiagram
-    participant Caller
-    participant Graph
-    participant Channel as DeltaChannel
-    participant Saver as Checkpointer
-    Caller->>Graph: invoke messages with thread ID
-    Graph->>Channel: write message delta
-    Channel->>Channel: coerce and merge by stable ID
-    Channel->>Saver: persist snapshot or delta
-    Caller->>Graph: later invoke with same thread ID
-    Graph->>Saver: load checkpoint
-    Saver->>Channel: replay stored writes
-    Channel-->>Graph: reconstructed message state
+    participant Parent as Parent graph
+    participant Middleware as Async middleware
+    participant SDK as LangGraph SDK
+    participant Child as Child thread
+    Parent->>Middleware: start_async_task
+    alt isolated mode
+        Middleware->>SDK: create thread and run with task
+    else fork mode
+        Middleware->>Middleware: snapshot effective history and hydrate blobs
+        Middleware->>SDK: create thread and run with snapshot
+    end
+    SDK->>Child: background run
+    Middleware-->>Parent: task ID and persisted tracking record
 ```
 
-The graph receives `checkpointer`, `store`, `cache`, and `context_schema` as separate integration points. A checkpointer persists graph state between runs; a store is separately supplied when a backend such as `StoreBackend` needs persistent file storage. Run-scoped context belongs in `context_schema`, while durable graph values belong in the state schema or middleware state schema. Sharing a `thread_id` is the application-level decision that selects a checkpoint lineage and thus makes a later invocation a continuation rather than a new conversation.
+Caption: the parent continues after launch; a fork transfers a point-in-time portable conversation snapshot rather than shared runtime state.
 
-## Middleware-owned and private state
+A specification with `url` uses that remote endpoint; one without it uses local ASGI transport. Local ASGI requires asynchronous invocation such as `ainvoke`; synchronous use requires a reachable URL. Task-thread metadata includes the subagent name and, when available, its parent thread. Local children can also receive the parent assistant ID, which allows later local runs on the child thread to locate the parent. A URL-targeted child or `notify_parent=False` child intentionally omits that assistant ID, preventing direct wake-up while preserving parent-thread association. A configured webhook is separately passed to SDK run creation for starts and updates.
 
-Middleware may contribute state schemas. Deep Agents gathers the caller's state schema plus all assembled middleware schemas, discovers fields annotated with `PrivateStateAttr`, and gives their names to every `SubAgentMiddleware` in the final stack—including a caller replacement for the default task middleware.
+`mode="isolated"` sends only the delegated task. Experimental `mode="fork"` snapshots the parent's effective conversation, adds a task preamble, removes local tool artifacts and eviction metadata, hydrates portable blobs, and dispatches the serialized snapshot. It is a one-way handoff: subsequent parent changes and runtime resources are not shared.
 
-Private state is a delegation boundary, not merely a type annotation. For a normal inline task, private keys are removed before the child receives the parent state and removed again from the child's returned state before it is merged into the parent. This prevents a secret or process-local value produced by one child from leaking to sibling children or back through the task result. If Deep Agents cannot resolve a schema's annotations at runtime, it logs a warning and cannot protect private fields from that schema; annotation dependencies must therefore be importable at runtime rather than only under `TYPE_CHECKING`.
+### Run replacement, queueing, and cancellation
 
-The async middleware owns a distinct `async_tasks` state field. Its reducer merges task updates by task ID, so launch, poll, update, cancel, and list operations retain remote task identifiers and status across graph state changes and context compaction/offloading.
+A task retains its thread-based `task_id` while the tracked `run_id` can change. The default `update_strategy="interrupt"` starts a replacement run on that thread and interrupts current work. With `update_strategy="enqueue"`, the latest run is queued without interrupting active work, so the task becomes `pending` while earlier work may still be running. Only one queued follow-up per task per model turn is accepted, preventing concurrent tool calls that observed the same state from losing run tracking.
 
-## Tool execution and interrupted histories
+```mermaid
+stateDiagram-v2
+    [*] --> running: launch
+    running --> pending: enqueue follow-up
+    pending --> running: queued run starts
+    running --> running: interrupt update replaces run
+    running --> waiting: child pauses
+    pending --> waiting: child pauses
+    running --> success: latest run completes
+    pending --> success: latest run completes
+    running --> error: latest run fails
+    running --> timeout: latest run times out
+    running --> cancelled: cancellation
+    pending --> cancelled: cancellation
+    waiting --> cancelled: local record cancellation
+    success --> [*]
+    error --> [*]
+    timeout --> [*]
+    cancelled --> [*]
+```
 
-A model tool call runs through the assembled middleware and tool set. Middleware may return a LangGraph `Command` that updates state and supplies the matching `ToolMessage`; tools that use state should use this path so message and non-message updates remain one graph transition.
+Caption: `pending` describes the latest queued run, not necessarily the state of earlier superseded work.
 
-`PatchToolCallsMiddleware` runs before the agent loop. It scans prior AI tool calls and invalid tool calls, finds IDs without a corresponding tool result, and appends an error `ToolMessage` for each. The repair tells the model whether a call was malformed or may have been cancelled/interrupted, preventing an old checkpoint from containing an unresolved assistant tool request when the next invocation starts. The middleware replaces the message list atomically by writing `REMOVE_ALL_MESSAGES` followed by the repaired history.
+An enqueue update records older run IDs as `superseded_run_ids`. If an earlier run's notification starts a parent run, middleware rewrites it so it remains a notification but cannot be read as the queued follow-up's result. Cancelling an enqueued task cancels the latest run and attempts pending or running superseded runs newest-first, avoiding release of a queued run behind active work.
 
-Human approval is a different pause path: `HumanInTheLoopMiddleware` emits an interrupt before the protected tool runs. Resume is performed by the LangGraph application using the saved graph/thread state and its review decision; Deep Agents' responsibility is to install the interrupt configuration consistently for the main graph and declarative subagents. Do not assume an interrupt protects a `CompiledSubAgent` or remote async agent: those graphs own their own approval configuration.
+A successful child run can still represent a pause: the child thread's `interrupted` status and pending interrupts map it to nonterminal `waiting`, so the child user can answer on the child thread. In contrast, a server run status of `interrupted` maps to `cancelled`. Observation can follow a newer run after external replacement, while an explicitly parent-cancelled task is not revived by that lookup. A waiting task needs no remote cancel request; the parent records it as `cancelled` and later checks preserve that choice.
 
-## Cross-graph delegation boundaries
+## Notifications are best effort; polling closes the gap
 
-The `task` tool supports declarative `SubAgent` definitions and opaque `CompiledSubAgent` runnables. They have materially different state contracts:
+`create_deep_agent()` installs `_ParentNotifierMiddleware` in every Deep Agents graph. On asynchronous execution, only the outermost graph of a task run reports final success or a model-call failure. It re-raises `GraphInterrupt`, so a human/approval pause is neither success nor failure, and it records reported run IDs to suppress duplicates.
 
-| Form | Initial context | Schema and policy ownership | Result returned to parent |
-| --- | --- | --- | --- |
-| Isolated declarative subagent | Only a new `HumanMessage` containing the delegated description, plus non-private transferable state | Deep Agents compiles it with the parent custom state schema; it inherits parent tools, permissions, and `interrupt_on` unless overridden | A `ToolMessage` containing the structured response as JSON or the last non-empty AI text; eligible public state updates merge back |
-| Forked declarative subagent | Parent conversation/state, with excluded transient fields removed and a new task message appended | Experimental; rebuilds the effective parent prompt and cannot define its own skills | Same task-result protocol; recursive `task` calls are refused |
-| Compiled subagent | Isolated mode receives the delegated task and transferable state; a compiled fork gets a restricted inherited state | Caller owns its runnable and compatible schema; it does not inherit `state_schema` or top-level approval settings | Must return a state containing `messages`, or `task` raises `ValueError` |
-| Async subagent | A remote Agent Protocol run with its own remote thread/run IDs | The remote graph owns its tools, state, and approval policy | Launch returns immediately; local `async_tasks` records status for later check, update, cancel, or list calls |
+A direct wake-up is intentionally local and best effort. A child must have both parent thread and assistant IDs; remote targets and notification opt-out lack the latter. The child reads the parent thread and creates a notification run with `multitask_strategy="reject"` only if that parent is `idle` or `error`; it does not interrupt a busy or approval-paused parent. Missing threads, races, and SDK delivery failures are logged but never fail the child.
 
-For an inline task, the parent invokes the selected child synchronously (or asynchronously through `atask`) and converts completion to a `ToolMessage` linked to the parent tool-call ID. A structured child response takes precedence; otherwise the final non-empty `AIMessage` text is used, avoiding an empty trailing end-turn response. Parent callbacks, tags, and compatible configuration propagate through the LangGraph runtime, while the child receives a subagent tracing marker.
+```mermaid
+sequenceDiagram
+    participant Child as Local child graph
+    participant Notifier as Parent notifier
+    participant Parent as Parent thread
+    participant Poller as Parent async middleware
+    Child->>Notifier: success or model failure
+    alt local route and parent idle or error
+        Notifier->>Parent: notification run with reject strategy
+    else remote opt-out busy or paused
+        Notifier-->>Child: no direct wake-up
+    end
+    Poller->>Poller: poll unfinished tasks at lifecycle hooks
+    Poller-->>Parent: newly observed reportable outcome
+```
 
-Forking is intentionally narrower than ordinary inheritance. A declarative fork receives the parent's effective conversation so it can continue work, mirrors prompt-producing middleware, and marks itself as forked. Its task tool remains visible only to return a refusal at call time, which prevents recursive delegation without changing the inherited tool shape. Compiled runnables are opaque, so Deep Agents cannot safely pass their internal/private channels or retrofit their schemas.
+Caption: direct wake-up is opportunistic. Parent-side polling is the reliable mechanism for eventually observing unfinished tracked tasks.
 
-Remote async subagents are not a continuation of the local graph. They communicate through the LangGraph SDK with an Agent Protocol server, return a task ID immediately, and may run concurrently. Local ASGI transport without a URL requires the parent to use an async entrypoint; synchronous invocation requires a reachable URL. Treat remote headers and the remote graph's configured capabilities as a separate trust and operational boundary.
+On the asynchronous parent path, the middleware records a delivered notification, polls unfinished tasks at agent start and before model calls, then polls again after a final answer with no tool calls. A new notification causes one more model turn; unchanged observations are not repeated. Each observation has a five-second limit. SDK errors and timeouts skip only that task, leaving its persisted record eligible for a later poll. Synchronous graph hooks expose the task tools but do not perform this polling.
 
-## Safe-change checklist
+Notifications carry `deepagents_notification` and clearly label their content as not user input. Child-controlled text is HTML-escaped and clipped; normal image, audio, video, and file blocks can pass through, while reasoning, tool-call, and unknown assistant-only blocks are dropped. Automatically reported failures disclose a failure class rather than exception details. Use `check_async_task` for a full result or pause details.
 
-- Preserve `DeepAgentState.messages` as a `DeltaChannel` when extending state schemas; replacing it loses the reducer and its checkpoint-growth/replay guarantees.
-- Give stateful middleware explicit schemas, mark non-delegable fields with `PrivateStateAttr`, and ensure referenced annotation types resolve at runtime.
-- Keep tool result messages correlated with their `tool_call_id`; preserve `PatchToolCallsMiddleware` or an equivalent repair strategy when resuming old checkpoints.
-- Configure a checkpointer before relying on approval interrupts or multi-turn continuation, and test resume using the same `thread_id`.
-- Treat `CompiledSubAgent` and `AsyncSubAgent` as graph ownership boundaries. Audit their state, tools, checkpointing, approvals, and credentials independently rather than expecting parent configuration to flow into them.
-- When altering stack order or exclusions, test both the main graph and generated general-purpose subagent: required filesystem and task scaffolding must remain available, and exclusions must fail loudly when stale.
+## Retry scopes are deliberately different
+
+`CodeModelRetryMiddleware` retries the model node only, taking the runtime-selected model's retry budget over its startup fallback. It retries classified transient failures with capped jittered delay or a valid capped `Retry-After`; graph control flow, non-transient failures, and exhausted budgets are re-raised. Therefore completed tool calls are not replayed and a failed provider request is not converted into an AI response.
+
+The middleware emits correlated `model_attempt` start and completion events and a `model_retry` event for each retry. The retry event reports whether visible streamed output may have begun, allowing clients to supersede partial output. Stream-event writer failures are logged without replacing the model result or its error.
+
+Talon adds a separate host-level retry loop around the entire asynchronous graph invocation. It propagates cancellation, uses the conversation ID as the LangGraph thread ID, retries its configured transient signals, and sleeps with capped exponential backoff. Because this scope can repeat a graph invocation, it is not the completed-tool safety boundary supplied by model-node retry middleware. See [Talon Integration](/openwiki/integrations/talon.md).
+
+## Operational change and test focus
+
+- Preserve reducer ID stability, reset behavior, and dangling-tool repair whenever checkpoint or resume behavior changes.
+- Test both normal and provider-overflow compaction paths: the recovery retry must be strictly smaller, bounded to one, and must not hide unrelated provider errors.
+- Test launch, queued follow-ups, superseded notification rewriting, waiting, external run replacement, cancellation, and cached-status fallback separately.
+- Test direct delivery separately from polling: local routing may wake only an idle or error parent, whereas polling must survive an SDK error or timeout without deleting task state.
+- Test notification escaping, clipping, media forwarding, assistant-block removal, failure redaction, and duplicate suppression at the parent model boundary.
+- Test model-node retry separately from host invocation retry; widening the former to tools changes replay safety.
+
+For configuration examples, see [Subagents and Skills](/openwiki/concepts/subagents-skills.md). For approval pauses, see [Permissions and HITL](/openwiki/concepts/permissions-hitl.md).

@@ -1,6 +1,6 @@
 """Tests for agent-server extension hosting."""
 
-from pathlib import Path
+from typing import TYPE_CHECKING
 from unittest.mock import Mock, patch
 
 import pytest
@@ -17,6 +17,9 @@ from deepagents_code.extensions.registry import (
     SourceInfo,
 )
 from deepagents_code.offload import _ArtifactsStorage
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 @pytest.fixture(autouse=True)

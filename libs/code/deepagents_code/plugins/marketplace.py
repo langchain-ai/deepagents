@@ -264,6 +264,10 @@ def _run_git(args: list[str]) -> None:
             capture_output=True,
             env=env,
             text=True,
+            # Git writes paths as UTF-8, while the locale default is the ANSI
+            # code page on Windows (e.g. cp1252).
+            encoding="utf-8",
+            errors="replace",
             timeout=_GIT_TIMEOUT_SECONDS,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:

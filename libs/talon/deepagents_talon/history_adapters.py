@@ -50,7 +50,7 @@ async def open_profile(config: TalonConfig) -> AsyncIterator[EmbeddingProfile | 
     async with AsyncExitStack() as stack:
         try:
             embed = await _adapter(config, profile, stack)
-        except (ImportError, TalonConfigError):
+        except ImportError, TalonConfigError:
             raise
         except Exception:  # noqa: BLE001  # Provider validation can include API keys.
             msg = "Could not initialize history embeddings; check the selected adapter and settings"

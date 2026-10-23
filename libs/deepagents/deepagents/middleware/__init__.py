@@ -47,7 +47,11 @@ Use a **plain tool** when:
 * The tool is specific to a single consumer (e.g. CLI-only)
 """
 
-from deepagents.middleware.async_subagents import AsyncSubAgent, AsyncSubAgentMiddleware
+from deepagents.middleware.async_subagents import (
+    AsyncSubAgent,
+    AsyncSubAgentMiddleware,
+    TaskEvent,
+)
 from deepagents.middleware.filesystem import FilesystemMiddleware, FilesystemPermission
 from deepagents.middleware.memory import MemoryMiddleware
 from deepagents.middleware.rubric import (
@@ -104,6 +108,7 @@ __all__ = [
     "SubAgentMiddleware",
     "SummarizationMiddleware",
     "SummarizationToolMiddleware",
+    "TaskEvent",
     "UnsupportedContentMiddleware",
     "create_summarization_tool_middleware",
 ]

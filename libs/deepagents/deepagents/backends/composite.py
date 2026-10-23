@@ -40,7 +40,7 @@ def _remap_grep_path(m: GrepMatch, route_prefix: str) -> GrepMatch:
         "GrepMatch",
         {
             **m,
-            "path": f"{route_prefix[:-1]}{m['path']}",
+            "path": f"{route_prefix.rstrip('/')}{m['path']}",
         },
     )
 
@@ -112,7 +112,7 @@ def _remap_file_info_path(fi: FileInfo, route_prefix: str) -> FileInfo:
         "FileInfo",
         {
             **fi,
-            "path": f"{route_prefix[:-1]}{fi['path']}",
+            "path": f"{route_prefix.rstrip('/')}{fi['path']}",
         },
     )
 
@@ -721,7 +721,7 @@ class CompositeBackend(BackendProtocol):
         """
         backend, stripped_key = self._get_backend_and_key(file_path)
         res = backend.write(stripped_key, content)
-        if res.path is not None:
+        if res.path is not None and stripped_key != file_path:
             res.path = file_path
         return res
 
@@ -733,7 +733,7 @@ class CompositeBackend(BackendProtocol):
         """Async version of write."""
         backend, stripped_key = self._get_backend_and_key(file_path)
         res = await backend.awrite(stripped_key, content)
-        if res.path is not None:
+        if res.path is not None and stripped_key != file_path:
             res.path = file_path
         return res
 

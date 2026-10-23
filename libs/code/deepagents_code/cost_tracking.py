@@ -1617,7 +1617,7 @@ def _estimate_from_price(
     """
     try:
         category_costs = _category_costs(price, usage)
-    except (AttributeError, ImportError):
+    except AttributeError, ImportError:
         category_costs = {
             "cache_creation": None,
             "cache_read": None,

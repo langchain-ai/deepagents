@@ -92,7 +92,7 @@ async def load_extension(
     api = ExtensionAPI(registry, source, cwd=cwd, mode=mode)
     try:
         await factory(api)
-    except (KeyboardInterrupt, asyncio.CancelledError):
+    except KeyboardInterrupt, asyncio.CancelledError:
         registry._rollback(snapshot)
         api._deactivate()
         sys.modules.pop(name, None)

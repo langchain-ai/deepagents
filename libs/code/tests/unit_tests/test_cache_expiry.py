@@ -1,15 +1,14 @@
 """Behavioral coverage for cache-expiry handoffs."""
 
 import asyncio
-from collections.abc import Iterator
 from copy import deepcopy
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from langchain_core.messages import BaseMessage, HumanMessage
+from textual.widgets import Static
 
 from deepagents_code.app import DeepAgentsApp, QueuedMessage, TextualSessionState
 from deepagents_code.hooks.client_lifecycle import ClientHookStopError
@@ -22,6 +21,9 @@ from deepagents_code.tui.widgets.messages import ErrorMessage
 from deepagents_code.tui.widgets.status import StatusBar
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
+    from pathlib import Path
+
     from langchain_core.runnables import RunnableConfig
 
 
@@ -38,7 +40,7 @@ def checkpoint_database(
     release_all()
 
 
-def _owned_config(config: "RunnableConfig") -> "RunnableConfig":
+def _owned_config(config: RunnableConfig) -> RunnableConfig:
     """Supply the reservation normally attached by the local HTTP client."""
     from deepagents_code.thread_ownership import OWNER_KEY, ensure_owned
 
@@ -224,6 +226,130 @@ async def test_cache_expiring_toast_without_hooks(
         assert len(notices) == 1
         assert notices[0].message == "Prompt-cache retention may end within 60 seconds."
         assert app.query_one("Toast").region.height > 0
+
+
+async def test_expiry_banner_survives_activity_and_clears_on_refresh(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        banner = app.query_one("#cache-expired-banner", Static)
+        assert not banner.display
+        _prepare(app, monkeypatch)
+        assert app._status_bar is not None
+        expires_at = datetime(2025, 1, 2, 15, 4, 5, tzinfo=UTC)
+        clock = MagicMock(wraps=datetime)
+        monkeypatch.setattr("deepagents_code.app.datetime", clock)
+        app._status_bar.cache_expires_at = expires_at
+        app._agent_running = True
+        app._cold_cache_suppressed_for_session = True
+        expired_at = expires_at.astimezone().strftime("%H:%M:%S")
+        for elapsed, age in (
+            (timedelta(seconds=0), "just now"),
+            (timedelta(seconds=59), "just now"),
+            (timedelta(minutes=1), "1 minute ago"),
+            (timedelta(minutes=59), "59 minutes ago"),
+            (timedelta(hours=1), "1 hour ago"),
+            (timedelta(hours=23), "23 hours ago"),
+            (timedelta(days=1), "1 day ago"),
+            (timedelta(days=2), "2 days ago"),
+        ):
+            clock.now.return_value = expires_at + elapsed
+            app._check_cache_expiry()
+            await pilot.pause()
+            assert banner.display
+            assert (
+                str(banner.content) == f"Prompt cache expired at {expired_at} ({age})"
+            )
+            assert banner.region.y <= 1
+        app._status_bar.cache_expires_at = expires_at + timedelta(hours=1)
+        app._check_cache_expiry()
+        expired_at = app._status_bar.cache_expires_at.astimezone().strftime("%H:%M:%S")
+        assert (
+            str(banner.content) == f"Prompt cache expired at {expired_at} (1 day ago)"
+        )
+        app._status_bar.cache_expires_at = clock.now.return_value + timedelta(minutes=5)
+        app._check_cache_expiry()
+        assert not banner.display
+        app._status_bar.cache_expires_at = None
+        app._check_cache_expiry()
+        assert not banner.display
+
+
+@pytest.mark.parametrize("outcome", ["read", "write", "none", "expired"])
+async def test_expiry_banner_follows_request_reconciliation(
+    outcome: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from langchain_core.messages import AIMessageChunk
+
+    from deepagents_code.tui.textual_adapter import TextualUIAdapter
+
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        _prepare(app, monkeypatch)
+        app._agent_running = True
+        app._cold_cache_suppressed_for_session = True
+        banner = app.query_one("#cache-expired-banner")
+        app._check_cache_expiry()
+        assert banner.display
+        assert app._status_bar is not None
+        previous_expiry = app._status_bar.cache_expires_at
+        requested_at = datetime.now(UTC) - timedelta(
+            minutes=6 if outcome == "expired" else 1
+        )
+        adapter = TextualUIAdapter(
+            mount_message=AsyncMock(),
+            update_status=MagicMock(),
+            request_approval=AsyncMock(),
+            on_cache_reconciliation=app._on_cache_reconciliation,
+        )
+        start = {
+            "type": "model_attempt",
+            "phase": "start",
+            "call_id": "banner-request",
+            "attempt": 0,
+            "cache_activity": {
+                "requested_at": requested_at.isoformat(),
+                "model_spec": "anthropic:claude-sonnet-4-6",
+                "endpoint": "default",
+                "params": None,
+            },
+        }
+        await adapter._cache_attempt_event(start)
+        assert not banner.display
+        app._check_cache_expiry()
+        assert not banner.display
+        assert app._status_bar.cache_expires_at == previous_expiry
+        app._on_user_visible_output_started()
+        assert not banner.display
+        if outcome == "none":
+            await adapter._cache_attempt_event({**start, "phase": "complete"})
+            assert app._status_bar.cache_expires_at == previous_expiry
+        else:
+            await adapter._cache_usage(
+                AIMessageChunk(
+                    content="still streaming",
+                    usage_metadata={
+                        "input_tokens": 100,
+                        "output_tokens": 1,
+                        "total_tokens": 101,
+                        "input_token_details": {
+                            "cache_creation"
+                            if outcome == "write"
+                            else "cache_read": 100
+                        },
+                    },
+                ),
+                {"dcode_cache_attempt": ["banner-request", 0]},
+            )
+            assert app._status_bar.cache_expires_at == requested_at + timedelta(
+                minutes=5
+            )
+        assert not app._cache_reconciliation_pending
+        assert app._agent_running
+        assert banner.display is (outcome in {"none", "expired"})
 
 
 @pytest.mark.parametrize("size", [(80, 20), (60, 16)])
@@ -612,7 +738,7 @@ async def test_handoff_child_is_discoverable_and_resumable(
         )
 
         async def update_state(
-            config: "RunnableConfig", values: dict[str, object] | None, *, as_node: str
+            config: RunnableConfig, values: dict[str, object] | None, *, as_node: str
         ) -> None:
             # The HTTP state API forwards the thread ID, but drops config metadata.
             await graph.aupdate_state(
@@ -759,7 +885,7 @@ async def test_handoff_with_separate_server_checkpoints(
     )
 
     async def update_state(
-        config: "RunnableConfig", values: dict[str, object] | None, *, as_node: str
+        config: RunnableConfig, values: dict[str, object] | None, *, as_node: str
     ) -> None:
         await graph.aupdate_state(
             {"configurable": config["configurable"]}, values, as_node=as_node
@@ -891,7 +1017,7 @@ async def test_handoff_preserves_shell_context(
         )
 
         async def update_state(
-            config: "RunnableConfig",
+            config: RunnableConfig,
             values: dict[str, object] | None,
             *,
             as_node: str | None = None,
@@ -1189,6 +1315,7 @@ async def test_expiry_send_action_dispatches_once_in_current_thread(
     outcome: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     app = DeepAgentsApp()
+    monkeypatch.setattr(app, "_cold_cache_estimate", AsyncMock(return_value=None))
 
     async def send(_text: str, _mode: str) -> None:
         assert app._lc_thread_id == "source"
@@ -1238,6 +1365,7 @@ async def test_handoff_pauses_submission_but_keeps_draft_editable(
     outcome: str, submitted: bool, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     app = DeepAgentsApp()
+    monkeypatch.setattr(app, "_cold_cache_estimate", AsyncMock(return_value=None))
     started = asyncio.Event()
     release = asyncio.Event()
 
@@ -1305,6 +1433,7 @@ async def test_cancel_handoff_restores_submission(
     cancel: str, submitted: bool, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     app = DeepAgentsApp()
+    monkeypatch.setattr(app, "_cold_cache_estimate", AsyncMock(return_value=None))
     started = asyncio.Event()
     release = asyncio.Event()
 
@@ -1364,6 +1493,7 @@ async def test_handoff_does_not_restore_draft_into_unrelated_thread(
     other_draft: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     app = DeepAgentsApp()
+    monkeypatch.setattr(app, "_cold_cache_estimate", AsyncMock(return_value=None))
 
     def summarize(**_kwargs: object) -> dict[str, str]:
         # The user leaves the source while its summary is being generated.
@@ -1592,6 +1722,7 @@ async def test_resumed_thread_with_lapsed_window_does_not_prompt(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     app = DeepAgentsApp()
+    monkeypatch.setattr(app, "_cold_cache_estimate", AsyncMock(return_value=None))
 
     async def restore_timing() -> None:  # noqa: RUF029  # mock contract
         # The checkpoint's last request is well past its retention window.

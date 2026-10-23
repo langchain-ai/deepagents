@@ -85,7 +85,7 @@ def _self_manages_update_check(request: pytest.FixtureRequest) -> bool:
 
 
 @pytest.fixture(autouse=True, scope="session")
-def _warm_model_caches() -> Generator[None, None, None]:
+def _warm_model_caches() -> Generator[None]:
     """Pre-populate model-config caches once per xdist worker.
 
     Tests like the model-selector UI tests call `get_available_models()` and
@@ -121,7 +121,7 @@ def _warm_model_caches() -> Generator[None, None, None]:
 
 
 @pytest.fixture(autouse=True)
-def _restore_os_environ() -> Generator[None, None, None]:
+def _restore_os_environ() -> Generator[None]:
     """Snapshot and restore `os.environ` around every test.
 
     Production code under test (`_ensure_bootstrap`, `_load_dotenv`,
@@ -149,7 +149,7 @@ def _restore_os_environ() -> Generator[None, None, None]:
 
 
 @pytest.fixture(autouse=True)
-def _restore_dotenv_loader_state() -> Generator[None, None, None]:
+def _restore_dotenv_loader_state() -> Generator[None]:
     """Snapshot and restore the dotenv loader's module-level maps.
 
     `_load_dotenv` records every value it injects in two module dicts
@@ -359,7 +359,7 @@ def _clear_splash_tips_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
-def _pin_invoked_name(monkeypatch: pytest.MonkeyPatch) -> Generator[None, None, None]:
+def _pin_invoked_name(monkeypatch: pytest.MonkeyPatch) -> Generator[None]:
     """Pin the launch command name echoed by resume hints.
 
     `invoked_name()` derives from `sys.argv[0]`, which under test is the runner
@@ -547,6 +547,29 @@ def _disable_terminal_escape(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _isolate_clipboard(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep clipboard backends in memory instead of touching the host or terminal."""
+    import pyperclip
+    from textual.app import App
+
+    from deepagents_code import clipboard
+
+    contents = ""
+
+    def copy(text: str) -> None:
+        nonlocal contents
+        contents = text
+
+    def copy_local(app: App, text: str) -> None:
+        app._clipboard = text
+
+    monkeypatch.setattr(pyperclip, "copy", copy)
+    monkeypatch.setattr(pyperclip, "paste", lambda: contents)
+    monkeypatch.setattr(App, "copy_to_clipboard", copy_local)
+    monkeypatch.setattr(clipboard, "_copy_osc52", lambda _text: None)
+
+
+@pytest.fixture(autouse=True)
 def _register_theme_variables(monkeypatch: pytest.MonkeyPatch) -> None:
     """Make app-specific CSS variables available to all test `App` instances.
 
@@ -716,6 +739,28 @@ def _isolate_state_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _isolate_session_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> Iterator[None]:
+    """Redirect the session lock `cli_main` takes and release it afterwards.
+
+    Installation-scoped like `UPDATE_LOCK_FILE`, so unpatched it would register
+    tests as sessions of this checkout's real tool environment. Closing the
+    descriptor keeps one test's registration, and its stale lock path, from
+    leaking into the next.
+    """
+    from deepagents_code import _session_lock
+
+    monkeypatch.setattr(
+        _session_lock, "SESSION_LOCK_FILE", tmp_path / ".state" / "sessions.lock"
+    )
+    yield
+    if _session_lock._held_fd is not None:
+        os.close(_session_lock._held_fd)
+        _session_lock._held_fd = None
+
+
+@pytest.fixture(autouse=True)
 def _isolate_history(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Redirect ChatInput history to a temp file.
 
@@ -813,7 +858,7 @@ def wait_for_modal() -> WaitForModal:
 
 
 @pytest.hookimpl(wrapper=True)
-def pytest_sessionfinish() -> Generator[None, None, None]:
+def pytest_sessionfinish() -> Generator[None]:
     """Close any debug-log file handlers still attached at session end.
 
     Companion to `_close_leaked_debug_handlers`, which is setup-only and so

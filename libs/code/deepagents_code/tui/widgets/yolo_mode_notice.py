@@ -102,7 +102,7 @@ class YoloModeNoticeScreen(ModalScreen[YoloModeNoticeResult]):
         margin: 0 0 1 0;
     }
 
-    YoloModeNoticeScreen .yolo-mode-notice-body > *:last-child {
+    YoloModeNoticeScreen .yolo-mode-notice-body > MarkdownBlock:last-child {
         margin-bottom: 0;
     }
 

@@ -1,6 +1,5 @@
 import logging
 import shutil
-from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast
 from unittest import mock
@@ -11,6 +10,8 @@ from langchain_core.messages import ToolMessage
 from deepagents_code.diff_utils import DiffStats
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from deepagents.backends.protocol import BackendProtocol
 
 

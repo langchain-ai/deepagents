@@ -1,12 +1,15 @@
 """Exercise local speech loading and generation without downloading a model."""
 
-from pathlib import Path
+from typing import TYPE_CHECKING
 from unittest.mock import Mock
 
 import pytest
 
 from deepagents_talon import speech
 from deepagents_talon.config import TalonConfig
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 def test_local_pipeline_transcribes_with_local_only_loading(

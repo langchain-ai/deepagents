@@ -66,7 +66,7 @@ class HistoryManager:
                     entries.append(entry if isinstance(entry, str) else str(entry))
                 self._read_failed = False
                 return entries
-        except (OSError, UnicodeDecodeError):
+        except OSError, UnicodeDecodeError:
             logger.warning(
                 "Failed to read history from %s",
                 self.history_file,

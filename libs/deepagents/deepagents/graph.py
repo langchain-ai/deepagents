@@ -43,6 +43,7 @@ from deepagents._version import _lc_version
 from deepagents.backends import StateBackend
 from deepagents.backends.protocol import BackendProtocol
 from deepagents.middleware._fs_interrupt import _build_interrupt_on_from_permissions
+from deepagents.middleware._parent_notifier import _ParentNotifierMiddleware
 from deepagents.middleware._prompt_caching import append_prompt_caching_middleware
 from deepagents.middleware._state import private_state_field_names
 from deepagents.middleware._tool_exclusion import _ToolExclusionMiddleware
@@ -234,7 +235,13 @@ def _apply_custom_middleware(
     result = list(base)
     for i, m in enumerate(result):
         if m.name in replacements:
-            result[i] = replacements[m.name]
+            replacement = replacements[m.name]
+            if isinstance(m, FilesystemMiddleware) and m._permissions and isinstance(replacement, FilesystemMiddleware):
+                if replacement._permissions and replacement._permissions != m._permissions:
+                    msg = "FilesystemMiddleware permissions conflict with the agent permissions; use the same rules or omit middleware permissions."
+                    raise ValueError(msg)
+                replacement = replacement._with_permissions(m._permissions)
+            result[i] = replacement
     if to_append and core_names is not None:
         # Land new middleware after the last core entry, ahead of the tail.
         pos = max((i for i, m in enumerate(result) if m.name in core_names), default=len(result) - 1) + 1
@@ -370,7 +377,9 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             See [Prompt assembly](https://docs.langchain.com/oss/deepagents/customization#prompt-assembly)
             for the full case-by-case breakdown.
         middleware: Additional middleware to apply after the base stack
-            but before the tail middleware. The full ordering is:
+            but before the tail middleware. Replacement `FilesystemMiddleware`
+            inherits agent permissions when unconfigured; conflicting non-empty
+            rules raise `ValueError`. The full ordering is:
 
             Base stack:
 
@@ -547,6 +556,10 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             the `task` tool, so subagents see the same custom fields as the
             parent.
 
+            Those subagents can also write the fields back to the parent. If
+            parallel `task` calls may change the same field, give it a
+            reducer; otherwise the step fails with `InvalidUpdateError`.
+
             [`CompiledSubAgent`][deepagents.middleware.subagents.CompiledSubAgent]
             runnables do not inherit this schema because they are already
             compiled — compile those runnables with a compatible state
@@ -719,7 +732,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
                 FilesystemMiddleware(
                     backend=backend,
                     custom_tool_descriptions=_subagent_profile.tool_description_overrides,
-                    _permissions=subagent_permissions,
+                    permissions=subagent_permissions,
                 ),
                 create_summarization_middleware(subagent_model, backend),
                 PatchToolCallsMiddleware(),
@@ -778,7 +791,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
 
             subagent_interrupt_on = spec.get("interrupt_on", interrupt_on)
             subagent_interrupt_on = _merge_fs_interrupt_on(
-                _build_interrupt_on_from_permissions(subagent_permissions or []),
+                _build_interrupt_on_from_permissions(subagent_permissions or [], backend),
                 subagent_interrupt_on,
             )
 
@@ -825,7 +838,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             FilesystemMiddleware(
                 backend=backend,
                 custom_tool_descriptions=_profile.tool_description_overrides,
-                _permissions=permissions,
+                permissions=permissions,
             ),
             create_summarization_middleware(model, backend),
             PatchToolCallsMiddleware(),
@@ -877,7 +890,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         else:
             general_purpose_spec["system_prompt"] = _apply_profile_prompt(_profile, GENERAL_PURPOSE_SUBAGENT["system_prompt"])
         gp_interrupt_on = _merge_fs_interrupt_on(
-            _build_interrupt_on_from_permissions(permissions or []),
+            _build_interrupt_on_from_permissions(permissions or [], backend),
             interrupt_on,
         )
         if gp_interrupt_on is not None:
@@ -890,8 +903,8 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         FilesystemMiddleware(
             backend=backend,
             custom_tool_descriptions=_profile.tool_description_overrides,
-            _permissions=permissions,
-        )
+            permissions=permissions,
+        ),
     ]
     sub_agent_middleware: SubAgentMiddleware | None = None
     if inline_subagents:
@@ -909,6 +922,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         deepagent_middleware.append(sub_agent_middleware)
     deepagent_middleware.extend(
         [
+            _ParentNotifierMiddleware(),
             create_summarization_middleware(model, backend),
             PatchToolCallsMiddleware(),
         ]
@@ -944,7 +958,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             )
         )
     main_interrupt_on = _merge_fs_interrupt_on(
-        _build_interrupt_on_from_permissions(permissions or []),
+        _build_interrupt_on_from_permissions(permissions or [], backend),
         interrupt_on,
     )
     if main_interrupt_on is not None:

@@ -2,12 +2,9 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+import pytest
 
 from deepagents_code.mcp_config import resolve_mcp_server_env
-
-if TYPE_CHECKING:
-    import pytest
 
 
 class TestResolveMcpServerEnv:
@@ -54,3 +51,65 @@ class TestResolveMcpServerEnv:
         resolved = resolve_mcp_server_env("srv", {"command": "${MCP_LITERAL}"})
 
         assert resolved["command"] == "keep-${NOT_A_REF}-literal"
+
+    def test_resolves_slack_app_credentials(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Custom credentials expand without mutating the source config."""
+        monkeypatch.setenv("SLACK_CLIENT_ID", "custom-app")
+        monkeypatch.setenv("SLACK_CLIENT_SECRET", "private-value")
+        config = {
+            "url": "https://mcp.slack.com/mcp",
+            "auth": "oauth",
+            "oauth": {
+                "client_id": "${SLACK_CLIENT_ID}",
+                "client_secret": "${SLACK_CLIENT_SECRET}",
+            },
+        }
+        resolved = resolve_mcp_server_env("slack", config)
+        assert resolved["oauth"] == {
+            "client_id": "custom-app",
+            "client_secret": "private-value",
+        }
+        assert config["oauth"]["client_secret"] == "${SLACK_CLIENT_SECRET}"
+
+    @pytest.mark.parametrize(
+        "oauth",
+        [
+            None,
+            [],
+            {},
+            {"client_id": ""},
+            {"client_id": 123},
+            {"client_id": "app", "client_secret": ""},
+            {"client_id": "app", "client_secret": "private\nvalue"},
+            {"client_id": "app", "unknown": "private-value"},
+        ],
+    )
+    def test_rejects_invalid_slack_credentials(self, oauth: object) -> None:
+        """Invalid settings fail without reflecting credential values."""
+        with pytest.raises((TypeError, ValueError)) as error:
+            resolve_mcp_server_env(
+                "slack",
+                {
+                    "url": "https://mcp.slack.com/mcp",
+                    "auth": "oauth",
+                    "oauth": oauth,
+                },
+            )
+        assert "private" not in str(error.value)
+
+    @pytest.mark.parametrize(
+        "url", ["https://example.com/mcp", "https://slack.com.evil.test/mcp"]
+    )
+    def test_rejects_app_credentials_for_other_hosts(self, url: str) -> None:
+        """Slack-specific app settings cannot affect another provider."""
+        with pytest.raises(ValueError, match="only for Slack"):
+            resolve_mcp_server_env(
+                "server",
+                {
+                    "url": url,
+                    "auth": "oauth",
+                    "oauth": {"client_id": "app"},
+                },
+            )

@@ -47,6 +47,7 @@ BUILTIN_METADATA: dict[str, SandboxProviderMetadata] = {
         name="daytona",
         working_dir="/home/daytona",
         install=SandboxInstallHint(kind="extra", name="daytona"),
+        supports_snapshot_name=True,
         backend_module="langchain_daytona",
     ),
     "langsmith": SandboxProviderMetadata(
@@ -60,6 +61,12 @@ BUILTIN_METADATA: dict[str, SandboxProviderMetadata] = {
         working_dir="/workspace",
         install=SandboxInstallHint(kind="extra", name="modal"),
         backend_module="langchain_modal",
+    ),
+    "openshell": SandboxProviderMetadata(
+        name="openshell",
+        working_dir="/sandbox",  # `$HOME` in OpenShell's sandbox images
+        install=SandboxInstallHint(kind="extra", name="openshell"),
+        backend_module="langchain_nvidia_openshell",
     ),
     "runloop": SandboxProviderMetadata(
         name="runloop",
@@ -344,6 +351,7 @@ def _create_builtin_provider(name: str) -> SandboxProvider:
         "daytona": sandbox_factory._DaytonaProvider,
         "langsmith": sandbox_factory._LangSmithProvider,
         "modal": sandbox_factory._ModalProvider,
+        "openshell": sandbox_factory._OpenShellProvider,
         "runloop": sandbox_factory._RunloopProvider,
         "vercel": sandbox_factory._VercelProvider,
     }

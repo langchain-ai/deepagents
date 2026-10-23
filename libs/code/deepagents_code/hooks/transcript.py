@@ -520,7 +520,7 @@ class TranscriptRecorder:
             return
         try:
             append_messages(self.thread_id, [message], agent_id=agent_id)
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             logger.warning(
                 "Skipping invalid streamed transcript message",
                 exc_info=True,
@@ -803,7 +803,7 @@ def _read_transcript(path: Path) -> tuple[list[TranscriptRecord], bool]:
             if not line.strip():
                 continue
             records.append(TranscriptRecord.model_validate_json(line))
-    except (OSError, ValueError):
+    except OSError, ValueError:
         logger.warning("Could not read transcript at %s", path, exc_info=True)
         return [], False
     return records, True

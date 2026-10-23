@@ -711,7 +711,7 @@ class ToolCallBuffer:
         joined = self._materialize_args()
         try:
             parsed = json.loads(joined)
-        except (json.JSONDecodeError, RecursionError):
+        except json.JSONDecodeError, RecursionError:
             # `RecursionError` is caught alongside the decode error because
             # pathologically nested model output can make `json.loads` exceed
             # the interpreter recursion limit, and that is one malformed call to

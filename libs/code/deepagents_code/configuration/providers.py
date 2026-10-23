@@ -228,7 +228,7 @@ def coerce_environment_value[T](
 
         try:
             return _found_for(option, _parse_extra_skills_dirs(raw, None))
-        except (OSError, ValueError, RuntimeError):
+        except OSError, ValueError, RuntimeError:
             return Invalid(f"Ignoring {name} (could not resolve a path)")
     if kind is OptionKind.THEME_DELEGATE:
         # Theme names are resolved by the theme-aware provider path. Keep this
@@ -344,7 +344,7 @@ def coerce_toml_value[T](
                 return _found_for(
                     option, _parse_extra_skills_dirs(None, cast("list[str]", raw))
                 )
-            except (ValueError, RuntimeError):
+            except ValueError, RuntimeError:
                 return Invalid(
                     f"Ignoring {label} in {source} (could not resolve a path)"
                 )
@@ -1164,7 +1164,7 @@ def _parse_remote_toml(
             "remote source is not UTF-8",
             source,
         )
-    except (tomllib.TOMLDecodeError, RecursionError):
+    except tomllib.TOMLDecodeError, RecursionError:
         return _remote_status(
             name,
             path,

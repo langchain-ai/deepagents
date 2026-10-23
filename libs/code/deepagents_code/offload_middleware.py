@@ -1400,7 +1400,7 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
                 )
                 try:
                     model.profile = merged  # ty: ignore[invalid-assignment]
-                except (AttributeError, TypeError, ValueError):
+                except AttributeError, TypeError, ValueError:
                     logger.warning(
                         "Could not apply runtime context limit %d to the offload "
                         "model profile; using its resolved profile",

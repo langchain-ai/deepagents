@@ -5,7 +5,6 @@ import logging
 import os
 import sys
 import warnings
-from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, fields
 from pathlib import Path
@@ -14,16 +13,18 @@ from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import Mock, patch
 
 import pytest
-from langchain_core.language_models import BaseChatModel
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage
 from langgraph.errors import GraphInterrupt
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator, Mapping
+
     from deepagents.backends.sandbox import SandboxBackendProtocol
     from langchain.agents.middleware.human_in_the_loop import InterruptOnConfig
     from langchain.agents.middleware.types import AgentMiddleware, AgentState
     from langchain.messages import ToolCall
+    from langchain_core.language_models import BaseChatModel
     from langgraph.prebuilt.tool_node import ToolCallRequest
     from langgraph.runtime import Runtime
 
@@ -51,6 +52,7 @@ from deepagents_code.agent import (
     get_available_agent_names,
     get_system_prompt,
     list_agents,
+    load_async_subagents,
 )
 from deepagents_code.config import runtime_state
 from deepagents_code.configuration.interpreter import InterpreterConfig
@@ -400,7 +402,7 @@ def _request_with_context(
     context: object,
     *,
     store: object | None = None,
-) -> "ToolCallRequest":
+) -> ToolCallRequest:
     return cast(
         "ToolCallRequest",
         SimpleNamespace(runtime=SimpleNamespace(context=context, store=store)),
@@ -547,7 +549,7 @@ def test_typed_autonomous_mode_requires_live_store_key() -> None:
 
 def _request_with_state(
     state: object, context: object, store: object
-) -> "ToolCallRequest":
+) -> ToolCallRequest:
     return cast(
         "ToolCallRequest",
         SimpleNamespace(
@@ -1011,7 +1013,7 @@ _EXECUTE_TOOL_CALL = cast(
 )
 
 
-def _execute_runtime(context: object) -> "Runtime[Any]":
+def _execute_runtime(context: object) -> Runtime[Any]:
     return cast("Runtime[Any]", SimpleNamespace(context=context))
 
 
@@ -5993,3 +5995,33 @@ class TestSubagentRetryBudgetResolution:
         with patch("deepagents_code.config.create_model", _fake_create_model):
             _resolve_retry_owned_model("anthropic:claude-haiku-4-5", cli_max_retries)
         return captured
+
+
+class TestLoadAsyncSubagents:
+    """Tests for `load_async_subagents` config parsing."""
+
+    @pytest.mark.parametrize(
+        ("webhook_line", "expected"),
+        [
+            ('webhook = "https://example.com/hook"\n', "https://example.com/hook"),
+            ("", None),
+            ("webhook = 123\n", None),
+            ("webhook = false\n", None),
+        ],
+        ids=["set", "unset", "integer", "boolean"],
+    )
+    def test_webhook_passthrough(
+        self, tmp_path: Path, webhook_line: str, expected: str | None
+    ) -> None:
+        """A string `webhook` is passed through; an absent one is omitted."""
+        config = tmp_path / "config.toml"
+        config.write_text(
+            "[async_subagents.researcher]\n"
+            'description = "Research agent"\n'
+            'graph_id = "agent"\n' + webhook_line
+        )
+
+        [agent] = load_async_subagents(config)
+
+        assert agent.get("webhook") == expected
+        assert ("webhook" in agent) is (expected is not None)

@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
 from deepagents_code.project_utils import find_project_root
-from deepagents_code.unicode_security import sanitize_control_chars
+from deepagents_code.unicode_security import is_safe_file_path, sanitize_control_chars
 
 logger = logging.getLogger(__name__)
 
@@ -279,8 +279,11 @@ class SlashCommandController:
                 (score, entry)
                 for entry in self._commands
                 if (
-                    score := self._score_command(
-                        search, entry.name, entry.description, entry.hidden_keywords
+                    score := max(
+                        self._score_command(
+                            search, name, entry.description, entry.hidden_keywords
+                        )
+                        for name in (entry.name, *entry.aliases)
                     )
                 )
                 > 0
@@ -631,16 +634,20 @@ def _run_git_ls_files(
         # S603: git_path validated via shutil.which(); ls-files args are
         # caller-supplied literals.
         result = subprocess.run(  # noqa: S603
-            [git_path, "ls-files", *extra_args],
+            # `-z` NUL-terminates entries and disables quoting; otherwise the
+            # default `core.quotePath` turns non-ASCII names into octal escapes.
+            [git_path, "ls-files", "-z", *extra_args],
             cwd=root,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="surrogateescape",
             timeout=5,
             check=False,
             # Git localizes stderr; use C so the non-repo marker stays stable.
             env={**os.environ, "LC_ALL": "C"},
         )
-    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+    except subprocess.TimeoutExpired, FileNotFoundError, OSError:
         logger.debug("git ls-files %s failed to run", extra_args, exc_info=True)
         return False, []
     if result.returncode != 0:
@@ -658,7 +665,7 @@ def _run_git_ls_files(
                 stderr,
             )
         return False, []
-    return True, [f for f in result.stdout.strip().split("\n") if f]
+    return True, [f for f in result.stdout.split("\0") if f]
 
 
 def _get_project_files(root: Path) -> list[str]:
@@ -819,13 +826,14 @@ def _scope_files_to_cwd(files: list[str], project_root: Path, cwd: Path) -> list
         cwd: Directory to scope suggestions to.
 
     Returns:
-        Paths rewritten relative to `cwd`, filtered to that subtree (possibly
-        empty), when `cwd` is nested under `project_root`. The input list
+        Safe paths rewritten relative to `cwd`, filtered to that subtree (possibly
+        empty), when `cwd` is nested under `project_root`. Safe paths remain
         unchanged when `cwd` equals `project_root`. An empty list when `cwd` is
         not under `project_root`: the paths are project-root-relative and would
         resolve to the wrong base from `cwd`, so fail closed rather than offer
         misleading suggestions.
     """
+    files = [path for path in files if is_safe_file_path(path)]
     if cwd == project_root:
         return files
     try:

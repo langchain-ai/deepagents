@@ -1134,7 +1134,7 @@ def _goal_proposal_from_text(text: str) -> tuple[str, str] | None:
         candidate = "\n".join(lines[1:-1]).strip()
     try:
         value = json.loads(candidate)
-    except (json.JSONDecodeError, TypeError):
+    except json.JSONDecodeError, TypeError:
         return None
     return _coerce_goal_proposal(value)
 

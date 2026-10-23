@@ -57,6 +57,10 @@ DELIVER_TO_HELP = """Where results post when this conversation is a channel
         `thread` for short follow-ups on the discussion at hand. Only Slack
         channel threads and public Discord threads distinguish the two."""
 
+SKILLS_HELP = """Optional skill names whose full instructions load into every
+    run of this job, up to 8. Use names from your skills list; a name that is not
+    installed when the job runs is skipped."""
+
 _RESULT_HELP = """The job's `upcoming` field lists its next few run times; check them
     against what the user asked for and fix the schedule if they disagree."""
 
@@ -70,6 +74,7 @@ Args:
         schedule once, at its next match.
     until: {UNTIL_HELP}
     deliver_to: {DELIVER_TO_HELP}
+    skills: {SKILLS_HELP}
 
 Returns:
     Created job details, or an error dictionary for invalid input.
@@ -88,6 +93,8 @@ Args:
     until: Optional replacement end time. {UNTIL_HELP}
         Pass an empty string to remove the end time.
     deliver_to: Optional replacement. {DELIVER_TO_HELP}
+    skills: Optional replacement. {SKILLS_HELP}
+        Pass an empty list to unpin every skill.
 
 Returns:
     Updated job details, or an error dictionary for invalid input.
@@ -117,6 +124,7 @@ class CronTools:
         repeat_times: int | None = None,
         until: str | None = None,
         deliver_to: DeliverTo = "channel",
+        skills: list[str] | None = None,
     ) -> dict[str, Any]:
         """Create a scheduled job in the current conversation.
 
@@ -127,6 +135,7 @@ class CronTools:
             repeat_times: Optional cap for recurring schedules.
             until: Optional end time, in the form `UNTIL_HELP` describes.
             deliver_to: Where results post, as `DELIVER_TO_HELP` describes.
+            skills: Skills to pin to each run, as `SKILLS_HELP` describes.
 
         Returns:
             Created job as a JSON-compatible dictionary, with `upcoming` runs.
@@ -139,6 +148,7 @@ class CronTools:
             repeat_times=repeat_times,
             until=parse_until(until) if until else None,
             deliver_to=deliver_to,
+            skills=skills or (),
         )
         return _tool_job(job, upcoming=True)
 
@@ -161,6 +171,7 @@ class CronTools:
         repeat_times: int | None = None,
         until: str | None = None,
         deliver_to: DeliverTo | None = None,
+        skills: list[str] | None = None,
     ) -> dict[str, Any]:
         """Edit a scheduled job in the current conversation.
 
@@ -175,6 +186,7 @@ class CronTools:
             until: Optional replacement end time, in the form `UNTIL_HELP`
                 describes. An empty string removes the end time.
             deliver_to: Optional replacement delivery target.
+            skills: Optional replacement pinned skills; an empty list unpins all.
 
         Returns:
             Updated job as a JSON-compatible dictionary, with `upcoming` runs.
@@ -191,6 +203,7 @@ class CronTools:
             until=parse_until(until) if until else None,
             clear_until=until == "",
             deliver_to=deliver_to,
+            skills=skills,
         )
         return _tool_job(job, upcoming=True)
 
@@ -235,6 +248,7 @@ def build_cron_tools(cron: CronTools) -> list[BaseTool]:
         repeat_times: int | None = None,
         until: str | None = None,
         deliver_to: DeliverTo = "channel",
+        skills: list[str] | None = None,
     ) -> dict[str, Any]:
         try:
             return cron.create_job(
@@ -244,6 +258,7 @@ def build_cron_tools(cron: CronTools) -> list[BaseTool]:
                 repeat_times=repeat_times,
                 until=_strip_optional_quotes(until),
                 deliver_to=deliver_to,
+                skills=skills,
             )
         except Exception as exc:  # noqa: BLE001
             return _tool_error(exc)
@@ -271,6 +286,7 @@ def build_cron_tools(cron: CronTools) -> list[BaseTool]:
         repeat_times: int | None = None,
         until: str | None = None,
         deliver_to: DeliverTo | None = None,
+        skills: list[str] | None = None,
     ) -> dict[str, Any]:
         try:
             return cron.edit_job(
@@ -282,6 +298,7 @@ def build_cron_tools(cron: CronTools) -> list[BaseTool]:
                 repeat_times=repeat_times,
                 until=_strip_optional_quotes(until),
                 deliver_to=deliver_to,
+                skills=skills,
             )
         except Exception as exc:  # noqa: BLE001
             return _tool_error(exc)
@@ -319,6 +336,7 @@ def _tool_job(job: CronJob, *, upcoming: bool = False) -> dict[str, Any]:
         "last_error": data["last_error"],
         "until": data["until"],
         "deliver_to": data["deliver_to"],
+        "skills": data["skills"],
     }
     if upcoming:
         payload["upcoming"] = [run.isoformat() for run in job.upcoming(_UPCOMING_COUNT)]

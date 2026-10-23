@@ -865,7 +865,7 @@ async def ensure_ripgrep() -> Path | None:
             "Could not download ripgrep from %s", _RELEASE_URL_PREFIX, exc_info=True
         )
         return None
-    except (urllib.error.URLError, TimeoutError):
+    except urllib.error.URLError, TimeoutError:
         logger.warning(
             "Could not download ripgrep from %s", _RELEASE_URL_PREFIX, exc_info=True
         )

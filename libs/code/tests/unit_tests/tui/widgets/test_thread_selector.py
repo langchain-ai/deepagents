@@ -21,6 +21,7 @@ from deepagents_code.tui.widgets.thread_selector import (
     ContainedSelect,
     ContainedSelectOverlay,
     DeleteThreadConfirmScreen,
+    ThreadOption,
     ThreadSelectorScreen,
     _format_column_value,
 )
@@ -390,6 +391,69 @@ class TestThreadNames:
                 assert [t["thread_id"] for t in screen._filtered_threads] == [
                     "abc12345"
                 ]
+
+
+class TestThreadSelectorFilterRows:
+    """Tests for the rows shown while the search filter changes."""
+
+    async def test_filter_recovers_after_cancelled_rebuild(self) -> None:
+        """Filtering restores visible rows after a rebuild is cancelled mid-removal."""
+        with _patch_list_threads(), _patch_columns():
+            app = ThreadSelectorTestApp()
+            async with app.run_test() as pilot:
+                app.show_selector()
+                await pilot.pause()
+                await app.workers.wait_for_complete()
+                screen = cast("ThreadSelectorScreen", app.screen)
+                scroll = screen.query_one(".thread-list")
+                remove_children = scroll.remove_children
+
+                async def cancel_after_removal() -> None:
+                    await remove_children()
+                    raise asyncio.CancelledError
+
+                with (
+                    patch.object(scroll, "remove_children", cancel_after_removal),
+                    pytest.raises(asyncio.CancelledError),
+                ):
+                    await screen._build_list()
+
+                screen.query_one("#thread-filter", Input).value = "ghi"
+                await pilot.pause()
+                await app.workers.wait_for_complete()
+                rows = scroll.query_children(ThreadOption)
+                assert [row.thread_id for row in rows if row.display] == ["ghi11111"]
+
+    async def test_filter_then_clear_restores_rows_and_selection(self) -> None:
+        """Filtering shows only matches; clearing restores order and selection."""
+        all_ids = [t["thread_id"] for t in MOCK_THREADS]
+        with _patch_list_threads(), _patch_columns():
+            app = ThreadSelectorTestApp(current_thread="def67890")
+            async with app.run_test(size=(140, 40)) as pilot:
+                app.show_selector()
+                await pilot.pause()
+                await app.workers.wait_for_complete()
+                screen = cast("ThreadSelectorScreen", app.screen)
+                filter_input = screen.query_one("#thread-filter", Input)
+
+                for query, expected in (
+                    ("ghi", ["ghi11111"]),
+                    ("zzz-no-match", []),
+                    ("", all_ids),
+                ):
+                    filter_input.value = query
+                    await pilot.pause()
+                    await app.workers.wait_for_complete()
+                    rows = screen.query_one(".thread-list").query_children(ThreadOption)
+                    assert [row.thread_id for row in rows if row.display] == expected
+                    assert bool(screen.query(".thread-empty")) == (not expected)
+
+                selected = screen.query(ThreadOption).filter(".thread-option-selected")
+                assert [row.thread_id for row in selected] == ["def67890"]
+
+                await pilot.press("down", "enter")
+                await pilot.pause()
+                assert app.result == "ghi11111"
 
 
 class TestThreadSelectorTabSort:

@@ -412,6 +412,10 @@ class ThreadOption(Horizontal):
         self._current = current
         self._relative_time = relative_time
         self._cell_text = cell_text
+        # Composed cells and their current text, so filtering can update the
+        # row in place instead of remounting it.
+        self._cells: dict[str, Static] = {}
+        self._texts: dict[str, str] = {}
 
     class Clicked(Message):
         """Message sent when a thread option is clicked."""
@@ -438,14 +442,8 @@ class ThreadOption(Horizontal):
             classes="thread-cell thread-cell-cursor",
             markup=False,
         )
-        tid = self.thread_id
         for key in _visible_column_keys(self._columns):
-            if self._cell_text is not None and (tid, key) in self._cell_text:
-                text = self._cell_text[tid, key]
-            else:
-                text = _format_column_value(
-                    self.thread, key, relative_time=self._relative_time
-                )
+            text = self._cell_value(key, self._cell_text)
             cell = Static(
                 text,
                 classes=f"thread-cell thread-cell-{key}",
@@ -453,7 +451,57 @@ class ThreadOption(Horizontal):
                 markup=False,
             )
             _apply_column_width(cell, key, self._column_widths)
+            self._cells[key] = cell
+            self._texts[key] = text
             yield cell
+
+    def _cell_value(
+        self, key: str, cell_text: Mapping[tuple[str, str], str] | None
+    ) -> str:
+        """Return the pre-formatted cell text, formatting it when missing."""
+        if cell_text is not None and (self.thread_id, key) in cell_text:
+            return cell_text[self.thread_id, key]
+        return _format_column_value(self.thread, key, relative_time=self._relative_time)
+
+    def update_cells(self, cell_text: Mapping[tuple[str, str], str]) -> None:
+        """Update cell text in place, skipping cells whose text is unchanged.
+
+        Args:
+            cell_text: Pre-formatted cell values keyed by `(thread_id, key)`.
+        """
+        for key, cell in self._cells.items():
+            text = self._cell_value(key, cell_text)
+            if text != self._texts.get(key):
+                self._texts[key] = text
+                cell.update(text)
+
+    def update_row(
+        self,
+        thread: ThreadInfo,
+        index: int,
+        *,
+        selected: bool,
+        column_widths: Mapping[str, int | None],
+        cell_text: Mapping[tuple[str, str], str],
+    ) -> None:
+        """Update a mounted row for a new filter result without remounting it.
+
+        Args:
+            thread: Latest metadata for the row's thread.
+            index: The row's new index in the filtered list.
+            selected: Whether the row is highlighted.
+            column_widths: Effective widths for the visible columns.
+            cell_text: Pre-formatted cell values keyed by `(thread_id, key)`.
+        """
+        self.thread = thread
+        self.index = index
+        if selected != self._selected:
+            self.set_selected(selected)
+        if column_widths != self._column_widths:
+            self._column_widths = dict(column_widths)
+            for key, cell in self._cells.items():
+                _apply_column_width(cell, key, self._column_widths)
+        self.update_cells(cell_text)
 
     def _cursor_text(self) -> str:
         """Return the cursor indicator for the row."""
@@ -1057,6 +1105,9 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         self._disk_load_complete = False
         self._selected_index = 0
         self._option_widgets: list[ThreadOption] = []
+        # Every mounted thread row, shown or hidden, keyed by thread ID.
+        # Filtering toggles and reorders these rows instead of remounting.
+        self._row_pool: dict[str, ThreadOption] = {}
         self._filter_text = initial_query
         self._filter_agent: str | None = None
         # Configured agent names from `~/.deepagents/` (the `/agents` list),
@@ -1444,6 +1495,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
                     with VerticalScroll(classes="thread-list"):
                         if self._has_initial_threads and self._filtered_threads:
                             self._option_widgets, _ = self._create_option_widgets()
+                            self._reset_row_pool()
                             yield from self._option_widgets
                         else:
                             yield self._build_empty_state()
@@ -1889,7 +1941,8 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         else:
             self._sync_selected_index()
         self._column_widths = self._compute_column_widths()
-        await self._build_list(recompute_widths=False)
+        if not await self._show_filtered_rows():
+            await self._build_list(recompute_widths=False)
 
     @staticmethod
     def _compute_filtered(
@@ -2354,13 +2407,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         self._cell_text = cell_text
 
         for widget in self._option_widgets:
-            tid = widget.thread_id
-            for key in visible_keys:
-                try:
-                    cell = widget.query_one(f".thread-cell-{key}", Static)
-                except NoMatches:
-                    continue
-                cell.update(cell_text[tid, key])
+            widget.update_cells(cell_text)
 
     def _resolve_thread_url(self) -> None:
         """Start exclusive background worker to resolve LangSmith thread URL."""
@@ -2422,6 +2469,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
                 # Drop the removed rows so keys cannot act on them.
                 self._filtered_threads = []
                 self._option_widgets = []
+                self._row_pool = {}
                 self._load_more_row = None
                 self._has_more = False
                 await scroll.mount(
@@ -2479,11 +2527,14 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             if recompute_widths:
                 self._column_widths = self._compute_column_widths()
             with self.app.batch_update():
+                self._option_widgets = []
+                self._row_pool = {}
+                self._load_more_row = None
                 await scroll.remove_children()
                 self._update_help_widgets()
 
                 self._option_widgets, selected_widget = self._create_option_widgets()
-                self._load_more_row = None
+                self._reset_row_pool()
                 if self._option_widgets:
                     await scroll.mount(*self._option_widgets)
                 else:
@@ -2492,12 +2543,118 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
                     self._load_more_row = self._build_load_more_row()
                     await scroll.mount(self._load_more_row)
 
-            if expanded_select_id is not None:
-                self.call_after_refresh(
-                    lambda: self._restore_expanded_select_focus(expanded_select_id)
-                )
-            elif selected_widget:
-                self.call_after_refresh(self._scroll_selected_into_view)
+        self._after_list_render(
+            expanded_select_id, scroll_to_selected=selected_widget is not None
+        )
+
+    def _after_list_render(
+        self, expanded_select_id: str | None, *, scroll_to_selected: bool
+    ) -> None:
+        """Restore focus or scroll position after the list changes.
+
+        Args:
+            expanded_select_id: Dropdown that was open before the render.
+            scroll_to_selected: Whether a thread row holds the selection.
+        """
+        if expanded_select_id is not None:
+            self.call_after_refresh(
+                lambda: self._restore_expanded_select_focus(expanded_select_id)
+            )
+        elif scroll_to_selected:
+            self.call_after_refresh(self._scroll_selected_into_view)
+
+    def _reset_row_pool(self) -> None:
+        """Make the freshly built thread rows the only reusable rows."""
+        self._row_pool = {row.thread_id: row for row in self._option_widgets}
+
+    async def _show_filtered_rows(self) -> bool:
+        """Show the filtered threads by reusing the mounted rows.
+
+        Remounting every row costs a few milliseconds per row, which made each
+        search keystroke lag. Rows that already exist are toggled and reordered
+        in place; only threads without a row are mounted.
+
+        Returns:
+            `False` when the list needs a full rebuild instead.
+        """
+        expanded_select_id = self._expanded_select_id()
+        async with self._render_lock:
+            try:
+                scroll = self.query_one(".thread-list", VerticalScroll)
+            except NoMatches:
+                return True
+            if self._has_more != (self._load_more_row is not None):
+                return False
+            with self.app.batch_update():
+                await self._mount_missing_rows(scroll)
+                await self._sync_empty_state(scroll)
+                self._place_filtered_rows(scroll)
+                self._update_help_widgets()
+        self._after_list_render(
+            expanded_select_id,
+            scroll_to_selected=self._selected_index < len(self._option_widgets),
+        )
+        return True
+
+    async def _mount_missing_rows(self, scroll: VerticalScroll) -> None:
+        """Mount rows for filtered threads that have no row yet.
+
+        Args:
+            scroll: The thread list container.
+        """
+        rows = [
+            self._create_option_widget(thread, index)
+            for index, thread in enumerate(self._filtered_threads)
+            if thread["thread_id"] not in self._row_pool
+        ]
+        if not rows:
+            return
+        # Track the rows before awaiting so a cancelled render cannot leave
+        # mounted rows that later renders never hide.
+        self._row_pool.update((row.thread_id, row) for row in rows)
+        await scroll.mount(*rows)
+
+    async def _sync_empty_state(self, scroll: VerticalScroll) -> None:
+        """Replace any placeholder, and show one when nothing matches.
+
+        Args:
+            scroll: The thread list container.
+        """
+        stale = scroll.query_children(".thread-empty")
+        if stale:
+            await stale.remove()
+        if not self._filtered_threads:
+            await scroll.mount(self._build_empty_state())
+
+    def _place_filtered_rows(self, scroll: VerticalScroll) -> None:
+        """Show the filtered rows in order and hide the rest.
+
+        Args:
+            scroll: The thread list container.
+        """
+        shown = [self._row_pool[t["thread_id"]] for t in self._filtered_threads]
+        for index, (row, thread) in enumerate(
+            zip(shown, self._filtered_threads, strict=True)
+        ):
+            row.update_row(
+                thread,
+                index,
+                selected=index == self._selected_index,
+                column_widths=self._column_widths,
+                cell_text=self._cell_text,
+            )
+        shown_ids = {row.thread_id for row in shown}
+        for thread_id, row in self._row_pool.items():
+            row.display = thread_id in shown_ids
+        self._option_widgets = shown
+        if self._load_more_row is not None:
+            self._load_more_row.set_selected(self._load_more_selected())
+        # Hidden rows and placeholders sort after the shown rows; the stable
+        # sort keeps them in place relative to each other.
+        rank = {id(row): index for index, row in enumerate(shown)}
+        scroll.sort_children(
+            key=lambda w: (w is self._load_more_row, rank.get(id(w), len(rank)))
+        )
 
     def _build_load_more_row(self) -> LoadMoreThreads:
         """Build the pagination row, highlighted when it holds the selection.
@@ -2536,35 +2693,47 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         Returns:
             Tuple of all option widgets and the currently selected widget.
         """
-        widgets: list[ThreadOption] = []
-        selected_widget: ThreadOption | None = None
-
-        for i, thread in enumerate(self._filtered_threads):
-            is_current = thread["thread_id"] == self._current_thread
-            is_selected = i == self._selected_index
-
-            classes = "thread-option"
-            if is_selected:
-                classes += " thread-option-selected"
-            if is_current:
-                classes += " thread-option-current"
-
-            widget = ThreadOption(
-                thread=thread,
-                index=i,
-                columns=self._columns,
-                column_widths=self._column_widths,
-                selected=is_selected,
-                current=is_current,
-                relative_time=self._relative_time,
-                cell_text=self._cell_text or None,
-                classes=classes,
-            )
-            widgets.append(widget)
-            if is_selected:
-                selected_widget = widget
-
+        widgets = [
+            self._create_option_widget(thread, index)
+            for index, thread in enumerate(self._filtered_threads)
+        ]
+        selected_widget = (
+            widgets[self._selected_index]
+            if self._selected_index < len(widgets)
+            else None
+        )
         return widgets, selected_widget
+
+    def _create_option_widget(self, thread: ThreadInfo, index: int) -> ThreadOption:
+        """Build one unmounted thread row.
+
+        Args:
+            thread: Thread metadata for the row.
+            index: The row's index in the filtered list.
+
+        Returns:
+            The thread row widget.
+        """
+        is_current = thread["thread_id"] == self._current_thread
+        is_selected = index == self._selected_index
+
+        classes = "thread-option"
+        if is_selected:
+            classes += " thread-option-selected"
+        if is_current:
+            classes += " thread-option-current"
+
+        return ThreadOption(
+            thread=thread,
+            index=index,
+            columns=self._columns,
+            column_widths=self._column_widths,
+            selected=is_selected,
+            current=is_current,
+            relative_time=self._relative_time,
+            cell_text=self._cell_text or None,
+            classes=classes,
+        )
 
     def _scroll_selected_into_view(self) -> None:
         """Scroll selected option into view without animation."""

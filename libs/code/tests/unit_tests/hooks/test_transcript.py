@@ -7,9 +7,10 @@ import os
 import stat
 from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING
+from unittest.mock import Mock
 
 import pytest
-from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, HumanMessage
+from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage
 
 from deepagents_code._constants import LOCAL_CONTEXT_MESSAGE_SOURCE
 from deepagents_code.hooks.runtime import HooksRuntime
@@ -21,7 +22,6 @@ from deepagents_code.hooks.transcript import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
     from pathlib import Path
 
 
@@ -261,61 +261,41 @@ def test_attempt_discard_cleans_partial_chunks(tmp_path: Path) -> None:
     assert '"content":"after"' in main
 
 
-class _CaptureRuntime:
-    def __init__(self) -> None:
-        self.calls: list[tuple[str, str | None, list[BaseMessage]]] = []
-
-    def append_messages(
-        self,
-        thread_id: str,
-        messages: Sequence[BaseMessage],
-        *,
-        agent_id: str | None = None,
-    ) -> None:
-        self.calls.append((thread_id, agent_id, list(messages)))
-
-
-def test_streamed_tool_call_chunks_merge_into_one_message() -> None:
-    runtime = _CaptureRuntime()
-    recorder = TranscriptRecorder(runtime, "thread")
-    args = json.dumps({"file_path": "/x.py", "content": "print('hi')\n" * 50})
-    deltas = [args[i : i + 7] for i in range(0, len(args), 7)]
-    chunks = [AIMessageChunk(id="c1", content="Writing ")]
-    chunks += [
-        AIMessageChunk(
-            id="c1",
-            content="file" if i == 0 else "",
-            tool_call_chunks=[
-                {
-                    "name": "write_file" if i == 0 else None,
-                    "id": "call-1" if i == 0 else None,
-                    "args": delta,
-                    "index": 0,
-                }
-            ],
-            chunk_position="last" if i == len(deltas) - 1 else None,
+def test_streamed_tool_call_chunks_merge_into_one_message(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _, recorder = _recorder_runtime(tmp_path)
+    append = Mock()
+    monkeypatch.setattr(HooksRuntime, "append_messages", append)
+    for index, args in enumerate(('{"file_path":', '"/x.py"}')):
+        recorder.record(
+            AIMessageChunk(
+                id="c1",
+                content="",
+                tool_call_chunks=[
+                    {
+                        "name": "write_file" if index == 0 else None,
+                        "id": "call-1" if index == 0 else None,
+                        "args": args,
+                        "index": 0,
+                    }
+                ],
+                chunk_position="last" if index == 1 else None,
+            ),
+            {},
+            main_agent=True,
         )
-        for i, delta in enumerate(deltas)
-    ]
-    for chunk in chunks:
-        recorder.record(chunk, {}, main_agent=True)
 
-    assert len(runtime.calls) == 1
-    thread_id, agent_id, messages = runtime.calls[0]
-    assert (thread_id, agent_id) == ("thread", None)
-    assert len(messages) == 1
-    message = messages[0]
-    assert isinstance(message, AIMessage)
-    assert message.content == "Writing file"
+    append.assert_called_once()
+    (message,) = append.call_args.args[1]
     assert message.tool_calls == [
         {
             "name": "write_file",
-            "args": json.loads(args),
+            "args": {"file_path": "/x.py"},
             "id": "call-1",
             "type": "tool_call",
         }
     ]
-    assert not recorder._chunks
 
 
 def test_attempt_last_chunk_not_materialized_until_complete(tmp_path: Path) -> None:

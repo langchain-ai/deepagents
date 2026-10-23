@@ -28,6 +28,15 @@ if TYPE_CHECKING:
 
 
 @pytest.fixture(autouse=True)
+def unconfigured_runtime_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep startup model selection independent of previously executed tests."""
+    from deepagents_code.config import runtime_state
+
+    monkeypatch.setattr(runtime_state, "model_provider", None)
+    monkeypatch.setattr(runtime_state, "model_name", None)
+
+
+@pytest.fixture(autouse=True)
 def checkpoint_database(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> Iterator[None]:

@@ -2631,9 +2631,12 @@ def build_coding_agent_metadata(
         metadata["repository_url"] = repository_url
         metadata["repository_provider"] = repository_provider
         metadata["repository_name"] = repository_name
+        metadata["ls_git_repo"] = repository_name
+        metadata["ls_repo_provider"] = repository_provider
 
     if git_branch:
         metadata["git_branch"] = git_branch
+        metadata["ls_git_branch"] = git_branch
     commit_sha = _get_git_commit_sha()
     if commit_sha:
         metadata["git_commit_sha"] = commit_sha
@@ -2642,6 +2645,7 @@ def build_coding_agent_metadata(
 
     if user_id:
         metadata["user_id"] = user_id
+        metadata["ls_attribution_identifier"] = user_id
     if sandbox_type and sandbox_type != "none":
         metadata["sandbox_type"] = sandbox_type
 

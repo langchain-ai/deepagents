@@ -577,11 +577,10 @@ jobs:
     env:
       WORKING_DIR: ${{ needs.build.outputs.working-dir }}
 
+    # No checkout or Python setup: the publish action only reads the built
+    # `dist/` artifact. Keep jobs that hold `id-token: write` to the minimum
+    # set of steps.
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ needs.build.outputs.release-sha }}
-
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: dist
@@ -852,21 +851,10 @@ jobs:
     env:
       WORKING_DIR: ${{ needs.build.outputs.working-dir }}
 
-    defaults:
-      run:
-        working-directory: ${{ env.WORKING_DIR }}
-
+    # No checkout or Python setup: the publish action only reads the built
+    # `dist/` artifact. Keep jobs that hold `id-token: write` to the minimum
+    # set of steps.
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ needs.build.outputs.release-sha }}
-
-      - name: Set up Python + uv
-        uses: "./.github/actions/uv_setup"
-        with:
-          python-version: ${{ needs.build.outputs.python-version }}
-          enable-cache: "false"
-
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: dist
@@ -914,21 +902,10 @@ jobs:
     env:
       WORKING_DIR: ${{ needs.build.outputs.working-dir }}
 
-    defaults:
-      run:
-        working-directory: ${{ env.WORKING_DIR }}
-
+    # No checkout or Python setup: the release action and `gh` work through
+    # the API, so every `gh` call passes `--repo` instead of reading it from a
+    # local clone. Keep jobs that hold write tokens to the minimum set of steps.
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ needs.build.outputs.release-sha }}
-
-      - name: Set up Python + uv
-        uses: "./.github/actions/uv_setup"
-        with:
-          python-version: ${{ needs.build.outputs.python-version }}
-          enable-cache: "false"
-
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: dist
@@ -1037,13 +1014,14 @@ jobs:
               --color "d9dce0" \
               --description "The release has been tagged by the automated release workflow." \
               --force || return 1
-            labels=$(gh pr view "$pr" --json labels --jq '.labels[].name') || return 1
+            labels=$(gh pr view "$pr" --repo "${{ github.repository }}" \
+              --json labels --jq '.labels[].name') || return 1
             for label in "auto:release-pending" "autorelease: pending"; do
               if printf '%s\n' "$labels" | grep -qFx "$label"; then
                 changes+=(--remove-label "$label")
               fi
             done
-            gh pr edit "$pr" "${changes[@]}"
+            gh pr edit "$pr" --repo "${{ github.repository }}" "${changes[@]}"
           }
 
           # Surface a manual-fix instruction on the run summary so a human reviewer
@@ -1081,7 +1059,8 @@ jobs:
           fi
 
           if [ -n "$PR_NUMBER" ]; then
-            if ! LABELS=$(gh pr view "$PR_NUMBER" --json labels --jq '.labels[].name' 2>&1); then
+            if ! LABELS=$(gh pr view "$PR_NUMBER" --repo "${{ github.repository }}" \
+              --json labels --jq '.labels[].name' 2>&1); then
               echo "::warning::gh pr view #$PR_NUMBER failed: $LABELS"
               echo "Falling through to label search."
             elif printf '%s\n' "$LABELS" | grep -qFx -e "auto:release-pending" -e "autorelease: pending"; then

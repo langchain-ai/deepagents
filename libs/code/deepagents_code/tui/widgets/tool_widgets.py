@@ -42,7 +42,7 @@ def format_display_content(content: object) -> str:
         return content
     try:
         return json.dumps(content, ensure_ascii=False, indent=2)
-    except (TypeError, ValueError, RecursionError):
+    except TypeError, ValueError, RecursionError:
         return str(content)
 
 

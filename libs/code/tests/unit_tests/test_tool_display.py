@@ -31,7 +31,7 @@ _ELLIPSIS = ASCII_GLYPHS.ellipsis
 
 
 @pytest.fixture(autouse=True)
-def _pin_ascii_glyphs() -> Generator[None, None, None]:
+def _pin_ascii_glyphs() -> Generator[None]:
     with patch("deepagents_code.tool_display.get_glyphs", return_value=ASCII_GLYPHS):
         yield
 

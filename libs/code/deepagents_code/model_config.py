@@ -1489,7 +1489,16 @@ def _load_provider_profiles(module_path: str) -> dict[str, Any]:
         file_spec.loader.exec_module(module)
         profiles = getattr(module, "_PROFILES", {})
         if module_path == "langchain_anthropic.data._profiles":
-            profiles = {**ANTHROPIC_MODEL_PROFILE_FALLBACKS, **profiles}
+            profiles = {
+                **ANTHROPIC_MODEL_PROFILE_FALLBACKS,
+                **{
+                    model: {
+                        **ANTHROPIC_MODEL_PROFILE_FALLBACKS.get(model, {}),
+                        **profile,
+                    }
+                    for model, profile in profiles.items()
+                },
+            }
         _provider_profiles_cache[module_path] = profiles
         return profiles
 
@@ -4133,7 +4142,7 @@ def _save_toml_field(
                     with contextlib.suppress(OSError):
                         Path(tmp_path).unlink()
                     raise
-    except (OSError, tomllib.TOMLDecodeError, TypeError, ValueError):
+    except OSError, tomllib.TOMLDecodeError, TypeError, ValueError:
         # `TypeError` covers `tomli_w.dump` rejecting a non-serializable
         # payload; `ValueError` covers things like `os.fdopen` on a
         # closed fd. Folding them in keeps the `bool` contract intact for
@@ -4383,7 +4392,7 @@ def _clear_model_field(field: str, config_path: Path | None = None) -> bool:
                 with contextlib.suppress(OSError):
                     Path(tmp_path).unlink()
                 raise
-    except (OSError, tomllib.TOMLDecodeError, TypeError, ValueError):
+    except OSError, tomllib.TOMLDecodeError, TypeError, ValueError:
         # See `_save_toml_field` for why `TypeError` / `ValueError` are
         # folded into the bool return contract.
         logger.exception("Could not clear models.%s preference", field)
@@ -4472,7 +4481,7 @@ def load_effort_for_model(
             )
             return None
         return effort.strip() or None
-    except (OSError, tomllib.TOMLDecodeError):
+    except OSError, tomllib.TOMLDecodeError:
         logger.exception(
             "Could not load reasoning effort preference for %s", model_spec
         )
@@ -4557,7 +4566,7 @@ def _update_effort_for_model(
                 with contextlib.suppress(OSError):
                     Path(tmp_path).unlink()
                 raise
-    except (OSError, tomllib.TOMLDecodeError, TypeError, ValueError):
+    except OSError, tomllib.TOMLDecodeError, TypeError, ValueError:
         logger.exception(
             "Could not update reasoning effort preference for %s", model_spec
         )
@@ -4589,7 +4598,7 @@ def is_warning_suppressed(key: str, config_path: Path | None = None) -> bool:
     """
     try:
         data, config_path = _load_effective_config_data(config_path)
-    except (OSError, tomllib.TOMLDecodeError):
+    except OSError, tomllib.TOMLDecodeError:
         logger.debug(
             "Could not read config file %s for warning suppression check",
             config_path,
@@ -4784,7 +4793,7 @@ def unsuppress_warning(key: str, config_path: Path | None = None) -> bool:
                 with contextlib.suppress(OSError):
                     Path(tmp_path).unlink()
                 raise
-    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
+    except OSError, UnicodeDecodeError, tomllib.TOMLDecodeError:
         logger.exception("Could not remove warning suppression for '%s'", key)
         return False
     _invalidate_config_caches(config_path)
@@ -5002,7 +5011,7 @@ def _normalize_mcp_project_scope(
         return None
     try:
         expanded_root = Path(project_root).expanduser()
-    except (OSError, RuntimeError):
+    except OSError, RuntimeError:
         logger.warning(
             "Could not expand MCP project root %s",
             project_root,
@@ -5045,7 +5054,7 @@ def _normalize_persisted_git_common_dir(project_root: str) -> str | None:
     """
     try:
         expanded_root = Path(project_root).expanduser()
-    except (OSError, RuntimeError):
+    except OSError, RuntimeError:
         logger.warning(
             "Could not expand persisted MCP Git identity %s",
             project_root,
@@ -5060,7 +5069,7 @@ def _normalize_persisted_git_common_dir(project_root: str) -> str | None:
         return None
     try:
         return os.path.abspath(expanded_root)  # noqa: PTH100  # do not follow links
-    except (OSError, RuntimeError, ValueError):
+    except OSError, RuntimeError, ValueError:
         logger.warning(
             "Could not normalize persisted MCP Git identity %s",
             project_root,
@@ -6049,7 +6058,7 @@ def add_enabled_project_mcp_servers(
                 with contextlib.suppress(OSError):
                     Path(tmp_path).unlink()
                 raise
-    except (OSError, tomllib.TOMLDecodeError, TypeError, ValueError):
+    except OSError, tomllib.TOMLDecodeError, TypeError, ValueError:
         # Matches `suppress_warning`: `TypeError` covers `tomli_w.dump`
         # rejecting a non-serializable payload; `ValueError` covers things like
         # `os.fdopen` on a closed fd. Folding them in keeps the `bool` contract
@@ -6212,7 +6221,7 @@ def load_thread_config(config_path: Path | None = None) -> ThreadConfig:
         model_value = threads_section.get("rename_model")
         if isinstance(model_value, str):
             rename_model = model_value.strip()
-    except (OSError, tomllib.TOMLDecodeError):
+    except OSError, tomllib.TOMLDecodeError:
         logger.warning("Could not read thread config; using defaults", exc_info=True)
         # Do not cache on error — allow retry on next call in case the
         # file is fixed or permissions are restored.
@@ -6265,7 +6274,7 @@ def load_terminal_tab_title(config_path: Path | None = None) -> str:
             _effective_source_label(config_path),
             type(value).__name__,
         )
-    except (OSError, tomllib.TOMLDecodeError):
+    except OSError, tomllib.TOMLDecodeError:
         logger.warning(
             "Could not read terminal title config; using default", exc_info=True
         )
@@ -6300,7 +6309,7 @@ def load_thread_columns(config_path: Path | None = None) -> dict[str, bool]:
             for key in result:
                 if key in columns and isinstance(columns[key], bool):
                     result[key] = columns[key]
-    except (OSError, tomllib.TOMLDecodeError):
+    except OSError, tomllib.TOMLDecodeError:
         logger.debug("Could not read thread column config", exc_info=True)
     return result
 
@@ -6343,7 +6352,7 @@ def save_thread_columns(
                 with contextlib.suppress(OSError):
                     Path(tmp_path).unlink()
                 raise
-    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
+    except OSError, UnicodeDecodeError, tomllib.TOMLDecodeError:
         logger.exception("Could not save thread column preferences")
         return False
     invalidate_thread_config_cache()
@@ -6370,7 +6379,7 @@ def load_thread_relative_time(config_path: Path | None = None) -> bool:
         value = threads.get("relative_time") if isinstance(threads, dict) else None
         if isinstance(value, bool):
             return value
-    except (OSError, tomllib.TOMLDecodeError):
+    except OSError, tomllib.TOMLDecodeError:
         logger.debug("Could not read thread relative_time config", exc_info=True)
     return True
 
@@ -6407,7 +6416,7 @@ def save_thread_relative_time(enabled: bool, config_path: Path | None = None) ->
                 with contextlib.suppress(OSError):
                     Path(tmp_path).unlink()
                 raise
-    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
+    except OSError, UnicodeDecodeError, tomllib.TOMLDecodeError:
         logger.exception("Could not save thread relative_time preference")
         return False
     invalidate_thread_config_cache()
@@ -6434,7 +6443,7 @@ def load_thread_sort_order(config_path: Path | None = None) -> str:
         value = threads.get("sort_order") if isinstance(threads, dict) else None
         if value in {"updated_at", "created_at"}:
             return value
-    except (OSError, tomllib.TOMLDecodeError):
+    except OSError, tomllib.TOMLDecodeError:
         logger.debug("Could not read thread sort_order config", exc_info=True)
     return "updated_at"
 
@@ -6571,7 +6580,7 @@ def load_startup_mode(config_path: Path | None = None) -> str:
                 "Ignoring [startup].recent=%r (expected 'manual' or 'auto')",
                 recent,
             )
-    except (OSError, tomllib.TOMLDecodeError):
+    except OSError, tomllib.TOMLDecodeError:
         logger.debug("Could not read startup mode config", exc_info=True)
     return DEFAULT_STARTUP_MODE
 
@@ -6636,7 +6645,7 @@ def save_thread_sort_order(sort_order: str, config_path: Path | None = None) -> 
                 with contextlib.suppress(OSError):
                     Path(tmp_path).unlink()
                 raise
-    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
+    except OSError, UnicodeDecodeError, tomllib.TOMLDecodeError:
         logger.exception("Could not save thread sort_order preference")
         return False
     invalidate_thread_config_cache()
@@ -6683,7 +6692,7 @@ def save_thread_scope(scope: str, config_path: Path | None = None) -> bool:
                 with contextlib.suppress(OSError):
                     Path(tmp_path).unlink()
                 raise
-    except (OSError, tomllib.TOMLDecodeError, TypeError, ValueError):
+    except OSError, tomllib.TOMLDecodeError, TypeError, ValueError:
         # `TypeError`/`ValueError` cover `tomli_w.dump` rejecting a payload
         # from a pre-existing config that does not round-trip; folding them in
         # keeps the `bool` contract intact for `_persist_scope`'s failure toast.
@@ -6752,7 +6761,7 @@ def load_recent_models(state_dir: Path | None = None) -> list[str]:
         return []
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except OSError, json.JSONDecodeError:
         logger.warning("Could not read recent models cache at %s", path, exc_info=True)
         return []
     raw = data.get("models") if isinstance(data, dict) else None
@@ -6919,7 +6928,7 @@ def clear_default_agent(config_path: Path | None = None) -> bool:
                 with contextlib.suppress(OSError):
                     Path(tmp_path).unlink()
                 raise
-    except (OSError, tomllib.TOMLDecodeError, TypeError, ValueError):
+    except OSError, tomllib.TOMLDecodeError, TypeError, ValueError:
         # See `_save_toml_field` for why `TypeError` / `ValueError` are
         # folded into the bool return contract.
         logger.exception("Could not clear default agent preference")
@@ -6961,7 +6970,7 @@ def _load_agents_field(field: str, config_path: Path | None = None) -> str | Non
     """
     try:
         data, _ = _load_effective_config_data(config_path)
-    except (OSError, tomllib.TOMLDecodeError):
+    except OSError, tomllib.TOMLDecodeError:
         logger.warning("Could not read agents.%s from config", field, exc_info=True)
         return None
     agents_section = data.get("agents", {})

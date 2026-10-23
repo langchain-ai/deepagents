@@ -39,6 +39,9 @@ from deepagents.backends.protocol import (
 )
 from deepagents.backends.utils import (
     InvalidGlobPatternError,
+    _filter_files_by_path,
+    _normalize_path,
+    _relative_to_root,
     compile_grep_include_glob,
     create_file_data,
     perform_string_replacement,
@@ -637,14 +640,18 @@ class ContextHubBackend(BackendProtocol):
 
         return GrepResult(matches=matches)
 
-    def glob(self, pattern: str, path: str | None = None) -> GlobResult:  # noqa: ARG002
-        """Return files matching `pattern` (`path` unused — flat namespace).
+    def glob(self, pattern: str, path: str | None = None) -> GlobResult:
+        """Return files under `path` matching `pattern`.
 
-        Matching uses the shared backend contract (`compile_grep_include_glob`),
-        so a bare pattern matches the basename at any depth, a pattern with `/`
-        matches the namespace-relative path, and a leading `/` anchors. Plain
-        `fnmatch` would diverge on all three: its `*` crosses `/`, so `/*.py`
-        would widen to every depth instead of anchoring to the top level.
+        Matching uses the shared backend contract (`compile_grep_include_glob`)
+        on each path relative to `path`, so a bare pattern matches the basename
+        at any depth, a pattern with `/` matches the relative path, and a leading
+        `/` anchors. Plain `fnmatch` would diverge on all three: its `*` crosses
+        `/`, so `/*.py` would widen to every depth instead of anchoring to the
+        top level. When `path` names a file, only that file is considered.
+
+        A pattern written from the repo root also matches, so callers that
+        scoped a glob in the pattern before `path` was honored keep working.
         """
         try:
             cache = self._ensure_cache()
@@ -656,7 +663,14 @@ class ContextHubBackend(BackendProtocol):
         except InvalidGlobPatternError as exc:
             logger.warning("Refused glob pattern %r for %r: %s", pattern, self._identifier, exc)
             return GlobResult(error=str(exc))
-        results: list[FileInfo] = [FileInfo(path=f"/{file_path}", is_dir=False) for file_path in cache if matcher(file_path)]
+        try:
+            root = _normalize_path(path)
+        except ValueError:
+            return GlobResult(matches=[])
+        files = _filter_files_by_path(dict.fromkeys(f"/{file_path}" for file_path in cache), root)
+        results: list[FileInfo] = [
+            FileInfo(path=file_path, is_dir=False) for file_path in files if matcher(_relative_to_root(file_path, root)) or matcher(file_path[1:])
+        ]
         return GlobResult(matches=results)
 
     def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:

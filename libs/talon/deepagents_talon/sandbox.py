@@ -99,10 +99,11 @@ async def open_sandbox(config: TalonConfig) -> AsyncIterator[SandboxSession | No
 
 
 def sandbox_backend(sandbox: SandboxBackendProtocol, assistant_dir: Path) -> CompositeBackend:
-    """Route everything to the sandbox except host-side skills and memory.
+    """Route everything to the sandbox except host-side skills, memory, and blobs.
 
-    Only `skills/` and `memory/` are routed to the host, so the sandboxed
-    agent cannot rewrite `tools.json` or other assistant state.
+    Only `skills/`, `memory/`, and media blobs are routed to the host, so the
+    sandboxed agent cannot rewrite `tools.json` or other assistant state. Blobs
+    stay on the host so offloaded images outlive a recreated sandbox.
 
     Args:
         sandbox: Started sandbox backend; also receives every `execute` call.
@@ -121,6 +122,11 @@ def sandbox_backend(sandbox: SandboxBackendProtocol, assistant_dir: Path) -> Com
         root = assistant_dir / name
         root.mkdir(mode=0o700, parents=True, exist_ok=True)
         routes[f"{root}/"] = FilesystemBackend(root_dir=root, virtual_mode=True)
+    # `FilesystemMiddleware` writes blobs under `<artifacts_root>/blobs`, and the
+    # artifacts root defaults to `/`.
+    blobs = assistant_dir / "artifacts" / "blobs"
+    blobs.mkdir(mode=0o700, parents=True, exist_ok=True)
+    routes["/blobs/"] = FilesystemBackend(root_dir=blobs, virtual_mode=True)
     return CompositeBackend(default=sandbox, routes=routes)
 
 

@@ -17,6 +17,7 @@ import sys
 import tempfile
 import threading
 import time
+import weakref
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Self
 from urllib.parse import quote
@@ -765,6 +766,9 @@ class ServerProcess:
     Env-var management for restarts (e.g. configuration changes requiring a full
     restart) is handled by `_scoped_env_overrides`, keeping this class focused
     on process management.
+
+    On POSIX a parent-owned pipe lets the server root detect owner death,
+    including SIGKILL. Windows retains the existing explicit-stop behavior.
     """
 
     def __init__(
@@ -801,6 +805,8 @@ class ServerProcess:
         self._owns_config_dir = owns_config_dir
         self._scaffold = scaffold
         self._process: subprocess.Popen | None = None
+        self._parent_pipe_writer: int | None = None
+        self._parent_pipe_finalizer: weakref.finalize | None = None
         self._temp_dir: tempfile.TemporaryDirectory | None = None
         self._log_file: tempfile.NamedTemporaryFile | None = None  # ty: ignore[invalid-type-form]
         self._env_overrides: dict[str, str] = {}
@@ -850,7 +856,7 @@ class ServerProcess:
             # unreachable, so this is defensive. `read_text(errors="replace")`
             # cannot raise `ValueError` for decoding, so the catch stays narrow
             # in practice.
-            except (OSError, ValueError):
+            except OSError, ValueError:
                 logger.warning(
                     "Failed to read server log file %s",
                     self._log_file.name,
@@ -949,6 +955,8 @@ class ServerProcess:
                 raise asyncio.CancelledError
             if self._running_locked():
                 return None
+            # Retire the exited generation before replacing its log or writer.
+            self._stop_process_locked()
             self._stopped = False
 
             work_dir = self.config_dir
@@ -1003,18 +1011,63 @@ class ServerProcess:
                 mode="w",
                 encoding="utf-8",
             )
-            self._process = subprocess.Popen(  # noqa: S603
+            try:
+                self._process = self._launch_process(cmd, work_dir, env)
+            except BaseException:
+                # `_start` has not entered its cleanup block until spawning
+                # returns. Failed launches must release their pipe/log here.
+                self._stop_process_locked()
+                raise
+            return self._process
+
+    def _launch_process(
+        self, cmd: list[str], work_dir: Path, env: dict[str, str]
+    ) -> subprocess.Popen:
+        """Launch one generation while the caller owns `_state_lock`.
+
+        Returns:
+            The process owning this generation's server root.
+        """
+        if sys.platform == "win32":
+            return subprocess.Popen(  # noqa: S603  # argv is built internally
                 cmd,
                 cwd=str(work_dir),
                 env=env,
                 stdout=self._log_file,
                 stderr=subprocess.STDOUT,
-                start_new_session=(sys.platform != "win32"),
-                creationflags=(
-                    _WINDOWS_CREATE_NEW_PROCESS_GROUP if sys.platform == "win32" else 0
-                ),
+                start_new_session=False,
+                creationflags=_WINDOWS_CREATE_NEW_PROCESS_GROUP,
             )
-            return self._process
+
+        from deepagents_code._session_lock import session_lock_fds
+
+        reader, writer = os.pipe()  # Both ends are non-inheritable by default.
+        self._parent_pipe_writer = writer
+        # Abandoning the manager must not leak its writer. Explicit teardown
+        # invokes this same finalizer so a reused descriptor is never closed twice.
+        self._parent_pipe_finalizer = weakref.finalize(self, os.close, writer)
+        # The session lock keeps the install marked in use while the server
+        # runs, so a migration does not rebuild it underneath.
+        inherited = (reader, *session_lock_fds())
+        try:
+            return subprocess.Popen(  # noqa: S603  # argv is built internally
+                [
+                    *cmd[:2],
+                    "deepagents_code.client.launch._server_bootstrap",
+                    ",".join(map(str, inherited)),
+                    str(_SHUTDOWN_TIMEOUT),
+                    *cmd[3:],
+                ],
+                cwd=str(work_dir),
+                env=env,
+                stdout=self._log_file,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+                creationflags=0,
+                pass_fds=inherited,
+            )
+        finally:
+            os.close(reader)
 
     async def wait_for_graph_ready(
         self,
@@ -1110,25 +1163,28 @@ class ServerProcess:
 
     def _stop_process_locked(self) -> None:
         """Stop the subprocess while `_state_lock` is held."""
-        if self._process is None:
-            return
+        try:
+            if self._process is not None and self._process.poll() is None:
+                _terminate_server_process(self._process)
+                # Best-effort termination may fail, for example with EPERM.
+                if self._process.poll() is None:
+                    logger.warning(
+                        "Dropping handle to server pid=%d that is still running; "
+                        "it may be orphaned",
+                        self._process.pid,
+                    )
+        finally:
+            self._process = None
+            # Preserve the writer throughout the explicit stop's grace budget;
+            # EOF must not start a competing shutdown while that stop is running.
+            if self._parent_pipe_finalizer is not None:
+                self._parent_pipe_finalizer()
+                self._parent_pipe_finalizer = None
+            self._parent_pipe_writer = None
+            self._close_log_file_locked()
 
-        if self._process.poll() is None:
-            _terminate_server_process(self._process)
-            # `_terminate_server_process` is best-effort. If the process is still
-            # alive here (e.g. SIGKILL failed with EPERM), then once we drop the
-            # handle below we can no longer observe or reap this pid, so surface
-            # the still-running process rather than clearing state as if shutdown
-            # succeeded.
-            if self._process.poll() is None:
-                logger.warning(
-                    "Dropping handle to server pid=%d that is still running; "
-                    "it may be orphaned",
-                    self._process.pid,
-                )
-
-        self._process = None
-
+    def _close_log_file_locked(self) -> None:
+        """Release the generation's log even when process creation failed."""
         if self._log_file is not None:
             log_path = Path(self._log_file.name)
             try:

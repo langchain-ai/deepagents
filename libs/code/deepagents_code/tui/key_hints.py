@@ -6,7 +6,10 @@ across every modal, and the glyph substitution for ASCII terminals cannot drift
 between them.
 """
 
-from deepagents_code.config import Glyphs
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from deepagents_code.config import Glyphs
 
 
 def modal_navigation_hint(glyphs: Glyphs) -> str:

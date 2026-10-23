@@ -1,11 +1,10 @@
 """Unit tests for the welcome banner widget."""
 
+from typing import TYPE_CHECKING
 from unittest.mock import patch
 
-import pytest
 from textual.app import App, ComposeResult
 from textual.color import Color as TColor
-from textual.content import Content
 from textual.style import Style as TStyle
 
 from deepagents_code import clipboard as clipboard_module
@@ -18,6 +17,10 @@ from deepagents_code._env_vars import (
 from deepagents_code._version import __version__
 from deepagents_code.tui.widgets import welcome as welcome_module
 from deepagents_code.tui.widgets.welcome import WelcomeBanner, _local_tag_style
+
+if TYPE_CHECKING:
+    import pytest
+    from textual.content import Content
 
 _EDITABLE = "deepagents_code.tui.widgets.welcome._is_editable_install"
 _PROJECT_NAME = "deepagents_code.tui.widgets.welcome.get_langsmith_project_name"

@@ -410,7 +410,7 @@ def resolve_physical_path(
         if path.is_absolute():
             return path
         return (Path.cwd() / path).resolve()
-    except (OSError, ValueError):
+    except OSError, ValueError:
         # The exception is the only thing distinguishing an embedded NUL byte
         # from a name too long from a failing agent-dir lookup. `None` now
         # decides which pre-image branch runs and reaches the user as "no
@@ -478,7 +478,7 @@ def is_sensitive_file_path(path_str: str | None) -> bool:
         return False
     try:
         name = Path(path_str).name.lower()
-    except (OSError, ValueError, TypeError):
+    except OSError, ValueError, TypeError:
         logger.warning(
             "is_sensitive_file_path: could not parse %r; treating as sensitive",
             path_str,
@@ -506,7 +506,7 @@ def format_display_path(path_str: str | None) -> str:
         if path.is_absolute():
             return path.name or str(path)
         return str(path)
-    except (OSError, ValueError):
+    except OSError, ValueError:
         return str(path_str)
 
 

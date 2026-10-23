@@ -52,6 +52,28 @@ async def _select_base_text(pilot: Pilot[None]) -> Static:
     return base_static
 
 
+def test_clipboard_backends_stay_in_memory(monkeypatch) -> None:
+    """Default unit-test copies never launch a host tool or write to a terminal."""
+    import pyperclip
+
+    from deepagents_code import clipboard
+
+    app = App()
+    driver = MagicMock()
+    monkeypatch.setattr(app, "_driver", driver)
+    with (
+        patch("subprocess.Popen", side_effect=AssertionError("host clipboard access")),
+        patch("pathlib.Path.open", side_effect=AssertionError("terminal access")),
+    ):
+        assert clipboard.copy_text_to_clipboard(app, "system copy") == (True, None)
+        assert pyperclip.paste() == "system copy"
+        app.copy_to_clipboard("local copy")
+        assert app.clipboard == "local copy"
+        clipboard._copy_osc52("terminal copy")
+
+    driver.write.assert_not_called()
+
+
 class TestCopyTextToClipboard:
     """Test the multi-backend `copy_text_to_clipboard` fallback chain."""
 

@@ -11,7 +11,6 @@ import shutil
 import sqlite3
 import subprocess  # noqa: S404  # Used only to probe resolved dcode Python launchers.
 import sys
-import warnings
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
@@ -34,7 +33,7 @@ def _has_runtime() -> bool:
     try:
         for module, symbol in _RUNTIME_IMPORTS:
             getattr(importlib.import_module(module), symbol)
-    except (AttributeError, ImportError):
+    except AttributeError, ImportError:
         return False
     return True
 
@@ -57,7 +56,7 @@ def _ensure_runtime() -> None:
         launcher = Path(executable).resolve()
         try:
             first_line = launcher.read_text(encoding="utf-8").splitlines()[0]
-        except (OSError, UnicodeDecodeError, IndexError):
+        except OSError, UnicodeDecodeError, IndexError:
             first_line = ""
         if first_line.startswith("#!"):
             candidates.append(Path(first_line[2:].strip()))
@@ -84,7 +83,7 @@ def _ensure_runtime() -> None:
                 check=False,
                 timeout=10,
             )
-        except (subprocess.TimeoutExpired, OSError):
+        except subprocess.TimeoutExpired, OSError:
             # A hung or non-executable candidate must not abort the search;
             # skip it and fall through to the next one (or the clear error below).
             continue
@@ -636,13 +635,6 @@ def main() -> None:
         raise SystemExit(msg)
 
     _ensure_runtime()
-    warnings.filterwarnings(
-        "ignore",
-        message=(
-            "Core Pydantic V1 functionality isn't compatible with Python 3.14 "
-            "or greater.*"
-        ),
-    )
     collected_warnings: list[str] = []
     result: dict[str, object]
     conn = _connect_read_only(args.db)

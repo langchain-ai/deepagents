@@ -2,8 +2,8 @@
 
 import asyncio
 import threading
-from pathlib import Path
 from types import SimpleNamespace
+from typing import TYPE_CHECKING
 from unittest.mock import Mock
 
 import pytest
@@ -14,6 +14,9 @@ from deepagents_talon.history_adapters import BoundedEmbeddings, open_profile
 from deepagents_talon.history_embeddings import HistoryEmbeddings
 from deepagents_talon.history_profiles import EmbeddingProfile
 from deepagents_talon.speech import DEFAULT_LOCAL_VOICE_TRANSCRIPTION_MODEL
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 @pytest.mark.parametrize("assistant_id", ["first", "second"])

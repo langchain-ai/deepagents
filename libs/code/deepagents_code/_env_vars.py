@@ -328,6 +328,9 @@ HIDE_SPLASH_TIPS = "DEEPAGENTS_CODE_HIDE_SPLASH_TIPS"
 HIDE_SPLASH_VERSION = "DEEPAGENTS_CODE_HIDE_SPLASH_VERSION"
 """Hide version and local-install details in the splash screen when enabled."""
 
+IDLE_COMPACTION_TOKENS = "DEEPAGENTS_CODE_IDLE_COMPACTION_TOKENS"
+"""Minimum context tokens for opt-in idle compaction; 0 disables it."""
+
 HISTORY_RETENTION_DAYS = "DEEPAGENTS_CODE_HISTORY_RETENTION_DAYS"
 """Days an offloaded conversation-history archive is kept before the startup
 sweep deletes it.
@@ -514,7 +517,11 @@ repo file, so a project `.env` cannot disable itself.
 """
 
 RECENT_THREADS = "DEEPAGENTS_CODE_RECENT_THREADS"
-"""Maximum recent threads (default: `_constants.DEFAULT_THREAD_LIMIT`)."""
+"""Recent threads per batch (default: 100, `_constants.DEFAULT_THREAD_LIMIT`).
+
+The thread switcher loads this many at a time. It is also the default row
+limit for `threads list` (override with `-n`) and `@@` thread completion.
+"""
 
 RECURSION_LIMIT = "DEEPAGENTS_CODE_RECURSION_LIMIT"
 """Override the main agent's LangGraph `recursion_limit` (graph step budget).
@@ -583,11 +590,11 @@ across restarts.
 SHOW_REASONING = "DEEPAGENTS_CODE_SHOW_REASONING"
 """Show provider-visible reasoning in local TUI and headless output.
 
-Off by default; use `[ui].show_reasoning` in config.toml to persist it. Parsed
-by `classify_env_bool` (an unrecognized value falls through to the config value
+On by default in the TUI and off by default in headless (`-n`) mode. Set this
+or `[ui].show_reasoning` in config.toml to choose for both modes. Parsed by
+`classify_env_bool` (an unrecognized value falls through to the config value
 rather than forcing the default). A recognized value outranks the config value
-but loses to `--show-reasoning`, which is the only way to change the setting for
-a single run.
+but loses to `--show-reasoning`.
 """
 
 SHOW_SCROLLBAR = "DEEPAGENTS_CODE_SHOW_SCROLLBAR"

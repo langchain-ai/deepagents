@@ -269,7 +269,7 @@ async def test_runtime_wires_backend_checkpointer_tools_skills_and_memory(
 
     assert isinstance(captured["backend"], CompositeBackend)
     assert captured["checkpointer"] is runtime.checkpointer
-    assert captured["system_prompt"] == "assistant instructions"
+    assert captured["system_prompt"].startswith("assistant instructions\n\n")
     assert captured["skills"] == [str(assistant_dir / "skills")]
     assert captured["memory"] == [str(assistant_dir / "memory" / "AGENTS.md")]
     assert (assistant_dir / "memory" / "AGENTS.md").is_file()
@@ -285,28 +285,6 @@ async def test_runtime_wires_backend_checkpointer_tools_skills_and_memory(
         "remove_job",
         "custom_tool",
     } <= tool_names
-
-
-async def test_runtime_resolves_supplied_subagents() -> None:
-    subagents = [
-        {
-            "name": "researcher",
-            "description": "Research tasks",
-            "system_prompt": "Research carefully.",
-        },
-    ]
-
-    runtime = DeepAgentRuntime(
-        model="test:model",
-        subagents=cast("Any", subagents),
-        include_web_tools=False,
-        skills=(),
-        memory=(),
-    )
-
-    resolved = runtime._resolve_subagents()
-
-    assert resolved == subagents
 
 
 async def test_runtime_requires_approval_for_async_subagent_tools(
@@ -362,7 +340,8 @@ async def test_runtime_merges_local_and_async_subagents(
     researcher_dir = tmp_path / "agent-home" / "agents" / "researcher"
     researcher_dir.mkdir(parents=True)
     (researcher_dir / "AGENTS.md").write_text(
-        "---\ndescription: Research tasks\n---\nResearch carefully.", encoding="utf-8"
+        "---\ndescription: Research tasks\nmodel: openai:model\n---\nResearch carefully.",
+        encoding="utf-8",
     )
     async_subagent = {
         "name": "remote_reviewer",
@@ -388,52 +367,9 @@ async def test_runtime_merges_local_and_async_subagents(
             "description": "Research tasks",
             "system_prompt": "Research carefully.",
             "tool_names": [],
+            "model": "openai:model",
         },
         async_subagent,
-    ]
-
-
-async def test_runtime_loads_local_subagents_from_user_agents_dir(
-    tmp_path: Path,
-) -> None:
-    assistant_dir = tmp_path / "agent-home" / "agent"
-    researcher_dir = tmp_path / "agent-home" / "agents" / "researcher"
-    reviewer_dir = tmp_path / "agent-home" / "agents" / "reviewer"
-    researcher_dir.mkdir(parents=True)
-    reviewer_dir.mkdir(parents=True)
-    (researcher_dir / "AGENTS.md").write_text(
-        "---\ndescription: Research tasks\nmodel: openai:model\n---\nResearch carefully.",
-        encoding="utf-8",
-    )
-    (reviewer_dir / "AGENTS.md").write_text(
-        "---\ndescription: Review changes\n---\nReview carefully.", encoding="utf-8"
-    )
-
-    runtime = DeepAgentRuntime(
-        model="test:model",
-        assistant_dir=assistant_dir,
-        include_web_tools=False,
-        skills=(),
-        memory=(),
-        env={},
-    )
-
-    resolved = runtime._resolve_subagents()
-
-    assert resolved == [
-        {
-            "name": "researcher",
-            "description": "Research tasks",
-            "system_prompt": "Research carefully.",
-            "model": "openai:model",
-            "tool_names": [],
-        },
-        {
-            "name": "reviewer",
-            "description": "Review changes",
-            "system_prompt": "Review carefully.",
-            "tool_names": [],
-        },
     ]
 
 
@@ -532,31 +468,6 @@ async def test_runtime_rejects_invalid_local_subagent_definitions(
 
     assert not captured
     assert "invalid name, description, or model" in caplog.text
-
-
-async def test_runtime_passes_middleware_to_create_deep_agent(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    captured: dict[str, Any] = {}
-    middleware = PassthroughMiddleware()
-
-    def fake_create_deep_agent(**kwargs: Any) -> RecordingGraph:
-        captured.update(kwargs)
-        return RecordingGraph()
-
-    monkeypatch.setattr("deepagents_talon.runtime.create_deep_agent", fake_create_deep_agent)
-
-    runtime = DeepAgentRuntime(
-        model="test:model",
-        include_web_tools=False,
-        skills=(),
-        memory=(),
-        middleware=(middleware,),
-    )
-
-    await runtime.start()
-
-    assert middleware in captured["middleware"]
 
 
 @pytest.mark.parametrize("obsolete_value", ["", " , ", "bash, execute,custom/mcp"])
@@ -919,22 +830,6 @@ async def test_runtime_adds_activity_callback_when_enabled(
     assert "agent.run.started" in caplog.text
     assert "agent.run.completed" in caplog.text
     assert "private-chat" not in caplog.text
-
-
-async def test_runtime_recursion_limit_reads_env_var(monkeypatch: pytest.MonkeyPatch) -> None:
-    graph = RecordingGraph()
-    monkeypatch.setattr("deepagents_talon.runtime.create_deep_agent", lambda **_kwargs: graph)
-    runtime = DeepAgentRuntime(
-        model="test:model",
-        include_web_tools=False,
-        skills=(),
-        memory=(),
-        env={"DEEPAGENTS_TALON_RECURSION_LIMIT": "1000"},
-    )
-    await runtime.start()
-
-    await runtime.invoke(AgentRequest(conversation_id="chat", text="hi"))
-    assert graph.calls[0][1]["recursion_limit"] == 1000
 
 
 async def test_runtime_recursion_limit_env_overrides_explicit_arg(

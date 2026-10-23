@@ -4,10 +4,10 @@ build-backend = "hatchling.build"
 
 [project]
 name = "deepagents-talon"
-version = "0.0.9"
+version = "0.1.0"
 description = "Local runtime host for long-running Deep Agents channels and schedules (experimental)"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.14,<3.15"
 license = {text = "MIT"}
 keywords = ["agents", "ai", "deepagents", "runtime", "channels", "scheduling"]
 classifiers = [
@@ -15,8 +15,6 @@ classifiers = [
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.12",
-    "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Topic :: Software Development :: Libraries :: Python Modules",
@@ -24,46 +22,50 @@ classifiers = [
 dependencies = [
     # The Slack adapter streams uploads with `aiohttp` directly. Arrives
     # transitively via `discord.py`; declared because we import it.
-    "aiohttp>=3.14.3,<4.0.0",
-    "aiosqlite>=0.22.1,<1.0.0",
-    "deepagents>=0.7.0",
+    "aiohttp>=3.14.5",
+    "aiosqlite>=0.22.1",
+    "deepagents>=0.7.24",
     "deepagents-code>=0.1.71,<1.0.0",
-    "discord.py>=2.4.0,<3.0.0",
-    "fastmcp>=4.0.0b4,<5.0.0",
-    "httpx>=0.28.1,<1.0.0",
+    "discord.py>=2.7.1",
+    "fastmcp>=4.1.0",
+    "httpx>=0.28.1",
     # The MCP OAuth transport in `mcp_auth.py` builds `httpx2.Request`/`Response`
     # objects and implements `httpx2.Auth`. Arrives transitively via `mcp`;
     # declared here because we import it directly.
-    "httpx2>=2.12.0,<3.0.0",
-    "langchain>=1.4.3,<2.0.0",
-    "langchain-core>=1.6.7,<2.0.0",
-    "langgraph>=1.2.14,<2.0.0",
-    "langgraph-checkpoint>=4.2.0,<5.0.0",
-    "langgraph-checkpoint-sqlite>=3.1.1,<4.0.0",
-    "langgraph-prebuilt>=1.1.0,<2.0.0",
-    "langgraph-sdk>=0.4.6,<1.0.0",
-    "langsmith>=0.14.4",
-    "mcp>=2.0.0,<3.0.0",
-    "pydantic>=2.13.4,<3.0.0",
+    "httpx2>=2.13.1",
+    "langchain>=1.4.7,<2.0.0",
+    "langchain-core>=1.7.0,<2.0.0",
+    "langgraph>=1.2.16,<2.0.0",
+    "langgraph-checkpoint>=4.3.0,<5.0.0",
+    "langgraph-checkpoint-sqlite>=3.1.2,<4.0.0",
+    "langgraph-prebuilt>=1.1.1,<2.0.0",
+    "langgraph-sdk>=0.4.8,<1.0.0",
+    "langsmith>=0.14.12",
+    "mcp>=2.3.0",
+    # Require Pydantic 2.13+ explicitly to avoid Python 3.14 warnings from LangChain's v1 imports.
+    "pydantic>=2.13.5",
     "pyyaml>=6.0.3",
-    "slack-sdk>=3.44.1,<4.0.0",
-    "tzdata>=2025.2",
+    "slack-sdk>=3.45.0",
+    "tzdata>=2026.5",
 ]
 
 [project.optional-dependencies]
 history-local = [
-    "sentence-transformers>=5.2.0,<7.0.0",
-    "transformers>=5.16.1,<6.0.0",
+    "sentence-transformers>=6.1.0",
+    "transformers>=5.19.0",
 ]
 history-voyage = [
     "langchain-voyageai>=0.4.1,<0.5.0",
     # `history_voyage.py` replaces the base class's clients with
     # `voyageai.Client`/`AsyncClient` directly.
-    "voyageai>=0.5.0,<1.0.0",
+    "voyageai>=0.5.0",
 ]
-history-openai = ["langchain-openai>=1.6.7,<2.0.0"]
+history-openai = ["langchain-openai>=1.7.2,<2.0.0"]
+# NVIDIA OpenShell sandbox (`DEEPAGENTS_TALON_SANDBOX=openshell`). The provider
+# lives in `deepagents-code`; this extra pulls in its backend package.
+openshell = ["deepagents-code[openshell]>=0.1.71,<1.0.0"]
 mongodb = [
-    "langgraph-checkpoint-mongodb>=0.5.0,<0.6.0",
+    "langgraph-checkpoint-mongodb>=0.5.1,<0.6.0",
     "langgraph-store-mongodb>=0.4.0,<0.5.0",
 ]
 postgres = [
@@ -71,17 +73,17 @@ postgres = [
     # `store.VECTOR_MIGRATIONS`, `migration.condition`, `migration._replace` and the
     # `dict_row` cursor factory, none of which are public API. A rename inside 3.x
     # would not fail loudly - it would leave the migration rewrite a silent no-op.
-    "langgraph-checkpoint-postgres>=3.1.2,<3.2.0",
-    "psycopg[binary]>=3.3.5,<4.0.0",
+    "langgraph-checkpoint-postgres>=3.1.3,<3.2.0",
+    "psycopg[binary]>=3.3.6",
 ]
 media = [
     "deepagents-code[media]>=0.1.71,<1.0.0",
-    "librosa>=0.11.0,<1.0.0",
-    "numpy>=2.5.3,<3.0.0",
-    "phonemizer>=3.3.0,<4.0.0",
-    "torch>=2.12.1,<2.14.0",
-    "torchaudio>=2.11.0,<2.12.0",
-    "transformers>=5.16.1,<6.0.0",
+    "librosa>=0.11.0",
+    "numpy>=2.5.4",
+    "phonemizer>=3.3.0",
+    "torch>=2.12.1",
+    "torchaudio>=2.11.0",
+    "transformers>=5.19.0",
 ]
 
 [project.scripts]
@@ -125,7 +127,6 @@ deepagents = { path = "../deepagents", editable = true }
 deepagents-code = { path = "../code", editable = true }
 
 [tool.ty.environment]
-python-version = "3.12"
 extra-paths = ["../deepagents", "../code"]
 
 [tool.ty.analysis]

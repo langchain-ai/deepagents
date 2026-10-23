@@ -5,7 +5,7 @@ import logging
 from pathlib import Path
 from time import time
 from types import SimpleNamespace
-from typing import ClassVar
+from typing import ClassVar, cast
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
@@ -3327,6 +3327,24 @@ class TestSkillMessageMarkupSafety:
         # (Markdown widget) so we verify fields instead.
         assert msg._description == content
         assert msg._args == content
+
+
+class TestSkillMessageSetInstructions:
+    """A live row shows instructions that stream in after it mounts."""
+
+    async def test_mounted_row_shows_description_and_body(self) -> None:
+        class _App(App[None]):
+            def compose(self) -> ComposeResult:
+                yield SkillMessage(skill_name="review", args="this patch")
+
+        async with _App().run_test() as pilot:
+            msg = pilot.app.query_one(SkillMessage)
+            msg.set_instructions("Review code", "Check the tests.")
+            await pilot.pause()
+
+            [description] = msg.query(".skill-description")
+            assert "Review code" in str(cast("Static", description).render())
+            assert msg._expanded is True
 
 
 class TestStripSuccessExitLine:

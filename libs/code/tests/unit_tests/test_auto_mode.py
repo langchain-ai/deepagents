@@ -11,7 +11,7 @@ import threading
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any, Literal, cast
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
 from unittest.mock import patch
 from uuid import uuid4
 
@@ -207,6 +207,7 @@ class _StructuredModel:
 
 class _ThinkingAnthropicModel(_StructuredModel):
     _llm_type = "anthropic-chat"
+    profile: ClassVar[dict[str, object]] = {"structured_output": True}
 
     def __init__(self, result: object) -> None:
         super().__init__(result)
@@ -2652,10 +2653,34 @@ async def test_sensitive_write_requires_classifier(
     assert len(model.calls) == 1
 
 
-async def test_inherited_anthropic_thinking_classifier_uses_json_schema(
+class _AnthropicModel(_StructuredModel):
+    _llm_type = "anthropic-chat"
+    profile: ClassVar[dict[str, object]] = {"structured_output": True}
+
+
+class _LegacyAnthropicModel(_StructuredModel):
+    """An Anthropic model whose profile does not advertise native support."""
+
+    _llm_type = "anthropic-chat"
+    profile: ClassVar[dict[str, object]] = {}
+
+
+@pytest.mark.parametrize(
+    ("model_cls", "expected_kwargs"),
+    [
+        (_ThinkingAnthropicModel, {"method": "json_schema"}),
+        (_AnthropicModel, {"method": "json_schema"}),
+        (_LegacyAnthropicModel, {}),
+        (_StructuredModel, {}),
+    ],
+)
+async def test_anthropic_classifier_uses_native_structured_output(
     tmp_path: Path,
+    model_cls: type[_StructuredModel],
+    expected_kwargs: dict[str, object],
 ) -> None:
-    model = _ThinkingAnthropicModel(_allow_result())
+    """Anthropic models with native support get schema-constrained output."""
+    model = model_cls(_allow_result())
     middleware = _middleware(tmp_path)
     request, _store, _key = _request(
         tmp_path,
@@ -2671,7 +2696,7 @@ async def test_inherited_anthropic_thinking_classifier_uses_json_schema(
         args={"file_path": str(tmp_path / "old.py")},
     )
 
-    assert model.structured_output_kwargs == {"method": "json_schema"}
+    assert model.structured_output_kwargs == expected_kwargs
     assert plan["decisions"][0]["disposition"] == "classifier_allow"
 
 
@@ -4932,12 +4957,10 @@ def test_classifier_unavailable_reason_specializes_timeouts() -> None:
 async def test_classifier_opts_out_of_preserved_thinking_binding(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The classifier must keep the forced tool call structured output needs.
+    """The classifier skips the Anthropic preserved-thinking binding.
 
-    An injected Anthropic `thinking` kwarg pushes `with_structured_output` onto
-    its unforced path, which drops `tool_choice` and raises when the model
-    answers in prose. One-shot classification replays no thinking blocks, so it
-    has nothing to gain from the binding in the first place.
+    One-shot classification replays no thinking blocks, so the binding would
+    only add latency and cost to every review.
     """
     factory = _RecordingModelFactory(_StructuredModel(_allow_result()))
     _install_model_factory(monkeypatch, factory)

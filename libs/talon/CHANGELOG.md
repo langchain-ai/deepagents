@@ -1,5 +1,33 @@
 # Changelog
 
+## [0.1.0](https://github.com/langchain-ai/deepagents/compare/deepagents-talon==0.0.9...deepagents-talon==0.1.0) (2026-10-22)
+
+### ⚠ BREAKING CHANGES
+
+- `deepagents-talon` now requires Python 3.14 (`>=3.14,<3.15`).
+
+### Features
+
+- Added `/effort` controls for reasoning. ([#7043](https://github.com/langchain-ai/deepagents/pull/7043))
+- Added the NVIDIA OpenShell sandbox provider and an `openshell` extra for Talon. ([#6999](https://github.com/langchain-ai/deepagents/pull/6999), [#7000](https://github.com/langchain-ai/deepagents/pull/7000))
+- Added independent breakout tasks for Slack and Discord. ([#6932](https://github.com/langchain-ai/deepagents/pull/6932))
+- Discord guild mentions now receive replies in threads, as they do in Slack. ([#7012](https://github.com/langchain-ai/deepagents/pull/7012))
+- Added configurable verbosity for interim progress updates. ([#7037](https://github.com/langchain-ai/deepagents/pull/7037))
+- Made background subagent capacity and checkpoint backends configurable. ([#7048](https://github.com/langchain-ai/deepagents/pull/7048), [#6727](https://github.com/langchain-ai/deepagents/pull/6727))
+- Skills can now be pinned to scheduled jobs and reload when their files change. ([#6906](https://github.com/langchain-ai/deepagents/pull/6906), [#6904](https://github.com/langchain-ai/deepagents/pull/6904))
+- Inbound media is now stored as backend blobs. ([#6905](https://github.com/langchain-ai/deepagents/pull/6905))
+
+### Bug Fixes
+
+- Slack thread context now preserves other participants, includes authorized bot replies, and labels bot history as participant messages. ([#6862](https://github.com/langchain-ai/deepagents/pull/6862), [#6742](https://github.com/langchain-ai/deepagents/pull/6742), [#6743](https://github.com/langchain-ai/deepagents/pull/6743))
+- Scheduled jobs are now shared across channel threads, while each run starts on a fresh thread. ([#6707](https://github.com/langchain-ai/deepagents/pull/6707), [#6936](https://github.com/langchain-ai/deepagents/pull/6936))
+- Operator pairing approvals now work in shared chats. ([#6710](https://github.com/langchain-ai/deepagents/pull/6710))
+- History search now resumes past the scan budget. ([#6740](https://github.com/langchain-ai/deepagents/pull/6740))
+- Channel documents are now exposed without inlining their contents. ([#7049](https://github.com/langchain-ai/deepagents/pull/7049))
+- Progress-tool guidance now reflects the configured verbosity. ([#7041](https://github.com/langchain-ai/deepagents/pull/7041))
+- MCP OAuth requests now include a user agent. ([#6981](https://github.com/langchain-ai/deepagents/pull/6981))
+- Raised minimum dependency versions. ([#6952](https://github.com/langchain-ai/deepagents/pull/6952))
+
 ## [0.0.9](https://github.com/langchain-ai/deepagents/compare/deepagents-talon==0.0.8...deepagents-talon==0.0.9) (2026-10-01)
 
 ### Features

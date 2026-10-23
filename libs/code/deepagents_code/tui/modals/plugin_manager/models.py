@@ -1,9 +1,10 @@
 """Plugin manager view models."""
 
 from dataclasses import dataclass
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
-from deepagents_code.plugins.models import UnsupportedComponent
+if TYPE_CHECKING:
+    from deepagents_code.plugins.models import UnsupportedComponent
 
 PluginTab = Literal["discover", "installed", "marketplaces", "errors", "settings"]
 PluginManagerView = Literal[

@@ -1,117 +1,179 @@
 ---
 type: architecture concept
-title: Tools, Filesystem, and Permissions
-description: FilesystemMiddleware exposes backend-backed file and optional shell tools, validates their results and capabilities, and controls how large text and binary media survive model requests and checkpoints.
-tags: [tools, filesystem, execution, middleware, backends, persistence, multimodal]
+title: Tools and Filesystem Policy
+description: Deep Agents and dcode compose built-in filesystem, caller, MCP, managed helper, and shell tools into an agent-specific surface. Filesystem policy, backend capabilities, trust gates, and runtime enforcement remain separate concerns.
+tags: [tools, filesystem, execution, middleware, backends, persistence, multimodal, permissions]
 sources:
+  - id: openwiki-source-1728494bdd59604ce9b5f65b
+    resource: repo://libs/code/deepagents_code/_server_config.py
+  - id: openwiki-source-05106e66a949150d557266a2
+    resource: repo://libs/code/deepagents_code/agent.py
+  - id: openwiki-source-a12868876b60484607797187
+    resource: repo://libs/code/deepagents_code/file_ops.py
+  - id: openwiki-source-2e03fee957625ca21a1c21af
+    resource: repo://libs/code/deepagents_code/main.py
+  - id: openwiki-source-752b52e8fedb86515652254d
+    resource: repo://libs/code/deepagents_code/managed_tools.py
+  - id: openwiki-source-f6d553e7afdf54acac36e7d3
+    resource: repo://libs/code/deepagents_code/mcp_tools.py
+  - id: openwiki-source-3300d75e0c132882e2e3b4ce
+    resource: repo://libs/code/deepagents_code/tool_catalog.py
+  - id: openwiki-source-8ccbc389e8d6198afea76baa
+    resource: repo://libs/code/tests/unit_tests/test_file_ops.py
+  - id: openwiki-source-a1549ea98d425efea270be93
+    resource: repo://libs/deepagents/deepagents/backends/composite.py
+  - id: openwiki-source-e483ff4cfd25918c8107d575
+    resource: repo://libs/deepagents/deepagents/backends/filesystem.py
   - id: openwiki-source-f84c83d6fab6028c94be90bc
     resource: repo://libs/deepagents/deepagents/backends/local_shell.py
-  - id: openwiki-source-e3efb5f3e4a9e8517eb6d8f5
-    resource: repo://libs/deepagents/deepagents/backends/protocol.py
   - id: openwiki-source-0fc0e47059e4d07e23e50be2
     resource: repo://libs/deepagents/deepagents/graph.py
   - id: openwiki-source-303a7196a0e1a36cc078621b
     resource: repo://libs/deepagents/deepagents/middleware/_blob_offload.py
-  - id: openwiki-source-9841bc6daf811e4615c54a88
-    resource: repo://libs/deepagents/deepagents/middleware/_message_eviction.py
+  - id: openwiki-source-0fb4155c19dd248acd3ffe4f
+    resource: repo://libs/deepagents/deepagents/middleware/_fs_interrupt.py
+  - id: openwiki-source-8b1aaf77fc0430fd00711a73
+    resource: repo://libs/deepagents/deepagents/middleware/_tool_exclusion.py
   - id: openwiki-source-fed4b84a38685f37e58018c5
     resource: repo://libs/deepagents/deepagents/middleware/filesystem.py
-  - id: openwiki-source-837c84a3f3120bc778033547
-    resource: repo://libs/deepagents/deepagents/middleware/unsupported_content.py
-  - id: openwiki-source-58bc0b41ad72708cee0fee6e
-    resource: repo://libs/deepagents/tests/unit_tests/middleware/test_blob_offload.py
-  - id: openwiki-source-f913f8fa643e6c2796621ca5
-    resource: repo://libs/deepagents/tests/unit_tests/middleware/test_filesystem_middleware_init.py
 verified:
   - by: openwiki/0.4.2
-    at: 2026-10-08T08:07:53.482Z
-generated: { by: "openwiki/0.4.2", at: "2026-10-08T08:07:53.482Z" }
+    at: 2026-10-23T08:06:06.503Z
+generated: { by: "openwiki/0.4.2", at: "2026-10-23T08:06:06.503Z" }
 ---
 
-# Tools, Filesystem, and Permissions
+# Tools and Filesystem Policy
 
-`FilesystemMiddleware` is the model-facing adapter for an initialized `BackendProtocol`. It constructs file tools, validates inputs and backend results, formats model-facing messages, and manages oversized or binary content. The backend owns storage and implements the operations; a filesystem tool name is neither a guarantee that the backend supports it nor an authorization decision. For backend implementations and routing, see [Backends](backends.md); for approvals and path policy, see [Permissions & HITL](permissions-hitl.md).
+`FilesystemMiddleware` is the model-facing adapter over an initialized `BackendProtocol`: it creates tools, validates and formats their results, applies middleware-owned filesystem policy, and manages large or binary message content. The backend owns storage and operation implementation. A visible tool is not a guarantee that the backend implements it. SDK profile exclusions are model-surface controls rather than authorization, while dcode treats its explicitly configured filesystem allowlist as a security control and carries it into configurable subagents. See [Backends](backends.md) for storage and routing, [Permissions & HITL](permissions-hitl.md) for approval configuration, and [MCP](../integrations/mcp.md) for remote tools.
 
-## Tool surface and backend contract
+## Tool surface and request boundary
 
-The built-in vocabulary is `ls`, `read_file`, `write_file`, `edit_file`, `delete`, `glob`, `grep`, and `execute`. `tools=None` and `tools="all"` expose the full filesystem suite; an explicit list constructs only those named tool factories and must include `read_file`. This is a model-visibility allowlist, not a security policy.
+The built-in vocabulary is `ls`, `read_file`, `write_file`, `edit_file`, `delete`, `glob`, `grep`, and `execute`. `tools=None` and `tools="all"` build all of them; an explicit list must include `read_file`, and tools absent from that list are not registered with the dispatchable tool node. At model-request time, filesystem middleware removes `delete` when the backend does not implement the optional operation and removes `execute` unless the backend is execution capable. It also adjusts the `grep` and `execute` descriptions to the remaining visible tools.
 
-At each model request the middleware removes `delete` and `execute` if the resolved backend lacks the corresponding capability. `delete` is optional on `BackendProtocol`; `execute` requires `SandboxBackendProtocol` support (for a composite, its default backend). Thus an allowlist cannot manufacture an implementation. The middleware also adjusts `grep` and `execute` descriptions for the visible set and appends composite host-path guidance only when execution is active.
+A harness profile's `excluded_tools` is a later, independent model-surface control. Graph construction appends `_ToolExclusionMiddleware` after profile and caller middleware so it removes named tools after all injection has happened; it also rejects a model call that still names an excluded tool. This makes the advertised and executable surfaces agree for that agent/profile, but it is explicitly not a security control. It is distinct from an absent construction-time tool, capability filtering, a filesystem permission denial, and a HITL interruption.
 
 ```mermaid
 flowchart TD
-    Config["FilesystemMiddleware configuration"] --> Factories["Construct allowed tool factories"]
-    Factories --> Request["Model request"]
-    Request --> Capability["Filter unavailable delete and execute"]
-    Capability --> Model["Model-visible tools"]
+    Config["Middleware configuration"] --> Factories["Create allowed tool factories"]
+    Factories --> Capability["Remove unsupported delete and execute"]
+    Capability --> Exclusion["Profile excludes named tools last"]
+    Exclusion --> Model["Model-visible tools"]
     Model --> Call["Tool call"]
-    Call --> Policy["Path validation and permission or HITL checks"]
-    Policy --> Backend["Backend file operation or shell execution"]
+    Call --> Check{"Excluded name"}
+    Check --> Reject["Reject excluded name"]
+    Check --> Guard["Validate path and enforce policy"]
+    Guard --> Backend["Backend file operation or execution"]
     Backend --> Result["Structured result and ToolMessage"]
 ```
 
-This flow separates construction-time visibility, request-time capability filtering, per-call controls, and backend execution.
+This flow separates construction-time registration, request-time capability and profile filtering, tool-call exclusion rejection, per-call policy, and backend behavior.
 
-`BackendProtocol` returns structured results rather than model-formatted strings. `ReadResult` validates pagination invariants: a line window must be complete and forward, `total_lines` must cover it, and `next_offset` must be the first unshown line. Backends tolerate negative offsets and non-positive read limits; the latter represents an uninspected empty window. Middleware adds line-number gutters and splits exceptionally long lines into continuation rows. `GrepResult` and `GlobResult` may be successful but incomplete (`truncated=True`), so partial matches are not proof that no further match exists.
+`BackendProtocol` returns structured results rather than presentation strings. `ReadResult` rejects incoherent pagination metadata; the middleware owns line-number formatting and long-line continuation rows. `grep` and `glob` can be successful yet incomplete, so `truncated=True` means absence from returned matches is not proof of absence from storage. The agent-facing `grep` is literal, not regex; its configured default total cap is 1,000 matches, and a positive per-call `max_count` can override it. Set `grep_max_count=None` when constructing the middleware to disable the default cap.
 
-`grep` matches literal text, not regular expressions. Its default total cap is 1,000 matches, a positive call-level `max_count` can override it, and `None` disables the default cap. The async protocol wrapper bounds how long the caller waits and enforces the cap even for older concrete backends that cannot accept `max_count` themselves.
+## dcode composition, enumeration, and trust
 
-### Initialization and state
+At runtime, dcode supplies caller tools (for example, `fetch_url`, `get_current_thread_id`, and credential-gated `web_search`) to its agent construction, and separately loads MCP tools. The filesystem tools remain SDK middleware tools rather than a parallel dcode implementation. An MCP-enabled agent wraps those remote calls with dcode's MCP timeout middleware; MCP loading can be disabled entirely with `no_mcp`.
 
-With no backend, the middleware uses `StateBackend()`. Backend factories are rejected: pass an initialized instance, including an initialized callable backend if applicable. It recursively detects state-backed branches of a composite and adds the `files` state channel when any route uses `StateBackend`; otherwise it uses the base state schema.
+MCP availability is deliberately not inferred from configuration alone. Project MCP servers, including remote HTTP/SSE servers, are trust-gated because discovery may reach a server or interpolate headers. Whole-project trust, scoped user approvals keyed to project root and server fingerprint, and explicit user denial are applied before loading; plugin-provided servers are treated as install-trusted but still obey user denial and fail closed if that policy cannot be read.
 
-The `files` channel is a delta-reduced mapping: writes for distinct paths in the same step merge, while a `None` update removes a path. The channel snapshots periodically to bound read depth. Before dispatching a tool batch, the middleware rejects a later `write_file`, `edit_file`, or `delete` call that normalizes to the same path as an earlier mutation in that assistant response. This prevents two parallel calls from independently modifying one logical file.
+```mermaid
+flowchart TD
+    Config["dcode configuration"] --> Builtin["SDK filesystem middleware"]
+    Config --> Caller["Caller supplied tools"]
+    Config --> McpConfig["MCP configuration and trust gate"]
+    McpConfig --> Mcp["Loaded MCP tools"]
+    Builtin --> Agent["Bound agent tool node"]
+    Caller --> Agent
+    Mcp --> Agent
+    Agent --> Catalog["tools list or slash command"]
+```
 
-## File behavior and execution boundary
+This shows composition, not equivalent trust: caller tools are supplied by the application, while MCP tools must pass configuration and trust resolution before they enter the bound set.
 
-`read_file` renders text as a paginated, line-numbered result. For base64 declared by the backend, it instead produces multimodal content: a recognized extension determines `image`, `audio`, `video`, or `file`; unknown binary content is a generic file. Binary payloads are never line-numbered, and the result records the validated source path and MIME type.
+`dcode tools list` and interactive `/tools` derive the built-in listing from the actual tools bound on an agent compiled with an offline placeholder model, rather than maintaining a display catalog. It forwards the session filesystem allowlist into that compilation and deliberately reports an allowlist leak rather than cosmetically filtering it. MCP tools are grouped by server; non-`ok` servers with no tools are surfaced as unavailable, and a discovery-wide failure leaves built-ins visible with a generic notice rather than leaking exception details.
 
-Video is a special binary path: when video dependencies are available, `read_file` samples frames into a synthetic `HumanMessage` while the tool result explains the sampled window. The middleware moves those synthetic media messages after the complete `ToolMessage` batch for the preceding AI tool-call message, preserving provider ordering requirements.
+`--allow-fs-tools` accepts `all` or a case-insensitive comma-separated subset of the eight SDK filesystem names. Omission and `all` leave the SDK's unrestricted default middleware in place; an explicit empty list, unknown name, mixed `all`, or subset without `read_file` is rejected. dcode installs a restricted replacement middleware for an explicit subset and appends equivalent middleware to raw subagent specifications. It rejects compiled subagents instead of silently letting delegation bypass that restriction.
 
-`execute` is deliberately more than another file operation. It calls an execution-capable backend, refuses a per-command timeout above `max_execute_timeout` (default 3,600 seconds), and returns the command exit code in `ToolMessage.artifact`. A command that ran is a successful tool invocation even when its exit code is nonzero; consumers must inspect the artifact to recognize command failure. Filesystem path mapping does not rewrite shell commands.
+## Managed helper and local presentation lifecycle
 
-A `LocalShellBackend` is execution-capable but is not a sandbox: it runs host commands with the current user's permissions. Likewise, a composite routes filesystem paths by prefix but sends `execute` to its default backend. Do not treat virtual paths, a tool allowlist, or filesystem permissions as shell confinement; use an isolated sandbox for untrusted execution. See [Sandbox partners](../integrations/sandbox-partners.md).
+The `grep` filesystem tool is backend functionality; dcode optionally provisions its `rg` helper. `ensure_ripgrep` first honors a `system` installer choice, accepts a current checksum-verified managed binary, can use a system binary when no managed copy exists, and otherwise downloads a pinned platform asset, verifies archive SHA-256, extracts it, then atomically installs and exposes it on `PATH`. Offline mode returns no managed binary; unsupported platforms may use a system `rg` or raise a remediation-oriented availability error. A profile fallback binary directory is never put directly on `PATH`: dcode copies a verified `rg` into a process-private shim so repository-controlled sibling executables cannot be shadowed in.
 
-## Permissions and compatibility recovery
+The terminal and non-interactive dcode surfaces also track `read_file`, `write_file`, `edit_file`, and `delete` calls for diffs, metrics, and approval presentation. A tracker captures a pre-image through the configured backend when available and reads a post-image after a successful write or edit. It distinguishes a trustworthy diff from an unavailable pre-image, unavailable post-image, and a line-terminator-only change; it therefore suppresses invented diff counts instead of representing unknown content as an empty file. Sensitive filename heuristics redact display of `.env` variants, known credential names, and private-key/keystore suffixes, failing closed when the path cannot be parsed. This is a UI/transcript safeguard, not filesystem authorization.
 
-Filesystem permissions are applied inside tool implementations, not by hiding schemas. Paths are canonicalized before matching; permission patterns must be absolute and reject traversal or `~`. For ordinary reads and writes, the first matching rule in declaration order supplies an `allow`, `deny`, or `interrupt` outcome. Bulk tools conservatively interrupt when their search subtree could overlap an interrupt rule; denied entries are filtered from list and search results. Recursive deletion is stricter: when a target may have descendants, any overlapping deny-write pattern blocks the all-or-nothing deletion, so a later specific deny cannot be bypassed by an earlier allow. Graph construction converts interrupt rules to human-in-the-loop predicates. `execute` has no path-aware permission enforcement; consequently, permission rules with an execution-capable backend are rejected except when every pattern is scoped to a route of a `CompositeBackend`, isolating those governed file-tool paths from the composite default shell.
+Focused unit tests cover the failure semantics: a missing pre-image is normal only when creating with `write_file`; malformed backend responses and failed reads are marked untrustworthy; a successful write with failed read-back retains request-derived metrics and its reason; delete previews distinguish text, directories, and unreadable targets; and credential-like paths are classified for redaction.
 
-`UnsupportedContentMiddleware` runs last in the `create_deep_agent` middleware stack. On every request it consults the active request model's profile and replaces only blocks the model explicitly cannot accept with a placeholder that identifies the original `read_file` path. It copies request messages rather than mutating persisted history, so a later compatible model can receive the original media. Inline non-PDF base64 documents have a stricter OpenAI Responses API compatibility path.
+## Composite routes are a path namespace, not a shell namespace
 
-If a provider still raises `ModelInvalidRequestError`, filesystem middleware retries once only when the latest tool turn contains multimodal `read_file` material. It replaces those latest read results with an unsupported-content notice and leaves unrelated invalid model requests to raise normally.
+`CompositeBackend` chooses the longest matching route prefix for a file path. It strips that prefix before delegating to the routed backend and restores it on path-bearing results, while unmatched paths go to the default backend. A listing of `/` combines the default root with synthetic route directories. This lets one model-visible tree span state, persistent, local, or remote backends without exposing each backend's internal root.
 
-## Text eviction and binary blob lifecycle
+Search has deliberate cross-route semantics. With `path` omitted or `/`, `grep` searches the default and routes under one global match budget, remapping route result paths; if an earlier backend fills the budget, later routes are skipped and the result is conservatively marked truncated. `glob` also merges and remaps results, but rewrites a route-targeting anchored pattern relative to that route, forwards a bare pattern into every route, and skips routes for a root-anchored pattern that cannot match beneath their prefix. An error from any searched backend is surfaced rather than represented as a successful partial glob. These details matter when interpreting an empty or truncated search result.
 
-Large text and binary media use different storage strategies.
+File operations route individually, but `execute` does not: a composite always delegates execution to its default backend. Consequently, a route prefix is a file-tool addressing mechanism, not evidence that the default shell can access the same path.
 
-- **Text eviction:** Before a model call, an oversized human message can be written under the backend's `conversation_history` artifact prefix and replaced for the request with a preview and file reference; state retains the original content. Oversized ordinary tool results can similarly be written under `large_tool_results`, with a line-numbered head-and-tail preview. Filesystem-tool results are excluded from this generic result eviction because they already return paginated or compact responses. If an artifact write fails, the original message stays intact.
-- **Binary offload:** `offload_binary_content=True` moves valid inline base64 payloads from `read_file` results and inline human media into content-addressed files under `blobs/` below the artifacts root. State stores a block with `deepagents_blob` and the SHA-256 digest rather than the base64 data; therefore checkpoints do not carry the binary bytes.
+## Direct filesystem access and permission policy
+
+`FilesystemBackend` reads and writes the host filesystem directly. Its default `virtual_mode=True` treats `root_dir` (or the process working directory) as a virtual root: `/x` maps below that root, relative inputs are normalized into that virtual namespace, and traversal through `..` or `~` is refused. Resolved paths must remain under the root; agent-visible paths use virtual absolute form and do not reveal the host root. `virtual_mode` provides stable path semantics—especially when `CompositeBackend` strips a route prefix before forwarding a path—but is not a sandbox or process-isolation boundary. With `virtual_mode=False`, absolute paths are used as-is and relative paths can escape `root_dir`.
+
+`FilesystemPermission` rules classify operations as `read` or `write` and have `allow`, `deny`, or `interrupt` mode. Patterns must be absolute and may not contain `..` or `~`. For ordinary exact operations, declaration order is significant: the first matching rule decides. Middleware checks both the requested normalized path and, for `FilesystemBackend` including routed composites, its symlink-resolved target; an unresolved target is refused when rules are configured. List and search results filter denied entries, including aliases that resolve to denied targets.
+
+`interrupt` is not enforced inside a filesystem tool. During `create_deep_agent` assembly, `_fs_interrupt` turns interrupt rules into `HumanInTheLoopMiddleware` predicates. Exact tools (`read_file`, `write_file`, `edit_file`) prompt only for matching paths unless a matching deny wins. Bulk tools (`ls`, `glob`, `grep`, and `delete`) prompt if their target subtree could overlap an interrupt rule; an omitted path or current-directory alias is treated as root. The glob predicate also examines absolute patterns and conservatively prompts for relative patterns containing `..`, preventing a benign `path` argument from bypassing a protected target.
+
+```mermaid
+flowchart TD
+    Call["Filesystem tool call"] --> Validate["Normalize and validate path"]
+    Validate --> Scope{"Exact or bulk scope"}
+    Scope -->|Exact| Match["Check requested and resolved paths"]
+    Scope -->|Bulk| Overlap["Check possible subtree overlap"]
+    Overlap --> Interrupt["HITL predicate may pause"]
+    Match --> Deny{"Deny rule"}
+    Deny -->|Yes| Refuse["Permission error"]
+    Deny -->|No| Operation["Backend operation"]
+    Interrupt --> Operation
+    Operation --> Filter["Filter denied bulk results"]
+```
+
+This policy flow shows the boundary: graph assembly owns approval predicates, while filesystem middleware denies calls and filters results. A recursive or ambiguous delete is stricter: it fails closed if a deny-write pattern could overlap its subtree, while a confirmed leaf uses the normal first-match rule.
+
+## Execution is a separate trust boundary
+
+`execute` requires `SandboxBackendProtocol`; for a composite, only the default backend supplies execution. The middleware validates a supplied timeout against its positive `max_execute_timeout` setting (default 3,600 seconds) and whether the backend accepts per-command overrides. A command invocation that completes gets a successful tool message and an exit-code artifact even if the command exits nonzero; callers must inspect that exit code. Capture-capable sandbox execution can write oversized command output at the source; otherwise generic message eviction applies.
+
+Filesystem permission patterns do not parse or constrain command syntax. Therefore, middleware rejects permissions combined with an execution-capable backend unless every permission pattern is scoped beneath a `CompositeBackend` route; that exception separates governed file-tool routes from the default executor but does not authorize or confine shell commands. A `LocalShellBackend` runs `shell=True` on the host as the current user, with no isolation, and its virtual paths restrict only inherited file operations—not commands. Use an isolated sandbox and HITL for untrusted work.
+
+When execution is active, middleware adds route-to-host mapping guidance only for composite routes that share a local `LocalShellBackend` filesystem. Remote, sandbox, and store-backed routes have no shell mapping and must be accessed through file tools. It does not rewrite commands.
+
+## Read media and content lifecycle
+
+For text, `read_file` produces a paginated line-numbered result. For backend-declared base64, it emits a multimodal block selected from the extension (`image`, `audio`, `video`, or generic `file`) rather than line-numbered text, retaining the validated source path and MIME type in metadata. Video decoding, when optional dependencies are available, samples frames into a synthetic `HumanMessage`; middleware moves that message after the entire preceding `ToolMessage` batch to satisfy provider ordering.
+
+`UnsupportedContentMiddleware`, placed after the core, memory, and HITL stack before later profile/caller stack shaping, copies model-request messages and replaces only blocks the active model explicitly cannot accept with a `read_file` path placeholder. Persisted message history remains unchanged. As a fallback, filesystem middleware retries once after a `ModelInvalidRequestError` only when the latest tool turn contains multimodal `read_file` material; it replaces that material with an unsupported-content notice and re-raises unrelated request errors.
+
+Large text and binary payloads have separate lifecycles:
+
+- **Text eviction:** oversized human text and ordinary tool text are written under backend artifact paths with a preview for the model request. Filesystem tools are excluded from generic tool-result eviction because their output is already paginated, bounded, or compact. An artifact-write failure leaves the original content intact.
+- **Binary offload:** with `offload_binary_content=True`, valid inline base64 from `read_file` results and eligible human media are SHA-256-addressed under `blobs/`; history stores a reference instead of bytes, and the model request receives rehydrated media. Offload is disabled with a warning if the blob path routes to `StateBackend`, because that would preserve bytes in checkpoint state.
 
 ```mermaid
 sequenceDiagram
     participant Tool as read_file tool
     participant MW as FilesystemMiddleware
-    participant Store as Backend blobs storage
-    participant State as Checkpoint state
+    participant Store as Backend blob storage
+    participant History as Message history
     participant Model as Model request
     Tool->>MW: Base64 media result
-    MW->>Store: Upload bytes at blobs digest
-    MW->>State: Store message with blob reference
-    MW->>Store: Download referenced bytes when needed
-    MW->>Model: Send rehydrated Base64 media
+    MW->>Store: Upload digest-addressed bytes
+    MW->>History: Store blob reference
+    MW->>Store: Download referenced bytes
+    MW->>Model: Send verified Base64 media
 ```
 
-The binary offload lifecycle: persisted messages retain a digest reference, while the request is rehydrated immediately before it reaches the model.
+The binary lifecycle stores references in history but restores verified payloads only for a model request. Binary offload is best effort: failed uploads keep inline content. Rehydration uses an in-run untracked cache when possible and verifies every downloaded payload against its digest because blobs are agent-writable. Missing, malformed, failed, or digest-mismatched references become a text notice rather than untrusted media.
 
-Offload is best effort. It considers only valid base64 blocks and deduplicates identical payloads by digest. Failed uploads leave content inline. On rehydration, an in-run private, untracked payload cache avoids repeated downloads; otherwise the backend batch download is used. Each downloaded byte sequence is hashed before use because blobs are on an agent-writable filesystem. Missing, malformed, failed, or hash-mismatched blobs become a text notice asking the model to re-read the file rather than injecting untrusted or stale bytes.
+## Operational guidance
 
-Human media entered after the last AI message is offloaded at the next model call. The resulting replacement updates state, while the initial input write remains present in checkpoint history. Offload is automatically disabled with a warning if the `blobs/` route resolves to `StateBackend`, since that would retain the bytes in checkpointed state and defeat the purpose.
+Keep `read_file` in explicit tool lists, and treat missing `delete` or `execute` as a backend capability issue rather than an allowlist issue. Use a harness profile exclusion to suppress a tool for a particular agent surface, not to authorize storage or isolate execution. Treat composite search truncation as incomplete output and do not assume file-tool route paths are shell paths. Configure binary offload only when the blob route supports upload/download outside checkpoint state. For direct host backends, keep virtual mode enabled unless trusted local workflows explicitly need host paths; do not mistake it for sandboxing.
 
-## Operational guidance and focused tests
-
-Configure token limits only as context-management controls; they are not retention or access controls. Keep `read_file` in any tool allowlist, inspect backend capability when `delete` or `execute` is absent, and treat `truncated` search output as incomplete. For binary offload, select a backend whose blob route persists outside checkpoint state and supports batch upload/download.
-
-Focused tests cover the important failure boundaries: middleware initialization verifies the state schema selected for state and composite backends, rejects factories, and permits tool-description overrides. Blob tests verify that only `read_file` results are offloaded, command-result media is traversed, uploads that fail leave media inline, and tampered or malformed references degrade to a text notice. Local sandbox operation tests exercise raw reads, pagination, permissions, exact and replace-all edits, and CRLF-aware edits that preserve the source line-ending style.
+When changing this area, exercise the focused behavior rather than only tool registration: virtual-root containment and symlink resolution; composite routing and merged search errors/truncation; request-time capability filtering and excluded-call rejection; permission first-match, recursive-delete, and bulk HITL cases; execution timeout/exit-code behavior; and offload upload, digest verification, and state-backed-route disablement.
 
 ## Related pages
 
@@ -119,4 +181,4 @@ Focused tests cover the important failure boundaries: middleware initialization 
 - [Middleware catalog](middleware-catalog.md) — composition and request/tool wrappers.
 - [Permissions & HITL](permissions-hitl.md) — policy and approval configuration.
 - [Sandbox partners](../integrations/sandbox-partners.md) — isolated execution integrations.
-- [Build a Deep Agent](../workflows/build-a-deep-agent.md) — agent assembly and configuration.
+- [Security](../operations/security.md) — operational threat model and safeguards.

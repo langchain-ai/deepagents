@@ -2,8 +2,6 @@
 
 import asyncio
 from asyncio import Future
-from collections.abc import AsyncIterator, Awaitable, Callable, Generator, Mapping
-from pathlib import Path
 from time import time
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Literal, cast
@@ -75,7 +73,9 @@ from deepagents_code.tui.widgets.messages import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncIterator, Awaitable, Callable, Generator, Mapping
     from contextlib import AbstractContextManager
+    from pathlib import Path
 
     from langchain_core.runnables import RunnableConfig
 
@@ -87,7 +87,7 @@ def _session_state(
     thread_id: str = "thread-1",
     approval_mode: ApprovalMode | str = "manual",
     auto_approve: bool | None = None,
-) -> "TextualSessionState":
+) -> TextualSessionState:
     """Build real session state so the adapter sees its full contract."""
     from deepagents_code.app import TextualSessionState
 
@@ -98,7 +98,7 @@ def _session_state(
     )
 
 
-def _handlers_for(*events: HookEvent) -> "AbstractContextManager[object]":
+def _handlers_for(*events: HookEvent) -> AbstractContextManager[object]:
     """Make every `HooksManager` report handlers for exactly `events`."""
     return patch.object(
         HooksManager,
@@ -1021,7 +1021,7 @@ class TestBuildStreamConfig:
         config_module._repo_metadata_cache.clear()
 
     @pytest.fixture(autouse=True)
-    def _hermetic_git(self) -> Generator[None, None, None]:
+    def _hermetic_git(self) -> Generator[None]:
         """Stub git/repo lookups so tests don't read the host repo's real `.git`.
 
         These tests assert on the identity/turn keys, not on git attribution, so
@@ -1397,7 +1397,7 @@ class TestFormatRubricEvent:
     """Tests for rubric custom-stream event formatting."""
 
     @pytest.fixture(autouse=True)
-    def _pin_unicode_glyphs(self) -> Generator[None, None, None]:
+    def _pin_unicode_glyphs(self) -> Generator[None]:
         """Pin Unicode glyphs so literal assertions hold on any terminal.
 
         `_format_rubric_event` resolves glyphs via `get_glyphs()`, which depends
@@ -1872,6 +1872,8 @@ class TestExecuteTaskTextualTurnMarkers:
         )
 
         assert agent.configs[0]["metadata"]["ls_skill_name"] == "code-review"
+        assert agent.stream_inputs[0]["pinned_skills"] == ["code-review"]
+        assert agent.stream_inputs[0]["messages"][0]["content"] == "review this"
 
 
 class TestExecuteTaskTextualClientLifecycle:
@@ -1899,6 +1901,7 @@ class TestExecuteTaskTextualClientLifecycle:
         ):
             await execute_task_textual(
                 user_input="secret prompt",
+                skill_name="code-review",
                 agent=agent,
                 assistant_id="assistant",
                 session_state=_session_state(),
@@ -1908,6 +1911,7 @@ class TestExecuteTaskTextualClientLifecycle:
         on_user_prompt.assert_awaited_once()
         stream_input = agent.stream_inputs[0]
         assert isinstance(stream_input, dict)
+        assert "pinned_skills" not in stream_input
         assert stream_input["messages"] == [
             {"role": "system", "content": "replacement context"}
         ]
@@ -3412,109 +3416,122 @@ class TestCacheReconciliation:
         self, boundary: str
     ) -> None:
         from contextlib import nullcontext
-        from datetime import UTC, datetime
+        from datetime import UTC, datetime, timedelta
 
         from deepagents_code.app import DeepAgentsApp
         from deepagents_code.tui.widgets.status import StatusBar
 
         app = DeepAgentsApp()
-        app._status_bar = StatusBar()
-        app._status_bar.set_cache_timing(datetime.now(UTC), ttl_seconds=300)
-        expiry = app._status_bar.cache_expires_at
-        start = {
-            "type": "model_attempt",
-            "phase": "start",
-            "call_id": "call-1",
-            "attempt": 0,
-            "cache_activity": {
-                "requested_at": datetime.now(UTC).isoformat(),
-                "model_spec": "anthropic:claude-sonnet-4-6",
-                "endpoint": "default",
-                "params": None,
-            },
-        }
-
-        class Agent(_FakeAgent):
-            completed = False
-
-            async def astream(self, *_: Any, **__: Any) -> AsyncIterator[tuple]:
-                if self.completed:
-                    return
-                self.completed = True
-                yield ((), "custom", start)
-                assert app._cache_reconciliation_pending
-                if boundary == "error":
-                    msg = "failed"
-                    raise RuntimeError(msg)
-                if boundary == "cancel":
-                    raise asyncio.CancelledError
-                if boundary == "complete":
-                    yield ((), "custom", {**start, "phase": "complete"})
-                elif boundary == "retry":
-                    yield (
-                        (),
-                        "custom",
-                        {
-                            "type": "model_retry",
-                            "call_id": "call-1",
-                            "failed_attempt": 0,
-                            "output_may_have_started": False,
-                            "attempt": 1,
-                            "max_retries": 1,
-                        },
-                    )
-                elif boundary == "approval":
-                    yield _hitl_interrupt_chunk(
-                        {
-                            "action_requests": [
-                                {"name": "execute", "args": {"command": "echo hi"}}
-                            ],
-                            "review_configs": [
-                                {
-                                    "action_name": "execute",
-                                    "allowed_decisions": ["approve"],
-                                }
-                            ],
-                        }
-                    )
-                else:
-                    yield ((), "updates", {"model": {"messages": []}})
-                assert not app._cache_reconciliation_pending
-                assert app._status_bar is not None
-                assert app._status_bar.cache_expires_at == expiry
-                if boundary == "retry":
-                    yield ((), "custom", {**start, "attempt": 1})
-                    yield ((), "custom", {**start, "phase": "complete"})
-                    assert app._cache_reconciliation_pending
-
-        async def approval(*_: Any, **__: Any) -> asyncio.Future:
-            await asyncio.sleep(0)
-            assert not app._cache_reconciliation_pending
-            future = asyncio.Future()
-            future.set_result({"type": "approve"})
-            return future
-
-        adapter = TextualUIAdapter(
-            mount_message=_mock_mount,
-            update_status=_noop_status,
-            request_approval=approval,
-            on_cache_reconciliation=app._on_cache_reconciliation,
-        )
-        with (
-            pytest.raises(RuntimeError, match="failed")
-            if boundary == "error"
-            else nullcontext()
-        ):
-            await execute_task_textual(
-                user_input="hi",
-                agent=Agent([]),
-                assistant_id="assistant",
-                session_state=_session_state(auto_approve=False),
-                adapter=adapter,
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._status_bar = StatusBar()
+            app._status_bar.set_cache_timing(
+                datetime.now(UTC) - timedelta(minutes=6), ttl_seconds=300
             )
-        assert not app._cache_reconciliation_pending
-        assert app._status_bar.cache_expires_at == expiry
-        assert app._last_cache_use is None
+            app._agent_running = True
+            app._cold_cache_suppressed_for_session = True
+            banner = app.query_one("#cache-expired-banner")
+            app._check_cache_expiry()
+            assert banner.display
+            expiry = app._status_bar.cache_expires_at
+            start = {
+                "type": "model_attempt",
+                "phase": "start",
+                "call_id": "call-1",
+                "attempt": 0,
+                "cache_activity": {
+                    "requested_at": datetime.now(UTC).isoformat(),
+                    "model_spec": "anthropic:claude-sonnet-4-6",
+                    "endpoint": "default",
+                    "params": None,
+                },
+            }
+
+            class Agent(_FakeAgent):
+                completed = False
+
+                async def astream(self, *_: Any, **__: Any) -> AsyncIterator[tuple]:
+                    if self.completed:
+                        return
+                    self.completed = True
+                    yield ((), "custom", start)
+                    assert app._cache_reconciliation_pending
+                    assert not banner.display
+                    if boundary == "error":
+                        msg = "failed"
+                        raise RuntimeError(msg)
+                    if boundary == "cancel":
+                        raise asyncio.CancelledError
+                    if boundary == "complete":
+                        yield ((), "custom", {**start, "phase": "complete"})
+                    elif boundary == "retry":
+                        yield (
+                            (),
+                            "custom",
+                            {
+                                "type": "model_retry",
+                                "call_id": "call-1",
+                                "failed_attempt": 0,
+                                "output_may_have_started": False,
+                                "attempt": 1,
+                                "max_retries": 1,
+                            },
+                        )
+                    elif boundary == "approval":
+                        yield _hitl_interrupt_chunk(
+                            {
+                                "action_requests": [
+                                    {"name": "execute", "args": {"command": "echo hi"}}
+                                ],
+                                "review_configs": [
+                                    {
+                                        "action_name": "execute",
+                                        "allowed_decisions": ["approve"],
+                                    }
+                                ],
+                            }
+                        )
+                    else:
+                        yield ((), "updates", {"model": {"messages": []}})
+                    assert not app._cache_reconciliation_pending
+                    assert banner.display
+                    assert app._status_bar is not None
+                    assert app._status_bar.cache_expires_at == expiry
+                    if boundary == "retry":
+                        yield ((), "custom", {**start, "attempt": 1})
+                        yield ((), "custom", {**start, "phase": "complete"})
+                        assert app._cache_reconciliation_pending
+
+            async def approval(*_: Any, **__: Any) -> asyncio.Future:
+                await asyncio.sleep(0)
+                assert not app._cache_reconciliation_pending
+                future = asyncio.Future()
+                future.set_result({"type": "approve"})
+                return future
+
+            adapter = TextualUIAdapter(
+                mount_message=_mock_mount,
+                update_status=_noop_status,
+                request_approval=approval,
+                on_cache_reconciliation=app._on_cache_reconciliation,
+            )
+            with (
+                pytest.raises(RuntimeError, match="failed")
+                if boundary == "error"
+                else nullcontext()
+            ):
+                await execute_task_textual(
+                    user_input="hi",
+                    agent=Agent([]),
+                    assistant_id="assistant",
+                    session_state=_session_state(auto_approve=False),
+                    adapter=adapter,
+                )
+            assert not app._cache_reconciliation_pending
+            assert app._status_bar.cache_expires_at == expiry
+            assert app._last_cache_use is None
+
+            assert banner.display
 
 
 class TestExecuteTaskTextualUserVisibleOutputStarted:
@@ -6087,7 +6104,7 @@ class _MutatingItemsDict(dict):  # noqa: FURB189  # must subclass dict to overri
     need to override the C-level iteration that triggers the error.
     """
 
-    def items(self) -> Generator[tuple[str, Any], None, None]:  # ty: ignore
+    def items(self) -> Generator[tuple[str, Any]]:  # ty: ignore
         """Yield items while mutating the dict mid-iteration."""
         it = iter(dict.items(self))
         first = next(it)
@@ -6106,7 +6123,7 @@ class _MutatingValuesDict(dict):  # noqa: FURB189  # must subclass dict to overr
     need to override the C-level iteration that triggers the error.
     """
 
-    def values(self) -> Generator[Any, None, None]:  # ty: ignore
+    def values(self) -> Generator[Any]:  # ty: ignore
         """Yield values while mutating the dict mid-iteration."""
         it = iter(dict.values(self))
         first = next(it)
@@ -8876,3 +8893,90 @@ def _retry_lifecycle_session_state(tmp_path: Path, thread_id: str) -> tuple[Any,
     hooks._runtime = runtime
     session_state.hooks = hooks
     return session_state, runtime
+
+
+class TestServerSkillPinning:
+    """The adapter answers server skill trust requests and renders pins."""
+
+    @staticmethod
+    async def _run(
+        agent: _SequencedAgent,
+        *,
+        request_skill_trust: Callable[[str, str], Awaitable[bool]] | None = None,
+        on_skill_pinned: Callable[[str, str, str], None] | None = None,
+    ) -> None:
+        async def mount_message(_widget: object) -> bool:
+            await asyncio.sleep(0)
+            return True
+
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=AsyncMock(),
+            request_skill_trust=request_skill_trust,
+            on_skill_pinned=on_skill_pinned,
+        )
+        with (
+            patch(
+                "deepagents_code.tui.textual_adapter.dispatch_hook",
+                new_callable=AsyncMock,
+            ),
+            patch("deepagents_code.tui.textual_adapter.dispatch_hook_fire_and_forget"),
+        ):
+            await execute_task_textual(
+                user_input="hello",
+                agent=agent,
+                assistant_id="assistant",
+                session_state=_session_state(auto_approve=False),
+                adapter=adapter,
+            )
+
+    @pytest.mark.parametrize("approved", [True, False])
+    async def test_trust_request_resumes_with_the_answer(self, approved: bool) -> None:
+        request = {"type": "skill_trust", "skill": "review", "directory": "/outside"}
+        interrupt = SimpleNamespace(id="trust-1", value=request)
+        agent = _SequencedAgent(
+            streams_by_call=[[((), "updates", {"__interrupt__": [interrupt]})], []]
+        )
+        asked: list[tuple[str, str]] = []
+
+        async def request_skill_trust(skill: str, directory: str) -> bool:
+            await asyncio.sleep(0)
+            asked.append((skill, directory))
+            return approved
+
+        await self._run(agent, request_skill_trust=request_skill_trust)
+
+        assert asked == [("review", "/outside")]
+        resume = agent.stream_inputs[1]
+        assert isinstance(resume, Command)
+        assert resume.resume == {"trust-1": {"approved": approved}}
+
+    async def test_malformed_trust_request_is_denied_without_asking(self) -> None:
+        interrupt = SimpleNamespace(id="trust-1", value={"type": "skill_trust"})
+        agent = _SequencedAgent(
+            streams_by_call=[[((), "updates", {"__interrupt__": [interrupt]})], []]
+        )
+        ask = AsyncMock(return_value=True)
+
+        await self._run(agent, request_skill_trust=ask)
+
+        ask.assert_not_awaited()
+        resume = agent.stream_inputs[1]
+        assert isinstance(resume, Command)
+        assert resume.resume == {"trust-1": {"approved": False}}
+
+    async def test_pinned_message_reports_the_skill(self) -> None:
+        pinned = HumanMessage(
+            '<skill name="review" path="/s/SKILL.md">\nDo it.\n</skill>',
+            additional_kwargs={
+                "lc_source": "pinned_skill",
+                "skill": {"name": "review", "description": "Review code"},
+            },
+        )
+        agent = _SequencedAgent(streams_by_call=[[((), "messages", (pinned, {}))]])
+        seen: list[tuple[str, str, str]] = []
+
+        await self._run(agent, on_skill_pinned=lambda *parts: seen.append(parts))
+
+        assert seen == [("review", "Review code", "Do it.")]

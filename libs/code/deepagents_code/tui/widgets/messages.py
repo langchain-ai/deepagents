@@ -1342,6 +1342,33 @@ class SkillMessage(Vertical):
             self._md_widget.update(body)
         self._md_rendered = True
 
+    def set_instructions(self, description: str, body: str) -> None:
+        """Show instructions that arrive after the row mounts.
+
+        The agent server reads the skill, so a live invocation learns its
+        description and body only when the pinned message streams back.
+
+        Args:
+            description: Short description of the skill.
+            body: `SKILL.md` body.
+        """
+        self._description = description
+        self._body = body
+        self._stripped_body = _strip_frontmatter(body)
+        if not self.is_mounted:
+            # `compose` and `on_mount` render the updated fields.
+            return
+        if description:
+            self.mount(
+                _SkillToggle(
+                    Content.styled(description, "dim"),
+                    classes="skill-description",
+                ),
+                after=self.query_one(".skill-header"),
+            )
+        if stripped := self._stripped_body.strip():
+            self._prepare_body(stripped)
+
     def toggle_body(self) -> None:
         """Toggle between preview and full body display."""
         if not self._stripped_body.strip():
@@ -1468,7 +1495,7 @@ class AssistantMessage(_StreamedTextParts, Vertical):
 
     /* Markdown blocks carry a bottom margin for inter-block spacing; drop it
        on the final block so the message has no trailing blank row. */
-    AssistantMessage Markdown > *:last-child {
+    AssistantMessage Markdown > MarkdownBlock:last-child {
         margin-bottom: 0;
     }
     """
@@ -3108,12 +3135,12 @@ class ToolCallMessage(Vertical):
         if list_match:
             try:
                 return ast.literal_eval("[" + list_match.group(1) + "]")
-            except (ValueError, SyntaxError):
+            except ValueError, SyntaxError:
                 return None
         try:
             items = ast.literal_eval(output)
             return items if isinstance(items, list) else None
-        except (ValueError, SyntaxError):
+        except ValueError, SyntaxError:
             return None
 
     def _build_todo_stats(self, items: list) -> Content:
@@ -3279,7 +3306,7 @@ class ToolCallMessage(Vertical):
                 return FormattedOutput(
                     content=Content("\n").join(lines), truncation=truncation
                 )
-        except (ValueError, SyntaxError):
+        except ValueError, SyntaxError:
             pass
 
         # Fallback: plain text
@@ -3518,7 +3545,7 @@ class ToolCallMessage(Vertical):
         # bug in `_format_search_lines` can't silently reroute to the fallback.
         try:
             items = ast.literal_eval(output.strip())
-        except (ValueError, SyntaxError):
+        except ValueError, SyntaxError:
             items = None
 
         if isinstance(items, list):
@@ -3780,7 +3807,7 @@ class ToolCallMessage(Vertical):
             if output.strip().startswith("{"):
                 return json.loads(output)
             return ast.literal_eval(output)
-        except (ValueError, SyntaxError, json.JSONDecodeError):
+        except ValueError, SyntaxError, json.JSONDecodeError:
             return None
 
     def _format_web_dict(self, data: dict, *, is_preview: bool) -> FormattedOutput:

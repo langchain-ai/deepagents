@@ -1160,6 +1160,7 @@ def load_async_subagents(config_path: Path | None = None) -> list[AsyncSubAgent]
     description = "Research agent"
     url = "https://my-deployment.langsmith.dev"
     graph_id = "agent"
+    webhook = "https://example.com/webhooks/subagent-finished"
     ```
 
     Args:
@@ -1225,6 +1226,8 @@ def load_async_subagents(config_path: Path | None = None) -> list[AsyncSubAgent]
         }
         if "url" in spec and isinstance(spec["url"], str):
             agent["url"] = spec["url"]
+        if "webhook" in spec and isinstance(spec["webhook"], str):
+            agent["webhook"] = spec["webhook"]
         if "headers" in spec and isinstance(spec["headers"], dict):
             agent["headers"] = spec["headers"]
         agents.append(agent)
@@ -3101,6 +3104,7 @@ def create_cli_agent(
         skills_middleware = PluginSkillsMiddleware(
             backend=FilesystemBackend(virtual_mode=False),
             sources=sources,
+            path_base=effective_cwd,
         )
         agent_middleware.append(skills_middleware)
         instruction_middleware.append(skills_middleware)
@@ -3591,6 +3595,17 @@ def create_cli_agent(
         *custom_subagents,
         *(async_subagents or []),
     ]
+    from deepagents_code.goal_tools import ForkGoalToolsMiddleware
+
+    for spec in custom_subagents:
+        if spec.get("mode") == "fork" and "runnable" not in spec:
+            spec["middleware"] = cast(
+                "list[AgentMiddleware]",
+                [
+                    *spec.get("middleware", []),
+                    ForkGoalToolsMiddleware(),
+                ],
+            )
     _ensure_glm_5p2_profile_registered()
     from deepagents_code.config_manifest import resolve_recursion_limit
 

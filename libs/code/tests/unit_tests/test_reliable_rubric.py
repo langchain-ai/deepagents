@@ -1,7 +1,7 @@
 """Tests for CLI-specific rubric grader behavior."""
 
 import json
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Iterator
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 from unittest.mock import AsyncMock, MagicMock
@@ -12,12 +12,10 @@ from deepagents.graph import create_deep_agent
 from deepagents.middleware.rubric import GraderResponse, RubricState
 from langchain.agents.middleware import HumanInTheLoopMiddleware
 from langchain.agents.middleware.human_in_the_loop import ApproveDecision
-from langchain_core.callbacks import CallbackManagerForLLMRun
 from langchain_core.language_models import BaseChatModel, LanguageModelInput
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, HumanMessage
 from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
-from langchain_core.runnables import Runnable, RunnableConfig
 from langchain_core.tools import BaseTool, tool
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.errors import GraphInterrupt
@@ -38,6 +36,10 @@ from deepagents_code.reliable_rubric import (
 from deepagents_code.resume_state import INHERIT_RUBRIC_MODEL
 
 if TYPE_CHECKING:
+    from collections.abc import Callable, Sequence
+
+    from langchain_core.callbacks import CallbackManagerForLLMRun
+    from langchain_core.runnables import Runnable, RunnableConfig
     from langgraph.runtime import Runtime
 
 

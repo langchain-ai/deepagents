@@ -45,7 +45,7 @@ HARBOR_AGENT_IMPL ?= dcode
 HARBOR_AGENT_GRAPH = $(HARBOR_AGENT_IMPL)
 HARBOR_LANGGRAPH_PROJECT = deepagents_harbor/langgraph_project
 HARBOR_LOCAL_DEPS_DIR = $(HARBOR_LANGGRAPH_PROJECT)/.local_deps
-HARBOR_AGENT_ARGS = --agent langgraph --agent-kwarg project_path=$(HARBOR_LANGGRAPH_PROJECT) --agent-kwarg config=langgraph.json --agent-kwarg graph=$(HARBOR_AGENT_GRAPH)
+HARBOR_AGENT_ARGS = --agent langgraph --agent-kwarg python_version=3.14 --agent-kwarg project_path=$(HARBOR_LANGGRAPH_PROJECT) --agent-kwarg config=langgraph.json --agent-kwarg graph=$(HARBOR_AGENT_GRAPH)
 HARBOR_AGENT_ENV_ARGS ?= --agent-env 'LANGSMITH_API_KEY=$${LANGSMITH_API_KEY}' --agent-env 'LANGSMITH_TRACING=true' --agent-env 'ANTHROPIC_API_KEY=$${ANTHROPIC_API_KEY}' --agent-env 'FIREWORKS_API_KEY=$${FIREWORKS_API_KEY}' --agent-env 'UV_PRERELEASE=allow'
 HARBOR_HELLO_WORLD_JOBS_DIR ?= harbor-jobs/hello-world
 HARBOR_TERMINAL_BENCH_JOBS_DIR ?= harbor-jobs/terminal-bench

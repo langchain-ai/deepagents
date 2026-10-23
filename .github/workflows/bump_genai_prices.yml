@@ -92,7 +92,7 @@ jobs:
       - name: Set up Python and uv
         uses: "./.github/actions/uv_setup"
         with:
-          python-version: "3.12"
+          python-version: "3.14"
           enable-cache: "false"
 
       - name: Re-lock genai-prices and resolve the version change
@@ -135,7 +135,7 @@ jobs:
           # in `libs/code/pyproject.toml`, yanks and pre-releases are all
           # honoured by uv itself, and a version we could never adopt simply
           # reads as "not stale".
-          uv lock --directory libs/code --python 3.12 --upgrade-package genai-prices
+          uv lock --directory libs/code --python 3.14 --upgrade-package genai-prices
 
           latest=$(read_pin)
 
@@ -175,7 +175,7 @@ jobs:
           # out-of-sync lockfile. A plain `uv lock` re-resolves only what the
           # manifest change requires: the pin stays at $latest (already the
           # newest the range permits) and only the specifier line moves.
-          uv lock --directory libs/code --python 3.12
+          python .github/scripts/checks/refresh_lockfiles.py libs/code/pyproject.toml > "$RUNNER_TEMP/price-bump-lockfiles"
 
           # Staleness is the pin moving or the floor lagging the pin, not
           # files changing: `uv lock` can touch unrelated lines (a lock
@@ -275,8 +275,8 @@ jobs:
             exit 1
           fi
 
-          lockfile="libs/code/uv.lock"
           manifest="libs/code/pyproject.toml"
+          mapfile -t lockfiles < "$RUNNER_TEMP/price-bump-lockfiles"
           remote="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
 
           # Query the REST endpoint directly instead of `gh pr list`, whose
@@ -322,11 +322,11 @@ jobs:
             # `git diff --quiet` exits 1 for "differs" but >1 for a real
             # error, so capture the code instead of branching on truthiness.
             set +e
-            git diff --quiet "refs/remotes/bump/${BRANCH}" -- "$lockfile" "$manifest"
+            git diff --quiet "refs/remotes/bump/${BRANCH}" -- "${lockfiles[@]}" "$manifest"
             diff_rc=$?
             set -e
             if [ "$diff_rc" -gt 1 ]; then
-              echo "::error::git diff failed comparing $lockfile and $manifest against $BRANCH (exit=$diff_rc)"
+              echo "::error::git diff failed comparing affected lockfiles and $manifest against $BRANCH (exit=$diff_rc)"
               exit 1
             fi
             if [ "$diff_rc" -eq 0 ]; then
@@ -347,7 +347,7 @@ jobs:
             git config --local user.name "github-actions[bot]"
             git config --local user.email "41898282+github-actions[bot]@users.noreply.github.com"
             git checkout -b "$BRANCH"
-            git add "$lockfile" "$manifest"
+            git add "${lockfiles[@]}" "$manifest"
             git commit -m "chore(deps): bump "'`genai-prices`'" in "'`deepagents-code`'" to $LATEST"
 
             # The bump branch is rebuilt on top of `main` every run, so there

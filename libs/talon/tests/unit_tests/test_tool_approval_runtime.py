@@ -62,6 +62,7 @@ async def outputs(runtime: DeepAgentRuntime, chat: str, name: str) -> list[dict[
 async def test_send_message_requires_approval_before_delivery(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, decision: str
 ) -> None:
+    monkeypatch.setenv("DEEPAGENTS_TALON_VERBOSITY", "3")
     model = ToolModel(responses=[call("send_message", text="<@U123>"), AIMessage(content="done")])
     runtime = make_runtime(tmp_path, monkeypatch, model)
     sent: list[str] = []

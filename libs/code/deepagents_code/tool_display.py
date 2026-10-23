@@ -7,13 +7,15 @@ path). Heavy SDK dependencies (e.g., `backends`) are deferred to function bodies
 """
 
 import json
-from collections.abc import Callable
 from contextlib import suppress
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from deepagents_code.config import MAX_ARG_LENGTH, get_glyphs
 from deepagents_code.unicode_security import strip_dangerous_unicode
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 _HIDDEN_CHAR_MARKER = " [hidden chars removed]"
 """Marker appended to display values that had dangerous Unicode stripped, so
@@ -360,7 +362,7 @@ def _format_content_block(block: dict) -> str:
     try:
         # Preserve non-ASCII characters (CJK, emoji, etc.) instead of \uXXXX escapes
         return json.dumps(block, ensure_ascii=False)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return str(block)
 
 
@@ -383,7 +385,7 @@ def format_tool_message_content(content: Any) -> str:  # noqa: ANN401  # Content
                 try:
                     # Preserve non-ASCII characters (CJK, emoji, etc.)
                     parts.append(json.dumps(item, ensure_ascii=False))
-                except (TypeError, ValueError):
+                except TypeError, ValueError:
                     parts.append(str(item))
         return "\n".join(parts)
     return str(content)

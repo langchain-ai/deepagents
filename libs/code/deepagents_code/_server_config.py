@@ -563,6 +563,12 @@ class ServerConfig:
 
     def to_workspace_payload(self) -> dict[str, Any]:
         """Return non-secret resource policy for a durable workspace binding."""
+        from deepagents_code.configuration.interpreter import InterpreterConfig
+
+        interpreter = InterpreterConfig.from_resolver(
+            ptc=self.interpreter_ptc,
+            ptc_acknowledge_unsafe=self.interpreter_ptc_acknowledge_unsafe,
+        )
         return {
             "assistant_id": self.assistant_id,
             "auto_approve": self.auto_approve,
@@ -574,10 +580,8 @@ class ServerConfig:
             "enable_memory": self.enable_memory,
             "enable_skills": self.enable_skills,
             "enable_interpreter": self.enable_interpreter,
-            "interpreter_ptc": self.interpreter_ptc,
-            "interpreter_ptc_acknowledge_unsafe": (
-                self.interpreter_ptc_acknowledge_unsafe
-            ),
+            "interpreter_ptc": interpreter.ptc,
+            "interpreter_ptc_acknowledge_unsafe": interpreter.ptc_acknowledge_unsafe,
             "allow_fs_tools": self.allow_fs_tools,
             "recursion_limit": self.recursion_limit,
             "sandbox_type": self.sandbox_type,

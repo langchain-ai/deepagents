@@ -451,7 +451,7 @@ class WorkspaceTrust:
         """
         try:
             root = project_root_for(cwd)
-        except (OSError, ValueError):
+        except OSError, ValueError:
             logger.warning(
                 "Could not resolve workspace root for session hook trust",
                 exc_info=True,
@@ -475,7 +475,7 @@ class WorkspaceTrust:
         """
         try:
             key = _project_key(project_root_for(cwd))
-        except (OSError, ValueError):
+        except OSError, ValueError:
             logger.warning(
                 "Could not resolve workspace root while revoking session hook trust",
                 exc_info=True,
@@ -506,7 +506,7 @@ class WorkspaceTrust:
         """
         try:
             root = project_root_for(cwd)
-        except (OSError, ValueError):
+        except OSError, ValueError:
             logger.warning(
                 "Could not resolve workspace root; treating project hooks as untrusted",
                 exc_info=True,

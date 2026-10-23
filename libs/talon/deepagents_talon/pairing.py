@@ -219,7 +219,7 @@ class PairingStore:
         """
         try:
             channels = self._cached_read()
-        except (OSError, PairingStoreError):
+        except OSError, PairingStoreError:
             logger.warning("Cannot read sender pairing store %s", self._path, exc_info=True)
             return None
         return channels.get(provider, _EMPTY).approved.get(sender_id)
@@ -446,7 +446,7 @@ class SenderPairing:
                 message.conversation_id,
                 now=self.now(),
             )
-        except (OSError, TimeoutError, PairingStoreError):
+        except OSError, TimeoutError, PairingStoreError:
             logger.warning("Could not record a sender pairing request", exc_info=True)
             return
         if code is None:
@@ -497,7 +497,7 @@ def run_pair_command(pairing: SenderPairing, text: str) -> PairCommandResult:
             return approve_code(pairing, argument)
         if action == "revoke" and argument is not None:
             return revoke_sender(pairing, argument)
-    except (OSError, TimeoutError, PairingStoreError):
+    except OSError, TimeoutError, PairingStoreError:
         logger.warning("Sender pairing command failed", exc_info=True)
         return PairCommandResult("Could not update sender pairing. Check Talon logs.")
     return PairCommandResult(PAIR_USAGE)

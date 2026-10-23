@@ -47,6 +47,29 @@ test('classifies with the small open model and filters output to the allowlist',
   assert.deepEqual(JSON.parse(taxonomy), allowed.map(name => ({ name, description: descriptions[name] })));
 });
 
+for (const provider of ['groq', 'semif']) {
+  test(`${provider} gives the classifier removal-aware guidance without changing issue classification`, async () => {
+    for (const reapplication of [false, true]) {
+      await classifyTopicLabels('latestPush contains new behavior', ['topic:mcp'], {
+        provider, reapplication, apiKey: 'secret', descriptions,
+        fetchImpl: async (_url, options) => {
+          const body = JSON.parse(options.body);
+          const guidance = provider === 'groq'
+            ? body.messages[0].content : body.questions['topic:mcp'].instructions;
+          assert.equal(guidance.includes('strong negative evidence, not a permanent veto'), reapplication);
+          if (reapplication) {
+            assert.ok(guidance.includes('latestPush diff'));
+            assert.ok(guidance.includes('Python syntax migrations'));
+          }
+          return provider === 'groq' ? response('{"labels":[]}') : {
+            ok: true, json: async () => ({ answers: { 'topic:mcp': { type: 'noul', noul: 0.1 } } }),
+          };
+        },
+      });
+    }
+  });
+}
+
 test('keeps at most three distinct allowed labels in relevance order', async () => {
   const topics = ['topic:prompts', 'topic:memory', 'topic:models', 'topic:middleware'];
   const labels = await classifyTopicLabels('text', topics, {

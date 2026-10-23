@@ -2,6 +2,79 @@
 
 # Deep Agents Code Changelog
 
+## [0.2.0](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.88...deepagents-code==0.2.0) (2026-10-22)
+
+### ⚠ BREAKING CHANGES
+
+- `deepagents-code` now requires Python 3.14 (`>=3.14,<3.15`). If you have auto-upgrade enabled, this should be handled for you automatically. Otherwise, re-run the dcode installer or recreate your environment with Python 3.14.
+
+### Bug Fixes
+
+- Decode Git output as UTF-8.
+
+## [0.1.88](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.87...deepagents-code==0.1.88) (2026-10-22)
+
+### Bug Fixes
+
+- Fixed async subagents to pass through `webhook` configuration.
+- Fixed bridge compatibility with Python 3.14.
+- Silenced no-op automatic cache offloads.
+
+## [0.1.87](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.86...deepagents-code==0.1.87) (2026-10-20)
+
+### Features
+
+- Resume threads in non-interactive mode ([#7011](https://github.com/langchain-ai/deepagents/pull/7011)).
+- Compact large idle sessions before the prompt cache expires ([#6956](https://github.com/langchain-ai/deepagents/pull/6956)) and show the prompt-cache expiration time ([#7005](https://github.com/langchain-ai/deepagents/pull/7005)).
+- Support custom Slack OAuth app identity ([#7061](https://github.com/langchain-ai/deepagents/pull/7061)).
+- Load older threads from the thread switcher ([#7051](https://github.com/langchain-ai/deepagents/pull/7051)).
+
+### Bug Fixes
+
+- Stop the local server when its owner dies ([#7038](https://github.com/langchain-ai/deepagents/pull/7038)).
+- Support non-ASCII file names in `@` mentions ([#7023](https://github.com/langchain-ai/deepagents/pull/7023)).
+- Correct misleading `/reload` change summaries ([#7063](https://github.com/langchain-ai/deepagents/pull/7063)).
+
+## [0.1.86](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.85...deepagents-code==0.1.86) (2026-10-16)
+
+### Features
+
+- Add NVIDIA OpenShell as a sandbox provider ([#6999](https://github.com/langchain-ai/deepagents/pull/6999)).
+- Show a banner when a prompt cache expires ([#6957](https://github.com/langchain-ai/deepagents/pull/6957)).
+
+### Bug Fixes
+
+- Add `/resume` as an alias and improve how alias matches are ranked ([#6988](https://github.com/langchain-ai/deepagents/pull/6988)).
+- Report workspace refusals accurately when resuming a thread ([#6992](https://github.com/langchain-ai/deepagents/pull/6992)).
+- Replace repeated thread-resume errors ([#6990](https://github.com/langchain-ai/deepagents/pull/6990)).
+- Replace the chat input when recalling a prompt ([#6994](https://github.com/langchain-ai/deepagents/pull/6994)).
+- Show an expired prompt cache in the footer ([#6970](https://github.com/langchain-ai/deepagents/pull/6970)).
+- Provide actionable errors when Groq tool limits are reached ([#6996](https://github.com/langchain-ai/deepagents/pull/6996)).
+- Compare effective interpreter permissions ([#6993](https://github.com/langchain-ai/deepagents/pull/6993)).
+
+## [0.1.85](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.84...deepagents-code==0.1.85) (2026-10-14)
+
+### Bug Fixes
+
+- Suppress ownership warnings for root installs.
+
+### Performance Improvements
+
+- Avoid restyling transcript history when inserting messages.
+
+## [0.1.84](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.83...deepagents-code==0.1.84) (2026-10-12)
+
+### Features
+
+- Resolve invoked skills on the server and check whether they are trusted ([#6837](https://github.com/langchain-ai/deepagents/pull/6837)).
+- Show provider-visible reasoning by default in the TUI ([#6850](https://github.com/langchain-ai/deepagents/pull/6850)).
+- Surface Daytona sandbox snapshots ([#6854](https://github.com/langchain-ai/deepagents/pull/6854)).
+
+### Bug Fixes
+
+- Refresh the agent skill catalog when `/reload` is run ([#6843](https://github.com/langchain-ai/deepagents/pull/6843)).
+- Keep fork goals visible without grading them ([#6893](https://github.com/langchain-ai/deepagents/pull/6893)).
+
 ## [0.1.83](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.82...deepagents-code==0.1.83) (2026-10-07)
 
 ### Features

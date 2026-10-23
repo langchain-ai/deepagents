@@ -528,7 +528,7 @@ class TestPathsBindingModulesDrift:
         for source_file in sorted(package_root.rglob("*.py")):
             try:
                 tree = ast.parse(source_file.read_text(encoding="utf-8"))
-            except (OSError, SyntaxError):  # pragma: no cover - defensive
+            except OSError, SyntaxError:  # pragma: no cover - defensive
                 continue
             for node in cls._module_level_imports(tree):
                 if node.module != prefix:

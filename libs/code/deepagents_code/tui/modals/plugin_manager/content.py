@@ -1,12 +1,17 @@
 """Pure plugin manager content builders."""
 
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from textual.content import Content
 from textual.widgets.option_list import Option
 
 from deepagents_code.config import get_glyphs
-from deepagents_code.tui.modals.plugin_manager.models import _MarketplaceRow, _PluginRow
+
+if TYPE_CHECKING:
+    from deepagents_code.tui.modals.plugin_manager.models import (
+        _MarketplaceRow,
+        _PluginRow,
+    )
 
 
 def _plugin_options(

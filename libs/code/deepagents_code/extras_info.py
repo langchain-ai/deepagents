@@ -52,7 +52,7 @@ def _sdk_distribution_name(dist: Distribution) -> str:
     """
     try:
         name = dist.name
-    except (AttributeError, KeyError, OSError, TypeError, ValueError):
+    except AttributeError, KeyError, OSError, TypeError, ValueError:
         # `KeyError` is future-proofing: on a metadata-less `*.dist-info`,
         # `Distribution.name` returns `None` today but is documented to raise
         # `KeyError` in a later Python (`DeprecationWarning` as of 3.14).
@@ -73,7 +73,7 @@ def _read_sdk_direct_url(dist: Distribution) -> dict[str, object] | None:
     """
     try:
         raw = dist.read_text("direct_url.json")
-    except (OSError, TypeError, ValueError):
+    except OSError, TypeError, ValueError:
         # `read_text` already suppresses the ordinary absent-file cases, so
         # reaching here means the path exists but is unusable (`OSError`) or holds
         # non-UTF-8 bytes (`UnicodeDecodeError`, a `ValueError`). `TypeError` is
@@ -87,7 +87,7 @@ def _read_sdk_direct_url(dist: Distribution) -> dict[str, object] | None:
         return None
     try:
         data = json.loads(raw)
-    except (RecursionError, ValueError):
+    except RecursionError, ValueError:
         # `ValueError` covers `json.JSONDecodeError`; pathologically nested
         # input raises `RecursionError`, which is not a `ValueError`.
         logger.debug("Malformed direct_url.json", exc_info=True)
@@ -149,7 +149,7 @@ def _running_sdk_package_root() -> Path | None:
     """
     try:
         spec = importlib.util.find_spec("deepagents")
-    except (ImportError, ValueError):
+    except ImportError, ValueError:
         # `ValueError` covers `sys.modules["deepagents"]` being `None`, which
         # `find_spec` rejects instead of searching.
         logger.debug("Could not search for the deepagents package", exc_info=True)
@@ -158,7 +158,7 @@ def _running_sdk_package_root() -> Path | None:
         return None
     try:
         return Path(spec.origin).resolve().parent
-    except (OSError, ValueError):
+    except OSError, ValueError:
         logger.debug("Could not locate the deepagents package", exc_info=True)
         return None
 
@@ -214,7 +214,7 @@ def _editable_sdk_source_root() -> Path | None:
             source_root = _sdk_editable_record_root(dist)
             if source_root is not None and _is_under(source_root, package_root):
                 return source_root
-    except (OSError, TypeError, ValueError, RecursionError):
+    except OSError, TypeError, ValueError, RecursionError:
         # Backstop for `distributions()` itself: it yields lazily, so a broken
         # `sys.path` entry surfaces mid-iteration and cannot be contained
         # per-distribution the way the two helpers above are. `RecursionError`
@@ -238,7 +238,7 @@ def _sdk_version_from_source(root: Path) -> str | None:
     try:
         source = version_file.read_text(encoding="utf-8")
         module = ast.parse(source, filename=str(version_file))
-    except (OSError, SyntaxError, ValueError):
+    except OSError, SyntaxError, ValueError:
         # Reached only for editable installs, where the package is known to be
         # present — so an unreadable or malformed version file is a broken local
         # checkout, not an absent dependency. Warn (not debug): the source
@@ -259,7 +259,7 @@ def _sdk_version_from_source(root: Path) -> str | None:
             continue
         try:
             value = ast.literal_eval(node.value)
-        except (ValueError, TypeError):
+        except ValueError, TypeError:
             # A non-literal `__version__` RHS masks the source version just like
             # an unreadable file, so warn for parity with the read/parse failure
             # above rather than falling back to stale metadata silently.
@@ -286,7 +286,7 @@ def _contract_home(path: Path) -> str:
     text = str(path)
     try:
         home = str(Path.home())
-    except (OSError, RuntimeError):
+    except OSError, RuntimeError:
         return text
     if text == home:
         return "~"
@@ -637,7 +637,7 @@ def _sdk_requirement_from_cli_source(source_path: str | None) -> Requirement | N
             isinstance(entry, str) for entry in dependencies
         ):
             return None
-    except (OSError, TypeError, tomllib.TOMLDecodeError):
+    except OSError, TypeError, tomllib.TOMLDecodeError:
         logger.warning(
             "Could not read deepagents requirement from editable dcode source",
             exc_info=True,
@@ -710,7 +710,7 @@ def _resolve_source_path(path: str | None) -> Path | None:
             normalized = f"{normalized[0].upper()}{normalized[1:]}"
             normalized = normalized.replace("\\", "/")
         return Path(normalized).expanduser().resolve(strict=False)
-    except (OSError, RuntimeError, ValueError):
+    except OSError, RuntimeError, ValueError:
         logger.debug("Could not resolve editable source path %r", path, exc_info=True)
         return None
 
@@ -1027,7 +1027,7 @@ Keep in sync with `[project.optional-dependencies]` in `pyproject.toml`.
 """
 
 SANDBOX_EXTRAS: frozenset[str] = frozenset(
-    {"agentcore", "daytona", "modal", "runloop", "vercel"}
+    {"agentcore", "daytona", "modal", "openshell", "runloop", "vercel"}
 )
 """Optional extras that add sandbox integrations."""
 
@@ -1455,7 +1455,7 @@ def verify_interpreter_deps() -> None:
     """
     try:
         found = importlib.util.find_spec("langchain_quickjs") is not None
-    except (ImportError, ValueError):
+    except ImportError, ValueError:
         # A broken-but-installed `langchain_quickjs` (e.g., parent package
         # raises during import) would otherwise masquerade as "not installed";
         # capture the underlying cause for debug logs.

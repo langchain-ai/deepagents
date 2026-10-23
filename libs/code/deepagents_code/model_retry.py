@@ -30,6 +30,7 @@ from contextlib import contextmanager
 from copy import copy
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
+from http import HTTPStatus
 from typing import TYPE_CHECKING, Any
 
 from langchain.agents.middleware.types import AgentMiddleware, TracePolicy, omit_payload
@@ -299,7 +300,7 @@ def _retry_after_seconds(exc: Exception) -> float | None:
         raw = headers.get("retry-after")
         if raw is None:
             raw = headers.get("Retry-After")
-    except (AttributeError, TypeError):
+    except AttributeError, TypeError:
         logger.debug("Retry-After lookup failed on %s headers", type(exc).__name__)
         return None
     if raw is None:
@@ -316,7 +317,7 @@ def _retry_after_seconds(exc: Exception) -> float | None:
     except ValueError:
         try:
             retry_at = parsedate_to_datetime(raw)
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             logger.debug("Ignoring unparseable Retry-After value %r", raw)
             return None
         if retry_at.tzinfo is None:
@@ -574,6 +575,39 @@ def _log_give_up(exc: Exception, attempts: int, max_retries: int) -> None:
         )
 
 
+class GroqToolLimitError(ValueError):
+    """A fixed, safe error message preserved by LangGraph's error serializer."""
+
+    def __init__(self) -> None:
+        msg = (
+            "Groq supports at most 128 tools per request. Disable some MCP tools "
+            "or switch to a model/provider with a higher tool limit."
+        )
+        super().__init__(msg)
+
+
+def _is_groq_tool_limit_error(exc: Exception) -> bool:
+    """Return whether this is Groq's known request-level tool-count rejection."""
+    if (
+        not any(
+            cls.__module__.partition(".")[0] == "groq"
+            and cls.__name__ == "BadRequestError"
+            for cls in type(exc).__mro__
+        )
+        or _extract_status_code(exc) != HTTPStatus.BAD_REQUEST
+    ):
+        return False
+    body = getattr(exc, "body", None)
+    if not isinstance(body, dict):
+        return False
+    error = body.get("error", body)
+    return (
+        isinstance(error, dict)
+        and error.get("type") == "invalid_request_error"
+        and error.get("message") == "'tools' : maximum number of items is 128"
+    )
+
+
 def _retry_call[ResultT](
     call: Callable[[], ResultT],
     *,
@@ -588,6 +622,7 @@ def _retry_call[ResultT](
 
     Raises:
         GraphBubbleUp: If the graph signals control flow.
+        GroqToolLimitError: If Groq rejects the request's tool count.
         RuntimeError: If the retry loop exits unexpectedly.
     """
     for attempt in range(max_retries + 1):
@@ -596,6 +631,8 @@ def _retry_call[ResultT](
         except GraphBubbleUp:
             raise
         except Exception as exc:  # classified by _is_retryable_model_error
+            if _is_groq_tool_limit_error(exc):
+                raise GroqToolLimitError from exc
             # Settle eligibility before consulting the guard. A guard that ran
             # first would blame the delay budget for an error that was never
             # going to be retried, and would skip the exhausted-budget log
@@ -632,6 +669,7 @@ async def _aretry_call[ResultT](
 
     Raises:
         GraphBubbleUp: If the graph signals control flow.
+        GroqToolLimitError: If Groq rejects the request's tool count.
         RuntimeError: If the retry loop exits unexpectedly.
     """
     import asyncio
@@ -642,6 +680,8 @@ async def _aretry_call[ResultT](
         except GraphBubbleUp:
             raise
         except Exception as exc:  # classified by _is_retryable_model_error
+            if _is_groq_tool_limit_error(exc):
+                raise GroqToolLimitError from exc
             # Settle eligibility before consulting the guard. A guard that ran
             # first would blame the delay budget for an error that was never
             # going to be retried, and would skip the exhausted-budget log

@@ -131,7 +131,7 @@ def _legacy_payload(legacy_event: str, payload: Mapping[str, object]) -> bytes:
 def _decode_argv(value: str) -> list[str] | None:
     try:
         decoded: object = json.loads(base64.urlsafe_b64decode(value))
-    except (BinasciiError, json.JSONDecodeError, UnicodeDecodeError, ValueError):
+    except BinasciiError, json.JSONDecodeError, UnicodeDecodeError, ValueError:
         return None
     if (
         not isinstance(decoded, list)
@@ -153,7 +153,7 @@ def _run_adapter(args: Sequence[str]) -> int:
         return 1
     try:
         payload: object = json.loads(sys.stdin.buffer.read())
-    except (json.JSONDecodeError, UnicodeDecodeError):
+    except json.JSONDecodeError, UnicodeDecodeError:
         return 1
     if not isinstance(payload, dict):
         return 1

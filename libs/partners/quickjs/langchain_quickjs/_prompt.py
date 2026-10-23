@@ -102,9 +102,11 @@ scope (see "Reuse what earlier evals left in scope" below).
 
 #### Fan out with bounded concurrency
 
-Dispatch independent work in parallel with `Promise.all`, but in explicit
-batches around 10 so you do not launch hundreds of subagents at once. The bridge
-enforces a hard per-REPL cap of 32 concurrent subagent calls.
+Dispatch independent work in parallel with `Promise.all`. Batches around 10 are
+a conservative recommendation, not a required limit; use larger batches when
+appropriate for the workload and its admission controls. The bridge enforces
+a per-REPL cap of {max_subagent_concurrency} concurrent subagent calls; excess
+calls wait for capacity.
 
 ```javascript
 const files = ["/src/a.ts", "/src/b.ts", "/src/c.ts"]; // found while exploring
@@ -319,9 +321,13 @@ def render_repl_system_prompt(
     )
 
 
-def render_subagent_system_prompt(*, tool_name: str = "eval") -> str:
+def render_subagent_system_prompt(
+    *, tool_name: str = "eval", max_subagent_concurrency: int = 32
+) -> str:
     """Render guidance for the top-level QuickJS `task` global."""
-    return _SUBAGENT_SYSTEM_PROMPT_TEMPLATE.replace("{tool_name}", tool_name)
+    return _SUBAGENT_SYSTEM_PROMPT_TEMPLATE.replace("{tool_name}", tool_name).replace(
+        "{max_subagent_concurrency}", str(max_subagent_concurrency)
+    )
 
 
 def render_eval_tool_code_doc(*, mode: Literal["thread", "turn", "call"]) -> str:

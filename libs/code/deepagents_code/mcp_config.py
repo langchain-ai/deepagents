@@ -1,7 +1,7 @@
 """Validation and environment-variable expansion for MCP server config.
 
 Resolves `${VAR}` and `${VAR:-default}` references in the supported
-configuration fields (`command`, `url`, `args`, `env`, `headers`) and
+configuration fields (`command`, `url`, `args`, `env`, `headers`, `oauth`) and
 validates their types. A `${VAR:-default}` reference falls back to
 `default` when `VAR` is unset *or* empty (POSIX `:-` semantics).
 """
@@ -11,6 +11,7 @@ from __future__ import annotations
 import copy
 import re
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlparse
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -132,7 +133,7 @@ def resolve_mcp_server_env(
 ) -> dict[str, Any]:
     """Resolve `${VAR}` references in one MCP server's supported fields.
 
-    Interpolates the `command`, `url`, `args`, `env`, and `headers`
+    Interpolates the `command`, `url`, `args`, `env`, `headers`, and `oauth`
     fields (see `_interpolate_env` for the reference syntax); every other
     field is copied through verbatim. The input is not mutated.
 
@@ -148,6 +149,7 @@ def resolve_mcp_server_env(
             scalar value, or `args`/`env`/`headers` with the wrong container
             type.
         RuntimeError: If a required environment variable is unset.
+        ValueError: If Slack app settings are invalid.
     """  # noqa: DOC502 - `RuntimeError` is raised by `_interpolate_env`
     resolved: dict[str, Any] = copy.deepcopy(dict(server_config))
     prefix = f"mcpServers.{server_name}"
@@ -166,7 +168,7 @@ def resolve_mcp_server_env(
             for index, value in enumerate(args)
         ]
 
-    for name in ("env", "headers"):
+    for name in ("env", "headers", "oauth"):
         if name not in resolved:
             continue
         values = resolved[name]
@@ -175,4 +177,43 @@ def resolve_mcp_server_env(
             raise TypeError(msg)
         resolved[name] = _resolve_mapping_values(values, field=f"{prefix}.{name}")
 
+    _validate_slack_oauth_config(server_name, resolved)
     return resolved
+
+
+def _validate_slack_oauth_config(
+    server_name: str, server_config: Mapping[str, object]
+) -> None:
+    """Reject invalid Slack app settings without exposing credential values.
+
+    Raises:
+        TypeError: If `oauth` is not a mapping.
+        ValueError: If the settings or server are unsupported.
+    """
+    if "oauth" not in server_config:
+        return
+    prefix = f"mcpServers.{server_name}.oauth"
+    oauth = server_config["oauth"]
+    if not isinstance(oauth, dict):
+        msg = f"{prefix} must be a dictionary"
+        raise TypeError(msg)
+    if oauth.keys() - {"client_id", "client_secret"} or "client_id" not in oauth:
+        msg = f"{prefix} requires client_id and supports only an optional client_secret"
+        raise ValueError(msg)
+    for name, value in oauth.items():
+        if (
+            not isinstance(value, str)
+            or not value.strip()
+            or re.search(r"[\x00-\x1f\x7f]", value)
+        ):
+            msg = (
+                f"{prefix}.{name} must be a non-empty string without control characters"
+            )
+            raise ValueError(msg)
+    url = server_config.get("url")
+    host = urlparse(url).hostname if isinstance(url, str) else None
+    if server_config.get("auth") != "oauth" or not (
+        host and (host == "slack.com" or host.endswith(".slack.com"))
+    ):
+        msg = f"{prefix} is supported only for Slack servers with auth: oauth"
+        raise ValueError(msg)

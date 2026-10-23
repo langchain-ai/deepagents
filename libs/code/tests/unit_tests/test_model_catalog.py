@@ -2,8 +2,7 @@
 
 import asyncio
 import threading
-from collections.abc import Iterator
-from pathlib import Path
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, Mock
 
 import pytest
@@ -22,6 +21,10 @@ from deepagents_code.tui.widgets.model_selector import (
     DefaultModelScope,
     ModelSelectorScreen,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+    from pathlib import Path
 
 
 @pytest.fixture
@@ -498,11 +501,13 @@ async def test_summary_default_scope_writes_only_summary_preference(
         app.push_screen(screen)
         await pilot.pause()
         await pilot.press("ctrl+s")
+        await app.workers.wait_for_complete()
         await pilot.pause()
         config = model_config.ModelConfig.load()
         assert config.default_model == "remote:main"
         assert config.summarization_default_model == "remote:resolved"
         await pilot.press("ctrl+s")
+        await app.workers.wait_for_complete()
         await pilot.pause()
         config = model_config.ModelConfig.load()
         assert config.summarization_default_model is None

@@ -433,7 +433,7 @@ jobs:
       - name: "🐍 Set up Python + UV"
         uses: "./.github/actions/uv_setup"
         with:
-          python-version: "3.12"
+          python-version: "3.14"
           cache-suffix: harbor
           working-directory: libs/evals
 
@@ -962,6 +962,7 @@ jobs:
           uv run harbor run \
             --yes \
             --agent langgraph \
+            --agent-kwarg python_version=3.14 \
             --agent-kwarg project_path=deepagents_harbor/langgraph_project \
             --agent-kwarg config=langgraph.json \
             --agent-kwarg graph="$HARBOR_AGENT_GRAPH" \

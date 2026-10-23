@@ -175,3 +175,35 @@ async def test_server_inherits_the_session_lock(
     assert lock_fd in pass_fds
     # The bootstrap must learn the descriptor too, to keep it from grandchildren.
     assert command[3].split(",")[1:] == [str(lock_fd)]
+
+
+def test_server_interpreter_caches_bytecode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Cache server imports inside the install without writing into projects."""
+    import sys
+
+    from deepagents_code.client.launch import _server_bootstrap as bootstrap
+
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "project_extension.py").write_text("value = 43\n")
+    monkeypatch.syspath_prepend(str(project))
+    run_module = bootstrap.runpy.run_module
+    monkeypatch.setattr(bootstrap, "_ParentGuard", MagicMock())
+    monkeypatch.setattr(
+        bootstrap.runpy,
+        "run_module",
+        lambda *_args, **_kwargs: run_module("project_extension"),
+    )
+    monkeypatch.setattr(sys, "prefix", str(tmp_path / "install"))
+    monkeypatch.setattr(sys, "pycache_prefix", None)
+    monkeypatch.setattr(sys, "dont_write_bytecode", True)
+    monkeypatch.setenv("PYTHONDONTWRITEBYTECODE", "1")
+    monkeypatch.setattr(sys, "argv", ["bootstrap", "0", "5", "dev"])
+
+    bootstrap._main()
+
+    assert list((tmp_path / "install" / "__pycache__").rglob("*.pyc"))
+    assert not (project / "__pycache__").exists()
+    assert os.environ["PYTHONDONTWRITEBYTECODE"] == "1"

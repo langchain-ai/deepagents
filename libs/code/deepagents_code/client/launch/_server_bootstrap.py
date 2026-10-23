@@ -13,6 +13,7 @@ import signal
 import sys
 import threading
 import time
+from pathlib import Path
 
 
 class _ParentGuard:
@@ -85,6 +86,8 @@ def _main() -> None:
     guard.start()
     if not guard.begin_dispatch():
         return
+    sys.pycache_prefix = str(Path(sys.prefix) / "__pycache__")
+    sys.dont_write_bytecode = False
     sys.argv = ["langgraph_cli", *sys.argv[3:]]
     runpy.run_module("langgraph_cli", run_name="__main__", alter_sys=True)
 

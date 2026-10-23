@@ -3122,6 +3122,53 @@ class TestLangsmithKeyShadowedByEmptyOverride:
 class TestLangsmithSecretRedaction:
     """Tests for LangSmith trace secret redaction configuration."""
 
+    def test_deferred_install_preserves_live_environment(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import os
+        from concurrent.futures import ThreadPoolExecutor
+        from threading import Event
+
+        from langsmith import client as client_module
+
+        entered = Event()
+        updated = Event()
+
+        def load_profile() -> None:
+            entered.set()
+            assert updated.wait(timeout=5)
+
+        monkeypatch.setattr(
+            config_module,
+            "_bootstrap_state",
+            config_module._BootstrapState(done=True, redaction_pending=True),
+        )
+        monkeypatch.setenv("LANGSMITH_TRACING", "true")
+        monkeypatch.setenv("LANGSMITH_API_KEY", "lsv2_test")
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_REDACT", "true")
+        monkeypatch.setenv("DCODE_ENV_UPDATE", "before")
+        monkeypatch.setattr(
+            client_module._profiles, "load_profile_client_config", load_profile
+        )
+        with (
+            patch("langsmith.Client"),
+            patch("langsmith.configure") as configure,
+            patch.object(os.environ, "clear", wraps=os.environ.clear) as clear,
+            ThreadPoolExecutor(max_workers=1) as executor,
+        ):
+            worker = executor.submit(config_module.ensure_langsmith_secret_redaction)
+            try:
+                assert entered.wait(timeout=5)
+                os.environ["DCODE_ENV_UPDATE"] = "after"
+            finally:
+                updated.set()
+            worker.result(timeout=5)
+
+        clear.assert_not_called()
+        assert os.environ["DCODE_ENV_UPDATE"] == "after"
+        assert not config_module._bootstrap_state.redaction_pending
+        configure.assert_called_once()
+
     def test_redaction_can_be_disabled_by_env(
         self,
         monkeypatch: pytest.MonkeyPatch,
@@ -6327,6 +6374,81 @@ class TestUserLangsmithEnvironment:
             var in env or f"DEEPAGENTS_CODE_{var}" in env
             for var in config_mod._USER_LANGSMITH_ENV_VARS
         )
+
+
+class TestDeferredLangsmithRedaction:
+    """A deferred redacting-client install must not leave a tracing gap."""
+
+    @pytest.fixture(autouse=True)
+    def _fresh_bootstrap(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> Iterator[Mock]:
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(
+            config_module, "_bootstrap_state", config_module._BootstrapState()
+        )
+        with patch(
+            "deepagents_code.config.configure_langsmith_secret_redaction",
+            return_value=True,
+        ) as install:
+            self.install = install
+            yield install
+
+    def test_bootstrap_installs_client_unless_deferred(self) -> None:
+        config_module._ensure_bootstrap()
+
+        self.install.assert_called_once_with()
+        assert not config_module._bootstrap_state.redaction_pending
+
+    def test_create_model_installs_deferred_client_first(self) -> None:
+        """No model, so no traced run, can exist before the deferred install."""
+        config_module.defer_langsmith_secret_redaction()
+        config_module._ensure_bootstrap()
+        self.install.assert_not_called()
+
+        # The unknown provider fails after the gate, before any model exists.
+        with pytest.raises(ModelConfigError):
+            create_model("no-such-provider:model")
+
+        self.install.assert_called_once_with()
+        assert not config_module._bootstrap_state.redaction_pending
+
+    async def test_tui_startup_worker_installs_deferred_client(self) -> None:
+        from unittest.mock import AsyncMock
+
+        from deepagents_code.app import DeepAgentsApp
+
+        config_module.defer_langsmith_secret_redaction()
+        config_module._ensure_bootstrap()
+        app = DeepAgentsApp()
+        with patch.object(app, "_await_prewarm_imports", AsyncMock()):
+            await app._install_deferred_langsmith_redaction()
+
+        self.install.assert_called_once_with()
+        config_module.ensure_langsmith_secret_redaction()
+        self.install.assert_called_once_with()
+
+    def test_failed_install_stays_pending_for_next_caller(self) -> None:
+        config_module.defer_langsmith_secret_redaction()
+        self.install.side_effect = [RuntimeError("boom"), True]
+
+        with pytest.raises(RuntimeError, match="boom"):
+            config_module.ensure_langsmith_secret_redaction()
+        assert config_module._bootstrap_state.redaction_pending
+
+        config_module.ensure_langsmith_secret_redaction()
+        assert self.install.call_count == 2
+        assert not config_module._bootstrap_state.redaction_pending
+
+    def test_auth_install_supersedes_deferred_install(self) -> None:
+        """A deferred install must not replace a client built from newer keys."""
+        config_module.defer_langsmith_secret_redaction()
+        config_module._ensure_bootstrap()
+
+        apply_stored_langsmith_auth(replace_project=True)
+        config_module.ensure_langsmith_secret_redaction()
+
+        self.install.assert_called_once_with()
 
 
 class TestLazySingletons:

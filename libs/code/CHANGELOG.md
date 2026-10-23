@@ -2,6 +2,20 @@
 
 # Deep Agents Code Changelog
 
+## [0.2.1](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.2.0...deepagents-code==0.2.1) (2026-10-23)
+
+
+### Features
+
+* **code:** default Anthropic Auto classifier to Claude Sonnet 5.5 ([#7163](https://github.com/langchain-ai/deepagents/issues/7163)) ([ad0fc5e](https://github.com/langchain-ai/deepagents/commit/ad0fc5ea19c41611891e40af403bcacb0a123fdf))
+* **code:** support skill-scoped MCP tools ([#7010](https://github.com/langchain-ai/deepagents/issues/7010)) ([227580e](https://github.com/langchain-ai/deepagents/commit/227580e26c6cf0ebe2581dc5b488ad3eb3695b43))
+
+
+### Bug Fixes
+
+* **code:** auto-migrate to Python 3.14 when no other session is running ([#7160](https://github.com/langchain-ai/deepagents/issues/7160)) ([acfb272](https://github.com/langchain-ai/deepagents/commit/acfb272c132e17d8fa813e52c218c5e9c0c0387a))
+* **code:** use native structured output for Anthropic Auto classifier ([#7162](https://github.com/langchain-ai/deepagents/issues/7162)) ([7bb57e6](https://github.com/langchain-ai/deepagents/commit/7bb57e664ea2ff41df22042f9aebcf15295b20cd))
+
 ## [0.2.0](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.88...deepagents-code==0.2.0) (2026-10-22)
 
 ### ⚠ BREAKING CHANGES

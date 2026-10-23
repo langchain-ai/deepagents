@@ -91,9 +91,15 @@ permissions:
   contents: read # Job-level overrides grant write only where needed
 
 jobs:
-  # Determine working directory from package input and resolve the release SHA
-  setup:
-    name: 🧭 Resolve release target
+  # Resolve the release target (package, working directory, release SHA,
+  # Python matrix), then build the distribution and extract version info.
+  #
+  # Runs with read-only permissions, isolated from the jobs that hold publish
+  # credentials. `pull-requests: read` is only for the release SHA -> PR
+  # lookup in the run summary.
+  build:
+    name: 📦 Build distribution
+    if: github.ref == 'refs/heads/main' || inputs.dangerous-nonmain-release
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -104,6 +110,9 @@ jobs:
       python-version: ${{ steps.python-matrix.outputs.python-version }}
       python-versions: ${{ steps.python-matrix.outputs.python-versions }}
       release-sha: ${{ steps.resolve-sha.outputs.sha }}
+      pkg-name: ${{ steps.check-version.outputs.pkg-name }}
+      version: ${{ steps.check-version.outputs.version }}
+      is-prerelease: ${{ steps.check-version.outputs.is-prerelease }}
     steps:
       - name: Parse package input
         id: parse
@@ -160,8 +169,9 @@ jobs:
 
       # fetch-depth: 0 so we can read pyproject.toml at an arbitrary historic
       # SHA (resolve-sha validates that ${WORKING_DIR}/pyproject.toml at the
-      # input SHA declares the version being released). All downstream jobs
-      # check out the resolved SHA so wheel bytes and tag tree agree.
+      # input SHA declares the version being released). The build below and
+      # all downstream jobs use the resolved SHA so wheel bytes and tag tree
+      # agree.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
@@ -350,35 +360,18 @@ jobs:
             | python .github/scripts/release/resolve_python_matrix.py \
             >> "$GITHUB_OUTPUT"
 
-  # Build the distribution package and extract version info
-  # Runs in isolated environment with minimal permissions for security
-  build:
-    name: 📦 Build distribution
-    needs: setup
-    if: github.ref == 'refs/heads/main' || inputs.dangerous-nonmain-release
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    env:
-      WORKING_DIR: ${{ needs.setup.outputs.working-dir }}
-
-    outputs:
-      pkg-name: ${{ steps.check-version.outputs.pkg-name }}
-      version: ${{ steps.check-version.outputs.version }}
-      is-prerelease: ${{ steps.check-version.outputs.is-prerelease }}
-
-    steps:
       # Build from the validated release commit (not dispatch HEAD) so the wheel
       # bytes match the GitHub release tag's tree. See RELEASING.md > Hotfix
       # Protocol for the integrity invariant this enforces.
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ needs.setup.outputs.release-sha }}
+      - name: Check out release commit
+        env:
+          RELEASE_SHA: ${{ steps.resolve-sha.outputs.sha }}
+        run: git checkout --quiet --detach "$RELEASE_SHA"
 
       - name: Set up Python + uv
         uses: "./.github/actions/uv_setup"
         with:
-          python-version: ${{ needs.setup.outputs.python-version }}
+          python-version: ${{ steps.python-matrix.outputs.python-version }}
           enable-cache: "false"
 
       # We want to keep this build stage *separate* from the release stage,
@@ -395,22 +388,22 @@ jobs:
       # https://github.com/pypa/gh-action-pypi-publish#non-goals
       - name: Build project for distribution
         run: uv build
-        working-directory: ${{ env.WORKING_DIR }}
+        working-directory: ${{ steps.parse.outputs.working-dir }}
         env:
           # Stamp the exact release commit into deepagents-code so `dcode doctor`
           # reports it on installed wheels. Other packages ignore this env var.
-          DEEPAGENTS_CODE_BUILD_COMMIT: ${{ needs.setup.outputs.release-sha }}
+          DEEPAGENTS_CODE_BUILD_COMMIT: ${{ steps.resolve-sha.outputs.sha }}
 
       - name: Upload build
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: dist
-          path: ${{ env.WORKING_DIR }}/dist/
+          path: ${{ steps.parse.outputs.working-dir }}/dist/
 
       - name: Check version
         id: check-version
         shell: python
-        working-directory: ${{ env.WORKING_DIR }}
+        working-directory: ${{ steps.parse.outputs.working-dir }}
         run: |
           import os
           import re
@@ -484,21 +477,20 @@ jobs:
   release-notes:
     name: 📝 Generate release notes
     needs:
-      - setup
       - build
     runs-on: ubuntu-latest
     permissions:
       contents: read
       pull-requests: read
     env:
-      WORKING_DIR: ${{ needs.setup.outputs.working-dir }}
+      WORKING_DIR: ${{ needs.build.outputs.working-dir }}
     outputs:
       release-body: ${{ steps.finalize-release-body.outputs.release-body }}
       tag: ${{ steps.check-tags.outputs.tag }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ needs.setup.outputs.release-sha }}
+          ref: ${{ needs.build.outputs.release-sha }}
           fetch-depth: 0
           fetch-tags: true
 
@@ -516,7 +508,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: ${{ needs.setup.outputs.python-version }}
+          python-version: ${{ needs.build.outputs.python-version }}
 
       # The release target checkout (above) uses the release SHA, which may
       # predate the notes script. Check out the workflow's own revision into
@@ -549,7 +541,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PKG_NAME: ${{ needs.build.outputs.pkg-name }}
           VERSION: ${{ needs.build.outputs.version }}
-          RELEASE_SHA: ${{ needs.setup.outputs.release-sha }}
+          RELEASE_SHA: ${{ needs.build.outputs.release-sha }}
           ACTOR: ${{ github.actor }}
           BASE_BRANCH: ${{ github.ref_name }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch || 'main' }}
@@ -572,7 +564,6 @@ jobs:
   test-pypi-publish:
     name: 🧪 Publish to TestPyPI
     needs:
-      - setup
       - build
       - pre-release-checks
     runs-on: ubuntu-latest
@@ -584,12 +575,12 @@ jobs:
       # https://docs.pypi.org/trusted-publishers/adding-a-publisher/
       id-token: write
     env:
-      WORKING_DIR: ${{ needs.setup.outputs.working-dir }}
+      WORKING_DIR: ${{ needs.build.outputs.working-dir }}
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ needs.setup.outputs.release-sha }}
+          ref: ${{ needs.build.outputs.release-sha }}
 
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
@@ -613,7 +604,6 @@ jobs:
   pre-release-checks:
     name: ✅ Pre-release checks (Python ${{ matrix.python-version }})
     needs:
-      - setup
       - build
     runs-on: ubuntu-latest
     environment: release
@@ -623,13 +613,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ${{ fromJSON(needs.setup.outputs.python-versions) }}
+        python-version: ${{ fromJSON(needs.build.outputs.python-versions) }}
     env:
-      WORKING_DIR: ${{ needs.setup.outputs.working-dir }}
+      WORKING_DIR: ${{ needs.build.outputs.working-dir }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ needs.setup.outputs.release-sha }}
+          ref: ${{ needs.build.outputs.release-sha }}
 
       # We explicitly *don't* set up caching here. This ensures our tests are
       # maximally sensitive to catching breakage.
@@ -739,7 +729,7 @@ jobs:
         working-directory: ${{ env.WORKING_DIR }}
 
       - name: Install sandbox provider extras
-        if: needs.setup.outputs.package == 'deepagents-code'
+        if: needs.build.outputs.package == 'deepagents-code'
         run: uv sync --group test --extra all-sandboxes
         working-directory: ${{ env.WORKING_DIR }}
 
@@ -822,20 +812,20 @@ jobs:
         env:
           # The Code sandbox files are ignored below and its remaining integration
           # tests use a fake model, so Code receives no provider credentials here.
-          ANTHROPIC_API_KEY: ${{ (needs.setup.outputs.package == 'deepagents' || needs.setup.outputs.package == 'langchain-quickjs') && secrets.ANTHROPIC_API_KEY || '' }}
-          DAYTONA_API_KEY: ${{ needs.setup.outputs.package == 'langchain-daytona' && secrets.DAYTONA_API_KEY || '' }}
-          LANGSMITH_API_KEY: ${{ needs.setup.outputs.package == 'deepagents' && secrets.LANGSMITH_API_KEY || '' }}
-          MODAL_TOKEN_ID: ${{ needs.setup.outputs.package == 'langchain-modal' && secrets.MODAL_TOKEN_ID || '' }}
-          MODAL_TOKEN_SECRET: ${{ needs.setup.outputs.package == 'langchain-modal' && secrets.MODAL_TOKEN_SECRET || '' }}
-          OPENAI_API_KEY: ${{ needs.setup.outputs.package == 'deepagents' && secrets.OPENAI_API_KEY || '' }}
-          RUNLOOP_API_KEY: ${{ needs.setup.outputs.package == 'langchain-runloop' && secrets.RUNLOOP_API_KEY || '' }}
-          VERCEL_TOKEN: ${{ needs.setup.outputs.package == 'langchain-vercel-sandbox' && secrets.VERCEL_TOKEN || '' }}
+          ANTHROPIC_API_KEY: ${{ (needs.build.outputs.package == 'deepagents' || needs.build.outputs.package == 'langchain-quickjs') && secrets.ANTHROPIC_API_KEY || '' }}
+          DAYTONA_API_KEY: ${{ needs.build.outputs.package == 'langchain-daytona' && secrets.DAYTONA_API_KEY || '' }}
+          LANGSMITH_API_KEY: ${{ needs.build.outputs.package == 'deepagents' && secrets.LANGSMITH_API_KEY || '' }}
+          MODAL_TOKEN_ID: ${{ needs.build.outputs.package == 'langchain-modal' && secrets.MODAL_TOKEN_ID || '' }}
+          MODAL_TOKEN_SECRET: ${{ needs.build.outputs.package == 'langchain-modal' && secrets.MODAL_TOKEN_SECRET || '' }}
+          OPENAI_API_KEY: ${{ needs.build.outputs.package == 'deepagents' && secrets.OPENAI_API_KEY || '' }}
+          RUNLOOP_API_KEY: ${{ needs.build.outputs.package == 'langchain-runloop' && secrets.RUNLOOP_API_KEY || '' }}
+          VERCEL_TOKEN: ${{ needs.build.outputs.package == 'langchain-vercel-sandbox' && secrets.VERCEL_TOKEN || '' }}
 
         # The deepagents-code sandbox coverage overlaps with the partner-level
         # SandboxIntegrationTests, so keep those files out of release checks.
         run: |
           if [ -f Makefile ] && grep -q "integration_test" Makefile; then
-            if [ "${{ needs.setup.outputs.package }}" = "deepagents-code" ]; then
+            if [ "${{ needs.build.outputs.package }}" = "deepagents-code" ]; then
               export PYTEST_ADDOPTS="${PYTEST_ADDOPTS:-} --ignore=tests/integration_tests/test_sandbox_factory.py --ignore=tests/integration_tests/test_sandbox_operations.py"
             fi
             make integration_test
@@ -848,7 +838,6 @@ jobs:
     name: 🚀 Publish to PyPI
     # Publishes the package to PyPI
     needs:
-      - setup
       - build
       - test-pypi-publish
       - pre-release-checks
@@ -861,7 +850,7 @@ jobs:
       # https://docs.pypi.org/trusted-publishers/adding-a-publisher/
       id-token: write
     env:
-      WORKING_DIR: ${{ needs.setup.outputs.working-dir }}
+      WORKING_DIR: ${{ needs.build.outputs.working-dir }}
 
     defaults:
       run:
@@ -870,12 +859,12 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ needs.setup.outputs.release-sha }}
+          ref: ${{ needs.build.outputs.release-sha }}
 
       - name: Set up Python + uv
         uses: "./.github/actions/uv_setup"
         with:
-          python-version: ${{ needs.setup.outputs.python-version }}
+          python-version: ${{ needs.build.outputs.python-version }}
           enable-cache: "false"
 
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
@@ -902,7 +891,6 @@ jobs:
   mark-release:
     name: 🏷️ Tag GitHub release
     needs:
-      - setup
       - build
       - release-notes
       - test-pypi-publish
@@ -924,7 +912,7 @@ jobs:
       # blocks every later release-please run.
       issues: write
     env:
-      WORKING_DIR: ${{ needs.setup.outputs.working-dir }}
+      WORKING_DIR: ${{ needs.build.outputs.working-dir }}
 
     defaults:
       run:
@@ -933,12 +921,12 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ needs.setup.outputs.release-sha }}
+          ref: ${{ needs.build.outputs.release-sha }}
 
       - name: Set up Python + uv
         uses: "./.github/actions/uv_setup"
         with:
-          python-version: ${{ needs.setup.outputs.python-version }}
+          python-version: ${{ needs.build.outputs.python-version }}
           enable-cache: "false"
 
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
@@ -954,7 +942,7 @@ jobs:
           generateReleaseNotes: false
           tag: ${{ needs.build.outputs.pkg-name }}==${{ needs.build.outputs.version }}
           body: ${{ needs.release-notes.outputs.release-body }}
-          commit: ${{ needs.setup.outputs.release-sha }}
+          commit: ${{ needs.build.outputs.release-sha }}
           prerelease: ${{ needs.build.outputs.is-prerelease == 'true' }}
           makeLatest: ${{ needs.build.outputs.pkg-name == 'deepagents' &&
             needs.build.outputs.is-prerelease != 'true' }}
@@ -971,7 +959,7 @@ jobs:
         env:
           PKG_NAME: ${{ needs.build.outputs.pkg-name }}
           VERSION: ${{ needs.build.outputs.version }}
-          RELEASE_SHA: ${{ needs.setup.outputs.release-sha }}
+          RELEASE_SHA: ${{ needs.build.outputs.release-sha }}
           ACTOR: ${{ github.actor }}
           BASE_BRANCH: ${{ github.ref_name }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch || 'main' }}
@@ -1013,7 +1001,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           IS_DANGEROUS: ${{ inputs.dangerous-nonmain-release }}
           PKG_NAME: ${{ needs.build.outputs.pkg-name }}
-          RELEASE_SHA: ${{ needs.setup.outputs.release-sha }}
+          RELEASE_SHA: ${{ needs.build.outputs.release-sha }}
           VERSION: ${{ needs.build.outputs.version }}
         run: |
           set -euo pipefail
@@ -1173,7 +1161,6 @@ jobs:
   bump-code-sdk-pin:
     name: 🔗 Trigger Code SDK pin bump
     needs:
-      - setup
       - build
       - publish
     if: always() && needs.publish.result == 'success' &&

@@ -44,17 +44,17 @@ def test_ci_matrices_match_requires_python() -> None:
 
 
 def test_release_uses_resolved_matrix() -> None:
-    """Fan out release checks over the versions resolved by `setup`."""
+    """Fan out release checks over the versions resolved by `build`."""
     workflow = yaml.safe_load(RELEASE_WORKFLOW.read_text())
     jobs = workflow["jobs"]
 
-    assert jobs["setup"]["outputs"]["python-versions"] == (
+    assert jobs["build"]["outputs"]["python-versions"] == (
         "${{ steps.python-matrix.outputs.python-versions }}"
     )
     strategy = jobs["pre-release-checks"]["strategy"]
     assert strategy["fail-fast"] is False
     assert strategy["matrix"]["python-version"] == (
-        "${{ fromJSON(needs.setup.outputs.python-versions) }}"
+        "${{ fromJSON(needs.build.outputs.python-versions) }}"
     )
 
 

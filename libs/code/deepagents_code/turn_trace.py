@@ -41,44 +41,9 @@ class TurnTrace:
                 merged.update(metadata)
                 run.extra = {**run.extra, "metadata": merged}
                 if run.end_time is not None:
-                    _patch_run(run)
+                    run.patch(exclude_inputs=True)
             except Exception:
                 logger.debug("Turn trace metadata update failed", exc_info=True)
-
-
-def _patch_run(run: RunTree) -> None:
-    if run.replicas:
-        _patch_replicas(run)
-        return
-    run.client.update_run(
-        run.id,
-        extra={**run.extra, "metadata": run.metadata.copy()},
-        end_time=run.end_time,
-        trace_id=run.trace_id,
-        dotted_order=run.dotted_order,
-    )
-
-
-def _patch_replicas(run: RunTree) -> None:
-    from langsmith import run_trees
-
-    for group in run._replica_groups():
-        client, project, updates, primary, address = group.key
-        replica = run._remap_for_project(
-            project, updates, primary=primary, address=address
-        )
-        client.update_run(
-            replica["id"],
-            extra=replica["extra"],
-            end_time=replica["end_time"],
-            trace_id=replica["trace_id"],
-            dotted_order=replica["dotted_order"],
-            session_name=replica.get("session_name"),
-            address=replica.get("address"),
-            _replica_auths=[
-                run_trees._extract_replica_auth(member) for member in group.members
-            ],
-        )
 
 
 def _current_root(config: RunnableConfig) -> RunTree | None:

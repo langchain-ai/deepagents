@@ -167,6 +167,10 @@ def _installed_plugins_path() -> Path:
     return _state_dir() / "installed_plugins.json"
 
 
+def _available_updates_path() -> Path:
+    return _state_dir() / "plugin_updates.json"
+
+
 def _invalid_state(
     path: Path, detail: str, *, strict: bool, cause: Exception | None = None
 ) -> dict[str, Any]:
@@ -345,6 +349,30 @@ def set_plugin_enabled(plugin_id: str, enabled: bool) -> None:
     else:
         enabled_plugin_ids.discard(plugin_id)
     _write_plugin_state(enabled_plugin_ids=enabled_plugin_ids)
+
+
+def load_available_plugin_updates() -> dict[str, str]:
+    """Load the plugin versions the last update check found but did not install.
+
+    Returns:
+        Available version keyed by plugin id; empty when unreadable.
+    """
+    available = _load_json(_available_updates_path()).get("available", {})
+    if not isinstance(available, dict):
+        return {}
+    return {
+        key: value
+        for key, value in available.items()
+        if isinstance(key, str) and isinstance(value, str)
+    }
+
+
+def save_available_plugin_updates(available: dict[str, str]) -> None:
+    """Persist the plugin versions found by an update check."""
+    _atomic_write_json(
+        _available_updates_path(),
+        {"version": _STORAGE_VERSION, "available": dict(sorted(available.items()))},
+    )
 
 
 def _parse_installed_plugin_json_entry(

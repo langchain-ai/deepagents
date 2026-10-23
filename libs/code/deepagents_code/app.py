@@ -19057,25 +19057,32 @@ class DeepAgentsApp(App):
         )
 
     async def _auto_update_plugins(self) -> None:
-        """Update plugins on disk and notify when `/reload` can apply them."""
-        from deepagents_code.plugins.discovery import auto_update_plugins
+        """Update opted-in plugins and announce updates found for the rest."""
+        from deepagents_code.plugins.discovery import (
+            available_updates_message,
+            check_plugin_updates,
+        )
 
         try:
-            updated = await asyncio.to_thread(auto_update_plugins)
+            result = await asyncio.to_thread(check_plugin_updates)
         except Exception:
-            logger.exception("Plugin auto-update failed")
+            logger.exception("Plugin update check failed")
             return
-        if not updated:
-            return
-
-        names = [plugin_id.rsplit("@", 1)[0] for plugin_id in updated]
-        noun = "Plugin" if len(names) == 1 else "Plugins"
-        display = f"{len(names)} plugins" if names[2:] else " and ".join(names)
-        self.notify(
-            f"{noun} updated: {display}. Run /reload to apply.",
-            timeout=10,
-            markup=False,
-        )
+        if result.updated:
+            names = [update.plugin_id.rsplit("@", 1)[0] for update in result.updated]
+            noun = "Plugin" if len(names) == 1 else "Plugins"
+            display = f"{len(names)} plugins" if names[2:] else " and ".join(names)
+            self.notify(
+                f"{noun} updated: {display}. Run /reload to apply.",
+                timeout=10,
+                markup=False,
+            )
+        if result.newly_available:
+            self.notify(
+                available_updates_message(result.newly_available),
+                timeout=10,
+                markup=False,
+            )
 
     async def _handle_user_message(self, message: str) -> None:
         """Handle a user message to send to the agent.

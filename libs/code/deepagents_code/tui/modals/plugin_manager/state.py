@@ -29,6 +29,7 @@ from deepagents_code.plugins.marketplace import (
 from deepagents_code.plugins.models import LocalPluginSource, split_plugin_id
 from deepagents_code.plugins.store import (
     get_primary_install_entry,
+    load_available_plugin_updates,
     load_enabled_plugin_ids,
     load_installed_plugins,
     load_marketplace_records,
@@ -275,6 +276,7 @@ def _row_from_instance(
     loaded_plugin_ids: AbstractSet[str],
     load_error: str | None = None,
     display_name: str = "",
+    available_version: str | None = None,
 ) -> _PluginRow:
     from deepagents_code.plugins.adapters.hooks import plugin_hook_event_names
 
@@ -306,6 +308,11 @@ def _row_from_instance(
         unsupported_components=unsupported,
         session_loaded=session_loaded,
         load_error=load_error,
+        available_version=(
+            available_version
+            if instance and available_version != instance.version
+            else None
+        ),
     )
 
 
@@ -318,6 +325,7 @@ def _load_manager_state(
     records = load_marketplace_records()
     enabled = load_enabled_plugin_ids()
     installed = load_installed_plugins()
+    available_updates = load_available_plugin_updates()
     errors: list[str] = []
     plugin_result = discover_plugins()
     errors.extend(plugin_result.warnings)
@@ -398,6 +406,7 @@ def _load_manager_state(
                     instance=instance,
                     plugin_name=plugin.name,
                 ),
+                available_version=available_updates.get(plugin_id),
             )
             (installed_plugins if is_installed else available_plugins).append(row)
     return _ManagerState(

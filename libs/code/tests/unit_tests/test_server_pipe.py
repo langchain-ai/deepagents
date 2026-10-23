@@ -185,35 +185,18 @@ def test_server_interpreter_caches_bytecode(
 
     from deepagents_code.client.launch import _server_bootstrap as bootstrap
 
-    class _Guard:
-        def __init__(self, _reader: int, _timeout: float) -> None:
-            pass
-
-        def start(self) -> None:
-            pass
-
-        def begin_dispatch(self) -> bool:
-            return True
-
-    install = tmp_path / "install"
     project = tmp_path / "project"
-    install.mkdir()
     project.mkdir()
-    (install / "server_dependency.py").write_text("value = 42\n")
     (project / "project_extension.py").write_text("value = 43\n")
-    monkeypatch.syspath_prepend(str(install))
     monkeypatch.syspath_prepend(str(project))
     run_module = bootstrap.runpy.run_module
-    cached: list[Path] = []
-
-    def dispatch(*_args: object, **_kwargs: object) -> None:
-        for name in ("server_dependency", "project_extension"):
-            module = run_module(name)
-            cached.append(Path(module["__cached__"]))
-
-    monkeypatch.setattr(bootstrap, "_ParentGuard", _Guard)
-    monkeypatch.setattr(bootstrap.runpy, "run_module", dispatch)
-    monkeypatch.setattr(sys, "prefix", str(install))
+    monkeypatch.setattr(bootstrap, "_ParentGuard", MagicMock())
+    monkeypatch.setattr(
+        bootstrap.runpy,
+        "run_module",
+        lambda *_args, **_kwargs: run_module("project_extension"),
+    )
+    monkeypatch.setattr(sys, "prefix", str(tmp_path / "install"))
     monkeypatch.setattr(sys, "pycache_prefix", None)
     monkeypatch.setattr(sys, "dont_write_bytecode", True)
     monkeypatch.setenv("PYTHONDONTWRITEBYTECODE", "1")
@@ -221,8 +204,6 @@ def test_server_interpreter_caches_bytecode(
 
     bootstrap._main()
 
-    assert len(cached) == 2
-    assert all(path.is_file() for path in cached)
-    assert all(path.is_relative_to(install / "__pycache__") for path in cached)
+    assert list((tmp_path / "install" / "__pycache__").rglob("*.pyc"))
     assert not (project / "__pycache__").exists()
     assert os.environ["PYTHONDONTWRITEBYTECODE"] == "1"

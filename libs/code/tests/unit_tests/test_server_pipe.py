@@ -177,13 +177,10 @@ async def test_server_inherits_the_session_lock(
     assert command[3].split(",")[1:] == [str(lock_fd)]
 
 
-def test_server_interpreter_caches_bytecode(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The server writes `.pyc` files even though its children are told not to.
-
-    Installs such as `uv tool install` ship without bytecode, so a server that
-    honored the inherited `PYTHONDONTWRITEBYTECODE` would recompile its
-    server-only dependencies on every launch.
-    """
+def test_server_interpreter_caches_bytecode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Cache server imports inside the install without writing into projects."""
     import sys
 
     from deepagents_code.client.launch import _server_bootstrap as bootstrap
@@ -198,16 +195,34 @@ def test_server_interpreter_caches_bytecode(monkeypatch: pytest.MonkeyPatch) -> 
         def begin_dispatch(self) -> bool:
             return True
 
-    seen: list[bool] = []
+    install = tmp_path / "install"
+    project = tmp_path / "project"
+    install.mkdir()
+    project.mkdir()
+    (install / "server_dependency.py").write_text("value = 42\n")
+    (project / "project_extension.py").write_text("value = 43\n")
+    monkeypatch.syspath_prepend(str(install))
+    monkeypatch.syspath_prepend(str(project))
+    run_module = bootstrap.runpy.run_module
+    cached: list[Path] = []
+
+    def dispatch(*_args: object, **_kwargs: object) -> None:
+        for name in ("server_dependency", "project_extension"):
+            module = run_module(name)
+            cached.append(Path(module["__cached__"]))
+
     monkeypatch.setattr(bootstrap, "_ParentGuard", _Guard)
-    monkeypatch.setattr(
-        bootstrap.runpy,
-        "run_module",
-        lambda *_args, **_kwargs: seen.append(sys.dont_write_bytecode),
-    )
+    monkeypatch.setattr(bootstrap.runpy, "run_module", dispatch)
+    monkeypatch.setattr(sys, "prefix", str(install))
+    monkeypatch.setattr(sys, "pycache_prefix", None)
     monkeypatch.setattr(sys, "dont_write_bytecode", True)
+    monkeypatch.setenv("PYTHONDONTWRITEBYTECODE", "1")
     monkeypatch.setattr(sys, "argv", ["bootstrap", "0", "5", "dev"])
 
     bootstrap._main()
 
-    assert seen == [False]
+    assert len(cached) == 2
+    assert all(path.is_file() for path in cached)
+    assert all(path.is_relative_to(install / "__pycache__") for path in cached)
+    assert not (project / "__pycache__").exists()
+    assert os.environ["PYTHONDONTWRITEBYTECODE"] == "1"

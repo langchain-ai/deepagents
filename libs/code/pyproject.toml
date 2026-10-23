@@ -61,7 +61,7 @@ dependencies = [
 
     # Tools
     "tavily-python>=0.7.26",
-    "langchain-quickjs>=0.3.4,<0.4.0",
+    "langchain-quickjs>=0.3.9,<0.4.0",
 
     # Cost estimation (bundled offline pricing data).
     # The local pricing overrides resolve through two *private* upstream names,
@@ -100,7 +100,7 @@ dependencies = [
     "anyio>=4.14.2",
 
     # ACP
-    "deepagents-acp>=0.0.10,<1.0.0",
+    "deepagents-acp>=0.0.13,<1.0.0",
     "mcp>=2.0.0",
 ]
 
@@ -136,11 +136,11 @@ all-providers = [
 
 # Sandbox providers
 agentcore = ["langchain-agentcore-codeinterpreter>=0.0.5,<1.0.0"]
-daytona = ["langchain-daytona>=0.0.7"]
-modal = ["langchain-modal>=0.0.5"]
+daytona = ["langchain-daytona>=0.0.9"]
+modal = ["langchain-modal>=0.0.6"]
 openshell = ["langchain-nvidia-openshell>=0.1.1"]
-runloop = ["langchain-runloop>=0.0.6"]
-vercel = ["langchain-vercel-sandbox>=0.0.1"]
+runloop = ["langchain-runloop>=0.0.7"]
+vercel = ["langchain-vercel-sandbox>=0.0.2"]
 all-sandboxes = [
     "deepagents-code[agentcore,daytona,modal,openshell,runloop,vercel]",
 ]

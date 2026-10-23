@@ -377,10 +377,9 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             See [Prompt assembly](https://docs.langchain.com/oss/deepagents/customization#prompt-assembly)
             for the full case-by-case breakdown.
         middleware: Additional middleware to apply after the base stack
-            but before the tail middleware. A replacement `FilesystemMiddleware`
-            with no rules inherits the agent's `permissions`. Conflicting
-            non-empty permission lists raise `ValueError`. Other middleware
-            configuration is not inherited. The full ordering is:
+            but before the tail middleware. Replacement `FilesystemMiddleware`
+            inherits agent permissions when unconfigured; conflicting non-empty
+            rules raise `ValueError`. The full ordering is:
 
             Base stack:
 

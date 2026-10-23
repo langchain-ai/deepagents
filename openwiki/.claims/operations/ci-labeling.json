@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:d3a5ab1f5ef7a3b1afd19f56e22763e28f665a54087e2fdca03ca4d764f33e73",
+  "pageVersion": "sha256:58f78af9eed9b960b052687aa27a9a6d2c1fa710c6ebf820a8d72c0d4763a66d",
   "claims": [
     {
       "id": "claim_10c098882c8a4f6ca2ae373df529e738",
@@ -184,7 +184,7 @@
         },
         {
           "resource": "repo://.github/workflows/ci.yml#L341-L423",
-          "version": "repo-lines-v1:sha256:f0d06b15eea502ecef9bec7bf6eb183c38e183ba2691b8d5e7f2ba25f89d0f01:eyJzZWxlY3RlZExpbmVDb3VudCI6ODMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM0YjM5Yjg0NjczOTkzMDMzMmYxNzY2NjA1NDRmZmJlYzYyNTk3YzJmYzhiNGRjNWNkOTM1ZDA4NjM5Y2JjNWUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM0YjM5Yjg0NjczOTkzMDMzMmYxNzY2NjA1NDRmZmJlYzYyNTk3YzJmYzhiNGRjNWNkOTM1ZDA4NjM5Y2JjNWUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjBmZGYyYmM0MjUwOGEzNzA4ZTczMTYxN2YyMzEwYTU3ZjNmZDk3Y2RlNGJhNDNhNDZkMmRjOTkyNmU5NzlmYWMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjhmNDJhNWE2MjExNTQ4ZTZlMTQyYWU4MWJkMzg5NGQ5MjRmNmNjOTQyNTRmYzNhN2UwMWQ4ODM5ZWMxMTIyOGUifQ"
+          "version": "repo-lines-v1:sha256:7d5bd388de2dd0b234279bc55f2e80aea9c29b709f37b557600932e32ee078fe:eyJzZWxlY3RlZExpbmVDb3VudCI6ODMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM0YjM5Yjg0NjczOTkzMDMzMmYxNzY2NjA1NDRmZmJlYzYyNTk3YzJmYzhiNGRjNWNkOTM1ZDA4NjM5Y2JjNWUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM0YjM5Yjg0NjczOTkzMDMzMmYxNzY2NjA1NDRmZmJlYzYyNTk3YzJmYzhiNGRjNWNkOTM1ZDA4NjM5Y2JjNWUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjBmZGYyYmM0MjUwOGEzNzA4ZTczMTYxN2YyMzEwYTU3ZjNmZDk3Y2RlNGJhNDNhNDZkMmRjOTkyNmU5NzlmYWMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjhmNDJhNWE2MjExNTQ4ZTZlMTQyYWU4MWJkMzg5NGQ5MjRmNmNjOTQyNTRmYzNhN2UwMWQ4ODM5ZWMxMTIyOGUifQ"
         }
       ]
     },
@@ -223,10 +223,104 @@
           "version": "repo-lines-v1:sha256:0bc794b56f1e8e87656d06c7d0bd8b28af751ef485255f7c0490de101cd91683:eyJzZWxlY3RlZExpbmVDb3VudCI6NjUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImVjZTQ5ZjYxOGQ4YjFhM2VjODMzNGU0MjMxMDQxZTI2MDJhNTU2ZjE4ZDliOTFkODM5M2ZmNjBlZjQzMWVhMzkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjlmYzIyNjMzNjAzNjEzMjY0NmMyYThjMzYyZjE3ZWRkYTBlZDkyMWViMzAzNmYyYjg5YzdlM2YxY2Q0NDU3MDIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImU5ZjIxMGI2N2I2MmY3ZmQ1OWQ1MGQ2YzFiMTRlMjdhZDcwZDJkN2M4ZmM4MDhhYjNiMGJiZDU0YjZmOWM5ZmUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjZmOTk1MTEyZjVjN2VlZjQ0MjA2NTlmYTg4MjVmNzNmMTk1Y2NlNjUyMzI5ZjBjYzdiYmIxYmRmZWVjOGI0MTgifQ"
         }
       ]
+    },
+    {
+      "id": "claim_61210a9fab0c421ea9283015b2ad8587",
+      "statement": "`ci.yml` uses path-filter outputs to fan lint and reusable unit-test jobs out to affected packages, includes CI workflow/action paths in package filters, expands selection for editable SDK consumers, and runs package jobs unconditionally on pushes to `main`.",
+      "evidence": [
+        {
+          "resource": "repo://.github/workflows/ci.yml#L139-L244",
+          "version": "repo-lines-v1:sha256:f051ba40d2978cc42f6f6bb2e2bca6f85248b9504e1c47115bf0c46558794c43:eyJzZWxlY3RlZExpbmVDb3VudCI6MTA2LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI5YTAzNDcxZThkOGUxOTYwYTYwMjUzNTBjZTNmYTE0NjcwNTg4NTQ1Nzg5NjE1YmRlOTFmZDczYjUwMmJhOTI0IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI2OGRkZDYwMzFiOTUxZWVhYjAxMGY4MzFhMGI5ZWYzOWE3OGI5NTY0MDBhZWYyZTcxYWQ3OTA3OGEzYWE3NzVmIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI1MDM1YmExOGUwZTJjN2JmMDcxMDk5NzFlN2VhNDAyZTQ2N2FjZDdmOTMzOWU4YjVmMWYyMGMwYzk1Y2Q2NGU4IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI1Y2U1ODdjMzIwMWFkMjFhODJkYzRhNmMxZjA0MWMwMmZmMDhiZDJmZDJiYTZlNGNlYWJiNWE4NDhjNjAyYTA2In0"
+        },
+        {
+          "resource": "repo://.github/workflows/ci.yml#L245-L426",
+          "version": "repo-lines-v1:sha256:ab014a083ad7d40b811b56d823c6ed5fda0c677e1c79c84737cf0427e1bd6d33:eyJzZWxlY3RlZExpbmVDb3VudCI6MTgyLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJlOTAxMjQ2M2RmZTQ2ZjgwNWIxMzZiNmM1MWIyOTIyZmIzZmJjMmEwZjkwYTMxMjk1OTM2OTA1YThiZWY0NTgxIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiIzOWNhMzM2YTE0NjhiNjEzZGNiOGU1YWU3OWFjN2VlNTg4Y2JjOWE4MTYzNzQxZmIwN2NkNWYxN2JjNTc1ODkzIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJmNTg1NTRmZDc4YmYyYmJlNDExNjRmMGM2MTJlZGQ4MmU5OTU1NTVjYjk1YjBhZjMzNzIyZDg4NjhiMWEyMmYwIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiJkMmU0YzdmYWVjNzQ4ODQ2MDlhMzBkY2ZlYTAyNTExMzZhMGExZmY5M2EyYmU4YjRlZGE5YWY5MDRkYmRlYTE4In0"
+        }
+      ]
+    },
+    {
+      "id": "claim_46cc10372318437096e2826e01837ed8",
+      "statement": "The `✅ CI Success` gate always runs, rejects a non-successful lockfile job, filters intentionally skipped jobs, executes trusted-base gate code, and otherwise rejects failures; only failed Talon lint/test jobs on PRs without Talon-source changes can be waived, while cancellations remain blocking outside pushes.",
+      "evidence": [
+        {
+          "resource": "repo://.github/scripts/checks/ci_gate.py#L43-L87",
+          "version": "repo-lines-v1:sha256:f0d2f19221662d80a5e3e1c38d08debc66f83d571610bf9de77bcdde15e976a3:eyJzZWxlY3RlZExpbmVDb3VudCI6NDUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImMxNDA0ZTJmMWM4NDU4YzljZjM4MDJlZDYxODcyZWFhMzNjNjcxOTAzYTczMjAxOWNhNDkwNWYxNDI1NmVhZGYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMwYzFmMTg4ZjE0MmVkN2E4MjQ2ODBiMjA3MTcyYzU1MTliYzYxNGE0OGZkYTdjZjE2N2VkYjhkZGY3OTk1NmMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjFiMjE4YjBkMDgyZGE0NmZmNDM0NjY5MmJlNzI5MjUxYzNlOTU4ZGIyZjEzMWI0ZGUzODA1ZjE5NTk1NzA0NjUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImM0MTU3NzZhOTlmMTQxNTY1OWRlMjZlYjRkYjI2MTg2M2ZhMTIxOTY2NjBjOTU3ODUzYTYzMTMxOWJmZDliODYifQ"
+        },
+        {
+          "resource": "repo://.github/scripts/tests/checks/test_ci_gate.py#L19-L97",
+          "version": "repo-lines-v1:sha256:4aa3385feb8aaa333c1d74d3aaa7ceb1fd8a904a0cce8bff6864b50ef4a3e0be:eyJzZWxlY3RlZExpbmVDb3VudCI6NzksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ2MWYyNWE1M2VhNzg2ZTJkOGNjZDA0Nzc1Yzg3N2VkMzVmZDUzM2UzMTVkZGEzZTRiYTQxOTNkNDhiZjE2YjUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImRjN2MxN2Y1MTI4YzIwMGJhMDgwYjA0NGY4YmM3MzJkYmFkZGY1ZDM5N2Q3YmNlYmE3ZjZkODIxMzhlOTVmMDIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjEwNGJjZGE3ODVjNDgxNmU3NjkwNTJkNGJlNDc0ZmY0NzJkMGM3MjBiZTdiMWNhMWNiODg5YTc5YjgxZjc3ZTIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImVmYmI3ZjAyYjdjMzhmNmJhNDZkZDNiM2U3NDVjYzY0MmJkNzU4YjdjN2Q5ZmYyYTNkNmFlMTQ1NWI2NDIyZTYifQ"
+        },
+        {
+          "resource": "repo://.github/workflows/ci.yml#L692-L759",
+          "version": "repo-lines-v1:sha256:83625de6076cb37427d8e9f8046f7bc47448380c2153f711eda49a9ddcfb97f6:eyJzZWxlY3RlZExpbmVDb3VudCI6NjgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU2OWQwOWE2MDcxZjFmYzEwMDJhNWI3YzE2YjY0MTdiYzcxOGJjNDIyMTM4M2MzNGIzZWM4MmVkNTUyZWM5MDUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjA4MmMwOGVjOGZlM2Y4NjFkZTY1MjY0MTMxNmY5MjFmZmE4NzZhNGUzYTQ5MjRlZGI2YzA4Nzg4NjZmYjAxYmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjUxZDUxZDFkNTc2YmEwMzMyODUwN2RiMWNlMThmNDEwZGJhNzQzYTUyODdhZTQ3MzRjMGQ2NTJiNzU5ZDNjYWUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjU4YWNkMmI3OTA1OGExNjk0ODUzYjc4YzYzY2Q5ZTIyNjU3ZDQyODVmZWI0YTQwY2U0ZDdhNGRkYzU2OTUyY2MifQ"
+        },
+        {
+          "resource": "repo://.github/workflows/ci.yml#L841-L924",
+          "version": "repo-lines-v1:sha256:b95cfc974e6428d5176d70c250b60338ac6204e6292e7ad2bd4ac85da40682c0:eyJzZWxlY3RlZExpbmVDb3VudCI6ODQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjlhYzQ3OGEyMjE0NTJiNzAyZWRiOTZjNjRlNmEwMjQ3YTljZmZjYThhMzU4ZDdlNWM4ZWQyZjBhODBkODI4MWMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ2OGFiYWI0ZGQ0ODJjMzQwNWY5NWI5YTA3MzU5OWY0Y2U2MmEwYjYzZDExODU0MDU0ZjY4MWU1Njc3NDRiNGYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjAxZTNiNTgwYTljMTlkZjA0YTMwNzQxYmY4OGI2ZmVkZTgzYzYxOWI2NDA1NmEzMWFjNmNiNzExOGYzNmRhZjEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_294218dd25204b3bba1b7632309c1641",
+      "statement": "The reusable lockfile workflow is called unconditionally by CI and runs a full-repository lockfile check; the helper selects owning package directories for supplied paths or all packages when none are supplied, uses package-specific Python versions, and emits the exact repair command when `uv lock --check` fails.",
+      "evidence": [
+        {
+          "resource": "repo://.github/scripts/checks/check_lockfiles_pre_commit.py#L17-L33",
+          "version": "repo-lines-v1:sha256:72058a554ccbcc038aaeeeeb6ac6ce1574fd0f4932af1325fa5e7ddf2ef01bb1:eyJzZWxlY3RlZExpbmVDb3VudCI6MTcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjJmZWE1YjFiZmFjY2EyYjYyZGRjOTJmZTczODdmNWMzZDBjMjgyMTQ0MWNjZWU2MDgwZmJkODY1YjcxYmY2N2EiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjZmMWZjMWM1OTE4NTA2YmEzMjdkMTFjNzdiZDE1MzQyODUzMTg0MzY3NzdiZTE3Mjk4YzhiNzA2MGJhNjY4YTIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijc5OTkzMzQyYTgzODdkMjJkMzFkNjYyOGU4ODhkZWRkYTllZjU3MThiZWM2OTY3NTZmY2ZhNmQyOTVhN2FmZjIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjZmOTIwNTdhYzZhZGI1YzM3MWE2MmVlMzQ2NzU3MDJlYjIwMDBlNDc3NTc4MjQzOTMwYjQ2ZmNmNmQ1N2QxNDEifQ"
+        },
+        {
+          "resource": "repo://.github/scripts/checks/check_lockfiles_pre_commit.py#L94-L145",
+          "version": "repo-lines-v1:sha256:8cf5190a669ddec91e7ff262e46b2f6a41402b1c1c6f9b7030cba1ecd8e4fc3d:eyJzZWxlY3RlZExpbmVDb3VudCI6NTIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImViNDQyOGQ5NzhhNDJlOWI5YmY4MWFhMDkyYjhhNDhhZWUxNTU4MTcxNDg2ZjU2OGMwMmZhOGFhNjJkNjJlODAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjlmMjc5OTRiZDE0NWMzMmY5MjYxOTg4YjYwMjMwYWE3YmQxYzIxMWRlMmEzM2NmZTNlOGU0MTY4ZDEwZGQ3ZjYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjYzOWE5YTVjM2QxOGMxMDdlNjcxZjc4ZjBiY2Q0OTYzOTQ1MDM2MThmZjQ5MDFmZDdmMzVlNDY4NjMwZWNhNmMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjA1NzIyYjhjNGYyODMxYTA4YTZmZjE2OGQxNjUxMTRiNmZkYmFjZjk4NDIxNTM2NjI3NzY5M2JkY2IzYmQwMjAifQ"
+        },
+        {
+          "resource": "repo://.github/scripts/tests/checks/test_check_lockfiles_pre_commit.py#L43-L136",
+          "version": "repo-lines-v1:sha256:41940dc26184bf4ae3b1b4ce0c102e9d3a8f98f8cc54479ca62eb0980dee2d23:eyJzZWxlY3RlZExpbmVDb3VudCI6OTQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU5YWYxYWRkYmYzMWUwYWJlOTFhMWFkZjFjODc1NDk4ZDE5ZmE1OTYzOGQxMzMxN2ExZWIwYzg4NGY2MTg4OTUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImVkYTA4Nzc1YjBlN2RiNDBkMDdjZTllZDM0YTk3NjZiM2VkMTA3Y2Q5MDIxODA0MWM0NWQ1MjNhNDY4OTg0NjQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjljZGM5NmI5NzA1NGZhNDk1ZjZjOTRmNjFjOGNkNzYwMTBkMTRjN2Y5YjM0NjE0YTM1YzFkOTM4NDM2YWMwMDQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        },
+        {
+          "resource": "repo://.github/workflows/check_lockfiles.yml#L7-L35",
+          "version": "repo-lines-v1:sha256:6671f8f98c9bd0aa5bbc76fc366c710d597ec5d070701b238a90ea95c2994e3b:eyJzZWxlY3RlZExpbmVDb3VudCI6MjksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU5NmRjNDgxNDlmNWE4M2QxZWQ2ZGJiMzliYmM3ZTJiOTAyYWEzZDM0ZDZiZDVhZTRiMjkxYjY4ZGYwY2E3OWEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFlM2M4ODAzMjQxZjlhNGQyMzg2MDc1YzA1NGM0ODAwZjYxZjQ3NTE4OWY3OTVkN2RkMWFiMjRiNjZhMTc5NDUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImI2MjVlODA4YmMzMDM5NDhmZjQ3YjU2Y2UyMDhlOTdiMzY0Yzg5MDA4NDAyZDU0Mjc4NmZjMDA1OGY2NDZlMTgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        },
+        {
+          "resource": "repo://.github/workflows/ci.yml#L43-L46",
+          "version": "repo-lines-v1:sha256:58711779a4843d1859c2d7ebce8a0661a12fcdd2da6d233f13e31def5b97b4ed:eyJzZWxlY3RlZExpbmVDb3VudCI6NCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiZTlkODAxNTRlZDQyZmM1Yzc3OWIxMzMxNTc4YjU4Yjg5YzgwMWVhY2U3NGYyNGNkNDhlYjRhMjM1Nzk0MGE5NSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiYWMxMjEzMDFjY2MxOTU2MDcxYTUyZDg3MjlkNGMwY2YyY2NiMjI1MzVkNTQ5MDYyM2JiNWJmZDliYjNiNTVkNiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNGI2NTM1OTU5NzBkOGJhZWQ2YjMxMDEyZjE5N2FjN2QzYzYzYTY1ZGU2NjVlZjM2M2ZmOTE1M2JmYjNiMzZmMiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZGE3OWFmZDc2Njk3YTc4MTExYTVlNjA5MzJiNThiYjNiNTU2ZTIyMDcwODJjYzhlYmRhYzQzNzQ1NTExMGViMyJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_b7a312b2291a4d48899a955f79aa266f",
+      "statement": "`_eval.yml` is a read-only reusable per-model evaluation worker that uses frozen uv resolution in `libs/evals`, requires an eval report on non-cancelled runs, uploads the report, and treats optional LLM failure analysis as non-gating.",
+      "evidence": [
+        {
+          "resource": "repo://.github/workflows/_eval.yml#L100-L143",
+          "version": "repo-lines-v1:sha256:a2cd04568fb653418e5786d8f0cb6cd0078576e82cb530a93686dc629e64bc71:eyJzZWxlY3RlZExpbmVDb3VudCI6NDQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU5ZDgwMTU0ZWQ0MmZjNWM3NzliMTMzMTU3OGI1OGI4OWM4MDFlYWNlNzRmMjRjZDQ4ZWI0YTIzNTc5NDBhOTUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjVhZDQxMTE1OWE2ODM2MWE3YjBjZWQ3OTQwMmVmYWNmN2VjYjlhNzZmMjlkYzNlYjg1NGNhMmMwMzVmOWQ0ZDEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImU0MjBjZWQwODkzNGVlMDMxMDAzNTVjYjQ0ZGM3MWQxNDkzZTI2NDhlMTljOGI1MGU0YzZhMTgwYTk4ZGI5NTQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImVjOWUzZjkxMmQzMThhZTRiYzQwZjVmMzQ4MmI2MjE0YjQ0NDA5NWU5M2U0YzljNmY3MGM4MmU4NjU2Yjg1MzMifQ"
+        },
+        {
+          "resource": "repo://.github/workflows/_eval.yml#L241-L263",
+          "version": "repo-lines-v1:sha256:e05322497ee396e3472e54fc7d68152f77d209f85f32ae61c52322d2c7851d94:eyJzZWxlY3RlZExpbmVDb3VudCI6MjMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQwNGE3MDAwMmFkNzZjMDBlOGM2OTNiOWMwZWQ1ZDhmY2E4YjdmZjI3MTAyNjk4ZDIzMWQxODdiMWFhMzBlMjEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImJmNTU5NzljZTczMDIwMzNlNmIyZmQ3ZDg4ZjUzN2EzYjhlMDkxZWEzMDVjODExZmZhMTI3NGJmNTc2NGVhNWUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjJmNjI5NTU1ZjBiNjUxNDZmOTgxZGNmOGRhZmJkZWVhMzJkNmMwOTIxZmVjYWRjYjMxMzIxNjdlMjEzMTE2ZjciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjhhMzUzMjU0NmJmZGNiMWE3MWYzNWRjYTUzM2YyMzJjZmVhNTg3NmE0MGQxNDU5ZGUzNmZlOTliNWQ4NzY0YmUifQ"
+        },
+        {
+          "resource": "repo://.github/workflows/_eval.yml#L361-L393",
+          "version": "repo-lines-v1:sha256:1865127a0fc7a5e91d1f252811c86ec1dc1647090411edfb9a666ac10c34d65f:eyJzZWxlY3RlZExpbmVDb3VudCI6MzMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU2NTI5ZWIwMzA4Y2FkN2MzZDkyNmZjYjU5YmI2MjYxMGM0MWRhMThiYTdkODVmMTMyNzJmMzNiYjJmNjA3NjQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImNlZGFmNWYyNTgxMmM3MDViOTA4MzIyNTczOWE1MzFjZmY5NmM4MDE3M2UyMTJmMzAzZWZjYjg5ZWU0MDc3NzIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjUwNDZhNGZiZGFkZDkyMDNhZDY1NDgxOTU5ODI5ODJkMTljNjNhYWVhODExZWI3ZmIzOGUzNzE1NzNkNjRhMDgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        },
+        {
+          "resource": "repo://.github/workflows/_eval.yml#L7-L98",
+          "version": "repo-lines-v1:sha256:4807b66d4d66d0df2df9d9123c33f684faaa823137ebe5bb821e0da900fafa4c:eyJzZWxlY3RlZExpbmVDb3VudCI6OTIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjJiYzczNTRkZjJmNjk1NGZiNjc3NmQwYzQ4YWYwMTYxNTIxZGI3ZmIyNmQ2ODJjZTgxNjc3MGY0YThjYjkxZDUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImYzYmJiZTU4ZWYwNmNlZmM3MjFmYTg5NWNkZTE3ODE3ZGE4N2EzNTI3MTQwNDdhMGEwMTNhZWE3NzEyNjkyNDkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImQwYjEzZWNjMDVjMjU5ZmMzZThlYjBmM2ZmNWE0MTlmOGU1ODM4NzU2MDc0NGI1ODFiNTQ4YmNhZGExY2Q1MjkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImI5ZGNkODdlY2UyMDY3MjZkMTBjMTFhNDcyZGQzMWRkMTkwMTEyZjUzZmFmYzZlMGVlZWQzY2JhOGY0NGM3ODEifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_4ede0fcd85f64d8c9b5fe2ea9d976d52",
+      "statement": "The local `uv_setup` composite action installs a pinned uv and requested Python version, enables a pruned dependency cache by default, and scopes cache keys to manifests, lockfiles, and requirements under the caller's working-directory input.",
+      "evidence": [
+        {
+          "resource": "repo://.github/actions/uv_setup/action.yml#L6-L47",
+          "version": "repo-lines-v1:sha256:f86ee1d336ba9364abb5cd3938961320106397c9cc47d6fa4f865e278d8e2f12:eyJzZWxlY3RlZExpbmVDb3VudCI6NDIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFkZWE1YTE3ZTE4ZGQ2ZDBjMzRiNGUzYTVjOTcxYTliN2FlYjYzM2Q2MWE1NTZiZTU0NDU2N2E0ZDkxMmFiOTQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImVlY2JiZDhlMTk1MDI2ODg1MjAxOWU2YzQ4NjEyMjhjZmMyYWJiMDE2M2M3ZmZjMzE1YWVjNmZlMjIxMDZjYjYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjhmZDY2OTk2NmU0YWQyYjZmZjc3NjM5NDhlZjlkZTI0YWZjNDhkMTRkMmY0YzY4NTBjYzY4ZGUzYjg1Yjk2NjUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-10-22T08:05:54.651Z"
+    "at": "2026-10-23T08:06:06.503Z"
   }
 }

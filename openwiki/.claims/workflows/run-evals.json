@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:bc742e16f566ae73fa2299a0a5bcaaf4aaf7df034b23a39cfd962a19da9605ce",
+  "pageVersion": "sha256:e17c0add0e4a35743763e3e62ce3d3ff3d36e539a1bc7302c4ac137b75f41376",
   "claims": [
     {
       "id": "claim_b860017fa5f346a49d6b77c4a8615a9c",
@@ -261,8 +261,8 @@
           "version": "repo-lines-v1:sha256:3708e50db302740c108aaa16fd9b84573461938dd6ee5d227b468521ab6daf4e:eyJzZWxlY3RlZExpbmVDb3VudCI6OSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNzg3Yjg2YTMzMjVlOTA3OGQ1MGJjMTE3N2JkNjZiZmNmNTExODg0ODEwNTQyMmU0MGUwOGM5N2YxMzdiNmRkMiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNDM0MDJjYmJjOWE0NDRjYzYxOTVlZjJkNGIwODRiMjMyZTBkZTkwZDJlNTZhNGY3OTk1YjI4ZWVlMzAwYTFmNSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZTVkNGIzZmI1MTU3OTA2ODc5MTYzYWI3NTE1OGZlNzNmYzMwMDBmNTE1YjZjMzA3YzkzNGM5MzNjOGFkNTMxMSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZDY3NjgxYjM4Zjk3ZTI0YjNhNWU4Y2ZkZTJjNzUxMzAxZjMyMmVmZmMzOGYwMGVhMzc5ZTg0MDM3NGU2YjRiMCJ9"
         },
         {
-          "resource": "repo://libs/evals/Makefile#L41-L80",
-          "version": "repo-lines-v1:sha256:756b7ec1bd6faa3397c2a3cb9aa81f747cd644d4e5f3e56339ca3c63e2cafaba:eyJzZWxlY3RlZExpbmVDb3VudCI6NDAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImNkZGVlM2ExZDhhMWE3Nzg0NTBlZGRhMmI4NzIzMDkxYmU5NWQyYzFkMjYyMDJlYjMyODIwMTllMDk2ZTNkOWIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImNlZTljYjQ2NmU5MDdkNTQ3YTgwODFmODU5YWE1NzQ0NTkzMjUzOGYyODk5ODI4MDg1MzI4MmI0MmRkZGJjYWEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjFiNzIzMTVlYmEwODdjZWIzNGFlNTVmNjA5OWE3YjI2NmUyNDcyY2Q2NWU2ZWZiZjhhMjA5MzgwMWMxYTE3MGYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijg0NjQ1ZmJhMzhkMjNlN2YxMjc4ZWU1Zjk3ZGM1ZjM0ZGI3MTYwNzA2NmJhMDYzNjQyMjM3YmFjYmIxOTU2MGQifQ"
+          "resource": "repo://libs/evals/Makefile#L41-L84",
+          "version": "repo-lines-v1:sha256:9a10076c4601563f126a502150b7e25fb14bd4d8bd357730ab12b1b14c01e27b:eyJzZWxlY3RlZExpbmVDb3VudCI6NDQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImNkZGVlM2ExZDhhMWE3Nzg0NTBlZGRhMmI4NzIzMDkxYmU5NWQyYzFkMjYyMDJlYjMyODIwMTllMDk2ZTNkOWIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImYwMDExMzk1ZWYwZTBlZjU2ZGZkMWU1Y2RiYTA1OTE4MzBhZjY3NzA5NDYwOGQ4NDc5ZjgwYjZhMjkxNmRhNzciLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjFiNzIzMTVlYmEwODdjZWIzNGFlNTVmNjA5OWE3YjI2NmUyNDcyY2Q2NWU2ZWZiZjhhMjA5MzgwMWMxYTE3MGYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImRiOWMxZjE2ZGI1NTdhODhkMDg2ZmRjY2JkZTdhN2ZkMDhjODVmYzFlNDYxNzc4MTQ1YTdmNGY5MjY0ZGE5NDUifQ"
         }
       ]
     },
@@ -449,26 +449,68 @@
       ]
     },
     {
-      "id": "claim_5ac59dc49ee343a195d4dbee14f79393",
-      "statement": "The reusable benchmark workflow installs a package test group and invokes its `make bench` target through CodSpeed in wall-time mode using OIDC; its memory step is conditional on `has-memory-benchmarks`, and the daily/manual nightly caller currently runs only deepagents and code.",
+      "id": "claim_ba9d60dc9796406d9cb6c2ff54095239",
+      "statement": "The reusable Harbor workflow validates required LangSmith, model-provider, verifier, and research web-search credentials before sandbox execution; it rejects unknown sandbox environments and missing secrets rather than running a materially incomplete benchmark.",
       "evidence": [
         {
-          "resource": "repo://.github/workflows/_benchmark.yml#L34-L72",
-          "version": "repo-lines-v1:sha256:ac35fa46029eb5f131846bc83e8a25afb936a05bcab19e87440d05a1ad6a0b11:eyJzZWxlY3RlZExpbmVDb3VudCI6MzksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU5ZDgwMTU0ZWQ0MmZjNWM3NzliMTMzMTU3OGI1OGI4OWM4MDFlYWNlNzRmMjRjZDQ4ZWI0YTIzNTc5NDBhOTUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjkzODc5OGFiNzMwMDdjNWQ3YTdmODI2NTJhNzA4ZTg2OTNjMjE0ZmFlNDYwOWY1MzY5N2M0MjE0MTc0NzNkODkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjRiNjUzNTk1OTcwZDhiYWVkNmIzMTAxMmYxOTdhYzdkM2M2M2E2NWRlNjY1ZWYzNjNmZjkxNTNiZmIzYjM2ZjIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+          "resource": "repo://.github/workflows/_harbor_run.yml#L312-L428",
+          "version": "repo-lines-v1:sha256:5535cad068ec1881aff2651fbc95555194e78f1b66e4636df75033602b182948:eyJzZWxlY3RlZExpbmVDb3VudCI6MTE3LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIwMDQ0NmNmNmJkOWM3OGI0Y2U4NDkzZDc3ZTc2YTVmZTdlNTljYzgwYTQ2MmRiNGRmMzU0MmIzMDJhNzhlMzg5IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJiZDBmN2YxZDZmNGNjMDJhZjA4YjFkZDVmNDM4ZDFjNDlmMGMzZjRkY2Q4ZTBhYjEyZjU3MDI0NGQ3Yzc4OGZmIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJhZTY0ZTYyOWJjMzhmZTE2NWZmMjgwMzY1NzdlMWNlN2Y0ZTljNzBiNzhmN2NlZjg0NDIxODA2ZjUwYWIyMDU5IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiJjMTQ0YmMzODJjMGFiNTkwMzhlODIxYTRlNDM4OGQ4MzBlOTlhZTNmNmZjNGU0ZGZiOWI2ZGFmNzU4NWJiYmNiIn0"
+        }
+      ]
+    },
+    {
+      "id": "claim_b9e9a966faf94edeb0a65f5505dd8e7b",
+      "statement": "The unified workflow resolves a per-model flat matrix in its prep job, delegates leaf benchmark execution to the reusable Harbor workflow, and combines downloaded Harbor artifacts into an uploaded cross-model result; its separate best-effort usage job has the LangSmith key while the publishing job has repository-write permission.",
+      "evidence": [
+        {
+          "resource": "repo://.github/workflows/unified_evals.yml#L200-L216",
+          "version": "repo-lines-v1:sha256:ec45ef3349d1eea451d20d3d7c3d26443d8361d879e794288a2b77846491d062:eyJzZWxlY3RlZExpbmVDb3VudCI6MTcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijk2ZjcxNWViODAzZjM0ZDhiODA5MjZmYzNhMTFjMDExODVlYWY2ZmNkMWM5MDViNjUwMjg5MjFhMWRkYjlmOTUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI5Y2Y4YzIyZTBmZTg0NDAwNTUyOWU3ZGRjMGZlYzlmNTYxNjg3ODEwNDk5OGQyZDcyYjg2YjczODhkM2MzOGIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjRjOTY2ZWJkNDcyODg2NzM0OTFiOTNkYmZkZjhlZjNkYjlmYzAwY2Q2YzZkYjQ0YWI5YWMxYjA1MjQ3MWFkZWYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImMyM2Y2NGU4NzQ4Y2YzMWNhZDgwNmIxM2MzNjVlMzM5YTQzZTkyNmFiNjEzMjU4ODJkZWU1OTZmYmJiYThhZDQifQ"
         },
         {
-          "resource": "repo://.github/workflows/_benchmark_nightly.yml#L1-L39",
-          "version": "repo-lines-v1:sha256:0259d65e3b0c920e2665b9c2fd5c552a86e8c1f7d21b4d8ce266090e0bb17eb4:eyJzZWxlY3RlZExpbmVDb3VudCI6MzksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjRmYmJkMDY0NGVhYmI1NTYyZjJjY2MyMmFlMDA2ZjAxNjNiMTk3MWM2OWYyM2EyNzZmNGQ2NmEwN2VkMjcyYTQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU5ZDVkZDNlOGEyNGQ1Y2VlMjhlYTIzZjdiNTRlYWY1MjQ2OGZmMWVkY2FhNWVmNTg5NzBmMWQ5NWYxMjRmNWMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+          "resource": "repo://.github/workflows/unified_evals.yml#L290-L325",
+          "version": "repo-lines-v1:sha256:7b485b3da89105b3185119edd8da3e326f8469f9b73de7748f4d2f02652fa738:eyJzZWxlY3RlZExpbmVDb3VudCI6MzYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjE1NmMyZjA4ZGQ3MjdkOWQxYTgwMTYwYzNiY2NhYWJiMDg1OWRiZGEyMzliOGYyYWVlZGJlZDE2NGVkMGZlOTEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjNiNDc4ZTQ0YjgxNjhmNDg3MDM1ODE1ODI1YWQ5ZGZiY2RkMzM0MzhjMDU5YjU0MDBlZThlYWUzODkzMDg0YTkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImI2MjFlOTU3ZjZmZWI0M2JkNmQxN2Y1YzVmNmYwZjBiNmRjMmU5YzVhZDU2Yzc2MzMxNWExNzNlYjQ0MGMwNzEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijg5MjdjNDRkYTEwMDlmMGZkZTIwYzgxZjQ5ZWQzMDRmZWZlMGIxYWIzYzI3ZGI0OGMzMTUzMjcxNzEzOWEzNjQifQ"
         },
         {
-          "resource": "repo://libs/DEVELOPMENT.md#L217-L221",
-          "version": "repo-lines-v1:sha256:9fef1ac6b0aeac98a74db40511c5f88e902a81184dfa41d49f0a31bb4adb465f:eyJzZWxlY3RlZExpbmVDb3VudCI6NSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiZWQ2YzY5Y2ZjYTQyNzI0MzgyYmJiZjdkOTY1YjJjZGUwYzBiMjAxY2FkNzUyNWU2M2U2MDIxYmFmMTk3NDE3MyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiYTJhMTI4ODA4OGNmN2JhOTE0YzUyZjcwZmEzZDYwM2QxNDQ3NTc4ZjBiZmJlNzlhOGFjNDczOWU3Y2RlZWYwMSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNGRlYTZiNmRjMDQ0NjU4MjNmNTdhOWM4ZTg2NmQ4NDYxYjBkMTQ3NWE0ZTg0M2M5MTU2OTRmZjc5YTFjODIzOSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiYWFlZWY5NTdlMjE4MTNjMTBmY2Q3M2EwYWYzOTE2NjEyODQ1NTA2NTExMzQwYjEyZWIzYTNkMWZjZmVlODAzNiJ9"
+          "resource": "repo://.github/workflows/unified_evals.yml#L327-L346",
+          "version": "repo-lines-v1:sha256:a48af362f9f7308936fdeb213572a839fe7d6bb4873adbf364bff9409b203d56:eyJzZWxlY3RlZExpbmVDb3VudCI6MjAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE2ZjMwMDA0NmMzOTNlMzMxZjMxZmQ1YmM1NDI3NDQ4MTdmODgzMWVhNWNlOWU3OGIzZWRlZTBkNjJmZWVhZGMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImYyMmU1Yjc5YjJhNWUyMTA1YmE3NWQ2ZDlmY2VlYzBlNDA3OWZhN2U5ZmNlOTcyYWIzYzMxNGUxZDU1MGNiNWEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjZmZTIyMzliMWEwN2JmM2E2ODhjYTU3ZDY3M2M3ZWM5OTBiYmFlMWQ5ZDJlOTA3Y2FlOWEyYjQ2ODRiZjY1OGUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjdlN2Q5YzU4MTg1NDE5M2NkM2UyZWEyYjcyOWQ2YTBkOGNiNDk3ZTk5ZTNkYjJhZmU2MzU2YmM4NmRjYzlmMTcifQ"
+        },
+        {
+          "resource": "repo://.github/workflows/unified_evals.yml#L388-L510",
+          "version": "repo-lines-v1:sha256:c90b70ea15491e35077e09f5c1d11fa2248f216a41b24ab7799b14676990496e:eyJzZWxlY3RlZExpbmVDb3VudCI6MTIzLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI0MGI5ZjEzNjFkYzhlMWI1OTY5ZWJmYzY3Njc4NzJiYjU5ZTdmMzJhM2Y4NTVjM2Y2OThjYmMzY2ZhZTE2N2MwIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI0YzM1NjVkM2MyYjcxN2ZiOTQ0M2Q0OTYxZjM5ZjI2MDlkOWEyMzA1M2U4ZTU1MWRjMDA1OGUzNmE5YzZlY2FjIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiIzNTA3YTQ4Mzc2MmJkYzUyODVlMjRkNmM0ZWE3NTVhYTE3MmYyYTZlOWI1Njg2Y2Y0OTgzYjc1ZGQ3Y2ZjY2UyIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI1ZTA2YjJlOTI4YmEyNGM1YjJjZjgwNzczNGM0ODY2MDdkM2U4Y2I2ZDg5MmFlYzliZjc4YzMwYmM1Mjc3ODc4In0"
+        }
+      ]
+    },
+    {
+      "id": "claim_5bd7614b6f4a43ab85f467a36de75cb4",
+      "statement": "The reusable Harbor workflow uses a shard matrix with fail-fast disabled and derives an aggregate matrix per category; when callers supply a flat matrix, it preserves its per-leaf dataset, category, graph, and shard information for multi-category campaigns.",
+      "evidence": [
+        {
+          "resource": "repo://.github/workflows/_harbor_run.yml#L132-L177",
+          "version": "repo-lines-v1:sha256:3a5feec4016d758d0a057e52460d799e864d37c0ad1c6aef292147ffa401802b:eyJzZWxlY3RlZExpbmVDb3VudCI6NDYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM4OTQ5YTMxYWRhYTc5MzY5ODhhMzcxNDdkOTA3ZTViOGUzYjM4Y2U1NWM3OGU5YjZlNmE4MmUwYTJmZTc1ZDciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBhMGVjMTU5NjBkODEzMTA4MjU4MTUzOGVkNzBiZjExYTRhZjVkZmIzMmE4NWU2YjdmYWNmNzk1MGFiOTI5MjUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImZiY2EwZGEwNTkzYTZiMjI3ZjY5OGVmMTQzYjU5YTFkOTYwNDg4MWYyMTRmODFkMDJiMTRiNTRjN2U5Y2YwYmYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjFkZjFjOGVhYmU3MzQ1MTE3YzM2NmQyOTE0YWExMDlkNjJiNDQ0YjBiZWJlZjY1MTNiM2MxY2QwNzViOTZlOGIifQ"
+        },
+        {
+          "resource": "repo://.github/workflows/_harbor_run.yml#L179-L252",
+          "version": "repo-lines-v1:sha256:5e0bcad9070a81bdbd139fa9a8d846e8422e31eadae4268ec0ba52a2facbe365:eyJzZWxlY3RlZExpbmVDb3VudCI6NzQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjA3ZGQ1YjM0M2RkNWQ4YTYyNjVjZGUzYjk5OWVhNTU4OTE3NGIwMzkxZmQ3ZjA0MmZiMTA1YmNiYjY1ZmRjNGIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg2OWQ2YjRhMDUzNzVkNWM2NzQ2MTgwNzVlOTkzZDJmZWFhNGU1MTAwZWQ1YTkyMjMyODlmMWJjOGIzNzQwYzAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjAwOWRjZmFmNTA1NGRiNWRmODcyNzhmNTFiMWZlMDUwN2IxODE1ZjhmZThjYzM1YTgzYmIzNmRhM2Q1YzRhZTEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImNiNGUzOGExNTU5NTcwYjhjYmZkYWMyNjRjNTM2NTE4YzFkNjY3YWU1ZTAwMGFkYmViMzI1OWQ4YzhiZDY5NTkifQ"
+        },
+        {
+          "resource": "repo://.github/workflows/_harbor_run.yml#L268-L303",
+          "version": "repo-lines-v1:sha256:8f99868471c8c386f2c8e0b9a225c6b7329ffd0b343263a82c5c7c33ffc9bd6d:eyJzZWxlY3RlZExpbmVDb3VudCI6MzYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjVhMTNmYzNjNGY4YjNlYzk5ZGIzNzVjYmE1YjhmMTU1ZjNjOTRiZDZhNzkxYjEwYTEwYTI2ODA4ODBiNDY1NTMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY2NjMwNmM2MWRkZmRhNmVmMjI1NGZhYzAzMzU0MTVjZTBmMTZmMjZmZjlkOWZlMjNiOTI4MjlmYzFhODJiM2QiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjRkZWMxZDc4MmYzNTI0ZjBmNWRlOTcxNDBkZjY1MGU2MmZjYzFiZWU5ZWZhNjgwMzlkMWQxZWQ5YjVkZDM3Y2YiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjlhNzBiYTE5YjRlMjU1NGU2NTI2MTFkNWZjMDVhZTNmYjk4NjYyZDU1OGZmM2JhMzMwZmFjNDBiOTdhZjhlNjQifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_97a45bbcbcd64df5aad2e0fa1444d26b",
+      "statement": "For branch comparisons, the Harbor workflow validates and fetches the resolved branch SHA, overlays only the four agent-under-test libraries, and leaves the Harbor harness at the workflow revision.",
+      "evidence": [
+        {
+          "resource": "repo://.github/workflows/_harbor_run.yml#L552-L586",
+          "version": "repo-lines-v1:sha256:57d5642de80d6cf83923f07b7e3c3ff593b24db941c422a8b2e8b8fb0838d6ba:eyJzZWxlY3RlZExpbmVDb3VudCI6MzUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE4OGZhZjU2MjAwNjg2ZmViMzJiNDRmYmUwYmE4ODhmZDlhNTJkYWViYWY2NmI3ZDJjZjUyNzQ2MmE1YmI4NmUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjZlOGQyY2MzNmVjZWE0NzcwMjc3ZGRhOTMyNTgxOWM3OTk2NzgyNWIyOThjNjJiNGI5MWFjZDhiYzRmODY5YjEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImNjZjA2NjQwYTY5OGJhYWI4MjRiMWU0YWE0MjEwZGNlZDJmZTdlMzM3ZTRiYTA0MjQ0N2EyNDlmZjQ4M2M1MTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImZhNTg3YTFkZGIwMzA1YjE1OGE1MjZlOWZkODJhYjMwZDQ1NTg2M2NiMWY2Nzg0MWQ1ZDJjMDIzOWY4Mjc4NGUifQ"
         }
       ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-10-21T08:05:42.350Z"
+    "at": "2026-10-23T08:06:06.503Z"
   }
 }

@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:499f06b2d79a757a0f9ea34fb2571c0407889cd1a0ba7fea2573f94c1ef85525",
+  "pageVersion": "sha256:2eb7571c072ffb927e5c51be04cea0a470b6e591d737d1b8533a696ae0ac1784",
   "claims": [
     {
       "id": "claim_3f6e4d8c4f6f470a94669778d16a96b1",
@@ -22,7 +22,7 @@
         },
         {
           "resource": "repo://libs/deepagents/deepagents/middleware/subagents.py",
-          "version": "repo-file-v1:sha256:f4a40887da485863f593be6d242fe3bb663943c55f6f49116db49a02789505d6"
+          "version": "repo-file-v1:sha256:66d1a30c8669309a306db73f0ce7376ee9ca1e627e7a4456b57bde7f84fec2e5"
         }
       ]
     },
@@ -36,7 +36,7 @@
         },
         {
           "resource": "repo://libs/deepagents/deepagents/middleware/subagents.py",
-          "version": "repo-file-v1:sha256:f4a40887da485863f593be6d242fe3bb663943c55f6f49116db49a02789505d6"
+          "version": "repo-file-v1:sha256:66d1a30c8669309a306db73f0ce7376ee9ca1e627e7a4456b57bde7f84fec2e5"
         }
       ]
     },
@@ -98,7 +98,7 @@
         },
         {
           "resource": "repo://libs/deepagents/tests/unit_tests/test_async_subagents.py",
-          "version": "repo-file-v1:sha256:19d2a0f0570273e2870d52a0a9894895cb8e6f13d33105b106660687db94c8bd"
+          "version": "repo-file-v1:sha256:c35a3b6977a03f38f0b067591e40c67dc895b847e8488d755461376edcd33dcb"
         }
       ]
     },
@@ -112,7 +112,7 @@
         },
         {
           "resource": "repo://libs/deepagents/tests/unit_tests/test_async_subagents.py",
-          "version": "repo-file-v1:sha256:19d2a0f0570273e2870d52a0a9894895cb8e6f13d33105b106660687db94c8bd"
+          "version": "repo-file-v1:sha256:c35a3b6977a03f38f0b067591e40c67dc895b847e8488d755461376edcd33dcb"
         }
       ]
     },
@@ -130,7 +130,7 @@
         },
         {
           "resource": "repo://libs/deepagents/tests/unit_tests/test_async_subagents.py",
-          "version": "repo-file-v1:sha256:19d2a0f0570273e2870d52a0a9894895cb8e6f13d33105b106660687db94c8bd"
+          "version": "repo-file-v1:sha256:c35a3b6977a03f38f0b067591e40c67dc895b847e8488d755461376edcd33dcb"
         }
       ]
     },
@@ -144,7 +144,7 @@
         },
         {
           "resource": "repo://libs/deepagents/tests/unit_tests/test_async_subagents.py",
-          "version": "repo-file-v1:sha256:19d2a0f0570273e2870d52a0a9894895cb8e6f13d33105b106660687db94c8bd"
+          "version": "repo-file-v1:sha256:c35a3b6977a03f38f0b067591e40c67dc895b847e8488d755461376edcd33dcb"
         }
       ]
     },
@@ -154,7 +154,7 @@
       "evidence": [
         {
           "resource": "repo://libs/deepagents/deepagents/middleware/subagents.py",
-          "version": "repo-file-v1:sha256:f4a40887da485863f593be6d242fe3bb663943c55f6f49116db49a02789505d6"
+          "version": "repo-file-v1:sha256:66d1a30c8669309a306db73f0ce7376ee9ca1e627e7a4456b57bde7f84fec2e5"
         }
       ]
     },
@@ -248,7 +248,7 @@
         },
         {
           "resource": "repo://libs/deepagents/tests/unit_tests/test_async_subagents.py",
-          "version": "repo-file-v1:sha256:19d2a0f0570273e2870d52a0a9894895cb8e6f13d33105b106660687db94c8bd"
+          "version": "repo-file-v1:sha256:c35a3b6977a03f38f0b067591e40c67dc895b847e8488d755461376edcd33dcb"
         }
       ]
     },
@@ -265,10 +265,56 @@
           "version": "repo-file-v1:sha256:238ca0289ce3987e2e2335da2c42419bd80fcb0bdff0297a68677dcd58c65f9b"
         }
       ]
+    },
+    {
+      "id": "claim_c0db9b90d3fd48099b5886825c3ca4cd",
+      "statement": "The Code CLI loads skills from ordered built-in, plugin, user, `.agents`, project, and experimental Claude filesystem sources, with later sources overriding same-named skills and individual source failures isolated; plugin skill discovery is recursive and namespaces names.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/skills/load.py",
+          "version": "repo-file-v1:sha256:383804e40498e406934c9a090c6207da6dd850642142b0a036cd43c35e99f78a"
+        },
+        {
+          "resource": "repo://libs/code/tests/unit_tests/skills/test_load.py",
+          "version": "repo-file-v1:sha256:e884c9b2f0dee479dcf431fa46b36336e2e39ceebd2045cf4eabf14a92c00a76"
+        }
+      ]
+    },
+    {
+      "id": "claim_8f1349ae7a6741678970a46cd7c687d6",
+      "statement": "The Code plugin skills adapter enforces containment when reading selected `SKILL.md` files: an outside resolved path triggers a `skill_trust` interrupt, and an approved directory is persisted then retried, while denial, failed persistence, empty roots, or a post-approval path change prevents the read.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/plugins/adapters/skills_middleware.py",
+          "version": "repo-file-v1:sha256:8049feb266707460e3b81125dff56f205060a17d2736d0efe0eb7135fee689e2"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/skills/load.py",
+          "version": "repo-file-v1:sha256:383804e40498e406934c9a090c6207da6dd850642142b0a036cd43c35e99f78a"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/skills/trust.py",
+          "version": "repo-file-v1:sha256:060cc32e3bbb40abde600958f4402bd33016014a25255ebf4b85ba540aa59ad2"
+        }
+      ]
+    },
+    {
+      "id": "claim_10e6429f838a44018de1b99814ac7e17",
+      "statement": "Code skill-directory trust is persisted as a versioned store under `~/.deepagents/.state/skill_trust.json` with atomic writes and fail-closed enforcement; verified trusted roots must still resolve to their stored canonical paths, so corrupt or incompatible stores and post-approval symlink swaps do not grant access.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/skills/trust.py",
+          "version": "repo-file-v1:sha256:060cc32e3bbb40abde600958f4402bd33016014a25255ebf4b85ba540aa59ad2"
+        },
+        {
+          "resource": "repo://libs/code/tests/unit_tests/skills/test_skill_trust.py",
+          "version": "repo-file-v1:sha256:f426e7cdbd2a9766282088590eb5b8e24804cf9cf718d0ab74a1c8f62d380c88"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-10-22T08:05:54.651Z"
+    "at": "2026-10-23T08:06:06.503Z"
   }
 }

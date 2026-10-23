@@ -10,6 +10,7 @@ from textual.screen import ModalScreen, Screen
 from textual.widgets import Input, Markdown, Static
 from textual.widgets.text_area import Selection
 
+from deepagents_code import _env_vars
 from deepagents_code.app import DeepAgentsApp
 from deepagents_code.tui.widgets.messages import (
     AppMessage,
@@ -105,18 +106,30 @@ async def test_selection_action_dismissed_by_keypress(key: str) -> None:
 
 
 @pytest.mark.parametrize(
-    ("config", "enabled"),
+    ("config", "env", "enabled"),
     [
-        ("", True),
-        ("[ui]\nask_about_selection = false\n", False),
-        ('[ui]\nask_about_selection = "invalid"\n', True),
+        ("", None, True),
+        ("[ui]\nask_about_selection = false\n", None, False),
+        ('[ui]\nask_about_selection = "invalid"\n', None, True),
+        ("", "false", False),
+        ("[ui]\nask_about_selection = false\n", "true", True),
+        ("[ui]\nask_about_selection = false\n", "invalid", False),
     ],
 )
 async def test_selection_action_config(
-    tmp_path: Path, config: str, *, enabled: bool
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    config: str,
+    env: str | None,
+    *,
+    enabled: bool,
 ) -> None:
-    """The action defaults on and honors an explicit config opt-out."""
+    """The action defaults on and honors the env var over config."""
     (tmp_path / "config.toml").write_text(config)
+    if env is None:
+        monkeypatch.delenv(_env_vars.ASK_ABOUT_SELECTION, raising=False)
+    else:
+        monkeypatch.setenv(_env_vars.ASK_ABOUT_SELECTION, env)
     app = DeepAgentsApp()
     async with app.run_test() as pilot:
         message = UserMessage("selected text")
@@ -125,6 +138,27 @@ async def test_selection_action_config(
         await _drag_select(pilot, message)
         assert app.screen.get_selected_text()
         assert bool(app.query(SelectionAction)) is enabled
+
+
+async def test_selection_action_config_applies_on_reload(tmp_path: Path) -> None:
+    """`/reload` applies a config change without a restart."""
+    config = tmp_path / "config.toml"
+    config.write_text("")
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        message = UserMessage("selected text")
+        await app.query_one("#messages", Container).mount(message)
+        await pilot.pause()
+        await _drag_select(pilot, message)
+        assert app.query(SelectionAction)
+
+        config.write_text("[ui]\nask_about_selection = false\n")
+        await app._run_reload()
+        await pilot.pause()
+        assert not app.query(SelectionAction)
+        await _drag_select(pilot, message)
+        assert app.screen.get_selected_text()
+        assert not app.query(SelectionAction)
 
 
 @pytest.mark.parametrize(

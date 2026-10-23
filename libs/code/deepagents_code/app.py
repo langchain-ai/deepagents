@@ -4132,7 +4132,8 @@ class DeepAgentsApp(App):
         )
         """Whether selecting conversation text shows "Ask about this".
 
-        Read once at startup from `[ui].ask_about_selection`. On by default.
+        Read at startup and on `/reload` from `DEEPAGENTS_CODE_ASK_ABOUT_SELECTION`
+        or `[ui].ask_about_selection`. On by default.
         """
 
         self._selection_action: SelectionAction | None = None
@@ -18316,6 +18317,11 @@ class DeepAgentsApp(App):
 
                 clear_caches()
                 self._sync_status_model()
+                self._ask_about_selection = _load_bool_display_preference(
+                    "display.ask_about_selection", fallback=True
+                )
+                if not self._ask_about_selection:
+                    self._dismiss_selection_action()
             except OSError, ValueError:
                 logger.exception("Failed to reload configuration")
                 await self._mount_message(

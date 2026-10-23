@@ -83,6 +83,7 @@ if TYPE_CHECKING:
     from langchain_core.language_models import BaseChatModel
     from langchain_core.runnables import RunnableConfig
     from langgraph.runtime import Runtime
+    from starlette.applications import Starlette
 
 KNOWN_MODEL = "claude-sonnet-4-5"
 KNOWN_PROVIDER = "anthropic"
@@ -2844,3 +2845,143 @@ async def test_streamed_side_answer_persists_completed_usage(
     assert cost["total_cost_usd"] > 0
     assert await asyncio.to_thread(load_cost, THREAD_ID) == cost
     assert recorder.drain(THREAD_ID) == []
+
+
+async def _write_usage_checkpoint(path: Path, values: dict[str, object]) -> None:
+    """Commit one root checkpoint to a real SQLite checkpoint DB."""
+    from langgraph.checkpoint.base import empty_checkpoint
+    from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+
+    checkpoint = empty_checkpoint()
+    checkpoint["channel_values"] = values
+    config: RunnableConfig = {
+        "configurable": {"thread_id": THREAD_ID, "checkpoint_ns": ""}
+    }
+    async with AsyncSqliteSaver.from_conn_string(str(path)) as saver:
+        await saver.aput(config, checkpoint, {}, {})
+
+
+def _usage_reader(app: Starlette) -> Callable[[str], Awaitable[object]]:
+    """Serve `RemoteAgent` HTTP reads from the in-process dcode routes."""
+    from httpx import ASGITransport, AsyncClient
+
+    async def read(path: str) -> object:
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.get(path)
+        assert response.status_code == 200
+        return response.json()
+
+    return read
+
+
+async def test_usage_route_settles_cost_and_cache_without_full_state(
+    side_cost_db: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from datetime import UTC, datetime
+
+    from deepagents_code import btw_api, btw_cost, offload_api
+    from deepagents_code.app import DeepAgentsApp
+    from deepagents_code.client.remote_client import RemoteAgent
+
+    monkeypatch.setattr(btw_api, "_database_path", lambda: side_cost_db)
+    requested_at = datetime.now(UTC).isoformat()
+    await _write_usage_checkpoint(
+        side_cost_db,
+        {
+            "messages": [HumanMessage("history " * 1000)],
+            "_session_cost_usd": 1.25,
+            "_last_model_request_at": requested_at,
+            "_last_cache_model_spec": f"{KNOWN_PROVIDER}:{KNOWN_MODEL}",
+            "goal": "not a usage channel",
+        },
+    )
+    side = cost_tracking._empty_cost_breakdown()
+    side.update(total_cost_usd=0.5, request_count=1)
+    await asyncio.to_thread(btw_cost._persist_cost, THREAD_ID, side)
+
+    remote = RemoteAgent("http://test")
+    remote._graph = MagicMock()
+    remote._graph.client.http.get = _usage_reader(offload_api.app)
+    app = DeepAgentsApp(agent=MagicMock(), thread_id=THREAD_ID)
+    monkeypatch.setattr(app, "_remote_agent", lambda: remote)
+    full_state = AsyncMock(side_effect=AssertionError("full state was read"))
+    monkeypatch.setattr(app, "_get_thread_state_values", full_state)
+    activity = AsyncMock()
+    monkeypatch.setattr("deepagents_code.sessions.refresh_thread_activity", activity)
+
+    await app._sync_session_cost_from_checkpoint()
+
+    full_state.assert_not_awaited()
+    assert app._displayed_cost_usd == pytest.approx(1.75)
+    assert app._last_model_request_at == requested_at
+    assert app._last_cache_model_spec == f"{KNOWN_PROVIDER}:{KNOWN_MODEL}"
+    activity.assert_awaited_once_with(THREAD_ID, datetime.fromisoformat(requested_at))
+    usage = await _usage_reader(offload_api.app)(f"/dcode/threads/{THREAD_ID}/usage")
+    assert usage == {
+        "cost": side,
+        "checkpoint": {
+            "_session_cost_usd": 1.25,
+            "_last_model_request_at": requested_at,
+            "_last_cache_model_spec": f"{KNOWN_PROVIDER}:{KNOWN_MODEL}",
+        },
+    }
+
+
+@pytest.mark.parametrize("database", ["missing", "empty", "other-thread"])
+async def test_usage_route_reports_no_channels_without_a_checkpoint(
+    database: str, side_cost_db: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from deepagents_code import btw_api, offload_api
+
+    monkeypatch.setattr(btw_api, "_database_path", lambda: side_cost_db)
+    if database == "empty":
+        await asyncio.to_thread(lambda: sqlite3.connect(side_cost_db).close())
+    elif database == "other-thread":
+        await _write_usage_checkpoint(side_cost_db, {"_session_cost_usd": 1.0})
+    thread_id = "another-thread" if database == "other-thread" else THREAD_ID
+    usage = await _usage_reader(offload_api.app)(f"/dcode/threads/{thread_id}/usage")
+    assert usage == {"cost": None, "checkpoint": {}}
+
+
+async def test_server_without_usage_route_falls_back_to_full_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from httpx import Request, Response
+    from langgraph_sdk.errors import NotFoundError
+
+    from deepagents_code.app import DeepAgentsApp
+    from deepagents_code.client.remote_client import RemoteAgent
+
+    side = cost_tracking._empty_cost_breakdown()
+    side.update(total_cost_usd=0.5, request_count=1)
+
+    missing = NotFoundError(
+        "Not found",
+        response=Response(404, request=Request("GET", "http://test/usage")),
+        body=None,
+    )
+
+    def read(path: str) -> object:
+        if path.endswith("/usage"):
+            raise missing
+        return {"cost": side}
+
+    remote = RemoteAgent("http://test")
+    remote._graph = MagicMock()
+    http_get = AsyncMock(side_effect=read)
+    remote._graph.client.http.get = http_get
+    app = DeepAgentsApp(agent=MagicMock(), thread_id=THREAD_ID)
+    monkeypatch.setattr(app, "_remote_agent", lambda: remote)
+    full_state = AsyncMock(return_value={"_session_cost_usd": 2.0})
+    monkeypatch.setattr(app, "_get_thread_state_values", full_state)
+
+    for _ in range(2):
+        await app._sync_session_cost_from_checkpoint()
+
+    assert app._displayed_cost_usd == pytest.approx(2.5)
+    assert full_state.await_count == 2
+    # A missing route is remembered, so later turns skip the extra request.
+    routes = [call.args[0].rsplit("/", 1)[-1] for call in http_get.await_args_list]
+    assert routes == ["usage", "cost", "cost"]

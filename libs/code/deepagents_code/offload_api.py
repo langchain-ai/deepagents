@@ -23,7 +23,7 @@ from starlette.routing import Route
 
 from deepagents_code._async import _join_task_deferring_cancellation
 from deepagents_code._cli_context import CLIContextSchema
-from deepagents_code.btw_api import btw, btw_cost
+from deepagents_code.btw_api import btw, btw_cost, thread_usage
 from deepagents_code.cost_tracking import prepare_operation_cost
 from deepagents_code.hooks.interrupt import build_hook_interrupt_payload
 from deepagents_code.hooks.server_middleware import (
@@ -1395,6 +1395,7 @@ app = Starlette(
         ),
         Route("/dcode/threads/{thread_id:str}/btw", btw, methods=["POST"]),
         Route("/dcode/threads/{thread_id:str}/cost", btw_cost, methods=["GET"]),
+        Route("/dcode/threads/{thread_id:str}/usage", thread_usage, methods=["GET"]),
         Route(
             "/dcode/threads/{thread_id:str}/workspace",
             workspace,

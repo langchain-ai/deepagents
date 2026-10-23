@@ -1,13 +1,19 @@
 """Floating action for asking about selected conversation text."""
 
-from collections.abc import Collection
+from __future__ import annotations
 
-from textual.events import Click, MouseUp
+from typing import TYPE_CHECKING
+
 from textual.message import Message
-from textual.widget import Widget
 from textual.widgets import Static
 
 from deepagents_code.tui.widgets.messages import DiffMessage, UserMessage
+
+if TYPE_CHECKING:
+    from collections.abc import Collection
+
+    from textual.events import Click, MouseUp
+    from textual.widget import Widget
 
 _TRANSCRIPT_IDS = frozenset(
     {

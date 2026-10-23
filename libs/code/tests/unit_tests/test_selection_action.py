@@ -1,13 +1,12 @@
 """Tests for asking about selected conversation text."""
 
-from collections.abc import Callable
-from pathlib import Path
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
 
 import pytest
 from textual.containers import Container
-from textual.pilot import Pilot
 from textual.screen import ModalScreen, Screen
-from textual.widget import Widget
 from textual.widgets import Input, Markdown, Static
 from textual.widgets.text_area import Selection
 
@@ -25,6 +24,13 @@ from deepagents_code.tui.widgets.selection_action import (
     SelectionAction,
     is_transcript_selection,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+    from pathlib import Path
+
+    from textual.pilot import Pilot
+    from textual.widget import Widget
 
 
 async def _drag_select(pilot: Pilot[None], widget: Widget) -> None:

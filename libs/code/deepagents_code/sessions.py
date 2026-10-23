@@ -563,9 +563,11 @@ async def list_threads(
 
         where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
 
+        # Aggregate every column except `thread_id`. A bare column makes SQLite
+        # read one table row per group, which drops the covering-index plan.
         query = f"""
             SELECT thread_id,
-                   json_extract(metadata, '$.agent_name') as agent_name,
+                   MAX(json_extract(metadata, '$.agent_name')) as agent_name,
                    MAX(json_extract(metadata, '$.updated_at')) as updated_at,
                    MAX(checkpoint_id) as latest_checkpoint_id,
                    MIN(COALESCE(json_extract(metadata, '$.created_at'),

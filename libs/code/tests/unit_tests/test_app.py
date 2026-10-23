@@ -1280,6 +1280,60 @@ class TestStartupSequence:
                 app.screen.action_cancel()
                 await asyncio.wait_for(launch_task, timeout=2)
 
+    async def test_server_startup_does_not_wait_for_post_paint_init(self) -> None:
+        """The server should spawn even while git and post-paint init are pending."""
+        app = DeepAgentsApp(
+            server_kwargs={"assistant_id": "agent", "model_name": None},
+            model_kwargs={"model_spec": None},
+        )
+        branch_gate = asyncio.Event()
+
+        async def stalled_branch_resolution() -> None:
+            await branch_gate.wait()
+
+        app._resolve_git_branch_and_continue = stalled_branch_resolution  # ty: ignore
+        app._post_paint_init = AsyncMock()  # ty: ignore
+        started_groups: list[str | None] = []
+
+        def fake_run_worker(work: object, *args: object, **kwargs: object) -> MagicMock:
+            del args
+            group = kwargs.get("group")
+            started_groups.append(group if isinstance(group, str) else None)
+            if inspect.iscoroutine(work):
+                work.close()
+            return MagicMock()
+
+        app.run_worker = fake_run_worker  # ty: ignore
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            assert "server-startup" in started_groups
+            app._post_paint_init.assert_not_awaited()
+            branch_gate.set()
+
+    async def test_session_start_builds_ui_adapter_before_submission(self) -> None:
+        """Startup work must not see a missing UI adapter if post-paint init lags."""
+        app = DeepAgentsApp(agent=MagicMock())
+        app._post_paint_init = AsyncMock()  # ty: ignore
+        adapter_at_session_init: list[object] = []
+
+        async def record_session_init() -> None:  # noqa: RUF029
+            adapter_at_session_init.append(app._ui_adapter)
+            app._session_state = MagicMock()
+
+        app._init_session_state = record_session_init  # ty: ignore
+        app._run_session_start_hook = AsyncMock(return_value=False)  # ty: ignore
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._ui_adapter is None
+
+            await app._run_session_start_sequence()
+
+            assert adapter_at_session_init
+            assert adapter_at_session_init[0] is not None
+
     async def test_build_launch_dependencies_prompt_screen_tracks_flag(
         self,
         monkeypatch: pytest.MonkeyPatch,

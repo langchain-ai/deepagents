@@ -5088,10 +5088,17 @@ class DeepAgentsApp(App):
         # Start branch resolution immediately — the thread launches now
         # (during on_mount) so by the time the first frame finishes painting
         # the filesystem probe is already done. _post_paint_init fires the
-        # heavier workers (server, model creation) afterward.
+        # remaining startup workers afterward.
         self._startup_task = asyncio.create_task(
             self._resolve_git_branch_and_continue(),
         )
+
+        # Start the server right after first paint, without waiting on the
+        # git probe and `_post_paint_init`. The subprocess is the slowest
+        # startup step, so any work queued ahead of it delays the prompt.
+        if self._server_kwargs is not None and not self._server_startup_deferred:
+            self.call_after_refresh(self._start_server_worker)
+
         self._maybe_start_external_event_source()
 
         # Non-essential advisory: defer past first paint so it never delays
@@ -5366,6 +5373,20 @@ class DeepAgentsApp(App):
 
         refresh_task.add_done_callback(_finalize_git_branch_refresh)
 
+    def _start_server_worker(self) -> None:
+        """Run `_start_server_background` in the startup server worker."""
+        if self._lc_thread_id:
+            # Session state binds the per-thread debug log later; bind now so
+            # the server launch lines reach the file too.
+            from deepagents_code._debug import bind_debug_logging_to_thread
+
+            bind_debug_logging_to_thread(self._lc_thread_id)
+        self.run_worker(
+            self._start_server_background,
+            exclusive=True,
+            group="server-startup",
+        )
+
     async def _resolve_git_branch_and_continue(self) -> None:
         """Resolve git branch, then schedule remaining init workers.
 
@@ -5378,18 +5399,22 @@ class DeepAgentsApp(App):
             await self._refresh_git_branch()
         finally:
             # Always schedule post-paint init — even if branch resolution
-            # fails, the app must still start the server, session, etc.
+            # fails, the app must still start the session, skills, etc.
             self.call_after_refresh(self._post_paint_init)
 
-    async def _post_paint_init(self) -> None:
-        """Fire background workers for remaining startup work.
+    async def _build_ui_adapter_after_prewarm(self) -> None:
+        """Build the UI adapter without blocking on the prewarm's import locks."""
+        await self._await_prewarm_imports()
+        self._ensure_ui_adapter()
 
-        Everything here is non-blocking: workers and thread-offloaded calls
-        so the UI stays responsive.
+    def _ensure_ui_adapter(self) -> None:
+        """Create the UI adapter once.
+
+        The adapter only holds UI callbacks and does not depend on the agent.
+        The agent is injected later at `execute_task_textual()` call time.
         """
-        # Create UI adapter unconditionally — it only holds UI callbacks and
-        # doesn't depend on the agent. The agent is injected later at
-        # execute_task_textual() call time.
+        if self._ui_adapter is not None:
+            return
         from deepagents_code.tui.textual_adapter import TextualUIAdapter
 
         self._ui_adapter = TextualUIAdapter(
@@ -5422,6 +5447,21 @@ class DeepAgentsApp(App):
         self._ui_adapter._on_usage_update = self._refresh_cache_display
         self._ui_adapter._on_stream_complete = self._mark_thread_turn_completed
 
+    async def _post_paint_init(self) -> None:
+        """Fire background workers for remaining startup work.
+
+        Everything here is non-blocking: workers and thread-offloaded calls
+        so the UI stays responsive.
+        """
+        # Build the UI adapter once the import prewarm finishes. Importing
+        # `textual_adapter` here while the prewarm thread still holds its
+        # module locks would freeze the event loop right after first paint.
+        self.run_worker(
+            self._build_ui_adapter_after_prewarm(),
+            exclusive=True,
+            group="startup-ui-adapter",
+        )
+
         if self._server_startup_deferred:
             await self._mount_deferred_start_notice()
 
@@ -5446,14 +5486,6 @@ class DeepAgentsApp(App):
             exclusive=True,
             group="startup-history-sweep",
         )
-
-        # Server startup (model creation + server process)
-        if self._server_kwargs is not None and not self._server_startup_deferred:
-            self.run_worker(
-                self._start_server_background,
-                exclusive=True,
-                group="server-startup",
-            )
 
         # Background update check and what's-new banner
         # (opt-out via env var or config.toml [update].check)
@@ -6468,6 +6500,10 @@ class DeepAgentsApp(App):
                 exc_info=results[1],
             )
 
+        # The server can win the race against `_post_paint_init`; make sure
+        # the adapter exists before the agent becomes usable.
+        await self._await_prewarm_imports()
+        self._ensure_ui_adapter()
         self.post_message(
             self.ServerReady(
                 agent=agent,
@@ -12003,6 +12039,10 @@ class DeepAgentsApp(App):
         self._startup_sequence_running = True
         initial_submitted = False
         try:
+            # Startup submissions need the adapter, which `_post_paint_init`
+            # builds in a worker that may not have run yet.
+            await self._await_prewarm_imports()
+            self._ensure_ui_adapter()
             if self._session_state is None:
                 # Initialize inline rather than waiting on the session-init worker:
                 # under Textual's worker scheduling an in-flight worker may not

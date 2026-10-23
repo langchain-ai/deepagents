@@ -1951,7 +1951,8 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 conflicting non-empty rule lists raise `ValueError`.
                 Interrupt rules require `create_deep_agent(permissions=...)`
                 to configure human-in-the-loop approval.
-            _permissions: Deprecated alias for `permissions`; do not pass both.
+            _permissions: Deprecated since `0.7.31`; scheduled for removal in
+                `0.9.0`. Use `permissions` instead; do not pass both.
         """
         if permissions is not None and _permissions is not None:
             msg = "Pass only permissions, not both permissions and _permissions."

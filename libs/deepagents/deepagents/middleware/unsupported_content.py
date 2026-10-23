@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from typing import TYPE_CHECKING, Any, Final, cast
 
 from langchain.agents.middleware.types import (
@@ -23,13 +24,6 @@ if TYPE_CHECKING:
 
     from langchain_core.language_models import BaseChatModel
     from langchain_core.messages import AnyMessage, ContentBlock
-
-try:
-    from langchain_openai import AzureChatOpenAI as _AzureChatOpenAI, ChatOpenAI as _ChatOpenAI
-except ImportError:
-    _OPENAI_FILE_MODEL_TYPES: tuple[type[Any], ...] = ()
-else:
-    _OPENAI_FILE_MODEL_TYPES = (_AzureChatOpenAI, _ChatOpenAI)
 
 _PROFILE_FIELD_BY_BLOCK_TYPE: Final[Mapping[str, str]] = {
     "image": "image_inputs",
@@ -79,7 +73,7 @@ def _profile_accepts(block: ContentBlock, profile: Mapping[str, Any], *, in_tool
 
 
 # deepagents-specific: behavior `ModelProfile` can't express yet. Outside this
-# section and the `_OPENAI_FILE_MIME_TYPES` / `langchain_openai` imports it uses,
+# section and the `_OPENAI_FILE_MIME_TYPES` / `langchain_openai` lookups it uses,
 # the module has no deepagents dependencies.
 
 
@@ -88,9 +82,23 @@ def _is_inline_document(block: ContentBlock) -> bool:
     return block["type"] == "file" and "base64" in block and block.get("mime_type") != _PDF_MIME_TYPE
 
 
+def _openai_file_model_types() -> tuple[type[Any], ...]:
+    """Return the loaded `ChatOpenAI` and `AzureChatOpenAI` classes.
+
+    Reads `sys.modules` rather than importing `langchain_openai`: an instance of
+    either class implies its module is loaded, and importing it eagerly would
+    add the `openai` SDK to every `deepagents` import.
+    """
+    found = (
+        getattr(sys.modules.get("langchain_openai.chat_models.base"), "ChatOpenAI", None),
+        getattr(sys.modules.get("langchain_openai.chat_models.azure"), "AzureChatOpenAI", None),
+    )
+    return tuple(cls for cls in found if cls is not None)
+
+
 def _openai_responses_accepts(block: ContentBlock, model: BaseChatModel) -> bool:
     """Return whether `model` is an OpenAI Responses model accepting `block`'s MIME type."""
-    return block.get("mime_type") in _OPENAI_FILE_MIME_TYPES and isinstance(model, _OPENAI_FILE_MODEL_TYPES) and bool(model.use_responses_api)
+    return block.get("mime_type") in _OPENAI_FILE_MIME_TYPES and isinstance(model, _openai_file_model_types()) and bool(model.use_responses_api)
 
 
 def _read_file_placeholder(block: ContentBlock, message: AnyMessage) -> ContentBlock:

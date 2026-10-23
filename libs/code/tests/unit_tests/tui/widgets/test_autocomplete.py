@@ -4,6 +4,7 @@ import locale
 import logging
 import os
 import subprocess
+import sys
 from pathlib import Path
 from typing import cast
 from unittest.mock import MagicMock
@@ -419,7 +420,10 @@ class TestGetProjectFiles:
 
         assert files == ["résumé.md", "naïve.py"]
 
-    @pytest.mark.skipif(os.name == "nt", reason="Windows filenames are Unicode")
+    @pytest.mark.skipif(
+        os.name == "nt" or sys.platform == "darwin",
+        reason="Windows and macOS (APFS) require Unicode filenames",
+    )
     def test_non_utf8_names_do_not_alias_valid_files(self, tmp_path: Path) -> None:
         """Invalid UTF-8 names must not become a different selectable filename."""
         self._init_repo(tmp_path)

@@ -293,7 +293,7 @@ Available async agent types:
 {available_agents}
 
 ## Usage notes:
-1. This tool launches a background task and returns immediately with a task ID. Report the task ID to the user and stop — do NOT immediately check status.
+1. This tool launches a background task and returns immediately with a task ID for internal coordination. Briefly describe the delegated work and whether you are continuing other work or waiting for results. Omit task IDs from user-facing replies unless explicitly requested or necessary for actionable troubleshooting. Do NOT immediately check status.
 2. You'll usually be told when a task finishes, fails or needs input, so don't check just to see if it's done; use `check_async_task` when the user asks or a notification says to.
 3. Use `update_async_task` to send new instructions to a running task.
 4. Multiple async subagents can run concurrently — launch several and let them run in the background.

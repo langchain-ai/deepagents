@@ -470,6 +470,31 @@ class TestAssistantMessageStreamFinalize:
                 "ordered_list_open"
             ]
 
+    @pytest.mark.parametrize("link", ["[docs][ref]", "[ref][]", "[ref]"])
+    async def test_reference_link_resolves_after_streaming(self, link: str) -> None:
+        """Later definitions resolve links in already completed paragraphs."""
+        async with _AssistantMessageApp().run_test(size=(80, 24)) as pilot:
+            msg = pilot.app.query_one("#assistant", AssistantMessage)
+            await _stream_chunks(
+                pilot,
+                msg,
+                [f"{link}\n\nAnother paragraph.\n\n", "[ref]: https://example.com\n"],
+            )
+            await msg.stop_stream()
+            await pilot.pause()
+
+            with patch(
+                "deepagents_code.tui.widgets.messages.open_checked_url_async",
+                new_callable=AsyncMock,
+            ) as open_url:
+                await pilot.click(_top_level_blocks(msg)[0], offset=(0, 0))
+                await pilot.pause()
+
+            open_url.assert_awaited_once()
+            awaited = open_url.await_args
+            assert awaited is not None
+            assert awaited.args[0] == "https://example.com"
+
     async def test_streamed_table_is_rebuilt(self) -> None:
         """A link in a table row streamed after the header still opens."""
         async with _AssistantMessageApp().run_test(size=(80, 24)) as pilot:

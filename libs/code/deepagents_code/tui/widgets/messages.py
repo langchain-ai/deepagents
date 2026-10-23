@@ -1484,8 +1484,9 @@ def _stream_diverged(markdown: Markdown, source: str) -> bool:
     ends mid-line can parse the partial line as its own block (a bare `2` is
     a paragraph), which closes a list early, so the rest of the list mounts
     as a second list. Table rows that arrive while streaming mount as plain
-    `Static` cells, which do not forward link clicks. A parse is cheap but a
-    full `Markdown.update()` remounts every block, so callers rebuild only
+    `Static` cells, which do not forward link clicks. Later reference
+    definitions also leave links in frozen blocks unresolved. A parse is cheap
+    but a full `Markdown.update()` remounts every block, so callers rebuild only
     when this returns `True`.
 
     Args:
@@ -1500,8 +1501,11 @@ def _stream_diverged(markdown: Markdown, source: str) -> bool:
     from markdown_it import MarkdownIt
     from textual.widgets.markdown import MarkdownBlock
 
-    tokens = MarkdownIt("gfm-like").parse(source)
-    if any(token.type == "table_open" for token in tokens):
+    environment: dict[str, object] = {}
+    tokens = MarkdownIt("gfm-like").parse(source, environment)
+    if environment.get("references") or any(
+        token.type == "table_open" for token in tokens
+    ):
         return True
     expected = [
         (token.type, tuple(token.map))

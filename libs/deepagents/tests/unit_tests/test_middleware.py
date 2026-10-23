@@ -3837,6 +3837,61 @@ class TestPatchToolCallsMiddleware:
         assert state_update is not None
         assert [m.id for m in state_update["messages"][1:]] == ["1", "2", "4", "3", "5"]
 
+    @pytest.mark.parametrize("call_kind", ["parsed", "invalid", "content_block"])
+    @pytest.mark.parametrize("first_result", [True, False])
+    @pytest.mark.parametrize("duplicate", [True, False])
+    def test_reused_tool_call_ids(self, call_kind: str, *, first_result: bool, duplicate: bool) -> None:
+        def call(turn: str) -> AIMessage:
+            if call_kind == "content_block":
+                return AIMessage(content=[{"type": "function_call", "call_id": "shared", "name": "search", "arguments": "{}"}], id=turn)
+            if call_kind == "invalid":
+                return AIMessage(content="", invalid_tool_calls=[{"id": "shared", "name": "search", "args": "{"}], id=turn)
+            return AIMessage(content="", tool_calls=[ToolCall(id="shared", name="search", args={})], id=turn)
+
+        first_call, second_call = call("first"), call("second")
+        first = ToolMessage(content="first result", tool_call_id="shared", id="first-result")
+        second = ToolMessage(content="second result", tool_call_id="shared", id="second-result")
+        boundary = HumanMessage(content="Search again")
+        input_messages = [first_call, *([first] if first_result else [])]
+        if duplicate and first_result:
+            input_messages.append(ToolMessage(content="first duplicate", tool_call_id="shared"))
+        input_messages.extend([boundary, second_call, second])
+        if duplicate:
+            input_messages.append(ToolMessage(content="second duplicate", tool_call_id="shared"))
+
+        middleware = PatchToolCallsMiddleware()
+        update = middleware.before_agent({"messages": input_messages}, None)
+        if not duplicate and (first_result or call_kind == "content_block"):
+            assert update is None
+            return
+        assert update is not None
+        patched = update["messages"][1:]
+        assert patched[-3:] == [boundary, second_call, second]
+        assert patched[0] == first_call
+        if first_result:
+            assert patched[1] == first
+        elif call_kind == "content_block":
+            assert len(patched) == 4
+        else:
+            assert patched[1].status == "error"
+            assert patched[1].tool_call_id == "shared"
+        assert middleware.before_agent({"messages": patched}, None) is None
+
+    @pytest.mark.parametrize("result_before_call", [True, False])
+    def test_reused_tool_call_ids_with_misplaced_result(self, *, result_before_call: bool) -> None:
+        first_call = AIMessage(content="", tool_calls=[ToolCall(id="shared", name="search", args={})])
+        first_result = ToolMessage(content="first result", tool_call_id="shared")
+        second_call = AIMessage(content="", tool_calls=[ToolCall(id="shared", name="search", args={})])
+        second_result = ToolMessage(content="second result", tool_call_id="shared")
+        boundary = HumanMessage(content="Search again")
+        misplaced = [first_result, first_call, boundary] if result_before_call else [first_call, boundary, first_result]
+        middleware = PatchToolCallsMiddleware()
+        update = middleware.before_agent({"messages": [*misplaced, second_call, second_result]}, None)
+        assert update is not None
+        patched = update["messages"][1:]
+        assert patched == [first_call, first_result, boundary, second_call, second_result]
+        assert middleware.before_agent({"messages": patched}, None) is None
+
     def test_result_for_content_block_call_is_kept(self) -> None:
         input_messages = [
             HumanMessage(content="Look it up", id="1"),

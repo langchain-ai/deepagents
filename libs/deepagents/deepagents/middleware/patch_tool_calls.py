@@ -48,19 +48,40 @@ def _results_for(message: AIMessage, results: dict[str, ToolMessage]) -> list[To
     return paired
 
 
+def _call_ids(message: AIMessage) -> Iterator[str]:
+    """Yield parsed and provider-native tool call ids for a single turn."""
+    for call in (*message.tool_calls, *message.invalid_tool_calls):
+        if call["id"] is not None:
+            yield call["id"]
+    yield from _block_call_ids(message)
+
+
+def _collect_results(messages: list[AnyMessage]) -> dict[int, dict[str, ToolMessage]]:
+    """Associate results with the nearest preceding call, or the first following call."""
+    owners: dict[str, int] = {}
+    for index, msg in enumerate(messages):
+        if isinstance(msg, AIMessage):
+            for call_id in _call_ids(msg):
+                owners.setdefault(call_id, index)
+    results: dict[int, dict[str, ToolMessage]] = {}
+    for index, msg in enumerate(messages):
+        if isinstance(msg, AIMessage):
+            owners.update((call_id, index) for call_id in _call_ids(msg))
+        elif isinstance(msg, ToolMessage) and (owner := owners.get(msg.tool_call_id)) is not None:
+            results.setdefault(owner, {}).setdefault(msg.tool_call_id, msg)
+    return results
+
+
 def _repair(messages: list[AnyMessage]) -> list[AnyMessage]:
     """Place each tool result directly after its call, dropping results that answer no call."""
-    results: dict[str, ToolMessage] = {}
-    for msg in messages:
-        if isinstance(msg, ToolMessage):
-            results.setdefault(msg.tool_call_id, msg)
+    results = _collect_results(messages)
     repaired: list[AnyMessage] = []
-    for msg in messages:
+    for index, msg in enumerate(messages):
         if isinstance(msg, ToolMessage):
             continue
         repaired.append(msg)
         if isinstance(msg, AIMessage):
-            repaired.extend(_results_for(msg, results))
+            repaired.extend(_results_for(msg, results.get(index, {})))
     return repaired
 
 

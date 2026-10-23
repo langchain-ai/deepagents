@@ -2527,12 +2527,14 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             if recompute_widths:
                 self._column_widths = self._compute_column_widths()
             with self.app.batch_update():
+                self._option_widgets = []
+                self._row_pool = {}
+                self._load_more_row = None
                 await scroll.remove_children()
                 self._update_help_widgets()
 
                 self._option_widgets, selected_widget = self._create_option_widgets()
                 self._reset_row_pool()
-                self._load_more_row = None
                 if self._option_widgets:
                     await scroll.mount(*self._option_widgets)
                 else:

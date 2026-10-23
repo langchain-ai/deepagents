@@ -396,6 +396,34 @@ class TestThreadNames:
 class TestThreadSelectorFilterRows:
     """Tests for the rows shown while the search filter changes."""
 
+    async def test_filter_recovers_after_cancelled_rebuild(self) -> None:
+        """Filtering restores visible rows after a rebuild is cancelled mid-removal."""
+        with _patch_list_threads(), _patch_columns():
+            app = ThreadSelectorTestApp()
+            async with app.run_test() as pilot:
+                app.show_selector()
+                await pilot.pause()
+                await app.workers.wait_for_complete()
+                screen = cast("ThreadSelectorScreen", app.screen)
+                scroll = screen.query_one(".thread-list")
+                remove_children = scroll.remove_children
+
+                async def cancel_after_removal() -> None:
+                    await remove_children()
+                    raise asyncio.CancelledError
+
+                with (
+                    patch.object(scroll, "remove_children", cancel_after_removal),
+                    pytest.raises(asyncio.CancelledError),
+                ):
+                    await screen._build_list()
+
+                screen.query_one("#thread-filter", Input).value = "ghi"
+                await pilot.pause()
+                await app.workers.wait_for_complete()
+                rows = scroll.query_children(ThreadOption)
+                assert [row.thread_id for row in rows if row.display] == ["ghi11111"]
+
     async def test_filter_then_clear_restores_rows_and_selection(self) -> None:
         """Filtering shows only matches; clearing restores order and selection."""
         all_ids = [t["thread_id"] for t in MOCK_THREADS]

@@ -14,9 +14,10 @@ from __future__ import annotations
 
 import inspect
 import logging
+import sys
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, TypeGuard, cast
 
 from langchain_anthropic import ChatAnthropic, convert_to_anthropic_tool
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, SystemMessage, ToolMessage
@@ -33,13 +34,6 @@ if TYPE_CHECKING:
     from langgraph.runtime import Runtime
 
     from deepagents.middleware.skills import SkillMetadata, SkillToolResolver
-
-try:
-    from langchain_openai.chat_models.base import BaseChatOpenAI as _BaseChatOpenAI
-except ImportError:
-    _BASE_CHAT_OPENAI_TYPE: type[BaseChatOpenAI] | None = None
-else:
-    _BASE_CHAT_OPENAI_TYPE = _BaseChatOpenAI
 
 logger = logging.getLogger(__name__)
 
@@ -384,11 +378,22 @@ def _inline_block_builder(model: object) -> Callable[[BaseTool], _ToolDisclosure
     chat_model = _unwrap_bound(model)
     if isinstance(chat_model, ChatAnthropic):
         build = _anthropic_tool_addition
-    elif _BASE_CHAT_OPENAI_TYPE is not None and isinstance(chat_model, _BASE_CHAT_OPENAI_TYPE):
+    elif _is_openai_chat_model(chat_model):
         build = _openai_additional_tools
     else:
         return None
     return build if (chat_model.profile or {}).get("mid_conversation_tools") else None
+
+
+def _is_openai_chat_model(model: object) -> TypeGuard[BaseChatOpenAI]:
+    """Return whether `model` is a `langchain_openai` chat model.
+
+    Reads `sys.modules` rather than importing `langchain_openai`: an instance of
+    its classes implies the module is loaded, and importing it eagerly would add
+    the `openai` SDK to every `deepagents` import.
+    """
+    base = sys.modules.get("langchain_openai.chat_models.base")
+    return base is not None and isinstance(model, base.BaseChatOpenAI)
 
 
 def _unwrap_bound(model: object) -> object:

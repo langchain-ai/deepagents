@@ -1138,7 +1138,7 @@ requires-dist = [
     { name = "langchain-fireworks", marker = "extra == 'fireworks'", specifier = ">=1.7.1,<2.0.0" },
     { name = "langchain-google-genai", specifier = ">=4.4.2,<5.0.0" },
     { name = "langchain-google-genai", marker = "extra == 'google-genai'", specifier = ">=4.4.2,<5.0.0" },
-    { name = "langchain-google-vertexai", marker = "extra == 'vertex'", specifier = ">=3.2.4,<4.0.0" },
+    { name = "langchain-google-vertexai", marker = "extra == 'vertex'", specifier = ">=3.2.5,<4.0.0" },
     { name = "langchain-groq", marker = "extra == 'groq'", specifier = ">=1.1.3,<2.0.0" },
     { name = "langchain-huggingface", marker = "extra == 'huggingface'", specifier = ">=1.2.3,<2.0.0" },
     { name = "langchain-ibm", marker = "extra == 'ibm'", specifier = ">=1.1.2,<2.0.0" },
@@ -1159,9 +1159,9 @@ requires-dist = [
     { name = "langchain-vercel-sandbox", marker = "extra == 'vercel'", editable = "../partners/vercel" },
     { name = "langchain-xai", marker = "extra == 'xai'", specifier = ">=1.3.0,<2.0.0" },
     { name = "langgraph-checkpoint-sqlite", specifier = ">=3.1.2,<4.0.0" },
-    { name = "langgraph-cli", extras = ["inmem"], specifier = ">=0.4.37,<1.0.0" },
-    { name = "langgraph-runtime-inmem", specifier = ">=0.36.5,<1.0.0" },
-    { name = "langgraph-sdk", specifier = ">=0.4.8,<1.0.0" },
+    { name = "langgraph-cli", extras = ["inmem"], specifier = ">=0.4.38,<1.0.0" },
+    { name = "langgraph-runtime-inmem", specifier = ">=0.36.6,<1.0.0" },
+    { name = "langgraph-sdk", specifier = ">=0.4.9,<1.0.0" },
     { name = "langsmith", extras = ["sandbox"], specifier = ">=0.14.12" },
     { name = "markdownify", specifier = ">=1.2.3" },
     { name = "mcp", specifier = ">=2.0.0" },
@@ -2574,7 +2574,7 @@ wheels = [
 
 [[package]]
 name = "langchain-google-vertexai"
-version = "3.2.4"
+version = "3.2.5"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "bottleneck" },
@@ -2585,13 +2585,12 @@ dependencies = [
     { name = "httpx-sse" },
     { name = "langchain-core" },
     { name = "numexpr" },
-    { name = "pyarrow" },
     { name = "pydantic" },
     { name = "validators" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/39/1c/4efdcfe094ef6711d9c130428c4c42af61a49a1580fa718dd1e1f6bd5fc3/langchain_google_vertexai-3.2.4.tar.gz", hash = "sha256:f0c16b4b639037f60357dbf6d4aa3b0f301f23be6b33b0688c75902235cb9434", size = 351222, upload-time = "2026-06-09T14:57:58.316Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/a3/aa/41a21eb5ce98e25fb1e171063f77597d5f8f57e91c4aaeb05b07fc8b77ab/langchain_google_vertexai-3.2.5.tar.gz", hash = "sha256:0a4b267aceefbaf8622bb47a13bffd8b2f93e2f2b9e298a91305592e88f33531", size = 350802, upload-time = "2026-10-23T14:37:22.11Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/04/a2/af563ff45208d22abc28d0a0e44a7fb8aceaadac201afa6a11c77bfb6338/langchain_google_vertexai-3.2.4-py3-none-any.whl", hash = "sha256:65b5615e596fdabc2e149f0160fded88bebef2bbc1ea70095ff81714f7570183", size = 118884, upload-time = "2026-06-09T14:57:57.062Z" },
+    { url = "https://files.pythonhosted.org/packages/cd/8d/9d4f123fe940e7e976db8728a162c534496b753044b660c0935db2cddaa6/langchain_google_vertexai-3.2.5-py3-none-any.whl", hash = "sha256:d4ea1c470ba79d5a99bd1ac92ebd45cb133e5c06caf5064756422e90742b9862", size = 120255, upload-time = "2026-10-23T14:37:20.876Z" },
 ]
 
 [[package]]
@@ -3033,7 +3032,7 @@ wheels = [
 
 [[package]]
 name = "langgraph-cli"
-version = "0.4.37"
+version = "0.4.38"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "click" },
@@ -3042,9 +3041,9 @@ dependencies = [
     { name = "pathspec" },
     { name = "python-dotenv" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/55/53/f2214b9103621c114c4835db908c350b0f1360bc696fa4f3348d7baa6b74/langgraph_cli-0.4.37.tar.gz", hash = "sha256:a24ac16135a72de158576aba358d731c33372dc0ab4caa6f9f8618c70942c638", size = 1096414, upload-time = "2026-10-19T14:06:09.701Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/13/9e/af18592c463c331bc455c8df5cd8faf2a89013cb3321df5201fe0b8fe6da/langgraph_cli-0.4.38.tar.gz", hash = "sha256:545211d0641cbbf1a923b47c18d86f76eb815531410c29b45217db348f4f2e90", size = 1098057, upload-time = "2026-10-23T14:22:14.603Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/ad/f7/aaa59446a7e7d706e2fa5ad790359b170cf593840ef10cb87766fb2b1c7e/langgraph_cli-0.4.37-py3-none-any.whl", hash = "sha256:f6a31396c04a8b241501eba5499ae3a8d75adc522b79fa54427ac9a5c64aed89", size = 93211, upload-time = "2026-10-19T14:06:08.394Z" },
+    { url = "https://files.pythonhosted.org/packages/72/fe/d00750e2b361af648c44402aa65d879f124afd712e92ec9fa29e45f4fe77/langgraph_cli-0.4.38-py3-none-any.whl", hash = "sha256:91f57d489c48afc3a4caa5b94f49d60da86727b18cec65559b84d2d87c2b0f33", size = 93672, upload-time = "2026-10-23T14:22:13.293Z" },
 ]
 
 [package.optional-dependencies]
@@ -3068,7 +3067,7 @@ wheels = [
 
 [[package]]
 name = "langgraph-runtime-inmem"
-version = "0.36.5"
+version = "0.36.6"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "blockbuster" },
@@ -3079,14 +3078,14 @@ dependencies = [
     { name = "starlette" },
     { name = "structlog" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/de/95/60f8360f3cb828f2ea123eb67b94dff9772865967d7491556370496001cf/langgraph_runtime_inmem-0.36.5.tar.gz", hash = "sha256:e0b0252082abd02ef66a24f8ad7fdbcc0e1227858fa7d267fbff9a35ae657518", size = 135061, upload-time = "2026-10-22T15:23:08.525Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/a2/0a/df15c20e14199232f53840d6dd75494ae533c8ff41573b449a6fc22dc531/langgraph_runtime_inmem-0.36.6.tar.gz", hash = "sha256:af4ac94f43d110953f933cca8f8e9e3f5dd6e1b5817452b66ff17a7b14602a30", size = 135060, upload-time = "2026-10-23T17:02:50.833Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/34/6e/2f2176abbfa3915d95e1a65b484ea00e394b0faa6d91b40e0376ebc1472a/langgraph_runtime_inmem-0.36.5-py3-none-any.whl", hash = "sha256:32b469f0064cde240521d708097f7f2bd257d56b54351b5a221334f10f4ffc62", size = 54346, upload-time = "2026-10-22T15:23:07.193Z" },
+    { url = "https://files.pythonhosted.org/packages/12/8c/515408d5f6c6118e9f0309e12d58cd754ca5ab27bc00c425519b20480c2e/langgraph_runtime_inmem-0.36.6-py3-none-any.whl", hash = "sha256:a7a595b6cf2e8940cd2f99d8ad531de80eb25fbfc136d72f9bfec839e6fccb2a", size = 54345, upload-time = "2026-10-23T17:02:49.494Z" },
 ]
 
 [[package]]
 name = "langgraph-sdk"
-version = "0.4.8"
+version = "0.4.9"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "httpx" },
@@ -3095,9 +3094,9 @@ dependencies = [
     { name = "orjson" },
     { name = "websockets" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/5e/2a/bb6b4ca7a735901542c885e59ce3d1a128e2914b072b0c9a9feaf927195a/langgraph_sdk-0.4.8.tar.gz", hash = "sha256:6dd0c55d0d9040686716581c9e302c21c31ad6e2eebda0defc944a8bb38ec011", size = 355741, upload-time = "2026-10-16T22:08:51.14Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/4e/ef/e8f63b62dea6ecb75bef9d336f62e3e8f853b17a9943e4727c1bbeb09b11/langgraph_sdk-0.4.9.tar.gz", hash = "sha256:24d775ac1382b94c2595b8eb4eb4e0aa8dde95c905f18e017dc6574e1d79070d", size = 358868, upload-time = "2026-10-23T14:19:05.963Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/26/b7/414170649c4437289858af6a9fec7a29f99e7b3919cebf32bbc4cb0be7a0/langgraph_sdk-0.4.8-py3-none-any.whl", hash = "sha256:bef8ac54bdfe3ac2f7eba5be2f322dde296701b39e1c1aa403302f08d273fab5", size = 164560, upload-time = "2026-10-16T22:08:49.836Z" },
+    { url = "https://files.pythonhosted.org/packages/57/7f/3102130eab099da9653ebe4a49123087a5889f4070eeee99b402255b1786/langgraph_sdk-0.4.9-py3-none-any.whl", hash = "sha256:c009243f4784758a07287fb2fd21fe47381c3d85f30479df2ae7f345c8703bb1", size = 167613, upload-time = "2026-10-23T14:19:04.82Z" },
 ]
 
 [[package]]
@@ -4046,28 +4045,6 @@ keyring = [
 ]
 memory = [
     { name = "cachetools" },
-]
-
-[[package]]
-name = "pyarrow"
-version = "23.0.1"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/88/22/134986a4cc224d593c1afde5494d18ff629393d74cc2eddb176669f234a4/pyarrow-23.0.1.tar.gz", hash = "sha256:b8c5873e33440b2bc2f4a79d2b47017a89c5a24116c055625e6f2ee50523f019", size = 1167336, upload-time = "2026-02-16T10:14:12.39Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/8d/1b/6da9a89583ce7b23ac611f183ae4843cd3a6cf54f079549b0e8c14031e73/pyarrow-23.0.1-cp314-cp314-macosx_12_0_arm64.whl", hash = "sha256:5df1161da23636a70838099d4aaa65142777185cc0cdba4037a18cee7d8db9ca", size = 34238755, upload-time = "2026-02-16T10:12:32.819Z" },
-    { url = "https://files.pythonhosted.org/packages/ae/b5/d58a241fbe324dbaeb8df07be6af8752c846192d78d2272e551098f74e88/pyarrow-23.0.1-cp314-cp314-macosx_12_0_x86_64.whl", hash = "sha256:fa8e51cb04b9f8c9c5ace6bab63af9a1f88d35c0d6cbf53e8c17c098552285e1", size = 35847826, upload-time = "2026-02-16T10:12:38.949Z" },
-    { url = "https://files.pythonhosted.org/packages/54/a5/8cbc83f04aba433ca7b331b38f39e000efd9f0c7ce47128670e737542996/pyarrow-23.0.1-cp314-cp314-manylinux_2_28_aarch64.whl", hash = "sha256:0b95a3994f015be13c63148fef8832e8a23938128c185ee951c98908a696e0eb", size = 44536859, upload-time = "2026-02-16T10:12:45.467Z" },
-    { url = "https://files.pythonhosted.org/packages/36/2e/c0f017c405fcdc252dbccafbe05e36b0d0eb1ea9a958f081e01c6972927f/pyarrow-23.0.1-cp314-cp314-manylinux_2_28_x86_64.whl", hash = "sha256:4982d71350b1a6e5cfe1af742c53dfb759b11ce14141870d05d9e540d13bc5d1", size = 47614443, upload-time = "2026-02-16T10:12:55.525Z" },
-    { url = "https://files.pythonhosted.org/packages/af/6b/2314a78057912f5627afa13ba43809d9d653e6630859618b0fd81a4e0759/pyarrow-23.0.1-cp314-cp314-musllinux_1_2_aarch64.whl", hash = "sha256:c250248f1fe266db627921c89b47b7c06fee0489ad95b04d50353537d74d6886", size = 48232991, upload-time = "2026-02-16T10:13:04.729Z" },
-    { url = "https://files.pythonhosted.org/packages/40/f2/1bcb1d3be3460832ef3370d621142216e15a2c7c62602a4ea19ec240dd64/pyarrow-23.0.1-cp314-cp314-musllinux_1_2_x86_64.whl", hash = "sha256:5f4763b83c11c16e5f4c15601ba6dfa849e20723b46aa2617cb4bffe8768479f", size = 50645077, upload-time = "2026-02-16T10:13:14.147Z" },
-    { url = "https://files.pythonhosted.org/packages/eb/3f/b1da7b61cd66566a4d4c8383d376c606d1c34a906c3f1cb35c479f59d1aa/pyarrow-23.0.1-cp314-cp314-win_amd64.whl", hash = "sha256:3a4c85ef66c134161987c17b147d6bffdca4566f9a4c1d81a0a01cdf08414ea5", size = 28234271, upload-time = "2026-02-16T10:14:09.397Z" },
-    { url = "https://files.pythonhosted.org/packages/b5/78/07f67434e910a0f7323269be7bfbf58699bd0c1d080b18a1ab49ba943fe8/pyarrow-23.0.1-cp314-cp314t-macosx_12_0_arm64.whl", hash = "sha256:17cd28e906c18af486a499422740298c52d7c6795344ea5002a7720b4eadf16d", size = 34488692, upload-time = "2026-02-16T10:13:21.541Z" },
-    { url = "https://files.pythonhosted.org/packages/50/76/34cf7ae93ece1f740a04910d9f7e80ba166b9b4ab9596a953e9e62b90fe1/pyarrow-23.0.1-cp314-cp314t-macosx_12_0_x86_64.whl", hash = "sha256:76e823d0e86b4fb5e1cf4a58d293036e678b5a4b03539be933d3b31f9406859f", size = 35964383, upload-time = "2026-02-16T10:13:28.63Z" },
-    { url = "https://files.pythonhosted.org/packages/46/90/459b827238936d4244214be7c684e1b366a63f8c78c380807ae25ed92199/pyarrow-23.0.1-cp314-cp314t-manylinux_2_28_aarch64.whl", hash = "sha256:a62e1899e3078bf65943078b3ad2a6ddcacf2373bc06379aac61b1e548a75814", size = 44538119, upload-time = "2026-02-16T10:13:35.506Z" },
-    { url = "https://files.pythonhosted.org/packages/28/a1/93a71ae5881e99d1f9de1d4554a87be37da11cd6b152239fb5bd924fdc64/pyarrow-23.0.1-cp314-cp314t-manylinux_2_28_x86_64.whl", hash = "sha256:df088e8f640c9fae3b1f495b3c64755c4e719091caf250f3a74d095ddf3c836d", size = 47571199, upload-time = "2026-02-16T10:13:42.504Z" },
-    { url = "https://files.pythonhosted.org/packages/88/a3/d2c462d4ef313521eaf2eff04d204ac60775263f1fb08c374b543f79f610/pyarrow-23.0.1-cp314-cp314t-musllinux_1_2_aarch64.whl", hash = "sha256:46718a220d64677c93bc243af1d44b55998255427588e400677d7192671845c7", size = 48259435, upload-time = "2026-02-16T10:13:49.226Z" },
-    { url = "https://files.pythonhosted.org/packages/cc/f1/11a544b8c3d38a759eb3fbb022039117fd633e9a7b19e4841cc3da091915/pyarrow-23.0.1-cp314-cp314t-musllinux_1_2_x86_64.whl", hash = "sha256:a09f3876e87f48bc2f13583ab551f0379e5dfb83210391e68ace404181a20690", size = 50629149, upload-time = "2026-02-16T10:13:57.238Z" },
-    { url = "https://files.pythonhosted.org/packages/50/f2/c0e76a0b451ffdf0cf788932e182758eb7558953f4f27f1aff8e2518b653/pyarrow-23.0.1-cp314-cp314t-win_amd64.whl", hash = "sha256:527e8d899f14bd15b740cd5a54ad56b7f98044955373a17179d5956ddb93d9ce", size = 28365807, upload-time = "2026-02-16T10:14:03.892Z" },
 ]
 
 [[package]]

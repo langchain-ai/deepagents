@@ -72,6 +72,7 @@ from deepagents_code.tui.widgets._links import (
     open_checked_url_async,
     open_style_link,
 )
+from deepagents_code.tui.widgets._static_update import update_in_place
 from deepagents_code.tui.widgets.diff import (
     compose_diff_lines,
     format_diff_stats,
@@ -2315,6 +2316,11 @@ class ToolCallMessage(Vertical):
         """Update the running spinner animation."""
         if self._status != "running" or self._status_widget is None:
             return
+        if not self.display:
+            # Folded into a collapsed tool group. The group shows its own
+            # spinner; expanding the group relayouts, and the next tick
+            # repaints this row.
+            return
 
         spinner_frames = get_glyphs().spinner_frames
         frame = spinner_frames[self._spinner_position]
@@ -2329,7 +2335,7 @@ class ToolCallMessage(Vertical):
         text = f"{frame} Running...{elapsed}"
         colors = theme.get_theme_colors(self)
         color = colors.skill if self.has_class("-skill-read") else colors.warning
-        self._status_widget.update(Content.styled(text, color))
+        update_in_place(self._status_widget, Content.styled(text, color))
 
     def pause_running(self) -> None:
         """Pause the running spinner while the tool awaits a user decision.

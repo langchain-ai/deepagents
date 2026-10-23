@@ -197,6 +197,10 @@ def _clear_langsmith_env(monkeypatch: pytest.MonkeyPatch) -> None:
     bootstrap `credentials` before this fixture runs, which captures the
     developer's shell LangSmith exports. A reload then restores those exports
     over the values a test sets, so a test can pass in CI and fail locally.
+
+    The user snapshot gets the same reset. Before bootstrap runs it is empty,
+    which the server-launch encoder rejects, so tests that spawn the server
+    would otherwise depend on whether an earlier test bootstrapped config.
     """
     import deepagents_code.config as config_mod
 
@@ -204,6 +208,11 @@ def _clear_langsmith_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         config_mod._bootstrap_state,
         "launch_langsmith_env",
+        config_mod._langsmith_selectors_from({}),
+    )
+    monkeypatch.setattr(
+        config_mod._bootstrap_state,
+        "user_langsmith_env",
         config_mod._langsmith_selectors_from({}),
     )
     for key in (

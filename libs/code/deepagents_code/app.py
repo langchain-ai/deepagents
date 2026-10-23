@@ -6369,8 +6369,6 @@ class DeepAgentsApp(App):
                     markup=False,
                 )
 
-        await self._await_prewarm_imports()
-
         # Install the managed `rg` and prepend it to `PATH` BEFORE spawning
         # the langgraph subprocess: `ServerProcess.start()` snapshots
         # `os.environ` into the child, so an install that lands after the
@@ -6385,12 +6383,26 @@ class DeepAgentsApp(App):
         if self._server_kwargs is None:
             return
         self._server_kwargs["cwd"] = self._cwd
-        coros: list[Any] = [start_server_and_get_agent(**self._server_kwargs)]  # ty: ignore[invalid-argument-type]
+        # Spawn the server without waiting for the import prewarm: the
+        # subprocess boots in parallel, and only the health check that follows
+        # imports into the prewarm's module graph on this thread.
+        coros: list[Any] = [
+            start_server_and_get_agent(
+                **self._server_kwargs,  # ty: ignore[invalid-argument-type]
+                after_spawn=self._await_prewarm_imports,
+            )
+        ]
 
         if self._mcp_preload_kwargs is not None:
             from deepagents_code.main import _preload_session_mcp_server_info
 
-            coros.append(_preload_session_mcp_server_info(**self._mcp_preload_kwargs))
+            preload_kwargs = self._mcp_preload_kwargs
+
+            async def _preload_mcp() -> list[MCPServerInfo] | None:
+                await self._await_prewarm_imports()
+                return await _preload_session_mcp_server_info(**preload_kwargs)
+
+            coros.append(_preload_mcp())
 
         try:
             results = await asyncio.gather(*coros, return_exceptions=True)

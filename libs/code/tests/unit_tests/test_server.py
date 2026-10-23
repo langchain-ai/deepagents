@@ -498,6 +498,81 @@ class TestServerProcess:
         assert not config_dir.exists()
         assert not log_path.exists()
 
+    async def test_after_spawn_runs_between_spawn_and_health_check(
+        self, tmp_path: Path
+    ) -> None:
+        """`after_spawn` overlaps server boot but finishes before health checks."""
+        config_dir = tmp_path / "runtime"
+        config_dir.mkdir()
+        (config_dir / "langgraph.json").write_text("{}")
+        events: list[str] = []
+
+        def spawn(*_args: object, **_kwargs: object) -> MagicMock:
+            events.append("spawn")
+            process = MagicMock()
+            process.poll.return_value = None
+            return process
+
+        async def after_spawn() -> None:  # noqa: RUF029  # matches the awaited hook
+            events.append("after_spawn")
+
+        async def healthy(*_args: object, **_kwargs: object) -> None:  # noqa: RUF029
+            events.append("health_check")
+
+        server = ServerProcess(config_dir=config_dir)
+        with (
+            patch(
+                "deepagents_code.client.launch.server._find_free_port",
+                return_value=12345,
+            ),
+            patch(
+                "deepagents_code.client.launch.server.subprocess.Popen",
+                side_effect=spawn,
+            ),
+            patch(
+                "deepagents_code.client.launch.server.wait_for_server_healthy",
+                new=healthy,
+            ),
+        ):
+            await server.start(after_spawn=after_spawn)
+
+        assert events == ["spawn", "after_spawn", "health_check"]
+
+    async def test_after_spawn_cancellation_reaps_subprocess(
+        self, tmp_path: Path
+    ) -> None:
+        """Cancelling during `after_spawn` must not orphan the spawned server."""
+        config_dir = tmp_path / "runtime"
+        config_dir.mkdir()
+        (config_dir / "langgraph.json").write_text("{}")
+        process = MagicMock()
+        process.poll.return_value = None
+        health_check = AsyncMock()
+
+        server = ServerProcess(config_dir=config_dir)
+        with (
+            patch(
+                "deepagents_code.client.launch.server._find_free_port",
+                return_value=12345,
+            ),
+            patch(
+                "deepagents_code.client.launch.server.subprocess.Popen",
+                return_value=process,
+            ),
+            patch(
+                "deepagents_code.client.launch.server.wait_for_server_healthy",
+                new=health_check,
+            ),
+            pytest.raises(asyncio.CancelledError),
+        ):
+            await server.start(
+                after_spawn=AsyncMock(side_effect=asyncio.CancelledError)
+            )
+
+        health_check.assert_not_awaited()
+        process.send_signal.assert_called_once_with(signal.SIGTERM)
+        assert server._process is None
+
     async def test_start_cleanup_error_does_not_mask_startup_error(
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture
     ) -> None:

@@ -39,7 +39,7 @@ from deepagents_code.config import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterator, Mapping
+    from collections.abc import Awaitable, Callable, Iterator, Mapping
 
 logger = logging.getLogger(__name__)
 
@@ -868,23 +868,28 @@ class ServerProcess:
         self,
         *,
         timeout: float = _HEALTH_TIMEOUT,  # noqa: ASYNC109
+        after_spawn: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
         """Start the `langgraph dev` server and wait for it to be healthy.
 
         Args:
             timeout: Max seconds to wait for the server to become healthy.
+            after_spawn: Awaited once the subprocess is spawned, before the
+                health check. Lets callers overlap work with server boot that
+                must finish before the health check's imports run.
 
         Raises:
             RuntimeError: If the server fails to start or become healthy.
         """  # noqa: DOC502  # `RuntimeError` propagates from `_start`
         async with self._lifecycle_lock:
-            await self._start(timeout=timeout)
+            await self._start(timeout=timeout, after_spawn=after_spawn)
 
     async def _start(
         self,
         *,
         timeout: float,  # noqa: ASYNC109
         expected_stop_generation: int | None = None,
+        after_spawn: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
         """Start while the caller owns `_lifecycle_lock`.
 
@@ -893,6 +898,8 @@ class ServerProcess:
             expected_stop_generation: Generation captured before a restart's
                 stop phase. If synchronous terminal shutdown ran meanwhile,
                 abort instead of resurrecting the subprocess.
+            after_spawn: Awaited once the subprocess is spawned, before the
+                health check.
         """
         process = self._spawn_process(
             expected_stop_generation=expected_stop_generation,
@@ -901,6 +908,8 @@ class ServerProcess:
             return
         started = False
         try:
+            if after_spawn is not None:
+                await after_spawn()
             await wait_for_server_healthy(
                 self.url,
                 timeout=timeout,

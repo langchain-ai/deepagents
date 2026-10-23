@@ -1463,17 +1463,74 @@ class _StreamedTextParts:
             self._flush_timer = None
 
 
+_TOP_LEVEL_BLOCK_TOKENS = frozenset(
+    {
+        "blockquote_open",
+        "bullet_list_open",
+        "code_block",
+        "fence",
+        "heading_open",
+        "hr",
+        "ordered_list_open",
+        "paragraph_open",
+        "table_open",
+    }
+)
+"""Token types for which `Markdown` mounts one top-level `MarkdownBlock`."""
+
+
+def _stream_diverged(markdown: Markdown, source: str) -> bool:
+    """Report whether streamed blocks differ from a full parse of `source`.
+
+    `Markdown.append` freezes every block before the last one. A flush that
+    ends mid-line can parse the partial line as its own block (a bare `2` is
+    a paragraph), which closes a list early, so the rest of the list mounts
+    as a second list. Table rows that arrive while streaming mount as plain
+    `Static` cells, which do not forward link clicks. Later reference
+    definitions also leave links in frozen blocks unresolved. A parse is cheap
+    but a full `Markdown.update()` remounts every block, so callers rebuild only
+    when this returns `True`.
+
+    Args:
+        markdown: The widget the stream wrote to.
+        source: The complete message source.
+
+    Returns:
+        `True` when a full re-render would change the widget tree.
+    """
+    if markdown.source != source:
+        return True
+    from markdown_it import MarkdownIt
+    from textual.widgets.markdown import MarkdownBlock
+
+    environment: dict[str, object] = {}
+    tokens = MarkdownIt("gfm-like").parse(source, environment)
+    if environment.get("references") or any(
+        token.type == "table_open" for token in tokens
+    ):
+        return True
+    expected = [
+        (token.type, tuple(token.map))
+        for token in tokens
+        if token.level == 0
+        and token.map is not None
+        and token.type in _TOP_LEVEL_BLOCK_TOKENS
+    ]
+    actual = [
+        (block.name, block.source_range)
+        for block in markdown.query_children(MarkdownBlock)
+    ]
+    return expected != actual
+
+
 class AssistantMessage(_StreamedTextParts, Vertical):
     """Widget displaying an assistant message with markdown support.
 
     Uses MarkdownStream for smoother streaming instead of re-rendering
     the full content on each update. Once a stream finishes, the message
-    is re-rendered from the complete source via `Markdown.update()` to
-    work around Textualize/textual#6518: `MarkdownFence._update_from_block`
-    refreshes the visible `Label` but leaves `_highlighted_code` pinned to
-    the first chunk, so any later recompose (click, focus change, theme
-    update) re-yields the stale value and wrapped fenced-code bodies vanish.
-    A full re-parse rebuilds every fence with correct internal state.
+    is re-rendered from the complete source via `Markdown.update()` only
+    when the streamed blocks differ from a full parse (see
+    `_stream_diverged`).
 
     The first streamed fragment is written immediately so the response appears
     without waiting for `_STREAM_FLUSH_INTERVAL`. Later tokens are coalesced in
@@ -1663,13 +1720,20 @@ class AssistantMessage(_StreamedTextParts, Vertical):
             await self._get_markdown().update(self._content)
 
     async def stop_stream(self) -> None:
-        """Stop the streaming and finalize the content."""
+        """Stop the streaming and finalize the content.
+
+        Re-renders from the full source only when the streamed blocks differ
+        from a full parse. Most messages match, which skips a remount of
+        every block at each text-to-tool boundary and at turn end.
+        """
         self._stop_flush_timer()
         await self._flush_pending_append()
         if self._stream is not None:
             await self._stream.stop()
             self._stream = None
-            await self._get_markdown().update(self._content)
+            markdown = self._get_markdown()
+            if _stream_diverged(markdown, self._content):
+                await markdown.update(self._content)
 
     async def set_content(self, content: str) -> None:
         """Set the full message content.

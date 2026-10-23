@@ -5084,6 +5084,10 @@ class DeepAgentsApp(App):
             exclusive=True,
             group="startup-import-prewarm",
         )
+        self.run_worker(
+            self._install_deferred_langsmith_redaction(),
+            group="startup-langsmith-redaction",
+        )
 
         # Start branch resolution immediately — the thread launches now
         # (during on_mount) so by the time the first frame finishes painting
@@ -6815,6 +6819,26 @@ class DeepAgentsApp(App):
             # failure originating outside that guard (e.g. the worker
             # machinery itself) so a failed prewarm never propagates here.
             logger.warning("Import prewarm worker failed", exc_info=True)
+
+    async def _install_deferred_langsmith_redaction(self) -> None:
+        """Install the redacting LangSmith client that startup deferred.
+
+        Runs on a worker thread after the import prewarm, so it delays neither
+        first paint nor the server health wait that follows the prewarm. This
+        is only a warm-up: `create_model` installs the client first if a model
+        is needed sooner, and retries an install that failed here.
+        """
+        await self._await_prewarm_imports()
+        from deepagents_code.config import ensure_langsmith_secret_redaction
+
+        try:
+            await asyncio.to_thread(ensure_langsmith_secret_redaction)
+        except Exception:
+            logger.warning(
+                "Deferred LangSmith redaction install failed; retrying on first "
+                "model use",
+                exc_info=True,
+            )
 
     @staticmethod
     def _prewarm_deferred_imports() -> None:

@@ -201,10 +201,16 @@ def _clear_langsmith_env(monkeypatch: pytest.MonkeyPatch) -> None:
     The user snapshot gets the same reset. Before bootstrap runs it is empty,
     which the server-launch encoder rejects, so tests that spawn the server
     would otherwise depend on whether an earlier test bootstrapped config.
+
+    The deferred-redaction flags are reset as well. A test that runs `cli_main`
+    down the TUI path sets them, and a later `create_model` would then install
+    the redacting client under that test's patched config.
     """
     import deepagents_code.config as config_mod
 
     monkeypatch.setattr(config_mod, "_reconciled_tracing_values", {})
+    monkeypatch.setattr(config_mod._bootstrap_state, "defer_redaction", False)
+    monkeypatch.setattr(config_mod._bootstrap_state, "redaction_pending", False)
     monkeypatch.setattr(
         config_mod._bootstrap_state,
         "launch_langsmith_env",

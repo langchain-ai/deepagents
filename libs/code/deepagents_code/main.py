@@ -5572,7 +5572,20 @@ def cli_main() -> None:
             _get_credentials,
             _is_editable_install,
             console,
+            defer_langsmith_secret_redaction,
         )
+
+        # A launch that can open the TUI installs the redacting LangSmith client
+        # on a worker thread after first paint, not before it. Nothing in this
+        # process traces before then: `create_model` installs it first if a
+        # model is needed earlier. The agent runs in the server process, which
+        # installs its own client.
+        if (
+            command is None
+            and not getattr(args, "acp", False)
+            and not args.non_interactive_message
+        ):
+            defer_langsmith_secret_redaction()
 
         _get_credentials()
 
@@ -5758,6 +5771,12 @@ def cli_main() -> None:
             sys.exit(exit_code)
 
         apply_stdin_pipe(args)
+        if args.non_interactive_message:
+            # Piped stdin turned this launch headless. It gets no prewarm
+            # thread, so install the redacting client now, as bootstrap would.
+            from deepagents_code.config import ensure_langsmith_secret_redaction
+
+            ensure_langsmith_secret_redaction()
 
         # Gate on stale editable-install dependencies. Choose the channel from
         # the launch mode, not from `sys.stdout.isatty()`: a TTY does not imply

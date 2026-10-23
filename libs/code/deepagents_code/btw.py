@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
+import logging
+import sqlite3
 from collections import OrderedDict
 from collections.abc import Mapping
-from contextlib import aclosing
+from contextlib import aclosing, closing
 from copy import deepcopy
 from typing import TYPE_CHECKING, Annotated, Any, NotRequired, cast
 
@@ -62,6 +65,8 @@ _MAX_RETRY_DELAY = 60
 """Leave generation time within the API's 120-second request deadline."""
 BTW_OPERATION_ATTR = "_dcode_btw"
 
+logger = logging.getLogger(__name__)
+
 
 class _InstructionState(MemoryState, SkillsState):
     """Local copy of the checkpoint channels used to assemble instructions."""
@@ -70,7 +75,8 @@ class _InstructionState(MemoryState, SkillsState):
 class _BtwState(AgentState):
     """Effective side-request context saved with a successful main response."""
 
-    _btw_system_prompt: Annotated[NotRequired[str], PrivateStateAttr]
+    _btw_system_prompt: Annotated[NotRequired[str | None], PrivateStateAttr]
+    """Legacy prompt copy, read as a fallback and cleared once the table has one."""
     _btw_model_settings: Annotated[NotRequired[dict[str, object]], PrivateStateAttr]
     _btw_model_retries: Annotated[NotRequired[int | None], PrivateStateAttr]
 
@@ -179,6 +185,59 @@ def _retry_budget(model: object) -> int | None:
         model = model.bound
     retries = getattr(model, MODEL_RETRIES_ATTR, None)
     return retries if type(retries) is int and retries >= 0 else None
+
+
+def _save_prompt(thread_id: str, prompt: str, digest: str) -> None:
+    """Store a thread's main prompt in the sessions database.
+
+    Checkpoints store every channel value again, so a prompt in graph state
+    repeats in each checkpoint row. One row per thread holds it here instead.
+    The upsert skips the write when the saved prompt has the same digest.
+
+    Args:
+        thread_id: Thread whose main call used `prompt`.
+        prompt: Effective main-call system prompt.
+        digest: SHA-256 hex digest of `prompt`.
+    """
+    from deepagents_code.workspace import _database_path
+
+    with closing(sqlite3.connect(_database_path(), timeout=5)) as conn, conn:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS dcode_btw_prompts (thread_id TEXT PRIMARY "
+            "KEY NOT NULL, digest TEXT NOT NULL, prompt TEXT NOT NULL)"
+        )
+        conn.execute(
+            "INSERT INTO dcode_btw_prompts VALUES (?, ?, ?) "
+            "ON CONFLICT(thread_id) DO UPDATE SET digest = excluded.digest, "
+            "prompt = excluded.prompt WHERE digest != excluded.digest",
+            (thread_id, digest, prompt),
+        )
+
+
+def _load_prompt(thread_id: str) -> str | None:
+    """Read a thread's saved main prompt without creating the database.
+
+    Returns:
+        The saved prompt, or `None` when the thread has none.
+    """
+    from deepagents_code.workspace import _database_path
+
+    path = _database_path()
+    if not path.exists():
+        return None
+    with closing(
+        sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True, timeout=1)
+    ) as conn:
+        exists = conn.execute(
+            "SELECT 1 FROM sqlite_master "
+            "WHERE type = 'table' AND name = 'dcode_btw_prompts'"
+        ).fetchone()
+        if not exists:
+            return None
+        row = conn.execute(
+            "SELECT prompt FROM dcode_btw_prompts WHERE thread_id = ?", (thread_id,)
+        ).fetchone()
+    return row[0] if row else None
 
 
 async def _open_text_stream(
@@ -357,6 +416,41 @@ def _prepare_messages(request: ModelRequest) -> list[BaseMessage]:
     )
 
 
+def _checkpoint_update(request: ModelRequest, *, saved: bool) -> Command:
+    """Checkpoint generation settings, which are small, with the response.
+
+    Returns:
+        A private-state update that also clears a legacy prompt copy once
+        the sessions database holds the current prompt.
+    """
+    update: dict[str, object] = {
+        "_btw_model_settings": tool_free_settings(
+            request.model, request.model_settings
+        ),
+        "_btw_model_retries": _retry_budget(request.model),
+    }
+    if saved and request.state.get("_btw_system_prompt") is not None:
+        update["_btw_system_prompt"] = None
+    return Command(update=update)
+
+
+async def _saved_prompt(thread_id: str, state: Mapping[str, object]) -> str | None:
+    """Read the saved main prompt, falling back to a legacy checkpoint copy.
+
+    Returns:
+        The saved prompt, or `None` when neither source has one.
+    """
+    try:
+        prompt = await asyncio.to_thread(_load_prompt, thread_id)
+    except sqlite3.Error:
+        logger.warning("Could not read side-question instructions", exc_info=True)
+        prompt = None
+    legacy = state.get("_btw_system_prompt")
+    if prompt is None and isinstance(legacy, str):
+        return legacy
+    return prompt
+
+
 class BtwOperation(AgentMiddleware):
     """Capture effective main-call context and answer tool-free side questions.
 
@@ -369,8 +463,10 @@ class BtwOperation(AgentMiddleware):
 
     This separate hook snapshots the resolved request before calling the model,
     allowing `/btw` to use it while the main response is still streaming. Main
-    calls also checkpoint effective instructions and generation settings on
-    success for use after restart or eviction. `answer` invokes the model without
+    calls also save effective instructions to the sessions database and
+    checkpoint generation settings on success for use after restart or
+    eviction. Instructions stay out of checkpoints because each checkpoint row
+    repeats every state value. `answer` invokes the model without
     running the agent or writing conversation state; when saved instructions are absent,
     it reuses the main agent's memory and skill loaders on a local state copy.
     """
@@ -403,37 +499,58 @@ class BtwOperation(AgentMiddleware):
         self._snapshots: OrderedDict[
             str, tuple[BaseChatModel, SystemMessage, dict[str, Any]]
         ] = OrderedDict()
+        self._saved_digests: dict[str, str] = {}
 
-    def _remember_model(self, request: ModelRequest) -> Command | None:
+    def _remember_model(self, request: ModelRequest) -> str | None:
         """Snapshot resolved settings before either kind of main model call.
 
         The in-memory snapshot is available immediately, even while the main
-        call is pending. Its context checkpoint update is only returned
-        with a successful main response.
+        call is pending. Durable context is only saved with a successful main
+        response.
 
         Returns:
-            Instructions to checkpoint on success, or `None` for nested calls.
+            The thread ID for main calls, or `None` for nested calls.
         """
         info = request.runtime.execution_info
-        if info is not None and info.thread_id and "|" not in info.checkpoint_ns:
-            self._snapshots[info.thread_id] = (
-                request.model,
-                (request.system_message or self._system).model_copy(deep=True),
-                deepcopy(request.model_settings),
-            )
-            self._snapshots.move_to_end(info.thread_id)
-            while len(self._snapshots) > _MAX_SNAPSHOTS:
-                self._snapshots.popitem(last=False)
-            return Command(
-                update={
-                    "_btw_system_prompt": (request.system_message or self._system).text,
-                    "_btw_model_settings": tool_free_settings(
-                        request.model, request.model_settings
-                    ),
-                    "_btw_model_retries": _retry_budget(request.model),
-                }
-            )
-        return None
+        if info is None or not info.thread_id or "|" in info.checkpoint_ns:
+            return None
+        self._snapshots[info.thread_id] = (
+            request.model,
+            (request.system_message or self._system).model_copy(deep=True),
+            deepcopy(request.model_settings),
+        )
+        self._snapshots.move_to_end(info.thread_id)
+        while len(self._snapshots) > _MAX_SNAPSHOTS:
+            self._snapshots.popitem(last=False)
+        return info.thread_id
+
+    def _unsaved_prompt(
+        self, thread_id: str, request: ModelRequest
+    ) -> tuple[str, str] | None:
+        """Find a prompt that this process has not yet saved for the thread.
+
+        Returns:
+            The prompt and its digest, or `None` when the saved one matches.
+        """
+        prompt = (request.system_message or self._system).text
+        digest = hashlib.sha256(prompt.encode()).hexdigest()
+        if self._saved_digests.get(thread_id) == digest:
+            return None
+        return prompt, digest
+
+    def _save(self, thread_id: str, prompt: str, digest: str) -> bool:
+        """Save the prompt, keeping the main response if the write fails.
+
+        Returns:
+            Whether the sessions database now holds the prompt.
+        """
+        try:
+            _save_prompt(thread_id, prompt, digest)
+        except sqlite3.Error:
+            logger.warning("Could not save side-question instructions", exc_info=True)
+            return False
+        self._saved_digests[thread_id] = digest
+        return True
 
     def wrap_model_call(
         self,
@@ -447,10 +564,18 @@ class BtwOperation(AgentMiddleware):
             handler: Callback that executes the main model request.
 
         Returns:
-            The main response with private instruction metadata to checkpoint.
+            The main response with private generation settings to checkpoint.
         """
-        command = self._remember_model(request)
-        return ExtendedModelResponse(model_response=handler(request), command=command)
+        thread_id = self._remember_model(request)
+        response = handler(request)
+        if thread_id is None:
+            return ExtendedModelResponse(model_response=response, command=None)
+        unsaved = self._unsaved_prompt(thread_id, request)
+        saved = unsaved is None or self._save(thread_id, *unsaved)
+        return ExtendedModelResponse(
+            model_response=response,
+            command=_checkpoint_update(request, saved=saved),
+        )
 
     async def awrap_model_call(
         self,
@@ -464,11 +589,20 @@ class BtwOperation(AgentMiddleware):
             handler: Callback that executes the main model request.
 
         Returns:
-            The main response with private instruction metadata to checkpoint.
+            The main response with private generation settings to checkpoint.
         """
-        command = self._remember_model(request)
+        thread_id = self._remember_model(request)
+        response = await handler(request)
+        if thread_id is None:
+            return ExtendedModelResponse(model_response=response, command=None)
+        unsaved = self._unsaved_prompt(thread_id, request)
+        # The server event loop must not block on the sessions database.
+        saved = unsaved is None or await asyncio.to_thread(
+            self._save, thread_id, *unsaved
+        )
         return ExtendedModelResponse(
-            model_response=await handler(request), command=command
+            model_response=response,
+            command=_checkpoint_update(request, saved=saved),
         )
 
     async def _resolve_context(
@@ -514,8 +648,8 @@ class BtwOperation(AgentMiddleware):
             msg = "Side questions require an unbound chat model."
             raise TypeError(msg)
         if snapshot is None:
-            saved_system = state.get("_btw_system_prompt")
-            if isinstance(saved_system, str):
+            saved_system = await _saved_prompt(thread_id, state)
+            if saved_system is not None:
                 system = await _refresh_skills(
                     SystemMessage(content=saved_system),
                     model,
@@ -544,8 +678,8 @@ class BtwOperation(AgentMiddleware):
 
         Use the thread's latest server-resolved model and instructions, falling
         back to checkpoint settings or the workspace's bootstrap model. Restore
-        the checkpointed instructions, generation settings, and retry budget when
-        no live snapshot exists.
+        the saved instructions, generation settings, and retry budget when no
+        live snapshot exists.
         New and legacy threads restore memory and skills through the main
         agent's loaders without writing updates back to the conversation.
         Large older file arguments are truncated using the main agent's policy;

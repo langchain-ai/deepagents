@@ -698,6 +698,106 @@ async def test_effective_context_survives_restart_and_eviction(
     assert (await graph.aget_state(config)) == checkpoint
 
 
+@pytest.fixture
+def prompt_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Use an isolated sessions database for saved side-question prompts."""
+    path = tmp_path / "sessions.db"
+    monkeypatch.setattr("deepagents_code.workspace._database_path", lambda: path)
+    return path
+
+
+def _prompt_graph(
+    operation: BtwOperation, prompt: list[str]
+) -> tuple[Pregel, RunnableConfig]:
+    """Build a checkpointed agent whose main prompt is `prompt[0]`.
+
+    Returns:
+        The graph and a config for its single thread.
+    """
+    from langchain.agents import create_agent
+    from langchain.agents.middleware import dynamic_prompt
+    from langgraph.checkpoint.memory import InMemorySaver
+
+    @dynamic_prompt
+    def current(_request: ModelRequest) -> str:
+        return prompt[0]
+
+    model = FakeMessagesListChatModel(
+        responses=[AIMessage(content=f"main {index}") for index in range(4)]
+    )
+    graph = create_agent(
+        model, middleware=[current, operation], checkpointer=InMemorySaver()
+    )
+    return graph, {"configurable": {"thread_id": "saved-prompt"}}
+
+
+@pytest.mark.usefixtures("prompt_db")
+async def test_saved_prompt_stays_out_of_checkpoints_and_survives_restart(
+    invoke: AsyncMock,
+) -> None:
+    model = FakeMessagesListChatModel(responses=[])
+    graph, config = _prompt_graph(
+        BtwOperation(model, "Bootstrap", None), ["Saved main instructions."]
+    )
+    await graph.ainvoke({"messages": [HumanMessage("Hello")]}, config)
+    state = await graph.aget_state(config)
+    assert "_btw_system_prompt" not in state.values
+
+    restarted = BtwOperation(model, "Bootstrap", None)
+    await restarted.answer("saved-prompt", state.values, "Why?")
+    assert invoke.call_args.args[0][0].text.startswith("Saved main instructions.")
+
+
+@pytest.mark.usefixtures("prompt_db")
+async def test_unchanged_prompt_is_saved_once(
+    monkeypatch: pytest.MonkeyPatch, invoke: AsyncMock
+) -> None:
+    from deepagents_code import btw
+
+    saves: list[str] = []
+    save = btw._save_prompt
+
+    def counted(thread_id: str, prompt: str, digest: str) -> None:
+        saves.append(prompt)
+        save(thread_id, prompt, digest)
+
+    monkeypatch.setattr(btw, "_save_prompt", counted)
+    prompt = ["First instructions."]
+    operation = BtwOperation(FakeMessagesListChatModel(responses=[]), "B", None)
+    graph, config = _prompt_graph(operation, prompt)
+    for _ in range(2):
+        await graph.ainvoke({"messages": [HumanMessage("Hello")]}, config)
+    prompt[0] = "Second instructions."
+    await graph.ainvoke({"messages": [HumanMessage("Hello")]}, config)
+    assert saves == ["First instructions.", "Second instructions."]
+
+    state = await graph.aget_state(config)
+    restarted = BtwOperation(FakeMessagesListChatModel(responses=[]), "B", None)
+    await restarted.answer("saved-prompt", state.values, "Why?")
+    assert invoke.call_args.args[0][0].text.startswith("Second instructions.")
+
+
+@pytest.mark.usefixtures("prompt_db")
+async def test_legacy_checkpoint_prompt_is_used_then_moved(invoke: AsyncMock) -> None:
+    model = FakeMessagesListChatModel(responses=[])
+    operation = BtwOperation(model, "Bootstrap", None)
+    graph, config = _prompt_graph(operation, ["Current instructions."])
+    await graph.ainvoke({"messages": [HumanMessage("Hello")]}, config)
+    # Threads from older releases kept the prompt in checkpoint state.
+    legacy = {"_btw_system_prompt": "Legacy instructions."}
+    await operation.answer("legacy-thread", legacy, "Why?")
+    assert invoke.call_args.args[0][0].text.startswith("Legacy instructions.")
+
+    await graph.aupdate_state(config, legacy)
+    await graph.ainvoke({"messages": [HumanMessage("Again")]}, config)
+    state = await graph.aget_state(config)
+    assert state.values.get("_btw_system_prompt") is None
+    await BtwOperation(model, "Bootstrap", None).answer(
+        "saved-prompt", state.values, "Why?"
+    )
+    assert invoke.call_args.args[0][0].text.startswith("Current instructions.")
+
+
 @pytest.mark.parametrize("streaming", [False, True])
 @pytest.mark.parametrize("retries", [0, 1])
 @pytest.mark.parametrize("restart", [False, True])

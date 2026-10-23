@@ -46,7 +46,7 @@ def launched_server(
         children.append((reader, process, stdout))
         return process
 
-    def terminate(process: MagicMock) -> None:
+    def terminate(process: MagicMock, *, grace: float | None = None) -> None:  # noqa: ARG001
         process.poll.return_value = 0
 
     monkeypatch.delenv("DEEPAGENTS_CODE_DEBUG", raising=False)
@@ -76,7 +76,7 @@ async def test_normal_stop_keeps_writer_until_termination(
     await server.start()
     reader, _, log = children[-1]
 
-    def terminate(process: MagicMock) -> None:
+    def terminate(process: MagicMock, *, grace: float | None = None) -> None:  # noqa: ARG001
         with pytest.raises(BlockingIOError):
             os.read(reader, 1)
         process.poll.return_value = 0

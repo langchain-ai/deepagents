@@ -1145,7 +1145,9 @@ class TestServerProcessStopIdempotency:
         """Repeated `stop()` calls tear the process down only once."""
         server = ServerProcess(host="127.0.0.1", port=2024)
         calls: list[int] = []
-        monkeypatch.setattr(server, "_stop_process_locked", lambda: calls.append(1))
+        monkeypatch.setattr(
+            server, "_stop_process_locked", lambda **_kwargs: calls.append(1)
+        )
 
         server.stop()
         server.stop()
@@ -1165,7 +1167,7 @@ class TestServerProcessStopIdempotency:
         release = threading.Event()
         calls: list[int] = []
 
-        def slow_stop_process() -> None:
+        def slow_stop_process(*, grace: float | None = None) -> None:  # noqa: ARG001
             calls.append(1)
             entered.set()
             release.wait(timeout=2.0)
@@ -1543,6 +1545,42 @@ class TestTerminateServerProcess:
         ]
         process.wait.assert_called_once_with()
         process.kill.assert_not_called()
+
+    def test_grace_overrides_shutdown_timeout(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An explicit `grace` replaces the full graceful window.
+
+        Abandoned startups pass a short grace so a server stuck in its graph
+        build is killed without holding the full `_SHUTDOWN_TIMEOUT`.
+        """
+        self._patch_own_group(monkeypatch)
+        group_killed = False
+
+        def _killpg(_pgid: int, sig: int) -> None:
+            nonlocal group_killed
+            if sig == signal.SIGKILL:
+                group_killed = True
+            elif sig == 0 and group_killed:
+                raise ProcessLookupError
+
+        def _no_wait(_seconds: float) -> None:
+            msg = "a zero grace must escalate without waiting"
+            raise AssertionError(msg)
+
+        killpg = MagicMock(side_effect=_killpg)
+        monkeypatch.setattr("deepagents_code.client.launch.server.os.killpg", killpg)
+        monkeypatch.setattr("deepagents_code.client.launch.server.time.sleep", _no_wait)
+        process = self._own_group_process()
+
+        _terminate_server_process(process, grace=0)
+
+        assert killpg.call_args_list == [
+            ((4321, signal.SIGTERM),),
+            ((4321, 0),),
+            ((4321, signal.SIGKILL),),
+            ((4321, 0),),
+        ]
 
     def test_group_wait_ignores_exited_leader(
         self, monkeypatch: pytest.MonkeyPatch

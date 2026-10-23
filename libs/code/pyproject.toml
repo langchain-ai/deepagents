@@ -32,7 +32,7 @@ dependencies = [
     # Client-server architecture
     "langgraph-sdk>=0.4.8,<1.0.0",
     "langgraph-cli[inmem]>=0.4.37,<1.0.0",
-    "langgraph-runtime-inmem>=0.36.4,<1.0.0",
+    "langgraph-runtime-inmem>=0.36.5,<1.0.0",
     "httpx>=0.28.1",
 
     # Core model providers - others are added as optional

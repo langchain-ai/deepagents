@@ -108,7 +108,7 @@ test('provider requests require canonical categories and pull-request-only links
       assert.match(prompt, new RegExp(category));
     }
     assert.match(prompt, /renderer controls headings, order, list formatting, and omission of empty sections/);
-    assert.match(prompt, /Preserve every useful pull-request link/);
+    assert.match(prompt, /Preserve every pull-request link/);
     assert.match(prompt, /remove commit links and commit hashes/);
     assert.match(prompt, /include no other links/);
   }
@@ -143,6 +143,13 @@ test('provider requests use fixed endpoints and keep source text in the body', (
     assert.doesNotMatch(request.url, /attacker/);
     assert.match(JSON.stringify(request.body), /attacker/);
   }
+});
+
+test('the model sees release-please issue links as pull-request links', () => {
+  const source = 'Package: langchain-daytona\nVersion: 0.0.9\n\n* **daytona:** apply request timeouts ([#7121](https://github.com/langchain-ai/deepagents/issues/7121))';
+  const prompt = draft.userPrompt(source);
+  assert.match(prompt, /\(https:\/\/github\.com\/langchain-ai\/deepagents\/pull\/7121\)/);
+  assert.doesNotMatch(prompt, /\/issues\//);
 });
 
 test('maintainer instructions join the user message as subordinate guidance', () => {

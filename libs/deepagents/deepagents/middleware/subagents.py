@@ -3,7 +3,7 @@
 import contextlib
 import dataclasses
 import json
-from collections.abc import Awaitable, Callable, Generator, Sequence
+from collections.abc import Awaitable, Callable, Generator, Mapping, Sequence
 from typing import TYPE_CHECKING, Annotated, Any, Literal, NotRequired, TypedDict, cast
 
 from langchain.agents import create_agent
@@ -79,6 +79,18 @@ omitting the tool -- see `_ForkTaskToolMiddleware` for why.
 _FORK_RECURSION_REFUSAL = (
     "You are a subagent and cannot delegate to another subagent. Complete this task yourself instead of calling this tool again."
 )
+
+_ASYNC_FORK_METADATA_KEY = "deepagents_fork"
+"""Task-thread metadata marking an async subagent that runs as a fork of the agent that launched it.
+
+The fork runs the launching agent's own graph, so it has the same delegation tools;
+the Agent Server copies this into every run on the thread, and they refuse there.
+"""
+
+
+def _is_async_fork(config: Mapping[str, Any] | None) -> bool:
+    """Whether this run is an async fork, which must not delegate."""
+    return str(((config or {}).get("metadata") or {}).get(_ASYNC_FORK_METADATA_KEY)).lower() == "true"
 
 
 class SubAgent(TypedDict):
@@ -840,7 +852,7 @@ def _build_task_tool(  # noqa: C901, PLR0915
         subagent_type: str,
         runtime: ToolRuntime,
     ) -> str | Command:
-        if runtime.state.get(_FORKED_CONTEXT_KEY):
+        if runtime.state.get(_FORKED_CONTEXT_KEY) or _is_async_fork(runtime.config):
             return _FORK_RECURSION_REFUSAL
         if subagent_type not in subagent_graphs:
             allowed_types = ", ".join([f"`{k}`" for k in subagent_graphs])
@@ -870,7 +882,7 @@ def _build_task_tool(  # noqa: C901, PLR0915
         subagent_type: str,
         runtime: ToolRuntime,
     ) -> str | Command:
-        if runtime.state.get(_FORKED_CONTEXT_KEY):
+        if runtime.state.get(_FORKED_CONTEXT_KEY) or _is_async_fork(runtime.config):
             return _FORK_RECURSION_REFUSAL
         if subagent_type not in subagent_graphs:
             allowed_types = ", ".join([f"`{k}`" for k in subagent_graphs])

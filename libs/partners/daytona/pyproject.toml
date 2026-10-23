@@ -23,7 +23,7 @@ version = "0.0.8"
 requires-python = ">=3.11,<4.0"
 dependencies = [
     "deepagents>=0.7.0,<0.8.0",
-    "daytona",
+    "daytona>=0.197.0",
 ]
 
 [tool.hatch.build.targets.wheel]

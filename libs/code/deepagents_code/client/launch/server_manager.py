@@ -15,6 +15,7 @@ duplicate try/finally teardown.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import tempfile
@@ -476,6 +477,14 @@ async def start_server_and_get_agent(
             # and orphan the process. The inner guard stops a `stop()` error
             # from masking the exception already propagating.
             #
+            # Offload `stop()`: it blocks for up to `_SHUTDOWN_TIMEOUT` plus the
+            # SIGKILL grace while the server finishes its in-flight graph build.
+            # Quitting the TUI during startup cancels this coroutine on Textual's
+            # event loop, so a blocking call here freezes the screen until the
+            # server exits. If a second cancellation interrupts the await, the
+            # thread keeps running and `asyncio.run` joins it before the process
+            # exits, so the server is still reaped.
+            #
             # `stop()` only *queues* any debug-preserved log path; it is not
             # announced here. This helper is awaited by callers that still own
             # the terminal (the initial TUI startup worker and the in-session
@@ -484,7 +493,7 @@ async def start_server_and_get_agent(
             # terminal teardown (`run_textual_app` / `server_session` finally)
             # drains this failed server's path once the terminal is restored.
             try:
-                server.stop()
+                await asyncio.to_thread(server.stop)
             except Exception:
                 logger.exception(
                     "Error stopping server during startup cleanup",

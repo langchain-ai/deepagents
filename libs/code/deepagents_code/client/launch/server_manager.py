@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncIterator, Awaitable, Callable
 
     from deepagents import FsToolName
 
@@ -327,6 +327,7 @@ async def start_server_and_get_agent(
     host: str = "127.0.0.1",
     port: int = _EPHEMERAL_PORT,
     cwd: str | None = None,
+    after_spawn: Callable[[], Awaitable[None]] | None = None,
 ) -> tuple[RemoteAgent, ServerProcess, MCPSessionManager | None]:
     """Start a LangGraph server and return a connected remote agent client.
 
@@ -372,6 +373,8 @@ async def start_server_and_get_agent(
             pick a free ephemeral port instead of the well-known `langgraph dev`
             port 2024.
         cwd: Explicit project workspace to bind to new threads.
+        after_spawn: Awaited once the server subprocess is spawned, before
+            the health check. See `ServerProcess.start`.
 
     Returns:
         Tuple of `(remote_agent, server_process, mcp_session_manager)`.
@@ -444,7 +447,7 @@ async def start_server_and_get_agent(
     )
     started = False
     try:
-        await server.start()
+        await server.start(after_spawn=after_spawn)
         await server.wait_for_graph_ready("agent")
         agent = RemoteAgent(
             url=server.url,

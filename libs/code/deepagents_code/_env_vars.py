@@ -77,6 +77,15 @@ Values outside 1-900 seconds are ignored in favor of the next config source.
 Also settable via `[mcp].tool_timeout` in config.toml.
 """
 
+ASK_ABOUT_SELECTION = "DEEPAGENTS_CODE_ASK_ABOUT_SELECTION"
+"""Show "Ask about this" when conversation text is selected.
+
+Enabled by default; set to a falsy value (`0`, `false`, `no`, `off`) to hide
+it. Parsed by `classify_env_bool` (an unrecognized or empty value falls through
+to the config value rather than forcing the default). Also settable via
+`[ui].ask_about_selection` in config.toml. `/reload` applies a change.
+"""
+
 AUTO_UPDATE = "DEEPAGENTS_CODE_AUTO_UPDATE"
 """Toggle automatic app updates. Enabled by default; set to a falsy value
 ('0', 'false', 'no', 'off', or empty) to opt out."""

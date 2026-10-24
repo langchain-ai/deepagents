@@ -5,16 +5,17 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import os
+import weakref
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from threading import RLock
+from threading import Lock, RLock
 from typing import TYPE_CHECKING, override
 from uuid import uuid4
 
 from filelock import FileLock, SoftFileLock, Timeout
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Awaitable, Sequence
+    from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
     from pathlib import Path
 
     from langchain_core.runnables import RunnableConfig
@@ -33,6 +34,16 @@ class ThreadOwnershipError(RuntimeError):
 OWNER_KEY = "x-dcode-thread-owner"
 _registry: dict[tuple[int, str], ThreadLease] = {}
 _registry_lock = RLock()
+# Resolved owner paths, so repeat mutations skip a thread hop.
+_gate_paths: dict[tuple[str, str], Path] = {}
+# Per-loop queues in front of each file gate. `flock` locks are per file
+# descriptor, so concurrent writers in one process contend on the file gate
+# like separate processes do. Queuing them on an `asyncio.Lock` first lets
+# them wait without polling the file lock.
+_local_gates: weakref.WeakKeyDictionary[
+    asyncio.AbstractEventLoop, weakref.WeakValueDictionary[str, asyncio.Lock]
+] = weakref.WeakKeyDictionary()
+_local_gates_lock = Lock()
 
 
 def _paths(thread_id: str, db_path: Path) -> Path:
@@ -194,23 +205,56 @@ async def writer_guard(
     thread_id: str, *, db_path: Path, token: str
 ) -> AsyncIterator[None]:
     """Fence a database mutation against both live reservations and new owners."""
-    path = await asyncio.to_thread(_paths, thread_id, db_path)
-    async with _mutation_gate(path):
-        await _finish_mutation(asyncio.to_thread(_validate, path, token))
+    key = (thread_id, str(db_path))
+    path = _gate_paths.get(key)
+    if path is None:
+        path = await asyncio.to_thread(_paths, thread_id, db_path)
+        _gate_paths[key] = path
+    async with _mutation_gate(path, check=lambda: _validate(path, token)):
         yield
 
 
 @asynccontextmanager
-async def _mutation_gate(path: Path) -> AsyncIterator[None]:
-    gate = _lock(path, "writer")
-    try:
-        while True:
-            if await _finish_mutation(asyncio.to_thread(_try_acquire_gate, gate)):
-                break
-            await asyncio.sleep(0.01)
-        yield
-    finally:
-        await _finish_mutation(asyncio.to_thread(gate.release))
+async def _mutation_gate(
+    path: Path, *, check: Callable[[], None] | None = None
+) -> AsyncIterator[None]:
+    """Hold the cross-process writer gate for `path`.
+
+    Args:
+        path: Owner path whose writer gate to hold.
+        check: Validation to run in the same thread hop once the gate is held.
+    """
+    async with _local_gate(path):
+        gate = _lock(path, "writer")
+        try:
+            while True:
+                if await _finish_mutation(asyncio.to_thread(_enter_gate, gate, check)):
+                    break
+                # Another process or a synchronous reservation holds the gate.
+                # Writers on this loop wait on the local lock, not here.
+                await asyncio.sleep(0.01)
+            yield
+        finally:
+            await _finish_mutation(asyncio.to_thread(gate.release))
+
+
+def _local_gate(path: Path) -> asyncio.Lock:
+    loop = asyncio.get_running_loop()
+    with _local_gates_lock:
+        gates = _local_gates.setdefault(loop, weakref.WeakValueDictionary())
+        gate = gates.get(str(path))
+        if gate is None:
+            gate = asyncio.Lock()
+            gates[str(path)] = gate
+        return gate
+
+
+def _enter_gate(gate: FileLock, check: Callable[[], None] | None) -> bool:
+    if not _try_acquire_gate(gate):
+        return False
+    if check is not None:
+        check()
+    return True
 
 
 def _try_acquire_gate(gate: FileLock) -> bool:

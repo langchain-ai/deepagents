@@ -153,7 +153,7 @@ _ALLOWLIST: dict[CallSite, str] = {
         "main.py", "_preload_session_mcp_server_info", "Path.cwd", "53b35c21"
     ): "The CLI preloads MCP data before server requests.",
     CallSite(
-        "main.py", "run_textual_cli_async", "Path.cwd", "47da3baa"
+        "main.py", "run_textual_cli_async", "Path.cwd", "fd9a100d"
     ): "The interactive CLI captures its launch directory.",
     CallSite(
         "main.py", "_run_acp_cli_async", "Path.cwd", "53b35c21"

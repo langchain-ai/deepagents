@@ -511,6 +511,21 @@ def _disable_app_startup_update_checks(
 
 
 @pytest.fixture(autouse=True)
+def _disable_server_prespawn(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep `run_textual_cli_async` tests from spawning a real server.
+
+    Those tests stub `run_textual_app`, but the prespawn runs before it and
+    would launch a `langgraph dev` subprocess. Tests that cover the prespawn
+    patch it back themselves.
+    """
+
+    async def _no_prespawn(*_: object, **__: object) -> None:
+        await asyncio.sleep(0)
+
+    monkeypatch.setattr("deepagents_code.main._prespawn_server", _no_prespawn)
+
+
+@pytest.fixture(autouse=True)
 def _skip_managed_tool_downloads(monkeypatch: pytest.MonkeyPatch) -> None:
     """Keep app startup from downloading the managed `rg` binary.
 
@@ -812,6 +827,18 @@ def _clear_kitty_kbd_probe_cache() -> None:
     from deepagents_code.terminal_capabilities import supports_kitty_keyboard_protocol
 
     supports_kitty_keyboard_protocol.cache_clear()
+
+
+@pytest.fixture(autouse=True)
+def _clear_deepagents_version_cache() -> None:
+    """Reset the process-lifetime cache on the SDK version lookup.
+
+    Tests patch `resolve_sdk_version` to drive `_get_deepagents_version`, so a
+    value cached by an earlier test would mask the patch.
+    """
+    from deepagents_code.config import _get_deepagents_version
+
+    _get_deepagents_version.cache_clear()
 
 
 @pytest.fixture

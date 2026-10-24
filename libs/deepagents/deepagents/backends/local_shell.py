@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING
 
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.backends.protocol import ExecuteResponse, SandboxBackendProtocol
+from deepagents.tracing import _execution_environment
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -114,6 +115,7 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
         max_output_bytes: int = 100_000,
         env: dict[str, str] | None = None,
         inherit_env: bool = False,
+        propagate_trace_context: bool = False,
     ) -> None:
         """Initialize local shell backend with filesystem access.
 
@@ -175,6 +177,15 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
                 When `True`, inherits all `os.environ` variables
                 and applies `env` overrides.
 
+            propagate_trace_context: Pass the current trace parent and project to
+                each command for use with `deepagents.tracing.execution_tracing`.
+                Credentials must be configured explicitly in `env` or the child
+                client. This does not instrument arbitrary script operations.
+
+                !!! warning "Experimental"
+                    Only local shell execution is supported. Disabled and local-only
+                    tracing are preserved; metadata and credentials are not copied.
+
         Raises:
             ValueError: If timeout is not positive.
         """
@@ -192,6 +203,7 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
         # Store execution parameters
         self._default_timeout = timeout
         self._max_output_bytes = max_output_bytes
+        self._propagate_trace_context = propagate_trace_context
 
         # Build environment based on inherit_env setting
         if inherit_env:
@@ -309,7 +321,7 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
                 stdin=subprocess.DEVNULL,  # Prevent hanging on commands that read stdin (e.g. python, cat)
                 text=True,
                 timeout=effective_timeout,
-                env=self._env,
+                env=_execution_environment(self._env) if self._propagate_trace_context else self._env,
                 cwd=str(self.cwd),  # Use the root_dir from FilesystemBackend
                 start_new_session=(sys.platform != "win32"),
             )

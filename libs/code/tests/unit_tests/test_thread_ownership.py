@@ -334,6 +334,38 @@ async def test_rotation_waits_for_inflight_write_without_releasing_reservation(
         lease.release()
 
 
+async def test_concurrent_local_writers_queue_without_polling(tmp_path, monkeypatch):
+    db_path = tmp_path / "sessions.db"
+    lease = ensure_owned("thread", db_path=db_path)
+    sleep = asyncio.sleep
+    polls: list[float] = []
+
+    async def spy(delay: float, *args: object, **kwargs: object) -> object:
+        if delay:
+            polls.append(delay)
+        return await sleep(delay, *args, **kwargs)
+
+    monkeypatch.setattr(asyncio, "sleep", spy)
+    active = 0
+    peak = 0
+
+    async def write() -> None:
+        nonlocal active, peak
+        async with writer_guard("thread", db_path=db_path, token=lease.token):
+            active += 1
+            peak = max(peak, active)
+            # Yield to the other writers while the gate is held.
+            await asyncio.to_thread(lambda: None)
+            active -= 1
+
+    try:
+        await asyncio.wait_for(asyncio.gather(*(write() for _ in range(8))), 10)
+    finally:
+        lease.release()
+    assert peak == 1
+    assert polls == []
+
+
 async def test_cancellation_during_lock_acquisition_releases_acquired_gate(
     tmp_path, monkeypatch
 ):

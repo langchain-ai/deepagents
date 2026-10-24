@@ -1,13 +1,15 @@
 ---
 type: architecture concept
-title: Tools and Filesystem Policy
-description: Deep Agents and dcode compose built-in filesystem, caller, MCP, managed helper, and shell tools into an agent-specific surface. Filesystem policy, backend capabilities, trust gates, and runtime enforcement remain separate concerns.
+title: Filesystem Tools and Backends
+description: Deep Agents and dcode expose filesystem and execution tools through capability-aware middleware backed by pluggable storage and sandbox implementations. This page explains tool allowlists, routing, permission and approval controls, content lifecycle, and the containment boundaries verified by focused tests.
 tags: [tools, filesystem, execution, middleware, backends, persistence, multimodal, permissions]
 sources:
   - id: openwiki-source-1728494bdd59604ce9b5f65b
     resource: repo://libs/code/deepagents_code/_server_config.py
   - id: openwiki-source-05106e66a949150d557266a2
     resource: repo://libs/code/deepagents_code/agent.py
+  - id: openwiki-source-b9ef532d79a0667acf40e58b
+    resource: repo://libs/code/deepagents_code/client/launch/server_manager.py
   - id: openwiki-source-a12868876b60484607797187
     resource: repo://libs/code/deepagents_code/file_ops.py
   - id: openwiki-source-2e03fee957625ca21a1c21af
@@ -20,12 +22,18 @@ sources:
     resource: repo://libs/code/deepagents_code/tool_catalog.py
   - id: openwiki-source-8ccbc389e8d6198afea76baa
     resource: repo://libs/code/tests/unit_tests/test_file_ops.py
+  - id: openwiki-source-f598809da8d8fbff2d7ae090
+    resource: repo://libs/code/tests/unit_tests/test_server_manager.py
   - id: openwiki-source-a1549ea98d425efea270be93
     resource: repo://libs/deepagents/deepagents/backends/composite.py
   - id: openwiki-source-e483ff4cfd25918c8107d575
     resource: repo://libs/deepagents/deepagents/backends/filesystem.py
   - id: openwiki-source-f84c83d6fab6028c94be90bc
     resource: repo://libs/deepagents/deepagents/backends/local_shell.py
+  - id: openwiki-source-e3efb5f3e4a9e8517eb6d8f5
+    resource: repo://libs/deepagents/deepagents/backends/protocol.py
+  - id: openwiki-source-d4463137befa776cd47750d4
+    resource: repo://libs/deepagents/deepagents/backends/sandbox.py
   - id: openwiki-source-0fc0e47059e4d07e23e50be2
     resource: repo://libs/deepagents/deepagents/graph.py
   - id: openwiki-source-303a7196a0e1a36cc078621b
@@ -36,13 +44,15 @@ sources:
     resource: repo://libs/deepagents/deepagents/middleware/_tool_exclusion.py
   - id: openwiki-source-fed4b84a38685f37e58018c5
     resource: repo://libs/deepagents/deepagents/middleware/filesystem.py
+  - id: openwiki-source-903e05891b2ddf4f958276fd
+    resource: repo://libs/deepagents/tests/unit_tests/test_local_sandbox_operations.py
+generated: { by: "openwiki/0.4.2", at: "2026-10-24T08:05:08.866Z" }
 verified:
   - by: openwiki/0.4.2
-    at: 2026-10-23T08:06:06.503Z
-generated: { by: "openwiki/0.4.2", at: "2026-10-23T08:06:06.503Z" }
+    at: 2026-10-24T08:05:08.866Z
 ---
 
-# Tools and Filesystem Policy
+# Filesystem Tools and Backends
 
 `FilesystemMiddleware` is the model-facing adapter over an initialized `BackendProtocol`: it creates tools, validates and formats their results, applies middleware-owned filesystem policy, and manages large or binary message content. The backend owns storage and operation implementation. A visible tool is not a guarantee that the backend implements it. SDK profile exclusions are model-surface controls rather than authorization, while dcode treats its explicitly configured filesystem allowlist as a security control and carries it into configurable subagents. See [Backends](backends.md) for storage and routing, [Permissions & HITL](permissions-hitl.md) for approval configuration, and [MCP](../integrations/mcp.md) for remote tools.
 
@@ -68,7 +78,7 @@ flowchart TD
 
 This flow separates construction-time registration, request-time capability and profile filtering, tool-call exclusion rejection, per-call policy, and backend behavior.
 
-`BackendProtocol` returns structured results rather than presentation strings. `ReadResult` rejects incoherent pagination metadata; the middleware owns line-number formatting and long-line continuation rows. `grep` and `glob` can be successful yet incomplete, so `truncated=True` means absence from returned matches is not proof of absence from storage. The agent-facing `grep` is literal, not regex; its configured default total cap is 1,000 matches, and a positive per-call `max_count` can override it. Set `grep_max_count=None` when constructing the middleware to disable the default cap.
+`BackendProtocol` returns structured results rather than presentation strings. `ReadResult` rejects incoherent pagination metadata; the middleware owns line-number formatting and long-line continuation rows. `grep` and `glob` can be successful yet incomplete, so `truncated=True` means absence from returned matches is not proof of absence from storage. When a backend can say why a glob is incomplete, `GlobResult.truncation_reason` distinguishes a time/match **budget**, an **unreadable** subtree, and clipped sandbox **transport**; only the budget case is plausibly addressed by narrowing the search. The agent-facing `grep` is literal, not regex; its configured default total cap is 1,000 matches, and a positive per-call `max_count` can override it. Set `grep_max_count=None` when constructing the middleware to disable the default cap.
 
 ## dcode composition, enumeration, and trust
 
@@ -93,6 +103,12 @@ This shows composition, not equivalent trust: caller tools are supplied by the a
 `dcode tools list` and interactive `/tools` derive the built-in listing from the actual tools bound on an agent compiled with an offline placeholder model, rather than maintaining a display catalog. It forwards the session filesystem allowlist into that compilation and deliberately reports an allowlist leak rather than cosmetically filtering it. MCP tools are grouped by server; non-`ok` servers with no tools are surfaced as unavailable, and a discovery-wide failure leaves built-ins visible with a generic notice rather than leaking exception details.
 
 `--allow-fs-tools` accepts `all` or a case-insensitive comma-separated subset of the eight SDK filesystem names. Omission and `all` leave the SDK's unrestricted default middleware in place; an explicit empty list, unknown name, mixed `all`, or subset without `read_file` is rejected. dcode installs a restricted replacement middleware for an explicit subset and appends equivalent middleware to raw subagent specifications. It rejects compiled subagents instead of silently letting delegation bypass that restriction.
+
+### Server-launched sessions
+
+`start_server_and_get_agent` is the process boundary used by dcode's server-backed client. It first preflights an explicit MCP configuration, builds a `ServerConfig` from the launch options—including `allow_fs_tools`, sandbox selection, and shell settings—and serializes that configuration into the server environment before spawning a temporary LangGraph server. Once the `agent` graph is ready, it creates a `RemoteAgent` and binds the resolved workspace plus a configuration claim and fingerprint. The claim intentionally contains session policy such as the filesystem allowlist, but not the MCP configuration path or project-MCP trust decision.
+
+If startup fails or the await is cancelled before ownership is transferred to the caller, the manager reaps the server in its `finally` block and runs the blocking stop off the event loop. `server_session` then provides the normal owner-facing lifecycle: it delegates startup and stops the returned process on context exit. This protects against an orphaned local server; it does not itself make shell execution or filesystem access safe.
 
 ## Managed helper and local presentation lifecycle
 
@@ -140,6 +156,10 @@ This policy flow shows the boundary: graph assembly owns approval predicates, wh
 
 Filesystem permission patterns do not parse or constrain command syntax. Therefore, middleware rejects permissions combined with an execution-capable backend unless every permission pattern is scoped beneath a `CompositeBackend` route; that exception separates governed file-tool routes from the default executor but does not authorize or confine shell commands. A `LocalShellBackend` runs `shell=True` on the host as the current user, with no isolation, and its virtual paths restrict only inherited file operations—not commands. Use an isolated sandbox and HITL for untrusted work.
 
+`SandboxBackendProtocol` is the extension contract that adds a sandbox identifier and synchronous/asynchronous command execution; it does not by itself guarantee a particular isolation mechanism. `BaseSandbox` builds `ls`, paginated `read`, `grep`, `glob`, `write`, and `edit` on that execution primitive and upload/download transport. Consequently, those helpers inherit the trust boundary of the subclass's `execute()` implementation rather than creating a second containment boundary. Capture-at-source output offload is opt-in on `BaseSandbox`; when enabled and its artifact path resolves to the executing backend, large combined command output can remain in the sandbox with a model-facing preview and `read_file` pointer.
+
+The local sandbox operation suite is a behavioral contract, not evidence of host isolation. It runs only with `RUN_SANDBOX_TESTS=true` and supplies a `LocalSubprocessSandbox` test double whose `execute` uses local `subprocess.run(..., shell=True)`. The double maps a virtual test prefix to a temporary real directory so tests can verify structured file results, pagination, errors, edits, search, and uploads without exposing that directory in returned paths. In particular, CRLF files are read as LF for the model, while edit accepts the LF view and preserves the matched file section's line-ending style; mixed-ending `replace_all` affects the first matching style only. Production sandbox containment must instead be established by the selected backend and is covered in [Sandbox partners](../integrations/sandbox-partners.md).
+
 When execution is active, middleware adds route-to-host mapping guidance only for composite routes that share a local `LocalShellBackend` filesystem. Remote, sandbox, and store-backed routes have no shell mapping and must be accessed through file tools. It does not rewrite commands.
 
 ## Read media and content lifecycle
@@ -173,7 +193,7 @@ The binary lifecycle stores references in history but restores verified payloads
 
 Keep `read_file` in explicit tool lists, and treat missing `delete` or `execute` as a backend capability issue rather than an allowlist issue. Use a harness profile exclusion to suppress a tool for a particular agent surface, not to authorize storage or isolate execution. Treat composite search truncation as incomplete output and do not assume file-tool route paths are shell paths. Configure binary offload only when the blob route supports upload/download outside checkpoint state. For direct host backends, keep virtual mode enabled unless trusted local workflows explicitly need host paths; do not mistake it for sandboxing.
 
-When changing this area, exercise the focused behavior rather than only tool registration: virtual-root containment and symlink resolution; composite routing and merged search errors/truncation; request-time capability filtering and excluded-call rejection; permission first-match, recursive-delete, and bulk HITL cases; execution timeout/exit-code behavior; and offload upload, digest verification, and state-backed-route disablement.
+When changing this area, exercise the focused behavior rather than only tool registration: virtual-root containment and symlink resolution; composite routing and merged search errors/truncation; request-time capability filtering and excluded-call rejection; permission first-match, recursive-delete, and bulk HITL cases; execution timeout/exit-code behavior; and offload upload, digest verification, and state-backed-route disablement. For server-backed dcode sessions, also test the environment round trip and fail-closed `allow_fs_tools` validation, workspace claim contents, cancellation-safe startup cleanup, and context-manager shutdown. Run the `BaseSandbox` local operation suite with `RUN_SANDBOX_TESTS=true` when modifying its portable file-operation behavior, but do not treat its local subprocess fixture as a sandbox security test.
 
 ## Related pages
 

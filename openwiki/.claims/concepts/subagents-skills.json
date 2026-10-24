@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:2eb7571c072ffb927e5c51be04cea0a470b6e591d737d1b8533a696ae0ac1784",
+  "pageVersion": "sha256:cfcf7c841e9c75a2e52634f07150a237c45e0d33c5eb3c9a470b049c16269bd7",
   "claims": [
     {
       "id": "claim_3f6e4d8c4f6f470a94669778d16a96b1",
@@ -8,7 +8,7 @@
       "evidence": [
         {
           "resource": "repo://libs/deepagents/deepagents/graph.py",
-          "version": "repo-file-v1:sha256:3826c92c9613a30d898d3fb4fb76ab49a6af0537b5ef74ec9e7340673f7f2261"
+          "version": "repo-file-v1:sha256:5964f538571f415331870230b86eae1833f11e52c0d91b38e3c37e6e0c609569"
         }
       ]
     },
@@ -18,7 +18,7 @@
       "evidence": [
         {
           "resource": "repo://libs/deepagents/deepagents/graph.py",
-          "version": "repo-file-v1:sha256:3826c92c9613a30d898d3fb4fb76ab49a6af0537b5ef74ec9e7340673f7f2261"
+          "version": "repo-file-v1:sha256:5964f538571f415331870230b86eae1833f11e52c0d91b38e3c37e6e0c609569"
         },
         {
           "resource": "repo://libs/deepagents/deepagents/middleware/subagents.py",
@@ -32,7 +32,7 @@
       "evidence": [
         {
           "resource": "repo://libs/deepagents/deepagents/graph.py",
-          "version": "repo-file-v1:sha256:3826c92c9613a30d898d3fb4fb76ab49a6af0537b5ef74ec9e7340673f7f2261"
+          "version": "repo-file-v1:sha256:5964f538571f415331870230b86eae1833f11e52c0d91b38e3c37e6e0c609569"
         },
         {
           "resource": "repo://libs/deepagents/deepagents/middleware/subagents.py",
@@ -46,7 +46,7 @@
       "evidence": [
         {
           "resource": "repo://libs/deepagents/deepagents/middleware/async_subagents.py",
-          "version": "repo-file-v1:sha256:238ca0289ce3987e2e2335da2c42419bd80fcb0bdff0297a68677dcd58c65f9b"
+          "version": "repo-file-v1:sha256:d04864d71809653355d8c88b1f798b22590a835c3e3d5372cc994d2ab00ba668"
         }
       ]
     },
@@ -66,7 +66,7 @@
       "evidence": [
         {
           "resource": "repo://libs/deepagents/deepagents/middleware/_skill_tools.py",
-          "version": "repo-file-v1:sha256:2d99b6159b5181f59ae6f97e5d65f5d8776851658aad70417334fdc1fcec08b9"
+          "version": "repo-file-v1:sha256:9bcdfc830b8b688100ae31ff0d28f1a58b152066183753adc3832e9be8e82987"
         },
         {
           "resource": "repo://libs/deepagents/deepagents/middleware/skills.py",
@@ -90,11 +90,11 @@
       "evidence": [
         {
           "resource": "repo://libs/deepagents/deepagents/graph.py",
-          "version": "repo-file-v1:sha256:3826c92c9613a30d898d3fb4fb76ab49a6af0537b5ef74ec9e7340673f7f2261"
+          "version": "repo-file-v1:sha256:5964f538571f415331870230b86eae1833f11e52c0d91b38e3c37e6e0c609569"
         },
         {
           "resource": "repo://libs/deepagents/deepagents/middleware/async_subagents.py",
-          "version": "repo-file-v1:sha256:238ca0289ce3987e2e2335da2c42419bd80fcb0bdff0297a68677dcd58c65f9b"
+          "version": "repo-file-v1:sha256:d04864d71809653355d8c88b1f798b22590a835c3e3d5372cc994d2ab00ba668"
         },
         {
           "resource": "repo://libs/deepagents/tests/unit_tests/test_async_subagents.py",
@@ -108,7 +108,7 @@
       "evidence": [
         {
           "resource": "repo://libs/deepagents/deepagents/middleware/async_subagents.py",
-          "version": "repo-file-v1:sha256:238ca0289ce3987e2e2335da2c42419bd80fcb0bdff0297a68677dcd58c65f9b"
+          "version": "repo-file-v1:sha256:d04864d71809653355d8c88b1f798b22590a835c3e3d5372cc994d2ab00ba668"
         },
         {
           "resource": "repo://libs/deepagents/tests/unit_tests/test_async_subagents.py",
@@ -122,7 +122,7 @@
       "evidence": [
         {
           "resource": "repo://libs/deepagents/deepagents/graph.py",
-          "version": "repo-file-v1:sha256:3826c92c9613a30d898d3fb4fb76ab49a6af0537b5ef74ec9e7340673f7f2261"
+          "version": "repo-file-v1:sha256:5964f538571f415331870230b86eae1833f11e52c0d91b38e3c37e6e0c609569"
         },
         {
           "resource": "repo://libs/deepagents/deepagents/middleware/_parent_notifier.py",
@@ -140,7 +140,7 @@
       "evidence": [
         {
           "resource": "repo://libs/deepagents/deepagents/middleware/async_subagents.py",
-          "version": "repo-file-v1:sha256:238ca0289ce3987e2e2335da2c42419bd80fcb0bdff0297a68677dcd58c65f9b"
+          "version": "repo-file-v1:sha256:d04864d71809653355d8c88b1f798b22590a835c3e3d5372cc994d2ab00ba668"
         },
         {
           "resource": "repo://libs/deepagents/tests/unit_tests/test_async_subagents.py",
@@ -164,7 +164,7 @@
       "evidence": [
         {
           "resource": "repo://libs/deepagents/deepagents/middleware/async_subagents.py",
-          "version": "repo-file-v1:sha256:238ca0289ce3987e2e2335da2c42419bd80fcb0bdff0297a68677dcd58c65f9b"
+          "version": "repo-file-v1:sha256:d04864d71809653355d8c88b1f798b22590a835c3e3d5372cc994d2ab00ba668"
         }
       ]
     },
@@ -184,11 +184,11 @@
       "evidence": [
         {
           "resource": "repo://libs/deepagents/deepagents/graph.py",
-          "version": "repo-file-v1:sha256:3826c92c9613a30d898d3fb4fb76ab49a6af0537b5ef74ec9e7340673f7f2261"
+          "version": "repo-file-v1:sha256:5964f538571f415331870230b86eae1833f11e52c0d91b38e3c37e6e0c609569"
         },
         {
           "resource": "repo://libs/deepagents/deepagents/middleware/_skill_tools.py",
-          "version": "repo-file-v1:sha256:2d99b6159b5181f59ae6f97e5d65f5d8776851658aad70417334fdc1fcec08b9"
+          "version": "repo-file-v1:sha256:9bcdfc830b8b688100ae31ff0d28f1a58b152066183753adc3832e9be8e82987"
         },
         {
           "resource": "repo://libs/deepagents/deepagents/middleware/skills.py",
@@ -202,7 +202,7 @@
       "evidence": [
         {
           "resource": "repo://libs/deepagents/deepagents/middleware/_skill_tools.py",
-          "version": "repo-file-v1:sha256:2d99b6159b5181f59ae6f97e5d65f5d8776851658aad70417334fdc1fcec08b9"
+          "version": "repo-file-v1:sha256:9bcdfc830b8b688100ae31ff0d28f1a58b152066183753adc3832e9be8e82987"
         },
         {
           "resource": "repo://libs/deepagents/deepagents/middleware/skills.py",
@@ -230,11 +230,11 @@
       "evidence": [
         {
           "resource": "repo://libs/deepagents/CHANGELOG.md",
-          "version": "repo-file-v1:sha256:39e50203b2aebe2e4a1861854fa0e6b510657a4e11b87f195dabc190bef435f1"
+          "version": "repo-file-v1:sha256:b0ed6832188053bc49d26ee248f64ee35b9bdbba10c2cbc625d129b5d21b0cbe"
         },
         {
           "resource": "repo://libs/deepagents/deepagents/middleware/async_subagents.py",
-          "version": "repo-file-v1:sha256:238ca0289ce3987e2e2335da2c42419bd80fcb0bdff0297a68677dcd58c65f9b"
+          "version": "repo-file-v1:sha256:d04864d71809653355d8c88b1f798b22590a835c3e3d5372cc994d2ab00ba668"
         }
       ]
     },
@@ -244,7 +244,7 @@
       "evidence": [
         {
           "resource": "repo://libs/deepagents/deepagents/middleware/async_subagents.py",
-          "version": "repo-file-v1:sha256:238ca0289ce3987e2e2335da2c42419bd80fcb0bdff0297a68677dcd58c65f9b"
+          "version": "repo-file-v1:sha256:d04864d71809653355d8c88b1f798b22590a835c3e3d5372cc994d2ab00ba668"
         },
         {
           "resource": "repo://libs/deepagents/tests/unit_tests/test_async_subagents.py",
@@ -258,11 +258,11 @@
       "evidence": [
         {
           "resource": "repo://libs/deepagents/CHANGELOG.md",
-          "version": "repo-file-v1:sha256:39e50203b2aebe2e4a1861854fa0e6b510657a4e11b87f195dabc190bef435f1"
+          "version": "repo-file-v1:sha256:b0ed6832188053bc49d26ee248f64ee35b9bdbba10c2cbc625d129b5d21b0cbe"
         },
         {
           "resource": "repo://libs/deepagents/deepagents/middleware/async_subagents.py",
-          "version": "repo-file-v1:sha256:238ca0289ce3987e2e2335da2c42419bd80fcb0bdff0297a68677dcd58c65f9b"
+          "version": "repo-file-v1:sha256:d04864d71809653355d8c88b1f798b22590a835c3e3d5372cc994d2ab00ba668"
         }
       ]
     },
@@ -286,7 +286,7 @@
       "evidence": [
         {
           "resource": "repo://libs/code/deepagents_code/plugins/adapters/skills_middleware.py",
-          "version": "repo-file-v1:sha256:8049feb266707460e3b81125dff56f205060a17d2736d0efe0eb7135fee689e2"
+          "version": "repo-file-v1:sha256:17b2013a3ec84074cb655b31530bb7bfd42d7c6f1eaa5a2579ee38aae83d3d42"
         },
         {
           "resource": "repo://libs/code/deepagents_code/skills/load.py",
@@ -311,10 +311,64 @@
           "version": "repo-file-v1:sha256:f426e7cdbd2a9766282088590eb5b8e24804cf9cf718d0ab74a1c8f62d380c88"
         }
       ]
+    },
+    {
+      "id": "claim_aea0c506f586491f93f6ed777b31bc96",
+      "statement": "`create_deep_agent` assembles `SkillsMiddleware` after core, caller, and harness-profile middleware but before prompt caching, memory, HITL, and unsupported-content handling; a caller middleware named `SkillsMiddleware` replaces that slot, and its sources can supply `skills` when the argument is absent.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/graph.py",
+          "version": "repo-file-v1:sha256:5964f538571f415331870230b86eae1833f11e52c0d91b38e3c37e6e0c609569"
+        }
+      ]
+    },
+    {
+      "id": "claim_23426fc297b149b8861a7bd906a0570e",
+      "statement": "`PluginSkillsMiddleware` extends the SDK middleware with a process marker that reloads cached skill metadata after a server restart or when a current-turn pinned `/skill:` selection is absent, and it restricts pending pins to that visible user turn before trust-checked content is emitted.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/plugins/adapters/skills_middleware.py",
+          "version": "repo-file-v1:sha256:17b2013a3ec84074cb655b31530bb7bfd42d7c6f1eaa5a2579ee38aae83d3d42"
+        }
+      ]
+    },
+    {
+      "id": "claim_1dd7c7da8cad4c2d81142e8e2e0e8c84",
+      "statement": "A Code skill-only MCP tool is excluded from the initial tool schema and MCP server summary, then becomes callable only after its skill is read or a pinned selection is approved; normal approval middleware still interrupts its call when configured.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/tests/unit_tests/skills/test_skill_tools.py",
+          "version": "repo-file-v1:sha256:7dddee164b8419c9de40bdc42d27b3a97543b9f788fc68bf7cc43691defb3058"
+        }
+      ]
+    },
+    {
+      "id": "claim_87716eb9883a4441be5b3d96f6b1efdd",
+      "statement": "Async `update_strategy`, `notify_parent`, and the `waiting` status semantics are marked beta, while `mode=\"fork\"` for both local and remote subagents is marked experimental.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/async_subagents.py",
+          "version": "repo-file-v1:sha256:d04864d71809653355d8c88b1f798b22590a835c3e3d5372cc994d2ab00ba668"
+        },
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/subagents.py",
+          "version": "repo-file-v1:sha256:66d1a30c8669309a306db73f0ce7376ee9ca1e627e7a4456b57bde7f84fec2e5"
+        }
+      ]
+    },
+    {
+      "id": "claim_db30f3800fd546ffa6fa81f6280f4c90",
+      "statement": "Skill `allowed-tools` frontmatter is parsed into metadata and rendered in the skills prompt as a recommendation; the field is marked experimental.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/skills.py",
+          "version": "repo-file-v1:sha256:f3cc2139f2b77bd599bf99df032efe27774462b2ecc80f6e58b7ea7edd2d7895"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-10-23T08:06:06.503Z"
+    "at": "2026-10-24T08:05:08.866Z"
   }
 }

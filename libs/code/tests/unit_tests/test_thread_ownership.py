@@ -241,6 +241,7 @@ async def test_generated_server_checkpointer_enforces_ownership(tmp_path, monkey
     db_path = tmp_path / "sessions.db"
     monkeypatch.setattr(sessions, "get_db_path", lambda: db_path)
     monkeypatch.setenv("DEEPAGENTS_CODE_SERVER_DB_PATH", "")
+    monkeypatch.setenv("REDIS_URI", "fake")
     _write_checkpointer(tmp_path)
     spec = importlib.util.spec_from_file_location(
         "ownership_checkpointer", tmp_path / "checkpointer.py"

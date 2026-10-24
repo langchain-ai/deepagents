@@ -29053,6 +29053,33 @@ class TestEnsureManagedRipgrep:
 
         assert call_order[:2] == ["ensure", "start_server"], call_order
 
+    async def test_start_server_background_adopts_prespawned_server(self) -> None:
+        """A server spawned before the app loaded is adopted, not duplicated."""
+        msg = "stop here"
+        prespawned = MagicMock()
+        prespawned.adopt = AsyncMock(side_effect=RuntimeError(msg))
+        app = DeepAgentsApp(
+            agent=MagicMock(), thread_id="t", prespawned_server=prespawned
+        )
+        app._server_kwargs = {}
+        app._mcp_preload_kwargs = None
+        app._default_assistant_id = None
+        start = MagicMock()
+
+        with (
+            patch.object(app, "_ensure_managed_ripgrep", AsyncMock(return_value=True)),
+            patch(
+                "deepagents_code.client.launch.server_manager.start_server_and_get_agent",
+                start,
+            ),
+            patch.object(app, "post_message"),
+        ):
+            await app._start_server_background()
+            await app._start_server_background()
+
+        prespawned.adopt.assert_awaited_once()
+        start.assert_called_once()
+
 
 class TestNotifyInterpreterToolsWithoutInterpreter:
     """Tests for `_notify_interpreter_tools_without_interpreter` (TUI advisory)."""

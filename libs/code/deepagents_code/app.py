@@ -1091,6 +1091,7 @@ if TYPE_CHECKING:
     from deepagents_code._terminal_stderr import TerminalStderrGuard
     from deepagents_code.approval_mode import ApprovalMode
     from deepagents_code.client.launch.server import ServerProcess
+    from deepagents_code.client.launch.server_manager import PrespawnedServer
     from deepagents_code.client.remote_client import RemoteAgent
     from deepagents_code.client.session_cost import SessionCost
     from deepagents_code.cold_cache import (
@@ -3423,6 +3424,7 @@ class DeepAgentsApp(App):
         hook_trust: WorkspaceTrust | None = None,
         title: str | None = None,
         sub_title: str | None = None,
+        prespawned_server: PrespawnedServer | None = None,
         **kwargs: Any,
     ) -> None:
         """Initialize the Deep Agents application.
@@ -3506,6 +3508,9 @@ class DeepAgentsApp(App):
                 substituted; otherwise the parent default is used.
 
                 Reassigning `app.sub_title` at runtime updates the header live.
+            prespawned_server: A server start already spawned for
+                `server_kwargs`. The startup worker adopts it instead of
+                spawning another; the caller reaps it if the app never does.
             **kwargs: Additional arguments passed to parent
         """
         super().__init__(**kwargs)
@@ -3843,6 +3848,8 @@ class DeepAgentsApp(App):
         if server_kwargs is not None:
             server_kwargs["cwd"] = self._cwd
         self._server_kwargs = server_kwargs
+        self._prespawned_server = prespawned_server
+        """Server start spawned before the app loaded; consumed on adoption."""
         self._thread_leases: dict[str, ThreadLease] = {}
         if (
             self._server_kwargs is None
@@ -6428,13 +6435,17 @@ class DeepAgentsApp(App):
         self._server_kwargs["cwd"] = self._cwd
         # Spawn the server without waiting for the import prewarm: the
         # subprocess boots in parallel, and only the health check that follows
-        # imports into the prewarm's module graph on this thread.
-        coros: list[Any] = [
-            start_server_and_get_agent(
+        # imports into the prewarm's module graph on this thread. A server
+        # spawned before the app loaded is adopted instead, exactly once.
+        prespawned, self._prespawned_server = self._prespawned_server, None
+        if prespawned is not None:
+            server_start = prespawned.adopt(after_spawn=self._await_prewarm_imports)
+        else:
+            server_start = start_server_and_get_agent(
                 **self._server_kwargs,  # ty: ignore[invalid-argument-type]
                 after_spawn=self._await_prewarm_imports,
             )
-        ]
+        coros: list[Any] = [server_start]
 
         if self._mcp_preload_kwargs is not None:
             from deepagents_code.main import _preload_session_mcp_server_info
@@ -32686,6 +32697,7 @@ async def run_textual_app(
     hook_trust: WorkspaceTrust | None = None,
     title: str | None = None,
     sub_title: str | None = None,
+    prespawned_server: PrespawnedServer | None = None,
 ) -> AppResult:
     """Run the Textual application.
 
@@ -32751,6 +32763,10 @@ async def run_textual_app(
             `"Deep Agents"` is used.
         sub_title: Override the Textual `App.sub_title` shown in the optional
             header bar.
+        prespawned_server: A server start already spawned for `server_kwargs`,
+            adopted by the app's startup worker.
+
+            The caller must close it after the app exits.
 
     Returns:
         An `AppResult` with the return code and final thread ID.
@@ -32792,6 +32808,7 @@ async def run_textual_app(
         hook_trust=hook_trust,
         title=title,
         sub_title=sub_title,
+        prespawned_server=prespawned_server,
     )
     stderr_guard: TerminalStderrGuard | None = None
     try:

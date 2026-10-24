@@ -1791,6 +1791,10 @@ class TestListThreadsQueryPlan:
         ("sort_by", "agent_name", "cwd"),
         [("updated", None, None), ("created", None, None), ("updated", "bot", "/w")],
     )
+    @pytest.mark.skipif(
+        sqlite3.sqlite_version_info <= (3, 46, 1),
+        reason="SQLite 3.46.1 and older do not cover these grouped JSON expressions",
+    )
     def test_uses_covering_index(
         self, db_path: Path, sort_by: str, agent_name: str | None, cwd: str | None
     ) -> None:

@@ -44,6 +44,10 @@ class ModalSandbox(BaseSandbox):
                 content_bytes = content
         except FileNotFoundError:
             error = "file_not_found"
+        except PermissionError:
+            error = "permission_denied"
+        except IsADirectoryError:
+            error = "is_directory"
         except modal.exception.FilesystemExecutionError as e:
             msg = str(e).lower()
             error = "is_directory" if "is a directory" in msg else "file_not_found"
@@ -66,6 +70,8 @@ class ModalSandbox(BaseSandbox):
             return FileUploadResponse(path=path, error="permission_denied")
         except FileNotFoundError:
             return FileUploadResponse(path=path, error="file_not_found")
+        except IsADirectoryError:
+            return FileUploadResponse(path=path, error="is_directory")
 
     @property
     def id(self) -> str:

@@ -454,20 +454,22 @@ def _collect_updates(
     include_local: bool,
     refresh_all: bool,
     should_install: Callable[[PluginManifest], bool],
-) -> PluginUpdateResult:
+) -> tuple[PluginUpdateResult, frozenset[str]]:
     """Compare installed target plugins with their marketplaces.
 
     Unversioned plugins are skipped so the running session's shared cache is not
     replaced.
 
     Returns:
-        Installed and available updates plus redacted per-source errors.
+        Installed and available updates plus redacted per-source errors, and the
+        plugin ids whose comparison completed.
     """
     records = load_marketplace_records(strict=True)
     installed = load_installed_plugins(strict=True)
     updated: list[PluginUpdate] = []
     available: list[PluginUpdate] = []
     errors: list[str] = []
+    checked: set[str] = set()
     for name, record in sorted(records.items()):
         plugin_ids = [
             plugin_id
@@ -487,6 +489,7 @@ def _collect_updates(
             installed_version = installed[plugin_id].version or ""
             try:
                 pending = _pending_update(marketplace, plugin_id, installed_version)
+                checked.add(plugin_id)
                 if pending is None:
                     continue
                 if not should_install(pending.manifest):
@@ -498,19 +501,30 @@ def _collect_updates(
                 detail = redact_urls_in_text(str(exc))
                 logger.warning("Could not update plugin %s: %s", plugin_id, detail)
                 errors.append(f"Could not update plugin {plugin_id}: {detail}")
-    return PluginUpdateResult(
+    result = PluginUpdateResult(
         updated=tuple(updated), available=tuple(available), errors=tuple(errors)
     )
+    return result, frozenset(checked)
 
 
-def _record_available_updates(result: PluginUpdateResult) -> PluginUpdateResult:
+def _record_available_updates(
+    result: PluginUpdateResult, checked: AbstractSet[str]
+) -> PluginUpdateResult:
     """Persist available updates and mark those no earlier check reported.
+
+    Entries for plugins this check could not compare, such as after a failed
+    marketplace refresh, are kept so they are not announced again later.
 
     Returns:
         `result` with `newly_available` filled in.
     """
     previous = load_available_plugin_updates()
-    current = {u.plugin_id: u.available_version for u in result.available}
+    current = {
+        plugin_id: version
+        for plugin_id, version in previous.items()
+        if plugin_id not in checked
+    }
+    current.update((u.plugin_id, u.available_version) for u in result.available)
     if current != previous:
         try:
             save_available_plugin_updates(current)
@@ -559,13 +573,13 @@ def check_plugin_updates() -> PluginUpdateResult:
         return PluginUpdateResult()
     try:
         with plugin_mutation_lock(timeout=0):
-            result = _collect_updates(
+            result, checked = _collect_updates(
                 load_enabled_plugin_ids(strict=True),
                 include_local=False,
                 refresh_all=True,
                 should_install=lambda manifest: manifest.auto_update,
             )
-            return _record_available_updates(result)
+            return _record_available_updates(result, checked)
     except Timeout:
         logger.debug(
             "Skipping plugin update check because another mutation holds the lock"
@@ -595,7 +609,7 @@ def update_plugins(
     if missing:
         msg = f"Plugin {missing[0]!r} is not installed"
         raise MarketplaceError(msg)
-    result = _collect_updates(
+    result, _checked = _collect_updates(
         targets,
         include_local=True,
         refresh_all=False,

@@ -10,7 +10,7 @@ from deepagents_code._env_vars import OFFLINE
 from deepagents_code.plugins import add_local_marketplace, install_plugin
 from deepagents_code.plugins.commands_cli import execute_plugin_command
 from deepagents_code.plugins.discovery import check_plugin_updates
-from deepagents_code.plugins.marketplace import load_marketplace
+from deepagents_code.plugins.marketplace import MarketplaceError, load_marketplace
 from deepagents_code.plugins.models import MarketplaceRecord
 from deepagents_code.plugins.store import (
     get_primary_install_entry,
@@ -103,6 +103,30 @@ def test_check_reports_update_without_installing_and_notifies_once(
     entry = get_primary_install_entry(PLUGIN_ID)
     assert entry is not None
     assert entry.version == "1.0.0"
+
+
+def test_failed_refresh_keeps_saved_update_and_does_not_renotify(
+    marketplace_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _as_remote(marketplace_root, monkeypatch)
+    _write_manifest(marketplace_root, "1.1.0")
+    check_plugin_updates()
+
+    def fail(_source: object) -> None:
+        msg = "network down"
+        raise MarketplaceError(msg)
+
+    monkeypatch.setattr(
+        "deepagents_code.plugins.discovery.materialize_marketplace_source", fail
+    )
+    failed = check_plugin_updates()
+    _as_remote(marketplace_root, monkeypatch)
+    recovered = check_plugin_updates()
+
+    assert failed.errors
+    assert load_available_plugin_updates() == {PLUGIN_ID: "1.1.0"}
+    assert recovered.available
+    assert not recovered.newly_available
 
 
 def test_check_installs_opted_in_update(

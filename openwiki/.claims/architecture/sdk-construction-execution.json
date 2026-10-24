@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:e52ea01f3fe2aa4083f7d9a89940cb234b5d824d90812d49c9e6e41e9a4bf6c1",
+  "pageVersion": "sha256:65601bd0c68a7283bc550d60684bf56fd8b81a5f5bfc9eae19e624ca32d3a938",
   "claims": [
     {
       "id": "claim_c5dfbd9cde8e41eb8280d713c9d71d4f",
@@ -8,7 +8,7 @@
       "evidence": [
         {
           "resource": "repo://libs/deepagents/deepagents/graph.py",
-          "version": "repo-file-v1:sha256:3826c92c9613a30d898d3fb4fb76ab49a6af0537b5ef74ec9e7340673f7f2261"
+          "version": "repo-file-v1:sha256:5964f538571f415331870230b86eae1833f11e52c0d91b38e3c37e6e0c609569"
         }
       ]
     },
@@ -18,7 +18,7 @@
       "evidence": [
         {
           "resource": "repo://libs/deepagents/deepagents/graph.py",
-          "version": "repo-file-v1:sha256:3826c92c9613a30d898d3fb4fb76ab49a6af0537b5ef74ec9e7340673f7f2261"
+          "version": "repo-file-v1:sha256:5964f538571f415331870230b86eae1833f11e52c0d91b38e3c37e6e0c609569"
         }
       ]
     },
@@ -38,7 +38,7 @@
       "evidence": [
         {
           "resource": "repo://libs/deepagents/deepagents/middleware/async_subagents.py",
-          "version": "repo-file-v1:sha256:238ca0289ce3987e2e2335da2c42419bd80fcb0bdff0297a68677dcd58c65f9b"
+          "version": "repo-file-v1:sha256:d04864d71809653355d8c88b1f798b22590a835c3e3d5372cc994d2ab00ba668"
         }
       ]
     },
@@ -48,7 +48,7 @@
       "evidence": [
         {
           "resource": "repo://libs/deepagents/deepagents/middleware/async_subagents.py",
-          "version": "repo-file-v1:sha256:238ca0289ce3987e2e2335da2c42419bd80fcb0bdff0297a68677dcd58c65f9b"
+          "version": "repo-file-v1:sha256:d04864d71809653355d8c88b1f798b22590a835c3e3d5372cc994d2ab00ba668"
         },
         {
           "resource": "repo://libs/deepagents/tests/unit_tests/test_async_subagents.py",
@@ -66,7 +66,7 @@
         },
         {
           "resource": "repo://libs/deepagents/deepagents/graph.py",
-          "version": "repo-file-v1:sha256:3826c92c9613a30d898d3fb4fb76ab49a6af0537b5ef74ec9e7340673f7f2261"
+          "version": "repo-file-v1:sha256:5964f538571f415331870230b86eae1833f11e52c0d91b38e3c37e6e0c609569"
         }
       ]
     },
@@ -86,7 +86,7 @@
       "evidence": [
         {
           "resource": "repo://libs/deepagents/deepagents/graph.py",
-          "version": "repo-file-v1:sha256:3826c92c9613a30d898d3fb4fb76ab49a6af0537b5ef74ec9e7340673f7f2261"
+          "version": "repo-file-v1:sha256:5964f538571f415331870230b86eae1833f11e52c0d91b38e3c37e6e0c609569"
         },
         {
           "resource": "repo://libs/deepagents/deepagents/middleware/_fs_interrupt.py",
@@ -100,11 +100,11 @@
       "evidence": [
         {
           "resource": "repo://libs/deepagents/deepagents/_excluded_middleware.py",
-          "version": "repo-file-v1:sha256:cc7064524e3e782928b4579f9ec1f635183333b7fae4682a7d40ce846918e68c"
+          "version": "repo-file-v1:sha256:390d0279e56de51152176a7bcb0958e068d3f5d11361408f8d03d007fd1c7bc2"
         },
         {
           "resource": "repo://libs/deepagents/deepagents/graph.py",
-          "version": "repo-file-v1:sha256:3826c92c9613a30d898d3fb4fb76ab49a6af0537b5ef74ec9e7340673f7f2261"
+          "version": "repo-file-v1:sha256:5964f538571f415331870230b86eae1833f11e52c0d91b38e3c37e6e0c609569"
         }
       ]
     },
@@ -118,7 +118,7 @@
         },
         {
           "resource": "repo://libs/deepagents/tests/unit_tests/test_permissions.py",
-          "version": "repo-file-v1:sha256:842dd3fd1bc751abddd15818cf0dd267de9f6ead7ffcc45dbc77dfbd5caf0f90"
+          "version": "repo-file-v1:sha256:9d7031fd882511e080174127cd7356b62062378c700d80f0ed0ae897b658cfbd"
         }
       ]
     },
@@ -138,7 +138,7 @@
       "evidence": [
         {
           "resource": "repo://libs/deepagents/deepagents/graph.py",
-          "version": "repo-file-v1:sha256:3826c92c9613a30d898d3fb4fb76ab49a6af0537b5ef74ec9e7340673f7f2261"
+          "version": "repo-file-v1:sha256:5964f538571f415331870230b86eae1833f11e52c0d91b38e3c37e6e0c609569"
         },
         {
           "resource": "repo://libs/deepagents/deepagents/middleware/subagents.py",
@@ -156,7 +156,7 @@
       "evidence": [
         {
           "resource": "repo://libs/deepagents/deepagents/graph.py",
-          "version": "repo-file-v1:sha256:3826c92c9613a30d898d3fb4fb76ab49a6af0537b5ef74ec9e7340673f7f2261"
+          "version": "repo-file-v1:sha256:5964f538571f415331870230b86eae1833f11e52c0d91b38e3c37e6e0c609569"
         },
         {
           "resource": "repo://libs/deepagents/deepagents/middleware/subagents.py",
@@ -164,7 +164,7 @@
         },
         {
           "resource": "repo://libs/deepagents/tests/unit_tests/test_graph.py",
-          "version": "repo-file-v1:sha256:f360fd9dcae597dc05022579a9fb5a29e90f7fdc11f26c489eb3fa54a8ad289a"
+          "version": "repo-file-v1:sha256:e200bcad236f47b1e87c1aacc42811558bb0bf1050c233c9a01f974730933a56"
         }
       ]
     },
@@ -174,7 +174,7 @@
       "evidence": [
         {
           "resource": "repo://libs/deepagents/deepagents/middleware/async_subagents.py",
-          "version": "repo-file-v1:sha256:238ca0289ce3987e2e2335da2c42419bd80fcb0bdff0297a68677dcd58c65f9b"
+          "version": "repo-file-v1:sha256:d04864d71809653355d8c88b1f798b22590a835c3e3d5372cc994d2ab00ba668"
         },
         {
           "resource": "repo://libs/deepagents/tests/unit_tests/test_async_subagents.py",
@@ -188,11 +188,11 @@
       "evidence": [
         {
           "resource": "repo://libs/deepagents/deepagents/graph.py",
-          "version": "repo-file-v1:sha256:3826c92c9613a30d898d3fb4fb76ab49a6af0537b5ef74ec9e7340673f7f2261"
+          "version": "repo-file-v1:sha256:5964f538571f415331870230b86eae1833f11e52c0d91b38e3c37e6e0c609569"
         },
         {
           "resource": "repo://libs/deepagents/tests/unit_tests/test_graph.py",
-          "version": "repo-file-v1:sha256:f360fd9dcae597dc05022579a9fb5a29e90f7fdc11f26c489eb3fa54a8ad289a"
+          "version": "repo-file-v1:sha256:e200bcad236f47b1e87c1aacc42811558bb0bf1050c233c9a01f974730933a56"
         }
       ]
     },
@@ -202,7 +202,7 @@
       "evidence": [
         {
           "resource": "repo://libs/deepagents/deepagents/graph.py",
-          "version": "repo-file-v1:sha256:3826c92c9613a30d898d3fb4fb76ab49a6af0537b5ef74ec9e7340673f7f2261"
+          "version": "repo-file-v1:sha256:5964f538571f415331870230b86eae1833f11e52c0d91b38e3c37e6e0c609569"
         }
       ]
     },
@@ -226,7 +226,7 @@
       "evidence": [
         {
           "resource": "repo://libs/deepagents/deepagents/middleware/async_subagents.py",
-          "version": "repo-file-v1:sha256:238ca0289ce3987e2e2335da2c42419bd80fcb0bdff0297a68677dcd58c65f9b"
+          "version": "repo-file-v1:sha256:d04864d71809653355d8c88b1f798b22590a835c3e3d5372cc994d2ab00ba668"
         },
         {
           "resource": "repo://libs/deepagents/tests/unit_tests/test_async_subagents.py",
@@ -240,11 +240,11 @@
       "evidence": [
         {
           "resource": "repo://libs/deepagents/deepagents/_excluded_middleware.py",
-          "version": "repo-file-v1:sha256:cc7064524e3e782928b4579f9ec1f635183333b7fae4682a7d40ce846918e68c"
+          "version": "repo-file-v1:sha256:390d0279e56de51152176a7bcb0958e068d3f5d11361408f8d03d007fd1c7bc2"
         },
         {
           "resource": "repo://libs/deepagents/deepagents/graph.py",
-          "version": "repo-file-v1:sha256:3826c92c9613a30d898d3fb4fb76ab49a6af0537b5ef74ec9e7340673f7f2261"
+          "version": "repo-file-v1:sha256:5964f538571f415331870230b86eae1833f11e52c0d91b38e3c37e6e0c609569"
         },
         {
           "resource": "repo://libs/deepagents/deepagents/middleware/_parent_notifier.py",
@@ -262,11 +262,11 @@
       "evidence": [
         {
           "resource": "repo://libs/deepagents/deepagents/graph.py",
-          "version": "repo-file-v1:sha256:3826c92c9613a30d898d3fb4fb76ab49a6af0537b5ef74ec9e7340673f7f2261"
+          "version": "repo-file-v1:sha256:5964f538571f415331870230b86eae1833f11e52c0d91b38e3c37e6e0c609569"
         },
         {
           "resource": "repo://libs/deepagents/deepagents/middleware/async_subagents.py",
-          "version": "repo-file-v1:sha256:238ca0289ce3987e2e2335da2c42419bd80fcb0bdff0297a68677dcd58c65f9b"
+          "version": "repo-file-v1:sha256:d04864d71809653355d8c88b1f798b22590a835c3e3d5372cc994d2ab00ba668"
         }
       ]
     },
@@ -319,6 +319,6 @@
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-10-23T08:06:06.503Z"
+    "at": "2026-10-24T08:05:08.866Z"
   }
 }

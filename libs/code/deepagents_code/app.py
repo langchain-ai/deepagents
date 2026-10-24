@@ -9842,10 +9842,13 @@ class DeepAgentsApp(App):
         """Show reconciled cache expiry independently of handoff preferences."""
         if not self.screen_stack:
             return
-        banners = self.screen_stack[0].query("#cache-expired-banner")
-        if banners:
+        # Polled every second: an `#id` `query_one` takes Textual's cached id
+        # lookup, while `query(...)` would walk every transcript widget.
+        banner = self.screen_stack[0].query_one_optional(
+            "#cache-expired-banner", Static
+        )
+        if banner is not None:
             expires_at = self._status_bar.cache_expires_at if self._status_bar else None
-            banner = banners.first(Static)
             banner.display = (
                 not self._cache_reconciliation_pending
                 and expires_at is not None
@@ -9860,7 +9863,11 @@ class DeepAgentsApp(App):
                     if count:
                         age = f"{count} {unit}{'s' if count != 1 else ''} ago"
                         break
-                banner.update(f"Prompt cache expired at {expired_at} ({age})")
+                text = f"Prompt cache expired at {expired_at} ({age})"
+                # The text changes at most once a minute per window; skip the
+                # per-tick relayout that `update` would otherwise force.
+                if banner.content != text:
+                    banner.update(text)
 
     def _check_idle_compaction(self) -> None:
         """Reserve one offload per warm cache window, without yielding to input."""

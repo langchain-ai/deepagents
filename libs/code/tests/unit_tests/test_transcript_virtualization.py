@@ -20,7 +20,7 @@ from textual.containers import Container
 from textual.widgets import Static
 
 from deepagents_code.app import DeepAgentsApp, _ChatScroll
-from deepagents_code.tui.widgets.messages import UserMessage
+from deepagents_code.tui.widgets.messages import ToolGroupSummary, UserMessage
 
 if TYPE_CHECKING:
     import pytest
@@ -238,3 +238,33 @@ class TestScrollDrivenHydration:
             assert end_after == app._message_store.total_count
             # Bind the store counter to a real widget: the tail row is mounted.
             assert messages.query(last_id)
+
+
+class TestPruneAbove:
+    """Pruning the oldest rows must also drop tool groups it empties."""
+
+    async def test_prune_removes_only_emptied_tool_group_summaries(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A summary goes when all its members go; a partial one stays."""
+        app = DeepAgentsApp()
+        monkeypatch.setattr(app, "_schedule_transcript_prune", lambda *_args: None)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await _mount_user_messages(app, 4)
+            messages = app.query_one("#messages", Container)
+            rows = [messages.get_child_by_id(f"m{index}") for index in range(4)]
+            emptied = ToolGroupSummary(collapsible=[rows[0]], id="emptied")
+            partial = ToolGroupSummary(collapsible=[rows[1], rows[2]], id="partial")
+            await messages.mount(emptied, before=rows[0])
+            await messages.mount(partial, before=rows[1])
+            await pilot.pause()
+
+            monkeypatch.setattr(app._message_store, "WINDOW_SIZE", 2)
+            assert await app._prune_messages("above") == 2
+            await pilot.pause()
+
+            assert not messages.query("#m0, #m1, #emptied")
+            assert partial.is_attached
+            visible = app._message_store.get_visible_messages()
+            assert [data.id for data in visible] == ["m2", "m3"]

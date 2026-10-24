@@ -1,47 +1,25 @@
 ---
 type: operations guide
 title: CI, Change Selection, and Labels
-description: How CI selects monorepo work, routes reusable tests and evaluations, validates lockfiles, aggregates results, and uses maintainer labels safely. Also describes the privileged pull-request labeling lifecycle and the release-bot curated-notes path.
+description: How CI selects monorepo work, routes reusable tests and evaluations, validates lockfiles, aggregates results, and uses narrowly scoped maintainer labels safely. It also documents privileged pull-request labeling and release-sensitive ripgrep coverage.
 tags: [ci, github-actions, change-detection, labels, testing, security]
-sources:
-  - id: openwiki-source-3638ff2c170b760df159d81b
-    resource: repo://.github/actions/uv_setup/action.yml
-  - id: openwiki-source-9d81aa681a56a98960013750
-    resource: repo://.github/scripts/checks/check_lockfiles_pre_commit.py
-  - id: openwiki-source-c0c09f6fe83cf1ab6089bb24
-    resource: repo://.github/scripts/checks/ci_gate.py
-  - id: openwiki-source-0b91f453f677e9b0a2cf7828
-    resource: repo://.github/scripts/labeling/pr-labeler-config.json
-  - id: openwiki-source-8dfd37cb54fafdc323a98ea2
-    resource: repo://.github/scripts/labeling/pr-labeler.js
-  - id: openwiki-source-9b32b94dc673575be27eaced
-    resource: repo://.github/scripts/labeling/topic-classifier.js
-  - id: openwiki-source-92f0f267bd28e544f8eba170
-    resource: repo://.github/scripts/tests/checks/test_check_lockfiles_pre_commit.py
-  - id: openwiki-source-e7850fa57a33702edf0ea85c
-    resource: repo://.github/scripts/tests/checks/test_ci_gate.py
-  - id: openwiki-source-93fd3b61cb9261e61a78c61f
-    resource: repo://.github/scripts/tests/labeling/pr-labeler.test.js
-  - id: openwiki-source-13010c24e32f7e95e2a6fdce
-    resource: repo://.github/scripts/tests/labeling/test_pr_labeler.py
-  - id: openwiki-source-5ec08fb431e595bde89de502
-    resource: repo://.github/scripts/tests/workflows/test_inherited_ci_diagnostics.py
-  - id: openwiki-source-fa750a379507f8fc66395df2
-    resource: repo://.github/workflows/_eval.yml
-  - id: openwiki-source-4d9cccca7700db7220ec055e
-    resource: repo://.github/workflows/_test.yml
-  - id: openwiki-source-fa3e3af42f9e8d6ed58a473e
-    resource: repo://.github/workflows/check_lockfiles.yml
-  - id: openwiki-source-164e2da859b5277df81c7d94
-    resource: repo://.github/workflows/ci.yml
-  - id: openwiki-source-fa7f93c575430256a6892cd7
-    resource: repo://.github/workflows/pr_labeler_backfill.yml
-  - id: openwiki-source-f8781d847f6481a966a44a68
-    resource: repo://.github/workflows/pr_labeler.yml
 verified:
   - by: openwiki/0.4.2
-    at: 2026-10-23T08:06:06.503Z
-generated: { by: "openwiki/0.4.2", at: "2026-10-23T08:06:06.503Z" }
+    at: 2026-10-24T08:05:08.866Z
+sources:
+  - id: openwiki-source-68af6821b228c8c5f21685d2
+    resource: repo://.github/scripts/release/install_ripgrep.sh
+  - id: openwiki-source-75ab344a500d6a7392581a42
+    resource: repo://.github/scripts/tests/workflows/test_ci_workflow.py
+  - id: openwiki-source-62330473ce7398c9846a86ce
+    resource: repo://.github/scripts/tests/workflows/test_release_python_matrix.py
+  - id: openwiki-source-ce9e844e8d33dbc3e766d8f1
+    resource: repo://.github/scripts/tests/workflows/test_workflow_secret_scoping.py
+  - id: openwiki-source-4d9cccca7700db7220ec055e
+    resource: repo://.github/workflows/_test.yml
+  - id: openwiki-source-e20813387da065eff52a6977
+    resource: repo://.github/workflows/ripgrep_timeout_comment.yml
+generated: { by: "openwiki/0.4.2", at: "2026-10-24T08:05:08.866Z" }
 ---
 
 # CI, Change Selection, and Labels
@@ -72,21 +50,55 @@ flowchart TD
 
 A Deepagents-only change also runs a small QuickJS prompt-snapshot smoke test when the full QuickJS suite is not selected. Evals changes run the Evals package tests and a DRBench reproducibility job that builds the dataset twice and diffs it. The helper-script test job runs `python -m pytest .github/scripts/tests -v` except on the curated-notes fast path.
 
-## Shared setup, tests, and bypass labels
+## Reusable tests, live labels, and ripgrep coverage
 
 The local [`uv_setup`](../../.github/actions/uv_setup/action.yml) composite action installs a pinned `uv`, selects the requested Python version, prunes caches, and scopes cache dependency globs to the caller's `pyproject.toml`, `uv.lock`, and requirements files. Reuse it rather than copying setup steps.
 
-`.github/workflows/_test.yml` is a `workflow_call` unit-test component. Callers must supply a working directory and a JSON array of quoted Python-version strings; optional extra legs are JSON objects with string `python-version` and `os`. A validation job rejects malformed matrices before a non-fail-fast matrix starts. Each leg checks out code, invokes `uv_setup`, runs `uv sync --group test`, runs `make test` on non-Windows runners or direct pytest on Windows, and verifies that the worktree stayed clean. Talon additionally installs Node 24.
+`.github/workflows/_test.yml` is a `workflow_call` unit-test component. Callers must supply a working directory and a JSON array of quoted Python-version strings; optional extra legs are JSON objects with string `python-version` and `os`. A validation job rejects malformed matrices before a non-fail-fast matrix starts. Each leg checks out code, invokes `uv_setup`, runs `uv sync --group test`, runs `make test` on non-Windows runners or direct pytest on Windows, and verifies that the worktree stayed clean. Talon additionally installs Node 24. CI’s declared package matrices are checked against each package’s `requires-python`; release pre-checks consume the matrix resolved during the build, reject unusable version specifiers, and require each release option to resolve at least one supported interpreter.
 
-On PR events, `_test.yml` reads labels from the live GitHub API rather than the stale webhook payload. An API failure fails closed: it reports the error but enables no override. `ci:allow-warnings` passes `-W default`, relaxing the package warning filter for that run only. Push and merge-group runs have no PR context and therefore keep normal warning enforcement.
+### Labels are control planes, not test results
 
-`ci:skip-ripgrep` is intentionally narrower. It applies only to Linux `libs/deepagents` release-sensitive PR legs. Those legs normally install ripgrep without an install timeout and set `DEEPAGENTS_RIPGREP_EXPECTED=1`, making the ripgrep-dependent filesystem checks fail rather than silently skip. With the label, an install failure can continue only after checking whether `rg` actually works; a missing binary creates a one-day marker artifact and the gated tests skip. Ordinary PRs use a two-minute installation bound, a bounded `dpkg --configure -a` recovery, and the same marker artifact only for an actual timeout; other installation failures fail the job. Push and merge-group enforcement cannot be bypassed by either label.
+The `ci:*` namespace is a narrow, maintainer-controlled input to a specific gate, not a PR labeler output and not evidence that a check passed. A consuming step must read the label from the live GitHub API on a PR run: reruns replay the old webhook payload, so event labels can be stale. The lookup uses a single `per_page=100` request and exact label matching. If it fails, the step emits an error and resolves the override to its enforcing value—**fail closed**—rather than treating partial or unavailable data as authorization. Push and merge-group runs have no PR label context and retain enforcement.
 
-The `ci:*` namespace denotes a maintainer acknowledgement or override and is read by gates, not written by the PR labeler. Important examples are `ci:allow-warnings`, `ci:skip-ripgrep`, `ci:skip-title-lint`, `ci:allow-scope-mismatch`, and the lockfile/release/documentation acknowledgements listed in [`LABELS.md`](../../.github/LABELS.md). Create a new bypass only with a live API lookup in the consuming gate, a pre-existing described repository label, and a taxonomy entry.
+`ci:allow-warnings` is one example: it supplies `-W default` to pytest for that run, which overrides the package warning filter. It does not grant a general exception, and per-test warning marks still apply. Add an override only when it has a pre-existing, described repository label and taxonomy entry, a live lookup in the exact consumer, an explicit narrow predicate, and a test for both the enabled and unavailable-label cases.
+
+### Ripgrep installation paths
+
+The reusable workflow has exactly two Linux `libs/deepagents` installation paths, selected by whether a PR is release-sensitive (a `release-please--` head ref or a `release(` title). The installer itself downloads the pinned `ripgrep` 14.1.0 x86_64 musl release, verifies its pinned SHA-256, installs `rg` into `/usr/local/bin`, and fails on unsupported architecture or any download, verification, extraction, installation, or probe failure. Callers, rather than the installer, decide whether such a failure is fatal.
+
+```mermaid
+flowchart TD
+    Start["Linux deepagents test leg"] --> Release{"Release-sensitive run"}
+    Release -->|"No ordinary PR"| Soft["Bound installer for 120 seconds"]
+    Release -->|"Yes or push or merge group"| Strict["Unbounded strict installer"]
+    Soft --> SoftResult{"Timeout and rg missing"}
+    SoftResult -->|"Yes"| SoftMarker["Upload one-day marker artifact"]
+    SoftResult -->|"No"| Covered["Set expected rg when usable"]
+    Strict --> InstallOK{"Install succeeded"}
+    InstallOK -->|"Yes"| Covered
+    InstallOK -->|"No"| Label{"Live bypass is exactly true"}
+    Label -->|"No"| Fail["Fail test leg"]
+    Label -->|"Yes and rg usable"| Covered
+    Label -->|"Yes and rg missing"| StrictMarker["Upload one-day marker artifact"]
+```
+
+*The label authorizes a documented loss of coverage after an install failure; it never turns missing ripgrep coverage into a successful ripgrep test.*
+
+Release-sensitive PRs, pushes, and merge-group legs run an unbounded strict installation. A successful installation sets `DEEPAGENTS_RIPGREP_EXPECTED=1`; the filesystem test helper then fails, rather than skips, ripgrep-gated tests if `rg` is unexpectedly absent. This protects real-binary behavior, including symlink containment. On a release-sensitive PR only, the live `ci:skip-ripgrep` label can tolerate a failed strict install. The step first probes `rg`: if it works, coverage remains required; only when it is missing does the run continue without ripgrep and allow the gated tests to skip. A failed label lookup, an absent label, a value other than exact `true`, a push, or a merge-group run remains strict.
+
+An ordinary Deepagents PR uses `sudo timeout --signal=TERM --kill-after=10s 120s` around the installer. Statuses 124 and 137 are timeouts; other nonzero results fail the job. A timeout with a working `rg` is not a coverage loss. A timeout with no usable binary writes a marker artifact named from package, OS, and Python version, retained for one day. A bypassed strict release-PR failure with no `rg` writes the same kind of marker; the shared upload step consumes either producer. Thus the artifact describes an actual coverage gap, not merely a slow command or the presence of a label.
+
+The release workflow repeats the strict policy before artifact unit tests. Its `dangerous-skip-ripgrep-check` dispatch input, propagated from a qualifying merged release PR label, is the only release bypass: an install failure without it fails publishing checks; with it, a usable `rg` preserves coverage and a missing binary skips gated tests and records “Published without ripgrep coverage” in the run summary. The label is therefore a risk acknowledgement with observable reporting consequences, not an equivalent substitute for successful ripgrep coverage.
+
+## Ripgrep warning reporting and trust boundary
+
+[`ripgrep_timeout_comment.yml`](../../.github/workflows/ripgrep_timeout_comment.yml) is a non-gating `workflow_run` consumer of completed successful or failed PR CI runs. It runs in the base repository context so it can write an issue comment even for fork PRs, but it does **not** check out or execute PR-authored code. It reads artifact names through the API, resolves the PR from workflow metadata or an open head-ref match, and ignores an old CI run when the PR head SHA has advanced. A missing PR is a normal race and is logged rather than treated as a workflow failure.
+
+The workflow keys concurrency on head SHA, then creates, updates, or removes a sticky comment owned by `github-actions[bot]`. It recognizes only unexpired `ripgrep-timeout-` artifacts. No artifact removes a previous bot warning; artifacts name the affected matrix legs. Release-PR wording reports a bypassed strict failure, whereas ordinary-PR wording reports a two-minute timeout. That distinction is based on PR kind, not on a later label read, so a label API failure cannot make the report claim the wrong failure mode. The later live-label read only says whether release dispatch propagation is confirmed; failure leaves it unconfirmed. Removing the label and rerunning CI is the route to restore coverage.
 
 ## Lockfiles
 
-`check-lockfiles.yml` is a reusable, five-minute, read-only workflow called unconditionally by CI. It checks out full history, sets up Python 3.14 through `uv_setup` with caching disabled (the check does not create a cache directory), and calls:
+`check-lockfiles.yml` is a reusable, five-minute, read-only workflow called unconditionally by CI. It checks out full history, sets up Python 3.14 through `uv_setup` with caching disabled, and calls:
 
 ```bash
 python3 .github/scripts/checks/check_lockfiles_pre_commit.py
@@ -164,7 +176,10 @@ Useful focused checks are:
 python .github/scripts/tests/labeling/test_pr_labeler.py
 python -m pytest .github/scripts/tests/checks/test_check_lockfiles_pre_commit.py
 python -m pytest .github/scripts/tests/checks/test_ci_gate.py
+python -m pytest .github/scripts/tests/workflows/test_ci_workflow.py
+python -m pytest .github/scripts/tests/workflows/test_release_python_matrix.py
+python -m pytest .github/scripts/tests/workflows/test_workflow_secret_scoping.py
 python -m pytest .github/scripts/tests/workflows/test_inherited_ci_diagnostics.py
 ```
 
-The labeler contract suite covers configuration/taxonomy drift, alias canonicalization, title reconciliation, label creation, and topic removal/reapplication. Lockfile tests cover path selection, package interpreter choice, and actionable failures. CI workflow contracts exercise ripgrep paths and bypass behavior; gate tests cover the narrow Talon waiver; inherited-CI tests verify parent-result propagation, fallback behavior, and safe diagnostic rendering.
+The labeler contract suite covers configuration/taxonomy drift, alias canonicalization, title reconciliation, label creation, and topic removal/reapplication. `test_ci_workflow.py` executes the ripgrep shell branches with stubbed commands: strict and soft-step selection, exact live-label resolution, timeout statuses, usable-binary probes, artifact/reporting wiring, release dispatch behavior, and the no-checkout write-comment boundary. `test_release_python_matrix.py` protects CI and release interpreter policy against `requires-python` drift and invalid or empty matrices. `test_workflow_secret_scoping.py` keeps App credentials, package-specific integration secrets, OpenWiki write credentials, and the topic-classifier environment scoped to their intended workflows or steps. Lockfile tests cover path selection, package interpreter choice, and actionable failures; gate tests cover the narrow Talon waiver; inherited-CI tests verify parent-result propagation, fallback behavior, and safe diagnostic rendering.

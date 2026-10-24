@@ -1,3 +1,3 @@
 # Files
 
-- [Testing Guide](testing-guide.md) - Route a change to the owning package Makefile and the narrowest unit, integration, UI, protocol, host, or evaluation seam. This guide covers deterministic test conventions, warning policy, CI correspondence, benchmarks, and evaluation runs.
+- [Testing Guide](testing-guide.md) - Select and run package-local tests for the Deep Agents SDK, dcode, release automation, and CI workflow policy. The guide distinguishes deterministic unit coverage from process, protocol, UI, and model-backed evaluation boundaries.

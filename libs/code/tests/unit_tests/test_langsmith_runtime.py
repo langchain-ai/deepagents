@@ -8,7 +8,7 @@ import threading
 from typing import TYPE_CHECKING, Any
 
 import pytest
-from langsmith import traceable, tracing_context
+from langsmith import Client, traceable, tracing_context
 from langsmith._internal import _aiter
 from langsmith.run_helpers import get_current_run_tree
 
@@ -88,7 +88,9 @@ async def test_traced_runs_keep_nesting(no_executor: list[object]) -> None:
     async def outer() -> None:
         await inner()
 
-    with tracing_context(enabled="local"):
+    with tracing_context(
+        enabled="local", client=Client(api_url="http://localhost:1984")
+    ):
         await outer(langsmith_extra={"on_end": finished.append})
 
     assert seen_parent == [finished[0].id]

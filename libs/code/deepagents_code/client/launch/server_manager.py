@@ -151,6 +151,9 @@ async def create_checkpointer():
     the checkpointer module works without code generation.
     """
     from pathlib import Path
+    from deepagents_code._checkpointer_adapter import (
+        install_delta_history_forwarding,
+    )
     from deepagents_code.thread_ownership import owned_saver_class
 
     db_path = os.environ.get("{db_path_var}")
@@ -159,6 +162,7 @@ async def create_checkpointer():
             "{db_path_var} not set. The app must set this "
             "env var before server startup."
         )
+    install_delta_history_forwarding()
     saver_class = owned_saver_class(db_path=Path(db_path))
     async with saver_class.from_conn_string(db_path) as saver:
         yield saver

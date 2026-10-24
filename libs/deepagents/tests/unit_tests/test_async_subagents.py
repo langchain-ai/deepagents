@@ -16,8 +16,9 @@ import pytest
 from langchain.agents import create_agent
 from langchain.agents.middleware import HumanInTheLoopMiddleware
 from langchain.tools import ToolRuntime
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage, convert_to_messages
 from langchain_core.tools import tool
+from langchain_core.utils.function_calling import convert_to_openai_tool
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command, interrupt
 from langgraph_sdk.client import LangGraphClient, SyncLangGraphClient
@@ -362,7 +363,10 @@ async def test_launch_context_snapshot(invocation: str, mode: str | None, *, sum
     assert set(body["input"]) == {"messages"}
     if mode == "fork":
         child_messages = body["input"]["messages"]
-        assert child_messages[:-1] == [message.model_dump(mode="json", exclude={"artifact"}) for message in expected]
+        # The server rebuilds messages from these dicts; the child gets the parent's, minus tool artifacts.
+        assert convert_to_messages(child_messages[:-1]) == [
+            m.model_copy(update={"artifact": None}) if isinstance(m, ToolMessage) else m for m in expected
+        ]
         assert child_messages[-1]["type"] == "human"
         assert child_messages[-1]["content"].endswith("Explain the delay")
     else:
@@ -2409,3 +2413,182 @@ class TestQueuedUpdates:
     def test_invalid_strategy(self, strategy: str | None) -> None:
         with pytest.raises(ValueError, match="invalid update_strategy"):
             AsyncSubAgentMiddleware(async_subagents=[_make_spec(update_strategy=strategy)])
+
+
+_FORK_FILTER = "ignore:.*forked subagents.*:langchain_core._api.LangChainBetaWarning"
+
+
+def _fork_server(bodies: list[dict[str, Any]], threads: list[dict[str, Any]]) -> httpx.MockTransport:
+    """A fake Agent Server that records task threads and runs, and reports every run as still running."""
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/threads":
+            threads.append(json.loads(request.content))
+            return httpx.Response(200, json={"thread_id": "child"})
+        if request.method == "POST" and request.url.path == "/threads/child/runs":
+            bodies.append(json.loads(request.content))
+            return httpx.Response(200, json={"run_id": "child_run", "status": "pending"})
+        return httpx.Response(200, json={"run_id": "child_run", "thread_id": "child", "status": "running"})
+
+    return httpx.MockTransport(handle)
+
+
+@pytest.mark.filterwarnings(_FORK_FILTER)
+class TestForkOnParent:
+    async def _launch(self, spec: AsyncSubAgent, runtime: ToolRuntime) -> tuple[dict[str, Any], dict[str, Any], Command]:
+        bodies: list[dict[str, Any]] = []
+        threads: list[dict[str, Any]] = []
+        launch = _get_tool(_build_async_subagent_tools([spec]), "start_async_task")
+        async with httpx.AsyncClient(base_url="http://api", transport=_fork_server(bodies, threads)) as http_client:
+            with patch("deepagents.middleware.async_subagents.get_client", return_value=LangGraphClient(http_client)):
+                result = await launch.coroutine(description="Explain the delay", subagent_type=spec["name"], runtime=runtime)
+        return threads[0], bodies[0], result
+
+    def _runtime(self) -> ToolRuntime:
+        runtime = _parent_runtime("tc_launch")
+        runtime.state.update(
+            {
+                "messages": [
+                    HumanMessage(content="Long upload", id="h1", additional_kwargs={"lc_evicted_to": "/uploads/h1.txt"}),
+                    AIMessage(content="", tool_calls=[{"name": "start_async_task", "args": {}, "id": "tc_launch"}]),
+                ],
+                "todos": [{"content": "Check order 42", "status": "in_progress"}],
+                "files": {"/uploads/h1.txt": {"content": ["Long upload"], "created_at": "", "modified_at": ""}},
+                "async_tasks": {"other": {"task_id": "other"}},
+                "rubric": "Grade the parent's goal",
+            }
+        )
+        return runtime
+
+    async def test_runs_on_the_parents_assistant_with_its_state(self) -> None:
+        spec = _make_spec("fork", url=None, mode="fork", graph_id="ignored_graph")
+
+        thread, body, result = await self._launch(spec, self._runtime())
+
+        assert body["assistant_id"] == "assistant_parent"
+        assert next(iter(result.update["async_tasks"].values()))["assistant_id"] == "assistant_parent"
+        assert thread["metadata"]["deepagents_fork"] == "true"
+        assert set(body["input"]) == {"messages", "todos", "files"}
+        first, last = body["input"]["messages"][0], body["input"]["messages"][-1]
+        # Shortened as the parent's model saw it, so the prompt prefix matches.
+        assert first["additional_kwargs"] == {"lc_evicted_to": "/uploads/h1.txt"}
+        assert "background copy of yourself" in last["content"]
+        assert last["content"].endswith("Explain the delay")
+
+    def test_a_fork_elsewhere_keeps_its_graph_and_gets_only_the_conversation(self) -> None:
+        bodies: list[dict[str, Any]] = []
+        threads: list[dict[str, Any]] = []
+        launch = _get_tool(_build_async_subagent_tools([_make_spec("fork", mode="fork")]), "start_async_task")
+        with (
+            httpx.Client(base_url="http://remote", transport=_fork_server(bodies, threads)) as http_client,
+            patch("deepagents.middleware.async_subagents.get_sync_client", return_value=SyncLangGraphClient(http_client)),
+        ):
+            launch.func(description="Explain the delay", subagent_type="fork", runtime=self._runtime())
+
+        assert bodies[0]["assistant_id"] == "my_graph"
+        assert "deepagents_fork" not in threads[0]["metadata"]
+        assert set(bodies[0]["input"]) == {"messages"}
+        assert "lc_evicted_to" not in bodies[0]["input"]["messages"][0]["additional_kwargs"]
+
+    async def test_off_an_agent_server_a_fork_falls_back_to_its_graph(self) -> None:
+        runtime = self._runtime()
+        runtime.config = {}
+
+        thread, body, _ = await self._launch(_make_spec("fork", url=None, mode="fork"), runtime)
+
+        assert body["assistant_id"] == "my_graph"
+        assert "deepagents_fork" not in thread["metadata"]
+
+    async def test_a_nested_graph_forks_onto_its_graph_not_the_runs_assistant(self) -> None:
+        """A graph nested in the run (such as a sync subagent) inherits the run's `assistant_id`, which isn't its own."""
+        runtime = self._runtime()
+        runtime.config = {**runtime.config, "configurable": {"thread_id": "thread_parent", "checkpoint_ns": "tools:a|tools:b"}}
+
+        thread, body, _ = await self._launch(_make_spec("fork", url=None, mode="fork"), runtime)
+
+        assert body["assistant_id"] == "my_graph"
+        assert "deepagents_fork" not in thread["metadata"]
+        assert set(body["input"]) == {"messages"}
+
+    @pytest.mark.parametrize(
+        ("launched_on", "expected"),
+        [("assistant_parent", "assistant_parent"), (None, "my_graph")],
+        ids=["parent-assistant", "task-from-older-version"],
+    )
+    @patch("deepagents.middleware.async_subagents.get_client")
+    async def test_follow_ups_use_the_assistant_the_task_launched_on(
+        self, mock_get_client: MagicMock, launched_on: str | None, expected: str
+    ) -> None:
+        mock_client = MagicMock()
+        mock_client.runs.create = MagicMock(side_effect=_async_return({"run_id": "run_new", "status": "pending"}))
+        mock_get_client.return_value = mock_client
+        runtime = _make_runtime_with_task(agent_name="fork")
+        if launched_on:
+            runtime.state["async_tasks"]["thread_abc"]["assistant_id"] = launched_on
+        else:
+            runtime.config = _parent_runtime().config
+        update = _get_tool(_build_async_subagent_tools([_make_spec("fork", url=None, mode="fork")]), "update_async_task")
+
+        await update.coroutine(task_id="thread_abc", message="more", runtime=runtime)
+
+        assert mock_client.runs.create.call_args.kwargs["assistant_id"] == expected
+
+    def test_the_parent_is_told_a_fork_is_a_copy_of_itself(self) -> None:
+        tools = _build_async_subagent_tools([_make_spec("here", url=None, mode="fork"), _make_spec("there", mode="fork")])
+        description = _get_tool(tools, "start_async_task").description
+
+        assert "- here: A test agent named here (a copy of you that continues this conversation in the background)" in description
+        assert "- there: A test agent named there (inherits your conversation at launch; uses its own system prompt and tools)" in description
+
+
+@pytest.mark.parametrize("tool_name", ["start_async_task", "task"])
+async def test_an_async_fork_refuses_to_delegate(tool_name: str) -> None:
+    agent = create_deep_agent(model=GenericFakeChatModel(messages=iter([])), subagents=[_make_spec("helper")])
+    tool_node = agent.get_graph().nodes["tools"].data
+    delegate = tool_node.tools_by_name[tool_name]
+    runtime = _parent_runtime("tc_delegate")
+    runtime.config = {**runtime.config, "metadata": {"deepagents_fork": "true"}}
+    args = {"description": "Do more", "subagent_type": "helper" if tool_name == "start_async_task" else "general-purpose"}
+
+    with patch("deepagents.middleware.async_subagents.get_client", side_effect=AssertionError("no launch")):
+        result = await delegate.coroutine(**args, runtime=runtime)
+
+    assert result == "You are a subagent and cannot delegate to another subagent. Complete this task yourself instead of calling this tool again."
+
+
+@pytest.mark.filterwarnings(_FORK_FILTER)
+async def test_a_fork_on_the_parents_assistant_extends_the_parents_last_request() -> None:
+    """The fork's first model request starts with the parent's last one, so it can reuse the prompt cache."""
+    spec = _make_spec("fork", url=None, mode="fork")
+    parent_model = GenericFakeChatModel(
+        messages=iter(
+            [
+                AIMessage(
+                    content="",
+                    tool_calls=[{"name": "write_file", "args": {"file_path": "/notes.md", "content": "Order 42 shipped Monday"}, "id": "note"}],
+                ),
+                AIMessage(
+                    content="",
+                    tool_calls=[{"name": "start_async_task", "args": {"description": "Explain the delay", "subagent_type": "fork"}, "id": "launch"}],
+                ),
+                AIMessage(content="Launched"),
+            ]
+        )
+    )
+    bodies: list[dict[str, Any]] = []
+    threads: list[dict[str, Any]] = []
+    parent_config = {"configurable": {"thread_id": "parent"}, "metadata": {"assistant_id": "assistant_parent"}}
+    async with httpx.AsyncClient(base_url="http://api", transport=_fork_server(bodies, threads)) as http_client:
+        with patch("deepagents.middleware.async_subagents.get_client", return_value=LangGraphClient(http_client)):
+            await create_deep_agent(model=parent_model, subagents=[spec]).ainvoke(
+                {"messages": [HumanMessage("Why is order 42 late?")]}, parent_config
+            )
+    child_model = GenericFakeChatModel(messages=iter([AIMessage(content="It's delayed at customs.")]))
+    child_config = {"configurable": {"thread_id": "child"}, "metadata": {**threads[0]["metadata"], "assistant_id": "assistant_parent"}}
+
+    await create_deep_agent(model=child_model, subagents=[spec]).ainvoke(bodies[0]["input"], child_config)
+
+    parent_request, child_request = parent_model.call_history[1], child_model.call_history[0]
+    assert [convert_to_openai_tool(t) for t in child_request["tools"]] == [convert_to_openai_tool(t) for t in parent_request["tools"]]
+    assert child_request["messages"][: len(parent_request["messages"])] == parent_request["messages"]
+    assert len(child_request["messages"]) == len(parent_request["messages"]) + 1

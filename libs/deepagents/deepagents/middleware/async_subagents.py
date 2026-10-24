@@ -47,7 +47,7 @@ from pydantic import BaseModel, Field
 from deepagents.middleware._blob_offload import _BLOB_PAYLOADS_KEY, _ahydrate_tool_messages, _hydrate_tool_messages
 from deepagents.middleware._utils import append_to_system_message
 from deepagents.middleware.filesystem import NUM_CHARS_PER_TOKEN
-from deepagents.middleware.subagents import _fork_messages
+from deepagents.middleware.subagents import _ASYNC_FORK_METADATA_KEY, _FORK_RECURSION_REFUSAL, _fork_messages, _is_async_fork
 from deepagents.middleware.summarization import SUMMARIZATION_EVENT_KEY
 
 logger = logging.getLogger(__name__)
@@ -102,7 +102,10 @@ class AsyncSubAgent(TypedDict):
     """
 
     graph_id: str
-    """The graph name or assistant ID on the remote server."""
+    """The graph name or assistant ID on the remote server.
+
+    Ignored for `mode="fork"` on this deployment (no `url`), which runs on the launching agent's own assistant.
+    """
 
     url: NotRequired[str]
     """URL of the [Agent Protocol](https://github.com/langchain-ai/agent-protocol) server.
@@ -142,18 +145,25 @@ class AsyncSubAgent(TypedDict):
     """
 
     mode: NotRequired[Literal["isolated", "fork"]]
-    """When using `mode="fork"`, configure the remote agent to match the parent's model,
-    system prompt, tools, and prompt-processing middleware if you want prompt-cache
-    reuse. Fork mode copies conversation history; it does not synchronize those
-    settings. Matching configuration is necessary but not sufficient: the rendered
-    prefix must match, and cache hits depend on the provider.
+    """What the subagent starts with.
 
     - `isolated` (default): send only the delegated task description.
     - `fork`: send a snapshot of the parent's conversation at launch, followed
         by the task description, for background work.
 
-    Different configurations are supported for context sharing, but you should
-    not expect parent-to-child cache reuse with them.
+    A fork on this deployment (no `url`) runs on the launching agent's own
+    assistant, so it has the same system prompt, tools, and middleware and can
+    reuse the parent's prompt cache; its `graph_id` is ignored. It also gets the
+    parent's `todos` and `files`, and its delegation tools refuse, as in a sync
+    fork. Large messages stay shortened as the parent's model saw them, so the
+    fork can read their full content only if it shares the parent's backend. It
+    also pauses for approval wherever the parent does (`interrupt_on`). Only a
+    top-level agent forks onto itself; a fork launched from a nested graph runs
+    `graph_id`. The fork doesn't get the parent's token usage, so near the
+    summarization threshold it may trim or summarize differently and miss the cache.
+
+    A fork on another server (`url`) runs `graph_id` and gets only the
+    conversation, so it doesn't share the parent's prompt cache.
 
     !!! warning "Experimental"
 
@@ -193,6 +203,9 @@ class AsyncTask(TypedDict):
 
     run_id: str
     """Run ID of the newest run this task knows of on its thread. A queued follow-up's run may not have started yet."""
+
+    assistant_id: NotRequired[str]
+    """Assistant the task's runs use, chosen at launch. Missing on older tasks, which use the subagent's `graph_id`."""
 
     superseded_run_ids: NotRequired[list[str]]
     """Earlier runs of this task, oldest first, from before a queued follow-up.
@@ -361,6 +374,11 @@ class _ParentReference(TypedDict):
     """The parent's assistant, which handles runs queued on its thread."""
 
 
+def _is_top_level_graph(config: Mapping[str, Any]) -> bool:
+    """Whether this is the outermost graph of a run, not a graph nested in it."""
+    return "|" not in str((config.get("configurable") or {}).get("checkpoint_ns") or "")
+
+
 def _parent_reference(config: RunnableConfig) -> _ParentReference:
     """Describe the running agent so the async subagent it launches can find it."""
     reference: _ParentReference = {}
@@ -394,6 +412,8 @@ def _thread_metadata(spec: AsyncSubAgent, runtime: ToolRuntime) -> dict[str, str
     """
     reference = _reference_for(spec, runtime)
     metadata = {"subagent_name": spec["name"]}
+    if _parent_fork_assistant(spec, runtime):
+        metadata[_ASYNC_FORK_METADATA_KEY] = "true"
     if "thread_id" in reference:
         metadata["parent_thread_id"] = reference["thread_id"]
     if "assistant_id" in reference:
@@ -704,6 +724,16 @@ def _validate_agent_type(agent_map: dict[str, AsyncSubAgent], agent_type: str) -
     return None
 
 
+_ASYNC_FORK_ON_PARENT_PREAMBLE = (
+    "[The messages above are your conversation so far. You are now a background copy of "
+    "yourself, started to complete the task below while the original continues separately. "
+    "Complete it yourself: don't start or delegate to subagents, which will be refused, and "
+    "don't repeat the delegation that started you.]\n\n"
+)
+
+_FORK_INHERITED_STATE_KEYS = ("todos", "files")
+"""Parent state a fork on the parent's own assistant continues from, besides the conversation."""
+
 _ASYNC_FORK_TASK_PREAMBLE = (
     "[The messages above are prior conversation inherited from the parent agent. "
     "You are the background subagent it has already invoked. Use the established "
@@ -712,48 +742,88 @@ _ASYNC_FORK_TASK_PREAMBLE = (
 )
 
 
-def _fork_task_messages(runtime: ToolRuntime, description: str) -> list[AnyMessage]:
+def _parent_fork_assistant(spec: AsyncSubAgent, runtime: ToolRuntime) -> str | None:
+    """The launching agent's own assistant, when `spec` forks onto it: a fork on this deployment.
+
+    A nested graph inherits its run's `assistant_id`, which isn't its own, so it
+    can't fork onto itself.
+    """
+    if spec.get("mode") != "fork" or spec.get("url") or not _is_top_level_graph(runtime.config):
+        return None
+    return _parent_reference(runtime.config).get("assistant_id")
+
+
+def _assistant_for(spec: AsyncSubAgent, runtime: ToolRuntime) -> str:
+    """The assistant a task's runs use: the parent's own for a fork on it, else `graph_id`."""
+    return _parent_fork_assistant(spec, runtime) or spec["graph_id"]
+
+
+def _fork_task_messages(runtime: ToolRuntime, description: str, *, on_parent: bool) -> list[AnyMessage]:
     """Snapshot effective history before media downloads can yield to parent edits."""
     messages = _fork_messages(
         runtime.state.get("messages", []),
         runtime.state.get(SUMMARIZATION_EVENT_KEY),
         description,
-        preamble=_ASYNC_FORK_TASK_PREAMBLE,
+        preamble=_ASYNC_FORK_ON_PARENT_PREAMBLE if on_parent else _ASYNC_FORK_TASK_PREAMBLE,
     )
     # Artifacts are local tool data and may contain objects that cannot be copied.
     return deepcopy([message.model_copy(update={"artifact": None}) if isinstance(message, ToolMessage) else message for message in messages])
 
 
-def _serialize_fork_messages(messages: list[AnyMessage]) -> list[dict[str, Any]]:
-    """Serialize portable conversation content for the remote child."""
-    # Eviction tags point to parent-local files; forwarding them would make the
-    # child's filesystem middleware hide the full content sent in this snapshot.
-    return [message.model_dump(exclude={"artifact": True, "additional_kwargs": {"lc_evicted_to"}}) for message in messages]
+def _serialize_fork_messages(messages: list[AnyMessage], *, on_parent: bool) -> list[dict[str, Any]]:
+    """Serialize portable conversation content for the child.
+
+    A fork on the parent's own assistant keeps eviction tags, so its model sees
+    large messages shortened exactly as the parent's did and the prompt prefix
+    matches. Another graph gets the full content: the tags point to parent-local
+    files its filesystem middleware would hide the content behind.
+    """
+    # The server rebuilds messages from dicts and moves fields it doesn't know
+    # into `additional_kwargs`, where models ignore them. The parent's usage isn't
+    # the child's, and providers can't replay an unparsable tool call either way.
+    exclude: dict[str, Any] = {"artifact": True, "usage_metadata": True, "invalid_tool_calls": True}
+    if not on_parent:
+        exclude["additional_kwargs"] = {"lc_evicted_to"}
+    return [message.model_dump(exclude=exclude) for message in messages]
 
 
-def _start_task_messages(spec: AsyncSubAgent, runtime: ToolRuntime, description: str) -> list[dict[str, Any]]:
-    """Snapshot the effective conversation for forks, or send only the task."""
+def _fork_input(runtime: ToolRuntime, messages: list[dict[str, Any]], *, on_parent: bool) -> dict[str, Any]:
+    """A fork's run input: the conversation, plus the parent's state it continues from on the parent's assistant."""
+    inherited = {key: runtime.state[key] for key in _FORK_INHERITED_STATE_KEYS if on_parent and key in runtime.state}
+    return {**deepcopy(inherited), "messages": messages}
+
+
+def _start_task_input(spec: AsyncSubAgent, runtime: ToolRuntime, description: str) -> dict[str, Any]:
+    """The task's run input: the effective conversation for forks, or only the task."""
     if spec.get("mode") != "fork":
-        return [{"role": "user", "content": description}]
-    messages = _fork_task_messages(runtime, description)
+        return {"messages": [{"role": "user", "content": description}]}
+    on_parent = _parent_fork_assistant(spec, runtime) is not None
+    messages = _fork_task_messages(runtime, description, on_parent=on_parent)
     # Restore media here so unrelated tools and isolated launches never reload it,
     # including when an approval edits the target before this tool executes.
     messages = _hydrate_tool_messages(messages, runtime.state.get(_BLOB_PAYLOADS_KEY) or {})
-    return _serialize_fork_messages(messages)
+    return _fork_input(runtime, _serialize_fork_messages(messages, on_parent=on_parent), on_parent=on_parent)
 
 
-async def _astart_task_messages(spec: AsyncSubAgent, runtime: ToolRuntime, description: str) -> list[dict[str, Any]]:
-    """Async version of `_start_task_messages`."""
+async def _astart_task_input(spec: AsyncSubAgent, runtime: ToolRuntime, description: str) -> dict[str, Any]:
+    """Async version of `_start_task_input`."""
     if spec.get("mode") != "fork":
-        return [{"role": "user", "content": description}]
-    messages = _fork_task_messages(runtime, description)
+        return {"messages": [{"role": "user", "content": description}]}
+    on_parent = _parent_fork_assistant(spec, runtime) is not None
+    messages = _fork_task_messages(runtime, description, on_parent=on_parent)
     messages = await _ahydrate_tool_messages(messages, runtime.state.get(_BLOB_PAYLOADS_KEY) or {})
-    return _serialize_fork_messages(messages)
+    return _fork_input(runtime, _serialize_fork_messages(messages, on_parent=on_parent), on_parent=on_parent)
 
 
 def _describe_async_subagent(spec: AsyncSubAgent) -> str:
-    """Describe a remote subagent's context inheritance without promising shared tools."""
-    suffix = " (inherits your conversation at launch; uses its own system prompt and tools)" if spec.get("mode") == "fork" else ""
+    """Describe a subagent's context inheritance without promising shared tools."""
+    suffix = ""
+    if spec.get("mode") == "fork":
+        suffix = (
+            " (inherits your conversation at launch; uses its own system prompt and tools)"
+            if spec.get("url")
+            else " (a copy of you that continues this conversation in the background)"
+        )
     return f"- {spec['name']}: {spec['description']}{suffix}"
 
 
@@ -769,18 +839,21 @@ def _build_start_tool(
         subagent_type: str,
         runtime: ToolRuntime,
     ) -> str | Command:
+        if _is_async_fork(runtime.config):
+            return _FORK_RECURSION_REFUSAL
         error = _validate_agent_type(agent_map, subagent_type)
         if error:
             return error
         spec = agent_map[subagent_type]
-        messages = _start_task_messages(spec, runtime, description)
+        task_input = _start_task_input(spec, runtime, description)
+        assistant_id = _assistant_for(spec, runtime)
         try:
             client = clients.get_sync(subagent_type)
             thread = client.threads.create(metadata=_thread_metadata(spec, runtime))
             run = client.runs.create(
                 thread_id=thread["thread_id"],
-                assistant_id=spec["graph_id"],
-                input={"messages": messages},
+                assistant_id=assistant_id,
+                input=task_input,
                 **_run_options(spec, runtime),
             )
         except Exception as e:  # noqa: BLE001  # LangGraph SDK raises untyped errors
@@ -793,6 +866,7 @@ def _build_start_tool(
             "agent_name": subagent_type,
             "thread_id": task_id,
             "run_id": run["run_id"],
+            "assistant_id": assistant_id,
             "status": "running",
             "created_at": now,
             "last_checked_at": now,
@@ -811,18 +885,21 @@ def _build_start_tool(
         subagent_type: str,
         runtime: ToolRuntime,
     ) -> str | Command:
+        if _is_async_fork(runtime.config):
+            return _FORK_RECURSION_REFUSAL
         error = _validate_agent_type(agent_map, subagent_type)
         if error:
             return error
         spec = agent_map[subagent_type]
-        messages = await _astart_task_messages(spec, runtime, description)
+        task_input = await _astart_task_input(spec, runtime, description)
+        assistant_id = _assistant_for(spec, runtime)
         try:
             client = clients.get_async(subagent_type)
             thread = await client.threads.create(metadata=_thread_metadata(spec, runtime))
             run = await client.runs.create(
                 thread_id=thread["thread_id"],
-                assistant_id=spec["graph_id"],
-                input={"messages": messages},
+                assistant_id=assistant_id,
+                input=task_input,
                 **_run_options(spec, runtime),
             )
         except Exception as e:  # noqa: BLE001  # LangGraph SDK raises untyped errors
@@ -835,6 +912,7 @@ def _build_start_tool(
             "agent_name": subagent_type,
             "thread_id": task_id,
             "run_id": run["run_id"],
+            "assistant_id": assistant_id,
             "status": "running",
             "created_at": now,
             "last_checked_at": now,
@@ -1149,7 +1227,7 @@ def _build_update_tool(
             client = clients.get_sync(tracked["agent_name"])
             run = client.runs.create(
                 thread_id=tracked["thread_id"],
-                assistant_id=spec["graph_id"],
+                assistant_id=tracked.get("assistant_id", spec["graph_id"]),
                 input={"messages": [{"role": "user", "content": message}]},
                 multitask_strategy=strategy,
                 **_run_options(spec, runtime),
@@ -1175,7 +1253,7 @@ def _build_update_tool(
             client = clients.get_async(tracked["agent_name"])
             run = await client.runs.create(
                 thread_id=tracked["thread_id"],
-                assistant_id=spec["graph_id"],
+                assistant_id=tracked.get("assistant_id", spec["graph_id"]),
                 input={"messages": [{"role": "user", "content": message}]},
                 multitask_strategy=strategy,
                 **_run_options(spec, runtime),
@@ -1587,7 +1665,11 @@ class AsyncSubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
                 msg = f"AsyncSubAgent '{spec['name']}' has invalid mode '{mode}'; expected 'isolated' or 'fork'"
                 raise ValueError(msg)
         if any(spec.get("mode") == "fork" for spec in async_subagents):
-            warn_beta(name="forked subagents", obj_type="feature")
+            warn_beta(
+                name="forked subagents",
+                obj_type="feature",
+                addendum="A fork on this deployment (no `url`) runs on the launching agent's own assistant, so its `graph_id` is ignored.",
+            )
 
         self._clients = _ClientCache({a["name"]: a for a in async_subagents})
         self.tools = _build_async_subagent_tools(async_subagents)

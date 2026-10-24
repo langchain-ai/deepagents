@@ -511,6 +511,21 @@ def _disable_app_startup_update_checks(
 
 
 @pytest.fixture(autouse=True)
+def _disable_server_prespawn(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep `run_textual_cli_async` tests from spawning a real server.
+
+    Those tests stub `run_textual_app`, but the prespawn runs before it and
+    would launch a `langgraph dev` subprocess. Tests that cover the prespawn
+    patch it back themselves.
+    """
+
+    async def _no_prespawn(*_: object, **__: object) -> None:
+        await asyncio.sleep(0)
+
+    monkeypatch.setattr("deepagents_code.main._prespawn_server", _no_prespawn)
+
+
+@pytest.fixture(autouse=True)
 def _skip_managed_tool_downloads(monkeypatch: pytest.MonkeyPatch) -> None:
     """Keep app startup from downloading the managed `rg` binary.
 

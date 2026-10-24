@@ -394,7 +394,6 @@ async def start_server_and_get_agent(
         RuntimeError: If no explicit workspace can be resolved.
     """  # noqa: DOC502 - `_preflight_validate_mcp_config()` raises indirectly
     from deepagents_code.client.launch.server import ServerProcess
-    from deepagents_code.client.remote_client import RemoteAgent
 
     project_context = (
         ProjectContext.from_user_cwd(Path(cwd))
@@ -455,6 +454,10 @@ async def start_server_and_get_agent(
     try:
         await server.start(after_spawn=after_spawn)
         await server.wait_for_graph_ready("agent")
+        # Import after the spawn: `PrespawnedServer` runs this before first
+        # paint, and only the spawn needs to happen that early.
+        from deepagents_code.client.remote_client import RemoteAgent
+
         agent = RemoteAgent(
             url=server.url,
             graph_name="agent",
@@ -509,6 +512,73 @@ async def start_server_and_get_agent(
                 logger.exception(
                     "Error stopping server during startup cleanup",
                 )
+
+
+class PrespawnedServer:
+    """A `start_server_and_get_agent` call that spawns before the app loads.
+
+    The subprocess boots while the caller imports and paints the app. The
+    start then pauses until `adopt` releases it, so the health check and its
+    imports run only after the app hands over its own `after_spawn` gate.
+    """
+
+    def __init__(self, **kwargs: Any) -> None:
+        """Schedule the server start.
+
+        Args:
+            **kwargs: Keyword arguments for `start_server_and_get_agent`,
+                except `after_spawn`.
+        """
+        self._spawned = asyncio.Event()
+        self._release = asyncio.Event()
+        self._adopted = False
+        self._task = asyncio.create_task(
+            start_server_and_get_agent(**kwargs, after_spawn=self._hold)
+        )
+
+    async def _hold(self) -> None:
+        self._spawned.set()
+        await self._release.wait()
+
+    async def wait_spawned(self) -> None:
+        """Return once the subprocess is spawned or the start has failed."""
+        spawned = asyncio.ensure_future(self._spawned.wait())
+        try:
+            await asyncio.wait({self._task, spawned}, return_when="FIRST_COMPLETED")
+        finally:
+            spawned.cancel()
+
+    async def adopt(
+        self, *, after_spawn: Callable[[], Awaitable[None]]
+    ) -> tuple[RemoteAgent, ServerProcess, MCPSessionManager | None]:
+        """Release the paused start and take ownership of the server.
+
+        Args:
+            after_spawn: Awaited before the health check, as in
+                `start_server_and_get_agent`.
+
+        Returns:
+            The `start_server_and_get_agent` result.
+        """
+        await after_spawn()
+        self._release.set()
+        result = await self._task
+        self._adopted = True
+        return result
+
+    async def aclose(self) -> None:
+        """Cancel and reap a start that no caller adopted.
+
+        Safe to call after `adopt`; an adopted server stays with its owner.
+        """
+        if not self._task.done():
+            self._task.cancel()
+        await asyncio.wait({self._task})
+        if self._task.cancelled() or self._task.exception() is not None:
+            return
+        if not self._adopted:
+            _, server, _ = self._task.result()
+            await asyncio.to_thread(server.stop, grace=_ABANDONED_START_GRACE)
 
 
 # ------------------------------------------------------------------

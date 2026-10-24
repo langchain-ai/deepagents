@@ -30,6 +30,7 @@ if TYPE_CHECKING:
     from deepagents_code.app import AppResult
     from deepagents_code.approval_mode import ApprovalMode
     from deepagents_code.client.headless_resume import ResumeRequest
+    from deepagents_code.client.launch.server_manager import PrespawnedServer
     from deepagents_code.config import Glyphs
     from deepagents_code.configuration.resolver import ConfigResolver
     from deepagents_code.configuration.types import ProviderStatus
@@ -3263,6 +3264,41 @@ def _resolve_summarization_model(spec: str | None) -> str | None:
     return ModelConfig.load().summarization_default_model
 
 
+async def _prespawn_server(
+    server_kwargs: dict[str, Any], *, cwd: Path, thread_id: str | None
+) -> PrespawnedServer | None:
+    """Spawn the app's server before the app module loads.
+
+    The app module takes about a second to import, and the server subprocess
+    is the slowest startup step. Spawning first lets the two overlap.
+
+    Args:
+        server_kwargs: Keyword arguments for `start_server_and_get_agent`.
+        cwd: Launch directory the app binds to the server.
+        thread_id: Session thread, so the launch logs reach its debug log.
+
+    Returns:
+        The paused server start, or `None` when the managed `rg` needs an
+            install or check. The app must then spawn after that install so
+            the server inherits the managed `rg` on `PATH`.
+    """
+    try:
+        if _should_ensure_managed_ripgrep():
+            return None
+    except OSError:
+        return None
+
+    from deepagents_code.client.launch.server_manager import PrespawnedServer
+
+    if thread_id:
+        from deepagents_code._debug import bind_debug_logging_to_thread
+
+        bind_debug_logging_to_thread(thread_id)
+    prespawned = PrespawnedServer(**server_kwargs, cwd=str(cwd))
+    await prespawned.wait_spawned()
+    return prespawned
+
+
 async def run_textual_cli_async(
     assistant_id: str,
     *,
@@ -3389,7 +3425,6 @@ async def run_textual_cli_async(
     """
     from rich.text import Text
 
-    from deepagents_code.app import AppResult, run_textual_app
     from deepagents_code.approval_mode import ApprovalMode, coerce_approval_mode
     from deepagents_code.config import (
         _get_default_model_spec,
@@ -3427,6 +3462,8 @@ async def run_textual_cli_async(
         from deepagents_code.config import console
 
         console.print(f"[bold red]Error:[/bold red] {escape(str(e))}", highlight=False)
+        from deepagents_code.app import AppResult
+
         return AppResult(return_code=1, thread_id=None)
 
     if resolved_spec:
@@ -3530,12 +3567,22 @@ async def run_textual_cli_async(
             "trust_project_mcp": trust_project_mcp,
         }
 
+    # The interactive CLI captures its launch directory once, for both the
+    # early server spawn and the app.
+    launch_cwd = Path.cwd()
+    prespawned = None
+    if not defer_server_start and resume_thread is None:
+        prespawned = await _prespawn_server(
+            server_kwargs, cwd=launch_cwd, thread_id=thread_id
+        )
     try:
+        from deepagents_code.app import run_textual_app
+
         result = await run_textual_app(
             assistant_id=assistant_id,
             backend=None,
             approval_mode=resolved_approval_mode,
-            cwd=Path.cwd(),
+            cwd=launch_cwd,
             thread_id=thread_id,
             resume_thread=resume_thread,
             initial_prompt=initial_prompt,
@@ -3552,10 +3599,11 @@ async def run_textual_cli_async(
             interpreter_arg=interpreter_arg,
             defer_server_start=defer_server_start,
             hook_trust=hook_trust,
+            prespawned_server=prespawned,
         )
     except Exception as e:
         logger.debug("App error", exc_info=True)
-        from deepagents_code.app import TextualAppError
+        from deepagents_code.app import AppResult, TextualAppError
         from deepagents_code.config import console
 
         error_text = Text("Application error: ", style="red")
@@ -3570,6 +3618,11 @@ async def run_textual_cli_async(
         if isinstance(e, TextualAppError):
             return e.result
         return AppResult(return_code=1, thread_id=thread_id)
+    finally:
+        # Reaps a server the app never adopted, e.g. on an exit before the
+        # startup worker ran. A no-op once the app owns the server.
+        if prespawned is not None:
+            await prespawned.aclose()
 
     return result
 

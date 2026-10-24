@@ -59,8 +59,14 @@ class TestBuildServerEnv:
             env = _build_server_env()
         assert "LANGGRAPH_AUTH" not in env
         assert "LANGGRAPH_CLOUD_LICENSE_KEY" not in env
-        assert "LANGSMITH_CONTROL_PLANE_API_KEY" not in env
+        assert env["LANGSMITH_CONTROL_PLANE_API_KEY"] == ""
         assert "LANGSMITH_TENANT_ID" not in env
+
+    def test_disables_langgraph_api_metadata_upload(self) -> None:
+        """A tracing key must not double as the control-plane metadata key."""
+        with patch.dict(os.environ, {"LANGSMITH_API_KEY": "lsv2_test"}):
+            env = _build_server_env()
+        assert env["LANGSMITH_CONTROL_PLANE_API_KEY"] == ""
 
     def test_strips_subprocess_hijack_variables(self) -> None:
         injected = {key: f"/tmp/evil-{key}" for key in _SERVER_ENV_DENYLIST}

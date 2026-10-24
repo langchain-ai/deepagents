@@ -443,11 +443,14 @@ def _build_server_env() -> dict[str, str]:
     for key in (
         "LANGGRAPH_AUTH",
         "LANGGRAPH_CLOUD_LICENSE_KEY",
-        "LANGSMITH_CONTROL_PLANE_API_KEY",
         "LANGSMITH_TENANT_ID",
         *_SERVER_ENV_DENYLIST,
     ):
         env.pop(key, None)
+    # `langgraph-api` falls back to `LANGSMITH_API_KEY` when this is unset and
+    # then posts usage metadata to LangSmith every few minutes. An empty value
+    # turns that loop off; nothing else in the server reads the variable.
+    env["LANGSMITH_CONTROL_PLANE_API_KEY"] = ""
 
     if inherited_pythonpath is not None:
         env[_INHERITED_PYTHONPATH_ENV] = inherited_pythonpath

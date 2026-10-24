@@ -401,6 +401,29 @@ def _message_timestamp_footer_id(message_id: str) -> str:
     return f"{message_id}-timestamp-footer"
 
 
+def _displayed_row_slots(children: Sequence[Widget]) -> dict[Widget, int]:
+    """Map each displayed child to the rows it takes in the vertical layout.
+
+    A slot runs from a child's top edge to the next displayed child's top edge.
+    It therefore includes the margin that Textual collapses between the two
+    neighbors, which `region` and `outer_size` both leave out. The last child,
+    or one whose neighbor is not laid out yet, adds its own bottom margin.
+
+    Returns:
+        Slot height in rows for every displayed child.
+    """
+    shown = [child for child in children if child.display]
+    slots: dict[Widget, int] = {}
+    for child, below in zip(shown, [*shown[1:], None], strict=True):
+        own = child.outer_size.height + child.styles.margin.bottom
+        if below is None:
+            slots[child] = own
+            continue
+        gap = below.virtual_region.y - child.virtual_region.y
+        slots[child] = gap if gap >= 0 else own
+    return slots
+
+
 def _read_text_file_expanding_user(path_arg: str) -> tuple[Path, str]:
     """Read a text file after expanding `~` in a worker thread.
 
@@ -10954,21 +10977,52 @@ class DeepAgentsApp(App):
             messages = self.query_one("#messages", Container)
         except NoMatches:
             return
+        heights = self._transcript_row_heights(list(messages.children))
         changed = False
         for message_id in message_ids:
-            try:
-                widget = messages.query_one(f"#{message_id}")
-            except NoMatches:
+            if message_id not in heights:
                 continue
-            height = max(1, widget.region.height)
-            footer_id = _message_timestamp_footer_id(message_id)
-            with suppress(NoMatches):
-                footer = messages.query_one(f"#{footer_id}")
-                if footer.display:
-                    height += max(1, footer.region.height)
-            changed = self._message_store.set_height_hint(message_id, height) or changed
+            rows, hidden = heights[message_id]
+            changed = (
+                self._message_store.set_height_hint(message_id, rows, hidden=hidden)
+                or changed
+            )
         if changed:
             self._sync_transcript_spacers(messages)
+
+    def _transcript_row_heights(
+        self, children: Sequence[Widget]
+    ) -> dict[str, tuple[int, bool]]:
+        """Attribute every laid-out transcript row to a store message.
+
+        A message owns its own slot plus its timestamp footer. A
+        `ToolGroupSummary` is not a store row, so its slot goes to the next
+        store message (the run's anchor). That message is hidden while the
+        group is folded, so without this the summary line would count as zero
+        rows. Other non-store children (spacers, transient notices) are not
+        attributed.
+
+        Returns:
+            Map of message ID to `(rows, hidden)`, where `hidden` is whether the
+                message widget itself is not displayed.
+        """
+        slots = _displayed_row_slots(children)
+        heights: dict[str, tuple[int, bool]] = {}
+        owner: str | None = None
+        carry = 0
+        for child in children:
+            rows = slots.get(child, 0)
+            if isinstance(child, ToolGroupSummary):
+                carry += rows
+            elif owner is not None and child.id == _message_timestamp_footer_id(owner):
+                owned, hidden = heights[owner]
+                heights[owner] = (owned + rows, hidden)
+            elif child.id and self._message_store.get_message(child.id) is not None:
+                heights[child.id] = (rows + carry, not child.display)
+                owner, carry = child.id, 0
+            else:
+                owner = None
+        return heights
 
     async def _mount_transient_app_message(self, content: str) -> AppMessage | None:
         """Mount an `AppMessage` that is not tracked by the message store.
@@ -22060,11 +22114,16 @@ class DeepAgentsApp(App):
         skipped, so it is safe to call on every stream boundary and on
         hydration. A run is only collapsed once every tool in it succeeded;
         a run containing an error/rejection/pending tool is left expanded.
+
+        Re-measures every tool and diff row afterward. Folding hides rows and
+        mounts a summary line in front of the run, and closing a live group can
+        reveal a failed tool, so heights measured at mount time go stale.
         """
         try:
             messages = self.query_one("#messages", Container)
         except NoMatches:
             return
+        tool_rows: list[str] = []
 
         run_tools: list[ToolCallMessage] = []
         run_collapsible: list[Widget] = []
@@ -22108,6 +22167,8 @@ class DeepAgentsApp(App):
                     ):
                         run_accessories.setdefault(owner, []).append(child)
                     continue
+                if isinstance(child, ToolCallMessage | DiffMessage) and child.id:
+                    tool_rows.append(child.id)
                 if isinstance(child, ToolCallMessage):
                     groupable = (
                         child.tool_name not in _TOOL_GROUP_EXCLUSIONS
@@ -22143,6 +22204,7 @@ class DeepAgentsApp(App):
                 # Assistant text, notices, an existing summary, etc. end the run.
                 await flush()
             await flush()
+        self._schedule_message_height_measurements(tool_rows)
 
     @staticmethod
     async def _mount_tool_group_summary(

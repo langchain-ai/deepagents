@@ -1,16 +1,18 @@
 ---
 type: workflow
 title: Build and Customize a Deep Agent
-description: Assemble a Deep Agents graph safely by selecting a model, backend, middleware, subagents, skills, persistence, and approval policy while preserving the builder's ordering and state invariants.
-tags: [deepagents, langgraph, middleware, skills, subagents, backends, testing]
+description: Assemble and safely customize a Deep Agents graph by selecting inputs, profiles, middleware, subagents, permissions, and focused construction-invariant tests.
+tags: [deepagents, langgraph, middleware, profiles, subagents, permissions, testing]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-10-23T08:06:06.503Z
+    at: 2026-10-24T08:05:08.866Z
 sources:
   - id: openwiki-source-68ae2141dbec1e0915410ac3
     resource: repo://libs/ARCHITECTURE.md
   - id: openwiki-source-fd64c1b88759a3b897a5452c
     resource: repo://libs/deepagents/deepagents/__init__.py
+  - id: openwiki-source-b93533cac55718d75277d1cf
+    resource: repo://libs/deepagents/deepagents/_excluded_middleware.py
   - id: openwiki-source-07f9eac13e71bcbdb4e6994b
     resource: repo://libs/deepagents/deepagents/backends/state.py
   - id: openwiki-source-0fc0e47059e4d07e23e50be2
@@ -35,7 +37,7 @@ sources:
     resource: repo://libs/deepagents/tests/unit_tests/test_graph.py
   - id: openwiki-source-851e3a9c96663d8db5ca3dec
     resource: repo://libs/deepagents/tests/unit_tests/test_permissions.py
-generated: { by: "openwiki/0.4.2", at: "2026-10-22T08:05:54.651Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-10-24T08:05:08.866Z" }
 ---
 
 # Build and Customize a Deep Agent
@@ -55,7 +57,7 @@ from deepagents import create_deep_agent
 from deepagents.backends import StateBackend
 
 agent = create_deep_agent(
-    model="openai:gpt-6-astra",
+    model="openai:gpt-5.5",
     backend=StateBackend(),
     tools=[my_application_tool],
     system_prompt="You are a careful research assistant.",
@@ -87,7 +89,7 @@ Caption: Construction classifies subagents, assembles the complete core and tail
 
 The core is `FilesystemMiddleware`; `SubAgentMiddleware` only when synchronous subagents exist; `_ParentNotifierMiddleware`; summarization; `PatchToolCallsMiddleware`; and `AsyncSubAgentMiddleware` when remote/background specs exist. The tail is profile extra middleware, optional `SkillsMiddleware`, provider prompt-caching middleware, optional memory, auto-derived HITL, and `UnsupportedContentMiddleware`.
 
-Custom middleware whose `.name` matches an assembled entry replaces it in place. New middleware is spliced after the last core member—including `_ParentNotifierMiddleware`—and before the profile/skills/caching/memory/HITL tail. Profile exclusions are deliberately applied both before and after this merge; unmatched, private-name, or ambiguous exclusions fail rather than silently producing a degraded graph. Profile tool exclusion is appended last, so custom middleware cannot restore an excluded name. `FilesystemMiddleware` and `SubAgentMiddleware` are protected scaffolding: a profile cannot exclude them. The compiled graph has a `recursion_limit` of 9,999 for long-horizon tool loops.
+Custom middleware whose `.name` matches an assembled entry replaces it in place. New middleware is spliced after the last core member—including `_ParentNotifierMiddleware`—and before the profile/skills/caching/memory/HITL tail. Profile exclusions run once on the assembled stack before the custom merge and once after it, so they also remove a matching custom replacement or addition. Class exclusions use exact type (a subclass is retained); string exclusions use an exact `.name`. An exclusion that matches nothing across the applicable main/general-purpose stacks, a private-name exclusion, or one name matching multiple concrete classes fails rather than silently producing a degraded graph. Profile tool exclusion is appended last, so custom middleware cannot restore an excluded name. `FilesystemMiddleware` and `SubAgentMiddleware` are protected scaffolding: a profile cannot exclude them. The compiled graph has a `recursion_limit` of 9,999 for long-horizon tool loops.
 
 A consequence of this placement is that ordinary user middleware runs before skills. It cannot see freshly loaded `skills_metadata` in `before_agent` or `before_model`, nor edit the skills prompt section in `wrap_model_call`. A custom middleware named `SkillsMiddleware` takes that slot instead.
 
@@ -188,11 +190,11 @@ Filesystem permissions are ordered, first-match `allow`, `deny`, or `interrupt` 
 
 `interrupt` rules become path-aware `HumanInTheLoopMiddleware` predicates; explicit `interrupt_on` entries win for the same tool name. Exact operations evaluate their target. Bulk operations (`ls`, `glob`, `grep`, and recursive `delete`) interrupt when their scope could intersect a protected subtree; missing paths and current-directory aliases are conservatively broad, and `glob` also examines an absolute or climbing pattern that can escape its nominal path. A checkpointer is needed to durably pause and resume approval.
 
-Recursive deletion is stricter than ordinary first-match resolution: it is all-or-nothing and refuses a directory deletion if a deny-write pattern overlaps the target subtree in either direction. A known leaf can use normal first-match behavior. Permissions are unsupported when the backend’s execution default is sandbox-capable, because the filesystem policy does not govern shell execution; configure containment at the tool/backend boundary. Permissions and HITL are therefore not sandboxing.
+Recursive deletion is stricter than ordinary first-match resolution: it is all-or-nothing and refuses a directory deletion if a deny-write pattern overlaps the target subtree in either direction. A confirmed plain-file delete can use normal first-match behavior. A backend that supports execution rejects filesystem permissions because the policy does not govern shell execution. A `CompositeBackend` is permitted when its default backend is not sandbox-capable, including when a sandbox exists only on a route; scope rules accordingly and configure containment at the tool/backend boundary. Permissions and HITL are therefore not sandboxing.
 
 ## 7. Verify the final graph and invocation path
 
-For builder, profile, ordering, or inheritance changes, begin with `tests/unit_tests/test_graph.py`. Its focused cases inspect assembled middleware and the compiled tool node, including default delegation, prompt assembly, provider caching placement, exclusions, skills replacement/placement, and fork behavior. Test both sides of the changed branch: default general-purpose enabled/disabled, matching-name replacement/new insertion, and exclusion after custom middleware.
+For builder, profile, ordering, exclusion, state-schema, or inheritance changes, begin with `tests/unit_tests/test_graph.py`. Its focused cases inspect the middleware passed to `create_agent` and the compiled tool node: default delegation, prompt assembly, provider-caching and skills placement, same-name replacement, state-schema propagation, and fork behavior. Treat these as construction-invariant regressions, not broad behavioral smoke tests. Cover both sides of the changed branch: default general-purpose enabled/disabled; matching-name replacement versus novel insertion; and exclusions before and after custom middleware. In particular, cover class versus name exclusion, protected scaffolding rejection, no-match failure, and collision failure when changing profile filtering.
 
 For async-subagent changes, run `tests/unit_tests/test_async_subagents.py` for middleware-level state, local/remote-client behavior, fork snapshots, child-owned waiting/approval behavior, notification delivery, and webhooks. Its queued-update cases verify `pending` state, accumulated `superseded_run_ids`, rejection of parallel same-turn follow-ups, non-terminal earlier notifications, and cancellation of queued and earlier active runs. Then run the `TestAsyncSubagentEndToEnd` cases in `tests/unit_tests/test_end_to_end.py`; they use mocked LangGraph SDK clients to exercise the complete graph loop from a model tool call through remote launch or control and the resulting `async_tasks` state, including coexistence of synchronous `task` and all five asynchronous controls.
 

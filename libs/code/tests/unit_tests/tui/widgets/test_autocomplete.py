@@ -5,6 +5,7 @@ import logging
 import os
 import subprocess
 import sys
+from difflib import SequenceMatcher
 from pathlib import Path
 from typing import cast
 from unittest.mock import MagicMock
@@ -26,6 +27,120 @@ from deepagents_code.tui.widgets.autocomplete import (
     _run_git_ls_files,
     _scope_files_to_cwd,
 )
+
+_RANKING_CORPUS = [
+    "README.md",
+    "Makefile",
+    "pyproject.toml",
+    "setup.py",
+    "src/main.py",
+    "src/utils.py",
+    "src/chat_models.py",
+    "src/chat-model-base.py",
+    "src/helpers/string_utils.py",
+    "src/helpers/__init__.py",
+    "src/models/chat/openai.py",
+    "src/models/llms/base.py",
+    "src/Runnables/RunnableConfig.py",
+    "libs/core/langchain_core/messages/ai.py",
+    "libs/core/langchain_core/runnables/base.py",
+    "libs/core/tests/unit_tests/test_messages.py",
+    "tests/test_main.py",
+    "tests/test_utils.py",
+    "tests/integration/test_chat.py",
+    "docs/api.md",
+    "docs/how_to/streaming.md",
+    "docs/Ça_va.md",
+    "web/src/components/ChatInput.tsx",
+    "web/src/components/chat-input.css",
+    "a/b/c/d/e/f/g/deeply_nested_file_name.txt",
+    "x.py",
+    "xx",
+    "win\\Src\\Path_Utils.py",
+    ".github/workflows/ci.yml",
+    ".gitignore",
+    ".env.example",
+]
+"""Fixed file list for comparing `_fuzzy_search` with `_reference_fuzzy_search`."""
+
+_RANKING_QUERIES = [
+    "",
+    *"acmpstx._-/",
+    "chat",
+    "chatmod",
+    "cht",
+    "tst_cht",
+    "mdoel",
+    "bse",
+    "runnablez",
+    "readme",
+    "READ",
+    "Init",
+    "libs/core",
+    "src/m",
+    "py",
+    "a.b",
+    "ça",
+    "xyzq",
+    "deepnest",
+    "nested_file",
+    ".git",
+    "ci",
+    "streamin",
+    "toml",
+    "x",
+    "xx",
+]
+"""Queries that cover substring, word-boundary, fuzzy, and no-match paths."""
+
+
+def _reference_score(query: str, candidate: str) -> float:
+    """Score a file the plain way, with `ratio()` on every fuzzy candidate.
+
+    Returns:
+        The score; callers drop values below 15.
+    """
+    query_lower = query.lower()
+    normalized = candidate.replace("\\", "/")
+    candidate_lower = normalized.lower()
+    filename = normalized.rsplit("/", 1)[-1].lower()
+    filename_start = candidate_lower.rfind("/") + 1
+    bonus = 1 / len(candidate)
+    if query_lower in filename:
+        idx = filename.find(query_lower)
+        if idx == 0:
+            return 150 + bonus
+        return (120 if filename[idx - 1] in "_-." else 100) + bonus
+    if query_lower in candidate_lower:
+        idx = candidate_lower.find(query_lower)
+        if idx == filename_start:
+            return 80 + bonus
+        boundary = idx == 0 or candidate[idx - 1] in "/_-."
+        return (60 if boundary else 40) + bonus
+    filename_ratio = SequenceMatcher(None, query_lower, filename).ratio()
+    if filename_ratio > 0.4:  # reference threshold
+        return filename_ratio * 30
+    return SequenceMatcher(None, query_lower, candidate_lower).ratio() * 15
+
+
+def _reference_fuzzy_search(
+    query: str, candidates: list[str], *, include_dotfiles: bool
+) -> list[str]:
+    """Rank files with `_reference_score`.
+
+    Returns:
+        Up to 50 paths, best match first.
+    """
+    if not include_dotfiles:
+        candidates = [
+            c for c in candidates if not any(p.startswith(".") for p in c.split("/"))
+        ]
+    if not query:
+        return sorted(candidates, key=lambda p: (p.count("/"), p.lower()))[:50]
+    scored = [(_reference_score(query, c), c) for c in candidates]
+    scored = [item for item in scored if item[0] >= 15]  # reference threshold
+    scored.sort(key=lambda item: -item[0])
+    return [c for _, c in scored[:50]]
 
 
 class TestFuzzyScore:
@@ -50,6 +165,23 @@ class TestFuzzySearch:
             ".gitignore",
             "docs/api.md",
         ]
+
+    @pytest.mark.parametrize("include_dotfiles", [False, True])
+    def test_matches_reference_ranking(self, include_dotfiles: bool) -> None:
+        """Ranked results match a plain scorer that runs `ratio()` on every file.
+
+        `_fuzzy_search` skips `SequenceMatcher.ratio()` when a cheap upper bound
+        shows a file cannot reach `_MIN_FUZZY_SCORE`. The skip must never change
+        which files are returned or their order.
+        """
+        for query in _RANKING_QUERIES:
+            expected = _reference_fuzzy_search(
+                query, _RANKING_CORPUS, include_dotfiles=include_dotfiles
+            )
+            actual = _fuzzy_search(
+                query, _RANKING_CORPUS, limit=50, include_dotfiles=include_dotfiles
+            )
+            assert actual == expected, query
 
 
 class TestHelperFunctions:
@@ -322,6 +454,27 @@ async def test_file_completion_rejects_unsafe_names(
     view.replace_completion_range.assert_called_once_with(
         0, 1, "@re\u0301sume\u0301.md"
     )
+
+
+async def test_file_completion_uses_refreshed_file_list(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Suggestions follow the file list after a forced background refresh."""
+    view = MagicMock()
+    controller = FuzzyFileController(view, cwd=tmp_path)
+    files = ["old_module.py"]
+    monkeypatch.setattr(autocomplete_module, "_get_project_files", lambda _root: files)
+
+    controller.on_text_changed("@module", 7)
+    assert view.render_completion_suggestions.call_args[0][0] == [
+        ("@old_module.py", "py")
+    ]
+
+    files.append("new_module.py")
+    await controller.warm_cache(force=True)
+    controller.on_text_changed("@module", 7)
+    labels = {label for label, _ in view.render_completion_suggestions.call_args[0][0]}
+    assert labels == {"@old_module.py", "@new_module.py"}
 
 
 class TestGetProjectFiles:

@@ -1,13 +1,15 @@
 ---
 type: integration
-title: MCP Integration and OAuth
-description: How dcode and Talon discover, configure, load, reload, and expose MCP tools, including trust boundaries, OAuth credential lifecycle, and failure handling.
+title: MCP Integration
+description: How dcode discovers, validates, loads, and cleans up Model Context Protocol servers, with explicit-config startup errors, isolated server failures, tool adaptation, and OAuth lifecycle. It also contrasts Talon's separate operator-selected MCP model.
 tags: [mcp, dcode, talon, oauth, configuration, trust, security, tools]
 sources:
   - id: openwiki-source-05106e66a949150d557266a2
     resource: repo://libs/code/deepagents_code/agent.py
   - id: openwiki-source-cf199a6eaab544ebe004462c
     resource: repo://libs/code/deepagents_code/client/commands/mcp.py
+  - id: openwiki-source-b9ef532d79a0667acf40e58b
+    resource: repo://libs/code/deepagents_code/client/launch/server_manager.py
   - id: openwiki-source-2fb89d2b59c886d0cb3ee3ea
     resource: repo://libs/code/deepagents_code/config_manifest.py
   - id: openwiki-source-a97cce048cd7efd394ae7dca
@@ -32,6 +34,8 @@ sources:
     resource: repo://libs/code/deepagents_code/mcp_tools.py
   - id: openwiki-source-4a7b6def251b42596a410ebc
     resource: repo://libs/code/deepagents_code/model_config.py
+  - id: openwiki-source-a9eb680bb6bdae179f52a3ac
+    resource: repo://libs/code/deepagents_code/server_graph.py
   - id: openwiki-source-3300d75e0c132882e2e3b4ce
     resource: repo://libs/code/deepagents_code/tool_catalog.py
   - id: openwiki-source-c899e0edba5a620390e98cb1
@@ -54,37 +58,43 @@ sources:
     resource: repo://libs/talon/deepagents_talon/mcp_config.py
   - id: openwiki-source-82cac27adeecff8a900a40fa
     resource: repo://libs/talon/deepagents_talon/mcp.py
-generated: { by: "openwiki/0.4.2", at: "2026-10-23T08:06:06.503Z" }
 verified:
   - by: openwiki/0.4.2
-    at: 2026-10-23T08:06:06.503Z
+    at: 2026-10-24T08:05:08.866Z
+generated: { by: "openwiki/0.4.2", at: "2026-10-24T08:05:08.866Z" }
 ---
 
-# MCP Integration and OAuth
+# MCP Integration
 
 MCP configuration is executable integration input: a stdio entry starts a local command, while a remote entry may interpolate values into a URL or headers. dcode therefore separates configuration discovery and project trust, disabled-server policy, connection lifecycle, OAuth login, and tool-call failure handling. An explicit configuration is operator-selected; it does not make a repository configuration self-authorizing.
 
 ## Discovery, precedence, and trust
 
-`resolve_and_load_mcp_tools()` is the runtime entry point. Unless `no_mcp` is set, it searches the selected profile's user `.mcp.json`, then `<project-root>/.deepagents/.mcp.json`, then `<project-root>/.mcp.json`, in ascending precedence. Definitions merge by server name, so later layers win. Plugin layers and an explicit configuration can add later layers, with the explicit configuration highest. An explicit-file load error is fatal; failures in auto-discovered files are represented as server-status errors while healthy servers continue.
+`resolve_and_load_mcp_tools()` is the runtime entry point. Unless `no_mcp` is set, it searches the selected profile's user `.mcp.json`, then `<project-root>/.deepagents/.mcp.json`, then `<project-root>/.mcp.json`, in ascending precedence. Definitions merge by server name, so later layers win. Plugin layers and an explicit configuration can add later layers, with the explicit configuration highest.
 
 The winning definition retains its origin for trust evaluation. Project trust is evaluated *after* precedence: whole-project trust or a matching, definition-bound persisted approval can enable a project server, but an explicit denial wins. Remote fixed-URL approvals can use the Git common directory and cover linked worktrees; local commands and environment-dependent remote definitions remain exact-worktree scoped. An unreadable trust policy disables whole-project trust.
 
 ```mermaid
 flowchart TD
-    User["User configuration"] --> Merge["Merge by server name"]
-    Project["Project configurations"] --> Merge
-    Plugin["Plugin configurations"] --> Merge
-    Explicit["Explicit configuration"] --> Merge
+    Start["MCP requested"] --> Explicit{"Explicit CLI config"}
+    Explicit -->|"yes"| Validate["Validate path and config in parent process"]
+    Validate -->|"invalid or missing"| Fatal["Fatal startup error with path and reason"]
+    Validate -->|"valid"| Merge["Merge by server name"]
+    Explicit -->|"no"| Discover["Discover user and project configs"]
+    Discover --> Lenient["Record unreadable or invalid discovered config as status"]
+    Lenient --> Merge
+    Plugin["Plugin configs"] --> Merge
     Merge --> Trust{"Winning project server trusted"}
     Trust -->|"no"| Skip["Do not activate"]
     Trust -->|"yes or user"| Disabled{"Disabled by policy"}
     Disabled -->|"yes"| Status["Disabled status"]
-    Disabled -->|"no"| Activate["Resolve and connect"]
+    Disabled -->|"no"| Activate["Resolve and connect per server"]
 ```
-This flow shows that precedence selects the definition before project trust and disabled-server policy decide activation.
+This flow distinguishes an operator-selected explicit file, which is validated before the server subprocess starts and fails startup on error, from discovered user/project files, whose read and parse failures become visible error entries while usable servers continue. Precedence still selects the winning definition before project trust and disabled-server policy decide activation.
 
 The separate `[mcp].disabled_servers` store persists names in user configuration. A name disables every same-named winning definition and is filtered before connection, though metadata keeps it visible in the UI. User and managed denies are combined; an unreadable managed deny policy disables all servers rather than allowing an uncertain configuration.
+
+For the client/server launch path, `_preflight_validate_mcp_config()` calls `load_mcp_config()` before environment serialization, workspace scaffolding, or `langgraph dev` startup. It preserves `MCPConfigError`, maps a missing file and JSON/shape `ValueError` or `TypeError` to a path-bearing `MCPConfigError`, and deliberately does not relabel an unrelated `RuntimeError` as configuration input. `no_mcp` or no explicit path bypasses this preflight. The child graph repeats the normal explicit load; preflight improves the error reported to the operator rather than changing configuration authority.
 
 ## Activation, connection, and status
 
@@ -92,7 +102,26 @@ The separate `[mcp].disabled_servers` store persists names in user configuration
 
 After validation, dcode performs stdio or remote preflight, builds a FastMCP transport, connects, and lists tools. Setup, connection, schema adaptation, and tool construction are isolated and concurrency-bounded per server. Failure details are redacted when the raw configuration contained interpolation, preventing resolved secret values from being surfaced.
 
-Connected backends are mounted behind a FastMCP router. dcode adapts their tools to LangChain with provider-safe names and records the original server and tool identity in metadata. `MCPSessionManager` owns retained router/backend loads: a reload does not close an older adopted load, so in-flight calls survive; cleanup of every retained load is bounded and best-effort.
+Connected backends are mounted behind a FastMCP router. dcode routes the adapter through a hexadecimal server namespace, then exports a provider-safe `<server>_<tool>` name: unsafe characters are normalized and overlong or altered names receive a deterministic hash within the 64-character limit. It resolves collisions deterministically independent of configuration order and records the original server and tool identity in metadata, so schema lookup and later filtering do not depend on the exported name.
+
+A server can specify exactly one non-empty list of `allowedTools` or `disabledTools`. Entries are literal names or `fnmatch` globs and match the original bare name as well as the prefixed/exported form; unmatched entries warn but do not fail startup, allowing a server version to change its tool list. Filtering happens after adaptation and before the server's `MCPToolInfo` metadata is published.
+
+`MCPSessionManager` owns retained router/backend loads: a reload does not close an older adopted load, so in-flight calls survive; cleanup closes the router and backend stack for every retained load with a five-second per-resource bound and continues after ordinary failures. A stateless load uses its initial sessions only for discovery, cleans them up, and replaces each adapted tool coroutine with a wrapper that loads the owning server afresh for each invocation and cleans that temporary manager in `finally`. In server-graph construction, discovery is requested as stateless but passes the shared manager; that external ownership takes precedence, so the connected load is retained by the server-owned manager rather than being torn down or converted to a per-call wrapper.
+
+```mermaid
+sequenceDiagram
+    participant Loader as MCP loader
+    participant Manager as Session manager
+    participant Router as Router client
+    participant Backend as Server backends
+    Loader->>Backend: preflight connect and list tools
+    Loader->>Manager: adopt router and backend stack
+    Manager->>Router: retain current load
+    Loader->>Manager: adopt reload without closing prior load
+    Manager->>Router: close every retained router with five second bound
+    Manager->>Backend: close every retained backend stack with five second bound
+```
+This lifecycle shows why a reload preserves older resources for in-flight tools and why shutdown is bounded and best-effort across all adopted loads.
 
 `MCPServerInfo` is the loader-to-UI contract. Only `ok` can carry tools and no error. Other states represent unauthenticated, `awaiting_reconnect`, error, or disabled servers; `pending_reconnect` is valid only on a disabled entry. The tool catalog and `/mcp` viewer consume this metadata to surface unavailable servers and OAuth or reconnect actions.
 

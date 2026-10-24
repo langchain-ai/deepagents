@@ -401,6 +401,29 @@ def _message_timestamp_footer_id(message_id: str) -> str:
     return f"{message_id}-timestamp-footer"
 
 
+def _orphaned_tool_group_summaries(
+    messages_container: Container, doomed: list[Widget]
+) -> list[Widget]:
+    """Return tool-group summaries left with no members after a prune.
+
+    Only direct children are scanned: summaries mount into the messages
+    container, and a full-DOM query costs tens of milliseconds at the
+    window cap.
+
+    Returns:
+        Summaries whose collapsed members are all detached or being removed.
+    """
+    gone = set(doomed)
+    return [
+        summary
+        for summary in messages_container.query_children(ToolGroupSummary)
+        if summary not in gone
+        and not any(
+            member.is_attached and member not in gone for member in summary._collapsible
+        )
+    ]
+
+
 def _read_text_file_expanding_user(path_arg: str) -> tuple[Path, str]:
     """Read a text file after expanding `~` in a worker thread.
 
@@ -21996,49 +22019,63 @@ class DeepAgentsApp(App):
             except NoMatches:
                 return 0
 
-        pruned_ids: list[str] = []
-        for data in to_prune:
+        pruned_ids, doomed = self._collect_pruned_rows(
+            messages_container, to_prune, direction
+        )
+        if not below:
+            doomed.extend(_orphaned_tool_group_summaries(messages_container, doomed))
+        # One removal and one spacer update inside a single batch: removing rows
+        # one at a time ran a full transcript relayout between rows, and the
+        # spacer must absorb the removed height in the same frame so the
+        # viewport does not jump.
+        with self.batch_update():
+            await messages_container.remove_children(doomed)
             if generation != self._transcript_generation:
                 return 0
-            footer_id = _message_timestamp_footer_id(data.id)
+            if below:
+                self._message_store.mark_pruned_below(pruned_ids)
+            else:
+                self._message_store.mark_pruned(pruned_ids)
+            self._sync_transcript_spacers(messages_container)
+        return len(pruned_ids)
+
+    @staticmethod
+    def _collect_pruned_rows(
+        messages_container: Container,
+        to_prune: list[MessageData],
+        direction: Literal["above", "below"],
+    ) -> tuple[list[str], list[Widget]]:
+        """Collect the mounted rows and footers for a prune batch.
+
+        Lazy tool-group summaries snapshot their detail state first, so
+        rehydration restores what the user had expanded.
+
+        Returns:
+            The pruned message IDs and the widgets to remove.
+        """
+        pruned_ids: list[str] = []
+        doomed: list[Widget] = []
+        for data in to_prune:
+            pruned_ids.append(data.id)
+            with suppress(NoMatches):
+                doomed.append(
+                    messages_container.get_child_by_id(
+                        _message_timestamp_footer_id(data.id)
+                    )
+                )
             try:
-                widget = messages_container.query_one(f"#{data.id}")
+                widget = messages_container.get_child_by_id(data.id)
             except NoMatches:
                 logger.warning(
                     "Widget %s missing during %s pruning; reconciling store window",
                     data.id,
                     direction,
                 )
-                widget = None
+                continue
             if isinstance(widget, LazyToolGroupSummary):
                 widget._snapshot_detail_state()
-            with suppress(NoMatches):
-                footer = messages_container.query_one(f"#{footer_id}")
-                await footer.remove()
-            if generation != self._transcript_generation:
-                return 0
-            if widget is not None:
-                await widget.remove()
-                if generation != self._transcript_generation:
-                    return 0
-            pruned_ids.append(data.id)
-
-        if below:
-            self._message_store.mark_pruned_below(pruned_ids)
-        else:
-            self._message_store.mark_pruned(pruned_ids)
-        self._sync_transcript_spacers(messages_container)
-        if not below:
-            for summary in list(self.query(ToolGroupSummary)):
-                if not summary.has_attached_members:
-                    try:
-                        await summary.remove()
-                    except Exception:
-                        logger.debug(
-                            "Failed to remove orphaned tool group summary",
-                            exc_info=True,
-                        )
-        return len(pruned_ids)
+            doomed.append(widget)
+        return pruned_ids, doomed
 
     def _reveal_pending_tool_calls(self) -> None:
         """Surface grouped tool calls before asking for approval."""

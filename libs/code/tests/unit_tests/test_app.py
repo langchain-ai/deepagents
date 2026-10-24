@@ -136,6 +136,17 @@ from deepagents_code.tui.widgets.startup_tip import StartupTip
 from deepagents_code.update_check import ExtraInstallOutcome
 
 
+@pytest.mark.parametrize("hidden_count", [0, 2])
+def test_displayed_row_slots_without_displayed_children(hidden_count: int) -> None:
+    """Empty and fully hidden layouts occupy no rows."""
+    from deepagents_code.app import _displayed_row_slots
+
+    children = [Static() for _ in range(hidden_count)]
+    for child in children:
+        child.display = False
+    assert _displayed_row_slots(children) == {}
+
+
 def _pop_goal_state_notice(update: dict[str, Any]) -> HumanMessage:
     """Remove and validate the canonical notice from a state update."""
     from langchain_core.messages import HumanMessage

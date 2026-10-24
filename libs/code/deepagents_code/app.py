@@ -413,6 +413,8 @@ def _displayed_row_slots(children: Sequence[Widget]) -> dict[Widget, int]:
         Slot height in rows for every displayed child.
     """
     shown = [child for child in children if child.display]
+    if not shown:
+        return {}
     slots: dict[Widget, int] = {}
     for child, below in zip(shown, [*shown[1:], None], strict=True):
         own = child.outer_size.height + child.styles.margin.bottom

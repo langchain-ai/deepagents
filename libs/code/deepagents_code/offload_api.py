@@ -23,6 +23,7 @@ from starlette.routing import Route
 
 from deepagents_code._async import _join_task_deferring_cancellation
 from deepagents_code._cli_context import CLIContextSchema
+from deepagents_code._run_queue_wakeup import install_run_queue_wakeup
 from deepagents_code.btw_api import btw, btw_cost, thread_usage
 from deepagents_code.cost_tracking import prepare_operation_cost
 from deepagents_code.hooks.interrupt import build_hook_interrupt_payload
@@ -209,7 +210,10 @@ def _start_runtime_prebuild() -> asyncio.Task[object]:
 
 @asynccontextmanager
 async def _lifespan(_app: Starlette) -> AsyncIterator[None]:
-    """Prebuild the runtime, then flush buffered traces once serving stops.
+    """Prepare the server, then flush buffered traces once serving stops.
+
+    Startup patches the run queue to start new runs without the poll delay
+    (see `_run_queue_wakeup`) and prebuilds the runtime.
 
     `Client` registers an `atexit` handler that only closes its session, never
     flushes, so without this hook anything still queued when dcode signals the
@@ -222,6 +226,7 @@ async def _lifespan(_app: Starlette) -> AsyncIterator[None]:
     Yields:
         Control for the lifetime of the application.
     """
+    install_run_queue_wakeup()
     prebuild = _start_runtime_prebuild()
     try:
         yield

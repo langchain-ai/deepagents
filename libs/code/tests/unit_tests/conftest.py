@@ -254,6 +254,19 @@ def _disable_langsmith_batching(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _reset_langsmith_runtime_overrides() -> Iterator[None]:
+    """Remove any process-global LangSmith runtime override a test installed.
+
+    Server-graph startup installs one (see `deepagents_code._langsmith_runtime`).
+    Without a reset it leaks into every later test in the worker.
+    """
+    yield
+    from langsmith import set_runtime_overrides
+
+    set_runtime_overrides()
+
+
+@pytest.fixture(autouse=True)
 def _clear_tavily_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Prevent a Tavily key loaded from .env from leaking into tests.
 

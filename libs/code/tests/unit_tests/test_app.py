@@ -136,6 +136,17 @@ from deepagents_code.tui.widgets.startup_tip import StartupTip
 from deepagents_code.update_check import ExtraInstallOutcome
 
 
+@pytest.mark.parametrize("hidden_count", [0, 2])
+def test_displayed_row_slots_without_displayed_children(hidden_count: int) -> None:
+    """Empty and fully hidden layouts occupy no rows."""
+    from deepagents_code.app import _displayed_row_slots
+
+    children = [Static() for _ in range(hidden_count)]
+    for child in children:
+        child.display = False
+    assert _displayed_row_slots(children) == {}
+
+
 def _pop_goal_state_notice(update: dict[str, Any]) -> HumanMessage:
     """Remove and validate the canonical notice from a state update."""
     from langchain_core.messages import HumanMessage
@@ -29795,6 +29806,42 @@ class TestToolGroupCollapse:
             assert f_excl.display is True, (
                 "an excluded tool's footer must not be folded into a neighbour"
             )
+
+    async def test_folded_run_height_hints_match_summary_line(self) -> None:
+        """A folded run is estimated at the summary's height, not per hidden row.
+
+        Archived rows are sized from these hints. If hidden rows each count as
+        a row and the summary line counts as none, the spacer is wrong by the
+        difference and scroll-back hydration moves the view.
+        """
+        from deepagents_code.tui.widgets.message_store import MessageData, MessageType
+        from deepagents_code.tui.widgets.messages import ToolGroupSummary
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t-group-hints")
+        app._load_thread_history = AsyncMock()  # ty: ignore
+        async with app.run_test() as pilot:
+            messages = app.query_one("#messages", Container)
+            await messages.remove_children()
+            specs = [
+                (f"h{i}", "read_file", {"file_path": f"{i}.py"}, "success")
+                for i in range(4)
+            ]
+            for tid, name, _args, _status in specs:
+                app._message_store.append(
+                    MessageData(
+                        type=MessageType.TOOL, content="", id=tid, tool_name=name
+                    )
+                )
+            await self._mount_tools(pilot, messages, specs)
+
+            await app._regroup_completed_tools()
+            await pilot.pause()
+            await pilot.pause()
+
+            summary = app.query_one(ToolGroupSummary)
+            summary_rows = summary.outer_size.height + summary.styles.margin.bottom
+            store = app._message_store
+            assert store.range_height(0, len(specs)) == summary_rows
 
     async def test_regroup_collapses_success_run(self) -> None:
         """A run of successful tools folds into one collapsed summary."""

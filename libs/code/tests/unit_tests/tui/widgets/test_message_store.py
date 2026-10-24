@@ -309,6 +309,14 @@ class TestVirtualizationFlow:
         assert clamped is not None
         assert clamped.height_hint == MIN_HEIGHT_HINT
 
+        # A hidden (folded) row takes no space, so it may drop to 0 and stays
+        # there through a width rescale.
+        assert store.set_height_hint("id-1", 0, hidden=True)
+        assert clamped.height_hint == 0
+        assert store.range_height(0, 1) == 0
+        store.invalidate_height_hints(scale=2.0)
+        assert clamped.height_hint == 0
+
         # The generic update path must not smuggle an unclamped height through.
         with pytest.raises(ValueError, match="height_hint"):
             store.update_message("id-1", height_hint=-4)

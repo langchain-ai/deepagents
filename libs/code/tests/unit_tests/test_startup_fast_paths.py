@@ -256,3 +256,28 @@ def parse_args_from(argv: list[str]) -> argparse.Namespace:
 
     with patch.object(sys, "argv", ["deepagents", *argv]):
         return parse_args()
+
+
+def test_server_modules_skip_textual() -> None:
+    """The langgraph dev server imports these before it reports healthy.
+
+    Textual is a TUI dependency. Loading it in the server adds startup time
+    for no benefit.
+    """
+    code = """
+        import sys
+
+        import deepagents_code.offload_api
+        import deepagents_code.server_graph
+
+        print(sorted(name for name in sys.modules if name.startswith("textual")))
+    """
+    result = subprocess.run(
+        [sys.executable, "-c", textwrap.dedent(code)],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "[]"

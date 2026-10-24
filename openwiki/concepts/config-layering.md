@@ -1,12 +1,11 @@
 ---
 type: configuration architecture
 title: dcode Configuration Layering
-description: How dcode resolves typed settings across managed policy, CLI values, environment, user TOML, and defaults. Covers provenance, reload generations, dotenv trust boundaries, and the client-to-server policy handoff.
+description: How dcode resolves typed settings across managed policy, CLI values, environment, user TOML, and defaults. Covers provenance, reload generations, dotenv trust boundaries, MCP preflight validation, and the client-to-server policy handoff.
 tags: [configuration, deepagents-code, precedence, managed-policy, environment, reload, workspace, server]
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-10-23T08:06:06.503Z
 sources:
+  - resource: repo://libs/code/deepagents_code/client/launch/server_manager.py
+  - resource: repo://libs/code/tests/unit_tests/test_server_manager.py
   - id: openwiki-source-6f5b1b7a043ee1d414708793
     resource: repo://libs/code/ARCHITECTURE.md
   - id: openwiki-source-1728494bdd59604ce9b5f65b
@@ -45,22 +44,23 @@ sources:
     resource: repo://libs/code/tests/unit_tests/test_workspace_diagnostics.py
   - id: openwiki-source-877b53371bf970f1b38a1809
     resource: repo://libs/code/tests/unit_tests/test_workspace.py
-generated: { by: "openwiki/0.4.2", at: "2026-10-23T08:06:06.503Z" }
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-10-24T08:05:08.866Z
+generated: { by: "openwiki/0.4.2", at: "2026-10-24T08:05:08.866Z" }
 ---
 
 # dcode Configuration Layering
 
 `dcode` resolves configuration through a typed, ranked provider chain rather than treating one file as the entire configuration surface. This preserves useful session, shell, and user settings while ensuring that organization-managed policy has the strongest authority. The same design makes both the winning value and its contributing source tiers inspectable.
 
-For the client/server boundary, see [Code agent](/openwiki/architecture/code-agent.md). Related concerns include [profiles and models](/openwiki/concepts/profiles-models.md), [MCP](/openwiki/integrations/mcp.md), [sandbox partners](/openwiki/integrations/sandbox-partners.md), and [running a dcode session](/openwiki/workflows/run-dcode-session.md).
+For the client/server boundary, see [Code agent](/openwiki/architecture/code-agent.md). Related concerns include [permissions and HITL](/openwiki/concepts/permissions-hitl.md), [MCP](/openwiki/integrations/mcp.md), and [running a dcode session](/openwiki/workflows/run-dcode-session.md).
 
 ## Configuration surface and providers
 
-`config_manifest.py` is the canonical description of scalar settings. A `ConfigOption` identifies its key, type/coercion kind, typed default, TOML path, environment variables, optional CLI binding, merge strategy, and whether display must redact its raw value. It rejects incoherent declarations at construction time—for example, a mutable or wrong-typed default, a scalar option using an accumulating merge strategy, or an invalid CLI specification.
+`config_manifest.py` is the canonical description of scalar settings. A `ConfigOption` identifies its key, type/coercion kind, typed default, TOML path, environment variables, optional CLI binding, merge strategy, and whether display must redact its raw value. Structured, user-defined tables are not flattened into scalar environment variables: they are marked `STRUCTURED` for discovery and read by dedicated typed loaders. Credential-capable structured tables are presence-only in `dcode config` output.
 
-The manifest deliberately does **not** flatten user-defined structured tables into scalar environment variables. Those tables are marked `STRUCTURED` for discovery and read by dedicated typed loaders. Credential-capable structured tables, including provider authentication/parameters and asynchronous-subagent headers, are presence-only in `dcode config` output.
-
-Each provider normalizes its own input into `Found`, `Unset`, or `Invalid` before the resolver considers precedence. Environment and TOML coercion rejects wrong types and invalid tokens rather than throwing away the rest of the source: an invalid setting falls through to a weaker valid tier, while valid sibling settings remain usable. `ResolvedValue` carries the resulting value, selected ranks, provider health, diagnostics, masked ranks, and rank/path provenance.
+Each provider normalizes its own input into `Found`, `Unset`, or `Invalid` before the resolver considers precedence. Environment and TOML coercion rejects wrong types and invalid tokens without discarding the rest of that source: an invalid setting falls through to a weaker valid tier, while valid siblings remain usable. `ResolvedValue` retains the selected ranks, provider health, diagnostics, masked ranks, and rank/path provenance.
 
 ## Precedence, durable policy, and composition
 
@@ -79,70 +79,55 @@ The standard configuration tier order. The reload tier is caller-installed rathe
 
 For ordinary `replace` options, the strongest usable `Found` value wins. A durable result at a stronger rank masks weaker non-durable values, preventing an environment value from bypassing a managed or durable policy result; the masking is directional, so a weaker user-file result cannot hide a stronger environment value.
 
-`union` and `deep_merge` mean a setting is intentionally cumulative. They retain every valid tier contribution rather than selecting a winner: unions preserve ordered, deduplicated list entries, and deep merges apply stronger leaves over weaker tables while retaining leaf-level provenance. Defaults are excluded from those accumulated contributions and used only as a fallback. This matters for restrictions such as MCP deny lists, where allowing a user replacement to erase an administrator denial would be fail-open. If an accumulating tier has an incompatible shape, resolution falls back to a copied strongest value rather than allowing a weaker value to displace policy.
+`union` and `deep_merge` mean a setting is intentionally cumulative. They retain every valid tier contribution rather than selecting a winner: unions preserve ordered, deduplicated list entries, and deep merges apply stronger leaves over weaker tables while retaining leaf-level provenance. Defaults are excluded from accumulated contributions and used only as a fallback. This matters for restrictions such as MCP deny lists, where allowing a user replacement to erase an administrator denial would be fail-open. If an accumulating tier has an incompatible shape, resolution uses a copied strongest value rather than allowing a weaker value to displace policy.
 
 `resolver_from_snapshots()` takes keyword-only `managed=` and `user=` snapshots. Since both arguments have the same type, this blocks an accidental positional swap that would grant a writable user configuration managed precedence. `ConfigResolver` also rejects duplicate ranks.
 
-## Managed policy boundary
+## Managed policy boundary, generations, and writes
 
 Managed configuration comes from an operating-system-controlled fixed path: `/etc/dcode/managed_config.toml` on Linux-like platforms, `/Library/Application Support/dcode/managed_config.toml` on macOS, and `ProgramData/dcode/managed_config.toml` on Windows. Production Windows lookup uses the HKLM registry value for ProgramData rather than a user-controlled process environment variable. If that registry lookup fails, the fallback path is explicitly marked indeterminate rather than reported as confidently absent policy.
 
-Managed policy is durable and must remain enforceable throughout reload. A provider that has previously loaded a usable TOML snapshot keeps serving it when a later candidate is unreadable or malformed; an initial unreadable source instead contributes no values and lets resolution continue. A managed refresh is fetched and policy-validated before installation. An unusable or unenforceable candidate cannot replace the active managed tier, so a broken refresh does not silently discard restrictions and reveal weaker values.
+Managed policy is durable throughout reload. A provider that previously loaded a usable TOML snapshot keeps serving it when a later candidate is unreadable or malformed; an initial unreadable source instead contributes no values and lets resolution continue. A managed refresh is fetched and policy-validated before installation. An unusable or unenforceable candidate cannot replace the active managed tier, so a broken refresh does not silently discard restrictions and reveal weaker values.
 
-## Generations, reloads, and writes
+The shared resolver caches one generation for normal process reads. Files are not watched: an on-disk edit is not visible until reload, resolver invalidation, or a committed write to the default user configuration path advances the generation. The environment provider deliberately differs: it reads the active environment at resolution time. `get_config_resolver()` owns the process cache and prevents installation of a second, different CLI provider in the same process.
 
-The shared resolver caches one generation for normal process reads. Files are not watched: an on-disk edit is not visible until a reload, resolver invalidation, or a committed write to the default user configuration path advances the generation. The environment provider is deliberately different: it reads the active environment at resolution time.
-
-```mermaid
-flowchart TD
-    A["Reload or default-path write"] --> B["Fetch managed candidate"]
-    B --> C{"Candidate enforceable"}
-    C -->|"no"| K["Retain active managed tier"]
-    C -->|"yes"| I["Install candidate"]
-    I --> J["Reload other providers"]
-    J --> P["Publish next generation"]
-```
-
-A managed refresh is obtained before resolver replacement so a failed refresh cannot remove an enforced policy.
-
-`get_config_resolver()` owns the process cache and prevents a second, different CLI provider from being installed in the same process. A resolver constructed directly from snapshots includes no CLI tier unless the caller supplies one. Reloading resets deduplicated source diagnostics, so a source that remains bad is reported again during the next repair attempt.
-
-`update_user_config()` is the supported transaction for user `config.toml`: it serializes read-modify-write operations, rejects the managed path and malformed existing TOML, writes a replacement beside the destination, and atomically replaces the destination. Once the bytes are committed, it best-effort refreshes the shared resolver for the default path. A refresh error leaves the completed write intact, with stale in-process state reported separately rather than misrepresenting the write as failed.
+`update_user_config()` is the supported user-`config.toml` transaction. It serializes read-modify-write operations, rejects the managed path and malformed existing TOML, writes a replacement beside the destination, and atomically replaces the destination. Once committed, it best-effort refreshes the shared resolver for the default path; a refresh error does not misreport the completed write as failed.
 
 ## Environment and dotenv trust boundary
 
 For prefix-aware credentials and provider settings, `DEEPAGENTS_CODE_{NAME}` takes precedence over `{NAME}` by *presence*, including an empty prefixed variable. An explicit empty override can therefore suppress a canonical credential or setting.
 
-Workspace construction derives an explicit dotenv environment rather than mutating the process environment as part of every read. The inherited shell environment wins; the nearest project `.env` fills absent keys, followed by the trusted global profile dotenv for keys still absent. Dotenv interpolation uses the original baseline, so project values cannot steer interpolation in the global file. `use_environment()` exposes such a mapping as an immutable, context-local snapshot during construction; outside that scope reads use live `os.environ`.
+Workspace construction derives an explicit dotenv environment rather than mutating the process environment as part of every read. The inherited shell environment wins; the nearest project `.env` fills absent keys, followed by the trusted global profile dotenv for keys still absent. Each dotenv file interpolates against the original environment baseline, so project values cannot steer interpolation in the global file. `use_environment()` exposes such a mapping as an immutable, context-local snapshot during construction; outside that scope reads use live `os.environ`.
 
-A project `.env` is untrusted checkout content. It cannot set project-MCP trust lists, Auto classifier model or timeout, MCP tool timeout, forked-subagent behavior, the upstream recursion fallback, or `TERM_PROGRAM`. The trusted global dotenv controls whether the project file may be read; if the global file cannot be read, dcode fails closed by skipping the project dotenv unless another trusted source explicitly opts in. These controls prevent a clone from selecting its own authorization boundary or exporting launch metadata through tracing.
+A project `.env` is untrusted checkout content. It cannot set project-MCP trust lists, Auto classifier model or timeout, MCP tool timeout, forked-subagent behavior, the upstream recursion fallback, or `TERM_PROGRAM`. The trusted global dotenv controls whether the project file may be read; if that global file cannot be read, dcode fails closed by skipping the project dotenv unless another trusted source explicitly opts in.
 
-Each server runtime is built from a frozen workspace dotenv and credentials snapshot, so later process-environment changes do not change an existing runtime. LangSmith selectors and the redaction setting must agree across workspaces on a server because the SDK uses process-wide state. If an active upload target requests secret redaction but dcode cannot install the redacting client, it disables tracing instead of uploading unredacted data.
+Each server runtime is built from a frozen workspace dotenv and credential snapshot, so later process-environment changes do not change an existing runtime. LangSmith selectors and the redaction setting must agree across workspaces on a server because the SDK uses process-wide state. If an active upload target requests secret redaction but dcode cannot install the redacting client, it disables tracing instead of uploading unredacted data.
 
-## MCP configuration is policy-aware
+## MCP configuration and launch preflight
 
 MCP configuration interpolates only `${VAR}` and `${VAR:-default}` in `command`, `url`, `args`, `env`, `headers`, and `oauth`. The default form is used when the variable is absent or empty. Unsupported fields are copied unchanged. Malformed references, an unset required variable, or an invalid supported-field shape are rejected before the resolved configuration is used.
 
 Disabled MCP servers are cumulative: user and managed names are unioned, then filtered before validation, connection, or tool exposure. If the managed deny list cannot be read or validated, dcode fails closed by disabling every candidate server rather than interpreting a broken restriction as an empty list.
 
+An explicit `--mcp-config` receives an additional parent-process preflight before server construction. `start_server_and_get_agent()` skips it when `--no-mcp` is active or no explicit path was supplied; otherwise it calls `load_mcp_config()`, preserves `MCPConfigError`, translates a missing file and ordinary value/type validation failures into a path-bearing `MCPConfigError`, and deliberately lets unrelated `RuntimeError` failures propagate. This produces an actionable startup error instead of a server-side health-check failure with truncated logs. Discovered project and user MCP configurations are intentionally not part of this fatal preflight: their loader errors remain viewer-visible entries.
+
 ## Client/server handoff and workspace continuity
 
-The interactive client and agent server are separate processes and do not share a resolver cache. `ServerConfig` is their typed handoff: the client serializes fields to `DEEPAGENTS_CODE_SERVER_*` environment variables, `None` clears a variable, and the server reconstructs and validates the schema. In particular, malformed or unsafe filesystem-tool allowlists are rejected rather than interpreted as unrestricted filesystem access.
+The interactive client and agent server are separate processes and do not share a resolver cache. `ServerConfig` is their typed handoff: the client resolves CLI paths against the launch project, serializes fields to `DEEPAGENTS_CODE_SERVER_*` environment variables, and the server reconstructs the schema. `None` clears a previous variable rather than becoming an empty string. This avoids a server launched in a temporary runtime directory interpreting a relative MCP, sandbox-setup, or extension path against the wrong directory.
 
 ```mermaid
-sequenceDiagram
-    participant Client
-    participant Server
-    participant Binding as SQLite binding
-    participant Runtime
-    Client->>Server: ServerConfig environment values
-    Server->>Binding: Bind resolved workspace policy
-    Binding-->>Server: Durable binding and fingerprints
-    Server->>Server: Resolve current workspace policy
-    Server->>Runtime: Build or reuse compatible runtime
+flowchart TD
+    A["CLI options and project context"] --> B["Validate explicit MCP config"]
+    B --> C["Build ServerConfig"]
+    C --> D["Serialize server environment"]
+    D --> E["Spawn langgraph server"]
+    E --> F["ServerConfig.from_env"]
+    F --> G["Bind server-resolved workspace policy"]
 ```
 
-The handoff, durable binding, and request-time validation are distinct safeguards.
+The launch process validates the explicit MCP file before serialization, then the server reconstructs and binds configuration independently.
+
+The filesystem-tool allowlist is security-sensitive serialization. An absent `ALLOW_FS_TOOLS` means unrestricted SDK-default filesystem tools, but a present value must parse as a non-empty JSON list of recognized tool names. `ServerConfig` also requires an explicit list to contain `read_file`; malformed JSON, a wrong shape, unknown names, an empty list, or omission of `read_file` raises rather than falling through to unrestricted access.
 
 A binding canonicalizes an existing workspace directory and records server-resolved, non-secret policy plus separate policy and runtime fingerprints in SQLite. It atomically refuses a different workspace or incompatible policy. A compatible runtime-only identity change rebuilds the runtime without deleting the binding or checkpoints.
 
@@ -152,6 +137,6 @@ Project-scoped MCP, sandbox setup, extension paths, and extension trust apply on
 
 Bindings retain a bounded allowlisted snapshot for refusal diagnostics. Only reportable policy scalars and lists are persisted. Paths, credentials, environment values, model data, and prompts are excluded from both persistence and logs; diagnostics either identify safe changed values or state that the old value is unavailable.
 
-When adding or changing configuration, define scalar options in the manifest or provide a dedicated structured loader; choose whether the setting replaces, unions, or deep-merges; preserve invalid-value fallback; and do not let project dotenv define authorization-sensitive controls. Server-facing changes must be classified as durable policy identity or rebuildable runtime identity.
+When adding or changing configuration, define scalar options in the manifest or provide a dedicated structured loader; choose whether the setting replaces, unions, or deep-merges; preserve invalid-value fallback; and do not let project dotenv define authorization-sensitive controls. Server-facing changes must be classified as durable policy identity or rebuildable runtime identity. Explicit launch-only files need parent-side validation when a server-process error would otherwise be opaque.
 
-Focused tests cover rank ordering, durable masking, union/deep-merge provenance, malformed-value fallback, source retention after failed reload, managed-refresh safety, default-path writes, dotenv precedence and trust boundaries, workspace snapshot isolation, server handoff validation, and policy/runtime drift. These boundaries—not parsing alone—are the behavior that makes layered configuration safe to evolve.
+Focused tests cover rank ordering, durable masking, union/deep-merge provenance, malformed-value fallback, source retention after failed reload, managed-refresh safety, default-path writes, dotenv precedence and trust boundaries, workspace snapshot isolation, server handoff validation, MCP preflight behavior, and policy/runtime drift.

@@ -401,6 +401,29 @@ def _message_timestamp_footer_id(message_id: str) -> str:
     return f"{message_id}-timestamp-footer"
 
 
+def _orphaned_tool_group_summaries(
+    messages_container: Container, doomed: list[Widget]
+) -> list[Widget]:
+    """Return tool-group summaries left with no members after a prune.
+
+    Only direct children are scanned: summaries mount into the messages
+    container, and a full-DOM query costs tens of milliseconds at the
+    window cap.
+
+    Returns:
+        Summaries whose collapsed members are all detached or being removed.
+    """
+    gone = set(doomed)
+    return [
+        summary
+        for summary in messages_container.query_children(ToolGroupSummary)
+        if summary not in gone
+        and not any(
+            member.is_attached and member not in gone for member in summary._collapsible
+        )
+    ]
+
+
 def _read_text_file_expanding_user(path_arg: str) -> tuple[Path, str]:
     """Read a text file after expanding `~` in a worker thread.
 
@@ -1091,6 +1114,7 @@ if TYPE_CHECKING:
     from deepagents_code._terminal_stderr import TerminalStderrGuard
     from deepagents_code.approval_mode import ApprovalMode
     from deepagents_code.client.launch.server import ServerProcess
+    from deepagents_code.client.launch.server_manager import PrespawnedServer
     from deepagents_code.client.remote_client import RemoteAgent
     from deepagents_code.client.session_cost import SessionCost
     from deepagents_code.cold_cache import (
@@ -3423,6 +3447,7 @@ class DeepAgentsApp(App):
         hook_trust: WorkspaceTrust | None = None,
         title: str | None = None,
         sub_title: str | None = None,
+        prespawned_server: PrespawnedServer | None = None,
         **kwargs: Any,
     ) -> None:
         """Initialize the Deep Agents application.
@@ -3506,6 +3531,9 @@ class DeepAgentsApp(App):
                 substituted; otherwise the parent default is used.
 
                 Reassigning `app.sub_title` at runtime updates the header live.
+            prespawned_server: A server start already spawned for
+                `server_kwargs`. The startup worker adopts it instead of
+                spawning another; the caller reaps it if the app never does.
             **kwargs: Additional arguments passed to parent
         """
         super().__init__(**kwargs)
@@ -3843,6 +3871,8 @@ class DeepAgentsApp(App):
         if server_kwargs is not None:
             server_kwargs["cwd"] = self._cwd
         self._server_kwargs = server_kwargs
+        self._prespawned_server = prespawned_server
+        """Server start spawned before the app loaded; consumed on adoption."""
         self._thread_leases: dict[str, ThreadLease] = {}
         if (
             self._server_kwargs is None
@@ -6428,13 +6458,17 @@ class DeepAgentsApp(App):
         self._server_kwargs["cwd"] = self._cwd
         # Spawn the server without waiting for the import prewarm: the
         # subprocess boots in parallel, and only the health check that follows
-        # imports into the prewarm's module graph on this thread.
-        coros: list[Any] = [
-            start_server_and_get_agent(
+        # imports into the prewarm's module graph on this thread. A server
+        # spawned before the app loaded is adopted instead, exactly once.
+        prespawned, self._prespawned_server = self._prespawned_server, None
+        if prespawned is not None:
+            server_start = prespawned.adopt(after_spawn=self._await_prewarm_imports)
+        else:
+            server_start = start_server_and_get_agent(
                 **self._server_kwargs,  # ty: ignore[invalid-argument-type]
                 after_spawn=self._await_prewarm_imports,
             )
-        ]
+        coros: list[Any] = [server_start]
 
         if self._mcp_preload_kwargs is not None:
             from deepagents_code.main import _preload_session_mcp_server_info
@@ -9842,10 +9876,13 @@ class DeepAgentsApp(App):
         """Show reconciled cache expiry independently of handoff preferences."""
         if not self.screen_stack:
             return
-        banners = self.screen_stack[0].query("#cache-expired-banner")
-        if banners:
+        # Polled every second: an `#id` `query_one` takes Textual's cached id
+        # lookup, while `query(...)` would walk every transcript widget.
+        banner = self.screen_stack[0].query_one_optional(
+            "#cache-expired-banner", Static
+        )
+        if banner is not None:
             expires_at = self._status_bar.cache_expires_at if self._status_bar else None
-            banner = banners.first(Static)
             banner.display = (
                 not self._cache_reconciliation_pending
                 and expires_at is not None
@@ -9860,7 +9897,11 @@ class DeepAgentsApp(App):
                     if count:
                         age = f"{count} {unit}{'s' if count != 1 else ''} ago"
                         break
-                banner.update(f"Prompt cache expired at {expired_at} ({age})")
+                text = f"Prompt cache expired at {expired_at} ({age})"
+                # The text changes at most once a minute per window; skip the
+                # per-tick relayout that `update` would otherwise force.
+                if banner.content != text:
+                    banner.update(text)
 
     def _check_idle_compaction(self) -> None:
         """Reserve one offload per warm cache window, without yielding to input."""
@@ -21978,49 +22019,63 @@ class DeepAgentsApp(App):
             except NoMatches:
                 return 0
 
-        pruned_ids: list[str] = []
-        for data in to_prune:
+        pruned_ids, doomed = self._collect_pruned_rows(
+            messages_container, to_prune, direction
+        )
+        if not below:
+            doomed.extend(_orphaned_tool_group_summaries(messages_container, doomed))
+        # One removal and one spacer update inside a single batch: removing rows
+        # one at a time ran a full transcript relayout between rows, and the
+        # spacer must absorb the removed height in the same frame so the
+        # viewport does not jump.
+        with self.batch_update():
+            await messages_container.remove_children(doomed)
             if generation != self._transcript_generation:
                 return 0
-            footer_id = _message_timestamp_footer_id(data.id)
+            if below:
+                self._message_store.mark_pruned_below(pruned_ids)
+            else:
+                self._message_store.mark_pruned(pruned_ids)
+            self._sync_transcript_spacers(messages_container)
+        return len(pruned_ids)
+
+    @staticmethod
+    def _collect_pruned_rows(
+        messages_container: Container,
+        to_prune: list[MessageData],
+        direction: Literal["above", "below"],
+    ) -> tuple[list[str], list[Widget]]:
+        """Collect the mounted rows and footers for a prune batch.
+
+        Lazy tool-group summaries snapshot their detail state first, so
+        rehydration restores what the user had expanded.
+
+        Returns:
+            The pruned message IDs and the widgets to remove.
+        """
+        pruned_ids: list[str] = []
+        doomed: list[Widget] = []
+        for data in to_prune:
+            pruned_ids.append(data.id)
+            with suppress(NoMatches):
+                doomed.append(
+                    messages_container.get_child_by_id(
+                        _message_timestamp_footer_id(data.id)
+                    )
+                )
             try:
-                widget = messages_container.query_one(f"#{data.id}")
+                widget = messages_container.get_child_by_id(data.id)
             except NoMatches:
                 logger.warning(
                     "Widget %s missing during %s pruning; reconciling store window",
                     data.id,
                     direction,
                 )
-                widget = None
+                continue
             if isinstance(widget, LazyToolGroupSummary):
                 widget._snapshot_detail_state()
-            with suppress(NoMatches):
-                footer = messages_container.query_one(f"#{footer_id}")
-                await footer.remove()
-            if generation != self._transcript_generation:
-                return 0
-            if widget is not None:
-                await widget.remove()
-                if generation != self._transcript_generation:
-                    return 0
-            pruned_ids.append(data.id)
-
-        if below:
-            self._message_store.mark_pruned_below(pruned_ids)
-        else:
-            self._message_store.mark_pruned(pruned_ids)
-        self._sync_transcript_spacers(messages_container)
-        if not below:
-            for summary in list(self.query(ToolGroupSummary)):
-                if not summary.has_attached_members:
-                    try:
-                        await summary.remove()
-                    except Exception:
-                        logger.debug(
-                            "Failed to remove orphaned tool group summary",
-                            exc_info=True,
-                        )
-        return len(pruned_ids)
+            doomed.append(widget)
+        return pruned_ids, doomed
 
     def _reveal_pending_tool_calls(self) -> None:
         """Surface grouped tool calls before asking for approval."""
@@ -32686,6 +32741,7 @@ async def run_textual_app(
     hook_trust: WorkspaceTrust | None = None,
     title: str | None = None,
     sub_title: str | None = None,
+    prespawned_server: PrespawnedServer | None = None,
 ) -> AppResult:
     """Run the Textual application.
 
@@ -32751,6 +32807,10 @@ async def run_textual_app(
             `"Deep Agents"` is used.
         sub_title: Override the Textual `App.sub_title` shown in the optional
             header bar.
+        prespawned_server: A server start already spawned for `server_kwargs`,
+            adopted by the app's startup worker.
+
+            The caller must close it after the app exits.
 
     Returns:
         An `AppResult` with the return code and final thread ID.
@@ -32792,6 +32852,7 @@ async def run_textual_app(
         hook_trust=hook_trust,
         title=title,
         sub_title=sub_title,
+        prespawned_server=prespawned_server,
     )
     stderr_guard: TerminalStderrGuard | None = None
     try:

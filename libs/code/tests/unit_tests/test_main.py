@@ -38,6 +38,7 @@ from deepagents_code.main import (
     _UNPERSISTED_AUTO_UPDATE_FAILURE_NOTE,
     _auto_install_ripgrep_cli,
     _install_termination_signal_handlers,
+    _prespawn_server,
     _print_session_stats,
     _render_teardown_thread_hints,
     _restart_current_process,
@@ -2202,6 +2203,74 @@ class TestLangSmithTeardownUrl:
 
 class TestAppResult:
     """Tests for the AppResult dataclass."""
+
+
+class TestRunTextualCliAsyncPrespawn:
+    """The server spawns before the app loads only when the app can adopt it."""
+
+    async def test_prespawned_server_reaches_app_and_is_closed(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The app gets the early server, which is closed even if the app fails."""
+        prespawned = MagicMock(aclose=AsyncMock())
+        monkeypatch.setattr(
+            "deepagents_code.main._prespawn_server", AsyncMock(return_value=prespawned)
+        )
+        captured: dict[str, Any] = {}
+
+        async def _crash(**kwargs: Any) -> AppResult:
+            captured.update(kwargs)
+            await asyncio.sleep(0)
+            msg = "boom"
+            raise RuntimeError(msg)
+
+        with patch("deepagents_code.app.run_textual_app", new=_crash):
+            result = await run_textual_cli_async(
+                "agent", thread_id="t-1", model_name="openai:gpt-5.5", no_mcp=True
+            )
+
+        assert result.return_code == 1
+        assert captured["prespawned_server"] is prespawned
+        prespawned.aclose.assert_awaited_once()
+
+    async def test_resume_keeps_late_spawn(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`-r` can change the agent, so the server must wait for resolution."""
+        prespawn = AsyncMock()
+        monkeypatch.setattr("deepagents_code.main._prespawn_server", prespawn)
+        captured: dict[str, Any] = {}
+
+        async def _stub(**kwargs: Any) -> AppResult:
+            captured.update(kwargs)
+            await asyncio.sleep(0)
+            return AppResult(return_code=0, thread_id="t-1")
+
+        with patch("deepagents_code.app.run_textual_app", new=_stub):
+            await run_textual_cli_async(
+                "agent",
+                resume_thread="__MOST_RECENT__",
+                model_name="openai:gpt-5.5",
+                no_mcp=True,
+            )
+
+        prespawn.assert_not_awaited()
+        assert captured["prespawned_server"] is None
+
+    async def test_ripgrep_install_keeps_late_spawn(self) -> None:
+        """The server must inherit a managed `rg` that is not installed yet."""
+        with (
+            patch(
+                "deepagents_code.main._should_ensure_managed_ripgrep",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_code.client.launch.server_manager.PrespawnedServer"
+            ) as server_cls,
+        ):
+            assert await _prespawn_server({}, cwd=Path(), thread_id=None) is None
+
+        server_cls.assert_not_called()
 
 
 class TestRunTextualCliAsyncMcp:

@@ -1,11 +1,11 @@
 ---
 type: architecture pattern
 title: SDK Middleware Assembly
-description: Documents the exact middleware composition, replacement, exclusion, and tail-safeguard rules used when the Deep Agents SDK compiles main, declarative, forked, and general-purpose agents.
+description: Explains how Deep Agents builds and filters middleware stacks for the main agent and subagents, including replacement, profile exclusion, caching, memory, approval, tool-surface, and content-compatibility rules.
 tags: [middleware, deepagents, agent-construction, harness-profile, subagents, tool-surface]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-10-23T08:06:06.503Z
+    at: 2026-10-24T08:05:08.866Z
 sources:
   - id: openwiki-source-b93533cac55718d75277d1cf
     resource: repo://libs/deepagents/deepagents/_excluded_middleware.py
@@ -13,8 +13,12 @@ sources:
     resource: repo://libs/deepagents/deepagents/graph.py
   - id: openwiki-source-0fb4155c19dd248acd3ffe4f
     resource: repo://libs/deepagents/deepagents/middleware/_fs_interrupt.py
+  - id: openwiki-source-7a16b9a53a07e882b7305459
+    resource: repo://libs/deepagents/deepagents/middleware/_prompt_caching.py
   - id: openwiki-source-8b1aaf77fc0430fd00711a73
     resource: repo://libs/deepagents/deepagents/middleware/_tool_exclusion.py
+  - id: openwiki-source-46a23efe78a78f9b3cd75d00
+    resource: repo://libs/deepagents/deepagents/middleware/memory.py
   - id: openwiki-source-114a1c7a58992fa867a94ef0
     resource: repo://libs/deepagents/deepagents/middleware/subagents.py
   - id: openwiki-source-f763e99e439a1356866a7aa4
@@ -25,116 +29,105 @@ sources:
     resource: repo://libs/deepagents/deepagents/profiles/harness/harness_profiles.py
   - id: openwiki-source-13e0ea89aadd1a5e309ac7e3
     resource: repo://libs/deepagents/tests/unit_tests/middleware/test_skill_tools_payload.py
+  - id: openwiki-source-6d183faf1a4bc5a5ba451aba
+    resource: repo://libs/deepagents/tests/unit_tests/test_graph.py
   - id: openwiki-source-851e3a9c96663d8db5ca3dec
     resource: repo://libs/deepagents/tests/unit_tests/test_permissions.py
-generated: { by: "openwiki/0.4.2", at: "2026-10-23T08:06:06.503Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-10-24T08:05:08.866Z" }
 ---
 
 # SDK Middleware Assembly
 
-`create_deep_agent()` resolves the model and its `HarnessProfile`, assembles middleware and subagent specifications, then gives the main list to LangChain `create_agent()`. Middleware is therefore the request-time extension surface: it can intercept each model request, change request messages or tools, inject prompt context, and own typed state. A callable in `tools=` runs only after the model selects it; it is additive to built-ins and cannot alter that model request.
+`create_deep_agent()` resolves the requested model and its `HarnessProfile`, builds the synchronous and remote subagent specifications, then passes the final main list to LangChain `create_agent()`. Middleware is consequently the request-time extension boundary: it can change model requests, messages, tools, prompts, or graph state. `tools=` instead contributes callable tools after the model selects one.
 
-Prompt assembly happens before middleware compilation. For the main agent, a caller `system_prompt` is the `USER` segment, the active harness profile supplies optional `BASE` and `SUFFIX` segments, and the final order is `USER` → `BASE` → `SUFFIX` with blank-line separators. The compiled graph receives that prompt, its caller tools after profile description rewrites, the finalized middleware list, and the caller's state, context, persistence, debug, name, and cache settings. Middleware state schemas are included when private state keys are discovered; those keys are then withheld from synchronous subagent dispatch.
+Prompt construction precedes stack compilation. The main prompt is caller `system_prompt` (`USER`), followed by the profile's optional base and suffix (`BASE`, `SUFFIX`), separated by blank lines. The main compilation call receives that prompt, profile-rewritten caller tools, the final middleware list, and graph configuration.
 
-## Main-agent ordering
+## Main effective stack and assembly flow
 
-The diagram shows **final list order**, omitting conditional entries. It deliberately distinguishes two mechanisms that are easy to conflate: caller middleware replaces a same-named slot or is inserted after the core; profile exclusions instead remove matching entries before and after that merge. LangChain owns the resulting wrapper nesting, so changes should be tested at model-request and tool-call boundaries, not only by inspecting this list.
+List order below is the assembly order (conditional members are marked). It is not an authorization order or a substitute for testing request and tool-call behavior.
 
 ```mermaid
 flowchart TD
-    A["Main core"] --> B["Caller merge point"]
-    B --> C["Profile and capability tail"]
-    C --> D["Profile exclusion pass"]
-    D --> E["Caller merge by name"]
-    E --> F["Profile exclusion pass"]
-    F --> G["Final tool exclusion"]
-    A1["Filesystem"] --- A
-    A2["SubAgent if inline"] --- A
-    A3["Parent notifier"] --- A
-    A4["Summarization"] --- A
-    A5["Patch tool calls"] --- A
-    A6["Async subagents if remote"] --- A
-    B1["Same name replaces in place"] --- B
-    B2["New name inserts after core"] --- B
-    C1["Profile extras"] --- C
-    C2["Skills if configured"] --- C
-    C3["Prompt caching integrations"] --- C
-    C4["Memory if configured"] --- C
-    C5["HITL if resolved"] --- C
-    C6["Unsupported content"] --- C
+    P["Resolve model and HarnessProfile"] --> V{"Required scaffolding excluded"}
+    V -- "yes" --> VF["ValueError: invalid profile"]
+    V -- "no" --> B["Build base and tail"]
+    B --> S1["Exclusion pass one"]
+    S1 --> M["Merge caller middleware by name"]
+    M --> S2["Exclusion pass two"]
+    S2 --> T["Append tool exclusion when configured"]
+    T --> C["Collect private state keys and verify coverage"]
+    C --> U{"Any exclusion unmatched"}
+    U -- "yes" --> UF["ValueError: stale or typo profile"]
+    U -- "no" --> A["create_agent"]
+
+    B1["Filesystem"] --- B
+    B2["SubAgent when synchronous children exist"] --- B
+    B3["Parent notifier"] --- B
+    B4["Summarization"] --- B
+    B5["Patch tool calls"] --- B
+    B6["Async subagents when remote specs exist"] --- B
+    B7["Profile extras, skills, caching, memory, HITL, unsupported content"] --- B
 ```
 
-Diagram: final main-agent list order and the separate replacement and exclusion phases.
+Diagram: the main stack's effective order and its two profile-exclusion passes. Both required-scaffolding rejection and unmatched-exclusion coverage failure are explicit assembly failures.
 
-The main **core**, in list order, is:
+### Base, insertion point, and tail
+
+The main **core** is, in order:
 
 1. `FilesystemMiddleware`;
-2. `SubAgentMiddleware` when synchronous inline subagents exist (including the usual automatic general-purpose agent);
+2. `SubAgentMiddleware` when there are synchronous inline children (declarative, compiled, or the automatic general-purpose child);
 3. `_ParentNotifierMiddleware`;
-4. Deep Agents summarization middleware;
+4. model-aware summarization middleware;
 5. `PatchToolCallsMiddleware`; and
-6. `AsyncSubAgentMiddleware` when remote async specs exist.
+6. `AsyncSubAgentMiddleware` when remote `AsyncSubAgent` specs are present.
 
-The core is followed by the caller insertion point and then the tail: freshly materialized `HarnessProfile.extra_middleware`, `SkillsMiddleware` when configured, Anthropic/optional Bedrock/optional Fireworks prompt caching, `MemoryMiddleware` when configured, `HumanInTheLoopMiddleware` for a non-empty resolved interrupt mapping, and `UnsupportedContentMiddleware`. Caching comes before memory because memory changes the system prompt. `UnsupportedContentMiddleware` is late so it evaluates the effective request model after routing or fallback middleware.
+The tail is materialized profile extras, `SkillsMiddleware` when configured, provider prompt-caching middleware, `MemoryMiddleware` when `memory=` is supplied, `HumanInTheLoopMiddleware` when the resolved interrupt mapping is non-empty, and `UnsupportedContentMiddleware`. The caller-middleware insertion point is after the surviving core and before that tail. `_ToolExclusionMiddleware`, when the profile has `excluded_tools`, is appended after both filtering and merging.
 
-Prompt-caching middleware is appended by the provider helper: Anthropic is unconditional and no-ops for other models; Bedrock and Fireworks are added when their optional integrations are importable. Skills is in the tail, after profile extras and caller additions but before caching. Consequently, its model-request disclosure sees the effective routed model and compacted conversation; ordinary caller middleware cannot edit the newly generated skills prompt section. A caller member named `SkillsMiddleware` can still replace that slot.
+Prompt caching is deliberately before memory: memory changes the system prompt. The helper always adds a lazy Anthropic cache adapter; it imports and delegates only for an Anthropic request. It adds Bedrock and Fireworks adapters only if their integrations are importable, and each is configured to ignore unsupported models. `MemoryMiddleware` loads configured files once into private `memory_contents`, injects its formatted content into the system message per model request, and—when enabled—sets an Anthropic-only ephemeral breakpoint on the final system block. This preserves a cache boundary even as memory changes.
 
-### Caller replacement is not profile exclusion
+`UnsupportedContentMiddleware` is late because it must inspect the effective `request.model` after routing or fallback middleware. It only copies and filters outgoing `HumanMessage` and `ToolMessage` blocks: unsupported multimodal input becomes explanatory text in the outgoing request, while the stored conversation retains the original blocks for a later compatible model.
 
-Main assembly builds its default core and tail, applies exclusions, merges `middleware=`, applies exclusions again, and only then appends `_ToolExclusionMiddleware` when the profile excludes tools. It also derives middleware-private state keys from surviving schemas and gives them to a surviving `SubAgentMiddleware` for safe task dispatch.
+### Merge is replacement, not exclusion
 
-Caller merge is name-based:
+`middleware=` is merged by `.name`:
 
-- If a caller entry's `.name` is present in the assembled list, it replaces that member **in place**; the last caller entry for that name wins.
-- A new name is inserted after the last surviving core member, before the profile/skills/cache/memory/HITL/compatibility tail. New entries retain caller order.
-- A caller entry never "undoes" a profile policy: a second exclusion pass removes an excluded replacement or a same-named entry that became novel because its default was already removed.
+- If a name is still in the assembled list, the caller member replaces that entry in place; if several caller entries target the same name, the last one wins.
+- A new name is inserted after the last surviving core member, before profile extras, skills, caching, memory, HITL, and compatibility handling. New entries preserve caller order.
+- Replacing `FilesystemMiddleware` preserves the agent's permissions if the replacement has none; a different non-empty permission set is a `ValueError`.
 
-A `HarnessProfile.excluded_middleware` is subtractive only; it does not define an insertion point or ordering policy. Required `FilesystemMiddleware` and `SubAgentMiddleware` cannot be excluded, because they provide the built-in file tools and permission enforcement, and the synchronous `task` handler respectively. Configuration is validated before assembly and invalid exclusions raise `ValueError` rather than yielding a silently degraded graph.
+Profile exclusion is separate and subtractive. `HarnessProfile.excluded_middleware` is validated before stack assembly, applied before the caller merge, then applied again afterward. The second pass means a caller cannot restore policy-excluded middleware, including a replacement or a formerly default name that became novel after the first filter.
 
-Class exclusions use exact `type`, not `isinstance`; a caller subclass therefore survives exclusion of its base class. String exclusions match `AgentMiddleware.name` exactly. A string matching distinct concrete classes in one stack is ambiguous and fails; unmatched exclusions also fail coverage validation. For the main profile, matches are accumulated across the main and automatic general-purpose stacks, so an exclusion need exist in either one. A declarative subagent validates and checks coverage against its own profile independently.
+`FilesystemMiddleware` and `SubAgentMiddleware` are required scaffolding and cannot be excluded by class or name; removal would break built-in filesystem/permission behavior or the synchronous `task` handler. Class entries match exact type (with the cache adapter's declared proxy type), whereas strings match `.name` exactly. A string that matches distinct concrete classes in one stack is rejected as ambiguous. Finally, every exclusion must have matched: the main profile aggregates matches across the main and automatic general-purpose stacks, while a declarative child verifies its own profile independently.
 
-## General-purpose and declarative stacks
+After the final main stack is built, private state fields declared by surviving middleware schemas are found and supplied to every surviving `SubAgentMiddleware`. Synchronous task dispatch can therefore withhold those fields from child input and output.
 
-The automatic `general-purpose` subagent is created unless the active profile disables it or an inline spec of that name replaces it. It has its own list and is not a section of the main list.
+## Child stacks and policy boundaries
 
-```mermaid
-flowchart TD
-    G1["Filesystem"] --> G2["Summarization"]
-    G2 --> G3["Patch tool calls"]
-    G3 --> G4["Profile extras"]
-    G4 --> G5["Skills if configured"]
-    G5 --> G6["Prompt caching"]
-    G6 --> G7["First profile exclusion"]
-    G7 --> G8["Caller overrides of existing GP slots only"]
-    G8 --> G9["Second profile exclusion"]
-    G9 --> G10["Final tool exclusion if configured"]
-    G10 --> G11["Compilation adds HITL then unsupported content"]
-```
+### Automatic general-purpose child
 
-Diagram: automatic general-purpose subagent ordering. Unlike the main stack, it does not accept novel caller middleware.
+The `general-purpose` child is auto-added only when its profile enables it and no supplied synchronous child has that name. If it is disabled and no other synchronous child exists, the main stack has no `SubAgentMiddleware` and does not expose `task`; remote async tools are independent.
 
-Its pre-compilation stack is filesystem, summarization, patch-tool calls, separately materialized profile extras, optional skills, and caching; then it takes two exclusion passes around only caller entries whose names match an **original** general-purpose slot. Novel main-only middleware is not inherited. Tool exclusion remains final in the pre-compilation list. When the declarative spec is compiled, `create_sub_agent()` appends HITL if its resolved interrupt configuration is non-empty and appends `UnsupportedContentMiddleware` unless a same-named member already exists.
+Its stack is separately assembled as filesystem, summarization, patch-tool calls, profile extras, optional skills, and prompt caching. It receives the same two profile-exclusion passes and final tool exclusion. It inherits only caller middleware whose names matched an **original** general-purpose slot; novel main-only middleware is not propagated. Its declarative compilation appends HITL for a resolved interrupt configuration and appends unsupported-content handling unless that name is already present.
 
-Each user-provided declarative `SubAgent` resolves its own model and profile. Its stack is filesystem, summarization, and patch-tool calls; its profile extras; skills (or parent skills for a fork); prompt caching; and, for a fork with parent memory configured, memory. It then runs profile exclusion, name-based spec middleware merge, profile exclusion, coverage validation, and final tool exclusion. A fork also combines parent caller middleware with its spec middleware before this merge, with the spec's duplicate names winning. Thus subagent profile selection and profile exclusion are per child, not inherited merely because the parent has a profile.
+### Declarative, forked, compiled, and remote children
 
-Declarative specs inherit top-level tools, permissions, and `interrupt_on` only when the corresponding field is absent. A child `permissions` value replaces the parent rules. Its resolved filesystem interrupts and explicit `interrupt_on` compile into HITL; compiled and remote subagents instead retain their own graph policy. Declarative children receive the parent state schema, whereas a supplied compiled runnable does not.
+Each declarative `SubAgent` resolves its own model profile rather than automatically reusing the parent's. Its pre-compilation stack is filesystem, summarization, patch-tool calls, its profile extras, optional skills, and provider caching. A fork inherits the parent's selected skills and, if parent `memory=` is configured, receives memory too. It then applies exclusion, merges spec middleware, applies exclusion again, checks coverage, and appends final tool exclusion. For a fork, parent caller middleware is combined with spec middleware first; duplicate spec names win.
 
-`isolated` is the default and `handoff` is its legacy alias. An isolated task receives a delegated `HumanMessage` and eligible non-private parent state; unchanged child values are discarded on return to avoid duplicate reducer updates and conflicts. In experimental `fork` mode, the child receives the parent's effective compacted history plus a task preamble. Declarative forks carry non-excluded parent state, including eligible private channels; compiled forks strip private state because their runnable schema is opaque. A forked child attempting a recursive `task` call is refused.
+A declarative child inherits top-level tools, filesystem permissions, and `interrupt_on` only if its spec omits that field. A child permissions value replaces—not extends—the parent rules. Resolved filesystem interrupt rules are merged with explicit `interrupt_on`, whose same-tool entries win, and `create_sub_agent()` appends HITL only for a non-empty result. Compiled runnables and remote children retain their own approval and schema policy instead of inheriting parent settings.
 
-Remote `AsyncSubAgent` specifications use `AsyncSubAgentMiddleware`, not `SubAgentMiddleware`: they launch Agent Protocol background work and return a task ID for later tracking and updates. Their remote graph owns its schema and policy.
+The default synchronous mode is isolated. It receives a delegated `HumanMessage` plus eligible non-private state, and unchanged values returned by the child are dropped to avoid reducer duplication and parallel update conflicts. A `fork` instead receives the parent's effective compacted history and a task preamble. A declarative fork retains non-excluded parent state, including private channels needed by the same graph shape; a compiled fork removes private channels because its runnable schema is opaque. A forked invocation that calls `task` recursively is refused.
 
-## Tail safeguards: tools, permissions, and compatibility
+Remote specs, identified by `graph_id`, are separated before inline assembly and are exposed through `AsyncSubAgentMiddleware`; the remote graph owns its own schema and policy.
 
-`_ToolExclusionMiddleware` is appended after both profile filtering and caller merging. It removes excluded names from every model request and rejects calls with those names at the tool-call boundary. This protects consistency between the advertised and executable tool surface even when earlier middleware injects tools; it is explicitly not a security boundary.
+## Tools, permissions, and compatibility
 
-Filesystem permissions are enforced by `FilesystemMiddleware` at built-in filesystem tool calls, not at direct backend access. Rules use first-match precedence and an unmatched call is allowed. Graph assembly turns `interrupt` permissions into per-tool `HumanInTheLoopMiddleware` configurations, then overlays explicit `interrupt_on` entries so explicit entries win for a matching tool name. Filesystem middleware itself enforces `deny`, not HITL.
+`_ToolExclusionMiddleware` filters named tools from each model request and rejects those names at the tool-call boundary. Because it runs after caller middleware, it also removes tools injected earlier in the request path. This maintains consistency between the advertised and executable surface; the implementation explicitly does **not** describe it as a security boundary.
 
-Generated approval predicates are path-sensitive. Exact operations respect normal interrupt matching and deny precedence. Bulk operations conservatively interrupt when their search subtree intersects an interrupt rule, when a pathless search cannot be localized, when `.` aliases the root, or when an absolute or parent-traversing `glob` pattern can escape its supplied path. When available, both a named path and its resolved symlink target are checked. Generated configurations permit approve, edit, reject, and respond; an edited call still re-enters filesystem permission enforcement.
-
-`UnsupportedContentMiddleware` is a compatibility layer rather than tool or authorization policy. It filters only outgoing `HumanMessage` and `ToolMessage` copies against the effective request model, replacing unsupported multimodal blocks with text notices. The stored thread retains original blocks, allowing a later compatible model to receive them.
+Filesystem permissions are enforced by `FilesystemMiddleware` at its built-in tool calls, not at direct backend access. Rules use declaration order and first-match precedence; unmatched operations are allowed. Graph assembly converts `interrupt` permissions into per-tool HITL configurations and overlays explicit `interrupt_on` entries so the latter take precedence. Filesystem middleware itself enforces `deny`, not HITL. Generated predicates are conservative for bulk tools: they account for intersecting subtrees, pathless searches, dot-root aliases, escaping glob patterns, and resolved symlink targets when available.
 
 ## Regression focus
 
-Keep stack-order tests alongside any change: they should cover same-name replacement versus novel insertion, exclusion-before-and-after merge, general-purpose override-only inheritance, declarative and forked assembly, and final tool filtering. Provider-payload tests additionally pin skill disclosure placement after a relevant read result without splitting tool-result batches or preceding queued user input; they also cover relocation after compaction removes the original read anchor. Permission tests cover recursive-delete denial plus exact and bulk approval behavior, pathless and dot-root searches, glob escapes, and symlink-resolved paths.
+Changes to assembly should keep tests for same-name replacement and new-name insertion, both exclusion passes, scaffolding and unmatched-exclusion failures, general-purpose override-only inheritance, child-specific profiles, fork behavior, and final tool filtering. Existing graph tests cover these wiring paths and the optional prompt-cache integrations. Provider-payload tests pin skills disclosure after an applicable read result without splitting tool-result batches or preceding queued user input, including relocation when compaction removes the original anchor. Permission tests cover conservative recursive deletion and generated approval behavior for bulk and path-sensitive filesystem operations.
 
-For related runtime behavior, see [runtime behavior](/openwiki/architecture/runtime-behavior.md), [SDK construction and execution](/openwiki/architecture/sdk-construction-execution.md), [context management](/openwiki/concepts/context-management.md), and [subagents and skills](/openwiki/concepts/subagents-skills.md).
+See also [SDK construction and execution](/openwiki/architecture/sdk-construction-execution.md), [middleware catalog](/openwiki/concepts/middleware-catalog.md), [permissions and HITL](/openwiki/concepts/permissions-hitl.md), [profiles and models](/openwiki/concepts/profiles-models.md), and [subagents and skills](/openwiki/concepts/subagents-skills.md).

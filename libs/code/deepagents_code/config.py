@@ -2275,6 +2275,7 @@ Kept short so tracing metadata can never stall app flows.
 """
 
 
+@functools.cache
 def _get_deepagents_version() -> str | None:
     """Resolve the installed Deep Agents SDK version for diagnostics.
 
@@ -2282,6 +2283,10 @@ def _get_deepagents_version() -> str | None:
     this uses the shared resolver that prefers the editable source marker and
     appends an `+editable` suffix. A sibling monorepo workspace whose marker
     trails dcode's exact pin reports the pinned release baseline instead.
+
+    Cached for the process lifetime: `build_stream_config` calls this on every
+    turn, and the resolver scans installed distributions each time. The
+    installed SDK does not change while the process runs.
 
     Returns:
         The resolved Deep Agents SDK version, or `None` when unavailable.

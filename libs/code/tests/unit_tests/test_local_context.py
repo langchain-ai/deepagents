@@ -11,11 +11,19 @@ from unittest.mock import AsyncMock, Mock
 if TYPE_CHECKING:
     from pathlib import Path
 
+    from langchain_core.callbacks import CallbackManagerForLLMRun
+    from langchain_core.outputs import ChatResult
+
 import pytest
+from deepagents import create_deep_agent
 from deepagents.backends import LocalShellBackend
 from deepagents.backends.protocol import ExecuteResponse
 from deepagents.middleware._state import private_state_field_names
 from deepagents.middleware.summarization import SummarizationMiddleware
+from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
+from langgraph.checkpoint.memory import InMemorySaver
+from pydantic import Field
 
 from deepagents_code.local_context import (
     DETECT_CONTEXT_SCRIPT,
@@ -328,6 +336,136 @@ class TestAsyncLocalContextMiddleware:
                 b"refreshed again"
             ).hexdigest(),
         }
+
+
+class _CountingBackend:
+    """Async backend whose output changes on every detection run."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def aexecute(
+        self,
+        command: str,  # noqa: ARG002
+        *,
+        timeout: int | None = None,  # noqa: ASYNC109, ARG002
+    ) -> ExecuteResponse:
+        """Return a distinct snapshot per call, like a changing git status."""
+        self.calls += 1
+        return ExecuteResponse(output=f"## Local Context run {self.calls}", exit_code=0)
+
+
+class _SystemPromptRecorder(GenericFakeChatModel):
+    """Fake model that records each request's system prompt."""
+
+    system_prompts: list[str] = Field(default_factory=list)
+
+    def bind_tools(self, tools: object, **kwargs: object) -> _SystemPromptRecorder:
+        del tools, kwargs
+        return self
+
+    def _generate(
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager: CallbackManagerForLLMRun | None = None,
+        **kwargs: Any,
+    ) -> ChatResult:
+        self.system_prompts.append(str(messages[0].content))
+        return super()._generate(messages, stop=stop, run_manager=run_manager, **kwargs)
+
+
+def _delegate_call(call_id: str) -> AIMessage:
+    return AIMessage(
+        content="",
+        tool_calls=[
+            {
+                "name": "task",
+                "args": {"description": "check", "subagent_type": "worker"},
+                "id": call_id,
+            }
+        ],
+    )
+
+
+class TestForkedSubagentContext:
+    """Forked subagents reuse the parent's snapshot on the same thread."""
+
+    @pytest.mark.filterwarnings(
+        "ignore:The feature `forked subagents` is in beta:"
+        "langchain_core._api.LangChainBetaWarning"
+    )
+    async def test_fork_reuses_parent_snapshot(self) -> None:
+        """A fork gets the parent's exact context without running detection."""
+        backend = _CountingBackend()
+        model = _SystemPromptRecorder(
+            messages=iter(
+                [
+                    _delegate_call("first"),
+                    AIMessage(content="fork one done"),
+                    _delegate_call("second"),
+                    AIMessage(content="fork two done"),
+                    AIMessage(content="parent done"),
+                ]
+            )
+        )
+        graph = create_deep_agent(
+            model=model,
+            checkpointer=InMemorySaver(),
+            middleware=[LocalContextMiddleware(backend=backend)],
+            subagents=[
+                {
+                    "name": "worker",
+                    "description": "check one thing",
+                    "system_prompt": "worker instructions",
+                    "mode": "fork",
+                }
+            ],
+        )
+
+        await graph.ainvoke(
+            {"messages": [HumanMessage(content="go")]},
+            {"configurable": {"thread_id": "fork-context"}},
+        )
+
+        assert backend.calls == 1
+        assert len(model.system_prompts) == 5
+        assert all(
+            "## Local Context run 1" in prompt for prompt in model.system_prompts
+        )
+
+    async def test_fork_without_parent_snapshot_runs_detection(self) -> None:
+        """A fork on a thread with no recorded snapshot detects its own context."""
+        backend = _CountingBackend()
+        middleware = LocalContextMiddleware(backend=backend)
+        parent_runtime: Any = Mock()
+        parent_runtime.execution_info.thread_id = "parent-thread"
+        await middleware.abefore_agent({"messages": []}, parent_runtime)  # ty: ignore
+        fork_runtime: Any = Mock()
+        fork_runtime.execution_info.thread_id = "other-thread"
+        fork_state: Any = {"messages": [], "_deepagents_forked_context": True}
+
+        result = await middleware.abefore_agent(fork_state, fork_runtime)
+
+        assert backend.calls == 2
+        assert result is not None
+        assert result["_local_context"] == "## Local Context run 2"
+
+    def test_sync_fork_reuses_parent_snapshot(self) -> None:
+        """The sync hook also hands a fork the parent's snapshot."""
+        backend = _make_backend(output=SAMPLE_CONTEXT)
+        middleware = LocalContextMiddleware(backend=backend)
+        runtime: Any = Mock()
+        runtime.execution_info.thread_id = "thread"
+        middleware.before_agent({"messages": []}, runtime)  # ty: ignore
+        backend.reset_mock()
+        fork_state: Any = {"messages": [], "_deepagents_forked_context": True}
+
+        result = middleware.before_agent(fork_state, runtime)
+
+        backend._mock.assert_not_called()
+        assert result is not None
+        assert result["_local_context"] == SAMPLE_CONTEXT.strip()
 
 
 class TestTimeoutForwarding:

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import inspect
-import time
 import uuid
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
@@ -18,9 +17,6 @@ from deepagents_code._run_queue_wakeup import install_run_queue_wakeup
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
-
-_FAST_PICKUP_SECS = 0.25
-"""Upper bound for pickup with the patch; stock waits at least 0.5 s."""
 
 
 @pytest.fixture
@@ -88,23 +84,27 @@ def test_skips_when_upstream_shape_changes(monkeypatch: pytest.MonkeyPatch) -> N
 
 
 @pytest.mark.usefixtures("isolated_runs", "stub_put")
-async def test_put_wakes_waiting_next() -> None:
+async def test_put_wakes_waiting_next(monkeypatch: pytest.MonkeyPatch) -> None:
     install_run_queue_wakeup()
-    # Bind the wakeup to this loop the way the scheduler's first poll does.
-    _ = [item async for item in Runs.next(wait=True)]
+    monkeypatch.setattr(_run_queue_wakeup, "_POLL_INTERVAL", 60)
+    ready = asyncio.Event()
+    original_wait = _run_queue_wakeup._WAKEUP.wait
+
+    async def wait() -> None:
+        ready.set()
+        await original_wait()
+
+    monkeypatch.setattr(_run_queue_wakeup._WAKEUP, "wait", wait)
 
     async def claim() -> list[object]:
         return [run async for run, _attempt in Runs.next(wait=True)]
 
-    waiter = asyncio.create_task(claim())
-    await asyncio.sleep(0.05)  # let the waiter block on the wakeup
-    start = time.perf_counter()
-    async with connect() as conn:
-        await Runs.put(
-            conn, uuid.uuid4(), {}, metadata={}, prevent_insert_if_inflight=False
-        )
-    claimed = await waiter
-    elapsed = time.perf_counter() - start
+    async with asyncio.timeout(5), asyncio.TaskGroup() as tasks:
+        waiter = tasks.create_task(claim())
+        await ready.wait()
+        async with connect() as conn:
+            await Runs.put(
+                conn, uuid.uuid4(), {}, metadata={}, prevent_insert_if_inflight=False
+            )
 
-    assert len(claimed) == 1
-    assert elapsed < _FAST_PICKUP_SECS
+    assert len(waiter.result()) == 1

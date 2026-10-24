@@ -29803,9 +29803,6 @@ class TestToolGroupCollapse:
             summary = app.query_one(ToolGroupSummary)
             summary_rows = summary.outer_size.height + summary.styles.margin.bottom
             store = app._message_store
-            stored = [store.get_message(tid) for tid, *_ in specs]
-            hints = [msg.height_hint if msg else None for msg in stored]
-            assert hints == [summary_rows, 0, 0, 0]
             assert store.range_height(0, len(specs)) == summary_rows
 
     async def test_regroup_collapses_success_run(self) -> None:

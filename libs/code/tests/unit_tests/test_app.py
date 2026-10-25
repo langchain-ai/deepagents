@@ -26799,7 +26799,9 @@ class TestResumeScrollPosition:
     async def test_compact_history_fills_initial_viewport(
         self, height: int, count: int
     ) -> None:
-        """Compact tails load until scrolling works or all history is mounted."""
+        """Compact tails load until they fill the viewport or history runs out."""
+        from deepagents_code.app import _MESSAGE_TOP_SPACER_ID
+
         app = DeepAgentsApp()
         app._message_timestamps_visible = False
         payload = _ThreadHistoryPayload(
@@ -26829,11 +26831,21 @@ class TestResumeScrollPosition:
                 thread_id="compact-resume", preloaded_payload=payload
             )
             chat = app.query_one("#chat", _ChatScroll)
+            messages = app.query_one("#messages", Container)
+            top = messages.query_one(f"#{_MESSAGE_TOP_SPACER_ID}")
             store = app._message_store
-            for _ in range(20):
+
+            def spacer_in_view() -> bool:
+                bottom = messages.virtual_region.y + top.virtual_region.bottom
+                return top.display and bottom > chat.scroll_y
+
+            for _ in range(40):
                 await pilot.pause()
-                if chat.max_scroll_y > 0 or not store.has_messages_above:
+                if not spacer_in_view() or not store.has_messages_above:
                     break
+
+            # No blank spacer rows stay on screen above the resumed tail.
+            assert not spacer_in_view()
 
             assert store.visible_count > store.INITIAL_WINDOW_SIZE + 1
             if height == 200:

@@ -3077,6 +3077,40 @@ class _StaticHeader(Header):
         event.stop()
 
 
+class _TranscriptSpacer(Static):
+    """Blank row block that stands in for unmounted transcript history.
+
+    `#messages` uses `layout: stream`, which ignores inline styles such as
+    `styles.height` and sizes each child from its content height. The spacer
+    therefore reports its row count as its content height. Otherwise it stays
+    one row tall, and the scroll view reaches its end before the newest message.
+    """
+
+    def __init__(self, spacer_id: str) -> None:
+        """Create a hidden spacer with no rows.
+
+        Args:
+            spacer_id: DOM id of the spacer.
+        """
+        super().__init__("", id=spacer_id, classes=_MESSAGE_SPACER_CLASS)
+        self._rows = 0
+        self.display = False
+
+    def set_rows(self, rows: int) -> None:
+        """Resize the spacer to `rows` terminal rows and hide it when empty."""
+        rows = max(0, rows)
+        if rows == self._rows:
+            return
+        self._rows = rows
+        self.display = rows > 0
+        self.refresh(layout=True)
+
+    @override
+    def get_content_height(self, container: Size, viewport: Size, width: int) -> int:
+        """Return the spacer row count as its content height."""
+        return self._rows
+
+
 class _ChatScroll(VerticalScroll):
     """Chat scroll container that doesn't steal focus when clicked.
 
@@ -10586,14 +10620,25 @@ class DeepAgentsApp(App):
             self._check_hydration_below_needed()
 
     async def _fill_history_viewport(self) -> None:
-        """Hydrate a compact resumed tail until scrolling becomes possible."""
+        """Hydrate a compact resumed tail until it fills the viewport.
+
+        The top spacer reserves rows for archived history, so a short tail can
+        scroll yet still show blank spacer rows above it at the end of the
+        view. Keep hydrating until the rows below the spacer fill the viewport.
+        """
         if not self._message_store.has_messages_above:
             return
         try:
             chat = self.query_one("#chat", VerticalScroll)
+            messages = chat.query_one("#messages", Container)
+            top = messages.query_one(f"#{_MESSAGE_TOP_SPACER_ID}", _TranscriptSpacer)
         except NoMatches:
             return
-        if chat.max_scroll_y > 0:
+        # Resume pins the view to the end, which may not have landed yet, so
+        # measure the rows below the spacer instead of the scroll offset.
+        spacer_bottom = messages.virtual_region.y + top.virtual_region.bottom
+        tail_rows = chat.virtual_size.height - spacer_bottom
+        if not top.display or tail_rows >= chat.scrollable_content_region.height:
             return
         if await self._hydrate_messages(
             "above", count=self._message_store.HYDRATE_BUFFER
@@ -10929,10 +10974,12 @@ class DeepAgentsApp(App):
         return None
 
     @staticmethod
-    def _bottom_spacer(container: Container) -> Static | None:
+    def _bottom_spacer(container: Container) -> _TranscriptSpacer | None:
         """Return the bottom transcript spacer if it is mounted."""
         with suppress(NoMatches):
-            return container.query_one(f"#{_MESSAGE_BOTTOM_SPACER_ID}", Static)
+            return container.query_one(
+                f"#{_MESSAGE_BOTTOM_SPACER_ID}", _TranscriptSpacer
+            )
         return None
 
     async def _mount_transcript_nodes(
@@ -10957,7 +11004,7 @@ class DeepAgentsApp(App):
             return
 
         if not container.query(f"#{_MESSAGE_TOP_SPACER_ID}"):
-            top = Static("", id=_MESSAGE_TOP_SPACER_ID, classes=_MESSAGE_SPACER_CLASS)
+            top = _TranscriptSpacer(_MESSAGE_TOP_SPACER_ID)
             first = next(
                 (child for child in container.children if child.parent is container),
                 None,
@@ -10968,11 +11015,7 @@ class DeepAgentsApp(App):
                 await container.mount(top, before=first)
 
         if not container.query(f"#{_MESSAGE_BOTTOM_SPACER_ID}"):
-            bottom = Static(
-                "",
-                id=_MESSAGE_BOTTOM_SPACER_ID,
-                classes=_MESSAGE_SPACER_CLASS,
-            )
+            bottom = _TranscriptSpacer(_MESSAGE_BOTTOM_SPACER_ID)
             anchor = self._loading_widget
             if anchor is None or anchor.parent is not container:
                 anchor = self._first_mounted_queued_widget(container)
@@ -10983,13 +11026,6 @@ class DeepAgentsApp(App):
 
         self._sync_transcript_spacers(container)
 
-    @staticmethod
-    def _set_spacer_height(widget: Static, height: int) -> None:
-        """Set spacer height in terminal rows."""
-        rows = max(0, height)
-        widget.styles.height = rows
-        widget.display = rows > 0
-
     def _sync_transcript_spacers(self, container: Container | None = None) -> None:
         """Update spacer rows from the current `MessageStore` visible range."""
         if container is None:
@@ -10998,14 +11034,15 @@ class DeepAgentsApp(App):
             except NoMatches:
                 return
         try:
-            top = container.query_one(f"#{_MESSAGE_TOP_SPACER_ID}", Static)
-            bottom = container.query_one(f"#{_MESSAGE_BOTTOM_SPACER_ID}", Static)
+            top = container.query_one(f"#{_MESSAGE_TOP_SPACER_ID}", _TranscriptSpacer)
+            bottom = container.query_one(
+                f"#{_MESSAGE_BOTTOM_SPACER_ID}", _TranscriptSpacer
+            )
         except NoMatches:
             return
         start, end = self._message_store.get_visible_range()
-        self._set_spacer_height(top, self._message_store.range_height(0, start))
-        self._set_spacer_height(
-            bottom,
+        top.set_rows(self._message_store.range_height(0, start))
+        bottom.set_rows(
             self._message_store.range_height(end, self._message_store.total_count),
         )
 

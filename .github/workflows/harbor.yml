@@ -150,6 +150,18 @@ on:
         required: false
         default: "1.0"
         type: string
+      reasoning_effort:
+        description: "Reasoning effort passed to the chat model constructor as `reasoning_effort`. Empty = provider default."
+        required: false
+        type: choice
+        default: ""
+        options:
+          - ""
+          - minimal
+          - low
+          - medium
+          - high
+          - xhigh
       env_build_timeout_multiplier:
         description: "Multiplier for each task's environment build timeout (harbor's client-side wait). Note: does not extend the LangSmith build service's own limit."
         required: false
@@ -225,6 +237,7 @@ jobs:
           INCLUDE_TASKS: ${{ inputs.include_tasks }}
           ROLLOUTS_PER_TASK: ${{ inputs.rollouts_per_task }}
           CONCURRENCY: ${{ inputs.concurrency }}
+          REASONING_EFFORT: ${{ inputs.reasoning_effort }}
         run: |
           echo "### 📊 Evals - Harbor dispatch inputs" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
@@ -250,6 +263,7 @@ jobs:
           fi
           echo "| \`rollouts_per_task\` | \`${ROLLOUTS_PER_TASK}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| \`concurrency\` | \`${CONCURRENCY}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| \`reasoning_effort\` | \`${REASONING_EFFORT:-(provider default)}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
 
       - name: "📋 Checkout Code"
@@ -333,6 +347,7 @@ jobs:
       n_tasks: ${{ inputs.n_tasks }}
       include_tasks: ${{ inputs.include_tasks }}
       agent_timeout_multiplier: ${{ inputs.agent_timeout_multiplier }}
+      reasoning_effort: ${{ inputs.reasoning_effort }}
       env_build_timeout_multiplier: ${{ inputs.env_build_timeout_multiplier }}
       override_storage_mb: ${{ inputs.override_storage_mb }}
       disable_verification: ${{ inputs.disable_verification }}

@@ -41,6 +41,17 @@ on:
         description: "Positive decimal multiplier for each task's agent execution timeout, such as 1.5 or 2.0."
         type: string
         default: "1.0"
+      reasoning_effort:
+        description: "Reasoning effort passed to the chat model constructor as `reasoning_effort`. Empty = provider default."
+        type: choice
+        default: ""
+        options:
+          - ""
+          - minimal
+          - low
+          - medium
+          - high
+          - xhigh
       concurrency:
         type: string
         default: "4"
@@ -236,6 +247,7 @@ jobs:
           IN_ROLLOUTS: ${{ inputs.rollouts }}
           IN_N_RETRIES: ${{ inputs.n_retries }}
           IN_AGENT_TIMEOUT_MULTIPLIER: ${{ inputs.agent_timeout_multiplier }}
+          IN_REASONING_EFFORT: ${{ inputs.reasoning_effort }}
           IN_CONCURRENCY: ${{ inputs.concurrency }}
           MAX_PARALLEL: ${{ steps.p.outputs.max_parallel }}
           MODEL_PARALLEL: ${{ steps.p.outputs.model_parallel }}
@@ -280,6 +292,7 @@ jobs:
             echo "| rollouts | \`${IN_ROLLOUTS}\` |"
             echo "| retries per failed trial (--max-retries) | \`${IN_N_RETRIES}\` |"
             echo "| agent timeout multiplier | \`${IN_AGENT_TIMEOUT_MULTIPLIER}\` |"
+            echo "| reasoning_effort | \`${IN_REASONING_EFFORT:-(provider default)}\` |"
             echo "| concurrency | \`${IN_CONCURRENCY}\` |"
             echo "| shard pool (max_parallel / model_parallel) | \`${MAX_PARALLEL:-?}\` / \`${MODEL_PARALLEL:-?}\` |"
             echo "| sandbox_env | \`${IN_SANDBOX_ENV}\` |"
@@ -317,6 +330,7 @@ jobs:
       rollouts: ${{ inputs.rollouts }}
       n_retries: ${{ inputs.n_retries }}
       agent_timeout_multiplier: ${{ inputs.agent_timeout_multiplier }}
+      reasoning_effort: ${{ inputs.reasoning_effort }}
       concurrency: ${{ inputs.concurrency }}
       sandbox_env: ${{ inputs.sandbox_env }}
       runner_label: ${{ inputs.runner_label }}

@@ -2220,15 +2220,18 @@ _HELP_SPECS: dict[str, tuple[str | None, str]] = {
     "mcp": ("mcp_command", "show_mcp_help"),
     "auth": ("auth_command", "show_auth_help"),
     "tools": ("tools_command", "show_tools_help"),
+    "completion": ("shell", "show_completion_help"),
 }
 """Maps top-level command names to their startup-fast-path help dispatch.
 
 Each value is `(subcommand_dest, ui_help_fn_name)`:
 
-- `subcommand_dest` is the argparse `dest=` for the group's sub-subparsers,
-    or `None` for leaf commands like `help`. When non-`None` and the parsed
-    namespace has a value at that attribute, a real subcommand was given and
-    the fast path declines.
+- `subcommand_dest` is the attribute that is non-`None` once the group's own
+    arguments were given: the argparse `dest=` of its sub-subparsers, or a
+    positional dest for leaf commands such as `completion`'s `shell`, or
+    `None` for zero-argument commands like `help`. When non-`None` and the
+    parsed namespace has a value at that attribute, a real argument was given
+    and the fast path declines.
 - `ui_help_fn_name` is the attribute on `deepagents_code.ui` invoked to
     render the help screen.
 
@@ -2277,16 +2280,21 @@ def _show_bare_command_group_help(args: argparse.Namespace) -> bool:
     return True
 
 
-def parse_args() -> argparse.Namespace:
-    """Parse command line arguments.
+def build_parser() -> argparse.ArgumentParser:
+    """Build the CLI argument parser without parsing `sys.argv`.
+
+    Kept separate from `parse_args` so code that needs to inspect the command
+    tree, such as `dcode completion`, can do so without consuming arguments or
+    importing the runtime.
 
     Returns:
-        Parsed arguments namespace.
+        The fully populated parser.
     """
     from deepagents_code._constants import DEFAULT_AGENT_NAME, DEFAULT_THREAD_LIMIT
     from deepagents_code.client.commands.auth import setup_auth_parser
     from deepagents_code.client.commands.config import setup_config_parser
     from deepagents_code.client.commands.mcp import setup_mcp_parsers
+    from deepagents_code.completion import SHELLS, program_arg
     from deepagents_code.output import add_json_output_arg
     from deepagents_code.skills import setup_skills_parser
 
@@ -2599,6 +2607,30 @@ def parse_args() -> argparse.Namespace:
         default=None,
         metavar="NAME",
         help="Installed optional extra to remove",
+    )
+
+    completion_parser = subparsers.add_parser(
+        "completion",
+        help="Generate shell completion scripts",
+        add_help=False,
+        parents=help_parent(_lazy_help("show_completion_help")),
+    )
+    completion_parser.add_argument(
+        "shell",
+        nargs="?",
+        default=None,
+        choices=SHELLS,
+        help="Shell to generate a completion script for",
+    )
+    completion_parser.add_argument(
+        "--prog",
+        action="append",
+        metavar="NAME",
+        type=program_arg,
+        help=(
+            "Command name the script completes (repeatable; "
+            "default: dcode and deepagents-code)"
+        ),
     )
 
     # Default interactive mode — argument order here determines the
@@ -3041,11 +3073,21 @@ def parse_args() -> argparse.Namespace:
         action=_make_help_action(_lazy_help("show_help")),
     )
 
+    return parser
+
+
+def parse_args() -> argparse.Namespace:
+    """Parse command line arguments.
+
+    Returns:
+        Parsed arguments namespace.
+    """
+    from deepagents_code._env_vars import EXPERIMENTAL, is_env_truthy
+
+    parser = build_parser()
     args = parser.parse_args()
     if args.package and (args.uninstall is not None or args.command == "uninstall"):
         parser.error("--package cannot be used with uninstall")
-
-    from deepagents_code._env_vars import EXPERIMENTAL, is_env_truthy
 
     if (
         getattr(args, "trust_project_extensions", False)
@@ -5575,6 +5617,11 @@ def cli_main() -> None:
             from deepagents_code.doctor import run_doctor_command
 
             sys.exit(run_doctor_command(args))
+
+        if command == "completion":
+            from deepagents_code.completion import run_completion_command
+
+            sys.exit(run_completion_command(args))
 
         # Every remaining command can read or act on managed policy, so none
         # may run while that policy is unenforceable. `config`, `doctor`, and

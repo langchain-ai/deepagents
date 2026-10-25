@@ -170,7 +170,7 @@ def test_langgraph_config_uses_harbor_env_for_fireworks_prereleases() -> None:
 
     dependencies = json.loads(config_path.read_text())["dependencies"]
 
-    assert "langchain-fireworks>=1.4.2,<1.5.0" in dependencies
+    assert "langchain-fireworks>=1.4.4" in dependencies
     assert not any(dependency.startswith("fireworks-ai") for dependency in dependencies)
 
 

@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:d3102446fd72afe1aefaa99386d0ef7eaec2880035ab6effc841c7c1405e5129",
+  "pageVersion": "sha256:9a3c1201792b1ccc81d6fbb811cdbeaaa106fb96d1d5357ca78cfabfe8b38214",
   "claims": [
     {
       "id": "claim_61636ad3626145198c548962a7ae658a",
@@ -151,10 +151,70 @@
           "version": "repo-lines-v1:sha256:d191ffeab9de4aab808ad0ade6dd572a7f0318cae6c9308ce37805c16fe40357:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZjN2UyMTc5OWFkZWUzNjc4OWZkY2Y5Y2ViODg0ZTgyZmE3ZGYyOTZhZTg5NGZkODM3N2Q4YTNjNmM3NjJjYWQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE2YTcxNTI1NzJlZTg0ZjEwOTA2Yzc0YjlmMmE5MjQzNGRkYWIwZTNjNDI4MTNiMDRlNTk3ZWZjZWM5NTFiMjYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjFhMGE2ODdkNGNiYjQxNjUwYmRmNTFhMGE0NGU3NzJhZWIyMDgyYjk5NjQ5NDVkMTBhYzM2Y2FkZjgwMjM1ODQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjRkNGRiYjRlOTNmMWVjYzA4MjJjYWRkN2Y5ZDUwYmYzNDEzOWYzODNjZTQzYTBlYWM5ZGYzNGEyNjM4NTMzMWEifQ"
         }
       ]
+    },
+    {
+      "id": "claim_32fd1b7467f5492980ba0f82f347ba50",
+      "statement": "The dcode offload HTTP boundary discards request-supplied model settings and derives the offload model and parameters from the target checkpoint; threads without checkpointed model metadata use the startup summarizer.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/offload_api.py#L801-L816",
+          "version": "repo-lines-v1:sha256:3617c21f70361a95c737736f85cd86a35681164b0577c50d7f6c5904794c87a4:eyJzZWxlY3RlZExpbmVDb3VudCI6MTYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjJmODQ2MzEwYTA4NzRmNGQyNjIxZGZlODIzYmE3YjQ2NDIyZjFjMGI3N2ZkZWY2MjhlNGM3YmRjNWU2YmM5Y2EiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAwZTA2NWYzYmI3MzgzYTE4Mjk3YjlmYzgwZDZiZWQ0YWQ1NzI3MjhlYWQ0NmFmNmI2MDQ0NmIzOTUxZmQ3OTkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImE0OTUzOGMyODdjNzFjY2FjODFkMWZkOWViZWY4ODE3NTkyZGE4N2ZkNzI3ZTQwYzAyOWQxOGNjM2MzYzg5NDUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImI2MDJlYTYxMmIxOWYyMTAyYTNmN2MyOTIyNTYxOTYyYWEyNzQxMDc0OTBkOWE2MjZkN2E0YTk4ZGJkNWE1NzYifQ"
+        },
+        {
+          "resource": "repo://libs/code/tests/unit_tests/test_offload_api.py#L1143-L1214",
+          "version": "repo-lines-v1:sha256:1bb490f3103546fdc6e1239cadedb508db97129dd7b127fe26b2d9adf241c69a:eyJzZWxlY3RlZExpbmVDb3VudCI6NzIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjFiNGNjOGZlOGMyMTc5ZGUwNGFlYmViYTI2MzdhNDUwMWJkNTI5YzYwOTU1YTEwYjdiNDhmODllZThmY2YxNjUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjUzZTE2ODEwMDY4YzY2NmZiY2M3YTY0OWU2NjE3ZGUxZGRkMWM1MWUxZDUxZGM5ODhhYWMyNTYxMTY2NTQ5ZDAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImM2ZjdhYTc3MjAwYTFkOGIzODQzOGQ1MjliYzEzMGZjNTA0MWZmZjE3MWU1ZWI3Y2NmMDg5OWU0NGYxNGIwZWIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjVmMTBmNDU2NjUwNGE3MTJmOWUwYTVlMmQ5ZTAyYzkwOWU2ZmE3M2MxYTU4YWYxYmMyMzE2N2NkYTYzZTg4ZDcifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_7b2453d3947f4130851b4576c69daad4",
+      "statement": "For an offload state-write failure, dcode rolls back drained cost records only when the checkpoint is confirmed unchanged; if the checkpoint advanced or cannot be read back, it keeps records claimed and reports an indeterminate outcome to avoid double charging.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/offload_api.py#L850-L959",
+          "version": "repo-lines-v1:sha256:e078713d7d453c337f40d95fd33f8924e46796b62fce7859c69e00368b27b341:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEwLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIwNjY0OTBmNmNiNDNiY2RmOTEyZjI0ZWVjNTAxMzY5Mjg5ZWE2MGMyZTdlYTZiYWFlYmJiNjY5NDg4YTM3MGQ5IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJlNGI1OTkyMDZjZWEzOTIxNDU5ZmM4ZTY2YzA4MjUxZjZlOTA4ZDI0ODFiODk3NGQ0YmNhOTAzNjZkNTc5NDNiIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiIxZDgyY2M0M2Y1MjVhNGRjNzQ0OTA2MTZmNTZiNTdmMDY4MTk3MGU1NWE1YTMxOTJlNDgxYTZmZDc3Y2I3YTQ4IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiIxMTYxNGY5NzAyMzc1NDdkOGEwOTk3ZDg3MWVkNzE3YmI3MjI3MzMyYTU1MGM4ZTU5MWVlZDcwZTQ1MmUyODUwIn0"
+        },
+        {
+          "resource": "repo://libs/code/tests/unit_tests/test_offload_api.py#L1450-L1592",
+          "version": "repo-lines-v1:sha256:bd73ff9be1a97abb5c8c4a2a1629261c4a761717627c660ca4f4f64c474017fd:eyJzZWxlY3RlZExpbmVDb3VudCI6MTQzLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI4ZThlYjc4ZDBmMGNlYjI0NmRlZTllMzBlZjFiZTQ1YmEyZDk4OWE2NjI3ODQ2ZWRlNmUxZDI3ZGY2MjM2Y2QxIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiIyNDY4MjVjNWEzMGZkM2I4MGU2NTEzYzdlNGUxOTViN2Q0YzEwODM5ZTI3MjEzYWMwN2I3YTUyMTg2OGNkZGYzIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI5YjdjZDJmNTQyY2E2ZTJlZDhhYjAwNGIwYTdjMjUxMzkwMjU1N2ZmMTQwZWJmNWRkN2QwNjYyYmQ0MDNmNGEzIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiJlMDkyMjRiMTgyYWQ5MzFjNmM4MTA4MTg3NzhjN2M1ZThiNjk2MjAzNTFiNzM3YmY2MDA1MDAyMTkxMTIwMzk4In0"
+        }
+      ]
+    },
+    {
+      "id": "claim_95566df4c50d48d8ac6ac54bb062e28a",
+      "statement": "dcode handoff summarizes a source thread without writing a summary event to that source, persists only its cost channels there, and names recovery snapshots by source-thread ownership so deletion cleanup can remove them.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/offload.py#L397-L466",
+          "version": "repo-lines-v1:sha256:c44e7f1d2fc14c22e1aba8ca0b4cd88b683cbd6e331eb99d635a8f3a913621a2:eyJzZWxlY3RlZExpbmVDb3VudCI6NzAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4MGRhNzFlMTExYTQ3ZjM3MGU2MDdiYmU3Y2YwMjhmODg0NmM3OWZiOTQ1MDBiNDEwMzM5NDZlZDUwNGI3MGYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjE5MWQzN2Y5YjE5MWM5YTE3ZjI1YjBlMDcyZjIyNjRiMDkyOTRiZTkxODYwYjFlOTQxNWI3YzQ3N2RkYWE0OWMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImRlNzU3NWMzYjc3NzZjZjJmOWMyYmZiY2E0NGYyMTQ4MTNhNzgyN2VhYTljMzg0NTRjNzAzYjY4OWE3NDQzODYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/offload_api.py#L1049-L1092",
+          "version": "repo-lines-v1:sha256:ca7dac580a3ee5378f84f0d2b7cc7d591d22dd6b95160daa6c55a7640a0a8543:eyJzZWxlY3RlZExpbmVDb3VudCI6NDQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFmYjczZmQ2OGMyMDVkNzUwOTI1ZGQ5MGE3ODcxNTEyM2I4ZWZmNmYyZTY4ZjdkMDFmMjE1M2NjMGJjMjIyZjgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImQ1YmIxMGE4YTZiMzc2NDMxZDk0NzFhMDI5YThhM2YwYmQ0NTgyZWU0ZmQ5ODE2NTc4NjZjZjdjMThiMmNmYzAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjRkYzY2ZjA1ZTU2NzNmYjg4ODQwOTA1YmE5NDYzNDM1ZThkNTZmZjFjNDE4NTFkMzBhOTkyZWQ5OWRhYmNiMDUifQ"
+        },
+        {
+          "resource": "repo://libs/code/tests/unit_tests/test_offload_api.py#L932-L1020",
+          "version": "repo-lines-v1:sha256:2bc477496568d4632251cb5740b5540da2865a5c02d2a51ebf63de8e62b8a8ba:eyJzZWxlY3RlZExpbmVDb3VudCI6ODksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjA5NjE0MGE5OTQ4NzhlNTkyNWFkYmM1YThiODRhZGE3ZmQ4YzhkZTkwYjA2NzE3NGEyZTc0OTVmZjE1ZWFkOTciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImJjOWVjNTY3ZTlkYTJiNGY2MzA1OGE4ZmU1MzZkMWIwZDM1NWNiNzg3MWY2NWUwMWYxN2ZhZWQ1YTY4MjhjOGMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjUwN2ZmNjZjZjU3OThkNGQwYWIyMDU2NTQxYmEwZjBhZTRhNzJjOTIxZWNhZjg4MWU0YzE0MWY3MjI4ZWU0YjQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjEyMGRjZDhhYzc4ZDNmYmFjMDExZDc5ODk4ZTI1NzI4NTQ4ODk0ZDEyMGFjMzgzOTBhNzg3ZmE1ZTFiYTk3NWIifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_ba17bb5b5ba74e0b8024295c14e690cb",
+      "statement": "Managed-memory reads and restoration writes use no-follow file operations, so a guarded-file symlink replacement causes a visible restoration failure rather than overwriting the symlink target.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/memory_guard.py#L173-L201",
+          "version": "repo-lines-v1:sha256:070f211e5b710fd25594935face517330b389eed50d2eccb4a33ea4e60e56b27:eyJzZWxlY3RlZExpbmVDb3VudCI6MjksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxYWJjZDBjYzY5MTNkNGY1MWViMjFlNGY1YWZjMmU5MGY4NmQzNmE0NTBiYjQyY2IwNWM2ZjNlMGQ3MDZmOGMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMxNzM5ZDdiNWVhZDdmY2ZkYzNkMDhkZThiYzUyZTdkY2U2MjE5OWFmYTBiZjQ3YTViMTYxZDhjYmU0OTg0YTIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjJkMWJhNjE5N2Y2MzcyYjRjMmU5NDNmNTRiMDM2MWJiYTc4ZjFiMzdjNzU4ZTllNDI4MzA0YmM1MmZhODQ2ZDQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQ3ODkwMjI4MGU4YmNiZWQyMjA5ZTM2MmY0NDY3ZThjZDMxNjQwNWZmN2NiZTE3NjdmMTI1ZTVmMGNjMDhmMjEifQ"
+        },
+        {
+          "resource": "repo://libs/code/tests/unit_tests/test_memory_guard.py#L122-L145",
+          "version": "repo-lines-v1:sha256:ff2e015c44c5b046cdb4dcc2425140e1fd0956114b1791e54eff710ba2039035:eyJzZWxlY3RlZExpbmVDb3VudCI6MjQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjA4YzNlMmYwZTJlZDM4ODAzMDE3OGJhNGRiYjJjYzY2MmUyNjgxZmU3MjU3NjRiYmM0OGQ5OWY0NzVmY2Q1MmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjdjYWI1MzIyMmI3ZDEyMGExNzY2NzUwYmRhMDlmOTg0Mzg0MWU2Mzg2YmE4MzY0YjY4MjFlMTc4MzdiMDk5ZTciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjEwZDc0ZWJlNmNjZjE3NGIwZmNkMTEwOTdkYzA1YmM1MTgzNzdlNDZmNTY5N2ZhMjY3ZTA5ODRkNGNmYjg1NmIifQ"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-10-23T08:06:06.503Z"
+    "at": "2026-10-25T08:05:05.473Z"
   }
 }

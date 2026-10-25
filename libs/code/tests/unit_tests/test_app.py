@@ -136,6 +136,17 @@ from deepagents_code.tui.widgets.startup_tip import StartupTip
 from deepagents_code.update_check import ExtraInstallOutcome
 
 
+@pytest.mark.parametrize("hidden_count", [0, 2])
+def test_displayed_row_slots_without_displayed_children(hidden_count: int) -> None:
+    """Empty and fully hidden layouts occupy no rows."""
+    from deepagents_code.app import _displayed_row_slots
+
+    children = [Static() for _ in range(hidden_count)]
+    for child in children:
+        child.display = False
+    assert _displayed_row_slots(children) == {}
+
+
 def _pop_goal_state_notice(update: dict[str, Any]) -> HumanMessage:
     """Remove and validate the canonical notice from a state update."""
     from langchain_core.messages import HumanMessage
@@ -26788,7 +26799,9 @@ class TestResumeScrollPosition:
     async def test_compact_history_fills_initial_viewport(
         self, height: int, count: int
     ) -> None:
-        """Compact tails load until scrolling works or all history is mounted."""
+        """Compact tails load until they fill the viewport or history runs out."""
+        from deepagents_code.app import _MESSAGE_TOP_SPACER_ID
+
         app = DeepAgentsApp()
         app._message_timestamps_visible = False
         payload = _ThreadHistoryPayload(
@@ -26818,11 +26831,21 @@ class TestResumeScrollPosition:
                 thread_id="compact-resume", preloaded_payload=payload
             )
             chat = app.query_one("#chat", _ChatScroll)
+            messages = app.query_one("#messages", Container)
+            top = messages.query_one(f"#{_MESSAGE_TOP_SPACER_ID}")
             store = app._message_store
-            for _ in range(20):
+
+            def spacer_in_view() -> bool:
+                bottom = messages.virtual_region.y + top.virtual_region.bottom
+                return top.display and bottom > chat.scroll_y
+
+            for _ in range(40):
                 await pilot.pause()
-                if chat.max_scroll_y > 0 or not store.has_messages_above:
+                if not spacer_in_view() or not store.has_messages_above:
                     break
+
+            # No blank spacer rows stay on screen above the resumed tail.
+            assert not spacer_in_view()
 
             assert store.visible_count > store.INITIAL_WINDOW_SIZE + 1
             if height == 200:
@@ -29053,6 +29076,33 @@ class TestEnsureManagedRipgrep:
 
         assert call_order[:2] == ["ensure", "start_server"], call_order
 
+    async def test_start_server_background_adopts_prespawned_server(self) -> None:
+        """A server spawned before the app loaded is adopted, not duplicated."""
+        msg = "stop here"
+        prespawned = MagicMock()
+        prespawned.adopt = AsyncMock(side_effect=RuntimeError(msg))
+        app = DeepAgentsApp(
+            agent=MagicMock(), thread_id="t", prespawned_server=prespawned
+        )
+        app._server_kwargs = {}
+        app._mcp_preload_kwargs = None
+        app._default_assistant_id = None
+        start = MagicMock()
+
+        with (
+            patch.object(app, "_ensure_managed_ripgrep", AsyncMock(return_value=True)),
+            patch(
+                "deepagents_code.client.launch.server_manager.start_server_and_get_agent",
+                start,
+            ),
+            patch.object(app, "post_message"),
+        ):
+            await app._start_server_background()
+            await app._start_server_background()
+
+        prespawned.adopt.assert_awaited_once()
+        start.assert_called_once()
+
 
 class TestNotifyInterpreterToolsWithoutInterpreter:
     """Tests for `_notify_interpreter_tools_without_interpreter` (TUI advisory)."""
@@ -29768,6 +29818,42 @@ class TestToolGroupCollapse:
             assert f_excl.display is True, (
                 "an excluded tool's footer must not be folded into a neighbour"
             )
+
+    async def test_folded_run_height_hints_match_summary_line(self) -> None:
+        """A folded run is estimated at the summary's height, not per hidden row.
+
+        Archived rows are sized from these hints. If hidden rows each count as
+        a row and the summary line counts as none, the spacer is wrong by the
+        difference and scroll-back hydration moves the view.
+        """
+        from deepagents_code.tui.widgets.message_store import MessageData, MessageType
+        from deepagents_code.tui.widgets.messages import ToolGroupSummary
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t-group-hints")
+        app._load_thread_history = AsyncMock()  # ty: ignore
+        async with app.run_test() as pilot:
+            messages = app.query_one("#messages", Container)
+            await messages.remove_children()
+            specs = [
+                (f"h{i}", "read_file", {"file_path": f"{i}.py"}, "success")
+                for i in range(4)
+            ]
+            for tid, name, _args, _status in specs:
+                app._message_store.append(
+                    MessageData(
+                        type=MessageType.TOOL, content="", id=tid, tool_name=name
+                    )
+                )
+            await self._mount_tools(pilot, messages, specs)
+
+            await app._regroup_completed_tools()
+            await pilot.pause()
+            await pilot.pause()
+
+            summary = app.query_one(ToolGroupSummary)
+            summary_rows = summary.outer_size.height + summary.styles.margin.bottom
+            store = app._message_store
+            assert store.range_height(0, len(specs)) == summary_rows
 
     async def test_regroup_collapses_success_run(self) -> None:
         """A run of successful tools folds into one collapsed summary."""

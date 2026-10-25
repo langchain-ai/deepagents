@@ -20,12 +20,12 @@ import json
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal, cast
 
-from textual.content import Content
-
 from deepagents_code.unicode_security import strip_dangerous_unicode
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
+
+    from textual.content import Content
 
 _SNAPSHOT_VERSION = 1
 """Persisted snapshot format generation.
@@ -382,6 +382,9 @@ def join_content(lines: Sequence[Content]) -> Content:
     Returns:
         One `Content` with each line on its own row.
     """
+    # Lazy: the server imports this module, and Textual costs ~15 ms there.
+    from textual.content import Content
+
     return Content("\n").join(lines)
 
 
@@ -417,6 +420,8 @@ def format_diagnostics_content(diagnostics: WorkspaceDiagnostics) -> Content:
     Returns:
         A styled summary of what changed since the thread was bound.
     """
+    from textual.content import Content
+
     lines = [Content.styled(f"Server refusal: {diagnostics.reason}", "bold")]
     if diagnostics.changes:
         lines.append(

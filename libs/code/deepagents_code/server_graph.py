@@ -134,6 +134,7 @@ def _configure_server_tracing(environ: Mapping[str, str], *, redact: bool) -> No
 
     Called on the server loop with no suspension between claim and setup.
     """
+    from deepagents_code._langsmith_runtime import install_untraced_inline_override
     from deepagents_code.config import (
         configure_langsmith_secret_redaction,
         reconcile_tracing_environment,
@@ -146,6 +147,7 @@ def _configure_server_tracing(environ: Mapping[str, str], *, redact: bool) -> No
         # Keep redaction on the server task: its fail-closed disable must
         # reach this task's LangSmith ContextVar, not a worker's copied context.
         configure_langsmith_secret_redaction()
+        install_untraced_inline_override()
         _server_tracing_initialized = True
 
 

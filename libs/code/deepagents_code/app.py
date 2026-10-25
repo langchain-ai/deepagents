@@ -401,6 +401,54 @@ def _message_timestamp_footer_id(message_id: str) -> str:
     return f"{message_id}-timestamp-footer"
 
 
+def _displayed_row_slots(children: Sequence[Widget]) -> dict[Widget, int]:
+    """Map each displayed child to the rows it takes in the vertical layout.
+
+    A slot runs from a child's top edge to the next displayed child's top edge.
+    It therefore includes the margin that Textual collapses between the two
+    neighbors, which `region` and `outer_size` both leave out. The last child,
+    or one whose neighbor is not laid out yet, adds its own bottom margin.
+
+    Returns:
+        Slot height in rows for every displayed child.
+    """
+    shown = [child for child in children if child.display]
+    if not shown:
+        return {}
+    slots: dict[Widget, int] = {}
+    for child, below in zip(shown, [*shown[1:], None], strict=True):
+        own = child.outer_size.height + child.styles.margin.bottom
+        if below is None:
+            slots[child] = own
+            continue
+        gap = below.virtual_region.y - child.virtual_region.y
+        slots[child] = gap if gap >= 0 else own
+    return slots
+
+
+def _orphaned_tool_group_summaries(
+    messages_container: Container, doomed: list[Widget]
+) -> list[Widget]:
+    """Return tool-group summaries left with no members after a prune.
+
+    Only direct children are scanned: summaries mount into the messages
+    container, and a full-DOM query costs tens of milliseconds at the
+    window cap.
+
+    Returns:
+        Summaries whose collapsed members are all detached or being removed.
+    """
+    gone = set(doomed)
+    return [
+        summary
+        for summary in messages_container.query_children(ToolGroupSummary)
+        if summary not in gone
+        and not any(
+            member.is_attached and member not in gone for member in summary._collapsible
+        )
+    ]
+
+
 def _read_text_file_expanding_user(path_arg: str) -> tuple[Path, str]:
     """Read a text file after expanding `~` in a worker thread.
 
@@ -1091,6 +1139,7 @@ if TYPE_CHECKING:
     from deepagents_code._terminal_stderr import TerminalStderrGuard
     from deepagents_code.approval_mode import ApprovalMode
     from deepagents_code.client.launch.server import ServerProcess
+    from deepagents_code.client.launch.server_manager import PrespawnedServer
     from deepagents_code.client.remote_client import RemoteAgent
     from deepagents_code.client.session_cost import SessionCost
     from deepagents_code.cold_cache import (
@@ -3028,6 +3077,40 @@ class _StaticHeader(Header):
         event.stop()
 
 
+class _TranscriptSpacer(Static):
+    """Blank row block that stands in for unmounted transcript history.
+
+    `#messages` uses `layout: stream`, which ignores inline styles such as
+    `styles.height` and sizes each child from its content height. The spacer
+    therefore reports its row count as its content height. Otherwise it stays
+    one row tall, and the scroll view reaches its end before the newest message.
+    """
+
+    def __init__(self, spacer_id: str) -> None:
+        """Create a hidden spacer with no rows.
+
+        Args:
+            spacer_id: DOM id of the spacer.
+        """
+        super().__init__("", id=spacer_id, classes=_MESSAGE_SPACER_CLASS)
+        self._rows = 0
+        self.display = False
+
+    def set_rows(self, rows: int) -> None:
+        """Resize the spacer to `rows` terminal rows and hide it when empty."""
+        rows = max(0, rows)
+        if rows == self._rows:
+            return
+        self._rows = rows
+        self.display = rows > 0
+        self.refresh(layout=True)
+
+    @override
+    def get_content_height(self, container: Size, viewport: Size, width: int) -> int:
+        """Return the spacer row count as its content height."""
+        return self._rows
+
+
 class _ChatScroll(VerticalScroll):
     """Chat scroll container that doesn't steal focus when clicked.
 
@@ -3423,6 +3506,7 @@ class DeepAgentsApp(App):
         hook_trust: WorkspaceTrust | None = None,
         title: str | None = None,
         sub_title: str | None = None,
+        prespawned_server: PrespawnedServer | None = None,
         **kwargs: Any,
     ) -> None:
         """Initialize the Deep Agents application.
@@ -3506,6 +3590,9 @@ class DeepAgentsApp(App):
                 substituted; otherwise the parent default is used.
 
                 Reassigning `app.sub_title` at runtime updates the header live.
+            prespawned_server: A server start already spawned for
+                `server_kwargs`. The startup worker adopts it instead of
+                spawning another; the caller reaps it if the app never does.
             **kwargs: Additional arguments passed to parent
         """
         super().__init__(**kwargs)
@@ -3843,6 +3930,8 @@ class DeepAgentsApp(App):
         if server_kwargs is not None:
             server_kwargs["cwd"] = self._cwd
         self._server_kwargs = server_kwargs
+        self._prespawned_server = prespawned_server
+        """Server start spawned before the app loaded; consumed on adoption."""
         self._thread_leases: dict[str, ThreadLease] = {}
         if (
             self._server_kwargs is None
@@ -6428,13 +6517,17 @@ class DeepAgentsApp(App):
         self._server_kwargs["cwd"] = self._cwd
         # Spawn the server without waiting for the import prewarm: the
         # subprocess boots in parallel, and only the health check that follows
-        # imports into the prewarm's module graph on this thread.
-        coros: list[Any] = [
-            start_server_and_get_agent(
+        # imports into the prewarm's module graph on this thread. A server
+        # spawned before the app loaded is adopted instead, exactly once.
+        prespawned, self._prespawned_server = self._prespawned_server, None
+        if prespawned is not None:
+            server_start = prespawned.adopt(after_spawn=self._await_prewarm_imports)
+        else:
+            server_start = start_server_and_get_agent(
                 **self._server_kwargs,  # ty: ignore[invalid-argument-type]
                 after_spawn=self._await_prewarm_imports,
             )
-        ]
+        coros: list[Any] = [server_start]
 
         if self._mcp_preload_kwargs is not None:
             from deepagents_code.main import _preload_session_mcp_server_info
@@ -9842,10 +9935,13 @@ class DeepAgentsApp(App):
         """Show reconciled cache expiry independently of handoff preferences."""
         if not self.screen_stack:
             return
-        banners = self.screen_stack[0].query("#cache-expired-banner")
-        if banners:
+        # Polled every second: an `#id` `query_one` takes Textual's cached id
+        # lookup, while `query(...)` would walk every transcript widget.
+        banner = self.screen_stack[0].query_one_optional(
+            "#cache-expired-banner", Static
+        )
+        if banner is not None:
             expires_at = self._status_bar.cache_expires_at if self._status_bar else None
-            banner = banners.first(Static)
             banner.display = (
                 not self._cache_reconciliation_pending
                 and expires_at is not None
@@ -9860,7 +9956,11 @@ class DeepAgentsApp(App):
                     if count:
                         age = f"{count} {unit}{'s' if count != 1 else ''} ago"
                         break
-                banner.update(f"Prompt cache expired at {expired_at} ({age})")
+                text = f"Prompt cache expired at {expired_at} ({age})"
+                # The text changes at most once a minute per window; skip the
+                # per-tick relayout that `update` would otherwise force.
+                if banner.content != text:
+                    banner.update(text)
 
     def _check_idle_compaction(self) -> None:
         """Reserve one offload per warm cache window, without yielding to input."""
@@ -10520,14 +10620,25 @@ class DeepAgentsApp(App):
             self._check_hydration_below_needed()
 
     async def _fill_history_viewport(self) -> None:
-        """Hydrate a compact resumed tail until scrolling becomes possible."""
+        """Hydrate a compact resumed tail until it fills the viewport.
+
+        The top spacer reserves rows for archived history, so a short tail can
+        scroll yet still show blank spacer rows above it at the end of the
+        view. Keep hydrating until the rows below the spacer fill the viewport.
+        """
         if not self._message_store.has_messages_above:
             return
         try:
             chat = self.query_one("#chat", VerticalScroll)
+            messages = chat.query_one("#messages", Container)
+            top = messages.query_one(f"#{_MESSAGE_TOP_SPACER_ID}", _TranscriptSpacer)
         except NoMatches:
             return
-        if chat.max_scroll_y > 0:
+        # Resume pins the view to the end, which may not have landed yet, so
+        # measure the rows below the spacer instead of the scroll offset.
+        spacer_bottom = messages.virtual_region.y + top.virtual_region.bottom
+        tail_rows = chat.virtual_size.height - spacer_bottom
+        if not top.display or tail_rows >= chat.scrollable_content_region.height:
             return
         if await self._hydrate_messages(
             "above", count=self._message_store.HYDRATE_BUFFER
@@ -10863,10 +10974,12 @@ class DeepAgentsApp(App):
         return None
 
     @staticmethod
-    def _bottom_spacer(container: Container) -> Static | None:
+    def _bottom_spacer(container: Container) -> _TranscriptSpacer | None:
         """Return the bottom transcript spacer if it is mounted."""
         with suppress(NoMatches):
-            return container.query_one(f"#{_MESSAGE_BOTTOM_SPACER_ID}", Static)
+            return container.query_one(
+                f"#{_MESSAGE_BOTTOM_SPACER_ID}", _TranscriptSpacer
+            )
         return None
 
     async def _mount_transcript_nodes(
@@ -10891,7 +11004,7 @@ class DeepAgentsApp(App):
             return
 
         if not container.query(f"#{_MESSAGE_TOP_SPACER_ID}"):
-            top = Static("", id=_MESSAGE_TOP_SPACER_ID, classes=_MESSAGE_SPACER_CLASS)
+            top = _TranscriptSpacer(_MESSAGE_TOP_SPACER_ID)
             first = next(
                 (child for child in container.children if child.parent is container),
                 None,
@@ -10902,11 +11015,7 @@ class DeepAgentsApp(App):
                 await container.mount(top, before=first)
 
         if not container.query(f"#{_MESSAGE_BOTTOM_SPACER_ID}"):
-            bottom = Static(
-                "",
-                id=_MESSAGE_BOTTOM_SPACER_ID,
-                classes=_MESSAGE_SPACER_CLASS,
-            )
+            bottom = _TranscriptSpacer(_MESSAGE_BOTTOM_SPACER_ID)
             anchor = self._loading_widget
             if anchor is None or anchor.parent is not container:
                 anchor = self._first_mounted_queued_widget(container)
@@ -10917,13 +11026,6 @@ class DeepAgentsApp(App):
 
         self._sync_transcript_spacers(container)
 
-    @staticmethod
-    def _set_spacer_height(widget: Static, height: int) -> None:
-        """Set spacer height in terminal rows."""
-        rows = max(0, height)
-        widget.styles.height = rows
-        widget.display = rows > 0
-
     def _sync_transcript_spacers(self, container: Container | None = None) -> None:
         """Update spacer rows from the current `MessageStore` visible range."""
         if container is None:
@@ -10932,14 +11034,15 @@ class DeepAgentsApp(App):
             except NoMatches:
                 return
         try:
-            top = container.query_one(f"#{_MESSAGE_TOP_SPACER_ID}", Static)
-            bottom = container.query_one(f"#{_MESSAGE_BOTTOM_SPACER_ID}", Static)
+            top = container.query_one(f"#{_MESSAGE_TOP_SPACER_ID}", _TranscriptSpacer)
+            bottom = container.query_one(
+                f"#{_MESSAGE_BOTTOM_SPACER_ID}", _TranscriptSpacer
+            )
         except NoMatches:
             return
         start, end = self._message_store.get_visible_range()
-        self._set_spacer_height(top, self._message_store.range_height(0, start))
-        self._set_spacer_height(
-            bottom,
+        top.set_rows(self._message_store.range_height(0, start))
+        bottom.set_rows(
             self._message_store.range_height(end, self._message_store.total_count),
         )
 
@@ -10954,21 +11057,52 @@ class DeepAgentsApp(App):
             messages = self.query_one("#messages", Container)
         except NoMatches:
             return
+        heights = self._transcript_row_heights(list(messages.children))
         changed = False
         for message_id in message_ids:
-            try:
-                widget = messages.query_one(f"#{message_id}")
-            except NoMatches:
+            if message_id not in heights:
                 continue
-            height = max(1, widget.region.height)
-            footer_id = _message_timestamp_footer_id(message_id)
-            with suppress(NoMatches):
-                footer = messages.query_one(f"#{footer_id}")
-                if footer.display:
-                    height += max(1, footer.region.height)
-            changed = self._message_store.set_height_hint(message_id, height) or changed
+            rows, hidden = heights[message_id]
+            changed = (
+                self._message_store.set_height_hint(message_id, rows, hidden=hidden)
+                or changed
+            )
         if changed:
             self._sync_transcript_spacers(messages)
+
+    def _transcript_row_heights(
+        self, children: Sequence[Widget]
+    ) -> dict[str, tuple[int, bool]]:
+        """Attribute every laid-out transcript row to a store message.
+
+        A message owns its own slot plus its timestamp footer. A
+        `ToolGroupSummary` is not a store row, so its slot goes to the next
+        store message (the run's anchor). That message is hidden while the
+        group is folded, so without this the summary line would count as zero
+        rows. Other non-store children (spacers, transient notices) are not
+        attributed.
+
+        Returns:
+            Map of message ID to `(rows, hidden)`, where `hidden` is whether the
+                message widget itself is not displayed.
+        """
+        slots = _displayed_row_slots(children)
+        heights: dict[str, tuple[int, bool]] = {}
+        owner: str | None = None
+        carry = 0
+        for child in children:
+            rows = slots.get(child, 0)
+            if isinstance(child, ToolGroupSummary):
+                carry += rows
+            elif owner is not None and child.id == _message_timestamp_footer_id(owner):
+                owned, hidden = heights[owner]
+                heights[owner] = (owned + rows, hidden)
+            elif child.id and self._message_store.get_message(child.id) is not None:
+                heights[child.id] = (rows + carry, not child.display)
+                owner, carry = child.id, 0
+            else:
+                owner = None
+        return heights
 
     async def _mount_transient_app_message(self, content: str) -> AppMessage | None:
         """Mount an `AppMessage` that is not tracked by the message store.
@@ -21978,49 +22112,63 @@ class DeepAgentsApp(App):
             except NoMatches:
                 return 0
 
-        pruned_ids: list[str] = []
-        for data in to_prune:
+        pruned_ids, doomed = self._collect_pruned_rows(
+            messages_container, to_prune, direction
+        )
+        if not below:
+            doomed.extend(_orphaned_tool_group_summaries(messages_container, doomed))
+        # One removal and one spacer update inside a single batch: removing rows
+        # one at a time ran a full transcript relayout between rows, and the
+        # spacer must absorb the removed height in the same frame so the
+        # viewport does not jump.
+        with self.batch_update():
+            await messages_container.remove_children(doomed)
             if generation != self._transcript_generation:
                 return 0
-            footer_id = _message_timestamp_footer_id(data.id)
+            if below:
+                self._message_store.mark_pruned_below(pruned_ids)
+            else:
+                self._message_store.mark_pruned(pruned_ids)
+            self._sync_transcript_spacers(messages_container)
+        return len(pruned_ids)
+
+    @staticmethod
+    def _collect_pruned_rows(
+        messages_container: Container,
+        to_prune: list[MessageData],
+        direction: Literal["above", "below"],
+    ) -> tuple[list[str], list[Widget]]:
+        """Collect the mounted rows and footers for a prune batch.
+
+        Lazy tool-group summaries snapshot their detail state first, so
+        rehydration restores what the user had expanded.
+
+        Returns:
+            The pruned message IDs and the widgets to remove.
+        """
+        pruned_ids: list[str] = []
+        doomed: list[Widget] = []
+        for data in to_prune:
+            pruned_ids.append(data.id)
+            with suppress(NoMatches):
+                doomed.append(
+                    messages_container.get_child_by_id(
+                        _message_timestamp_footer_id(data.id)
+                    )
+                )
             try:
-                widget = messages_container.query_one(f"#{data.id}")
+                widget = messages_container.get_child_by_id(data.id)
             except NoMatches:
                 logger.warning(
                     "Widget %s missing during %s pruning; reconciling store window",
                     data.id,
                     direction,
                 )
-                widget = None
+                continue
             if isinstance(widget, LazyToolGroupSummary):
                 widget._snapshot_detail_state()
-            with suppress(NoMatches):
-                footer = messages_container.query_one(f"#{footer_id}")
-                await footer.remove()
-            if generation != self._transcript_generation:
-                return 0
-            if widget is not None:
-                await widget.remove()
-                if generation != self._transcript_generation:
-                    return 0
-            pruned_ids.append(data.id)
-
-        if below:
-            self._message_store.mark_pruned_below(pruned_ids)
-        else:
-            self._message_store.mark_pruned(pruned_ids)
-        self._sync_transcript_spacers(messages_container)
-        if not below:
-            for summary in list(self.query(ToolGroupSummary)):
-                if not summary.has_attached_members:
-                    try:
-                        await summary.remove()
-                    except Exception:
-                        logger.debug(
-                            "Failed to remove orphaned tool group summary",
-                            exc_info=True,
-                        )
-        return len(pruned_ids)
+            doomed.append(widget)
+        return pruned_ids, doomed
 
     def _reveal_pending_tool_calls(self) -> None:
         """Surface grouped tool calls before asking for approval."""
@@ -22060,11 +22208,16 @@ class DeepAgentsApp(App):
         skipped, so it is safe to call on every stream boundary and on
         hydration. A run is only collapsed once every tool in it succeeded;
         a run containing an error/rejection/pending tool is left expanded.
+
+        Re-measures every tool and diff row afterward. Folding hides rows and
+        mounts a summary line in front of the run, and closing a live group can
+        reveal a failed tool, so heights measured at mount time go stale.
         """
         try:
             messages = self.query_one("#messages", Container)
         except NoMatches:
             return
+        tool_rows: list[str] = []
 
         run_tools: list[ToolCallMessage] = []
         run_collapsible: list[Widget] = []
@@ -22108,6 +22261,8 @@ class DeepAgentsApp(App):
                     ):
                         run_accessories.setdefault(owner, []).append(child)
                     continue
+                if isinstance(child, ToolCallMessage | DiffMessage) and child.id:
+                    tool_rows.append(child.id)
                 if isinstance(child, ToolCallMessage):
                     groupable = (
                         child.tool_name not in _TOOL_GROUP_EXCLUSIONS
@@ -22143,6 +22298,7 @@ class DeepAgentsApp(App):
                 # Assistant text, notices, an existing summary, etc. end the run.
                 await flush()
             await flush()
+        self._schedule_message_height_measurements(tool_rows)
 
     @staticmethod
     async def _mount_tool_group_summary(
@@ -32686,6 +32842,7 @@ async def run_textual_app(
     hook_trust: WorkspaceTrust | None = None,
     title: str | None = None,
     sub_title: str | None = None,
+    prespawned_server: PrespawnedServer | None = None,
 ) -> AppResult:
     """Run the Textual application.
 
@@ -32751,6 +32908,10 @@ async def run_textual_app(
             `"Deep Agents"` is used.
         sub_title: Override the Textual `App.sub_title` shown in the optional
             header bar.
+        prespawned_server: A server start already spawned for `server_kwargs`,
+            adopted by the app's startup worker.
+
+            The caller must close it after the app exits.
 
     Returns:
         An `AppResult` with the return code and final thread ID.
@@ -32792,6 +32953,7 @@ async def run_textual_app(
         hook_trust=hook_trust,
         title=title,
         sub_title=sub_title,
+        prespawned_server=prespawned_server,
     )
     stderr_guard: TerminalStderrGuard | None = None
     try:

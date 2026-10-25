@@ -18,6 +18,8 @@ sources:
     resource: repo://libs/code/deepagents_code/managed_tools.py
   - id: openwiki-source-f6d553e7afdf54acac36e7d3
     resource: repo://libs/code/deepagents_code/mcp_tools.py
+  - id: openwiki-source-ea1089f0d7536fbc96c64866
+    resource: repo://libs/code/deepagents_code/offload_api.py
   - id: openwiki-source-3300d75e0c132882e2e3b4ce
     resource: repo://libs/code/deepagents_code/tool_catalog.py
   - id: openwiki-source-8ccbc389e8d6198afea76baa
@@ -46,10 +48,10 @@ sources:
     resource: repo://libs/deepagents/deepagents/middleware/filesystem.py
   - id: openwiki-source-903e05891b2ddf4f958276fd
     resource: repo://libs/deepagents/tests/unit_tests/test_local_sandbox_operations.py
-generated: { by: "openwiki/0.4.2", at: "2026-10-24T08:05:08.866Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-10-25T08:05:05.473Z" }
 verified:
   - by: openwiki/0.4.2
-    at: 2026-10-24T08:05:08.866Z
+    at: 2026-10-25T08:05:05.473Z
 ---
 
 # Filesystem Tools and Backends
@@ -106,9 +108,29 @@ This shows composition, not equivalent trust: caller tools are supplied by the a
 
 ### Server-launched sessions
 
-`start_server_and_get_agent` is the process boundary used by dcode's server-backed client. It first preflights an explicit MCP configuration, builds a `ServerConfig` from the launch options—including `allow_fs_tools`, sandbox selection, and shell settings—and serializes that configuration into the server environment before spawning a temporary LangGraph server. Once the `agent` graph is ready, it creates a `RemoteAgent` and binds the resolved workspace plus a configuration claim and fingerprint. The claim intentionally contains session policy such as the filesystem allowlist, but not the MCP configuration path or project-MCP trust decision.
+`start_server_and_get_agent` is the process boundary used by dcode's server-backed client. It preflights only an explicitly supplied MCP configuration (discovered project and user configurations remain lenient), resolves a `ServerConfig` from launch options—including `allow_fs_tools`, sandbox selection, and shell settings—and serializes it through `ServerConfig.to_env()` into `DEEPAGENTS_CODE_SERVER_*` variables. It scaffolds a temporary LangGraph runtime whose graph entry point reads the same schema with `ServerConfig.from_env()`. Thus `allow_fs_tools` crosses the process boundary as a JSON list when explicitly restricted; malformed, empty, unknown, or `read_file`-less values are rejected rather than becoming unrestricted access.
 
-If startup fails or the await is cancelled before ownership is transferred to the caller, the manager reaps the server in its `finally` block and runs the blocking stop off the event loop. `server_session` then provides the normal owner-facing lifecycle: it delegates startup and stops the returned process on context exit. This protects against an orphaned local server; it does not itself make shell execution or filesystem access safe.
+```mermaid
+sequenceDiagram
+    participant Client as dcode client
+    participant Manager as server manager
+    participant Process as LangGraph server
+    participant Remote as RemoteAgent
+    Client->>Manager: start with launch options and workspace
+    Manager->>Manager: preflight explicit MCP config
+    Manager->>Process: config environment and temporary workspace
+    Process->>Process: read ServerConfig and build agent graph
+    Manager->>Process: wait for agent graph readiness
+    Manager->>Remote: create remote graph client
+    Manager->>Remote: set workspace with session claim and fingerprint
+    Remote->>Process: bind thread workspace
+```
+
+This sequence shows configuration transport and binding order; it does not make all configuration client-claimable.
+
+Only after the `agent` graph is ready does the manager create a `RemoteAgent` and call `set_workspace` with the resolved working directory, the exact session-policy subset, and that subset's fingerprint. The session claim includes command-scoped controls such as `allow_fs_tools`, shell and approval settings, sandbox identity, and `no_mcp`. It deliberately excludes project-scoped policy—MCP config path and trust, sandbox setup, extension paths, and extension trust—because those settings can grant code execution for a checkout and must be resolved by the server for the requested project. The workspace endpoint rejects a claim that includes any project-scoped field or whose claim/fingerprint differs from the server-resolved session policy, then persists the complete trusted workspace policy for the thread. This separation means that the filesystem allowlist is a policy the client and server must agree on; it is neither an MCP trust grant nor a sandbox boundary.
+
+If startup fails or the await is cancelled before ownership is transferred to the caller, the manager reaps the server in its `finally` block and runs the blocking stop off the event loop. It uses a short abandoned-start grace period unless a sandbox is being created, in which case graceful shutdown is retained so the server can clean it up. `server_session` then provides the normal owner-facing lifecycle: it delegates startup and stops the returned process on context exit. This prevents an orphaned local server; it does not itself make shell execution or filesystem access safe.
 
 ## Managed helper and local presentation lifecycle
 

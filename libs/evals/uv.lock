@@ -1019,11 +1019,11 @@ wheels = [
 
 [[package]]
 name = "filelock"
-version = "3.32.2"
+version = "4.2.1"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/f6/57/3ba6e6cb097f85b855b00163d169f35365f44277df044dcf96d55b8f62a3/filelock-3.32.2.tar.gz", hash = "sha256:c33351e1f49cae33414acbc6d56784e6ecee82514ec90795da1161fc4836b5b8", size = 217172, upload-time = "2026-07-29T22:46:04.895Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/d5/98/771d8ca889f220d7d7e352addf500666368f0fd081c6080a83767580c6e4/filelock-4.2.1.tar.gz", hash = "sha256:c4c937ccac2a813cee448e662a56366cfb374c0f8702e75f295c412cc1c5d5a3", size = 650997, upload-time = "2026-10-17T16:48:14.435Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/c1/e8/72f8cef9fdfeffe06213fe8508039396ee48daa0e3259457ed766173bfd6/filelock-3.32.2-py3-none-any.whl", hash = "sha256:87dd94cf281e586d135fa51132b8e3d9a598b316e90377a288663c9321036c82", size = 98830, upload-time = "2026-07-29T22:46:03.52Z" },
+    { url = "https://files.pythonhosted.org/packages/28/00/db89d339bc4ecdc8087fa7b8607ba22ffc27bf96286f340c9620bea428b3/filelock-4.2.1-py3-none-any.whl", hash = "sha256:7be2662e9e826b9bba28afc0f843a123280d799a2ea44bb5d35ccec67905ae44", size = 162455, upload-time = "2026-10-17T16:48:12.937Z" },
 ]
 
 [[package]]
@@ -1975,7 +1975,7 @@ requires-dist = [
     { name = "deepagents", editable = "../deepagents" },
     { name = "langchain", specifier = ">=1.4.7,<2.0.0" },
     { name = "langchain-core", specifier = ">=1.7.0,<2.0.0" },
-    { name = "langgraph", specifier = ">=1.2.16,<2.0.0" },
+    { name = "langgraph", specifier = ">=1.2.17,<2.0.0" },
     { name = "quickjs-rs", specifier = ">=0.2.5,<0.3.0" },
 ]
 
@@ -2016,7 +2016,7 @@ wheels = [
 
 [[package]]
 name = "langgraph"
-version = "1.2.16"
+version = "1.2.17"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "langchain-core" },
@@ -2026,9 +2026,9 @@ dependencies = [
     { name = "pydantic" },
     { name = "xxhash" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/db/65/69de99a24546c1e3b75a67905dbcc17ed6cd0ed81694d4cc021ed688a60d/langgraph-1.2.16.tar.gz", hash = "sha256:e4dd63480bfd3ee14a6ab80ecf1311698780519693d8e3b67a28f3486e69e1f7", size = 772613, upload-time = "2026-10-16T22:11:14.147Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/75/39/38b60bfc6fd064bc172693e19b3a6dccdaf9141bc9b984a9f83cdb06d014/langgraph-1.2.17.tar.gz", hash = "sha256:311516e313abd5424596d6c5250507c89be2e1973cbe813061696728803b0e10", size = 774002, upload-time = "2026-10-24T01:07:50.567Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/ad/eb/ceb9bed99f6549e9ec51c497b749062d19e0a1c68fea0ad801d55c4a9691/langgraph-1.2.16-py3-none-any.whl", hash = "sha256:aeceb1bc49488409f12b02f1e51881099391d9e85bcfd78e1dbead71831c41b5", size = 260357, upload-time = "2026-10-16T22:11:12.638Z" },
+    { url = "https://files.pythonhosted.org/packages/00/d9/2e5b99319e2e8d39bc44d84836497c2e8f616554bb47843c8c819c8fed28/langgraph-1.2.17-py3-none-any.whl", hash = "sha256:e022a9fea64631fed946557a23f3fa5ac2ff38c72dcb999f426fc77d55ccde60", size = 260489, upload-time = "2026-10-24T01:07:49.155Z" },
 ]
 
 [[package]]

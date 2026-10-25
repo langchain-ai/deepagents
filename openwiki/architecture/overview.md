@@ -5,7 +5,7 @@ description: Architecture and dependency map for the Deep Agents Python monorepo
 tags: [architecture, deepagents, langgraph, sdk, talon, integrations]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-10-24T08:05:08.866Z
+    at: 2026-10-25T08:05:05.473Z
 sources:
   - id: openwiki-source-9a1c436646ef8c4f6dde787a
     resource: repo://.github/RELEASING.md

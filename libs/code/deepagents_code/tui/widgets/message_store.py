@@ -32,7 +32,11 @@ DEFAULT_HEIGHT_HINT = 5
 """Estimated terminal rows for a message whose rendered height is unknown."""
 
 MIN_HEIGHT_HINT = 1
-"""Smallest useful row estimate for spacer and range-height math."""
+"""Smallest row estimate for a displayed message in spacer and range math.
+
+A row folded out of view (e.g. a tool hidden behind a `ToolGroupSummary`) may
+store a smaller hint, down to 0. See `MessageStore.set_height_hint`.
+"""
 
 _ACTIVE_REASON = "active"
 """Protection reason for the currently-streaming message."""
@@ -319,7 +323,8 @@ class MessageData:
     via `set_height_hint`. Consumed by `estimate_height`/`range_height` to size
     the transcript spacers and to keep the scroll anchor stable across
     hydrate-above/below. When None (not yet measured), `estimate_height` falls
-    back to `DEFAULT_HEIGHT_HINT`. Always `>= MIN_HEIGHT_HINT` once set.
+    back to `DEFAULT_HEIGHT_HINT`. Always `>= MIN_HEIGHT_HINT` once set, except
+    for a row measured while hidden, which may be 0.
     """
 
     def __post_init__(self) -> None:
@@ -1211,7 +1216,9 @@ class MessageStore:
         """
         return self._messages[self._visible_start : self._visible_end]
 
-    def set_height_hint(self, message_id: str, rows: int) -> bool:
+    def set_height_hint(
+        self, message_id: str, rows: int, *, hidden: bool = False
+    ) -> bool:
         """Update a measured message height, clamped to `MIN_HEIGHT_HINT`.
 
         The single write path for `height_hint`; `height_hint` is intentionally
@@ -1220,6 +1227,9 @@ class MessageStore:
         Args:
             message_id: Message ID to update.
             rows: Rendered height in terminal rows.
+            hidden: Whether the row is not displayed, e.g. folded into a tool
+                group. A hidden row takes no space, so its hint may drop to 0
+                instead of `MIN_HEIGHT_HINT`.
 
         Returns:
             Whether the message existed and was updated.
@@ -1227,7 +1237,7 @@ class MessageStore:
         msg_data = self._index.get(message_id)
         if msg_data is None:
             return False
-        msg_data.height_hint = max(MIN_HEIGHT_HINT, rows)
+        msg_data.height_hint = max(0 if hidden else MIN_HEIGHT_HINT, rows)
         return True
 
     def invalidate_height_hints(self, *, scale: float | None = None) -> None:
@@ -1243,14 +1253,16 @@ class MessageStore:
             if scale is None:
                 msg.height_hint = None
             else:
-                msg.height_hint = max(MIN_HEIGHT_HINT, round(msg.height_hint * scale))
+                # Never lift a hidden row's sub-floor hint up to the floor.
+                floor = min(MIN_HEIGHT_HINT, msg.height_hint)
+                msg.height_hint = max(floor, round(msg.height_hint * scale))
 
     @staticmethod
     def estimate_height(message: MessageData) -> int:
         """Return the best available row estimate for a message."""
         if message.height_hint is None:
             return DEFAULT_HEIGHT_HINT
-        return max(MIN_HEIGHT_HINT, message.height_hint)
+        return max(0, message.height_hint)
 
     def range_height(self, start: int, end: int) -> int:
         """Estimate rows in `[start:end]`.

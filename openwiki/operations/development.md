@@ -1,11 +1,11 @@
 ---
 type: operations guide
 title: Development, Dependencies, Lockfiles, and Releases
-description: Package-scoped uv development, public dependency and lockfile policy, and the guarded release-please-to-PyPI lifecycle for Deep Agents distributions.
-tags: [development, dependencies, uv, lockfiles, releases, release-please]
+description: Package-scoped uv development, public dependency boundaries, lockfile maintenance, dcode workspace-safety linting, and the release lifecycle for Deep Agents distributions.
+tags: [development, dependencies, uv, lockfiles, dcode, releases, release-please]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-10-24T08:05:08.866Z
+    at: 2026-10-25T08:05:05.473Z
 sources:
   - id: openwiki-source-9a1c436646ef8c4f6dde787a
     resource: repo://.github/RELEASING.md
@@ -41,17 +41,31 @@ sources:
     resource: repo://libs/code/Makefile
   - id: openwiki-source-7ba50bd13eb62341a2061ef9
     resource: repo://libs/code/pyproject.toml
+  - id: openwiki-source-2c81844c6fc58eace9ea6aba
+    resource: repo://libs/code/scripts/check_process_cwd.py
   - id: openwiki-source-0f308f1610986e2f3ed6d53c
     resource: repo://libs/deepagents/Makefile
   - id: openwiki-source-478a579b56d29c6928ec2320
     resource: repo://libs/deepagents/pyproject.toml
   - id: openwiki-source-fb60ee46c55b974b8341651c
     resource: repo://libs/DEVELOPMENT.md
+  - id: openwiki-source-f2bb883b9cbec377de535c00
+    resource: repo://libs/evals/pyproject.toml
+  - id: openwiki-source-6985df297a9bf809e10bc5d8
+    resource: repo://libs/evals/uv.lock
+  - id: openwiki-source-49fbcc45434b619b68220bf9
+    resource: repo://libs/Makefile
+  - id: openwiki-source-b38d20ec21c25c8c726dc1b6
+    resource: repo://libs/partners/quickjs/pyproject.toml
+  - id: openwiki-source-5742b8b792426010995c1325
+    resource: repo://libs/partners/quickjs/uv.lock
   - id: openwiki-source-686a5e2ba1fe4ce0f98b9bf2
     resource: repo://libs/talon/pyproject.toml
+  - id: openwiki-source-966f1489233b6fc6ee5f2e4c
+    resource: repo://libs/talon/uv.lock
   - id: openwiki-source-482fa4ca84f42b04ba025fc1
     resource: repo://release-please-config.json
-generated: { by: "openwiki/0.4.2", at: "2026-10-24T08:05:08.866Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-10-25T08:05:05.473Z" }
 ---
 
 # Development, Dependencies, Lockfiles, and Releases
@@ -74,7 +88,7 @@ make lint
 
 `uv sync --all-groups` installs the package and its declared groups. Use `uv run ...` for an intentional one-off command. Each package's `requires-python` and dependency constraints—not editable workspace resolution—define what downstream users can install.
 
-Deep Agents and Code export `UV_FROZEN=true`, so ordinary targets do not silently repair a stale lock. Their unit-test targets run parallel pytest with non-Unix sockets disabled and Unix sockets allowed; integration targets select integration tests with a 30-second timeout. `make lint` runs Ruff checks, verifies Ruff formatting, and runs `ty`; `make format` formats and applies safe Ruff fixes. `TEST_FILE` narrows the usual test target.
+Deep Agents, Code, QuickJS, and Talon export `UV_FROZEN=true`, so their ordinary targets do not silently repair a stale lock. Deep Agents and Code unit tests run parallel pytest with non-Unix sockets disabled and Unix sockets allowed; Code integration tests select integration tests with a 30-second timeout. QuickJS uses the same socket restriction for unit tests and parallel integration tests. Talon runs its Node-based WhatsApp bridge tests before its Python suite, with sockets restricted and a 10-second timeout. Each package's `make lint` runs Ruff checks, verifies Ruff formatting, and runs `ty`; `make format` formats and applies safe Ruff fixes. `TEST_FILE` narrows the usual test target where supported.
 
 Code has a useful local CI-parity entrypoint:
 
@@ -86,13 +100,21 @@ make check
 
 `make bootstrap` syncs the test group and installs hooks. `make check` runs linting, import checks, unit tests, extras synchronization, version-file equality, and lock freshness. Its SDK-pin check is advisory only for exit status `1`; another failure remains fatal.
 
+### dcode process-directory review gate
+
+`make lint` for `libs/code` also verifies the generated slash-command catalog and runs `scripts/check_process_cwd.py deepagents_code`. This AST-based gate exists because one workspace-server process can serve many bound workspaces: reading the process current directory answers correctly only for the workspace from which that server was launched. Server paths should use the directory recorded for the workspace instead.
+
+The checker recognizes direct `Path.cwd()`, `os.getcwd()`, and calls to `find_project_root` (which can fall back to the process directory when invoked without an argument). Every recognized call must have a matching `CallSite` in its allowlist, with a reason explaining the process context; conversely, an allowlist entry without a matching call fails as stale. A call's identity includes its package-relative path, enclosing scope, kind, a digest of the call and enclosing statement, and—only for duplicate calls—an occurrence number. Editing the enclosing statement therefore produces both an unreviewed replacement and a stale old entry, deliberately requiring renewed review.
+
+Do not treat a clean run as a proof that no process-directory read exists. The scanner intentionally does not detect equivalent spellings such as `Path(".").resolve()`, `os.path.abspath(".")`, or calls through an attribute or saved reference. If a newly detected call is legitimate, prefer passing an explicit workspace directory; otherwise add a narrowly scoped allowlist entry with a reason that names why the process directory is correct. Read or parse errors fail closed so the unchecked file cannot pass the gate.
+
 Pre-commit installs commit-message and pre-push hooks. It validates Conventional Commit messages and repository hygiene, runs matching package format/lint targets, and checks affected lockfiles, extras, and version-file pairs. The pre-push hook delegates branch naming to `.githooks/pre-push`; re-run `pre-commit install --install-hooks` in an existing checkout after hook configuration changes.
 
 External contributors must link an approved issue or discussion and be assigned before opening a PR. Use a scoped Conventional Commit title. Keep a bump-worthy change in one releasable component; put cross-package dependency and lockfile churn in a separate `chore(deps):` PR so release-please does not attribute one visible change to several distributions.
 
 ## Public dependencies and local sources
 
-A requirement in `[project.dependencies]` is the PyPI contract; `[tool.uv.sources]` maps a dependency to a development-only local resolution. For example, Code publishes `deepagents==0.7.32`, while resolving Deep Agents, ACP, and partner packages from sibling editable paths during local development. Do not loosen an exact public pin merely to simplify sibling work.
+A requirement in `[project.dependencies]` is the PyPI contract; `[tool.uv.sources]` maps a dependency to a development-only local resolution. Keep those layers separate. For example, Code publishes `deepagents==0.7.32` and `langchain-quickjs>=0.3.9,<0.4.0`, while resolving Deep Agents, ACP, and partner packages from sibling editable paths during local development. Evals similarly publishes floors for Deep Agents, dcode, and QuickJS but points its checkout at their sibling sources; Talon publishes bounded or minimum requirements for Deep Agents and dcode while mapping both to sibling editable checkouts; QuickJS publishes a `deepagents>=0.7.32,<0.8.0` compatibility range while mapping Deep Agents locally. Do not loosen an exact public pin merely to simplify sibling work.
 
 ### The dcode-to-SDK pin invariant
 
@@ -119,7 +141,7 @@ The checker discovers library, partner, and example package directories. With no
 python .github/scripts/checks/refresh_lockfiles.py libs/code/pyproject.toml
 ```
 
-Locking uses Python 3.14 for first-party `acp`, `code`, `evals`, and `talon`, and Python 3.12 otherwise. A stale-lock error prints the root-relative repair command. From `libs/`, aggregate targets fan out and stop at the first failure:
+The path-aware checker and refresh helper resolve first-party `acp`, `code`, `evals`, and `talon` with Python 3.14, and other discovered packages with Python 3.12. Their lockfiles record the supported Python and platform marker coverage: Evals and Talon are locked for Python 3.14, while QuickJS's `>=3.11,<4.0` lock covers multiple Python and Emscripten branches. A stale-lock error prints the root-relative repair command. From `libs/`, aggregate targets fan out and stop at the first failure; its Makefile currently selects Python 3.14 only for `acp` and 3.12 for every other package:
 
 | Command | Purpose |
 | --- | --- |

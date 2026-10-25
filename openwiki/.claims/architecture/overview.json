@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:e67e1a15d5cf5e872482e70bb2f9ff1561edb3e8114f59a2249dafcf77450c26",
+  "pageVersion": "sha256:ced9d0bdc2fe5bd6eb0a29c1e545967512bf878b528b20ac403c827ad162e21b",
   "claims": [
     {
       "id": "claim_7e77f7ec620944c29e36936e3abea92f",
@@ -32,7 +32,7 @@
         },
         {
           "resource": "repo://libs/talon/pyproject.toml",
-          "version": "repo-file-v1:sha256:d2c79d805f57ea1034673340f85e92f6469c3b478771a2c6b31cfbd23fc935d6"
+          "version": "repo-file-v1:sha256:555e93f332f5197cbed538d2ab1e0fb3f900102666bab5332b11a24443ac641b"
         },
         {
           "resource": "repo://release-please-config.json",
@@ -58,11 +58,11 @@
         },
         {
           "resource": "repo://libs/partners/quickjs/pyproject.toml",
-          "version": "repo-file-v1:sha256:f96d5856fce5aa907ad777b132134416443bff1207a282b12098365c644af121"
+          "version": "repo-file-v1:sha256:87be1f987d75886cbc4f8eec5b2f6a716ed7ef5eaa2537e06a1eec33ceb77a26"
         },
         {
           "resource": "repo://libs/talon/pyproject.toml",
-          "version": "repo-file-v1:sha256:d2c79d805f57ea1034673340f85e92f6469c3b478771a2c6b31cfbd23fc935d6"
+          "version": "repo-file-v1:sha256:555e93f332f5197cbed538d2ab1e0fb3f900102666bab5332b11a24443ac641b"
         }
       ]
     },
@@ -116,7 +116,7 @@
         },
         {
           "resource": "repo://libs/talon/pyproject.toml",
-          "version": "repo-file-v1:sha256:d2c79d805f57ea1034673340f85e92f6469c3b478771a2c6b31cfbd23fc935d6"
+          "version": "repo-file-v1:sha256:555e93f332f5197cbed538d2ab1e0fb3f900102666bab5332b11a24443ac641b"
         }
       ]
     },
@@ -177,6 +177,6 @@
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-10-24T08:05:08.866Z"
+    "at": "2026-10-25T08:05:05.473Z"
   }
 }

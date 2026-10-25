@@ -221,6 +221,7 @@ jobs:
           UNIFIED_ROLLOUTS: ${{ inputs.rollouts }}
           UNIFIED_N_RETRIES: ${{ inputs.n_retries }}
           UNIFIED_AGENT_TIMEOUT_MULTIPLIER: ${{ inputs.agent_timeout_multiplier }}
+          UNIFIED_REASONING_EFFORT: ${{ inputs.reasoning_effort }}
           # Set by the enumerate step above for the full profile only; empty
           # (unset) for lite, which unified_prep.py never reads in that case.
           UNIFIED_TASKS_JSON: ${{ env.UNIFIED_TASKS_JSON }}
@@ -491,6 +492,8 @@ jobs:
           # incomplete rather than silently ranking on fewer categories.
           EXPECTED_LEAVES: ${{ needs.prep.outputs.expected_leaves }}
           EXPECTED_CATEGORIES: ${{ needs.prep.outputs.categories }}
+          # Part of each experiment name, so usage lookups match what runs logged.
+          UNIFIED_REASONING_EFFORT: ${{ inputs.reasoning_effort }}
         run: |
           mkdir -p _leaves
           usage_args=()

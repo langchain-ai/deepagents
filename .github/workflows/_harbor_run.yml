@@ -908,7 +908,7 @@ jobs:
           # by category (one model spans three datasets) and by run id/attempt (keep
           # re-runs separate); shards of a category share it, so harbor's stock plugin
           # (>=harbor-langsmith 0.3.0) converges them into one experiment. Reads
-          # HARBOR_MODEL/BRANCH/AGENT_IMPL/CATEGORY + GITHUB_RUN_ID/ATTEMPT from the env.
+          # HARBOR_MODEL/BRANCH/AGENT_IMPL/CATEGORY/REASONING_EFFORT + GITHUB_RUN_ID/ATTEMPT from the env.
           HARBOR_LANGSMITH_EXPERIMENT="$(python3 "$GITHUB_WORKSPACE/.github/scripts/evals/experiment_name.py")"
           echo "HARBOR_AGENT_GRAPH=$HARBOR_AGENT_GRAPH" >> "$GITHUB_ENV"
           echo "HARBOR_LANGSMITH_DATASET=$HARBOR_LANGSMITH_DATASET" >> "$GITHUB_ENV"

@@ -44,6 +44,11 @@ on:
         required: false
         default: ""
         type: string
+      langsmith_dataset:
+        description: "Optional LangSmith dataset name to log experiments under (created if missing). Empty derives it from the Harbor dataset ref."
+        required: false
+        default: ""
+        type: string
       dataset_path:
         description: "Optional local dataset path relative to libs/evals (for example, datasets/context-retrieval-evals). Takes priority over registry inputs."
         required: false
@@ -335,7 +340,7 @@ jobs:
       dataset_path: ${{ inputs.dataset_path }}
       agent_impl: ${{ inputs.agent_impl }}
       # Empty: the leaf derives the dataset name itself.
-      langsmith_dataset: ""
+      langsmith_dataset: ${{ inputs.langsmith_dataset }}
       rollouts: ${{ inputs.rollouts_per_task }}
       n_shards: ${{ inputs.n_shards }}
       # Derived pool the shards drain through (dynamic dispatch), not n_shards

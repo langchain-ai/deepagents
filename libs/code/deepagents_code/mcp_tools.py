@@ -45,6 +45,7 @@ if TYPE_CHECKING:
         Mapping,
         Sequence,
     )
+    from ssl import SSLContext
     from typing import TextIO
 
     import httpx2
@@ -1664,8 +1665,8 @@ def _apply_tool_filter(
     ]
 
 
-_MCP_REMOTE_STARTUP_TIMEOUT = 2.0
-"""Maximum seconds for a remote server to connect and discover tools."""
+_MCP_REMOTE_CONNECT_TIMEOUT = 2.0
+"""Maximum seconds to establish a remote HTTP connection."""
 
 _MCP_LOAD_CONCURRENCY = 8
 """Upper bound on simultaneous MCP setup and discovery pipelines."""
@@ -1765,6 +1766,28 @@ async def _gather_bounded[T](
         raise
 
 
+def _remote_http_client(
+    headers: dict[str, str] | None = None,
+    timeout: httpx2.Timeout | None = None,
+    auth: httpx2.Auth | None = None,
+    *,
+    follow_redirects: bool = True,
+    verify: SSLContext | bool | str = True,
+) -> httpx2.AsyncClient:
+    """Return an HTTP client with a short connect timeout and unchanged reads."""
+    import httpx2
+
+    timeout = httpx2.Timeout(timeout or httpx2.Timeout(30.0, read=300.0))
+    timeout.connect = _MCP_REMOTE_CONNECT_TIMEOUT
+    return httpx2.AsyncClient(
+        headers=headers,
+        timeout=timeout,
+        auth=auth,
+        follow_redirects=follow_redirects,
+        verify=verify,
+    )
+
+
 def _build_transport(
     server_name: str,  # noqa: ARG001 - retained for transport factory callers
     server_type: str,
@@ -1796,6 +1819,7 @@ def _build_transport(
     Returns:
         A transport ready to mount on the router.
     """
+    from fastmcp.client.transports import SSETransport, StreamableHttpTransport
     from fastmcp.mcp_config import RemoteMCPServer, StdioMCPServer
 
     if server_type in _SUPPORTED_REMOTE_TYPES:
@@ -1811,7 +1835,13 @@ def _build_transport(
         # The config's `auth` is a mode name (`"oauth"`), not a credential; the
         # resolved provider replaces it.
         remote.auth = auth
-        return remote.to_transport()
+        transport = remote.to_transport()
+        if isinstance(transport, (SSETransport, StreamableHttpTransport)):
+            transport.httpx_client_factory = functools.partial(
+                _remote_http_client,
+                verify=True if transport.verify is None else transport.verify,
+            )
+        return transport
 
     stdio = StdioMCPServer.model_validate(dict(server_config))
     stdio.keep_alive = keep_alive
@@ -1860,12 +1890,7 @@ async def _mount_backends(
     discovered: dict[str, list[Any]] = {}
     failures: dict[str, tuple[MCPServerStatus, str]] = {}
 
-    from fastmcp.client.transports import (
-        ClientTransport,
-        SSETransport,
-        StdioTransport,
-        StreamableHttpTransport,
-    )
+    from fastmcp.client.transports import ClientTransport, StdioTransport
 
     stack = AsyncExitStack()
     connected: dict[str, StatefulProxyClient[Any]] = {}
@@ -1900,25 +1925,11 @@ async def _mount_backends(
                 "backend client",
                 functools.partial(backend._disconnect, force=True),
             )
-            timeout = (
-                _MCP_REMOTE_STARTUP_TIMEOUT
-                if isinstance(transport, (SSETransport, StreamableHttpTransport))
-                else None
-            )
-            async with asyncio.timeout(timeout):
-                await backend.__aenter__()  # noqa: PLC2801 - explicit forced disconnect above
-                tools = await backend.list_tools()
+            await backend.__aenter__()  # noqa: PLC2801 - explicit forced disconnect above
+            tools = await backend.list_tools()
             connected[server_name] = backend
             discovered[server_name] = tools
             stack.push_async_callback(_close_backend_stack, owned.pop_all())
-        except TimeoutError:
-            error = (
-                f"MCP server {server_name!r}: connection and tool discovery timed out "
-                f"after {_MCP_REMOTE_STARTUP_TIMEOUT:g}s. "
-                "Check that the server is reachable and responding."
-            )
-            failures[server_name] = ("error", error)
-            logger.warning("MCP server '%s' skipped: %s", server_name, error)
         except Exception as exc:  # noqa: BLE001 - isolate each backend
             failures[server_name] = _classify_connect_failure(
                 server_name, exc, redact=redact.get(server_name, False)

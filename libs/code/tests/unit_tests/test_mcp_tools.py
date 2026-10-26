@@ -2832,92 +2832,75 @@ class TestLoadToolsConcurrency:
                 for client in clients:
                     await client._disconnect(force=True)
 
-    @pytest.mark.parametrize("phase", ["connect", "discovery"])
     @pytest.mark.parametrize("protocol", ["http", "sse"])
-    async def test_remote_startup_timeout_releases_slot_and_closes_backend(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-        caplog: pytest.LogCaptureFixture,
-        phase: str,
-        protocol: str,
+    @pytest.mark.parametrize("read_timeout", [None, 47.0])
+    async def test_remote_connect_timeout_preserves_read_and_auth(
+        self, protocol: str, read_timeout: float | None
     ) -> None:
-        """Hung remote servers time out, clean up, and let queued servers load."""
-        from fastmcp.client.transports import (
-            FastMCPTransport,
-            SSETransport,
-            StreamableHttpTransport,
+        import httpx2
+
+        transport = _build_transport(
+            "remote",
+            protocol,
+            {"type": protocol, "url": "https://example.invalid/mcp"},
+            auth=None,
+            keep_alive=False,
         )
+        from fastmcp.client.transports import SSETransport, StreamableHttpTransport
+
+        assert isinstance(transport, (SSETransport, StreamableHttpTransport))
+        factory = transport.httpx_client_factory
+        assert factory is not None
+        auth = httpx2.BasicAuth("user", "password")
+        timeout = httpx2.Timeout(30, read=read_timeout) if read_timeout else None
+        async with factory(
+            headers={"X-Test": "value"}, timeout=timeout, auth=auth
+        ) as client:
+            assert client.timeout.connect == pytest.approx(2.0)
+            assert client.timeout.read == (read_timeout or 300.0)
+            assert client.timeout.write == pytest.approx(30.0)
+            assert client.timeout.pool == pytest.approx(30.0)
+            assert client.auth is auth
+            assert client.headers["X-Test"] == "value"
+        if timeout is not None:
+            assert timeout.connect == pytest.approx(30.0)
+
+    @pytest.mark.parametrize("phase", ["connect", "discovery"])
+    async def test_slow_healthy_server_keeps_tools(self, phase: str) -> None:
+        """Healthy initialization and discovery may exceed the connect timeout."""
+        from fastmcp.client.transports import FastMCPTransport, StreamableHttpTransport
         from fastmcp.server.providers.proxy import StatefulProxyClient
 
-        monkeypatch.setattr(
-            "deepagents_code.mcp_tools._MCP_REMOTE_STARTUP_TIMEOUT", 0.05
-        )
-        monkeypatch.setattr("deepagents_code.mcp_tools._MCP_LOAD_CONCURRENCY", 1)
-        monkeypatch.setenv("MCP_TIMEOUT_SECRET", "timeout-secret-must-not-leak")
-        caplog.set_level(logging.DEBUG, logger="deepagents_code.mcp_tools")
-        server = FakeMCPServer("healthy", [("tool", "tool")])
-        stopped = asyncio.Event()
-        clients: list[StatefulProxyClient] = []
+        server = FakeMCPServer("remote", [("tool", "tool")])
+        remote = StreamableHttpTransport("https://example.invalid/mcp")
         enter = StatefulProxyClient.__aenter__
         list_tools = StatefulProxyClient.list_tools
-        remote_type = SSETransport if protocol == "sse" else StreamableHttpTransport
-        remote = remote_type("https://example.invalid/mcp")
-        closed = AsyncMock(wraps=remote.close)
-        monkeypatch.setattr(remote, "close", closed)
-
-        async def stall() -> None:
-            try:
-                await asyncio.Event().wait()
-            finally:
-                stopped.set()
 
         async def connect(client: StatefulProxyClient) -> StatefulProxyClient:
-            clients.append(client)
-            if client.transport is remote:
-                if phase == "connect":
-                    await stall()
-                client.transport = FastMCPTransport(server.server)
+            if phase == "connect":
+                await asyncio.sleep(2.01)
+            client.transport = FastMCPTransport(server.server)
             return await enter(client)
 
         async def discover(client: StatefulProxyClient) -> list[Tool]:
-            if client is clients[0] and phase == "discovery":
-                await stall()
+            if phase == "discovery":
+                await asyncio.sleep(2.01)
             return await list_tools(client)
 
-        def build(name: str, *_args: Any, **_kwargs: Any) -> Any:  # noqa: ANN401
-            return remote if name == "hung" else FastMCPTransport(server.server)
-
         with (
-            patch("deepagents_code.mcp_tools._build_transport", build),
+            patch("deepagents_code.mcp_tools._build_transport", return_value=remote),
             patch.object(StatefulProxyClient, "__aenter__", connect),
             patch.object(StatefulProxyClient, "list_tools", discover),
         ):
-            tools, manager, infos = await asyncio.wait_for(
-                _load_tools_from_config(
-                    {
-                        "mcpServers": {
-                            "hung": {
-                                "type": protocol,
-                                "url": "https://example.invalid/${MCP_TIMEOUT_SECRET}",
-                            },
-                            "healthy": {"command": "node"},
-                        }
-                    }
-                ),
-                timeout=5,
+            tools, manager, infos = await _load_tools_from_config(
+                {"mcpServers": {"remote": {"url": "https://example.invalid/mcp"}}}
             )
         assert manager is not None
         try:
-            assert [info.status for info in infos] == ["error", "ok"]
-            assert "timed out" in (infos[0].error or "")
-            assert "timeout-secret-must-not-leak" not in caplog.text
-            assert stopped.is_set()
-            assert not clients[0].is_connected()
-            closed.assert_awaited_once()
-            assert [tool.name for tool in tools] == ["healthy_tool"]
+            assert infos[0].status == "ok"
+            assert [tool.name for tool in tools] == ["remote_tool"]
         finally:
             await manager.cleanup()
-        assert not any(client.is_connected() for client in clients)
 
     @pytest.mark.parametrize("status", ["unauthenticated", "error"])
     async def test_discovery_failure_classifies_and_closes_backend(

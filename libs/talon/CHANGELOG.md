@@ -4,7 +4,7 @@
 
 ### ⚠ BREAKING CHANGES
 
-- `deepagents-talon` now requires Python 3.14 (`>=3.14,<3.15`).
+- `deepagents-talon` now requires Python 3.14 (`>=3.14,<3.15`). ([#7052](https://github.com/langchain-ai/deepagents/pull/7052))
 
 ### Features
 
@@ -50,7 +50,7 @@
 - Transcribe inbound audio attachments, preserve MIME types for downloaded WhatsApp voice messages, and avoid retranscribing voice on background follow-ups. ([#6680](https://github.com/langchain-ai/deepagents/pull/6680), [#6590](https://github.com/langchain-ai/deepagents/pull/6590), [#6682](https://github.com/langchain-ai/deepagents/pull/6682))
 - List selectable gateway models and persist model selection across conversations. ([#6595](https://github.com/langchain-ai/deepagents/pull/6595), [#6603](https://github.com/langchain-ai/deepagents/pull/6603))
 - Preserve Slack conversation context across threads, include preceding replies when mentioned in a thread, and keep legacy thread archives writable. ([#6665](https://github.com/langchain-ai/deepagents/pull/6665), [#6634](https://github.com/langchain-ai/deepagents/pull/6634), [#6679](https://github.com/langchain-ai/deepagents/pull/6679))
-- Allow scheduled jobs to read their origin chat’s history and serialize changes to the cron store. ([#6583](https://github.com/langchain-ai/deepagents/pull/6583), [#6688](https://github.com/langchain-ai/deepagents/pull/6688))
+- Allow scheduled jobs to read their origin chat's history and serialize changes to the cron store. ([#6583](https://github.com/langchain-ai/deepagents/pull/6583), [#6688](https://github.com/langchain-ai/deepagents/pull/6688))
 - Accept any Slack slash command name and labeled Slack OAuth callbacks, while excluding OAuth callbacks from thread context. ([#6589](https://github.com/langchain-ai/deepagents/pull/6589), [#6593](https://github.com/langchain-ai/deepagents/pull/6593), [#6687](https://github.com/langchain-ai/deepagents/pull/6687))
 - Deliver narration before running tools and preserve turn cancellation during typing cleanup. ([#6681](https://github.com/langchain-ai/deepagents/pull/6681), [#6594](https://github.com/langchain-ai/deepagents/pull/6594))
 - Index only visible conversation text and persist history-vector deduplication. ([#6358](https://github.com/langchain-ai/deepagents/pull/6358), [#6357](https://github.com/langchain-ai/deepagents/pull/6357))

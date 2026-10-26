@@ -53,6 +53,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Reject empty commits
         run: |
@@ -367,6 +368,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 1
+          persist-credentials: false
       - name: Wait for in-flight releases
         id: check
         env:
@@ -694,6 +696,8 @@ jobs:
       prs: ${{ steps.release.outputs.prs }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       # Release-please only discovers PRs with the canonical pending label.
       # Normalization must succeed before it runs, or it can update an existing

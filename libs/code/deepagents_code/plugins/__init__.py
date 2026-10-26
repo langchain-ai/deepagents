@@ -11,6 +11,7 @@ from deepagents_code.plugins.discovery import (
     remove_marketplace,
     set_installed_plugin_enabled,
     uninstall_plugin,
+    update_plugins,
 )
 from deepagents_code.plugins.models import PluginDiscoveryResult, PluginInstance
 
@@ -27,4 +28,5 @@ __all__ = [
     "remove_marketplace",
     "set_installed_plugin_enabled",
     "uninstall_plugin",
+    "update_plugins",
 ]

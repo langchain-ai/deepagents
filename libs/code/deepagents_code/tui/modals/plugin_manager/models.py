@@ -56,6 +56,7 @@ class _PluginRow:
     load_error: str | None = None
     needs_repair: bool = False
     """Whether the plugin is registered but its installed files are missing."""
+    available_version: str | None = None
 
     @property
     def load_state(self) -> PluginLoadState:

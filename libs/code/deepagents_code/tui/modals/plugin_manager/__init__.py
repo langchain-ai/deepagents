@@ -44,6 +44,7 @@ from deepagents_code.plugins import (
     remove_marketplace,
     set_installed_plugin_enabled,
     uninstall_plugin,
+    update_plugins,
 )
 from deepagents_code.plugins.discovery import plugin_auto_update_setting
 from deepagents_code.plugins.marketplace import MarketplaceError, redact_urls_in_text
@@ -1102,6 +1103,9 @@ class PluginManagerScreen(ModalScreen[PluginManagerResult]):  # noqa: RUF067
         if option_id == "action:uninstall":
             await self._uninstall_selected_plugin()
             return
+        if option_id == "action:update":
+            await self._update_selected_plugin()
+            return
         if option_id == "action:remove-marketplace":
             self._mode = "confirm_remove_marketplace"
             self._error = None
@@ -1268,6 +1272,35 @@ class PluginManagerScreen(ModalScreen[PluginManagerResult]):  # noqa: RUF067
             self._refresh_view()
             return
         self._error = None
+        await self._refresh_state()
+
+    async def _update_selected_plugin(self) -> None:
+        row = self._selected_plugin
+        if row is None:
+            return
+        self._status = f"Updating {row.label}..."
+        self._error = None
+        self._refresh_view()
+        try:
+            result = await asyncio.to_thread(update_plugins, [row.plugin_id])
+        except (MarketplaceError, OSError, ValueError) as exc:
+            self._error = f"Could not update plugin: {redact_urls_in_text(str(exc))}"
+            self._status = None
+            self._refresh_view()
+            return
+        if result.errors:
+            self._error = result.errors[0]
+            self._status = None
+            self._refresh_view()
+            return
+        self._mode = "list"
+        self._selected_plugin = None
+        self._status = (
+            f"Updated {row.label} to {result.updated[0].available_version}. "
+            "Run /reload to apply."
+            if result.updated
+            else f"{row.label} is already up to date."
+        )
         await self._refresh_state()
 
     async def _uninstall_selected_plugin(self) -> None:

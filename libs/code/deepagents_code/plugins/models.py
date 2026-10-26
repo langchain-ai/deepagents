@@ -256,6 +256,32 @@ class PluginDiscoveryResult:
     broken: tuple[BrokenPluginInstall, ...] = ()
 
 
+@dataclass(frozen=True, slots=True, kw_only=True)
+class PluginUpdate:
+    """A marketplace plugin version that differs from the installed one."""
+
+    plugin_id: str
+    installed_version: str
+    available_version: str
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class PluginUpdateResult:
+    """Outcome of checking installed plugins against their marketplaces.
+
+    Attributes:
+        updated: Plugins whose newer version was installed.
+        available: Plugins with a newer version that was not installed.
+        newly_available: Subset of `available` not reported by a previous check.
+        errors: Per-marketplace or per-plugin failures, already redacted.
+    """
+
+    updated: tuple[PluginUpdate, ...] = ()
+    available: tuple[PluginUpdate, ...] = ()
+    newly_available: tuple[PluginUpdate, ...] = ()
+    errors: tuple[str, ...] = ()
+
+
 def split_plugin_id(plugin_id: str) -> tuple[str, str]:
     """Split a plugin id in `{plugin}@{marketplace}` form.
 

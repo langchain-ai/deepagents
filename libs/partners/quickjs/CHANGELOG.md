@@ -2,6 +2,12 @@
 
 # Changelog
 
+## [0.3.10](https://github.com/langchain-ai/deepagents/compare/langchain-quickjs==0.3.9...langchain-quickjs==0.3.10) (2026-10-26)
+
+### Bug Fixes
+
+- Fixed PTC prompt caching to cache prompts per slot and tool identity. ([#7296](https://github.com/langchain-ai/deepagents/pull/7296))
+
 ## [0.3.9](https://github.com/langchain-ai/deepagents/compare/langchain-quickjs==0.3.8...langchain-quickjs==0.3.9) (2026-10-13)
 
 ### Features

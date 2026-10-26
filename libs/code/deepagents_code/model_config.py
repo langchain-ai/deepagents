@@ -1488,6 +1488,27 @@ ANTHROPIC_MODEL_PROFILE_FALLBACKS: dict[str, dict[str, Any]] = {
 """Capability fallbacks from https://platform.claude.com/docs/en/models/haiku-5-5/overview."""
 
 
+OPENAI_MODEL_PROFILE_FALLBACKS: dict[str, dict[str, Any]] = {
+    "gpt-6.1-terra": {
+        "name": "GPT-6.1 Terra",
+        "max_input_tokens": 922_000,
+        "max_output_tokens": 128_000,
+        "text_inputs": True,
+        "image_inputs": True,
+        "audio_inputs": False,
+        "video_inputs": False,
+        "text_outputs": True,
+        "reasoning_output": True,
+        "tool_calling": True,
+        "tool_choice": True,
+        "structured_output": True,
+        "reasoning_effort_levels": ["none", "low", "medium", "high", "xhigh", "max"],
+        "reasoning_effort_default": "medium",
+    },
+}
+"""Capability fallbacks from https://developers.openai.com/api/docs/models/gpt-6.1-terra."""
+
+
 def _load_provider_profiles(module_path: str) -> dict[str, Any]:
     """Load `_PROFILES` from a provider's data module.
 
@@ -1549,12 +1570,16 @@ def _load_provider_profiles(module_path: str) -> dict[str, Any]:
         module = importlib.util.module_from_spec(file_spec)
         file_spec.loader.exec_module(module)
         profiles = getattr(module, "_PROFILES", {})
-        if module_path == "langchain_anthropic.data._profiles":
+        fallbacks = {
+            "langchain_anthropic.data._profiles": ANTHROPIC_MODEL_PROFILE_FALLBACKS,
+            "langchain_openai.data._profiles": OPENAI_MODEL_PROFILE_FALLBACKS,
+        }.get(module_path, {})
+        if fallbacks:
             profiles = {
-                **ANTHROPIC_MODEL_PROFILE_FALLBACKS,
+                **fallbacks,
                 **{
                     model: {
-                        **ANTHROPIC_MODEL_PROFILE_FALLBACKS.get(model, {}),
+                        **fallbacks.get(model, {}),
                         **profile,
                     }
                     for model, profile in profiles.items()

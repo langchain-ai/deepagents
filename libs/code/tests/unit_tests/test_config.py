@@ -5245,6 +5245,36 @@ class TestCreateModelForwardsProviderProfile:
             "deepagents_code.model_config.has_provider_credentials", lambda _: True
         )
 
+    def test_terra_profile_and_responses_tool_payload(self) -> None:
+        from langchain_core.messages import HumanMessage
+        from langchain_core.runnables import RunnableBinding
+        from langchain_openai import ChatOpenAI
+        from pydantic import BaseModel
+
+        class Decision(BaseModel):
+            allowed: bool
+
+        result = create_model(
+            "openai:gpt-6.1-terra",
+            extra_kwargs={"api_key": "test-key", "reasoning_effort": "max"},
+        )
+        model = result.model
+        assert isinstance(model, ChatOpenAI)
+        assert result.context_limit == 922_000
+        assert result.unsupported_modalities == frozenset({"audio", "video"})
+        assert model.profile is not None
+        assert model.profile["max_output_tokens"] == 128_000
+        bound = model.bind_tools([Decision], tool_choice="Decision")
+        assert isinstance(bound, RunnableBinding)
+        payload = model._get_request_payload(
+            [HumanMessage("Is this allowed?")], **bound.kwargs
+        )
+        assert model.use_responses_api is True
+        assert payload["reasoning"]["effort"] == "max"
+        assert payload["tool_choice"] == {"type": "function", "name": "Decision"}
+        assert "input" in payload
+        assert "messages" not in payload
+
     @patch("langchain.chat_models.init_chat_model")
     def test_profile_pre_init_failure_wrapped_in_model_config_error(
         self,

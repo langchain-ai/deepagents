@@ -6,7 +6,7 @@
 
 ### Bug Fixes
 
-- Cache the PTC prompt per slot and tool identity.
+- Fixed PTC prompt caching to cache prompts per slot and tool identity. ([#7296](https://github.com/langchain-ai/deepagents/pull/7296))
 
 ## [0.3.9](https://github.com/langchain-ai/deepagents/compare/langchain-quickjs==0.3.8...langchain-quickjs==0.3.9) (2026-10-13)
 

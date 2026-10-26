@@ -29,6 +29,38 @@ If `AGENT_MODEL` is unset, Talon starts with the echo runtime. This is useful fo
 
 Assistant state lives under `~/.deepagents/<assistant_id>/` by default. The host creates restrictive state directories for the materialized agent manifest, channel sessions, and cron jobs, and persists conversation checkpoints in `checkpoints.sqlite` so chat history survives restarts. Offloaded conversation history and large tool results live in the assistant home’s `artifacts/` directory. The default local execution workspace is the current working directory; set `DEEPAGENTS_TALON_WORKSPACE` to use a different directory. The per-invocation graph recursion limit defaults to `500`; set `DEEPAGENTS_TALON_RECURSION_LIMIT` to tune it.
 
+## Checkpoint backends
+
+Set `DEEPAGENTS_TALON_CHECKPOINT_URI` to select persistent LangGraph checkpoints:
+
+| URI | Install |
+| --- | --- |
+| Unset, `sqlite:///absolute/path/checkpoints.sqlite`, or `file:///absolute/path/checkpoints.sqlite` | Included by default |
+| `postgresql://user:password@host/database` (also `postgres:`) | `uv sync --extra postgres` |
+| `mongodb://host/database` or `mongodb+srv://host/database` | `uv sync --extra mongodb` |
+
+Only the selected checkpoint driver is imported. PostgreSQL and MongoDB packages
+are optional; SQLite remains installed for the default local conversation archive.
+Checkpoint and history URIs are independent. Changing the checkpoint URI does not
+migrate existing checkpoints. Use separate databases for separate assistants;
+remote checkpoint thread IDs are not automatically namespaced by assistant ID.
+SQLite paths containing spaces must be percent-encoded; query options are not supported.
+
+Other LangGraph checkpointers can be supplied by trusted installed packages:
+
+```toml
+[project.entry-points."deepagents_talon.checkpoint_backends"]
+custom = "my_package:open_checkpointer"
+```
+
+Set the checkpoint URI to `custom://...`. The factory receives the unchanged URI
+and returns an async context manager yielding an initialized `BaseCheckpointSaver`
+with async checkpoint methods. The factory owns setup, connection options, bounded
+startup, and cleanup, including cancellation. Built-in schemes take precedence;
+unknown or duplicate plugin schemes fail startup. Talon wraps every backend with
+`ConversationSaver` so history tools remain available. This plugin API is experimental.
+Embedding hosts can also pass any compatible saver directly to `DeepAgentRuntime`.
+
 ## Sandboxed execution
 
 By default the agent's shell and file tools run on the host. Set `DEEPAGENTS_TALON_SANDBOX` to a sandbox provider to run them in a remote sandbox instead:
@@ -39,7 +71,7 @@ DEEPAGENTS_TALON_SANDBOX=langsmith AGENT_MODEL=<provider>:<model-id> uv run deep
 
 Under systemd, put the variable in the service's environment file instead.
 
-Talon uses the `deepagents-code` sandbox providers: `langsmith` works out of the box, and `agentcore`, `daytona`, `modal`, `runloop`, and `vercel` need the matching extra, for example `uv run --with 'deepagents-code[daytona]' deepagents-talon`. Each provider reads its own credentials (such as `LANGSMITH_API_KEY` or `DAYTONA_API_KEY`) in the Talon process; they are not forwarded into the sandbox.
+Talon uses the `deepagents-code` sandbox providers: `langsmith` works out of the box, and `agentcore`, `daytona`, `modal`, `openshell`, `runloop`, and `vercel` need the matching extra, for example `uv run --with 'deepagents-code[daytona]' deepagents-talon`. Talon also ships an `openshell` extra (`deepagents-talon[openshell]`). Each provider reads its own credentials (such as `LANGSMITH_API_KEY` or `DAYTONA_API_KEY`) in the Talon process; they are not forwarded into the sandbox. OpenShell instead uses the gateway the `openshell` CLI has selected, overridable with `OPENSHELL_GATEWAY`, and the workspace in `OPENSHELL_WORKSPACE` (default `default`). For OpenShell, `DEEPAGENTS_TALON_SANDBOX_ID` takes the sandbox name the CLI shows.
 
 | Variable | Purpose |
 | --- | --- |
@@ -78,7 +110,8 @@ reset. Custom async LangGraph checkpointers can enable history with `Conversatio
 Set `DEEPAGENTS_TALON_HISTORY_URI` to `mongodb://host/database` or
 `postgresql://user:password@host/database` and install the `mongodb` or `postgres`
 extra (`uv sync --extra mongodb`). All three backends use the same archive; SQLite
-is the default. This alpha requires fresh history storage. Checkpoints stay local.
+is the default. This alpha requires fresh history storage. Checkpoints stay local
+unless `DEEPAGENTS_TALON_CHECKPOINT_URI` is also configured.
 Default SQLite uses the same store factory and assistant namespace as configured
 backends, with its own connection to the checkpoint database.
 
@@ -396,7 +429,13 @@ Registration needs the **`applications.commands`** scope alongside `bot` in the 
 
 `DEEPAGENTS_TALON_DISCORD_COMMAND_GUILD_ID` scopes registration to one guild, which applies immediately and is useful while developing; global registration can take several minutes to propagate but is the only kind that reaches DMs, so leave this unset for an operator-DM deployment. `DEEPAGENTS_TALON_DISCORD_SLASH_COMMANDS=false` disables registration entirely, leaving commands available as typed text.
 
-`conversation_id` is the Discord channel ID, which works uniformly for DM channels and guild text channels. A public guild thread keeps its own conversation and reply destination, but its archived history is shared with its parent channel and other public threads there. Private threads and DMs retain separate history. Existing thread-scoped history is not moved into the parent channel. `/reset-all-history` in a public thread clears the parent channel's shared archive; `/new` starts a new conversation only in the current thread. In `allowlist` mode, `DEEPAGENTS_TALON_DISCORD_ALLOWLIST_USERS` allows DMs from specific Discord user IDs regardless of channel, while `DEEPAGENTS_TALON_DISCORD_ALLOWLIST_CHATS` allows messages from specific channel IDs (DM or guild). `DEEPAGENTS_TALON_DISCORD_OPERATOR_ID` accepts one or more comma-separated operator IDs for `self` exposure, the default mode, which only accepts DMs from those operators. Outbound text over Discord's 2000-character message limit is split into multiple separate messages sent in order; outbound media is sent as a file attachment with the caption as the message content when it fits, or as a preceding separate message otherwise. `DEEPAGENTS_TALON_MAX_MEDIA_BYTES` caps inbound and outbound channel media across providers and defaults to `1073741824` (1 GiB). If `AGENT_MODEL` and `DEEPAGENTS_TALON_MODEL` are both unset, Talon uses the echo runtime and replies with the inbound text unchanged.
+Talon adapts to where it is talking, the way it does on Slack. A direct message with the bot is one conversation, and every message in it is a turn. In a server (guild), the bot answers only when a message mentions it — either `@Talon` itself or its integration role, which Discord's autocomplete offers alongside it; replying to one of the bot's messages with the ping left on also counts. A mention in a text channel opens a public thread on the mentioning message, named after its first line, and the bot replies there. A mention inside an existing thread is answered in that thread. Each thread is its own conversation, so follow-ups mention the bot in the thread, for example `@Talon /new`. A message that does not mention the bot is ignored, even in an allowlisted channel. If the bot cannot open a thread — most often because it lacks **Create Public Threads** — it logs a warning and replies in the channel instead. Guild use needs the bot's **Send Messages in Threads**, **Create Public Threads**, and **Read Message History** permissions.
+
+To drop the mention requirement in particular channels, set `DEEPAGENTS_TALON_DISCORD_MENTION_OPTIONAL_CHATS` to a comma-separated list of channel IDs, or to `*` for every guild channel. There, any message from a person is a turn, in the channel and in its threads: a top-level message opens its own thread just as a mention would, and follow-ups in that thread need no mention. This lifts only the mention requirement — the exposure policy still decides who is admitted, so in `self` mode only operators trigger the bot. With `allowlist` or `open` exposure, though, every message from anyone admitted in such a channel becomes a turn and a new thread. Messages from other bots must still mention Talon, so two bots that each answer everything cannot reply to each other forever.
+
+When the bot is addressed in an existing thread, it reads up to 40 earlier thread messages, including the message that started the thread, and gives the ones posted since its own last reply to the agent as context rather than instructions; anything older is already in its history. As on Slack, only messages from operators and `DEEPAGENTS_TALON_DISCORD_ALLOWLIST_USERS` are included, other bots' messages are marked as bot-authored, the bot's own replies are left out because they are already in its history, and a message containing an OAuth callback URL is dropped whole. Set `DEEPAGENTS_TALON_DISCORD_INCLUDE_OTHER_THREAD_PARTICIPANTS=1` to include every participant, accepting that their text can steer an agent with privileged tools. If the history cannot be read, the agent is told so.
+
+`conversation_id` is the Discord channel ID of the DM or thread. A public guild thread, including one Talon opened, keeps its own conversation and reply destination, but its archived history is shared with its parent channel and other public threads there. Private threads and DMs retain separate history. Existing thread-scoped history is not moved into the parent channel. `/reset-all-history` in a public thread clears the parent channel's shared archive; `/new` starts a new conversation only in the current thread. In `allowlist` mode, `DEEPAGENTS_TALON_DISCORD_ALLOWLIST_USERS` allows DMs from specific Discord user IDs regardless of channel, while `DEEPAGENTS_TALON_DISCORD_ALLOWLIST_CHATS` allows messages from specific channel IDs (DM or guild); an allowlisted guild channel also admits every thread in it, so anyone there can mention the bot. `DEEPAGENTS_TALON_DISCORD_OPERATOR_ID` accepts one or more comma-separated operator IDs for `self` exposure, the default mode, which only accepts DMs from those operators. Outbound text over Discord's 2000-character message limit is split into multiple separate messages sent in order; outbound media is sent as a file attachment with the caption as the message content when it fits, or as a preceding separate message otherwise. `DEEPAGENTS_TALON_MAX_MEDIA_BYTES` caps inbound and outbound channel media across providers and defaults to `1073741824` (1 GiB). If `AGENT_MODEL` and `DEEPAGENTS_TALON_MODEL` are both unset, Talon uses the echo runtime and replies with the inbound text unchanged.
 
 ## Slack
 
@@ -420,6 +459,8 @@ oauth_config:
   scopes:
     bot:
       - app_mentions:read
+      - channels:history
+      - groups:history
       - chat:write
       - commands
       - files:read
@@ -447,7 +488,9 @@ AGENT_ASSISTANT_ID=slack-local \
 uv run --directory libs/talon deepagents-talon --slack
 ```
 
-A direct message with the bot is one conversation. In channels the bot answers only when mentioned, and it replies in a thread under the mentioning message. Each thread is its own conversation, identified as `<channel id>:<thread ts>`, so mention the bot again in the thread to continue. Invite the bot to a channel with `/invite @Talon` before mentioning it there.
+A direct message with the bot is one conversation. In channels the bot answers only when mentioned, and it replies in a thread under the mentioning message. Each thread is its own active conversation, identified as `<channel id>:<thread ts>`, so mention the bot again in the thread to continue. Archived history for channel threads is shared by channel: `list_conversations`, `search_conversations`, and the other conversation tools can see sibling threads, but their active contexts and reply destinations remain separate. DMs keep separate history. Existing thread-scoped sessions continue writing to their original archive and are not included in channel-wide history tools or resets; use `/new` to start a channel-scoped archive without moving the old history. `/reset-all-history` in a channel thread clears its channel's shared archive; `/new` starts a new conversation only in that thread. Invite the bot to a channel with `/invite @Talon` before mentioning it there.
+
+When mentioned in an existing channel thread, Talon includes bounded preceding replies from configured operators and allowlisted users as model context. By default, replies from other senders are excluded, even in open or channel-allowlist exposure. Set `DEEPAGENTS_TALON_SLACK_INCLUDE_OTHER_THREAD_PARTICIPANTS=1` to include other humans' and bots' messages, such as a root question addressed to a different bot; the default is `0`. This changes historical context only, not who may trigger Talon. Enable it only where you trust every participant, including external Slack Connect participants: their messages can influence an agent using the operator's shell, MCP tools, and credentials. Escaping and labeling history as context do not prevent prompt injection. OAuth callback messages remain excluded. Existing installations must add `channels:history` (public channels) and `groups:history` (private channels) to the bot scopes and reinstall the app. If fetching history fails or exceeds the retrieval limit, Talon tells the model history is unavailable rather than supplying stale replies.
 
 Slack treats any message that starts with `/` as a slash command, so Talon's commands are reached through the single `/talon` command: `/talon new`, `/talon stop`, `/talon mcp-reload`, `/talon context-doctor`, and `/talon help` (the default when no argument is given). The command can have any name: an app that names it `/talon-dev` in its manifest uses `/talon-dev new`, and so on. Anything after the command name is passed along as typed, so `/talon model <provider>:<model>` behaves like `/model <provider>:<model>`. A slash command carries no thread, so `/talon` works only in a direct message with the bot. In a channel thread, mention the bot followed by the command instead, for example `@Talon /new`. Refusals from `/talon`, including one from the exposure policy, are shown only to the invoking user.
 
@@ -461,15 +504,15 @@ Sender pairing lets the operator admit a new person on Discord, Telegram, or Sla
 
 Set `DEEPAGENTS_TALON_DISCORD_PAIRING=enabled`, `DEEPAGENTS_TALON_TELEGRAM_PAIRING=enabled`, or `DEEPAGENTS_TALON_SLACK_PAIRING=enabled`. Pairing works with `self` and `allowlist` exposure and is refused with `open`.
 
-On Slack, the client treats a message starting with `/` as a slash command, so the operator reaches `/pair` through `/talon` in their DM with the bot: `/talon pair approve K7QM-3XRD`, `/talon pair list`, and `/talon pair revoke <member-id>`. Slack sender ids are member ids starting with `U`, and `/talon pair list` shows them. The requester can DM the bot or mention it in a channel the app has joined. The Slack app's Messages tab must be enabled, as it is in the manifest above. The `im:write` scope lets Talon open a DM for a channel mention; existing installations must add that scope and reinstall the app.
+On Slack, the client treats a message starting with `/` as a slash command, so the operator reaches `/pair` through `/talon`: `/talon pair approve K7QM-3XRD`, `/talon pair list`, and `/talon pair revoke <member-id>`. Slack sender ids are member ids starting with `U`, and `/talon pair list` shows them. The requester can DM the bot or mention it in a channel the app has joined. The Slack app's Messages tab must be enabled, as it is in the manifest above. The `im:write` scope lets Talon open a DM for a channel mention; existing installations must add that scope and reinstall the app.
 
 1. An unknown sender DMs or mentions the bot in a channel. Their message is dropped before it reaches the host or the model, and the bot sends a code such as `K7QM-3XRD` only in the sender's DM, never in the channel. If the bot cannot open the DM, no request is recorded. The code is bound to that sender on that channel, expires after 1 hour, and works once.
 2. The sender passes the code to the operator by any other means.
-3. The operator approves it with `/pair approve K7QM-3XRD` in their own DM with the bot, or with `deepagents-talon pairing approve <channel> K7QM-3XRD`, where `<channel>` is the requester's channel (`discord`, `slack`, or `telegram`); a code only approves on the channel it was issued on. The sender is told they were approved. From then on they reach the agent wherever the bot is, the way an env operator does: in their DM, by mentioning the bot in any Slack channel it has joined, and in any Discord server channel it can read.
+3. The operator approves it with `/pair approve K7QM-3XRD` in any chat where the bot accepts their messages, or with `deepagents-talon pairing approve <channel> K7QM-3XRD`, where `<channel>` is the requester's channel (`discord`, `slack`, or `telegram`); a code only approves on the channel it was issued on. The sender is told they were approved. From then on they reach the agent wherever the bot is, the way an env operator does: in their DM, by mentioning the bot in any Slack channel it has joined, and in any Discord server channel it can read.
 
 `/pair list` shows pending codes and paired senders. `/pair revoke <sender-id>` removes a sender, stops all in-flight work, including background workers, in every chat they have used since that chat was last idle, pauses the cron jobs they created in any chat, and stops any of those jobs' runs in progress so their results are not delivered. Paused jobs stay paused if the sender is approved again. The CLI has matching `list`, `approve`, and `revoke` subcommands. A CLI revoke takes effect on the sender's next message but cannot cancel a run in progress. It lists their enabled cron jobs and prints a `deepagents-talon pairing pause-jobs <channel> <sender-id>` command to pause them. Run that only while Talon is stopped, because the running host is the cron store's only writer.
 
-Only an operator id from `DEEPAGENTS_TALON_<CHANNEL>_OPERATOR_ID` can run `/pair`, and only in a DM. A paired sender cannot approve anyone, and the model has no pairing tool. Codes are accepted only on those operator surfaces, so strangers have nowhere to guess them. Each sender holds at most one live code, and a channel holds at most 16; further requests are dropped silently. Set `DEEPAGENTS_TALON_<CHANNEL>_PAIRING_REPLY=false` to keep the bot silent and read pending codes from `/pair list` instead.
+Only an operator id from `DEEPAGENTS_TALON_<CHANNEL>_OPERATOR_ID` can run `/pair`. Approval works in DMs and shared chats; listing and revocation remain DM-only. A paired sender cannot approve anyone, and the model has no pairing tool. Codes are accepted only on those operator surfaces, so strangers have nowhere to guess them. Each sender holds at most one live code, and a channel holds at most 16; further requests are dropped silently. Set `DEEPAGENTS_TALON_<CHANNEL>_PAIRING_REPLY=false` to keep the bot silent and read pending codes from `/pair list` instead.
 
 A paired sender is admitted in every chat the bot can see, like an env operator, but never gains operator controls: they cannot run `/pair` or change tool approval policy, and tool approval prompts for their runs go to them. On Discord, where the bot reads every message in the channels it can see, any message a paired sender posts in those channels starts a run. Telegram group chats stay ignored for everyone. With pairing enabled, `DEEPAGENTS_TALON_<CHANNEL>_ALLOWLIST_USERS` also admits DMs in `self` mode; allowlisted users stay DM-only. Env stays authoritative: env operators and allowlisted users never receive codes and cannot be revoked with `/pair`. Paired senders are stored in `pairing.json` in the assistant home. If that file is unreadable or invalid, only env senders are admitted.
 

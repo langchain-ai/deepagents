@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from deepagents_code.plugins.models import PluginInstance
+    from deepagents_code.plugins.models import BrokenPluginInstall, PluginInstance
 
 logger = logging.getLogger(__name__)
 
@@ -95,13 +95,16 @@ def plugin_skill_roots(plugins: tuple[PluginInstance, ...]) -> list[Path]:
 
 
 def discover_plugin_skill_state() -> tuple[
-    tuple[tuple[Path, str], ...], tuple[Path, ...], frozenset[str]
+    tuple[tuple[Path, str], ...],
+    tuple[Path, ...],
+    frozenset[str],
+    tuple[BrokenPluginInstall, ...],
 ]:
-    """Discover plugin skill sources, containment roots, and loaded ids.
+    """Discover plugin skill sources, containment roots, loaded ids, and repairs.
 
     Returns:
-        Plugin skill sources, roots, and ids, or empty values when discovery
-        fails.
+        Plugin skill sources, roots, ids, and enabled plugins whose installed
+        files are missing, or empty values when discovery fails.
     """
     plugin_sources: tuple[tuple[Path, str], ...] = ()
     plugin_roots: tuple[Path, ...] = ()
@@ -109,18 +112,19 @@ def discover_plugin_skill_state() -> tuple[
     try:
         from deepagents_code.plugins import discover_plugins
 
-        plugins = discover_plugins().plugins
+        result = discover_plugins()
+        plugins = result.plugins
         plugin_sources = tuple(
             (Path(path), namespace)
             for path, _label, namespace in plugin_skill_sources(plugins)
         )
         plugin_roots = tuple(plugin_skill_roots(plugins))
         plugin_ids = frozenset(plugin.plugin_id for plugin in plugins)
-    except (OSError, RuntimeError):
+    except OSError, RuntimeError:
         logger.warning("Could not discover plugin skills", exc_info=True)
-        return (), (), frozenset()
+        return (), (), frozenset(), ()
 
-    return plugin_sources, plugin_roots, plugin_ids
+    return plugin_sources, plugin_roots, plugin_ids, result.broken
 
 
 def discover_plugin_skill_sources_and_roots() -> tuple[
@@ -131,6 +135,6 @@ def discover_plugin_skill_sources_and_roots() -> tuple[
     Returns:
         Plugin skill sources and roots, or empty tuples when discovery fails.
     """
-    plugin_sources, plugin_roots, _plugin_ids = discover_plugin_skill_state()
+    plugin_sources, plugin_roots, _plugin_ids, _broken = discover_plugin_skill_state()
 
     return plugin_sources, plugin_roots

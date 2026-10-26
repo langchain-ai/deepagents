@@ -138,6 +138,35 @@ def test_local_shell_backend_execute_output_truncation() -> None:
         assert len(result.output) <= 150  # Some buffer for truncation message
 
 
+@pytest.mark.parametrize("use_async", [False, True])
+@pytest.mark.parametrize(
+    ("text", "limit", "expected", "truncated"),
+    [
+        ("abcdefghi", 8, "abcdefgh", True),
+        ("中文测", 8, "中文", True),
+        ("😀😀😀", 8, "😀😀", True),
+        ("a中😀b", 7, "a中", True),
+        ("中", 1, "", True),
+        ("中文", 6, "中文", False),
+        ("😀", 8, "😀", False),
+        ("中", 0, "", True),
+    ],
+)
+async def test_local_shell_backend_execute_utf8_byte_limit(
+    tmp_path: Path, text: str, limit: int, expected: str, *, truncated: bool, use_async: bool
+) -> None:
+    """Enforce the UTF-8 byte budget without returning partial characters."""
+    backend = LocalShellBackend(root_dir=tmp_path, max_output_bytes=limit)
+    command = f"printf '%s' '{text}'"
+    result = await backend.aexecute(command) if use_async else backend.execute(command)
+    notice = f"\n\n... Output truncated at {limit} bytes." if truncated else ""
+
+    assert result.exit_code == 0
+    assert result.truncated is truncated
+    assert result.output == expected + notice
+    assert len(expected.encode("utf-8")) <= limit
+
+
 def test_local_shell_backend_filesystem_operations() -> None:
     """Test that filesystem operations work (inherited from FilesystemBackend)."""
     with tempfile.TemporaryDirectory() as tmpdir:

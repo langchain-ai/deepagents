@@ -63,6 +63,22 @@ class TestPrepareConfig:
 
 
 class TestConvertMessageData:
+    @pytest.mark.parametrize(
+        "metadata",
+        [{}, {"chunk_position": None}, {"chunk_position": "last"}],
+        ids=["missing", "nonterminal", "terminal"],
+    )
+    def test_ai_message_preserves_chunk_position(
+        self, metadata: dict[str, str | None]
+    ) -> None:
+        """Remote chunks retain their explicit message-completion boundary."""
+        msg = _convert_message_data(
+            {"type": "AIMessageChunk", "content": "hello", "id": "m1", **metadata}
+        )
+        assert isinstance(msg, AIMessageChunk)
+        assert msg.chunk_position == metadata.get("chunk_position")
+        assert msg.content == "hello"
+
     def test_ai_message_with_tool_call_chunks(self) -> None:
         msg = _convert_message_data(
             {
@@ -118,6 +134,23 @@ class TestConvertMessageData:
         )
         assert isinstance(msg, ToolMessage)
         assert msg.additional_kwargs[AUTO_DENIED_METADATA_KEY] is True
+
+    def test_human_message_keeps_pinned_skill_marker(self) -> None:
+        """The TUI fills a live skill row only from a recognizable pin."""
+        from deepagents_code.skills.invocation import pinned_skill_parts
+
+        msg = _convert_message_data(
+            {
+                "type": "human",
+                "content": '<skill name="review" path="/s/SKILL.md">\nDo it.\n</skill>',
+                "id": "m5",
+                "additional_kwargs": {
+                    "lc_source": "pinned_skill",
+                    "skill": {"name": "review", "description": "Review code"},
+                },
+            }
+        )
+        assert pinned_skill_parts(msg) == ("review", "Review code", "Do it.")
 
     def test_tool_message_additional_kwargs_defaults_to_empty(self) -> None:
         """A missing or non-dict `additional_kwargs` does not discard the message."""
@@ -177,7 +210,9 @@ def _make_agent(
     events: Sequence[tuple[tuple[str, ...], str, Any]],
 ) -> RemoteAgent:
     """Create a RemoteAgent with a mock RemoteGraph yielding events."""
-    agent = RemoteAgent(url="http://localhost:8123", graph_name="agent")
+    agent = RemoteAgent(
+        url="http://localhost:8123", graph_name="agent", local_ownership=False
+    )
     mock_graph = MagicMock()
 
     async def fake_astream(  # noqa: RUF029
@@ -200,7 +235,9 @@ def _config() -> dict[str, Any]:
 
 def _make_capturing_agent() -> tuple[RemoteAgent, dict[str, Any]]:
     """RemoteAgent whose mock graph records the kwargs passed to `astream`."""
-    agent = RemoteAgent(url="http://localhost:8123", graph_name="agent")
+    agent = RemoteAgent(
+        url="http://localhost:8123", graph_name="agent", local_ownership=False
+    )
     captured: dict[str, Any] = {}
     mock_graph = MagicMock()
 
@@ -248,6 +285,78 @@ class TestRemoteAgentReplicaForwarding:
 
 
 class TestRemoteAgentAstream:
+    @pytest.mark.parametrize(
+        ("local_ownership", "resume"), [(False, False), (True, False), (True, True)]
+    )
+    async def test_ownership_uses_header_with_workspace_context(
+        self,
+        tmp_path,
+        monkeypatch: pytest.MonkeyPatch,
+        local_ownership: bool,
+        resume: bool,
+    ) -> None:
+        """The real SDK sends context-compatible runs with ownership fencing."""
+        import json
+
+        import httpx
+        from langgraph.pregel.remote import RemoteGraph
+        from langgraph.types import Command
+        from langgraph_sdk.client import LangGraphClient
+
+        from deepagents_code import sessions
+        from deepagents_code.thread_ownership import OWNER_KEY, held_lease, release_all
+
+        monkeypatch.setattr(sessions, "get_db_path", lambda: tmp_path / "sessions.db")
+        workspace = {"workspace_id": "test-workspace"}
+        config = _config()
+
+        def respond(request: httpx.Request) -> httpx.Response:
+            assert request.url.path == f"/threads/{_TEST_THREAD_ID}/runs/stream"
+            payload = json.loads(request.content)
+            assert payload["context"] == {"workspace": workspace}
+            # langgraph-api rejects nonempty configurable together with context.
+            assert not payload["config"].get("configurable")
+            lease = held_lease(_TEST_THREAD_ID)
+            if local_ownership:
+                assert lease is not None
+                assert request.headers[OWNER_KEY] == lease.token
+            else:
+                assert lease is None
+                assert OWNER_KEY not in request.headers
+            assert request.headers["x-custom"] == "preserved"
+            if resume:
+                assert payload["command"]["resume"] == "approved"
+            else:
+                assert payload["input"] == {"messages": []}
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/event-stream"},
+                content=b'event: updates\ndata: {"agent": {"done": true}}\n\n',
+            )
+
+        try:
+            async with httpx.AsyncClient(
+                transport=httpx.MockTransport(respond),
+                base_url="http://test",
+                headers={"x-custom": "preserved"},
+            ) as client:
+                agent = RemoteAgent("http://test", local_ownership=local_ownership)
+                agent._graph = RemoteGraph("agent", client=LangGraphClient(client))
+                agent._workspaces[_TEST_THREAD_ID] = workspace
+                result = [
+                    event
+                    async for event in agent.astream(
+                        Command(resume="approved") if resume else {"messages": []},
+                        config=config,
+                        stream_mode=["updates"],
+                        subgraphs=True,
+                    )
+                ]
+            assert result == [((), "updates", {"agent": {"done": True}})]
+            assert config == _config()
+        finally:
+            release_all()
+
     async def test_updates_with_interrupt_converted(self) -> None:
         """Interrupt dicts in updates events are converted to Interrupt."""
         from langgraph.types import Interrupt
@@ -585,7 +694,9 @@ class TestRemoteAgentCancelActiveRuns:
     """`acancel_active_runs` exposes best-effort remote run cancellation."""
 
     async def test_cancels_running_and_pending_runs(self) -> None:
-        agent = RemoteAgent(url="http://localhost:8123", graph_name="agent")
+        agent = RemoteAgent(
+            url="http://localhost:8123", graph_name="agent", local_ownership=False
+        )
         runs_list = AsyncMock(
             side_effect=[
                 [{"run_id": "run-1"}],
@@ -612,7 +723,9 @@ class TestRemoteAgentCancelActiveRuns:
         }
 
     async def test_raises_when_thread_id_missing(self) -> None:
-        agent = RemoteAgent(url="http://localhost:8123", graph_name="agent")
+        agent = RemoteAgent(
+            url="http://localhost:8123", graph_name="agent", local_ownership=False
+        )
         with pytest.raises(ValueError, match="thread_id"):
             await agent.acancel_active_runs({"configurable": {}})
 
@@ -637,7 +750,9 @@ class TestRemoteAgentUpdateStateConflictRecovery:
         runs_cancel: AsyncMock,
         update_side_effect: list[Any],
     ) -> tuple[RemoteAgent, MagicMock]:
-        agent = RemoteAgent(url="http://localhost:8123", graph_name="agent")
+        agent = RemoteAgent(
+            url="http://localhost:8123", graph_name="agent", local_ownership=False
+        )
         mock_graph = MagicMock()
         mock_graph.aupdate_state = AsyncMock(side_effect=update_side_effect)
         mock_runs = MagicMock()
@@ -650,7 +765,9 @@ class TestRemoteAgentUpdateStateConflictRecovery:
         return agent, mock_graph
 
     async def test_recovery_write_is_distinguished_for_server_tracing(self) -> None:
-        agent = RemoteAgent(url="http://localhost:8123", graph_name="agent")
+        agent = RemoteAgent(
+            url="http://localhost:8123", graph_name="agent", local_ownership=False
+        )
         mock_graph = MagicMock()
         mock_graph.aupdate_state = AsyncMock()
         agent._graph = mock_graph
@@ -665,7 +782,9 @@ class TestRemoteAgentUpdateStateConflictRecovery:
         )
 
     async def test_normal_write_has_no_recovery_header(self) -> None:
-        agent = RemoteAgent(url="http://localhost:8123", graph_name="agent")
+        agent = RemoteAgent(
+            url="http://localhost:8123", graph_name="agent", local_ownership=False
+        )
         mock_graph = MagicMock()
         mock_graph.aupdate_state = AsyncMock()
         agent._graph = mock_graph
@@ -803,7 +922,9 @@ class TestRemoteAgentUpdateStateConflictRecovery:
         assert mock_graph.aupdate_state.await_count == 2
 
     async def test_validate_client_raises_skips_cancel_and_retries(self) -> None:
-        agent = RemoteAgent(url="http://localhost:8123", graph_name="agent")
+        agent = RemoteAgent(
+            url="http://localhost:8123", graph_name="agent", local_ownership=False
+        )
         mock_graph = MagicMock()
         mock_graph.aupdate_state = AsyncMock(
             side_effect=[_conflict_error(), _conflict_error()]
@@ -928,7 +1049,9 @@ def _idle_state() -> SimpleNamespace:
 class TestRemoteAgentAbandonPendingWork:
     def _agent_with_states(self, *states: Any) -> tuple[RemoteAgent, MagicMock]:
         """RemoteAgent whose mock graph returns `states` from successive reads."""
-        agent = RemoteAgent(url="http://localhost:8123", graph_name="agent")
+        agent = RemoteAgent(
+            url="http://localhost:8123", graph_name="agent", local_ownership=False
+        )
         mock_client = MagicMock()
         mock_client.runs.list = AsyncMock(return_value=[])
         mock_graph = MagicMock()
@@ -992,7 +1115,9 @@ class TestRemoteAgentAbandonPendingWork:
 
 class TestRemoteAgentStore:
     async def test_aput_store_item_uses_unindexed_put(self) -> None:
-        agent = RemoteAgent(url="http://localhost:8123", graph_name="agent")
+        agent = RemoteAgent(
+            url="http://localhost:8123", graph_name="agent", local_ownership=False
+        )
         store = SimpleNamespace(put_item=AsyncMock())
         client = SimpleNamespace(store=store)
         graph = MagicMock()
@@ -1012,7 +1137,9 @@ class TestRemoteAgentStore:
         self,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
-        agent = RemoteAgent(url="http://localhost:8123", graph_name="agent")
+        agent = RemoteAgent(
+            url="http://localhost:8123", graph_name="agent", local_ownership=False
+        )
         store = SimpleNamespace(put_item=AsyncMock(side_effect=RuntimeError("boom")))
         client = SimpleNamespace(store=store)
         graph = MagicMock()
@@ -1033,7 +1160,9 @@ class TestRemoteAgentEnsureThread:
 
     async def test_creates_thread_with_do_nothing(self) -> None:
         """Creates the remote thread idempotently before cold-resume updates."""
-        agent = RemoteAgent(url="http://localhost:8123", graph_name="agent")
+        agent = RemoteAgent(
+            url="http://localhost:8123", graph_name="agent", local_ownership=False
+        )
         mock_threads = MagicMock()
         mock_threads.create = AsyncMock()
         mock_client = MagicMock()
@@ -1151,7 +1280,7 @@ class TestRemoteAgentWorkspace:
     """Workspace bindings stay thread-scoped and require explicit launch state."""
 
     async def test_bindings_are_cached_per_thread(self) -> None:
-        agent = RemoteAgent("http://localhost:1234")
+        agent = RemoteAgent("http://localhost:1234", local_ownership=False)
         post = AsyncMock(
             side_effect=[
                 {"workspace": {"workspace_id": "first"}},
@@ -1186,7 +1315,7 @@ class TestRemoteAgentWorkspace:
         }
 
     async def test_binding_can_defer_policy_to_external_server(self) -> None:
-        agent = RemoteAgent("http://localhost:1234")
+        agent = RemoteAgent("http://localhost:1234", local_ownership=False)
         post = AsyncMock(return_value={"workspace": {"workspace_id": "remote"}})
         graph = SimpleNamespace(client=SimpleNamespace(http=SimpleNamespace(post=post)))
         agent.set_workspace("/workspace/project")
@@ -1205,7 +1334,7 @@ class TestRemoteAgentWorkspace:
     async def test_switch_preserves_destination_binding_and_returns_metadata(
         self,
     ) -> None:
-        agent = RemoteAgent("http://localhost:1234")
+        agent = RemoteAgent("http://localhost:1234", local_ownership=False)
         agent.set_workspace("/workspace/old")
         agent._workspaces["old"] = {"workspace_id": "old"}
         post = AsyncMock(
@@ -1242,7 +1371,7 @@ class TestRemoteAgentWorkspace:
         assert info[0].tools[0].name == "search"
 
     async def test_switch_failure_preserves_workspace_state(self) -> None:
-        agent = RemoteAgent("http://localhost:1234")
+        agent = RemoteAgent("http://localhost:1234", local_ownership=False)
         agent.set_workspace("/workspace/old")
         agent._workspaces["old"] = {"workspace_id": "old"}
         graph = SimpleNamespace(
@@ -1263,13 +1392,13 @@ class TestRemoteAgentWorkspace:
         assert agent._workspaces == {"old": {"workspace_id": "old"}}
 
     def test_policy_and_fingerprint_must_be_configured_together(self) -> None:
-        agent = RemoteAgent("http://localhost:1234")
+        agent = RemoteAgent("http://localhost:1234", local_ownership=False)
 
         with pytest.raises(ValueError, match="configured together"):
             agent.set_workspace("/workspace/project", {"enable_shell": True})
 
     async def test_binding_requires_explicit_workspace(self) -> None:
-        agent = RemoteAgent("http://localhost:1234")
+        agent = RemoteAgent("http://localhost:1234", local_ownership=False)
 
         with pytest.raises(RuntimeError, match="not configured"):
             await agent._workspace_for_thread(
@@ -1307,7 +1436,7 @@ class TestServerOffload:
 
         http = SimpleNamespace(post=AsyncMock(side_effect=post))
         graph = _offload_graph(http)
-        agent = RemoteAgent("http://localhost:1234")
+        agent = RemoteAgent("http://localhost:1234", local_ownership=False)
 
         with patch.object(agent, "_get_graph", return_value=graph):
             task = asyncio.create_task(
@@ -1360,7 +1489,7 @@ class TestServerOffload:
         graph = _offload_graph(http)
         graph.client.threads.create.side_effect = record_create
 
-        agent = RemoteAgent("http://localhost:1234")
+        agent = RemoteAgent("http://localhost:1234", local_ownership=False)
         with patch.object(agent, "_get_graph", return_value=graph):
             await agent.aoffload(
                 config={"configurable": {"thread_id": "thread"}},
@@ -1374,7 +1503,7 @@ class TestServerOffload:
         assert create_kwargs["if_exists"] == "do_nothing"
 
     async def test_fulfills_hook_and_returns_typed_result(self) -> None:
-        agent = RemoteAgent("http://localhost:1234")
+        agent = RemoteAgent("http://localhost:1234", local_ownership=False)
         result = {
             "status": "compacted",
             "messages_offloaded": 2,
@@ -1462,7 +1591,7 @@ class TestServerOffload:
         )
         payload = build_hook_interrupt_payload(request)
 
-        agent = RemoteAgent("http://localhost:1234")
+        agent = RemoteAgent("http://localhost:1234", local_ownership=False)
         result = {
             "status": "compacted",
             "messages_offloaded": 1,
@@ -1499,7 +1628,7 @@ class TestServerOffload:
 
     async def test_non_compacted_result_needs_no_statistics(self) -> None:
         """`empty`/`noop`/`denied` results carry no stats the renderer reads."""
-        agent = RemoteAgent("http://localhost:1234")
+        agent = RemoteAgent("http://localhost:1234", local_ownership=False)
         result = {"status": "denied", "error": "Blocked by a compaction hook"}
         http = SimpleNamespace(
             post=AsyncMock(return_value={"status": "complete", "result": result})
@@ -1536,7 +1665,7 @@ class TestServerOffload:
             transport=httpx.MockTransport(older_server), base_url="http://test"
         ) as client:
             http = SimpleNamespace(post=LangGraphClient(client).http.post)
-            agent = RemoteAgent("http://test")
+            agent = RemoteAgent("http://test", local_ownership=False)
             with patch.object(agent, "_get_graph", return_value=_offload_graph(http)):
                 if handoff:
                     with pytest.raises(RuntimeError, match=r"/handoff.*upgrade"):
@@ -1556,7 +1685,7 @@ class TestServerOffload:
         assert compacted is not handoff
 
     async def test_handoff_result_requires_summary_and_transcript(self) -> None:
-        agent = RemoteAgent("http://localhost:1234")
+        agent = RemoteAgent("http://localhost:1234", local_ownership=False)
         result = {"status": "summarized", "archive_path": "/t.md"}
         http = SimpleNamespace(
             post=AsyncMock(return_value={"status": "complete", "result": result})
@@ -1579,7 +1708,7 @@ class TestServerOffload:
         """Exhaustion must be diagnosable and must not assert a cause."""
         from deepagents_code.client.remote_client import _OFFLOAD_MAX_RESUME_ROUNDS
 
-        agent = RemoteAgent("http://localhost:1234")
+        agent = RemoteAgent("http://localhost:1234", local_ownership=False)
         counter = itertools.count()
 
         async def _always_interrupt(  # noqa: RUF029  # must be awaitable
@@ -1622,7 +1751,7 @@ class TestServerOffload:
         """
         from deepagents_code.client.remote_client import _OFFLOAD_MAX_RESUME_ROUNDS
 
-        agent = RemoteAgent("http://localhost:1234")
+        agent = RemoteAgent("http://localhost:1234", local_ownership=False)
         counter = itertools.count()
 
         async def _always_interrupt(  # noqa: RUF029  # must be awaitable
@@ -1673,7 +1802,7 @@ async def test_btw_stream_delivers_fragments_and_closes_transport(
     cost.update(total_cost_usd=0.5, request_count=1)
 
     class Body(AsyncByteStream):
-        async def __aiter__(self) -> AsyncGenerator[bytes, None]:
+        async def __aiter__(self) -> AsyncGenerator[bytes]:
             yield b'event: text\ndata: "First "\n\n'
             await release.wait()
             if outcome == "complete":

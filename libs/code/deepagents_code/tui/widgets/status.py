@@ -364,7 +364,7 @@ def _home_relative(path: str) -> str:
         if candidate.is_relative_to(home):
             relative = candidate.relative_to(home).as_posix()
             return "~" if relative == "." else f"~/{relative}"
-    except (ValueError, RuntimeError):
+    except ValueError, RuntimeError:
         pass
     return path
 
@@ -478,6 +478,27 @@ class MetricsLine(Widget):
     """
 
     segments: reactive[tuple[Content, ...]] = reactive((), layout=True)
+    _cost_hovered: reactive[bool] = reactive(False)
+
+    async def on_click(self, event: events.Click) -> None:
+        """Open the breakdown only for a left-click on the cost span."""
+        if event.button != _LEFT_BUTTON or not event.style.meta.get(
+            "status-cost-target"
+        ):
+            return
+        event.stop()
+        if event.chain == _SINGLE_CLICK_CHAIN:
+            await self.run_action("app.open_cost_breakdown")
+
+    def on_mouse_move(self, event: events.MouseMove) -> None:
+        """Indicate that the cost span is clickable."""
+        self._cost_hovered = bool(event.style.meta.get("status-cost-target"))
+        self.styles.pointer = "pointer" if self._cost_hovered else "default"
+
+    def on_leave(self) -> None:
+        """Clear the cost hover indication."""
+        self._cost_hovered = False
+        self.styles.pointer = "default"
 
     def _separator(self) -> Content:  # noqa: PLR6301 — reads the active glyph set
         """Return the styled separator drawn between two segments."""
@@ -489,7 +510,17 @@ class MetricsLine(Widget):
         Returns:
             Joined metric segments.
         """
-        return self._separator().join(self.segments[:count])
+        return self._separator().join(
+            segment.stylize(Style(underline=True))
+            if self._cost_hovered
+            and any(
+                isinstance(span.style, Style)
+                and span.style.meta.get("status-cost-target")
+                for span in segment.spans
+            )
+            else segment
+            for segment in self.segments[:count]
+        )
 
     def get_content_width(self, container: Size, viewport: Size) -> int:  # noqa: ARG002
         """Return the intrinsic width of the full chain so `width: auto` works.
@@ -693,6 +724,7 @@ class StatusBar(Vertical):
         self.cache_write_tokens = 0
         self.cache_written_at: datetime | None = None
         self.cache_expires_at: datetime | None = None
+        self.cache_window_seconds: int | None = None
         self.cache_retention_confidence: CacheConfidence = "expired"
         self._cache_timer: Timer | None = None
         self._status_by_source: dict[StatusMessageSource, str] = {
@@ -1161,8 +1193,8 @@ class StatusBar(Vertical):
         )
         minutes, seconds = divmod(remaining, 60)
         countdown = (
-            "uncertain"
-            if remaining == 0 and self.cache_retention_confidence == "may_be_cold"
+            "expired"
+            if datetime.now(UTC) >= self.cache_expires_at
             else f"{minutes}:{seconds:02d}"
         )
         return f"{written} / {countdown}" if written else countdown
@@ -1203,11 +1235,18 @@ class StatusBar(Vertical):
             segment
             for segment in (
                 self._context_segment(count, approximate=approximate),
-                Content(cost) if cost else Content(""),
+                Content.styled(cost, Style.from_meta({"status-cost-target": True}))
+                if cost
+                else Content(""),
             )
             if segment.plain
         )
         cache = self._cache_segment()
+        if (
+            self.cache_expires_at is not None
+            and datetime.now(UTC) >= self.cache_expires_at
+        ):
+            cache = cache.stylize(theme.get_theme_colors(self).error)
         cache_display.segments = (cache,) if cache.plain else ()
         context_display.segments = context_segments
 
@@ -1291,6 +1330,7 @@ class StatusBar(Vertical):
         self._stop_cache_timer()
         self.cache_written_at = written_at
         self.cache_retention_confidence = retention_confidence
+        self.cache_window_seconds = ttl_seconds
         retention_at = retention_at or written_at
         self.cache_expires_at = (
             datetime.fromtimestamp(retention_at.timestamp() + ttl_seconds, UTC)

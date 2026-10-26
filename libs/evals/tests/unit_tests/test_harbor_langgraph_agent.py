@@ -14,6 +14,7 @@ from fastmcp import FastMCP
 from langchain.mcp import MCPAdapter
 from langchain_core.tools import BaseTool
 
+from deepagents_harbor.agent import DeepAgentsLangGraph
 from deepagents_harbor.langgraph_project import langgraph_agent
 
 if TYPE_CHECKING:
@@ -169,7 +170,7 @@ def test_langgraph_config_uses_harbor_env_for_fireworks_prereleases() -> None:
 
     dependencies = json.loads(config_path.read_text())["dependencies"]
 
-    assert "langchain-fireworks>=1.4.2,<1.5.0" in dependencies
+    assert "langchain-fireworks>=1.4.4" in dependencies
     assert not any(dependency.startswith("fireworks-ai") for dependency in dependencies)
 
 
@@ -747,6 +748,48 @@ def test_make_bare_graph_builds_sdk_deepagent_with_local_shell(
     # The bare path must not inject a harness system prompt, preserving the
     # prompt-free SDK default.
     assert "system_prompt" not in captured_create[0]
+
+
+def test_make_bare_graph_loads_task_skills(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    captured_create: list[dict[str, object]] = []
+    monkeypatch.setattr(langgraph_agent, "init_chat_model", lambda *_a, **_k: object())
+    monkeypatch.setattr(langgraph_agent, "create_deep_agent", lambda **k: captured_create.append(k))
+
+    langgraph_agent.make_bare_graph(
+        {
+            "configurable": {
+                "model": "p:m",
+                "cwd": str(tmp_path),
+                "skills_dir": "/app/.agents/skills",
+            }
+        }
+    )
+
+    assert captured_create[0]["skills"] == ["/app/.agents/skills"]
+
+
+@pytest.mark.parametrize("skills_dir", ["relative/skills", "/app/../etc", 3])
+def test_make_bare_graph_rejects_invalid_skills_dir(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, skills_dir: object
+) -> None:
+    monkeypatch.setattr(langgraph_agent, "init_chat_model", lambda *_a, **_k: object())
+    monkeypatch.setattr(langgraph_agent, "create_deep_agent", lambda **_k: object())
+
+    with pytest.raises(ValueError, match="skills_dir"):
+        langgraph_agent.make_bare_graph(
+            {"configurable": {"model": "p:m", "cwd": str(tmp_path), "skills_dir": skills_dir}}
+        )
+
+
+def test_deepagents_langgraph_forwards_task_skills_dir(tmp_path: Path) -> None:
+    project = Path(langgraph_agent.__file__).parent
+    agent = DeepAgentsLangGraph(
+        project_path=project, logs_dir=tmp_path, skills_dir="/app/.agents/skills"
+    )
+    plain = DeepAgentsLangGraph(project_path=project, logs_dir=tmp_path)
+
+    assert agent.configurable["skills_dir"] == "/app/.agents/skills"
+    assert "skills_dir" not in plain.configurable
 
 
 def test_make_tau3_graph_does_not_inject_system_prompt(monkeypatch):

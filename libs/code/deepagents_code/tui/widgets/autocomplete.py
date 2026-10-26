@@ -16,10 +16,10 @@ import subprocess  # noqa: S404
 from difflib import SequenceMatcher
 from enum import StrEnum
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, NamedTuple, Protocol
 
 from deepagents_code.project_utils import find_project_root
-from deepagents_code.unicode_security import sanitize_control_chars
+from deepagents_code.unicode_security import is_safe_file_path, sanitize_control_chars
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +41,7 @@ if TYPE_CHECKING:
 
 
 _THREAD_LABEL_LIMIT = 80
-"""Maximum initial-prompt label length shown in thread completion."""
+"""Maximum label length shown in thread completion."""
 
 _THREAD_REFERENCE_PREFIX = "@@(thread:"
 """Prefix for durable thread-reference tokens."""
@@ -51,8 +51,9 @@ _THREAD_TRIGGER = "@@"
 
 
 def _thread_label(thread: ThreadInfo) -> str:
-    """Return a single-line initial-prompt label for a completion row."""
-    label = " ".join(sanitize_control_chars(thread.get("initial_prompt") or "").split())
+    """Return a single-line name or initial-prompt label for a completion row."""
+    title = thread.get("thread_name") or thread.get("initial_prompt") or ""
+    label = " ".join(sanitize_control_chars(title).split())
     if not label:
         return thread["thread_id"][:8]
     if len(label) > _THREAD_LABEL_LIMIT:
@@ -278,8 +279,11 @@ class SlashCommandController:
                 (score, entry)
                 for entry in self._commands
                 if (
-                    score := self._score_command(
-                        search, entry.name, entry.description, entry.hidden_keywords
+                    score := max(
+                        self._score_command(
+                            search, name, entry.description, entry.hidden_keywords
+                        )
+                        for name in (entry.name, *entry.aliases)
                     )
                 )
                 > 0
@@ -450,6 +454,7 @@ class ThreadCompletionController:
         """
         values = (
             thread["thread_id"],
+            thread.get("thread_name"),
             thread.get("initial_prompt"),
             thread.get("agent_name"),
             thread.get("git_branch"),
@@ -594,8 +599,11 @@ _MAX_FALLBACK_FILES = 1000
 _MIN_FUZZY_SCORE = 15
 """Minimum score to include in file-completion results."""
 
-_MIN_FUZZY_RATIO = 0.4
-"""SequenceMatcher threshold for filename-only fuzzy matches."""
+_FUZZY_FILENAME_WEIGHT = 30
+"""Multiplier applied to a filename `SequenceMatcher` ratio to get its score.
+
+A fuzzy match needs a ratio of at least `_MIN_FUZZY_SCORE / 30 = 0.5`.
+"""
 
 _NOT_A_REPO_MARKER = "not a git repository"
 """Marker in `git ls-files` stderr for a non-repository directory.
@@ -629,16 +637,20 @@ def _run_git_ls_files(
         # S603: git_path validated via shutil.which(); ls-files args are
         # caller-supplied literals.
         result = subprocess.run(  # noqa: S603
-            [git_path, "ls-files", *extra_args],
+            # `-z` NUL-terminates entries and disables quoting; otherwise the
+            # default `core.quotePath` turns non-ASCII names into octal escapes.
+            [git_path, "ls-files", "-z", *extra_args],
             cwd=root,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="surrogateescape",
             timeout=5,
             check=False,
             # Git localizes stderr; use C so the non-repo marker stays stable.
             env={**os.environ, "LC_ALL": "C"},
         )
-    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+    except subprocess.TimeoutExpired, FileNotFoundError, OSError:
         logger.debug("git ls-files %s failed to run", extra_args, exc_info=True)
         return False, []
     if result.returncode != 0:
@@ -656,7 +668,7 @@ def _run_git_ls_files(
                 stderr,
             )
         return False, []
-    return True, [f for f in result.stdout.strip().split("\n") if f]
+    return True, [f for f in result.stdout.split("\0") if f]
 
 
 def _get_project_files(root: Path) -> list[str]:
@@ -703,51 +715,120 @@ def _get_project_files(root: Path) -> list[str]:
     return files
 
 
+class _FileEntry(NamedTuple):
+    """A file path with the query-independent values `_score_entry` needs.
+
+    Built once per file-cache load so each keystroke does not re-lowercase and
+    re-split every path.
+    """
+
+    path: str
+    """Path as offered to the user."""
+
+    lower: str
+    """Lowercased path with `\\` normalized to `/`."""
+
+    filename: str
+    """Lowercased final path component."""
+
+    filename_start: int
+    """Index in `lower` where the filename begins."""
+
+    is_dotpath: bool
+    """Whether any path component is hidden."""
+
+
+def _index_file(path: str) -> _FileEntry:
+    """Precompute the scoring fields for one path.
+
+    Returns:
+        The entry for `path`.
+    """
+    # Normalize path separators for cross-platform support
+    normalized = path.replace("\\", "/")
+    lower = normalized.lower()
+    return _FileEntry(
+        path=path,
+        lower=lower,
+        filename=normalized.rsplit("/", 1)[-1].lower(),
+        filename_start=lower.rfind("/") + 1,
+        is_dotpath=_is_dotpath(path),
+    )
+
+
+def _index_files(paths: list[str]) -> list[_FileEntry]:
+    """Precompute the scoring fields for each path.
+
+    Returns:
+        One entry per path, in input order.
+    """
+    return [_index_file(path) for path in paths]
+
+
+def _substring_score(query_lower: str, entry: _FileEntry) -> float | None:
+    """Score a case-insensitive substring match of the query.
+
+    A filename match ranks above a match elsewhere in the path.
+
+    Returns:
+        The score, or `None` when `query_lower` is not in the path.
+    """
+    path = entry.path
+    idx = entry.filename.find(query_lower)
+    if idx >= 0:
+        # Bonus for being at start of filename, then for a word boundary
+        if idx == 0:
+            return 150 + (1 / len(path))
+        if entry.filename[idx - 1] in "_-.":
+            return 120 + (1 / len(path))
+        return 100 + (1 / len(path))
+
+    idx = entry.lower.find(query_lower)
+    if idx < 0:
+        return None
+    if idx == entry.filename_start:
+        return 80 + (1 / len(path))
+    if idx == 0 or path[idx - 1] in "/_-.":
+        return 60 + (1 / len(path))
+    return 40 + (1 / len(path))
+
+
+def _score_entry(query_lower: str, entry: _FileEntry) -> float:
+    """Score a file entry against a lowercased query. Higher = better match.
+
+    Returns:
+        The score, or `0.0` when it is below `_MIN_FUZZY_SCORE`.
+    """
+    score = _substring_score(query_lower, entry)
+    if score is not None:
+        return score
+
+    # Fuzzy match on the filename only. A fuzzy match on the full path is not
+    # tried: at weight 15 it reaches `_MIN_FUZZY_SCORE` only at ratio 1.0,
+    # which means an exact match, and the substring check already caught that.
+    #
+    # `ratio()` is slow. Its cheap upper bounds reject most files first:
+    # `2 * min(len) / total` (the `real_quick_ratio()` formula), then
+    # `quick_ratio()`. A file rejected by a bound cannot reach the threshold.
+    total = len(query_lower) + len(entry.filename)
+    bound = 2.0 * min(len(query_lower), len(entry.filename)) / total
+    if bound * _FUZZY_FILENAME_WEIGHT < _MIN_FUZZY_SCORE:
+        return 0.0
+    matcher = SequenceMatcher(None, query_lower, entry.filename)
+    if matcher.quick_ratio() * _FUZZY_FILENAME_WEIGHT < _MIN_FUZZY_SCORE:
+        return 0.0
+    score = matcher.ratio() * _FUZZY_FILENAME_WEIGHT
+    return score if score >= _MIN_FUZZY_SCORE else 0.0
+
+
 def _fuzzy_score(query: str, candidate: str) -> float:
     """Score a candidate against query. Higher = better match.
 
     Returns:
-        Score value where higher indicates better match quality.
+        Score value where higher indicates better match quality, or `0.0`
+            when it is below `_MIN_FUZZY_SCORE`.
     """
-    query_lower = query.lower()
-    # Normalize path separators for cross-platform support
-    candidate_normalized = candidate.replace("\\", "/")
-    candidate_lower = candidate_normalized.lower()
-
-    # Extract filename for matching (prioritize filename over full path)
-    filename = candidate_normalized.rsplit("/", 1)[-1].lower()
-    filename_start = candidate_lower.rfind("/") + 1
-
-    # Check filename first (higher priority)
-    if query_lower in filename:
-        idx = filename.find(query_lower)
-        # Bonus for being at start of filename
-        if idx == 0:
-            return 150 + (1 / len(candidate))
-        # Bonus for word boundary in filename
-        if idx > 0 and filename[idx - 1] in "_-.":
-            return 120 + (1 / len(candidate))
-        return 100 + (1 / len(candidate))
-
-    # Check full path
-    if query_lower in candidate_lower:
-        idx = candidate_lower.find(query_lower)
-        # At start of filename
-        if idx == filename_start:
-            return 80 + (1 / len(candidate))
-        # At word boundary in path
-        if idx == 0 or candidate[idx - 1] in "/_-.":
-            return 60 + (1 / len(candidate))
-        return 40 + (1 / len(candidate))
-
-    # Fuzzy match on filename only (more relevant)
-    filename_ratio = SequenceMatcher(None, query_lower, filename).ratio()
-    if filename_ratio > _MIN_FUZZY_RATIO:
-        return filename_ratio * 30
-
-    # Fallback: fuzzy on full path
-    ratio = SequenceMatcher(None, query_lower, candidate_lower).ratio()
-    return ratio * 15
+    return _score_entry(query.lower(), _index_file(candidate))
 
 
 def _is_dotpath(path: str) -> bool:
@@ -786,25 +867,49 @@ def _fuzzy_search(
     Returns:
         List of matching file paths sorted by relevance score.
     """
-    # Filter dotfiles unless explicitly searching for them
-    filtered = (
-        candidates
-        if include_dotfiles
-        else [c for c in candidates if not _is_dotpath(c)]
+    return _search_entries(
+        query, _index_files(candidates), limit, include_dotfiles=include_dotfiles
     )
+
+
+def _search_entries(
+    query: str,
+    entries: list[_FileEntry],
+    limit: int,
+    *,
+    include_dotfiles: bool,
+) -> list[str]:
+    """Return the paths of the top-scoring entries.
+
+    Args:
+        query: Search query.
+        entries: Precomputed entries from `_index_files`.
+        limit: Max results to return.
+        include_dotfiles: Whether to include hidden paths.
+
+    Returns:
+        Matching file paths sorted by relevance score.
+    """
+    # Filter dotfiles unless explicitly searching for them
+    if not include_dotfiles:
+        entries = [entry for entry in entries if not entry.is_dotpath]
 
     if not query:
         # Empty query: show root-level files first, sorted by depth then name
-        sorted_files = sorted(filtered, key=lambda p: (_path_depth(p), p.lower()))
-        return sorted_files[:limit]
+        paths = sorted(
+            (entry.path for entry in entries),
+            key=lambda p: (_path_depth(p), p.lower()),
+        )
+        return paths[:limit]
 
+    query_lower = query.lower()
     scored = [
-        (score, c)
-        for c in filtered
-        if (score := _fuzzy_score(query, c)) >= _MIN_FUZZY_SCORE
+        (score, entry.path)
+        for entry in entries
+        if (score := _score_entry(query_lower, entry)) >= _MIN_FUZZY_SCORE
     ]
     scored.sort(key=lambda x: -x[0])
-    return [c for _, c in scored[:limit]]
+    return [path for _, path in scored[:limit]]
 
 
 def _scope_files_to_cwd(files: list[str], project_root: Path, cwd: Path) -> list[str]:
@@ -817,13 +922,14 @@ def _scope_files_to_cwd(files: list[str], project_root: Path, cwd: Path) -> list
         cwd: Directory to scope suggestions to.
 
     Returns:
-        Paths rewritten relative to `cwd`, filtered to that subtree (possibly
-        empty), when `cwd` is nested under `project_root`. The input list
+        Safe paths rewritten relative to `cwd`, filtered to that subtree (possibly
+        empty), when `cwd` is nested under `project_root`. Safe paths remain
         unchanged when `cwd` equals `project_root`. An empty list when `cwd` is
         not under `project_root`: the paths are project-root-relative and would
         resolve to the wrong base from `cwd`, so fail closed rather than offer
         misleading suggestions.
     """
+    files = [path for path in files if is_safe_file_path(path)]
     if cwd == project_root:
         return files
     try:
@@ -832,6 +938,18 @@ def _scope_files_to_cwd(files: list[str], project_root: Path, cwd: Path) -> list
         return []
     prefix = f"{relative_cwd}/"
     return [path[len(prefix) :] for path in files if path.startswith(prefix)]
+
+
+def _load_file_index(
+    project_root: Path, cwd: Path
+) -> tuple[list[str], list[_FileEntry]]:
+    """List, scope, and index project files. Blocking; run in a worker thread.
+
+    Returns:
+        The file paths relative to `cwd`, and their scoring entries.
+    """
+    files = _scope_files_to_cwd(_get_project_files(project_root), project_root, cwd)
+    return files, _index_files(files)
 
 
 class FuzzyFileController:
@@ -854,6 +972,10 @@ class FuzzyFileController:
         self._suggestions: list[tuple[str, str]] = []
         self._selected_index = 0
         self._file_cache: list[str] | None = None
+        # Scoring entries for `_file_index_source`. Rebuilt when `_file_cache`
+        # is replaced by a different list.
+        self._file_index: list[_FileEntry] = []
+        self._file_index_source: list[str] | None = None
         # When True, `_project_root` is a provisional value (set synchronously by
         # `set_cwd`) and the real project root is resolved off the event loop in
         # `warm_cache`. See `set_cwd` for why discovery is deferred.
@@ -935,9 +1057,11 @@ class FuzzyFileController:
         # list visible. Log at debug so a recurring background refresh failure
         # (the 30s timer) is diagnosable rather than silently stale.
         try:
-            files = await asyncio.to_thread(_get_project_files, project_root)
+            files, index = await asyncio.to_thread(_load_file_index, project_root, cwd)
             if generation == self._cache_generation:
-                self._file_cache = _scope_files_to_cwd(files, project_root, cwd)
+                self._file_cache = files
+                self._file_index = index
+                self._file_index_source = files
         except Exception:  # best-effort refresh; prior cache is the fallback
             logger.debug("File-cache warm failed for %s", project_root, exc_info=True)
 
@@ -996,17 +1120,31 @@ class FuzzyFileController:
         else:
             self.reset()
 
+    def _get_file_index(self) -> list[_FileEntry]:
+        """Get scoring entries for the cached file list.
+
+        Returns:
+            One entry per cached file path.
+        """
+        files = self._get_files()
+        if self._file_index_source is not files:
+            self._file_index = _index_files(files)
+            self._file_index_source = files
+        return self._file_index
+
     def _get_fuzzy_suggestions(self, search: str) -> list[tuple[str, str]]:
         """Get fuzzy file suggestions.
 
         Returns:
             List of (label, type_hint) tuples for matching files.
         """
-        files = self._get_files()
         # Include dotfiles only if query starts with "."
         include_dots = search.startswith(".")
-        matches = _fuzzy_search(
-            search, files, limit=MAX_SUGGESTIONS, include_dotfiles=include_dots
+        matches = _search_entries(
+            search,
+            self._get_file_index(),
+            MAX_SUGGESTIONS,
+            include_dotfiles=include_dots,
         )
 
         suggestions: list[tuple[str, str]] = []

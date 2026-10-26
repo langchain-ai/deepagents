@@ -6,17 +6,18 @@ import logging
 import os
 import signal
 import sys
-from collections.abc import AsyncIterator, Iterator, Sequence
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
-from unittest.mock import AsyncMock, MagicMock, call, patch
+from unittest.mock import AsyncMock, MagicMock, Mock, call, patch
 
 import pytest
 from langchain_core.messages import AIMessage, AIMessageChunk, ToolMessage
 from rich.console import Console
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncIterator, Iterator, Sequence
+
     from langchain_core.runnables import RunnableConfig
 from typing import cast
 
@@ -25,6 +26,11 @@ from rich.style import Style
 from deepagents_code._tool_stream import ToolCallBuffer
 from deepagents_code._tracing import RESUME_TRACE_TAG
 from deepagents_code.approval_mode import ApprovalMode
+from deepagents_code.client.headless_resume import (
+    ResumeError,
+    ResumeRequest,
+    ResumeTarget,
+)
 from deepagents_code.client.non_interactive import (
     RETRY_BOUNDARY_LINE,
     HITLIterationLimitError,
@@ -50,7 +56,6 @@ from deepagents_code.client.non_interactive import (
 from deepagents_code.config import (
     ASCII_GLYPHS,
     SHELL_ALLOW_ALL,
-    ModelResult,
     get_glyphs,
     runtime_state,
 )
@@ -74,7 +79,18 @@ from deepagents_code.hooks.models.domain import (
     UserPromptSubmitDecision,
 )
 from deepagents_code.hooks.transcript import TranscriptRecorder, TranscriptStore
+from deepagents_code.model_metadata import ModelMetadata
+from deepagents_code.thread_ownership import ensure_owned, held_lease
 from deepagents_code.tool_display import format_tool_message_content
+
+
+def _headless_agent() -> MagicMock:
+    """Return a remote-agent double with server-resolved startup metadata."""
+    agent = MagicMock()
+    agent.aget_model_metadata = AsyncMock(
+        return_value=ModelMetadata("test-model", "test")
+    )
+    return agent
 
 
 @pytest.fixture(autouse=True)
@@ -343,19 +359,11 @@ class TestSandboxTypeForwarding:
 
     async def test_sandbox_type_passed_to_server(self) -> None:
         """run_non_interactive should forward sandbox_type to the server."""
-        mock_agent = MagicMock()
+        mock_agent = _headless_agent()
         mock_agent.astream = MagicMock(return_value=_async_iter([]))
         mock_server_proc = MagicMock()
 
         with (
-            patch(
-                "deepagents_code.client.non_interactive.create_model",
-                return_value=ModelResult(
-                    model=MagicMock(),
-                    model_name="test-model",
-                    provider="test",
-                ),
-            ),
             patch(
                 "deepagents_code.client.non_interactive.generate_thread_id",
                 return_value="test-thread",
@@ -368,11 +376,15 @@ class TestSandboxTypeForwarding:
                 return_value=None,
             ),
             patch(
+                "deepagents_code.client.non_interactive.owned_sandbox",
+            ) as mock_owned_sandbox,
+            patch(
                 "deepagents_code.client.launch.server_manager.start_server_and_get_agent",
                 new_callable=AsyncMock,
                 return_value=(mock_agent, mock_server_proc, None),
             ) as mock_start_server,
         ):
+            mock_owned_sandbox.return_value.__aenter__.return_value = "owned-sandbox"
             mock_settings.return_value = None
             mock_settings.has_tavily = False
             runtime_state.model_name = None
@@ -384,6 +396,7 @@ class TestSandboxTypeForwarding:
             )
 
         _, kwargs = mock_start_server.call_args
+        assert kwargs["sandbox_id"] == "owned-sandbox"
         assert kwargs["sandbox_type"] == "modal"
         assert kwargs["profile_overrides"] == {"max_input_tokens": 32_000}
         assert kwargs["enable_interpreter"] is None
@@ -394,18 +407,10 @@ class TestSandboxTypeForwarding:
         runtime.configured_events.return_value = frozenset(
             {HookEvent.PERMISSION_REQUEST}
         )
-        mock_agent = MagicMock()
+        mock_agent = _headless_agent()
         mock_server_proc = MagicMock()
 
         with (
-            patch(
-                "deepagents_code.client.non_interactive.create_model",
-                return_value=ModelResult(
-                    model=MagicMock(),
-                    model_name="test-model",
-                    provider="test",
-                ),
-            ),
             patch(
                 "deepagents_code.client.non_interactive.generate_thread_id",
                 return_value="test-thread",
@@ -450,19 +455,11 @@ class TestSandboxTypeForwarding:
 
     async def test_sandbox_snapshot_name_passed_to_server(self) -> None:
         """`sandbox_snapshot_name` must reach `start_server_and_get_agent`."""
-        mock_agent = MagicMock()
+        mock_agent = _headless_agent()
         mock_agent.astream = MagicMock(return_value=_async_iter([]))
         mock_server_proc = MagicMock()
 
         with (
-            patch(
-                "deepagents_code.client.non_interactive.create_model",
-                return_value=ModelResult(
-                    model=MagicMock(),
-                    model_name="test-model",
-                    provider="test",
-                ),
-            ),
             patch(
                 "deepagents_code.client.non_interactive.generate_thread_id",
                 return_value="test-thread",
@@ -475,11 +472,15 @@ class TestSandboxTypeForwarding:
                 return_value=None,
             ),
             patch(
+                "deepagents_code.client.non_interactive.owned_sandbox",
+            ) as mock_owned_sandbox,
+            patch(
                 "deepagents_code.client.launch.server_manager.start_server_and_get_agent",
                 new_callable=AsyncMock,
                 return_value=(mock_agent, mock_server_proc, None),
             ) as mock_start_server,
         ):
+            mock_owned_sandbox.return_value.__aenter__.return_value = "owned-sandbox"
             mock_settings.return_value = None
             mock_settings.has_tavily = False
             runtime_state.model_name = None
@@ -491,6 +492,7 @@ class TestSandboxTypeForwarding:
             )
 
         _, kwargs = mock_start_server.call_args
+        assert kwargs["sandbox_id"] == "owned-sandbox"
         assert kwargs["sandbox_snapshot_name"] == "my-snap"
 
 
@@ -504,19 +506,11 @@ class TestAllowFsToolsForwarding:
     """
 
     async def test_allow_fs_tools_passed_to_server(self) -> None:
-        mock_agent = MagicMock()
+        mock_agent = _headless_agent()
         mock_agent.astream = MagicMock(return_value=_async_iter([]))
         mock_server_proc = MagicMock()
 
         with (
-            patch(
-                "deepagents_code.client.non_interactive.create_model",
-                return_value=ModelResult(
-                    model=MagicMock(),
-                    model_name="test-model",
-                    provider="test",
-                ),
-            ),
             patch(
                 "deepagents_code.client.non_interactive.generate_thread_id",
                 return_value="test-thread",
@@ -566,19 +560,11 @@ class TestQuietMode:
         stdout_buf = io.StringIO()
         stderr_buf = io.StringIO()
 
-        mock_agent = MagicMock()
+        mock_agent = _headless_agent()
         mock_agent.astream = MagicMock(return_value=_async_iter(stream_chunks))
         mock_server_proc = MagicMock()
 
         with (
-            patch(
-                "deepagents_code.client.non_interactive.create_model",
-                return_value=ModelResult(
-                    model=MagicMock(),
-                    model_name="test-model",
-                    provider="test",
-                ),
-            ),
             patch(
                 "deepagents_code.client.non_interactive.generate_thread_id",
                 return_value="test-thread",
@@ -626,7 +612,7 @@ class TestQuietMode:
             {"type": "text", "text": "answer"},
             {"type": "reasoning", "reasoning": "thinking"},
         ]
-        mock_agent = MagicMock()
+        mock_agent = _headless_agent()
         mock_agent.astream = MagicMock(
             return_value=_async_iter([("", "messages", (ai_msg, {}))])
         )
@@ -634,14 +620,6 @@ class TestQuietMode:
         stderr = io.StringIO()
 
         with (
-            patch(
-                "deepagents_code.client.non_interactive.create_model",
-                return_value=ModelResult(
-                    model=MagicMock(),
-                    model_name="test-model",
-                    provider="test",
-                ),
-            ),
             patch(
                 "deepagents_code.client.non_interactive.generate_thread_id",
                 return_value="test-thread",
@@ -672,7 +650,7 @@ class TestQuietMode:
             )
 
         assert stdout.getvalue() == "answer\n"
-        assert stderr.getvalue() == "\nReasoning:\nthinking\n"
+        assert stderr.getvalue() == "Thread: test-thread\n\nReasoning:\nthinking\n"
 
 
 class TestQuietFileOpNotification:
@@ -814,19 +792,11 @@ class TestNoStreamMode:
 
         stdout_buf = TrackingStringIO()
 
-        mock_agent = MagicMock()
+        mock_agent = _headless_agent()
         mock_agent.astream = MagicMock(return_value=_async_iter(stream_chunks))
         mock_server_proc = MagicMock()
 
         with (
-            patch(
-                "deepagents_code.client.non_interactive.create_model",
-                return_value=ModelResult(
-                    model=MagicMock(),
-                    model_name="test-model",
-                    provider="test",
-                ),
-            ),
             patch(
                 "deepagents_code.client.non_interactive.generate_thread_id",
                 return_value="test-thread",
@@ -883,19 +853,11 @@ class TestNoStreamMode:
 
         stdout_buf = TrackingStringIO()
 
-        mock_agent = MagicMock()
+        mock_agent = _headless_agent()
         mock_agent.astream = MagicMock(return_value=_async_iter(stream_chunks))
         mock_server_proc = MagicMock()
 
         with (
-            patch(
-                "deepagents_code.client.non_interactive.create_model",
-                return_value=ModelResult(
-                    model=MagicMock(),
-                    model_name="test-model",
-                    provider="test",
-                ),
-            ),
             patch(
                 "deepagents_code.client.non_interactive.generate_thread_id",
                 return_value="test-thread",
@@ -942,7 +904,7 @@ class TestFastFollowLangsmithLink:
             "https://smith.langchain.com/o/org/projects/p/proj/t/test-thread"
         )
 
-        mock_agent = MagicMock()
+        mock_agent = _headless_agent()
         mock_agent.astream = MagicMock(return_value=_async_iter([]))
         mock_server_proc = MagicMock()
 
@@ -950,14 +912,6 @@ class TestFastFollowLangsmithLink:
             patch(
                 "deepagents_code.client.non_interactive.Console",
                 return_value=mock_console,
-            ),
-            patch(
-                "deepagents_code.client.non_interactive.create_model",
-                return_value=ModelResult(
-                    model=MagicMock(),
-                    model_name="test-model",
-                    provider="test",
-                ),
             ),
             patch(
                 "deepagents_code.client.non_interactive.generate_thread_id",
@@ -995,7 +949,7 @@ class TestFastFollowLangsmithLink:
             "https://smith.langchain.com/o/org/projects/p/proj/t/test-thread"
         )
 
-        mock_agent = MagicMock()
+        mock_agent = _headless_agent()
         mock_agent.astream = MagicMock(return_value=_async_iter([]))
         mock_server_proc = MagicMock()
 
@@ -1003,14 +957,6 @@ class TestFastFollowLangsmithLink:
             patch(
                 "deepagents_code.client.non_interactive.Console",
                 return_value=mock_console,
-            ),
-            patch(
-                "deepagents_code.client.non_interactive.create_model",
-                return_value=ModelResult(
-                    model=MagicMock(),
-                    model_name="test-model",
-                    provider="test",
-                ),
             ),
             patch(
                 "deepagents_code.client.non_interactive.generate_thread_id",
@@ -1042,7 +988,7 @@ class TestFastFollowLangsmithLink:
 
     async def test_quiet_mode_skips_thread_url_lookup(self) -> None:
         """Should not start LangSmith URL lookup when quiet=True."""
-        mock_agent = MagicMock()
+        mock_agent = _headless_agent()
         mock_agent.astream = MagicMock(return_value=_async_iter([]))
         mock_server_proc = MagicMock()
 
@@ -1050,14 +996,6 @@ class TestFastFollowLangsmithLink:
             patch(
                 "deepagents_code.client.non_interactive.Console",
                 return_value=MagicMock(spec=Console),
-            ),
-            patch(
-                "deepagents_code.client.non_interactive.create_model",
-                return_value=ModelResult(
-                    model=MagicMock(),
-                    model_name="test-model",
-                    provider="test",
-                ),
             ),
             patch(
                 "deepagents_code.client.non_interactive.generate_thread_id",
@@ -1130,19 +1068,11 @@ class TestShellAllowListDecisionLogic:
         expected_allow_list: list[str] | None,
     ) -> None:
         """Verify start_server_and_get_agent receives correct flags."""
-        mock_agent = MagicMock()
+        mock_agent = _headless_agent()
         mock_agent.astream = MagicMock(return_value=_async_iter([]))
         mock_server_proc = MagicMock()
 
         with (
-            patch(
-                "deepagents_code.client.non_interactive.create_model",
-                return_value=ModelResult(
-                    model=MagicMock(),
-                    model_name="test-model",
-                    provider="test",
-                ),
-            ),
             patch(
                 "deepagents_code.client.non_interactive.generate_thread_id",
                 return_value="test-thread",
@@ -1186,19 +1116,11 @@ class TestNonInteractivePrompt:
     """Tests that run_non_interactive passes interactive=False."""
 
     async def test_passes_interactive_false(self) -> None:
-        mock_agent = MagicMock()
+        mock_agent = _headless_agent()
         mock_agent.astream = MagicMock(return_value=_async_iter([]))
         mock_server_proc = MagicMock()
 
         with (
-            patch(
-                "deepagents_code.client.non_interactive.create_model",
-                return_value=ModelResult(
-                    model=MagicMock(),
-                    model_name="test-model",
-                    provider="test",
-                ),
-            ),
             patch(
                 "deepagents_code.client.non_interactive.generate_thread_id",
                 return_value="test-thread",
@@ -1225,31 +1147,13 @@ class TestNonInteractivePrompt:
         _, kwargs = mock_start_server.call_args
         assert kwargs["interactive"] is False
 
-    async def test_initial_skill_wraps_prompt_and_metadata(self) -> None:
-        """Headless skill execution should send wrapped prompt + `__skill`."""
-        mock_agent = MagicMock()
+    async def test_initial_skill_pins_instructions_and_keeps_metadata(self) -> None:
+        """Headless execution leaves reading the skill to the server."""
+        mock_agent = _headless_agent()
         mock_agent.astream = MagicMock(return_value=_async_iter([]))
         mock_server_proc = MagicMock()
-        skill = {
-            "name": "code-review",
-            "description": "Review code changes",
-            "path": "/skills/code-review/SKILL.md",
-            "license": None,
-            "compatibility": None,
-            "metadata": {},
-            "allowed_tools": [],
-            "source": "user",
-        }
 
         with (
-            patch(
-                "deepagents_code.client.non_interactive.create_model",
-                return_value=ModelResult(
-                    model=MagicMock(),
-                    model_name="test-model",
-                    provider="test",
-                ),
-            ),
             patch(
                 "deepagents_code.client.non_interactive.generate_thread_id",
                 return_value="test-thread",
@@ -1261,14 +1165,7 @@ class TestNonInteractivePrompt:
                 "deepagents_code.client.non_interactive.build_langsmith_thread_url",
                 return_value=None,
             ),
-            patch(
-                "deepagents_code.skills.invocation.discover_skills_and_roots",
-                return_value=([skill], []),
-            ),
-            patch(
-                "deepagents_code.skills.load.load_skill_content",
-                return_value="# Instructions\nDo stuff",
-            ),
+            patch("deepagents_code.skills.load.load_skill_content") as mock_load,
             patch(
                 "deepagents_code.client.launch.server_manager.start_server_and_get_agent",
                 new_callable=AsyncMock,
@@ -1285,108 +1182,63 @@ class TestNonInteractivePrompt:
                 quiet=True,
             )
 
+        mock_load.assert_not_called()
         stream_input = mock_agent.astream.call_args.args[0]
         user_msg = stream_input["messages"][0]
+        assert stream_input["pinned_skills"] == ["code-review"]
         assert "I'm invoking the skill `code-review`." in user_msg["content"]
         assert "**User request:** review this patch" in user_msg["content"]
         assert user_msg["additional_kwargs"]["__skill"]["name"] == "code-review"
         assert user_msg["additional_kwargs"]["__skill"]["args"] == "review this patch"
 
-    async def test_initial_skill_missing_returns_error_without_starting_server(
-        self,
-    ) -> None:
-        """Missing headless skill should fail before the server starts."""
+    async def test_skill_trust_request_is_denied_on_resume(self) -> None:
+        """Headless mode cannot ask, so it resumes a trust request with a deny."""
+        from langgraph.types import Command, Interrupt
+
+        from deepagents_code.client.non_interactive import _process_interrupts
+
+        inputs: list[object] = []
+
+        async def staged_stream(  # noqa: RUF029  # replaces the async _stream_agent seam
+            _agent: object,
+            stream_input: object,
+            _config: object,
+            state: StreamState,
+            console: Console,
+            _file_op_tracker: object,
+            _context: object,
+        ) -> None:
+            inputs.append(stream_input)
+            if len(inputs) == 1:
+                request = {"type": "skill_trust", "skill": "review", "directory": "/x"}
+                _process_interrupts(
+                    {"__interrupt__": [Interrupt(value=request, id="trust-1")]},
+                    state,
+                    console,
+                )
+
         with (
             patch(
-                "deepagents_code.client.non_interactive.create_model",
-                return_value=ModelResult(
-                    model=MagicMock(),
-                    model_name="test-model",
-                    provider="test",
-                ),
+                "deepagents_code.client.non_interactive._stream_agent",
+                new=staged_stream,
             ),
             patch(
-                "deepagents_code.client.non_interactive._resolve_shell_allow_list",
-            ) as mock_settings,
-            patch(
-                "deepagents_code.skills.invocation.discover_skills_and_roots",
-                return_value=([], []),
-            ),
-            patch(
-                "deepagents_code.client.launch.server_manager.start_server_and_get_agent",
+                "deepagents_code.client.non_interactive.dispatch_hook",
                 new_callable=AsyncMock,
-            ) as mock_start_server,
+            ),
         ):
-            mock_settings.return_value = None
-            mock_settings.has_tavily = False
-            runtime_state.model_name = None
-
-            result = await run_non_interactive(
-                message="review this patch",
-                initial_skill="missing-skill",
+            await _run_agent_loop(
+                MagicMock(),
+                "run a skill",
+                {"configurable": {"thread_id": "t"}},
+                Console(quiet=True),
+                MagicMock(),
                 quiet=True,
             )
 
-        assert result == 1
-        mock_start_server.assert_not_awaited()
-
-    async def test_initial_skill_containment_failure_hard_fails(self) -> None:
-        """A skill resolving outside trusted roots hard-fails headlessly.
-
-        The non-interactive path has no TUI to prompt on, so it must never try
-        to grant trust: it fails closed with the containment error and never
-        starts the server.
-        """
-        skill = {
-            "name": "evil-skill",
-            "description": "Resolves outside trusted roots",
-            "path": "/skills/evil-skill/SKILL.md",
-            "license": None,
-            "compatibility": None,
-            "metadata": {},
-            "allowed_tools": [],
-            "source": "user",
-        }
-        with (
-            patch(
-                "deepagents_code.client.non_interactive.create_model",
-                return_value=ModelResult(
-                    model=MagicMock(),
-                    model_name="test-model",
-                    provider="test",
-                ),
-            ),
-            patch(
-                "deepagents_code.client.non_interactive._resolve_shell_allow_list",
-            ) as mock_settings,
-            patch(
-                "deepagents_code.skills.invocation.discover_skills_and_roots",
-                return_value=([skill], []),
-            ),
-            patch(
-                "deepagents_code.skills.load.load_skill_content",
-                side_effect=PermissionError(
-                    "Skill path /tmp/evil resolves outside all allowed skill "
-                    "directories."
-                ),
-            ),
-            patch(
-                "deepagents_code.client.launch.server_manager.start_server_and_get_agent",
-                new_callable=AsyncMock,
-            ) as mock_start_server,
-        ):
-            mock_settings.return_value = None
-            mock_settings.has_tavily = False
-            runtime_state.model_name = None
-
-            result = await run_non_interactive(
-                message="review this patch",
-                initial_skill="evil-skill",
-                quiet=True,
-            )
-
-        assert result == 1
-        mock_start_server.assert_not_awaited()
+        resume = inputs[1]
+        assert isinstance(resume, Command)
+        assert resume.resume == {"trust-1": {"approved": False}}
 
 
 def _make_interrupt_chunk(interrupt_id: str = "i1") -> tuple:
@@ -1408,7 +1260,7 @@ def _make_interrupt_chunk(interrupt_id: str = "i1") -> tuple:
 def _make_looping_agent() -> MagicMock:
     """Return a mock agent whose astream always yields one interrupt chunk."""
     chunk = _make_interrupt_chunk()
-    mock_agent = MagicMock()
+    mock_agent = _headless_agent()
     mock_agent.astream = MagicMock(side_effect=lambda *_, **__: _async_iter([chunk]))
     return mock_agent
 
@@ -1578,6 +1430,45 @@ class TestMaxTurns:
             HookEvent.SESSION_END,
         ]
         agent.astream.assert_not_called()
+
+    async def test_suppressed_prompt_does_not_pin_skill(
+        self,
+        lifecycle_runtime: MagicMock,
+    ) -> None:
+        """A hook that drops the prompt also drops the skill it requested."""
+        runtime = lifecycle_runtime
+        runtime.configured_events.return_value = frozenset(
+            {HookEvent.SESSION_START, HookEvent.USER_PROMPT_SUBMIT}
+        )
+        runtime.invoke = AsyncMock(
+            side_effect=[
+                SessionStartDecision(event=HookEvent.SESSION_START),
+                UserPromptSubmitDecision(
+                    event=HookEvent.USER_PROMPT_SUBMIT,
+                    context=["Replacement context"],
+                    suppress_original_prompt=True,
+                ),
+            ]
+        )
+        agent = _headless_agent()
+        agent.astream = MagicMock(return_value=_async_iter([]))
+
+        await _run_agent_loop(
+            agent,
+            "I'm invoking the skill `code-review`.",
+            {"configurable": {"thread_id": "t1"}},
+            Console(quiet=True),
+            MagicMock(),
+            quiet=True,
+            hooks=_manager(runtime),
+            skill_name="code-review",
+        )
+
+        stream_input = agent.astream.call_args.args[0]
+        assert "pinned_skills" not in stream_input
+        assert stream_input["messages"] == [
+            {"role": "system", "content": "Replacement context"}
+        ]
 
     async def test_compact_session_start_uses_active_model_before_continuation(
         self,
@@ -1866,19 +1757,11 @@ class TestMaxTurns:
 
     async def test_max_turns_forwarded_from_run_non_interactive(self) -> None:
         """run_non_interactive passes max_turns through to _run_agent_loop."""
-        mock_agent = MagicMock()
+        mock_agent = _headless_agent()
         mock_agent.astream = MagicMock(return_value=_async_iter([]))
         mock_server_proc = MagicMock()
 
         with (
-            patch(
-                "deepagents_code.client.non_interactive.create_model",
-                return_value=ModelResult(
-                    model=MagicMock(),
-                    model_name="test-model",
-                    provider="test",
-                ),
-            ),
             patch(
                 "deepagents_code.client.non_interactive.generate_thread_id",
                 return_value="test-thread",
@@ -2018,14 +1901,6 @@ class TestMaxTurns:
             raise HITLIterationLimitError(msg)
 
         with (
-            patch(
-                "deepagents_code.client.non_interactive.create_model",
-                return_value=ModelResult(
-                    model=MagicMock(),
-                    model_name="test-model",
-                    provider="test",
-                ),
-            ),
             patch(
                 "deepagents_code.client.non_interactive.generate_thread_id",
                 return_value="test-thread",
@@ -3100,19 +2975,13 @@ class TestDrainWiring:
 
     async def test_drains_pending_hooks_on_success(self) -> None:
         """The success path (exit 0) still awaits the drain."""
-        mock_agent = MagicMock()
+        mock_agent = _headless_agent()
         mock_agent.astream = MagicMock(return_value=_async_iter([]))
         mock_server_proc = MagicMock()
 
         with (
             patch(
                 "deepagents_code.client.non_interactive._make_stdio_encoding_safe",
-            ),
-            patch(
-                "deepagents_code.client.non_interactive.create_model",
-                return_value=ModelResult(
-                    model=MagicMock(), model_name="test-model", provider="test"
-                ),
             ),
             patch(
                 "deepagents_code.client.non_interactive.generate_thread_id",
@@ -3146,16 +3015,10 @@ class TestDrainWiring:
 
     async def test_drains_pending_hooks_on_error_and_preserves_exit_code(self) -> None:
         """An error return (exit 1) still awaits the drain, exit code intact."""
-        mock_agent = MagicMock()
+        mock_agent = _headless_agent()
         mock_server_proc = MagicMock()
 
         with (
-            patch(
-                "deepagents_code.client.non_interactive.create_model",
-                return_value=ModelResult(
-                    model=MagicMock(), model_name="test-model", provider="test"
-                ),
-            ),
             patch(
                 "deepagents_code.client.non_interactive.generate_thread_id",
                 return_value="test-thread",
@@ -3198,16 +3061,10 @@ class TestDrainWiring:
         not only success/OSError, so the final `tool.result` is not dropped when a
         user interrupts a headless run.
         """
-        mock_agent = MagicMock()
+        mock_agent = _headless_agent()
         mock_server_proc = MagicMock()
 
         with (
-            patch(
-                "deepagents_code.client.non_interactive.create_model",
-                return_value=ModelResult(
-                    model=MagicMock(), model_name="test-model", provider="test"
-                ),
-            ),
             patch(
                 "deepagents_code.client.non_interactive.generate_thread_id",
                 return_value="test-thread",
@@ -3245,16 +3102,10 @@ class TestDrainWiring:
 
     async def test_drains_pending_hooks_on_iteration_limit_124(self) -> None:
         """A turn-budget hit (exit 124) still awaits the drain, exit code intact."""
-        mock_agent = MagicMock()
+        mock_agent = _headless_agent()
         mock_server_proc = MagicMock()
 
         with (
-            patch(
-                "deepagents_code.client.non_interactive.create_model",
-                return_value=ModelResult(
-                    model=MagicMock(), model_name="test-model", provider="test"
-                ),
-            ),
             patch(
                 "deepagents_code.client.non_interactive.generate_thread_id",
                 return_value="test-thread",
@@ -3326,7 +3177,7 @@ class TestHeadlessUsageStats:
             "deepagents_code.model_config.DEFAULT_CONFIG_PATH", config_path
         )
 
-        mock_agent = MagicMock()
+        mock_agent = _headless_agent()
         mock_agent.astream = MagicMock(return_value=_async_iter([]))
         mock_console = MagicMock(spec=Console)
 
@@ -3334,14 +3185,6 @@ class TestHeadlessUsageStats:
             patch(
                 "deepagents_code.client.non_interactive.Console",
                 return_value=mock_console,
-            ),
-            patch(
-                "deepagents_code.client.non_interactive.create_model",
-                return_value=ModelResult(
-                    model=MagicMock(),
-                    model_name="test-model",
-                    provider="test",
-                ),
             ),
             patch(
                 "deepagents_code.client.non_interactive.print_usage_table"
@@ -4599,3 +4442,257 @@ def _retry_event(
         failed_attempt=failed_attempt,
         output_may_have_started=output_may_have_started,
     )
+
+
+@pytest.mark.parametrize("metadata_fails", [False, True])
+async def test_headless_uses_server_metadata_before_inference(
+    metadata_fails: bool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent = _headless_agent()
+    metadata = ModelMetadata("remote-model", "remote-provider", 12345)
+    agent.aget_model_metadata = AsyncMock(
+        return_value=metadata,
+        side_effect=RuntimeError("Metadata unavailable") if metadata_fails else None,
+    )
+    server = MagicMock()
+    monkeypatch.setattr(
+        "deepagents_code.client.launch.server_manager.start_server_and_get_agent",
+        AsyncMock(return_value=(agent, server, None)),
+    )
+    monkeypatch.setattr(
+        "deepagents_code.config.create_model",
+        Mock(
+            side_effect=AssertionError("Headless client constructed a provider model")
+        ),
+    )
+    monkeypatch.setattr(
+        "deepagents_code.client.non_interactive._resolve_shell_allow_list", lambda: None
+    )
+    monkeypatch.setattr(
+        "deepagents_code.client.non_interactive.generate_thread_id", lambda: "thread"
+    )
+
+    def run_loop(*_args: object, **_kwargs: object) -> None:
+        assert runtime_state.model_name == "remote-model"
+        assert runtime_state.model_provider == "remote-provider"
+        assert runtime_state.model_context_limit == 12345
+
+    run = AsyncMock(side_effect=run_loop)
+    monkeypatch.setattr("deepagents_code.client.non_interactive._run_agent_loop", run)
+    code = await run_non_interactive(message="test", quiet=True, no_mcp=True)
+    assert code == (1 if metadata_fails else 0)
+    assert run.await_count == (0 if metadata_fails else 1)
+    server.stop.assert_called_once()
+
+
+class TestHeadlessResume:
+    """`run_non_interactive(resume=...)` continues an existing thread or exits 1."""
+
+    @pytest.fixture
+    def start_server(self, monkeypatch: pytest.MonkeyPatch) -> AsyncMock:
+        agent = _headless_agent()
+        agent.aensure_thread = AsyncMock()
+        agent.aget_state = AsyncMock(return_value=SimpleNamespace(values={}))
+        agent.aresolve_model = AsyncMock(
+            return_value=ModelMetadata("thread-model", "openai", context_limit=999)
+        )
+        agent.astream = MagicMock(return_value=_async_iter([]))
+        start = AsyncMock(return_value=(agent, MagicMock(), None))
+        monkeypatch.setattr(
+            "deepagents_code.client.launch.server_manager.start_server_and_get_agent",
+            start,
+        )
+        monkeypatch.setattr(
+            "deepagents_code.client.non_interactive._resolve_shell_allow_list",
+            lambda: None,
+        )
+        monkeypatch.setattr(
+            "deepagents_code.client.non_interactive.build_langsmith_thread_url",
+            lambda _thread_id: None,
+        )
+        monkeypatch.setattr("deepagents_code.thread_ownership.ensure_owned", Mock())
+        monkeypatch.setattr(
+            "deepagents_code.sessions.thread_exists", AsyncMock(return_value=True)
+        )
+        return start
+
+    @staticmethod
+    def _target(monkeypatch: pytest.MonkeyPatch, **overrides: object) -> AsyncMock:
+        fields: dict[str, Any] = {
+            "thread_id": "t-1",
+            "agent_name": "coder",
+            "cwd": None,
+            **overrides,
+        }
+        resolve = AsyncMock(return_value=ResumeTarget(**fields))
+        monkeypatch.setattr(
+            "deepagents_code.client.headless_resume.resolve_resume_target", resolve
+        )
+        return resolve
+
+    @staticmethod
+    def _request(
+        *, adopt_agent: bool = True, adopt_model: bool = True
+    ) -> ResumeRequest:
+        return ResumeRequest("t-1", adopt_agent=adopt_agent, adopt_model=adopt_model)
+
+    async def _run(self, **kwargs: Any) -> tuple[int, str, str]:
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with patch.object(sys, "stdout", stdout), patch.object(sys, "stderr", stderr):
+            code = await run_non_interactive(
+                message="next step", quiet=True, no_mcp=True, **kwargs
+            )
+        return code, stdout.getvalue(), stderr.getvalue()
+
+    async def test_missing_thread_exits_before_server_start(
+        self, monkeypatch: pytest.MonkeyPatch, start_server: AsyncMock
+    ) -> None:
+        monkeypatch.setattr(
+            "deepagents_code.client.headless_resume.resolve_resume_target",
+            AsyncMock(side_effect=ResumeError("Thread 't-1' not found.")),
+        )
+
+        code, stdout, stderr = await self._run(resume=self._request())
+
+        assert code == 1
+        assert "Thread 't-1' not found." in stderr
+        assert "Thread: " not in stderr
+        assert stdout == ""
+        start_server.assert_not_awaited()
+
+    async def test_cancelled_startup_command_leaves_thread_unreserved(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        start_server: AsyncMock,
+        tmp_path: Path,
+    ) -> None:
+        db = tmp_path / "sessions.db"
+        monkeypatch.setattr("deepagents_code.sessions.get_db_path", lambda: db)
+        monkeypatch.setattr(
+            "deepagents_code.thread_ownership.ensure_owned", ensure_owned
+        )
+        monkeypatch.setattr(
+            "deepagents_code.client.non_interactive._run_startup_command",
+            AsyncMock(side_effect=asyncio.CancelledError),
+        )
+        self._target(monkeypatch)
+
+        with pytest.raises(asyncio.CancelledError):
+            await self._run(resume=self._request(), startup_cmd="sleep 60")
+
+        assert held_lease("t-1", db_path=db) is None
+        start_server.assert_not_awaited()
+
+    async def test_resumed_run_releases_its_reservation(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        start_server: AsyncMock,
+        tmp_path: Path,
+    ) -> None:
+        db = tmp_path / "sessions.db"
+        monkeypatch.setattr("deepagents_code.sessions.get_db_path", lambda: db)
+        monkeypatch.setattr(
+            "deepagents_code.thread_ownership.ensure_owned", ensure_owned
+        )
+        self._target(monkeypatch)
+        held_during_run: list[bool] = []
+        start_server.side_effect = lambda **_kwargs: (
+            held_during_run.append(held_lease("t-1", db_path=db) is not None),
+            start_server.return_value,
+        )[1]
+
+        code, _stdout, _stderr = await self._run(resume=self._request())
+
+        assert code == 0
+        assert held_during_run == [True]
+        assert held_lease("t-1", db_path=db) is None
+
+    async def test_other_directory_exits_1(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        start_server: AsyncMock,
+        tmp_path: Path,
+    ) -> None:
+        origin, here = tmp_path / "origin", tmp_path / "here"
+        origin.mkdir()
+        here.mkdir()
+        monkeypatch.chdir(here)
+        self._target(monkeypatch, cwd=str(origin))
+
+        code, _stdout, stderr = await self._run(resume=self._request())
+
+        assert code == 1
+        assert "Run from that directory" in stderr
+        start_server.assert_not_awaited()
+
+    async def test_resumed_turn_continues_thread_with_its_agent_and_model(
+        self, monkeypatch: pytest.MonkeyPatch, start_server: AsyncMock
+    ) -> None:
+        self._target(monkeypatch)
+        agent = start_server.return_value[0]
+        agent.aget_state.return_value = SimpleNamespace(
+            values={
+                "_model_spec": "openai:thread-model",
+                "_model_params": {"temperature": 0},
+                "rubric": "criteria from an earlier run",
+            }
+        )
+        session_start = AsyncMock(
+            return_value=SimpleNamespace(ok=True, stop_reason=None)
+        )
+        monkeypatch.setattr(HooksManager, "on_session_start", session_start)
+
+        code, _stdout, stderr = await self._run(
+            resume=self._request(), profile_override={"max_input_tokens": 10}
+        )
+
+        assert code == 0
+        assert stderr.startswith("Thread: t-1\n")
+        assert start_server.call_args.kwargs["assistant_id"] == "coder"
+        stream_input = agent.astream.call_args.args[0]
+        kwargs = agent.astream.call_args.kwargs
+        assert kwargs["config"]["configurable"]["thread_id"] == "t-1"
+        assert stream_input["rubric"] is None
+        assert kwargs["context"]["model"] == "openai:thread-model"
+        assert kwargs["context"]["model_params"] == {"temperature": 0}
+        assert kwargs["context"]["profile_overrides"] == {"max_input_tokens": 10}
+        assert kwargs["context"]["model_context_limit"] == 999
+        from deepagents_code.hooks.models.domain import SessionStartCause
+
+        assert session_start.call_args.args[0] is SessionStartCause.RESUME
+
+    async def test_explicit_agent_and_model_win(
+        self, monkeypatch: pytest.MonkeyPatch, start_server: AsyncMock
+    ) -> None:
+        self._target(monkeypatch, agent_name="coder")
+        agent = start_server.return_value[0]
+        agent.aget_state.return_value = SimpleNamespace(
+            values={"_model_spec": "openai:thread-model"}
+        )
+
+        code, _stdout, _stderr = await self._run(
+            resume=self._request(adopt_agent=False, adopt_model=False),
+            assistant_id="reviewer",
+        )
+
+        assert code == 0
+        assert start_server.call_args.kwargs["assistant_id"] == "reviewer"
+        agent.aresolve_model.assert_not_awaited()
+        assert "model" not in agent.astream.call_args.kwargs["context"]
+
+    async def test_unrestorable_model_warns_and_uses_launch_model(
+        self, monkeypatch: pytest.MonkeyPatch, start_server: AsyncMock
+    ) -> None:
+        self._target(monkeypatch)
+        agent = start_server.return_value[0]
+        agent.aget_state.return_value = SimpleNamespace(
+            values={"_model_spec": "gone:model"}
+        )
+        agent.aresolve_model.side_effect = RuntimeError("unknown provider")
+
+        code, _stdout, stderr = await self._run(resume=self._request())
+
+        assert code == 0
+        assert "could not restore this thread's model gone:model" in stderr
+        assert "model" not in agent.astream.call_args.kwargs["context"]

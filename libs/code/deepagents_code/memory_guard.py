@@ -121,7 +121,7 @@ class ManagedMemoryGuardMiddleware(AgentMiddleware):
         for raw in requested:
             try:
                 resolved.add(Path(raw).expanduser().resolve())
-            except (OSError, RuntimeError, ValueError):
+            except OSError, RuntimeError, ValueError:
                 logger.warning(
                     "Could not resolve guarded memory path %r", raw, exc_info=True
                 )
@@ -151,7 +151,7 @@ class ManagedMemoryGuardMiddleware(AgentMiddleware):
             return None
         try:
             resolved = Path(file_path).expanduser().resolve()
-        except (OSError, RuntimeError, ValueError):
+        except OSError, RuntimeError, ValueError:
             # A guarded-tool call whose path won't resolve could be an attempt
             # to slip past the set-membership match, so leave a trail.
             logger.warning(
@@ -184,7 +184,7 @@ class ManagedMemoryGuardMiddleware(AgentMiddleware):
         except FileNotFoundError:
             # Expected when the guarded file has not been created yet.
             return None
-        except (OSError, UnicodeDecodeError):
+        except OSError, UnicodeDecodeError:
             # An existing-but-unreadable guarded file would otherwise silently
             # disable protection for this call, so make it visible.
             logger.warning("Could not read guarded memory file %s", path, exc_info=True)
@@ -337,7 +337,7 @@ class ManagedMemoryGuardMiddleware(AgentMiddleware):
             return _RestoreOutcome.FAILED
         try:
             self._write(path, restored)
-        except (OSError, UnicodeEncodeError):
+        except OSError, UnicodeEncodeError:
             logger.warning(
                 "Could not restore managed memory block at %s", path, exc_info=True
             )
@@ -458,6 +458,10 @@ class ManagedMemoryGuardMiddleware(AgentMiddleware):
             The tool result, or an error `ToolMessage` when the managed block
                 was altered.
         """
+        # Most calls are not guarded tools. Check the name inline so those calls
+        # skip the thread hop that path resolution needs.
+        if request.tool_call["name"] not in _GUARDED_TOOLS:
+            return await handler(request)
         path = await asyncio.to_thread(self._guarded_path, request)
         if path is None:
             return await handler(request)

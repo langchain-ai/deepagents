@@ -17,6 +17,9 @@ _GIT_DIR_POINTER_PREFIX = "gitdir: "
 _GIT_HEAD_REF_PREFIX = "ref: "
 """Prefix used by `HEAD` when it points at a named ref instead of a commit."""
 
+_REFTABLE_HEAD_PLACEHOLDER = "refs/heads/.invalid"
+"""Ref a reftable repository writes to `HEAD`; the real refs live in `reftable/`."""
+
 _GIT_REF_PREFIXES = ("refs/heads/", "refs/remotes/", "refs/tags/", "refs/")
 """Known git ref prefixes stripped when formatting a branch-like display name."""
 
@@ -173,7 +176,7 @@ def _read_single_git_metadata_line(path: Path) -> str | None:
         return None
     try:
         raw = path.read_text(encoding="utf-8")
-    except (OSError, UnicodeError):
+    except OSError, UnicodeError:
         logger.debug("Failed to read Git metadata from %s", path, exc_info=True)
         return None
 
@@ -204,7 +207,7 @@ def _resolve_git_metadata_path(path: Path, *, relative_to: Path) -> Path | None:
         candidate = relative_to / candidate
     try:
         return candidate.resolve(strict=True)
-    except (OSError, RuntimeError, ValueError):
+    except OSError, RuntimeError, ValueError:
         logger.debug("Failed to resolve Git metadata path from %s", path, exc_info=True)
         return None
 
@@ -227,7 +230,7 @@ def _normalize_git_metadata_path(path: Path, *, relative_to: Path) -> Path | Non
         candidate = relative_to / candidate
     try:
         return Path(os.path.abspath(candidate))  # noqa: PTH100  # do not follow links
-    except (OSError, RuntimeError, ValueError):
+    except OSError, RuntimeError, ValueError:
         logger.debug(
             "Failed to normalize Git metadata path from %s", path, exc_info=True
         )
@@ -254,7 +257,7 @@ def _parse_trusted_git_dir_pointer(git_entry: Path) -> Path | None:
         candidate = git_entry.parent / candidate
     try:
         git_dir = candidate.resolve(strict=True)
-    except (OSError, RuntimeError, ValueError):
+    except OSError, RuntimeError, ValueError:
         logger.debug(
             "Failed to resolve trusted gitdir pointer %s", git_entry, exc_info=True
         )
@@ -328,7 +331,7 @@ def find_git_common_dir(path: str | Path) -> Path | None:
         backlink = _normalize_git_metadata_path(git_dir / "gitdir", relative_to=git_dir)
         if backlink is None or backlink != git_entry:
             return None
-    except (OSError, RuntimeError, ValueError):
+    except OSError, RuntimeError, ValueError:
         logger.debug(
             "Failed to validate Git common directory for %s", path, exc_info=True
         )
@@ -377,7 +380,7 @@ def _submodule_git_dir(root: Path, parent_config_dir: Path) -> Path | None:
         if not candidate.is_absolute():
             candidate = git_dir / candidate
         return git_dir if candidate.resolve(strict=True) == root else None
-    except (OSError, RuntimeError, ValueError):
+    except OSError, RuntimeError, ValueError:
         logger.debug("Failed to validate submodule Git metadata")
         return None
 
@@ -411,7 +414,8 @@ def read_git_branch_from_filesystem(path: str | Path) -> str | None:
     Returns:
         The abbreviated branch name, `HEAD` for detached HEAD, an empty string
         when `path` is not inside a git repository, or `None` when metadata
-        exists but cannot be parsed confidently.
+        exists but cannot be parsed confidently (including reftable
+        repositories, whose `HEAD` file only holds a placeholder).
     """
     git_dir = find_git_dir(path)
     if git_dir is None:
@@ -431,7 +435,9 @@ def read_git_branch_from_filesystem(path: str | Path) -> str | None:
         return ""
     if head.startswith(_GIT_HEAD_REF_PREFIX):
         ref = head.removeprefix(_GIT_HEAD_REF_PREFIX).strip()
-        return _abbreviate_git_ref(ref) if ref else None
+        if not ref or ref == _REFTABLE_HEAD_PLACEHOLDER:
+            return None
+        return _abbreviate_git_ref(ref)
     return "HEAD"
 
 
@@ -451,6 +457,9 @@ def read_git_branch_via_subprocess(path: str | Path) -> str:
             ["git", "rev-parse", "--abbrev-ref", "HEAD"],  # noqa: S607
             capture_output=True,
             text=True,
+            # Branch names are UTF-8, not in the Windows ANSI code page.
+            encoding="utf-8",
+            errors="replace",
             timeout=2,
             check=False,
             cwd=path,
@@ -653,6 +662,9 @@ def read_git_remote_url_via_subprocess(path: str | Path) -> str:
             ["git", "config", "--get", "remote.origin.url"],  # noqa: S607
             capture_output=True,
             text=True,
+            # Local-path remotes are UTF-8, not in the Windows ANSI code page.
+            encoding="utf-8",
+            errors="replace",
             timeout=2,
             check=False,
             cwd=path,

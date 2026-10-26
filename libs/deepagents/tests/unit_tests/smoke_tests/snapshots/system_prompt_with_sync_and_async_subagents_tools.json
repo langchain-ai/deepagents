@@ -247,7 +247,7 @@
   },
   {
     "function": {
-      "description": "Start an async subagent on a remote server. The subagent runs in the background and returns a task ID immediately.\n\nAvailable async agent types:\n- remote-researcher: Researches topics on a remote LangGraph server\n- remote-analyst: Analyzes data on a remote LangGraph server\n\n## Usage notes:\n1. This tool launches a background task and returns immediately with a task ID. Report the task ID to the user and stop \u2014 do NOT immediately check status.\n2. Use `check_async_task` only when the user asks for a status update or result.\n3. Use `update_async_task` to send new instructions to a running task.\n4. Multiple async subagents can run concurrently \u2014 launch several and let them run in the background.\n5. The subagent runs on a remote server, so it has its own tools and capabilities.",
+      "description": "Start an async subagent on a remote server. The subagent runs in the background and returns a task ID immediately.\n\nAvailable async agent types:\n- remote-researcher: Researches topics on a remote LangGraph server\n- remote-analyst: Analyzes data on a remote LangGraph server\n\n## Usage notes:\n1. This tool launches a background task and returns immediately with a task ID for internal coordination. Briefly describe the delegated work and whether you are continuing other work or waiting for results. Omit task IDs from user-facing replies unless explicitly requested or necessary for actionable troubleshooting. Do NOT immediately check status.\n2. You'll usually be told when a task finishes, fails or needs input, so don't check just to see if it's done; use `check_async_task` when the user asks or a notification says to.\n3. Use `update_async_task` to send new instructions to a running task.\n4. Multiple async subagents can run concurrently \u2014 launch several and let them run in the background.\n5. The subagent runs on a remote server, so it has its own tools and capabilities.\n6. A task with status `waiting` is waiting for a human (an approval or an answer). The user answers it directly; you can't answer or approve it for them. Keep working, and tell the user it's waiting if they ask.",
       "name": "start_async_task",
       "parameters": {
         "properties": {
@@ -271,7 +271,7 @@
   },
   {
     "function": {
-      "description": "Check the status of an async subagent task. Returns the current status and, if complete, the result. Statuses shown earlier in the conversation are always stale, so call this to get the current status rather than reporting a status from a previous tool result.",
+      "description": "Check the status of an async subagent task. Returns the current status and, if complete, the result. If the status is `waiting`, it also returns what the subagent is asking the user. Statuses shown earlier in the conversation are always stale, so call this to get the current status rather than reporting a status from a previous tool result.",
       "name": "check_async_task",
       "parameters": {
         "properties": {
@@ -314,7 +314,7 @@
   },
   {
     "function": {
-      "description": "Cancel a running async subagent task. Use this to stop a task that is no longer needed.",
+      "description": "Cancel a running, pending, or waiting async subagent task. Use this to stop a task that is no longer needed.",
       "name": "cancel_async_task",
       "parameters": {
         "properties": {
@@ -333,7 +333,7 @@
   },
   {
     "function": {
-      "description": "List tracked async subagent tasks with their current live statuses. By default shows all tasks. Use `status_filter` to narrow by status (e.g. 'running', 'success', 'error', 'cancelled'). Use `check_async_task` to get the full result of a specific completed task. Statuses shown earlier in the conversation are always stale, so call this to read current statuses rather than reporting one from a previous tool result.",
+      "description": "List tracked async subagent tasks with their current live statuses. By default shows all tasks. Use `status_filter` to narrow by status (e.g. 'running', 'pending', 'waiting', 'success', 'error', 'cancelled'). Use `check_async_task` to get the full result of a specific completed task, or what a `waiting` task is asking the user. Statuses shown earlier in the conversation are always stale, so call this to read current statuses rather than reporting one from a previous tool result.",
       "name": "list_async_tasks",
       "parameters": {
         "properties": {
@@ -342,6 +342,8 @@
               {
                 "enum": [
                   "running",
+                  "pending",
+                  "waiting",
                   "success",
                   "error",
                   "cancelled",
@@ -354,7 +356,7 @@
               }
             ],
             "default": null,
-            "description": "Filter tasks by status. One of: 'running', 'success', 'error', 'cancelled', 'all'. Defaults to 'all'."
+            "description": "Filter tasks by status. One of: 'running', 'pending', 'waiting', 'success', 'error', 'cancelled', 'all'. Defaults to 'all'."
           }
         },
         "type": "object"

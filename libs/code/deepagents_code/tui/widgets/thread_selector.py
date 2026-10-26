@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import logging
 import sqlite3
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar, cast
 
@@ -35,11 +36,11 @@ if TYPE_CHECKING:
 
     from textual.app import ComposeResult
     from textual.events import Click, Key, MouseMove
+    from textual.worker import Worker
 
     from deepagents_code.sessions import ThreadInfo
 
 from deepagents_code import theme
-from deepagents_code._env_vars import RECENT_THREADS
 from deepagents_code.config import (
     build_langsmith_thread_url,
     get_glyphs,
@@ -52,9 +53,16 @@ logger = logging.getLogger(__name__)
 _URL_FETCH_TIMEOUT = 2.0
 """Seconds to wait for LangSmith thread-URL resolution before giving up."""
 
+_LOAD_MORE_DETAILS_TIMEOUT = 5.0
+"""Seconds a "Load more" batch waits for row details before it renders.
+
+Rendering first would show "Loading" cells that fill in a moment later, which
+reads as a flicker. A slower load renders anyway and fills in afterwards.
+"""
+
 _column_widths_cache: (
     tuple[
-        tuple[tuple[str, str | None], ...],  # (thread_id, checkpoint_id) fingerprint
+        tuple[tuple[str, str | None, str | None], ...],
         frozenset[str],  # visible column keys
         bool,  # relative_time
         dict[str, int | None],  # computed widths
@@ -74,6 +82,7 @@ _COL_PROMPT = None
 _AUTO_WIDTH_COLUMNS = {"agent_name", "created_at", "updated_at", "cwd"}
 _COLUMN_ORDER = (
     "thread_id",
+    "thread_name",
     "agent_name",
     "messages",
     "created_at",
@@ -84,6 +93,7 @@ _COLUMN_ORDER = (
 )
 _COLUMN_WIDTHS: dict[str, int | None] = {
     "thread_id": _COL_TID,
+    "thread_name": None,
     "agent_name": _COL_AGENT,
     "messages": _COL_MSGS,
     "created_at": _COL_TIMESTAMP,
@@ -94,6 +104,7 @@ _COLUMN_WIDTHS: dict[str, int | None] = {
 }
 _COLUMN_LABELS = {
     "thread_id": "Thread ID",
+    "thread_name": "Name",
     "agent_name": "Agent",
     "messages": "# msg",
     "created_at": "Created",
@@ -104,6 +115,7 @@ _COLUMN_LABELS = {
 }
 _COLUMN_TOGGLE_LABELS = {
     "thread_id": "Thread ID",
+    "thread_name": "Name",
     "agent_name": "Agent Name",
     "messages": "# Messages",
     "created_at": "Created At",
@@ -153,6 +165,23 @@ _CWD_DEFAULT = _Sentinel()
 
 Distinguishes "caller did not specify" (use the current working directory) from
 an explicit `None` (start with no cwd filter)."""
+
+
+@dataclass(frozen=True, slots=True)
+class _WindowSnapshot:
+    """Picker state that `_apply_window` replaces, kept to undo a failed render."""
+
+    threads: list[ThreadInfo]
+    filtered_threads: list[ThreadInfo]
+    selected_index: int
+    has_more: bool
+    loaded_limit: int
+    disk_load_complete: bool
+
+
+def _error_detail(exc: Exception) -> str:
+    """Return an exception's message, or its type name when the message is empty."""
+    return str(exc) or type(exc).__name__
 
 
 def _safe_cwd_string() -> str | None:
@@ -296,6 +325,8 @@ def _format_column_value(
         # Strip UUID separators in the compact table preview so truncation
         # never leaves a dangling trailing hyphen in the thread ID column.
         value = thread["thread_id"].replace("-", "")
+    elif key == "thread_name":
+        value = _collapse_whitespace(thread.get("thread_name") or "")
     elif key == "agent_name":
         value = thread.get("agent_name") or _UNKNOWN_AGENT_LABEL
     elif key == "messages":
@@ -381,6 +412,10 @@ class ThreadOption(Horizontal):
         self._current = current
         self._relative_time = relative_time
         self._cell_text = cell_text
+        # Composed cells and their current text, so filtering can update the
+        # row in place instead of remounting it.
+        self._cells: dict[str, Static] = {}
+        self._texts: dict[str, str] = {}
 
     class Clicked(Message):
         """Message sent when a thread option is clicked."""
@@ -407,14 +442,8 @@ class ThreadOption(Horizontal):
             classes="thread-cell thread-cell-cursor",
             markup=False,
         )
-        tid = self.thread_id
         for key in _visible_column_keys(self._columns):
-            if self._cell_text is not None and (tid, key) in self._cell_text:
-                text = self._cell_text[tid, key]
-            else:
-                text = _format_column_value(
-                    self.thread, key, relative_time=self._relative_time
-                )
+            text = self._cell_value(key, self._cell_text)
             cell = Static(
                 text,
                 classes=f"thread-cell thread-cell-{key}",
@@ -422,7 +451,57 @@ class ThreadOption(Horizontal):
                 markup=False,
             )
             _apply_column_width(cell, key, self._column_widths)
+            self._cells[key] = cell
+            self._texts[key] = text
             yield cell
+
+    def _cell_value(
+        self, key: str, cell_text: Mapping[tuple[str, str], str] | None
+    ) -> str:
+        """Return the pre-formatted cell text, formatting it when missing."""
+        if cell_text is not None and (self.thread_id, key) in cell_text:
+            return cell_text[self.thread_id, key]
+        return _format_column_value(self.thread, key, relative_time=self._relative_time)
+
+    def update_cells(self, cell_text: Mapping[tuple[str, str], str]) -> None:
+        """Update cell text in place, skipping cells whose text is unchanged.
+
+        Args:
+            cell_text: Pre-formatted cell values keyed by `(thread_id, key)`.
+        """
+        for key, cell in self._cells.items():
+            text = self._cell_value(key, cell_text)
+            if text != self._texts.get(key):
+                self._texts[key] = text
+                cell.update(text)
+
+    def update_row(
+        self,
+        thread: ThreadInfo,
+        index: int,
+        *,
+        selected: bool,
+        column_widths: Mapping[str, int | None],
+        cell_text: Mapping[tuple[str, str], str],
+    ) -> None:
+        """Update a mounted row for a new filter result without remounting it.
+
+        Args:
+            thread: Latest metadata for the row's thread.
+            index: The row's new index in the filtered list.
+            selected: Whether the row is highlighted.
+            column_widths: Effective widths for the visible columns.
+            cell_text: Pre-formatted cell values keyed by `(thread_id, key)`.
+        """
+        self.thread = thread
+        self.index = index
+        if selected != self._selected:
+            self.set_selected(selected)
+        if column_widths != self._column_widths:
+            self._column_widths = dict(column_widths)
+            for key, cell in self._cells.items():
+                _apply_column_width(cell, key, self._column_widths)
+        self.update_cells(cell_text)
 
     def _cursor_text(self) -> str:
         """Return the cursor indicator for the row."""
@@ -454,6 +533,35 @@ class ThreadOption(Horizontal):
         """
         event.stop()
         self.post_message(self.Clicked(self.thread_id, self.index))
+
+
+class LoadMoreThreads(Static):
+    """Selectable pagination row at the bottom of the thread list."""
+
+    class Requested(Message):
+        """Posted when the user activates the row to load the next batch."""
+
+    def set_selected(self, selected: bool) -> None:
+        """Match the thread rows' keyboard-selection styling.
+
+        Args:
+            selected: Whether the row is highlighted.
+        """
+        self.set_class(selected, "thread-option-selected")
+
+    def set_loading(self, loading: bool) -> None:
+        """Show whether a batch fetch is in flight.
+
+        Args:
+            loading: Whether a fetch is running.
+        """
+        label = "Loading" if loading else "Load more"
+        self.update(f"{label}{get_glyphs().ellipsis}")
+
+    def on_click(self, event: Click) -> None:
+        """Load another batch when clicked."""
+        event.stop()
+        self.post_message(self.Requested())
 
 
 class ThreadControlsScroll(VerticalScroll):
@@ -784,11 +892,6 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         margin-bottom: 1;
     }
 
-    ThreadSelectorScreen .thread-controls-help {
-        color: $text-muted;
-        margin-bottom: 1;
-    }
-
     ThreadSelectorScreen .thread-controls-label {
         color: $text-muted;
         margin-top: 0;
@@ -871,6 +974,15 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         width: 10;
     }
 
+    ThreadSelectorScreen .thread-cell-thread_name {
+        width: 1fr;
+        min-width: 5;
+        max-width: 24;
+        overflow-x: hidden;
+        text-wrap: nowrap;
+        text-overflow: ellipsis;
+    }
+
     ThreadSelectorScreen .thread-cell-agent_name {
         width: auto;
         overflow-x: hidden;
@@ -904,6 +1016,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
 
     ThreadSelectorScreen .thread-selector-help {
         height: auto;
+        min-height: 2;
         color: $text-muted;
         text-style: italic;
         margin-top: 1;
@@ -929,12 +1042,15 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         filter_cwd: str | _Sentinel | None = _CWD_DEFAULT,
         initial_query: str = "",
         reference_mode: bool = False,
+        validate_selection: Callable[[str], None] | None = None,
     ) -> None:
         """Initialize the `ThreadSelectorScreen`.
 
         Args:
             current_thread: The currently active thread ID (to highlight).
-            thread_limit: Maximum number of rows to fetch when querying DB.
+            thread_limit: Number of rows to load per batch.
+
+                Uses `get_thread_limit()` when `None`.
             initial_threads: Optional preloaded rows to render immediately.
             filter_cwd: Working-directory filter for the picker.
 
@@ -947,12 +1063,23 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             initial_query: Search text carried from the compact picker.
             reference_mode: Whether selection returns a reference instead of
                 resuming the selected thread.
+            validate_selection: Optional check that raises if selection is blocked.
         """
         super().__init__()
         self._current_thread = current_thread
-        self._thread_limit = thread_limit
+        if thread_limit is None:
+            from deepagents_code.sessions import get_thread_limit
+
+            thread_limit = get_thread_limit()
+        self._batch_size = max(1, thread_limit)
+        self._loaded_limit = self._batch_size
+        self._has_more = False
+        self._loading_more = False
+        self._reload_worker: Worker[None] | None = None
+        self._load_more_row: LoadMoreThreads | None = None
         self._initial_query = initial_query
         self._reference_mode = reference_mode
+        self._validate_selection = validate_selection
 
         from deepagents_code.model_config import load_thread_config
 
@@ -978,13 +1105,18 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         self._disk_load_complete = False
         self._selected_index = 0
         self._option_widgets: list[ThreadOption] = []
+        # Every mounted thread row, shown or hidden, keyed by thread ID.
+        # Filtering toggles and reorders these rows instead of remounting.
+        self._row_pool: dict[str, ThreadOption] = {}
         self._filter_text = initial_query
         self._filter_agent: str | None = None
         # Configured agent names from `~/.deepagents/` (the `/agents` list),
-        # loaded off the event loop in `_load_threads`. Unioned with
+        # loaded off the event loop in `_preload_window_details`. Unioned with
         # thread-derived names so the agent filter mirrors `/agents` even for
         # agents that have not produced any threads yet.
         self._available_agent_names: list[str] = []
+        # Options last set on the agent dropdown, to skip no-op refreshes.
+        self._agent_options: list[tuple[str, str]] | None = None
         self._confirming_delete = False
         self._render_lock = asyncio.Lock()
         self._filter_input: Input | None = None
@@ -994,6 +1126,10 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         self._columns = dict(cfg.columns)
         self._relative_time = cfg.relative_time
         self._sort_by_updated = cfg.sort_order == "updated_at"
+        # The sort and scope the shown rows were loaded with. A failed reload
+        # rolls the controls back to these.
+        self._shown_sort_by_updated = self._sort_by_updated
+        self._shown_filter_cwd = self._filter_cwd
 
         # Cached threads are pre-sorted by updated_at DESC (the only sort
         # order the cache stores).  Skip the O(n log n) re-sort when that
@@ -1060,36 +1196,64 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             )
         return f"Select Thread (current: {self._current_thread})"
 
+    def _selected_thread_id(self) -> str | None:
+        """Return the highlighted thread ID, or `None` off the thread rows."""
+        if self._selected_index < len(self._filtered_threads):
+            return self._filtered_threads[self._selected_index]["thread_id"]
+        return None
+
+    def _select_thread_id(self, thread_id: str | None, fallback: int) -> None:
+        """Point the cursor at `thread_id` if listed, else the clamped `fallback`.
+
+        Only sets the index; callers update the row styles.
+
+        Args:
+            thread_id: Thread to select.
+            fallback: Index to use when the thread is not in the filtered rows.
+                Clamped to the last selectable row, so a cursor on "Load more"
+                stays there when a batch adds no rows above it.
+        """
+        last_row = len(self._filtered_threads) - 1 + int(self._has_more)
+        self._selected_index = min(fallback, max(0, last_row))
+        for index, thread in enumerate(self._filtered_threads):
+            if thread["thread_id"] == thread_id:
+                self._selected_index = index
+                break
+
+    def _load_more_selected(self) -> bool:
+        """Return whether the highlighted row is the "Load more" row."""
+        return self._has_more and self._selected_index == len(self._filtered_threads)
+
     def _build_help_text(self) -> str:
         """Build the footer help text for the selector.
+
+        Thread-only hints (copy ID, delete) are hidden while the "Load more"
+        row is highlighted, since no thread is highlighted to act on. The
+        Space hint shows only while an Options control has focus, since Space
+        types into the search input otherwise.
 
         Returns:
             Footer guidance for the active selector bindings.
         """
         glyphs = get_glyphs()
-        lines = (
+        option_hint = (
+            f" {glyphs.bullet} Space toggle option"
+            if isinstance(self.focused, (Checkbox, Select))
+            else ""
+        )
+        thread_hints = (
+            ""
+            if self._load_more_selected()
+            else f" {glyphs.bullet} Ctrl+C copy ID {glyphs.bullet} Ctrl+D delete"
+        )
+        return (
             f"{glyphs.arrow_up}/{glyphs.arrow_down} navigate"
             f" {glyphs.bullet} Enter select"
             f" {glyphs.bullet} Tab/Shift+Tab focus options"
-            f" {glyphs.bullet} Space toggle option"
-            f" {glyphs.bullet} Ctrl+C copy ID"
-            f" {glyphs.bullet} Ctrl+D delete"
+            f"{option_hint}"
+            f"{thread_hints}"
             f" {glyphs.bullet} Esc cancel"
         )
-        limit = self._effective_thread_limit()
-        if len(self._threads) >= limit:
-            lines += (
-                f"\nShowing last {limit} threads. Set {RECENT_THREADS} to override."
-            )
-        return lines
-
-    def _effective_thread_limit(self) -> int:
-        """Return the resolved thread limit for display purposes."""
-        if self._thread_limit is not None:
-            return self._thread_limit
-        from deepagents_code.sessions import get_thread_limit
-
-        return get_thread_limit()
 
     def _get_filter_input(self) -> Input:
         """Return the cached search input widget."""
@@ -1189,6 +1353,11 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         except NoMatches:
             return False
         options = self._collect_agent_options()
+        if options == self._agent_options:
+            # Usually true for a "Load more" batch. Resetting the options would
+            # post `Select.Changed` twice and can queue an extra list rebuild.
+            return False
+        self._agent_options = options
         valid_values = {value for _, value in options}
         current = agent_select.value
         # `set_options` resets the value to the first option, posting a
@@ -1214,9 +1383,9 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         swallowed by `get_available_agent_names`, which returns an empty list
         (logging the cause for unexpected `OSError`s, but staying silent when
         the agents directory simply does not exist yet), so the agent filter
-        degrades to thread-derived names only. The caller in `_load_threads`
-        additionally guards against any unexpected error so the picker is never
-        stranded if the scan fails.
+        degrades to thread-derived names only. The caller in
+        `_preload_window_details` additionally guards against any unexpected
+        error so the picker is never stranded if the scan fails.
         """
         from deepagents_code.agent import get_available_agent_names
 
@@ -1326,20 +1495,13 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
                     with VerticalScroll(classes="thread-list"):
                         if self._has_initial_threads and self._filtered_threads:
                             self._option_widgets, _ = self._create_option_widgets()
+                            self._reset_row_pool()
                             yield from self._option_widgets
                         else:
                             yield self._build_empty_state()
 
                 with Vertical(classes="thread-controls"):
                     yield Static("Options", classes="thread-controls-title")
-                    yield Static(
-                        (
-                            "Tab through scope, sort, agent, and column options. "
-                            "Column visibility persists between sessions."
-                        ),
-                        classes="thread-controls-help",
-                        markup=False,
-                    )
                     yield Static(
                         "Show threads from:",
                         classes="thread-controls-label",
@@ -1463,9 +1625,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             # enrichment (message counts, initial prompts) after load
             # completes.  Launch immediately when there are no cached rows
             # to render.
-            self.run_worker(
-                self._load_threads, exclusive=True, group="thread-selector-load"
-            )
+            self._run_reload()
 
     def on_resize(self) -> None:
         """Refresh the overflow indicator when the modal is resized."""
@@ -1478,13 +1638,30 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         event.stop()
         self.call_after_refresh(self._update_controls_overflow_hint)
 
+    def refresh_threads(self) -> None:
+        """Reload visible threads after an out-of-band metadata change."""
+        self._start_thread_load()
+
     def _start_thread_load(self) -> None:
         """Launch the thread-load worker after the initial layout pass."""
         if not self.is_attached:
             return
-        self.run_worker(
-            self._load_threads, exclusive=True, group="thread-selector-load"
+        self._run_reload()
+
+    def _run_reload(self) -> None:
+        """Reload every loaded batch, superseding any load in flight."""
+        # Cast because Textual's `WorkType` alias admits both a coroutine
+        # factory and a plain callable, so the result type infers as a union.
+        self._reload_worker = cast(
+            "Worker[None]",
+            self.run_worker(
+                self._load_threads, exclusive=True, group="thread-selector-load"
+            ),
         )
+
+    def _reload_pending(self) -> bool:
+        """Return whether a reload has been started and has not finished."""
+        return self._reload_worker is not None and not self._reload_worker.is_finished
 
     def on_input_changed(self, event: Input.Changed) -> None:
         """Filter threads as user types.
@@ -1503,6 +1680,10 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         """
         event.stop()
         self.action_select()
+
+    def on_descendant_focus(self) -> None:
+        """Refresh the footer so the Space hint tracks the focused control."""
+        self._update_help_text()
 
     def on_key(self, event: Key) -> None:
         """Return focus to search when letters are typed from other controls.
@@ -1664,7 +1845,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         visible_keys = _visible_column_keys(self._columns)
         visible = frozenset(visible_keys)
         fingerprint = tuple(
-            (t["thread_id"], t.get("latest_checkpoint_id"))
+            (t["thread_id"], t.get("latest_checkpoint_id"), t.get("thread_name"))
             for t in self._filtered_threads
         )
 
@@ -1726,6 +1907,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         format_path, _, _ = _get_format_fns()
         cwd = thread.get("cwd") or ""
         parts = [
+            thread.get("thread_name") or "",
             thread["thread_id"],
             thread.get("agent_name") or "",
             thread.get("git_branch") or "",
@@ -1759,7 +1941,8 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         else:
             self._sync_selected_index()
         self._column_widths = self._compute_column_widths()
-        await self._build_list(recompute_widths=False)
+        if not await self._show_filtered_rows():
+            await self._build_list(recompute_widths=False)
 
     @staticmethod
     def _compute_filtered(
@@ -1867,14 +2050,14 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
 
     @staticmethod
     def _threads_match(old: list[ThreadInfo], new: list[ThreadInfo]) -> bool:
-        """Check whether two thread lists have the same IDs and checkpoints in order.
+        """Check whether thread IDs, checkpoints, and names match in order.
 
         Args:
             old: Previous thread list.
             new: Fresh thread list.
 
         Returns:
-            True if both lists have identical thread/checkpoint ID pairs.
+            True if both lists have identical thread IDs, checkpoints, and names.
         """
         if len(old) != len(new):
             return False
@@ -1883,103 +2066,296 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
                 return False
             if a.get("latest_checkpoint_id") != b.get("latest_checkpoint_id"):
                 return False
+            if a.get("thread_name") != b.get("thread_name"):
+                return False
         return True
 
+    async def _fetch_window(self, limit: int) -> list[ThreadInfo]:
+        """Fetch one row past `limit` so the caller can tell if more exist.
+
+        Args:
+            limit: Number of rows in the loaded window.
+
+        Returns:
+            Up to `limit + 1` threads in the active sort order.
+        """
+        from deepagents_code.sessions import list_threads
+
+        sort_by = "updated" if self._sort_by_updated else "created"
+        return await list_threads(
+            limit=limit + 1,
+            include_message_count=False,
+            sort_by=sort_by,
+            cwd=self._filter_cwd,
+        )
+
     async def _load_threads(self) -> None:
-        """Load thread rows first, then kick off background enrichment."""
+        """Reload every loaded batch, then kick off background enrichment."""
+        try:
+            threads = await self._fetch_window(self._loaded_limit)
+            await self._apply_window_or_restore(threads, self._loaded_limit)
+        except Exception as exc:
+            # Any failure (I/O, a malformed row, a render error) must mark the
+            # load complete and surface it: otherwise the picker stays stuck on
+            # "Loading threads..." or the worker error exits the app.
+            # CancelledError is a BaseException and is intentionally not caught
+            # here, so a superseding exclusive worker keeps ownership of the flag.
+            logger.exception("Failed to load threads for thread selector")
+            await self._report_load_failure(exc)
+            return
+        self._shown_sort_by_updated = self._sort_by_updated
+        self._shown_filter_cwd = self._filter_cwd
+
+    async def _report_load_failure(self, exc: Exception) -> None:
+        """Show a failed load; after the first disk load, keep the rows shown.
+
+        Args:
+            exc: The error from the fetch.
+        """
+        if self._disk_load_complete:
+            # A sort, scope, or refresh reload: the shown rows are still usable.
+            message = f"Could not reload threads: {_error_detail(exc)}"
+            if self._revert_to_shown_settings():
+                message += ". Kept the previous sort and directory."
+            self.notify(message, severity="error", markup=False)
+            return
+        self._disk_load_complete = True
+        await self._show_mount_error(str(exc))
+
+    def _revert_to_shown_settings(self) -> bool:
+        """Put the sort and scope controls back to match the shown rows.
+
+        Also saves the restored settings, so the next picker opens with them.
+
+        Returns:
+            Whether any setting changed.
+        """
+        changed = False
+        if self._sort_by_updated != self._shown_sort_by_updated:
+            self._sort_by_updated = self._shown_sort_by_updated
+            sort = _SORT_VALUE_UPDATED if self._sort_by_updated else _SORT_VALUE_CREATED
+            self._set_select_quietly(_SORT_SELECT_ID, sort)
+            self._persist_sort_order(sort)
+            changed = True
+        if self._filter_cwd != self._shown_filter_cwd:
+            self._filter_cwd = self._shown_filter_cwd
+            scope = _SCOPE_VALUE_ALL if self._filter_cwd is None else _SCOPE_VALUE_CWD
+            self._set_select_quietly(_SCOPE_SELECT_ID, scope)
+            self._persist_scope(scope)
+            changed = True
+        if changed:
+            self._update_help_widgets()
+        return changed
+
+    def _set_select_quietly(self, select_id: str, value: str) -> None:
+        """Set a dropdown without re-running its change handler.
+
+        Args:
+            select_id: ID of the `Select` widget.
+            value: Option value to show.
+        """
+        try:
+            select = self._get_select(select_id)
+        except NoMatches:
+            return
+        with self.prevent(Select.Changed):
+            select.value = value
+
+    async def _apply_window_or_restore(
+        self, threads: list[ThreadInfo], limit: int, *, load_more: bool = False
+    ) -> None:
+        """Run `_apply_window`, undoing its state changes if it raises.
+
+        Args:
+            threads: Rows from `_fetch_window(limit)`.
+            limit: Number of rows in the loaded window.
+            load_more: Whether this extends the shown rows.
+        """
+        snapshot = self._snapshot_window()
+        try:
+            await self._apply_window(threads, limit, load_more=load_more)
+        except BaseException:
+            # Also undo on cancellation: a superseding load can cancel this
+            # worker while it waits for row details, after the rows were
+            # replaced but before they render.
+            self._restore_window(snapshot)
+            raise
+
+    def _snapshot_window(self) -> _WindowSnapshot:
+        """Capture the state that `_apply_window` replaces.
+
+        Returns:
+            Copies of the rows and the cursor and pagination state.
+        """
+        return _WindowSnapshot(
+            threads=list(self._threads),
+            filtered_threads=list(self._filtered_threads),
+            selected_index=self._selected_index,
+            has_more=self._has_more,
+            loaded_limit=self._loaded_limit,
+            disk_load_complete=self._disk_load_complete,
+        )
+
+    def _restore_window(self, snapshot: _WindowSnapshot) -> None:
+        """Undo a window whose render failed so the rows match the state again.
+
+        Args:
+            snapshot: State from before the failed `_apply_window`.
+        """
+        self._threads = snapshot.threads
+        self._filtered_threads = snapshot.filtered_threads
+        self._selected_index = snapshot.selected_index
+        self._has_more = snapshot.has_more
+        self._loaded_limit = snapshot.loaded_limit
+        self._disk_load_complete = snapshot.disk_load_complete
+        if self._disk_load_complete:
+            # The render may have removed rows. Before the first disk load,
+            # the mount error replaces the list instead.
+            self._schedule_list_rebuild()
+
+    async def _apply_window(
+        self, threads: list[ThreadInfo], limit: int, *, load_more: bool = False
+    ) -> None:
+        """Render a fetched window and schedule background enrichment.
+
+        Args:
+            threads: Rows from `_fetch_window(limit)`.
+            limit: Number of rows in the loaded window.
+            load_more: Whether this extends the shown rows. Keeps the
+                highlighted row and skips lookups that do not change between
+                batches.
+        """
         from deepagents_code.sessions import (
             apply_cached_thread_initial_prompts,
             apply_cached_thread_message_counts,
-            list_threads,
         )
 
         old_threads = list(self._threads)
+        selected_id = self._selected_thread_id()
+        selected_index = self._selected_index
 
-        try:
-            limit = self._thread_limit
-            if limit is None:
-                from deepagents_code.sessions import get_thread_limit
-
-                limit = get_thread_limit()
-            sort_by = "updated" if self._sort_by_updated else "created"
-            self._threads = await list_threads(
-                limit=limit,
-                include_message_count=False,
-                sort_by=sort_by,
-                cwd=self._filter_cwd,
-            )
-        except (OSError, sqlite3.Error) as exc:
-            logger.exception("Failed to load threads for thread selector")
-            self._disk_load_complete = True
-            await self._show_mount_error(str(exc))
-            return
-        except Exception as exc:
-            # An unexpected error (e.g. a malformed row raising ValueError) must
-            # still mark the load complete and surface the failure; otherwise the
-            # picker stays stuck on the "Loading threads..." placeholder forever.
-            # CancelledError is a BaseException and is intentionally not caught
-            # here, so a superseding exclusive worker keeps ownership of the flag.
-            logger.exception("Unexpected error loading threads for thread selector")
-            self._disk_load_complete = True
-            await self._show_mount_error(str(exc))
-            return
-
+        self._loaded_limit = limit
+        self._has_more = len(threads) > limit
+        self._threads = threads[:limit]
         self._disk_load_complete = True
         apply_cached_thread_message_counts(self._threads)
         apply_cached_thread_initial_prompts(self._threads)
-        if not self._has_initial_threads:
-            try:
-                await self._populate_visible_checkpoint_details()
-            except (OSError, sqlite3.Error):
-                logger.debug(
-                    "Could not preload checkpoint details for thread selector",
-                    exc_info=True,
-                )
-            except Exception:
-                logger.warning(
-                    "Unexpected error preloading checkpoint details "
-                    "for thread selector",
-                    exc_info=True,
-                )
+        await self._preload_window_details(load_more=load_more)
+        self._update_filtered_list()
+        self._sync_selected_index()
+        if self._refresh_agent_select_options():
+            self._update_filtered_list()
+            self._sync_selected_index()
+        if load_more:
+            self._select_thread_id(selected_id, selected_index)
+        await self._render_window(old_threads)
+
+        self._schedule_checkpoint_enrichment()
+
+        if self._current_thread and not load_more:
+            self._resolve_thread_url()
+
+    async def _preload_window_details(self, *, load_more: bool) -> None:
+        """Load row details and agent names before a window renders.
+
+        A reload of prefetched rows skips the row details; background
+        enrichment fills them in after the render.
+
+        Args:
+            load_more: Whether this extends the shown rows. Agent names do not
+                change between batches, so a batch skips the scan. A batch
+                waits a bounded time for row details so its rows do not
+                render with "Loading" cells that fill in a moment later.
+        """
+        if load_more or not self._has_initial_threads:
+            await self._preload_checkpoint_details(bounded=load_more)
         try:
-            await self._load_available_agent_names()
+            if not load_more:
+                await self._load_available_agent_names()
         except Exception:
             # The configured-agent scan is non-essential: a failure here must
             # not strand the picker by skipping the filter refresh, DOM build,
-            # and checkpoint enrichment below. `get_available_agent_names`
+            # and checkpoint enrichment that follow. `get_available_agent_names`
             # already absorbs expected filesystem errors; this guards anything
             # unexpected that escapes it.
             logger.warning(
                 "Could not load configured agent names for thread selector",
                 exc_info=True,
             )
-        self._update_filtered_list()
-        self._sync_selected_index()
-        if self._refresh_agent_select_options():
-            self._update_filtered_list()
-            self._sync_selected_index()
 
+    async def _preload_checkpoint_details(self, *, bounded: bool) -> None:
+        """Load missing row details before a render; failures only log.
+
+        Args:
+            bounded: Whether to stop waiting after
+                `_LOAD_MORE_DETAILS_TIMEOUT`. On timeout the rows render as
+                they are and background enrichment fills in the rest.
+        """
+        timeout = _LOAD_MORE_DETAILS_TIMEOUT if bounded else None
+        deadline = asyncio.timeout(timeout)
+        try:
+            async with deadline:
+                await self._populate_visible_checkpoint_details()
+        except OSError, sqlite3.Error:
+            # `TimeoutError` is an `OSError`, so check that it is our deadline.
+            if deadline.expired():
+                logger.debug(
+                    "Timed out preloading checkpoint details for thread selector"
+                )
+                return
+            logger.debug(
+                "Could not preload checkpoint details for thread selector",
+                exc_info=True,
+            )
+        except Exception:
+            logger.warning(
+                "Unexpected error preloading checkpoint details for thread selector",
+                exc_info=True,
+            )
+
+    async def _render_window(self, old_threads: list[ThreadInfo]) -> None:
+        """Update the rows in place when they are unchanged, else rebuild.
+
+        Args:
+            old_threads: Rows shown before the fetch.
+        """
         # Short-circuit: when the fresh data matches what is already rendered,
         # update widget references and cell labels without tearing down the DOM.
-        if (
+        # Callers pass at most one batch of initial rows, so the first load often
+        # matches them and the pagination row is added here, not in a rebuild.
+        if not (
             self._has_initial_threads
             and self._option_widgets
             and self._threads_match(old_threads, self._filtered_threads)
         ):
-            for widget, thread in zip(
-                self._option_widgets,
-                self._filtered_threads,
-                strict=True,
-            ):
-                widget.thread = thread
-            self._refresh_cell_labels()
-        else:
             await self._build_list()
+            return
+        for widget, thread in zip(
+            self._option_widgets, self._filtered_threads, strict=True
+        ):
+            widget.thread = thread
+        self._refresh_cell_labels()
+        await self._sync_load_more_row()
+        # The cursor may have moved while the rows stayed in place.
+        for index, row in enumerate(self._selection_rows()):
+            selected = index == self._selected_index
+            if row.has_class("thread-option-selected") != selected:
+                row.set_selected(selected)
 
-        self._schedule_checkpoint_enrichment()
+    def _notify_load_more_failed(self, exc: Exception, *, retryable: bool) -> None:
+        """Tell the user a "Load more" batch failed; the loaded rows stay.
 
-        if self._current_thread:
-            self._resolve_thread_url()
+        Args:
+            exc: The error from the batch.
+            retryable: Whether the error is an I/O error that a retry can fix.
+        """
+        detail = _error_detail(exc)
+        message = (
+            f'Could not load more threads: {detail}. Select "Load more" to retry.'
+            if retryable
+            else f"Unexpected error loading more threads: {detail}"
+        )
+        self.notify(message, severity="error", markup=False)
 
     async def _load_checkpoint_details(self) -> None:
         """Populate checkpoint-derived thread fields in one background pass."""
@@ -1988,7 +2364,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
 
         try:
             _, load_prompts = await self._populate_visible_checkpoint_details()
-        except (OSError, sqlite3.Error):
+        except OSError, sqlite3.Error:
             logger.debug(
                 "Could not load checkpoint details for thread selector",
                 exc_info=True,
@@ -2004,17 +2380,13 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         if load_prompts and self._filter_text.strip():
             # Prompts may affect fuzzy match results; rebuild the filtered
             # list but preserve the user's cursor position.
-            saved_tid = (
-                self._filtered_threads[self._selected_index]["thread_id"]
-                if self._selected_index < len(self._filtered_threads)
-                else None
-            )
+            saved_tid = self._selected_thread_id()
+            was_load_more = self._load_more_selected()
             self._update_filtered_list()
-            if saved_tid is not None:
-                for i, thread in enumerate(self._filtered_threads):
-                    if thread["thread_id"] == saved_tid:
-                        self._selected_index = i
-                        break
+            if was_load_more and self._has_more:
+                self._selected_index = len(self._filtered_threads)
+            elif saved_tid is not None:
+                self._select_thread_id(saved_tid, self._selected_index)
             self._schedule_list_rebuild()
         else:
             self._refresh_cell_labels()
@@ -2035,13 +2407,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         self._cell_text = cell_text
 
         for widget in self._option_widgets:
-            tid = widget.thread_id
-            for key in visible_keys:
-                try:
-                    cell = widget.query_one(f".thread-cell-{key}", Static)
-                except NoMatches:
-                    continue
-                cell.update(cell_text[tid, key])
+            widget.update_cells(cell_text)
 
     def _resolve_thread_url(self) -> None:
         """Start exclusive background worker to resolve LangSmith thread URL."""
@@ -2060,7 +2426,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
                 asyncio.to_thread(build_langsmith_thread_url, self._current_thread),
                 timeout=_URL_FETCH_TIMEOUT,
             )
-        except (TimeoutError, OSError):
+        except TimeoutError, OSError:
             logger.debug(
                 "Could not resolve LangSmith thread URL for '%s'",
                 self._current_thread,
@@ -2100,6 +2466,12 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             async with self._render_lock:
                 scroll = self.query_one(".thread-list", VerticalScroll)
                 await scroll.remove_children()
+                # Drop the removed rows so keys cannot act on them.
+                self._filtered_threads = []
+                self._option_widgets = []
+                self._row_pool = {}
+                self._load_more_row = None
+                self._has_more = False
                 await scroll.mount(
                     Static(
                         Content.from_markup(
@@ -2132,8 +2504,10 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
                 classes="thread-empty",
                 id="thread-loading",
             )
+        # Older threads are not loaded yet, so a match may exist past "Load more".
+        message = "No matching threads loaded" if self._has_more else "No threads found"
         return Static(
-            Content.styled("No threads found", "dim"),
+            Content.styled(message, "dim"),
             classes="thread-empty",
         )
 
@@ -2153,23 +2527,165 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             if recompute_widths:
                 self._column_widths = self._compute_column_widths()
             with self.app.batch_update():
+                self._option_widgets = []
+                self._row_pool = {}
+                self._load_more_row = None
                 await scroll.remove_children()
                 self._update_help_widgets()
 
-                if not self._filtered_threads:
-                    self._option_widgets = []
-                    await scroll.mount(self._build_empty_state())
-                    return
-
                 self._option_widgets, selected_widget = self._create_option_widgets()
-                await scroll.mount(*self._option_widgets)
+                self._reset_row_pool()
+                if self._option_widgets:
+                    await scroll.mount(*self._option_widgets)
+                else:
+                    await scroll.mount(self._build_empty_state())
+                if self._has_more:
+                    self._load_more_row = self._build_load_more_row()
+                    await scroll.mount(self._load_more_row)
 
-            if expanded_select_id is not None:
-                self.call_after_refresh(
-                    lambda: self._restore_expanded_select_focus(expanded_select_id)
-                )
-            elif selected_widget:
-                self.call_after_refresh(self._scroll_selected_into_view)
+        self._after_list_render(
+            expanded_select_id, scroll_to_selected=selected_widget is not None
+        )
+
+    def _after_list_render(
+        self, expanded_select_id: str | None, *, scroll_to_selected: bool
+    ) -> None:
+        """Restore focus or scroll position after the list changes.
+
+        Args:
+            expanded_select_id: Dropdown that was open before the render.
+            scroll_to_selected: Whether a thread row holds the selection.
+        """
+        if expanded_select_id is not None:
+            self.call_after_refresh(
+                lambda: self._restore_expanded_select_focus(expanded_select_id)
+            )
+        elif scroll_to_selected:
+            self.call_after_refresh(self._scroll_selected_into_view)
+
+    def _reset_row_pool(self) -> None:
+        """Make the freshly built thread rows the only reusable rows."""
+        self._row_pool = {row.thread_id: row for row in self._option_widgets}
+
+    async def _show_filtered_rows(self) -> bool:
+        """Show the filtered threads by reusing the mounted rows.
+
+        Remounting every row costs a few milliseconds per row, which made each
+        search keystroke lag. Rows that already exist are toggled and reordered
+        in place; only threads without a row are mounted.
+
+        Returns:
+            `False` when the list needs a full rebuild instead.
+        """
+        expanded_select_id = self._expanded_select_id()
+        async with self._render_lock:
+            try:
+                scroll = self.query_one(".thread-list", VerticalScroll)
+            except NoMatches:
+                return True
+            if self._has_more != (self._load_more_row is not None):
+                return False
+            with self.app.batch_update():
+                await self._mount_missing_rows(scroll)
+                await self._sync_empty_state(scroll)
+                self._place_filtered_rows(scroll)
+                self._update_help_widgets()
+        self._after_list_render(
+            expanded_select_id,
+            scroll_to_selected=self._selected_index < len(self._option_widgets),
+        )
+        return True
+
+    async def _mount_missing_rows(self, scroll: VerticalScroll) -> None:
+        """Mount rows for filtered threads that have no row yet.
+
+        Args:
+            scroll: The thread list container.
+        """
+        rows = [
+            self._create_option_widget(thread, index)
+            for index, thread in enumerate(self._filtered_threads)
+            if thread["thread_id"] not in self._row_pool
+        ]
+        if not rows:
+            return
+        # Track the rows before awaiting so a cancelled render cannot leave
+        # mounted rows that later renders never hide.
+        self._row_pool.update((row.thread_id, row) for row in rows)
+        await scroll.mount(*rows)
+
+    async def _sync_empty_state(self, scroll: VerticalScroll) -> None:
+        """Replace any placeholder, and show one when nothing matches.
+
+        Args:
+            scroll: The thread list container.
+        """
+        stale = scroll.query_children(".thread-empty")
+        if stale:
+            await stale.remove()
+        if not self._filtered_threads:
+            await scroll.mount(self._build_empty_state())
+
+    def _place_filtered_rows(self, scroll: VerticalScroll) -> None:
+        """Show the filtered rows in order and hide the rest.
+
+        Args:
+            scroll: The thread list container.
+        """
+        shown = [self._row_pool[t["thread_id"]] for t in self._filtered_threads]
+        for index, (row, thread) in enumerate(
+            zip(shown, self._filtered_threads, strict=True)
+        ):
+            row.update_row(
+                thread,
+                index,
+                selected=index == self._selected_index,
+                column_widths=self._column_widths,
+                cell_text=self._cell_text,
+            )
+        shown_ids = {row.thread_id for row in shown}
+        for thread_id, row in self._row_pool.items():
+            row.display = thread_id in shown_ids
+        self._option_widgets = shown
+        if self._load_more_row is not None:
+            self._load_more_row.set_selected(self._load_more_selected())
+        # Hidden rows and placeholders sort after the shown rows; the stable
+        # sort keeps them in place relative to each other.
+        rank = {id(row): index for index, row in enumerate(shown)}
+        scroll.sort_children(
+            key=lambda w: (w is self._load_more_row, rank.get(id(w), len(rank)))
+        )
+
+    def _build_load_more_row(self) -> LoadMoreThreads:
+        """Build the pagination row, highlighted when it holds the selection.
+
+        Returns:
+            The unmounted "Load more" row.
+        """
+        row = LoadMoreThreads(id="thread-load-more", classes="thread-option")
+        row.set_loading(self._loading_more)
+        row.set_selected(self._load_more_selected())
+        return row
+
+    async def _sync_load_more_row(self) -> None:
+        """Mount or remove the pagination row without rebuilding thread rows."""
+        if self._has_more == (self._load_more_row is not None):
+            return
+        async with self._render_lock:
+            # A rebuild that held the lock may have synced the row already.
+            if self._has_more == (self._load_more_row is not None):
+                return
+            if self._load_more_row is not None:
+                await self._load_more_row.remove()
+                self._load_more_row = None
+            else:
+                try:
+                    scroll = self.query_one(".thread-list", VerticalScroll)
+                except NoMatches:
+                    return
+                self._load_more_row = self._build_load_more_row()
+                await scroll.mount(self._load_more_row)
+        self._update_help_text()
 
     def _create_option_widgets(self) -> tuple[list[ThreadOption], ThreadOption | None]:
         """Build option widgets from filtered threads without mounting.
@@ -2177,41 +2693,52 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         Returns:
             Tuple of all option widgets and the currently selected widget.
         """
-        widgets: list[ThreadOption] = []
-        selected_widget: ThreadOption | None = None
-
-        for i, thread in enumerate(self._filtered_threads):
-            is_current = thread["thread_id"] == self._current_thread
-            is_selected = i == self._selected_index
-
-            classes = "thread-option"
-            if is_selected:
-                classes += " thread-option-selected"
-            if is_current:
-                classes += " thread-option-current"
-
-            widget = ThreadOption(
-                thread=thread,
-                index=i,
-                columns=self._columns,
-                column_widths=self._column_widths,
-                selected=is_selected,
-                current=is_current,
-                relative_time=self._relative_time,
-                cell_text=self._cell_text or None,
-                classes=classes,
-            )
-            widgets.append(widget)
-            if is_selected:
-                selected_widget = widget
-
+        widgets = [
+            self._create_option_widget(thread, index)
+            for index, thread in enumerate(self._filtered_threads)
+        ]
+        selected_widget = (
+            widgets[self._selected_index]
+            if self._selected_index < len(widgets)
+            else None
+        )
         return widgets, selected_widget
+
+    def _create_option_widget(self, thread: ThreadInfo, index: int) -> ThreadOption:
+        """Build one unmounted thread row.
+
+        Args:
+            thread: Thread metadata for the row.
+            index: The row's index in the filtered list.
+
+        Returns:
+            The thread row widget.
+        """
+        is_current = thread["thread_id"] == self._current_thread
+        is_selected = index == self._selected_index
+
+        classes = "thread-option"
+        if is_selected:
+            classes += " thread-option-selected"
+        if is_current:
+            classes += " thread-option-current"
+
+        return ThreadOption(
+            thread=thread,
+            index=index,
+            columns=self._columns,
+            column_widths=self._column_widths,
+            selected=is_selected,
+            current=is_current,
+            relative_time=self._relative_time,
+            cell_text=self._cell_text or None,
+            classes=classes,
+        )
 
     def _scroll_selected_into_view(self) -> None:
         """Scroll selected option into view without animation."""
-        if not self._option_widgets:
-            return
-        if self._selected_index >= len(self._option_widgets):
+        rows = self._selection_rows()
+        if self._selected_index >= len(rows):
             return
         try:
             scroll = self.query_one(".thread-list", VerticalScroll)
@@ -2221,13 +2748,16 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         if self._selected_index == 0:
             scroll.scroll_home(animate=False)
         else:
-            self._option_widgets[self._selected_index].scroll_visible(animate=False)
+            rows[self._selected_index].scroll_visible(animate=False)
 
     def _update_help_widgets(self) -> None:
         """Update visible header and help text after state changes."""
         self._schedule_header_rebuild()
         self.call_after_refresh(self._update_controls_overflow_hint)
+        self._update_help_text()
 
+    def _update_help_text(self) -> None:
+        """Refresh the footer help text for the current selection."""
         try:
             help_widget = self.query_one("#thread-help", Static)
             help_widget.update(self._build_help_text())
@@ -2281,28 +2811,79 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             key=lambda thread: thread.get(key) or "", reverse=True
         )
 
+    def _selection_rows(self) -> list[ThreadOption | LoadMoreThreads]:
+        """Return the thread rows followed by the pagination action."""
+        rows: list[ThreadOption | LoadMoreThreads] = list(self._option_widgets)
+        if self._load_more_row is not None:
+            rows.append(self._load_more_row)
+        return rows
+
+    def on_load_more_threads_requested(self) -> None:
+        """Fetch another batch without dismissing the picker."""
+        # A pending reload replaces the window anyway; a batch now would cancel
+        # it and leave the shown sort and scope out of date.
+        if self._loading_more or not self._has_more or self._reload_pending():
+            return
+        self.run_worker(
+            self._load_more_threads, exclusive=True, group="thread-selector-load"
+        )
+
+    def _set_loading_more(self, loading: bool) -> None:
+        """Track an in-flight batch and show it on the "Load more" row."""
+        self._loading_more = loading
+        if self._load_more_row is not None:
+            self._load_more_row.set_loading(loading)
+
+    async def _load_more_threads(self) -> None:
+        """Expand the loaded window; a failed fetch keeps the rows shown."""
+        # Set the flag inside the worker: a worker cancelled before it starts
+        # never reaches `finally`, so a flag set by the caller would stick.
+        self._set_loading_more(True)
+        limit = self._loaded_limit + self._batch_size
+        try:
+            threads = await self._fetch_window(limit)
+            # Inside the `try`: a worker error would otherwise exit the app.
+            await self._apply_window_or_restore(threads, limit, load_more=True)
+        except (OSError, sqlite3.Error) as exc:
+            logger.exception("Failed to load more threads for thread selector")
+            self._notify_load_more_failed(exc, retryable=True)
+        except Exception as exc:
+            logger.exception(
+                "Unexpected error loading more threads for thread selector"
+            )
+            self._notify_load_more_failed(exc, retryable=False)
+        finally:
+            self._set_loading_more(False)
+
     def _move_selection(self, delta: int) -> None:
         """Move selection by delta, updating only the affected rows.
 
         Args:
             delta: Positions to move (negative for up, positive for down).
         """
-        if not self._filtered_threads or not self._option_widgets:
+        rows = self._selection_rows()
+        if not rows:
             return
 
-        count = len(self._filtered_threads)
+        count = len(rows)
         old_index = self._selected_index
+        was_load_more = self._load_more_selected()
         new_index = (old_index + delta) % count
         self._selected_index = new_index
 
-        self._option_widgets[old_index].set_selected(False)
-        self._option_widgets[new_index].set_selected(True)
+        rows[old_index].set_selected(False)
+        rows[new_index].set_selected(True)
+        if self._load_more_selected() != was_load_more:
+            self._update_help_text()
 
         if new_index == 0:
             scroll = self.query_one(".thread-list", VerticalScroll)
             scroll.scroll_home(animate=False)
         else:
-            self._option_widgets[new_index].scroll_visible()
+            # Wrapping jumps the full list, so an animated scroll would sweep
+            # through every row; snap instead.
+            wrapped = new_index != old_index + delta
+            rows[new_index].scroll_visible(animate=not wrapped)
 
     def action_move_up(self) -> None:
         """Move selection up."""
@@ -2339,7 +2920,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
 
     def action_page_up(self) -> None:
         """Move selection up by one visible page."""
-        if self._confirming_delete or not self._filtered_threads:
+        if self._confirming_delete or not self._selection_rows():
             return
         page = self._visible_page_size()
         target = max(0, self._selected_index - page)
@@ -2349,9 +2930,9 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
 
     def action_page_down(self) -> None:
         """Move selection down by one visible page."""
-        if self._confirming_delete or not self._filtered_threads:
+        count = len(self._selection_rows())
+        if self._confirming_delete or not count:
             return
-        count = len(self._filtered_threads)
         page = self._visible_page_size()
         target = min(count - 1, self._selected_index + page)
         delta = target - self._selected_index
@@ -2367,19 +2948,32 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             return
         if self._open_focused_select():
             return
-        if self._filtered_threads:
-            thread_id = self._filtered_threads[self._selected_index]["thread_id"]
-            self.dismiss(thread_id)
+        if self._load_more_selected():
+            self.on_load_more_threads_requested()
+            return
+        thread_id = self._selected_thread_id()
+        if thread_id is not None:
+            self._select_thread(thread_id)
+
+    def _select_thread(self, thread_id: str) -> None:
+        if self._validate_selection is not None:
+            try:
+                self._validate_selection(thread_id)
+            except (OSError, RuntimeError) as exc:
+                self.notify(str(exc), severity="error", markup=False)
+                return
+        self.dismiss(thread_id)
 
     def action_copy_thread_id(self) -> None:
         """Copy the highlighted thread ID without dismissing the selector."""
-        if self._confirming_delete or not self._filtered_threads:
+        thread_id = self._selected_thread_id()
+        if self._confirming_delete or thread_id is None:
             return
         from deepagents_code.clipboard import copy_text_with_feedback
 
         copy_text_with_feedback(
             self.app,
-            self._filtered_threads[self._selected_index]["thread_id"],
+            thread_id,
             failure_noun="selection",
             success_message="Thread ID copied to clipboard",
         )
@@ -2468,9 +3062,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             return
         self._filter_cwd = new_cwd
         self._update_help_widgets()
-        self.run_worker(
-            self._load_threads, exclusive=True, group="thread-selector-load"
-        )
+        self._run_reload()
 
     def _apply_sort_selection(self, sort_by_updated: bool) -> None:
         """Re-sort the picker when the sort dropdown selection changes.
@@ -2481,10 +3073,17 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         if self._sort_by_updated == sort_by_updated:
             return
         self._sort_by_updated = sort_by_updated
-        self._apply_sort()
-        self._sync_selected_index()
         self._update_help_widgets()
-        self._schedule_list_rebuild()
+        if self._has_more or not self._disk_load_complete or self._reload_pending():
+            # The loaded rows are only the top of the old order, or a fetch in
+            # the old order is still running. Re-fetch so the window and any
+            # later "Load more" use the new order.
+            self._start_thread_load()
+        else:
+            self._apply_sort()
+            self._shown_sort_by_updated = sort_by_updated
+            self._sync_selected_index()
+            self._schedule_list_rebuild()
         self._persist_sort_order(
             _SORT_VALUE_UPDATED if sort_by_updated else _SORT_VALUE_CREATED
         )
@@ -2518,14 +3117,16 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         if self._confirming_delete:
             return
         if not self._filtered_threads:
-            # Nothing to delete — fall through to quit. Using exit() instead of
-            # dismiss() is intentional: dismiss() would just close the modal
-            # silently, re-swallowing ctrl+d.
+            # Nothing to delete — fall through to quit, even when a "Load more"
+            # row is shown. Using exit() instead of dismiss() is intentional:
+            # dismiss() would just close the modal silently, re-swallowing
+            # ctrl+d.
             self.app.exit()
             return
+        tid = self._selected_thread_id()
+        if tid is None:
+            return
         self._confirming_delete = True
-        thread = self._filtered_threads[self._selected_index]
-        tid = thread["thread_id"]
         self.app.push_screen(
             DeleteThreadConfirmScreen(tid),
             lambda confirmed: self._on_delete_confirmed(tid, confirmed),
@@ -2573,10 +3174,12 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
 
         try:
             await delete_thread(thread_id)
-        except (OSError, sqlite3.Error):
+        except (OSError, sqlite3.Error) as exc:
             logger.warning("Failed to delete thread %s", thread_id, exc_info=True)
             self.app.notify(
-                f"Failed to delete thread {thread_id[:8]}",
+                str(exc)
+                if isinstance(exc, BlockingIOError)
+                else f"Failed to delete thread {thread_id[:8]}",
                 severity="error",
                 timeout=3,
                 markup=False,
@@ -2589,13 +3192,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             thread for thread in self._threads if thread["thread_id"] != thread_id
         ]
         self._update_filtered_list()
-        if preferred_thread_id is not None:
-            for index, thread in enumerate(self._filtered_threads):
-                if thread["thread_id"] == preferred_thread_id:
-                    self._selected_index = index
-                    break
-        if self._selected_index >= len(self._filtered_threads):
-            self._selected_index = max(0, len(self._filtered_threads) - 1)
+        self._select_thread_id(preferred_thread_id, self._selected_index)
         await self._build_list()
         with contextlib.suppress(NoMatches):
             self.query_one("#thread-filter", Input).focus()
@@ -2622,7 +3219,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             return
         if 0 <= event.index < len(self._filtered_threads):
             self._selected_index = event.index
-            self.dismiss(event.thread_id)
+            self._select_thread(event.thread_id)
 
     def action_cancel(self) -> None:
         """Cancel the selection."""

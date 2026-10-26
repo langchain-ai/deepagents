@@ -8,10 +8,14 @@ require `hatchling` (declared in the `test` dependency group).
 
 import importlib.util
 from pathlib import Path
-from types import ModuleType
+from typing import TYPE_CHECKING
 
 import pytest
-from hatchling.builders.hooks.plugin.interface import BuildHookInterface
+
+if TYPE_CHECKING:
+    from types import ModuleType
+
+    from hatchling.builders.hooks.plugin.interface import BuildHookInterface
 
 _HATCH_BUILD_PATH = Path(__file__).resolve().parents[2] / "hatch_build.py"
 

@@ -75,6 +75,10 @@ on:
       agent_timeout_multiplier:
         type: string
         default: "1.0"
+      reasoning_effort:
+        # Passed to the chat model constructor as `reasoning_effort`. Empty = provider default.
+        type: string
+        default: ""
       env_build_timeout_multiplier:
         # Scales each task's environment.build_timeout_sec (harbor's client-side
         # wait). Note: it does NOT extend the LangSmith build service's own limit.
@@ -283,6 +287,7 @@ jobs:
       HARBOR_ROLLOUTS_PER_TASK: ${{ inputs.rollouts }}
       HARBOR_N_RETRIES: ${{ inputs.n_retries || '0' }}
       HARBOR_AGENT_TIMEOUT_MULTIPLIER: ${{ inputs.agent_timeout_multiplier || '1.0' }}
+      HARBOR_REASONING_EFFORT: ${{ inputs.reasoning_effort }}
       HARBOR_ENV_BUILD_TIMEOUT_MULTIPLIER: ${{ inputs.env_build_timeout_multiplier || '1.0' }}
       HARBOR_OVERRIDE_STORAGE_MB: ${{ inputs.override_storage_mb || '0' }}
       HARBOR_DISABLE_VERIFICATION: ${{ inputs.disable_verification || 'false' }}
@@ -433,7 +438,7 @@ jobs:
       - name: "🐍 Set up Python + UV"
         uses: "./.github/actions/uv_setup"
         with:
-          python-version: "3.12"
+          python-version: "3.14"
           cache-suffix: harbor
           working-directory: libs/evals
 
@@ -520,7 +525,7 @@ jobs:
         run: echo "HARBOR_LANGSMITH_DATASET_NAME=drbench-app" >> "$GITHUB_ENV"
 
       - name: "✂️ Prune agent provider deps to selected model"
-        if: ${{ matrix.agent_impl != 'codex' && matrix.agent_impl != 'claude-code' && matrix.agent_impl != 'hermes' && matrix.agent_impl != 'pi' && inputs.agent_impl != 'codex' && inputs.agent_impl != 'claude-code' && inputs.agent_impl != 'hermes' && inputs.agent_impl != 'pi' }}
+        if: ${{ matrix.agent_impl != 'codex' && matrix.agent_impl != 'claude-code' && matrix.agent_impl != 'pi' && inputs.agent_impl != 'codex' && inputs.agent_impl != 'claude-code' && inputs.agent_impl != 'pi' }}
         # The agent loads its model via init_chat_model, which lazily imports
         # only the provider matching HARBOR_MODEL. langgraph.json ships every
         # provider (for local `langgraph dev`); a single job needs just one, so
@@ -730,6 +735,15 @@ jobs:
             *) echo "::error::Invalid force_build (true|false): $HARBOR_FORCE_BUILD"; exit 1 ;;
           esac
 
+          # Allowlist the effort; Harbor splats model_kwargs into init_chat_model.
+          reasoning_args=()
+          case "$HARBOR_REASONING_EFFORT" in
+            "") ;;
+            minimal|low|medium|high|xhigh)
+              reasoning_args=(--agent-kwarg "model_kwargs={\"reasoning_effort\": \"$HARBOR_REASONING_EFFORT\"}") ;;
+            *) echo "::error::Invalid reasoning_effort (minimal|low|medium|high|xhigh): $HARBOR_REASONING_EFFORT"; exit 1 ;;
+          esac
+
           dataset_args=(--dataset "$HARBOR_DATASET")
           HARBOR_LANGSMITH_DATASET="$HARBOR_DATASET"
           if [ -n "$HARBOR_DATASET_PATH" ]; then
@@ -878,22 +892,31 @@ jobs:
           env_flag="--env $HARBOR_SANDBOX_ENV"
           agent_args=()
           case "$HARBOR_AGENT_IMPL" in
-            codex|claude-code|hermes|pi)
+            codex|claude-code|pi)
               if [ "$HARBOR_BRANCH" != current ]; then
                 echo "::error::$HARBOR_AGENT_IMPL does not support branch overlays"; exit 1
               fi
               model_provider="${HARBOR_MODEL%%:*}"
               case "$HARBOR_AGENT_IMPL:$model_provider" in
-                codex:openai|claude-code:anthropic|hermes:openai|hermes:anthropic|pi:openai|pi:anthropic) ;;
+                codex:openai|claude-code:anthropic|pi:openai|pi:anthropic) ;;
                 *) echo "::error::$HARBOR_AGENT_IMPL does not support $model_provider models"; exit 1 ;;
               esac
               agent_args=(--agent "$HARBOR_AGENT_IMPL")
+              # Each CLI names its effort knob differently; values are allowlisted above.
+              reasoning_args=()
+              case "$HARBOR_AGENT_IMPL:$HARBOR_REASONING_EFFORT" in
+                *:) ;;
+                claude-code:minimal) echo "::error::claude-code does not support reasoning_effort=minimal"; exit 1 ;;
+                pi:*) reasoning_args=(--agent-kwarg "thinking=$HARBOR_REASONING_EFFORT") ;;
+                *) reasoning_args=(--agent-kwarg "reasoning_effort=$HARBOR_REASONING_EFFORT") ;;
+              esac
               ;;
             *)
               AGENT_IMPL="$HARBOR_AGENT_IMPL" python3 \
                 "$GITHUB_WORKSPACE/.github/scripts/evals/validate_agent_graph.py" \
                 "$GITHUB_WORKSPACE/libs/evals/deepagents_harbor/langgraph_project/langgraph.json"
-              agent_args=(--agent langgraph
+              agent_args=(--agent deepagents_harbor.agent:DeepAgentsLangGraph
+                --agent-kwarg python_version=3.14
                 --agent-kwarg project_path=deepagents_harbor/langgraph_project
                 --agent-kwarg config=langgraph.json
                 --agent-kwarg "graph=$HARBOR_AGENT_IMPL")
@@ -911,7 +934,7 @@ jobs:
           # by category (one model spans three datasets) and by run id/attempt (keep
           # re-runs separate); shards of a category share it, so harbor's stock plugin
           # (>=harbor-langsmith 0.3.0) converges them into one experiment. Reads
-          # HARBOR_MODEL/BRANCH/AGENT_IMPL/CATEGORY + GITHUB_RUN_ID/ATTEMPT from the env.
+          # HARBOR_MODEL/BRANCH/AGENT_IMPL/CATEGORY/REASONING_EFFORT + GITHUB_RUN_ID/ATTEMPT from the env.
           HARBOR_LANGSMITH_EXPERIMENT="$(python3 "$GITHUB_WORKSPACE/.github/scripts/evals/experiment_name.py")"
           echo "HARBOR_AGENT_GRAPH=$HARBOR_AGENT_GRAPH" >> "$GITHUB_ENV"
           echo "HARBOR_LANGSMITH_DATASET=$HARBOR_LANGSMITH_DATASET" >> "$GITHUB_ENV"
@@ -978,17 +1001,12 @@ jobs:
 
           agent_model="$HARBOR_MODEL"
           case "$HARBOR_AGENT_IMPL" in
-            codex|claude-code|hermes|pi) agent_model="${HARBOR_MODEL%%:*}/${HARBOR_MODEL#*:}" ;;
+            codex|claude-code|pi) agent_model="${HARBOR_MODEL%%:*}/${HARBOR_MODEL#*:}" ;;
           esac
-          diagnostic_args=()
-          if [ "$HARBOR_AGENT_IMPL" = hermes ]; then
-            diagnostic_args=(--agent-env 'HERMES_HOME=/tmp/hermes'
-              --artifact /tmp/hermes/logs/install.log)
-          fi
           uv run harbor run \
             --yes \
             "${agent_args[@]}" \
-            "${diagnostic_args[@]}" \
+            "${reasoning_args[@]}" \
             "${dataset_args[@]}" \
             -n "$HARBOR_CONCURRENCY" \
             --n-attempts "$HARBOR_ROLLOUTS_PER_TASK" \

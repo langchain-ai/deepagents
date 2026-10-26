@@ -13,12 +13,14 @@ from textual.content import Content
 from textual.geometry import Offset
 from textual.widgets import Static
 
+from deepagents_code import theme
 from deepagents_code._env_vars import HIDE_CWD
 from deepagents_code.config import ASCII_GLYPHS, reset_glyphs_cache
 from deepagents_code.tui.widgets.status import (
     _PICKER_TARGET_META,
     BranchLabel,
     CwdLabel,
+    MetricsLine,
     ModelLabel,
     StatusBar,
 )
@@ -56,6 +58,9 @@ class StatusBarApp(App[None]):
 
     def action_open_effort_selector(self) -> None:
         self.opened_pickers.append("effort")
+
+    def action_open_cost_breakdown(self) -> None:
+        self.opened_pickers.append("cost")
 
     def on_click(self, event: events.Click) -> None:
         """Count clicks that reach the app, standing in for the real handler.
@@ -286,6 +291,44 @@ class TestTokenDisplay:
 class TestCostDisplay:
     """Tests for cumulative cost rendered inline with context tokens."""
 
+    async def test_only_cost_click_opens_breakdown(self) -> None:
+        app = StatusBarApp()
+        async with app.run_test(size=(150, 24)) as pilot:
+            bar = app.query_one("#status-bar", StatusBar)
+            bar.set_tokens(5000)
+            bar.set_cost(1.25)
+            await pilot.pause()
+            display = app.query_one("#tokens-display", MetricsLine)
+            inset = display.content_region.x - display.region.x
+            cost_offset = (inset + str(display.render()).index("$"), 0)
+
+            await pilot.click(display, offset=(inset, 0))
+            await pilot.click(display, offset=cost_offset, button=3)
+            await pilot.pause()
+            assert app.opened_pickers == []
+            unhandled = app.unhandled_clicks
+
+            await pilot.click(display, offset=cost_offset, times=2)
+            await pilot.pause()
+            assert app.opened_pickers == ["cost"]
+            assert app.unhandled_clicks == unhandled
+
+    async def test_hidden_cost_leaves_no_click_target(self) -> None:
+        app = StatusBarApp()
+        async with app.run_test(size=(150, 24)) as pilot:
+            bar = app.query_one("#status-bar", StatusBar)
+            bar.set_tokens(5000)
+            bar.set_cost(1.25)
+            await pilot.pause()
+            display = app.query_one("#tokens-display", MetricsLine)
+            display.styles.width = 5
+            await pilot.pause()
+            assert "$" not in str(display.render())
+            inset = display.content_region.x - display.region.x
+            await pilot.click(display, offset=(inset, 0))
+            await pilot.pause()
+            assert app.opened_pickers == []
+
 
 class TestCacheTimingDisplay:
     """Tests for cache write timing in the status bar."""
@@ -293,8 +336,8 @@ class TestCacheTimingDisplay:
     @pytest.mark.parametrize(
         ("confidence", "before", "after"),
         [
-            ("may_be_cold", "/ 0:30", "/ uncertain"),
-            ("expired", "/ 0:30", "/ 0:00"),
+            ("may_be_cold", "/ 0:30", "/ expired"),
+            ("expired", "/ 0:30", "/ expired"),
         ],
     )
     async def test_retention_bound_passes(
@@ -326,6 +369,15 @@ class TestCacheTimingDisplay:
                 assert after in str(display.render())
                 assert "bust" not in str(display.render())
                 assert bar._cache_timer is None
+                cache_display = pilot.app.query_one("#cache-display", MetricsLine)
+                error = theme.get_theme_colors(bar).error
+                assert cache_display.segments[0].spans[-1].style == error
+
+                bar.set_cache_timing(now + timedelta(seconds=30), ttl_seconds=300)
+                await pilot.pause()
+                assert cache_display.segments[0].spans[-1].end < len(
+                    cache_display.segments[0].plain
+                )
 
     async def test_clear_stops_countdown(self) -> None:
         async with StatusBarApp().run_test() as pilot:

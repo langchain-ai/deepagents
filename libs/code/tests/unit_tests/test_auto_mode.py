@@ -11,7 +11,7 @@ import threading
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any, Literal, cast
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
 from unittest.mock import patch
 from uuid import uuid4
 
@@ -207,6 +207,7 @@ class _StructuredModel:
 
 class _ThinkingAnthropicModel(_StructuredModel):
     _llm_type = "anthropic-chat"
+    profile: ClassVar[dict[str, object]] = {"structured_output": True}
 
     def __init__(self, result: object) -> None:
         super().__init__(result)
@@ -2652,10 +2653,34 @@ async def test_sensitive_write_requires_classifier(
     assert len(model.calls) == 1
 
 
-async def test_inherited_anthropic_thinking_classifier_uses_json_schema(
+class _AnthropicModel(_StructuredModel):
+    _llm_type = "anthropic-chat"
+    profile: ClassVar[dict[str, object]] = {"structured_output": True}
+
+
+class _LegacyAnthropicModel(_StructuredModel):
+    """An Anthropic model whose profile does not advertise native support."""
+
+    _llm_type = "anthropic-chat"
+    profile: ClassVar[dict[str, object]] = {}
+
+
+@pytest.mark.parametrize(
+    ("model_cls", "expected_kwargs"),
+    [
+        (_ThinkingAnthropicModel, {"method": "json_schema"}),
+        (_AnthropicModel, {"method": "json_schema"}),
+        (_LegacyAnthropicModel, {}),
+        (_StructuredModel, {}),
+    ],
+)
+async def test_anthropic_classifier_uses_native_structured_output(
     tmp_path: Path,
+    model_cls: type[_StructuredModel],
+    expected_kwargs: dict[str, object],
 ) -> None:
-    model = _ThinkingAnthropicModel(_allow_result())
+    """Anthropic models with native support get schema-constrained output."""
+    model = model_cls(_allow_result())
     middleware = _middleware(tmp_path)
     request, _store, _key = _request(
         tmp_path,
@@ -2671,7 +2696,7 @@ async def test_inherited_anthropic_thinking_classifier_uses_json_schema(
         args={"file_path": str(tmp_path / "old.py")},
     )
 
-    assert model.structured_output_kwargs == {"method": "json_schema"}
+    assert model.structured_output_kwargs == expected_kwargs
     assert plan["decisions"][0]["disposition"] == "classifier_allow"
 
 
@@ -4932,12 +4957,10 @@ def test_classifier_unavailable_reason_specializes_timeouts() -> None:
 async def test_classifier_opts_out_of_preserved_thinking_binding(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The classifier must keep the forced tool call structured output needs.
+    """The classifier skips the Anthropic preserved-thinking binding.
 
-    An injected Anthropic `thinking` kwarg pushes `with_structured_output` onto
-    its unforced path, which drops `tool_choice` and raises when the model
-    answers in prose. One-shot classification replays no thinking blocks, so it
-    has nothing to gain from the binding in the first place.
+    One-shot classification replays no thinking blocks, so the binding would
+    only add latency and cost to every review.
     """
     factory = _RecordingModelFactory(_StructuredModel(_allow_result()))
     _install_model_factory(monkeypatch, factory)
@@ -6556,6 +6579,71 @@ def test_unresolvable_home_path_is_reviewed_not_raised(tmp_path: Path) -> None:
             "type": "tool_call",
         },
     )
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git status",
+        "git status --porcelain=v2 -b",
+        "git diff",
+        "git diff --cached --stat HEAD~1",
+        "git diff main...HEAD -- src/app.py",
+        "git log --oneline -10",
+        "git log -n 5 --format=%H --author alice",
+        "git log -S needle -p -- src/",
+        "git show HEAD:src/app.py",
+        "git show --stat --pretty=fuller HEAD",
+        "git ls-files --others --exclude-standard",
+        "git rev-parse --abbrev-ref HEAD",
+        "git rev-parse --short=8 HEAD",
+    ],
+)
+def test_fixed_repo_command_allows_read_only_git(tmp_path: Path, command: str) -> None:
+    """Common read-only Git commands skip the classifier."""
+    assert _fixed_repo_command_allowed(command, tmp_path)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        # Writes `.git/config`; a later `git status` then runs `core.fsmonitor`.
+        (
+            "git log -1 --pretty=format:'[core]%nfsmonitor = touch /tmp/x' "
+            "--output=.git/config"
+        ),
+        "git log --output .git/config",
+        "git diff --output=.git/hooks/pre-commit",
+        "git show HEAD --output=.git/config",
+        "git diff --ext-diff",
+        "git log -p --textconv",
+        "git show --show-signature",
+        "git diff --no-index a b",
+        # A value-taking option must not swallow a dangerous option as its value.
+        "git log -n --output=.git/config",
+        # Short tokens must match exactly, not as a prefix before `=`.
+        "git diff -p=--output",
+        # Options this list does not know go to the classifier.
+        "git log --end-of-options --output=.git/config",
+        "git status --unknown-future-flag",
+    ],
+)
+def test_fixed_repo_command_reviews_unlisted_git_options(
+    tmp_path: Path, command: str
+) -> None:
+    """Git options outside the allowlist go to the classifier.
+
+    The subcommand name alone does not make a Git command read-only: several
+    options write files or run programs.
+    """
+    assert not _fixed_repo_command_allowed(command, tmp_path)
+
+
+def test_fixed_repo_command_treats_tokens_after_separator_as_paths(
+    tmp_path: Path,
+) -> None:
+    """After `--`, a token that looks like an option is a pathspec."""
+    assert _fixed_repo_command_allowed("git diff -- --output=x", tmp_path)
 
 
 async def test_unresolvable_home_write_is_denied_with_a_reason(

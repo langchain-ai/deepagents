@@ -1,12 +1,12 @@
 ---
-type: integration-guide
-title: Sandbox Providers and Execution Boundaries
-description: Explains how dcode selects and owns optional remote sandbox providers, why a server sandbox belongs to only one workspace, and how Talon reuses the same provider lifecycle while retaining selected control-plane paths on the host.
-tags: [sandbox, providers, dcode, talon, execution-boundaries, security]
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-09-29T08:06:56.235Z
+type: integration architecture
+title: Sandbox and Partner Integrations
+description: How dcode discovers optional sandbox providers, acquires or attaches sandboxes, runs setup, and assigns cleanup ownership. Covers the independently distributed partner adapters and Daytona's bounded command execution behavior.
+tags: [dcode, sandbox, integrations, providers, lifecycle, partners]
 sources:
+  - resource: repo://libs/partners/daytona/langchain_daytona/sandbox.py
+  - resource: repo://libs/partners/daytona/tests/unit_tests/test_import.py
+  - resource: repo://libs/deepagents/deepagents/backends/protocol.py
   - id: openwiki-source-9f207ab48c42b84dcfd05f43
     resource: repo://libs/code/deepagents_code/integrations/sandbox_config.py
   - id: openwiki-source-bcf1f68e7989964d2fcec7aa
@@ -19,138 +19,152 @@ sources:
     resource: repo://libs/code/deepagents_code/server_graph.py
   - id: openwiki-source-7ba50bd13eb62341a2061ef9
     resource: repo://libs/code/pyproject.toml
-  - id: openwiki-source-e3efb5f3e4a9e8517eb6d8f5
-    resource: repo://libs/deepagents/deepagents/backends/protocol.py
-  - id: openwiki-source-d4463137befa776cd47750d4
-    resource: repo://libs/deepagents/deepagents/backends/sandbox.py
-  - id: openwiki-source-81698d033a5726401d48b135
-    resource: repo://libs/talon/deepagents_talon/config.py
-  - id: openwiki-source-580d91c607e0a09e0659e565
-    resource: repo://libs/talon/deepagents_talon/sandbox.py
-  - id: openwiki-source-fdd0c2c3830b8e9a88502a57
-    resource: repo://libs/talon/README.md
-  - id: openwiki-source-57a0613315e23277d358df76
-    resource: repo://libs/talon/tests/unit_tests/test_sandbox.py
-generated: { by: "openwiki/0.4.2", at: "2026-09-29T08:06:56.235Z" }
+  - id: openwiki-source-ea49272aef6bfc33d634a15c
+    resource: repo://libs/code/tests/integration_tests/test_sandbox_factory.py
+  - id: openwiki-source-ba6aa10dca5a8aea05030887
+    resource: repo://libs/code/tests/integration_tests/test_sandbox_operations.py
+  - id: openwiki-source-b6c121d977850bad8b8c8068
+    resource: repo://libs/code/tests/unit_tests/test_sandbox_factory.py
+  - id: openwiki-source-32820da62949c2fdb3f41188
+    resource: repo://libs/code/tests/unit_tests/test_sandbox_registry.py
+  - id: openwiki-source-667fd72e0b93552f91d3888d
+    resource: repo://libs/partners/AGENTS.md
+  - id: openwiki-source-da577cbe81ec29338f1388b2
+    resource: repo://libs/partners/daytona/pyproject.toml
+  - id: openwiki-source-936554ac5f0a201f8696be25
+    resource: repo://libs/partners/modal/pyproject.toml
+  - id: openwiki-source-8d2c8381956c1c023bcdb565
+    resource: repo://libs/partners/runloop/pyproject.toml
+  - id: openwiki-source-03a39f44d8ccfde2fd47e57a
+    resource: repo://libs/partners/vercel/pyproject.toml
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-10-26T08:11:58.203Z
+generated: { by: "openwiki/0.4.2", at: "2026-10-26T08:11:58.203Z" }
 ---
 
-# Sandbox Providers and Execution Boundaries
+# Sandbox and Partner Integrations
 
-A sandbox integration has two separate responsibilities:
+A dcode sandbox provider supplies a `SandboxBackendProtocol`: an execution and filesystem backend identified by `id`. The registry and factory are the dcode-facing integration layer; the provider package remains responsible for its provider SDK, credentials, environment semantics, and backend implementation. Selecting a sandbox routes the execution/filesystem backend; it is not, by itself, a general authorization or isolation policy. See [Backends](/openwiki/concepts/backends.md), [Tools and filesystem](/openwiki/concepts/tools-filesystem.md), and [Security](/openwiki/operations/security.md).
 
-- A **backend adapter** exposes a provider environment as the Deep Agents filesystem-and-shell contract.
-- A dcode **provider** creates, attaches to, and—when it owns it—deletes that environment.
+## Provider contract and discovery
 
-`SandboxBackendProtocol` adds `id`, `execute()`, and `aexecute()` to the generic backend contract. It is designed for containers, VMs, and remote hosts, but it is a capability contract rather than an isolation guarantee. In particular, `LocalShellBackend` conforms while executing commands directly on the host. The provider environment and deployment determine identity, network access, accessible files, retention, and actual containment. See [Backends](../concepts/backends.md), [Filesystem tools](../concepts/tools-filesystem.md), and [Security](../operations/security.md).
+A `SandboxProvider` implements synchronous `get_or_create(sandbox_id=..., **kwargs)` and `delete(sandbox_id=..., **kwargs)`. Its `aget_or_create()` and `adelete()` convenience methods run those synchronous operations in worker threads. A provider may advertise `SandboxProviderMetadata`: default working directory, installation hint, whether attachment by ID and named snapshots are supported, and an optional backend module for dependency probing.
 
-## Adapter contract and shared behavior
+`SandboxRegistry` combines three sources under one name:
 
-A `BaseSandbox` adapter implements four provider-facing primitives: `id`, `execute()`, `upload_files()`, and `download_files()`. The base class derives agent filesystem operations from these primitives: reads, listings, searches, and globbing run generated commands in the environment; writes transfer bytes; and edits execute a replacement script, transferring temporary old/new payloads for large edits. Transfer batches must return one ordered response per input and report individual errors, allowing partial success.
+1. Curated built-ins: `agentcore`, `daytona`, `langsmith`, `modal`, `openshell`, `runloop`, and `vercel`.
+2. Installed Python entry points in the `deepagents_code.sandbox_providers` group.
+3. Operator-declared providers in `[sandboxes.providers]`.
 
-```mermaid
-sequenceDiagram
-    participant Agent as Agent tools
-    participant Base as BaseSandbox
-    participant Adapter as Provider adapter
-    participant Env as Provider environment
-
-    Agent->>Base: filesystem operation or execute
-    Base->>Base: generate command or transfer request
-    Base->>Adapter: execute or transfer
-    Adapter->>Env: provider SDK request
-    Env-->>Adapter: result
-    Adapter-->>Base: protocol response
-    Base-->>Agent: structured result
-```
-
-*Filesystem tools are shared behavior layered over an adapter's command and file-transfer primitives.*
-
-The helpers do not narrow `execute()` authority. For example, shell quoting in recursive deletion makes the path one argument but does not confine what paths can be reached. `execute_with_offload()` is also opt-in: the default leaves a command unwrapped and returns full output. Adapters that opt in capture large output in the sandbox, return a preview, and preserve the command exit code even when capture reaches its hard limit.
-
-## dcode discovery, configuration, and lifecycle
-
-`SandboxProviderMetadata` lets dcode discover a working directory, supported attachment and snapshot features, installation hints, and an optional dependency probe without instantiating a provider that might need credentials. A `SandboxProvider` supplies synchronous create/attach and delete methods, with `asyncio.to_thread` wrappers.
-
-The registry combines curated providers, packages registered in the `deepagents_code.sandbox_providers` entry-point group, and local `[sandboxes.providers]` declarations. Resolution order is **config, then entry point, then built-in**. A configured `class_path` imports code as the local user, so it is an operator trust boundary. The configured `[sandboxes].default` is considered only after sandbox mode was explicitly requested; setting it never enables remote execution by itself.
-
-The built-in provider metadata covers `agentcore`, `daytona`, `langsmith`, `modal`, `runloop`, and `vercel`. `langsmith` is bundled through the base `langsmith[sandbox]` dependency. The other five have optional extras:
-
-```bash
-pip install 'deepagents-code[agentcore,daytona,modal,runloop,vercel]'
-# or install all curated optional adapters
-pip install 'deepagents-code[all-sandboxes]'
-```
-
-`deepagents-code` 0.1.78 requires Python `>=3.12,<4.0` and pins `deepagents==0.7.19`. Optional extras install adapter packages; they do not supply credentials or change the remote environment's security policy.
-
-`create_sandbox()` resolves metadata before construction. It rejects snapshots unsupported by that provider and rejects a snapshot combined with an attached ID. It merges configured provider parameters with call parameters, with call parameters taking precedence, then calls `get_or_create()`. An optional host setup file is expanded with the active workspace environment and executed in the sandbox using `bash -c`.
+On a name collision, resolution is **configuration, then entry point, then built-in**. Entry-point enumeration is best-effort, so a discovery error leaves the remaining sources usable. Built-in and configured metadata can be read without constructing a provider. To obtain an entry-point provider's metadata, the registry instantiates it; if that fails, discovery presents a conservative `/workspace` metadata fallback rather than failing the provider list.
 
 ```mermaid
 flowchart TD
-    Request["Provider request"] --> Validate["Resolve metadata and validate options"]
-    Validate --> Acquire["Create or attach backend"]
-    Acquire --> Setup{"Setup file supplied"}
-    Setup -->|yes| Run["Expand workspace variables and run bash"]
-    Setup -->|no| Use["Yield backend"]
-    Run --> Use
-    Use --> Close{"Context exits"}
-    Close -->|new sandbox| Delete["Delete provider resource"]
-    Close -->|attached ID| Keep["Leave resource running"]
+    Request["Provider name"] --> Config{"Configured entry"}
+    Config -->|yes| Import["Import class_path"]
+    Config -->|no| Entry{"Entry point"}
+    Entry -->|yes| Load["Load entry point"]
+    Entry -->|no| Builtin["Create built-in provider"]
+    Import --> Provider["SandboxProvider"]
+    Load --> Provider
+    Builtin --> Provider
+    Provider --> Backend["Create or attach backend"]
 ```
 
-*The context owns only a resource it created; attached resources remain available after it exits.*
+*Provider resolution is configuration over entry point over built-in.*
 
-If setup fails, an owned resource is still cleaned up. Cleanup failures are reported but do not hide the original error. The setup file is host input and commands run with the sandbox's authority; it is not a policy or escaping mechanism.
+A configuration entry can provide `class_path`, `working_dir`, installation package, capability flags, and provider `params`:
 
-### dcode server invariant: one sandboxed workspace per process
+```toml
+[sandboxes]
+default = "acme"
 
-The dcode server opens its sandbox context during runtime construction and stores it for process-lifetime cleanup with `atexit`. Its runtime factory is cached deliberately: recreating it per request would duplicate MCP discovery, leak sandbox sessions, and register repeated cleanup handlers. The process-wide backend is passed into `create_cli_agent()`.
+[sandboxes.providers.acme]
+class_path = "my_package:AcmeSandboxProvider"
+working_dir = "/workspace"
+package = "acme-dcode-sandbox"
+supports_snapshot_name = true
 
-A separate workspace-runtime cache supports multiple unsandboxed workspace runtimes, but a configured sandbox cannot be shared across them. The first sandboxed workspace claims `_sandbox_workspace_id`; another workspace whose configuration requests a sandbox receives a `WorkspaceConflictError` rather than inheriting the first workspace's remote filesystem and credentials. Run another server process for an independent sandboxed workspace.
+[sandboxes.providers.acme.params]
+region = "us-east-1"
+```
 
-## Talon: shared provider lifecycle, mixed execution plane
+`class_path` is trusted operator configuration: resolving it imports Python. On the normal default-path load, a managed configuration that has a `[sandboxes]` section supplies that section instead of the user section. If the user file is malformed or unreadable, dcode retains applicable managed values and exposes the user-file problem through the registry configuration error; malformed provider values that are not TOML tables are ignored. Passing an explicit config path deliberately excludes managed policy. The configured default names the provider selected by a bare `--sandbox`; it never turns on sandbox mode for an invocation that did not opt in. Configuration layering and managed policy are described in [Configuration layering](/openwiki/concepts/config-layering.md).
 
-Talon is an experimental local runtime host. It reuses dcode's `create_sandbox()` and provider registry rather than implementing provider SDKs itself. `DEEPAGENTS_TALON_SANDBOX` enables this behavior; when it is unset, Talon yields no sandbox and shell/file tools use their normal host backend. The following configuration is read from Talon's environment:
+## Factory lifecycle and ownership
 
-| Variable | Meaning |
-| --- | --- |
-| `DEEPAGENTS_TALON_SANDBOX` | Registry provider name. Unset means host execution. |
-| `DEEPAGENTS_TALON_SANDBOX_ID` | Existing resource to attach. Talon does not delete it. |
-| `DEEPAGENTS_TALON_SANDBOX_SNAPSHOT` | Snapshot or blueprint where the selected provider supports it. |
-| `DEEPAGENTS_TALON_SANDBOX_SETUP` | Host path to a setup script executed after startup. |
-
-For a newly created LangSmith sandbox, Talon defaults the snapshot to `talon-<assistant_id>` to avoid the generic shared dcode snapshot name. An explicit Talon snapshot wins. If either `LANGSMITH_SANDBOX_SNAPSHOT_NAME` or its `DEEPAGENTS_CODE_` override is already configured, Talon leaves snapshot selection to the provider. An attachment or a non-LangSmith provider has no Talon-generated default.
+`create_sandbox()` is the common synchronous context-managed lifecycle. It reads provider metadata before acquisition, validates that the provider supports a requested `snapshot_name`, and rejects a snapshot combined with `sandbox_id`: a snapshot applies only when creating a fresh sandbox. It then copies configured provider `params`, overlays explicit `params`, translates `snapshot_name` to the provider's `snapshot` argument, and calls `get_or_create()`.
 
 ```mermaid
-sequenceDiagram
-    participant Host as Talon host
-    participant Factory as dcode create_sandbox
-    participant Remote as Sandbox provider
-    participant Composite as CompositeBackend
-    participant Agent as Agent tools
-
-    Host->>Factory: create or attach provider sandbox
-    Factory->>Remote: provision or locate environment
-    Remote-->>Factory: sandbox backend
-    Factory-->>Host: backend and working directory
-    Host->>Composite: route skills and memory to host
-    Agent->>Composite: file or shell operation
-    Composite->>Remote: default route and all execute calls
-    Composite->>Host: skills and memory routes only
+flowchart TD
+    Start["create_sandbox"] --> Validate["Read metadata and validate options"]
+    Validate --> Merge["Merge configured then explicit parameters"]
+    Merge --> Acquire["get_or_create"]
+    Acquire --> Setup{"Setup file supplied"}
+    Setup -->|yes| Run["Expand variables and run bash -c"]
+    Setup -->|no| Yield["Yield backend"]
+    Run --> Yield
+    Yield --> Exit["Context exit or failure"]
+    Exit --> Owned{"Created by factory"}
+    Owned -->|yes| Delete["delete backend id"]
+    Owned -->|no| Retain["Leave attached backend"]
 ```
 
-*Talon reuses dcode provisioning but constructs a composite backend with an intentionally mixed host/remote filesystem.*
+*The factory deletes a new resource, but never an attached one.*
 
-Talon starts provisioning in a worker thread because dcode provider startup is synchronous. It keeps the context open for the Talon host lifetime, closing it at shutdown: resources it created are deleted and attached resources remain. Startup failure becomes `SandboxStartupError`; Talon does **not** fall back to host execution. Cancellation is handled explicitly: because cancelling `asyncio.to_thread` does not stop the worker, a handoff object closes the context whether cancellation happens before or after that worker finishes, preventing an owned sandbox leak.
+A setup file is read on the host after acquisition. `${VAR}` expansion uses dcode's active workspace environment—not the server process environment—and the resulting script executes inside the sandbox as `bash -c`. A missing/unreadable setup file, an execution exception, or a nonzero exit prevents the context body from running. Once a fresh backend has been acquired, the `finally` path attempts deletion after setup failure, caller failure, or normal exit. Cleanup errors are reported but do not mask the original exception. Supplying `sandbox_id` changes this ownership rule: the factory attaches and does not delete the supplied resource, including after setup failure.
 
-### What remains on the Talon host
+For the server runtime, dcode enters this context in a worker thread and stores the context for the process lifetime; it registers an `atexit` close after successful startup. If startup is cancelled after a context has entered, the cancellation path closes that context before re-raising cancellation, avoiding a factory-owned sandbox leak. A configured sandbox creation failure is surfaced as startup failure rather than silently replacing the requested backend.
 
-Talon constructs a `CompositeBackend` whose default route is the remote sandbox. Only the assistant's `skills/` and `memory/` directories use host `FilesystemBackend` routes in virtual mode; each is created with `0700` permissions. This keeps skills and memory usable locally while preventing sandbox filesystem tools from reaching `tools.json` and other assistant state through those routes. Traversal from a host-routed memory path is rejected. Every `execute` call goes to the sandbox.
+## Daytona: provisioning and command boundaries
 
-This split is not a complete Talon security boundary. Talon's README explicitly notes that MCP tools, web tools, and channel media handling continue on the host; provider credentials are read by the Talon process and are not forwarded into the sandbox. Treat channel users as having access to the operator's configured agent capabilities unless separately constrained. See [Talon](talon.md) for host lifecycle and channel behavior.
+The built-in dcode Daytona provider creates a Daytona client from the API key and optional `DAYTONA_API_URL`, then creates a fresh sandbox. It does **not** currently implement `sandbox_id` attachment, even though generic provider metadata can otherwise advertise that capability. Startup polls `echo ready` every two seconds up to its `timeout`; if readiness never succeeds, it best-effort deletes the new sandbox before raising. For snapshots, `DAYTONA_SANDBOX_SNAPSHOT_ID` wins; otherwise an explicit `snapshot` overrides `DAYTONA_SANDBOX_SNAPSHOT_NAME`, and a missing named snapshot may be built from `snapshot_image` or the provider default image. A named snapshot that already exists but is not active is rejected rather than rebuilt.
 
-## Operating and extending safely
+`DaytonaSandbox` is the partner backend that wraps the created SDK sandbox. It inherits the common `BaseSandbox` filesystem operations and implements command execution with a temporary Daytona process session. `ExecuteResponse` carries combined output, an optional exit code, and a `truncated` marker; callers should use the exit code to distinguish a completed command failure from success.
 
-Choose providers based on their actual service boundaries and image requirements, not merely on protocol conformance. Derived `BaseSandbox` operations require the commands they generate, including `python3` in several paths. A new adapter should implement the four primitives, maintain ordered per-file partial-failure responses, and place provisioning, credentials, readiness checks, attachment, and deletion in a `SandboxProvider`. Advertise snapshot and attachment support only when the provider lifecycle actually implements it.
+For a finite `execute()` timeout, one monotonic deadline covers session creation, asynchronous command start, status polling, and final-log retrieval. The adapter avoids making a request once fewer than one second remains, caps each request by the remaining time, and limits each polling sleep to that remainder. `timeout=0` is deliberately different: it means wait indefinitely and sends unbounded command-phase requests. The execute-start argument is adjusted for the Daytona SDK's extra five-second HTTP buffer so that a finite effective request stays within the caller's deadline.
 
-Focused Talon tests exercise the relevant boundary conditions: no sandbox when unset; environment parsing and snapshot precedence; host-only `skills/` and `memory/` routes; sandbox cleanup; cancellation during synchronous startup; fail-closed provisioning; and rejection of external or traversing memory paths. The shared `BaseSandbox` tests separately verify server-side reads and edits, direct byte uploads, and the large-edit temporary-file path.
+```mermaid
+flowchart TD
+    Begin["execute command"] --> Deadline{"Finite timeout"}
+    Deadline -->|no timeout 0| Create["Create session"]
+    Deadline -->|yes| Budget{"At least one second remains"}
+    Budget -->|no| TimedOut["Return exit 124"]
+    Budget -->|yes| Create
+    Create --> Start["Start async command"]
+    Start --> Poll["Poll status within remaining deadline"]
+    Poll --> Done{"Exit code available"}
+    Done -->|yes| Logs["Read final logs within deadline"]
+    Done -->|no deadline| TimeoutLogs["Try partial logs within shared grace"]
+    Logs --> Result["Return output and exit code"]
+    TimedOut --> Cleanup["Bounded session deletion"]
+    TimeoutLogs --> Cleanup
+    Result --> Cleanup
+    Cleanup --> Finish["Return result"]
+```
+
+*This is the Daytona adapter's command deadline and cleanup path; it is not a contract for other sandbox adapters.*
+
+A timeout returns exit code `124` and the timeout message, appending partial stdout/stderr if it can be read. Timeout recovery gives log collection and deletion one shared two-second grace period, with at most one second per cleanup request; exhausted grace skips deletion. The adapter always attempts bounded session deletion once session creation was attempted—including when a creation transport timeout leaves remote creation uncertain. Cleanup failures are logged and do not replace a command result. On normal completion, final logs are retrieved before the session is deleted.
+
+Daytona file transfers require absolute paths: invalid relative inputs get the standardized `invalid_path` error without an SDK request. Downloads preserve input order and map missing Daytona content to `file_not_found`; uploads return one response per input. These transfer rules and the command deadline behavior are specific to `langchain-daytona`.
+
+## Installation and optional package boundary
+
+The six curated external adapters—AgentCore, Daytona, Modal, OpenShell, Runloop, and Vercel—are optional `deepagents-code` extras, collectively available through `deepagents-code[all-sandboxes]`. `langsmith[sandbox]` is a regular dcode dependency. The compatibility `deepagents-code[quickjs]` extra intentionally remains empty because QuickJS is already a normal dependency and is middleware rather than a remote sandbox adapter. Missing optional provider imports produce provider-specific installation guidance.
+
+In particular, the `openshell` extra installs `langchain-nvidia-openshell>=0.1.1`. dcode's local development source mappings point at the Daytona, Modal, QuickJS, Runloop, and Vercel partner directories; they do not turn those packages into dcode-owned code or add an OpenShell checkout.
+
+The checked-in Daytona, Modal, Runloop, and Vercel adapters are separate partner distributions. Each depends on Deep Agents and its respective provider SDK and owns its own version, environment, `pyproject.toml`, `Makefile`, and tests. dcode's curated names provide discovery, optional-install packaging, parameter forwarding, and lifecycle policy—not ownership of the adapter implementation. A third-party package can extend the registry by publishing an entry point in `deepagents_code.sandbox_providers`; an operator can instead use a configured `class_path` for an internal or local provider.
+
+## Operating and changing integrations
+
+- Use `--sandbox <provider>` to choose a provider, or bare `--sandbox` only when `[sandboxes].default` is configured. Unknown providers and unsupported snapshot options are rejected before normal startup. ID support is provider-specific: the Daytona provider currently raises `NotImplementedError` if an ID is passed.
+- Treat provider metadata as declarations that drive dcode validation and UX, not proof that the provider enforces a security property. Verify provider-specific identity, credential, network, retention, timeout, cancellation, and isolation behavior separately.
+- Preserve the factory's ownership boundary when adding a provider: only fresh factory-created resources may be deleted. Ensure setup failures take the same cleanup path.
+- Do not generalize Daytona's `124` timeout result, deadline accounting, polling policy, or shared cleanup grace to another adapter without implementing and testing them there.
+- The focused dcode unit tests cover registry precedence, entry-point metadata fallback, malformed configuration and immutable provider mappings, snapshot validation, setup failure, attachment ownership, and cleanup error reporting. Daytona unit tests additionally cover fixed and adaptive polling, finite versus unlimited command requests, deadline-bounded requests, partial-output recovery, cleanup failure, and shared cleanup grace. The optional integration suites exercise real creation, command execution, file transfer, and filesystem operations; they are skipped in the release pipeline and some error-path cases remain explicitly skipped pending provider support.
+- For repository work on an adapter, follow the partner-package guidance: adding a partner also requires its independent release and CI wiring, including sandbox credential/integration-test surfaces where applicable.
+
+See [Development](/openwiki/operations/development.md) for repository workflows and [Run a dcode session](/openwiki/workflows/run-dcode-session.md) for the end-user session path.

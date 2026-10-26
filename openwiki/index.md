@@ -4,7 +4,7 @@ okf_version: "0.2"
 
 # Files
 
-- [Engineer Navigation Guide](quickstart.md) - Concise navigation for engineers changing the Deep Agents SDK, dcode, ACP, Talon, partner integrations, or evaluation suite. Routes common work to the architecture, concepts, workflows, operations, and focused testing guidance.
+- [Deep Agents Monorepo Quickstart](quickstart.md) - Route a Deep Agents change to its owning package, distinguish released requirements from local uv sources, and run the narrowest authoritative validation. Includes the dcode SDK compatibility pin and dependent lockfile handoffs.
 
 # Directories
 

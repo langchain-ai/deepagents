@@ -44,17 +44,19 @@ from functools import lru_cache
 from typing import (
     TYPE_CHECKING,
     Any,
+    Generic,
     Literal,
     NotRequired,
     TypedDict,
+    TypeIs,
+    TypeVar,
     Unpack,
     get_args,
     overload,
 )
 
-from typing_extensions import TypeIs
-
 from deepagents_code import _env_vars
+from deepagents_code.terminal_title import DEFAULT_TERMINAL_TAB_TITLE
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Mapping
@@ -480,8 +482,11 @@ type _SynthesizedStrKind = Literal[
 ]
 
 
+T_co = TypeVar("T_co", covariant=True)
+
+
 @dataclass(frozen=True)
-class ConfigOption[T]:
+class ConfigOption(Generic[T_co]):  # noqa: UP046  # Explicit covariance avoids dataclass __replace__ inference.
     """One user-tunable configuration option and where it can be set.
 
     `T` is the type `ConfigResolver.get` yields for this option. It is not
@@ -507,7 +512,7 @@ class ConfigOption[T]:
     kind: OptionKind
     """How env/TOML values are coerced to a typed value."""
 
-    default: T | None = None
+    default: T_co | None = None
     """Typed default value, or `None` when there is no static default.
 
     Declaring one is what removes `None` from `T`: `_resolve` falls back to
@@ -870,7 +875,7 @@ def load_config_toml() -> dict[str, Any]:
             return tomllib.load(f)
     except FileNotFoundError:
         return {}
-    except (OSError, tomllib.TOMLDecodeError, UnicodeDecodeError):
+    except OSError, tomllib.TOMLDecodeError, UnicodeDecodeError:
         # `UnicodeDecodeError` is neither of the other two (it subclasses
         # `ValueError`), but a file saved as UTF-16 or holding a stray byte is
         # unreadable TOML in exactly the same way -- without it, a config that
@@ -1170,7 +1175,7 @@ def _notify_cli_warning(message: str) -> bool:
         from textual._context import active_app  # noqa: PLC2701
 
         app = active_app.get()
-    except (ImportError, LookupError):
+    except ImportError, LookupError:
         return False
     if not app.is_running:
         return False
@@ -1395,6 +1400,7 @@ def load_bool_display_preference(
     key: str,
     *,
     fallback: bool,
+    default: bool | None = None,
     on_rejected: Callable[[str], None] | None = None,
 ) -> bool:
     """Resolve a boolean `Display` option through the config manifest.
@@ -1418,6 +1424,9 @@ def load_bool_display_preference(
             not a `BOOL` option — both mean a caller and the manifest disagree.
             Pinned against each option's declared default by
             `test_bool_display_preference_fallbacks_match_the_manifest`.
+        default: Value to use instead of the declared default when no tier
+            sets the option. For a mode whose default differs from the
+            manifest's, such as headless reasoning output.
         on_rejected: Called once per rejection reason when a tier at or above
             the winning tier supplied a value that failed to parse — a
             rejection a weaker tier could not have influenced, and one at a
@@ -1433,6 +1442,7 @@ def load_bool_display_preference(
     Returns:
         The resolved value.
     """
+    from deepagents_code.configuration.resolver import DEFAULT_RANK
     from deepagents_code.configuration.types import Invalid
 
     option = get_option(key)
@@ -1456,6 +1466,8 @@ def load_bool_display_preference(
     ranked = _resolve_option(option)
     _emit_ranked_diagnostics(option, ranked)
     resolved = bool(ranked.value)
+    if default is not None and ranked.ranks == (DEFAULT_RANK,):
+        resolved = default
     # Keep the source: a display option turned off by managed policy is
     # otherwise indistinguishable from one the user turned off themselves.
     # Visible under `DEEPAGENTS_CODE_DEBUG`; `dcode config get` is the answer
@@ -2134,7 +2146,7 @@ def is_provider_package_installed(provider: str) -> bool:
         return True
     try:
         return importlib.util.find_spec(dependency[0]) is not None
-    except (ImportError, ValueError):
+    except ImportError, ValueError:
         # `find_spec` re-raises errors from a broken parent package and raises
         # `ValueError` for a malformed spec. Treat "can't tell" as "missing"
         # so the model selector routes to the install prompt rather than
@@ -2261,6 +2273,17 @@ _STATIC_OPTIONS: tuple[ConfigOption[object], ...] = (
         empty_env_is_false=True,
     ),
     ConfigOption(
+        key="terminal.tab_title",
+        group="Display",
+        summary=(
+            "Terminal tab title template using {app_name}, {thread_name}, {cwd}, "
+            "and {branch}."
+        ),
+        kind=OptionKind.STR,
+        default=DEFAULT_TERMINAL_TAB_TITLE,
+        toml_keys=("terminal", "tab_title"),
+    ),
+    ConfigOption(
         key="display.show_message_timestamps",
         group="Display",
         summary="Show the timestamp footer under each chat message.",
@@ -2339,9 +2362,12 @@ _STATIC_OPTIONS: tuple[ConfigOption[object], ...] = (
     ConfigOption(
         key="display.show_reasoning",
         group="Display",
-        summary="Show provider-visible reasoning in local output (off by default).",
+        summary=(
+            "Show provider-visible reasoning in local output "
+            "(on in the TUI, off in headless mode)."
+        ),
         kind=OptionKind.BOOL,
-        default=False,
+        default=True,
         env_var=_env_vars.SHOW_REASONING,
         toml_keys=("ui", "show_reasoning"),
         cli_flag="--show-reasoning",
@@ -2364,6 +2390,15 @@ _STATIC_OPTIONS: tuple[ConfigOption[object], ...] = (
         default=False,
         env_var=_env_vars.DEBUG_CONSOLE_CLICK_TO_COPY,
         toml_keys=("ui", "debug_console_click_to_copy"),
+    ),
+    ConfigOption(
+        key="display.ask_about_selection",
+        group="Display",
+        summary='Show "Ask about this" for selected conversation text (on by default).',
+        kind=OptionKind.BOOL,
+        default=True,
+        env_var=_env_vars.ASK_ABOUT_SELECTION,
+        toml_keys=("ui", "ask_about_selection"),
     ),
     ConfigOption(
         key="display.collapse_pastes",
@@ -2894,6 +2929,21 @@ _STATIC_OPTIONS: tuple[ConfigOption[object], ...] = (
         env_var=_env_vars.HISTORY_RETENTION_DAYS,
         toml_keys=("history", "retention_days"),
     ),
+    ConfigOption(
+        key="history.idle_compaction_tokens",
+        group="History",
+        summary=(
+            "Automatically offload idle context at this token count during the "
+            "final 20% of prompt-cache retention, capped at 120 seconds "
+            "(disabled by default; "
+            "0 disables). Uses the "
+            "offload model and may incur summarization costs."
+        ),
+        kind=OptionKind.NON_NEGATIVE_INT,
+        default=0,
+        env_var=_env_vars.IDLE_COMPACTION_TOKENS,
+        toml_keys=("history", "idle_compaction_tokens"),
+    ),
     # --- Warnings ------------------------------------------------------
     ConfigOption(
         key="warnings.cache_prompt",
@@ -3044,7 +3094,10 @@ _STATIC_OPTIONS: tuple[ConfigOption[object], ...] = (
     ConfigOption(
         key="plugins.auto_update",
         group="Plugins",
-        summary="Update opted-in plugins after the first prompt; disable globally.",
+        summary=(
+            "Check plugins for updates after the first prompt and install "
+            "opted-in ones; disable globally."
+        ),
         kind=OptionKind.BOOL,
         default=True,
         env_var=_env_vars.PLUGIN_AUTO_UPDATE,

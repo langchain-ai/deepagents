@@ -99,7 +99,7 @@ def _assert_snapshot(
 
 
 @contextmanager
-def _mock_settings(tmp_path: Path) -> Generator[None, None, None]:
+def _mock_settings(tmp_path: Path) -> Generator[None]:
     """Patch filesystem settings and fixed runtime model identity.
 
     Mirrors the ``mock_settings`` pattern from ``test_end_to_end.py`` but
@@ -112,9 +112,18 @@ def _mock_settings(tmp_path: Path) -> Generator[None, None, None]:
 
     skills_dir = tmp_path / "skills"
     skills_dir.mkdir(parents=True)
+    user_skill = tmp_path / "claude_skills" / "release-check"
+    user_skill.mkdir(parents=True)
+    (user_skill / "SKILL.md").write_text(
+        "---\nname: release-check\n"
+        "description: Check a release before publishing.\n---\n"
+        "Check the release notes.\n",
+        encoding="utf-8",
+    )
 
     with (
         patch("deepagents_code.agent.credentials") as mock_s,
+        patch("deepagents_code.agent.invoked_name", return_value="dcode"),
         patch("deepagents_code.agent.runtime_state") as mock_runtime_state,
         patch("deepagents_code.agent.ensure_agent_dir", return_value=agent_dir),
         patch(

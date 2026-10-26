@@ -3,7 +3,7 @@
 /* Define layers for z-ordering */
 Screen {
     layout: vertical;
-    layers: base autocomplete;
+    layers: base autocomplete selection-action;
 }
 
 /* Thin scrollbars app-wide */
@@ -17,6 +17,16 @@ Screen {
    and balances the clock-space gutter on the right, keeping the title centered. */
 #app-header HeaderIcon {
     visibility: hidden;
+}
+
+#cache-expired-banner {
+    display: none;
+    height: 1;
+    width: 100%;
+    background: $error;
+    color: $text;
+    text-align: center;
+    text-style: bold;
 }
 
 /* Main content goes on base layer by default */
@@ -448,6 +458,13 @@ ChatTextArea {
 
     & .text-area--cursor-gutter {
         background: transparent;
+    }
+
+    /* Transparent cursor backgrounds resolve against the widget, so the
+       underline cursor needs the same tint to keep the line continuous. */
+    &.multiline:focus .text-area--cursor-line,
+    &.multiline.cursor-underline:focus .text-area--cursor {
+        background: $foreground 6%;
     }
 }
 

@@ -71,7 +71,6 @@ from deepagents_code.agent import DEFAULT_AGENT_NAME
 from deepagents_code.config import (
     SHELL_ALLOW_ALL,
     build_langsmith_thread_url,
-    create_model,
     get_glyphs,
     is_ascii_mode,
     is_shell_command_allowed,
@@ -84,7 +83,7 @@ from deepagents_code.hooks import (
     drain_pending_hooks,
 )
 from deepagents_code.hooks.transcript import SUBAGENT_TRANSCRIPT_ID_METADATA_KEY
-from deepagents_code.model_config import ModelConfigError
+from deepagents_code.integrations.sandbox_factory import owned_sandbox
 from deepagents_code.model_retry import (
     INTERRUPTED_TOOL_OUTPUT,
     RETRY_BOUNDARY_LINE,
@@ -94,6 +93,10 @@ from deepagents_code.model_retry import (
     retry_status_from_event,
 )
 from deepagents_code.sessions import generate_thread_id
+from deepagents_code.skills.load_errors import (
+    format_skills_load_errors,
+    skills_load_errors_from_event,
+)
 from deepagents_code.tool_display import format_tool_message_content
 from deepagents_code.unicode_security import (
     check_url_safety,
@@ -107,13 +110,14 @@ from deepagents_code.unicode_security import (
 if TYPE_CHECKING:
     from asyncio.subprocess import Process
     from collections.abc import Hashable, Mapping
-    from pathlib import Path
     from uuid import UUID
 
     from deepagents import FsToolName
     from langchain_core.runnables import RunnableConfig
 
     from deepagents_code.approval_mode import ApprovalMode
+    from deepagents_code.client.headless_resume import ResumeRequest
+    from deepagents_code.client.remote_client import RemoteAgent
     from deepagents_code.hooks.manager import HooksManager
     from deepagents_code.hooks.models.domain import SessionEndCause
     from deepagents_code.hooks.presenter import (
@@ -212,7 +216,7 @@ def _make_stdio_encoding_safe() -> None:
             continue
         try:
             reconfigure(errors="replace")
-        except (ValueError, OSError, TypeError):
+        except ValueError, OSError, TypeError:
             # Closed, detached, or otherwise non-reconfigurable stream (a
             # duck-typed `reconfigure` with a different signature raises
             # `TypeError`) — leave it as-is. This is a best-effort hardening
@@ -501,6 +505,13 @@ class StreamState:
     hook_response: dict[str, Any] = field(default_factory=dict)
     """Resume values for fulfilled Hooks v2 interrupts, keyed by interrupt id."""
 
+    skill_trust_response: dict[str, dict[str, bool]] = field(default_factory=dict)
+    """Denials for server skill trust requests, keyed by interrupt id.
+
+    Recorded while streaming, so it is not cleared with the other responses
+    before a resume.
+    """
+
     hooks: HooksManager = field(default_factory=_inert_hooks)
     """Client-side Hooks v2 coordinator for this headless session."""
 
@@ -626,6 +637,38 @@ def _start_langsmith_thread_url_lookup(thread_id: str) -> ThreadUrlLookupState:
     return state
 
 
+def _deny_skill_trust(
+    interrupt_obj: Interrupt, state: StreamState, console: Console
+) -> bool:
+    """Deny a server request to trust a skill directory.
+
+    Headless runs cannot ask, so the server reports the containment error and
+    the turn fails.
+
+    Returns:
+        Whether `interrupt_obj` was a skill trust request.
+    """
+    from deepagents_code.skills.trust import (
+        SKILL_TRUST_INTERRUPT_TYPE,
+        parse_skill_trust_request,
+    )
+
+    value = interrupt_obj.value
+    if not isinstance(value, dict) or value.get("type") != SKILL_TRUST_INTERRUPT_TYPE:
+        return False
+    request = parse_skill_trust_request(value)
+    if request is not None:
+        console.print(
+            f"[yellow]Skill '{escape_markup(request['skill'])}' is in "
+            f"{escape_markup(request['directory'])}, which is not trusted. "
+            "Non-interactive mode cannot ask; add the directory to "
+            "[skills].extra_allowed_dirs to allow it.[/yellow]"
+        )
+    state.skill_trust_response[interrupt_obj.id] = {"approved": False}
+    state.interrupt_occurred = True
+    return True
+
+
 def _process_interrupts(
     data: dict[str, list[Interrupt]],
     state: StreamState,
@@ -647,6 +690,8 @@ def _process_interrupts(
             if is_hook_interrupt_payload(interrupt_obj.value):
                 state.pending_hook_interrupts[interrupt_obj.id] = interrupt_obj.value
                 state.interrupt_occurred = True
+                continue
+            if _deny_skill_trust(interrupt_obj, state, console):
                 continue
             try:
                 validated_request = _HITL_REQUEST_ADAPTER.validate_python(
@@ -1658,6 +1703,13 @@ def _process_stream_chunk(
             parsed = model_attempt_from_event(data)
             if parsed is not None:
                 _process_attempt_lifecycle(ns_key, parsed, state, console)
+        elif (load_errors := skills_load_errors_from_event(data)) is not None:
+            if load_errors:
+                console.print(
+                    f"[yellow]{escape_markup(format_skills_load_errors(load_errors))}"
+                    "[/yellow]",
+                    highlight=False,
+                )
         else:
             _process_rubric_event(cast("dict[str, Any]", data), state, console)
     elif stream_mode == "messages":
@@ -2087,6 +2139,9 @@ async def _run_agent_loop(
     approval_mode: ApprovalMode | None = None,
     prompt_id: UUID | None = None,
     summarization_model: str | None = None,
+    skill_name: str | None = None,
+    context_overrides: CLIContext | None = None,
+    resumed: bool = False,
 ) -> None:
     """Run the agent and handle HITL interrupts until the task completes.
 
@@ -2130,6 +2185,10 @@ async def _run_agent_loop(
         approval_mode: Effective client approval policy. Defaults to manual.
         prompt_id: Stable identifier for the headless turn.
         summarization_model: Model spec used only for context-compaction summaries.
+        skill_name: Explicitly invoked skill for the SDK to pin on this turn.
+        context_overrides: Run-context fields to apply, such as a resumed
+            thread's model.
+        resumed: Whether this run continues an existing thread.
 
     Raises:
         ClientHookStopError: If a client-owned hook stops processing.
@@ -2156,12 +2215,17 @@ async def _run_agent_loop(
     }
     if rubric is not None:
         stream_input["rubric"] = rubric
+    elif resumed:
+        # `--rubric` is per invocation and rejected with `-r`, so a rubric left
+        # in the checkpoint by an earlier run must not grade this turn.
+        stream_input["rubric"] = None
 
     thread_id = state.thread_id
     # An empty or missing thread ID carries no session identity, so leave it
     # unset in context rather than passing a blank string to model middleware.
     context_thread_id = thread_id if isinstance(thread_id, str) and thread_id else None
     context = CLIContext(
+        **(context_overrides or {}),
         thread_id=context_thread_id,
         summarization_model=summarization_model,
     )
@@ -2234,7 +2298,7 @@ async def _run_agent_loop(
     state.transcript = state.hooks.recorder(thread_id)
 
     start_outcome = await state.hooks.on_session_start(
-        SessionStartCause.STARTUP,
+        SessionStartCause.RESUME if resumed else SessionStartCause.STARTUP,
         model=runtime_state.model_name or None,
     )
     if not start_outcome.ok:
@@ -2279,6 +2343,10 @@ async def _run_agent_loop(
         )
         raise
 
+    # Skip the pin when a hook suppressed the prompt that requested it
+    if skill_name and user_msg in stream_input["messages"]:
+        stream_input["pinned_skills"] = [skill_name]
+
     start_time = time.monotonic()
 
     run_completed = False
@@ -2315,7 +2383,12 @@ async def _run_agent_loop(
             state.hook_response.clear()
             await _fulfill_pending_hook_interrupts(state)
             await _process_hitl_interrupts(state, console)
-            resume_payload = {**state.hook_response, **state.hitl_response}
+            resume_payload = {
+                **state.hook_response,
+                **state.hitl_response,
+                **state.skill_trust_response,
+            }
+            state.skill_trust_response.clear()
             stream_input = Command(resume=resume_payload)
             await _stream_agent(
                 agent, stream_input, config, state, console, file_op_tracker, context
@@ -2488,6 +2561,158 @@ def _build_non_interactive_header(
     return Text.assemble(*parts)
 
 
+async def _select_thread(
+    resume: ResumeRequest | None, assistant_id: str
+) -> tuple[str, str]:
+    """Pick this run's thread, checking a resumed one without reserving it.
+
+    Args:
+        resume: The `-r <id>` request, or `None` for a new thread.
+        assistant_id: The agent selected on the command line.
+
+    Returns:
+        The thread ID and the agent to run it with.
+
+    Raises:
+        ResumeError: The requested thread cannot be resumed from here.
+    """
+    if resume is None:
+        return generate_thread_id(), assistant_id
+
+    from pathlib import Path
+
+    from deepagents_code.client.headless_resume import (
+        ResumeError,
+        cwd_conflict,
+        resolve_resume_target,
+    )
+
+    target = await resolve_resume_target(resume.thread_id)
+    if conflict := cwd_conflict(target, str(Path.cwd())):
+        raise ResumeError(conflict)
+    if resume.adopt_agent and target.agent_name:
+        assistant_id = target.agent_name
+    return target.thread_id, assistant_id
+
+
+async def _reserve_thread(thread_id: str) -> None:
+    """Reserve a resumed thread so no other session writes to it meanwhile.
+
+    Raises:
+        ResumeError: The thread was deleted after `_select_thread` checked it.
+    """
+    from deepagents_code.client.headless_resume import ResumeError
+    from deepagents_code.sessions import thread_exists
+    from deepagents_code.thread_ownership import ensure_owned
+
+    ensure_owned(thread_id)
+    # Deleting a thread requires its reservation, so this check cannot go stale.
+    if not await thread_exists(thread_id):
+        msg = f"Thread '{thread_id}' was deleted before it could be resumed."
+        raise ResumeError(msg)
+
+
+async def _resumed_model_context(
+    agent: RemoteAgent,
+    config: RunnableConfig,
+    *,
+    adopt_model: bool,
+    profile_override: dict[str, Any] | None,
+    console: Console,
+) -> CLIContext:
+    """Restore the model a resumed thread last used, when adopting it.
+
+    Returns:
+        Context overrides selecting that model, or none.
+    """
+    from deepagents_code.client.headless_resume import persisted_model
+
+    if not adopt_model:
+        return CLIContext()
+    # A fresh server reads persisted checkpoints only for registered threads.
+    await agent.aensure_thread(dict(config))
+    state = await agent.aget_state(dict(config))
+    selection = persisted_model(state.values) if state else None
+    if selection is None:
+        return CLIContext()
+    return await _adopt_thread_model(
+        agent, config, *selection, profile_override=profile_override, console=console
+    )
+
+
+async def _adopt_thread_model(
+    agent: RemoteAgent,
+    config: RunnableConfig,
+    spec: str,
+    params: dict[str, Any] | None,
+    *,
+    profile_override: dict[str, Any] | None,
+    console: Console,
+) -> CLIContext:
+    """Switch the run to the model a resumed thread last used.
+
+    Mirrors the TUI: a model that no longer resolves falls back to the launch
+    model with a warning, while a workspace conflict still aborts the run.
+
+    Returns:
+        Context overrides selecting the model, or none when it was not restored.
+
+    Raises:
+        ConflictError: The thread's workspace binding refused this invocation.
+    """
+    from langgraph_sdk.errors import ConflictError
+
+    launch = f"{runtime_state.model_provider}:{runtime_state.model_name}"
+    try:
+        metadata = await agent.aresolve_model(config, spec, extra_kwargs=params)
+    except ConflictError:
+        raise
+    except Exception:
+        logger.warning("Could not restore model %s on resume", spec, exc_info=True)
+        console.print(
+            f"[yellow]Warning:[/yellow] could not restore this thread's model "
+            f"{escape_markup(spec)}; continuing with {escape_markup(launch)}."
+        )
+        return CLIContext()
+    metadata.apply_to_runtime_state()
+    return CLIContext(
+        model=f"{metadata.provider}:{metadata.model_name}",
+        model_params=params or {},
+        profile_overrides=profile_override or {},
+        model_context_limit=runtime_state.model_context_limit,
+    )
+
+
+def _print_resume_error(console: Console, exc: Exception) -> None:
+    # `soft_wrap` keeps the message on one line for scripts that grep it.
+    console.print(f"[red]Error: {escape_markup(str(exc))}[/red]", soft_wrap=True)
+
+
+def _workspace_conflict_text(exc: BaseException) -> str | None:
+    """Explain a server refusal to resume a thread under different settings.
+
+    Returns:
+        The user-facing message, or `None` when `exc` is not a 409 conflict.
+    """
+    from langgraph_sdk.errors import ConflictError
+
+    if not isinstance(exc, ConflictError):
+        return None
+    from deepagents_code.client.headless_resume import WORKSPACE_CONFLICT_MESSAGE
+    from deepagents_code.client.remote_client import workspace_conflict_diagnostics
+    from deepagents_code.workspace_diagnostics import SAFE_SNAPSHOT_FIELDS
+
+    diagnostics = workspace_conflict_diagnostics(exc)
+    changed = sorted(
+        {change.name for change in diagnostics.changes} & SAFE_SNAPSHOT_FIELDS
+        if diagnostics is not None
+        else set()
+    )
+    if not changed:
+        return WORKSPACE_CONFLICT_MESSAGE
+    return f"{WORKSPACE_CONFLICT_MESSAGE} Changed: {', '.join(changed)}."
+
+
 async def _run_startup_command(
     command: str,
     console: Console,
@@ -2601,6 +2826,7 @@ async def run_non_interactive(
     trust_project_hooks: bool = False,
     trust_project_extensions: bool = False,
     extension_paths: tuple[str, ...] = (),
+    resume: ResumeRequest | None = None,
 ) -> int:
     """Run a single task non-interactively and exit.
 
@@ -2634,8 +2860,8 @@ async def run_non_interactive(
         sandbox_snapshot_name: Snapshot (langsmith) or blueprint (runloop) name.
         sandbox_setup: Optional path to setup script to run in the sandbox
             after creation.
-        initial_skill: Optional skill name whose `SKILL.md` instructions wrap
-            the user message before sending it to the agent.
+        initial_skill: Optional skill name whose instructions the SDK pins
+            before the first model call.
         startup_cmd: Shell command to run at startup, before the agent runs.
 
             Output follows the same console routing as other app messages:
@@ -2693,6 +2919,9 @@ async def run_non_interactive(
             Defaults to `False`; persisted or configured trust may still grant
             project loading inside the server.
         extension_paths: Explicit one-run extension files or directories.
+        resume: Continue this existing thread instead of starting a new one.
+
+            Any resume failure exits 1 rather than starting a new thread.
 
     Returns:
         Exit code: 0 for success or an intentional hook stop, 1 for error, 124
@@ -2705,121 +2934,38 @@ async def run_non_interactive(
     # uses _write_text() -> sys.stdout directly.
     console = Console(stderr=True) if quiet else Console()
 
+    from deepagents_code.client.headless_resume import ResumeError
+    from deepagents_code.thread_ownership import ThreadOwnershipError
+
+    # Check `-r` before `--startup-cmd` so a bad ID fails without side effects.
+    # The reservation waits for the main `try`, whose `finally` releases it.
+    try:
+        thread_id, assistant_id = await _select_thread(resume, assistant_id)
+    except ResumeError as exc:
+        _print_resume_error(console, exc)
+        return 1
+    if quiet:
+        # Printed despite `-q`: scripts parse it to resume the thread later.
+        console.print(
+            f"Thread: {thread_id}", markup=False, highlight=False, soft_wrap=True
+        )
+
     if startup_cmd and startup_cmd.strip():
         await _run_startup_command(startup_cmd.strip(), console, quiet=quiet)
 
     message_kwargs: dict[str, Any] | None = None
     skill_name: str | None = None
     if initial_skill and initial_skill.strip():
-        from deepagents_code.skills.invocation import (
-            build_skill_invocation_envelope,
-            discover_skills_and_roots,
+        from deepagents_code.skills.invocation import build_skill_invocation_envelope
+
+        # The agent server resolves, trust-checks, and reads the skill.
+        envelope = build_skill_invocation_envelope(
+            initial_skill.strip().lower(), message
         )
-        from deepagents_code.skills.load import (
-            ExtendedSkillMetadata,
-            load_skill_content,
-        )
-
-        normalized_skill = initial_skill.strip().lower()
-        try:
-            # Offloaded to a thread: discovery does blocking filesystem I/O
-            # (a JSON trust-store read plus `Path.resolve()` calls) that must
-            # not block the event loop.
-            from deepagents_code.plugins.adapters.skills import (
-                discover_plugin_skill_sources_and_roots,
-            )
-
-            def discover_all_skills() -> tuple[list[ExtendedSkillMetadata], list[Path]]:
-                plugin_sources, plugin_roots = discover_plugin_skill_sources_and_roots()
-                return discover_skills_and_roots(
-                    assistant_id,
-                    plugin_skill_sources=plugin_sources,
-                    plugin_skill_roots=plugin_roots,
-                )
-
-            skills, allowed_roots = await asyncio.to_thread(discover_all_skills)
-            skill = next((s for s in skills if s["name"] == normalized_skill), None)
-        except OSError as e:
-            console.print(
-                "[bold red]Error:[/bold red] "
-                f"Could not load skill: {escape_markup(normalized_skill)}. "
-                f"Filesystem error: {escape_markup(str(e))}"
-            )
-            return 1
-        except Exception as e:  # noqa: BLE001
-            console.print(
-                "[bold red]Error:[/bold red] "
-                f"Error loading skill: {escape_markup(normalized_skill)}. "
-                f"Unexpected error: {type(e).__name__}: {escape_markup(str(e))}"
-            )
-            return 1
-
-        if skill is None:
-            console.print(
-                "[bold red]Error:[/bold red] "
-                f"Skill not found: {escape_markup(normalized_skill)}"
-            )
-            return 1
-
-        try:
-            content = load_skill_content(
-                str(skill["path"]),
-                allowed_roots=allowed_roots,
-            )
-        except PermissionError as e:
-            console.print(f"[bold red]Error:[/bold red] {escape_markup(str(e))}")
-            return 1
-        except OSError as e:
-            console.print(
-                "[bold red]Error:[/bold red] "
-                f"Could not load skill: {escape_markup(normalized_skill)}. "
-                f"Filesystem error: {escape_markup(str(e))}"
-            )
-            return 1
-        except Exception as e:  # noqa: BLE001
-            console.print(
-                "[bold red]Error:[/bold red] "
-                f"Error loading skill: {escape_markup(normalized_skill)}. "
-                f"Unexpected error: {type(e).__name__}: {escape_markup(str(e))}"
-            )
-            return 1
-        if content is None:
-            console.print(
-                "[bold red]Error:[/bold red] "
-                f"Could not read content for skill: {escape_markup(normalized_skill)}. "
-                "Check that the SKILL.md file exists, is readable, "
-                "and is saved as UTF-8."
-            )
-            return 1
-
-        if not content.strip():
-            console.print(
-                "[bold red]Error:[/bold red] "
-                f"Skill '{escape_markup(normalized_skill)}' has an empty "
-                "SKILL.md file. "
-                "Add instructions to the file before invoking."
-            )
-            return 1
-
-        envelope = build_skill_invocation_envelope(skill, content, message)
         message = envelope.prompt
         message_kwargs = envelope.message_kwargs
         skill_name = envelope.skill_name
 
-    try:
-        result = create_model(
-            model_name,
-            extra_kwargs=model_params,
-            profile_overrides=profile_override,
-            cli_max_retries=cli_max_retries,
-        )
-    except ModelConfigError as e:
-        console.print(f"[bold red]Error:[/bold red] {e}")
-        return 1
-
-    result.apply_to_runtime_state()
-
-    thread_id = generate_thread_id()
     from deepagents_code._debug import bind_debug_logging_to_thread
 
     bind_debug_logging_to_thread(thread_id)
@@ -2828,12 +2974,6 @@ async def run_non_interactive(
     if not quiet:
         thread_url_lookup = _start_langsmith_thread_url_lookup(thread_id)
         console.print(Text("Running task non-interactively...", style="dim"))
-        header = _build_non_interactive_header(
-            assistant_id,
-            thread_id,
-            rubric_active=rubric is not None,
-        )
-        console.print(header)
 
     from deepagents_code.client.launch.server_manager import server_session
     from deepagents_code.hooks.client_lifecycle import ClientHookStopError
@@ -2855,6 +2995,9 @@ async def run_non_interactive(
             logger.warning("MCP metadata preload task creation failed", exc_info=True)
 
     try:
+        if resume is not None:
+            await _reserve_thread(thread_id)
+
         from pathlib import Path
 
         from deepagents_code.approval_mode import ApprovalMode
@@ -2921,36 +3064,65 @@ async def run_non_interactive(
         if not quiet:
             console.print(Text("Starting LangGraph server...", style="dim"))
 
-        async with server_session(
-            assistant_id=assistant_id,
-            model_name=model_name,
-            model_params=model_params,
-            cli_max_retries=cli_max_retries,
-            profile_overrides=profile_override,
-            auto_approve=use_auto_approve,
-            interrupt_shell_only=use_interrupt_shell_only,
-            shell_allow_list=restrictive_allow_list,
-            sandbox_type=sandbox_type,
-            sandbox_id=sandbox_id,
-            sandbox_snapshot_name=sandbox_snapshot_name,
-            sandbox_setup=sandbox_setup,
-            enable_shell=enable_shell,
-            enable_ask_user=False,
-            enable_interpreter=enable_interpreter,
-            interpreter_ptc=interpreter_ptc,
-            interpreter_ptc_acknowledge_unsafe=interpreter_ptc_acknowledge_unsafe,
-            allow_fs_tools=allow_fs_tools,
-            rubric_model=rubric_model,
-            rubric_max_iterations=rubric_max_iterations,
-            recursion_limit=recursion_limit,
-            mcp_config_path=mcp_config_path,
-            no_mcp=no_mcp,
-            trust_project_mcp=trust_project_mcp,
-            trust_project_extensions=trust_project_extensions,
-            extension_paths=extension_paths,
-            interactive=False,
-            cwd=str(Path.cwd()),
-        ) as (agent, _server_proc):
+        async with (
+            owned_sandbox(
+                sandbox_type,
+                sandbox_id=sandbox_id,
+                snapshot_name=sandbox_snapshot_name,
+                quiet=quiet,
+            ) as owned_sandbox_id,
+            server_session(
+                assistant_id=assistant_id,
+                model_name=model_name,
+                model_params=model_params,
+                cli_max_retries=cli_max_retries,
+                profile_overrides=profile_override,
+                auto_approve=use_auto_approve,
+                interrupt_shell_only=use_interrupt_shell_only,
+                shell_allow_list=restrictive_allow_list,
+                sandbox_type=sandbox_type,
+                sandbox_id=owned_sandbox_id,
+                sandbox_snapshot_name=sandbox_snapshot_name,
+                sandbox_setup=sandbox_setup,
+                enable_shell=enable_shell,
+                enable_ask_user=False,
+                enable_interpreter=enable_interpreter,
+                interpreter_ptc=interpreter_ptc,
+                interpreter_ptc_acknowledge_unsafe=interpreter_ptc_acknowledge_unsafe,
+                allow_fs_tools=allow_fs_tools,
+                rubric_model=rubric_model,
+                rubric_max_iterations=rubric_max_iterations,
+                recursion_limit=recursion_limit,
+                mcp_config_path=mcp_config_path,
+                no_mcp=no_mcp,
+                trust_project_mcp=trust_project_mcp,
+                trust_project_extensions=trust_project_extensions,
+                extension_paths=extension_paths,
+                interactive=False,
+                cwd=str(Path.cwd()),
+            ) as (agent, _server_proc),
+        ):
+            metadata = await agent.aget_model_metadata()
+            metadata.apply_to_runtime_state()
+            context_overrides = (
+                await _resumed_model_context(
+                    agent,
+                    config,
+                    adopt_model=resume.adopt_model,
+                    profile_override=profile_override,
+                    console=console,
+                )
+                if resume is not None
+                else None
+            )
+            if not quiet:
+                header = _build_non_interactive_header(
+                    assistant_id,
+                    thread_id,
+                    rubric_active=rubric is not None,
+                )
+                console.print(header)
+
             # Collect MCP preload result (ran concurrently with server startup)
             if mcp_task is not None:
                 try:
@@ -2990,11 +3162,17 @@ async def run_non_interactive(
                 approval_mode=approval_mode,
                 prompt_id=turn_id,
                 summarization_model=summarization_model,
+                skill_name=skill_name,
+                context_overrides=context_overrides,
+                resumed=resume is not None,
             )
 
     except KeyboardInterrupt:
         console.print("\n[yellow]Interrupted[/yellow]")
         return 130
+    except (ResumeError, ThreadOwnershipError) as exc:
+        _print_resume_error(console, exc)
+        return 1
     except ClientHookStopError as exc:
         console.print(Text(f"\nOperation stopped by hook: {exc}", style="yellow"))
         return 0
@@ -3014,10 +3192,22 @@ async def run_non_interactive(
         return 1
     except Exception as e:
         logger.exception("Unexpected error during non-interactive execution")
-        console.print(
-            f"\n[red]Unexpected error ({type(e).__name__}): "
-            f"{escape_markup(str(e))}[/red]"
-        )
+        if resume is not None and (conflict := _workspace_conflict_text(e)):
+            console.print(
+                f"\n[red]Error: {escape_markup(conflict)}[/red]", soft_wrap=True
+            )
+            return 1
+        if e.args and isinstance(e.args[0], dict):
+            # The server raised it; show its type and message, not the dict.
+            from deepagents_code.client.remote_client import format_agent_exception
+
+            detail = format_agent_exception(e)
+            console.print(f"\n[red]Agent error: {escape_markup(detail)}[/red]")
+        else:
+            console.print(
+                f"\n[red]Unexpected error ({type(e).__name__}): "
+                f"{escape_markup(str(e))}[/red]"
+            )
         return 1
     else:
         return 0
@@ -3033,3 +3223,8 @@ async def run_non_interactive(
             await drain_pending_hooks()
         except Exception:
             logger.warning("Hook drain raised unexpectedly before exit", exc_info=True)
+        finally:
+            from deepagents_code.thread_ownership import held_lease
+
+            if lease := held_lease(thread_id):
+                lease.release()

@@ -1,4 +1,4 @@
-FROM ghcr.io/astral-sh/uv:python3.13-bookworm
+FROM ghcr.io/astral-sh/uv:python3.14-bookworm
 
 ARG GCX_VERSION=0.4.0
 ARG TEA_VERSION=0.14.1

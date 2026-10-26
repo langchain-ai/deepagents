@@ -7,13 +7,15 @@ path). Heavy SDK dependencies (e.g., `backends`) are deferred to function bodies
 """
 
 import json
-from collections.abc import Callable
 from contextlib import suppress
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from deepagents_code.config import MAX_ARG_LENGTH, get_glyphs
 from deepagents_code.unicode_security import strip_dangerous_unicode
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 _HIDDEN_CHAR_MARKER = " [hidden chars removed]"
 """Marker appended to display values that had dangerous Unicode stripped, so
@@ -143,6 +145,24 @@ def _format_scope_path(
     return f" in {display}"
 
 
+def is_skill_read(tool_name: str | None, tool_args: dict | None) -> bool:
+    """Identify skill-file reads.
+
+    Args:
+        tool_name: Name of the tool being called.
+        tool_args: Arguments containing the file path.
+
+    Returns:
+        Whether the call reads a skill definition.
+    """
+    if tool_name != "read_file" or not tool_args:
+        return False
+    path = tool_args.get("file_path")
+    if path is None:
+        path = tool_args.get("path")
+    return isinstance(path, str) and Path(path).name.lower() == "skill.md"
+
+
 def format_tool_display(tool_name: str, tool_args: dict) -> str:
     """Format tool calls for display with tool-specific smart formatting.
 
@@ -206,6 +226,10 @@ def format_tool_display(tool_name: str, tool_args: dict) -> str:
             path = abbreviate_path(path_raw)
             if path_raw != str(path_value):
                 path += _HIDDEN_CHAR_MARKER
+            if is_skill_read(tool_name, tool_args):
+                skill_path = Path(path_raw)
+                name = truncate_value(skill_path.parent.name or skill_path.name)
+                return f"{prefix} read_file({path}) [skill: {name}]"
             return f"{prefix} {tool_name}({path})"
 
     elif tool_name == "web_search":
@@ -338,7 +362,7 @@ def _format_content_block(block: dict) -> str:
     try:
         # Preserve non-ASCII characters (CJK, emoji, etc.) instead of \uXXXX escapes
         return json.dumps(block, ensure_ascii=False)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return str(block)
 
 
@@ -361,7 +385,7 @@ def format_tool_message_content(content: Any) -> str:  # noqa: ANN401  # Content
                 try:
                     # Preserve non-ASCII characters (CJK, emoji, etc.)
                     parts.append(json.dumps(item, ensure_ascii=False))
-                except (TypeError, ValueError):
+                except TypeError, ValueError:
                     parts.append(str(item))
         return "\n".join(parts)
     return str(content)

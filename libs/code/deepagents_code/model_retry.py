@@ -30,6 +30,7 @@ from contextlib import contextmanager
 from copy import copy
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
+from http import HTTPStatus
 from typing import TYPE_CHECKING, Any
 
 from langchain.agents.middleware.types import AgentMiddleware, TracePolicy, omit_payload
@@ -41,6 +42,7 @@ from langgraph.pregel._messages import (  # noqa: PLC2701  # not publicly re-exp
     StreamMessagesHandler,
 )
 
+from deepagents_code.cold_cache import cache_request
 from deepagents_code.config import (
     DEFAULT_MODEL_RETRIES,
     MODEL_RETRIES_ATTR,
@@ -150,7 +152,8 @@ def _google_api_core_status_code(exc: Exception) -> int | None:
 class _MessageStreamTracker:
     """Track whether a model attempt emitted output to the message stream."""
 
-    def __init__(self) -> None:
+    def __init__(self, scope: tuple[str, int] | None = None) -> None:
+        self.scope = scope
         self.has_streamed = False
         self._tracked: list[tuple[StreamMessagesHandler, StreamMessagesHandler]] = []
 
@@ -164,6 +167,13 @@ class _MessageStreamTracker:
             # the chunk beyond our control, so the client must be told output
             # may have escaped even though the consumer never saw the chunk.
             self.has_streamed = True
+            if self.scope is not None:
+                namespace, mode, (message, metadata) = chunk
+                chunk = (
+                    namespace,
+                    mode,
+                    (message, {**metadata, "dcode_cache_attempt": self.scope}),
+                )
             source.stream(chunk)
 
         def replace(handler: BaseCallbackHandler) -> BaseCallbackHandler:
@@ -290,7 +300,7 @@ def _retry_after_seconds(exc: Exception) -> float | None:
         raw = headers.get("retry-after")
         if raw is None:
             raw = headers.get("Retry-After")
-    except (AttributeError, TypeError):
+    except AttributeError, TypeError:
         logger.debug("Retry-After lookup failed on %s headers", type(exc).__name__)
         return None
     if raw is None:
@@ -307,7 +317,7 @@ def _retry_after_seconds(exc: Exception) -> float | None:
     except ValueError:
         try:
             retry_at = parsedate_to_datetime(raw)
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             logger.debug("Ignoring unparseable Retry-After value %r", raw)
             return None
         if retry_at.tzinfo is None:
@@ -565,6 +575,39 @@ def _log_give_up(exc: Exception, attempts: int, max_retries: int) -> None:
         )
 
 
+class GroqToolLimitError(ValueError):
+    """A fixed, safe error message preserved by LangGraph's error serializer."""
+
+    def __init__(self) -> None:
+        msg = (
+            "Groq supports at most 128 tools per request. Disable some MCP tools "
+            "or switch to a model/provider with a higher tool limit."
+        )
+        super().__init__(msg)
+
+
+def _is_groq_tool_limit_error(exc: Exception) -> bool:
+    """Return whether this is Groq's known request-level tool-count rejection."""
+    if (
+        not any(
+            cls.__module__.partition(".")[0] == "groq"
+            and cls.__name__ == "BadRequestError"
+            for cls in type(exc).__mro__
+        )
+        or _extract_status_code(exc) != HTTPStatus.BAD_REQUEST
+    ):
+        return False
+    body = getattr(exc, "body", None)
+    if not isinstance(body, dict):
+        return False
+    error = body.get("error", body)
+    return (
+        isinstance(error, dict)
+        and error.get("type") == "invalid_request_error"
+        and error.get("message") == "'tools' : maximum number of items is 128"
+    )
+
+
 def _retry_call[ResultT](
     call: Callable[[], ResultT],
     *,
@@ -579,6 +622,7 @@ def _retry_call[ResultT](
 
     Raises:
         GraphBubbleUp: If the graph signals control flow.
+        GroqToolLimitError: If Groq rejects the request's tool count.
         RuntimeError: If the retry loop exits unexpectedly.
     """
     for attempt in range(max_retries + 1):
@@ -587,6 +631,8 @@ def _retry_call[ResultT](
         except GraphBubbleUp:
             raise
         except Exception as exc:  # classified by _is_retryable_model_error
+            if _is_groq_tool_limit_error(exc):
+                raise GroqToolLimitError from exc
             # Settle eligibility before consulting the guard. A guard that ran
             # first would blame the delay budget for an error that was never
             # going to be retried, and would skip the exhausted-budget log
@@ -623,6 +669,7 @@ async def _aretry_call[ResultT](
 
     Raises:
         GraphBubbleUp: If the graph signals control flow.
+        GroqToolLimitError: If Groq rejects the request's tool count.
         RuntimeError: If the retry loop exits unexpectedly.
     """
     import asyncio
@@ -633,6 +680,8 @@ async def _aretry_call[ResultT](
         except GraphBubbleUp:
             raise
         except Exception as exc:  # classified by _is_retryable_model_error
+            if _is_groq_tool_limit_error(exc):
+                raise GroqToolLimitError from exc
             # Settle eligibility before consulting the guard. A guard that ran
             # first would blame the delay budget for an error that was never
             # going to be retried, and would skip the exhausted-budget log
@@ -1159,16 +1208,26 @@ class CodeModelRetryMiddleware(AgentMiddleware):
 
         def call() -> ModelResponse:
             nonlocal stream_tracker
-            stream_tracker = _MessageStreamTracker()
-            self._emit_stream_event(
-                request, build_attempt_event(call_id, current_attempt, phase="start")
-            )
+            stream_tracker = _MessageStreamTracker((call_id, current_attempt))
+            event = build_attempt_event(call_id, current_attempt, phase="start")
+            activity = cache_request.get() if self.stream_output_is_visible else None
+            if activity is not None:
+                activity["requested_at"] = datetime.now(UTC).isoformat()
+                event["cache_activity"] = dict(activity)
+            self._emit_stream_event(request, event)
             with _track_message_streams(stream_tracker):
                 result = handler(request)
-            self._emit_stream_event(
-                request,
-                build_attempt_event(call_id, current_attempt, phase="complete"),
-            )
+            event = build_attempt_event(call_id, current_attempt, phase="complete")
+            if activity is not None:
+                from deepagents_code.cost_tracking import cache_token_counts
+
+                counts = [
+                    cache_token_counts(getattr(message, "usage_metadata", None))
+                    for message in result.result
+                ]
+                event["cache_read"] = any(reads for reads, _ in counts)
+                event["cache_write"] = any(any(writes) for _, writes in counts)
+            self._emit_stream_event(request, event)
             return result
 
         def on_retry(attempt: int, budget: int, exc: Exception) -> None:
@@ -1204,16 +1263,26 @@ class CodeModelRetryMiddleware(AgentMiddleware):
 
         async def call() -> ModelResponse:
             nonlocal stream_tracker
-            stream_tracker = _MessageStreamTracker()
-            self._emit_stream_event(
-                request, build_attempt_event(call_id, current_attempt, phase="start")
-            )
+            stream_tracker = _MessageStreamTracker((call_id, current_attempt))
+            event = build_attempt_event(call_id, current_attempt, phase="start")
+            activity = cache_request.get() if self.stream_output_is_visible else None
+            if activity is not None:
+                activity["requested_at"] = datetime.now(UTC).isoformat()
+                event["cache_activity"] = dict(activity)
+            self._emit_stream_event(request, event)
             with _track_message_streams(stream_tracker):
                 result = await handler(request)
-            self._emit_stream_event(
-                request,
-                build_attempt_event(call_id, current_attempt, phase="complete"),
-            )
+            event = build_attempt_event(call_id, current_attempt, phase="complete")
+            if activity is not None:
+                from deepagents_code.cost_tracking import cache_token_counts
+
+                counts = [
+                    cache_token_counts(getattr(message, "usage_metadata", None))
+                    for message in result.result
+                ]
+                event["cache_read"] = any(reads for reads, _ in counts)
+                event["cache_write"] = any(any(writes) for _, writes in counts)
+            self._emit_stream_event(request, event)
             return result
 
         def on_retry(attempt: int, budget: int, exc: Exception) -> None:

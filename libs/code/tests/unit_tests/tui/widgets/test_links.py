@@ -1,10 +1,11 @@
 """Unit tests for style-link click handling."""
 
 import os
-from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 from deepagents_code._env_vars import SHOW_URL_OPEN_TOAST
 from deepagents_code.tui.widgets._links import (
@@ -15,6 +16,8 @@ from deepagents_code.tui.widgets._links import (
 )
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from textual.app import App
 
 
@@ -63,6 +66,74 @@ async def test_open_checked_url_async_blocks_suspicious_url() -> None:
     assert "https://example.com/[admin]" in args[0]
     assert kwargs["severity"] == "warning"
     assert kwargs["markup"] is False
+
+
+_UNSUPPORTED_URLS = [
+    "mailto:test@example.com",
+    "javascript:alert(1)",
+    "file:///etc/passwd",
+    "vscode://file/tmp/x",
+    "custom-app://open?payload=1",
+    "MAILTO:test@example.com",
+    "example.com",
+]
+
+
+@pytest.mark.parametrize("url", _UNSUPPORTED_URLS)
+async def test_open_checked_url_async_blocks_unsupported_scheme(url: str) -> None:
+    """Links with a scheme other than http or https never reach the browser."""
+    notify = MagicMock()
+    app = cast("App[None]", SimpleNamespace(notify=notify))
+
+    with patch("deepagents_code.tui.widgets._links.webbrowser.open") as mock_open:
+        opened = await open_checked_url_async(url, app=app, notify_on_success=True)
+
+    assert opened is False
+    mock_open.assert_not_called()
+    notify.assert_called_once()
+    args, kwargs = notify.call_args
+    assert "unsupported scheme" in args[0]
+    assert kwargs["severity"] == "warning"
+    assert kwargs["markup"] is False
+
+
+@pytest.mark.parametrize("url", _UNSUPPORTED_URLS)
+def test_open_style_link_blocks_unsupported_scheme(url: str) -> None:
+    """Style links with a scheme other than http or https are not opened."""
+    event = _event_with_link(url)
+
+    with patch("deepagents_code.tui.widgets._links.webbrowser.open") as mock_open:
+        open_style_link(event)  # ty: ignore
+
+    mock_open.assert_not_called()
+    event.stop.assert_not_called()
+    event.app.notify.assert_called_once()
+    assert "unsupported scheme" in event.app.notify.call_args.args[0]
+
+
+async def test_open_url_async_blocks_unparseable_url() -> None:
+    """A URL whose scheme cannot be parsed is blocked, not opened."""
+    app = cast("App[None]", SimpleNamespace(notify=MagicMock()))
+
+    with patch("deepagents_code.tui.widgets._links.webbrowser.open") as mock_open:
+        opened = await open_url_async("http://[::1", app=app)
+
+    assert opened is False
+    mock_open.assert_not_called()
+
+
+@pytest.mark.parametrize("url", ["http://example.com", "HTTPS://example.com"])
+async def test_open_checked_url_async_allows_web_schemes(url: str) -> None:
+    """Http and https links still open, regardless of scheme case."""
+    app = cast("App[None]", SimpleNamespace(notify=MagicMock()))
+
+    with patch(
+        "deepagents_code.tui.widgets._links.webbrowser.open", return_value=True
+    ) as mock_open:
+        opened = await open_checked_url_async(url, app=app)
+
+    assert opened is True
+    mock_open.assert_called_once_with(url)
 
 
 async def test_open_url_async_can_toast_on_success() -> None:

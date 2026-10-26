@@ -1,0 +1,34 @@
+MCPServersScreen {
+    align: center middle;
+}
+
+MCPServersScreen > VerticalScroll {
+    width: 78;
+    max-width: 92%;
+    height: auto;
+    max-height: 85%;
+    background: $surface;
+    border: solid $primary;
+    padding: 1 2;
+}
+
+MCPServersScreen .mcp-servers-title {
+    height: auto;
+    text-style: bold;
+    color: $primary;
+    text-align: center;
+    margin-bottom: 1;
+}
+
+MCPServersScreen #mcp-servers-body {
+    height: auto;
+    color: $text;
+}
+
+MCPServersScreen .mcp-servers-help {
+    height: auto;
+    color: $text-muted;
+    text-style: italic;
+    text-align: center;
+    margin-top: 1;
+}

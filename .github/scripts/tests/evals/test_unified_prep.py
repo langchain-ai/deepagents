@@ -134,7 +134,7 @@ def test_native_harbor_impls_accept_all_categories_and_match_provider(tmp_path, 
     monkeypatch.setenv("UNIFIED_PROFILE", "lite")
     monkeypatch.setenv("UNIFIED_CATEGORIES", "autonomous")
     monkeypatch.setenv("GITHUB_OUTPUT", str(tmp_path / "out"))
-    for impl, model in (("codex", "openai:gpt-5.6-sol"), ("claude-code", "anthropic:claude-sonnet-5"), ("hermes", "openai:gpt-5.6-sol"), ("pi", "anthropic:claude-sonnet-5")):
+    for impl, model in (("codex", "openai:gpt-5.6-sol"), ("claude-code", "anthropic:claude-sonnet-5"), ("pi", "anthropic:claude-sonnet-5")):
         monkeypatch.setenv("UNIFIED_AGENT_IMPLS", impl)
         monkeypatch.setenv("UNIFIED_MODELS", model)
         assert up.main() == 0
@@ -151,9 +151,24 @@ def test_native_harbor_impls_accept_all_categories_and_match_provider(tmp_path, 
         monkeypatch.delenv("UNIFIED_BRANCHES")
 
 
+def test_claude_code_rejects_minimal_reasoning_effort(tmp_path, monkeypatch):
+    import pytest
+
+    monkeypatch.setenv("UNIFIED_PROFILE", "lite")
+    monkeypatch.setenv("UNIFIED_CATEGORIES", "autonomous")
+    monkeypatch.setenv("GITHUB_OUTPUT", str(tmp_path / "out"))
+    monkeypatch.setenv("UNIFIED_AGENT_IMPLS", "claude-code")
+    monkeypatch.setenv("UNIFIED_MODELS", "anthropic:claude-sonnet-5")
+    monkeypatch.setenv("UNIFIED_REASONING_EFFORT", "minimal")
+    with pytest.raises(SystemExit, match="reasoning_effort=minimal"):
+        up.main()
+    monkeypatch.setenv("UNIFIED_REASONING_EFFORT", "high")
+    assert up.main() == 0
+
+
 def test_module_impl_sets_match_registry():
-    assert up.KNOWN_AGENT_IMPLS == {"bare", "dcode", "tau3", "codex", "claude-code", "hermes", "pi"}
-    assert up.CODE_AGENT_IMPLS == {"bare", "dcode", "codex", "claude-code", "hermes", "pi"}
+    assert up.KNOWN_AGENT_IMPLS == {"bare", "dcode", "tau3", "codex", "claude-code", "pi"}
+    assert up.CODE_AGENT_IMPLS == {"bare", "dcode", "codex", "claude-code", "pi"}
 
 def test_main_rejects_invalid_profile(tmp_path, monkeypatch):
     import pytest

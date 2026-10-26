@@ -1,6 +1,6 @@
 [project]
 name = "deepagents"
-version = "0.7.20"
+version = "0.7.32"
 
 description = "Production-ready, extensible agent harness with a built-in filesystem and context management, sub-agent delegation, skills, and long-term memory."
 readme = "README.md"
@@ -20,19 +20,19 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 dependencies = [
-    "langchain>=1.4.3,<2.0.0",
-    "langchain-core>=1.6.6,<2.0.0",
-    "langchain-anthropic>=1.7.5,<2.0.0",
-    "langchain-google-genai>=4.4.0,<5.0.0",
-    "langsmith>=0.14.1",
+    "langchain>=1.4.7,<2.0.0",
+    "langchain-core>=1.7.0,<2.0.0",
+    "langchain-anthropic>=1.7.6,<2.0.0",
+    "langchain-google-genai>=4.4.2,<5.0.0",
+    "langsmith>=0.14.12",
     "packaging>=23.2",
     "wcmatch>=11.0",
 ]
 
 [project.optional-dependencies]
-aws = ["langchain-aws>=1.7.9,<2.0.0"]
-quickjs = ["langchain-quickjs>=0.3.8"]
-video = ["av>=18.0.0,<19.0.0", "pillow>=12.3.0,<13.0.0"]
+aws = ["langchain-aws>=1.9.1,<2.0.0"]
+quickjs = ["langchain-quickjs>=0.3.9"]
+video = ["av>=18.0.0", "pillow>=12.3.0"]
 
 [project.urls]
 Homepage = "https://docs.langchain.com/oss/python/deepagents/overview"
@@ -58,14 +58,16 @@ test = [
   "ty>=0.0.62,<1.0.0",
   "pytest-asyncio>=1.4.0",
   "langchain-tests>=1.1.9",
-  "langchain-openai",
+  "langchain-openai>=1.7.2,<2.0.0",
+  # The `aws` extra, so payload tests can drive real langchain-aws chat models.
+  "langchain-aws>=1.9.1,<2.0.0",
   "twine",
   "build",
   # Lazy-imported at runtime so the core package does
   # not depend on them. ty still sees the import names and
   # needs stubs, so we install them into the type-checker venv.
   "av>=18.0.0,<19.0.0",
-  "pillow>=12.3.0,<13.0.0",
+  "pillow>=12.3.0,<14.0.0",
 ]
 [build-system]
 requires = ["setuptools>=83.0.0", "wheel"]
@@ -158,9 +160,6 @@ markers = [
     "requires(*packages): integration test dependencies required to run a test",
     "video_extra: pin the read_file video gate on to snapshot the [video]-extra variant",
 ]
-
-[tool.ty.environment]
-python-version = "3.11"
 
 [tool.ty.rules]
 # Most rules are enabled by default. Enable rules that are disabled by default:

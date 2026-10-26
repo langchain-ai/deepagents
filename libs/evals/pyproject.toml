@@ -4,23 +4,24 @@ version = "0.0.1"
 description = "Evaluation suite and Harbor integration for Deep Agents"
 readme = "README.md"
 license = { text = "MIT" }
-requires-python = ">=3.12,<3.14"
+requires-python = ">=3.14,<3.15"
 keywords = ["agents", "ai", "evals", "harbor", "llm", "langgraph", "langchain", "langsmith", "tracing"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.12",
-    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 dependencies = [
     # SDK — local editable in dev (see [tool.uv.sources]), versioned for published package
-    "deepagents>=0.6.12",
-    "langchain[mcp]>=1.4.1,<2.0.0",
-    "deepagents-code>=0.1.27",
+    "deepagents>=0.7.32",
+    "langchain[mcp]>=1.4.1",
+    "deepagents-code>=0.2.1",
+    # Require Pydantic 2.13+ explicitly to avoid Python 3.14 warnings from LangChain's v1 imports.
+    "pydantic>=2.13.0,<3.0.0",
     # Harbor runtime, with the built-in LangSmith sandbox env (`-e langsmith`, introduced in harbor 0.13.2).
     # 0.20+: managed-Python agent venv. harbor-langsmith 0.3.0+ is the piece that honors
     # experiment_name (no job-id suffix), so shards of a leaf converge on one queryable experiment;
@@ -28,29 +29,29 @@ dependencies = [
     "harbor[langsmith]>=0.20.0,<0.21.0",
     "harbor-langsmith>=0.3.0,<0.4.0",
     # LangSmith for observability
-    "langsmith>=0.10.9",
+    "langsmith>=0.14.12",
     # Sandbox runtimes
     "dockerfile-parse>=2.0.1",
     "modal>=1.4.3",
     # LangChain model providers (evals run against many providers)
-    "langchain-anthropic>=1.5.4,<2.0.0",
-    "langchain-baseten>=0.2.1,<0.3.0",
-    "langchain-deepseek>=1.1.0,<1.2.0",
-    "langchain-fireworks>=1.4.4,<1.5.0",
-    "langchain-google-genai>=4.3.0,<5.0.0",
-    "langchain-groq>=1.1.3,<1.2.0",
-    "langchain-mistralai>=1.1.6,<1.2.0",
-    "langchain-nvidia-ai-endpoints>=1.4.3,<1.5.0",
-    "langchain-ollama>=1.1.0,<1.2.0",
-    "langchain-openai>=1.4.0,<2.0.0",
-    "langchain-openrouter>=0.2.6,<0.3.0",
-    "langchain-xai>=1.2.2,<1.3.0",
+    "langchain-anthropic>=1.5.4",
+    "langchain-baseten>=0.2.1",
+    "langchain-deepseek>=1.1.0",
+    "langchain-fireworks>=1.4.4",
+    "langchain-google-genai>=4.3.0",
+    "langchain-groq>=1.1.3",
+    "langchain-mistralai>=1.1.6",
+    "langchain-nvidia-ai-endpoints>=1.4.3",
+    "langchain-ollama>=1.1.0",
+    "langchain-openai>=1.4.0",
+    "langchain-openrouter>=0.2.6",
+    "langchain-xai>=1.2.2",
     # Eval-specific dependencies
-    "datasets>=5.0.0",
+    "datasets>=5.0.1",
     "nltk>=3.10.3",
     "openevals>=0.2.0",
     "tiktoken>=0.13.0",
-    "langchain-quickjs>=0.3.3,<0.4.0",
+    "langchain-quickjs>=0.3.3",
 ]
 
 [project.scripts]
@@ -63,7 +64,7 @@ charts = [
 
 [dependency-groups]
 test = [
-    "fastmcp>=4.0.1,<5.0.0",
+    "fastmcp>=4.1.2,<5.0.0",
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
     "pytest-watcher>=0.6.3,<1.0.0",
@@ -85,7 +86,7 @@ Slack = "https://www.langchain.com/join-community"
 Reddit = "https://www.reddit.com/r/LangChain/"
 
 [build-system]
-requires = ["setuptools>=83.0.0"]
+requires = ["setuptools>=84.1.0"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]

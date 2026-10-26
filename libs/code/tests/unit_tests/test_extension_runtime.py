@@ -1,7 +1,6 @@
 """Tests for extension loading, trust gating, and teardown."""
 
-from pathlib import Path
-from typing import cast
+from typing import TYPE_CHECKING, cast
 from unittest.mock import patch
 
 import pytest
@@ -18,6 +17,9 @@ from deepagents_code.plugins.models import (
     PluginInstance,
     PluginManifest,
 )
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 @pytest.fixture(autouse=True)

@@ -1,0 +1,106 @@
+{
+  "schemaVersion": 1,
+  "pageVersion": "sha256:5f3356d8729dd86fbb70bcb23573fe805f13142ff31b825e1665abdb511021ce",
+  "claims": [
+    {
+      "id": "claim_10c098882c8a4f6ca2ae373df529e738",
+      "statement": "The reusable `_test.yml` workflow validates required JSON matrix inputs before expanding a non-fail-fast build matrix, then checks out code, uses the local uv setup action, synchronizes the test group, runs platform-specific unit-test commands, and verifies a clean working tree.",
+      "evidence": [
+        {
+          "resource": "repo://.github/workflows/_test.yml#L341-L371",
+          "version": "repo-lines-v1:sha256:2375921e87c50b15390c72550318f4c571388f09228e29c93a99880188f87346:eyJzZWxlY3RlZExpbmVDb3VudCI6MzEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjYzMDFmNWFhNDEwMTM3MjM4YzcxOGNhNWNiN2M3ODVhNzlkMTMwZGU1ZTdkY2ZmNDY2YzhiODFkMmM3OWE1NmUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImNjMzMwYzU3MjBjZjQ4Mjg1MGQ0NWFkY2IyZmQ1MmVmNzdmY2VmOTkxNWY0MDE0ZWEwMjJhY2ZjMTU4MzEyMTciLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijc2ZjgwNTJiMzkzZDE3NDJhZjA1OTg5YzU2MDcwMTVjNzMxYWRiMGNmN2I4YmUzNTI0MTU1Mzc5MTIzMGE4MzQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        },
+        {
+          "resource": "repo://.github/workflows/_test.yml#L5-L95",
+          "version": "repo-lines-v1:sha256:c7f90031d8dff865cf718ae883e7737eb9a9ffd1442fedbc839d52300a541197:eyJzZWxlY3RlZExpbmVDb3VudCI6OTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU5NmRjNDgxNDlmNWE4M2QxZWQ2ZGJiMzliYmM3ZTJiOTAyYWEzZDM0ZDZiZDVhZTRiMjkxYjY4ZGYwY2E3OWEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjVhZDQxMTE1OWE2ODM2MWE3YjBjZWQ3OTQwMmVmYWNmN2VjYjlhNzZmMjlkYzNlYjg1NGNhMmMwMzVmOWQ0ZDEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImM2MmY0ZDE5ZmNkY2UzMGVjZmFhNjZmNzFjZjQzMzU2NGIxNzFmNWJjMzg1M2VkNzZhYTE1ZWFkOGVlYTY4M2MiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjIyMjEzMzA2ZjI5Mzk1ZjZiYmNiNjViY2Y2MjRjOWE2M2MzY2Y4MjUzZmMwMzA4NmJhYjYyNjY5NzEzOWUxZTQifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_740e76465c5748d19581a37b076bce93",
+      "statement": "`_test.yml` reads maintainer bypass labels from the live GitHub API only for pull-request runs and fails closed if that lookup fails; `ci:allow-warnings` adds `-W default`, while the narrowly scoped release ripgrep bypass can tolerate an install failure and record an artifact without weakening push or merge-group enforcement.",
+      "evidence": [
+        {
+          "resource": "repo://.github/workflows/_test.yml#L27-L34",
+          "version": "repo-lines-v1:sha256:efe1220d66e56654b74ba901a2b46c76a1fa75dbd3d2bb909b3d2aae338f3734:eyJzZWxlY3RlZExpbmVDb3VudCI6OCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNDA5ZTA4ZTYwZGY0NGU5Nzk1NmMzYmMxZDc4OTA2NGUxMzg2MjA4NGMzY2M5OWU1ODA3OWJhYzJlZmQxNjEwNSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNDM2OThjY2RmZjdlYThlMDFjMzk5YWZjNTI4ZmY4YThmNjQ0MDY1MWQxNDhlZjdiZGRkNzk3N2IyMzE4MzM1MiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiYTcyMzJjNTAwNmYzNDZhODM3OTgxMTI4NGJkZDQ0Y2RjOGZhOTIyYzFhY2M4ZWIzZmFmOWJkYWNiOTlkNmZlYSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiOTYzMGYzZTQwNmE3ZTM0Y2I4Mjk1NDRhMjJhZDIwNDRmNmY1OTMwMjBhNDYxNDdiNDEyZmUwMmFlNDMwZDIwOCJ9"
+        },
+        {
+          "resource": "repo://.github/workflows/_test.yml#L300-L349",
+          "version": "repo-lines-v1:sha256:9bdd2820332ed1284081708121654f065e8c412c55e191e4b6ba0ea96034c4f2:eyJzZWxlY3RlZExpbmVDb3VudCI6NTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjEzOWJhYjgwNmMyNGZlNjBhZDgxYTUzNWQzYThkYzdlMWM4MDliMThhMzQwOGFjYThhNTJjNzRkMzk4ZDg3M2IiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ5NTZmNWUzYWRhZWI4MjE1NmQxNDExMGU5MzUyNmVlZGRmN2Y3MGFhYjJlOTkwNzdiODMyNmFjMDdkNWM1NDciLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijg0MWU3MTdmNWE0MWI4NTBiZmIwZGI0NDI1ZmFlN2FjNjYyNzUwNTI3Njk5YTc2MDZhNzMxMjZhMjAwYjk5ZDMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImQ4MGFjMjU2NDg5MGQ4NDUwYWY2M2ZjNDE5M2RkNmRiZTU1MTAxNjZhYjg3Mjk5MTM2OWQxMmUxMGM0Y2JhYjcifQ"
+        },
+        {
+          "resource": "repo://.github/workflows/_test.yml#L97-L215",
+          "version": "repo-lines-v1:sha256:5b1a0533e31ea437b1ee77a404b4d567136ff7fcf053ed47549964b00c8da227:eyJzZWxlY3RlZExpbmVDb3VudCI6MTE2LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI0NmZlNDQyYWM3NGIwOWMyODFiOTQ4ZTE3N2M5YmY2NzdmMGU3OTNlYjdjOThmMWY3ZjYwYWJmNzZmMjRjNmExIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI0NjhhYmFiNGRkNDgyYzM0MDVmOTViOWEwNzM1OTlmNGNlNjJhMGI2M2QxMTg1NDA1NGY2ODFlNTY3NzQ0YjRmIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiIwYjc4NWZmOTAyOTY2ODI2N2MwMDk3MTM1NDllYWIyYWU0ZjZlZTUxNGFkMWU1MjE5ZTgxOWViZWYyM2E5ZmNmIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI3ZDg5MzczYWVjNmNkNjY3MWRmY2NmNWRjNzcxY2JmM2VmNzgxYzNlNjZhNTA4YWI5YTMzYjlmNGI4NTU2MjcxIn0"
+        }
+      ]
+    },
+    {
+      "id": "claim_e2ae08e83d41475995524b38ac4cdb49",
+      "statement": "The ripgrep installer uses a pinned ripgrep 14.1.0 Linux x86_64 musl archive, verifies its SHA-256 before installing `rg`, and exits nonzero for unsupported architecture or installation failures so workflow callers retain policy control.",
+      "evidence": [
+        {
+          "resource": "repo://.github/scripts/release/install_ripgrep.sh#L1-L34",
+          "version": "repo-lines-v1:sha256:98de1f4a43b6516cfd0f0c135cd51a2f441b812cf75809c684895ffcf86c3df6:eyJzZWxlY3RlZExpbmVDb3VudCI6MzQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjFkOTVmYzA0YTgwYzk1MmY0OWNlNDE4ODYyN2M1M2IwZmJlOGM0NDA0MWI5NTJkNTkyYWNkMWRlOTk4NjE0NjYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjE2MzJkODc1M2ViMDdhODI5ODk2MmE4NjAzY2ExZWRkMTBlMTNhODUxZGNlNDBhZjI0MDBhZjU1ZWNkZmRiMDgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_cf2846017e004b01aec5fe47e5927560",
+      "statement": "`ripgrep_timeout_comment.yml` consumes completed PR CI runs without checking out PR code, uses artifact names and a head-SHA stale-run guard to manage a bot-owned sticky warning, and treats an unresolvable PR as a logged race rather than a failing comment job.",
+      "evidence": [
+        {
+          "resource": "repo://.github/workflows/ripgrep_timeout_comment.yml#L1-L17",
+          "version": "repo-lines-v1:sha256:673d8400fa43aae351b1a10fcea01127197fbcad968efa84fa9fa9ba10a5f95f:eyJzZWxlY3RlZExpbmVDb3VudCI6MTcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM3OTBkMGRiZGVlM2Y1M2ZmMzFkYzI0NTM3MmVlZTkwMDcxODkyNWU0ZjhhNWMyZDA1NDg0YjkyMzBiNTk4MGYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjJjYmYyMmQ0MGRmZmNhZmQwMzhjZWY2NGFkYzMyYjU1OGJkMmRlMjc2YzU3YjBhODE0YzZiYmRjNDA5MWNmZmEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjFmY2I4MWJlMDk0NjIzNTMxNTA0ZGYwNWU2NGQ2NjljMzliYzU4Y2ExYzJiOWM0YjMyYzZjOTRjZjc2YzZjZTkifQ"
+        },
+        {
+          "resource": "repo://.github/workflows/ripgrep_timeout_comment.yml#L144-L230",
+          "version": "repo-lines-v1:sha256:9b0de54acc8d91200e2ba7ec5831ebf8e09972953db792a8c65f5666820d7fb9:eyJzZWxlY3RlZExpbmVDb3VudCI6ODcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjJhZmE4ZjAxZDg5YTYwZDhjZjJiODNkNTAwZjIxOTQ0MzJlYTY2OTc4NGI2MmZiMjJlMDZjMzdlZDFiZjFhNjUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjE3MTQ3ZDYxOTI0ODU0OTYwYWEyNTFiZmJhZmJkMzgzZTM5YzIzNTFiZmRiZmQxYjViNzYzZDZjODI3ZjUxOWQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjYwMGI2MmIyOGFhMDZjYWIxZjgyM2I1YmU0MjhiYWUyYzIwM2Q2NWY2YWU3YzJkYzg5NTYzYzlhNzQ3ZDE1NmMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjoxLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjU1MjJjNDJjZDE5YzZkMDNkODA4YzQ1MjcyMDU1MjgyNWI3ZWExYzViNDkxYjIxODUxMWNhYzc0MTVjZjlkOWIifQ"
+        },
+        {
+          "resource": "repo://.github/workflows/ripgrep_timeout_comment.yml#L42-L114",
+          "version": "repo-lines-v1:sha256:15503008b59474f4d8a9bc69a9ffb20c5298211994dc8a5534a575eeabf1ad2b:eyJzZWxlY3RlZExpbmVDb3VudCI6NzMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU5ZDgwMTU0ZWQ0MmZjNWM3NzliMTMzMTU3OGI1OGI4OWM4MDFlYWNlNzRmMjRjZDQ4ZWI0YTIzNTc5NDBhOTUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU1MjJjNDJjZDE5YzZkMDNkODA4YzQ1MjcyMDU1MjgyNWI3ZWExYzViNDkxYjIxODUxMWNhYzc0MTVjZjlkOWIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImMxMzdhOWRmMDRhMGRhOWYzMmMxMWIzNDlkODc3OTM1YjdkNGFhZDM4OTIyYTdhNWJjNGM1MGIwMDA3MDM4MDgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjA5MzRkNGE1MTI5ZGJhMWIwNjM3NGIyYzBkZGIxZWEzNjk3N2Q2ZjVjYjRlZTg1ODczMTU1ZDA0MGI3MDM0NDEifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_68e1ed1300ab4d6db2c8639bece51c97",
+      "statement": "The ripgrep warning workflow distinguishes a bypassed release-PR install failure from an ordinary PR timeout by PR kind, while a failed live-label read only leaves release dispatch propagation unconfirmed; marker artifacts identify legs that lost ripgrep coverage rather than proving that coverage passed.",
+      "evidence": [
+        {
+          "resource": "repo://.github/workflows/_test.yml#L190-L285",
+          "version": "repo-lines-v1:sha256:d62e994bc66cf08c9c8fac420928dab211e47698b5399b84c5e4c693dbed2334:eyJzZWxlY3RlZExpbmVDb3VudCI6OTYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU5YTRjNGZjOTMwMGY1NjE1MGVjODYwMjI1ZGY0YzY5ZDk3MTNmZTA2NDg3Y2MzOGMxZTIyOWJhNWEzOTg2MmEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjlhZTZlNzI5MTZkNjM0MTM2YjkxNWI3YTVmY2Y5NTUxZDM4ZjE3YjY5ODk0ZGUwZTMxMmQ1NmRjMzMzNDkyOTQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijg5YjdjNDQxZDFjYzU2ZDg2MDgwZmI2ZWZhNmZjOTExNWMxNzNhM2JiMGUyMzEwZDFhZDFiMjVhOTQyMzA5ODAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImI4ZDA0YzAwNWY2ZmQxNzg2YmIzNmIzNTE0NGQwYWUzYTg5YmMyMDJmOWQ4ZjEwZjdiOTlmNWI2OTE2ZTAyNTcifQ"
+        },
+        {
+          "resource": "repo://.github/workflows/ripgrep_timeout_comment.yml#L116-L142",
+          "version": "repo-lines-v1:sha256:4e305bc518fccc781bd040f5c3d60b8e746e2c58b7a6289e63970e144ae337d9:eyJzZWxlY3RlZExpbmVDb3VudCI6MjcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImMyNDI1OWIyNzNhN2M0N2RiYWU5NDI3ZmY3NmZlZTdmYmQ1MTZlZmUwYjlhMzNkYTNiMDVlNjczODJjYjQxNzQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU1MjJjNDJjZDE5YzZkMDNkODA4YzQ1MjcyMDU1MjgyNWI3ZWExYzViNDkxYjIxODUxMWNhYzc0MTVjZjlkOWIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImRkYjBkMTY1MmUxNDQ0YmE0NDg2ZmUyNzE0ZDA2NjA1M2FhYWY3ODc1Y2VkZDJiM2E5YmRhZDRiMjYwMTBjMDEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjcxY2JmZGIwZmFkNTBlMTExNjE5ZDZlMDEzNDMzOTI2OTM2ODk1ZWUyNGE0OTQzMTZmZDk1ZTYzN2JlNjM2NTUifQ"
+        },
+        {
+          "resource": "repo://.github/workflows/ripgrep_timeout_comment.yml#L177-L213",
+          "version": "repo-lines-v1:sha256:af10d281650443fd5c25f6558ff06a43546c4a7ae923a697c9e0d08b425cca4e:eyJzZWxlY3RlZExpbmVDb3VudCI6MzcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU3MTg5YjQxM2RlODJkYmMxYWI5NTNhOGQ3YTUxYTAyYjYxZDgwZmM1OWRkYWM4ZmYwNmVkM2EwMzY2YmEyY2YiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZkZmIxNzE5ZTQ2MzYxNTYxYWE4YzM2ZjA1MjdlYTQ2YTlkZmMyY2I5ODNlNjNhYTY2MDBkOGQ0ZmJkZDIzNDMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImRkYjBkMTY1MmUxNDQ0YmE0NDg2ZmUyNzE0ZDA2NjA1M2FhYWY3ODc1Y2VkZDJiM2E5YmRhZDRiMjYwMTBjMDEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjA1NGExNDU2OGNmODhhOTI4Y2ZmODZiYThkYWJlNDcyMTVjZWY2ZjdjMDBhYmExNzA2OWNjOTQ2ZWIyODNhMDgifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_9269ecb310f6485fa1837f571ddd2e42",
+      "statement": "Workflow contract tests execute ripgrep install and bypass branches with stubbed commands, enforce release-predicate and reporting alignment, and separately verify that CI matrices follow package `requires-python` policy and that credentials remain scoped to their intended workflow or step.",
+      "evidence": [
+        {
+          "resource": "repo://.github/scripts/tests/workflows/test_ci_workflow.py#L343-L979",
+          "version": "repo-lines-v1:sha256:d87eca44ade168a42755ae36038603319d925fbad3abc7816672ef2818afdab4:eyJzZWxlY3RlZExpbmVDb3VudCI6NjM3LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIyY2Q2NDExMzIxZmM3N2YxNmIyNmQ5NTdkMGMxY2VjMmQwM2EwNjU1ZDkxNjVhZjFlNWY3OTg5ZmZiMGFlNzViIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiIyODEzYzBhMDE3YjMzNDIyNjA0MDEwZDZiNDAyYzU2ZTY2MjhjZDI5MWQ2OWJkNThmMmFkMTVhZTY3MTgzMTU4IiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI4MTllZTEyYmRlYmExNjQ3MjNiYjJjZGVjMmVhYjNiYmUyNDA2MTc3NjY5ZDhmOGViYjMwZjY4N2ZjZmZjYTFkIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MCwiZm9sbG93aW5nQ29udGV4dEhhc2giOiJlM2IwYzQ0Mjk4ZmMxYzE0OWFmYmY0Yzg5OTZmYjkyNDI3YWU0MWU0NjQ5YjkzNGNhNDk1OTkxYjc4NTJiODU1In0"
+        },
+        {
+          "resource": "repo://.github/scripts/tests/workflows/test_release_python_matrix.py#L24-L111",
+          "version": "repo-lines-v1:sha256:49994c28a671309f5725f5aed246c6545a2d42bc30f5692578b778fef2146966:eyJzZWxlY3RlZExpbmVDb3VudCI6ODgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI0YzA3ZDViYWM3YTY1ODEzNGEyZGI5MGJkNDQxYThkZDZlY2Q4Y2I3YmMwMzVjMjhhMDM3MGM1ODExN2RlYzYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQxNjYwYTE1Yzc5ZDczNDFiM2QzZTEyN2JlYmNmOWRhNDgwODQyNmY0YTI4YjRiOGZhMGZkYjNmOGI5YjUzZTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjI1NjI5MmYzYmJhNDhlNjU5ZTVjNTJkYjllNWFiMmRhYWMwYWM3ZWM0NTA5OGQzOWNhOGQ1ZWRhNzFlMGQxNzciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        },
+        {
+          "resource": "repo://.github/scripts/tests/workflows/test_workflow_secret_scoping.py#L60-L184",
+          "version": "repo-lines-v1:sha256:cea8f22e7e63dad6070f8397ea573f0764c3f125b5814a3c2d51d1cc240ffb0a:eyJzZWxlY3RlZExpbmVDb3VudCI6MTI1LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIxNGUwYTFkMjdhNzEwNjExZTYwZGU0ZDc2NjAwYWU1YzVkOWM4OWNjYTg1ZTkwNGE2OTJiMjU2NTY5ZTZhODc3IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJhNTdkMmJmZGFiNWYyNWU3OWUyM2ViNDI5YTI4NTdhMGE3MTk3NzUzNzQwNDdmYjY1YmRjNTA1NDg5MzM0MjA4IiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJmNzZkZTc2MTk2OGU0ZjAwYTFlYmY1NTM2MDNlMjM5MjBlZTllMGI3NWE0NjQ4M2NkY2U5ZTVlMWIxMDQ2ZmUyIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MSwiZm9sbG93aW5nQ29udGV4dEhhc2giOiJjMjEyNzgwYTE3NjUzZDBiMmVhZDA5MGJkZmI2YzE5YWQ1OTU0MTU1M2I3YWQ2ODM5NGNmN2FhMTZlZTgyMWZkIn0"
+        }
+      ]
+    }
+  ],
+  "verification": {
+    "by": "openwiki/0.4.2",
+    "at": "2026-10-24T08:05:08.866Z"
+  }
+}

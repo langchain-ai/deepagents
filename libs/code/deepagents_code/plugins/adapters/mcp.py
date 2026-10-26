@@ -208,13 +208,11 @@ def discover_plugin_mcp_configs(
         from deepagents_code.plugins import discover_plugins
 
         result = discover_plugins()
-    except (OSError, RuntimeError):
+    except OSError, RuntimeError:
         logger.warning("Could not discover plugin MCP configs", exc_info=True)
         return ()
-    if result.warnings:
-        logger.warning(
-            "Plugin discovery warnings while loading MCP: %s", result.warnings
-        )
+    for warning in result.warnings:
+        logger.warning("Plugin discovery warning while loading MCP: %s", warning)
     return tuple(plugin_mcp_configs(result.plugins, project_dir=project_dir))
 
 

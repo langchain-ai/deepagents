@@ -818,7 +818,7 @@ def _delete(
         )
         try:
             response = input().strip().lower()
-        except (EOFError, KeyboardInterrupt):
+        except EOFError, KeyboardInterrupt:
             console.print("\n[dim]Cancelled.[/dim]")
             return
 

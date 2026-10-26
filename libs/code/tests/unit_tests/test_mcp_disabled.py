@@ -1,7 +1,6 @@
 """Tests for the MCP disabled-servers persistence store."""
 
-from collections.abc import Iterator
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 
@@ -13,6 +12,10 @@ from deepagents_code.mcp_disabled import (
     set_server_disabled,
 )
 from unit_tests.conftest import redirect_managed_config
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+    from pathlib import Path
 
 
 @pytest.fixture

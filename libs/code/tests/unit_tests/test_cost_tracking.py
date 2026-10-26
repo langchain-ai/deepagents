@@ -83,6 +83,7 @@ if TYPE_CHECKING:
     from langchain_core.language_models import BaseChatModel
     from langchain_core.runnables import RunnableConfig
     from langgraph.runtime import Runtime
+    from starlette.applications import Starlette
 
 KNOWN_MODEL = "claude-sonnet-4-5"
 KNOWN_PROVIDER = "anthropic"
@@ -2511,6 +2512,93 @@ def side_cost_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return path
 
 
+@pytest.mark.parametrize("outcome", ["automatic", "rejected", "invalid", "switched"])
+@pytest.mark.usefixtures("side_cost_db")
+async def test_thread_naming_cost_is_durable_and_updates_display(
+    recorder: _SessionCostRecorder,
+    monkeypatch: pytest.MonkeyPatch,
+    outcome: str,
+) -> None:
+    from deepagents_code.app import DeepAgentsApp
+    from deepagents_code.btw_cost import load_cost
+    from deepagents_code.client.remote_client import RemoteAgent
+    from deepagents_code.config import ModelResult
+    from deepagents_code.tui.modals.session_cost import SessionCostWarningScreen
+
+    response = _message(_usage(), message_id="naming")
+    response.content = "" if outcome == "invalid" else "Cache repair"
+    # The dedicated naming model's identity must survive absent response metadata.
+    response.response_metadata = {}
+    model = _fake_model(response)
+    _set_configured_model_metadata(model, KNOWN_MODEL, KNOWN_PROVIDER)
+    monkeypatch.setattr(
+        "deepagents_code.config.create_model",
+        lambda *_args, **_kwargs: ModelResult(model, KNOWN_MODEL, KNOWN_PROVIDER),
+    )
+    state = {
+        "messages": [HumanMessage("Fix caching"), AIMessage("Here is the fix")],
+        "_model_spec": "other:chat-model",
+        "_session_cost_usd": 1.0,
+    }
+    app = DeepAgentsApp(thread_id=THREAD_ID)
+    remote = RemoteAgent("http://test")
+    remote._cost_tracker(THREAD_ID).update_graph(1.0, None)
+    monkeypatch.setattr(app, "_remote_agent", lambda: remote)
+    monkeypatch.setattr(app, "_get_thread_state_values", AsyncMock(return_value=state))
+    monkeypatch.setattr(app, "notify", MagicMock())
+    monkeypatch.setattr(app, "call_after_refresh", MagicMock())
+    monkeypatch.setattr(app, "_refresh_thread_name_selectors", MagicMock())
+    monkeypatch.setattr(
+        "deepagents_code.sessions.get_thread_name", AsyncMock(return_value=None)
+    )
+    rename = AsyncMock(return_value=True)
+    monkeypatch.setattr("deepagents_code.sessions.rename_thread", rename)
+    show_warning = MagicMock()
+    monkeypatch.setattr(app, "push_screen", show_warning)
+    app._session_cost_usd = 1.0
+    app._provisional_cost_usd = 0.5
+    app._session_cost_warning_threshold_usd = 1.0
+
+    # A main request awaiting settlement must not be drained with the title.
+    await _fake_model(_message(_usage(), message_id="main")).ainvoke(
+        [HumanMessage("main")], config={"metadata": {"thread_id": THREAD_ID}}
+    )
+    app._start_thread_name_generation(
+        THREAD_ID,
+        f"{KNOWN_PROVIDER}:{KNOWN_MODEL}",
+        automatic=outcome == "automatic",
+    )
+    if outcome == "switched":
+        app._lc_thread_id = "other-thread"
+    await asyncio.gather(*app._thread_name_tasks.values())
+
+    saved = await asyncio.to_thread(load_cost, THREAD_ID)
+    assert saved is not None
+    expected = estimate_cost(_usage(), KNOWN_MODEL, KNOWN_PROVIDER)
+    assert expected is not None
+    assert expected > 0
+    assert saved["total_cost_usd"] == pytest.approx(expected)
+    assert saved["request_count"] == 1
+    assert await asyncio.to_thread(load_cost, "other-thread") is None
+    assert [record.message_id for record in recorder.drain(THREAD_ID)] == ["main"]
+    assert cost_tracking._RECORDER.drain(THREAD_ID) == []
+    assert state["_session_cost_usd"] == pytest.approx(1.0)
+    assert app._provisional_cost_usd == pytest.approx(0.5)
+    cached = remote.get_cached_session_cost({"configurable": {"thread_id": THREAD_ID}})
+    assert cached is not None
+    assert cached["total"] == pytest.approx(1.0 + expected)
+    if outcome == "switched":
+        assert app._session_cost_usd == pytest.approx(1.0)
+        show_warning.assert_not_called()
+    else:
+        assert app._session_cost_usd == pytest.approx(1.0 + expected)
+        assert isinstance(show_warning.call_args.args[0], SessionCostWarningScreen)
+    if outcome == "automatic":
+        rename.assert_awaited_once_with(THREAD_ID, "Cache repair", only_if_unnamed=True)
+    else:
+        rename.assert_not_awaited()
+
+
 @pytest.mark.parametrize("saved_before_deletion", [False, True])
 async def test_thread_deletion_erases_cost_and_discards_late_settlements(
     side_cost_db: Path,
@@ -2757,3 +2845,143 @@ async def test_streamed_side_answer_persists_completed_usage(
     assert cost["total_cost_usd"] > 0
     assert await asyncio.to_thread(load_cost, THREAD_ID) == cost
     assert recorder.drain(THREAD_ID) == []
+
+
+async def _write_usage_checkpoint(path: Path, values: dict[str, object]) -> None:
+    """Commit one root checkpoint to a real SQLite checkpoint DB."""
+    from langgraph.checkpoint.base import empty_checkpoint
+    from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+
+    checkpoint = empty_checkpoint()
+    checkpoint["channel_values"] = values
+    config: RunnableConfig = {
+        "configurable": {"thread_id": THREAD_ID, "checkpoint_ns": ""}
+    }
+    async with AsyncSqliteSaver.from_conn_string(str(path)) as saver:
+        await saver.aput(config, checkpoint, {}, {})
+
+
+def _usage_reader(app: Starlette) -> Callable[[str], Awaitable[object]]:
+    """Serve `RemoteAgent` HTTP reads from the in-process dcode routes."""
+    from httpx import ASGITransport, AsyncClient
+
+    async def read(path: str) -> object:
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.get(path)
+        assert response.status_code == 200
+        return response.json()
+
+    return read
+
+
+async def test_usage_route_settles_cost_and_cache_without_full_state(
+    side_cost_db: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from datetime import UTC, datetime
+
+    from deepagents_code import btw_api, btw_cost, offload_api
+    from deepagents_code.app import DeepAgentsApp
+    from deepagents_code.client.remote_client import RemoteAgent
+
+    monkeypatch.setattr(btw_api, "_database_path", lambda: side_cost_db)
+    requested_at = datetime.now(UTC).isoformat()
+    await _write_usage_checkpoint(
+        side_cost_db,
+        {
+            "messages": [HumanMessage("history " * 1000)],
+            "_session_cost_usd": 1.25,
+            "_last_model_request_at": requested_at,
+            "_last_cache_model_spec": f"{KNOWN_PROVIDER}:{KNOWN_MODEL}",
+            "goal": "not a usage channel",
+        },
+    )
+    side = cost_tracking._empty_cost_breakdown()
+    side.update(total_cost_usd=0.5, request_count=1)
+    await asyncio.to_thread(btw_cost._persist_cost, THREAD_ID, side)
+
+    remote = RemoteAgent("http://test")
+    remote._graph = MagicMock()
+    remote._graph.client.http.get = _usage_reader(offload_api.app)
+    app = DeepAgentsApp(agent=MagicMock(), thread_id=THREAD_ID)
+    monkeypatch.setattr(app, "_remote_agent", lambda: remote)
+    full_state = AsyncMock(side_effect=AssertionError("full state was read"))
+    monkeypatch.setattr(app, "_get_thread_state_values", full_state)
+    activity = AsyncMock()
+    monkeypatch.setattr("deepagents_code.sessions.refresh_thread_activity", activity)
+
+    await app._sync_session_cost_from_checkpoint()
+
+    full_state.assert_not_awaited()
+    assert app._displayed_cost_usd == pytest.approx(1.75)
+    assert app._last_model_request_at == requested_at
+    assert app._last_cache_model_spec == f"{KNOWN_PROVIDER}:{KNOWN_MODEL}"
+    activity.assert_awaited_once_with(THREAD_ID, datetime.fromisoformat(requested_at))
+    usage = await _usage_reader(offload_api.app)(f"/dcode/threads/{THREAD_ID}/usage")
+    assert usage == {
+        "cost": side,
+        "checkpoint": {
+            "_session_cost_usd": 1.25,
+            "_last_model_request_at": requested_at,
+            "_last_cache_model_spec": f"{KNOWN_PROVIDER}:{KNOWN_MODEL}",
+        },
+    }
+
+
+@pytest.mark.parametrize("database", ["missing", "empty", "other-thread"])
+async def test_usage_route_reports_no_channels_without_a_checkpoint(
+    database: str, side_cost_db: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from deepagents_code import btw_api, offload_api
+
+    monkeypatch.setattr(btw_api, "_database_path", lambda: side_cost_db)
+    if database == "empty":
+        await asyncio.to_thread(lambda: sqlite3.connect(side_cost_db).close())
+    elif database == "other-thread":
+        await _write_usage_checkpoint(side_cost_db, {"_session_cost_usd": 1.0})
+    thread_id = "another-thread" if database == "other-thread" else THREAD_ID
+    usage = await _usage_reader(offload_api.app)(f"/dcode/threads/{thread_id}/usage")
+    assert usage == {"cost": None, "checkpoint": {}}
+
+
+async def test_server_without_usage_route_falls_back_to_full_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from httpx import Request, Response
+    from langgraph_sdk.errors import NotFoundError
+
+    from deepagents_code.app import DeepAgentsApp
+    from deepagents_code.client.remote_client import RemoteAgent
+
+    side = cost_tracking._empty_cost_breakdown()
+    side.update(total_cost_usd=0.5, request_count=1)
+
+    missing = NotFoundError(
+        "Not found",
+        response=Response(404, request=Request("GET", "http://test/usage")),
+        body=None,
+    )
+
+    def read(path: str) -> object:
+        if path.endswith("/usage"):
+            raise missing
+        return {"cost": side}
+
+    remote = RemoteAgent("http://test")
+    remote._graph = MagicMock()
+    http_get = AsyncMock(side_effect=read)
+    remote._graph.client.http.get = http_get
+    app = DeepAgentsApp(agent=MagicMock(), thread_id=THREAD_ID)
+    monkeypatch.setattr(app, "_remote_agent", lambda: remote)
+    full_state = AsyncMock(return_value={"_session_cost_usd": 2.0})
+    monkeypatch.setattr(app, "_get_thread_state_values", full_state)
+
+    for _ in range(2):
+        await app._sync_session_cost_from_checkpoint()
+
+    assert app._displayed_cost_usd == pytest.approx(2.5)
+    assert full_state.await_count == 2
+    # A missing route is remembered, so later turns skip the extra request.
+    routes = [call.args[0].rsplit("/", 1)[-1] for call in http_get.await_args_list]
+    assert routes == ["usage", "cost", "cost"]

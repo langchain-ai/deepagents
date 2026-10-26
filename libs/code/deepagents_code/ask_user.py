@@ -97,13 +97,14 @@ def _execution_thread_id(runtime: object) -> str | None:
 
 def _active_turn_id(runtime: object) -> str | None:
     from deepagents_code.auto_mode import USER_PROMPT_METADATA_KEY
+    from deepagents_code.goal_state_notice import is_pinned_skill_message
 
     state = getattr(runtime, "state", None)
     messages = state.get("messages") if isinstance(state, Mapping) else None
     if not isinstance(messages, list):
         return None
     for message in reversed(messages):
-        if not isinstance(message, HumanMessage):
+        if not isinstance(message, HumanMessage) or is_pinned_skill_message(message):
             continue
         metadata = message.additional_kwargs.get(USER_PROMPT_METADATA_KEY)
         if not isinstance(metadata, Mapping):

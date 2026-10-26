@@ -84,6 +84,7 @@ from deepagents_code.update_check import (
     should_defer_startup_auto_update_for_resume,
     should_notify_update,
     should_skip_startup_auto_update_after_failure,
+    startup_auto_update_was_deferred,
     update_install_lock,
     upgrade_install_command,
 )
@@ -1379,44 +1380,21 @@ class TestUpdateLogs:
                 "deepagents_code.update_check.upgrade_install_command",
                 return_value="printf 'ok\\n'",
             ),
+            patch("deepagents_code.update_check._upgrade_python", return_value=None),
+            patch(
+                "deepagents_code.update_check.release_prerelease_pins", return_value=[]
+            ),
+            patch(
+                "deepagents_code.update_check.read_installed_distribution_version",
+                return_value="2.0.0",
+            ),
         ):
-            success, output, _installed = await perform_upgrade(log_path=log_path)
+            success, output, _installed = await perform_upgrade(
+                log_path=log_path, target_version="2.0.0"
+            )
 
         assert success is True
         assert output == "ok"
-
-    async def test_perform_upgrade_falls_back_when_receipt_introspection_fails(
-        self,
-    ) -> None:
-        """Receipt failures must not block the upgrade — fall back to bare.
-
-        Dropping extras is bad, but silently keeping the user pinned to an
-        old version is worse. The fallback path runs the bare upgrade
-        command rather than refusing the upgrade outright.
-        """
-        with (
-            patch("deepagents_code.update_check.__version__", "1.0.0"),
-            patch(
-                "deepagents_code.update_check.detect_install_method",
-                return_value="uv",
-            ),
-            patch(
-                "deepagents_code.extras_info.installed_extra_names",
-                side_effect=ExtrasIntrospectionError("metadata unreadable"),
-            ),
-            patch(
-                "deepagents_code.update_check._run_install_subprocess",
-                new_callable=AsyncMock,
-                return_value=(True, ""),
-            ) as run_mock,
-        ):
-            success, _output, _installed = await perform_upgrade()
-
-        assert success is True
-        run_mock.assert_awaited_once()
-        await_args = run_mock.await_args
-        assert await_args is not None
-        assert await_args.args[0] == "uv tool install -U deepagents-code"
 
     def test_dependency_refresh_dry_run_ignores_phantom_metadata_extras(
         self, tmp_path, monkeypatch
@@ -1607,7 +1585,7 @@ class TestUpdateInstallLock:
                 try:
                     proc.stdin.close()
                     proc.wait(timeout=30)
-                except (OSError, subprocess.TimeoutExpired):
+                except OSError, subprocess.TimeoutExpired:
                     proc.kill()
                     proc.wait(timeout=30)
 
@@ -1830,11 +1808,12 @@ class TestUpdateInstallLock:
         lock, and every later attempt in the session reports a phantom
         concurrent install. Without the log that is undiagnosable.
         """
+        # A real lock would also call the failing release from its destructor,
+        # leaking the lock and emitting an unraisable-exception warning.
+        lock = MagicMock()
+        lock.release.side_effect = OSError("unlock failed")
         with (
-            patch(
-                "filelock.FileLock.release",
-                side_effect=OSError("unlock failed"),
-            ),
+            patch("filelock.FileLock", return_value=lock),
             caplog.at_level(logging.WARNING, logger="deepagents_code.update_check"),
             update_install_lock() as holding,
         ):
@@ -2006,9 +1985,8 @@ class TestUpgradeInstallCommand:
     def test_propagates_extras_introspection_error(self, tmp_path, monkeypatch) -> None:
         """Unreadable extras metadata propagates rather than silently dropping.
 
-        `perform_upgrade` catches this and falls back to the bare command, but
-        the builder itself must surface the failure so that decision stays at
-        the caller, matching the docstring's documented contract.
+        `perform_upgrade` refuses the upgrade rather than dropping extras;
+        the builder surfaces the failure for that safe caller decision.
         """
         _write_uv_receipt(tmp_path, '{ name = "deepagents-code" }')
         monkeypatch.setattr("sys.prefix", str(tmp_path))
@@ -2034,7 +2012,7 @@ class TestUpgradeInstallCommand:
         508-invalid extra name. Since the extras here come from the
         distribution's own metadata, such a name signals malformed metadata —
         the builder re-raises it as `ExtrasIntrospectionError` so `perform_upgrade`
-        handles it through its typed fallback rather than relying on a broad
+        refuses the upgrade through its typed error handling rather than a broad
         `ValueError` catch that could also mask an unrelated builder bug.
         """
         _write_uv_receipt(tmp_path, '{ name = "deepagents-code" }')
@@ -3254,6 +3232,18 @@ class TestStartupAutoUpdateFailureCooldown:
         assert data["seen_version"] == "1.0.0"
         assert "startup_auto_update_failed_version" not in data
         assert "startup_auto_update_failed_at" not in data
+        assert "startup_auto_update_deferred" not in data
+
+    def test_deferral_is_recorded_per_version(self, state_file) -> None:  # noqa: ARG002
+        """A deferral marker names its version and is replaced by a failure."""
+        mark_startup_auto_update_failed("2.0.0", deferred=True)
+        assert startup_auto_update_was_deferred("2.0.0") is True
+        assert startup_auto_update_was_deferred("2.0.1") is False
+        # A deferral is retried once sole, so it starts no cooldown.
+        assert should_skip_startup_auto_update_after_failure("2.0.0") is False
+
+        mark_startup_auto_update_failed("2.0.0")
+        assert startup_auto_update_was_deferred("2.0.0") is False
 
     def test_clear_ignores_different_version(self, state_file) -> None:
         """Clearing a different version leaves the failure marker intact."""

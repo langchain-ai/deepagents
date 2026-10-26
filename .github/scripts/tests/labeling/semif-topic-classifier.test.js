@@ -50,8 +50,6 @@ test('uses the gateway System One contract and ignores unsolicited labels', asyn
   assert.ok(body.questions['topic:models'].instructions.includes(descriptions['topic:models']));
   assert.ok(!body.questions['topic:models'].instructions.includes(descriptions['topic:mcp']));
   for (const question of Object.values(body.questions)) {
-    assert.ok(question.instructions.includes('directly relevant'));
-    assert.ok(question.instructions.includes('literal reference'));
     assert.ok(!question.instructions.includes(descriptions['priority:urgent']));
   }
 });

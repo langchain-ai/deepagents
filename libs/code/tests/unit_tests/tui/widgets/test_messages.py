@@ -5,7 +5,7 @@ import logging
 from pathlib import Path
 from time import time
 from types import SimpleNamespace
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar, cast
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
@@ -27,13 +27,15 @@ from deepagents_code.tool_display import (
     EXECUTE_HEADER_MAX_LENGTH,
     JS_EVAL_HEADER_MAX_LENGTH,
 )
-from deepagents_code.tui.widgets.message_store import MessageData
+from deepagents_code.tui.widgets.final_markdown import FinalMarkdown
+from deepagents_code.tui.widgets.message_store import MessageData, MessageType
 from deepagents_code.tui.widgets.messages import (
     _TOOL_ROW_ACTION_CLASS,
     AppMessage,
     AssistantMessage,
     DiffMessage,
     ErrorMessage,
+    LazyToolGroupSummary,
     QueuedUserMessage,
     ReasoningMessage,
     RubricResultMessage,
@@ -47,6 +49,9 @@ from deepagents_code.tui.widgets.messages import (
     _strip_success_exit_line,
 )
 
+if TYPE_CHECKING:
+    from textual.pilot import Pilot
+
 # Content that previously caused MarkupError crashes
 MARKUP_INJECTION_CASES = [
     "[foo] bar [baz]",
@@ -58,6 +63,68 @@ MARKUP_INJECTION_CASES = [
     "[unclosed bracket",
     "nested [[brackets]]",
 ]
+
+
+class TestLazyToolGroupExpansion:
+    """Large lazy groups yield to UI work and clean up interrupted expansion."""
+
+    @pytest.mark.parametrize("interruption", [None, "failure", "cancel"])
+    async def test_batched_expansion(self, interruption: str | None) -> None:
+        rows = [
+            MessageData(type=MessageType.TOOL, content="", tool_name="read_file")
+            for _ in range(32)
+        ]
+        built: list[Static] = []
+        progress: list[int] = []
+
+        def build(data: MessageData) -> tuple[Static, None]:
+            if len(built) == 16:
+                if interruption == "failure":
+                    msg = "detail failed"
+                    raise ValueError(msg)
+                if interruption == "cancel":
+                    raise asyncio.CancelledError
+            widget = Static(data.id, id=data.id)
+            built.append(widget)
+            return widget, None
+
+        group = LazyToolGroupSummary(rows, detail_builder=build)
+        app = App()
+        async with app.run_test() as pilot:
+            await app.mount(group)
+
+            async def observe() -> None:
+                while not group._expanded:
+                    progress.append(len(built))
+                    await asyncio.sleep(0)
+
+            observer = asyncio.create_task(observe())
+            try:
+                if interruption == "cancel":
+                    with pytest.raises(asyncio.CancelledError):
+                        await group._set_expanded(True)
+                else:
+                    await group._set_expanded(True)
+            finally:
+                observer.cancel()
+                await asyncio.gather(observer, return_exceptions=True)
+
+            assert any(0 < count < len(rows) for count in progress)
+            assert not group._transitioning
+            assert group._details is not None
+            if interruption is not None:
+                assert not group._expanded
+                assert not group._details.children
+                assert not group._detail_widgets
+            else:
+                assert [widget.id for widget in group._details.children] == [
+                    data.id for data in rows
+                ]
+                await group._set_expanded(False)
+                await pilot.pause()
+                assert not group._details.children
+                await group._set_expanded(True)
+                assert len(group._details.children) == len(rows)
 
 
 class TestUserMessageMarkupSafety:
@@ -295,12 +362,9 @@ class TestAssistantMessageStreamCoalescing:
         """Stopping the stream drains buffered text and clears the timer."""
         async with _AssistantMessageApp().run_test() as pilot:
             msg = pilot.app.query_one("#assistant", AssistantMessage)
-            markdown = MagicMock()
-            markdown.update = AsyncMock()
             stream = MagicMock()
             stream.write = AsyncMock()
             stream.stop = AsyncMock()
-            msg._markdown = markdown
             msg._stream = stream
 
             await msg.append_content("partial")
@@ -311,16 +375,30 @@ class TestAssistantMessageStreamCoalescing:
             assert msg._flush_timer is None
             assert msg._pending_append == ""
 
+    async def test_stop_stream_renders_all_text_without_waiting_for_timer(
+        self,
+    ) -> None:
+        """A long flush delay never holds back or drops the end of a message."""
+        with patch.object(AssistantMessage, "_STREAM_FLUSH_INTERVAL", 60.0):
+            async with _AssistantMessageApp().run_test() as pilot:
+                msg = pilot.app.query_one("#assistant", AssistantMessage)
+                chunks = ["- one\n", "- two\n", "- three\n\n", "```py\nx = 1\n```\n"]
+
+                for chunk in chunks:
+                    await msg.append_content(chunk)
+                await asyncio.wait_for(msg.stop_stream(), timeout=5)
+
+                assert msg.query_one(FinalMarkdown).source == "".join(chunks)
+                assert not msg.query(Markdown)
+                assert msg._flush_timer is None
+
     async def test_set_content_drains_and_cancels_active_timer(self) -> None:
         """`set_content` cancels a live flush timer and drops the buffer."""
         async with _AssistantMessageApp().run_test() as pilot:
             msg = pilot.app.query_one("#assistant", AssistantMessage)
-            markdown = MagicMock()
-            markdown.update = AsyncMock()
             stream = MagicMock()
             stream.write = AsyncMock()
             stream.stop = AsyncMock()
-            msg._markdown = markdown
             msg._stream = stream
 
             await msg.append_content("buffered")
@@ -336,7 +414,7 @@ class TestAssistantMessageStreamCoalescing:
             # The initial fragment rendered immediately and must not bleed into
             # the replacement render again.
             stream.write.assert_awaited_once_with("buffered")
-            markdown.update.assert_awaited_once_with("replacement")
+            assert msg.query_one(FinalMarkdown).source == "replacement"
 
     async def test_flush_drains_successive_batches(self) -> None:
         """Each flush writes the latest batch; an empty buffer is a no-op."""
@@ -390,6 +468,145 @@ class TestAssistantMessageStreamCoalescing:
             # Text arriving after the failure queues behind the retried fragment.
             await msg.append_content(" more")
             assert msg._pending_append == "kept more"
+
+
+async def _stream_chunks(
+    pilot: Pilot[None], msg: AssistantMessage, chunks: list[str]
+) -> None:
+    """Stream `chunks` so each one lands as its own `Markdown.append`.
+
+    `MarkdownStream` merges writes until its task runs, so pause after each
+    flush to pin the append boundaries.
+    """
+    for chunk in chunks:
+        await msg.append_content(chunk)
+        await msg._flush_pending_append()
+        await pilot.pause()
+
+
+_SWAP_SOURCES = [
+    "Intro paragraph that wraps across the narrow message width.\n\n- a\n- b\n",
+    "## Heading\n\n1. one\n   - nested\n2. two\n\n> quoted text\n\n---\n\nend",
+    "```python\nx = 1  # a trailing comment long enough to fold in the fence\n```",
+    "| a | b |\n|---|---|\n| 1 | a cell that wraps across lines |\n",
+]
+
+
+def _final(msg: AssistantMessage) -> FinalMarkdown:
+    return msg.query_one("#assistant-content", FinalMarkdown)
+
+
+class TestAssistantMessageStreamFinalize:
+    """Tests for how `stop_stream` swaps the streamed `Markdown` for one widget."""
+
+    @pytest.mark.parametrize("source", _SWAP_SOURCES)
+    async def test_swap_keeps_height(self, source: str) -> None:
+        """The finished reply is as tall as the streamed one, so nothing jumps."""
+        async with _AssistantMessageApp().run_test(size=(40, 60)) as pilot:
+            msg = pilot.app.query_one("#assistant", AssistantMessage)
+            await _stream_chunks(pilot, msg, [source])
+            await pilot.pause()
+            streamed = msg.outer_size.height
+
+            await msg.stop_stream()
+            await pilot.pause()
+
+            assert not msg.query(Markdown)
+            assert _final(msg).source == source
+            assert msg.outer_size.height == streamed
+
+    async def test_split_list_is_rebuilt(self) -> None:
+        """A list split at a flush boundary renders as one list when finished."""
+        async with _AssistantMessageApp().run_test() as pilot:
+            msg = pilot.app.query_one("#assistant", AssistantMessage)
+            # A flush that ends on the bare "2" parses it as a paragraph that
+            # closes the list, so ". second" then starts a second list.
+            await _stream_chunks(
+                pilot, msg, ["1. first\n\n   more first\n\n2", ". second\n"]
+            )
+            await msg.stop_stream()
+            await pilot.pause()
+
+            assert _final(msg).selectable_text == "1. first\nmore first\n2. second"
+
+    @pytest.mark.parametrize("link", ["[docs][ref]", "[ref][]", "[ref]"])
+    async def test_reference_link_resolves_after_streaming(self, link: str) -> None:
+        """Later definitions resolve links in already completed paragraphs."""
+        async with _AssistantMessageApp().run_test(size=(80, 24)) as pilot:
+            msg = pilot.app.query_one("#assistant", AssistantMessage)
+            await _stream_chunks(
+                pilot,
+                msg,
+                [f"{link}\n\nAnother paragraph.\n\n", "[ref]: https://example.com\n"],
+            )
+            await msg.stop_stream()
+            await pilot.pause()
+
+            with patch(
+                "deepagents_code.tui.widgets.final_markdown._widget.open_checked_url_async",
+                new_callable=AsyncMock,
+            ) as open_url:
+                await pilot.click(_final(msg), offset=(0, 0))
+                await pilot.pause()
+
+            open_url.assert_awaited_once()
+            awaited = open_url.await_args
+            assert awaited is not None
+            assert awaited.args[0] == "https://example.com"
+
+    async def test_streamed_table_link_opens(self) -> None:
+        """A link in a table row streamed after the header opens when clicked."""
+        async with _AssistantMessageApp().run_test(size=(80, 24)) as pilot:
+            msg = pilot.app.query_one("#assistant", AssistantMessage)
+            await _stream_chunks(
+                pilot,
+                msg,
+                ["| a | b |\n|---|---|\n| 1 | 2 |\n", "| 3 | [x](https://e.com) |\n"],
+            )
+            await msg.stop_stream()
+            await pilot.pause()
+            lines = _final(msg).selectable_text.splitlines()
+            y = next(index for index, line in enumerate(lines) if " x " in line)
+
+            with patch(
+                "deepagents_code.tui.widgets.final_markdown._widget.open_checked_url_async",
+                new_callable=AsyncMock,
+            ) as open_url:
+                await pilot.click(_final(msg), offset=(lines[y].index(" x ") + 1, y))
+                await pilot.pause()
+
+            open_url.assert_awaited_once()
+            awaited = open_url.await_args
+            assert awaited is not None
+            assert awaited.args[0] == "https://e.com"
+
+    async def test_text_after_finish_streams_again(self) -> None:
+        """Text appended to a finished reply restreams, then finishes again."""
+        async with _AssistantMessageApp().run_test() as pilot:
+            msg = pilot.app.query_one("#assistant", AssistantMessage)
+            await _stream_chunks(pilot, msg, ["first part. "])
+            await msg.stop_stream()
+            await pilot.pause()
+
+            await _stream_chunks(pilot, msg, ["second part."])
+            assert msg.query_one(Markdown).source == "first part. second part."
+            assert not msg.query(FinalMarkdown)
+
+            await msg.stop_stream()
+            await pilot.pause()
+            assert _final(msg).source == "first part. second part."
+
+    async def test_initial_content_composes_final_widget(self) -> None:
+        """Complete content, as on thread resume, never mounts a `Markdown`."""
+        async with _AssistantMessageApp().run_test() as pilot:
+            msg = AssistantMessage("**done**")
+            await pilot.app.mount(msg)
+            await msg.write_initial_content()
+            await msg.set_content("**done**")
+            await pilot.pause()
+
+            assert not msg.query(Markdown)
+            assert _final(msg).source == "**done**"
 
 
 class TestSummarizationMessage:
@@ -829,6 +1046,46 @@ def _tool_msg_app(tool_name: str, args: dict | None = None) -> _ToolMsgApp:
         An unmounted `App` exposing the message as `app.msg`.
     """
     return _ToolMsgApp(tool_name, args)
+
+
+class TestSkillReadMessage:
+    """Skill reads retain normal tool output and lifecycle behavior."""
+
+    @pytest.mark.parametrize("error", [False, True])
+    async def test_skill_read_output_and_round_trip(self, error: bool) -> None:
+        app = _tool_msg_app("read_file", {"file_path": "/skills/[review]/SKILL.md"})
+        output = "Permission denied" if error else "# Review\nCheck the changes."
+        async with app.run_test() as pilot:
+            assert app.msg.has_class("-skill-read")
+            header = app.msg.query_one("#tool-header", Static).render()
+            assert isinstance(header, Content)
+            assert (
+                "read_file(/skills/[review]/SKILL.md) [skill: [review]]" in header.plain
+            )
+            if error:
+                app.msg.set_error(output)
+            else:
+                app.msg.set_success(output)
+                await pilot.pause()
+                assert app.msg._full_row is not None
+                assert not app.msg._full_row.display
+                await pilot.click("#tool-header")
+            await pilot.pause()
+            assert app.msg.has_class("-status-error" if error else "-status-success")
+            assert app.msg._full_row is not None
+            assert app.msg._full_row.display
+            rendered = app.msg.query_one("#output-full", Static).render()
+            assert isinstance(rendered, Content)
+            assert output in rendered.plain
+            data = MessageData.from_widget(app.msg)
+
+        restored = data.to_widget()
+        assert isinstance(restored, ToolCallMessage)
+        assert restored.has_class("-skill-read")
+        restored._restore_deferred_state()
+        assert restored._expanded
+        assert restored._output == output
+        assert restored._status == ("error" if error else "success")
 
 
 class TestToolCallMessageAppearance:
@@ -3287,6 +3544,24 @@ class TestSkillMessageMarkupSafety:
         # (Markdown widget) so we verify fields instead.
         assert msg._description == content
         assert msg._args == content
+
+
+class TestSkillMessageSetInstructions:
+    """A live row shows instructions that stream in after it mounts."""
+
+    async def test_mounted_row_shows_description_and_body(self) -> None:
+        class _App(App[None]):
+            def compose(self) -> ComposeResult:
+                yield SkillMessage(skill_name="review", args="this patch")
+
+        async with _App().run_test() as pilot:
+            msg = pilot.app.query_one(SkillMessage)
+            msg.set_instructions("Review code", "Check the tests.")
+            await pilot.pause()
+
+            [description] = msg.query(".skill-description")
+            assert "Review code" in str(cast("Static", description).render())
+            assert msg._expanded is True
 
 
 class TestStripSuccessExitLine:

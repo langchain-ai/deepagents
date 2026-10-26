@@ -41,13 +41,21 @@ Each package gets its own **draft** release PR on a branch named `release-please
 To release a package:
 
 1. Merge one or more [releasable conventional commits](#releasable-commit-types-and-version-bumping) to `main`
-2. Wait for the release-please action to create/update the release PR (can take a minute or two)
+2. [Wait for release-please to finish refreshing the release PR](#waiting-for-a-release-pr-refresh), including its lockfile updates.
 3. Review the generated changelog in the PR. The published GitHub release body is extracted from the merged package `CHANGELOG.md`, not from the release PR description.
    1. Follow the [curated release-notes workflow](#curated-release-notes) after moving the PR from draft to ready for review. This applies to every release-please managed package.
 4. Merge the release PR after its required checks pass — this triggers the pre-release checks, PyPI publish, and GitHub release
 
 > [!IMPORTANT]
 > `deepagents-code` pins an exact `deepagents==` version in `libs/code/pyproject.toml`. Bump this pin as part of any PR that depends on new SDK functionality — don't defer it to release time. The pin should always reflect the minimum SDK version `deepagents-code` actually requires. If you intentionally need to ship a release PR with an older SDK pin, add the `ci:dcode-skip-sdk-pin` label before merging. See [Release Failed: Code SDK Pin Is Older Than SDK](#release-failed-code-sdk-pin-is-older-than-sdk) for recovery if a stale pin slips through.
+
+### Waiting for a release PR refresh
+
+After merging changes into `main`, including an SDK-pin bump, let release-please update the release PR. Do not manually rebase it, merge `main` into it, or edit its branch while the automation is queued or running. Release-please can replace those changes, invalidate reviewed notes, or move the branch while `@release-bot apply` is starting.
+
+Check the `release-please.yml` workflow run for the `main` commit you need included. Wait for its release-please job and the release PR's `Update lockfiles` job to finish. A new commit on the release branch alone does not mean the refresh is complete. Confirm the expected changes are present and no further refresh of that PR is queued or running before marking it ready for review or running `@release-bot draft` / `@release-bot apply`.
+
+If automation fails, skips the update, or leaves the branch stale, inspect the run and diagnose why before making a manual update. Once the refresh finishes, follow the [curated release-notes process](#curated-release-notes), including any instructions to re-draft or re-apply existing notes.
 
 ### Curated Release Notes
 
@@ -60,7 +68,7 @@ Keep the release PR in draft while changes are still accumulating. When it is re
 3. After reviewing & finalizing, comment `@release-bot apply`. The bot updates that package's `CHANGELOG.md` (e.g. `libs/code/CHANGELOG.md` for `deepagents-code`) and mirrors the notes to the PR body.
 4. Merge normally after the `curated release notes` CI check passes.
 
-Drafts use a fixed section order matching `release-please`: `⚠ BREAKING CHANGES`, `Features`, `Bug Fixes`, `Performance Improvements`, and `Reverted Changes`. Empty sections are omitted, entries are bullets, and references include pull request links only—not commit hashes or other links.
+Drafts use a fixed section order matching `release-please`: `⚠ BREAKING CHANGES`, `Features`, `Bug Fixes`, `Performance Improvements`, and `Reverted Changes`. Empty sections are omitted, entries are bullets, and references include pull request links only—not commit hashes or other links. A draft must link every pull request in the generated changelog section and no link outside it; if the model drops a pull request or adds a link, the draft fails and nothing is posted. Links to issues that a commit closes are optional.
 
 > [!NOTE]
 > When `@release-bot apply` adds a trusted commit that changes only the package's managed `CHANGELOG.md`, the main CI workflow intentionally skips its package lint and test jobs. The `✅ CI Success` gate reuses the result from the apply commit's parent, where the same release-PR contents already ran through normal CI. Skipped package jobs on the apply commit are therefore expected; inspect the parent's `✅ CI Success` check and linked workflow run to see the reused tests. If the parent did not pass CI, the apply commit does not pass the gate.
@@ -336,7 +344,7 @@ For hotfixes or exceptional cases, you can trigger a release manually. Use the `
 2. Click **Run workflow**
 3. Select the package to release
 4. **Provide `version`**: the version you want to publish (e.g. `0.0.35`). The workflow checks that the code you selected has the same version.
-5. **Provide `release-sha`**: the commit to publish. Usually this is the release-please PR's merge commit. Find it with `gh pr view <release-pr-number> --json mergeCommit --jq .mergeCommit.oid`. If a release failed before anything reached PyPI, you can also use the hotfix commit you merged afterward. See [Hotfix Protocol > Case A](#case-a--release-failed-before-pypi-publish) for that recovery flow.
+5. **Provide `release-sha`**: the commit to publish. Usually this is the release-please PR's merge commit. Find it with `gh pr view <release-pr-number> --json mergeCommit --jq .mergeCommit.oid`. The commit must be reachable from `main`, or with `dangerous-nonmain-release` enabled, from the branch the workflow was dispatched from. If a release failed before anything reached PyPI, you can also use the hotfix commit you merged afterward. See [Hotfix Protocol > Case A](#case-a--release-failed-before-pypi-publish) for that recovery flow.
 6. (Optionally enable `dangerous-nonmain-release` for hotfix branches that are not `main`. When enabled, `release-sha` may be left empty and the workflow uses the branch's current commit.)
 
 > [!WARNING]
@@ -566,7 +574,9 @@ git add libs/code/<changed-file>
 git commit -m "chore(code): release 0.0.35" -m "Release-As: 0.0.35"
 ```
 
-If there is no meaningful package-file edit to make, use the config-file form instead: temporarily add `"release-as": "0.0.35"` to the `libs/code` package entry in `release-please-config.json`:
+The footer is what makes this work: release-please skips a package whose release notes would be empty, and every type except `feat`, `fix`, `perf`, and `revert` is hidden from the changelog. A commit carrying a `Release-As` footer always gets a changelog entry, even as `chore`, so it clears that check.
+
+The config-file form below (`"release-as"` in `release-please-config.json`) does **not** work here. It only sets the version; it adds no changelog entry, and the config file is not under `libs/code`, so release-please still finds nothing user-facing and opens no release PR. Use it only when the package already has a visible (`feat`/`fix`/`perf`/`revert`) commit since the last release and you just need a different version number. In that case, temporarily add `"release-as": "0.0.35"` to the `libs/code` package entry in `release-please-config.json`:
 
 ```diff
  "libs/code": {
@@ -668,10 +678,10 @@ When the new line is ready to become `main`:
        git commit -m "feat(sdk): release X.Y.Z" -m "Release-As: X.Y.Z"
        ```
 
-     - **`release-as` config key** — set `"release-as": "X.Y.Z"` on the package's entry in [`release-please-config.json`](https://github.com/langchain-ai/deepagents/blob/main/release-please-config.json). Same effect, but it lives in config rather than a commit message. It's a standing override, so **delete the key once the release PR is open!** — otherwise every later run keeps pinning that same version.
+     - **`release-as` config key** — set `"release-as": "X.Y.Z"` on the package's entry in [`release-please-config.json`](https://github.com/langchain-ai/deepagents/blob/main/release-please-config.json). Same version override, but it lives in config rather than a commit message. Unlike the footer, it adds no changelog entry, so it only works when the package already has a visible (`feat`/`fix`/`perf`/`revert`) commit; on its own it will not open a release PR. It's a standing override, so **delete the key once the release PR is open!** — otherwise every later run keeps pinning that same version.
 
    > [!CAUTION]
-   > Don't put the `Release-As` footer on an `--allow-empty` commit on `main` — an empty commit touches no package paths and triggers the [empty-commit fan-out](#empty-commit-fan-out) guard, opening a release PR for *every* package. That's why the footer goes on a commit that actually edits the package's files; the `release-as` config key sidesteps this since editing the config file is itself a non-empty change.
+   > Don't put the `Release-As` footer on an `--allow-empty` commit on `main` — an empty commit touches no package paths and triggers the [empty-commit fan-out](#empty-commit-fan-out) guard, opening a release PR for *every* package. That's why the footer goes on a commit that actually edits the package's files; the `release-as` config key avoids the fan-out since editing the config file is itself a non-empty change (but see the visible-commit caveat above).
 
 ### Maintenance branch (patching the old line after cutover)
 
@@ -699,7 +709,7 @@ Check these common causes first:
 
 This most commonly bites when someone tries to "fix up" a merged PR's changelog entry by pushing an empty commit with a corrected conventional-commit subject (e.g., adding a missing `!` for a breaking change). The corrected subject does land in `git log`, but release-please reads file paths, not commit subjects, when deciding scope.
 
-The `guard-empty-commit` job in [`release-please.yml`](https://github.com/langchain-ai/deepagents/blob/main/.github/workflows/release-please.yml) blocks this at CI time: any push to `main` whose `HEAD` commit changes zero files fails fast with a clear error before the release-please action runs.
+The empty-commit guard (the first step of the `detect-release-commit` job) in [`release-please.yml`](https://github.com/langchain-ai/deepagents/blob/main/.github/workflows/release-please.yml) blocks this at CI time: any push to `main` whose `HEAD` commit changes zero files fails fast with a clear error before the release-please action runs.
 
 There is one narrow exception for history repair: an empty merge commit titled `hotfix(repo): ...` may pass if each commit introduced by the merged branch touches files. This covers cases where the final file tree is intentionally unchanged, but preserving the individual commits matters. For example, release-please reads commit history to decide package scope, version bumps, and changelog entries, so restoring a lost `feat(sdk)!` commit with a `BREAKING CHANGE:` footer can be necessary even when the files already match `main`.
 
@@ -833,7 +843,7 @@ Use when something measurable has already happened off `main` (downstream consum
 #### Don'ts
 
 - **No force-push to `main`** — branch protection blocks it and would drop unrelated commits anyway.
-- **No empty commits** to "fix up" the changelog — `guard-empty-commit` fails them, and even if it didn't, the empty fan-out would open release PRs for every package (see [Empty commit fan-out](#empty-commit-fan-out)).
+- **No empty commits** to "fix up" the changelog — the empty-commit guard in `release-please.yml` fails them, and even if it didn't, the empty fan-out would open release PRs for every package (see [Empty commit fan-out](#empty-commit-fan-out)).
 - **Don't edit the release PR body to remove the entry directly** — release-please regenerates the body from merged-PR commits on every sync, so manual edits persist only until the next push to `main`. The override on the original PR is the durable mechanism.
 - **Don't edit `.release-please-manifest.json`** — manifest edits only matter for [Yanking a Release](#yanking-a-release) (versions that already shipped).
 
@@ -1027,12 +1037,12 @@ If the older pin is intentional, add the `ci:dcode-skip-sdk-pin` label to the re
 
 ### Release Failed: Ripgrep Install
 
-On release-sensitive paths, the ripgrep install itself runs with no timeout. This applies to the strict step in CI and to the `Install ripgrep` step in `release.yml`. The rg-gated tests must exercise the real binary, not the Python fallback; one of them checks symlink containment. An apt or mirror failure therefore fails the job even though the code is fine.
+On release-sensitive paths, the ripgrep install itself runs with no timeout. This applies to the strict step in CI and to the `Install ripgrep` step in `release.yml`. The rg-gated tests must exercise the real binary, not the Python fallback; one of them checks symlink containment. The install downloads a pinned ripgrep release from GitHub (`.github/scripts/release/install_ripgrep.sh`) and verifies its checksum. A download failure therefore fails the job even though the code is fine.
 
-If the apt log shows a mirror or network error, add the `ci:skip-ripgrep` label to the release PR and re-run CI. With the label present:
+If the install log shows a network or download error, add the `ci:skip-ripgrep` label to the release PR and re-run CI. With the label present:
 
-- **In CI** (`_test.yml`): the strict install still runs, but a failure becomes a tolerated continue. The step then unwinds `dpkg` and probes for a usable `rg`. If one is present, the leg keeps full coverage. If not, `DEEPAGENTS_RIPGREP_EXPECTED` is left unset, so `require_ripgrep()` skips the gated tests on that leg instead of failing them. The run posts a sticky comment on the PR that records which legs ran without ripgrep.
-- **At dispatch** (`release-please.yml`): the automatic release dispatch passes `dangerous-skip-ripgrep-check=true` to `release.yml`. The publish run's `Install ripgrep` step then tolerates the same apt failure. It applies the same `rg` probe, and when the binary really is missing it writes a "Published without ripgrep coverage" block to the run summary.
+- **In CI** (`_test.yml`): the strict install still runs, but a failure becomes a tolerated continue. The step then probes for a usable `rg`. If one is present, the leg keeps full coverage. If not, `DEEPAGENTS_RIPGREP_EXPECTED` is left unset, so `require_ripgrep()` skips the gated tests on that leg instead of failing them. The run posts a sticky comment on the PR that records which legs ran without ripgrep.
+- **At dispatch** (`release-please.yml`): the automatic release dispatch passes `dangerous-skip-ripgrep-check=true` to `release.yml`. The publish run's `Install ripgrep` step then tolerates the same install failure. It applies the same `rg` probe, and when the binary really is missing it writes a "Published without ripgrep coverage" block to the run summary.
 
 The label is honored only on release PRs — a `pull_request` with a `release-please--` branch or a `release(` title. `push`-to-`main` and merge-queue runs have no PR label to read, so they always enforce the strict install. The dispatch reads the label at merge time: remove it before merging and the publish run enforces the strict install again. Remove the label and re-run CI to restore full ripgrep coverage before you rely on the result.
 

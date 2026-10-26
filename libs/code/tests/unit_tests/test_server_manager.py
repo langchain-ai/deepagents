@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
-from typing import TYPE_CHECKING
+import threading
+from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 if TYPE_CHECKING:
@@ -13,7 +15,9 @@ import pytest
 
 from deepagents_code._env_vars import SERVER_ENV_PREFIX
 from deepagents_code._server_config import ServerConfig
+from deepagents_code.client.launch.server import _ABANDONED_START_GRACE
 from deepagents_code.client.launch.server_manager import (
+    PrespawnedServer,
     _apply_server_config,
     _runtime_package_dependency,
     _write_pyproject,
@@ -299,6 +303,114 @@ class TestStartServerAndGetAgent:
         assert captured[0].allow_fs_tools == ["ls", "read_file"]
         assert captured[0].summarization_model == "openai:summary-model"
 
+    async def test_cancelled_startup_stops_server_off_event_loop(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """Cancelling during the graph-ready wait must not block the event loop.
+
+        Quitting the TUI during startup cancels this coroutine on Textual's
+        event loop. The server can take seconds to exit while its graph build
+        finishes, so a `stop()` that runs on the loop freezes the screen.
+        """
+        project_root = tmp_path / "project"
+        project_root.mkdir()
+        monkeypatch.chdir(project_root)
+        work_dir = tmp_path / "runtime"
+        work_dir.mkdir()
+
+        graph_wait_entered = asyncio.Event()
+        loop_ran = threading.Event()
+        loop_ran_during_stop: list[bool] = []
+
+        async def wait_forever(_graph_name: str) -> None:
+            graph_wait_entered.set()
+            await asyncio.Event().wait()
+
+        def stop(*, grace: float | None = None) -> None:  # noqa: ARG001
+            # Only an event-loop callback sets `loop_ran`, so a `stop()` that
+            # blocks the loop times out here instead of deadlocking the test.
+            loop_ran_during_stop.append(loop_ran.wait(timeout=2))
+
+        server = MagicMock(
+            start=AsyncMock(),
+            wait_for_graph_ready=wait_forever,
+            stop=stop,
+            url="http://127.0.0.1:2024",
+        )
+
+        with (
+            patch.dict(os.environ, {}, clear=False),
+            patch(
+                "deepagents_code.client.launch.server_manager.tempfile.mkdtemp",
+                return_value=str(work_dir),
+            ),
+            patch("deepagents_code.client.launch.server_manager._scaffold_workspace"),
+            patch(
+                "deepagents_code.client.launch.server.ServerProcess",
+                return_value=server,
+            ),
+        ):
+            task = asyncio.create_task(
+                start_server_and_get_agent(assistant_id="agent", mcp_config_path=None)
+            )
+            await graph_wait_entered.wait()
+            task.cancel()
+            asyncio.get_running_loop().call_soon(loop_ran.set)
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+        assert loop_ran_during_stop == [True]
+
+    @pytest.mark.parametrize(
+        ("sandbox_type", "expected_grace"),
+        [("none", _ABANDONED_START_GRACE), ("modal", None)],
+    )
+    async def test_abandoned_startup_grace_keeps_sandbox_cleanup(
+        self,
+        tmp_path: Path,
+        monkeypatch,
+        sandbox_type: str,
+        expected_grace: float | None,
+    ) -> None:
+        """An abandoned startup skips the full graceful window unless sandboxed.
+
+        The server never reached the caller, so it holds no session state. A
+        graph build may be creating a sandbox, though, and the server deletes
+        it only on a graceful exit, so a sandboxed server keeps the full window.
+        """
+        project_root = tmp_path / "project"
+        project_root.mkdir()
+        monkeypatch.chdir(project_root)
+        work_dir = tmp_path / "runtime"
+        work_dir.mkdir()
+
+        server = MagicMock(
+            start=AsyncMock(),
+            wait_for_graph_ready=AsyncMock(side_effect=RuntimeError("graph failed")),
+            url="http://127.0.0.1:2024",
+        )
+
+        with (
+            patch.dict(os.environ, {}, clear=False),
+            patch(
+                "deepagents_code.client.launch.server_manager.tempfile.mkdtemp",
+                return_value=str(work_dir),
+            ),
+            patch("deepagents_code.client.launch.server_manager._scaffold_workspace"),
+            patch(
+                "deepagents_code.client.launch.server.ServerProcess",
+                return_value=server,
+            ),
+            pytest.raises(RuntimeError, match="graph failed"),
+        ):
+            await start_server_and_get_agent(
+                assistant_id="agent",
+                mcp_config_path=None,
+                sandbox_type=sandbox_type,
+            )
+
+        server.stop.assert_called_once_with(grace=expected_grace)
+
 
 class TestWritePyproject:
     """Tests for the generated runtime pyproject."""
@@ -405,3 +517,79 @@ class TestServerSession:
 
 class TestPreflightValidateMCPConfig:
     """Pre-flight validation of `--mcp-config` raises an actionable error."""
+
+
+class _FakeStart:
+    """Stand-in for `start_server_and_get_agent` that pauses at the spawn."""
+
+    def __init__(self) -> None:
+        self.events: list[str] = []
+        self.server = MagicMock()
+        self.result = (MagicMock(), self.server, None)
+
+    async def __call__(self, **kwargs: Any) -> tuple[Any, Any, None]:
+        self.events.append("spawn")
+        try:
+            await kwargs["after_spawn"]()
+            self.events.append("health")
+        except asyncio.CancelledError:
+            self.events.append("reaped")
+            raise
+        return self.result
+
+
+class TestPrespawnedServer:
+    """The early server start spawns, pauses, and has exactly one owner."""
+
+    async def test_adopt_runs_gate_before_health_check(self) -> None:
+        """The app's gate must finish before the health check runs."""
+        fake = _FakeStart()
+
+        async def gate() -> None:
+            await asyncio.sleep(0)
+            fake.events.append("gate")
+
+        with patch(
+            "deepagents_code.client.launch.server_manager.start_server_and_get_agent",
+            fake,
+        ):
+            prespawned = PrespawnedServer(assistant_id="agent")
+            await prespawned.wait_spawned()
+            assert fake.events == ["spawn"]
+            result = await prespawned.adopt(after_spawn=gate)
+            await prespawned.aclose()
+
+        assert result is fake.result
+        assert fake.events == ["spawn", "gate", "health"]
+        fake.server.stop.assert_not_called()
+
+    async def test_aclose_reaps_unadopted_start(self) -> None:
+        """A start that the app never adopts is cancelled, not left running."""
+        fake = _FakeStart()
+        with patch(
+            "deepagents_code.client.launch.server_manager.start_server_and_get_agent",
+            fake,
+        ):
+            prespawned = PrespawnedServer(assistant_id="agent")
+            await prespawned.wait_spawned()
+            await prespawned.aclose()
+
+        assert fake.events == ["spawn", "reaped"]
+
+    async def test_failed_start_surfaces_on_adopt(self) -> None:
+        """A start that fails before the spawn reports the error to the app."""
+        msg = "bad mcp config"
+
+        async def fail(**_: object) -> None:
+            await asyncio.sleep(0)
+            raise ValueError(msg)
+
+        with patch(
+            "deepagents_code.client.launch.server_manager.start_server_and_get_agent",
+            fail,
+        ):
+            prespawned = PrespawnedServer(assistant_id="agent")
+            await prespawned.wait_spawned()
+            with pytest.raises(ValueError, match=msg):
+                await prespawned.adopt(after_spawn=AsyncMock())
+            await prespawned.aclose()

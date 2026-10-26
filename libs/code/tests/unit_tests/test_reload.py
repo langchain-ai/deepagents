@@ -186,21 +186,22 @@ class TestReloadFromEnvironment:
         assert owner.openai_api_key == "sk-old"
 
     def test_preview_reload_reports_changes_without_mutating(
-        self, tmp_path: Path
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         """Previewing reload changes should not update settings or `os.environ`."""
+        monkeypatch.delenv("TAVILY_API_KEY", raising=False)
         current = tmp_path / "current"
         target = tmp_path / "target"
         current.mkdir()
         target.mkdir()
-        (target / ".env").write_text("DEEPAGENTS_CODE_SHELL_ALLOW_LIST=ls\n")
+        (target / ".env").write_text("TAVILY_API_KEY=tvly-project\n")
         credentials = Credentials.from_environment(start_path=current)
 
         changes = credentials.preview_reload_from_environment(start_path=target)
 
-        assert any(change.startswith("shell_allow_list:") for change in changes)
-        assert _shell_allow_list() is None
-        assert "DEEPAGENTS_CODE_SHELL_ALLOW_LIST" not in os.environ
+        assert "tavily_api_key: unset -> set" in changes
+        assert credentials.tavily_api_key is None
+        assert "TAVILY_API_KEY" not in os.environ
 
     def test_preview_reload_sees_shell_allow_list_toml_edit(
         self, tmp_path: Path
@@ -1683,6 +1684,41 @@ class TestReloadSkillReport:
 
             return "\n".join(str(w._content) for w in app.query(AppMessage))
 
+    @pytest.mark.parametrize("config_ok", [True, False])
+    async def test_skill_trust_denials_cleared_only_on_successful_reload(
+        self, monkeypatch: pytest.MonkeyPatch, *, config_ok: bool
+    ) -> None:
+        """A successful `/reload` re-prompts for denied skill directories."""
+        from deepagents_code.app import DeepAgentsApp
+        from deepagents_code.tui.widgets.messages import AppMessage
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._skill_trust_denied.add("/outside")
+
+            async def _fake_discover() -> bool:  # noqa: RUF029  # awaited as coroutine by `_handle_command`
+                return True
+
+            async def _broken_settings() -> list[str]:  # noqa: RUF029  # awaited by reload
+                msg = "bad .env"
+                raise OSError(msg)
+
+            monkeypatch.setattr(app, "_discover_skills", _fake_discover)
+            if not config_ok:
+                monkeypatch.setattr(
+                    app, "_reload_settings_from_environment", _broken_settings
+                )
+
+            await app._handle_command("/reload")
+            if app._reload_task is not None:
+                await app._reload_task
+            await pilot.pause()
+
+            report = "\n".join(str(w._content) for w in app.query(AppMessage))
+            assert bool(app._skill_trust_denied) is not config_ok
+            assert ("Skill trust denials cleared" in report) is config_ok
+
 
 async def test_reload_notifies_when_managed_policy_newly_masks_cli(
     tmp_path: Path,
@@ -1879,7 +1915,7 @@ class TestReloadPluginsViaReload:
         link = skills_root / "linked"
         try:
             link.symlink_to(outside, target_is_directory=True)
-        except (NotImplementedError, OSError):
+        except NotImplementedError, OSError:
             pytest.skip("directory symlinks are unavailable")
         plugin = PluginInstance(
             plugin_id="demo@tools",
@@ -2209,6 +2245,7 @@ class TestReloadPluginsViaReload:
 
             text = "\n".join(str(w._content) for w in app.query(AppMessage))
             assert "Couldn't read plugin state; run /reload to be safe." in text
+            assert "keeps its current skills" in text
             # The reload still completed: the config-reload header is present and
             # no plugin summary line was emitted.
             assert "Configuration reloaded." in text
@@ -2275,6 +2312,7 @@ class TestReloadPluginsViaReload:
             # claim anything about MCP — the two lines would contradict.
             text = "\n".join(str(w._content) for w in app.query(AppMessage))
             assert ("MCP server changes" in text) is restarted
+            assert ("keeps its current skills" in text) is not restarted
 
     @pytest.mark.parametrize(
         ("mcp_status", "expected", "forbidden"),
@@ -2445,6 +2483,7 @@ class TestReloadPluginsViaReload:
 
             text = "\n".join(str(w._content) for w in app.query(AppMessage))
             assert "cannot reload MCP config" in text
+            assert "keeps its current skills" in text
 
     @pytest.mark.parametrize("no_mcp", [False, True])
     async def test_reload_deferred_local_startup_is_not_labeled_remote(
@@ -2503,6 +2542,7 @@ class TestReloadPluginsViaReload:
             text = "\n".join(str(w._content) for w in app.query(AppMessage))
             assert "remote" not in text
             assert "cannot reload MCP config" not in text
+            assert "keeps its current skills" not in text
             if no_mcp:
                 assert "MCP is disabled for this session (--no-mcp)" in text
             else:

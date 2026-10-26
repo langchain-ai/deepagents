@@ -7,6 +7,7 @@ import dataclasses
 import hashlib
 import itertools
 import json
+import logging
 import math
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, override
@@ -19,6 +20,7 @@ from langgraph.checkpoint.base import (
     empty_checkpoint,
 )
 from langgraph.config import get_config
+from langgraph.errors import GraphBubbleUp, NodeCancelledError
 from langgraph.types import Command
 
 from deepagents_code.cost_tracking import (
@@ -26,6 +28,7 @@ from deepagents_code.cost_tracking import (
     _merge_cost_breakdowns,
     _parent_checkpoint_scope,
 )
+from deepagents_code.thread_ownership import OWNER_KEY
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -35,6 +38,8 @@ if TYPE_CHECKING:
     from langgraph.prebuilt.tool_node import ToolCallRequest, ToolRuntime
 
     from deepagents_code.cost_tracking import CostBreakdown
+
+logger = logging.getLogger(__name__)
 
 _ACCOUNTING_KEY = "__deepagents_js_cost_owner"
 _RESPONSE_FORMAT_KEY = "__deepagents_subagent_response_format"
@@ -171,6 +176,17 @@ def _cost_task(
                 config=config,
                 tool_call_id=runtime.tool_call_id,
             )
+        except asyncio.CancelledError, GraphBubbleUp, NodeCancelledError:
+            raise
+        except Exception as exc:
+            logger.debug("Subagent %r failed", subagent_type, exc_info=exc)
+            return {
+                "error": (
+                    f"Subagent {subagent_type!r} failed: "
+                    f"{type(exc).__name__}: {str(exc)[:300]}. You may retry this task."
+                ),
+                "failed": True,
+            }
         finally:
             if invocation is not None:
                 active.discard(invocation)
@@ -202,6 +218,8 @@ def record_cost_receipt(
             "checkpoint_ns": f"{owner}|receipt:{_digest(namespace)}",
         }
     }
+    if OWNER_KEY in configurable:
+        config["configurable"][OWNER_KEY] = configurable[OWNER_KEY]
     loop = configurable["__deepagents_js_cost_loop"]
     asyncio.run_coroutine_threadsafe(
         _put_receipt(saver, config, owner, amount, breakdown), loop

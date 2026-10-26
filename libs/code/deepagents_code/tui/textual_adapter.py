@@ -38,6 +38,7 @@ if TYPE_CHECKING:
     from pydantic import TypeAdapter
 
     from deepagents_code._ask_user_types import AskUserWidgetResult, Question
+    from deepagents_code.cold_cache import CacheActivity
     from deepagents_code.hooks.models.domain import ToolCallData
     from deepagents_code.resume_state import RubricResult
 
@@ -149,6 +150,16 @@ from deepagents_code.model_retry import (
     model_retry_from_event,
     retry_marker_from_event,
     retry_status_from_event,
+)
+from deepagents_code.skills.invocation import pinned_skill_parts
+from deepagents_code.skills.load_errors import (
+    format_skills_load_errors,
+    skills_load_errors_from_event,
+)
+from deepagents_code.skills.trust import (
+    SKILL_TRUST_INTERRUPT_TYPE,
+    SkillTrustRequest,
+    parse_skill_trust_request,
 )
 from deepagents_code.tool_display import format_tool_message_content
 from deepagents_code.tui.widgets.messages import (
@@ -839,8 +850,21 @@ class TextualUIAdapter:
         on_approval_mode_fallback: Callable[[str], None] | None = None,
         *,
         show_diff_line_numbers: bool = True,
+        request_skill_trust: Callable[[str, str], Awaitable[bool]] | None = None,
+        on_skill_pinned: Callable[[str, str, str], None] | None = None,
+        on_cache_reconciliation: Callable[
+            [bool, CacheActivity | None, bool], Awaitable[None]
+        ]
+        | None = None,
     ) -> None:
         """Initialize the adapter."""
+        self._on_cache_reconciliation = on_cache_reconciliation
+        self._cache_attempt: tuple[str, int] | None = None
+        self._cache_activity: CacheActivity | None = None
+        self._cache_settled: set[tuple[str, int]] = set()
+        self.stream_completed = False
+        """Whether the most recent execution reached a clean end of stream."""
+
         self._mount_message = mount_message
         """Async callback to mount a message widget to the chat."""
 
@@ -888,6 +912,16 @@ class TextualUIAdapter:
         agent-executed tool (e.g. `git checkout`) returns, instead of waiting
         for the full turn to finish.
         """
+
+        self._request_skill_trust = request_skill_trust
+        """Async callback asking whether to trust a skill directory.
+
+        Called with the skill name and directory from a server `skill_trust`
+        interrupt. Without it, every such request is denied.
+        """
+
+        self._on_skill_pinned = on_skill_pinned
+        """Callback fired with `(name, description, body)` when a skill is pinned."""
 
         self._on_subagent_event = on_subagent_event
         """Sync callback fired for each validated `subagent` custom-stream event."""
@@ -948,6 +982,59 @@ class TextualUIAdapter:
 
         self._on_stream_complete: Callable[[], None] | None = None
         """Called only after the agent stream reaches a clean end."""
+
+    async def _reconcile_cache(
+        self, *, pending: bool = False, read: bool = False, write: bool = False
+    ) -> None:
+        """Settle the active request before releasing expiry notifications."""
+        if self._on_cache_reconciliation:
+            await self._on_cache_reconciliation(
+                pending, self._cache_activity if read or write else None, write
+            )
+        if not pending and self._cache_attempt is not None:
+            self._cache_settled.add(self._cache_attempt)
+
+    async def _cache_attempt_event(self, event: dict[str, Any]) -> None:
+        """Ignore stale boundaries and renew only from confirmed cache usage."""
+        from deepagents_code.cold_cache import parse_cache_activity
+        from deepagents_code.model_retry import model_attempt_from_event
+
+        parsed = model_attempt_from_event(event)
+        if parsed is None:
+            return
+        scope = (cast("str", parsed["call_id"]), cast("int", parsed["attempt"]))
+        if scope in self._cache_settled:
+            return
+        if parsed["phase"] == "start":
+            if scope == self._cache_attempt:
+                return
+            if self._cache_attempt is not None:
+                self._cache_settled.add(self._cache_attempt)
+            self._cache_attempt = scope
+            self._cache_activity = parse_cache_activity(event.get("cache_activity"))
+            await self._reconcile_cache(pending=self._cache_activity is not None)
+        elif scope == self._cache_attempt:
+            await self._reconcile_cache(
+                read=event.get("cache_read") is True,
+                write=event.get("cache_write") is True,
+            )
+
+    async def _cache_usage(self, message: object, metadata: object) -> None:
+        """Use correlated main-model cache usage as soon as it is streamed."""
+        from deepagents_code.cost_tracking import cache_token_counts
+
+        if (
+            self._cache_attempt is None
+            or self._cache_attempt in self._cache_settled
+            or not isinstance(metadata, dict)
+        ):
+            return
+        scope = metadata.get("dcode_cache_attempt")
+        if not isinstance(scope, (tuple, list)) or tuple(scope) != self._cache_attempt:
+            return
+        reads, writes = cache_token_counts(getattr(message, "usage_metadata", None))
+        if reads or any(writes):
+            await self._reconcile_cache(read=bool(reads), write=any(writes))
 
     def _reset_auto_mode_review_tracking(self) -> None:
         """Start each user turn with no in-flight batch and no replay guard.
@@ -1685,6 +1772,28 @@ async def _mount_diff_note(adapter: Any, text: str) -> None:  # noqa: ANN401  # 
         logger.exception("Failed to mount diff note: %s", text)
 
 
+async def _resolve_skill_trust(
+    adapter: TextualUIAdapter, request: SkillTrustRequest | None
+) -> bool:
+    """Ask the user about a server skill trust request, failing closed.
+
+    Returns:
+        Whether the user approved the directory. A malformed request, a
+            missing callback, or a prompt error is a deny.
+    """
+    if request is None or adapter._request_skill_trust is None:
+        return False
+    if adapter._set_spinner:
+        await adapter._set_spinner(None)
+    try:
+        return await adapter._request_skill_trust(
+            request["skill"], request["directory"]
+        )
+    except Exception:
+        logger.exception("Skill trust prompt failed; denying")
+        return False
+
+
 async def execute_task_textual(
     user_input: str,
     agent: Any,  # noqa: ANN401  # Dynamic agent graph type
@@ -1695,7 +1804,7 @@ async def execute_task_textual(
     image_tracker: MediaTracker | None = None,
     context: CLIContext | None = None,
     *,
-    show_reasoning: bool = False,
+    show_reasoning: bool = True,
     sandbox_type: str | None = None,
     message_kwargs: dict[str, Any] | None = None,
     skill_name: str | None = None,
@@ -1770,8 +1879,12 @@ async def execute_task_textual(
     from deepagents_code.hooks.client_lifecycle import ClientHookStopError
     from deepagents_code.hooks.models.domain import HookEvent
 
+    adapter.stream_completed = False
     hitl_request_adapter = _get_hitl_request_adapter(HITLRequest)
     ask_user_adapter = _get_ask_user_adapter()
+    adapter._cache_attempt = None
+    adapter._cache_activity = None
+    adapter._cache_settled.clear()
     adapter._reset_auto_mode_review_tracking()
 
     message_content: str | list[dict[str, Any]] | None = None
@@ -1990,6 +2103,8 @@ async def execute_task_textual(
             "messages": messages,
             "goal_criteria_request": None,
         }
+        if skill_name and not prompt_outcome.suppress_original_prompt:
+            stream_input["pinned_skills"] = [skill_name]
         if rubric:
             stream_input["rubric"] = rubric
     else:
@@ -2024,6 +2139,7 @@ async def execute_task_textual(
             pending_interrupts: dict[str, tuple[tuple[Any, ...], HITLRequest]] = {}
             pending_ask_user: dict[str, AskUserRequest] = {}
             pending_hook_resumes: dict[str, dict[str, Any]] = {}
+            pending_skill_trust: dict[str, SkillTrustRequest | None] = {}
 
             if context is None:
                 context = CLIContext()
@@ -2041,7 +2157,7 @@ async def execute_task_textual(
                 )
             try:
                 selected_mode = ApprovalMode(raw_mode)
-            except (TypeError, ValueError):
+            except TypeError, ValueError:
                 selected_mode = ApprovalMode.MANUAL
             context["approval_mode"] = selected_mode.value
             context["auto_approve"] = selected_mode is not ApprovalMode.MANUAL
@@ -2186,9 +2302,20 @@ async def execute_task_textual(
                                 )
                         continue
 
+                    load_errors = skills_load_errors_from_event(data)
+                    if load_errors is not None:
+                        # A subagent scans the same sources, so show them once.
+                        if is_main_agent and load_errors:
+                            await adapter._mount_message(
+                                AppMessage(format_skills_load_errors(load_errors))
+                            )
+                        continue
+
                     if isinstance(data, dict) and data.get("type") == "model_attempt":
                         attempt_event = model_attempt_from_event(data)
                         if attempt_event is not None:
+                            if is_main_agent:
+                                await adapter._cache_attempt_event(data)
                             attempt_scope = _ModelAttemptScope(
                                 ns_key,
                                 cast("str", attempt_event["call_id"]),
@@ -2291,6 +2418,16 @@ async def execute_task_textual(
 
                     if isinstance(data, dict) and data.get("type") == "model_retry":
                         retry_correlation = model_retry_from_event(data)
+                        if (
+                            is_main_agent
+                            and retry_correlation is not None
+                            and adapter._cache_attempt
+                            == (
+                                retry_correlation["call_id"],
+                                retry_correlation["failed_attempt"],
+                            )
+                        ):
+                            await adapter._reconcile_cache()
                         if is_main_agent and adapter._set_spinner is not None:
                             # Runs for valid, malformed, and legacy (uncorrelated)
                             # retries alike: the spinner status predates attempt
@@ -2487,6 +2624,8 @@ async def execute_task_textual(
 
                 # Handle UPDATES stream - for interrupts and todos
                 if current_stream_mode == "updates":
+                    if is_main_agent:
+                        await adapter._reconcile_cache()
                     if not isinstance(data, dict):
                         continue
 
@@ -2500,6 +2639,17 @@ async def execute_task_textual(
                                     resume_value = await hooks.fulfill_interrupt(iv)
                                     pending_hook_resumes[interrupt_obj.id] = (
                                         resume_value
+                                    )
+                                    interrupt_occurred = True
+                                    continue
+                                if (
+                                    isinstance(iv, dict)
+                                    and iv.get("type") == SKILL_TRUST_INTERRUPT_TYPE
+                                ):
+                                    # A malformed request is kept as `None`
+                                    # and denied when the run resumes.
+                                    pending_skill_trust[interrupt_obj.id] = (
+                                        parse_skill_trust_request(iv)
                                     )
                                     interrupt_occurred = True
                                     continue
@@ -2702,6 +2852,8 @@ async def execute_task_textual(
                     if _is_auto_mode_classifier_chunk(metadata):
                         continue
 
+                    await adapter._cache_usage(message, metadata)
+
                     # Only a visible top-level model call represents the active
                     # conversation context. Hidden usage was still recorded above.
                     if recorded_usage is not None:
@@ -2738,6 +2890,16 @@ async def execute_task_textual(
                             await adapter._set_spinner("Thinking")
 
                     if isinstance(message, HumanMessage):
+                        if (
+                            is_main_agent
+                            and adapter._on_skill_pinned is not None
+                            and (pinned := pinned_skill_parts(message)) is not None
+                        ):
+                            try:
+                                adapter._on_skill_pinned(*pinned)
+                            except Exception:
+                                logger.exception("Failed to render pinned skill")
+                            continue
                         content = message.text
                         # Flush pending text for this namespace
                         pending_text = pending_text_by_namespace.get(ns_key, "")
@@ -2759,6 +2921,7 @@ async def execute_task_textual(
                         continue
 
                     if isinstance(message, ToolMessage):
+                        await adapter._reconcile_cache()
                         tool_name = getattr(message, "name", "")
                         # Normalize to the two-value hook domain, fail-closed: an
                         # unexpected provider status is logged and treated as an
@@ -3302,6 +3465,8 @@ async def execute_task_textual(
                             pending_text_by_namespace[ns_key] = ""
                             assistant_message_by_namespace.pop(ns_key, None)
 
+            await adapter._reconcile_cache()
+
             # Reset summarization state if stream ended mid-summarization
             # (e.g. middleware error, stream exhausted before regular chunks).
             if summarization_in_progress:
@@ -3332,6 +3497,9 @@ async def execute_task_textual(
                 ask_user_cancelled = False
                 dismissed_question_count = 0
                 resume_payload: dict[str, Any] = dict(pending_hook_resumes)
+                for interrupt_id, trust_request in pending_skill_trust.items():
+                    approved = await _resolve_skill_trust(adapter, trust_request)
+                    resume_payload[interrupt_id] = {"approved": approved}
 
                 # Tools mounted above start their spinner immediately, but a
                 # tool blocked on HITL approval or `ask_user` input is not
@@ -4095,12 +4263,13 @@ async def execute_task_textual(
                 if not hooks.has_handlers(HookEvent.NOTIFICATION):
                     await dispatch_hook("task.complete", {"thread_id": thread_id})
                 stream_completed = True
+                adapter.stream_completed = True
                 break
 
     except ClientHookStopError:
         _reject_tracked_rows(adapter)
         raise
-    except (asyncio.CancelledError, KeyboardInterrupt):
+    except asyncio.CancelledError, KeyboardInterrupt:
         await _handle_interrupt_cleanup(
             adapter=adapter,
             agent=agent,
@@ -4140,6 +4309,7 @@ async def execute_task_textual(
                 )
         raise
     finally:
+        await adapter._reconcile_cache()
         # A clean stream can leave its successful final attempt open when the
         # best-effort completion event was lost. Commit those scopes; only an
         # aborted stream owns incomplete records that must be discarded.

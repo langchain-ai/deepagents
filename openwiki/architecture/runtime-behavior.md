@@ -1,149 +1,170 @@
 ---
 type: runtime architecture
-title: Talon Host Runtime Behavior
-description: Control flow and isolation rules for Talon's durable agent turns, host command and delivery lifecycle, models, approvals, background work, and scheduled execution.
-tags: [talon, runtime, lifecycle, model-selection, approvals, scheduling, persistence]
+title: Runtime Behavior and Failure Boundaries
+description: Execution-time state, prompt shaping, asynchronous subagent lifecycle, notification delivery, and retry boundaries in Deep Agents. Distinguishes checkpointed state and remote task records from best-effort observation and delivery.
+tags: [deepagents, runtime, middleware, state, persistence, async-subagents, retries, notifications]
 sources:
-  - id: openwiki-source-995d5d95882808a64071f617
-    resource: repo://libs/talon/deepagents_talon/archive_saver.py
-  - id: openwiki-source-cd45145a8c3a51b52eab3c2b
-    resource: repo://libs/talon/deepagents_talon/background.py
-  - id: openwiki-source-0ad7ce4799b63dc215741642
-    resource: repo://libs/talon/deepagents_talon/channels/base.py
-  - id: openwiki-source-4b1e381713dec742c675816b
-    resource: repo://libs/talon/deepagents_talon/context_doctor.py
-  - id: openwiki-source-f55101eb12af3c6ae9b9d823
-    resource: repo://libs/talon/deepagents_talon/cron/jobs.py
-  - id: openwiki-source-363e56d368aecc6ab73d3e2f
-    resource: repo://libs/talon/deepagents_talon/cron/scheduler.py
-  - id: openwiki-source-ef047a301ffca1d2f8ab2c87
-    resource: repo://libs/talon/deepagents_talon/cron/tools.py
-  - id: openwiki-source-6801a88de6305bc8cbdd259f
-    resource: repo://libs/talon/deepagents_talon/host.py
-  - id: openwiki-source-f04ce33d1db21a61b1e6e8b3
-    resource: repo://libs/talon/deepagents_talon/model_selection.py
+  - id: openwiki-source-c101168dc0286ff6c29ed37f
+    resource: repo://libs/code/deepagents_code/model_retry.py
+  - id: openwiki-source-822ae989625ba99d4c7cc08b
+    resource: repo://libs/deepagents/deepagents/_messages_reducer.py
+  - id: openwiki-source-0fc0e47059e4d07e23e50be2
+    resource: repo://libs/deepagents/deepagents/graph.py
+  - id: openwiki-source-41c16d89908bf285e252530e
+    resource: repo://libs/deepagents/deepagents/middleware/_parent_notifier.py
+  - id: openwiki-source-7a16b9a53a07e882b7305459
+    resource: repo://libs/deepagents/deepagents/middleware/_prompt_caching.py
+  - id: openwiki-source-e51c4102234507d1529a2440
+    resource: repo://libs/deepagents/deepagents/middleware/async_subagents.py
+  - id: openwiki-source-46a23efe78a78f9b3cd75d00
+    resource: repo://libs/deepagents/deepagents/middleware/memory.py
+  - id: openwiki-source-13b8cea81b8a29f0950cc836
+    resource: repo://libs/deepagents/deepagents/middleware/patch_tool_calls.py
+  - id: openwiki-source-f763e99e439a1356866a7aa4
+    resource: repo://libs/deepagents/deepagents/middleware/summarization.py
+  - id: openwiki-source-6228ff9cf1d681a771797121
+    resource: repo://libs/deepagents/tests/unit_tests/middleware/test_compaction_recovery.py
+  - id: openwiki-source-6ce85b02eabe462f99e0c912
+    resource: repo://libs/deepagents/tests/unit_tests/test_async_subagents.py
+  - id: openwiki-source-dc64f28a66d10932b86fcd61
+    resource: repo://libs/deepagents/tests/unit_tests/test_messages_reducer.py
   - id: openwiki-source-665a21e2fbd09a89d3f13ac0
     resource: repo://libs/talon/deepagents_talon/runtime.py
-  - id: openwiki-source-267468fe937003d4716fe6c2
-    resource: repo://libs/talon/deepagents_talon/tool_approvals.py
-  - id: openwiki-source-376016a439d0559796a191a0
-    resource: repo://libs/talon/tests/cron/test_scheduler.py
-  - id: openwiki-source-a69daa62c9a3eb9a49f09bf9
-    resource: repo://libs/talon/tests/test_host.py
-  - id: openwiki-source-4d6726e17c8a0c78539a7d33
-    resource: repo://libs/talon/tests/test_runtime.py
-  - id: openwiki-source-1e472b2d67bd29dc25c17e85
-    resource: repo://libs/talon/tests/unit_tests/test_context_doctor.py
-  - id: openwiki-source-817808ec0e85107297729a56
-    resource: repo://libs/talon/tests/unit_tests/test_model_selection.py
+generated: { by: "openwiki/0.4.2", at: "2026-10-24T08:05:08.866Z" }
 verified:
   - by: openwiki/0.4.2
-    at: 2026-09-29T08:06:56.235Z
-generated: { by: "openwiki/0.4.2", at: "2026-09-29T08:06:56.235Z" }
+    at: 2026-10-24T08:05:08.866Z
 ---
 
-# Talon Host Runtime Behavior
+# Runtime Behavior and Failure Boundaries
 
-Talon is an experimental Deep Agents runtime. `DeepAgentRuntime` owns graph construction, checkpoints, turn-local context, and agent execution. `TalonHost` owns managed startup and shutdown, channel commands and admission-facing dispatch, per-conversation serialization and replacement, delivery, background follow-ups, and scheduled dispatch. This boundary lets later configuration changes take effect without altering a graph, model, or approval policy already captured by a running turn. See [Permissions and Human-in-the-Loop](/openwiki/concepts/permissions-hitl.md), [State Persistence](/openwiki/concepts/state-persistence.md), [Talon channel admission](/openwiki/concepts/talon-channel-admission.md), and [Talon scheduling](/openwiki/concepts/talon-scheduling.md).
+`create_deep_agent()` is the composition boundary for a LangGraph agent: it resolves the model and its harness profile, combines caller tools with a selected backend, assembles ordered middleware, and forwards optional checkpointer, store, cache, context, and state schemas. The configured graph has a recursion limit of `9_999` and Deep Agents integration/version metadata. The constructor does not itself make state durable; a caller-provided LangGraph checkpointer does. See [SDK Construction and Execution](/openwiki/architecture/sdk-construction-execution.md) and [State Persistence](/openwiki/concepts/state-persistence.md).
 
-## Host lifecycle and inbound dispatch
+## Middleware order, model profiles, and prompt input
 
-On start, the host starts the runtime, binds each channel's message handler (and reaction handler where supported), starts channels, then starts the scheduler. A partial start is unwound in reverse. On stop it cancels its background dispatcher and in-flight work, stops channels and scheduler, and finally asks the runtime to stop; a failure stopping one component is logged but does not prevent cleanup of the others. `run_until_stopped()` installs signal handlers around this lifecycle.
-
-For each inbound message, the host derives a provider-qualified conversation root, serializes processing with the conversation lock, and records the history scope. It handles `/help` before that lock, then—inside it—handles host commands, pending approval replies, and authorization replies before treating the message as model input. Thus `/new`, `/stop`, `/mcp-reload`, `/context-doctor`, `/model`, `/smart-model`, `/pair`, and history reset do not reach the agent graph. Channel adapters separately enforce their configured exposure policy before dispatching messages to the host; an `open` policy requires an explicit risk acknowledgement because arbitrary senders can otherwise trigger the agent with host access.
-
-```mermaid
-sequenceDiagram
-    participant Channel
-    participant Host as TalonHost
-    participant Runtime as DeepAgentRuntime
-    participant Graph
-    Channel->>Host: inbound ChannelMessage
-    Host->>Host: lock conversation and intercept commands
-    Host->>Host: cancel and recover prior turn if replaced
-    Host->>Runtime: invoke AgentRequest
-    Runtime->>Runtime: capture graph policy and model
-    Runtime->>Graph: invoke or resume
-    Graph-->>Runtime: final text or interrupt
-    Runtime-->>Host: AgentResult
-    Host->>Channel: deliver confirmed reply
-    Host->>Runtime: record delivered reply
-```
-
-This sequence shows the important delivery boundary: a completed model invocation is not yet a delivered reply.
-
-## Startup, graph assembly, and durable state
-
-`DeepAgentRuntime.start()` resolves configured subagents, materializes the tool-approval policy, and compiles the initial graph. Assembly gives `create_deep_agent` the resolved model and subagents, built-in and runtime tools, approval-management tools and `interrupt_on` policy, backend, prompt, skills, memory, caller middleware, task/background middleware, and a checkpointer. The default checkpointer is `InMemorySaver`, so same-process turns using a conversation `thread_id` share graph history.
-
-`ConversationSaver` is the archival checkpointer option. It serializes writes, persists the checkpoint before committed archive revisions, and—if cancelled—waits for both operations to settle before re-raising cancellation. This does not make reply text delivered: the host records a final reply in semantic history only after channel delivery succeeds.
-
-The default local shell backend is deliberately separated from the parent process environment. It uses a fixed safe `PATH`, an allowlisted and scrubbed child environment that excludes loader-hijack and credential-like values, and an artifacts directory created and enforced with mode `0700`. This reduces exposure but does not replace approval policy.
-
-## Reload, invocation isolation, and execution recovery
-
-Before an invocation, `refresh_tools` may replace runtime tools. Explicit MCP and subagent reloads use the same candidate-before-replacement shape: resolve and validate inputs, construct a graph, then assign it under `_tools_lock`. A build failure leaves the previous graph usable. An approval-file revision also compiles a replacement graph at the next invocation.
-
-While holding that lock, `invoke()` captures the graph in a context variable and binds the approval snapshot. Initial graph calls and approval resumes use that captured graph after the lock is released. An active turn is therefore insulated from later MCP, subagent, or approval reloads; `get_agent_tools` reports inactive saved changes and warns that running work retains its original capabilities.
-
-Every graph call uses the request conversation ID as LangGraph `thread_id` and the configured recursion limit. Whole calls retry only classified transient connection, timeout, status, parsing, context-limit, or message-marker failures with capped exponential backoff; cancellation and terminal failures escape. Empty final text follows a separate bounded continuation-nudge path and then a forced summary.
-
-`recover_interrupted()` reads the latest checkpoint, uses `PatchToolCallsMiddleware` to repair dangling assistant tool calls, and appends an interruption marker at the checkpoint configuration. The runtime stops background workers before teardown; if a worker survives cancellation, it refuses to close graph/checkpoint resources that worker might still write.
-
-## Per-conversation replacement and delivery containment
-
-Inbound model turns are serialized by conversation root. Except for commands and pending approval or authorization responses, a new message replaces the active turn: the host increments its generation, cancels it, recovers its graph thread, and starts the replacement. If cancellation or recovery cannot settle within the bound, the conversation is blocked until restart rather than risking concurrent use of its graph thread. A recovery failure still permits the replacement, marked with degraded-recovery metadata.
-
-After model work, the host reacquires the conversation lock and verifies both the current graph thread and generation before delivery. Superseded output is dropped. Successful delivery is passed to `record_delivered_reply`; delivery failure or supersession is not written as a semantic final reply.
-
-All host channel sends, including commands, progress updates, agent replies, and scheduled delivery, use `send_with_retry`. It converts transport exceptions to failed `SendResult` values, retries retryable or recognized transient-network failures twice with exponential delays, and returns a non-retryable failure without raising into the host loop. This confines channel transport faults to the particular delivery decision.
-
-## Model selection and context diagnostics
-
-`/model` is host-wide state, not graph configuration: a non-default selection is stored under a global key in the model-state JSON and attached to subsequent interactive `AgentRequest`s for **all chats**. Only an operator may switch or reset it; listing is available to others. A selection captured in `_Turn` remains fixed for that already-started turn, and the persisted setting survives `/new` and host restart. Scheduled jobs do not receive this chat selection.
-
-The runtime discovers selectable models from the shared catalog, including only providers with required credentials in Talon's environment, plus the startup default. Requested text must match that catalog exactly. Non-default models are lazily built and cached under a lock; a stale or unbuildable saved selection falls back to the default for that turn rather than failing the chat.
-
-A selected model is bound in the `ACTIVE_MODEL` turn context variable. Outer `ModelSelectionMiddleware` substitutes it into main-agent model calls without recompiling the graph. `SelectedModelSummarization` occupies Deep Agents' summarizer slot and maintains per-selected-model summarizers, so compaction uses the selected model's input budget. Delegated subagents retain the startup model and summarizer.
-
-`DeepAgentRuntime.context_doctor(conversation_id)` is an optional, read-only capability served by `/context-doctor`. It reads the active graph checkpoint and produces bounded token estimates without calling a model or changing state. The host resolves the current thread, applies a ten-second bound, and returns generic unavailable/failure responses instead of diagnostic exceptions.
-
-## Approval and unattended authority
-
-The approval file is a bounded, non-symlink regular JSON document with validated exact names and byte-revision compare-and-swap updates. An `ApprovalSnapshot` freezes policy for an invocation and compiles interrupts only for enabled names; updates apply on a later invocation. The runtime batches tool interrupts, audits action names and counts rather than arguments, resumes aligned decisions, and caps approval rounds.
-
-An attended channel turn can receive channel approval and authorization handlers. **Cron and background-delivery requests are unattended:** the host supplies neither interactive handler, and the runtime clears approval-operator authority. A protected-tool interrupt without an eligible handler is auto-rejected, so unattended work fails closed instead of waiting for a human. Detached background workers also clear authorization and approval authority, so they cannot carry it past their owner turn.
-
-## Background subagents and follow-up delivery
-
-For ordinary channel turns, `task` and `start_async_task` create in-memory jobs associated with the owner thread. Capacity and running-work limits apply; jobs use separate task thread IDs, cannot delegate recursively, have no approval operator or authorization handler, have bounded/sanitized results, and have a one-hour timeout. A completed result is injected as data into an owner follow-up turn. The runtime acknowledges result IDs only after that main-agent turn completes, and returns their IDs in `AgentResult` because only the host knows whether the user saw its reply.
-
-The host background loop checks once per second and only launches an unattended follow-up when the owner is idle, current, and unlocked. It spaces repeated attempts with capped exponential delay. Failed consumption increments a bounded delivery counter; after the limit, the result is dropped rather than retried forever. If a result-consuming turn is superseded or cancelled before delivery, the host requeues its IDs. A deliberately suppressed result remains acknowledged because the host intentionally withheld output after the model consumed it.
-
-## Scheduled execution
-
-Cron jobs persist an origin, prompt, parsed minute-granularity schedule, repeat/run state, optional expiry, and claim state. Management tools are scoped to the current `CronOrigin`, preventing one conversation from administering another's jobs. The scheduler first sweeps finished records, then claims a due occurrence by advancing `next_run_at` before execution, records its outcome, suppresses `[SILENT]` output, and logs ticker failures while continuing on the normal tick interval. A claim beyond the `until` grace expires; finished records are retained only where error or unresolved-claim retention needs later pruning.
+The main stack begins with filesystem and optional inline-subagent middleware, then parent notification, summarization, and dangling-tool-call repair. Async-subagent middleware is included only when remote async agents are configured. Profile middleware, skills, provider prompt caching, and optional memory follow; human approval and unsupported-content handling come later. Custom middleware can replace or be inserted before named core layers. Profile exclusions are checked across the main and general-purpose-subagent stacks, and the final excluded-tool filter prevents a later wrapper from restoring an excluded tool.
 
 ```mermaid
 flowchart TD
-    Scan["Ticker scans jobs"] --> Sweep["Sweep finished records"]
-    Sweep --> Claim["Claim due occurrence"]
-    Claim -->|"not due or expired"| Next["Continue tick"]
-    Claim --> Run["Run scheduled graph thread"]
-    Run -->|"timeout"| Repair["Recover interrupted thread"]
-    Repair --> Error["Record error"]
-    Run -->|"failure"| Error
-    Run -->|"silent"| Success["Record success"]
-    Run -->|"text"| Deliver["Deliver to origin"]
-    Deliver --> Success
-    Success --> Next
-    Error --> Next
+    Build["create_deep_agent"] --> FS["Filesystem and inline task middleware"]
+    FS --> Notifier["Parent notifier"]
+    Notifier --> Context["Summarization and tool repair"]
+    Context --> Async["Async middleware when configured"]
+    Async --> Tail["Profile skills cache and memory"]
+    Tail --> Guards["Approval and content guards"]
+    Guards --> Filter["Final excluded tool filter"]
+    Filter --> Agent["Configured LangGraph agent"]
 ```
 
-This flow shows that claiming advances the occurrence before agent execution, while the scheduler records success or error after execution and, for text, after delivery.
+Caption: construction fixes the middleware order; async task tools exist only for configured async subagents.
 
-The host uses a dedicated `<job-id>:talon-cron` thread and holds its conversation lock for each run, preventing overlap. A scheduled-run timeout invokes interruption recovery before it reaches the scheduler. Scheduled requests have no approval or authorization handlers and run subagent delegations inline rather than leaving detached work for a later turn. Inline delegation disables recursion and detached-job management tools, queues behind a separate concurrency limit, has a bounded timeout, converts failures to sanitized output, and clamps returned text.
+Prompt caching is provider-specific. The Anthropic cache middleware is a lazy stand-in: it leaves non-Anthropic requests untouched and imports the provider middleware only on the first Anthropic request, including after a runtime model switch. Bedrock and Fireworks cache middleware are appended only when their optional packages import successfully; an absent optional package is logged at debug level rather than preventing agent construction.
 
-## Focused change checks
+When `memory=` is configured, `MemoryMiddleware` loads each configured `AGENTS.md` source once into private `memory_contents` state before the agent runs. Missing files are ignored, but another backend download error fails the run. At model-call time it appends the sources in configured order, strips HTML comments, and frames them as reference material in the system prompt; the memory guidance explicitly says that file content is untrusted and must not override the user, safety policy, or verified evidence. With `add_cache_control=True`, the last system block receives Anthropic's ephemeral cache breakpoint based on the **runtime** request model, so model-routing changes remain correct; it is a no-op for non-Anthropic models.
 
-When changing this area, preserve candidate-before-replacement graph construction and capture graph, approval, selected model, and host generation per turn. Do not transfer attended authority into cron, detached workers, or background delivery. Repair a cancelled thread before reuse; treat host-confirmed delivery as the semantic-history boundary; and requeue background results only when unintended loss prevented delivery. Focused tests exercise graph refresh isolation, approvals and interruption repair, shell hardening, global model persistence and selected-model summarization, host timeout/replacement/delivery/requeue behavior, scheduled delegation, and scheduler resilience.
+## Checkpointed state and resumable history
+
+`DeepAgentState.messages` uses a `DeltaChannel` with snapshot frequency 50 to avoid quadratic checkpoint growth. Its reducer coerces message-like writes, replaces or deduplicates messages by stable ID, applies removals, honors the last `REMOVE_ALL_MESSAGES` reset, and treats a missing replay base as an empty history. Stable IDs are assigned before checkpoint serialization by LangGraph, rather than during replay; assigning them in the reducer would make replay nondeterministic.
+
+Before each run, `PatchToolCallsMiddleware` finds AI tool calls—valid or invalid—that lack a corresponding `ToolMessage`. It appends an error result for each and returns a message reset plus the repaired sequence. Thus a resumed checkpoint does not send an invalid dangling-call history to a provider; histories with all results are unchanged.
+
+## Compaction preserves the raw log
+
+Summarization changes the **effective request history**, not the raw `messages` state. It stores `_summarization_event`, containing a summary, raw cutoff, and optional backend history path; the next model request is constructed from that event plus preserved messages. Evicted history is offloaded to the configured backend before it is summarized when possible. If that write fails, summarization can still proceed, but the older history has no recovery path.
+
+```mermaid
+flowchart TD
+    Raw["Raw checkpointed messages"] --> Effective["Apply summary event"]
+    Effective --> Count["Count request with system and tools"]
+    Count --> Decision{"Over trigger or budget"}
+    Decision -- "no" --> Model["Call model"]
+    Decision -- "yes or overflow" --> Save["Offload older history when possible"]
+    Save --> Summary["Create summary event"]
+    Summary --> Request["Summary plus preserved tail"]
+    Request --> Model
+    Model --> State["Persist event and any tail replacements"]
+```
+
+Caption: compaction shapes the next request while the checkpoint retains the raw message log and records the summary event separately.
+
+When creating summarized effective history, preserved AI messages lose only reasoning blocks that are bound to preceding Claude history: native Claude reasoning blocks, plus `reasoning` blocks for Claude on Bedrock. Other identified providers retain their reasoning blocks. This is request shaping, not deletion from raw state.
+
+The middleware reserves configured output tokens and five-percent headroom when a model advertises an input limit. A recognized context-overflow response can trigger summarization and **at most one strictly smaller** recovery request. It refuses to resend unchanged input, rejects known irreducible requests before sending them, and surfaces `ContextOverflowError` when recovery is exhausted; unrelated bad requests are not treated as context overflow.
+
+`SummarizationToolMiddleware` exposes manual `compact_conversation`; it never compacts in the background. The tool shares the automatic middleware's engine and `_summarization_event`, but is eligible only around half the automatic trigger. A successful call records a new event and confirmation `ToolMessage`; no eligible cutoff or a summary failure returns a tool message without changing the event. See [Context Management](/openwiki/concepts/context-management.md).
+
+## Async subagents: durable tracking, remote observation
+
+`AsyncSubAgentMiddleware` exposes `start_async_task`, `check_async_task`, `update_async_task`, `cancel_async_task`, and `list_async_tasks`. Starting a task creates a child thread and run through an Agent Protocol client, returns the child thread ID as the stable `task_id`, and stores an `async_tasks` record in parent graph state. The record contains the configured agent, thread, tracked run, status, and timestamps. It is durable parent-side tracking, not the remote server's source of truth: checks and lists refresh it when possible, while an SDK failure returns an error or cached status rather than removing it.
+
+```mermaid
+sequenceDiagram
+    participant Parent as Parent agent
+    participant Middleware as Async middleware
+    participant Remote as Remote Agent Protocol server
+    participant Child as Child thread
+    Parent->>Middleware: start_async_task
+    Middleware->>Remote: create child thread
+    Middleware->>Remote: create background run
+    Remote->>Child: execute delegated task
+    Middleware-->>Parent: persist task ID and running record
+    alt queued update
+        Parent->>Middleware: update_async_task enqueue
+        Middleware->>Remote: create queued follow-up on same thread
+        Middleware-->>Parent: persist pending latest run
+        Note over Child: earlier run may still execute
+    else waiting
+        Child-->>Remote: success run with thread interrupt
+        Remote-->>Middleware: thread is waiting
+        Middleware-->>Parent: persist waiting and interrupt details
+        Note over Parent: user answers on child thread
+    else terminal
+        Child-->>Remote: success error timeout or cancelled
+        Remote-->>Middleware: observed terminal outcome
+        Middleware-->>Parent: persist terminal state and notification
+    end
+```
+
+Caption: a task has a stable child-thread ID while its tracked run may be replaced; `pending`, `waiting`, and terminal outcomes are distinct observation states.
+
+A specification with `url` uses that remote endpoint; one without it uses local ASGI transport. Local ASGI requires asynchronous invocation such as `ainvoke`; synchronous use requires a reachable URL. Task-thread metadata includes the subagent name and, when available, its parent thread. Local children can also receive the parent assistant ID, which allows later local runs on the child thread to locate the parent. A URL-targeted child or `notify_parent=False` child intentionally omits that assistant ID, preventing direct wake-up while preserving parent-thread association. A configured webhook is separately passed to SDK run creation for starts and updates.
+
+`mode="isolated"` sends only the delegated task. Experimental `mode="fork"` snapshots the parent's effective conversation, adds a task preamble, removes local tool artifacts and eviction metadata, hydrates portable blobs, and dispatches the serialized snapshot. It is a one-way handoff: subsequent parent changes and runtime resources are not shared.
+
+### Run replacement, queueing, and cancellation
+
+A task retains its thread-based `task_id` while the tracked `run_id` can change. The default `update_strategy="interrupt"` starts a replacement run on that thread and interrupts current work. With `update_strategy="enqueue"`, the latest run is queued without interrupting active work, so the task becomes `pending` while earlier work may still be running. Only one queued follow-up per task per model turn is accepted, preventing concurrent tool calls that observed the same state from losing run tracking.
+
+An enqueue update records older run IDs as `superseded_run_ids`. If an earlier run's notification starts a parent run, middleware rewrites it so it remains a notification but cannot be read as the queued follow-up's result. Cancelling an enqueued task cancels the latest run and attempts pending or running superseded runs newest-first, avoiding release of a queued run behind active work.
+
+A successful child run can still represent a pause: the child thread's `interrupted` status and pending interrupts map it to nonterminal `waiting`, so the child user can answer on the child thread. In contrast, a server run status of `interrupted` maps to `cancelled`. Observation can follow a newer run after external replacement, while an explicitly parent-cancelled task is not revived by that lookup. A waiting task needs no remote cancel request; the parent records it as `cancelled` and later checks preserve that choice.
+
+## Notifications are best effort; polling closes the gap
+
+`create_deep_agent()` installs `_ParentNotifierMiddleware` in every Deep Agents graph. On asynchronous execution, only the outermost graph of a task run reports final success or a model-call failure. It re-raises `GraphInterrupt`, so a human/approval pause is neither success nor failure, and it records reported run IDs to suppress duplicates.
+
+A direct wake-up is intentionally local and best effort. A child must have both parent thread and assistant IDs; remote targets and notification opt-out lack the latter. The child reads the parent thread and creates a notification run with `multitask_strategy="reject"` only if that parent is `idle` or `error`; it does not interrupt a busy or approval-paused parent. Missing threads, races, and SDK delivery failures are logged but never fail the child.
+
+On the asynchronous parent path, the middleware records a delivered notification, polls unfinished tasks at agent start and before model calls, then polls again after a final answer with no tool calls. A new notification causes one more model turn; unchanged observations are not repeated. Each observation has a five-second limit. SDK errors and timeouts skip only that task, leaving its persisted record eligible for a later poll. Synchronous graph hooks expose the task tools but do not perform this polling.
+
+Notifications carry `deepagents_notification` and clearly label their content as not user input. Child-controlled text is HTML-escaped and clipped; normal image, audio, video, and file blocks can pass through, while reasoning, tool-call, and unknown assistant-only blocks are dropped. Automatically reported failures disclose a failure class rather than exception details. Use `check_async_task` for a full result or pause details.
+
+## Retry scopes are deliberately different
+
+`CodeModelRetryMiddleware` retries the model node only, taking the runtime-selected model's retry budget over its startup fallback. It retries classified transient failures with capped jittered delay or a valid capped `Retry-After`; graph control flow, non-transient failures, and exhausted budgets are re-raised. Therefore completed tool calls are not replayed and a failed provider request is not converted into an AI response.
+
+The middleware emits correlated `model_attempt` start and completion events and a `model_retry` event for each retry. The retry event reports whether visible streamed output may have begun, allowing clients to supersede partial output. Stream-event writer failures are logged without replacing the model result or its error.
+
+Talon adds a separate host-level retry loop around the entire asynchronous graph invocation. It propagates cancellation, uses the conversation ID as the LangGraph thread ID, retries its configured transient signals, and sleeps with capped exponential backoff. Because this scope can repeat a graph invocation, it is not the completed-tool safety boundary supplied by model-node retry middleware. See [Talon Integration](/openwiki/integrations/talon.md).
+
+## Operational change and test focus
+
+- Preserve reducer ID stability, reset behavior, and dangling-tool repair whenever checkpoint or resume behavior changes.
+- Test provider routing and optional cache dependencies: non-Anthropic requests must pass through, and memory cache control must follow the request model rather than the construction-time model.
+- Test memory sources in order, comment stripping, missing-file tolerance, and failure propagation for other backend errors; treat memory files as untrusted input in any customized prompt.
+- Test launch, queued follow-ups, superseded notification rewriting, waiting, external run replacement, cancellation, and cached-status fallback separately.
+- Test direct delivery separately from polling: local routing may wake only an idle or error parent, whereas polling must survive an SDK error or timeout without deleting task state.
+- Test notification escaping, clipping, media forwarding, assistant-block removal, failure redaction, and duplicate suppression at the parent model boundary.
+- Test model-node retry separately from host invocation retry; widening the former to tools changes replay safety.
+
+For configuration examples, see [Subagents and Skills](/openwiki/concepts/subagents-skills.md). For approval pauses, see [Permissions and HITL](/openwiki/concepts/permissions-hitl.md).

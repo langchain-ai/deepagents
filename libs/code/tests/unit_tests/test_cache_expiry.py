@@ -3,29 +3,50 @@
 import asyncio
 from copy import deepcopy
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from langchain_core.messages import BaseMessage, HumanMessage
+from textual.widgets import Static
 
 from deepagents_code.app import DeepAgentsApp, QueuedMessage, TextualSessionState
+from deepagents_code.hooks.client_lifecycle import ClientHookStopError
+from deepagents_code.hooks.models.domain import DcodeNotificationKind
 from deepagents_code.tui.modals.cold_cache import (
     ColdCacheChoice,
     ColdCacheWarningScreen,
 )
 from deepagents_code.tui.widgets.messages import ErrorMessage
+from deepagents_code.tui.widgets.status import StatusBar
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
+    from pathlib import Path
+
     from langchain_core.runnables import RunnableConfig
 
 
 @pytest.fixture(autouse=True)
-def checkpoint_database(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def checkpoint_database(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> Iterator[None]:
+    from deepagents_code.thread_ownership import release_all
+
     monkeypatch.setattr(
         "deepagents_code.sessions.get_db_path", lambda: tmp_path / "sessions.db"
     )
+    yield
+    release_all()
+
+
+def _owned_config(config: RunnableConfig) -> RunnableConfig:
+    """Supply the reservation normally attached by the local HTTP client."""
+    from deepagents_code.thread_ownership import OWNER_KEY, ensure_owned
+
+    configurable = config["configurable"]
+    lease = ensure_owned(configurable["thread_id"])
+    return {**config, "configurable": {**configurable, OWNER_KEY: lease.token}}
 
 
 def _prepare(app: DeepAgentsApp, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -34,6 +55,301 @@ def _prepare(app: DeepAgentsApp, monkeypatch: pytest.MonkeyPatch) -> None:
     app._session_state = TextualSessionState(thread_id="source")
     assert app._status_bar is not None
     app._status_bar.cache_expires_at = datetime.now(UTC) - timedelta(seconds=1)
+
+
+@pytest.mark.parametrize("remaining", [None, -1, 0, 1, 60, 61])
+async def test_cache_expiring_notification_window(
+    remaining: int | None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    now = datetime.now(UTC)
+    monkeypatch.setattr("deepagents_code.app.datetime", MagicMock(now=lambda _: now))
+    app = DeepAgentsApp()
+    app._lc_thread_id = "source"
+    app._status_bar = StatusBar()
+    app._status_bar.cache_expires_at = (
+        now + timedelta(seconds=remaining) if remaining is not None else None
+    )
+    notify = AsyncMock()
+    toast = MagicMock()
+    monkeypatch.setattr(type(app._hooks), "notify", notify)
+    monkeypatch.setattr(app, "notify", toast)
+
+    await app._notify_cache_expiring()
+    await app._notify_cache_expiring()
+
+    if remaining in (1, 60):
+        notify.assert_awaited_once_with(
+            DcodeNotificationKind.CACHE_EXPIRING,
+            "Prompt-cache retention may end within 60 seconds.",
+            title="Prompt cache expiring",
+        )
+        toast.assert_called_once_with(
+            "Prompt-cache retention may end within 60 seconds.",
+            title="Prompt cache expiring",
+            severity="warning",
+            markup=False,
+        )
+    else:
+        notify.assert_not_awaited()
+        toast.assert_not_called()
+
+
+async def test_cache_expiring_notification_waits_for_reconciliation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = DeepAgentsApp()
+    app._lc_thread_id = "source"
+    app._status_bar = StatusBar()
+    app._status_bar.cache_expires_at = datetime.now(UTC) + timedelta(seconds=20)
+    notify = AsyncMock()
+    toast = MagicMock()
+    monkeypatch.setattr(type(app._hooks), "notify", notify)
+    monkeypatch.setattr(app, "notify", toast)
+    monkeypatch.setattr(app, "_set_spinner", AsyncMock())
+    monkeypatch.setattr(app, "_schedule_git_branch_refresh", MagicMock())
+    monkeypatch.setattr(app, "_process_next_from_queue", AsyncMock())
+    monkeypatch.setattr(app, "_maybe_drain_deferred", AsyncMock())
+
+    app._on_user_visible_output_started()
+    await app._on_cache_reconciliation(True, None, False)
+    await app._notify_cache_expiring()
+    notify.assert_not_awaited()
+    toast.assert_not_called()
+
+    await app._on_cache_reconciliation(False, None, False)
+    assert app._active_turn_visible_output_started
+    await app._notify_cache_expiring()
+    await app._notify_cache_expiring()
+    notify.assert_awaited_once()
+    toast.assert_called_once()
+
+
+@pytest.mark.parametrize("failure", [None, ClientHookStopError, RuntimeError])
+async def test_cache_expiring_dedup_and_rearm(
+    failure: type[Exception] | None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app = DeepAgentsApp()
+    app._lc_thread_id = "source"
+    app._status_bar = StatusBar()
+    expires_at = datetime.now(UTC) + timedelta(seconds=20)
+    app._status_bar.cache_expires_at = expires_at
+    notify = AsyncMock(side_effect=failure)
+    toast = MagicMock()
+    monkeypatch.setattr(type(app._hooks), "notify", notify)
+    monkeypatch.setattr(app, "notify", toast)
+    app._thread_switching = True
+    await app._notify_cache_expiring()
+    app._thread_switching = False
+    app._exiting = True
+    await app._notify_cache_expiring()
+    notify.assert_not_awaited()
+    toast.assert_not_called()
+    app._exiting = False
+    await app._notify_cache_expiring()
+    app._lc_thread_id = "other"
+    await app._notify_cache_expiring()
+    app._lc_thread_id = "source"
+    await app._notify_cache_expiring()
+    assert notify.await_count == toast.call_count == 2
+    app._status_bar.cache_expires_at = expires_at + timedelta(seconds=1)
+    await app._notify_cache_expiring()
+    assert notify.await_count == toast.call_count == 3
+
+
+async def test_cache_expiring_timer_runs_without_prompt_or_refresh(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = DeepAgentsApp()
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def notify(*_args: object, **_kwargs: object) -> None:
+        started.set()
+        await release.wait()
+
+    hook = AsyncMock(side_effect=notify)
+    process = AsyncMock()
+    handoff = AsyncMock()
+    monkeypatch.setattr(type(app._hooks), "notify", hook)
+    monkeypatch.setattr(app, "_process_message", process)
+    monkeypatch.setattr(app, "_handoff_expired_cache", handoff)
+    monkeypatch.setattr("deepagents_code.app._load_cache_prompt_mode", lambda: "off")
+    async with app.run_test(notifications=True) as pilot:
+        await pilot.pause()
+        _prepare(app, monkeypatch)
+        assert app._status_bar is not None
+        app._status_bar.cache_expires_at = datetime.now(UTC) + timedelta(seconds=20)
+        app._cold_cache_suppressed_for_session = True
+        app._cold_cache_warning_threshold_usd = 0
+        app._set_agent_running(True)
+        await asyncio.wait_for(started.wait(), timeout=5)
+        app._check_cache_expiring()
+        app._check_cache_expiring()
+        assert hook.await_count == 1
+        assert app._chat_input is not None
+        app._chat_input.value = "draft remains editable"
+        await pilot.pause()
+        assert app._chat_input.value == "draft remains editable"
+        assert app.query_one("Toast").region.height > 0
+        assert any(
+            notice.title == "Prompt cache expiring" for notice in app._notifications
+        )
+        release.set()
+        assert app._cache_expiring_worker is not None
+        await app._cache_expiring_worker.wait()
+        app._check_cache_expiring()
+        await app._cache_expiring_worker.wait()
+        assert hook.await_count == 1
+        assert not isinstance(app.screen, ColdCacheWarningScreen)
+        process.assert_not_awaited()
+        handoff.assert_not_awaited()
+
+
+async def test_cache_expiring_toast_without_hooks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = DeepAgentsApp()
+    async with app.run_test(notifications=True) as pilot:
+        await pilot.pause()
+        _prepare(app, monkeypatch)
+        assert not app._hooks.enabled
+        assert app._status_bar is not None
+        app._status_bar.cache_expires_at = datetime.now(UTC) + timedelta(seconds=45)
+        await app._notify_cache_expiring()
+        await app._notify_cache_expiring()
+        await pilot.pause()
+        notices = [
+            notice
+            for notice in app._notifications
+            if notice.title == "Prompt cache expiring"
+        ]
+        assert len(notices) == 1
+        assert notices[0].message == "Prompt-cache retention may end within 60 seconds."
+        assert app.query_one("Toast").region.height > 0
+
+
+async def test_expiry_banner_survives_activity_and_clears_on_refresh(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        banner = app.query_one("#cache-expired-banner", Static)
+        assert not banner.display
+        _prepare(app, monkeypatch)
+        assert app._status_bar is not None
+        expires_at = datetime(2025, 1, 2, 15, 4, 5, tzinfo=UTC)
+        clock = MagicMock(wraps=datetime)
+        monkeypatch.setattr("deepagents_code.app.datetime", clock)
+        app._status_bar.cache_expires_at = expires_at
+        app._agent_running = True
+        app._cold_cache_suppressed_for_session = True
+        expired_at = expires_at.astimezone().strftime("%H:%M:%S")
+        for elapsed, age in (
+            (timedelta(seconds=0), "just now"),
+            (timedelta(seconds=59), "just now"),
+            (timedelta(minutes=1), "1 minute ago"),
+            (timedelta(minutes=59), "59 minutes ago"),
+            (timedelta(hours=1), "1 hour ago"),
+            (timedelta(hours=23), "23 hours ago"),
+            (timedelta(days=1), "1 day ago"),
+            (timedelta(days=2), "2 days ago"),
+        ):
+            clock.now.return_value = expires_at + elapsed
+            app._check_cache_expiry()
+            await pilot.pause()
+            assert banner.display
+            assert (
+                str(banner.content) == f"Prompt cache expired at {expired_at} ({age})"
+            )
+            assert banner.region.y <= 1
+        app._status_bar.cache_expires_at = expires_at + timedelta(hours=1)
+        app._check_cache_expiry()
+        expired_at = app._status_bar.cache_expires_at.astimezone().strftime("%H:%M:%S")
+        assert (
+            str(banner.content) == f"Prompt cache expired at {expired_at} (1 day ago)"
+        )
+        app._status_bar.cache_expires_at = clock.now.return_value + timedelta(minutes=5)
+        app._check_cache_expiry()
+        assert not banner.display
+        app._status_bar.cache_expires_at = None
+        app._check_cache_expiry()
+        assert not banner.display
+
+
+@pytest.mark.parametrize("outcome", ["read", "write", "none", "expired"])
+async def test_expiry_banner_follows_request_reconciliation(
+    outcome: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from langchain_core.messages import AIMessageChunk
+
+    from deepagents_code.tui.textual_adapter import TextualUIAdapter
+
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        _prepare(app, monkeypatch)
+        app._agent_running = True
+        app._cold_cache_suppressed_for_session = True
+        banner = app.query_one("#cache-expired-banner")
+        app._check_cache_expiry()
+        assert banner.display
+        assert app._status_bar is not None
+        previous_expiry = app._status_bar.cache_expires_at
+        requested_at = datetime.now(UTC) - timedelta(
+            minutes=6 if outcome == "expired" else 1
+        )
+        adapter = TextualUIAdapter(
+            mount_message=AsyncMock(),
+            update_status=MagicMock(),
+            request_approval=AsyncMock(),
+            on_cache_reconciliation=app._on_cache_reconciliation,
+        )
+        start = {
+            "type": "model_attempt",
+            "phase": "start",
+            "call_id": "banner-request",
+            "attempt": 0,
+            "cache_activity": {
+                "requested_at": requested_at.isoformat(),
+                "model_spec": "anthropic:claude-sonnet-4-6",
+                "endpoint": "default",
+                "params": None,
+            },
+        }
+        await adapter._cache_attempt_event(start)
+        assert not banner.display
+        app._check_cache_expiry()
+        assert not banner.display
+        assert app._status_bar.cache_expires_at == previous_expiry
+        app._on_user_visible_output_started()
+        assert not banner.display
+        if outcome == "none":
+            await adapter._cache_attempt_event({**start, "phase": "complete"})
+            assert app._status_bar.cache_expires_at == previous_expiry
+        else:
+            await adapter._cache_usage(
+                AIMessageChunk(
+                    content="still streaming",
+                    usage_metadata={
+                        "input_tokens": 100,
+                        "output_tokens": 1,
+                        "total_tokens": 101,
+                        "input_token_details": {
+                            "cache_creation"
+                            if outcome == "write"
+                            else "cache_read": 100
+                        },
+                    },
+                ),
+                {"dcode_cache_attempt": ["banner-request", 0]},
+            )
+            assert app._status_bar.cache_expires_at == requested_at + timedelta(
+                minutes=5
+            )
+        assert not app._cache_reconciliation_pending
+        assert app._agent_running
+        assert banner.display is (outcome in {"none", "expired"})
 
 
 @pytest.mark.parametrize("size", [(80, 20), (60, 16)])
@@ -116,6 +432,8 @@ async def test_defers_busy_and_disabled_then_rearms_new_window(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     app = DeepAgentsApp()
+    # Exercise scheduling independently of model identity and cost eligibility.
+    monkeypatch.setattr(app, "_cold_cache_estimate", AsyncMock(return_value=None))
     async with app.run_test() as pilot:
         await pilot.pause()
         _prepare(app, monkeypatch)
@@ -335,7 +653,7 @@ async def test_seeding_handoff_preserves_active_workspace(
 ) -> None:
     from deepagents_code.client.remote_client import RemoteAgent
 
-    remote = RemoteAgent("http://localhost:8123")
+    remote = RemoteAgent("http://localhost:8123", local_ownership=False)
     bindings: dict[str, str] = {}
 
     def bind(
@@ -420,11 +738,13 @@ async def test_handoff_child_is_discoverable_and_resumable(
         )
 
         async def update_state(
-            config: "RunnableConfig", values: dict[str, object] | None, *, as_node: str
+            config: RunnableConfig, values: dict[str, object] | None, *, as_node: str
         ) -> None:
             # The HTTP state API forwards the thread ID, but drops config metadata.
             await graph.aupdate_state(
-                {"configurable": {"thread_id": config["configurable"]["thread_id"]}},
+                _owned_config(
+                    {"configurable": {"thread_id": config["configurable"]["thread_id"]}}
+                ),
                 values,
                 as_node=as_node,
             )
@@ -450,10 +770,12 @@ async def test_handoff_child_is_discoverable_and_resumable(
         assert await sessions.get_thread_agent(child_id) == owner
         continued = await graph.ainvoke(
             {"messages": [HumanMessage("Continue from the summary.")]},
-            {
-                "configurable": {"thread_id": child_id},
-                "metadata": {"agent_name": owner, "cwd": app._cwd},
-            },
+            _owned_config(
+                {
+                    "configurable": {"thread_id": child_id},
+                    "metadata": {"agent_name": owner, "cwd": app._cwd},
+                }
+            ),
         )
         assert [message.text for message in continued["messages"]] == [
             state.values["messages"][0].text,
@@ -555,7 +877,7 @@ async def test_handoff_with_separate_server_checkpoints(
 
     app = DeepAgentsApp(assistant_id="researcher")
     app._lc_thread_id = "source"
-    remote = RemoteAgent("http://server:8123")
+    remote = RemoteAgent("http://server:8123", local_ownership=False)
     graph = create_agent(
         FakeListChatModel(responses=["Unused"]),
         middleware=[ResumeStateMiddleware()],
@@ -563,7 +885,7 @@ async def test_handoff_with_separate_server_checkpoints(
     )
 
     async def update_state(
-        config: "RunnableConfig", values: dict[str, object] | None, *, as_node: str
+        config: RunnableConfig, values: dict[str, object] | None, *, as_node: str
     ) -> None:
         await graph.aupdate_state(
             {"configurable": config["configurable"]}, values, as_node=as_node
@@ -690,10 +1012,12 @@ async def test_handoff_preserves_shell_context(
             middleware=[ResumeStateMiddleware()],
             checkpointer=checkpointer,
         )
-        await graph.ainvoke({"messages": [HumanMessage("original")]}, source_config)
+        await graph.ainvoke(
+            {"messages": [HumanMessage("original")]}, _owned_config(source_config)
+        )
 
         async def update_state(
-            config: "RunnableConfig",
+            config: RunnableConfig,
             values: dict[str, object] | None,
             *,
             as_node: str | None = None,
@@ -707,7 +1031,9 @@ async def test_handoff_preserves_shell_context(
                 raise asyncio.CancelledError
             # Cross the same serialization boundary as the HTTP client: the graph
             # must not assign IDs back onto the app's buffered message objects.
-            await graph.aupdate_state(config, deepcopy(values), as_node=as_node)
+            await graph.aupdate_state(
+                _owned_config(config), deepcopy(values), as_node=as_node
+            )
             if outcome == "lost_response":
                 msg = "response lost"
                 raise RuntimeError(msg)
@@ -785,6 +1111,7 @@ async def test_send_timing_restores_draft_without_spending(
     mode: str, keys: tuple[str, ...], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     app = DeepAgentsApp()
+    monkeypatch.setattr(app, "_cold_cache_estimate", AsyncMock(return_value=None))
     process = AsyncMock()
     monkeypatch.setattr(app, "_process_message", process)
     monkeypatch.setattr("deepagents_code.app._load_cache_prompt_mode", lambda: mode)
@@ -988,6 +1315,7 @@ async def test_expiry_send_action_dispatches_once_in_current_thread(
     outcome: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     app = DeepAgentsApp()
+    monkeypatch.setattr(app, "_cold_cache_estimate", AsyncMock(return_value=None))
 
     async def send(_text: str, _mode: str) -> None:
         assert app._lc_thread_id == "source"
@@ -1037,6 +1365,7 @@ async def test_handoff_pauses_submission_but_keeps_draft_editable(
     outcome: str, submitted: bool, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     app = DeepAgentsApp()
+    monkeypatch.setattr(app, "_cold_cache_estimate", AsyncMock(return_value=None))
     started = asyncio.Event()
     release = asyncio.Event()
 
@@ -1104,6 +1433,7 @@ async def test_cancel_handoff_restores_submission(
     cancel: str, submitted: bool, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     app = DeepAgentsApp()
+    monkeypatch.setattr(app, "_cold_cache_estimate", AsyncMock(return_value=None))
     started = asyncio.Event()
     release = asyncio.Event()
 
@@ -1163,6 +1493,7 @@ async def test_handoff_does_not_restore_draft_into_unrelated_thread(
     other_draft: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     app = DeepAgentsApp()
+    monkeypatch.setattr(app, "_cold_cache_estimate", AsyncMock(return_value=None))
 
     def summarize(**_kwargs: object) -> dict[str, str]:
         # The user leaves the source while its summary is being generated.
@@ -1391,6 +1722,7 @@ async def test_resumed_thread_with_lapsed_window_does_not_prompt(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     app = DeepAgentsApp()
+    monkeypatch.setattr(app, "_cold_cache_estimate", AsyncMock(return_value=None))
 
     async def restore_timing() -> None:  # noqa: RUF029  # mock contract
         # The checkpoint's last request is well past its retention window.
@@ -1581,3 +1913,36 @@ def test_mode_resolution_rejects_unknown_values(
         assert _load_cache_prompt_mode() == expected
     finally:
         reset_config_resolver()
+
+
+async def test_streamed_cache_activity_survives_stale_checkpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = DeepAgentsApp()
+    app._lc_thread_id = "source"
+    app._status_bar = StatusBar()
+    monkeypatch.setattr(app, "_refresh_cache_display", MagicMock())
+    now = datetime.now(UTC)
+    from deepagents_code.cold_cache import CacheActivity
+
+    current = CacheActivity(
+        requested_at=now.isoformat(),
+        model_spec="anthropic:claude-sonnet-4-6",
+        endpoint="default",
+        params=None,
+    )
+    await app._on_cache_reconciliation(True, None, False)
+    await app._on_cache_reconciliation(False, current, True)
+    app._sync_cache_state_from_state(
+        {
+            "_last_cache_use": {
+                **current,
+                "requested_at": (now - timedelta(minutes=4)).isoformat(),
+            },
+            "_last_cache_write": None,
+        }
+    )
+    await app._refresh_cache_timing()
+    assert app._last_cache_use == current
+    assert app._last_cache_write == current
+    assert app._status_bar.cache_expires_at == now + timedelta(minutes=5)

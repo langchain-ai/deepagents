@@ -134,7 +134,7 @@ def _candidate_from_localtime(path: Path) -> str | None:
 def _candidate_from_timezone_file(path: Path) -> str | None:
     try:
         return path.read_text(encoding="utf-8").strip() or None
-    except (OSError, ValueError):
+    except OSError, ValueError:
         # A missing file and an undecodable one are both "no answer here".
         # UnicodeDecodeError is a ValueError, not an OSError.
         logger.debug("Could not read host timezone from %s", path, exc_info=True)

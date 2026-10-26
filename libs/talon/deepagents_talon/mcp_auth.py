@@ -43,6 +43,7 @@ from mcp.shared.auth import (
 from mcp.types import LATEST_PROTOCOL_VERSION
 from pydantic import AnyHttpUrl, BaseModel, ConfigDict, SecretStr, ValidationError
 
+from deepagents_talon._version import __version__
 from deepagents_talon.authorization import (
     AuthorizationBinding,
     AuthorizationURL,
@@ -53,6 +54,7 @@ from deepagents_talon.authorization import (
     current_authorization_invocation,
 )
 from deepagents_talon.mcp_config import locked_path, warn_agent_workspace_path
+from deepagents_talon.mcp_oauth import MCPOAuthConfig
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Awaitable, Callable
@@ -169,6 +171,7 @@ class FileTokenStorage:
         server_url: str,
         force_authorization: bool = False,
         agent_root: Path | None = None,
+        oauth: MCPOAuthConfig | None = None,
     ) -> None:
         """Bind storage to a server name and URL.
 
@@ -186,8 +189,12 @@ class FileTokenStorage:
             force_authorization: Whether the first token read should require a
                 fresh OAuth flow without deleting the stored credential.
             agent_root: Agent workspace root. Defaults to the process workspace.
+            oauth: Explicit settings used to isolate incompatible credentials.
         """
-        digest = hashlib.sha256(server_url.encode()).hexdigest()[:12]
+        identity = server_url
+        if oauth is not None and oauth != MCPOAuthConfig():
+            identity += "\n" + oauth.storage_identity()
+        digest = hashlib.sha256(identity.encode()).hexdigest()[:12]
         directories: list[Path] = []
         current = Path.home()
         for part in _TOKEN_DIR.parts:
@@ -686,7 +693,7 @@ async def _request_json(
             content.extend(chunk)
     try:
         value = json.loads(content)
-    except (UnicodeDecodeError, json.JSONDecodeError):
+    except UnicodeDecodeError, json.JSONDecodeError:
         return None
     return value if isinstance(value, dict) else None
 
@@ -774,7 +781,12 @@ class _OAuthSafeTransport(SSRFSafeTransport):
 
 
 def _oauth_http_client() -> httpx.AsyncClient:
+    """Identify OAuth requests; DEEPAGENTS_TALON_MCP_USER_AGENT overrides the default."""
     return httpx.AsyncClient(
+        headers={
+            "User-Agent": os.environ.get("DEEPAGENTS_TALON_MCP_USER_AGENT")
+            or f"deepagents-talon/{__version__}"
+        },
         transport=_OAuthSafeTransport(),
         timeout=_HTTP_TIMEOUT_SECONDS,
         follow_redirects=False,
@@ -800,6 +812,8 @@ async def _validate_oauth_url(url: str) -> None:
 
 
 class _PersistedExpiryOAuthProvider(OAuthClientProvider):
+    configured_scopes: tuple[str, ...] | None = None
+
     async def _initialize(self) -> None:
         storage = self.context.storage
         if not isinstance(storage, FileTokenStorage):
@@ -832,7 +846,7 @@ class _PersistedExpiryOAuthProvider(OAuthClientProvider):
         await _validate_oauth_url(str(request.url))
         try:
             async with asyncio.timeout(_HTTP_TIMEOUT_SECONDS), _oauth_http_client() as client:
-                guarded = httpx.Request(
+                guarded = client.build_request(
                     request.method,
                     str(request.url),
                     headers=request.headers.raw,
@@ -879,6 +893,8 @@ class _PersistedExpiryOAuthProvider(OAuthClientProvider):
                 await _validate_oauth_url(str(endpoint))
 
     async def _perform_authorization(self) -> httpx2.Request:
+        if self.configured_scopes is not None:
+            self.context.client_metadata.scope = " ".join(self.configured_scopes)
         await self._validate_metadata()
         if self.context.oauth_metadata is None:
             base = self.context.get_authorization_base_url(self.context.server_url)
@@ -939,6 +955,7 @@ def build_oauth_provider(
     server_url: str,
     storage: FileTokenStorage,
     interactive: bool,
+    oauth: MCPOAuthConfig | None = None,
 ) -> OAuthClientProvider:
     """Build an MCP SDK OAuth provider for Talon.
 
@@ -947,11 +964,15 @@ def build_oauth_provider(
         server_url: Remote MCP endpoint URL.
         storage: Credential storage bound to the server identity.
         interactive: Whether to use terminal instead of channel authorization.
+        oauth: Optional assigned public-client settings.
 
     Returns:
         A configured MCP SDK OAuth provider.
     """
-    redirect_uri = _SLACK_REDIRECT_URI if _is_slack_mcp_url(server_url) else _REDIRECT_URI
+    oauth = oauth or MCPOAuthConfig()
+    redirect_uri = oauth.callback_url or (
+        _SLACK_REDIRECT_URI if _is_slack_mcp_url(server_url) else _REDIRECT_URI
+    )
     if interactive:
         fallback, callback = _interactive_handlers(redirect_uri)
     else:
@@ -959,11 +980,15 @@ def build_oauth_provider(
     provider: OAuthClientProvider | None = None
 
     async def redirect(url: str) -> None:
-        if provider is not None and await _authorize_discovered_device(
-            server_name,
-            storage,
-            provider.context,
-            interactive=interactive,
+        if (
+            oauth.client_id is None
+            and provider is not None
+            and await _authorize_discovered_device(
+                server_name,
+                storage,
+                provider.context,
+                interactive=interactive,
+            )
         ):
             raise DeviceAuthorizationCompletedError
         await fallback(url)
@@ -975,17 +1000,29 @@ def build_oauth_provider(
         redirect_handler=redirect,
         callback_handler=callback,
     )
+    provider.configured_scopes = oauth.scopes
     return provider
 
 
-async def prepare_oauth_login(*, server_url: str, storage: FileTokenStorage) -> None:
+async def prepare_oauth_login(
+    *, server_url: str, storage: FileTokenStorage, oauth: MCPOAuthConfig | None = None
+) -> None:
     """Preseed provider-specific OAuth client information when required.
 
     Args:
         server_url: Remote MCP endpoint URL.
         storage: Credential storage bound to the server identity.
+        oauth: Optional assigned public-client settings.
     """
-    if _is_slack_mcp_url(server_url):
+    if oauth is not None and oauth.client_id is not None:
+        redirect_uri = oauth.callback_url or (
+            _SLACK_REDIRECT_URI if _is_slack_mcp_url(server_url) else _REDIRECT_URI
+        )
+        client_info = OAuthClientInformationFull(
+            **_client_metadata(redirect_uri).model_dump(), client_id=oauth.client_id
+        )
+        await storage.set_client_info(client_info)
+    elif _is_slack_mcp_url(server_url):
         await _preseed_slack_client_info(storage)
     else:
         await prepare_device_client(server_url, storage)
@@ -1022,6 +1059,7 @@ def _channel_handlers(
             server_name=server_name,
             invocation_id=invocation_id,
             expires_at=asyncio.get_running_loop().time() + _AUTHORIZATION_TIMEOUT_SECONDS,
+            redirect_uri=redirect_uri,
         )
         attempt.binding = binding
         await handler(AuthorizationURL(binding=binding, url=url))
@@ -1064,15 +1102,35 @@ def _parse_callback_url(raw: str, redirect_uri: str = _REDIRECT_URI) -> Authoriz
     return AuthorizationCodeResult(code=code, state=state, iss=query.get("iss", [None])[0])
 
 
-def extract_oauth_callback_url(text: str) -> str | None:
-    """Return a recognized Talon OAuth callback URL from a channel message.
+def extract_oauth_callback_url(text: str, *, redirect_uri: str | None = None) -> str | None:
+    """Return a callback matching the configured URI or Talon's default endpoints.
+
+    Args:
+        text: Raw channel message text.
+        redirect_uri: Exact redirect URI bound to the pending authorization.
+
+    Returns:
+        The normalized matching callback URL, or `None`.
+    """
+    candidate = extract_loopback_oauth_callback_url(text)
+    if candidate is None:
+        return None
+    parsed = urlparse(candidate)
+    endpoint = (parsed.scheme, parsed.netloc, parsed.path)
+    if redirect_uri is None:
+        return candidate if endpoint in _OAUTH_CALLBACK_ENDPOINTS else None
+    expected = urlparse(redirect_uri)
+    return candidate if endpoint == (expected.scheme, expected.netloc, expected.path) else None
+
+
+def extract_loopback_oauth_callback_url(text: str) -> str | None:
+    """Recognize loopback callback credentials for interception, not authorization.
 
     Args:
         text: Raw channel message text.
 
     Returns:
-        The normalized callback URL, or `None` when the message is not a
-        recognized callback.
+        A normalized callback-shaped loopback URL, or `None`.
     """
     candidate = text.strip()
     if candidate.startswith("<") and candidate.endswith(">"):
@@ -1084,9 +1142,17 @@ def extract_oauth_callback_url(text: str) -> str | None:
         return None
     try:
         parsed = urlparse(candidate)
+        port = parsed.port
+        if (
+            parsed.scheme != "http"
+            or parsed.hostname not in {"localhost", "127.0.0.1", "::1"}
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.fragment
+            or port == 0
+        ):
+            return None
     except ValueError:
-        return None
-    if (parsed.scheme, parsed.netloc, parsed.path) not in _OAUTH_CALLBACK_ENDPOINTS:
         return None
     query = parse_qs(parsed.query)
     if not query.get("state") or not (query.get("code") or query.get("error")):
@@ -1141,6 +1207,20 @@ def format_login_error(exc: BaseException) -> str:
         the message is empty, as `str(OSError())` is. Both call sites are
         themselves error handlers, so this must not raise.
     """
+    if isinstance(exc, BaseExceptionGroup) and exc.exceptions:
+        exc = exc.exceptions[0]
+    if isinstance(exc, MCPAuthorizationError):
+        return str(exc) or "OAuth authorization failed; retry login."
+    if isinstance(exc, TimeoutError):
+        return "OAuth login timed out; retry login and complete the callback promptly."
+    if isinstance(exc, (httpx.HTTPError, httpx2.HTTPError)):
+        return "OAuth network request failed; check connectivity and retry login."
+    if type(exc).__name__ == "OAuthFlowError":
+        return (
+            "OAuth login was rejected; verify the assigned client_id, registered callback_url "
+            "and scopes, then retry with a fresh callback. Servers without dynamic registration "
+            "require an explicit client_id."
+        )
     if isinstance(exc, (OSError, ValidationError, TypeError, ValueError)):
         first = str(exc).splitlines()
         if first and first[0]:

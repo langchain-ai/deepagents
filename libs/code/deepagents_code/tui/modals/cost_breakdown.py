@@ -7,20 +7,33 @@ from typing import TYPE_CHECKING, ClassVar
 
 from textual.binding import Binding, BindingType
 from textual.containers import VerticalScroll
-from textual.content import Content
 from textual.screen import ModalScreen
-from textual.widgets import Static
+from textual.widgets import Markdown, Static
 
 from deepagents_code.clipboard import copy_text_to_clipboard
 from deepagents_code.config import get_glyphs
+from deepagents_code.tui.modals._cost_breakdown import (
+    format_cost_breakdown_table as format_cost_breakdown_table,
+)
 from deepagents_code.unicode_security import sanitize_control_chars
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from textual.app import ComposeResult
+    from textual.app import App, ComposeResult
 
 logger = logging.getLogger(__name__)
+
+
+def open_cost_breakdown(app: App, provider: Callable[[], str]) -> None:
+    """Open the live breakdown without stacking duplicate modals."""
+    if any(isinstance(screen, CostBreakdownScreen) for screen in app.screen_stack):
+        return
+    breakdown = provider()
+    if not breakdown:
+        app.notify("No cost details to show for this session yet.", markup=False)
+        return
+    app.push_screen(CostBreakdownScreen(breakdown, provider))
 
 
 class CostBreakdownScreen(ModalScreen[None]):
@@ -34,7 +47,7 @@ class CostBreakdownScreen(ModalScreen[None]):
     CSS = """
     CostBreakdownScreen { align: center middle; }
     CostBreakdownScreen > VerticalScroll {
-        width: 78; max-width: 92%; height: auto; max-height: 85%;
+        width: 86; max-width: 92%; height: auto; max-height: 85%;
         background: $surface; border: solid $primary; padding: 1 2;
     }
     CostBreakdownScreen .cost-breakdown-title {
@@ -42,7 +55,7 @@ class CostBreakdownScreen(ModalScreen[None]):
         text-align: center; margin-bottom: 1;
     }
     CostBreakdownScreen .cost-breakdown-body {
-        height: auto; color: $text;
+        height: auto; color: $text; padding: 0;
     }
     CostBreakdownScreen .cost-breakdown-help {
         height: auto; color: $text-muted; text-style: italic;
@@ -51,7 +64,7 @@ class CostBreakdownScreen(ModalScreen[None]):
     """
 
     def __init__(self, breakdown: str, provider: Callable[[], str]) -> None:
-        """Initialize with a plain-text breakdown and its live provider."""
+        """Initialize with a Markdown breakdown and its live provider."""
         super().__init__()
         self._provider = provider
         self._breakdown = sanitize_control_chars(
@@ -66,9 +79,7 @@ class CostBreakdownScreen(ModalScreen[None]):
         """
         with VerticalScroll():
             yield Static("Token & Cost Breakdown", classes="cost-breakdown-title")
-            yield Static(
-                Content(self._breakdown), classes="cost-breakdown-body", markup=False
-            )
+            yield Markdown(self._breakdown, classes="cost-breakdown-body")
             separator = f" {get_glyphs().separator} "
             yield Static(
                 separator.join(("c copy", "Esc close")),
@@ -95,7 +106,7 @@ class CostBreakdownScreen(ModalScreen[None]):
         )
         if breakdown != self._breakdown:
             self._breakdown = breakdown
-            self.query_one(".cost-breakdown-body", Static).update(Content(breakdown))
+            self.query_one(".cost-breakdown-body", Markdown).update(breakdown)
 
     def action_copy(self) -> None:
         """Copy the complete breakdown to the clipboard."""

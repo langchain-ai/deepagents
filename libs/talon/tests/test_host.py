@@ -262,10 +262,11 @@ class ApprovalAgent(BlockingAgent):
 
 
 class AuthorizationAgent(BlockingAgent):
-    def __init__(self, *, terminal: bool = False) -> None:
+    def __init__(self, *, terminal: bool = False, redirect_uri: str | None = None) -> None:
         super().__init__()
         self.callbacks: list[str] = []
         self.terminal = terminal
+        self.redirect_uri = redirect_uri
 
     async def invoke(self, request: AgentRequest) -> AgentResult:
         self.requests.append(request)
@@ -276,6 +277,7 @@ class AuthorizationAgent(BlockingAgent):
             server_name="notion",
             invocation_id="tool-call-1",
             expires_at=asyncio.get_running_loop().time() + 30,
+            redirect_uri=self.redirect_uri,
         )
         await request.authorization_handler(
             AuthorizationURL(
@@ -409,9 +411,14 @@ async def test_channel_authorization_intercepts_bound_callback_outside_model(
     ]
 
 
-async def test_slack_labeled_callback_completes_authorization(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "redirect_uri", ["http://localhost:3000/callback", "http://127.0.0.1:6359/callback"]
+)
+async def test_slack_labeled_callback_completes_authorization(
+    tmp_path: Path, redirect_uri: str
+) -> None:
     channel = RecordingChannel(provider="slack")
-    agent = AuthorizationAgent()
+    agent = AuthorizationAgent(redirect_uri=redirect_uri)
     host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
     await host.start()
 
@@ -428,7 +435,7 @@ async def test_slack_labeled_callback_completes_authorization(tmp_path: Path) ->
             "ts": "1700000000.000200",
             "thread_ts": "1700000000.000100",
             "user": "operator",
-            "text": "<http://localhost:3000/callback?code=example&amp;state=state|localhost/callback?code=…&amp;state=…>",
+            "text": f"<{redirect_uri}?code=example&amp;state=state|callback>",
         },
         bot_id="bot",
     )
@@ -444,12 +451,61 @@ async def test_slack_labeled_callback_completes_authorization(tmp_path: Path) ->
     await _wait_for_sent_count(channel, 3)
     await host.stop()
 
-    assert agent.callbacks == ["http://localhost:3000/callback?code=example&state=state"]
+    assert agent.callbacks == [f"{redirect_uri}?code=example&state=state"]
     assert [request.text for request in agent.requests] == ["login"]
     assert channel.sent[-2:] == [
         (conversation_id, "MCP server `notion` is authorized."),
         (conversation_id, "authorization:completed"),
     ]
+
+
+async def test_custom_callback_requires_matching_endpoint_and_operator(tmp_path: Path) -> None:
+    channel = RecordingChannel(provider="telegram")
+    redirect_uri = "http://127.0.0.1:6359/callback"
+    agent = AuthorizationAgent(redirect_uri=redirect_uri)
+    host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
+    await host.start()
+    await host.receive_message(
+        channel, ChannelMessage(conversation_id="chat", text="login", sender_id="operator")
+    )
+    await _wait_for_sent_count(channel, 1)
+    callback = f"{redirect_uri}?code=secret-code&state=secret-state"
+    for conversation, sender, text in (
+        ("other-chat", "operator", callback),
+        ("chat", "attacker", callback),
+        ("chat", "operator", callback.replace(":6359", ":6360")),
+        ("chat", "operator", callback.replace("/callback", "/wrong")),
+        ("chat", "operator", callback.replace("127.0.0.1", "localhost")),
+    ):
+        await host.receive_message(
+            channel, ChannelMessage(conversation_id=conversation, text=text, sender_id=sender)
+        )
+        assert agent.callbacks == []
+    await host.receive_message(
+        channel, ChannelMessage(conversation_id="chat", text=callback, sender_id="operator")
+    )
+    await _wait_for_sent_count(channel, 8)
+    await host.stop()
+    assert agent.callbacks == [callback]
+    assert [request.text for request in agent.requests] == ["login"]
+
+
+async def test_unsolicited_custom_callback_never_reaches_model(tmp_path: Path) -> None:
+    channel = RecordingChannel(provider="telegram")
+    agent = BlockingAgent()
+    host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
+    await host.start()
+    await host.receive_message(
+        channel,
+        ChannelMessage(
+            conversation_id="chat",
+            text="http://127.0.0.1:6359/callback?code=secret-code&state=secret-state",
+            sender_id="operator",
+        ),
+    )
+    await host.stop()
+    assert agent.requests == []
+    assert channel.sent == [("chat", "No matching MCP authorization request is pending.")]
 
 
 async def test_terminal_channel_authorization_suppresses_redundant_agent_result(
@@ -959,30 +1015,22 @@ def _cron_job(tmp_path: Path, *, prompt: str = "scan the market", channel: str |
 async def test_scheduled_run_timeout_repairs_the_job_thread(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A run that never returns is bounded, and its thread is left usable.
-
-    The scheduler awaits `run_scheduled_job` directly rather than through `_tasks`, so
-    nothing else reaches the recovery that patches dangling tool calls. Without it the
-    thread ends on an assistant message whose tool calls have no results, and every
-    later fire of the job fails against the provider.
-    """
+    """A timed-out run is repaired without reusing its thread on the next fire."""
     monkeypatch.setattr("deepagents_talon.host._SCHEDULED_RUN_TIMEOUT_SECONDS", 0.05)
     channel = RecordingChannel()
     agent = BlockingAgent()
     host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
     job = _cron_job(tmp_path, prompt="block")
-    cron_id = f"{job.id}:talon-cron"
     await host.start()
     try:
         with pytest.raises(TimeoutError):
             await asyncio.wait_for(host.run_scheduled_job(job), 2)
 
-        assert agent.recoveries == [cron_id]
+        assert agent.recoveries == [agent.requests[0].conversation_id]
 
-        # The job is still usable: the next fire runs rather than inheriting a wedged
-        # thread, and it is not blocked behind the abandoned run.
         agent.released.set()
         assert await asyncio.wait_for(host.run_scheduled_job(job), 2) == "reply:block"
+        assert agent.requests[0].conversation_id != agent.requests[1].conversation_id
     finally:
         await host.stop()
 
@@ -1006,6 +1054,7 @@ async def test_two_runs_of_one_job_never_overlap(tmp_path: Path) -> None:
         assert await asyncio.wait_for(first, 2) == "reply:block"
         assert await asyncio.wait_for(second, 2) == "reply:block"
         assert len(agent.requests) == 2
+        assert agent.requests[0].conversation_id != agent.requests[1].conversation_id
     finally:
         await host.stop()
 
@@ -1296,7 +1345,7 @@ async def test_host_passes_inbound_photo_as_model_content(tmp_path: Path) -> Non
     content = cast("list[dict[str, object]]", agent.requests[0].metadata["model_content"])
     assert isinstance(content, list)
     assert content[0] == {"type": "text", "text": "look"}
-    assert content[1]["type"] == "image_url"
+    assert content[1]["type"] == "image"
 
 
 async def test_host_passes_inbound_video_path_in_text(tmp_path: Path) -> None:
@@ -1792,6 +1841,26 @@ async def test_host_runs_scheduled_job_and_delivers_result(tmp_path: Path) -> No
     assert channel.sent == [("chat", "reply:scheduled prompt")]
 
 
+async def test_scheduled_job_passes_its_pinned_skills(tmp_path: Path) -> None:
+    channel = RecordingChannel()
+    agent = BlockingAgent()
+    host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
+    store = CronJobStore(assistant_id="test", cron_dir=tmp_path / "test" / "cron")
+    job = store.create_job(
+        prompt="scheduled prompt",
+        schedule=CronSchedule.parse("in 5m"),
+        origin=CronOrigin(conversation_id="chat"),
+        skills=("weekly-report",),
+    )
+    await host.start()
+    try:
+        await host.run_scheduled_job(job)
+    finally:
+        await host.stop()
+
+    assert agent.requests[0].metadata["pinned_skills"] == ["weekly-report"]
+
+
 async def test_scheduled_job_runs_while_interactive_turn_remains_active(tmp_path: Path) -> None:
     channel = RecordingChannel()
     agent = BlockingAgent()
@@ -1812,7 +1881,7 @@ async def test_scheduled_job_runs_while_interactive_turn_remains_active(tmp_path
     assert [request.text for request in agent.requests] == ["block", "scheduled prompt"]
     assert agent.recoveries == []
     assert agent.requests[0].conversation_id == "test:chat"
-    assert agent.requests[1].conversation_id == f"{job.id}:talon-cron"
+    assert agent.requests[1].conversation_id.startswith(f"{job.id}:talon-cron:")
     assert not host._tasks["test:chat"].done()
     agent.released.set()
     await host.stop()

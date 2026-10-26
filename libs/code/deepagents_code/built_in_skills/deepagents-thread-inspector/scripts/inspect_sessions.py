@@ -11,7 +11,6 @@ import shutil
 import sqlite3
 import subprocess  # noqa: S404  # Used only to probe resolved dcode Python launchers.
 import sys
-import warnings
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
@@ -34,7 +33,7 @@ def _has_runtime() -> bool:
     try:
         for module, symbol in _RUNTIME_IMPORTS:
             getattr(importlib.import_module(module), symbol)
-    except (AttributeError, ImportError):
+    except AttributeError, ImportError:
         return False
     return True
 
@@ -57,7 +56,7 @@ def _ensure_runtime() -> None:
         launcher = Path(executable).resolve()
         try:
             first_line = launcher.read_text(encoding="utf-8").splitlines()[0]
-        except (OSError, UnicodeDecodeError, IndexError):
+        except OSError, UnicodeDecodeError, IndexError:
             first_line = ""
         if first_line.startswith("#!"):
             candidates.append(Path(first_line[2:].strip()))
@@ -84,7 +83,7 @@ def _ensure_runtime() -> None:
                 check=False,
                 timeout=10,
             )
-        except (subprocess.TimeoutExpired, OSError):
+        except subprocess.TimeoutExpired, OSError:
             # A hung or non-executable candidate must not abort the search;
             # skip it and fall through to the next one (or the clear error below).
             continue
@@ -209,6 +208,27 @@ def _decode_metadata(
     return {str(key): item for key, item in decoded.items()}
 
 
+def _thread_name(
+    conn: sqlite3.Connection, thread_id: str, metadata: dict[str, object]
+) -> str | None:
+    """Prefer the durable name over potentially stale checkpoint metadata.
+
+    Returns:
+        Saved name, latest checkpoint name, or `None` for an unnamed thread.
+    """
+    if conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+        ("dcode_thread_names",),
+    ).fetchone():
+        row = conn.execute(
+            "SELECT name FROM dcode_thread_names WHERE thread_id = ?", (thread_id,)
+        ).fetchone()
+        if row:
+            return str(row[0])
+    name = metadata.get("thread_name")
+    return name if isinstance(name, str) else None
+
+
 def _thread_summary(
     conn: sqlite3.Connection,
     thread_id: str,
@@ -236,6 +256,7 @@ def _thread_summary(
     ).fetchone()[0]
     summary: dict[str, object] = {
         "thread_id": thread_id,
+        "thread_name": _thread_name(conn, thread_id, metadata),
         "agent_name": metadata.get("agent_name"),
         "created_at": aggregate["created_at"],
         "updated_at": aggregate["updated_at"],
@@ -614,13 +635,6 @@ def main() -> None:
         raise SystemExit(msg)
 
     _ensure_runtime()
-    warnings.filterwarnings(
-        "ignore",
-        message=(
-            "Core Pydantic V1 functionality isn't compatible with Python 3.14 "
-            "or greater.*"
-        ),
-    )
     collected_warnings: list[str] = []
     result: dict[str, object]
     conn = _connect_read_only(args.db)

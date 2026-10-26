@@ -30,11 +30,13 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.tools import StructuredTool, tool
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+from langgraph.errors import GraphInterrupt, NodeCancelledError, ParentCommand
+from langgraph.prebuilt.tool_node import ToolRuntime
 from langgraph.types import Command, interrupt
 
 from deepagents_code import cost_tracking
 from deepagents_code._fake_models import _ToolBindingFakeModel
-from deepagents_code._js_cost import CostAwareCodeInterpreterMiddleware
+from deepagents_code._js_cost import CostAwareCodeInterpreterMiddleware, _cost_task
 from deepagents_code.cost_tracking import CostTrackingMiddleware
 
 _INTERPRETERS: list[CostAwareCodeInterpreterMiddleware] = []
@@ -222,9 +224,9 @@ async def test_js_subagent_cost_is_durable(mode) -> None:
     assert snapshot.values["_session_cost_usd"] == pytest.approx(3.0)
     await _assert_accounting(agent, 3)
     assert snapshot.values["_session_cost_transfers"] == {}
-    from deepagents_code.app import _format_cost_breakdown_table
+    from deepagents_code.tui.modals.cost_breakdown import format_cost_breakdown_table
 
-    table = _format_cost_breakdown_table(
+    table = format_cost_breakdown_table(
         snapshot.values["_session_cost_usd"], snapshot.values["_session_cost_breakdown"]
     )
     assert "Entire-thread estimated breakdown" in table
@@ -311,6 +313,67 @@ async def test_completed_sibling_interrupt_fresh_runtime(
     await resumed.ainvoke(None, _CONFIG)
     assert await _total(resumed) == pytest.approx(5.0)
     await _assert_accounting(resumed, 5)
+
+
+async def test_completed_sibling_cost_survives_owned_sqlite_resume(
+    tmp_path: Path,
+) -> None:
+    from deepagents_code.thread_ownership import (
+        OWNER_KEY,
+        ensure_owned,
+        owned_saver_class,
+    )
+
+    @tool
+    def approval() -> str:
+        """Pause after a sibling has completed."""
+        return str(interrupt("approve?"))
+
+    # Persist the completed sibling before interrupting; Promise.all can cancel it.
+    code = (
+        'await task({description:"done", subagentType:"done"});'
+        'await task({description:"pause", subagentType:"pause"})'
+    )
+    database = tmp_path / "owned.sqlite"
+    saver_class = owned_saver_class(db_path=database)
+    lease = ensure_owned("js-cost", db_path=database)
+    config: RunnableConfig = {
+        "configurable": {"thread_id": "js-cost", OWNER_KEY: lease.token}
+    }
+    try:
+        async with saver_class.from_conn_string(str(database)) as saver:
+            agent = _parent(
+                code,
+                {
+                    "done": _child(_message("done")),
+                    "pause": _child(_tool_call("approval"), tools=[approval]),
+                },
+                saver,
+            )
+            result = await agent.ainvoke({"messages": [HumanMessage("go")]}, config)
+            assert len(result["__interrupt__"]) == 1
+            await _assert_accounting(agent, 1)
+
+        _fresh_runtime()
+        lease.release()
+        lease = ensure_owned("js-cost", db_path=database)
+        config["configurable"][OWNER_KEY] = lease.token
+        async with saver_class.from_conn_string(str(database)) as saver:
+            resumed = _parent(
+                code,
+                {
+                    "done": _child(),
+                    "pause": _child(_message("approved"), tools=[approval]),
+                },
+                saver,
+                resuming=True,
+            )
+            await resumed.ainvoke(Command(resume="yes"), config)
+            await _assert_accounting(resumed, 5)
+            await resumed.ainvoke(None, config)
+            await _assert_accounting(resumed, 5)
+    finally:
+        lease.release()
 
 
 async def test_nested_dispatch_and_multiple_eval_tools() -> None:
@@ -419,6 +482,97 @@ async def test_failed_child_preserves_checkpointed_cost() -> None:
     await _assert_accounting(agent, 3)
 
 
+@pytest.mark.parametrize(
+    "error",
+    [
+        asyncio.CancelledError(),
+        GraphInterrupt(()),
+        NodeCancelledError("cancelled"),
+        ParentCommand(Command(goto="parent")),
+    ],
+)
+async def test_dispatch_preserves_control_flow(error: BaseException) -> None:
+    @tool
+    async def task(description: str, subagent_type: str) -> str:  # noqa: ARG001  # Task tool signature.
+        """Raise a graph control-flow signal."""
+        await asyncio.sleep(0)
+        raise error
+
+    runtime = ToolRuntime(
+        state={},
+        context=None,
+        config={},
+        stream_writer=lambda _value: None,
+        tool_call_id="task",
+        store=None,
+    )
+    assert isinstance(task, StructuredTool)
+    proxy = _cost_task(task, runtime, "owner", set())
+    assert proxy.coroutine is not None
+    with pytest.raises(type(error)) as caught:
+        await proxy.coroutine("work", "child", runtime)
+    assert caught.value is error
+
+
+@pytest.mark.parametrize("durability", ["async", "exit"])
+async def test_failed_dispatch_preserves_successful_siblings(durability) -> None:
+    started = {name: asyncio.Event() for name in ("one", "two")}
+    release = asyncio.Event()
+    completed = []
+    cancelled = []
+
+    @tool
+    async def wait(name: str) -> str:
+        """Finish after the failed child has been dispatched."""
+        started[name].set()
+        try:
+            await release.wait()
+            await asyncio.sleep(0.05)
+        except asyncio.CancelledError:
+            cancelled.append(name)
+            raise
+        completed.append(name)
+        return name
+
+    @tool
+    async def fail() -> str:
+        """Fail while both healthy siblings are still running."""
+        await asyncio.gather(*(event.wait() for event in started.values()))
+        release.set()
+        msg = "child unavailable"
+        raise RuntimeError(msg)
+
+    children = {
+        name: _child(
+            _tool_call("wait", {"name": name}),
+            AIMessage(content="RESULT_" + name, id=name, usage_metadata=_usage()),
+            tools=[wait],
+        )
+        for name in started
+    }
+    children["fail"] = _child(_tool_call("fail"), tools=[fail])
+    agent = _parent(
+        "const results = await Promise.all(["
+        'task({description:"one",subagentType:"one"}),'
+        'task({description:"fail",subagentType:"fail"}),'
+        'task({description:"two",subagentType:"two"})]);'
+        "JSON.stringify([results[0], JSON.parse(results[1]), results[2]])",
+        children,
+        InMemorySaver(),
+    )
+    result = await agent.ainvoke(
+        {"messages": [HumanMessage("go")]}, _CONFIG, durability=durability
+    )
+    output = result["messages"][-2].content
+    assert "RESULT_one" in output
+    assert "RESULT_two" in output
+    assert "Subagent 'fail' failed: RuntimeError: child unavailable" in output
+    assert '"failed":true' in output
+    assert sorted(completed) == ["one", "two"]
+    assert cancelled == []
+    await _assert_accounting(agent, 7)
+
+
 @pytest.mark.parametrize("durability", ["async", "exit"])
 @pytest.mark.parametrize("nested", [False, True])
 async def test_dispatch_failure_cancels_sibling_without_losing_durable_cost(
@@ -442,7 +596,8 @@ async def test_dispatch_failure_cancels_sibling_without_losing_durable_cost(
 
     code = (
         'await Promise.all([task({description:"wait",subagentType:"wait"}),'
-        'task({description:"fail",subagentType:"fail"})])'
+        'task({description:"fail",subagentType:"fail"}).then(result => {'
+        "throw new Error(JSON.parse(result).error);})])"
     )
     waiter = _child(_tool_call("wait"), tools=[wait])
     if nested:
@@ -808,10 +963,10 @@ async def test_parallel_usage_with_partial_or_zero_pricing(
     )
     await agent.ainvoke({"messages": [HumanMessage("go")]}, _CONFIG)
     await _assert_accounting(agent, 4, priced=priced, charged=charged)
-    from deepagents_code.app import _format_cost_breakdown_table
+    from deepagents_code.tui.modals.cost_breakdown import format_cost_breakdown_table
 
     snapshot = await agent.aget_state(_CONFIG)
-    table = _format_cost_breakdown_table(
+    table = format_cost_breakdown_table(
         snapshot.values.get("_session_cost_usd", 0.0),
         snapshot.values["_session_cost_breakdown"],
     )
@@ -983,9 +1138,11 @@ async def test_legacy_dollar_only_receipt_survives_sqlite_resume(
         assert breakdown["cache_creation_cost_usd"] == pytest.approx(0.6)
         assert breakdown["cache_read_cost_usd"] == pytest.approx(0.3)
         assert breakdown["reasoning_cost_usd"] == pytest.approx(0.36)
-        from deepagents_code.app import _format_cost_breakdown_table
+        from deepagents_code.tui.modals.cost_breakdown import (
+            format_cost_breakdown_table,
+        )
 
-        assert _format_cost_breakdown_table(4.0, breakdown) == ""
+        assert format_cost_breakdown_table(4.0, breakdown) == ""
         await agent.ainvoke(None, _CONFIG)
         replayed = await agent.aget_state(_CONFIG)
         assert replayed.values["_session_cost_usd"] == pytest.approx(4.0)

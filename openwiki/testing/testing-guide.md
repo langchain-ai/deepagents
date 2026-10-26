@@ -1,178 +1,195 @@
 ---
-type: "Reference"
-title: "Testing by Runtime Boundary"
-openwiki_generated: true
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-09-29T08:06:56.235Z
+type: testing guide
+title: Testing Guide
+description: Focused dcode test routing for server lifecycle, runtime compatibility patches, workspace ownership, middleware integrity, and virtualized Textual transcripts. Use package Makefile targets as the command authority and prefer deterministic seams over process or model-backed tests.
+tags: [testing, pytest, dcode, textual, middleware, lifecycle]
 sources:
-  - id: openwiki-source-8288b43b279d5cf7aaf1505d
-    resource: repo://libs/acp/tests/test_agent.py
+  - id: openwiki-source-e6ad64b6a7d1df658edc7234
+    resource: repo://libs/code/deepagents_code/_checkpointer_adapter.py
+  - id: openwiki-source-b07cec8e891bf1f14e503026
+    resource: repo://libs/code/deepagents_code/_langsmith_runtime.py
+  - id: openwiki-source-526a6c8ea414f4f02ee9c4a9
+    resource: repo://libs/code/deepagents_code/_run_queue_wakeup.py
+  - id: openwiki-source-b9ef532d79a0667acf40e58b
+    resource: repo://libs/code/deepagents_code/client/launch/server_manager.py
+  - id: openwiki-source-8896ee5af2462c92e51bfb6e
+    resource: repo://libs/code/deepagents_code/local_context.py
+  - id: openwiki-source-528731d4c0ef5dde5cf54f4c
+    resource: repo://libs/code/deepagents_code/memory_guard.py
+  - id: openwiki-source-91c9283d1547adfffd627c43
+    resource: repo://libs/code/deepagents_code/thread_ownership.py
+  - id: openwiki-source-2d3ba1d75dbc72b01448e124
+    resource: repo://libs/code/deepagents_code/tui/widgets/message_store.py
   - id: openwiki-source-006b62af9993da1b48c11de8
     resource: repo://libs/code/Makefile
+  - id: openwiki-source-36838b2ce6fb7679d6e662cb
+    resource: repo://libs/code/tests/integration_tests/test_headless_resume.py
   - id: openwiki-source-6684124c441015e6f9246319
     resource: repo://libs/code/tests/unit_tests/conftest.py
-  - id: openwiki-source-6a586415ef68cbe7c7967a41
-    resource: repo://libs/code/tests/unit_tests/test_offload_api.py
-  - id: openwiki-source-784e764f7f5eb5169220c3d2
-    resource: repo://libs/code/tests/unit_tests/test_server_graph.py
-  - id: openwiki-source-0f308f1610986e2f3ed6d53c
-    resource: repo://libs/deepagents/Makefile
-  - id: openwiki-source-c0799cb44ce695871e7f3bf6
-    resource: repo://libs/evals/CONTRIBUTING.md
-  - id: openwiki-source-f55101eb12af3c6ae9b9d823
-    resource: repo://libs/talon/deepagents_talon/cron/jobs.py
-  - id: openwiki-source-363e56d368aecc6ab73d3e2f
-    resource: repo://libs/talon/deepagents_talon/cron/scheduler.py
-  - id: openwiki-source-ba53b2ab73965694b2510a58
-    resource: repo://libs/talon/Makefile
-  - id: openwiki-source-94758cb9b3302b8f80f516f9
-    resource: repo://libs/talon/tests/channels/test_discord.py
-  - id: openwiki-source-266f810628c26d9ced8dfceb
-    resource: repo://libs/talon/tests/channels/test_slack.py
-  - id: openwiki-source-7aca178f00238f277438cf18
-    resource: repo://libs/talon/tests/conftest.py
-  - id: openwiki-source-75458be2d378c9102e37d6c4
-    resource: repo://libs/talon/tests/cron/test_expression.py
-  - id: openwiki-source-058eda257c62daed009e3f78
-    resource: repo://libs/talon/tests/cron/test_jobs.py
-  - id: openwiki-source-376016a439d0559796a191a0
-    resource: repo://libs/talon/tests/cron/test_scheduler.py
-  - id: openwiki-source-3c0ee8cc5cf93b1411287e26
-    resource: repo://libs/talon/tests/cron/test_until.py
-  - id: openwiki-source-581a0b1656cc4ab3f26c7a17
-    resource: repo://libs/talon/tests/integration_tests/test_slack_host.py
-generated: { by: "openwiki/0.4.2", at: "2026-09-29T08:06:56.235Z" }
+  - id: openwiki-source-7f916fdd682c58125bb1c675
+    resource: repo://libs/code/tests/unit_tests/test_checkpointer_adapter.py
+  - id: openwiki-source-ceb0295160537174ea07a3f2
+    resource: repo://libs/code/tests/unit_tests/test_langsmith_runtime.py
+  - id: openwiki-source-86a8d168faa54044d4aa6ec7
+    resource: repo://libs/code/tests/unit_tests/test_local_context.py
+  - id: openwiki-source-d965874b5a639c3205f2eadd
+    resource: repo://libs/code/tests/unit_tests/test_memory_guard.py
+  - id: openwiki-source-7e558b3c5b3acbc58f79b60c
+    resource: repo://libs/code/tests/unit_tests/test_run_queue_wakeup.py
+  - id: openwiki-source-f598809da8d8fbff2d7ae090
+    resource: repo://libs/code/tests/unit_tests/test_server_manager.py
+  - id: openwiki-source-a5e918d96b1dae3f7adec3f5
+    resource: repo://libs/code/tests/unit_tests/test_thread_ownership.py
+  - id: openwiki-source-7b9fdc9826d14adc6230d61c
+    resource: repo://libs/code/tests/unit_tests/test_transcript_virtualization.py
+  - id: openwiki-source-b7beeddb49bcfbe0565494c8
+    resource: repo://libs/code/tests/unit_tests/tui/widgets/test_autocomplete.py
+  - id: openwiki-source-585649cb24fc70035488ac0f
+    resource: repo://libs/code/tests/unit_tests/tui/widgets/test_message_store.py
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-10-25T08:05:05.473Z
+generated: { by: "openwiki/0.4.2", at: "2026-10-25T08:05:05.473Z" }
 ---
 
+# Testing Guide
 
-# Testing by Runtime Boundary
+For dcode changes, test the observable contract at the narrowest deterministic seam. Use a fake backend, temporary SQLite database, controlled environment, patched collaborator, or Textual `run_test` pilot before adding a subprocess test. Reserve process coverage for a boundary that cannot be represented faithfully—such as CLI/server startup or import-time profile state—and reserve model-backed evaluation for an explicit evaluation run. This complements [Development](../operations/development.md), [Run a dcode session](../workflows/run-dcode-session.md), and the architectural [code-agent](../architecture/code-agent.md) and [source map](../architecture/source-map.md) pages.
 
-Test the contract at the boundary that changes—not an implementation detail below it and not a real external service above it. Packages are independently developed from their own directories with `uv` and package `Makefile` targets; normal unit targets block Internet sockets (while permitting Unix sockets). Use a real dependency only when the behavior being changed is specifically its integration contract.
+## Run the package authority
+
+Run commands through `libs/code/Makefile`; do not replace its socket, parallelism, timeout, or coverage policy with ad-hoc pytest invocations. `make test` defaults `TEST_FILE` to `tests/unit_tests/`, runs with xdist, disables network sockets except Unix sockets, and accepts extra pytest arguments through `PYTEST_EXTRA`. `integration_tests` switches the target to `tests/integration_tests/` and applies its 30-second timeout.
+
+```bash
+make -C libs/code test TEST_FILE=tests/unit_tests/test_server_manager.py
+make -C libs/code test TEST_FILE=tests/unit_tests/test_thread_ownership.py
+make -C libs/code test TEST_FILE=tests/unit_tests/test_transcript_virtualization.py
+make -C libs/code test TEST_FILE=tests/unit_tests/tui/widgets/test_message_store.py
+make -C libs/code test PYTEST_EXTRA='-k wakeup' TEST_FILE=tests/unit_tests/test_run_queue_wakeup.py
+make -C libs/code integration_tests TEST_FILE=tests/integration_tests/<focused_test>.py
+make -C libs/code lint
+```
+
+`coverage` is the dedicated XML-report target; `update-snapshots` is limited to smoke snapshots. The dcode lint target also validates the generated command catalog and process working-directory rules. Unit-test collection establishes a synthetic `DEEPAGENTS_HOME` before imports, snapshots and restores `os.environ`, and clears global dotenv, tracing, and related runtime state so tests do not inherit a developer profile, credentials, or daemon discovery.
+
+## Select the seam
 
 ```mermaid
 flowchart TD
-    Change["Changed behavior"] --> SDK["SDK graph or tool behavior"]
-    Change --> Dcode["dcode client server or persistence boundary"]
-    Change --> Talon["Talon host channel or scheduler boundary"]
-    Change --> ACP["ACP protocol session boundary"]
-    Change --> Eval["Model behavior or prompt quality"]
-    SDK --> Fake["Fake model and temporary backend"]
-    Dcode --> ASGI["In-process ASGI and fake runtime"]
-    Talon --> Adapter["Recording channel or fake gateway"]
-    ACP --> Client["Fake ACP client and memory saver"]
-    Eval --> LLM["Real LLM trajectory evaluation"]
+    Change["Changed observable contract"] --> Boundary{"Can a controlled collaborator prove it"}
+    Boundary -->|Yes| Unit["Unit test with fake state or temporary files"]
+    Boundary -->|No| Integration["Focused local process or persistence test"]
+    Unit --> Make["Package Makefile test target"]
+    Integration --> Make
+    Make --> Lint["Package Makefile lint target"]
 ```
 
-*Route a change to the narrowest runtime boundary that can observe its promised result.*
+*Start at the controlled unit seam; cross a process boundary only when it is the behavior under test.*
 
-## First choose the tier
+- **Server lifecycle and configuration:** patch `ServerProcess`, runtime scaffolding, and `RemoteAgent`; assert configuration transfer, readiness, workspace binding, and cleanup rather than spawning a server.
+- **Private upstream compatibility:** seed real lightweight upstream state, install the patch, then assert both the optimized path and the safe fallback when the upstream shape does not qualify.
+- **Concurrency and durable state:** use a temporary sessions database and real locks; coordinate with events instead of sleeps. A small helper subprocess is appropriate when the invariant is explicitly cross-process.
+- **Middleware:** invoke the sync and async hook with fake tool handlers or backends. Verify the protected output and failure response, not the middleware's incidental helper calls.
+- **Textual UI:** use `App.run_test` and its pilot only for actual mount, scroll, focus, or interaction behavior. Keep store arithmetic and autocomplete ranking as ordinary unit tests.
 
-| Change owns | Test tier and starting point | Assert at the boundary |
-| --- | --- | --- |
-| `deepagents` graph, middleware, filesystem tools, permissions, streaming, or backend behavior | SDK unit tests, especially `libs/deepagents/tests/unit_tests/test_end_to_end.py`, `test_middleware.py`, `test_graph.py`, and the focused tool/backend test | A fake model's tool calls and final messages, returned state, tool output, or temporary backend state. Include denial, malformed input, truncation, and async variants where the public behavior supports them. |
-| `deepagents-code` UI-independent server graph, workspace policy, offload API, or cost accumulation | dcode unit tests such as `tests/unit_tests/test_server_graph.py`, `test_offload_api.py`, and `test_cost_tracking.py` | HTTP response and persisted/bound workspace state through an in-process ASGI client; graph construction, event output, or per-thread cost state through fakes. |
-| dcode TUI interaction | dcode unit tests with Textual's test support and isolated profile | Visible widget/state outcome, not implementation call order. Do not let a developer profile, dotenv, provider key, local daemon, or tracing thread influence it. |
-| Talon host lifecycle, agent invocation, interruption, persistence, or scheduled delivery | `libs/talon/tests/test_host.py`, `test_runtime.py`, `test_main.py`, and `tests/cron/` | Delivered/withheld message, graph resume decision, durable checkpoint/job record, cleanup, and user-safe failure result using recording agents, channels, clocks, and stores. |
-| Talon provider adaptation | `tests/channels/test_discord.py` or `test_slack.py`; use `tests/integration_tests/test_slack_host.py` only for channel-to-host composition | Gateway inputs become normalized messages exactly once; responses, status, threads, command replies, and media safety are observable without a live provider. |
-| Agent Client Protocol behavior | `libs/acp/tests/test_agent.py`, `test_model_switching.py`, or command-security tests | ACP session updates, cancellation scope, permission request, replay, and protocol errors through a fake client and memory checkpointer. |
-| Behavior that intrinsically depends on a model's judgement or trajectory | `libs/evals/tests/evals/` | Real-LLM trajectory and resulting text/files with hard correctness assertions; use soft efficiency expectations only as diagnostic signal. |
+## Server startup, handoff, and cleanup
 
-## Commands and hermetic defaults
-
-Run commands from the package that owns the changed boundary:
-
-```bash
-cd libs/deepagents
-make test TEST_FILE=tests/unit_tests/test_end_to_end.py
-make lint
-
-cd ../code
-make test TEST_FILE=tests/unit_tests/test_offload_api.py
-make lint
-
-cd ../acp
-make test TEST_FILE=tests/test_agent.py
-make lint
-
-cd ../talon
-make test TEST_FILE=tests/test_runtime.py
-make test TEST_FILE=tests/channels/test_slack.py
-make lint
-```
-
-The core SDK and dcode `make test` targets run pytest with `--disable-socket --allow-unix-socket`; their separate `make integration_test` targets are the deliberate network-permitted route. ACP and Talon also disable sockets on their ordinary test target. Talon's target additionally runs the WhatsApp bridge Node tests first, applies a 10-second pytest timeout, and enables coverage. Do not work around socket blocking to make a unit test pass: inject the transport, SDK client, model, clock, or gateway instead.
-
-For dcode, `make check` is the local CI aggregate: lint/type checks, import checks, unit tests, and repository consistency checks. Use it before a broad change, but iterate with the focused file first. For all packages, warnings are errors unless explicitly allowlisted, so fix a new warning rather than treating a passing assertion as sufficient.
-
-## SDK: deterministic agent and tool contracts
-
-Use fake chat models with a predetermined sequence of `AIMessage` tool calls and responses to test the actual compiled agent graph. This is the right tier for the core agent loop: verify that a requested tool call produces a tool message and that the subsequent model response becomes the final output. Use temporary or in-memory backends when the contract includes filesystem state, offload artifacts, pagination, or permissions.
-
-Test both the successful graph transition and the failure semantics that make it safe to evolve:
-
-- Tool and filesystem changes need invalid paths, missing inputs, denied operations, truncation/large-result behavior, and sync/async parity where both APIs exist.
-- Middleware/profile changes need the assembled graph contract: which tools and middleware remain visible, ordering only when it is externally significant, and propagation of caller tags and metadata into streaming/tool runtime configuration.
-- Permission changes need denied recursive and ancestor/descendant cases, not just a happy-path allow rule. Verify that filtering prevents execution rather than merely hiding a tool description.
-- Stateful or concurrent behavior needs a real temporary saver/store if persistence is the contract; otherwise use an in-memory fake and assert the public state/result.
-
-A fake model is intentional here: it makes the expected tool trajectory reproducible and keeps an SDK unit failure attributable to graph behavior rather than provider variance.
-
-## dcode: client/server and persistence seams
-
-dcode spans a Textual client and a server-hosted graph. Test an API or workspace change at the server boundary with `httpx.AsyncClient` plus `ASGITransport`, patching runtime construction and the thread client. This tests request validation, response status, workspace binding, and persistence without listening on a port or contacting a service.
-
-Workspace tests should protect ownership and policy, not merely HTTP shape. An explicitly launched workspace must retain its resolved policy/runtime; validation-only preflight must not bind a workspace, build a runtime, or create/update a thread; and a conflict must return before a streamed run starts. Security-sensitive policy supplied by the server must not be silently accepted from a client claim.
-
-Server-graph tests should use a fresh module state and fake factories to cover process-lifetime behavior: concurrent requests resolve one cached runtime, startup construction failures emit the startup marker and exit nonzero, and only unambiguously read-only MCP tools enter criteria context. Test disabled MCP as a no-load path. These cases catch cache, startup, and trust-boundary regressions that a client-only test cannot observe.
-
-dcode's shared fixtures establish the other half of determinism: a synthetic `DEEPAGENTS_HOME` is selected before imports; environment and dotenv module state are restored around tests; tracing variables and auto-batching are removed; and price auto-update is disabled to prevent a background network thread. Follow that pattern for a newly discovered process-global cache, environment setting, worker, or client pool—reset it before and after each test.
-
-For cost tracking, give each test its own recorder through the context variable, then supply synthetic usage and model metadata. Assert visible accumulated cost/event or persisted graph state, including incomplete usage categories and subagent transfer, rather than relying on a provider response.
-
-## Talon: host, runtime, channels, and durable schedules
-
-Talon tests are layered around a long-running host. `tests/conftest.py` isolates `DEEPAGENTS_TALON_HOME` and `HOME`; its `RecordingChannel` records messages/media/typing and injects inbound events only after handler registration. Use it with a blocking or recording agent to test startup, cancellation, replacement turns, shutdown, and safe user-facing errors. Test CLI bootstrap with fakes around sandbox and runtime construction, then assert sandbox handoff/cleanup or a checkpoint readable from the resulting SQLite file.
+`start_server_and_get_agent` captures the project context, validates MCP configuration, derives one `ServerConfig`, transfers it to the server environment, creates and scaffolds a temporary runtime, and waits for the `agent` graph. Only after readiness does it construct a `RemoteAgent` and bind the user workspace plus a session-workspace claim and fingerprint. The returned server is then owned by the successful caller; `server_session` is the higher-level lifecycle owner.
 
 ```mermaid
 sequenceDiagram
-    participant Gateway as Fake gateway or recording channel
-    participant Channel as Talon channel adapter
-    participant Host as Talon host
-    participant Runtime as Fake graph or agent runtime
-    Gateway->>Channel: inbound provider event
-    Channel->>Channel: normalize and apply admission
-    Channel->>Host: accepted channel message
-    Host->>Runtime: agent request
-    Runtime-->>Host: text result or approval outcome
-    Host->>Channel: response or command result
-    Channel-->>Gateway: provider-specific post
+    participant Caller
+    participant Config as ServerConfig
+    participant Runtime as Temporary Runtime
+    participant Proc as ServerProcess
+    participant Remote as RemoteAgent
+    Caller->>Config: derive from project and CLI inputs
+    Caller->>Runtime: apply environment and scaffold files
+    Caller->>Proc: start and wait for agent graph
+    Proc-->>Caller: ready URL
+    Caller->>Remote: create and bind workspace claim
+    Caller-->>Caller: hand off server on success
+    Caller->>Proc: stop if startup does not hand off
 ```
 
-*Channel and host tests replace the provider and agent seams while retaining the adapter/host contract under test.*
+*Startup hands a server to its caller only after graph readiness and workspace binding; every earlier failure path reaps it.*
 
-For runtime changes, install a fake graph/model/tool factory and assert graph input, streamed result, interruption recovery, and approval decision. A cron-triggered request has no interactive approval authority: a gated tool interrupt must be resumed as rejected and must not execute. Treat timeout, cancellation, partial startup, and cleanup as first-class cases; long-running hosts most often regress there.
+Use `test_server_manager.py` for these contracts:
 
-Channel tests use fake Discord/Slack gateways, SDK clients, or URL openers. Assert admission (authorized input exactly once; self or unauthorized input never), conversation mapping, status transitions, bounded outbound text, and cleanup. Slack-specific tests should cover thread identity, non-duplication of mention events, private slash-command failures, escaped control syntax, and file-download controls: token only to HTTPS `files.slack.com`, no redirects or foreign host, size limits before/during transfer, no partial destination, and private file mode. The Slack host integration test is deliberately narrow: it composes real `SlackChannel` and `TalonHost` with a fake Socket Mode gateway and echo agent to prove threading and command-responder delivery without a provider connection.
+- Round-trip a `ServerConfig` through the environment and test the filesystem allowlist as a fail-closed boundary. An explicit allowlist must include `read_file`; empty, malformed, non-list, and non-string serialized values are invalid.
+- Capture configuration passed into the process seam. Relative explicit MCP paths must be normalized from the captured project context, while server-owned MCP/trust policy is absent from a managed workspace claim.
+- Test generated runtime contents directly: source checkouts use a local package dependency, the generated graph map exposes only `agent`, and the HTTP app uses custom route authentication.
+- Block `wait_for_graph_ready`, cancel the startup task, and schedule a loop callback. Assert that `stop()` runs outside the event loop. On a readiness failure, assert abandoned startup gets a short grace period except when sandbox cleanup requires the full graceful window.
 
-For cron work, separate calendar parsing from durable dispatch. Use fixed UTC/local datetimes and `ZoneInfo` for expressions/DST; use a temporary job store, fixed `now`, recording runner, and recording delivery callback for scheduling. A due record must be claimed—advanced or disabled and persisted—before callback execution. Test successful, silent, runner-failure, delivery-failure, missed-`until`, and retention outcomes. This preserves exactly-once-like operational behavior across a callback crash rather than only proving a callback was invoked.
+For the real CLI/server/persistence boundary, keep a separate integration test such as headless resume. Give helper and CLI subprocesses a temporary `HOME` and `DEEPAGENTS_HOME` before importing dcode, because profile paths and the sessions database are captured at import time. This prevents a resume test from touching a developer profile.
 
-## ACP: protocol-facing session behavior
+## Runtime compatibility patches
 
-ACP tests sit above the SDK graph and below a real ACP client. Build a graph with a fake model and `MemorySaver`, connect `AgentServerACP` to a `FakeACPClient`, and assert emitted session updates in order. This tier owns content block conversion, streamed text/thought/tool updates, cancellation, human-in-the-loop permission requests, model/mode options, and session replay.
+dcode carries narrowly scoped patches over private upstream APIs. Their tests should be contract tests, not broad mocks: pin the expected upstream shape, show the improvement with realistic state, and prove that version drift degrades safely.
 
-Use persisted-memory restart tests when changing session lifecycle. A restart must replay saved user/agent history, visible reasoning in block order, and tool-call completion; it must restore saved mode/model options. Session loading must reject an unknown/unowned session and a request whose working directory differs from the session's. Cancellation coverage must include concurrent sessions so cancelling one prompt cannot cancel another.
+### Checkpointer delta history
 
-## LLM-backed evaluations are a separate signal
+The LangGraph API custom checkpointer adapter inherits the base delta-history method, which prevents normal attribute forwarding to an inner saver. `install_delta_history_forwarding()` patches only adapters that still expose the base methods. The replacement delegates to an inner saver only if that saver overrides the base operation; otherwise it preserves the base ancestor walk.
 
-Evals are not replacements for deterministic unit tests. They run the real agent against a real LLM and score the observed trajectory—tool calls, final response, and file mutations. From `libs/evals`, configure the model provider key plus `LANGSMITH_API_KEY` and `LANGSMITH_TRACING=true`, then run a focused eval or `make evals MODEL=...`. Results are logged to the `deepagents-evals` LangSmith suite; `--evals-report-file` or `DEEPAGENTS_EVALS_REPORT_FILE` also writes a JSON summary.
+In `test_checkpointer_adapter.py`, seed a `StateGraph` with a `DeltaChannel` into a temporary `AsyncSqliteSaver`. Compare the adapter's original result to the patched result and spy on the SQLite fast path. A companion saver deliberately lacking an override proves the fallback still returns the normal history. Keep the server-only import environment minimal (`REDIS_URI`) rather than starting a server.
 
-Author a focused eval with `@pytest.mark.langsmith`, the `model` fixture, `create_deep_agent`, and `run_agent`. Put correctness that must block a regression in `TrajectoryScorer.success(...)`; `.expect(...)` records trajectory-shape targets such as step/tool-call counts but does not fail the test. Use an LLM judge only where semantic criteria cannot be expressed deterministically. Tag the eval with an `eval_category` and filter locally with `--eval-category` when validating a capability slice.
+### LangSmith and run scheduling
 
-## Change checklist
+`install_untraced_inline_override()` is process-global and belongs only in the server process. It runs the two known traceable bookkeeping callbacks inline when tracing is off; any other call still uses LangSmith's default thread hop because it may perform I/O. Test a traced and untraced decorated coroutine: untraced success and failure must avoid `run_in_executor`, while tracing still preserves nested run relationships and the executor path.
 
-1. Identify the owner of the changed promise: SDK graph/tool, dcode server/client state, Talon host/provider adaptation, ACP protocol, or model capability.
-2. Start with one focused, socket-blocked test file and a deterministic fake at the external seam. Use a temporary persistence implementation only if durability itself is under test.
-3. Assert an observable result: protocol update/HTTP status, delivered or withheld message, persisted state, tool execution/denial, cleanup, or redacted failure. Avoid asserting private helper order.
-4. Add at least one failure-path test for the altered boundary: invalid input, denied authority, cancellation/timeout, transport/runtime failure, restart/replay, or partial cleanup as applicable.
-5. Run the package lint target after the focused test. Use an integration target or a real-LLM eval only when the behavior cannot be established at the deterministic lower boundary.
+`install_run_queue_wakeup()` replaces the in-memory runtime's fixed scheduler poll with an event signaled after `Runs.put`, while leaving the upstream claim operation and fallback polling interval intact. It installs idempotently only when `Runs.next` and `Runs.put` have the pinned static-method signatures; an unexpected shape must leave the runtime unmodified. Reset both methods and the wakeup object per test, then use an event barrier to show a pending insert wakes a waiting `Runs.next` without a timing sleep.
+
+## Workspace ownership and checkpoint writers
+
+Thread ownership protects a locally persisted thread from independent clients and stale server processes. Acquiring a thread produces a lease token; mutations carry that token in `x-dcode-thread-owner`. Before a checkpoint write, `writer_guard` serializes writers through local and filesystem gates and verifies both the recorded token and the client reservation. A released, crashed, or superseded client therefore fences its old server from writing.
+
+```mermaid
+sequenceDiagram
+    participant Client as Client Lease
+    participant Guard as Writer Guard
+    participant DB as SQLite Saver
+    Client->>Client: acquire thread and token
+    Client->>Guard: mutation with token
+    Guard->>Guard: take writer gate and validate lease
+    Guard->>DB: checkpoint write or delete
+    DB-->>Guard: result
+    Guard-->>Client: release gate
+```
+
+*The writer gate makes ownership validation and the database mutation one fenced operation.*
+
+Use `test_thread_ownership.py` with a temporary database to cover failure ordering that a mock cannot establish:
+
+- A helper subprocess cannot acquire an already leased thread, but another thread remains available; releasing the lease permits a replacement owner.
+- A client crash, ownership rotation, or failed restart invalidates an old token. The old server must reject writes, while the successor token can write.
+- The ownership-fenced saver rejects tokenless or stale `aput` and `aput_writes`, and forbids deletion while another client owns the thread. Reads remain possible and deletion succeeds once the lease is released.
+- Cancellation is safety-critical: cancellation during acquisition or deletion must wait for the blocking operation, release reservation/gates afterward, and never expose a half-finished database mutation. Concurrent local writers queue through the local async gate rather than polling each other.
+
+## Local context and managed memory
+
+`LocalContextMiddleware` gathers project context through the active backend, so the same detection runs in a local shell or remote sandbox. Its local-context snapshot, fingerprint, and refresh cutoff are private graph state: they do not become public output or trace state. When summarization reaches a valid cutoff, a changed snapshot is appended as a tagged message rather than replacing the saved initial snapshot. A forked subagent on the same thread reuses the parent snapshot; a different thread detects its own context.
+
+Test both `before_agent` and `abefore_agent` with concrete sync or async fake backends. Cover malformed/out-of-range summarization cutoffs, deduplication by snapshot fingerprint, and escaping of context embedded in message content. A dotenv test must demonstrate that project credentials can load while `BASH_ENV` cannot influence backend startup detection.
+
+`ManagedMemoryGuardMiddleware` protects marker-delimited onboarding-name blocks in configured memory files. It allows unrelated edits, but if `edit_file` or `write_file` changes or removes a managed block, it restores that block while retaining unrelated edits and returns a tool error. Deletes of a guarded file or a parent directory are rejected before the tool runs when a managed block exists; an existing unreadable file also fails closed. Test the synchronous and asynchronous wrappers, partial-marker removal, preserving unrelated edits, and the no-follow symlink restore hardening where `os.O_NOFOLLOW` is available.
+
+## Virtualized transcripts and completion
+
+The message store retains lightweight `MessageData` for the full transcript while mounting only a visible window of Textual widgets. Archived rows are represented by spacers whose height comes from measured or default height hints. Streaming and live-tool rows are protected against pruning, with independent protection reasons so releasing one reason cannot accidentally unprotect another. On resume, `bulk_load` mounts a bounded tail rather than all historic widgets.
+
+Transcript virtualization must be tested at two seams:
+
+1. In `tui/widgets/test_message_store.py`, test store ranges, hydration thresholds, edge hydration, height-hint clamping and scaling, bounded tail loading, and protection invariants with `MessageData` only.
+2. In `test_transcript_virtualization.py`, run a real `DeepAgentsApp` pilot. Assert wheel/trackpad, keyboard, and scrollbar movement produce `_ChatScroll.Scrolled` when the vertical offset changes; then prune a small window and prove scrolling toward either spacer remounts the archived boundary widgets. Also assert spacers occupy the archived row height, so the view can reach a history edge instead of stalling.
+
+For autocomplete, keep fuzzy ranking and controller behavior outside a Textual pilot. Compare optimized fuzzy search against a simple reference scorer over a fixed corpus, and test controller handling with a mocked completion view. Treat project filenames as untrusted display/input data: unsafe control or deceptive names must not enter suggestions or the chat input. Thread completion is a separate `@@` grammar that searches durable thread metadata and inserts the canonical `@@(thread:<uuid>)` token.
+
+## Completion checklist
+
+1. Identify the observable contract and choose a controlled unit seam first.
+2. Run the focused `libs/code` Makefile target; use `PYTEST_EXTRA` only to add pytest selection or diagnostics.
+3. Own environment, temporary files, database rows, global patch state, and cleanup in the test fixture.
+4. For private-API patches, assert both the qualifying fast path and an upstream-drift fallback.
+5. For cancellation or ownership behavior, coordinate with events and assert cleanup/fencing after cancellation rather than relying on sleeps.
+6. Escalate to an integration test only for a real process, import-time configuration, durable persistence, or CLI/server contract.
+7. Run `make -C libs/code lint` before completion.

@@ -11,7 +11,6 @@ from uuid import (
     UUID,  # ruff:ignore[typing-only-standard-library-import] - Pydantic resolves model annotations at runtime.
 )
 
-from langchain_core.messages import ToolMessage
 from pydantic import BaseModel, ConfigDict, Field
 
 from deepagents_code.approval_mode import (  # ruff:ignore[typing-only-first-party-import] - Pydantic runtime annotation.
@@ -24,6 +23,7 @@ from deepagents_code.json_types import (
 )
 
 if TYPE_CHECKING:
+    from langchain_core.messages import ToolMessage
     from langgraph.types import Command
 
 
@@ -82,6 +82,7 @@ class DcodeNotificationKind(StrEnum):
     AGENT_NEEDS_INPUT = "agent_needs_input"
     AGENT_COMPLETED = "agent_completed"
     COLD_CACHE_WARNING = "cold_cache_warning"
+    CACHE_EXPIRING = "cache_expiring"
 
 
 class CompactTrigger(StrEnum):
@@ -241,6 +242,11 @@ class PostToolUseEvent(_DomainModel):
         Returns:
             A `PostToolUseEvent` with a JSON-projected `result`.
         """
+        # Deferred: the client imports this module to read hook config before
+        # first paint, and only the server (which already loaded LangChain)
+        # builds tool-result events.
+        from langchain_core.messages import ToolMessage
+
         if isinstance(result, ToolMessage):
             value: object = result.model_dump(mode="json")
         else:

@@ -19,6 +19,8 @@ from langchain.agents.middleware.types import (
     ContextT,
     ModelRequest,
     ModelResponse,
+    OmitFromSchema,
+    PrivateStateAttr,
     TracePolicy,
     omit_payload,
 )
@@ -37,6 +39,7 @@ from deepagents_code.goal_state_notice import (
     build_goal_state_notice,
     goal_notice_size_error,
     goal_state_fingerprint,
+    goal_state_notice_info,
     has_goal_or_rubric_state,
     is_oversized_goal_state_message,
     latest_goal_state_message_index,
@@ -71,6 +74,7 @@ def _goal_state_notice_for(
     state: dict[str, Any],
     messages: Sequence[object],
     *,
+    candidate: int | None,
     cutoff: int,
 ) -> HumanMessage | None:
     """Build a notice when effective history lacks current goal/rubric state.
@@ -78,6 +82,10 @@ def _goal_state_notice_for(
     Args:
         state: Authoritative middleware state.
         messages: Messages visible at the next model boundary.
+        candidate: Index of the newest goal-state message in `messages`, from
+            `latest_goal_state_message_index`. Callers compute it once and
+            share it, because the scan walks the full history when no notice
+            exists.
         cutoff: Summarization cutoff index that `messages` is measured against.
             Required rather than defaulted: both callers pass the full persisted
             list, where a notice below the cutoff is present but invisible to the
@@ -90,17 +98,18 @@ def _goal_state_notice_for(
     """
     if latest_human_is_unsaved_goal_continuation(messages):
         return None
-    latest = latest_goal_state_notice(messages)
-    latest_candidate = latest_goal_state_message_index(messages)
-    fingerprint = goal_state_fingerprint(state)
+    if candidate is None:
+        return (
+            build_goal_state_notice(state) if has_goal_or_rubric_state(state) else None
+        )
+    # The newest valid notice counts only when it is also the newest goal-state
+    # message, so validating that one message is enough.
+    info = goal_state_notice_info(messages[candidate])
     if (
-        latest is not None
-        and latest[0] == latest_candidate
-        and latest[1]["state_fingerprint"] == fingerprint
-        and latest[0] >= cutoff
+        info is not None
+        and info["state_fingerprint"] == goal_state_fingerprint(state)
+        and candidate >= cutoff
     ):
-        return None
-    if latest_candidate is None and not has_goal_or_rubric_state(state):
         return None
     return build_goal_state_notice(state)
 
@@ -113,6 +122,9 @@ class GoalToolState(GoalRubricChannels):
     `ResumeState` cannot drift apart. Adds only the public `rubric` graph input,
     which is intentionally non-private — it is the `RubricMiddleware` input.
     """
+
+    _fork_notice_rubric: Annotated[NotRequired[str | None], PrivateStateAttr]
+    """Invocation criteria inherited by forks for notices, never grading."""
 
     rubric: NotRequired[str | None]
     """Public `RubricMiddleware` graph input (intentionally non-private).
@@ -378,6 +390,7 @@ class GoalToolsMiddleware(AgentMiddleware[GoalToolState, ContextT]):
         notice = _goal_state_notice_for(
             values,
             messages,
+            candidate=latest_goal_state_message_index(messages),
             # Force a fresh notice when discarding an event so a summarization
             # regenerated on this boundary retains the canonical goal state.
             cutoff=len(messages) if malformed_event else (cutoff or 0),
@@ -400,6 +413,14 @@ class GoalToolsMiddleware(AgentMiddleware[GoalToolState, ContextT]):
             update["rubric"] = None
         return update or None
 
+    def _boundary_update(self, state: AgentState[Any]) -> dict[str, Any] | None:
+        """Return notice updates and synchronized criteria for future forks."""
+        update = self._notice_update(state) or {}
+        rubric = None if goal_notice_size_error(state) else state.get("rubric")
+        if state.get("_fork_notice_rubric") != rubric:
+            update["_fork_notice_rubric"] = rubric
+        return update or None
+
     @override
     def before_model(
         self,
@@ -416,7 +437,7 @@ class GoalToolsMiddleware(AgentMiddleware[GoalToolState, ContextT]):
             Message update containing a current notice, or `None` when unchanged.
         """
         del runtime
-        return self._notice_update(state)
+        return self._boundary_update(state)
 
     @override
     async def abefore_model(
@@ -432,11 +453,13 @@ class GoalToolsMiddleware(AgentMiddleware[GoalToolState, ContextT]):
             Message update containing a current notice, or `None` when unchanged.
         """
         del runtime
-        return self._notice_update(state)
+        return self._boundary_update(state)
 
     @staticmethod
     def _request_with_goal_notice(
         request: ModelRequest[ContextT],
+        *,
+        notice_values: dict[str, Any] | None = None,
     ) -> ModelRequest[ContextT]:
         """Ensure a current goal-state notice is visible in a model request.
 
@@ -479,14 +502,22 @@ class GoalToolsMiddleware(AgentMiddleware[GoalToolState, ContextT]):
             log_malformed_summarization_event(event, len(request.messages))
             values = {**values, "_summarization_event": None}
             request = request.override(state=cast("AgentState[Any]", values))
+        candidate = latest_goal_state_message_index(request.messages)
         notice = _goal_state_notice_for(
-            values,
+            notice_values if notice_values is not None else values,
             request.messages,
+            candidate=candidate,
             # Force a fresh notice when discarding an event, matching
             # `_notice_update`, so a summarization regenerated on this boundary
             # retains the canonical goal state.
             cutoff=len(request.messages) if malformed_event else (cutoff or 0),
         )
+        if candidate is None:
+            # No goal-state message exists, so none can be oversized and the
+            # in-place replacement pass below has nothing to do.
+            if notice is None:
+                return request
+            return request.override(messages=[*request.messages, notice])
         latest = latest_goal_state_notice(request.messages)
         preserved_index = latest[0] if notice is None and latest is not None else None
         messages = [
@@ -533,3 +564,73 @@ class GoalToolsMiddleware(AgentMiddleware[GoalToolState, ContextT]):
             Model response from the wrapped handler.
         """
         return await handler(self._request_with_goal_notice(request))
+
+
+class ForkGoalToolState(GoalToolState):
+    """Accept the parent's notice snapshot while keeping it out of outputs."""
+
+    _fork_notice_rubric: Annotated[
+        NotRequired[str | None], OmitFromSchema(input=False, output=True)
+    ]
+    _goal_objective: Annotated[
+        NotRequired[str | None], OmitFromSchema(input=False, output=True)
+    ]
+    _goal_status: Annotated[
+        NotRequired[Literal["active", "paused", "blocked", "complete"] | None],
+        OmitFromSchema(input=False, output=True),
+    ]
+    _goal_rubric: Annotated[
+        NotRequired[str | None], OmitFromSchema(input=False, output=True)
+    ]
+    _goal_status_note: Annotated[
+        NotRequired[str | None], OmitFromSchema(input=False, output=True)
+    ]
+    _sticky_rubric: Annotated[
+        NotRequired[str | None], OmitFromSchema(input=False, output=True)
+    ]
+
+
+class ForkGoalToolsMiddleware(GoalToolsMiddleware[ContextT]):
+    """Render inherited criteria without restoring the fork's grading input."""
+
+    state_schema = ForkGoalToolState
+
+    @property
+    def name(self) -> str:
+        """Replace inherited goal tools through public middleware composition."""
+        return "GoalToolsMiddleware"
+
+    @staticmethod
+    def _notice_values(state: AgentState[Any]) -> dict[str, Any]:
+        return {**state, "rubric": state.get("_fork_notice_rubric")}
+
+    def _boundary_update(self, state: AgentState[Any]) -> dict[str, Any] | None:
+        return self._notice_update(cast("AgentState[Any]", self._notice_values(state)))
+
+    @override
+    def wrap_model_call[ResponseT](
+        self,
+        request: ModelRequest[ContextT],
+        handler: Callable[[ModelRequest[ContextT]], ModelResponse[ResponseT]],
+    ) -> ModelResponse[ResponseT]:
+        """Return the response with current fork notices and unchanged state."""
+        return handler(
+            self._request_with_goal_notice(
+                request, notice_values=self._notice_values(request.state)
+            )
+        )
+
+    @override
+    async def awrap_model_call[ResponseT](
+        self,
+        request: ModelRequest[ContextT],
+        handler: Callable[
+            [ModelRequest[ContextT]], Awaitable[ModelResponse[ResponseT]]
+        ],
+    ) -> ModelResponse[ResponseT]:
+        """Return the async response without restoring fork grading input."""
+        return await handler(
+            self._request_with_goal_notice(
+                request, notice_values=self._notice_values(request.state)
+            )
+        )

@@ -31,8 +31,10 @@ from pydantic import BaseModel, Field, ValidationError, model_validator
 from typing_extensions import TypeIs
 
 from deepagents.backends.protocol import BackendProtocol
+from deepagents.middleware._skill_tools import _SKILL_TOOLS_DISCLOSED_KEY
 from deepagents.middleware._utils import append_to_system_message
 from deepagents.middleware.filesystem import FilesystemMiddleware, FilesystemPermission
+from deepagents.middleware.rubric import _RUBRIC_KEY
 from deepagents.middleware.summarization import (
     SUMMARIZATION_EVENT_KEY,
     SUMMARIZATION_SESSION_ID_KEY,
@@ -47,12 +49,24 @@ if TYPE_CHECKING:
 SUBAGENT_RESPONSE_FORMAT_CONFIG_KEY = "__deepagents_subagent_response_format"
 """Configurable key used by task-tool callers to request dynamic response format."""
 
-_FORK_EXCLUDED_STATE_KEYS = frozenset({"structured_response", SUMMARIZATION_EVENT_KEY, SUMMARIZATION_SESSION_ID_KEY})
+_FORK_EXCLUDED_STATE_KEYS = frozenset(
+    {
+        "structured_response",
+        "pinned_skills",
+        _RUBRIC_KEY,
+        SUMMARIZATION_EVENT_KEY,
+        SUMMARIZATION_SESSION_ID_KEY,
+        _SKILL_TOOLS_DISCLOSED_KEY,
+    }
+)
 """State a fork must not resume.
 
 The summarization event is folded into the fork's messages instead. Dropping the
 session ID lets the subagent generate its own, and dropping a prior structured response
-ensures it cannot be mistaken for the fork's result.
+ensures it cannot be mistaken for the fork's result. The disclosed skill tools
+describe the parent's last model call; the fork records its own. Skills the parent
+has yet to pin are the parent's own. The rubric grades the parent's whole goal,
+not the fork's task.
 """
 
 _FORKED_CONTEXT_KEY = "_deepagents_forked_context"
@@ -82,60 +96,23 @@ class SubAgent(TypedDict):
     a default middleware stack before any custom `middleware` specified in
     this spec.
 
-    Required fields:
-        name: Unique identifier for the subagent.
-
-            The main agent uses this name when calling the `task()` tool.
-        description: What this subagent does.
-
-            Be specific and action-oriented. The main agent uses this
-            to decide when to delegate.
-    Optional fields:
-        system_prompt: Instructions for the subagent.
-
-            Appended to the inherited prompt under `mode="fork"`.
-        mode: `isolated` (default) for a subagent that only sees the
-            delegated task, or `fork` to continue the parent's conversation.
-        tools: Tools the subagent can use.
-
-            If not specified, inherits tools from the main agent
-            via `default_tools`.
-        model: Override the main agent's model.
-
-            Use the format `'provider:model-name'` (e.g., `'openai:gpt-5.5'`).
-        middleware: Additional middleware for custom behavior, logging,
-            or rate limiting. To restrict filesystem tools, include a
-            `FilesystemMiddleware(tools=...)` instance here — it
-            will be used as the subagent's filesystem middleware instead of
-            the default one.
-        interrupt_on: Configure human-in-the-loop for specific tools.
-
-            Requires a checkpointer.
-        skills: Skill source paths for `SkillsMiddleware`.
-
-            List of paths to skill directories
-            (e.g., `["/skills/user/", "/skills/project/"]`).
-        permissions: Filesystem permission rules for this subagent.
-
-            If omitted, inherits the parent agent's permissions. If provided,
-            replaces the parent agent's rules entirely for this subagent.
-
-            Rules are evaluated in declaration order; the first match wins.
+    `name` and `description` are required; all other fields are optional.
+    See the individual attributes for configuration details.
     """
 
     name: str
-    """Unique identifier for the subagent."""
+    """Unique identifier used by the main agent when calling the `task()` tool."""
 
     description: str
     """What this subagent does.
 
-    The main agent uses this to decide when to delegate.
+    Be specific and action-oriented: the main agent uses this to decide when to delegate.
     """
 
     tools: NotRequired[Sequence[BaseTool | Callable | dict[str, Any]]]
     """Tools the subagent can use.
 
-    If not specified, inherits from main agent.
+    If not specified, inherits tools from the main agent via `default_tools`.
     """
 
     model: NotRequired[str | BaseChatModel]
@@ -145,13 +122,42 @@ class SubAgent(TypedDict):
     """
 
     middleware: NotRequired[list[AgentMiddleware]]
-    """Additional middleware for custom behavior."""
+    """Additional middleware for custom behavior, logging, or rate limiting.
+
+    Under `mode="fork"`, inherits the parent's custom middleware list. Entries
+    in this list replace inherited entries with the same `.name`; entries with
+    other names are added.
+
+    Avoid middleware that rewrites the inherited system-prompt prefix in the
+    fork's model request or changes tool definitions unless you accept reduced
+    shared prompt-cache reuse and potentially higher model costs. This is
+    distinct from `SubAgent.system_prompt`, which appends instructions to the
+    inherited prompt. A `wrap_model_call` hook receives that prompt through
+    `request.system_message`. For example, this prepends text before the inherited
+    prefix in the fork's request, preventing reuse of that prefix:
+
+    ```python
+    from langchain_core.messages import SystemMessage
+
+    rewritten = SystemMessage(content=[
+        {"type": "text", "text": "You are a security auditor.\\n"},
+        *request.system_message.content_blocks,
+    ])
+    return handler(request.override(system_message=rewritten))
+    ```
+
+    To restrict filesystem tools, include a `FilesystemMiddleware(tools=...)`
+    instance here to replace the subagent's default filesystem middleware.
+    """
 
     interrupt_on: NotRequired[dict[str, bool | InterruptOnConfig]]
-    """Configure human-in-the-loop for specific tools."""
+    """Configure human-in-the-loop for specific tools. Requires a checkpointer."""
 
     skills: NotRequired[list[str]]
-    """Skill source paths for `SkillsMiddleware`. Forbidden under `mode="fork"`."""
+    """Skill source paths for `SkillsMiddleware`. Forbidden under `mode="fork"`.
+
+    For example, `["/skills/user/", "/skills/project/"]`.
+    """
 
     permissions: NotRequired[list[FilesystemPermission]]
     """List of `FilesystemPermission` rules for this subagent.
@@ -314,7 +320,7 @@ _SubAgentSpec = SubAgent | CompiledSubAgent
 def _validate_subagent_mode(spec: _SubAgentSpec) -> None:
     """Reject unsupported context modes before a subagent can run."""
     mode = spec.get("mode")
-    if mode not in (None, "isolated", "fork", "handoff"):  # "handoff" is legacy alias for "isolated"
+    if mode not in (None, "isolated", "fork"):
         msg = f"SubAgent '{spec['name']}' has invalid mode '{mode}'; expected 'isolated' or 'fork'"
         raise ValueError(msg)
     if mode == "fork" and spec.get("skills"):
@@ -375,6 +381,8 @@ def _fork_messages(
     messages: Sequence[AnyMessage],
     event: SummarizationEvent | None,
     description: str,
+    *,
+    preamble: str = _FORK_TASK_PREAMBLE,
 ) -> list[AnyMessage]:
     """Build a fork's history: the parent's effective conversation, then the task.
 
@@ -385,7 +393,7 @@ def _fork_messages(
     if history and isinstance(history[-1], AIMessage) and history[-1].tool_calls:
         history.pop()
     effective = _DeepAgentsSummarizationMiddleware._apply_event_to_messages(history, event)
-    return [*effective, HumanMessage(content=_FORK_TASK_PREAMBLE + description)]
+    return [*effective, HumanMessage(content=preamble + description)]
 
 
 DEFAULT_SUBAGENT_PROMPT = """In order to complete the objective that the user asks of you, you have access to a number of standard tools.
@@ -398,7 +406,10 @@ _EXCLUDED_STATE_KEYS = {
     "todos",
     "structured_response",
     "skills_metadata",
+    "pinned_skills",
+    _SKILL_TOOLS_DISCLOSED_KEY,
     _FORKED_CONTEXT_KEY,
+    _RUBRIC_KEY,
 }
 """State keys that are excluded when passing state to subagents and when
 returning updates from subagents.
@@ -412,10 +423,29 @@ When returning updates:
     to the main agent.
 3. `skills_metadata` is excluded so a subagent loads skills from its own
     sources rather than reusing the parent's list, and cannot replace the
-    parent's list with its own.
-4. Agent-private fields on middleware state schemas are excluded from both
+    parent's list with its own. `_skill_tools_disclosed` is excluded because it
+    describes one agent's latest model call, and `pinned_skills` because a
+    pending pin belongs to the agent it was requested for.
+4. `rubric` belongs to the caller. A child that inherits it is graded against
+    the caller's whole goal instead of its own task. It has no reducer, so
+    parallel `task` calls that each return it would conflict, and one child
+    could also replace the caller's rubric.
+5. Agent-private fields on middleware state schemas are excluded from both
     subagent output and subagent inputs.
 """
+
+
+def _is_unchanged(key: str, value: object, inputs: dict) -> bool:
+    """Return whether a subagent returned `key` exactly as it received it.
+
+    Such keys are dropped from the subagent's update. A key without a reducer
+    would otherwise make parallel `task` calls conflict, and a key with an
+    additive reducer would get the inherited value added again.
+    """
+    if key not in inputs:
+        return False
+    # `is True` treats an ambiguous comparison, such as an array result, as a change.
+    return value is inputs[key] or (value == inputs[key]) is True
 
 
 _TASK_TOOL_INJECTED_ARGS = frozenset({"runtime"})
@@ -714,7 +744,7 @@ def _build_task_tool(  # noqa: C901, PLR0915
     # mirror tool (above) can reference these directly -- everything they
     # call is only looked up when actually invoked, long after this
     # function returns, so those don't need to exist yet.
-    def _return_command_with_state_update(result: dict, tool_call_id: str) -> Command:
+    def _return_command_with_state_update(result: dict, tool_call_id: str, inputs: dict) -> Command:
         # Validate that the result contains a 'messages' key
         if "messages" not in result:
             error_msg = (
@@ -724,7 +754,9 @@ def _build_task_tool(  # noqa: C901, PLR0915
             )
             raise ValueError(error_msg)
 
-        state_update = {k: v for k, v in result.items() if k not in _EXCLUDED_STATE_KEYS and k not in private_state_keys}
+        state_update = {
+            k: v for k, v in result.items() if k not in _EXCLUDED_STATE_KEYS and k not in private_state_keys and not _is_unchanged(k, v, inputs)
+        }
 
         structured = result.get("structured_response")
         if structured is not None:
@@ -831,7 +863,7 @@ def _build_task_tool(  # noqa: C901, PLR0915
         subagent_config: RunnableConfig = {"configurable": {"ls_agent_type": "subagent"}}
         with _subagent_tracing_context():
             result = subagent.invoke(subagent_state, subagent_config)
-        return _return_command_with_state_update(result, runtime.tool_call_id)
+        return _return_command_with_state_update(result, runtime.tool_call_id, subagent_state)
 
     async def atask(
         description: str,
@@ -861,7 +893,7 @@ def _build_task_tool(  # noqa: C901, PLR0915
         subagent_config: RunnableConfig = {"configurable": {"ls_agent_type": "subagent"}}
         with _subagent_tracing_context():
             result = await subagent.ainvoke(subagent_state, subagent_config)
-        return _return_command_with_state_update(result, runtime.tool_call_id)
+        return _return_command_with_state_update(result, runtime.tool_call_id, subagent_state)
 
     compiled_subagents = [_compile_spec(spec) for spec in subagents]
     subagents_by_name = {spec["name"]: spec for spec in subagents}

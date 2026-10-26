@@ -1,8 +1,9 @@
 """Unit tests for the deepagents_code._git module."""
 
+import locale
 import subprocess
-from collections.abc import Iterator
 from pathlib import Path
+from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -13,8 +14,14 @@ from deepagents_code._git import (
     find_git_common_dir,
     parse_repository_metadata,
     read_git_branch_from_filesystem,
+    read_git_branch_via_subprocess,
     read_git_remote_url_from_filesystem,
+    read_git_remote_url_via_subprocess,
+    resolve_git_branch,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 _FULL_SHA = "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0"
 """A valid 40-char SHA-1 used across the commit-resolution tests."""
@@ -31,10 +38,10 @@ def _run_git(root: Path, *args: str) -> None:
     )
 
 
-def _init_git_repo(root: Path) -> None:
+def _init_git_repo(root: Path, *init_args: str) -> None:
     """Create a committed repository suitable for real worktree tests."""
     root.mkdir()
-    _run_git(root, "init")
+    _run_git(root, "init", *init_args)
     _run_git(root, "config", "user.email", "test@example.com")
     _run_git(root, "config", "user.name", "Test")
     _run_git(root, "config", "commit.gpgsign", "false")
@@ -247,6 +254,33 @@ class TestReadGitBranchFromFilesystem:
         mock_read.side_effect = OSError("Permission denied")
         assert read_git_branch_from_filesystem(tmp_path) is None
 
+    def test_reftable_head_placeholder_is_not_a_branch(self, tmp_path: Path) -> None:
+        """Regression test for #7120: the reftable `HEAD` placeholder is not a branch.
+
+        Reftable repositories keep refs out of `HEAD` and leave a placeholder there.
+        No branch can be named `.invalid` (ref components can't start with a dot),
+        so the reader must defer to git instead of reporting it.
+        """
+        git_dir = tmp_path / ".git"
+        git_dir.mkdir()
+        (git_dir / "HEAD").write_text("ref: refs/heads/.invalid\n")
+
+        assert read_git_branch_from_filesystem(tmp_path) is None
+
+    def test_reftable_repository_resolves_branch_through_git(
+        self, tmp_path: Path
+    ) -> None:
+        """Regression test for #7120: reftable repositories read the branch via git."""
+        repo = tmp_path / "repo"
+        try:
+            _init_git_repo(repo, "--ref-format=reftable")
+        except subprocess.CalledProcessError:
+            pytest.skip("reftable repositories need git 2.45 or newer")
+        _run_git(repo, "branch", "-m", "feature")
+
+        assert read_git_branch_from_filesystem(repo) is None
+        assert resolve_git_branch(repo) == "feature"
+
 
 class TestReadGitRemoteUrlFromFilesystem:
     def _write_config(self, tmp_path: Path, body: str) -> None:
@@ -332,6 +366,37 @@ class TestReadGitRemoteUrlFromFilesystem:
         (forged / ".git").write_text(f"gitdir: {git_dir}\n")
 
         assert read_git_remote_url_from_filesystem(forged) == ""
+
+
+class TestGitSubprocessFallbacks:
+    """Regression tests for #7119: git's output is decoded as UTF-8.
+
+    Git writes branch names and paths as UTF-8, but Windows decodes text pipes
+    with the ANSI code page by default. Forcing cp1252 reproduces that on any
+    platform: `č` is `c4 8d` in UTF-8 and cp1252 has no `0x8d`.
+    """
+
+    def test_branch_name_is_decoded_as_utf8(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        repo = tmp_path / "repo"
+        _init_git_repo(repo)
+        _run_git(repo, "branch", "-m", "oprava-kočí")
+        # `subprocess` resolves an unspecified text encoding through this function.
+        monkeypatch.setattr(locale, "getencoding", lambda: "cp1252")
+
+        assert read_git_branch_via_subprocess(repo) == "oprava-kočí"
+
+    def test_remote_url_is_decoded_as_utf8(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        repo = tmp_path / "repo"
+        remote = str(tmp_path / "Kočí" / "remote.git")
+        _init_git_repo(repo)
+        _run_git(repo, "remote", "add", "origin", remote)
+        monkeypatch.setattr(locale, "getencoding", lambda: "cp1252")
+
+        assert read_git_remote_url_via_subprocess(repo) == remote
 
 
 class TestParseRepositoryMetadata:

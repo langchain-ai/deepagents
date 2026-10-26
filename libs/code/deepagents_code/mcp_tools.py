@@ -438,6 +438,12 @@ def _validate_server_config(server_name: str, server_config: dict[str, Any]) -> 
         error_msg = f"Server '{server_name}' config must be a dictionary"
         raise TypeError(error_msg)
 
+    if "skillOnly" in server_config and not isinstance(
+        server_config["skillOnly"], bool
+    ):
+        error_msg = f"Server '{server_name}' 'skillOnly' must be a boolean"
+        raise TypeError(error_msg)
+
     server_type = _resolve_server_type(server_config)
 
     if server_type in _SUPPORTED_REMOTE_TYPES:
@@ -971,7 +977,7 @@ def _same_config_location(first: Path, second: Path) -> MCPConfigIdentity:
         return MCPConfigIdentity.SAME
     try:
         identity_match = first.samefile(second)
-    except (OSError, RuntimeError):
+    except OSError, RuntimeError:
         logger.warning(
             "Could not determine whether %s and %s are the same MCP config; "
             "the pair cannot be told apart",
@@ -2127,7 +2133,7 @@ async def _load_tools_from_config(
         # relabeled as a per-server config skip.
         try:
             server_config = resolve_mcp_server_env(server_name, server_config)
-        except (RuntimeError, TypeError) as exc:
+        except (RuntimeError, TypeError, ValueError) as exc:
             logger.warning(
                 "MCP server '%s' skipped: config error: %s",
                 server_name,
@@ -2164,6 +2170,7 @@ async def _load_tools_from_config(
                 storage = FileTokenStorage(
                     server_name,
                     server_url=server_config["url"],
+                    oauth_client_id=(server_config.get("oauth") or {}).get("client_id"),
                 )
                 stored_tokens = await storage.get_tokens()
 
@@ -2193,6 +2200,7 @@ async def _load_tools_from_config(
                         server_url=server_config["url"],
                         storage=storage,
                         interactive=False,
+                        oauth=server_config.get("oauth"),
                     )
 
                 return _build_transport(
@@ -2293,6 +2301,11 @@ async def _load_tools_from_config(
             for tool in server_tools:
                 original_name = (tool.metadata or {})[_MCP_ORIGINAL_TOOL_NAME_KEY]
                 tool.name = tool_names[server_name, original_name]
+                if server_config.get("skillOnly"):
+                    tool.metadata = {
+                        **(tool.metadata or {}),
+                        "_deepagents_code_skill_only": True,
+                    }
             server_tools = _apply_tool_filter(server_tools, server_name, server_config)
 
             # Pair each schema by the server-side name retained in the adapted
@@ -2319,7 +2332,7 @@ async def _load_tools_from_config(
                 )
                 for tool in server_tools
             ]
-        except (asyncio.CancelledError, KeyboardInterrupt, SystemExit):
+        except asyncio.CancelledError, KeyboardInterrupt, SystemExit:
             raise
         except Exception as exc:
             error = (

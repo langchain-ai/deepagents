@@ -10,7 +10,7 @@ import os
 import shlex
 import string
 import time
-from contextlib import contextmanager
+from contextlib import asynccontextmanager, contextmanager
 from datetime import timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, Protocol
@@ -33,7 +33,7 @@ from deepagents_code.integrations.sandbox_provider import (
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
-    from collections.abc import Generator, Mapping
+    from collections.abc import AsyncGenerator, Generator, Mapping
     from types import ModuleType
 
     from deepagents.backends.protocol import SandboxBackendProtocol
@@ -91,7 +91,7 @@ def create_sandbox(
     snapshot_name: str | None = None,
     setup_script_path: str | None = None,
     params: dict[str, Any] | None = None,
-) -> Generator[SandboxBackendProtocol, None, None]:
+) -> Generator[SandboxBackendProtocol]:
     """Create or connect to a sandbox of the specified provider.
 
     This is the unified interface for sandbox creation using the
@@ -99,14 +99,14 @@ def create_sandbox(
 
     Args:
         provider: Sandbox provider name. Built-ins (`'agentcore'`, `'daytona'`,
-            `'langsmith'`, `'modal'`, `'runloop'`, `'vercel'`), entry-point
-            providers, and config-declared providers are all resolved through
-            the registry.
+            `'langsmith'`, `'modal'`, `'openshell'`, `'runloop'`, `'vercel'`),
+            entry-point providers, and config-declared providers are all
+            resolved through the registry.
         sandbox_id: Optional existing sandbox ID to reuse
         snapshot_name: Optional sandbox snapshot name to use or create.
             Honored by providers whose metadata sets `supports_snapshot_name`
-            (built-ins: `'langsmith'` snapshot, `'runloop'` blueprint); must be
-            `None` for other providers.
+            (built-ins: `'langsmith'` and `'daytona'` snapshot, `'runloop'`
+            blueprint); must be `None` for other providers.
         setup_script_path: Optional path to setup script to run after sandbox starts
         params: Extra keyword arguments forwarded to `provider.get_or_create()`
             (e.g. config-declared `[sandboxes.providers.<name>.params]`).
@@ -260,6 +260,12 @@ _LANGSMITH_DEFAULT_IMAGE = "python:3"
 
 _LANGSMITH_DEFAULT_FS_CAPACITY_BYTES = 16 * 1024**3
 """Default filesystem capacity (16 GiB) for LangSmith sandbox snapshots."""
+
+_DAYTONA_DEFAULT_IMAGE = "python:3"
+"""Default Docker image for Daytona sandbox snapshots when none is provided."""
+
+_DAYTONA_SNAPSHOT_READY_STATE = "active"
+"""Daytona snapshot state that is bootable; others are in-flight or failed."""
 
 
 class _LangSmithProvider(SandboxProvider):
@@ -473,6 +479,7 @@ class _DaytonaProvider(SandboxProvider):
                 "or DEEPAGENTS_CODE_DAYTONA_API_KEY."
             )
             raise ValueError(msg)
+        self._daytona = daytona_module
         self._client = daytona_module.Daytona(
             daytona_module.DaytonaConfig(
                 api_key=api_key,
@@ -485,14 +492,26 @@ class _DaytonaProvider(SandboxProvider):
         *,
         sandbox_id: str | None = None,
         timeout: int = 180,
-        **kwargs: Any,  # noqa: ARG002
+        snapshot: str | None = None,
+        snapshot_image: str | None = None,
+        **kwargs: Any,
     ) -> SandboxBackendProtocol:
         """Get or create a Daytona sandbox.
 
         Args:
             sandbox_id: Not supported yet — must be None.
             timeout: Seconds to wait for startup.
-            **kwargs: Unused.
+            snapshot: Snapshot name to boot from.
+
+                Resolved to a Daytona snapshot, creating it from
+                `snapshot_image` if missing. Overrides
+                `DAYTONA_SANDBOX_SNAPSHOT_NAME`; overridden by
+                `DAYTONA_SANDBOX_SNAPSHOT_ID` (a pre-baked snapshot reference
+                used as-is, which wins over everything). When none is set,
+                uses Daytona's managed default sandbox.
+            snapshot_image: Docker image used when building the snapshot.
+            **kwargs: Rejected; passing any other keyword argument raises
+                `TypeError`.
 
         Returns:
             `DaytonaSandbox` instance.
@@ -500,13 +519,19 @@ class _DaytonaProvider(SandboxProvider):
         Raises:
             NotImplementedError: If `sandbox_id` is provided.
             RuntimeError: If the sandbox fails to start.
+            TypeError: If unsupported keyword arguments are provided.
         """
+        from deepagents_code.model_config import resolve_env_var
+
         daytona_backend = _import_provider_module(
             "langchain_daytona",
             provider="daytona",
             package="langchain-daytona",
         )
 
+        if kwargs:
+            msg = f"Received unsupported arguments: {list(kwargs.keys())}"
+            raise TypeError(msg)
         if sandbox_id:
             msg = (
                 "Connecting to existing Daytona sandbox by ID not yet supported. "
@@ -514,7 +539,30 @@ class _DaytonaProvider(SandboxProvider):
             )
             raise NotImplementedError(msg)
 
-        sandbox = self._client.create()
+        # Explicit snapshot ID wins — skip name lookup and auto-build.
+        env_snapshot_id = resolve_env_var("DAYTONA_SANDBOX_SNAPSHOT_ID")
+        if env_snapshot_id:
+            snapshot_ref = env_snapshot_id
+        else:
+            env_snapshot_name = resolve_env_var("DAYTONA_SANDBOX_SNAPSHOT_NAME")
+            snapshot_name = snapshot or env_snapshot_name
+            image = snapshot_image or _DAYTONA_DEFAULT_IMAGE
+            snapshot_ref = (
+                self._ensure_snapshot(snapshot_name, image) if snapshot_name else None
+            )
+
+        try:
+            sandbox = (
+                self._client.create(
+                    self._daytona.CreateSandboxFromSnapshotParams(snapshot=snapshot_ref)
+                )
+                if snapshot_ref
+                else self._client.create()
+            )
+        except Exception as e:
+            msg = f"Failed to create sandbox from snapshot '{snapshot_ref}': {e}"
+            raise RuntimeError(msg) from e
+
         last_exc: Exception | None = None
         for _ in range(timeout // 2):
             try:
@@ -537,6 +585,69 @@ class _DaytonaProvider(SandboxProvider):
         """Delete a Daytona sandbox by id."""
         sandbox = self._client.get(sandbox_id)
         self._client.delete(sandbox)
+
+    def _ensure_snapshot(self, snapshot_name: str, image: str) -> str:
+        """Resolve a snapshot by name, building it from `image` if missing.
+
+        Daytona references snapshots by name, so `snapshot.get` resolves the
+        name directly. Only a snapshot in the `active` state is bootable; a
+        matching-name snapshot that is still building or has failed raises
+        rather than triggering a duplicate build, which would mask the
+        in-flight/failed snapshot.
+
+        When no matching snapshot exists, `snapshot.create` builds one and
+        blocks until it reaches a terminal state.
+
+        Args:
+            snapshot_name: Name of the snapshot to resolve or build.
+            image: Docker image used when building a missing snapshot.
+
+        Returns:
+            The snapshot name ready to pass to `create`.
+
+        Raises:
+            RuntimeError: If looking up or building the snapshot fails, or if a
+                matching-name snapshot exists but is not ready.
+        """
+        try:
+            existing = self._client.snapshot.get(snapshot_name)
+        except self._daytona.DaytonaNotFoundError:
+            existing = None
+        except Exception as e:
+            msg = f"Failed to look up snapshot '{snapshot_name}': {e}"
+            raise RuntimeError(msg) from e
+
+        if existing is not None:
+            if existing.state == _DAYTONA_SNAPSHOT_READY_STATE:
+                return existing.name
+            if existing.state == "inactive":
+                msg = (
+                    f"Snapshot '{snapshot_name}' is inactive. Activate it with "
+                    "Daytona's snapshot.activate API before retrying."
+                )
+                raise RuntimeError(msg)
+            msg = (
+                f"Snapshot '{snapshot_name}' exists but is in state "
+                f"'{existing.state}'. Wait for it to finish building, or "
+                f"delete it to rebuild."
+            )
+            raise RuntimeError(msg)
+
+        try:
+            built = self._client.snapshot.create(
+                self._daytona.CreateSnapshotParams(name=snapshot_name, image=image)
+            )
+        except Exception as e:
+            msg = f"Failed to build snapshot '{snapshot_name}': {e}"
+            raise RuntimeError(msg) from e
+
+        if built.state != _DAYTONA_SNAPSHOT_READY_STATE:
+            msg = (
+                f"Snapshot '{snapshot_name}' finished building in state "
+                f"'{built.state}' rather than '{_DAYTONA_SNAPSHOT_READY_STATE}'."
+            )
+            raise RuntimeError(msg)
+        return built.name
 
 
 class _ModalProvider(SandboxProvider):
@@ -1254,6 +1365,113 @@ class _VercelProvider(SandboxProvider):
             raise RuntimeError(msg) from exc
 
 
+_OPENSHELL_DEFAULT_WORKSPACE = "default"
+"""Workspace the OpenShell CLI uses when `OPENSHELL_WORKSPACE` is unset."""
+
+
+class _OpenShellProvider(SandboxProvider):
+    """NVIDIA OpenShell sandbox provider, bound to the active gateway.
+
+    Credentials come from the OpenShell CLI's on-disk gateway state, so no
+    token is read here. `OPENSHELL_GATEWAY` and `OPENSHELL_WORKSPACE` select
+    the gateway and workspace, as they do for the CLI.
+    """
+
+    def __init__(self) -> None:
+        """Connect to the active OpenShell gateway.
+
+        Raises:
+            RuntimeError: If no gateway is configured or it cannot be reached.
+        """
+        openshell = _import_provider_module(
+            "openshell",
+            provider="openshell",
+            package="langchain-nvidia-openshell",
+        )
+
+        from deepagents_code.model_config import resolve_env_var
+
+        try:
+            self._client = openshell.SandboxClient.from_active_cluster(
+                cluster=resolve_env_var("OPENSHELL_GATEWAY")
+            )
+        except Exception as exc:  # OpenShell SDK exception types vary by version
+            # Generic message avoids leaking gateway auth state; chain keeps cause.
+            msg = (
+                "Failed to connect to the active OpenShell gateway. Run "
+                "`openshell gateway select` or set OPENSHELL_GATEWAY."
+            )
+            raise RuntimeError(msg) from exc
+        self._workspace = (
+            resolve_env_var("OPENSHELL_WORKSPACE") or _OPENSHELL_DEFAULT_WORKSPACE
+        )
+        self._names: dict[str, str] = {}
+        """Sandbox name by id; the SDK deletes by name, callers delete by id."""
+
+    def get_or_create(
+        self,
+        *,
+        sandbox_id: str | None = None,
+        timeout: int = 180,
+        **kwargs: Any,  # noqa: ARG002
+    ) -> SandboxBackendProtocol:
+        """Attach to an OpenShell sandbox by name, or create one.
+
+        Args:
+            sandbox_id: Existing sandbox name, as the OpenShell CLI shows it.
+            timeout: Seconds to wait for a new sandbox to become ready.
+            **kwargs: Unused.
+
+        Returns:
+            `OpenShellSandbox` instance.
+        """
+        backend = _import_provider_module(
+            "langchain_nvidia_openshell",
+            provider="openshell",
+            package="langchain-nvidia-openshell",
+        )
+        session = self._attach(sandbox_id) if sandbox_id else self._create(timeout)
+        self._names[session.id] = session.sandbox.name
+        return backend.OpenShellSandbox(sandbox=session)
+
+    def delete(self, *, sandbox_id: str, **kwargs: Any) -> None:  # noqa: ARG002
+        """Delete an OpenShell sandbox by id, or by name if it was not created here."""
+        name = self._names.pop(sandbox_id, sandbox_id)
+        self._client.delete(name, workspace=self._workspace, allow_missing=True)
+
+    def _attach(self, name: str) -> Any:  # noqa: ANN401  # `openshell.SandboxSession`; SDK is optional
+        try:
+            return self._client.get_session(name, workspace=self._workspace)
+        except Exception as exc:
+            code = getattr(exc, "code", None)
+            if callable(code) and getattr(code(), "name", None) == "NOT_FOUND":
+                raise SandboxNotFoundError(name) from exc
+            raise
+
+    def _create(self, timeout: int) -> Any:  # noqa: ANN401  # `openshell.SandboxSession`; SDK is optional
+        session = self._client.create_session(workspace=self._workspace)
+        name = session.sandbox.name
+        try:
+            self._client.wait_ready(
+                name, workspace=self._workspace, timeout_seconds=timeout
+            )
+        except Exception as exc:
+            self._discard(name)
+            msg = (
+                f"OpenShell sandbox {name} did not become ready within "
+                f"{timeout} seconds."
+            )
+            raise RuntimeError(msg) from exc
+        return session
+
+    def _discard(self, name: str) -> None:
+        """Delete a sandbox that failed to start; `create_sandbox` never saw it."""
+        try:
+            self._client.delete(name, workspace=self._workspace, allow_missing=True)
+        except Exception:  # Cleanup must not mask the startup failure
+            logger.warning("Could not delete OpenShell sandbox %s", name, exc_info=True)
+
+
 def _get_provider(
     provider_name: str,
     registry: SandboxRegistry | None = None,
@@ -1302,7 +1520,7 @@ def verify_sandbox_deps(provider: str) -> None:
 
     try:
         found = importlib.util.find_spec(metadata.backend_module) is not None
-    except (ImportError, ValueError):
+    except ImportError, ValueError:
         found = False
 
     if not found:
@@ -1322,3 +1540,70 @@ __all__ = [
     "get_default_working_dir",
     "verify_sandbox_deps",
 ]
+
+
+@asynccontextmanager
+async def owned_sandbox(
+    provider: str,
+    *,
+    sandbox_id: str | None = None,
+    snapshot_name: str | None = None,
+    quiet: bool = False,
+) -> AsyncGenerator[str | None]:
+    """Own a sandbox's lifetime from the client process.
+
+    Yields the sandbox ID to hand to the server. When no ID was supplied and
+    the provider supports reuse by ID, the sandbox is created here and deleted
+    on exit -- regardless of how the server process later terminates. In every
+    other case the given ID (or None) is yielded unchanged and the server keeps
+    ownership through `create_sandbox`, exactly as before.
+
+    Why this exists: `create_sandbox` runs inside the langgraph server and
+    releases the sandbox from an `atexit` handler. The client stops that
+    server with SIGTERM, which bypasses `atexit`, so the sandbox leaked until
+    the provider's own timeout reclaimed it. Deleting from the client's control
+    flow removes the dependence on how the server process dies.
+
+    Yields:
+        The sandbox ID for the server to reuse, or `None`.
+    """
+    if provider == "none" or sandbox_id is not None:
+        yield sandbox_id
+        return
+
+    registry = _get_registry()
+    metadata = registry.get_metadata(provider)
+    if metadata is None or not metadata.supports_sandbox_id:
+        yield None
+        return
+    if snapshot_name is not None and not metadata.supports_snapshot_name:
+        yield None  # let create_sandbox raise its usual error server-side
+        return
+
+    provider_obj = _get_provider(provider, registry=registry)
+    provider_kwargs: dict[str, Any] = dict(registry.get_params(provider))
+    if snapshot_name is not None:
+        provider_kwargs["snapshot"] = snapshot_name
+
+    if not quiet:
+        console.print(f"[yellow]Starting {provider} sandbox...[/yellow]")
+    backend = await provider_obj.aget_or_create(**provider_kwargs)
+    if not quiet:
+        console.print(
+            f"[green]{get_glyphs().checkmark} {provider.capitalize()} sandbox "
+            f"ready: {backend.id}[/green]"
+        )
+    try:
+        yield backend.id
+    finally:
+        try:
+            await provider_obj.adelete(sandbox_id=backend.id)
+            if not quiet:
+                console.print(
+                    f"[dim]{get_glyphs().checkmark} {provider.capitalize()} "
+                    f"sandbox {backend.id} terminated[/dim]"
+                )
+        except Exception:
+            logger.warning(
+                "Failed to delete %s sandbox %s", provider, backend.id, exc_info=True
+            )

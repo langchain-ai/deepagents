@@ -75,7 +75,10 @@ from deepagents_code.approval_mode import (
     coerce_approval_mode,
 )
 from deepagents_code.config_manifest import AUTO_CLASSIFIER_TIMEOUT_SECONDS_DEFAULT
-from deepagents_code.goal_state_notice import project_goal_state
+from deepagents_code.goal_state_notice import (
+    is_pinned_skill_message,
+    project_goal_state,
+)
 
 if TYPE_CHECKING:
     from langchain_core.language_models import BaseChatModel, LanguageModelInput
@@ -545,7 +548,7 @@ def _validate_temp_artifact(value: object) -> AutoTempArtifact | None:
         return None
     try:
         file_path = Path(cast("str", raw_file_path))
-    except (OSError, TypeError, ValueError):
+    except OSError, TypeError, ValueError:
         return None
     if not file_path.is_absolute() or not file_path.name.startswith(
         _TEMP_ARTIFACT_PREFIX
@@ -791,7 +794,7 @@ def _known_credential_values(
                     and len(value) >= _MIN_SECRET_LENGTH
                 ):
                     values.add(value)
-    except (OSError, RuntimeError, TypeError, ValueError):
+    except OSError, RuntimeError, TypeError, ValueError:
         logger.debug("Could not load stored credential values for Auto redaction")
     return tuple(sorted(values, key=len, reverse=True))
 
@@ -1148,6 +1151,7 @@ def _latest_turn_id(messages: Sequence[object]) -> str | None:
             message
             for message in reversed(messages)
             if isinstance(message, HumanMessage)
+            and not is_pinned_skill_message(message)
         ),
         None,
     )
@@ -2029,7 +2033,7 @@ def _resolve_path(root: Path, raw: object) -> Path | None:
         if not candidate.is_absolute():
             candidate = root / candidate
         return candidate.resolve(strict=False)
-    except (OSError, RuntimeError, ValueError):
+    except OSError, RuntimeError, ValueError:
         return None
 
 
@@ -2226,6 +2230,184 @@ def _command_paths_stay_in_worktree(parts: Sequence[str], root: Path) -> bool:
     return True
 
 
+# Options that keep a read-only Git subcommand free of side effects. This is an
+# allowlist on purpose: Git has options that write files (`--output`), run
+# programs (`--ext-diff`, `--textconv`, `--show-signature`), or read outside the
+# repository (`--no-index`), and new releases add more. An option missing here
+# is not blocked. The command goes to the classifier instead.
+_GIT_DIFF_FLAGS = frozenset(
+    {
+        "--cached",
+        "--check",
+        "--color",
+        "--exit-code",
+        "--ignore-all-space",
+        "--merge-base",
+        "--minimal",
+        "--name-only",
+        "--name-status",
+        "--no-color",
+        "--no-ext-diff",
+        "--no-patch",
+        "--no-textconv",
+        "--numstat",
+        "--patch",
+        "--quiet",
+        "--raw",
+        "--shortstat",
+        "--staged",
+        "--stat",
+        "--summary",
+        "--unified",
+        "--word-diff",
+        "-R",
+        "-p",
+        "-w",
+    }
+)
+_GIT_LOG_FLAGS = _GIT_DIFF_FLAGS | {
+    "--abbrev-commit",
+    "--all",
+    "--decorate",
+    "--first-parent",
+    "--follow",
+    "--graph",
+    "--left-right",
+    "--merges",
+    "--no-merges",
+    "--oneline",
+    "--reverse",
+}
+_GIT_LOG_VALUED = frozenset(
+    {
+        "--after",
+        "--author",
+        "--before",
+        "--date",
+        "--format",
+        "--grep",
+        "--max-count",
+        "--pretty",
+        "--since",
+        "--until",
+        "-G",
+        "-S",
+        "-n",
+    }
+)
+# Subcommand -> (options without a value, options that take a value).
+_GIT_READ_OPTIONS: Mapping[str, tuple[frozenset[str], frozenset[str]]] = {
+    "diff": (_GIT_DIFF_FLAGS, frozenset({"--diff-filter"})),
+    "log": (_GIT_LOG_FLAGS, _GIT_LOG_VALUED | {"--diff-filter"}),
+    "ls-files": (
+        frozenset(
+            {
+                "--cached",
+                "--deleted",
+                "--directory",
+                "--error-unmatch",
+                "--exclude-standard",
+                "--full-name",
+                "--ignored",
+                "--modified",
+                "--others",
+                "--stage",
+                "-c",
+                "-d",
+                "-i",
+                "-m",
+                "-o",
+                "-s",
+                "-z",
+            }
+        ),
+        frozenset({"--exclude", "-x"}),
+    ),
+    "rev-parse": (
+        frozenset(
+            {
+                "--abbrev-ref",
+                "--absolute-git-dir",
+                "--git-common-dir",
+                "--git-dir",
+                "--is-bare-repository",
+                "--is-inside-work-tree",
+                "--quiet",
+                "--short",
+                "--show-cdup",
+                "--show-prefix",
+                "--show-toplevel",
+                "--symbolic-full-name",
+                "--verify",
+                "-q",
+            }
+        ),
+        frozenset(),
+    ),
+    "show": (
+        _GIT_DIFF_FLAGS | {"--abbrev-commit", "--oneline"},
+        frozenset({"--date", "--format", "--pretty"}),
+    ),
+    "status": (
+        frozenset(
+            {
+                "--branch",
+                "--ignored",
+                "--long",
+                "--porcelain",
+                "--short",
+                "--show-stash",
+                "-b",
+                "-s",
+                "-z",
+            }
+        ),
+        frozenset(),
+    ),
+}
+_GIT_COUNT_RE = re.compile(r"-\d+")
+
+
+def _git_option_allowed(
+    arg: str, subcommand: str, flags: frozenset[str], valued: frozenset[str]
+) -> bool | None:
+    """Classify one option argument.
+
+    Returns:
+        `True` for an allowed option, `None` for an allowed option whose value is
+            the next argument, and `False` for anything else.
+    """
+    if subcommand == "log" and _GIT_COUNT_RE.fullmatch(arg):
+        return True
+    # Only long options carry an inline value. A short option such as `-p=x`
+    # is a bundle of letters, so it must match exactly.
+    if arg.startswith("--") and "=" in arg:
+        return arg.split("=", 1)[0] in flags | valued
+    if arg in flags:
+        return True
+    return None if arg in valued else False
+
+
+def _git_read_args_allowed(subcommand: str, args: Sequence[str]) -> bool:
+    flags, valued = _GIT_READ_OPTIONS[subcommand]
+    args_iter = iter(args)
+    for arg in args_iter:
+        if arg == "--":
+            # Everything after `--` is a pathspec.
+            return True
+        if not arg.startswith("-"):
+            # Refs and paths. A Git ref name cannot start with `-`.
+            continue
+        allowed = _git_option_allowed(arg, subcommand, flags, valued)
+        if allowed is False:
+            return False
+        if allowed is None:
+            value = next(args_iter, None)
+            if value is None or value.startswith("-"):
+                return False
+    return True
+
+
 def _fixed_repo_command_allowed(command: object, root: Path) -> bool:
     if (
         not isinstance(command, str)
@@ -2242,15 +2424,8 @@ def _fixed_repo_command_allowed(command: object, root: Path) -> bool:
     return (
         len(parts) >= _MIN_COMMAND_PARTS
         and parts[0] == "git"
-        and parts[1]
-        in {
-            "diff",
-            "log",
-            "ls-files",
-            "rev-parse",
-            "show",
-            "status",
-        }
+        and parts[1] in _GIT_READ_OPTIONS
+        and _git_read_args_allowed(parts[1], parts[2:])
     )
 
 
@@ -2658,7 +2833,7 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         if not targets_managed_artifact:
             try:
                 candidate_stat = candidate.stat()
-            except (OSError, ValueError):
+            except OSError, ValueError:
                 pass
             else:
                 targets_managed_artifact = any(
@@ -2860,8 +3035,7 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
                         selected,
                         # Classifier history never replays thinking blocks,
                         # so the Anthropic preserved-thinking binding would only
-                        # cost it the forced tool call `with_structured_output`
-                        # relies on.
+                        # add latency and cost to every review.
                         bind_preserved_thinking=False,
                         **retry_kwargs,
                     )
@@ -3085,12 +3259,18 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         timeout_cm = asyncio.timeout(self._classifier_timeout_seconds)
         try:
             async with timeout_cm:
-                thinking = getattr(model, "thinking", None)
+                # Anthropic's native structured output constrains decoding to
+                # the schema. Forced tool calling only suggests it, and Claude
+                # intermittently wraps a valid verdict list in a JSON string or
+                # a placeholder key, which strict validation rejects and the
+                # fail-closed path turns into a denied batch. Models without
+                # native support (Claude 4.1 and earlier) reject the request
+                # outright, so they keep forced tool calling.
+                profile = getattr(model, "profile", None)
                 if (
-                    spec is None
-                    and getattr(model, "_llm_type", None) == "anthropic-chat"
-                    and isinstance(thinking, dict)
-                    and thinking.get("type") in {"adaptive", "enabled"}
+                    getattr(model, "_llm_type", None) == "anthropic-chat"
+                    and isinstance(profile, dict)
+                    and profile.get("structured_output") is True
                 ):
                     structured = model.with_structured_output(
                         _ClassifierBatch, method="json_schema"

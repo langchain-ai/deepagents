@@ -77,6 +77,15 @@ Values outside 1-900 seconds are ignored in favor of the next config source.
 Also settable via `[mcp].tool_timeout` in config.toml.
 """
 
+ASK_ABOUT_SELECTION = "DEEPAGENTS_CODE_ASK_ABOUT_SELECTION"
+"""Show "Ask about this" when conversation text is selected.
+
+Enabled by default; set to a falsy value (`0`, `false`, `no`, `off`) to hide
+it. Parsed by `classify_env_bool` (an unrecognized or empty value falls through
+to the config value rather than forcing the default). Also settable via
+`[ui].ask_about_selection` in config.toml. `/reload` applies a change.
+"""
+
 AUTO_UPDATE = "DEEPAGENTS_CODE_AUTO_UPDATE"
 """Toggle automatic app updates. Enabled by default; set to a falsy value
 ('0', 'false', 'no', 'off', or empty) to opt out."""
@@ -277,13 +286,20 @@ EXPERIMENTAL = "DEEPAGENTS_CODE_EXPERIMENTAL"
 Off by default; parsed by `is_env_truthy` (see there for the accepted truthy
 values). Marks experimental runs in UI/trace metadata. Behavior behind this
 flag may change or be removed without notice.
+
+Set only through the launching shell or global `~/.deepagents/.env`; a project
+`.env` cannot set it.
 """
 
 EXTENSIONS = "DEEPAGENTS_CODE_EXTENSIONS"
 """Enable loading installed-plugin and trusted-project Python extensions."""
 
 EXTENSIONS_TRUST = "DEEPAGENTS_CODE_EXTENSIONS_TRUST"
-"""Default project extension trust policy: `ask`, `always`, or `never`."""
+"""Default project extension trust policy: `ask`, `always`, or `never`.
+
+Set only through the launching shell or global `~/.deepagents/.env`; a project
+`.env` cannot set it.
+"""
 
 EXTERNAL_EVENT_SOCKET = "DEEPAGENTS_CODE_EXTERNAL_EVENT_SOCKET"
 """Enable the local Unix-socket external event listener.
@@ -296,7 +312,11 @@ EXTERNAL_EVENT_SOCKET_PATH = "DEEPAGENTS_CODE_EXTERNAL_EVENT_SOCKET_PATH"
 """Override the default Unix-socket path for the external event listener."""
 
 EXTRA_SKILLS_DIRS = "DEEPAGENTS_CODE_EXTRA_SKILLS_DIRS"
-"""Paths added to the skill containment allowlist, split with `os.pathsep`."""
+"""Paths added to the skill containment allowlist, split with `os.pathsep`.
+
+Set only through the launching shell or global `~/.deepagents/.env`; a project
+`.env` cannot set it.
+"""
 
 GOAL_AUTO_ACCEPT_CRITERIA = "DEEPAGENTS_CODE_GOAL_AUTO_ACCEPT_CRITERIA"
 """Apply generated goal criteria automatically in Auto mode.
@@ -327,6 +347,9 @@ HIDE_SPLASH_TIPS = "DEEPAGENTS_CODE_HIDE_SPLASH_TIPS"
 
 HIDE_SPLASH_VERSION = "DEEPAGENTS_CODE_HIDE_SPLASH_VERSION"
 """Hide version and local-install details in the splash screen when enabled."""
+
+IDLE_COMPACTION_TOKENS = "DEEPAGENTS_CODE_IDLE_COMPACTION_TOKENS"
+"""Minimum context tokens for opt-in idle compaction; 0 disables it."""
 
 HISTORY_RETENTION_DAYS = "DEEPAGENTS_CODE_HISTORY_RETENTION_DAYS"
 """Days an offloaded conversation-history archive is kept before the startup
@@ -482,6 +505,8 @@ PLUGIN_CACHE_DIR = "DEEPAGENTS_CODE_PLUGIN_CACHE_DIR"
 """Override the plugin install/marketplace cache root.
 
 When unset, plugins are stored under `DEFAULT_CONFIG_DIR / "plugins"`.
+Set only through the launching shell or global `~/.deepagents/.env`; a project
+`.env` cannot set it.
 """
 
 PRICES_AUTO_UPDATE = "DEEPAGENTS_CODE_PRICES_AUTO_UPDATE"
@@ -514,7 +539,11 @@ repo file, so a project `.env` cannot disable itself.
 """
 
 RECENT_THREADS = "DEEPAGENTS_CODE_RECENT_THREADS"
-"""Maximum recent threads (default: `_constants.DEFAULT_THREAD_LIMIT`)."""
+"""Recent threads per batch (default: 100, `_constants.DEFAULT_THREAD_LIMIT`).
+
+The thread switcher loads this many at a time. It is also the default row
+limit for `threads list` (override with `-n`) and `@@` thread completion.
+"""
 
 RECURSION_LIMIT = "DEEPAGENTS_CODE_RECURSION_LIMIT"
 """Override the main agent's LangGraph `recursion_limit` (graph step budget).
@@ -557,7 +586,11 @@ SERVER_ENV_PREFIX = "DEEPAGENTS_CODE_SERVER_"
 """Environment variable prefix used to pass CLI config to the server subprocess."""
 
 SHELL_ALLOW_LIST = "DEEPAGENTS_CODE_SHELL_ALLOW_LIST"
-"""Comma-separated shell commands to allow (or 'recommended'/'all')."""
+"""Comma-separated shell commands to allow (or 'recommended'/'all').
+
+Set only through the launching shell or global `~/.deepagents/.env`; a project
+`.env` cannot set it.
+"""
 
 SHOW_HEADER = "DEEPAGENTS_CODE_SHOW_HEADER"
 """Show Textual's native header bar at the top of the TUI when enabled."""
@@ -583,11 +616,11 @@ across restarts.
 SHOW_REASONING = "DEEPAGENTS_CODE_SHOW_REASONING"
 """Show provider-visible reasoning in local TUI and headless output.
 
-Off by default; use `[ui].show_reasoning` in config.toml to persist it. Parsed
-by `classify_env_bool` (an unrecognized value falls through to the config value
+On by default in the TUI and off by default in headless (`-n`) mode. Set this
+or `[ui].show_reasoning` in config.toml to choose for both modes. Parsed by
+`classify_env_bool` (an unrecognized value falls through to the config value
 rather than forcing the default). A recognized value outranks the config value
-but loses to `--show-reasoning`, which is the only way to change the setting for
-a single run.
+but loses to `--show-reasoning`.
 """
 
 SHOW_SCROLLBAR = "DEEPAGENTS_CODE_SHOW_SCROLLBAR"

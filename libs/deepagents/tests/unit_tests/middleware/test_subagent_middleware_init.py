@@ -153,14 +153,13 @@ class TestSubagentMiddlewareInit:
         with pytest.raises(ValueError, match="invalid mode 'dynamic'"):
             SubAgentMiddleware(backend=StateBackend(), subagents=[invalid_spec])
 
-    @pytest.mark.parametrize("mode", ["isolated", "handoff"])
-    def test_accepts_isolated_subagent_mode(self, mode: str) -> None:
-        """`handoff` is a legacy alias for `isolated`; neither forks the parent."""
+    def test_accepts_isolated_subagent_mode(self) -> None:
+        """An isolated subagent does not fork the parent."""
         spec: Any = {
             "name": "worker",
             "description": "Does work.",
             "runnable": RunnableLambda(lambda _state: {"messages": [AIMessage(content="done")]}),
-            "mode": mode,
+            "mode": "isolated",
         }
 
         SubAgentMiddleware(backend=StateBackend(), subagents=[spec])

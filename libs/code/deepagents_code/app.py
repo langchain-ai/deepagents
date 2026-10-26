@@ -18393,8 +18393,9 @@ class DeepAgentsApp(App):
     async def _request_skill_trust(self, skill_name: str, directory: str) -> bool:
         """Ask whether to trust a skill directory for the agent server.
 
-        The server saves an approval. A denial is remembered for the session so
-        the same directory is not asked about again.
+        The server saves an approval. A denial is remembered until `/reload` so
+        the same directory is not asked about again; later refusals say so
+        instead of failing silently.
 
         Args:
             skill_name: Skill the user invoked, for the prompt.
@@ -18406,6 +18407,17 @@ class DeepAgentsApp(App):
         from deepagents_code.tui.widgets.skill_trust import SkillTrustScreen
 
         if directory in self._skill_trust_denied:
+            await self._mount_message(
+                AppMessage(
+                    Content.from_markup(
+                        "Skill $skill was not loaded: you denied trust for "
+                        "$directory earlier in this session. Run /reload to "
+                        "be asked again.",
+                        skill=skill_name,
+                        directory=directory,
+                    )
+                )
+            )
             return False
         try:
             allowed = await self._push_screen_wait(
@@ -18674,6 +18686,10 @@ class DeepAgentsApp(App):
                 if removed_skills:
                     skill_lines.append(f"  - Removed: {', '.join(removed_skills)}")
                 report += "\nSkills updated:\n" + "\n".join(skill_lines)
+            if self._skill_trust_denied:
+                # Re-prompt for skill directories denied earlier in the session.
+                self._skill_trust_denied.clear()
+                report += "\nSkill trust denials cleared; you'll be asked again."
 
             # Rediscover plugins and restart the owned server so plugin MCP config
             # is picked up without a separate slash command.

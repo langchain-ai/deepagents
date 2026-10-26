@@ -2746,9 +2746,10 @@ class TestModalScreenShiftTabHandling:
         self, newline_key: str, btw_app: tuple[DeepAgentsApp, MagicMock]
     ) -> None:
         """Side-question shortcuts edit text without changing approval mode."""
-        from textual.widgets import Markdown, TextArea
+        from textual.widgets import TextArea
 
         from deepagents_code.tui.modals.btw import BtwScreen
+        from deepagents_code.tui.widgets.final_markdown import FinalMarkdown
 
         app, remote = btw_app
         answer = remote.abtw
@@ -2781,7 +2782,7 @@ class TestModalScreenShiftTabHandling:
             await pilot.pause()
             assert answer.await_count == 1
             assert answer.await_args.args == ("first!\nsecond",)
-            assert app.screen.query_one(Markdown)._markdown == "Side answer"
+            assert app.screen.query_one(FinalMarkdown).source == "Side answer"
             await pilot.press("shift+tab")
             assert editor.text == ""
             assert app._approval_mode is mode

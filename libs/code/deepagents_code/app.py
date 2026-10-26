@@ -14106,12 +14106,9 @@ class DeepAgentsApp(App):
                     )
                 else:
                     msg = AssistantMessage(f"```text\n{output}\n```", local_only=True)
-                    # `write_initial_content` queries the composed Markdown
-                    # child, so it raises `NoMatches` on a widget that never
-                    # reached the screen. `_mount_message` returns `False`
-                    # exactly then (teardown mid-command), so skip the write
-                    # rather than turning an ordinary shutdown race into a
-                    # spurious "Shell command crashed" in the log.
+                    # `_mount_message` returns `False` when the screen was
+                    # torn down mid-command; the row never shows then, so
+                    # log that instead of writing to a detached widget.
                     if await self._mount_message(msg):
                         await msg.write_initial_content()
                     else:

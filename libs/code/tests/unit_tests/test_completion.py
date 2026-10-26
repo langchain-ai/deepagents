@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import shlex
 import shutil
 import subprocess
@@ -234,6 +235,60 @@ class TestBashCompletion:
             self._complete(bash_script, ["dcode", "threads", "list", "--limit", ""], 4)
             == []
         )
+
+
+@pytest.fixture(scope="module")
+def zsh_script(tmp_path_factory, root: CommandSpec) -> Path:
+    """The generated zsh script, saved under the name `fpath` autoloads."""
+    if shutil.which("zsh") is None:
+        pytest.skip("zsh is not installed")
+    path = tmp_path_factory.mktemp("zfunc") / "_dcode"
+    path.write_text(render_script("zsh", root, ("dcode", "deepagents-code")))
+    return path
+
+
+class TestZshCompletion:
+    """Run the script the way `compinit` does, not just the syntax check."""
+
+    def _run(self, script_path: Path, body: list[str], home: Path) -> str:
+        lines = [
+            f"fpath=({shlex.quote(str(script_path.parent))} $fpath)",
+            "autoload -Uz compinit",
+            "compinit -u",
+            'compadd() { print -r -- "COMPADD:$*" }',
+            "words=(dcode thr)",
+            "CURRENT=2",
+            *body,
+        ]
+        result = subprocess.run(
+            ["zsh", "-f", "-c", "\n".join(lines)],
+            capture_output=True,
+            text=True,
+            check=False,
+            env={**os.environ, "HOME": str(home), "ZDOTDIR": str(home)},
+        )
+        assert result.returncode == 0, result.stderr
+        return result.stdout
+
+    def test_autoload_completes_on_every_tab(self, zsh_script, tmp_path) -> None:
+        # The first TAB autoloads `_dcode` from `fpath`; later TABs reach
+        # whatever `compinit` maps `dcode` to once the script registers itself.
+        second_tab = '"${_comps[dcode]}"'
+        output = self._run(zsh_script, ["_dcode", second_tab, second_tab], tmp_path)
+        assert output.count("COMPADD:") == 3
+        assert "COMPADD:--" in output
+
+    def test_sourcing_registers_without_completing(self, zsh_script, tmp_path) -> None:
+        output = self._run(
+            zsh_script,
+            [
+                f"source {shlex.quote(str(zsh_script))}",
+                'print -r -- "comps=${_comps[dcode]:-<unset>}"',
+            ],
+            tmp_path,
+        )
+        assert "COMPADD:" not in output
+        assert "comps=_dcode_completion" in output
 
 
 class TestProgramArg:

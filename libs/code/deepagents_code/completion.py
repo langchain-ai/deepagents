@@ -601,10 +601,15 @@ def _zsh_script(root: CommandSpec, programs: Sequence[str]) -> str:
     lines += [
         "}",
         "",
-        'if [ "${funcstack[1]}" = "_dcode_completion" ]; then',
-        '    _dcode_completion "$@"',
-        "elif (( $+functions[compdef] )); then",
+        "if (( $+functions[compdef] )); then",
         f"    compdef _dcode_completion {' '.join(programs)}",
+        "fi",
+        "# When autoloaded from `fpath`, the file body runs as the function",
+        "# named after the file, so a fixed function name cannot detect it.",
+        "# Match the execution context instead: `loadautofunc` on the first",
+        "# call, `shfunc` when a loaded copy is invoked directly later.",
+        'if [[ "${zsh_eval_context[-1]}" == (loadautofunc|shfunc) ]]; then',
+        '    _dcode_completion "$@"',
         "fi",
     ]
     return "\n".join(lines) + "\n"

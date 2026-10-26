@@ -31,8 +31,8 @@ dependencies = [
 
     # Client-server architecture
     "langgraph-sdk>=0.4.9,<1.0.0",
-    "langgraph-cli[inmem]>=0.4.38,<1.0.0",
-    "langgraph-runtime-inmem>=0.36.6,<1.0.0",
+    "langgraph-cli[inmem]>=0.4.40,<1.0.0",
+    "langgraph-runtime-inmem>=0.36.7,<1.0.0",
     "httpx>=0.28.1",
 
     # Core model providers - others are added as optional
@@ -108,7 +108,7 @@ dependencies = [
 # Model providers
 anthropic = ["langchain-anthropic>=1.7.6,<2.0.0"]
 baseten = ["langchain-baseten>=0.2.5,<1.0.0"]
-bedrock = ["langchain-aws>=1.9.0,<2.0.0"]
+bedrock = ["langchain-aws>=1.9.1,<2.0.0"]
 cohere = ["langchain-cohere>=0.6.0,<1.0.0"]
 deepseek = ["langchain-deepseek>=1.1.1,<2.0.0"]
 fireworks = ["langchain-fireworks>=1.7.1,<2.0.0"]
@@ -137,7 +137,7 @@ all-providers = [
 # Sandbox providers
 agentcore = ["langchain-agentcore-codeinterpreter>=0.0.5,<1.0.0"]
 daytona = ["langchain-daytona>=0.0.9"]
-modal = ["langchain-modal>=0.0.6"]
+modal = ["langchain-modal>=0.0.7"]
 openshell = ["langchain-nvidia-openshell>=0.1.1"]
 runloop = ["langchain-runloop>=0.0.7"]
 vercel = ["langchain-vercel-sandbox>=0.0.2"]

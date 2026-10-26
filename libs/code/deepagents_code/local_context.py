@@ -421,7 +421,21 @@ def _section_git() -> str:
     """
     return r"""# --- Git ---
 if $IN_GIT; then
-  BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null)"
+  if STATUS="$(git status --porcelain=v2 --branch --no-ahead-behind 2>/dev/null)"; then
+    SUMMARY=$(awk '
+      /^# branch.head / { branch = substr($0, 15) }
+      /^[12u?] / { changes++ }
+      END { print branch; print changes + 0 }
+    ' <<< "$STATUS")
+    BRANCH="${SUMMARY%%$'\n'*}"
+    DC="${SUMMARY##*$'\n'}"
+    if [ "$BRANCH" = "(detached)" ]; then
+      BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null)"
+    fi
+  else
+    BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null)"
+    DC=$(git status --porcelain 2>/dev/null | awk 'END { print NR }')
+  fi
   if [ "$BRANCH" = "HEAD" ]; then
     COMMIT="$(git rev-parse --short HEAD 2>/dev/null)"
     GT="**Git**: Detached HEAD at \`${COMMIT}\`"
@@ -439,7 +453,6 @@ if $IN_GIT; then
   done
   [ -n "$MAINS" ] && GT="${GT}, ${MAINS} available"
 
-  DC=$(git status --porcelain 2>/dev/null | awk 'END { print NR }')
   if [ "$DC" -gt 0 ]; then
     if [ "$DC" -eq 1 ]; then GT="${GT}, 1 uncommitted change"
     else GT="${GT}, ${DC} uncommitted changes"

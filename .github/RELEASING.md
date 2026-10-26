@@ -776,7 +776,7 @@ Append a `BEGIN_COMMIT_OVERRIDE` block (shown below) to the **merged PR's body**
 Two situations call for this:
 
 1. **Wrong type/scope inferred** — e.g. a `feat:` that should have been `refactor:` or `chore:`.
-2. **Parser cannot read the commit body** — `@conventional-commits/parser` (which release-please uses) is grammar-strict and does not honor markdown code fences. Bodies containing function calls split across lines (`name(` followed by a newline), even inside ` ``` ` blocks, throw a parse error and the commit is silently dropped from the changelog. The pre-merge `release_please_parse_check.yml` check catches this before merge; if a commit slipped through, use the override to recover.
+2. **Parser cannot read the commit body** — `@conventional-commits/parser` (which release-please uses) is grammar-strict and does not honor markdown code fences. Bodies containing function calls split across lines (`name(` followed by a newline), even inside ` ``` ` blocks, throw a parse error and the commit is silently dropped from the changelog. GitHub also wraps squash-merge body lines longer than 72 characters, except inside top-level code fences, so a long one-line call in an indented fence can be split and fail the same way. The pre-merge `release_please_parse_check.yml` check catches this before merge; if a commit slipped through, use the override to recover.
 
 ```txt
 BEGIN_COMMIT_OVERRIDE

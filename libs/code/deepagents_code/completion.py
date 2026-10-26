@@ -330,49 +330,18 @@ def _pattern(names: Sequence[str]) -> str:
     return "|".join(names)
 
 
-def _walk_levels(
-    level: CommandSpec,
-    chain: tuple[tuple[str, ...], ...] = (),
-) -> Iterator[tuple[CommandSpec, tuple[tuple[str, ...], ...]]]:
-    """Yield each level with the name sets of its non-root ancestors.
+def _iter_levels(level: CommandSpec) -> Iterator[CommandSpec]:
+    """Yield a level and every nested command level.
 
     Args:
-        level: Level to visit.
-        chain: Name sets of the ancestors visited so far, excluding the root.
-
-    Yields:
-        Each level and the name sets of its non-root ancestors.
-    """
-    yield level, chain
-    next_chain = chain if not level.path else (*chain, level.names)
-    for child in level.subcommands:
-        yield from _walk_levels(child, next_chain)
-
-
-def _iter_levels(root: CommandSpec) -> Iterator[CommandSpec]:
-    """Yield the root and every nested command level.
-
-    Args:
-        root: Root command spec.
+        level: Level to start from.
 
     Yields:
         Every level in pre-order.
     """
-    for level, _chain in _walk_levels(root):
-        yield level
-
-
-def _iter_options(root: CommandSpec) -> Iterator[OptionSpec]:
-    """Yield every option at every level.
-
-    Args:
-        root: Root command spec.
-
-    Yields:
-        Every option exposed by the tree.
-    """
-    for level in _iter_levels(root):
-        yield from level.options
+    yield level
+    for child in level.subcommands:
+        yield from _iter_levels(child)
 
 
 def _candidates(level: CommandSpec) -> tuple[str, ...]:
@@ -392,42 +361,76 @@ def _candidates(level: CommandSpec) -> tuple[str, ...]:
     return tuple(dict.fromkeys(word for word in words if _WORD_RE.match(word)))
 
 
-def _choice_map(root: CommandSpec) -> dict[str, tuple[str, ...]]:
-    """Map each flag to the fixed values it accepts.
+def _value_flags(level: CommandSpec) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Split a level's value-taking flags by whether the value is required.
 
     Args:
-        root: Root command spec.
+        level: Command level to describe.
+
+    Returns:
+        Flags whose value is required, then flags whose value is optional.
+    """
+    required: list[str] = []
+    optional: list[str] = []
+    for option in level.options:
+        if option.takes_value:
+            (optional if option.optional_value else required).extend(option.flags)
+    return tuple(required), tuple(optional)
+
+
+def _level_choices(level: CommandSpec) -> dict[str, tuple[str, ...]]:
+    """Map a level's required-value flags to the fixed values they accept.
+
+    Args:
+        level: Command level to describe.
 
     Returns:
         A mapping from flag spelling to its accepted values.
     """
     mapping: dict[str, tuple[str, ...]] = {}
-    for option in _iter_options(root):
+    for option in level.options:
         values = tuple(choice for choice in option.choices if _WORD_RE.match(choice))
-        if not values or not option.takes_value:
-            continue
-        for flag in option.flags:
-            mapping.setdefault(flag, values)
+        if values and option.takes_value and not option.optional_value:
+            mapping.update(dict.fromkeys(option.flags, values))
     return mapping
 
 
-def _required_value_flags(root: CommandSpec) -> tuple[str, ...]:
-    """Return flags that always consume the following word.
+def _has_required_values(root: CommandSpec) -> bool:
+    """Return whether any level has a flag that must be followed by a value.
 
     Args:
         root: Root command spec.
 
     Returns:
-        Flag spellings whose value is required.
+        Whether a required-value flag exists anywhere in the tree.
     """
-    return tuple(
-        dict.fromkeys(
-            flag
-            for option in _iter_options(root)
-            if option.takes_value and not option.optional_value
-            for flag in option.flags
-        )
-    )
+    return any(_value_flags(level)[0] for level in _iter_levels(root))
+
+
+def _level_case(
+    blocks: Sequence[tuple[str, Sequence[str]]],
+    indent: str,
+    var: str,
+) -> list[str]:
+    """Emit a `case "$cmd"` block dispatching to per-level `case "$var"` arms.
+
+    Args:
+        blocks: Command path and the inner case arms for that level.
+        indent: Leading indentation for the emitted block.
+        var: Shell variable matched by the inner case.
+
+    Returns:
+        Script lines, or an empty list when there are no blocks.
+    """
+    if not blocks:
+        return []
+    lines = [f'{indent}case "$cmd" in']
+    for path, arms in blocks:
+        lines.extend([f'{indent}    "{path}")', f'{indent}        case "${var}" in'])
+        lines.extend(f"{indent}            {arm}" for arm in arms)
+        lines.extend([f"{indent}        esac", f"{indent}        ;;"])
+    lines.append(f"{indent}esac")
+    return lines
 
 
 def _bash_script(root: CommandSpec, programs: Sequence[str]) -> str:
@@ -440,22 +443,21 @@ def _bash_script(root: CommandSpec, programs: Sequence[str]) -> str:
     Returns:
         The bash script.
     """
-    choices = _choice_map(root)
     lines = [
         f"# bash completion for {'/'.join(programs)}",
         "# Generated by `dcode completion bash`; regenerate after CLI changes.",
         "",
         "_dcode_completion() {",
-        "    local cur prev cmd w i",
+        "    local cur cmd flag w i",
         "    COMPREPLY=()",
         '    cur="${COMP_WORDS[COMP_CWORD]}"',
-        '    prev="${COMP_WORDS[COMP_CWORD-1]}"',
         '    cmd=""',
+        '    flag=""',
         "",
     ]
-    lines += _bash_command_scan(root)
+    lines += _command_scan(root, words="COMP_WORDS", cursor="COMP_CWORD", start=1)
     lines.append("")
-    lines += _bash_value_case(choices, _required_value_flags(root))
+    lines += _bash_value_case(root)
     lines += _bash_candidate_case(root)
     lines += ["}", ""]
     lines += [
@@ -465,34 +467,80 @@ def _bash_script(root: CommandSpec, programs: Sequence[str]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _bash_command_scan(root: CommandSpec) -> list[str]:
-    """Emit the loop that walks typed words to find the subcommand path.
+def _command_scan(
+    root: CommandSpec,
+    *,
+    words: str,
+    cursor: str,
+    start: int,
+) -> list[str]:
+    """Emit the bash/zsh loop that walks typed words to find the command path.
+
+    Option values are skipped the way argparse consumes them, using the flags
+    of the command level being parsed when the option appears.
 
     Args:
         root: Root command spec.
+        words: Name of the shell array holding the command line.
+        cursor: Name of the shell variable holding the cursor index.
+        start: Index of the first word after the program name.
 
     Returns:
         Script lines for the word-scanning loop.
     """
-    required = _required_value_flags(root)
     lines = [
         "    # Find the deepest subcommand typed before the cursor.",
-        "    for ((i = 1; i < COMP_CWORD; i++)); do",
-        '        w="${COMP_WORDS[i]}"',
-        '        case "$w" in',
-        "            --) break ;;",
+        f"    for ((i = {start}; i < {cursor}; i++)); do",
+        f'        w="${{{words}[i]}}"',
+        '        [[ "$w" == -- ]] && break',
     ]
-    if required:
-        lines += [
-            f"            {_pattern(required)})",
-            "                i=$((i + 1))",
-            "                continue",
-            "                ;;",
-        ]
-    lines += ["            -*) continue ;;", "        esac"]
+    lines += _value_scan(root, words=words, cursor=cursor)
+    lines.append('        [[ "$w" == -* ]] && continue')
     lines += _transitions(root, _INDENT * 2)
     lines.append("    done")
     return lines
+
+
+def _value_scan(root: CommandSpec, *, words: str, cursor: str) -> list[str]:
+    """Emit per-level arms that skip the value following a flag.
+
+    A required value is always consumed. An optional value is consumed only
+    when the next typed word does not look like an option, as argparse does.
+    A required-value flag directly before the cursor is recorded in `flag`.
+
+    Args:
+        root: Root command spec.
+        words: Name of the shell array holding the command line.
+        cursor: Name of the shell variable holding the cursor index.
+
+    Returns:
+        Script lines for the value-skipping block.
+    """
+    following = f'"${{{words}[i+1]}}"'
+    blocks = []
+    for level in _iter_levels(root):
+        required, optional = _value_flags(level)
+        arms: list[str] = []
+        if required:
+            arms += [
+                f"{_pattern(required)})",
+                f'    (( i + 1 == {cursor} )) && flag="$w"',
+                "    i=$((i + 1))",
+                "    continue",
+                "    ;;",
+            ]
+        if optional:
+            arms += [
+                f"{_pattern(optional)})",
+                f"    if (( i + 1 < {cursor} )) && [[ {following} != -* ]]; then",
+                "        i=$((i + 1))",
+                "    fi",
+                "    continue",
+                "    ;;",
+            ]
+        if arms:
+            blocks.append((level.path, arms))
+    return _level_case(blocks, _INDENT * 2, "w")
 
 
 def _transitions(root: CommandSpec, indent: str) -> list[str]:
@@ -505,48 +553,48 @@ def _transitions(root: CommandSpec, indent: str) -> list[str]:
     Returns:
         Script lines for the transition block.
     """
-    groups = [level for level in _iter_levels(root) if level.subcommands]
-    if not groups:
-        return []
-    lines = [f'{indent}case "$cmd" in']
-    for level in groups:
-        lines.extend([f'{indent}    "{level.path}")', f'{indent}        case "$w" in'])
-        lines.extend(
-            f'{indent}            {_pattern(child.names)}) cmd="{child.path}" ;;'
-            for child in level.subcommands
+    blocks = [
+        (
+            level.path,
+            [
+                f'{_pattern(child.names)}) cmd="{child.path}" ;;'
+                for child in level.subcommands
+            ],
         )
-        lines.extend([f"{indent}        esac", f"{indent}        ;;"])
-    lines.append(f"{indent}esac")
-    return lines
+        for level in _iter_levels(root)
+        if level.subcommands
+    ]
+    return _level_case(blocks, indent, "w")
 
 
-def _bash_value_case(
-    choices: dict[str, tuple[str, ...]],
-    required: tuple[str, ...],
-) -> list[str]:
+def _bash_value_case(root: CommandSpec) -> list[str]:
     """Emit completion for an option value, falling back to file names.
 
     Args:
-        choices: Flag-to-values mapping for options with fixed choices.
-        required: Flags whose value is required.
+        root: Root command spec.
 
     Returns:
         Script lines for the value branch.
     """
-    fallback = [flag for flag in required if flag not in choices]
-    if not choices and not fallback:
+    if not _has_required_values(root):
         return []
-    lines = ['    if [[ "$cur" != -* ]]; then', '        case "$prev" in']
-    for flag, values in choices.items():
-        words = " ".join(values)
-        lines.append(
-            f'            {flag}) COMPREPLY=( $(compgen -W "{words}" -- "$cur") );'
-            " return 0 ;;"
+    blocks = [
+        (
+            level.path,
+            [
+                f'{flag}) COMPREPLY=( $(compgen -W "{" ".join(values)}" -- "$cur") ) ;;'
+                for flag, values in _level_choices(level).items()
+            ],
         )
-    if fallback:
-        lines.append(f"            {_pattern(fallback)}) return 0 ;;")
-    lines += ["        esac", "    fi"]
-    return lines
+        for level in _iter_levels(root)
+        if _level_choices(level)
+    ]
+    return [
+        '    if [[ -n "$flag" && "$cur" != -* ]]; then',
+        *_level_case(blocks, _INDENT * 2, "flag"),
+        "        return 0",
+        "    fi",
+    ]
 
 
 def _bash_candidate_case(root: CommandSpec) -> list[str]:
@@ -582,21 +630,20 @@ def _zsh_script(root: CommandSpec, programs: Sequence[str]) -> str:
     Returns:
         The zsh script.
     """
-    choices = _choice_map(root)
     lines = [
         f"#compdef {' '.join(programs)}",
         "",
         "_dcode_completion() {",
-        "    local cur prev cmd w i",
+        "    local cur cmd flag w i",
         "    local -a candidates",
         '    cur="${words[CURRENT]}"',
-        '    prev="${words[CURRENT-1]}"',
         '    cmd=""',
+        '    flag=""',
         "",
     ]
-    lines += _zsh_command_scan(root)
+    lines += _command_scan(root, words="words", cursor="CURRENT", start=2)
     lines.append("")
-    lines += _zsh_value_case(choices, _required_value_flags(root))
+    lines += _zsh_value_case(root)
     lines += _zsh_candidate_case(root)
     lines += [
         "}",
@@ -615,59 +662,35 @@ def _zsh_script(root: CommandSpec, programs: Sequence[str]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _zsh_command_scan(root: CommandSpec) -> list[str]:
-    """Emit the zsh word walk mirroring `_bash_command_scan`.
+def _zsh_value_case(root: CommandSpec) -> list[str]:
+    """Emit zsh completion for an option value, falling back to file names.
 
     Args:
         root: Root command spec.
 
     Returns:
-        Script lines for the word-scanning loop.
-    """
-    required = _required_value_flags(root)
-    lines = [
-        "    # Find the deepest subcommand typed before the cursor.",
-        "    for ((i = 2; i < CURRENT; i++)); do",
-        '        w="${words[i]}"',
-        '        case "$w" in',
-        "            --) break ;;",
-    ]
-    if required:
-        lines += [
-            f"            {_pattern(required)})",
-            "                (( i += 1 ))",
-            "                continue",
-            "                ;;",
-        ]
-    lines += ["            -*) continue ;;", "        esac"]
-    lines += _transitions(root, _INDENT * 2)
-    lines.append("    done")
-    return lines
-
-
-def _zsh_value_case(
-    choices: dict[str, tuple[str, ...]],
-    required: tuple[str, ...],
-) -> list[str]:
-    """Emit zsh completion for an option value.
-
-    Args:
-        choices: Flag-to-values mapping for options with fixed choices.
-        required: Flags whose value is required.
-
-    Returns:
         Script lines for the value branch.
     """
-    fallback = [flag for flag in required if flag not in choices]
-    if not choices and not fallback:
+    if not _has_required_values(root):
         return []
-    lines = ['    if [[ "$cur" != -* ]]; then', '        case "$prev" in']
-    for flag, values in choices.items():
-        lines.append(f"            {flag}) compadd -- {' '.join(values)}; return ;;")
-    if fallback:
-        lines.append(f"            {_pattern(fallback)}) _files; return ;;")
-    lines += ["        esac", "    fi"]
-    return lines
+    blocks = [
+        (
+            level.path,
+            [
+                f"{flag}) compadd -- {' '.join(values)}; return ;;"
+                for flag, values in _level_choices(level).items()
+            ],
+        )
+        for level in _iter_levels(root)
+        if _level_choices(level)
+    ]
+    return [
+        '    if [[ -n "$flag" && "$cur" != -* ]]; then',
+        *_level_case(blocks, _INDENT * 2, "flag"),
+        "        _files",
+        "        return",
+        "    fi",
+    ]
 
 
 def _zsh_candidate_case(root: CommandSpec) -> list[str]:
@@ -708,48 +731,170 @@ def _fish_script(root: CommandSpec, programs: Sequence[str]) -> str:
         f"# fish completion for {'/'.join(programs)}",
         "# Generated by `dcode completion fish`; regenerate after CLI changes.",
         "",
-        "function __dcode_prev_option",
-        "    set -l tokens (commandline -opc)",
-        "    test (count $tokens) -gt 0; and contains -- $tokens[-1] $argv",
+        *_fish_path_function(root),
+        "",
+        "function __dcode_at_level",
+        "    set -l path (__dcode_command_path)",
+        '    test "$path" = "$argv[1]"',
         "end",
         "",
     ]
     for program in programs:
-        for level, chain in _walk_levels(root):
-            lines += _fish_level_lines(level, chain, program)
+        for level in _iter_levels(root):
+            lines += _fish_level_lines(level, program)
     return "\n".join(lines) + "\n"
 
 
-def _fish_level_lines(
-    level: CommandSpec,
-    chain: tuple[tuple[str, ...], ...],
-    program: str,
-) -> list[str]:
+def _fish_path_function(root: CommandSpec) -> list[str]:
+    """Emit the fish function that prints the command path before the cursor.
+
+    It mirrors `_command_scan`, so fish resolves the same command level as
+    bash and zsh instead of matching subcommand names anywhere on the line.
+
+    Args:
+        root: Root command spec.
+
+    Returns:
+        Script lines for `__dcode_command_path`.
+    """
+    indent = _INDENT * 2
+    lines = [
+        "function __dcode_command_path",
+        "    set -l tokens (commandline -opc)",
+        "    set -l cmd ''",
+        "    set -l i 2",
+        "    while test $i -le (count $tokens)",
+        "        set -l w $tokens[$i]",
+        "        set i (math $i + 1)",
+        "        test \"$w\" = '--'; and break",
+    ]
+    lines += _fish_switch(_fish_value_blocks(root), indent)
+    lines.append("        string match -q -- '-*' \"$w\"; and continue")
+    lines += _fish_switch(_fish_transition_blocks(root), indent)
+    lines += ["    end", "    echo $cmd", "end"]
+    return lines
+
+
+def _fish_value_blocks(root: CommandSpec) -> list[tuple[str, list[str]]]:
+    """Return per-level fish arms that skip the value following a flag.
+
+    Args:
+        root: Root command spec.
+
+    Returns:
+        Command path and the inner switch arms for that level.
+    """
+    blocks = []
+    for level in _iter_levels(root):
+        required, optional = _value_flags(level)
+        arms: list[str] = []
+        if required:
+            arms += [
+                f"case {_fish_words(required)}",
+                "    set i (math $i + 1)",
+                "    continue",
+            ]
+        if optional:
+            arms += [
+                f"case {_fish_words(optional)}",
+                (
+                    "    if test $i -le (count $tokens)"
+                    "; and not string match -q -- '-*' $tokens[$i]"
+                ),
+                "        set i (math $i + 1)",
+                "    end",
+                "    continue",
+            ]
+        if arms:
+            blocks.append((level.path, arms))
+    return blocks
+
+
+def _fish_transition_blocks(root: CommandSpec) -> list[tuple[str, list[str]]]:
+    """Return per-level fish arms that advance on each subcommand name.
+
+    Args:
+        root: Root command spec.
+
+    Returns:
+        Command path and the inner switch arms for that level.
+    """
+    return [
+        (
+            level.path,
+            [
+                line
+                for child in level.subcommands
+                for line in (
+                    f"case {_fish_words(child.names)}",
+                    f"    set cmd {_fish_quote(child.path)}",
+                )
+            ],
+        )
+        for level in _iter_levels(root)
+        if level.subcommands
+    ]
+
+
+def _fish_switch(blocks: Sequence[tuple[str, Sequence[str]]], indent: str) -> list[str]:
+    """Emit a fish `switch "$cmd"` dispatching to per-level `switch "$w"` arms.
+
+    Args:
+        blocks: Command path and the inner switch arms for that level.
+        indent: Leading indentation for the emitted block.
+
+    Returns:
+        Script lines, or an empty list when there are no blocks.
+    """
+    if not blocks:
+        return []
+    lines = [f'{indent}switch "$cmd"']
+    for path, arms in blocks:
+        lines.extend(
+            [f"{indent}    case {_fish_quote(path)}", f'{indent}        switch "$w"']
+        )
+        lines.extend(f"{indent}            {arm}" for arm in arms)
+        lines.append(f"{indent}        end")
+    lines.append(f"{indent}end")
+    return lines
+
+
+def _fish_words(words: Sequence[str]) -> str:
+    """Quote several fish words.
+
+    Args:
+        words: Words to quote.
+
+    Returns:
+        The quoted words separated by spaces.
+    """
+    return " ".join(_fish_quote(word) for word in words)
+
+
+def _fish_level_lines(level: CommandSpec, program: str) -> list[str]:
     """Emit fish completions for one command level.
 
     Args:
         level: Command level to describe.
-        chain: Name sets of the level's non-root ancestors.
         program: Command name to register completions for.
 
     Returns:
         Fish completion lines.
     """
-    condition = _fish_condition(level, chain)
+    condition = f"__dcode_at_level {_fish_quote(level.path)}"
+    choices = _level_choices(level)
     lines: list[str] = []
     for option in level.options:
         for flag in option.flags:
             spec = _fish_flag(flag, option.takes_value and not option.optional_value)
-            if spec is not None:
-                lines.append(
-                    f"complete -c {program} -n {_fish_quote(condition)} "
-                    f"{spec} -d {_fish_quote(option.help)}"
-                )
-        if option.takes_value and option.choices:
-            values = _fish_quote(" ".join(option.choices))
-            for flag in option.flags:
-                prev = _fish_quote(f"__dcode_prev_option {flag}")
-                lines.append(f"complete -c {program} -f -n {prev} -a {values}")
+            if spec is None:
+                continue
+            if flag in choices:
+                spec += f" -f -a {_fish_quote(' '.join(choices[flag]))}"
+            lines.append(
+                f"complete -c {program} -n {_fish_quote(condition)} "
+                f"{spec} -d {_fish_quote(option.help)}"
+            )
     lines.extend(
         f"complete -c {program} -f -n {_fish_quote(condition)} "
         f"-a {_fish_quote(name)} -d {_fish_quote(child.help)}"
@@ -763,46 +908,6 @@ def _fish_level_lines(
                 f"complete -c {program} -f -n {_fish_quote(condition)} -a {values}"
             )
     return lines
-
-
-def _fish_condition(
-    level: CommandSpec,
-    chain: tuple[tuple[str, ...], ...],
-) -> str:
-    """Build the fish condition selecting one command level.
-
-    Args:
-        level: Command level to describe.
-        chain: Name sets of the level's non-root ancestors.
-
-    Returns:
-        A fish condition expression.
-    """
-    if not level.path:
-        names = _child_names(level)
-        if not names:
-            return "true"
-        return f"not __fish_seen_subcommand_from {names}"
-    parts = [f"__fish_seen_subcommand_from {' '.join(names)}" for names in chain]
-    parts.append(f"__fish_seen_subcommand_from {' '.join(level.names)}")
-    child_names = _child_names(level)
-    if child_names:
-        parts.append(f"not __fish_seen_subcommand_from {child_names}")
-    return "; and ".join(parts)
-
-
-def _child_names(level: CommandSpec) -> str:
-    """Return every child name at a level, aliases included.
-
-    Args:
-        level: Command level to describe.
-
-    Returns:
-        Space-separated child names, without duplicates.
-    """
-    return " ".join(
-        dict.fromkeys(name for child in level.subcommands for name in child.names)
-    )
 
 
 def _fish_flag(flag: str, takes_value: bool) -> str | None:

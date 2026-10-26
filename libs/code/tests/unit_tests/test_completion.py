@@ -291,6 +291,104 @@ class TestZshCompletion:
         assert "comps=_dcode_completion" in output
 
 
+def _scoped_parser() -> argparse.ArgumentParser:
+    """A parser whose subcommands reuse a flag with different meanings."""
+    parser = argparse.ArgumentParser(prog="dcode")
+    parser.add_argument("-r", "--resume", nargs="?")
+    parser.add_argument("--model")
+    commands = parser.add_subparsers(dest="command")
+    alpha = commands.add_parser("alpha")
+    alpha.add_argument("--mode", choices=["fast", "slow"])
+    alpha.add_argument("--name")
+    beta = commands.add_parser("beta")
+    beta.add_argument("--mode", choices=["red", "blue"])
+    beta.add_argument("--name", action="store_true")
+    beta.add_subparsers(dest="beta_command").add_parser("go")
+    return parser
+
+
+def _complete_bash(script: Path, words: list[str], cwd: Path) -> list[str]:
+    """Return bash candidates for *words*, the last being the cursor word."""
+    body = "\n".join(
+        [
+            f"source {shlex.quote(str(script))}",
+            f"COMP_WORDS=({' '.join(shlex.quote(word) for word in words)})",
+            f"COMP_CWORD={len(words) - 1}",
+            "_dcode_completion",
+            'printf "%s\\n" "${COMPREPLY[@]}"',
+        ]
+    )
+    return _shell_lines(["bash", "--noprofile", "--norc", "-c", body], cwd)
+
+
+def _complete_zsh(script: Path, words: list[str], cwd: Path) -> list[str]:
+    """Return zsh candidates for *words*, the last being the cursor word."""
+    body = "\n".join(
+        [
+            'compadd() { [[ "$1" == -- ]] && shift; print -rl -- "$@" }',
+            "_files() { : }",
+            f"source {shlex.quote(str(script))}",
+            f"words=({' '.join(shlex.quote(word) for word in words)})",
+            f"CURRENT={len(words)}",
+            "_dcode_completion",
+        ]
+    )
+    return _shell_lines(["zsh", "-f", "-c", body], cwd)
+
+
+def _complete_fish(script: Path, words: list[str], cwd: Path) -> list[str]:
+    """Return fish candidates for *words*, the last being the cursor word."""
+    body = "source $argv[1]; complete -C $argv[2]"
+    command = ["fish", "--no-config", "-c", body, str(script), " ".join(words)]
+    return [line.split("\t")[0] for line in _shell_lines(command, cwd)]
+
+
+def _shell_lines(command: list[str], cwd: Path) -> list[str]:
+    """Run a shell command and return its non-empty output lines."""
+    result = subprocess.run(
+        command, capture_output=True, text=True, check=False, cwd=cwd
+    )
+    assert result.returncode == 0, result.stderr
+    return [line for line in result.stdout.splitlines() if line]
+
+
+_COMPLETERS = {"bash": _complete_bash, "zsh": _complete_zsh, "fish": _complete_fish}
+
+
+class TestArgparseSemantics:
+    """Each shell resolves the command level the way argparse parses it."""
+
+    @pytest.fixture(params=SHELLS)
+    def complete(self, request, tmp_path):
+        shell = request.param
+        if shutil.which(shell) is None:
+            pytest.skip(f"{shell} is not installed")
+        script = tmp_path / f"dcode.{shell}"
+        root = build_spec(_scoped_parser(), ("dcode",))
+        script.write_text(render_script(shell, root, ("dcode",)))
+        cwd = tmp_path / "empty"
+        cwd.mkdir()
+        return lambda words: set(_COMPLETERS[shell](script, ["dcode", *words], cwd))
+
+    @pytest.mark.parametrize(
+        ("words", "present", "absent"),
+        [
+            # `--resume` consumes `alpha` as its optional value.
+            (["--resume", "alpha", ""], {"alpha", "beta"}, {"--mode"}),
+            # An option-like word is not an optional value.
+            (["--resume", "--model", "m", "alpha", "--m"], {"--mode"}, {"--model"}),
+            (["alpha", "--mode", ""], {"fast", "slow"}, {"red", "blue"}),
+            (["beta", "--mode", ""], {"red", "blue"}, {"fast", "slow"}),
+            # `beta --name` is a switch, so `go` is a subcommand, not its value.
+            (["beta", "--name", "go", "-"], {"--help"}, {"--mode", "--name"}),
+        ],
+    )
+    def test_command_level(self, complete, words, present, absent) -> None:
+        candidates = complete(words)
+        assert present <= candidates
+        assert not absent & candidates
+
+
 class TestProgramArg:
     def test_accepts_command_names(self) -> None:
         assert program_arg("dcode") == "dcode"

@@ -1468,19 +1468,7 @@ def _get_provider_profile_modules() -> list[tuple[str, str]]:
 
 ANTHROPIC_MODEL_PROFILE_FALLBACKS: dict[str, dict[str, Any]] = {
     "claude-haiku-5-5": {
-        "name": "Claude Haiku 5.5",
-        "max_input_tokens": 1_000_000,
-        "max_output_tokens": 128_000,
-        "text_inputs": True,
-        "image_inputs": True,
-        "audio_inputs": False,
-        "video_inputs": False,
-        "text_outputs": True,
-        "reasoning_output": True,
-        "tool_calling": True,
         "tool_choice": True,
-        "structured_output": True,
-        "temperature": False,
         "reasoning_effort_levels": ["low", "medium", "high", "xhigh", "max"],
         "reasoning_effort_default": "medium",
     },

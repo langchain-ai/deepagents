@@ -39,7 +39,6 @@ from rich.spinner import Spinner as RichSpinner
 from rich.style import Style
 from rich.text import Text
 
-from deepagents_code.integrations.sandbox_factory import owned_sandbox
 from deepagents_code._cli_context import CLIContext
 from deepagents_code._constants import SESSION_END_DRAIN_TIMEOUT_SECONDS
 from deepagents_code._content_blocks import reasoning_text
@@ -84,6 +83,7 @@ from deepagents_code.hooks import (
     drain_pending_hooks,
 )
 from deepagents_code.hooks.transcript import SUBAGENT_TRANSCRIPT_ID_METADATA_KEY
+from deepagents_code.integrations.sandbox_factory import owned_sandbox
 from deepagents_code.model_retry import (
     INTERRUPTED_TOOL_OUTPUT,
     RETRY_BOUNDARY_LINE,
@@ -3064,41 +3064,44 @@ async def run_non_interactive(
         if not quiet:
             console.print(Text("Starting LangGraph server...", style="dim"))
 
-        async with owned_sandbox(
-            sandbox_type,
-            sandbox_id=sandbox_id,
-            snapshot_name=sandbox_snapshot_name,
-            quiet=quiet,
-        ) as sandbox_id, server_session(
-            assistant_id=assistant_id,
-            model_name=model_name,
-            model_params=model_params,
-            cli_max_retries=cli_max_retries,
-            profile_overrides=profile_override,
-            auto_approve=use_auto_approve,
-            interrupt_shell_only=use_interrupt_shell_only,
-            shell_allow_list=restrictive_allow_list,
-            sandbox_type=sandbox_type,
-            sandbox_id=sandbox_id,
-            sandbox_snapshot_name=sandbox_snapshot_name,
-            sandbox_setup=sandbox_setup,
-            enable_shell=enable_shell,
-            enable_ask_user=False,
-            enable_interpreter=enable_interpreter,
-            interpreter_ptc=interpreter_ptc,
-            interpreter_ptc_acknowledge_unsafe=interpreter_ptc_acknowledge_unsafe,
-            allow_fs_tools=allow_fs_tools,
-            rubric_model=rubric_model,
-            rubric_max_iterations=rubric_max_iterations,
-            recursion_limit=recursion_limit,
-            mcp_config_path=mcp_config_path,
-            no_mcp=no_mcp,
-            trust_project_mcp=trust_project_mcp,
-            trust_project_extensions=trust_project_extensions,
-            extension_paths=extension_paths,
-            interactive=False,
-            cwd=str(Path.cwd()),
-        ) as (agent, _server_proc):
+        async with (
+            owned_sandbox(
+                sandbox_type,
+                sandbox_id=sandbox_id,
+                snapshot_name=sandbox_snapshot_name,
+                quiet=quiet,
+            ) as owned_sandbox_id,
+            server_session(
+                assistant_id=assistant_id,
+                model_name=model_name,
+                model_params=model_params,
+                cli_max_retries=cli_max_retries,
+                profile_overrides=profile_override,
+                auto_approve=use_auto_approve,
+                interrupt_shell_only=use_interrupt_shell_only,
+                shell_allow_list=restrictive_allow_list,
+                sandbox_type=sandbox_type,
+                sandbox_id=owned_sandbox_id,
+                sandbox_snapshot_name=sandbox_snapshot_name,
+                sandbox_setup=sandbox_setup,
+                enable_shell=enable_shell,
+                enable_ask_user=False,
+                enable_interpreter=enable_interpreter,
+                interpreter_ptc=interpreter_ptc,
+                interpreter_ptc_acknowledge_unsafe=interpreter_ptc_acknowledge_unsafe,
+                allow_fs_tools=allow_fs_tools,
+                rubric_model=rubric_model,
+                rubric_max_iterations=rubric_max_iterations,
+                recursion_limit=recursion_limit,
+                mcp_config_path=mcp_config_path,
+                no_mcp=no_mcp,
+                trust_project_mcp=trust_project_mcp,
+                trust_project_extensions=trust_project_extensions,
+                extension_paths=extension_paths,
+                interactive=False,
+                cwd=str(Path.cwd()),
+            ) as (agent, _server_proc),
+        ):
             metadata = await agent.aget_model_metadata()
             metadata.apply_to_runtime_state()
             context_overrides = (

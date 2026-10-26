@@ -1,7 +1,6 @@
 """Sandbox lifecycle management with provider abstraction."""
 
 from __future__ import annotations
-from collections.abc import AsyncGenerator
 
 import contextlib
 import importlib
@@ -34,7 +33,7 @@ from deepagents_code.integrations.sandbox_provider import (
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
-    from collections.abc import Generator, Mapping
+    from collections.abc import AsyncGenerator, Generator, Mapping
     from types import ModuleType
 
     from deepagents.backends.protocol import SandboxBackendProtocol
@@ -1564,6 +1563,9 @@ async def owned_sandbox(
     server with SIGTERM, which bypasses `atexit`, so the sandbox leaked until
     the provider's own timeout reclaimed it. Deleting from the client's control
     flow removes the dependence on how the server process dies.
+
+    Yields:
+        The sandbox ID for the server to reuse, or `None`.
     """
     if provider == "none" or sandbox_id is not None:
         yield sandbox_id
@@ -1601,7 +1603,7 @@ async def owned_sandbox(
                     f"[dim]{get_glyphs().checkmark} {provider.capitalize()} "
                     f"sandbox {backend.id} terminated[/dim]"
                 )
-        except Exception:  # noqa: BLE001  # never mask the run's own outcome
+        except Exception:
             logger.warning(
                 "Failed to delete %s sandbox %s", provider, backend.id, exc_info=True
             )

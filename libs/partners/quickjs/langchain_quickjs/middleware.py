@@ -42,7 +42,12 @@ from langchain_quickjs._ptc import (
     filter_tools_for_ptc,
     render_ptc_prompt,
 )
-from langchain_quickjs._repl import _DEFAULT_MAX_SUBAGENT_CONCURRENCY, _Registry
+from langchain_quickjs._repl import (
+    _DEFAULT_MAX_SUBAGENT_CONCURRENCY,
+    EvalOutcome,
+    _Registry,
+    _SnapshotRestoreError,
+)
 from langchain_quickjs._snapshot import (
     encode_snapshot,
     normalize_signing_key,
@@ -306,24 +311,23 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         code_doc = render_eval_tool_code_doc(mode=self._mode)
         tool_description = render_eval_tool_description(mode=self._mode)
 
-        def _make_tool_message(
-            outcome: Any,
+        def _make_tool_output(
+            outcome: EvalOutcome,
             tool_call_id: str | None,
         ) -> ToolMessage | Command:
-            message = ToolMessage(
+            if isinstance(outcome, _SnapshotRestoreError):
+                return outcome.to_command(
+                    ToolMessage(
+                        content=format_outcome(outcome, max_result_chars=max_chars),
+                        tool_call_id=tool_call_id,
+                        name=tool_name,
+                    )
+                )
+            return ToolMessage(
                 content=format_outcome(outcome, max_result_chars=max_chars),
                 tool_call_id=tool_call_id,
                 name=tool_name,
             )
-            if outcome.snapshot_restore_failed:
-                return Command(
-                    update={
-                        "messages": [message],
-                        "_quickjs_snapshot_payload": None,
-                        "_quickjs_snapshot_hmac": None,
-                    }
-                )
-            return message
 
         def sync_eval(
             runtime: ToolRuntime[None, Any],
@@ -341,7 +345,7 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
             finally:
                 if middleware._mode == "call":
                     middleware._registry.reset_repl(slot_id)
-            return _make_tool_message(outcome, runtime.tool_call_id)
+            return _make_tool_output(outcome, runtime.tool_call_id)
 
         async def async_eval(
             runtime: ToolRuntime[None, Any],
@@ -360,7 +364,7 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
             finally:
                 if middleware._mode == "call":
                     middleware._registry.reset_repl(slot_id)
-            return _make_tool_message(outcome, runtime.tool_call_id)
+            return _make_tool_output(outcome, runtime.tool_call_id)
 
         return StructuredTool.from_function(
             name=tool_name,

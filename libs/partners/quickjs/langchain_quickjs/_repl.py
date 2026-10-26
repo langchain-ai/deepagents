@@ -23,6 +23,7 @@ from langchain_core.tools.base import (
 )
 from langgraph.errors import GraphInterrupt
 from langgraph.prebuilt.tool_node import _get_all_injected_args
+from langgraph.types import Command
 from quickjs_rs import (
     UNDEFINED,
     ConcurrentEvalError,
@@ -55,6 +56,7 @@ from langchain_quickjs._subagent import (
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
+    from langchain_core.messages import ToolMessage
     from langchain_core.tools import BaseTool
     from langgraph.prebuilt import ToolRuntime
 
@@ -84,7 +86,6 @@ class EvalOutcome:
     is collected from `console.*` regardless.
     """
 
-    snapshot_restore_failed: bool = False
     stdout: str = ""
     stdout_truncated_chars: int = 0
     result: str | None = None
@@ -92,6 +93,20 @@ class EvalOutcome:
     error_type: str | None = None
     error_message: str = ""
     error_stack: str | None = None
+
+
+class _SnapshotRestoreError(EvalOutcome):
+    """Evaluation result that also invalidates a failed persisted snapshot."""
+
+    def to_command(self, message: ToolMessage) -> Command:
+        """Clear invalid checkpoint state alongside the evaluation result."""
+        return Command(
+            update={
+                "messages": [message],
+                "_quickjs_snapshot_payload": None,
+                "_quickjs_snapshot_hmac": None,
+            }
+        )
 
 
 class _PTCCallBudgetExceededError(RuntimeError):
@@ -792,20 +807,20 @@ class _ThreadREPL:
 
     async def _aprepare_for_eval(
         self, payload: bytes | None, tools: Sequence[BaseTool] | None
-    ) -> bool:
-        """Restore once and report failures for checkpoint invalidation."""
-        restore_failed = False
+    ) -> EvalOutcome:
+        """Restore once and return an outcome carrying checkpoint invalidation."""
+        outcome = EvalOutcome()
         if not self._prepared_for_eval:
             self._prepared_for_eval = True
             if payload:
                 try:
                     await self._arestore_snapshot(payload, inject_globals=True)
                 except Exception:  # noqa: BLE001  # best-effort restore path
-                    restore_failed = True
+                    outcome = _SnapshotRestoreError()
                     logger.warning("Failed to restore QuickJS snapshot", exc_info=True)
         if tools is not None:
             await self._ainstall_tools(tools)
-        return restore_failed
+        return outcome
 
     async def _aeval_async(  # noqa: C901, PLR0912, PLR0915
         self,
@@ -836,9 +851,7 @@ class _ThreadREPL:
             outer_loop=outer_loop,
         )
         try:
-            outcome.snapshot_restore_failed = await self._aprepare_for_eval(
-                snapshot_payload, tools
-            )
+            outcome = await self._aprepare_for_eval(snapshot_payload, tools)
             # Drive any final-expression Promise (e.g. a bare async
             # IIFE) to its resolved value before marshaling. Without
             # this the Promise object itself fails to marshal and

@@ -12,6 +12,7 @@ from deepagents_code.plugins import (
     add_marketplace_source,
     install_plugin,
     list_available_plugins,
+    reinstall_plugin,
     remove_marketplace,
     set_installed_plugin_enabled,
     uninstall_plugin,
@@ -21,7 +22,11 @@ from deepagents_code.plugins.marketplace import (
     redact_marketplace_source,
     redact_urls_in_text,
 )
-from deepagents_code.plugins.store import load_marketplace_records
+from deepagents_code.plugins.store import (
+    install_path_exists,
+    load_installed_plugins,
+    load_marketplace_records,
+)
 
 
 def setup_plugin_parser(
@@ -65,6 +70,10 @@ def setup_plugin_parser(
 
     install_parser = plugin_sub.add_parser("install", help="Install a plugin")
     install_parser.add_argument("plugin_id")
+    reinstall_parser = plugin_sub.add_parser(
+        "reinstall", help="Restore an installed plugin's files"
+    )
+    reinstall_parser.add_argument("plugin_id")
     uninstall_parser = plugin_sub.add_parser("uninstall", help="Uninstall a plugin")
     uninstall_parser.add_argument("plugin_id")
 
@@ -91,11 +100,52 @@ def setup_plugin_parser(
     return parser
 
 
+def _needs_repair_ids() -> frozenset[str]:
+    """Return installed plugin ids whose registered install path is missing."""
+    return frozenset(
+        plugin_id
+        for plugin_id, entry in load_installed_plugins().items()
+        if not install_path_exists(entry.install_path)
+    )
+
+
 def _plugin_list_rows() -> list[dict[str, object]]:
+    needs_repair = _needs_repair_ids()
     return [
-        {"id": plugin_id, "description": description, "enabled": enabled}
+        {
+            "id": plugin_id,
+            "description": description,
+            "enabled": enabled,
+            "needs_repair": plugin_id in needs_repair,
+        }
         for plugin_id, description, enabled in list_available_plugins()
     ]
+
+
+def _list_status(row: dict[str, object]) -> str:
+    if row["needs_repair"]:
+        return "needs repair"
+    return "enabled" if row["enabled"] else "disabled"
+
+
+def _reinstall(plugin_id: str) -> str:
+    """Reinstall a plugin and print the outcome.
+
+    Returns:
+        The printed result text.
+
+    Raises:
+        SystemExit: With status 1 when the reinstall fails.
+    """
+    try:
+        instance = reinstall_plugin(plugin_id)
+    except (MarketplaceError, FileNotFoundError, OSError, ValueError) as exc:
+        text = f"Failed to reinstall {plugin_id}: {redact_urls_in_text(str(exc))}"
+        print(text)  # noqa: T201
+        raise SystemExit(1) from exc
+    text = f"Reinstalled plugin {instance.plugin_id}. Run /reload to activate."
+    print(text)  # noqa: T201
+    return text
 
 
 def execute_plugin_command(args: argparse.Namespace) -> str | None:
@@ -129,7 +179,7 @@ def execute_plugin_command(args: argparse.Namespace) -> str | None:
         else:
             lines = []
             for row in rows:
-                status = "enabled" if row["enabled"] else "disabled"
+                status = _list_status(row)
                 lines.append(f"{status} {row['id']} {row['description']}".rstrip())
             text = "\n".join(lines)
         print(text)  # noqa: T201
@@ -149,6 +199,8 @@ def execute_plugin_command(args: argparse.Namespace) -> str | None:
         )
         print(text)  # noqa: T201
         return text
+    if command == "reinstall":
+        return _reinstall(args.plugin_id)
     if command == "uninstall":
         uninstall_plugin(args.plugin_id)
         text = f"Uninstalled plugin {args.plugin_id}."
@@ -220,6 +272,6 @@ def execute_plugin_command(args: argparse.Namespace) -> str | None:
             )
             print(text)  # noqa: T201
             return text
-    text = "Usage: plugin {list,install,uninstall,enable,disable,marketplace}"
+    text = "Usage: plugin {list,install,reinstall,uninstall,enable,disable,marketplace}"
     print(text)  # noqa: T201
     return text

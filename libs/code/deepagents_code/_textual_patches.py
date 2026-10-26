@@ -293,6 +293,11 @@ else:
 
 
 def _rendered_text(widget: Widget) -> str | None:
+    # A widget that renders a custom visual (such as `FinalMarkdown`) can
+    # publish the text its selection offsets index into.
+    selectable = getattr(widget, "selectable_text", None)
+    if isinstance(selectable, str):
+        return selectable
     visual = widget._render()  # match Textual's get_selection path
     if isinstance(visual, (Content, Text)):
         return str(visual)

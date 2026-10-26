@@ -124,12 +124,17 @@ def _plugin_display_name(
     return plugin_name
 
 
+def _repair_error(plugin_id: str) -> str:
+    return f"{plugin_id}: installed files are missing; reinstall or disable it."
+
+
 def _instance_for_manager_row(
     plugin_id: str,
     *,
     discovered: dict[str, PluginInstance],
     is_installed: bool,
     errors: list[str],
+    broken: set[str],
 ) -> PluginInstance | None:
     instance = discovered.get(plugin_id)
     if instance is not None:
@@ -147,7 +152,9 @@ def _instance_for_manager_row(
         errors.append(f"{plugin_id}: could not inspect install path: {exc}")
         return None
     if not installed:
-        errors.append(f"{plugin_id}: install cache missing at {root}; re-run install")
+        logger.debug("Plugin %s install path %s is not a directory", plugin_id, root)
+        errors.append(_repair_error(plugin_id))
+        broken.add(plugin_id)
         return None
     from deepagents_code.plugins.discovery import _plugin_from_install_path
 
@@ -275,6 +282,7 @@ def _row_from_instance(
     loaded_plugin_ids: AbstractSet[str],
     load_error: str | None = None,
     display_name: str = "",
+    needs_repair: bool = False,
 ) -> _PluginRow:
     from deepagents_code.plugins.adapters.hooks import plugin_hook_event_names
 
@@ -306,6 +314,7 @@ def _row_from_instance(
         unsupported_components=unsupported,
         session_loaded=session_loaded,
         load_error=load_error,
+        needs_repair=needs_repair,
     )
 
 
@@ -321,6 +330,8 @@ def _load_manager_state(
     errors: list[str] = []
     plugin_result = discover_plugins()
     errors.extend(plugin_result.warnings)
+    errors.extend(_repair_error(item.plugin_id) for item in plugin_result.broken)
+    broken: set[str] = set()
     discovered = {instance.plugin_id: instance for instance in plugin_result.plugins}
     available_plugins: list[_PluginRow] = []
     installed_plugins: list[_PluginRow] = []
@@ -367,6 +378,7 @@ def _load_manager_state(
                 discovered=discovered,
                 is_installed=is_installed,
                 errors=row_errors,
+                broken=broken,
             )
             if instance is None and not is_installed:
                 instance = _preview_local_plugin_instance(
@@ -377,7 +389,8 @@ def _load_manager_state(
                 )
             errors.extend(row_errors)
             load_error: str | None = None
-            if is_installed and instance is None:
+            needs_repair = plugin_id in broken
+            if is_installed and instance is None and not needs_repair:
                 load_error = (
                     row_errors[0]
                     if row_errors
@@ -393,6 +406,7 @@ def _load_manager_state(
                 mcp_connecting=mcp_connecting,
                 loaded_plugin_ids=loaded_plugin_ids,
                 load_error=load_error,
+                needs_repair=needs_repair,
                 display_name=_plugin_display_name(
                     marketplace_display_name=plugin.display_name,
                     instance=instance,

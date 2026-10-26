@@ -443,11 +443,11 @@ def _build_server_env() -> dict[str, str]:
     for key in (
         "LANGGRAPH_AUTH",
         "LANGGRAPH_CLOUD_LICENSE_KEY",
-        "LANGSMITH_CONTROL_PLANE_API_KEY",
         "LANGSMITH_TENANT_ID",
         *_SERVER_ENV_DENYLIST,
     ):
         env.pop(key, None)
+    env["LANGSMITH_CONTROL_PLANE_API_KEY"] = ""
 
     if inherited_pythonpath is not None:
         env[_INHERITED_PYTHONPATH_ENV] = inherited_pythonpath

@@ -75,7 +75,7 @@ def _is_stream_tty(stream: TextIO | None) -> bool:
         return False
     try:
         return bool(stream.isatty())
-    except (ValueError, OSError):
+    except ValueError, OSError:
         return False
 
 

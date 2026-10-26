@@ -245,13 +245,17 @@ def token_store_dir() -> Path:
     return DEFAULT_STATE_DIR / "mcp-tokens"
 
 
-def _token_file_stem(server_name: str, server_url: str | None) -> str:
+def _token_file_stem(
+    server_name: str, server_url: str | None, oauth_client_id: str | None = None
+) -> str:
     """Return a path-safe storage stem for this server identity.
 
     Safety of the stem depends on `server_name` already having passed
     `_SERVER_NAME_RE` in `_validate_server_config` — the URL is hashed
     to a hex digest, so only the server name can carry path separators.
     """
+    if oauth_client_id is not None:
+        server_url = json.dumps([server_url, oauth_client_id])
     if server_url is None:
         return server_name
     digest = hashlib.sha256(server_url.encode("utf-8")).hexdigest()[:16]
@@ -291,7 +295,13 @@ async def _join_task_deferring_cancellation[T](
 class FileTokenStorage(TokenStorage):
     """File-backed `TokenStorage` under the selected profile's state directory."""
 
-    def __init__(self, server_name: str, *, server_url: str | None = None) -> None:
+    def __init__(
+        self,
+        server_name: str,
+        *,
+        server_url: str | None = None,
+        oauth_client_id: str | None = None,
+    ) -> None:
         """Bind this storage to a configured MCP server identity.
 
         Raises:
@@ -309,11 +319,14 @@ class FileTokenStorage(TokenStorage):
             raise ValueError(msg)
         self._server_name = server_name
         self._server_url = server_url
+        self._oauth_client_id = oauth_client_id
 
     @property
     def path(self) -> Path:
         """On-disk token file path for this server."""
-        stem = _token_file_stem(self._server_name, self._server_url)
+        stem = _token_file_stem(
+            self._server_name, self._server_url, self._oauth_client_id
+        )
         return token_store_dir() / f"{stem}.json"
 
     @property
@@ -524,7 +537,7 @@ class FileTokenStorage(TokenStorage):
             return None
         try:
             return float(raw)
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             # Log the value's type, never the value itself — the sidecar lives
             # next to the bearer token in the same JSON envelope, so a
             # misplaced token string would land here.
@@ -1218,6 +1231,7 @@ def _make_loopback_handlers(
     extras = dict(extra_auth_params or {})
     interaction = ui if ui is not None else _default_ui()
     last_authorize_url: str | None = None
+    browser_opened = False
     _paste_redirect, paste_callback = _make_paste_back_handlers(
         extra_auth_params=extra_auth_params,
         ui=interaction,
@@ -1227,7 +1241,8 @@ def _make_loopback_handlers(
         import asyncio
         import webbrowser
 
-        nonlocal last_authorize_url
+        nonlocal last_authorize_url, browser_opened
+        browser_opened = False
         final_url = _append_query_params(auth_url, extras) if extras else auth_url
         last_authorize_url = final_url
 
@@ -1268,10 +1283,18 @@ def _make_loopback_handlers(
             )
             await interaction.show_authorize_url(final_url, opened_in_browser=False)
             return
+        browser_opened = True
         await interaction.show_authorize_url(final_url, opened_in_browser=True)
 
     async def callback() -> AuthorizationCodeResult:
+        from deepagents_code.mcp_oauth_ui import (
+            CliOAuthInteraction,
+            _wait_for_browser_authorization,
+        )
+
         try:
+            if browser_opened and isinstance(interaction, CliOAuthInteraction):
+                return await _wait_for_browser_authorization(callback_server.wait)
             return await callback_server.wait()
         except (
             _LoopbackCallbackTimeoutError,
@@ -1771,6 +1794,7 @@ def build_oauth_provider(
     extra_auth_params: dict[str, str] | None = None,
     interactive: bool = True,
     ui: OAuthInteraction | None = None,
+    oauth: Mapping[str, str] | None = None,
 ) -> OAuthClientProvider:
     """Construct an `OAuthClientProvider` for an MCP server.
 
@@ -1782,13 +1806,14 @@ def build_oauth_provider(
         interactive: Whether the provider may prompt on stdin.
         ui: Interaction surface used for URL display and paste-back
             input in interactive mode.
+        oauth: Validated Slack app credentials from the server configuration.
 
     Returns:
         A configured `OAuthClientProvider`.
     """
     from deepagents_code.mcp_providers import resolve_provider
 
-    policy = resolve_provider(server_url)
+    policy = resolve_provider(server_url, oauth=oauth)
     redirect_uri: str | None = None
 
     if interactive:
@@ -1998,6 +2023,7 @@ def format_login_failure(exc: BaseException) -> str:
     if reauth is not None:
         return str(reauth)
 
+    from deepagents_code.mcp_oauth_ui import MCPLoginAbortedError
     from deepagents_code.mcp_tools import MCPConfigError
 
     if isinstance(exc, MCPConfigError):
@@ -2018,8 +2044,12 @@ def format_login_failure(exc: BaseException) -> str:
     visited: set[int] = set()
     while current is not None and id(current) not in visited:
         visited.add(id(current))
+        if isinstance(current, MCPLoginAbortedError):
+            return "MCP login aborted."
         parts.append(type(current).__name__)
         if isinstance(current, BaseExceptionGroup):
+            if current.subgroup(MCPLoginAbortedError) is not None:
+                return "MCP login aborted."
             parts.append(
                 "[" + ", ".join(type(e).__name__ for e in current.exceptions[:5]) + "]"
             )
@@ -2190,7 +2220,7 @@ async def login(
         raise ValueError(msg)
     try:
         resolved_config = resolve_mcp_server_env(server_name, server_config)
-    except (RuntimeError, TypeError) as exc:
+    except (RuntimeError, TypeError, ValueError) as exc:
         # Re-raise as MCPConfigError (a ValueError) so callers' existing
         # config-error handling catches it, and `format_login_failure`
         # preserves the actionable, field-scoped message instead of
@@ -2199,8 +2229,13 @@ async def login(
 
     from deepagents_code.mcp_providers import resolve_provider
 
-    storage = FileTokenStorage(server_name, server_url=resolved_config["url"])
-    policy = resolve_provider(resolved_config["url"])
+    oauth = resolved_config.get("oauth")
+    storage = FileTokenStorage(
+        server_name,
+        server_url=resolved_config["url"],
+        oauth_client_id=oauth["client_id"] if oauth else None,
+    )
+    policy = resolve_provider(resolved_config["url"], oauth=oauth)
     result = await policy.run_login(
         server_name=server_name,
         server_url=resolved_config["url"],
@@ -2223,7 +2258,12 @@ async def login(
     provider = build_oauth_provider(
         server_name=server_name,
         server_url=resolved_config["url"],
-        storage=_FreshLoginTokenStorage(server_name, server_url=resolved_config["url"]),
+        storage=_FreshLoginTokenStorage(
+            server_name,
+            server_url=resolved_config["url"],
+            oauth_client_id=oauth["client_id"] if oauth else None,
+        ),
+        oauth=oauth,
         extra_auth_params=result.extra_auth_params or None,
         ui=ui,
     )

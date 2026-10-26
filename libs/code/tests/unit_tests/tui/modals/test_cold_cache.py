@@ -11,7 +11,6 @@ from deepagents_code.cold_cache import (
     RewarmEstimate,
 )
 from deepagents_code.tui.modals.cold_cache import (
-    SEND_CHOICES,
     ColdCacheChoice,
     ColdCacheWarningScreen,
 )
@@ -81,23 +80,14 @@ def test_unknown_age_copy_claims_no_idle_time() -> None:
 
     body = screen._body()
 
-    assert "no record of when this thread last reached the model" in body
-    assert "Anthropic keeps entries for at most 5m" in body
+    assert "We can't tell whether this conversation is still cached." in body
     # Neither of the other two branches' claims may leak in: no idle duration
     # is known, and nothing about the model changed.
-    assert "idle for" not in body
-    assert "active model or prompt-cache settings differ" not in body
+    assert "inactivity" not in body
+    assert "model settings changed" not in body
     # Unknown age leaves open that the cache is intact, so the cost sentence
     # stays conditional even though the policy is `expired`.
     assert "If the cache has expired" in body
-
-
-def test_send_choices_excludes_cancel() -> None:
-    """Spend authorization is a closed set; cancel is never in it."""
-    assert ColdCacheChoice.CANCEL not in SEND_CHOICES
-    assert {
-        choice for choice in ColdCacheChoice if choice is not ColdCacheChoice.CANCEL
-    } == SEND_CHOICES
 
 
 async def test_enter_authorizes_send() -> None:

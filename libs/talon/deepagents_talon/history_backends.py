@@ -134,9 +134,11 @@ async def _sqlite_store(uri: str) -> AsyncIterator[BaseStore]:
     async with AsyncExitStack() as stack:
         try:
             async with asyncio.timeout(_STARTUP_TIMEOUT):
-                conn = await stack.enter_async_context(
-                    aiosqlite.connect(connection, uri=True, isolation_level=None)
-                )
+                conn = aiosqlite.connect(connection, uri=True, isolation_level=None)
+                # Failed __aenter__ queues shutdown without waiting for its worker.
+                worker = conn._thread  # noqa: SLF001  # aiosqlite has no public join API.
+                stack.push_async_callback(asyncio.to_thread, worker.join)
+                await stack.enter_async_context(conn)
                 store = AsyncSqliteStore(conn)
                 stack.push_async_callback(_stop_dispatcher, store)
                 await store.setup()

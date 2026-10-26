@@ -47,7 +47,11 @@ Use a **plain tool** when:
 * The tool is specific to a single consumer (e.g. CLI-only)
 """
 
-from deepagents.middleware.async_subagents import AsyncSubAgent, AsyncSubAgentMiddleware
+from deepagents.middleware.async_subagents import (
+    AsyncSubAgent,
+    AsyncSubAgentMiddleware,
+    TaskEvent,
+)
 from deepagents.middleware.filesystem import FilesystemMiddleware, FilesystemPermission
 from deepagents.middleware.memory import MemoryMiddleware
 from deepagents.middleware.rubric import (
@@ -63,7 +67,7 @@ from deepagents.middleware.rubric import (
     RubricResult,
     RubricState,
 )
-from deepagents.middleware.skills import SkillMetadata, SkillsMiddleware, SkillsState
+from deepagents.middleware.skills import SkillMetadata, SkillsMiddleware, SkillsState, SkillToolResolver
 from deepagents.middleware.subagents import (
     CompiledSubAgent,
     SubAgent,
@@ -75,6 +79,7 @@ from deepagents.middleware.summarization import (
     SummarizationToolMiddleware,
     create_summarization_tool_middleware,
 )
+from deepagents.middleware.unsupported_content import UnsupportedContentMiddleware
 
 __all__ = [
     "DEEPAGENTS_DEFAULT_SUMMARY_PROMPT",
@@ -96,11 +101,14 @@ __all__ = [
     "RubricResult",
     "RubricState",
     "SkillMetadata",
+    "SkillToolResolver",
     "SkillsMiddleware",
     "SkillsState",
     "SubAgent",
     "SubAgentMiddleware",
     "SummarizationMiddleware",
     "SummarizationToolMiddleware",
+    "TaskEvent",
+    "UnsupportedContentMiddleware",
     "create_summarization_tool_middleware",
 ]

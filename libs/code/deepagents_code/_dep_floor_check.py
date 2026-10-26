@@ -96,7 +96,7 @@ def _load_cli_requirements() -> list[str] | None:
     try:
         data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
         entries = data["project"]["dependencies"]
-    except (OSError, KeyError, TypeError, tomllib.TOMLDecodeError):
+    except OSError, KeyError, TypeError, tomllib.TOMLDecodeError:
         logger.debug(
             "Could not read dependency floors from the source checkout",
             exc_info=True,
@@ -330,7 +330,7 @@ def _workspace_editable_paths() -> list[Path]:
     try:
         data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
         sources = data["tool"]["uv"]["sources"]
-    except (OSError, KeyError, TypeError, tomllib.TOMLDecodeError):
+    except OSError, KeyError, TypeError, tomllib.TOMLDecodeError:
         logger.debug(
             "Could not read workspace sources from the source checkout",
             exc_info=True,
@@ -363,13 +363,16 @@ def _refresh_args(uv_path: str) -> list[str]:
             root would execute instead of the legitimate binary.
 
     Returns:
-        Arguments for the user-approved `uv pip install` process.
+        Arguments for the user-approved `uv pip install` process, with uv's
+        configuration discovery anchored to the editable checkout.
     """
     checkout = _checkout_root()
     args = [
         uv_path,
         "pip",
         "install",
+        "--directory",
+        str(checkout),
         "--python",
         sys.executable,
         "-e",
@@ -562,7 +565,7 @@ def _read_dismissed_fingerprints(path: Path) -> dict[str, str]:
     """
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    except OSError, ValueError:
         return {}
     if not isinstance(data, dict):
         return {}

@@ -37,6 +37,19 @@ def test_skill_installation_and_discovery_preserve_user_changes(tmp_path: Path) 
     assert files[0].read_text() == "Operator customization"
 
 
+def test_safety_skill_installed_without_overwriting_customization(tmp_path: Path) -> None:
+    config = TalonConfig("safety", tmp_path / "assistant")
+    config.ensure_home()
+    runtime = DeepAgentRuntime(model="test:parent", assistant_dir=config.home, env={})
+    skill = Path(runtime._resolve_skills()[0]) / "safety" / "SKILL.md"
+    assert skill.is_file()
+    assert skill.stat().st_mode & 0o777 == 0o600
+    assert skill.read_text().startswith("---\nname: safety\ndescription:")
+    skill.write_text("Operator customization")
+    config.ensure_home()
+    assert skill.read_text() == "Operator customization"
+
+
 @pytest.mark.parametrize("fixture", _FIXTURES, ids=lambda item: item["name"])
 async def test_review_apply_verify_and_rollback(tmp_path, monkeypatch, fixture):
     config = TalonConfig("review", tmp_path / "assistant")

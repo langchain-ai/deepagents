@@ -1,6 +1,8 @@
-from pathlib import Path
 from types import SimpleNamespace
+from typing import TYPE_CHECKING
 from unittest.mock import Mock
+
+import pytest
 
 from deepagents_talon import speech
 from deepagents_talon.config import TalonConfig
@@ -12,6 +14,9 @@ from deepagents_talon.speech import (
     build_voice_transcriber,
     transcribe_voice_message,
 )
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 def _config(env: dict[str, str], tmp_path: Path) -> TalonConfig:
@@ -92,7 +97,11 @@ async def test_transcribe_voice_message_transcribes_video() -> None:
     assert "transcribed" in updated.text
 
 
-async def test_transcribe_voice_message_transcribes_audio_document() -> None:
+@pytest.mark.parametrize("media_type", ["voice", "audio"])
+@pytest.mark.parametrize("text", ["", "caption"])
+async def test_transcribe_voice_message_transcribes_audio_document(
+    media_type: str, text: str
+) -> None:
     class Transcriber:
         def __init__(self) -> None:
             self.calls = 0
@@ -104,9 +113,9 @@ async def test_transcribe_voice_message_transcribes_audio_document() -> None:
     transcriber = Transcriber()
     message = ChannelMessage(
         conversation_id="chat",
-        text="",
+        text=text,
         metadata={
-            "media_type": "voice",
+            "media_type": media_type,
             "media_path": "song.mp3",
             "media_mime_types": ["audio/mpeg"],
         },
@@ -115,7 +124,8 @@ async def test_transcribe_voice_message_transcribes_audio_document() -> None:
     updated = await transcribe_voice_message(transcriber, message)
 
     assert transcriber.calls == 1
-    assert "transcribed" in updated.text
+    assert updated.text == (f"{text}\n\ntranscribed" if text else "transcribed")
+    assert updated.metadata == {**message.metadata, "voice_transcribed": True}
 
 
 async def test_transcribe_voice_message_ignores_plain_document() -> None:

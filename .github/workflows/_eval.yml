@@ -130,7 +130,7 @@ jobs:
       - name: "🐍 Set up Python + UV"
         uses: "./.github/actions/uv_setup"
         with:
-          python-version: "3.12"
+          python-version: "3.14"
           # Per-shard scope so parallel matrix jobs don't race on the same
           # cache key. `artifact_key` is enforced unique by the matrix
           # builder (`_artifact_key` in `.github/scripts/evals/models.py`).

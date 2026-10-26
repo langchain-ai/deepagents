@@ -861,7 +861,12 @@ def _installation_paths() -> InstallationPaths:
     """
     root = _normalize_absolute(Path(sys.prefix), what="sys.prefix")
     resources = root / "share" / "deepagents-code"
-    locks = root.parent / f".{root.name}.deepagents-code-locks"
+    # uv enumerates every directory beside the tool environment as a package.
+    # Keep persistent locks beside that container instead, outside the environment
+    # uv replaces on upgrade. Mirror this in install.sh's acquire_install_lock.
+    locks = (
+        root.parent.parent / f".{root.parent.name}.{root.name}.deepagents-code-locks"
+    )
     return InstallationPaths(
         root=root,
         managed_bin_dir=resources / "bin",

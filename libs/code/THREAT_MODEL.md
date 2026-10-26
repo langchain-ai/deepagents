@@ -15,7 +15,7 @@
 - Interactive TUI (`app.py`, `tui/textual_adapter.py`, `tui/widgets/`)
 - Non-interactive pipeline runner (`client/non_interactive.py`)
 - Agent creation (`agent.py`)
-- Built-in tools (`tools.py`: `http_request`, `web_search`, `fetch_url`)
+- Built-in tools (`tools.py`: `web_search`, `fetch_url`)
 - MCP config loader and per-server allow/deny lists (`mcp_tools.py`, `model_config.py`)
 - Hook runtimes (`hooks/`)
 - Sandbox integration factory (`integrations/sandbox_factory.py`, `integrations/sandbox_provider.py`)
@@ -63,7 +63,9 @@
 
 ## System Overview
 
-`deepagents-code` is a terminal-based AI coding assistant. It wraps the `deepagents` SDK in an interactive TUI (Textual) and a headless non-interactive mode. Both modes route agent execution through a local `langgraph dev` subprocess: the CLI spawns a server, passes configuration via `DA_SERVER_*` environment variables, and communicates via a `RemoteAgent` HTTP+SSE client. The agent receives user prompts, reasons with a configurable LLM, and executes side-effecting tools (file read/write, shell commands, web search, HTTP requests) subject to a human-in-the-loop (HITL) approval gate. Sessions are persisted in a local SQLite checkpoint database. Users can extend the agent with MCP servers (stdio processes or remote HTTP/SSE endpoints), hooks (event-driven subprocesses), custom subagents (AGENTS.md files in `.deepagents/agents/`), async remote subagents (LangGraph deployments configured in `config.toml`), and pluggable sandbox backends for remote code execution.
+`deepagents-code` is a terminal-based AI coding assistant. It wraps the `deepagents` SDK in an interactive TUI (Textual) and a headless non-interactive mode. Both modes route agent execution through a local `langgraph dev` subprocess: the CLI spawns a server, passes configuration via `DA_SERVER_*` environment variables, and communicates via a `RemoteAgent` HTTP+SSE client. The agent receives user prompts, reasons with a configurable LLM, and executes side-effecting tools (file read/write, shell commands, web search, HTTP requests) subject to the selected approval mode and configured policies (not universally to human approval). Sessions are persisted in a local SQLite checkpoint database. Users can extend the agent with MCP servers (stdio processes or remote HTTP/SSE endpoints), hooks (event-driven subprocesses), custom subagents (AGENTS.md files in `.deepagents/agents/`), async remote subagents (LangGraph deployments configured in `config.toml`), and pluggable sandbox backends for remote code execution.
+
+Non-interactive mode (`-n` or piped stdin) does not ask for human tool approvals. Non-shell tools, including file mutations and permitted network requests, run unattended by default. Shell execution is disabled unless a shell allow-list is configured; configured permission hooks remain effective (TB2). Disabling shell execution does not make a run read-only or confine local filesystem access to the project: the local backend uses `virtual_mode=False`, so absolute paths and relative paths escaping the project remain accessible subject to OS permissions. Untrusted repository content and tool output can influence an unattended agent. Human approval, automated permission hooks, shell policy, HTTP URL protections, and sandbox isolation are distinct controls, not substitutes for one another.
 
 ### Architecture Diagram
 
@@ -138,7 +140,7 @@
 | C1  | CLI Entry Point             | Parses argv, loads config/env, bootstraps session                                                                   | framework-controlled | Yes      | `main.cli_main`, `main.parse_args`                                                                |
 | C2  | TUI / Non-interactive       | Textual UI for interactive chat; `client/non_interactive.py` for headless pipelines (both use `RemoteAgent`)        | framework-controlled | Yes      | `app.DeepAgentsApp.run`, `client.non_interactive.run_non_interactive`                             |
 | C3  | Agent Engine                | LangGraph agent graph running inside `langgraph dev` server, assembled by `create_cli_agent`                        | framework-controlled | Yes      | `agent.create_cli_agent`, `agent._add_interrupt_on`, `server_graph.make_graph`                    |
-| C4  | Built-in Tools              | `http_request`, `web_search` (Tavily), `fetch_url` (HTML→markdown)                                                 | framework-controlled | Partial¹ | `tools.http_request`, `tools.web_search`, `tools.fetch_url`                                       |
+| C4  | Built-in Tools              | `web_search` (Tavily), `fetch_url` (HTML→markdown)                                                 | framework-controlled | Partial¹ | `tools.web_search`, `tools.fetch_url`                                       |
 | C5  | MCP Loader & Trust          | Discovers/loads `.mcp.json`, validates server configs, applies per-server allow/deny lists + interactive approval    | framework-controlled | No²      | `mcp_tools.resolve_and_load_mcp_tools`, `model_config.load_mcp_server_trust_lists`, `main._check_mcp_project_trust` |
 | C6  | Hook Runtime                | Fires subprocess commands on agent lifecycle events                                                                 | framework-controlled | No³      | `hooks.runtime.HooksRuntime`, `hooks.runner.run_command_handler`                                  |
 | C7  | Sandbox Integration         | Creates/destroys remote sandboxes (Daytona, LangSmith, Modal, Runloop, AgentCore)                                  | framework-controlled | No⁴      | `integrations.sandbox_factory.create_sandbox`                                                     |
@@ -156,7 +158,7 @@
 | C19 | Goal/Rubric State Notice    | Projects persisted goal objectives, active criteria, and status notes into synthetic messages for the primary model | framework-controlled | Yes      | `goal_state_notice.build_goal_state_notice`, `goal_tools.GoalToolsMiddleware`                     |
 
 **Notes:**
-1. `http_request` and `fetch_url` enabled by default; `web_search` requires `TAVILY_API_KEY`.
+1. `fetch_url` enabled by default; `web_search` requires `TAVILY_API_KEY`.
 2. MCP servers only load if `.mcp.json` config files are present.
 3. User hooks load from `~/.deepagents/hooks.json`. Project hooks load from `.deepagents/hooks.json` only after interactive workspace trust or the headless `--trust-project-hooks` opt-in.
 4. Sandbox mode requires explicit `--sandbox` CLI flag.
@@ -219,7 +221,7 @@
 | ID   | Boundary                              | Description                                                                | Controls (Inside)                                                               | Does NOT Control (Outside)                                    |
 |------|---------------------------------------|----------------------------------------------------------------------------|---------------------------------------------------------------------------------|---------------------------------------------------------------|
 | TB1  | User Input → Agent Engine             | Where user-typed prompts enter the agent graph                             | Prompt routing, session threading, UI rendering                                 | Prompt content — any text accepted                            |
-| TB2  | LLM Decision → Tool Execution         | HITL gate on all side-effecting tool calls                                 | Interrupt map, allow-list check, auto-approve toggle                            | LLM reasoning; what user approves                             |
+| TB2  | LLM Decision → Tool Execution         | Approval-mode-dependent gating of configured tools                                 | Interrupt map, permission hooks, shell allow-list, approval mode                            | LLM reasoning; what user approves                             |
 | TB3  | Tool Result → LLM Context             | Tool outputs re-enter the context window                                   | Unicode warnings on URLs in args; markdownify HTML conversion                   | Content of fetched web pages, MCP responses, search results   |
 | TB4  | MCP Config → Process / Network        | `.mcp.json` triggers subprocess spawn or network connection                | Schema validation; per-server allow/deny lists + interactive approval prompt    | What the MCP process does once trusted and running            |
 | TB5  | Hooks Config → Subprocess             | `hooks.json` commands execute as local subprocesses                        | Workspace trust for project hooks, schema validation, bounded execution, sanitized environment | Command content (user-authored) |
@@ -243,10 +245,11 @@
 
 #### TB2: LLM Decision → Tool Execution Gate (HITL)
 
-- **Inside**: `agent._add_interrupt_on` registers interrupt configs for `execute`, `write_file`, `edit_file`, `web_search`, `fetch_url`, `task`, `compact_conversation`, `launch_async_subagent`, `update_async_subagent`, `cancel_async_subagent`. In non-interactive mode, `client.non_interactive._handle_action_request` enforces the shell allow-list via `config.is_shell_command_allowed`.
-- **Outside**: Once the user clicks "approve" (interactive) or a command passes the allow-list check (non-interactive), the tool executes with no further framework-level gating.
-- **Crossing mechanism**: LangGraph HITL interrupt routed through `RemoteAgent` SSE stream.
-- **Key note**: `auto_approve` mode bypasses all HITL approval prompts while still displaying Unicode/URL warnings.
+- **Inside**: `agent._add_interrupt_on` configures gated tools, including shell execution, file mutations, web search, URL fetching, and delegation. Interactive Manual mode routes these calls through HITL; read-only tools do not all prompt. Auto uses automated review, while YOLO bypasses human approval.
+- **Non-interactive**: Without configured `PermissionRequest` hooks, `run_non_interactive` selects auto-approval when shell is disabled or unrestricted (`all`); with a restrictive shell allow-list, `create_cli_agent` omits HITL middleware and installs `ShellAllowListMiddleware`. Non-shell tools run unattended in both cases.
+- **Permission-hook exception**: Configured `PermissionRequest` handlers disable those middleware shortcuts so gated calls reach the client. `_process_hitl_interrupts` uses hook decisions first, including allow, deny, or interruption; unresolved calls fall back to `_make_hitl_decision`, which approves non-shell tools and checks shell commands against the allow-list (rejecting them when none is configured). A hook-provided decision takes precedence over that fallback. This is automated policy handling, not a human prompt.
+- **Outside**: Approval does not validate model intent or isolate execution. Tool-specific URL checks, configured hooks, backend access rules, and OS/sandbox restrictions remain separate controls.
+- **Crossing mechanism**: When installed and applicable to the approval mode, LangGraph HITL interrupts are routed through the `RemoteAgent` SSE stream. Non-interactive runs resolve them programmatically.
 - **Key note**: This boundary gates the *model-initiated* `compact_conversation` tool.
   - **Authorization**: The explicit `/offload` command does *not* cross it. C18 invokes the agent's shared compaction service directly, with no tool node and no synthetic message. The slash command is the authorization.
   - **Hook events**: The operation still dispatches `PreCompact` and `PreToolUse` against an in-memory forced call. Hooks may veto or interrupt. The TUI returns opaque hook replies over the operation protocol.
@@ -367,7 +370,7 @@
 | DF4  | C11 LangGraph Dev Server | C12 RemoteAgent | SSE stream (AI responses, tool calls, interrupts) | DC2 | TB10 | HTTP+SSE (localhost) |
 | DF5  | C3 Agent     | External LLM | System prompt + message history               | DC1, DC2       | TB7              | HTTPS / LangChain      |
 | DF6  | External LLM | C3 Agent     | AI response + tool call decisions             | —              | TB7              | HTTPS / LangChain      |
-| DF7  | C3 Agent     | C4 Tools     | Tool call arguments (file/URL/command)        | —              | TB2              | Function call + HITL   |
+| DF7  | C3 Agent     | C4 Tools     | Tool call arguments (file/URL/command)        | —              | TB2              | Function call + mode-dependent approval |
 | DF8  | External     | C4 Tools     | HTTP response bodies (web/API content)        | —              | TB3              | HTTPS                  |
 | DF9  | C4 Tools     | C3 Agent     | Tool results (file content, web pages)        | —              | TB3              | ToolMessage            |
 | DF10 | C9 Config    | C1 Entry     | TOML config, env vars, API keys               | DC1            | None             | File + environ         |
@@ -398,7 +401,7 @@
 
 - **Data**: Arbitrary HTML/JSON from the internet, converted to markdown by `markdownify`. Can be megabytes.
 - **Validation**: URL domain checked for Unicode spoofing / script mixing (`unicode_security.check_url_safety`); displayed as warning in approval dialog. Content not scanned for prompt-injection patterns.
-- **Trust assumption**: User approved the fetch. Content is data — but the LLM may interpret adversarial content as instructions.
+- **Trust assumption**: A permitted fetch is not necessarily human-approved; non-interactive runs fetch unattended by default. `fetch_url` enforces the URL protections in D3 independently of approval mode. Content is data — but the LLM may interpret adversarial content as instructions.
 
 #### DF11: MCP Tool Results → Agent Context
 
@@ -445,7 +448,7 @@
 | T1  | DF8, DF9  | —              | Prompt injection via fetched web content causes LLM to request harmful actions              | TB3      | Medium   | Likely     | `tools.fetch_url`, `agent._add_interrupt_on`                          |
 | T2  | DF7       | —              | `--shell-allow-list all` removes pattern checks; LLM-injected shell commands execute without approval in non-interactive mode | TB2 | Medium | Verified | `config.is_shell_command_allowed`, `client.non_interactive._handle_action_request` |
 | T3  | DF7       | —              | Unicode-homoglyph URL in LLM-generated tool args deceives user during approval              | TB2      | Low      | Disproven  | `unicode_security.check_url_safety`, `agent._format_fetch_url_description` |
-| T4  | DF5, DF9  | —              | Auto-approve mode bypasses all HITL gates; any LLM-initiated tool call executes             | TB2      | Low      | Verified   | `agent.create_cli_agent` (`auto_approve` param), `agent._add_interrupt_on` |
+| T4  | DF5, DF9  | —              | YOLO and non-interactive operation omit human tool approval; other controls still apply             | TB2      | Low      | Verified   | `agent.create_cli_agent` (`auto_approve` param), `agent._add_interrupt_on` |
 | T5  | DF13, DF14| DC2            | Local SQLite checkpoint file tampered with to inject adversarial content into future LLM context | None | Low   | Unverified | `sessions.get_db_path`                                                 |
 | T6  | DF3, DF4, DF26 | DC2       | Unauthenticated LangGraph dev server on localhost can be accessed by any local process     | TB10     | Medium   | Verified   | `server._build_server_env`, `server._DEFAULT_HOST`, `offload_api.app` |
 | T7  | DF19, DF20| DC3            | Makefile or project file content injected into system prompt via LocalContextMiddleware    | TB9      | Low      | Verified   | `local_context._section_makefile`, `local_context.LocalContextMiddleware._get_modified_request` |
@@ -465,12 +468,12 @@
 
 - **Flow**: DF8 (external web) → DF9 (tool result) → C3 Agent context
 - **Description**: When the agent calls `fetch_url` or `web_search`, the response body enters the LLM's context window as a `ToolMessage`. A maliciously crafted web page or search snippet can embed natural-language instructions that the LLM may interpret as authoritative commands, leading to unexpected tool call requests in the next turn.
-- **Preconditions**: (1) User or LLM-initiated call to `fetch_url`/`web_search` reaches a malicious page; (2) LLM interprets injected instructions as directives; (3) In interactive mode, user must still approve the resulting tool call.
+- **Preconditions**: (1) User or LLM-initiated call to `fetch_url`/`web_search` reaches a malicious page; (2) LLM interprets injected instructions as directives; (3) In interactive Manual mode, gated calls still require approval unless resolved by a configured permission hook; non-interactive calls are resolved without human review.
 
 #### T15: Stored Prompt Injection Through Goal/Rubric State
 
 - **Flow**: DF28/DF29 (user or local-file content → checkpointed notice → primary-model context)
-- **Description**: The goal-state notice embeds the full actionable objective, active criteria, and status note in a synthetic `HumanMessage`. A rubric loaded from an untrusted repository file, or a crafted status note, can therefore persist instructions that influence later model behavior. Bounded superseded notices remain in the append-only request history until compaction; the latest notice identifies itself as authoritative, but a model can still attend to older text. Oversized legacy notices are replaced only in the transient model request. HTML escaping and boundary labels prevent literal tag forgery. They do not stop natural-language prompt injection. Interactive HITL still gates side-effecting tool calls. Auto and non-interactive configurations can reduce that protection.
+- **Description**: The goal-state notice embeds the full actionable objective, active criteria, and status note in a synthetic `HumanMessage`. A rubric loaded from an untrusted repository file, or a crafted status note, can therefore persist instructions that influence later model behavior. Bounded superseded notices remain in the append-only request history until compaction; the latest notice identifies itself as authoritative, but a model can still attend to older text. Oversized legacy notices are replaced only in the transient model request. HTML escaping and boundary labels prevent literal tag forgery. They do not stop natural-language prompt injection. Interactive Manual mode gates configured tools; Auto, YOLO, and non-interactive operation have different approval semantics (TB2).
 - **Preconditions**: (1) The user accepts a goal/rubric or loads a file containing attacker-controlled instructions; (2) the state is actionable or the rubric remains active; (3) the primary model follows the injected content; (4) for side effects, the resulting tool call is approved or an approval-bypassing mode is active.
 
 #### T16: Automatic Disclosure of File-Loaded Rubrics
@@ -497,11 +500,11 @@
 - **Description**: An LLM influenced by adversarial input could generate a `fetch_url` call with a URL containing mixed-script or confusable characters visually identical to ASCII.
 - **Preconditions**: LLM generates a confusable URL (requires adversarial steering). `check_url_safety` detects mixed-script domain labels and `strip_dangerous_unicode` removes invisible BiDi/zero-width characters; warnings displayed in approval dialog. Classified Disproven as a project vulnerability — the UI warnings are the intended control.
 
-#### T4: Auto-Approve Removes All Execution Safeguards
+#### T4: Unattended Tool Execution Without Human Approval
 
-- **Flow**: DF7 (all tool calls) when `auto_approve=True`
-- **Description**: When auto-approve is enabled (via `--auto-approve` flag or `Shift+Tab` in TUI), all tool calls including `execute`, `write_file`, `edit_file`, `fetch_url`, `launch_async_subagent` execute without user confirmation.
-- **Preconditions**: User explicitly enables auto-approve. Default is approval-required.
+- **Flow**: DF7 (tool calls), influenced by DF5/DF9 (model context and tool results).
+- **Description**: YOLO bypasses human tool approval. Non-interactive mode also runs non-shell tools, including file mutations and permitted network requests, unattended by default, without requiring a separate auto-approve flag. Shell execution is disabled unless configured through the shell allow-list; `all` removes command-pattern restrictions. Configured permission hooks retain the decision precedence described in TB2. URL protections and OS/sandbox access restrictions still apply: omitting human approval does not remove every security check.
+- **Preconditions**: The user selects YOLO or invokes non-interactive operation (`-n` or piped stdin). Untrusted repository content or tool output can then influence actions without human review. Interactive Manual approval is not a universal default for all modes or every tool. Shell-disabled local runs are neither read-only nor project-confined; use appropriate filesystem permissions and isolation for unattended work.
 
 #### T5: Local SQLite Checkpoint Tampering
 
@@ -600,8 +603,8 @@ Threats that appear valid in isolation but fall outside project responsibility b
 
 | Pattern                                                                 | Why Out of Scope                                                                                                                                                                     | Project Responsibility Ends At                                                                                     |
 |-------------------------------------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|---------------------------------------------------------------------------------------------------------------------|
-| Prompt injection leading to arbitrary code execution (interactive mode) | In interactive mode, every side-effecting tool call requires explicit user approval via the HITL dialog. The user is the final gatekeeper.                                          | Providing HITL for all side-effecting tools (`agent._add_interrupt_on`) and Unicode/URL warnings in the approval dialog. |
-| API key exfiltration via LLM-directed `http_request`                   | `http_request` requires HITL in interactive mode. Keys it could exfiltrate are user-supplied env vars. In non-interactive mode, user has opted into autonomous operation.             | Providing HITL gate for HTTP tools. Users control which env vars are in scope.                                      |
+| Prompt injection leading to arbitrary code execution (interactive mode) | In interactive Manual mode, configured gated calls require approval unless resolved by permission hooks. This rationale does not apply to unattended modes or ungated tools.                                          | Providing mode-dependent HITL for configured tools (`agent._add_interrupt_on`) and Unicode/URL warnings in the approval dialog. |
+| Data exfiltration via LLM-directed network requests | Permitted public URLs can carry sensitive data even with SSRF protections. Non-interactive requests run unattended by default; interactive Manual mode gates `fetch_url`. | Enforcing `fetch_url` URL protections and the configured approval policy, not guaranteeing content confidentiality. |
 | Malicious MCP server injecting prompt instructions                     | Users configure MCP servers and explicitly trust project-level configs. Once trusted, MCP tool outputs are data from a system the user controls.                                     | Interactive approval prompt + per-server allow/deny lists for project-level configs (`main._check_mcp_project_trust`, `model_config.load_mcp_server_trust_lists`). |
 | LLM jailbreak / safety bypass                                          | Model selection and safety configuration are user-controlled. The project routes prompts to the configured LLM but cannot guarantee model behavior.                                   | Correctly routing prompts to the configured LLM; applying the system prompt from `agent.get_system_prompt`.         |
 | Sandbox provider security vulnerabilities                              | Daytona, LangSmith, Modal, Runloop, and AgentCore are third-party services. Their internal security is not this project's responsibility.                                            | Correctly initializing sandbox sessions via `integrations.sandbox_factory.create_sandbox`.                          |
@@ -612,11 +615,11 @@ Threats that appear valid in isolation but fall outside project responsibility b
 
 ### Rationale
 
-**Prompt injection in interactive mode**: The HITL interrupt means every file write, shell command, web search, URL fetch, task delegation, and async subagent action shows the user a confirmation dialog with full tool arguments. Even a successful prompt injection can only execute what the user explicitly approves. The project's responsibility is to make that dialog accurate — hence the Unicode/URL warning layer in `unicode_security.py`.
+**Prompt injection in interactive Manual mode**: Configured gated tools show a confirmation dialog unless a permission hook resolves the request. This does not cover every tool or apply to Auto, YOLO, or non-interactive operation (TB2/T4). Approval UI warnings help users inspect arguments; they do not prevent prompt injection in repository content or tool results.
 
 **LangGraph dev server without auth**: The `LANGGRAPH_AUTH_TYPE=noop` setting is intentional for local dev server use. Adding authentication would require users to manage tokens for a locally-spawned ephemeral process, creating more friction than security benefit in this context. The 127.0.0.1 binding limits exposure to the local machine. T6 documents this as an accepted risk for the threat model.
 
-**Custom subagent system prompts**: Subagent definitions in `.deepagents/agents/` are user-authored files. The framework correctly treats them as user-controlled content. The HITL gate on `task` tool calls ensures the user approves subagent delegation before it occurs.
+**Custom subagent system prompts**: Subagent definitions in `.deepagents/agents/` are user-authored files. The framework correctly treats them as user-controlled content. In interactive Manual mode, `task` is gated unless resolved by permission hooks; unattended modes do not promise human approval of delegation.
 
 **`class_path` code execution**: This follows the same trust model as `pyproject.toml` build scripts — the user edits their own config file on their own machine. The `issubclass(BaseChatModel)` check provides a post-import guard, though module-level side effects execute before it. Documented as intentional in `model_config.py`.
 
@@ -637,7 +640,7 @@ Threats that appear valid in isolation but fall outside project responsibility b
 |----|----------------|---------------|----------|------------|
 | D1 | Unsafe msgpack deserialization in langgraph checkpoint loading | Verified fix status — confirmed fixed and closed upstream. | Users on current `langgraph` versions are not exposed. | Upstream langgraph has patched the unsafe msgpack deserialization. No longer an active risk. |
 | D2 | Unicode URL homoglyph as project vulnerability | Traced `check_url_safety` + `strip_dangerous_unicode` + `format_warning_detail` → approval dialog display | `unicode_security.check_url_safety`, `agent._format_fetch_url_description` | Warning system is the intended control — the project correctly surfaces the risk to the user in the approval dialog. Not a project vulnerability; classified as mitigated by design (UI warning). |
-| D3 | SSRF via `http_request` / `fetch_url` to internal services | Traced `tools.http_request` and `tools.fetch_url` — no URL scheme or host blocklist. However, both tools require HITL approval in interactive mode. In non-interactive mode, only shell commands are auto-approved via the allow-list; HTTP tools still go through the HITL interrupt gate. | `tools.http_request`, `tools.fetch_url`, `agent._add_interrupt_on` | Not a project vulnerability in isolation — the HITL gate is the intended control for all HTTP tool calls. The user sees the full URL before approving. SSRF is only reachable if the user approves the request (interactive) or enables auto-approve (explicit opt-in). Classified as out-of-scope for the same reason as prompt injection in interactive mode. |
+| D3 | SSRF via built-in URL fetching to internal services | Current `tools.py` exposes `fetch_url`, not `http_request`. `fetch_url` permits only HTTP/HTTPS and rejects hosts resolving to private, loopback, link-local, reserved, multicast, unspecified, or other non-global IPs. Each redirect is revalidated (maximum five); connections are pinned to validated IPs and environment proxies are disabled. | `tools._validate_url`, `tools._is_blocked_ip`, `tools._fetch_with_redirects`, `tools._pinned_dns` | These URL/connection protections apply independently of human approval. Non-interactive fetches run unattended by default, subject to configured hooks. The protections do not prevent disclosure to permitted public destinations or constrain network access through other tools or MCP servers. |
 | D4 | Offload path injection via archive filename | Checked `SummarizationMiddleware._get_session_id`/`_get_history_path` — the leaf is `session_` plus a `uuid4().hex`. | `SummarizationMiddleware._get_session_id`, `SummarizationMiddleware._get_history_path` | The archive filename is minted by the framework from a UUID4 hex, so no user-controlled path component reaches the file path. Not exploitable. |
 
 ---
@@ -668,3 +671,4 @@ Threats that appear valid in isolation but fall outside project responsibility b
 | 2026-08-24 | langster-threat-model (diff)       | Removed the client-seeded `/offload` fallback. `/offload` is now available only through C18 on built-in servers; local in-process and ACP agents do not support it, and custom or older servers without the route fail at the HTTP boundary. Updated DC5, TB2, TB10, and T6 to remove the client self-approval and synthetic-message attack surface. The server route, hook behavior, archive guard, and state-only persistence controls are unchanged; no new threat was identified. |
 | 2026-08-24 | manual update                      | The C18 boundary now strips endpoint/proxy/transport keys (`base_url`, `openai_proxy`, `http_client`, and similar) from client-supplied `model_params` before they reach `config.create_model` (`offload_api._strip_transport_model_params`), closing the credential-redirection consequence of T6 for this route. Client-supplied `model` and behavioral params still flow through; in-process `CLIContextSchema` model params remain trusted and unfiltered |
 | 2026-08-25 | manual update                      | Stopped replacing bounded superseded goal-state notices in model requests while retaining bounded same-index stand-ins for oversized legacy notices. Goal/rubric history now remains append-only for prompt-cache stability where safe, and the latest notice explicitly supersedes earlier notices. Updated T15 to record the residual risk that a model can still attend to older bounded goal text until compaction. |
+| 2026-09-22 | manual update | Corrected TB2, T4, D3, and related approval claims to describe existing non-interactive behavior, permission-hook exceptions, local filesystem access, and `fetch_url` URL/connection protections. Runtime behavior is unchanged. |

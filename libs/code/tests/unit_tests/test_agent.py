@@ -5,7 +5,6 @@ import logging
 import os
 import sys
 import warnings
-from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, fields
 from pathlib import Path
@@ -14,16 +13,18 @@ from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import Mock, patch
 
 import pytest
-from langchain_core.language_models import BaseChatModel
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage
 from langgraph.errors import GraphInterrupt
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator, Mapping
+
     from deepagents.backends.sandbox import SandboxBackendProtocol
     from langchain.agents.middleware.human_in_the_loop import InterruptOnConfig
     from langchain.agents.middleware.types import AgentMiddleware, AgentState
     from langchain.messages import ToolCall
+    from langchain_core.language_models import BaseChatModel
     from langgraph.prebuilt.tool_node import ToolCallRequest
     from langgraph.runtime import Runtime
 
@@ -51,6 +52,7 @@ from deepagents_code.agent import (
     get_available_agent_names,
     get_system_prompt,
     list_agents,
+    load_async_subagents,
 )
 from deepagents_code.config import runtime_state
 from deepagents_code.configuration.interpreter import InterpreterConfig
@@ -400,7 +402,7 @@ def _request_with_context(
     context: object,
     *,
     store: object | None = None,
-) -> "ToolCallRequest":
+) -> ToolCallRequest:
     return cast(
         "ToolCallRequest",
         SimpleNamespace(runtime=SimpleNamespace(context=context, store=store)),
@@ -547,7 +549,7 @@ def test_typed_autonomous_mode_requires_live_store_key() -> None:
 
 def _request_with_state(
     state: object, context: object, store: object
-) -> "ToolCallRequest":
+) -> ToolCallRequest:
     return cast(
         "ToolCallRequest",
         SimpleNamespace(
@@ -1011,7 +1013,7 @@ _EXECUTE_TOOL_CALL = cast(
 )
 
 
-def _execute_runtime(context: object) -> "Runtime[Any]":
+def _execute_runtime(context: object) -> Runtime[Any]:
     return cast("Runtime[Any]", SimpleNamespace(context=context))
 
 
@@ -1243,6 +1245,7 @@ class TestGetSystemPromptModelIdentity:
         expected = PATHS.display(PATHS.profile.agent_skills_dir("test-agent"))
         assert expected in prompt
         assert "~/.deepagents/test-agent/skills" not in prompt
+        assert "bash python" not in prompt
 
     def test_excludes_provider_when_not_set(self) -> None:
         """Test that provider is excluded when model_provider is None."""
@@ -1358,6 +1361,26 @@ class TestGetSystemPromptWebSearch:
 
         assert "### Web Search Tool Usage" in prompt
         assert "When you use the web_search tool:" in prompt
+        assert "explain what you found and ask clarifying questions" in prompt
+        assert "only sees your text responses" not in prompt
+        assert "Always provide a complete, natural language answer" in prompt
+
+    def test_headless_guidance_does_not_request_followup(self) -> None:
+        mock_settings = Mock()
+        runtime_state.model_name = None
+        mock_settings.has_tavily = True
+
+        with patch("deepagents_code.agent.credentials", mock_settings):
+            prompt = get_system_prompt("test-agent", interactive=False)
+
+        assert (
+            "6. If the search doesn't find what you need, explain what you found\n\n"
+            in prompt
+        )
+        assert (
+            "6. If the search doesn't find what you need, explain what you found "
+            "and ask clarifying questions" not in prompt
+        )
 
 
 class TestGetSystemPromptNonInteractive:
@@ -1372,6 +1395,12 @@ class TestGetSystemPromptNonInteractive:
 
         assert "interactive TUI" in prompt
         assert "ask questions before acting" in prompt
+        assert "## Clarifying Requests" in prompt
+        assert "Only ask when genuinely blocked" in prompt
+        assert "Don't substitute without asking" in prompt
+        assert "ask the user what to do" in prompt
+        assert "ask the user for help" in prompt
+        assert "rejected by the user" in prompt
 
     def test_non_interactive_prompt_mentions_headless(self) -> None:
         mock_settings = Mock()
@@ -1390,7 +1419,55 @@ class TestGetSystemPromptNonInteractive:
         with patch("deepagents_code.agent.credentials", mock_settings):
             prompt = get_system_prompt("test-agent", interactive=False)
 
+        assert "## Clarifying Requests" not in prompt
         assert "ask questions before acting" not in prompt
+        assert "Ask domain-defining questions" not in prompt
+        assert "ask the user what to do" not in prompt
+        assert "ask the user for help" not in prompt
+        assert "Only ask when genuinely blocked" not in prompt
+        assert "Don't substitute without asking" not in prompt
+        assert "report the blocker and any completed work" in prompt
+        assert "Do not invent required identifiers or permissions" in prompt
+        assert "DO NOT loop more than 3 times" in prompt
+
+    @pytest.mark.parametrize("interactive", [True, False])
+    @pytest.mark.parametrize("sandbox_type", [None, "modal"])
+    @pytest.mark.parametrize("has_tavily", [True, False])
+    def test_mode_sections_preserve_prompt_structure(
+        self, *, interactive: bool, sandbox_type: str | None, has_tavily: bool
+    ) -> None:
+        prompt = get_system_prompt(
+            "test-agent",
+            sandbox_type=sandbox_type,
+            interactive=interactive,
+            has_tavily=has_tavily,
+        )
+
+        assert "\n\n## Tool Usage\n\n" in prompt
+        assert "\n\n## Formatting & Pre-Commit Hooks\n\n" in prompt
+        assert "\n\n\n" not in prompt
+        assert "interactive-only" not in prompt
+        assert "{clarification_guidance}" not in prompt
+        assert "bash python" not in prompt
+        assert "The user only sees your text responses" not in prompt
+        assert ("### Web Search Tool Usage" in prompt) is has_tavily
+        assert ("and ask clarifying questions" in prompt) is (
+            interactive and has_tavily
+        )
+
+    def test_non_interactive_prompt_describes_policy_rejections(self) -> None:
+        mock_settings = Mock()
+        runtime_state.model_name = None
+
+        with patch("deepagents_code.agent.credentials", mock_settings):
+            prompt = get_system_prompt("test-agent", interactive=False)
+
+        assert "shell commands may be rejected" in prompt
+        assert "configured allow-list policy" in prompt
+        assert "Read the reason in the tool message" in prompt
+        assert "Use an allowed command or another approach" in prompt
+        assert "rejected by the user" not in prompt
+        assert "Suggest an alternative approach or ask for clarification" not in prompt
 
     def test_non_interactive_prompt_instructs_autonomous_execution(self) -> None:
         mock_settings = Mock()
@@ -1469,6 +1546,15 @@ class TestGetSystemPromptSandbox:
 
         assert "do NOT have access to the user's local filesystem" in prompt
 
+    def test_interactive_sandbox_does_not_claim_tools_run_locally(self) -> None:
+        mock_settings = Mock()
+        runtime_state.model_name = None
+
+        with patch("deepagents_code.agent.credentials", mock_settings):
+            prompt = get_system_prompt("test-agent", sandbox_type="modal")
+
+        assert "tools run on the user's machine" not in prompt
+
     def test_sandbox_includes_working_dir_constraint(self) -> None:
         mock_settings = Mock()
         runtime_state.model_name = None
@@ -1540,6 +1626,38 @@ class TestGetSystemPromptFilesystemTools:
 
         assert "`edit_file` over" in prompt
         assert "`write_file` over" in prompt
+
+
+@pytest.mark.parametrize("interactive", [True, False])
+@pytest.mark.parametrize("cli_name", ["dcode", "deepagents-code", "dcode-dev"])
+def test_plugin_discovery_uses_invoked_cli_name(
+    interactive: bool, cli_name: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The server prompt preserves the client's CLI name in either mode."""
+    import deepagents_code.config as config_mod
+    from deepagents_code._invocation import invoked_name
+    from deepagents_code.client.launch.server import _build_server_env
+
+    for field in ("launch_langsmith_env", "user_langsmith_env"):
+        monkeypatch.setattr(
+            config_mod._bootstrap_state,
+            field,
+            dict.fromkeys(config_mod._USER_LANGSMITH_ENV_VARS),
+        )
+    monkeypatch.delenv(_env_vars.INVOKED_AS, raising=False)
+    monkeypatch.setattr(sys, "argv", [f"/usr/local/bin/{cli_name}"])
+    invoked_name.cache_clear()
+    server_env = _build_server_env()
+
+    monkeypatch.setattr(sys, "argv", ["/site-packages/langgraph_cli/__main__.py"])
+    invoked_name.cache_clear()
+    with patch.dict(os.environ, server_env, clear=True):
+        prompt = get_system_prompt(
+            "test-agent", interactive=interactive, has_tavily=False
+        )
+
+    assert f"this session's CLI command is `{cli_name}`" in prompt
+    assert "`deepagents-plugin-discovery` skill" in prompt
 
 
 class TestGetSystemPromptPlaceholderValidation:
@@ -4652,6 +4770,24 @@ class TestCreateCliAgentInterpreterWiring:
             compaction_middleware
         )
 
+    def test_mcp_tools_wire_timeout_middleware(self, tmp_path: Path) -> None:
+        """MCP tools install the middleware that owns their call deadline."""
+        from langchain_core.tools import StructuredTool
+
+        mcp_tool = StructuredTool.from_function(
+            lambda: "ok",
+            name="linear_get_issue",
+            description="Get an issue",
+        )
+        mcp_tool.metadata = {
+            "_deepagents_code_mcp": True,
+            "_deepagents_code_mcp_server": "linear",
+        }
+
+        middleware = self._capture_middleware(tmp_path, mcp_tools=[mcp_tool])
+
+        assert any(item.name == "MCPToolMiddleware" for item in middleware)
+
     def test_auto_mode_omitted_with_sandbox(self, tmp_path: Path) -> None:
         """Auto is refused (no middleware) when a sandbox backend is active.
 
@@ -5322,8 +5458,9 @@ class TestCreateCliAgentInterpreterWiring:
             )
 
         _, kwargs = mock_create.call_args
-        middleware_types = [type(m) for m in kwargs["middleware"]]
-        assert CodeInterpreterMiddleware in middleware_types
+        assert any(
+            isinstance(m, CodeInterpreterMiddleware) for m in kwargs["middleware"]
+        )
 
     def test_no_interpreter_middleware_when_disabled(self, tmp_path: Path) -> None:
         from langchain_quickjs import CodeInterpreterMiddleware
@@ -5355,8 +5492,9 @@ class TestCreateCliAgentInterpreterWiring:
             )
 
         _, kwargs = mock_create.call_args
-        middleware_types = [type(m) for m in kwargs["middleware"]]
-        assert CodeInterpreterMiddleware not in middleware_types
+        assert not any(
+            isinstance(m, CodeInterpreterMiddleware) for m in kwargs["middleware"]
+        )
 
     def test_raises_when_sandbox_present(self, tmp_path: Path) -> None:
         mock_settings = self._build_mock_settings(tmp_path)
@@ -5857,3 +5995,33 @@ class TestSubagentRetryBudgetResolution:
         with patch("deepagents_code.config.create_model", _fake_create_model):
             _resolve_retry_owned_model("anthropic:claude-haiku-4-5", cli_max_retries)
         return captured
+
+
+class TestLoadAsyncSubagents:
+    """Tests for `load_async_subagents` config parsing."""
+
+    @pytest.mark.parametrize(
+        ("webhook_line", "expected"),
+        [
+            ('webhook = "https://example.com/hook"\n', "https://example.com/hook"),
+            ("", None),
+            ("webhook = 123\n", None),
+            ("webhook = false\n", None),
+        ],
+        ids=["set", "unset", "integer", "boolean"],
+    )
+    def test_webhook_passthrough(
+        self, tmp_path: Path, webhook_line: str, expected: str | None
+    ) -> None:
+        """A string `webhook` is passed through; an absent one is omitted."""
+        config = tmp_path / "config.toml"
+        config.write_text(
+            "[async_subagents.researcher]\n"
+            'description = "Research agent"\n'
+            'graph_id = "agent"\n' + webhook_line
+        )
+
+        [agent] = load_async_subagents(config)
+
+        assert agent.get("webhook") == expected
+        assert ("webhook" in agent) is (expected is not None)

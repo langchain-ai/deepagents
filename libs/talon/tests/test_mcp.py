@@ -53,6 +53,8 @@ if TYPE_CHECKING:
 
     from fastmcp.client.transports import ClientTransport
 
+    from deepagents_talon.mcp_oauth import MCPOAuthConfig
+
 
 class FakeMCPAdapter:
     connections: ClassVar[list[ClientTransport]] = []
@@ -323,7 +325,9 @@ async def test_mcp_tool_provider_exposes_only_configured_server_authentication(
         "title": "Reauthenticate",
         "type": "boolean",
     }
-    assert await provider._authenticate("unconfigured", "tool-call") == {"status": "failed"}
+    result = await provider._authenticate("unconfigured", "tool-call")
+    assert result["status"] == "failed"
+    assert "auth set to oauth" in result["message"]
 
 
 async def test_mcp_reload_tool_schedules_refresh_without_configuration(
@@ -779,7 +783,9 @@ async def test_unrelated_exception_group_remains_server_error(
 
     assert result.tools == ()
     assert result.servers[0].status == "error"
-    assert result.servers[0].error == "ExceptionGroup"
+    assert result.servers[0].error == "RuntimeError"
+    assert "nested detail" not in result.servers[0].error
+    assert "internal detail" not in result.servers[0].error
 
 
 @pytest.mark.parametrize("error", [OAuthFlowError, ConnectError])
@@ -813,7 +819,9 @@ async def test_unexpected_server_error_does_not_block_other_servers(
         ("working", "ok"),
     ]
     if error is ConnectError:
-        assert result.servers[0].error == "ConnectError"
+        assert result.servers[0].error == (
+            "OAuth network request failed; check connectivity and retry login."
+        )
 
 
 async def test_tool_allowlist_filters_loaded_tools(
@@ -852,7 +860,16 @@ async def test_oauth_connection_uses_stored_credentials(
     provider = object()
 
     class FakeStorage:
-        def __init__(self, server_name: str, *, server_url: str) -> None:
+        def __init__(
+            self,
+            server_name: str,
+            *,
+            server_url: str,
+            force_authorization: bool = False,
+            oauth: MCPOAuthConfig | None = None,
+        ) -> None:
+            del oauth
+            assert force_authorization is False
             assert (server_name, server_url) == ("remote", "https://example.com/mcp")
 
         async def get_tokens(self) -> object:
@@ -883,13 +900,25 @@ async def test_oauth_connection_prepares_oauth_login(
     prepared: list[tuple[str, object]] = []
 
     class EmptyStorage:
-        def __init__(self, server_name: str, *, server_url: str) -> None:
+        def __init__(
+            self,
+            server_name: str,
+            *,
+            server_url: str,
+            force_authorization: bool = False,
+            oauth: MCPOAuthConfig | None = None,
+        ) -> None:
+            del oauth
+            assert force_authorization is False
             assert (server_name, server_url) == (
                 "github",
                 "https://api.githubcopilot.com/mcp",
             )
 
-    async def prepare(*, server_url: str, storage: object) -> None:
+    async def prepare(
+        *, server_url: str, storage: object, oauth: MCPOAuthConfig | None = None
+    ) -> None:
+        del oauth
         prepared.append((server_url, storage))
 
     monkeypatch.setattr("deepagents_talon.mcp.FileTokenStorage", EmptyStorage)
@@ -914,7 +943,16 @@ async def test_oauth_connection_reuses_stored_token(
     provider = object()
 
     class StoredStorage:
-        def __init__(self, _server_name: str, *, server_url: str) -> None:
+        def __init__(
+            self,
+            _server_name: str,
+            *,
+            server_url: str,
+            force_authorization: bool = False,
+            oauth: MCPOAuthConfig | None = None,
+        ) -> None:
+            del oauth
+            assert force_authorization is False
             assert server_url == "https://example.com/mcp"
 
         async def get_tokens(self) -> OAuthToken:
@@ -942,8 +980,10 @@ async def test_forced_oauth_connection_bypasses_stored_credentials(
             server_name: str,
             *,
             server_url: str,
-            force_authorization: bool,
+            force_authorization: bool = False,
+            oauth: MCPOAuthConfig | None = None,
         ) -> None:
+            del oauth
             assert (server_name, server_url) == ("remote", "https://example.com/mcp")
             assert force_authorization is True
 
@@ -965,7 +1005,16 @@ async def test_oauth_without_stored_credentials_requires_login(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     class EmptyStorage:
-        def __init__(self, server_name: str, *, server_url: str) -> None:
+        def __init__(
+            self,
+            server_name: str,
+            *,
+            server_url: str,
+            force_authorization: bool = False,
+            oauth: MCPOAuthConfig | None = None,
+        ) -> None:
+            del oauth
+            assert force_authorization is False
             assert (server_name, server_url) == ("remote", "https://example.com/mcp")
 
         async def get_tokens(self) -> None:
@@ -1018,8 +1067,10 @@ async def test_login_uses_talon_config_and_interactive_oauth(
             _server_name: str,
             *,
             server_url: str,
-            force_authorization: bool,
+            force_authorization: bool = False,
+            oauth: MCPOAuthConfig | None = None,
         ) -> None:
+            del oauth
             assert server_url == "https://example.com/mcp"
             forced.append(force_authorization)
 
@@ -1059,7 +1110,16 @@ async def test_login_reports_oauth_failure_without_details(
     result = await login_mcp_server(_config(tmp_path), "remote", str(config_path))
 
     assert result == 1
-    assert capsys.readouterr().err == f"MCP login failed: {error.__name__}\n"
+    message = capsys.readouterr().err
+    assert message.startswith("MCP login failed: ")
+    assert "secret token exchange response" not in message
+    assert "retry" in message
+    if error is OAuthFlowError:
+        assert "client_id" in message
+        assert "callback_url" in message
+        assert "scopes" in message
+    else:
+        assert "check connectivity" in message
 
 
 async def test_login_does_not_timeout_interactive_session(
@@ -1200,7 +1260,7 @@ async def test_authenticate_reports_failure_for_a_grouped_session_error(
         lambda _self: _stored_tokens(),
     )
 
-    async def fail_inside_task_group(_client: object, _server_name: str) -> None:
+    async def fail_inside_task_group(_client: object) -> None:
         async with anyio.create_task_group() as group:
             group.start_soon(_raise_connection_failure)
 
@@ -1208,7 +1268,8 @@ async def test_authenticate_reports_failure_for_a_grouped_session_error(
 
     result = await provider._authenticate("notion", "tool-call")
 
-    assert result == {"status": "failed", "server_name": "notion"}
+    assert result == {"status": "failed", "server_name": "notion", "message": "connection reset"}
+    assert "ExceptionGroup" not in result["message"]
     assert await provider.refresh_if_needed() is None
 
 
@@ -1240,3 +1301,38 @@ async def test_login_succeeds_and_logs_a_failure_alongside_the_completion_marker
     assert captured.err == ""
     assert "after credentials were saved" in caplog.text
     assert "connection reset" in caplog.text
+
+
+async def test_authentication_tool_returns_safe_oauth_failure_remedy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_path = tmp_path / "oauth.mcp.json"
+    _write_config(config_path, {"notion": {"url": "https://mcp.example", "auth": "oauth"}})
+    monkeypatch.setattr(
+        "deepagents_talon.mcp.FileTokenStorage.get_tokens", lambda _self: _no_tokens()
+    )
+    provider = MCPToolProvider(_config(tmp_path, {"DEEPAGENTS_TALON_MCP_CONFIG": str(config_path)}))
+    loaded = await provider.load()
+    authentication = next(tool for tool in loaded.tools if tool.name == "authenticate_mcp_server")
+
+    async def fail_login(*_args: object, **_kwargs: object) -> None:
+        await _raise_oauth_failure()
+
+    monkeypatch.setattr("deepagents_talon.mcp._open_authenticated_session", fail_login)
+    result = await authentication.ainvoke(
+        {
+            "name": "authenticate_mcp_server",
+            "args": {"server_name": "notion"},
+            "id": "tool-call",
+            "type": "tool_call",
+        }
+    )
+    response = json.loads(result.content)
+    assert response["status"] == "failed"
+    assert response["server_name"] == "notion"
+    assert "secret token exchange response" not in response["message"]
+    assert "client_id" in response["message"]
+    assert "callback_url" in response["message"]
+    assert "scopes" in response["message"]
+    assert "retry" in response["message"]
+    assert await provider.refresh_if_needed() is None

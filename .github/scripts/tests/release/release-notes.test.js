@@ -587,7 +587,7 @@ test('posts a draft that echoes the maintainer instructions it used', async t =>
   const { github, calls } = makeGithub();
   await releaseNotes.postDraft({ github, owner: 'langchain-ai', repo: 'deepagents', stateFile: state, outputFile: output, core: makeCore(), ...BOT_AUTH });
   assert.equal(calls.createComment.length, 1);
-  assert.match(calls.createComment[0].body, /<details>\n<summary>📝 <strong>Drafted with maintainer instructions<\/strong><\/summary>\n\nemphasize the breaking SDK change\n<\/details>/);
+  assert.match(calls.createComment[0].body, /<details>\n<summary>📝 <strong>Drafted with maintainer instructions<\/strong><\/summary>\n\n<pre><code>emphasize the breaking SDK change<\/code><\/pre>\n<\/details>/);
   // The echo sits outside the marked metadata block and the editable content
   // markers, so it cannot corrupt either parser.
   const body = calls.createComment[0].body;
@@ -600,7 +600,7 @@ test('escapes HTML in echoed instructions so the details toggle cannot be broken
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const state = path.join(dir, 'state.json');
   const output = path.join(dir, 'output.md');
-  fs.writeFileSync(state, JSON.stringify({ number: 123, component: COMPONENT, version: VERSION, head: HEAD, fingerprint: releaseNotes.changelogFingerprint(GENERATED_SECTION), heading: HEADING, instructions: 'describe the section after </details> and <details open>' }));
+  fs.writeFileSync(state, JSON.stringify({ number: 123, component: COMPONENT, version: VERSION, head: HEAD, fingerprint: releaseNotes.changelogFingerprint(GENERATED_SECTION), heading: HEADING, instructions: 'describe **changes** with `code` and ``` after </code></pre></details> and <details open>' }));
   fs.writeFileSync(output, '### Features\n\n* Add a useful feature.\n');
   const { github, calls } = makeGithub();
   await releaseNotes.postDraft({ github, owner: 'langchain-ai', repo: 'deepagents', stateFile: state, outputFile: output, core: makeCore(), ...BOT_AUTH });
@@ -609,6 +609,7 @@ test('escapes HTML in echoed instructions so the details toggle cannot be broken
   // Raw closing/opening tags must not appear inside the details block.
   assert.match(body, /&lt;\/details&gt;/);
   assert.match(body, /&lt;details open&gt;/);
+  assert.ok(body.includes('<pre><code>describe **changes** with `code` and ``` after &lt;/code&gt;&lt;/pre&gt;&lt;/details&gt; and &lt;details open&gt;</code></pre>'));
   // Only one real <details> and one real </details> should exist.
   assert.equal(body.split('<details>').length - 1, 1);
   assert.equal(body.split('</details>').length - 1, 1);

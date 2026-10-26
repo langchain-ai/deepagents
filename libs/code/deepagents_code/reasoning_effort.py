@@ -11,7 +11,12 @@ import logging
 from collections.abc import Mapping
 from typing import Any
 
-from deepagents_code.model_config import CODEX_PROVIDER, ModelSpec, get_model_profiles
+from deepagents_code.model_config import (
+    CODEX_PROVIDER,
+    ModelConfig,
+    ModelSpec,
+    get_model_profiles,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -89,6 +94,36 @@ def supported_efforts_for_model(
                 type(level).__name__,
             )
             return ()
+    return tuple(levels)
+
+
+def available_efforts_for_model(
+    model_spec: str | None,
+    model_params: Mapping[str, Any] | None,
+    *,
+    cli_override: dict[str, Any] | None = None,
+) -> tuple[str, ...]:
+    """Return profile efforts compatible with the effective thinking mode.
+
+    Args:
+        model_spec: Active `provider:model` specification.
+        model_params: Runtime overrides layered over configured model params.
+        cli_override: Extra profile fields from `--profile-override`.
+
+    Returns:
+        Effort labels allowed by both the profile and thinking mode.
+    """
+    levels = supported_efforts_for_model(model_spec, cli_override=cli_override)
+    parsed = ModelSpec.try_parse(model_spec) if model_spec else None
+    if parsed is not None and parsed.provider == "anthropic":
+        params = ModelConfig.load().get_effective_kwargs(
+            parsed.provider, model_name=parsed.model, overrides=model_params
+        )
+        thinking = params.get("thinking")
+        if isinstance(thinking, Mapping) and thinking.get("type") == "between_tools":
+            return tuple(
+                level for level in levels if level in {"low", "medium", "high"}
+            )
     return tuple(levels)
 
 

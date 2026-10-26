@@ -143,7 +143,7 @@ class AutoModeNoticeScreen(ModalScreen[bool]):
         margin: 0 0 1 0;
     }
 
-    AutoModeNoticeScreen .auto-mode-notice-body > *:last-child {
+    AutoModeNoticeScreen .auto-mode-notice-body > MarkdownBlock:last-child {
         margin-bottom: 0;
     }
 

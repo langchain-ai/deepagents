@@ -156,7 +156,7 @@ class StateBackend(BackendProtocol):
                 continue
 
             # This is a file directly in the current directory
-            size = len(file_data_to_string(fd))
+            size = len(file_data_to_string(fd).encode("utf-8"))
             infos.append(
                 {
                     "path": k,
@@ -216,6 +216,7 @@ class StateBackend(BackendProtocol):
 
         existing = files.get(file_path)
         new_file_data = update_file_data(existing, content) if existing is not None else create_file_data(content)
+        new_file_data["encoding"] = "utf-8"
         self._send_files_update({file_path: self._prepare_for_storage(new_file_data)})
         return WriteResult(path=file_path)
 
@@ -235,6 +236,9 @@ class StateBackend(BackendProtocol):
 
         if file_data is None:
             return EditResult(error=f"Error: File '{file_path}' not found")
+
+        if file_data.get("encoding") == "base64":
+            return EditResult(error="Error: Cannot edit binary files with text replacements.")
 
         content = file_data_to_string(file_data)
         result = perform_string_replacement(content, old_string, new_string, replace_all)
@@ -308,7 +312,7 @@ class StateBackend(BackendProtocol):
         infos: list[FileInfo] = []
         for p in paths:
             fd = files.get(p)
-            size = len(file_data_to_string(fd)) if fd else 0
+            size = len(file_data_to_string(fd).encode("utf-8")) if fd else 0
             infos.append(
                 {
                     "path": p,
@@ -334,12 +338,13 @@ class StateBackend(BackendProtocol):
         for path, content in files:
             try:
                 text = content.decode("utf-8")
+                encoding = "utf-8"
             except UnicodeDecodeError:
                 text = base64.b64encode(content).decode("ascii")
+                encoding = "base64"
 
-            prev = existing.get(path)
-            file_data = update_file_data(prev, text) if prev else create_file_data(text)
-            update[path] = {**file_data}
+            created_at = (existing.get(path) or {}).get("created_at")
+            update[path] = {**create_file_data(text, created_at=created_at, encoding=encoding)}
             responses.append(FileUploadResponse(path=path, error=None))
 
         if update:

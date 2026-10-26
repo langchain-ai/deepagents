@@ -15,6 +15,7 @@ duplicate try/finally teardown.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import tempfile
@@ -24,7 +25,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncIterator, Awaitable, Callable
 
     from deepagents import FsToolName
 
@@ -35,6 +36,7 @@ if TYPE_CHECKING:
 from deepagents_code._env_vars import SERVER_ENV_PREFIX
 from deepagents_code._server_config import ServerConfig
 from deepagents_code.client.launch.server import (
+    _ABANDONED_START_GRACE,
     _EPHEMERAL_PORT,
     emit_preserved_log_notices,
 )
@@ -130,7 +132,6 @@ def _write_checkpointer(work_dir: Path) -> None:
     """
     from deepagents_code.sessions import get_db_path
 
-    # Set the env var that the generated module will read at import time.
     os.environ[f"{SERVER_ENV_PREFIX}DB_PATH"] = str(get_db_path())
 
     db_path_var = f"{SERVER_ENV_PREFIX}DB_PATH"
@@ -149,7 +150,11 @@ async def create_checkpointer():
     (set by the app before server startup) rather than hard-coded, so
     the checkpointer module works without code generation.
     """
-    from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+    from pathlib import Path
+    from deepagents_code._checkpointer_adapter import (
+        install_delta_history_forwarding,
+    )
+    from deepagents_code.thread_ownership import owned_saver_class
 
     db_path = os.environ.get("{db_path_var}")
     if not db_path:
@@ -157,7 +162,9 @@ async def create_checkpointer():
             "{db_path_var} not set. The app must set this "
             "env var before server startup."
         )
-    async with AsyncSqliteSaver.from_conn_string(db_path) as saver:
+    install_delta_history_forwarding()
+    saver_class = owned_saver_class(db_path=Path(db_path))
+    async with saver_class.from_conn_string(db_path) as saver:
         yield saver
 '''
     (work_dir / "checkpointer.py").write_text(content)
@@ -175,7 +182,7 @@ def _write_pyproject(work_dir: Path) -> None:
     content = f"""[project]
 name = "deepagents-server-runtime"
 version = "0.0.1"
-requires-python = ">=3.12"
+requires-python = ">=3.14,<3.15"
 dependencies = [
     "{_runtime_package_dependency()}",
 ]
@@ -326,6 +333,7 @@ async def start_server_and_get_agent(
     host: str = "127.0.0.1",
     port: int = _EPHEMERAL_PORT,
     cwd: str | None = None,
+    after_spawn: Callable[[], Awaitable[None]] | None = None,
 ) -> tuple[RemoteAgent, ServerProcess, MCPSessionManager | None]:
     """Start a LangGraph server and return a connected remote agent client.
 
@@ -371,6 +379,8 @@ async def start_server_and_get_agent(
             pick a free ephemeral port instead of the well-known `langgraph dev`
             port 2024.
         cwd: Explicit project workspace to bind to new threads.
+        after_spawn: Awaited once the server subprocess is spawned, before
+            the health check. See `ServerProcess.start`.
 
     Returns:
         Tuple of `(remote_agent, server_process, mcp_session_manager)`.
@@ -384,7 +394,6 @@ async def start_server_and_get_agent(
         RuntimeError: If no explicit workspace can be resolved.
     """  # noqa: DOC502 - `_preflight_validate_mcp_config()` raises indirectly
     from deepagents_code.client.launch.server import ServerProcess
-    from deepagents_code.client.remote_client import RemoteAgent
 
     project_context = (
         ProjectContext.from_user_cwd(Path(cwd))
@@ -443,8 +452,12 @@ async def start_server_and_get_agent(
     )
     started = False
     try:
-        await server.start()
+        await server.start(after_spawn=after_spawn)
         await server.wait_for_graph_ready("agent")
+        # Import after the spawn: `PrespawnedServer` runs this before first
+        # paint, and only the spawn needs to happen that early.
+        from deepagents_code.client.remote_client import RemoteAgent
+
         agent = RemoteAgent(
             url=server.url,
             graph_name="agent",
@@ -472,6 +485,19 @@ async def start_server_and_get_agent(
             # and orphan the process. The inner guard stops a `stop()` error
             # from masking the exception already propagating.
             #
+            # Offload `stop()`: it blocks for up to `_SHUTDOWN_TIMEOUT` plus the
+            # SIGKILL grace while the server finishes its in-flight graph build.
+            # Quitting the TUI during startup cancels this coroutine on Textual's
+            # event loop, so a blocking call here freezes the screen until the
+            # server exits. If a second cancellation interrupts the await, the
+            # thread keeps running and `asyncio.run` joins it before the process
+            # exits, so the server is still reaped.
+            #
+            # The server never reached the caller, so it holds no session state
+            # and gets only a short graceful window. A sandbox is the exception:
+            # the graph build may be creating one, and the server deletes it only
+            # when it exits gracefully.
+            #
             # `stop()` only *queues* any debug-preserved log path; it is not
             # announced here. This helper is awaited by callers that still own
             # the terminal (the initial TUI startup worker and the in-session
@@ -479,12 +505,80 @@ async def start_server_and_get_agent(
             # alternate screen. The queue is process-global, so the outer
             # terminal teardown (`run_textual_app` / `server_session` finally)
             # drains this failed server's path once the terminal is restored.
+            grace = None if config.sandbox_type else _ABANDONED_START_GRACE
             try:
-                server.stop()
+                await asyncio.to_thread(server.stop, grace=grace)
             except Exception:
                 logger.exception(
                     "Error stopping server during startup cleanup",
                 )
+
+
+class PrespawnedServer:
+    """A `start_server_and_get_agent` call that spawns before the app loads.
+
+    The subprocess boots while the caller imports and paints the app. The
+    start then pauses until `adopt` releases it, so the health check and its
+    imports run only after the app hands over its own `after_spawn` gate.
+    """
+
+    def __init__(self, **kwargs: Any) -> None:
+        """Schedule the server start.
+
+        Args:
+            **kwargs: Keyword arguments for `start_server_and_get_agent`,
+                except `after_spawn`.
+        """
+        self._spawned = asyncio.Event()
+        self._release = asyncio.Event()
+        self._adopted = False
+        self._task = asyncio.create_task(
+            start_server_and_get_agent(**kwargs, after_spawn=self._hold)
+        )
+
+    async def _hold(self) -> None:
+        self._spawned.set()
+        await self._release.wait()
+
+    async def wait_spawned(self) -> None:
+        """Return once the subprocess is spawned or the start has failed."""
+        spawned = asyncio.ensure_future(self._spawned.wait())
+        try:
+            await asyncio.wait({self._task, spawned}, return_when="FIRST_COMPLETED")
+        finally:
+            spawned.cancel()
+
+    async def adopt(
+        self, *, after_spawn: Callable[[], Awaitable[None]]
+    ) -> tuple[RemoteAgent, ServerProcess, MCPSessionManager | None]:
+        """Release the paused start and take ownership of the server.
+
+        Args:
+            after_spawn: Awaited before the health check, as in
+                `start_server_and_get_agent`.
+
+        Returns:
+            The `start_server_and_get_agent` result.
+        """
+        await after_spawn()
+        self._release.set()
+        result = await self._task
+        self._adopted = True
+        return result
+
+    async def aclose(self) -> None:
+        """Cancel and reap a start that no caller adopted.
+
+        Safe to call after `adopt`; an adopted server stays with its owner.
+        """
+        if not self._task.done():
+            self._task.cancel()
+        await asyncio.wait({self._task})
+        if self._task.cancelled() or self._task.exception() is not None:
+            return
+        if not self._adopted:
+            _, server, _ = self._task.result()
+            await asyncio.to_thread(server.stop, grace=_ABANDONED_START_GRACE)
 
 
 # ------------------------------------------------------------------

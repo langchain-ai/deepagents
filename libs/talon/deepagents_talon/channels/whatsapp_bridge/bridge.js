@@ -18,6 +18,7 @@ const {
   serializedId,
   widString,
 } = require("./id_compat");
+const { downloadMedia } = require("./media");
 
 const host = process.env.WHATSAPP_BRIDGE_HOST || "127.0.0.1";
 const port = Number(process.env.WHATSAPP_BRIDGE_PORT || "3000");
@@ -382,7 +383,7 @@ async function downloadMessageMedia(message) {
       );
       return [];
     }
-    const media = await message.downloadMedia();
+    const media = await downloadMedia(client.pupPage, message);
     if (!media || !media.data) {
       return [];
     }

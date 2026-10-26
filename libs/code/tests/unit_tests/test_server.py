@@ -25,6 +25,11 @@ from deepagents_code.client.launch.server import (
     emit_preserved_log_notices,
     wait_for_server_healthy,
 )
+from deepagents_code.model_config import (
+    MissingCredentialsError,
+    MissingProviderPackageError,
+    ModelConfigError,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -196,6 +201,94 @@ class TestServerPortSelection:
         in_use.assert_called_once_with("127.0.0.1", 2024)
         find_free.assert_called_once_with("127.0.0.1")
         assert server.port == 43210
+
+
+@pytest.mark.parametrize(
+    ("phase", "error"),
+    [
+        (
+            "health",
+            MissingCredentialsError(
+                'Missing credentials for "anthropic".\nUse /auth to recover.',
+                provider="anthropic",
+                env_var="ANTHROPIC_API_KEY",
+            ),
+        ),
+        ("exit", MissingCredentialsError("Credentials missing", provider="custom")),
+        (
+            "transport",
+            MissingProviderPackageError(
+                "Provider package missing",
+                provider="fireworks",
+                package="langchain-fireworks",
+            ),
+        ),
+        (
+            "status",
+            MissingCredentialsError(
+                "Credentials missing", provider="custom", env_var="CUSTOM_API_KEY"
+            ),
+        ),
+    ],
+)
+async def test_startup_preserves_recovery_errors(
+    phase: str,
+    error: ModelConfigError,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Errors emitted by the child retain recovery fields at every startup boundary."""
+    from deepagents_code._startup_error import emit_startup_failure
+
+    emit_startup_failure(error)
+    output = capsys.readouterr().err
+    process = MagicMock()
+    process.poll.return_value = 1 if phase in {"health", "exit"} else None
+    process.returncode = 1
+    server = ServerProcess()
+    server._process = process
+    monkeypatch.setattr(server, "_read_log_file", lambda: output)
+    client = _FakeAsyncClient(
+        OSError("connection closed")
+        if phase == "transport"
+        else SimpleNamespace(status_code=500)
+    )
+
+    ready = (
+        wait_for_server_healthy(server.url, process=process, read_log=lambda: output)
+        if phase == "health"
+        else server.wait_for_graph_ready()
+    )
+    with (
+        patch("httpx.AsyncClient", return_value=client),
+        pytest.raises(type(error)) as caught,
+    ):
+        await ready
+
+    assert str(caught.value) == str(error)
+    assert vars(caught.value) == vars(error)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        "not json",
+        "null",
+        "{}",
+        '{"type":"UnknownError","message":"failure","provider":"custom"}',
+        '{"type":"MissingCredentialsError","message":"failure","provider":1}',
+        '{"type":"MissingCredentialsError","message":"failure","provider":"custom","env_var":[]}',
+        '{"type":"MissingProviderPackageError","message":"failure","provider":"custom","package":false}',
+    ],
+)
+def test_invalid_recovery_details_preserve_fallback(payload: str) -> None:
+    from deepagents_code._startup_error import startup_error_from_output
+
+    error = startup_error_from_output(
+        f"DEEPAGENTS_STARTUP_ERROR_DETAILS:{payload}\n", "original startup failure"
+    )
+    assert isinstance(error, RuntimeError)
+    assert str(error) == "original startup failure"
 
 
 class TestWaitForServerHealthy:
@@ -404,6 +497,81 @@ class TestServerProcess:
         assert server._log_file is None
         assert not config_dir.exists()
         assert not log_path.exists()
+
+    async def test_after_spawn_runs_between_spawn_and_health_check(
+        self, tmp_path: Path
+    ) -> None:
+        """`after_spawn` overlaps server boot but finishes before health checks."""
+        config_dir = tmp_path / "runtime"
+        config_dir.mkdir()
+        (config_dir / "langgraph.json").write_text("{}")
+        events: list[str] = []
+
+        def spawn(*_args: object, **_kwargs: object) -> MagicMock:
+            events.append("spawn")
+            process = MagicMock()
+            process.poll.return_value = None
+            return process
+
+        async def after_spawn() -> None:  # noqa: RUF029  # matches the awaited hook
+            events.append("after_spawn")
+
+        async def healthy(*_args: object, **_kwargs: object) -> None:  # noqa: RUF029
+            events.append("health_check")
+
+        server = ServerProcess(config_dir=config_dir)
+        with (
+            patch(
+                "deepagents_code.client.launch.server._find_free_port",
+                return_value=12345,
+            ),
+            patch(
+                "deepagents_code.client.launch.server.subprocess.Popen",
+                side_effect=spawn,
+            ),
+            patch(
+                "deepagents_code.client.launch.server.wait_for_server_healthy",
+                new=healthy,
+            ),
+        ):
+            await server.start(after_spawn=after_spawn)
+
+        assert events == ["spawn", "after_spawn", "health_check"]
+
+    async def test_after_spawn_cancellation_reaps_subprocess(
+        self, tmp_path: Path
+    ) -> None:
+        """Cancelling during `after_spawn` must not orphan the spawned server."""
+        config_dir = tmp_path / "runtime"
+        config_dir.mkdir()
+        (config_dir / "langgraph.json").write_text("{}")
+        process = MagicMock()
+        process.poll.return_value = None
+        health_check = AsyncMock()
+
+        server = ServerProcess(config_dir=config_dir)
+        with (
+            patch(
+                "deepagents_code.client.launch.server._find_free_port",
+                return_value=12345,
+            ),
+            patch(
+                "deepagents_code.client.launch.server.subprocess.Popen",
+                return_value=process,
+            ),
+            patch(
+                "deepagents_code.client.launch.server.wait_for_server_healthy",
+                new=health_check,
+            ),
+            pytest.raises(asyncio.CancelledError),
+        ):
+            await server.start(
+                after_spawn=AsyncMock(side_effect=asyncio.CancelledError)
+            )
+
+        health_check.assert_not_awaited()
+        process.send_signal.assert_called_once_with(signal.SIGTERM)
+        assert server._process is None
 
     async def test_start_cleanup_error_does_not_mask_startup_error(
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture
@@ -977,7 +1145,9 @@ class TestServerProcessStopIdempotency:
         """Repeated `stop()` calls tear the process down only once."""
         server = ServerProcess(host="127.0.0.1", port=2024)
         calls: list[int] = []
-        monkeypatch.setattr(server, "_stop_process_locked", lambda: calls.append(1))
+        monkeypatch.setattr(
+            server, "_stop_process_locked", lambda **_kwargs: calls.append(1)
+        )
 
         server.stop()
         server.stop()
@@ -997,7 +1167,7 @@ class TestServerProcessStopIdempotency:
         release = threading.Event()
         calls: list[int] = []
 
-        def slow_stop_process() -> None:
+        def slow_stop_process(*, grace: float | None = None) -> None:  # noqa: ARG001
             calls.append(1)
             entered.set()
             release.wait(timeout=2.0)
@@ -1375,6 +1545,42 @@ class TestTerminateServerProcess:
         ]
         process.wait.assert_called_once_with()
         process.kill.assert_not_called()
+
+    def test_grace_overrides_shutdown_timeout(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An explicit `grace` replaces the full graceful window.
+
+        Abandoned startups pass a short grace so a server stuck in its graph
+        build is killed without holding the full `_SHUTDOWN_TIMEOUT`.
+        """
+        self._patch_own_group(monkeypatch)
+        group_killed = False
+
+        def _killpg(_pgid: int, sig: int) -> None:
+            nonlocal group_killed
+            if sig == signal.SIGKILL:
+                group_killed = True
+            elif sig == 0 and group_killed:
+                raise ProcessLookupError
+
+        def _no_wait(_seconds: float) -> None:
+            msg = "a zero grace must escalate without waiting"
+            raise AssertionError(msg)
+
+        killpg = MagicMock(side_effect=_killpg)
+        monkeypatch.setattr("deepagents_code.client.launch.server.os.killpg", killpg)
+        monkeypatch.setattr("deepagents_code.client.launch.server.time.sleep", _no_wait)
+        process = self._own_group_process()
+
+        _terminate_server_process(process, grace=0)
+
+        assert killpg.call_args_list == [
+            ((4321, signal.SIGTERM),),
+            ((4321, 0),),
+            ((4321, signal.SIGKILL),),
+            ((4321, 0),),
+        ]
 
     def test_group_wait_ignores_exited_leader(
         self, monkeypatch: pytest.MonkeyPatch

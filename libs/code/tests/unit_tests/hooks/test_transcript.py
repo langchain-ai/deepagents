@@ -7,6 +7,7 @@ import os
 import stat
 from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING
+from unittest.mock import Mock
 
 import pytest
 from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage
@@ -258,6 +259,43 @@ def test_attempt_discard_cleans_partial_chunks(tmp_path: Path) -> None:
     main = _read_main(runtime)
     assert "dangling" not in main
     assert '"content":"after"' in main
+
+
+def test_streamed_tool_call_chunks_merge_into_one_message(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _, recorder = _recorder_runtime(tmp_path)
+    append = Mock()
+    monkeypatch.setattr(HooksRuntime, "append_messages", append)
+    for index, args in enumerate(('{"file_path":', '"/x.py"}')):
+        recorder.record(
+            AIMessageChunk(
+                id="c1",
+                content="",
+                tool_call_chunks=[
+                    {
+                        "name": "write_file" if index == 0 else None,
+                        "id": "call-1" if index == 0 else None,
+                        "args": args,
+                        "index": 0,
+                    }
+                ],
+                chunk_position="last" if index == 1 else None,
+            ),
+            {},
+            main_agent=True,
+        )
+
+    append.assert_called_once()
+    (message,) = append.call_args.args[1]
+    assert message.tool_calls == [
+        {
+            "name": "write_file",
+            "args": {"file_path": "/x.py"},
+            "id": "call-1",
+            "type": "tool_call",
+        }
+    ]
 
 
 def test_attempt_last_chunk_not_materialized_until_complete(tmp_path: Path) -> None:

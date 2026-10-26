@@ -4,7 +4,7 @@ okf_version: "0.2"
 
 # Files
 
-- [Deep Agents Repository Quickstart](quickstart.md) - Route a Deep Agents maintenance task to its owning package, its focused test boundary, and the detailed operational guide. Includes current release units and links for Talon, MCP, delegation, dcode diagnostics, ACP, and releases.
+- [Deep Agents Monorepo Quickstart](quickstart.md) - Route a Deep Agents change to its owning package, its detailed guide, and the narrowest useful validation command. Use this page to identify local editable handoffs and dcode's SDK compatibility pin.
 
 # Directories
 

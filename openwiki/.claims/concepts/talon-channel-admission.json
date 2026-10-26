@@ -1,0 +1,244 @@
+{
+  "schemaVersion": 1,
+  "pageVersion": "sha256:1b7197ad954475d279a1c1acb4fc27a186f37b470e8fa00752073a3f8c4e5c49",
+  "claims": [
+    {
+      "id": "claim_0c5d862f533545f9aadcc99ac6555b7d",
+      "statement": "Talon defines a common ChannelAdapter protocol for lifecycle, host message-handler registration, text/media send and edit, typing, and status; ChannelMessage and ChannelReaction carry channel-specific conversation and sender identity plus metadata, while reactions are an optional adapter capability.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/deepagents_talon/interfaces.py#L19-L104",
+          "version": "repo-lines-v1:sha256:a08bfe8a351737324dca4cc0d5d9a8fd1630d7fab9f71d28c69e5892a31022bb:eyJzZWxlY3RlZExpbmVDb3VudCI6ODYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImYyZjRjZjM1ZTNmN2FmYTVmZDRhYWEzNzRjMDg0MDIzNDgwMDhlNDFjNjY1ZDE1M2VmNGNhYWM5ODQwOTg0NmQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijk0Mjc2MTAyYjlkMTU2MWNlMmY0MjlmMDhmNWQ5MzM0OTQwNGI3MGE5YjliODdiYTliZGM1NzAyZWJiMmUxNmQifQ"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/interfaces.py#L202-L288",
+          "version": "repo-lines-v1:sha256:4fd1089d84d6dfe487957ddc061b5aeac99d6e84fee01eef7d8794297bc9ad05:eyJzZWxlY3RlZExpbmVDb3VudCI6ODcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImYzNzUyYzU2YmRiYmQ1ZjFjM2JiNGFmMTZhNTAwZmNmZGE4ZGMyNWNjNWMxYzQwOWQ1YWM3ZGU3YWQ0MTZjZTgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjUwZGUyNTg3MTk2MTQ5MjYwNzFjOGZiMTlmZDg2NjE1MDU1NWYxYjAxMzU0ZjhjZDE2MDNhMTA5YTdkZGFlNDAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjhlNTEwNmRiMjJkYTQzYzk2YjMxMmM4MDlmNWU4YWEyNmNmYTI2N2ExMzA4NzA1ZTlhNDdmZjc4NzU5NTE0YzQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImY5NzQ0ZTkzZTEwZDQwYjE5NDRmOTQwMGQ3NjY0ZDEzZGE2M2Q0ZWNjZGExMzVjZWJlMDNlNzgxNzc4MzYyNjIifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_771d30e46bda44899664487392088914",
+      "statement": "Shared ChannelExposure defaults to self, where from_self or configured operator IDs are admitted; allowlist admits configured conversation IDs or text glob patterns; open admits every message but configuration requires an explicit risk acknowledgement and logs the arbitrary-sender risk.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/deepagents_talon/channels/base.py#L177-L219",
+          "version": "repo-lines-v1:sha256:e9924b9db7350665948a15196800ef7261d76cba44906592f066217ded2b4e3c:eyJzZWxlY3RlZExpbmVDb3VudCI6NDMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjgwNzVmYmE0MmYwNGY0YjE0ZDQ5MzBjYmM2ZWMzZjZkNDI1NzJlOGRmZjkxYWQwZmMwY2Y5MTIwYTk5MWYxNWMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMwYzFmMTg4ZjE0MmVkN2E4MjQ2ODBiMjA3MTcyYzU1MTliYzYxNGE0OGZkYTdjZjE2N2VkYjhkZGY3OTk1NmMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjAyZTYzMDEzMTI4ZjE4ZDkyMGEyOTFiNTczNzI3ODI0NWQ3NWE2MjZjYWFlMGI3NzA5MjczMWIyNmYxN2U0NGEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImE5Zjk1NGNlNTkwNTI5ZTNhMDNmZmQ4NDk0YzgxY2JhMzAxYjgxZmE5NTM3ODEwN2I5MzNmM2YzOWUzNDhjZGQifQ"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/channels/base.py#L44-L108",
+          "version": "repo-lines-v1:sha256:fa0f7c635a8fb0d464d6e4fe5ccc8bd8a183f790140a89a459cb173fe381e162:eyJzZWxlY3RlZExpbmVDb3VudCI6NjUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImIzMTU0ZDljNGI2MjU1NmQwMTNlMTUxMTA0N2M1YjkzMjc4NWI5ZGQxNjk3MzQzYzg3N2NjYzVjYzU0N2E0NDUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU5MDlhNTNhNjE4ZDAyOGUxZDMwMDBjMGE3YWJjZWVjYmU1ZmIzN2Y0ZTUxMWVmZTQ2NjQzZmFkNmU2Njg3MmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjYyMDA5N2U0YWE1MDA2OGJhMTU3ZjlhMjczOWZhZDg2OTk1ZTFlMGNkY2NkYWRjNTg5N2MyMDM0Yzc0ZDNlZmEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjA2MTFjMmNiMDE0NjhjZmM4NjIzMzliMTg1NWZmYzY4MTgzNzIzOWMxMTNiZGU4MmNkMTQ2ZmU1ZGJjNDJhY2QifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_74e7da4f223c49bab13b1d216b3df091",
+      "statement": "Pairing grants normal sender invocation but never operator authority: environment-configured operator and allowlisted IDs remain authoritative DM senders, while /pair is handled outside the model and requires an explicitly configured operator; pairing administration is DM-only except that an operator may approve a code outside a DM.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/deepagents_talon/host.py#L609-L642",
+          "version": "repo-lines-v1:sha256:f7a113598123bc8a0ce235a1940bef134470e0ec22cd22a76d95d10cea7c9284:eyJzZWxlY3RlZExpbmVDb3VudCI6MzQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFhZjUwNjAyNzg1ODg2Mzg4ODE3ZDA3ODY3MmU5NTdjNzRhZjhkZWNiNzcyYjY3ODM2MDlkOTc3ZGZiMTRmOWEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY0NzRkYjVmYWI4YzRmYmIyMjgyYWNhMDA0NGM3NDY3NGYyMDQ5ZWRkY2IwZTA3MWUwMjA0OWVhNjVkMTFhYmQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjlmMWU3ZmM3OTJlMTM1Yzg3ODVkMDBhNTIyZDVlNTdiYjQyOGVkOTc5ODA0OWY1NGM2ZGQzNTNjODQ0NzAxMzgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQzYmY0Y2E4MzYwYjIxYmYwMTgyMDhmZTZmOWY0N2JmZTEwMzUzN2JlZGQ1NjA1NjU4OGQ3MWY0ZWNmMWNkYWUifQ"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/pairing.py#L364-L456",
+          "version": "repo-lines-v1:sha256:49929bf34cbe3189c45c5d338dbfd313548d270e4ffa72be6b3550e5bc7e8d79:eyJzZWxlY3RlZExpbmVDb3VudCI6OTMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBlM2ZiMWU1OGZiYzkwNDc5NGQ1MDczMTRmYTkxYzlmMmYxOThjODhkM2ZmMzk1ZTAwODI4OTAxYzM3ZGM5MWIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBmMmQyODBlZWU3YzUzYjk3NjkyM2I4MGE0ZmRjNDVlMTYxNDMyODMxM2Q4NzQwY2VmODU0YTkxN2QyZjc2NDciLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjM4OTg4ODM2ZmJiZmVmODNlMDJjOWNlNGVkNTU5M2FhMjQzODk2Mjc2YTY2YmI1OWU2MzhjZTIxMTllM2Y5MTYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjlhOGI5Y2MwZmJmZGU2Y2ZlMGRiNjFlMTBjOGFmYTkzNzg4NDkxZTY5ZWViZGRhMjJkNWZjOWUzODkxODNlMzYifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_7f60c6bb99fc41a0b87c613f883f704f",
+      "statement": "After adapter admission, TalonHost derives a provider-qualified conversation root and agent conversation ID, serializes work per root, replaces an active turn with a newer one, and treats adapter metadata as request context while retaining host control of the request conversation and selected model.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/deepagents_talon/host.py#L1023-L1116",
+          "version": "repo-lines-v1:sha256:c4e7a48fb27b0b475b10cc7a309d7ee016add03600f329dfb66b6d9f2da89ee8:eyJzZWxlY3RlZExpbmVDb3VudCI6OTQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjkxMTRhNzAzODI4M2ExZmIwNGQxOTFlY2ZhMjIwMGJiY2QyMjk0OTUxYzlkN2RiMGQ1OGZkM2NhNDNhYjMzNDkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU1MDMyZTk2NGQwOTMyMzUxZTVkMTg1MjY5MjgxYjE3MWEzYTA5YjA4YjI4NmU2NjFlYTQ3MDMyM2M4MmViNGQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjY0NGVkYjllZTJlODAxOGUzNTM0NDBhMzM5MWE2ZWJiMDVlMGVjYmNmYWY5OGI0OTBhNjQ0NWYxYzY2YjhkYmUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjZjYzFlMmYxNTgyZDljYWQ2NDQwZTdlYmZkNmFjNTczMjQwNzlhZGY0MDJhOGI1YjI1ODVlY2VhYzQ0N2U1ZGQifQ"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/host.py#L502-L557",
+          "version": "repo-lines-v1:sha256:6d91dce316e2e817c3cec53ef425e241855b195a1ede24c0fc818fcc0ca895d4:eyJzZWxlY3RlZExpbmVDb3VudCI6NTYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjliYzQ1NmRkYzBmZGVlZWI2NDU1N2FhODM3NThkN2M0ODY1ZGFkNzE0MTRhMDhkYzNiMGU2ZDMyOTg4N2MyMDgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjUxMDM0ODFjNTdkMGYwZGMwZjc2Y2QyY2M4YjM2MDRjNGU4Mjk2ZGE0MTIyYWRkMTllODE3NDVkYzdlMzMxYTYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImQwZjEyZmE3NmI5MzhiNzRjOGU4YjdjYTUxYTc4OTA2ZWIwNGRiMDQ4MTljYTE1OTM4MWIwMTA5YWNiNzAyMDYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImJhMGZmZjY5MTQwZmE2N2JjZTQ4ZGM1NzNmZTM2Nzg4MmExZWQwZTA0YjczNmNhMmUwMTAyOGExOTY3MzI1MmEifQ"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/host.py#L897-L942",
+          "version": "repo-lines-v1:sha256:0a53e1899cdea8bb02786ac15d1e6262f9f8701b5cfdebc1101bc59055d38cf7:eyJzZWxlY3RlZExpbmVDb3VudCI6NDYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE3YjJiZjg4MDM4YjgxODY1Zjg1OTI0OTI2YzU2N2JhNjc1MTVmMGRhMGQ5ZDYyNjM3MGNmYjAyYTFlM2JlOWEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImVlMzc2MDAwZDU3M2IyY2MxYjRjYzhmYjg0YzI2YWZiN2M1OGFlNDU3ZDhkNDVmZDk2ZTQ3OTMwOTY0MTkyNWIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjUwMWE2MjBhOWRkYWE4ZDk1YzlmYmQ0YWZlZDBmMThiMTZiNjVkNGIyOTBjMWNkMWQ0ZWQ2MzA4MjhkNDk2NWEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjIxYzdkNTIzNTZmODZiY2E5NTc4MzBkY2ZmODQ1Y2M3ODE2NDc3Y2NkMjgxMDVhNTM1MjI5MzJiOTM2ZmFiZWYifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_e6d8377ca87c4920acdcd3a15c4b195e",
+      "statement": "The host routes result text and extracted markdown media references back to the origin conversation, retries transient send failures with exponential backoff, and suppresses stale turn results using the conversation generation.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/deepagents_talon/channels/base.py#L591-L642",
+          "version": "repo-lines-v1:sha256:91d6b813623328d2a99695925e0217a4580526ceaaa877569b9ea7b1cacee4cd:eyJzZWxlY3RlZExpbmVDb3VudCI6NTIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImVkYzhjMTlkZDVlMjM2ZmU5YWU1MDVkZThhZTkzZmRkNTQ1YmRkZmVmNTA4MTQ3Y2ZiOWE5MmNiZDFjNjRhYWIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI3NTdiMTJkZTRhNmNiZTRmY2NmZjYxZTIxYmY1OWE4Y2MyZmZiMDZkNDkxYzVlZWU2ZTM1MjE2YjkzN2VlMDEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImFmZjA1NTA2MzJjZmNlMGEyMTAxOTQ4MTNiYTUxMjY5OTI5Njg3NDdhOThmZGNlM2ZkYzJiYzEyMTFkNDA3MmMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/host.py#L1064-L1075",
+          "version": "repo-lines-v1:sha256:245928cbd3f47b34d0183b4e9dad9b8cdb70d634bd9458d01348c7aac108a396:eyJzZWxlY3RlZExpbmVDb3VudCI6MTIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjhiMmUwZTc1ZjMyOGQwYTk4OWRmNGQwZDQzMDM4NzRhOTllNjI5ZDIxMTIzNzJiYTc0MWNjYzU0ZWEzMTZhZTMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjRmODJjYzY1M2UwMjI0ODRjYmY4ZjZkZmMyZmFkMjlhOGQ0NDAwNDcwYTMzODYxNjRiNTczZWEzMmM5MTI4ZWYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjBlY2YzMzIyMzk5NWRhNTY4YjY1YjRkZDFkYmU3MjRmOThkNjNmZThmNWNhNTJlM2JjODUxOGQyYjRhZjMyOWMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImZiN2EwNjZiMDVmNDlmMzVkNjM2ZTlhY2RlOTczYWZhN2EyYzFhNmExNjBjMDJiM2FiZjgxNWFmMWE1MTdlM2YifQ"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/host.py#L2067-L2104",
+          "version": "repo-lines-v1:sha256:ff47ea0939c0a4d00f9e7577ab65d911467f107ac7dbdb5cc535880f21abe45e:eyJzZWxlY3RlZExpbmVDb3VudCI6MzgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjkwMzQxOTlmZDQxNjFhODE5N2RmYWFhNzRjZjdkYmQzZDZlNjMxMjhiMGY5MmE5N2NjZTE1NmU4ZmI4MTdkZDIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImM3ZDcxOTczN2IyZDFjNGEzMWEwY2FlNTFmMzZiYWU2NGJmY2FmZjllMjgxNThlNGNmYTRmODAwNGI4MmEwOWQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImMxMTM2MWY1ZjhmMTM1MWExZTI5MDIwYmIzYmQ3NTI1OWExNmMxNDJlNTRmNzg4MmZmYWIxYTYzNGQ3OTNkY2QiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQxYjNmN2EwZDI0NDgxMWNhMGU0Yzc5YjFiMjQzNjUyYTZhMDljZjdiZThiODFiMTI0OGVjYmNhMTJiMTk1YjUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_be6fcebc13c54d09a59af2f1157265bf",
+      "statement": "When replacing or stopping an active channel turn, the host increments its generation, cancels it, and attempts runtime recovery within 30 seconds. A timeout blocks further work for that agent conversation, while stale or cancelled undelivered turns requeue consumed background-subagent results.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/deepagents_talon/host.py#L1023-L1133",
+          "version": "repo-lines-v1:sha256:2acfb80385b1a4bf8618372b81cfe7256468a86c1189f865df41c0505f31d7a3:eyJzZWxlY3RlZExpbmVDb3VudCI6MTExLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI5MTE0YTcwMzgyODNhMWZiMDRkMTkxZWNmYTIyMDBiYmNkMjI5NDk1MWM5ZDdkYjBkNThmZDNjYTQzYWIzMzQ5IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI1OTA5YTUzYTYxOGQwMjhlMWQzMDAwYzBhN2FiY2VlY2JlNWZiMzdmNGU1MTFlZmU0NjY0M2ZhZDZlNjY4NzJmIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI2NDRlZGI5ZWUyZTgwMThlMzUzNDQwYTMzOTFhNmViYjA1ZTBlY2JjZmFmOThiNDkwYTY0NDVmMWM2NmI4ZGJlIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI3Zjc5NzMzMWQ4YjFiOGMwYzVhN2RmMzcyZWEzOWYxZDRjZmQ5NDhkYWY1MGQ5YTRkMzE3MGIyY2UyODJiYTk3In0"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/host.py#L897-L942",
+          "version": "repo-lines-v1:sha256:0a53e1899cdea8bb02786ac15d1e6262f9f8701b5cfdebc1101bc59055d38cf7:eyJzZWxlY3RlZExpbmVDb3VudCI6NDYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE3YjJiZjg4MDM4YjgxODY1Zjg1OTI0OTI2YzU2N2JhNjc1MTVmMGRhMGQ5ZDYyNjM3MGNmYjAyYTFlM2JlOWEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImVlMzc2MDAwZDU3M2IyY2MxYjRjYzhmYjg0YzI2YWZiN2M1OGFlNDU3ZDhkNDVmZDk2ZTQ3OTMwOTY0MTkyNWIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjUwMWE2MjBhOWRkYWE4ZDk1YzlmYmQ0YWZlZDBmMThiMTZiNjVkNGIyOTBjMWNkMWQ0ZWQ2MzA4MjhkNDk2NWEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjIxYzdkNTIzNTZmODZiY2E5NTc4MzBkY2ZmODQ1Y2M3ODE2NDc3Y2NkMjgxMDVhNTM1MjI5MzJiOTM2ZmFiZWYifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_1f78de751ebf42529d4bc732f1b112c0",
+      "statement": "Discord requires guild messages to mention the bot or its integration role unless a configured mention-optional channel permits a human message; only after admission does a top-level guild turn open a public thread, with fallback to replying in the parent channel if thread creation fails.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/deepagents_talon/channels/discord.py#L1050-L1152",
+          "version": "repo-lines-v1:sha256:c39867d25dbca93627d7685d74a0f9dfb67a9807774266d2789cb258a8730cc2:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAzLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJhOWY4OWIxMjgxMDkwNTM1YTc0M2IyZDE3NTI0Nzc3YmJjOTA4ZWJkZDEzNjU2NGMyMmFiMWRiMjg0NGY5ZjU2IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI1OTA5YTUzYTYxOGQwMjhlMWQzMDAwYzBhN2FiY2VlY2JlNWZiMzdmNGU1MTFlZmU0NjY0M2ZhZDZlNjY4NzJmIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiIwZjllYmU5OWM1MjNhMDU5M2UzYzc4MTg2YjYzYTNiZTJkYTBiMTQzMjlhN2EwOWVjNjBmZDk0NzU4Njk1ZDFlIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI5NzBkZDVkNTNlNjEyNzg1MTVmMjZjZTNjYTIzNTdjNmM4ZDVhMmFhOGY1ZTdkYmY0NzU1YzQ1MzNkMzdmNTQ5In0"
+        },
+        {
+          "resource": "repo://libs/talon/tests/channels/test_discord.py#L670-L728",
+          "version": "repo-lines-v1:sha256:026bf009ae9c4408632bbfd73049e03ba807524d69d2044fc410a9640a57af60:eyJzZWxlY3RlZExpbmVDb3VudCI6NTksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFmM2UyMGM5YjQ1YzQ3NGQ5OWM1ZTBjZGVhOGQzOTE2NTRlMjZlMjcxZWI2YjEzYWNkM2U3ODFhM2Q2Y2FiOTEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFmM2UyMGM5YjQ1YzQ3NGQ5OWM1ZTBjZGVhOGQzOTE2NTRlMjZlMjcxZWI2YjEzYWNkM2U3ODFhM2Q2Y2FiOTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImE2MTU3MmNmMTE5ZWY3MDRmZjcxM2IwMTE1YTMyNDgxZmQzYTU2M2QwZGZjYzY3ODBhOGM2MDlmN2FmNTQ2MjEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImNjM2I2YTdkODE4ZTdhMGQxOTMxNTQyNGRmMGE5MjA0MTdjMDQ4YmY0ZTYwZTFlZGY0NTE2Y2NhOTQwMzMwOWIifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_a69f7b0eac14451baf982d163e9881f9",
+      "statement": "A shared command registry supplies host-visible command definitions, help text, and the visible Discord application-command set; hidden commands are still accepted when typed but are excluded from help and platform registration.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/deepagents_talon/channels/discord.py#L980-L1041",
+          "version": "repo-lines-v1:sha256:5fd3e8fe4234b96bf3f74342c1c06fbdbbd5b0b314676dd717655fd391bf6206:eyJzZWxlY3RlZExpbmVDb3VudCI6NjIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY0Y2ZmNWM2ZGZkYzFkN2Y4M2QwMmU0YTNhMzdkMTEzMzU3M2FmZDg1MDA5Njg1ZmViOGU0MjNjNzVhODFkOGMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU1NzE3YzdkM2YwYTVkN2ZiZWI0YmU0ODQxODQyZGJkMTQ4NjgwOWY4MTk4OWQwZGI5OTY2YWZkNTVkNDczOWUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImM2MWIxMjc3ODQ1MDQ2ODBkMWQ5OWU4OWJhNmUyZDZkMjY4NmRlYmQ4YTg3OTM5NzBkM2ViMTFjZWFkOTU1YmYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjdkODE1YTMwMWQzNmUwZGJhYzdhODZmZDcwMzI4ZjFmOGMwNzBjMjk2NzkyNWFmMWFlNGU3MDY0ZTkxZjAyMjUifQ"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/commands.py#L41-L140",
+          "version": "repo-lines-v1:sha256:aced0b1714187e4bb86462f1b25a1ff020effc0758de7011bc339a7ec082cb58:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAwLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIwZTNmYjFlNThmYmM5MDQ3OTRkNTA3MzE0ZmE5MWM5ZjJmMTk4Yzg4ZDNmZjM5NWUwMDgyODkwMWMzN2RjOTFiIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJjM2IyMjQ5ZGY2MjFlMGEwOWYyOGExMzg1MjhjNjNkNjI1NDlkMmRkMzk3Y2M4YTJmYjkxM2RkYzlkZWQ5Njc2IiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJhOThiMDYzZDliNDdlNjUzNzk2MjU1NzJjY2UxOTc2NjlkNTc2N2UxMmMxOGJlMDc1NjUyYjhjZDk4MWNlOGQ1IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MCwiZm9sbG93aW5nQ29udGV4dEhhc2giOiJlM2IwYzQ0Mjk4ZmMxYzE0OWFmYmY0Yzg5OTZmYjkyNDI3YWU0MWU0NjQ5YjkzNGNhNDk1OTkxYjc4NTJiODU1In0"
+        }
+      ]
+    },
+    {
+      "id": "claim_f380a53edb0e4de3aefb36d1ec54565a",
+      "statement": "The host binds message and optional reaction callbacks before channel startup, starts the runtime before channels and the scheduler after them, and reverses started components on startup failure; shutdown cancels work before stopping channels, scheduler, and runtime.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/deepagents_talon/channels/base.py#L111-L130",
+          "version": "repo-lines-v1:sha256:95a7ed7731cbc44f45f7db35fd8f2e85b413d1511f0e9a6de39bf113ab134fa0:eyJzZWxlY3RlZExpbmVDb3VudCI6MjAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU0MjM0MGZlOTBiOWI4Mzg5NzQ4MjRhZDU5YzFlNWExOTQ0NzhjYzU5ZjFlMzViY2Y0ZDJhNmZkOWE1MWI5NDAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQwNzkzMTA0NzA2NzlmZTlmMGQ5MjQyMDRkZDNiNmQzYTU5YTA2NDUxMjU2MDkwYjE1NWM3OWIzZGI4NjRmZDkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImIzZGYyYWNmMDZlOGMzZjAzYzcxMzVjNmU4YWM1YTljYTU0MzJhYmUwNmE3NGFjYTBmZGQ5YTUzYTAwOGY5ODciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImEwMGQ2NmU4YTI2NDk5YTI1YjI3ZmUyOGIyY2U5MjExM2EyNGNlYzRlZmE1YWZkZWY0ODRmMWE1Njk1N2U5MGYifQ"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/host.py#L388-L476",
+          "version": "repo-lines-v1:sha256:a3f5a619e3011d681ac45a3ac46070c3d7cdccfa01c4727b678e17c949628517:eyJzZWxlY3RlZExpbmVDb3VudCI6ODksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFjNmRmYmI3NmM1ZmNjNGJjZDM3MjU4OTUzNThjZThiY2VhYjVjYjVlYjEyNjMwNzZlYzljYWExNjdlZWMwMzQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjYyNTdmYzYyZWI2OTk2Njg0NmI2YTc1OTQxNGVmMDI1YTc2NDAxOTlkNThlYWFmZDhhNTliNjQ1ZWY4ZDQ4OTYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjcyYzBhMzQxOTcxODI5NjE5YzhhZDk3YWQ4ODNhMGM5ZTAxZTE2NjIxM2IxMTE4ZDk1ODU2ZDM1YmE3YWZkYjQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjBiZDBjMTM4MmFlNTgzZTkzNGFlNTFhMjYyOWUwZTE5MmJlNmQ0NmQ2OTk4ZTMyOWFlYmIxMTZmNjU5MWI5NDAifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_2165392dbbce473d9b9f3f7a08f19945",
+      "statement": "Discord, Slack, and Telegram apply exposure or pairing before preparing inbound media; Slack and Telegram also independently gate reactions, while Telegram marks a message from its bot identity as from_self.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/deepagents_talon/channels/discord.py#L1050-L1087",
+          "version": "repo-lines-v1:sha256:c2a756923031780a8d62d979e6ef1e71ffa141a6ddeef872c711063ee22eb975:eyJzZWxlY3RlZExpbmVDb3VudCI6MzgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE5Zjg5YjEyODEwOTA1MzVhNzQzYjJkMTc1MjQ3NzdiYmM5MDhlYmRkMTM2NTY0YzIyYWIxZGIyODQ0ZjlmNTYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImNlZjY3MWFjZWNkNTQ3NzY1MWFmZjNlYWRlYmVkMDJlMDQ1ZDVhOTA4NjlhNzI0OTk3NDI1NWE4N2ZhZWM3ZmEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjBmOWViZTk5YzUyM2EwNTkzZTNjNzgxODZiNjNhM2JlMmRhMGIxNDMyOWE3YTA5ZWM2MGZkOTQ3NTg2OTVkMWUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjE3MWE0Yzk5NTI1MDFhODY3MTc1ZjM1MDc2YzlkYWRkODg5ZTIzYzNhOTExN2NhNTlhZWJmMjk1YWIwNjBkMjgifQ"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/channels/slack.py#L969-L1071",
+          "version": "repo-lines-v1:sha256:ffcfc6bb8cf7b0a545e970ac344bc0fbf38f0b64fa0434c5b3593544f0593fb3:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAzLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI4OWUwYmExODYwZDdhZThhOWEzYjY5MWRkYjRkYTY3MjRlMjc0NWE5YmZmMDM2OGM2OTExMDNlYTRkODY4NGYzIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI0YjA2YzJjZmFlOGFiZThjYWM1YjNlNmI2ZDY3OGNiNWMxM2UzZDlkNzY5NmQxM2MzZWVkYmEwOTI0M2VmYmUyIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJmMmZmODVmMmFiYzQ2YWE1YzE5ZjEwOGVmMmQ2Y2U2ZTczMTEwYTQ0ZGRjYzcyZDkzNWI0NjFmYTU5ZWFiYjFiIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiJjOGE0YjY1NjgzYzM3YTJkMDcyYzlmNjhjNTQzMDNlYTlmYThmODcxNjhlZmMyYmQ2YjY1ZTlhZmRjYjMyYzRiIn0"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/channels/telegram.py#L683-L742",
+          "version": "repo-lines-v1:sha256:8f33f4faa8f82ebc6fdaab38bbef7e028de00c25674dccde38d79ec9e664f0e4:eyJzZWxlY3RlZExpbmVDb3VudCI6NjAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg5NjUwMzViMWJkNjAyNzUxNzg5NjdjY2QxYjBlNTUyYTBkYzQyNDc5ZTY5NDYxZGJkMjQ5OGU2YzlhZjRmMTEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjRiMDZjMmNmYWU4YWJlOGNhYzViM2U2YjZkNjc4Y2I1YzEzZTNkOWQ3Njk2ZDEzYzNlZWRiYTA5MjQzZWZiZTIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjgxYTk3NjVkZDI3MzRiZjEwMmNiOTE3ZWNmMzYzNzU4MmJmZmVhMWVkZDc5OTg0MjA3MjlkNGIwNTQxMzU2OTkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzODI3ZDYxOGU1MWM2NzBiODA3MThiY2ZhZGNjMDA0ZTgwZDEyMmUyNGE1YjI1M2ViOTdmZTRmZjc5N2E0YWMifQ"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/channels/telegram.py#L913-L933",
+          "version": "repo-lines-v1:sha256:db50790950f6ed2fbfd42e1576f5547f2e9ce0cc2f8994940f9baf9a92f3f308:eyJzZWxlY3RlZExpbmVDb3VudCI6MjEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImI2Y2I3ZjA3MDZkYWRmODc5MDQ0YmZkMTM5MDcxZGFlZTRkOTQ3NmNhYjQ0YTJiZjk2OTZkN2VlNDQ4MzE5Y2IiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjAxNTgwZGM5MzI0ZDgwZTVjYWE0N2I3MTJiOTdiYzhmYmEzNmM3OGFlNWRkYzk4NWY0NjkwNjFjMmFkYTdlMDAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImViZjY0OWFmOWI5NzFhNGU2ZWEyZWRhY2I2ZjdmYWI4YTZiZmQ4YWFmMjc4ODEwMGMxMGMwZjY3OTI3MmFiZjUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_05c0820f44a941e494edcf7cd5596e63",
+      "statement": "Pairing requests and approvals are provider-scoped, codes expire after one hour and are consumed on approval, and the pairing store serializes mutations with a lock and atomic replacement while admission fails closed if the persisted store is unreadable or invalid.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/deepagents_talon/pairing.py#L158-L237",
+          "version": "repo-lines-v1:sha256:2f398e576d763486fd5997abbac72fbe5146380b068f017027518976788bfb76:eyJzZWxlY3RlZExpbmVDb3VudCI6ODAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE4ODhlY2U1ZTQzNWY1NzZhNDMyNTYwYzUzNjkzYTBmOGYwMDNjNzIyODgzNjAxMzI2MDUwZTZlYWU1N2VjMWEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ3NjQ4MDA0ZDEyMWZiMzVlZWY5MWU1OTM2ZGNmN2I1ZGY5M2I1M2ZiN2IzYTU0ZDVjZjhkNDFkZWU2MGRkODYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjIwOWM0Zjg4ODRhMjBkZjFkYjY2ZGFjOTFiMWExZTcyNDMwZWZiNzMzMDFmOTJhM2MyZDlhMzJiZTkwYTk3OTAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjU1NzU2NzkwYWZhMDcyNGYyNjE5N2MxM2Q4MWE3YTdiOTQ2N2RhMWVlNjZmM2QyZmNiODBiYzhhM2MxMDc2NGEifQ"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/pairing.py#L252-L361",
+          "version": "repo-lines-v1:sha256:7677464686f4cd026ba488fc088c8a45f981c8e931e6729b4fb5d482e021404a:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEwLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJiY2ZkN2VmMmYzYWY1MGNhYmU4OTI2N2FlNjNhOTQyMWVjMTc4MWZiMmUxYTc0MjM3NTQxODhkNWZiMWY0YWZmIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJkOWRmMDg4NTM5MDYxYzBiNmRmZDM2ZjM0NDA1YWE0ZmRiZmNlMGI4YTBmOTk2Zjc0MmY5OTFlOTBmMDdmZjFmIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI1NGQxNzY1OTYxNTY4MjAwYmFmZTU5MWJiODc0ODY1ZGZjM2M2NGM5ZTc2MTI3OTg0ZWFhY2U2YmVjMzgwYjBiIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI5YThiOWNjMGZiZmRlNmNmZTBkYjYxZTEwYzhhZmE5Mzc4ODQ5MWU2OWVlYmRkYTIyZDVmYzllMzg5MTgzZTM2In0"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/pairing.py#L602-L650",
+          "version": "repo-lines-v1:sha256:04d111bcd72591fc7469754440bfb70f28f0a08d63da2eeb740b3d76206d3ba1:eyJzZWxlY3RlZExpbmVDb3VudCI6NDksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ3YmY5OGVjMTE5YjFmNjMxNjZlYTY4MTY2MzlmYTk3ZGY3ODZhY2U2M2Q5MWY0MjU0ZjQyZmVhYjEwODkxOTUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMwYzFmMTg4ZjE0MmVkN2E4MjQ2ODBiMjA3MTcyYzU1MTliYzYxNGE0OGZkYTdjZjE2N2VkYjhkZGY3OTk1NmMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjY5YzA1ZTM2YzJjMjdkZWEyYzMzMzE5ZTIzOTcyZDU4OTQyM2EyNzczMWZmNGRkNDMzYTk2YzhiOTA0ODRjY2MiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjFkNWYxN2EzNThlMTQ2YmEwY2MwNjUwYzQxM2UwNGY5NjJlNTVmYTdiZDA0N2ZmYTY5OTY5NTM0N2M2NzZhZDUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_b971572b8e9045c9aae39e83c784b725",
+      "statement": "A pairing revocation removes future paired access and makes the running host cancel the sender's tracked conversations and pause the sender's provider-scoped cron jobs.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/deepagents_talon/host.py#L637-L660",
+          "version": "repo-lines-v1:sha256:9ee30f0d61246ea5add5a7c69cde3d3c19d00e28a252233994d499e7f8839048:eyJzZWxlY3RlZExpbmVDb3VudCI6MjQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ4MzRiZjM4Njk1ODUyZDgwOWM0ZmRiOTI1N2M5ZjM1YTdkZTUxNzUyODE0NTU1MzQ1YjIwZDIxMzBmMTYzMDYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU4ZDVkYmFiYzllZWRhMzFlODBjNWY0ZWE1NTVjYmEwYTA4YzQwODIzNWU2NjlkM2Y3ZjMzNjM2OTlmZjA2YjkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjA1ZGNmNDUwMGY1NGRhZmFiNjY5Zjk2ZThkNWI5ODJjYTBkMDU3YmM4NWExOWI1ZmY2NWEwNTY4Yjc1NDU5MzMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjlmODI0N2E3ZWI1NjI5MzNkNzA1ZjA0NzNhYzBlM2JlYjY5MzRkM2VkY2QxZTZmYjlhNjMzMGUzODE2ZDZjMmIifQ"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/pairing.py#L568-L599",
+          "version": "repo-lines-v1:sha256:552c7d5c8fe56a1cf90f07e1c791d38fcafd7b617886b57f862aab535b306b4a:eyJzZWxlY3RlZExpbmVDb3VudCI6MzIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjVhM2ExNWVmYTAyNjQwYTVlNTI4ODAyMTgwOGVmNWZlOTZjMWM1YzAxNjVhMDhkOTVmY2M2MmU5ZmYwNjBmZGYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ0ODUzNjE1MzQ2MTRhNGY5Zjc1ZGEyMTM5NmNkNGJhYjVhM2IwOWQ3NmU5NTQ3MzhiNTQ0NTZmYmUwZjQ2YmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImNjYzM3ODEwN2U0YzYzNjE1NmJlODUwMWNiNmYzMWJlNWI4ZTc1N2QzNzllMGU3YWViMWVhY2RlOTNiOTVmYzEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImI2OTlkMjI2MWQ1Y2FiYjhkYWY5MGQ0NjdlN2M1OTE3OTk1ZGE3ODBjOWZlNjUwMGFkZTg5NjNjZDc5N2Q2MTIifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_e44395d2beae48b8be2cc335e1455c1a",
+      "statement": "Discord converts an application interaction into the equivalent ChannelMessage, checks admission before deferring it, and scopes follow-up output through a task-local interaction sink so unrelated concurrent output is not captured.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/deepagents_talon/channels/discord.py#L980-L1041",
+          "version": "repo-lines-v1:sha256:5fd3e8fe4234b96bf3f74342c1c06fbdbbd5b0b314676dd717655fd391bf6206:eyJzZWxlY3RlZExpbmVDb3VudCI6NjIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY0Y2ZmNWM2ZGZkYzFkN2Y4M2QwMmU0YTNhMzdkMTEzMzU3M2FmZDg1MDA5Njg1ZmViOGU0MjNjNzVhODFkOGMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU1NzE3YzdkM2YwYTVkN2ZiZWI0YmU0ODQxODQyZGJkMTQ4NjgwOWY4MTk4OWQwZGI5OTY2YWZkNTVkNDczOWUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImM2MWIxMjc3ODQ1MDQ2ODBkMWQ5OWU4OWJhNmUyZDZkMjY4NmRlYmQ4YTg3OTM5NzBkM2ViMTFjZWFkOTU1YmYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjdkODE1YTMwMWQzNmUwZGJhYzdhODZmZDcwMzI4ZjFmOGMwNzBjMjk2NzkyNWFmMWFlNGU3MDY0ZTkxZjAyMjUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_e1338d979e124ac497d13b344c68f429",
+      "statement": "Inbound-media adapters normalize local media paths and MIME metadata after successful preparation and retain a deliverable message with has_media false and media_error when preparation fails; outbound media validation enforces a bounded trusted root, regular file, matching media type, and byte cap.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/deepagents_talon/channels/base.py#L222-L326",
+          "version": "repo-lines-v1:sha256:dc8b1cd0efe5a95dc611ca8380b7f2fa6666cb30910801e253685be9d93245cb:eyJzZWxlY3RlZExpbmVDb3VudCI6MTA1LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJiNTNkMGM0ODFlYzdjNzA2ZDVhZDAyNGZjN2VmMTQzYTVlZWFkOWE1OGUyNjdhZTkyNTBlZGI2ZGIzNDk3Y2FjIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiIwMjc2N2YxOWFiMjUwZGYwMjllMmY1NmI3NjE3Y2Q4YzFhYmEwMDNlYTZhMDgzOGJhYTk2MGRhMWM3ODcxYzM3IiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI4Y2M0YTdkMWNjNzk2YWJhM2U0NjcyMzMyN2Y1MTdlOWY4MTE5ODJkMjUwZjA3MDI5ODZlNGI1NzY0YWQ5NTg5IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI0NzVmZTNmMDIxZmI4MGRlNzQyNGNmYmU4ODIxZDljMTlkZmExY2VlMGQwOTA5YWQ1MWU0ZTllZjM3M2ZkM2ZjIn0"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/channels/discord.py#L1212-L1241",
+          "version": "repo-lines-v1:sha256:7056073a1b0b35d0832b0b0d6df1c5c34dc3d7851b1690c5b31bed5939bc70f7:eyJzZWxlY3RlZExpbmVDb3VudCI6MzAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjcwZjhlNjZkNjBjOWMwZTYzYmVkMmRkZTYyMWMyNTZmYWVmNGY5MzMzOTFlNWJmMzNjYWExZTcyZTExNzY1YmMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU5MDlhNTNhNjE4ZDAyOGUxZDMwMDBjMGE3YWJjZWVjYmU1ZmIzN2Y0ZTUxMWVmZTQ2NjQzZmFkNmU2Njg3MmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImJjZTgwMzljNjNmMzI4MjAxYTFlMjYwNzVkZWIzNWI1NDI3Y2I3MmE0MWQzMjY5YTUxNzA5MDMzMjcyMDIxOGQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImU1MGQ3ZjE0OTRjNTcwYTQ0ZTg3NWUzMDVmZGVkNzdlZTU2ZjExMzJjMDM5YWFlYTFlM2I3ZGVkMWFiZDZlODUifQ"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/channels/slack.py#L1091-L1136",
+          "version": "repo-lines-v1:sha256:29bb0c1e0bd598025f40ff79621bdee2e68cec727d274d0ccc7a138d8a4a1176:eyJzZWxlY3RlZExpbmVDb3VudCI6NDYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjcwZjhlNjZkNjBjOWMwZTYzYmVkMmRkZTYyMWMyNTZmYWVmNGY5MzMzOTFlNWJmMzNjYWExZTcyZTExNzY1YmMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImYwY2YyMDIxYjI3M2Q0MmU4YzQ0NzM3NDVmY2U0ZjU1NDBiODM3ZWZjYjgxNGYzNGIwNGQxNzRlNTU1MGM5ZjYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImJjZTgwMzljNjNmMzI4MjAxYTFlMjYwNzVkZWIzNWI1NDI3Y2I3MmE0MWQzMjY5YTUxNzA5MDMzMjcyMDIxOGQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjA0MTBmZTE0NzJiMjE5NDQ5OTFmMjVhODNjYjUwNmMyMTIwNDg5NjhiNjEwNjlhNDZlOTU0ZmEyNjM2ZGE5NDMifQ"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/channels/telegram.py#L744-L831",
+          "version": "repo-lines-v1:sha256:c050597e6bd5739c779aafdea7c02d07d3532d6c51f70e96038aec00e13f0d3f:eyJzZWxlY3RlZExpbmVDb3VudCI6ODgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjdhNmQ3Y2JjZThjMjc3NDkzNzg4NzY5ZWY2NzA2MWM5MzMyYjY1Yjk0NWJiMzU1YmE4MGIwNDRiNWVjZTRlMzEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImUzZWVhZThiYjVjZjhiMDkxZTIyNWQyYzlkOGZhYjJhMDRkNmViNTc3ZTY0OGNiMDk3NWYyZDEwODRlMmFjMDgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImFjMzdjZjA2NTViYjRjY2U4NGYxYmYzNGEzYzY1YTAwMzkwNjYzYzZhMDMxNDJlOTZiMTUwNjEyNDhhN2FmMDciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImFkODc5ZWFkNmNjNjBjZDk2ODI4M2IyNjA5YzNlNzQ1NWJkNGZmMmFiMDJjYTkxMTJkMjZiOTkxMGE4YWViNWYifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_8e8da4b9fc434876a8f93bad67d985aa",
+      "statement": "The host only resolves an admitted reaction against a pending approval for the corresponding provider-qualified conversation, and delivery settlement drops a stale generation's result while requeuing its background results.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/deepagents_talon/host.py#L1220-L1289",
+          "version": "repo-lines-v1:sha256:d3a0961e03ec3e6e6f13d31752726cafb9ca5d2b2304fe7cab3ae798bd477298:eyJzZWxlY3RlZExpbmVDb3VudCI6NzAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU5MTZlZmE3YzlkOTkwZDc1YmJlOGE4ODk4NWE2ZGQ4N2ZmZThhMWQ3OGQzN2VhOGMzM2IwYWZiN2IzODg5YmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU5MDlhNTNhNjE4ZDAyOGUxZDMwMDBjMGE3YWJjZWVjYmU1ZmIzN2Y0ZTUxMWVmZTQ2NjQzZmFkNmU2Njg3MmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjQ1MTZhODQ0OTVjMWYwZDA3YzU4OTBhYzQ2YTZkMzhmMWRiODliMGZmZTM4MTcyYzAyZTk0MjEzMzgxZGNkNjIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImU2NGU3MzY0ZmI3ODY2ZDYzMDIzZDYxNmZiMDkzMTQwM2FjZDQ5OWNkNTFlNWIwM2ExNThkMzMxYjVjNWZjYmEifQ"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/host.py#L866-L895",
+          "version": "repo-lines-v1:sha256:9388fd0620a6a58255c607141f63b2689cfed2730948b8fbe91a2f6237872311:eyJzZWxlY3RlZExpbmVDb3VudCI6MzAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE5MTcwODQyM2YxNjc2OTY5OWI4ZjhiZThlNWNiNWExMmY1YzYxYjMxN2U3ODg2NDEwNmE0NWE1ZjQ3YjFmNDUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU5MDlhNTNhNjE4ZDAyOGUxZDMwMDBjMGE3YWJjZWVjYmU1ZmIzN2Y0ZTUxMWVmZTQ2NjQzZmFkNmU2Njg3MmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjA2ODE5ZmUwZDc4YWVkZjk2NDgyZjJlMjZjYjQ1NTFhZGVlY2RhZWFhYzgzNjY3NDJkMGExYjA0OTcwZmE1ZjkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImU5MTdiNjllYjI1ODZiYWFiMDVjMzZkZTQwZTJmMDMzMDQ1ZjdlZmViYTg5MWZlMzZiYjM5ZWI3NTM1ODEzYjkifQ"
+        }
+      ]
+    }
+  ],
+  "verification": {
+    "by": "openwiki/0.4.2",
+    "at": "2026-10-23T08:06:06.503Z"
+  }
+}

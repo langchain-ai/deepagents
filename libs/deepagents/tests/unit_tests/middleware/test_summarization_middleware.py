@@ -18,6 +18,7 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, System
 from deepagents.backends.composite import CompositeBackend
 from deepagents.backends.protocol import BackendProtocol, EditResult, FileDownloadResponse, FileUploadResponse, ReadResult, WriteResult
 from deepagents.middleware.summarization import (
+    SummarizationEvent,
     SummarizationMiddleware,
     _token_counter_accepts_tools,
     _upload_response_error,
@@ -2783,6 +2784,127 @@ def test_chained_summarization_cutoff_index() -> None:
     assert [m.content for m in modified_request.messages[1:]] == ["S18", "S19"]
     _, content = backend.write_calls[2]
     assert offloaded_labels(content) == ["S12", "S13", "S14", "S15", "S16", "S17"]
+
+
+def _thinking_message(index: int) -> AIMessage:
+    return AIMessage(
+        content=[
+            {"type": "thinking", "thinking": f"plan {index}", "signature": f"sig-{index}"},
+            {"type": "text", "text": f"S{index}"},
+        ],
+        id=f"s{index}",
+    )
+
+
+def _has_thinking(message: BaseMessage) -> bool:
+    return isinstance(message.content, list) and any(block.get("type") == "thinking" for block in message.content)
+
+
+@pytest.mark.parametrize("use_async", [False, True])
+async def test_summary_drops_reasoning_bound_to_replaced_history(use_async: bool) -> None:  # noqa: FBT001
+    """Reasoning kept from before a summary is left out of every later request.
+
+    Anthropic binds a thinking block to the conversation before it, and the
+    summary replaces that conversation. Reasoning produced after the summary is
+    sent as usual, and the raw messages in state keep their blocks.
+    """
+    middleware = SummarizationMiddleware(
+        model=make_mock_model(),
+        backend=MockBackend(),
+        trigger=("messages", 6),
+        keep=("messages", 2),
+    )
+    call = call_awrap_model_call if use_async else _async_call_wrap_model_call
+    runtime = make_mock_runtime()
+    messages = [HumanMessage(content=f"S{i}", id=f"s{i}") if i % 2 == 0 else _thinking_message(i) for i in range(8)]
+
+    result, request = await call(middleware, cast("AgentState[Any]", {"messages": messages}), runtime)
+
+    assert isinstance(result, ExtendedModelResponse)
+    event = result.command.update["_summarization_event"]
+    assert event["created_at_index"] == 8
+    assert request is not None
+    kept = request.messages[-1]
+    assert kept.id == "s7"
+    assert not _has_thinking(kept)
+    assert kept.content == [{"type": "text", "text": "S7"}]
+    assert _has_thinking(messages[7])
+
+    # The next request sends the same kept message, plus new reasoning intact.
+    later = [*messages, HumanMessage(content="S8", id="s8"), _thinking_message(9)]
+    state = cast("AgentState[Any]", {"messages": later, "_summarization_event": event})
+    _, request = await call(middleware, state, runtime)
+
+    assert request is not None
+    assert [m.id for m in request.messages[1:]] == ["s6", "s7", "s8", "s9"]
+    assert request.messages[2] == kept
+    assert _has_thinking(request.messages[4])
+
+
+@pytest.mark.parametrize(
+    ("provider", "model", "reasoning", "dropped"),
+    [
+        # Anthropic with `output_version="v1"` returns standard reasoning blocks.
+        ("anthropic", "claude-opus-5-5", {"type": "reasoning", "reasoning": "plan", "extras": {"signature": "sig"}}, True),
+        (
+            "bedrock_converse",
+            "us.anthropic.claude-opus-5-5",
+            {"type": "reasoning_content", "reasoning_content": {"text": "plan", "signature": "sig"}},
+            True,
+        ),
+        # `ChatBedrock` (InvokeModel) returns Anthropic-format blocks for Claude.
+        ("bedrock", "anthropic.claude-opus-5-5", {"type": "thinking", "thinking": "plan", "signature": "sig"}, True),
+        # Bedrock also serves models that do not bind reasoning.
+        ("bedrock_converse", "openai.gpt-oss-120b-1:0", {"type": "reasoning_content", "reasoning_content": {"text": "plan"}}, False),
+        # Gemini also uses `thinking` blocks, but does not bind them to earlier history.
+        ("google_genai", "gemini-3-pro", {"type": "thinking", "thinking": "plan", "signature": "sig"}, False),
+        ("openai", "gpt-6.1", {"type": "reasoning", "summary": []}, False),
+    ],
+)
+def test_summary_drops_reasoning_only_for_models_that_bind_it(
+    provider: str,
+    model: str,
+    reasoning: dict[str, Any],
+    dropped: bool,  # noqa: FBT001
+) -> None:
+    message = AIMessage(
+        content=[reasoning, {"type": "text", "text": "S1"}],
+        id="s1",
+        response_metadata={"model_provider": provider, "model_name": model},
+    )
+    event: SummarizationEvent = {
+        "cutoff_index": 1,
+        "summary_message": HumanMessage(content="summary"),
+        "file_path": None,
+        "created_at_index": 2,
+    }
+
+    effective = SummarizationMiddleware._apply_event_to_messages([HumanMessage(content="S0", id="s0"), message], event)
+
+    expected = [{"type": "text", "text": "S1"}] if dropped else message.content
+    assert effective[1].content == expected
+
+
+def test_summary_event_without_reasoning_index_keeps_reasoning() -> None:
+    """Events saved before `created_at_index` existed leave messages as they were."""
+    messages = [HumanMessage(content="S0", id="s0"), _thinking_message(1)]
+    event: SummarizationEvent = {
+        "cutoff_index": 1,
+        "summary_message": HumanMessage(content="summary"),
+        "file_path": None,
+    }
+
+    effective = SummarizationMiddleware._apply_event_to_messages(messages, event)
+
+    assert effective[1] is messages[1]
+
+
+async def _async_call_wrap_model_call(
+    middleware: SummarizationMiddleware,
+    state: "AgentState[Any]",
+    runtime: Any,  # noqa: ANN401
+) -> tuple["ModelResponse | ExtendedModelResponse", ModelRequest | None]:
+    return call_wrap_model_call(middleware, state, runtime)
 
 
 # -----------------------------------------------------------------------------

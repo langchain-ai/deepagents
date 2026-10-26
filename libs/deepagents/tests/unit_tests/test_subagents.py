@@ -7,6 +7,7 @@ and child agents.
 
 import dataclasses
 import json
+import operator
 import uuid
 from collections.abc import Callable, Sequence
 from pathlib import Path
@@ -30,12 +31,13 @@ from langgraph.graph import END, START, MessagesState, StateGraph
 from langgraph.types import Command
 from langsmith import Client
 from langsmith.run_helpers import tracing_context
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.graph import create_deep_agent
+from deepagents.middleware.rubric import RubricState
 from deepagents.middleware.skills import SkillMetadata, SkillsMiddleware
-from deepagents.middleware.subagents import CompiledSubAgent, SubAgent
+from deepagents.middleware.subagents import CompiledSubAgent, SubAgent, TaskToolSchema
 from tests.unit_tests.chat_model import GenericFakeChatModel
 
 
@@ -328,6 +330,82 @@ class TestSubAgents:
         assert multiplication_tool_message.content == "The product of 4 and 6 is 24.", (
             f"Multiplication subagent should return exact message, got: {multiplication_tool_message.content}"
         )
+
+    @staticmethod
+    def _build_parallel_rubric_agent(*, change_child_rubric: bool, mode: str) -> tuple[Any, list[str | None]]:
+        """Build a parent that calls two subagents in parallel, and record the rubric each child sees."""
+
+        class SharedState(RubricState):
+            completed: Annotated[list[str], operator.add]
+
+        class SharedMiddleware(AgentMiddleware[SharedState]):
+            state_schema = SharedState
+
+        inherited_rubrics: list[str | None] = []
+
+        class ChildMiddleware(SharedMiddleware):
+            def before_agent(self, state: SharedState, runtime: object) -> dict[str, Any]:
+                inherited_rubrics.append(state.get("rubric"))
+                update: dict[str, Any] = {"completed": [state["messages"][-1].content]}
+                if change_child_rubric:
+                    update["rubric"] = "child-local goal"
+                return update
+
+        parent = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {"name": "task", "args": {"description": name, "subagent_type": name}, "id": name, "type": "tool_call"}
+                            for name in ("first", "second")
+                        ],
+                    ),
+                    AIMessage(content="parent done"),
+                ]
+            )
+        )
+        agent = create_deep_agent(
+            model=parent,
+            middleware=[SharedMiddleware()],
+            subagents=[
+                {
+                    "name": name,
+                    "description": name,
+                    "system_prompt": "Complete the assigned task.",
+                    "mode": mode,
+                    "model": GenericFakeChatModel(messages=iter([AIMessage(content=f"{name} done")])),
+                    "middleware": [ChildMiddleware()],
+                }
+                for name in ("first", "second")
+            ],
+        )
+        return agent, inherited_rubrics
+
+    @staticmethod
+    def _assert_parent_rubric_preserved(result: dict[str, Any], inherited_rubrics: list[str | None]) -> None:
+        assert result["rubric"] == "parent goal"
+        assert inherited_rubrics == [None, None]
+        assert len(result["completed"]) == 2
+        assert all(any(entry.endswith(name) for entry in result["completed"]) for name in ("first", "second"))
+        assert {message.content for message in result["messages"] if isinstance(message, ToolMessage)} == {"first done", "second done"}
+        assert result["messages"][-1].content == "parent done"
+
+    @pytest.mark.parametrize("change_child_rubric", [False, True])
+    @pytest.mark.parametrize("mode", ["fork", "isolated"])
+    def test_parallel_subagents_preserve_parent_rubric(self, *, change_child_rubric: bool, mode: str) -> None:
+        """Subagents must not inherit, conflict on, or overwrite the caller's `rubric`."""
+        agent, inherited_rubrics = self._build_parallel_rubric_agent(change_child_rubric=change_child_rubric, mode=mode)
+        result = agent.invoke({"messages": [HumanMessage(content="Delegate both tasks")], "rubric": "parent goal"})
+        self._assert_parent_rubric_preserved(result, inherited_rubrics)
+
+    @pytest.mark.parametrize("change_child_rubric", [False, True])
+    @pytest.mark.parametrize("mode", ["fork", "isolated"])
+    async def test_parallel_subagents_preserve_parent_rubric_async(self, *, change_child_rubric: bool, mode: str) -> None:
+        """Async variant of `test_parallel_subagents_preserve_parent_rubric`."""
+        agent, inherited_rubrics = self._build_parallel_rubric_agent(change_child_rubric=change_child_rubric, mode=mode)
+        result = await agent.ainvoke({"messages": [HumanMessage(content="Delegate both tasks")], "rubric": "parent goal"})
+        self._assert_parent_rubric_preserved(result, inherited_rubrics)
 
     def test_private_state_does_not_propagate_between_sibling_subagents(self) -> None:
         """A private state field should not propagate from one sibling subagent to another."""
@@ -3099,6 +3177,73 @@ class TestSubAgents:
         # Verify skills_metadata is NOT in the subagent state
         subagent_state = captured_subagent_states[0]
         assert "skills_metadata" not in subagent_state, "Subagent without skills parameter should NOT have skills_metadata"
+
+    @pytest.mark.parametrize("use_async", [False, True])
+    @pytest.mark.parametrize("unknown_args", [{"prompt": "the real instructions"}, {"prompt": "instructions", "context": "details"}])
+    async def test_task_call_with_unknown_key_returns_tool_error_without_dispatching(self, *, use_async: bool, unknown_args: dict[str, str]) -> None:
+        """A `task` call carrying an invented key must not dispatch the label alone.
+
+        Models sometimes leave a short label in `description` and put the real
+        instructions under a key the schema does not define. Silently dropping that
+        key dispatched the subagent without its instructions and reported success.
+        """
+        subagent_model = GenericFakeChatModel(messages=iter([AIMessage(content="Should not run.")]))
+        parent_model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "task",
+                                "args": {
+                                    "description": "short label",
+                                    "subagent_type": "general-purpose",
+                                    **unknown_args,
+                                },
+                                "id": "call_extra",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Done."),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(
+            model=parent_model,
+            checkpointer=InMemorySaver(),
+            subagents=[
+                SubAgent(
+                    name="general-purpose",
+                    description="Override agent",
+                    system_prompt="You are the override.",
+                    model=subagent_model,
+                )
+            ],
+        )
+
+        inputs = {"messages": [HumanMessage(content="Do something")]}
+        config = {"configurable": {"thread_id": "test_task_unknown_key"}}
+        result = await agent.ainvoke(inputs, config=config) if use_async else agent.invoke(inputs, config=config)
+
+        tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
+        assert len(tool_messages) == 1
+        assert tool_messages[0].status == "error"
+        for key in unknown_args:
+            assert f"Unexpected argument {key!r}" in tool_messages[0].content
+        assert "put all instructions for the subagent in `description`" in tool_messages[0].content
+        assert "Should not run." not in tool_messages[0].content
+
+    def test_task_tool_schema_rejects_unknown_keys_and_allows_runtime(self) -> None:
+        with pytest.raises(ValidationError, match="prompt"):
+            TaskToolSchema.model_validate({"description": "label", "subagent_type": "worker", "prompt": "instructions"})
+
+        # The tool node validates after injecting `runtime`, which is not a schema field.
+        parsed = TaskToolSchema.model_validate({"description": "do it", "subagent_type": "worker", "runtime": object()})
+        assert parsed.model_dump() == {"description": "do it", "subagent_type": "worker"}
+        assert "additionalProperties" not in TaskToolSchema.model_json_schema()
 
     def test_general_purpose_subagent_override(self) -> None:
         """Test that a general-purpose subagent spec overrides the default."""

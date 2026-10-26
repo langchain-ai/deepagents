@@ -1,7 +1,6 @@
 """Unit tests for style-link click handling."""
 
 import os
-from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast
 from unittest.mock import MagicMock, patch
@@ -15,6 +14,8 @@ from deepagents_code.tui.widgets._links import (
 )
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from textual.app import App
 
 

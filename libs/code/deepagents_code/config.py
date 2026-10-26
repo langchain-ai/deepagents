@@ -40,6 +40,7 @@ from deepagents_code._env_vars import (
     DISABLED_PROJECT_MCP_SERVERS,
     FORKED_SUBAGENTS,
     HIDE_SPLASH_VERSION,
+    MCP_TOOL_TIMEOUT,
     READ_PROJECT_DOTENV,
     UI_CHARSET_MODE,
     is_env_truthy,
@@ -99,6 +100,19 @@ class _BootstrapState:
     user_langsmith_env: dict[str, str | None] = dataclass_field(default_factory=dict)
     """Launch and project-dotenv LangSmith values intended for user commands."""
 
+    defer_redaction: bool = False
+    """Whether bootstrap leaves the redacting LangSmith client uninstalled.
+
+    Set by `defer_langsmith_secret_redaction` before bootstrap runs.
+    """
+
+    redaction_pending: bool = False
+    """Whether a deferred redacting LangSmith client still needs installing.
+
+    While this is set, no traced run may start in this process.
+    `ensure_langsmith_secret_redaction` installs the client and clears it.
+    """
+
     error: BaseException | None = None
     """Why bootstrap did not finish, when it was cut short.
 
@@ -115,6 +129,10 @@ _bootstrap_state = _BootstrapState()
 _bootstrap_lock = threading.Lock()
 """Guards `_ensure_bootstrap()` against concurrent access from the main thread
 and the prewarm worker thread."""
+
+_redaction_lock = threading.Lock()
+"""Serializes redacting-client installs so a deferred install cannot replace a
+newer one built from rotated `/auth` credentials."""
 
 _singleton_lock = threading.Lock()
 """Guards lazy construction of process-wide config, runtime, and console state."""
@@ -386,6 +404,7 @@ _PROJECT_DOTENV_DENIED_ENV_KEYS = frozenset(
         DISABLED_PROJECT_MCP_SERVERS,
         AUTO_CLASSIFIER_MODEL,
         AUTO_CLASSIFIER_TIMEOUT,
+        MCP_TOOL_TIMEOUT,
         FORKED_SUBAGENTS,
         _LANGGRAPH_DEFAULT_RECURSION_LIMIT_ENV,
         "TERM_PROGRAM",
@@ -671,7 +690,7 @@ def _dotenv_environment(
             return
         try:
             values = _dotenv_values_from(dotenv_path, baseline)
-        except (OSError, ValueError):
+        except OSError, ValueError:
             logger.warning(
                 "Could not read dotenv at %s; environment may be incomplete",
                 dotenv_path,
@@ -733,7 +752,7 @@ def _dotenv_environment(
             )
             if raw is not None:
                 global_toggle[READ_PROJECT_DOTENV] = raw
-    except (OSError, ValueError):
+    except OSError, ValueError:
         # Fail closed. `resolve_read_project_dotenv` defaults to true, so an
         # unreadable global file would silently discard the user's opt-out and
         # load the untrusted project `.env` instead. Skipping the project file
@@ -1050,7 +1069,7 @@ def _tracing_environment_values(environ: Mapping[str, str]) -> dict[str, str | N
     Returns:
         Selector values, with `None` denoting an unset variable.
     """
-    return {
+    values = {
         var: (
             _resolve_env_var_from(environ, var)
             if var in _PREFIX_RESOLVED_TRACING_ENV_VARS
@@ -1058,6 +1077,9 @@ def _tracing_environment_values(environ: Mapping[str, str]) -> dict[str, str | N
         )
         for var in _TRACING_RECONCILED_ENV_VARS
     }
+    if is_tracing_disabled(environ=environ):
+        values.update(dict.fromkeys(_TRACING_ENABLE_ENV_VARS, "false"))
+    return values
 
 
 def reconcile_tracing_environment(environ: Mapping[str, str]) -> None:
@@ -1091,9 +1113,12 @@ def reconcile_tracing_environment(environ: Mapping[str, str]) -> None:
 
 def _clear_langsmith_env_caches() -> None:
     """Drop the LangSmith SDK's cached environment reads."""
+    ls_utils = sys.modules.get("langsmith.utils")
+    if ls_utils is None:
+        # The caches live on the module, so an SDK that has not been imported
+        # has read nothing yet. Importing it here would only cost startup time.
+        return
     try:
-        from langsmith import utils as ls_utils
-
         ls_utils.get_env_var.cache_clear()
         ls_utils.get_tracer_project.cache_clear()
     except Exception:  # cache shape is upstream's, not ours
@@ -1321,7 +1346,7 @@ def _load_langsmith_profile_config(
     if profiles is None:
         return None
 
-    if env is None:
+    if env is None or env is os.environ:
         return profiles.load_profile_client_config()
 
     from unittest.mock import patch
@@ -1427,7 +1452,7 @@ def _decode_user_langsmith_env(
     """
     try:
         decoded = json.loads(encoded)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return None
     if not isinstance(decoded, dict) or decoded.keys() != {"launch", "user"}:
         return None
@@ -1681,14 +1706,71 @@ def apply_stored_langsmith_auth(*, replace_project: bool = False) -> None:
             save path sets it true because the saved project is the newest user
             choice for the already-running session.
     """
+    _apply_stored_langsmith_env(replace_project=replace_project)
+    with _redaction_lock:
+        configure_langsmith_secret_redaction()
+        # This install supersedes a deferred one. Without clearing the flag,
+        # the deferred install could later replace this client with one built
+        # from older credentials.
+        _bootstrap_state.redaction_pending = False
+
+
+def _apply_stored_langsmith_env(*, replace_project: bool = False) -> None:
+    """Apply the environment part of `apply_stored_langsmith_auth`.
+
+    Args:
+        replace_project: See `apply_stored_langsmith_auth`.
+    """
     from deepagents_code.model_config import apply_stored_service_credentials
 
     _apply_prefixed_langsmith_env()
+    if is_tracing_disabled():
+        os.environ.update(dict.fromkeys(_TRACING_ENABLE_ENV_VARS, "false"))
+        _clear_langsmith_env_caches()
     apply_stored_service_credentials()
     _apply_stored_langsmith_tracing(replace_project=replace_project)
     _disable_orphaned_tracing()
     _apply_default_langsmith_project()
-    configure_langsmith_secret_redaction()
+
+
+def defer_langsmith_secret_redaction() -> None:
+    """Defer the redacting LangSmith client install out of bootstrap.
+
+    Bootstrap still applies all LangSmith environment state. Only the client
+    install waits, because its `langsmith` import costs about 150-250 ms on the
+    startup path. The install then happens on the first call to
+    `ensure_langsmith_secret_redaction`. Every path in this process that can
+    start a traced run must call it first; `create_model` does.
+
+    Has no effect once bootstrap has run.
+    """
+    _bootstrap_state.defer_redaction = True
+
+
+def ensure_langsmith_secret_redaction() -> None:
+    """Install the redacting LangSmith client if bootstrap deferred it.
+
+    Idempotent and thread-safe. A caller blocks until the install is done, so
+    it cannot start a traced run before the redacting client is in place. If
+    the install raises, the flag stays set and the next caller tries again.
+    """
+    if _bootstrap_state.defer_redaction:
+        # Bootstrap decides whether an install is pending. Run it first so a
+        # caller that arrives before it cannot slip past an unset flag.
+        _ensure_bootstrap()
+    if not _bootstrap_state.redaction_pending:
+        return
+    with _redaction_lock:
+        if not _bootstrap_state.redaction_pending:
+            return
+        # Read the process environment, as bootstrap does, not a snapshot
+        # that a caller such as `create_model` scoped for its own use.
+        token = _active_environment.set(None)
+        try:
+            configure_langsmith_secret_redaction()
+        finally:
+            _active_environment.reset(token)
+        _bootstrap_state.redaction_pending = False
 
 
 def _warn_on_prefixed_langsmith_override(canonical: str, prefixed: str) -> None:
@@ -1895,6 +1977,11 @@ def _ensure_bootstrap() -> None:
             return
 
         try:
+            # Mark a deferred install pending before any step that can raise, so
+            # a partial bootstrap still installs the redacting client before
+            # the first traced run.
+            _bootstrap_state.redaction_pending = _bootstrap_state.defer_redaction
+
             # First, because this needs nothing but `os.environ`. Anything below
             # can raise into the handler, which this contract says to survive;
             # leaving the snapshot empty instead makes `_encode_user_langsmith_env`
@@ -1951,7 +2038,10 @@ def _ensure_bootstrap() -> None:
             # tracing defaults, disable orphaned tracing, and route active tracing
             # to the displayed project. Keeping this in one helper lets `/auth`
             # save apply the same state inside an already-running TUI session.
-            apply_stored_langsmith_auth()
+            if _bootstrap_state.defer_redaction:
+                _apply_stored_langsmith_env()
+            else:
+                apply_stored_langsmith_auth()
         except Exception as exc:
             _bootstrap_state.error = exc
             logger.exception(
@@ -2185,6 +2275,7 @@ Kept short so tracing metadata can never stall app flows.
 """
 
 
+@functools.cache
 def _get_deepagents_version() -> str | None:
     """Resolve the installed Deep Agents SDK version for diagnostics.
 
@@ -2192,6 +2283,10 @@ def _get_deepagents_version() -> str | None:
     this uses the shared resolver that prefers the editable source marker and
     appends an `+editable` suffix. A sibling monorepo workspace whose marker
     trails dcode's exact pin reports the pinned release baseline instead.
+
+    Cached for the process lifetime: `build_stream_config` calls this on every
+    turn, and the resolver scans installed distributions each time. The
+    installed SDK does not change while the process runs.
 
     Returns:
         The resolved Deep Agents SDK version, or `None` when unavailable.
@@ -2282,7 +2377,7 @@ def _resolve_editable_info() -> tuple[bool, str | None]:
                 url = data.get("url", "")
                 if url.startswith("file://"):
                     path = _contract_editable_path(url2pathname(urlparse(url).path))
-    except (PackageNotFoundError, FileNotFoundError, json.JSONDecodeError, TypeError):
+    except PackageNotFoundError, FileNotFoundError, json.JSONDecodeError, TypeError:
         logger.debug(
             "Failed to read editable install info from PEP 610 metadata",
             exc_info=True,
@@ -3553,7 +3648,7 @@ def _sync_reload_overrides(
                 continue
             try:
                 candidate = resolver.get_without_ranks(option, {RELOAD_RANK}).value
-            except (OSError, RuntimeError, ValueError):
+            except OSError, RuntimeError, ValueError:
                 candidate = object()
             if candidate != values[field]:
                 retained[key] = values[field]
@@ -3978,7 +4073,7 @@ class Credentials:
                     if skills_managed or not env_skills
                     else _parse_extra_skills_dirs(env_skills)
                 )
-        except (OSError, RuntimeError, ValueError):
+        except OSError, RuntimeError, ValueError:
             logger.warning(
                 "Could not resolve %s during reload; keeping previous value",
                 EXTRA_SKILLS_DIRS,
@@ -4479,6 +4574,15 @@ def langsmith_key_shadowed_by_empty_override() -> LangsmithShadowResult:
     return LangsmithShadowResult(store_unreadable=store_unreadable)
 
 
+def is_tracing_disabled(*, environ: Mapping[str, str] | None = None) -> bool:
+    """Return whether the app-specific tracing override explicitly opts out."""
+    from deepagents_code._env_vars import classify_env_bool
+
+    env = active_environment() if environ is None else environ
+    raw = env.get("DEEPAGENTS_CODE_LANGSMITH_TRACING")
+    return raw is not None and bool(raw.strip()) and classify_env_bool(raw) is False
+
+
 def is_langsmith_redaction_enabled() -> bool:
     """Return whether LangSmith secret redaction is enabled for agent traces."""
     from deepagents_code.config_manifest import _emit_ranked_diagnostics, get_option
@@ -4668,7 +4772,7 @@ def resolve_auto_classifier_model_with_problem() -> tuple[str | None, str | None
 
 
 _DEFAULT_AUTO_CLASSIFIER_MODELS = {
-    "anthropic": "anthropic:claude-sonnet-5",
+    "anthropic": "anthropic:claude-sonnet-5-5",
     "google_genai": "google_genai:gemini-3.8-flash",
     "google_vertexai": "google_vertexai:gemini-3.8-flash",
     "openai": "openai:gpt-5.6-luna",
@@ -4792,14 +4896,15 @@ def configure_langsmith_secret_redaction() -> bool:
             return False
 
         from langsmith import Client, configure
-        from langsmith.anonymizer import create_secret_anonymizer
+
+        from deepagents_code._trace_redaction import create_cached_secret_anonymizer
 
         api_key = _resolve_env_var_from(
             env,
             "LANGSMITH_API_KEY",
         ) or _resolve_env_var_from(env, "LANGCHAIN_API_KEY")
         api_url = _tracing_endpoint_from(env)
-        kwargs: dict[str, Any] = {"anonymizer": create_secret_anonymizer()}
+        kwargs: dict[str, Any] = {"anonymizer": create_cached_secret_anonymizer()}
         if api_key:
             kwargs["api_key"] = api_key
         if api_url:
@@ -4943,6 +5048,8 @@ def _tracing_enabled_from(env: Mapping[str, str]) -> bool:
     """
     from deepagents_code._env_vars import classify_env_bool
 
+    if is_tracing_disabled(environ=env):
+        return False
     for var in _TRACING_BRIDGED_ENABLE_ENV_VARS:
         raw = _resolve_env_var_from(env, var)
         if raw is not None and classify_env_bool(raw):
@@ -4968,6 +5075,8 @@ def _tracing_explicitly_disabled_from(env: Mapping[str, str]) -> bool:
     from deepagents_code._env_vars import classify_env_bool
     from deepagents_code.model_config import _ENV_PREFIX
 
+    if is_tracing_disabled(environ=env):
+        return True
     if _tracing_enabled_from(env):
         return False
 
@@ -5040,7 +5149,7 @@ def _langsmith_runs_endpoint_urls_from(env: Mapping[str, str]) -> tuple[str, ...
 
     try:
         parsed = json.loads(raw)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return ()
 
     if isinstance(parsed, list):
@@ -5172,10 +5281,10 @@ class TracingStatus:
     """
 
     enabled: bool
-    """Whether a tracing flag is truthy in the environment."""
+    """Whether tracing is enabled and not explicitly disabled for the app."""
 
     explicitly_disabled: bool
-    """Whether a tracing flag is explicitly set to a falsy value (vs. unset)."""
+    """Whether app-specific or canonical tracing flags explicitly disable tracing."""
 
     has_credentials: bool
     """Whether an API key or profile credential is resolvable."""
@@ -5487,7 +5596,7 @@ def get_default_coding_instructions() -> str:
         The default agent instructions as a string.
     """
     default_prompt_path = Path(__file__).parent / "default_agent_prompt.md"
-    return default_prompt_path.read_text()
+    return default_prompt_path.read_text(encoding="utf-8")
 
 
 _BEDROCK_REGION_PREFIXES = ("us.", "eu.", "apac.", "us-gov.")
@@ -5518,6 +5627,25 @@ def _is_bedrock_model_id(model_lower: str) -> bool:
             break
     vendor, dot, _ = model_lower.partition(".")
     return bool(dot) and vendor.isalnum()
+
+
+def _bedrock_init_provider(model_name: str) -> str:
+    """Return the `init_chat_model` provider for a `bedrock` model ID.
+
+    `ChatBedrock` (InvokeModel) binds tools only for Anthropic models. Amazon
+    Nova already routes through Converse internally, translating `model_kwargs`
+    into inference settings. Keep that route to preserve existing Nova configs.
+    Other vendors use `ChatBedrockConverse` so tools reach the model. ARNs and
+    other non-ID names stay on `bedrock`.
+    """
+    model_lower = model_name.lower()
+    if (
+        _is_bedrock_model_id(model_lower)
+        and "anthropic" not in model_lower.split(".")[:2]
+        and "amazon.nova" not in model_lower
+    ):
+        return "bedrock_converse"
+    return "bedrock"
 
 
 def _detection_credentials() -> Credentials | CredentialsSnapshot:
@@ -5993,20 +6121,34 @@ def _apply_scoped_endpoint(
     provider: str,
     kwargs: dict[str, Any],
     extra_kwargs: dict[str, Any] | None,
-) -> None:
+) -> bool:
     """Pair the resolved key with its endpoint on the workspace-scoped path.
 
     `apply_stored_credentials` is skipped while an environment is bound, so this
     is the only thing keeping a gateway key from reaching an endpoint that key
     was not issued for.
+
+    Returns:
+        Whether constructed clients must discard inherited gateway headers.
     """
     if not (extra_kwargs and "api_key" in extra_kwargs):
-        _apply_scoped_stored_endpoint(provider, kwargs)
+        clear_headers = _apply_scoped_stored_endpoint(provider, kwargs)
         if extra_kwargs and "base_url" in extra_kwargs:
             kwargs["base_url"] = extra_kwargs["base_url"]
-        return
+            clear_headers = False
+        if (
+            provider == "openai"
+            and kwargs.get("base_url") == _PROVIDER_NATIVE_BASE_URLS["openai"]
+            and kwargs.get("client") is None
+            and kwargs.get("async_client") is None
+        ):
+            # An explicit URL disables LangChain's native streaming-usage default.
+            # Restore it only for clients constructed here; caller-owned clients
+            # can use a different endpoint. Preserve explicit opt-outs.
+            kwargs.setdefault("stream_usage", True)
+        return clear_headers
     if "base_url" in extra_kwargs:
-        return
+        return False
 
     from deepagents_code.model_config import auth_store
 
@@ -6026,15 +6168,75 @@ def _apply_scoped_endpoint(
             provider,
         )
         kwargs.pop("base_url", None)
-        return
+        return False
     if stored_base_url and kwargs.get("base_url") == stored_base_url:
         kwargs.pop("base_url", None)
+    return False
 
 
-def _apply_scoped_stored_endpoint(provider: str, kwargs: dict[str, Any]) -> None:
-    """Pair stored credentials with their endpoint without mutating the process."""
+_PROVIDER_NATIVE_BASE_URLS: dict[str, str] = {
+    "anthropic": "https://api.anthropic.com",
+    "baseten": "https://inference.baseten.co/v1",
+    "cohere": "https://api.cohere.com",
+    "deepseek": "https://api.deepseek.com/v1",
+    "fireworks": "https://api.fireworks.ai/inference",
+    "google_genai": "https://generativelanguage.googleapis.com/",
+    "groq": "https://api.groq.com",
+    "mistralai": "https://api.mistral.ai/v1",
+    "nvidia": "https://integrate.api.nvidia.com/v1",
+    "openai": "https://api.openai.com/v1",
+    "openrouter": "https://openrouter.ai/api/v1",
+    "perplexity": "https://api.perplexity.ai",
+    "together": "https://api.together.xyz/v1/",
+    "xai": "https://api.x.ai/v1/",
+}
+"""Native endpoints that must bypass integration and SDK environment fallbacks.
+
+These are constructor URLs verified against the provider sources, not request
+URLs: Fireworks appends `/v1/chat/completions` to an explicit base URL. Providers
+with deployment-specific endpoints (such as Azure) have no fixed native URL.
+"""
+
+_PROVIDER_BASE_URL_ALIASES: dict[str, str] = {
+    "anthropic": "anthropic_api_url",
+    "baseten": "baseten_api_base",
+    "deepseek": "api_base",
+    "fireworks": "fireworks_api_base",
+    "google_genai": "client_options",
+    "groq": "groq_api_base",
+    "mistralai": "endpoint",
+    "openai": "openai_api_base",
+    "openrouter": "openrouter_api_base",
+    "together": "together_api_base",
+    "xai": "xai_api_base",
+}
+"""Provider endpoint fields accepted alongside the common `base_url` alias."""
+
+
+def _google_genai_uses_vertexai(kwargs: dict[str, Any]) -> bool:
+    """Match the integration's backend selection before choosing a native URL.
+
+    Returns:
+        Whether Google will derive a Vertex endpoint from project and location.
+    """
+    if kwargs.get("vertexai") is not None:
+        return bool(kwargs["vertexai"])
+    # The integration reads the process environment for backend selection.
+    selector = os.environ.get("GOOGLE_GENAI_USE_VERTEXAI", "").lower()
+    if selector in {"true", "1", "yes"}:
+        return True
+    if selector in {"false", "0", "no"}:
+        return False
+    return kwargs.get("credentials") is not None or kwargs.get("project") is not None
+
+
+def _apply_scoped_stored_endpoint(provider: str, kwargs: dict[str, Any]) -> bool:
+    """Pair stored credentials with their endpoint without mutating the process.
+
+    Returns:
+        Whether a native endpoint replaced inherited gateway settings.
+    """
     from deepagents_code.model_config import (
-        PROVIDER_CUSTOM_HEADERS_ENV,
         ModelConfig,
         _configured_base_url_survives_env_clear,
         auth_store,
@@ -6059,20 +6261,71 @@ def _apply_scoped_stored_endpoint(provider: str, kwargs: dict[str, Any]) -> None
         stored_base_url = None
     else:
         if not stored_key:
-            return
+            return False
     provider_config = ModelConfig.load().providers.get(provider)
     configured_url = provider_config.get("base_url") if provider_config else None
     if configured_url or _configured_base_url_survives_env_clear(provider):
-        return
+        return False
     if stored_base_url:
         kwargs["base_url"] = stored_base_url
-        return
+        return False
     kwargs.pop("base_url", None)
-    if provider == "anthropic":
-        kwargs["base_url"] = "https://api.anthropic.com"
-    custom_headers = PROVIDER_CUSTOM_HEADERS_ENV.get(provider)
-    if custom_headers:
-        kwargs["default_headers"] = {}
+    # Omitting the kwarg lets the integration/SDK reread the process's gateway
+    # env vars, which a workspace-scoped construction must leave untouched.
+    if provider == "google_genai" and _google_genai_uses_vertexai(kwargs):
+        # Vertex has regional endpoints; the Gemini URL is not its default.
+        return False
+    endpoint_alias = _PROVIDER_BASE_URL_ALIASES.get(provider)
+    if (not endpoint_alias or kwargs.get(endpoint_alias) is None) and (
+        native_url := _PROVIDER_NATIVE_BASE_URLS.get(provider)
+    ):
+        kwargs["base_url"] = native_url
+        return True
+    return False
+
+
+def _clear_inherited_client_headers(
+    model: BaseChatModel, kwargs: Mapping[str, object]
+) -> None:
+    """Remove SDK environment headers from newly constructed native clients.
+
+    These SDKs merge their environment headers even with `default_headers={}`.
+    Filter the instance headers before any request, preserving explicit headers
+    and caller-owned clients without touching the shared process environment.
+    """
+    from collections.abc import Mapping
+
+    inherited = {
+        line.partition(":")[0].strip().lower()
+        for prefix in ("OPENAI", "ANTHROPIC", "FIREWORKS", "PERPLEXITY")
+        for line in os.environ.get(f"{prefix}_CUSTOM_HEADERS", "").splitlines()
+        if ":" in line
+    }
+    explicit = kwargs.get("default_headers")
+    explicit_names = set(explicit) if isinstance(explicit, Mapping) else set()
+    if not inherited:
+        return
+    for attribute in (
+        "client",
+        "async_client",
+        "root_client",
+        "root_async_client",
+        "_client",
+        "_async_client",
+    ):
+        if kwargs.get(attribute) is not None:
+            continue
+        client = getattr(model, attribute, None)
+        if not isinstance(getattr(client, "_custom_headers", None), Mapping):
+            # Chat-completion resources hold their owning SDK client here.
+            client = getattr(client, "_client", None)
+        headers = getattr(client, "_custom_headers", None)
+        if client is not None and isinstance(headers, Mapping):
+            client._custom_headers = {
+                name: value
+                for name, value in headers.items()
+                if name.lower() not in inherited or name in explicit_names
+            }
 
 
 def _apply_google_anthropic_vertex_kwargs(
@@ -6311,10 +6564,58 @@ def _create_model_from_class(
         raise ModelConfigError(msg)
 
     try:
+        # A real subclass has already loaded the optional integration. Other
+        # custom classes must keep their normal constructor endpoint argument.
+        perplexity_class = getattr(
+            sys.modules.get("langchain_perplexity.chat_models"), "ChatPerplexity", None
+        )
+        if (
+            provider == "perplexity"
+            and kwargs.get("base_url")
+            and isinstance(perplexity_class, type)
+            and issubclass(cls, perplexity_class)
+        ):
+            return _create_perplexity_model(model_name, kwargs, model_class=cls)
         return cls(model=model_name, **kwargs)
     except Exception as e:
         msg = f"Failed to instantiate '{class_path}' for '{provider}:{model_name}': {e}"
         raise ModelConfigError(msg) from e
+
+
+def _create_perplexity_model(
+    model_name: str,
+    kwargs: dict[str, Any],
+    *,
+    model_class: type[BaseChatModel] | None = None,
+) -> BaseChatModel:
+    """Apply the endpoint to SDK clients before any requests can be made.
+
+    `ChatPerplexity` does not expose `base_url`; passing it to the integration
+    would send it as a completion parameter while its SDK rereads the process
+    environment. Client construction is local, so set each instance's endpoint
+    before returning the model. Explicitly supplied clients retain their settings.
+
+    Args:
+        model_name: Model identifier.
+        kwargs: Constructor parameters including the resolved `base_url`.
+        model_class: Configured class to construct instead of `init_chat_model`.
+
+    Returns:
+        Model with the resolved endpoint on both SDK clients.
+    """
+    from langchain.chat_models import init_chat_model
+
+    kwargs = dict(kwargs)
+    base_url = kwargs.pop("base_url")
+    model = (
+        model_class(model=model_name, **kwargs)
+        if model_class is not None
+        else init_chat_model(model_name, model_provider="perplexity", **kwargs)
+    )
+    for attribute in ("client", "async_client"):
+        if not kwargs.get(attribute):
+            getattr(model, attribute).base_url = base_url
+    return model
 
 
 def _create_model_via_init(
@@ -6352,6 +6653,8 @@ def _create_model_via_init(
 
     try:
         if provider:
+            if provider == "perplexity" and kwargs.get("base_url"):
+                return _create_perplexity_model(model_name, kwargs)
             return init_chat_model(model_name, model_provider=provider, **kwargs)
         return init_chat_model(model_name, **kwargs)
     except ImportError as e:
@@ -6619,6 +6922,9 @@ def create_model(
         >>> model = create_model("gpt-5.5")  # Auto-detects openai
         >>> model = create_model()  # Uses environment defaults
     """  # noqa: DOC502 - `ModelNotAllowedError` propagates from `require_model_allowed`
+    # A model is how this process starts traced runs, so none may exist before
+    # a deferred redacting client is installed.
+    ensure_langsmith_secret_redaction()
     from deepagents_code.model_config import (
         IMPLICIT_AUTH_PROVIDERS,
         ModelConfig,
@@ -6773,8 +7079,11 @@ def create_model(
         reasoning_effort_override = extra_kwargs.get("reasoning_effort")
         reasoning_override = extra_kwargs.get("reasoning")
         kwargs.update(extra_kwargs)
-    if provider and scoped_environment:
-        _apply_scoped_endpoint(provider, kwargs, extra_kwargs)
+    clear_inherited_headers = (
+        provider
+        and scoped_environment
+        and (_apply_scoped_endpoint(provider, kwargs, extra_kwargs))
+    )
     kwargs = _compose_openai_reasoning_effort(
         provider,
         kwargs,
@@ -6851,12 +7160,31 @@ def create_model(
     elif class_path:
         model = _create_model_from_class(class_path, model_name, provider, kwargs)
     else:
-        model = _create_model_via_init(model_name, provider, kwargs)
+        init_provider = (
+            _bedrock_init_provider(model_name) if provider == "bedrock" else provider
+        )
+        model = _create_model_via_init(model_name, init_provider, kwargs)
+
+    if clear_inherited_headers:
+        _clear_inherited_client_headers(model, kwargs)
 
     resolved_provider = provider or getattr(model, "_model_provider", provider)
     from deepagents_code.cost_tracking import _set_configured_model_metadata
 
     _set_configured_model_metadata(model, model_name, resolved_provider)
+
+    if provider == "anthropic":
+        from deepagents_code.model_config import ANTHROPIC_MODEL_PROFILE_FALLBACKS
+
+        fallback = ANTHROPIC_MODEL_PROFILE_FALLBACKS.get(model_name)
+        if fallback:
+            upstream = getattr(model, "profile", None)
+            _apply_profile_overrides(
+                model,
+                {**fallback, **(upstream if isinstance(upstream, dict) else {})},
+                model_name,
+                label="bundled fallback",
+            )
 
     # Apply profile overrides from config.toml (e.g., max_input_tokens)
     if provider:

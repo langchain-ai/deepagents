@@ -63,7 +63,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_MAX_TASK_CALLS_PER_THREAD = 32
+_DEFAULT_MAX_SUBAGENT_CONCURRENCY = 32
 _TASK_FUNCTION_NAME = "task"
 
 
@@ -134,6 +134,13 @@ class _PTCState:
     remaining_calls: int | None
     outer_runtime: ToolRuntime | None = None
     outer_loop: asyncio.AbstractEventLoop | None = None
+    task_dispatch_count: int = 0
+    """Ordinal for the next `task()` dispatch in this eval.
+
+    Starts at 0 for every eval, so a replayed eval that dispatches in the
+    same order reproduces the same ordinals and therefore the same derived
+    dispatch ids.
+    """
 
     def consume_call_budget(
         self, *, function_name: str, max_ptc_calls: int | None
@@ -354,6 +361,7 @@ class _ThreadREPL:
         max_stdout_chars: int,
         max_ptc_calls: int | None = 256,
         subagents_enabled: bool = True,
+        max_subagent_concurrency: int = _DEFAULT_MAX_SUBAGENT_CONCURRENCY,
     ) -> None:
         self._worker = worker
         self._runtime = runtime
@@ -366,6 +374,7 @@ class _ThreadREPL:
         # Static budget config; mutable counters live in `_ptc_state`.
         self._max_ptc_calls = max_ptc_calls
         self._subagents_enabled = subagents_enabled
+        self._max_subagent_concurrency = max_subagent_concurrency
         self._console = _ConsoleBuffer(max_stdout_chars)
         self._ctx: Context | None = None
         # PTC state. `_registered_tools` tracks which camel-case names
@@ -399,7 +408,7 @@ class _ThreadREPL:
         if self._capture_console:
             self._install_console()
         if self._subagents_enabled:
-            self._task_calls = asyncio.Semaphore(_MAX_TASK_CALLS_PER_THREAD)
+            self._task_calls = asyncio.Semaphore(self._max_subagent_concurrency)
             self._register_task_bridge()
 
     def _require_ctx(self) -> Context:
@@ -531,6 +540,7 @@ class _ThreadREPL:
         payload: dict[str, Any],
         *,
         state: _PTCState,
+        dispatch_ordinal: int,
     ) -> Any:
         """Validate JS `task()` input and invoke the runner on the right loop.
 
@@ -557,6 +567,7 @@ class _ThreadREPL:
                 response_schema=response_schema,
                 runtime=runtime,
                 label=label,
+                dispatch_ordinal=dispatch_ordinal,
             )
 
         outer_loop = state.outer_loop
@@ -587,11 +598,14 @@ class _ThreadREPL:
                 raise RuntimeError(msg)
 
             payload = _normalize_tool_input(raw_input)
+            dispatch_ordinal = state.task_dispatch_count
+            self._ptc_state = replace(state, task_dispatch_count=dispatch_ordinal + 1)
             async with task_calls:
                 try:
                     result = await self._ainvoke_task_on_outer_loop(
                         payload,
                         state=state,
+                        dispatch_ordinal=dispatch_ordinal,
                     )
                 except GraphInterrupt:
                     raise
@@ -922,6 +936,7 @@ class _Registry:
     max_stdout_chars: int
     max_ptc_calls: int | None = 256
     subagents_enabled: bool = True
+    max_subagent_concurrency: int = _DEFAULT_MAX_SUBAGENT_CONCURRENCY
     execution: ExecutionMode = "worker"
     _slots: dict[str, _Slot] = field(default_factory=dict)
     _lock: threading.Lock = field(default_factory=threading.Lock)
@@ -971,6 +986,7 @@ class _Registry:
             max_stdout_chars=self.max_stdout_chars,
             max_ptc_calls=self.max_ptc_calls,
             subagents_enabled=self.subagents_enabled,
+            max_subagent_concurrency=self.max_subagent_concurrency,
         )
 
         with self._lock:
@@ -997,6 +1013,7 @@ class _Registry:
             max_stdout_chars=self.max_stdout_chars,
             max_ptc_calls=self.max_ptc_calls,
             subagents_enabled=self.subagents_enabled,
+            max_subagent_concurrency=self.max_subagent_concurrency,
         )
         return _Slot(worker=worker, runtime=runtime, repl=repl)
 

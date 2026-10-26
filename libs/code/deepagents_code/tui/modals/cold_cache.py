@@ -1,4 +1,4 @@
-"""Confirmation modal for an expensive cold prompt-cache turn."""
+"""Modal for a cold prompt cache: send-time confirmation or expiry handoff."""
 
 from __future__ import annotations
 
@@ -6,13 +6,13 @@ from enum import Enum
 from typing import TYPE_CHECKING, ClassVar, assert_never
 
 from textual.binding import Binding, BindingType
-from textual.containers import Vertical
+from textual.containers import Vertical, VerticalScroll
 from textual.content import Content
 from textual.screen import ModalScreen
 from textual.widgets import Static
 
-from deepagents_code._session_stats import format_cost_estimate, format_token_count
-from deepagents_code.cold_cache import format_cache_age, format_cache_window
+from deepagents_code._session_stats import format_cost_estimate
+from deepagents_code.cold_cache import format_cache_age
 from deepagents_code.config import get_glyphs
 from deepagents_code.tui.key_hints import modal_navigation_hint
 
@@ -25,6 +25,9 @@ if TYPE_CHECKING:
 
 class ColdCacheChoice(Enum):
     """How to resolve a cold prompt-cache warning."""
+
+    HANDOFF = "handoff"
+    """Start a summarized new thread; never sends, so not in `SEND_CHOICES`."""
 
     SEND = "send"
     """Send this turn; keep warning on future cold-cache turns."""
@@ -46,7 +49,7 @@ SEND_CHOICES: frozenset[ColdCacheChoice] = frozenset(
         ColdCacheChoice.SEND_SUPPRESS_ALWAYS,
     }
 )
-"""Choices that authorize spend.
+"""Choices that authorize sending the submitted turn.
 
 Lives with the enum so callers restate the set in one place only. A new variant
 is excluded until added here, which fails closed: an unlisted choice is treated
@@ -108,13 +111,13 @@ class _ChoiceOption(Static):
 
 
 class ColdCacheWarningScreen(ModalScreen[ColdCacheChoice | None]):
-    """Ask whether to send a turn whose prompt cache may be cold.
+    """Offer actions for a turn whose prompt cache may be cold.
 
     Dismisses with the chosen `ColdCacheChoice`, or `None` on a
     programmatic pop. Esc is mapped to `CANCEL` so the user is never
     forced into a spend they did not explicitly choose. `None` and
-    `CANCEL` are both non-send outcomes, and callers must treat any
-    non-send value as cancel so the dialog fails closed.
+    `CANCEL` are both non-send outcomes. `HANDOFF` authorizes summarization
+    without sending the submitted turn.
     """
 
     can_focus = True
@@ -133,6 +136,10 @@ class ColdCacheWarningScreen(ModalScreen[ColdCacheChoice | None]):
         Binding("tab", "move_down", "Next", show=False, priority=True),
         Binding("shift+tab", "move_up", "Previous", show=False, priority=True),
         Binding("enter", "activate", "Select", show=False, priority=True),
+        Binding(
+            "ctrl+c", "quit_or_interrupt", "Quit/Interrupt", show=False, priority=True
+        ),
+        Binding("ctrl+d", "quit_app", "Quit", show=False, priority=True),
     ]
 
     CSS = """
@@ -144,12 +151,14 @@ class ColdCacheWarningScreen(ModalScreen[ColdCacheChoice | None]):
         width: 72;
         max-width: 90%;
         height: auto;
+        max-height: 100%;
         background: $surface;
         border: solid $warning;
         padding: 1 2;
     }
 
     ColdCacheWarningScreen .cold-cache-title {
+        dock: top;
         text-style: bold;
         color: $warning;
         text-align: center;
@@ -160,6 +169,17 @@ class ColdCacheWarningScreen(ModalScreen[ColdCacheChoice | None]):
         height: auto;
         color: $text;
         margin-bottom: 1;
+    }
+
+    ColdCacheWarningScreen #cold-cache-body-scroll {
+        height: auto;
+        max-height: 100%;
+        min-height: 1;
+    }
+
+    ColdCacheWarningScreen #cold-cache-actions {
+        dock: bottom;
+        height: auto;
     }
 
     ColdCacheWarningScreen .cold-cache-choice {
@@ -181,7 +201,13 @@ class ColdCacheWarningScreen(ModalScreen[ColdCacheChoice | None]):
     }
     """
 
-    def __init__(self, warning: ColdCacheWarning) -> None:
+    def __init__(
+        self,
+        warning: ColdCacheWarning | None,
+        *,
+        handoff: bool = False,
+        allow_send: bool = False,
+    ) -> None:
         """Initialize the warning from validated policy and pricing data.
 
         Takes the whole `ColdCacheWarning` rather than its fields separately so
@@ -191,135 +217,151 @@ class ColdCacheWarningScreen(ModalScreen[ColdCacheChoice | None]):
         idle duration the caller had explicitly determined it did not know.
 
         Args:
-            warning: Validated policy, pricing, and cause for this turn.
+            warning: Validated policy, pricing, and cause for this turn, or
+                `None` when no reliable estimate exists. The body then shows
+                a generic expiry notice.
+            handoff: Offer a summarized thread as the default action.
+            allow_send: Include a send action in the handoff menu when a
+                message has been submitted.
         """
         super().__init__()
+        self._handoff = handoff
+        self._allow_send = allow_send
         self._warning = warning
         self._options: list[_ChoiceOption] = []
         self._selected = 0
 
     def _body(self) -> str:
-        """Build provider-aware warning copy.
+        """Explain the possible extra cost and why it applies.
 
         Returns:
             Plain-text warning body.
         """
-        policy = self._warning.policy
-        window = format_cache_window(policy.window_seconds)
-        expires = policy.confidence == "expired"
+        if self._warning is None:
+            return (
+                "This conversation's cache may have expired. Continuing could "
+                "cost more, but an estimate isn't available."
+            )
+        expires = self._warning.policy.confidence == "expired"
         # `certain` is set by the arm that already knows the answer rather than
         # re-tested afterwards, so the cost sentence cannot drift out of step
         # with the status sentence above it.
         match self._warning.reason:
             case "identity_changed":
-                # All three triggers are named because the caller collapses
-                # them into one reason (see `app._cold_cache_warning_for`):
-                # the model, the endpoint, and the cache-affecting params each
-                # invalidate the prefix. Naming only some of them tells a user
-                # who switched endpoints that their model changed, which sends
-                # them debugging the wrong thing.
+                # Model settings covers model, endpoint, and cache parameter
+                # changes without claiming that the model itself changed.
                 certain = True
                 status = (
-                    "The active model, endpoint, or prompt-cache settings "
-                    "differ from the last successful turn, so the previous "
-                    "cached prefix cannot be reused."
+                    "Your model settings changed, so the conversation needs "
+                    "to be processed again."
                 )
             case "age_unknown":
                 certain = False
-                # Qualified by `confidence` for the same reason the `idle` arm
-                # is: a bare "keeps entries for 30m" states a ceiling, and for
-                # GPT-5.6+ that window is a guaranteed floor the provider may
-                # exceed. Saying it unqualified inverts the one distinction
-                # `CacheConfidence` exists to preserve.
-                retention = (
-                    f"keeps entries for at most {window}"
-                    if expires
-                    else f"only guarantees {window} of retention"
-                )
-                status = (
-                    "There is no record of when this thread last reached the "
-                    "model, so the cached prefix cannot be assumed to still "
-                    f"exist ({policy.provider_name} {retention})."
-                )
+                status = "We can't tell whether this conversation is still cached."
             case "idle":
                 certain = expires
                 age = format_cache_age(self._warning.age_seconds or 0.0)
                 if expires:
                     status = (
-                        f"This thread has been idle for {age}, longer than "
-                        f"{policy.provider_name}'s {window} prompt-cache "
-                        "lifetime. The cached conversation prefix has likely "
-                        "expired."
+                        f"After {age} of inactivity, this conversation's cache "
+                        "has likely expired."
                     )
                 else:
                     status = (
-                        f"This thread has been idle for {age}, longer than "
-                        f"{policy.provider_name}'s {window} minimum "
-                        "cache-retention window. The provider may still have "
-                        "retained the cache."
+                        f"After {age} of inactivity, this conversation's cache "
+                        "may have expired."
                     )
             case _:  # pragma: no cover - exhaustiveness guard
                 assert_never(self._warning.reason)
         # Both figures are worst-case estimates from synthetic usage payloads:
         # the cache may be partially warm and the actual spend lower, so the
         # modal rounds them and frames the total as an "up to" bound and the
-        # delta as a "roughly" figure. Only `identity_changed` and an expired
+        # delta as an "about" figure. Only `identity_changed` and an expired
         # window are certainties; `may_be_cold` and `age_unknown` both leave
         # open that the cache is intact, so the cost sentence stays conditional
         # on it having expired.
-        conditional = (
-            "Re-processing" if certain else "If the cache has expired, re-processing"
-        )
+        conditional = "Rereading" if certain else "If the cache has expired, rereading"
         estimate = self._warning.estimate
         cost = (
-            f"{conditional} approximately "
-            f"{format_token_count(self._warning.context_tokens)} history tokens "
-            f"may cost up to {format_cost_estimate(estimate.cold_cost_usd)} "
-            f"in input tokens, roughly "
-            f"{format_cost_estimate(estimate.incremental_cost_usd)} more "
-            "than a warm cache hit."
+            f"{conditional} this conversation could cost up to "
+            f"{format_cost_estimate(estimate.cold_cost_usd)}, about "
+            f"{format_cost_estimate(estimate.incremental_cost_usd)} extra. "
+            "This excludes the reply."
         )
         return f"{status}\n\n{cost}"
+
+    def _choices(self) -> tuple[tuple[ColdCacheChoice, str], ...]:
+        """Return the available actions in navigation order."""
+        if self._handoff:
+            choices = ((ColdCacheChoice.HANDOFF, "Start new thread with summary"),)
+            if self._allow_send:
+                choices += ((ColdCacheChoice.SEND, "Send in current thread"),)
+            cancel = (
+                "Cancel (keep draft)" if self._allow_send else "Stay in current thread"
+            )
+            return (*choices, (ColdCacheChoice.CANCEL, cancel))
+        return (
+            (ColdCacheChoice.SEND, "Send anyway"),
+            (
+                ColdCacheChoice.SEND_SUPPRESS_SESSION,
+                "Send and don't warn again this session",
+            ),
+            (ColdCacheChoice.SEND_SUPPRESS_ALWAYS, "Send and never warn again"),
+            (ColdCacheChoice.CANCEL, "Don't send (keep draft)"),
+        )
 
     def compose(self) -> ComposeResult:
         """Compose the warning dialog.
 
         Yields:
-            Title, warning copy, one row per choice, and keyboard help.
+            Title, warning copy, action rows, and keyboard help.
         """
         glyphs = get_glyphs()
         with Vertical():
             yield Static(
-                "Warning: cache may be cold",
+                "Continuing may cost more",
                 classes="cold-cache-title",
                 markup=False,
             )
-            yield Static(self._body(), classes="cold-cache-body", markup=False)
-            for choice, label in (
-                (ColdCacheChoice.SEND, "Send anyway"),
-                (
-                    ColdCacheChoice.SEND_SUPPRESS_SESSION,
-                    "Send and don't warn again this session",
-                ),
-                (
-                    ColdCacheChoice.SEND_SUPPRESS_ALWAYS,
-                    "Send and never warn again",
-                ),
-                (ColdCacheChoice.CANCEL, "Don't send (keep draft)"),
-            ):
-                option = _ChoiceOption(choice, label)
-                self._options.append(option)
-                yield option
-            help_text = (
-                f"{modal_navigation_hint(glyphs)} "
-                f"{glyphs.bullet} Enter select "
-                f"{glyphs.bullet} Esc cancel"
-            )
-            yield Static(help_text, classes="cold-cache-help", markup=False)
+            with VerticalScroll(id="cold-cache-body-scroll"):
+                yield Static(self._body(), classes="cold-cache-body", markup=False)
+                if self._handoff:
+                    yield Static(
+                        "Start a new thread with a summary of this conversation. "
+                        "Your original thread stays available, and your draft "
+                        "won't be sent. Creating the summary also costs money; "
+                        "overall savings aren't guaranteed.",
+                        classes="cold-cache-body",
+                        markup=False,
+                    )
+            with Vertical(id="cold-cache-actions"):
+                for choice, label in self._choices():
+                    option = _ChoiceOption(choice, label)
+                    self._options.append(option)
+                    yield option
+                cancel_hint = (
+                    "stay" if self._handoff and not self._allow_send else "cancel"
+                )
+                help_text = (
+                    f"{modal_navigation_hint(glyphs)} "
+                    f"{glyphs.bullet} Enter select "
+                    f"{glyphs.bullet} Esc {cancel_hint}"
+                )
+                yield Static(help_text, classes="cold-cache-help", markup=False)
+                if self._handoff:
+                    yield Static(
+                        "Manage this warning in /notifications",
+                        classes="cold-cache-help",
+                        markup=False,
+                    )
 
     def on_mount(self) -> None:
-        """Focus the modal and default the cursor to the send row."""
-        self.focus()
+        """Focus the scrollable copy and select the first action.
+
+        The body receives Page Up/Down while the modal's priority bindings
+        keep Tab and arrow keys navigating the pinned actions.
+        """
+        self.query_one("#cold-cache-body-scroll", VerticalScroll).focus()
         self._set_selected(0)
 
     def _set_selected(self, new_index: int) -> None:
@@ -351,7 +393,7 @@ class ColdCacheWarningScreen(ModalScreen[ColdCacheChoice | None]):
         self.dismiss(self._options[self._selected].choice)
 
     def action_cancel(self) -> None:
-        """Cancel the pending send, keeping the draft.
+        """Cancel the pending send or decline the handoff, keeping the draft.
 
         The method name must stay `cancel`: the app owns a priority `escape`
         binding that, for an active `ModalScreen`, dispatches to `action_cancel`

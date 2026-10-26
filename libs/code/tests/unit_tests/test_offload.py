@@ -721,6 +721,65 @@ class TestOffloadFallbackRoot:
 class TestDeleteOffloadedHistory:
     """Cover cleanup of a thread's offloaded conversation-history archive."""
 
+    @pytest.mark.parametrize("thread_id", ["thread-1", "thread-*?[1]"])
+    @pytest.mark.parametrize("compacted", [True, False])
+    def test_removes_all_owned_handoffs(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        thread_id: str,
+        compacted: bool,
+    ) -> None:
+        """Ownership cleanup is exact and does not require a compaction archive."""
+        monkeypatch.setattr(offload, "_offload_fallback_root", lambda: tmp_path)
+        archive_dir = tmp_path / "conversation_history"
+        archive_dir.mkdir()
+        compact = archive_dir / f"{thread_id}.md"
+        if compacted:
+            compact.write_text("compacted history")
+        owned = [
+            archive_dir / f"{offload._handoff_archive_prefix(thread_id)}{index}.md"
+            for index in range(2)
+        ]
+        keep = [
+            archive_dir / f"{offload._handoff_archive_prefix('thread-2')}snapshot.md",
+            archive_dir / "thread-2.md",
+        ]
+        for archive in owned + keep:
+            archive.write_text("full transcript")
+
+        assert delete_offloaded_history(thread_id) is True
+        assert not compact.exists()
+        assert all(not archive.exists() for archive in owned)
+        assert all(archive.read_text() == "full transcript" for archive in keep)
+        assert delete_offloaded_history(thread_id) is False
+
+    def test_handoff_cleanup_continues_after_unlink_failure(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An undeletable compaction archive must not strand handoff snapshots."""
+        monkeypatch.setattr(offload, "_offload_fallback_root", lambda: tmp_path)
+        archive_dir = tmp_path / "conversation_history"
+        archive_dir.mkdir()
+        compact = archive_dir / "thread-1.md"
+        compact.write_text("compacted history")
+        handoff = (
+            archive_dir / f"{offload._handoff_archive_prefix('thread-1')}snapshot.md"
+        )
+        handoff.write_text("full transcript")
+        unlink = Path.unlink
+
+        def fail_compact(path: Path, *, missing_ok: bool = False) -> None:
+            if path == compact:
+                msg = "read-only archive"
+                raise PermissionError(msg)
+            unlink(path, missing_ok=missing_ok)
+
+        monkeypatch.setattr(Path, "unlink", fail_compact)
+        assert delete_offloaded_history("thread-1") is True
+        assert compact.exists()
+        assert not handoff.exists()
+
     def test_removes_persistent_archive(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

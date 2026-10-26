@@ -60,6 +60,10 @@ Charset-dependent characters and animations have **single sources of truth**. Re
 - **Message passing** for widget communication - see [Events guide](https://textual.textualize.io/guide/events/)
 - **Reactive attributes** for state management - see [Reactivity guide](https://textual.textualize.io/guide/reactivity/)
 
+### Shared notification sources
+
+When a lifecycle condition needs both a TUI notification and a hook, detect it once and fan out to both from the same source. Share timing, deduplication, and message data rather than adding separate timers or parallel condition checks. Built-in UI notifications must work without configured hooks and must not wait for hook execution or depend on its success. Prefer a small shared dispatch path over introducing an event bus solely for this purpose.
+
 ### UI component organization
 
 Apply these rules to new UI; do not treat them as a mandate to refactor existing code.
@@ -129,6 +133,36 @@ Debug logging is configured **once**, on the `deepagents_code` package logger, b
 - The **file** handler only attaches when `DEEPAGENTS_CODE_DEBUG` is truthy and the active thread is known; that path is a small env-var read and filesystem operation, so it's safe on the startup hot path. See `DEVELOPMENT.md` for the `DEEPAGENTS_CODE_DEBUG` / `DEEPAGENTS_CODE_DEBUG_DIRECTORY` / `DEEPAGENTS_CODE_LOG_LEVEL` env vars.
 - Separately, an **always-on in-memory ring buffer** (`_debug_buffer.install_log_buffer`, called from `__init__.py` right before `configure_debug_logging`) attaches unconditionally at import so the in-app Debug Console (`Ctrl+\`) can tail recent `deepagents_code.*` records without file logging. It captures `INFO` and above by default (or `DEEPAGENTS_CODE_LOG_LEVEL`), and may lower the package logger to `INFO` for the process lifetime. It never spills to the terminal (a handler is always found, so `lastResort` is skipped) and is bounded (a `deque` of 1000 records *per log level*), so it's cheap enough to keep on. Because it installs *before* `configure_debug_logging`, warnings that helper emits at startup are captured and visible in the console.
 
+## Agent middleware
+
+### Trace policy
+
+Every `AgentMiddleware` subclass in `deepagents_code` must omit its hook inputs from traces:
+
+```python
+from langchain.agents.middleware.types import AgentMiddleware, TracePolicy, omit_payload
+
+
+class MyMiddleware(AgentMiddleware):
+    trace_policy = TracePolicy(process_inputs=omit_payload)
+```
+
+Trace inputs only for a documented reason, and put that reason in a comment next to the override. `GoalToolsMiddleware` (`goal_tools.py`) is a reference example.
+
+Why: without this policy, each `wrap_model_call` and `awrap_model_call` span traces the full `ModelRequest`, which includes the whole message history. Each middleware adds one more copy per model call. When secret redaction is on, the server also runs regex redaction over each copy on the event loop. One middleware without the policy once added about 28% of traced bytes and about 27% of per-turn latency for users with tracing on.
+
+### Checkpointed state
+
+Each checkpoint row stores the value of every graph state channel inline. The SQLite saver does not deduplicate blobs, and only `messages` is delta-encoded. Thus every state value is written again on each step.
+
+- Do not put large or derivable values in state channels. This includes rendered prompts, file contents, caches, and metadata that you can compute again. The rule also applies to private channels (`PrivateStateAttr`).
+- Store large per-thread data in a dcode side table keyed by thread ID, such as `dcode_thread_names` (`sessions.py`) or `dcode_thread_workspaces` (`workspace.py`). Write to it only when the data changes.
+- Keep per-step `Command(update=...)` writes small.
+
+Why: one 58 KB value written on each model call made checkpoints about 2× larger and made resume and state reads slower.
+
+Private channels do not cross the subagent `task` tool boundary. The tool strips them in both directions, so a subagent does not see or return the parent's private state.
+
 ## CLI help screen
 
 The `deepagents-code --help` screen is hand-maintained in `ui.show_help()`, separate from the argparse definitions in `main.parse_args()`. When adding a new CLI flag, update **both** files. A drift-detection test (`test_args.TestHelpScreenDrift`) fails if a flag is registered in argparse but missing from the help screen.
@@ -139,7 +173,9 @@ Hints that tell the user to run something (for example the teardown `-r <thread>
 
 ## Splash screen tips
 
-When adding a user-facing CLI feature (new slash command, keybinding, workflow), add a corresponding entry to the `_TIPS` dict in `deepagents_code/tui/widgets/startup_tip.py`, mapping the tip text to a relative selection weight (higher = shown more often). One tip is chosen at random above the input on startup to help users discover features. Keep tips short and action-oriented (e.g., `"Press ctrl+g to compose prompts in your external editor"`).
+Treat the `_TIPS` dict in `deepagents_code/tui/widgets/startup_tip.py` as a curated, limited-attention surface, not a feature changelog. Do not add a tip by default when adding a feature. One tip is chosen at random above the chat input on startup, so each addition competes with existing tips.
+
+Add a tip only for a broadly useful, frequently applicable action that is hard to discover through existing help or UI and can be explained accurately in one short, action-oriented sentence (e.g., `"Press ctrl+g to compose prompts in your external editor"`). Niche or advanced configuration, experimental or opt-in tuning, and features requiring caveats about cost, quality, or tradeoffs belong in documentation or contextual help, not startup tips. If the value to most users is unclear, leave the list unchanged. Before adding one, check for overlap and explain why it earns space over existing tips in the PR. Map accepted tip text to a relative selection weight (higher = shown more often); do not increase weight merely because a feature is new.
 
 ## Slash commands
 

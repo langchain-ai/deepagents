@@ -71,6 +71,7 @@ class SlashCommand:
             description=self.description,
             hidden_keywords=self.hidden_keywords,
             argument_hint=self.argument_hint,
+            aliases=self.aliases,
         )
 
 
@@ -115,6 +116,13 @@ COMMANDS: tuple[SlashCommand, ...] = (
             "key keys credential credentials login token api tracing langsmith"
         ),
         aliases=("/connect",),
+    ),
+    SlashCommand(
+        name="/btw",
+        description="Ask a side question without changing the conversation",
+        bypass_tier=BypassTier.SIDE_EFFECT_FREE,
+        hidden_keywords="aside question background",
+        argument_hint="[question]",
     ),
     SlashCommand(
         name="/clear",
@@ -172,7 +180,7 @@ COMMANDS: tuple[SlashCommand, ...] = (
     SlashCommand(
         name="/effort",
         description="Set reasoning effort for the current model",
-        bypass_tier=BypassTier.QUEUED,
+        bypass_tier=BypassTier.IMMEDIATE_UI,
         hidden_keywords="reasoning thinking level",
         argument_hint="[<level>|clear]",
     ),
@@ -201,13 +209,6 @@ COMMANDS: tuple[SlashCommand, ...] = (
         bypass_tier=BypassTier.IMMEDIATE_UI,
     ),
     SlashCommand(
-        name="/summarization-model",
-        description="Set the model used for context-compaction summaries",
-        bypass_tier=BypassTier.IMMEDIATE_UI,
-        hidden_keywords="compact summary summarize",
-        argument_hint="[<spec>|clear]",
-    ),
-    SlashCommand(
         name="/notifications",
         description="Review notifications and configure warning settings",
         bypass_tier=BypassTier.IMMEDIATE_UI,
@@ -215,9 +216,10 @@ COMMANDS: tuple[SlashCommand, ...] = (
     ),
     SlashCommand(
         name="/offload",
-        description="Summarize and offload older messages to free context",
+        description="Offload older messages or choose the summarization model",
         bypass_tier=BypassTier.QUEUED,
-        hidden_keywords="compact",
+        hidden_keywords="compact summary summarize model",
+        argument_hint="[model [<spec>|clear]]",
         aliases=("/compact",),
     ),
     SlashCommand(  # Static alias; not auto-generated from skill discovery
@@ -241,11 +243,19 @@ COMMANDS: tuple[SlashCommand, ...] = (
         argument_hint="[task]",
     ),
     SlashCommand(
+        name="/rename",
+        description="Name this thread or generate a suggested name",
+        bypass_tier=BypassTier.SIDE_EFFECT_FREE,
+        hidden_keywords="title name",
+        argument_hint="[name]",
+    ),
+    SlashCommand(
         name="/threads",
         description="Browse and resume past threads",
         bypass_tier=BypassTier.IMMEDIATE_UI,
         hidden_keywords="continue history sessions resume back previous",
         argument_hint="[-r [ID]]",
+        aliases=("/resume",),
     ),
     SlashCommand(
         name="/trace",
@@ -402,21 +412,8 @@ BYPASS_WHEN_CONNECTING: frozenset[str] = _build_bypass_set(BypassTier.CONNECTING
 IMMEDIATE_UI: frozenset[str] = _build_bypass_set(BypassTier.IMMEDIATE_UI)
 """Commands that open modal UI immediately, deferring real work."""
 
-IMMEDIATE_UI_ARG_FORMS: frozenset[str] = frozenset({"/auto model"})
-"""Argument forms of `IMMEDIATE_UI` commands that are still pure selector opens.
-
-The bare-form check in `_can_bypass_queue` (`value == cmd`) parks every
-argument form behind the queue because most of them act directly (e.g.
-`/model <name>` switches models). Entries here are the exceptions: their
-handler routes straight to a modal open and defers all real work (validation,
-mutation) to the dismiss callback, exactly like the bare form. `/auto model`
-with no further arguments qualifies — it only pushes the classifier-model
-picker — while `/auto model <spec>` and `/auto model clear` validate and
-mutate classifier state, so they stay queue-bound. Each entry must be an exact
-lowered command-plus-subcommand string with single-space separators and no
-further arguments; the bypass canonicalizes the submitted value's whitespace
-before comparing against it.
-"""
+IMMEDIATE_UI_ARG_FORMS: frozenset[str] = frozenset({"/auto model", "/offload model"})
+"""Exact selector-opening forms that bypass the queue without mutating state."""
 
 SIDE_EFFECT_FREE: frozenset[str] = _build_bypass_set(BypassTier.SIDE_EFFECT_FREE)
 """Commands whose side effect fires immediately; chat output deferred until idle."""
@@ -486,6 +483,9 @@ class CommandEntry(NamedTuple):
     still matching and inserting its full canonical `name`
     (e.g. `/skill:my-plugin:review`). Falls back to `name` when empty.
     """
+
+    aliases: tuple[str, ...] = ()
+    """Alternative command names used for autocomplete ranking."""
 
     def label(self) -> str:
         """Return the popup label, preferring `display_name` over `name`.

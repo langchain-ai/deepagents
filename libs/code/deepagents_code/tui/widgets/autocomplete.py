@@ -16,10 +16,10 @@ import subprocess  # noqa: S404
 from difflib import SequenceMatcher
 from enum import StrEnum
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, NamedTuple, Protocol
 
 from deepagents_code.project_utils import find_project_root
-from deepagents_code.unicode_security import sanitize_control_chars
+from deepagents_code.unicode_security import is_safe_file_path, sanitize_control_chars
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +37,28 @@ if TYPE_CHECKING:
     from textual import events
 
     from deepagents_code.command_registry import CommandEntry
+    from deepagents_code.sessions import ThreadInfo
+
+
+_THREAD_LABEL_LIMIT = 80
+"""Maximum label length shown in thread completion."""
+
+_THREAD_REFERENCE_PREFIX = "@@(thread:"
+"""Prefix for durable thread-reference tokens."""
+
+_THREAD_TRIGGER = "@@"
+"""Trigger reserved for recent-thread completion."""
+
+
+def _thread_label(thread: ThreadInfo) -> str:
+    """Return a single-line name or initial-prompt label for a completion row."""
+    title = thread.get("thread_name") or thread.get("initial_prompt") or ""
+    label = " ".join(sanitize_control_chars(title).split())
+    if not label:
+        return thread["thread_id"][:8]
+    if len(label) > _THREAD_LABEL_LIMIT:
+        return f"{label[: _THREAD_LABEL_LIMIT - 3].rstrip()}..."
+    return label
 
 
 class CompletionResult(StrEnum):
@@ -95,6 +117,10 @@ class CompletionController(Protocol):
 
     def reset(self) -> None:
         """Reset/clear the completion state."""
+        ...
+
+    def apply_selection(self, index: int, text: str, cursor_index: int) -> bool:
+        """Apply a clicked completion row."""
         ...
 
 
@@ -253,8 +279,11 @@ class SlashCommandController:
                 (score, entry)
                 for entry in self._commands
                 if (
-                    score := self._score_command(
-                        search, entry.name, entry.description, entry.hidden_keywords
+                    score := max(
+                        self._score_command(
+                            search, name, entry.description, entry.hidden_keywords
+                        )
+                        for name in (entry.name, *entry.aliases)
                     )
                 )
                 > 0
@@ -332,6 +361,17 @@ class SlashCommandController:
         self.reset()
         return True
 
+    def apply_selection(self, index: int, _text: str, cursor_index: int) -> bool:
+        """Apply a clicked slash-command completion row.
+
+        Returns:
+            Whether the selected row was applied.
+        """
+        if index < 0 or index >= len(self._suggestions):
+            return False
+        self._selected_index = index
+        return self._apply_selected_completion(cursor_index)
+
     def apply_name_prefix_completion(
         self, match: CommandEntry, cursor_index: int
     ) -> None:
@@ -346,6 +386,209 @@ class SlashCommandController:
 
 
 # ============================================================================
+# Thread Completion
+# ============================================================================
+
+
+class ThreadCompletionController:
+    """Controller for `@@` thread completion from local session metadata."""
+
+    def __init__(self, view: CompletionView) -> None:
+        """Initialize with an empty thread cache."""
+        self._view = view
+        self._threads: list[ThreadInfo] = []
+        self._matches: list[ThreadInfo] = []
+        self._suggestions: list[tuple[str, str]] = []
+        self._selected_index = 0
+        self._query_active = False
+
+    def update_threads(self, threads: list[ThreadInfo]) -> None:
+        """Replace cached threads."""
+        self._threads = list(threads)
+
+    def refresh(self, text: str, cursor_index: int) -> None:
+        """Refresh an active query while preserving the selected thread.
+
+        Args:
+            text: Current composer text in completion space.
+            cursor_index: Current cursor offset in completion space.
+        """
+        if not self._query_active:
+            return
+        selected_id = (
+            self._matches[self._selected_index]["thread_id"] if self._matches else None
+        )
+        self.on_text_changed(text, cursor_index)
+        for index, thread in enumerate(self._matches):
+            if thread["thread_id"] == selected_id:
+                self._selected_index = index
+                self._view.render_completion_suggestions(self._suggestions, index)
+                break
+
+    @staticmethod
+    def _mention_start(text: str, cursor_index: int) -> int | None:
+        """Return the active `@@` index when the cursor is in a mention."""
+        if cursor_index < len(_THREAD_TRIGGER) or cursor_index > len(text):
+            return None
+        start = text[:cursor_index].rfind(_THREAD_TRIGGER)
+        if start < 0 or (
+            start > 0 and not (text[start - 1].isspace() or text[start - 1] in "([{")
+        ):
+            return None
+        fragment = text[start:cursor_index]
+        if fragment.startswith(_THREAD_REFERENCE_PREFIX) or "\n" in fragment:
+            return None
+        return start
+
+    @classmethod
+    def can_handle(cls, text: str, cursor_index: int) -> bool:
+        """Return whether the cursor is inside an `@@` thread query."""
+        return cls._mention_start(text, cursor_index) is not None
+
+    @staticmethod
+    def _search_text(thread: ThreadInfo) -> str:
+        """Build normalized searchable thread metadata.
+
+        Returns:
+            Lowercase thread metadata joined for matching.
+        """
+        values = (
+            thread["thread_id"],
+            thread.get("thread_name"),
+            thread.get("initial_prompt"),
+            thread.get("agent_name"),
+            thread.get("git_branch"),
+            thread.get("cwd"),
+        )
+        return " ".join(value for value in values if value).lower()
+
+    def active_query(self, text: str, cursor_index: int) -> str | None:
+        """Return the active thread query for full-picker escalation."""
+        start = self._mention_start(text, cursor_index)
+        if start is None:
+            return None
+        return text[start + len(_THREAD_TRIGGER) : cursor_index]
+
+    def replace_active_query(
+        self, text: str, cursor_index: int, thread_id: str
+    ) -> bool:
+        """Replace the active query with an ID-only thread token.
+
+        Returns:
+            Whether an active query was replaced.
+        """
+        start = self._mention_start(text, cursor_index)
+        if start is None:
+            return False
+        self._view.replace_completion_range(
+            start, cursor_index, f"{_THREAD_REFERENCE_PREFIX}{thread_id})"
+        )
+        self.reset()
+        return True
+
+    def reset(self) -> None:
+        """Clear suggestions."""
+        self._query_active = False
+        if self._suggestions:
+            self._matches.clear()
+            self._suggestions.clear()
+            self._selected_index = 0
+            self._view.clear_completion_suggestions()
+
+    def on_text_changed(self, text: str, cursor_index: int) -> None:
+        """Search cached threads and render suggestions."""
+        from deepagents_code.sessions import format_relative_timestamp
+
+        self.reset()
+        start = self._mention_start(text, cursor_index)
+        if start is None:
+            return
+        # An empty cache still has an active query to refresh after loading.
+        self._query_active = True
+        query = text[start + len(_THREAD_TRIGGER) : cursor_index].lower()
+        query_terms = query.split()
+        indexed_threads = [
+            (thread, self._search_text(thread)) for thread in self._threads
+        ]
+        matches = [
+            thread
+            for thread, search_text in indexed_threads
+            if all(term in search_text for term in query_terms)
+        ][:MAX_SUGGESTIONS]
+        if not matches:
+            return
+        self._matches = matches
+        self._suggestions = [
+            (
+                _thread_label(thread),
+                " · ".join(
+                    filter(
+                        None,
+                        (
+                            thread.get("agent_name")
+                            if thread.get("agent_name") != "agent"
+                            else None,
+                            format_relative_timestamp(thread.get("updated_at")),
+                            thread["thread_id"][:8],
+                        ),
+                    )
+                ),
+            )
+            for thread in matches
+        ]
+        self._selected_index = 0
+        self._view.render_completion_suggestions(self._suggestions, 0)
+
+    def on_key(
+        self, event: events.Key, text: str, cursor_index: int
+    ) -> CompletionResult:
+        """Handle thread completion navigation and selection.
+
+        Returns:
+            Whether the key was handled by thread completion.
+        """
+        if not self._suggestions:
+            return CompletionResult.IGNORED
+        match event.key:
+            case "tab" | "enter":
+                return (
+                    CompletionResult.HANDLED
+                    if self.apply_selection(self._selected_index, text, cursor_index)
+                    else CompletionResult.IGNORED
+                )
+            case "down":
+                self._move_selection(1)
+                return CompletionResult.HANDLED
+            case "up":
+                self._move_selection(-1)
+                return CompletionResult.HANDLED
+            case "escape":
+                self.reset()
+                return CompletionResult.HANDLED
+            case _:
+                return CompletionResult.IGNORED
+
+    def _move_selection(self, delta: int) -> None:
+        """Move the selected thread row."""
+        self._selected_index = (self._selected_index + delta) % len(self._suggestions)
+        self._view.render_completion_suggestions(
+            self._suggestions, self._selected_index
+        )
+
+    def apply_selection(self, index: int, text: str, cursor_index: int) -> bool:
+        """Apply a clicked thread completion row.
+
+        Returns:
+            Whether the selected row was applied.
+        """
+        if index < 0 or index >= len(self._suggestions):
+            return False
+        return self.replace_active_query(
+            text, cursor_index, self._matches[index]["thread_id"]
+        )
+
+
+# ============================================================================
 # Fuzzy File Completion (scoped to current working directory)
 # ============================================================================
 
@@ -356,8 +599,11 @@ _MAX_FALLBACK_FILES = 1000
 _MIN_FUZZY_SCORE = 15
 """Minimum score to include in file-completion results."""
 
-_MIN_FUZZY_RATIO = 0.4
-"""SequenceMatcher threshold for filename-only fuzzy matches."""
+_FUZZY_FILENAME_WEIGHT = 30
+"""Multiplier applied to a filename `SequenceMatcher` ratio to get its score.
+
+A fuzzy match needs a ratio of at least `_MIN_FUZZY_SCORE / 30 = 0.5`.
+"""
 
 _NOT_A_REPO_MARKER = "not a git repository"
 """Marker in `git ls-files` stderr for a non-repository directory.
@@ -391,16 +637,20 @@ def _run_git_ls_files(
         # S603: git_path validated via shutil.which(); ls-files args are
         # caller-supplied literals.
         result = subprocess.run(  # noqa: S603
-            [git_path, "ls-files", *extra_args],
+            # `-z` NUL-terminates entries and disables quoting; otherwise the
+            # default `core.quotePath` turns non-ASCII names into octal escapes.
+            [git_path, "ls-files", "-z", *extra_args],
             cwd=root,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="surrogateescape",
             timeout=5,
             check=False,
             # Git localizes stderr; use C so the non-repo marker stays stable.
             env={**os.environ, "LC_ALL": "C"},
         )
-    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+    except subprocess.TimeoutExpired, FileNotFoundError, OSError:
         logger.debug("git ls-files %s failed to run", extra_args, exc_info=True)
         return False, []
     if result.returncode != 0:
@@ -418,7 +668,7 @@ def _run_git_ls_files(
                 stderr,
             )
         return False, []
-    return True, [f for f in result.stdout.strip().split("\n") if f]
+    return True, [f for f in result.stdout.split("\0") if f]
 
 
 def _get_project_files(root: Path) -> list[str]:
@@ -465,51 +715,120 @@ def _get_project_files(root: Path) -> list[str]:
     return files
 
 
+class _FileEntry(NamedTuple):
+    """A file path with the query-independent values `_score_entry` needs.
+
+    Built once per file-cache load so each keystroke does not re-lowercase and
+    re-split every path.
+    """
+
+    path: str
+    """Path as offered to the user."""
+
+    lower: str
+    """Lowercased path with `\\` normalized to `/`."""
+
+    filename: str
+    """Lowercased final path component."""
+
+    filename_start: int
+    """Index in `lower` where the filename begins."""
+
+    is_dotpath: bool
+    """Whether any path component is hidden."""
+
+
+def _index_file(path: str) -> _FileEntry:
+    """Precompute the scoring fields for one path.
+
+    Returns:
+        The entry for `path`.
+    """
+    # Normalize path separators for cross-platform support
+    normalized = path.replace("\\", "/")
+    lower = normalized.lower()
+    return _FileEntry(
+        path=path,
+        lower=lower,
+        filename=normalized.rsplit("/", 1)[-1].lower(),
+        filename_start=lower.rfind("/") + 1,
+        is_dotpath=_is_dotpath(path),
+    )
+
+
+def _index_files(paths: list[str]) -> list[_FileEntry]:
+    """Precompute the scoring fields for each path.
+
+    Returns:
+        One entry per path, in input order.
+    """
+    return [_index_file(path) for path in paths]
+
+
+def _substring_score(query_lower: str, entry: _FileEntry) -> float | None:
+    """Score a case-insensitive substring match of the query.
+
+    A filename match ranks above a match elsewhere in the path.
+
+    Returns:
+        The score, or `None` when `query_lower` is not in the path.
+    """
+    path = entry.path
+    idx = entry.filename.find(query_lower)
+    if idx >= 0:
+        # Bonus for being at start of filename, then for a word boundary
+        if idx == 0:
+            return 150 + (1 / len(path))
+        if entry.filename[idx - 1] in "_-.":
+            return 120 + (1 / len(path))
+        return 100 + (1 / len(path))
+
+    idx = entry.lower.find(query_lower)
+    if idx < 0:
+        return None
+    if idx == entry.filename_start:
+        return 80 + (1 / len(path))
+    if idx == 0 or path[idx - 1] in "/_-.":
+        return 60 + (1 / len(path))
+    return 40 + (1 / len(path))
+
+
+def _score_entry(query_lower: str, entry: _FileEntry) -> float:
+    """Score a file entry against a lowercased query. Higher = better match.
+
+    Returns:
+        The score, or `0.0` when it is below `_MIN_FUZZY_SCORE`.
+    """
+    score = _substring_score(query_lower, entry)
+    if score is not None:
+        return score
+
+    # Fuzzy match on the filename only. A fuzzy match on the full path is not
+    # tried: at weight 15 it reaches `_MIN_FUZZY_SCORE` only at ratio 1.0,
+    # which means an exact match, and the substring check already caught that.
+    #
+    # `ratio()` is slow. Its cheap upper bounds reject most files first:
+    # `2 * min(len) / total` (the `real_quick_ratio()` formula), then
+    # `quick_ratio()`. A file rejected by a bound cannot reach the threshold.
+    total = len(query_lower) + len(entry.filename)
+    bound = 2.0 * min(len(query_lower), len(entry.filename)) / total
+    if bound * _FUZZY_FILENAME_WEIGHT < _MIN_FUZZY_SCORE:
+        return 0.0
+    matcher = SequenceMatcher(None, query_lower, entry.filename)
+    if matcher.quick_ratio() * _FUZZY_FILENAME_WEIGHT < _MIN_FUZZY_SCORE:
+        return 0.0
+    score = matcher.ratio() * _FUZZY_FILENAME_WEIGHT
+    return score if score >= _MIN_FUZZY_SCORE else 0.0
+
+
 def _fuzzy_score(query: str, candidate: str) -> float:
     """Score a candidate against query. Higher = better match.
 
     Returns:
-        Score value where higher indicates better match quality.
+        Score value where higher indicates better match quality, or `0.0`
+            when it is below `_MIN_FUZZY_SCORE`.
     """
-    query_lower = query.lower()
-    # Normalize path separators for cross-platform support
-    candidate_normalized = candidate.replace("\\", "/")
-    candidate_lower = candidate_normalized.lower()
-
-    # Extract filename for matching (prioritize filename over full path)
-    filename = candidate_normalized.rsplit("/", 1)[-1].lower()
-    filename_start = candidate_lower.rfind("/") + 1
-
-    # Check filename first (higher priority)
-    if query_lower in filename:
-        idx = filename.find(query_lower)
-        # Bonus for being at start of filename
-        if idx == 0:
-            return 150 + (1 / len(candidate))
-        # Bonus for word boundary in filename
-        if idx > 0 and filename[idx - 1] in "_-.":
-            return 120 + (1 / len(candidate))
-        return 100 + (1 / len(candidate))
-
-    # Check full path
-    if query_lower in candidate_lower:
-        idx = candidate_lower.find(query_lower)
-        # At start of filename
-        if idx == filename_start:
-            return 80 + (1 / len(candidate))
-        # At word boundary in path
-        if idx == 0 or candidate[idx - 1] in "/_-.":
-            return 60 + (1 / len(candidate))
-        return 40 + (1 / len(candidate))
-
-    # Fuzzy match on filename only (more relevant)
-    filename_ratio = SequenceMatcher(None, query_lower, filename).ratio()
-    if filename_ratio > _MIN_FUZZY_RATIO:
-        return filename_ratio * 30
-
-    # Fallback: fuzzy on full path
-    ratio = SequenceMatcher(None, query_lower, candidate_lower).ratio()
-    return ratio * 15
+    return _score_entry(query.lower(), _index_file(candidate))
 
 
 def _is_dotpath(path: str) -> bool:
@@ -548,25 +867,49 @@ def _fuzzy_search(
     Returns:
         List of matching file paths sorted by relevance score.
     """
-    # Filter dotfiles unless explicitly searching for them
-    filtered = (
-        candidates
-        if include_dotfiles
-        else [c for c in candidates if not _is_dotpath(c)]
+    return _search_entries(
+        query, _index_files(candidates), limit, include_dotfiles=include_dotfiles
     )
+
+
+def _search_entries(
+    query: str,
+    entries: list[_FileEntry],
+    limit: int,
+    *,
+    include_dotfiles: bool,
+) -> list[str]:
+    """Return the paths of the top-scoring entries.
+
+    Args:
+        query: Search query.
+        entries: Precomputed entries from `_index_files`.
+        limit: Max results to return.
+        include_dotfiles: Whether to include hidden paths.
+
+    Returns:
+        Matching file paths sorted by relevance score.
+    """
+    # Filter dotfiles unless explicitly searching for them
+    if not include_dotfiles:
+        entries = [entry for entry in entries if not entry.is_dotpath]
 
     if not query:
         # Empty query: show root-level files first, sorted by depth then name
-        sorted_files = sorted(filtered, key=lambda p: (_path_depth(p), p.lower()))
-        return sorted_files[:limit]
+        paths = sorted(
+            (entry.path for entry in entries),
+            key=lambda p: (_path_depth(p), p.lower()),
+        )
+        return paths[:limit]
 
+    query_lower = query.lower()
     scored = [
-        (score, c)
-        for c in filtered
-        if (score := _fuzzy_score(query, c)) >= _MIN_FUZZY_SCORE
+        (score, entry.path)
+        for entry in entries
+        if (score := _score_entry(query_lower, entry)) >= _MIN_FUZZY_SCORE
     ]
     scored.sort(key=lambda x: -x[0])
-    return [c for _, c in scored[:limit]]
+    return [path for _, path in scored[:limit]]
 
 
 def _scope_files_to_cwd(files: list[str], project_root: Path, cwd: Path) -> list[str]:
@@ -579,13 +922,14 @@ def _scope_files_to_cwd(files: list[str], project_root: Path, cwd: Path) -> list
         cwd: Directory to scope suggestions to.
 
     Returns:
-        Paths rewritten relative to `cwd`, filtered to that subtree (possibly
-        empty), when `cwd` is nested under `project_root`. The input list
+        Safe paths rewritten relative to `cwd`, filtered to that subtree (possibly
+        empty), when `cwd` is nested under `project_root`. Safe paths remain
         unchanged when `cwd` equals `project_root`. An empty list when `cwd` is
         not under `project_root`: the paths are project-root-relative and would
         resolve to the wrong base from `cwd`, so fail closed rather than offer
         misleading suggestions.
     """
+    files = [path for path in files if is_safe_file_path(path)]
     if cwd == project_root:
         return files
     try:
@@ -594,6 +938,18 @@ def _scope_files_to_cwd(files: list[str], project_root: Path, cwd: Path) -> list
         return []
     prefix = f"{relative_cwd}/"
     return [path[len(prefix) :] for path in files if path.startswith(prefix)]
+
+
+def _load_file_index(
+    project_root: Path, cwd: Path
+) -> tuple[list[str], list[_FileEntry]]:
+    """List, scope, and index project files. Blocking; run in a worker thread.
+
+    Returns:
+        The file paths relative to `cwd`, and their scoring entries.
+    """
+    files = _scope_files_to_cwd(_get_project_files(project_root), project_root, cwd)
+    return files, _index_files(files)
 
 
 class FuzzyFileController:
@@ -616,6 +972,10 @@ class FuzzyFileController:
         self._suggestions: list[tuple[str, str]] = []
         self._selected_index = 0
         self._file_cache: list[str] | None = None
+        # Scoring entries for `_file_index_source`. Rebuilt when `_file_cache`
+        # is replaced by a different list.
+        self._file_index: list[_FileEntry] = []
+        self._file_index_source: list[str] | None = None
         # When True, `_project_root` is a provisional value (set synchronously by
         # `set_cwd`) and the real project root is resolved off the event loop in
         # `warm_cache`. See `set_cwd` for why discovery is deferred.
@@ -697,9 +1057,11 @@ class FuzzyFileController:
         # list visible. Log at debug so a recurring background refresh failure
         # (the 30s timer) is diagnosable rather than silently stale.
         try:
-            files = await asyncio.to_thread(_get_project_files, project_root)
+            files, index = await asyncio.to_thread(_load_file_index, project_root, cwd)
             if generation == self._cache_generation:
-                self._file_cache = _scope_files_to_cwd(files, project_root, cwd)
+                self._file_cache = files
+                self._file_index = index
+                self._file_index_source = files
         except Exception:  # best-effort refresh; prior cache is the fallback
             logger.debug("File-cache warm failed for %s", project_root, exc_info=True)
 
@@ -719,6 +1081,11 @@ class FuzzyFileController:
 
         at_index = before_cursor.rfind("@")
         if cursor_index <= at_index:
+            return False
+
+        # `@@` is reserved for thread completion. `rfind` points at the second
+        # trigger character, so also inspect the character immediately before it.
+        if at_index > 0 and before_cursor[at_index - 1 : at_index + 1] == "@@":
             return False
 
         # Fragment from @ to cursor must not contain spaces
@@ -753,17 +1120,31 @@ class FuzzyFileController:
         else:
             self.reset()
 
+    def _get_file_index(self) -> list[_FileEntry]:
+        """Get scoring entries for the cached file list.
+
+        Returns:
+            One entry per cached file path.
+        """
+        files = self._get_files()
+        if self._file_index_source is not files:
+            self._file_index = _index_files(files)
+            self._file_index_source = files
+        return self._file_index
+
     def _get_fuzzy_suggestions(self, search: str) -> list[tuple[str, str]]:
         """Get fuzzy file suggestions.
 
         Returns:
             List of (label, type_hint) tuples for matching files.
         """
-        files = self._get_files()
         # Include dotfiles only if query starts with "."
         include_dots = search.startswith(".")
-        matches = _fuzzy_search(
-            search, files, limit=MAX_SUGGESTIONS, include_dotfiles=include_dots
+        matches = _search_entries(
+            search,
+            self._get_file_index(),
+            MAX_SUGGESTIONS,
+            include_dotfiles=include_dots,
         )
 
         suggestions: list[tuple[str, str]] = []
@@ -812,6 +1193,17 @@ class FuzzyFileController:
         self._view.render_completion_suggestions(
             self._suggestions, self._selected_index
         )
+
+    def apply_selection(self, index: int, text: str, cursor_index: int) -> bool:
+        """Apply a clicked file completion row.
+
+        Returns:
+            Whether the selected row was applied.
+        """
+        if index < 0 or index >= len(self._suggestions):
+            return False
+        self._selected_index = index
+        return self._apply_selected_completion(text, cursor_index)
 
     def _apply_selected_completion(self, text: str, cursor_index: int) -> bool:
         """Apply the currently selected completion.
@@ -881,6 +1273,16 @@ class MultiCompletionManager:
         # Let the active controller process the change
         candidate.on_text_changed(text, cursor_index)
 
+    def apply_selection(self, index: int, text: str, cursor_index: int) -> bool:
+        """Apply a clicked completion through the active controller.
+
+        Returns:
+            Whether the active controller applied the row.
+        """
+        if self._active is None:
+            return False
+        return self._active.apply_selection(index, text, cursor_index)
+
     def on_key(
         self, event: events.Key, text: str, cursor_index: int
     ) -> CompletionResult:
@@ -892,6 +1294,10 @@ class MultiCompletionManager:
         if self._active is None:
             return CompletionResult.IGNORED
         return self._active.on_key(event, text, cursor_index)
+
+    def is_active(self, controller: CompletionController) -> bool:
+        """Return whether `controller` owns the current completion session."""
+        return self._active is controller
 
     def reset(self) -> None:
         """Reset all controllers."""

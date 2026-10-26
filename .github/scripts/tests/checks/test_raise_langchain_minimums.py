@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import os
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -238,6 +240,38 @@ class TestPlanManifest:
 
         assert scope.requirements == ()
 
+    def test_published_local_sources_are_raised_up_to_the_local_version(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A path source only applies locally; PyPI users get the declared floor.
+
+        The floor stops at the local checkout's version, so `uv lock` can still
+        resolve the path source when PyPI is ahead of this branch.
+        """
+        monkeypatch.setattr(raise_langchain_minimums, "REPO_ROOT", tmp_path)
+        (tmp_path / "vercel").mkdir()
+        (tmp_path / "vercel" / "pyproject.toml").write_text(
+            '[project]\nname = "langchain-vercel-sandbox"\nversion = "0.0.2"\n',
+            encoding="utf-8",
+        )
+        scope = self._scope(
+            tmp_path,
+            '[project]\nname = "x"\n'
+            "[project.optional-dependencies]\n"
+            'vercel = ["langchain-vercel-sandbox>=0.0.1"]\n'
+            "\n"
+            "[tool.uv.sources]\n"
+            'langchain-vercel-sandbox = { path = "vercel", editable = true }\n',
+        )
+
+        plan = _plan_manifest(
+            scope, {"langchain-vercel-sandbox": _versions("0.0.1", "0.0.2", "0.0.3")}
+        )
+
+        assert [edit.new_requirement for edit in plan.edits] == [
+            "langchain-vercel-sandbox>=0.0.2"
+        ]
+
     def test_exact_pins_are_left_alone(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -380,22 +414,108 @@ class TestInScope:
 
 
 class TestEditsMarkdown:
-    def test_renders_one_table_row_per_edit(self) -> None:
+    @pytest.mark.parametrize(
+        ("old", "new", "minimum"),
+        [
+            (">=0.1.0,<1.0", ">=0.4.0,<1.0", "`>=0.1.0` → `>=0.4.0`"),
+            ("~=0.1.0", "~=0.1.9", "`~=0.1.0` → `~=0.1.9`"),
+            ("~=0.1,>=0.2", "~=0.1,>=0.4", "`>=0.2` → `>=0.4`"),
+        ],
+    )
+    def test_renders_only_the_changed_floor(
+        self, old: str, new: str, minimum: str
+    ) -> None:
         edit = raise_langchain_minimums.RequirementEdit(
             manifest_path="libs/code/pyproject.toml",
             dependency_name="langsmith",
-            old_requirement="langsmith>=0.1.0",
-            new_requirement="langsmith>=0.4.0",
+            old_requirement=f"langsmith{old}",
+            new_requirement=f"langsmith{new}",
         )
 
-        assert edits_markdown([edit], heading="Raised 1 minimum(s):") == (
-            "Raised 1 minimum(s):\n"
+        assert edits_markdown([edit], heading="Raised 1 dependency minimum:") == (
+            "Raised 1 dependency minimum:\n"
             "\n"
-            "| Manifest | Dependency | Change |\n"
+            "| Dependency | Minimum | Targets |\n"
             "|---|---|---|\n"
-            "| `libs/code/pyproject.toml` | `langsmith` | "
-            "`langsmith>=0.1.0` → `langsmith>=0.4.0` |"
+            f"| `langsmith` | {minimum} | `deepagents-code` |"
         )
+
+    def test_groups_dependencies_with_sorted_package_targets(self) -> None:
+        edits = [
+            raise_langchain_minimums.RequirementEdit(
+                manifest, name, f"{name}>=0.1,<1.0", f"{name}>=0.4,<1.0"
+            )
+            for manifest, name in [
+                ("libs/code/pyproject.toml", "langsmith"),
+                ("libs/deepagents/pyproject.toml", "langsmith"),
+                ("libs/code/pyproject.toml", "langgraph"),
+            ]
+        ]
+
+        result = edits_markdown(edits, heading="Raised 3 dependency minimums:")
+
+        assert result == (
+            "Raised 3 dependency minimums:\n\n"
+            "| Dependency | Minimum | Targets |\n"
+            "|---|---|---|\n"
+            "| `langgraph` | `>=0.1` → `>=0.4` | `deepagents-code` |\n"
+            "| `langsmith` | `>=0.1` → `>=0.4` | `deepagents-code`, `deepagents` |"
+        )
+        assert (
+            edits_markdown(
+                list(reversed(edits)), heading="Raised 3 dependency minimums:"
+            )
+            == result
+        )
+
+    def test_keeps_distinct_bounds_in_separate_dependency_rows(self) -> None:
+        edits = [
+            raise_langchain_minimums.RequirementEdit(
+                "libs/code/pyproject.toml",
+                "langsmith",
+                f"langsmith{old}",
+                f"langsmith{new}",
+            )
+            for old, new in [(">=0.2", ">=0.4"), (">=0.1", ">=0.4"), (">=0.1", ">=0.3")]
+        ]
+
+        assert edits_markdown(edits, heading="Raised 3 dependency minimums:") == (
+            "Raised 3 dependency minimums:\n\n"
+            "| Dependency | Minimum | Targets |\n"
+            "|---|---|---|\n"
+            "| `langsmith` | `>=0.1` → `>=0.3` | `deepagents-code` |\n"
+            "| `langsmith` | `>=0.1` → `>=0.4` | `deepagents-code` |\n"
+            "| `langsmith` | `>=0.2` → `>=0.4` | `deepagents-code` |"
+        )
+
+    def test_preserves_extras_and_markers_for_distinct_declarations(self) -> None:
+        identities = [
+            "langsmith",
+            'langsmith[otel]; python_version < "3.12"',
+            'langsmith[otel]; python_version >= "3.12"',
+            'langsmith; os_name == "a|b"',
+        ]
+        edits = []
+        for identity in identities:
+            name, separator, marker = identity.partition(";")
+            edits.append(
+                raise_langchain_minimums.RequirementEdit(
+                    "libs/code/pyproject.toml",
+                    "langsmith",
+                    f"{name}>=0.1,<1.0{separator}{marker}",
+                    f"{name}>=0.4,<1.0{separator}{marker}",
+                )
+            )
+
+        result = edits_markdown(edits, heading="Raised 4 dependency minimums:")
+
+        assert result.count("| `langsmith` | `>=0.1` → `>=0.4` |") == 1
+        assert "`deepagents-code`, " in result
+        assert '`deepagents-code` (extras: `otel`); `python_version < "3.12"`' in result
+        assert (
+            '`deepagents-code` (extras: `otel`); `python_version >= "3.12"`' in result
+        )
+        assert '`deepagents-code`; `os_name == "a\\|b"`' in result
 
 
 class TestParseDependencyCsv:
@@ -432,6 +552,32 @@ class TestRunNarrowing:
         monkeypatch.setattr(
             raise_langchain_minimums, "load_release_packages", lambda: {"libs/x": "pkg"}
         )
+
+    @pytest.mark.parametrize("count", [1, 2])
+    def test_summary_uses_natural_singular_and_plural(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, count: int
+    ) -> None:
+        names = ["langsmith", "langchain-core"][:count]
+        dependencies = ", ".join(f'"{name}>=0.1"' for name in names)
+        self._package(
+            tmp_path,
+            monkeypatch,
+            f'[project]\nname = "pkg"\ndependencies = [{dependencies}]\n',
+        )
+        monkeypatch.setattr(
+            raise_langchain_minimums,
+            "_fetch_available_versions",
+            lambda _: ({name: _versions("0.4") for name in names}, []),
+        )
+        outputs: dict[str, str] = {}
+        monkeypatch.setattr(
+            raise_langchain_minimums, "_write_output", outputs.__setitem__
+        )
+
+        assert _run("pkg", skip_dependent_locks=True) == 0
+        noun = "minimum" if count == 1 else "minimums"
+        assert outputs["summary"].startswith(f"Raised {count} dependency {noun}:\n")
+        assert "| Dependency | Minimum | Targets |" in outputs["summary"]
 
     def test_unknown_requested_name_fails_closed(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -620,6 +766,98 @@ def test_workflow_expressions_use_only_real_functions() -> None:
             assert not unknown, (
                 f"{workflow.name}: unknown expression function(s) {unknown}"
             )
+
+
+@pytest.mark.parametrize("already_copied_main", [False, True])
+def test_refresh_preserves_main_ancestry(
+    tmp_path: Path, already_copied_main: bool
+) -> None:
+    """Refreshing a shallow branch keeps unrelated main changes out of the PR."""
+    source = tmp_path / "source"
+    source.mkdir()
+
+    def git(directory: Path, *args: str) -> str:
+        return subprocess.check_output(
+            ["git", "-C", str(directory), *args], text=True
+        ).strip()
+
+    git(source, "init", "-b", "main")
+    git(source, "config", "user.name", "github-actions[bot]")
+    git(source, "config", "user.email", "bot@example.com")
+    for name in ("pyproject.toml", "uv.lock", "unrelated.py", "removed.py"):
+        (source / name).write_text("original\n")
+    git(source, "add", ".")
+    git(source, "commit", "-m", "initial")
+    branch = "chore/raise-dependency-minimums-all"
+    git(source, "checkout", "-b", branch)
+    (source / "pyproject.toml").write_text("raised\n")
+    (source / "uv.lock").write_text("raised\n")
+    git(source, "commit", "-am", "raise minimums")
+    git(source, "checkout", "main")
+    (source / "unrelated.py").write_text("updated on main\n")
+    (source / "added.py").write_text("added on main\n")
+    (source / "removed.py").unlink()
+    git(source, "add", "-A")
+    git(source, "commit", "-m", "unrelated main changes")
+    base = git(source, "rev-parse", "HEAD")
+    if already_copied_main:
+        git(source, "checkout", branch)
+        git(source, "read-tree", "--reset", "-u", base)
+        for name in ("pyproject.toml", "uv.lock"):
+            (source / name).write_text("raised\n")
+        git(source, "add", ".")
+        git(source, "commit", "-m", "broken refresh without main parent")
+        git(source, "checkout", "main")
+    remote = tmp_path / "remote.git"
+    git(tmp_path, "clone", "--bare", str(source), str(remote))
+    workflow = REPO_ROOT / ".github/workflows/raise_langchain_minimums.yml"
+    steps = yaml.safe_load(workflow.read_text())["jobs"]["raise"]["steps"]
+    script = next(
+        step["run"]
+        for step in steps
+        if step.get("name") == "Refresh existing minimums bump PR"
+    )
+    for iteration in range(2):
+        checkout = tmp_path / f"checkout-{iteration}"
+        git(tmp_path, "clone", "--depth=1", remote.as_uri(), str(checkout))
+        assert git(checkout, "rev-parse", "--is-shallow-repository") == "true"
+        previous = git(remote, "rev-parse", branch)
+        git(
+            checkout,
+            "config",
+            f"url.{remote.as_uri()}.insteadOf",
+            "https://x-access-token:test@github.com/test/repo.git",
+        )
+        for name in ("pyproject.toml", "uv.lock"):
+            (checkout / name).write_text("raised\n")
+        env = {
+            **os.environ,
+            "GH_TOKEN": "test",
+            "GITHUB_REPOSITORY": "test/repo",
+            "BRANCH": branch,
+            "BOT_EMAIL": "bot@example.com",
+            "CHANGED_FILES": "pyproject.toml",
+            "LOCK_DIRS": ".",
+            "TITLE": "raise minimums",
+            "PR_NUMBER": "1",
+            "PR_URL": "unused",
+            "TMPDIR": str(tmp_path),
+        }
+        subprocess.run(
+            ["bash", "-c", "gh() { :; }\n" + script],
+            cwd=checkout,
+            env=env,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        assert git(remote, "rev-parse", f"{branch}^1") == previous
+        assert git(remote, "rev-parse", f"{branch}^2") == base
+        assert git(remote, "merge-base", "main", branch) == base
+        assert git(remote, "diff", "--name-only", f"main...{branch}").splitlines() == [
+            "pyproject.toml",
+            "uv.lock",
+        ]
 
 
 def test_workflow_options_match_release_labels() -> None:

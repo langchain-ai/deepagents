@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import tomllib
 from datetime import date, datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
@@ -25,11 +26,15 @@ from deepagents_code.client.commands.config import (
     run_config_command,
 )
 from deepagents_code.config_manifest import (
+    MCP_TOOL_TIMEOUT_CEILING,
+    MCP_TOOL_TIMEOUT_FLOOR,
+    MCP_TOOL_TIMEOUT_SECONDS_DEFAULT,
     ConfigOption,
     OptionKind,
     get_config_options,
     get_option,
     options_with_key_prefix,
+    resolve_mcp_tool_timeout,
 )
 from deepagents_code.model_config import DEFAULT_STARTUP_MODE, PROVIDER_API_KEY_ENV
 from unit_tests.conftest import resolve_option_for_test
@@ -42,6 +47,115 @@ if TYPE_CHECKING:
 # config file, or built-in defaults; adding the env var here would hide the
 # config/default cases these tests are trying to verify.
 pytestmark = pytest.mark.self_managed_update_check
+
+
+def test_mcp_tool_timeout_resolves_env_and_bounds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """MCP timeout accepts env overrides and rejects values outside its bounds."""
+    option = get_option("mcp.tool_timeout")
+    assert option is not None
+    assert option.env_var == _env_vars.MCP_TOOL_TIMEOUT
+
+    monkeypatch.setenv(_env_vars.MCP_TOOL_TIMEOUT, "45")
+    assert resolve_mcp_tool_timeout(
+        toml_data={"mcp": {"tool_timeout": 30.0}}
+    ) == pytest.approx(45.0)
+
+    monkeypatch.setenv(_env_vars.MCP_TOOL_TIMEOUT, str(MCP_TOOL_TIMEOUT_CEILING + 1))
+    assert resolve_mcp_tool_timeout(
+        toml_data={"mcp": {"tool_timeout": 30.0}}
+    ) == pytest.approx(30.0)
+
+    monkeypatch.setenv(_env_vars.MCP_TOOL_TIMEOUT, str(MCP_TOOL_TIMEOUT_FLOOR - 1))
+    assert resolve_mcp_tool_timeout(
+        toml_data={"mcp": {"tool_timeout": 30.0}}
+    ) == pytest.approx(30.0)
+    assert pytest.approx(120.0) == MCP_TOOL_TIMEOUT_SECONDS_DEFAULT
+
+
+@pytest.mark.parametrize("process_value", [None, "45", "901"])
+@pytest.mark.parametrize("managed_value", [None, 901.0])
+def test_mcp_timeout_rejects_scoped_environment_override(
+    monkeypatch: pytest.MonkeyPatch,
+    process_value: str | None,
+    managed_value: float | None,
+) -> None:
+    """A rejected workspace override reveals TOML without changing the process."""
+    from deepagents_code.config import active_environment, use_environment
+
+    if process_value is None:
+        monkeypatch.delenv(_env_vars.MCP_TOOL_TIMEOUT, raising=False)
+    else:
+        monkeypatch.setenv(_env_vars.MCP_TOOL_TIMEOUT, process_value)
+    managed = {} if managed_value is None else {"mcp": {"tool_timeout": managed_value}}
+    with use_environment({_env_vars.MCP_TOOL_TIMEOUT: "901"}):
+        assert resolve_mcp_tool_timeout(
+            toml_data={"mcp": {"tool_timeout": 30.0}}, managed_toml_data=managed
+        ) == pytest.approx(30.0)
+        assert active_environment()[_env_vars.MCP_TOOL_TIMEOUT] == "901"
+        assert os.environ.get(_env_vars.MCP_TOOL_TIMEOUT) == process_value
+
+
+@pytest.mark.parametrize("invalid", [0, 901, "nan", "inf", "invalid"])
+def test_mcp_timeout_falls_back_through_all_rejected_sources(
+    monkeypatch: pytest.MonkeyPatch, invalid: int | str
+) -> None:
+    """Invalid values at every precedence level still leave a finite deadline."""
+    monkeypatch.setenv(_env_vars.MCP_TOOL_TIMEOUT, str(invalid))
+    assert resolve_mcp_tool_timeout(
+        toml_data={"mcp": {"tool_timeout": invalid}},
+        managed_toml_data={"mcp": {"tool_timeout": invalid}},
+    ) == pytest.approx(MCP_TOOL_TIMEOUT_SECONDS_DEFAULT)
+
+
+@pytest.mark.parametrize(
+    ("managed", "environment", "user", "expected", "source"),
+    [
+        (20, "45", 30, 20.0, "managed config"),
+        (901, "45", 30, 45.0, f"env ({_env_vars.MCP_TOOL_TIMEOUT})"),
+        (901, "901", 30, 30.0, "config.toml"),
+        (901, "901", 901, MCP_TOOL_TIMEOUT_SECONDS_DEFAULT, "default"),
+    ],
+)
+def test_mcp_timeout_display_matches_runtime_source(
+    monkeypatch: pytest.MonkeyPatch,
+    managed: int,
+    environment: str,
+    user: int,
+    expected: float,
+    source: str,
+) -> None:
+    """Config introspection reports the accepted value and its actual source."""
+    monkeypatch.setenv(_env_vars.MCP_TOOL_TIMEOUT, environment)
+    option = get_option("mcp.tool_timeout")
+    assert option is not None
+    assert _resolve(
+        option,
+        toml_data={"mcp": {"tool_timeout": user}},
+        managed_toml_data={"mcp": {"tool_timeout": managed}},
+    ) == (source != "default", source, expected)
+
+
+@pytest.mark.parametrize("user_timeout", [30, 901])
+def test_config_get_mcp_timeout_reports_bounded_value(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    user_timeout: int,
+) -> None:
+    """The config command falls back to TOML or the default for invalid env values."""
+    config = tmp_path / "config.toml"
+    config.write_text(f"[mcp]\ntool_timeout = {user_timeout}\n", encoding="utf-8")
+    monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
+    monkeypatch.setenv(_env_vars.MCP_TOOL_TIMEOUT, "901")
+
+    payload = _get_json_object("mcp.tool_timeout", capsys)
+
+    expected = 30.0 if user_timeout == 30 else MCP_TOOL_TIMEOUT_SECONDS_DEFAULT
+    assert payload["value"] == expected
+    assert payload["source"] == ("config.toml" if user_timeout == 30 else "default")
+    assert payload["set"] is (user_timeout == 30)
 
 
 def _resolve_manifest_option(
@@ -703,6 +817,50 @@ def test_run_config_text_reports_stored_source(capsys):
     assert "configured" in out
     assert "stored" in out
     assert "from-store" not in out
+
+
+@pytest.mark.parametrize("command", [None, "get"])
+def test_config_surfaces_tracing_status_and_opt_out(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    command: str | None,
+) -> None:
+    from deepagents_code import config
+
+    monkeypatch.setattr(config, "_bootstrap_state", config._BootstrapState())
+    monkeypatch.setenv("LANGSMITH_TRACING", "true")
+    monkeypatch.setenv("LANGSMITH_API_KEY", "private-key")
+    args = argparse.Namespace(
+        config_command=command, key="tracing", output_format="text"
+    )
+    assert run_config_command(args) == 0
+    output = capsys.readouterr().out
+    assert "LangSmith agent tracing: ON" in output
+    assert "--no-tracing" in output
+    assert "DEEPAGENTS_CODE_LANGSMITH_TRACING=false" in output
+    assert "private-key" not in output
+
+
+@pytest.mark.parametrize("sdk_override", [False, None])
+def test_tracing_status_respects_sdk_disable(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    sdk_override: bool | None,
+) -> None:
+    from langsmith._internal import _context
+
+    from deepagents_code import config
+
+    monkeypatch.setattr(config, "_bootstrap_state", config._BootstrapState())
+    monkeypatch.setattr(_context, "_GLOBAL_TRACING_ENABLED", sdk_override)
+    monkeypatch.setenv("LANGSMITH_TRACING", "true")
+    monkeypatch.setenv(
+        "LANGSMITH_TRACING_V2", "false" if sdk_override is None else "true"
+    )
+    monkeypatch.setenv("LANGSMITH_API_KEY", "private-key")
+    args = argparse.Namespace(config_command="get", key="tracing", output_format="text")
+    assert run_config_command(args) == 0
+    assert "LangSmith agent tracing: OFF" in capsys.readouterr().out
 
 
 def test_resolve_empty_stored_key_falls_back_to_env(stored_auth_dir, monkeypatch):
@@ -2220,3 +2378,16 @@ def test_legacy_debug_file_remains_discoverable(monkeypatch) -> None:
     assert _resolve_manifest_option(
         option, toml_data={"debug": {"file": "/tmp/configured.log"}}
     ) == ("/tmp/configured.log", "config.toml")
+
+
+@pytest.mark.parametrize("value", ["100000", "0"])
+def test_idle_compaction_env_override(
+    monkeypatch: pytest.MonkeyPatch, value: str
+) -> None:
+    option = get_option("history.idle_compaction_tokens")
+    assert option is not None
+    monkeypatch.setenv(_env_vars.IDLE_COMPACTION_TOKENS, value)
+    resolved, _ = resolve_option_for_test(
+        option, toml_data={"history": {"idle_compaction_tokens": 50000}}
+    )
+    assert resolved == int(value)

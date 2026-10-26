@@ -2,8 +2,8 @@
 
 Delegates streaming, state management, and SSE handling to
 `langgraph.pregel.remote.RemoteGraph`. This wrapper converts streamed message
-dicts into LangChain message objects for the app's Textual adapter, but leaves
-state snapshots in the server's serialized form.
+dicts into LangChain message objects for the app's Textual adapter. State snapshots
+remain unchanged; accounting is read separately from the server.
 """
 
 from __future__ import annotations
@@ -11,17 +11,26 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Mapping
+from contextlib import aclosing
 from typing import TYPE_CHECKING, Any, cast
 
-if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Awaitable, Callable
+from deepagents_code.client.session_cost import SessionCostTracker
 
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
+
+    from deepagents_code.client.session_cost import SessionCost
+    from deepagents_code.cost_tracking import CostBreakdown
     from deepagents_code.mcp_tools import MCPServerInfo
+    from deepagents_code.model_catalog import ModelCatalog
+    from deepagents_code.model_metadata import ModelMetadata, ModelPurpose
     from deepagents_code.offload_middleware import OffloadResult
+    from deepagents_code.workspace_diagnostics import WorkspaceDiagnostics
 
 logger = logging.getLogger(__name__)
 
 _RUN_CANCEL_WAIT_SECONDS = 10.0
+_RECOVERY_TRACE_HEADERS = {"x-deepagents-recovery": "interrupt"}
 """Per-run cancel wait. Picked so a stuck server-side run can't hang the UI on
 Esc for more than ~10s, while leaving room for an actually-cancelling run to
 finish its in-flight tool call.
@@ -146,7 +155,38 @@ def _validated_offload_result(result: object) -> OffloadResult:
                     f"{type(value).__name__}."
                 )
                 raise RuntimeError(msg)  # noqa: TRY004  # protocol fault
+    if status == "summarized":
+        for field in ("summary", "archive_path"):
+            if not isinstance(result.get(field), str):
+                msg = f"Handoff result field {field!r} must be a string."
+                raise RuntimeError(msg)  # noqa: TRY004  # protocol fault
     return cast("OffloadResult", result)
+
+
+def workspace_conflict_diagnostics(
+    exc: BaseException,
+) -> WorkspaceDiagnostics | None:
+    """Extract server workspace diagnostics from a raised HTTP conflict.
+
+    The workspace route answers a refusal with 409 and an additive
+    `diagnostics` payload beside `detail`; the SDK carries that body on
+    `APIStatusError.body`. Older servers omit the field, and any malformed
+    payload must degrade to `None` rather than break error display.
+
+    Args:
+        exc: The exception caught from a workspace request.
+
+    Returns:
+        The parsed `WorkspaceDiagnostics`, or `None` when absent or malformed.
+    """
+    from deepagents_code.workspace_diagnostics import WorkspaceDiagnostics
+
+    body = getattr(exc, "body", None)
+    if not isinstance(body, dict):
+        return None
+    return WorkspaceDiagnostics.from_dict(
+        cast("dict[str, Any]", body).get("diagnostics")
+    )
 
 
 def _require_thread_id(config: Mapping[str, Any] | None) -> str:
@@ -301,8 +341,8 @@ class RemoteAgent:
     Wraps `langgraph.pregel.remote.RemoteGraph` which handles SSE parsing,
     stream-mode negotiation (`messages-tuple`), namespace extraction, and
     interrupt detection. This class adds streamed message-object conversion for
-    the Textual adapter and thread-ID normalization. State snapshots are
-    returned as provided by the server.
+    the Textual adapter and thread-ID normalization. Graph state and accounting
+    responses remain separate.
     """
 
     def __init__(
@@ -312,6 +352,7 @@ class RemoteAgent:
         graph_name: str = "agent",
         api_key: str | None = None,
         headers: dict[str, str] | None = None,
+        local_ownership: bool = True,
     ) -> None:
         """Initialize the remote agent client.
 
@@ -323,9 +364,13 @@ class RemoteAgent:
                 When `None`, `RemoteGraph` auto-reads `LANGGRAPH_API_KEY`,
                 `LANGSMITH_API_KEY`, or `LANGCHAIN_API_KEY` from
                 the environment.
+            local_ownership: Fence writes to the local sessions database. Set to
+                `False` only for externally managed servers with separate storage.
             headers: Extra HTTP headers to include in every request
                 (e.g. bearer tokens, proxy headers).
         """
+        self._local_ownership = local_ownership
+        self._ownership_tokens: dict[str, str] = {}
         self._url = url
         self._graph_name = graph_name
         self._api_key = api_key
@@ -335,6 +380,9 @@ class RemoteAgent:
         self._workspace_config: dict[str, Any] | None = None
         self._workspace_config_fingerprint: str | None = None
         self._workspace_cwd: str | None = None
+        self._session_costs: dict[str, SessionCostTracker] = {}
+        # Servers without the usage route return 404 every time; stop asking.
+        self._usage_route_missing = False
 
     def _get_graph(self) -> Any:  # noqa: ANN401
         """Lazily create the `RemoteGraph` instance.
@@ -353,12 +401,310 @@ class RemoteAgent:
             )
         return self._graph
 
+    async def aget_model_metadata(self) -> ModelMetadata:
+        """Read the launch model's metadata without binding a conversation thread.
+
+        Returns:
+            Provider-independent metadata cached by the server at startup.
+
+        Raises:
+            RuntimeError: If the metadata request times out.
+        """
+        from deepagents_code.model_metadata import ModelMetadata
+
+        try:
+            response = await asyncio.wait_for(
+                self._get_graph().client.http.get("/dcode/model"), timeout=60
+            )
+        except TimeoutError as exc:
+            msg = "Startup model metadata timed out. Restart the server and retry."
+            raise RuntimeError(msg) from exc
+        return ModelMetadata.from_payload(response)
+
+    async def aget_model_catalog(
+        self,
+        config: Mapping[str, Any],
+        *,
+        purpose: ModelPurpose = "main",
+        recommended_models: Sequence[str] = (),
+        current_spec: str | None = None,
+    ) -> ModelCatalog:
+        """Load discovery, readiness, and profiles from the inference host.
+
+        Args:
+            config: Thread configuration used to bind the workspace.
+            purpose: Which role's profile overrides apply.
+            recommended_models: Known models to include alongside discovery.
+            current_spec: Active model to retain in the catalog.
+
+        Returns:
+            Validated provider-independent catalog data.
+        """
+        from deepagents_code.model_catalog import ModelCatalog
+
+        async def discover() -> ModelCatalog:
+            workspace = await self._workspace_for_thread(config)
+            thread_id = _require_thread_id(config)
+            payload = await self._get_graph().client.http.post(
+                f"/dcode/threads/{thread_id}/models",
+                json={
+                    "workspace": workspace,
+                    "purpose": purpose,
+                    "recommended_models": list(recommended_models),
+                    "current_spec": current_spec,
+                },
+            )
+            return ModelCatalog.model_validate(payload)
+
+        return await asyncio.wait_for(discover(), timeout=60)
+
+    async def aresolve_model(
+        self,
+        config: Mapping[str, Any],
+        model_spec: str | None = None,
+        *,
+        extra_kwargs: dict[str, Any] | None = None,
+        purpose: ModelPurpose = "main",
+    ) -> ModelMetadata:
+        """Read a thread's metadata or validate a proposed switch on the server.
+
+        Args:
+            config: Thread configuration used to bind the workspace.
+            model_spec: Proposed model, or `None` to read startup metadata.
+            extra_kwargs: Constructor parameters for a main-model switch.
+            purpose: Auxiliary models resolve without main-model profile overrides.
+
+        Returns:
+            Validated metadata, without a provider model in the client process.
+
+        Raises:
+            RuntimeError: If the metadata request times out.
+        """
+        from langgraph_sdk.errors import APIStatusError
+
+        from deepagents_code.model_metadata import ModelMetadata
+
+        async def resolve() -> ModelMetadata:
+            workspace = await self._workspace_for_thread(config)
+            thread_id = _require_thread_id(config)
+            try:
+                response = await self._get_graph().client.http.post(
+                    f"/dcode/threads/{thread_id}/model",
+                    json={
+                        "workspace": workspace,
+                        "model_spec": model_spec,
+                        "extra_kwargs": extra_kwargs,
+                        **({"purpose": purpose} if purpose != "main" else {}),
+                    },
+                )
+            except APIStatusError as exc:
+                body = exc.body
+                detail = body.get("detail") if isinstance(body, dict) else None
+                msg = (
+                    detail
+                    if isinstance(detail, str)
+                    else (
+                        "Model metadata is unavailable from this server. "
+                        "Update or restart the server and retry."
+                    )
+                )
+                raise RuntimeError(msg) from exc
+            return ModelMetadata.from_payload(response)
+
+        try:
+            return await asyncio.wait_for(resolve(), timeout=60)
+        except TimeoutError as exc:
+            msg = "Timed out resolving model metadata. Restart the server and retry."
+            raise RuntimeError(msg) from exc
+
+    async def abtw(
+        self,
+        question: str,
+        *,
+        config: Mapping[str, Any],
+        history: Sequence[tuple[str, str]] = (),
+        on_text: Callable[[str], Awaitable[None]] | None = None,
+    ) -> str:
+        """Ask without submitting a run or writing conversation state.
+
+        Args:
+            question: Side question to answer.
+            config: Configuration identifying the main conversation.
+            history: Completed question/answer pairs from this side conversation.
+            on_text: Optional receiver for streamed answer text.
+
+        Returns:
+            The ephemeral answer.
+
+        Raises:
+            RuntimeError: If the server cannot complete the side question.
+            TypeError: If the response is malformed.
+        """
+        from langgraph_sdk.errors import NotFoundError
+
+        thread_id = _require_thread_id(config)
+        workspace = await self._workspace_for_thread(config)
+        await self.aensure_thread(dict(config))
+        payload: dict[str, object] = {"question": question, "workspace": workspace}
+        if history:
+            payload["history"] = list(history)
+        try:
+            path = f"/dcode/threads/{thread_id}/btw"
+            if on_text is None:
+                response = await self._get_graph().client.http.post(path, json=payload)
+            else:
+                response = await self._stream_btw(path, payload, on_text)
+        except NotFoundError as exc:
+            msg = "This server does not support /btw. Update the built-in dcode server."
+            raise RuntimeError(msg) from exc
+        text = response.get("text") if isinstance(response, dict) else None
+        cost = response.get("cost") if isinstance(response, dict) else None
+        if not isinstance(text, str):
+            msg = "Invalid side-question response from the server."
+            raise TypeError(msg)
+        # Accounting is best-effort: _refresh_side_cost also handles malformed totals.
+        await self._refresh_side_cost(
+            thread_id,
+            breakdown=cast("CostBreakdown | None", cost),
+        )
+        return text
+
+    async def _stream_btw(
+        self,
+        path: str,
+        payload: dict[str, object],
+        on_text: Callable[[str], Awaitable[None]],
+    ) -> object:
+        async with aclosing(
+            self._get_graph().client.http.stream(path, "POST", json=payload)
+        ) as stream:
+            async for event in stream:
+                if event.event == "text" and isinstance(event.data, str):
+                    await on_text(event.data)
+                elif event.event == "complete":
+                    return event.data
+                elif event.event == "error":
+                    detail = (
+                        event.data.get("detail")
+                        if isinstance(event.data, dict)
+                        else None
+                    )
+                    msg = (
+                        detail
+                        if isinstance(detail, str)
+                        else "Side question failed on the server."
+                    )
+                    raise RuntimeError(msg)
+        msg = "Side-question stream ended before the answer was complete."
+        raise RuntimeError(msg)
+
+    def _cost_tracker(self, thread_id: str) -> SessionCostTracker:
+        return self._session_costs.setdefault(thread_id, SessionCostTracker())
+
+    def get_cached_session_cost(self, config: Mapping[str, Any]) -> SessionCost | None:
+        """Read the display total without fetching either accounting source.
+
+        Args:
+            config: Config with `configurable.thread_id`.
+
+        Returns:
+            Last known usage, or `None` when no accounting has been received.
+        """
+        return self._cost_tracker(_require_thread_id(config)).snapshot()
+
+    async def aget_session_cost(
+        self,
+        config: Mapping[str, Any],
+        *,
+        checkpoint: Mapping[str, object],
+    ) -> SessionCost | None:
+        """Reconcile main-task state and refresh separately persisted side spend.
+
+        Args:
+            config: Config with `configurable.thread_id`.
+            checkpoint: Already fetched graph state, or empty if unavailable.
+
+        Returns:
+            Combined usage. Without valid graph state, `cached` tells callers
+            to preserve provisional main-task usage even if side spend refreshed.
+        """
+        tracker = self._cost_tracker(_require_thread_id(config))
+        settled = tracker.update_graph(
+            checkpoint.get("_session_cost_usd"),
+            checkpoint.get("_session_cost_breakdown"),
+        )
+        await self._refresh_side_cost(_require_thread_id(config))
+        return tracker.snapshot(cached=not settled)
+
+    async def aget_usage_state(
+        self, config: Mapping[str, Any]
+    ) -> tuple[dict[str, object], SessionCost | None] | None:
+        """Read cost and prompt-cache channels and side spend in one request.
+
+        Full thread state also rebuilds and sends the message history, which
+        is megabytes on a long thread. This read sends only usage channels.
+
+        Args:
+            config: Config with `configurable.thread_id`.
+
+        Returns:
+            The checkpoint's usage channels and the combined usage, or `None`
+                when the server cannot answer. Callers then read full state.
+        """
+        from langgraph_sdk.errors import NotFoundError
+
+        thread_id = _require_thread_id(config)
+        if self._usage_route_missing:
+            return None
+        try:
+            async with asyncio.timeout(2):
+                response = await self._get_graph().client.http.get(
+                    f"/dcode/threads/{thread_id}/usage"
+                )
+            checkpoint = response["checkpoint"]
+            if not isinstance(checkpoint, dict):
+                return None
+            tracker = self._cost_tracker(thread_id)
+            tracker.update_side(response["cost"])
+        except NotFoundError:
+            self._usage_route_missing = True
+            return None
+        except Exception:  # full state is the fallback
+            logger.debug("Could not read thread usage", exc_info=True)
+            return None
+        settled = tracker.update_graph(
+            checkpoint.get("_session_cost_usd"),
+            checkpoint.get("_session_cost_breakdown"),
+        )
+        return checkpoint, tracker.snapshot(cached=not settled)
+
+    async def _refresh_side_cost(
+        self, thread_id: str, *, breakdown: CostBreakdown | None = None
+    ) -> None:
+        """Refresh one source without replacing concurrently updated graph usage."""
+        from langgraph_sdk.errors import NotFoundError
+
+        try:
+            if breakdown is None:
+                async with asyncio.timeout(2):
+                    response = await self._get_graph().client.http.get(
+                        f"/dcode/threads/{thread_id}/cost"
+                    )
+                breakdown = response["cost"]
+            self._cost_tracker(thread_id).update_side(breakdown)
+        except NotFoundError:
+            # Servers predating /btw have only graph-owned accounting.
+            pass
+        except Exception:
+            logger.warning("Could not refresh side-question costs", exc_info=True)
+
     async def aoffload(
         self,
         *,
         config: Mapping[str, Any],
         context: Mapping[str, Any],
         fulfill_hook: Callable[[object], Awaitable[dict[str, object]]],
+        handoff: bool = False,
     ) -> OffloadResult:
         """Request server-owned offload and fulfill its hook callbacks.
 
@@ -366,6 +712,8 @@ class RemoteAgent:
             config: Runnable config identifying the thread.
             context: Runtime model and Hooks v2 context.
             fulfill_hook: Client hook executor for server requests.
+            handoff: Summarize every message for a new thread without
+                compacting the source thread.
 
         Returns:
             Typed offload result from the server operation.
@@ -390,6 +738,9 @@ class RemoteAgent:
         thread_id = _require_thread_id(config)
         workspace = await self._workspace_for_thread(config)
         operation_context = dict(context)
+        operation_context.update(
+            self._ownership_headers(self._prepare_mutation(config))
+        )
         operation_context["workspace"] = workspace
         # The operation reads and writes thread state over HTTP, so the thread's
         # live row must exist first. Checkpoint persistence and registration are
@@ -400,15 +751,19 @@ class RemoteAgent:
         operation_id = str(uuid4())
         hook_responses: dict[str, object] = {}
         graph = self._get_graph()
+        # Older servers ignore an unknown `handoff` body field and compact the
+        # source. A distinct route makes them reject the request before that.
+        operation = "handoff" if handoff else "offload"
         for round_index in range(_OFFLOAD_MAX_RESUME_ROUNDS + 1):
             try:
                 response = await _await_offload_step(
                     graph.client.http.post(
-                        f"/dcode/threads/{thread_id}/offload",
+                        f"/dcode/threads/{thread_id}/{operation}",
                         json={
                             "operation_id": operation_id,
                             "context": operation_context,
                             "hook_responses": hook_responses,
+                            **({"handoff": True} if handoff else {}),
                         },
                     ),
                     graph=graph,
@@ -423,7 +778,7 @@ class RemoteAgent:
                 # and the SDK's bare "404 Not Found" names neither the cause nor
                 # a fix.
                 msg = (
-                    "This server does not provide dcode's /offload operation. "
+                    f"This server does not provide dcode's /{operation} operation. "
                     "Use the built-in dcode server, or upgrade the server to a "
                     "version that registers it."
                 )
@@ -512,10 +867,17 @@ class RemoteAgent:
         """  # noqa: DOC502 — raised by _require_thread_id
         from langchain_core.messages import BaseMessage
 
-        _require_thread_id(config)
+        thread_id = _require_thread_id(config)
 
         graph = self._get_graph()
-        config = _prepare_config(config)
+        config = self._prepare_mutation(config)
+        ownership_headers = self._ownership_headers(config)
+        if ownership_headers:
+            from deepagents_code.thread_ownership import OWNER_KEY
+
+            # Runs cannot contain both configurable values and workspace context.
+            # The server injects this configured header into the run config instead.
+            config["configurable"].pop(OWNER_KEY)
         dropped_count = 0
 
         # Mirror this server-side run to an extra LangSmith project when
@@ -542,6 +904,7 @@ class RemoteAgent:
             subgraphs=subgraphs,
             config=config,
             context=payload,
+            headers=ownership_headers,
             **extra_stream_kwargs,
         ):
             logger.debug("RemoteGraph event mode=%s ns=%s", mode, ns)
@@ -574,6 +937,17 @@ class RemoteAgent:
                 yield (ns, "updates", update_data)
                 continue
 
+            if (
+                not ns
+                and mode == "custom"
+                and isinstance(data, dict)
+                and data.get("type") == "session_cost"
+                and isinstance(data.get("total"), int | float)
+            ):
+                tracker = self._cost_tracker(thread_id)
+                tracker.update_graph(data["total"], data.get("breakdown"))
+                yield (ns, mode, {**data, **(tracker.snapshot() or {})})
+                continue
             yield (ns, mode, data)
 
         if dropped_count:
@@ -660,6 +1034,7 @@ class RemoteAgent:
         values: dict[str, Any] | None,
         *,
         as_node: str | None = None,
+        recovery: bool = False,
     ) -> None:
         """Update the state of a thread.
 
@@ -680,6 +1055,7 @@ class RemoteAgent:
             config: Config with `configurable.thread_id`.
             values: State values to update.
             as_node: Optional graph node to attribute the state update to.
+            recovery: Mark an internal recovery write for server-side tracing policy.
 
         Raises:
             ValueError: If `thread_id` is not present in `config`.
@@ -687,11 +1063,17 @@ class RemoteAgent:
         from langgraph_sdk.errors import ConflictError
 
         thread_id = _require_thread_id(config)
-        prepared = _prepare_config(config)
+        prepared = self._prepare_mutation(config)
         graph = self._get_graph()
+        headers = self._ownership_headers(prepared)
+        if recovery:
+            headers.update(_RECOVERY_TRACE_HEADERS)
+        update_kwargs = {"headers": headers} if headers else {}
 
         try:
-            await graph.aupdate_state(prepared, values, as_node=as_node)
+            await graph.aupdate_state(
+                prepared, values, as_node=as_node, **update_kwargs
+            )
         except ConflictError:
             logger.debug(
                 "update_state conflict for thread %s; cancelling active runs "
@@ -709,7 +1091,9 @@ class RemoteAgent:
         await _cancel_active_runs(graph, thread_id)
 
         try:
-            await graph.aupdate_state(prepared, values, as_node=as_node)
+            await graph.aupdate_state(
+                prepared, values, as_node=as_node, **update_kwargs
+            )
         except Exception:
             logger.debug(
                 "Retry of update_state still failed for thread %s",
@@ -732,7 +1116,7 @@ class RemoteAgent:
             RuntimeError: If pending work remains after the state update.
         """
         thread_id = _require_thread_id(config)
-        prepared = _prepare_config(config)
+        prepared = self._prepare_mutation(config)
         await _cancel_active_runs(self._get_graph(), thread_id)
         state = await self.aget_state(prepared)
         cancelled = await asyncio.to_thread(
@@ -943,7 +1327,7 @@ class RemoteAgent:
         _require_thread_id(config)
 
         graph = self._get_graph()
-        prepared = _prepare_config(config)
+        prepared = self._prepare_mutation(config)
         thread_id = prepared["configurable"]["thread_id"]
         metadata = prepared.get("metadata")
         thread_metadata = metadata if isinstance(metadata, dict) else None
@@ -963,6 +1347,54 @@ class RemoteAgent:
                 exc_info=True,
             )
             raise
+
+    def bind_thread_ownership(self, thread_id: str) -> None:
+        """Bind an explicitly activated session to its current reservation.
+
+        Raises:
+            ThreadOwnershipError: The thread has no active local reservation.
+        """
+        if not self._local_ownership:
+            return
+        from deepagents_code.thread_ownership import ThreadOwnershipError, held_lease
+
+        lease = held_lease(thread_id)
+        if lease is None:
+            msg = f"Thread {thread_id} has no active reservation."
+            raise ThreadOwnershipError(msg)
+        self._ownership_tokens[thread_id] = lease.token
+
+    def _prepare_mutation(self, config: Mapping[str, Any] | None) -> dict[str, Any]:
+        prepared = _prepare_config(config)
+        if self._local_ownership:
+            from deepagents_code.thread_ownership import (
+                OWNER_KEY,
+                ThreadOwnershipError,
+                ensure_owned,
+                held_lease,
+            )
+
+            thread_id = _require_thread_id(config)
+            bound = self._ownership_tokens.get(thread_id)
+            lease = held_lease(thread_id) if bound else ensure_owned(thread_id)
+            supplied = prepared["configurable"].get(OWNER_KEY, bound)
+            if (
+                lease is None
+                or (bound is not None and bound != lease.token)
+                or (supplied is not None and supplied != lease.token)
+            ):
+                msg = "The thread reservation changed during this operation."
+                raise ThreadOwnershipError(msg)
+            self._ownership_tokens[thread_id] = lease.token
+            prepared["configurable"][OWNER_KEY] = lease.token
+        return prepared
+
+    def _ownership_headers(self, config: Mapping[str, Any]) -> dict[str, str]:
+        if not self._local_ownership:
+            return {}
+        from deepagents_code.thread_ownership import OWNER_KEY
+
+        return {OWNER_KEY: config["configurable"][OWNER_KEY]}
 
     def with_config(self, config: dict[str, Any]) -> RemoteAgent:  # noqa: ARG002
         """Return self (config is passed per-call, not stored).
@@ -1150,6 +1582,7 @@ def _convert_ai_message(data: dict[str, Any]) -> Any:  # noqa: ANN401
         "content": content,
         "id": data.get("id"),
         "response_metadata": response_metadata,
+        "chunk_position": data.get("chunk_position"),
     }
 
     if tool_call_chunks:
@@ -1179,7 +1612,7 @@ def _convert_ai_message(data: dict[str, Any]) -> Any:  # noqa: ANN401
 
     try:
         chunk = AIMessageChunk(**kwargs)
-    except (TypeError, ValueError, KeyError):
+    except TypeError, ValueError, KeyError:
         logger.warning(
             "Failed to construct AIMessageChunk from server data (id=%s)",
             data.get("id"),
@@ -1195,6 +1628,9 @@ def _convert_ai_message(data: dict[str, Any]) -> Any:  # noqa: ANN401
 def _convert_human_message(data: dict[str, Any]) -> Any:  # noqa: ANN401
     """Convert a server human message dict to a `HumanMessage`.
 
+    `additional_kwargs` is forwarded, so the TUI can tell an SDK pinned-skill
+    message from a user prompt.
+
     Args:
         data: Raw message dict from the server.
 
@@ -1203,12 +1639,16 @@ def _convert_human_message(data: dict[str, Any]) -> Any:  # noqa: ANN401
     """
     from langchain_core.messages import HumanMessage
 
+    additional_kwargs = data.get("additional_kwargs")
     try:
         return HumanMessage(
             content=data.get("content", ""),
             id=data.get("id"),
+            additional_kwargs=(
+                additional_kwargs if isinstance(additional_kwargs, dict) else {}
+            ),
         )
-    except (TypeError, ValueError, KeyError):
+    except TypeError, ValueError, KeyError:
         logger.warning(
             "Failed to construct HumanMessage from server data (id=%s)",
             data.get("id"),
@@ -1246,7 +1686,7 @@ def _convert_tool_message(data: dict[str, Any]) -> Any:  # noqa: ANN401
                 additional_kwargs if isinstance(additional_kwargs, dict) else {}
             ),
         )
-    except (TypeError, ValueError, KeyError):
+    except TypeError, ValueError, KeyError:
         logger.warning(
             "Failed to construct ToolMessage from server data (id=%s)",
             data.get("id"),

@@ -88,6 +88,9 @@ _ALLOWLIST: dict[CallSite, str] = {
         "2956b508",
     ): "The client captures the directory used to launch or bind the server.",
     CallSite(
+        "client/non_interactive.py", "_select_thread", "Path.cwd", "3f41895f"
+    ): "Headless resume compares a thread's directory with the client's own.",
+    CallSite(
         "client/non_interactive.py", "_run_startup_command", "Path.cwd", "c745df8c"
     ): "The headless client runs startup commands in its active local workspace.",
     CallSite(
@@ -150,7 +153,7 @@ _ALLOWLIST: dict[CallSite, str] = {
         "main.py", "_preload_session_mcp_server_info", "Path.cwd", "53b35c21"
     ): "The CLI preloads MCP data before server requests.",
     CallSite(
-        "main.py", "run_textual_cli_async", "Path.cwd", "47da3baa"
+        "main.py", "run_textual_cli_async", "Path.cwd", "fd9a100d"
     ): "The interactive CLI captures its launch directory.",
     CallSite(
         "main.py", "_run_acp_cli_async", "Path.cwd", "53b35c21"
@@ -177,7 +180,7 @@ _ALLOWLIST: dict[CallSite, str] = {
         "project_utils.py", "find_project_root", "Path.cwd", "60fa8f5e"
     ): "The helper default supports client callers; server callers pass a start path.",
     CallSite(
-        "skills/invocation.py", "discover_skills_and_roots", "Path.cwd", "7649626b"
+        "skills/invocation.py", "discover_skills_and_roots", "Path.cwd", "b527b014"
     ): "Skill invocation discovery runs in the TUI or headless client.",
     CallSite(
         "tool_catalog.py", "_load_mcp_server_info", "Path.cwd", "53b35c21"

@@ -1,132 +1,173 @@
 ---
 type: capability reference
-title: Middleware Capability Catalog
-description: Capability-to-owner lookup for Deep Agents middleware, covering request shaping, filesystem access, context, memory, skills, delegation, quality gates, permissions, caching, and profile enforcement. Use it to select the owning layer and understand its important lifecycle boundaries.
-tags: [middleware, deepagents, filesystem, context-management, memory, skills, subagents, permissions]
+title: Middleware Catalog and Extension Rules
+description: Explains Deep Agents middleware responsibilities, stack assembly, and the safety rules for replacing or excluding middleware. Covers lazy prompt caching and memory prompt lifecycle behavior.
+tags: [middleware, deepagents, filesystem, summarization, compaction, async-tasks, skills, subagents, permissions]
 sources:
+  - id: openwiki-source-b93533cac55718d75277d1cf
+    resource: repo://libs/deepagents/deepagents/_excluded_middleware.py
   - id: openwiki-source-0fc0e47059e4d07e23e50be2
     resource: repo://libs/deepagents/deepagents/graph.py
-  - id: openwiki-source-fc54598423086acf9d53d9fd
-    resource: repo://libs/deepagents/deepagents/middleware/__init__.py
-  - id: openwiki-source-0fb4155c19dd248acd3ffe4f
-    resource: repo://libs/deepagents/deepagents/middleware/_fs_interrupt.py
-  - id: openwiki-source-9841bc6daf811e4615c54a88
-    resource: repo://libs/deepagents/deepagents/middleware/_message_eviction.py
-  - id: openwiki-source-64b92f60456305edc143f48a
-    resource: repo://libs/deepagents/deepagents/middleware/_overflow_clip.py
   - id: openwiki-source-7a16b9a53a07e882b7305459
     resource: repo://libs/deepagents/deepagents/middleware/_prompt_caching.py
-  - id: openwiki-source-421bc4b065189ae1165ca326
-    resource: repo://libs/deepagents/deepagents/middleware/_state.py
-  - id: openwiki-source-8b1aaf77fc0430fd00711a73
-    resource: repo://libs/deepagents/deepagents/middleware/_tool_exclusion.py
-  - id: openwiki-source-454ab6b822ad87c53f679f58
-    resource: repo://libs/deepagents/deepagents/middleware/_video.py
-  - id: openwiki-source-e51c4102234507d1529a2440
-    resource: repo://libs/deepagents/deepagents/middleware/async_subagents.py
-  - id: openwiki-source-fed4b84a38685f37e58018c5
-    resource: repo://libs/deepagents/deepagents/middleware/filesystem.py
   - id: openwiki-source-46a23efe78a78f9b3cd75d00
     resource: repo://libs/deepagents/deepagents/middleware/memory.py
-  - id: openwiki-source-13b8cea81b8a29f0950cc836
-    resource: repo://libs/deepagents/deepagents/middleware/patch_tool_calls.py
-  - id: openwiki-source-b93c32bc33a8fa17b52b8a0e
-    resource: repo://libs/deepagents/deepagents/middleware/rubric.py
-  - id: openwiki-source-66cf9d0832d3cb55bec2b5ed
-    resource: repo://libs/deepagents/deepagents/middleware/skills.py
-  - id: openwiki-source-114a1c7a58992fa867a94ef0
-    resource: repo://libs/deepagents/deepagents/middleware/subagents.py
-  - id: openwiki-source-f763e99e439a1356866a7aa4
-    resource: repo://libs/deepagents/deepagents/middleware/summarization.py
-generated: { by: "openwiki/0.4.2", at: "2026-09-18T16:46:37.183Z" }
+  - id: openwiki-source-625509b0456f4d7c72702c52
+    resource: repo://libs/deepagents/tests/unit_tests/middleware/test_memory_middleware.py
+  - id: openwiki-source-6d183faf1a4bc5a5ba451aba
+    resource: repo://libs/deepagents/tests/unit_tests/test_graph.py
 verified:
   - by: openwiki/0.4.2
-    at: 2026-09-18T16:46:37.183Z
+    at: 2026-10-24T08:05:08.866Z
+generated: { by: "openwiki/0.4.2", at: "2026-10-24T08:05:08.866Z" }
 ---
 
-# Middleware Capability Catalog
+# Middleware Catalog and Extension Rules
 
-`deepagents.middleware` is the public import surface for the SDK's built-in middleware. Choose middleware when a capability must affect *every* model request: an `AgentMiddleware` wrapper can shape the system prompt, advertised tools, messages, and typed cross-turn state before the LLM is called. A consumer callable passed in `tools=` instead runs only after the model selects it.
+`deepagents.middleware` is the public import surface for middleware that prepares a model request, intercepts tool execution, or owns cross-turn state. It re-exports filesystem permissions, memory, skills and `SkillToolResolver`, summarization, synchronous and asynchronous subagents, rubric evaluation, and unsupported-content filtering. Use these public classes and factories as extension points. Graph-only helpers—prompt caching, parent notification, tool-call repair, and tool exclusion—are assembly details rather than consumer APIs.
 
-This page is a capability lookup, not a complete construction guide. See [Middleware stack](../architecture/middleware-stack.md) for ordering, [Context management](context-management.md) for compaction details, [Subagents and skills](subagents-skills.md) for delegation design, and [Filesystem tools](tools-filesystem.md) for tool contracts.
+Middleware differs from a plain `tools=[]` callable because it can run at agent, model, and tool hooks, shape the request on every model call, and persist typed state. Use a plain tool for a self-contained consumer operation; use middleware when the capability needs prompt/tool shaping, policy enforcement, or lifecycle state.
 
-## Capability-to-owner lookup
-
-| Need | Owner and entrypoint | Lifecycle / boundary |
+| Responsibility | Public entrypoint | Lifecycle / boundary |
 | --- | --- | --- |
-| Backend-backed file tools and large-result control | `FilesystemMiddleware` | Supplies the filesystem tools; shapes requests and intercepts tool results. |
-| Automatic or model-invoked conversation compaction | `SummarizationMiddleware`; `SummarizationToolMiddleware`; `create_summarization_tool_middleware` | Creates a private summarization event and recoverable backend history. |
-| Always-available project instructions | `MemoryMiddleware` | Loads `AGENTS.md` before the run, then normally injects it for each model call. |
-| Discoverable, on-demand workflows | `SkillsMiddleware` | Discovers `SKILL.md` metadata before a run and advertises metadata, not full instructions, in the prompt. |
-| Inline specialist delegation | `SubAgentMiddleware`, `SubAgent`, `CompiledSubAgent` | Provides blocking `task` calls to local/compiled child agents. |
-| Remote background delegation | `AsyncSubAgentMiddleware`, `AsyncSubAgent` | Provides start/check/update/cancel/list tools and persists task records. |
-| Validate a natural-stop response against a definition of done | `RubricMiddleware` | Calls a structured-output grader after the main loop would stop; can jump back to the model. |
-| Repair interrupted message history | `PatchToolCallsMiddleware` | Runs at `before_agent` and completes dangling call/result pairs. |
-| Filesystem approval conversion | `_fs_interrupt` plus graph assembly | Translates interrupt-mode rules to HITL predicates; it is separate from filesystem deny enforcement. |
-| Prompt-cache optimization | `append_prompt_caching_middleware` | Adds provider middleware during graph assembly before memory. |
-| Harness/profile tool consistency | `_ToolExclusionMiddleware` | Filters tools at model-call time and rejects excluded call names at dispatch. |
-
-`deepagents.middleware` re-exports the public filesystem, memory, skills, delegation, summarization, and rubric classes and associated supporting types through its `__all__`. `PatchToolCallsMiddleware` is current built-in harness behavior—graph construction imports and appends it—but it is not part of that package-level export list. Underscore-prefixed modules are assembly helpers rather than the stable consumer import surface.
-
-## Request and state lifecycle
+| Backend files and execution | `FilesystemMiddleware` | Supplies filesystem tools through `BackendProtocol`; adds execution only for `SandboxBackendProtocol`; evicts oversized results to backend storage. |
+| File access policy and approval | `FilesystemPermission` | Matches read/write path rules for allow, deny, or interruption. This—not profile visibility—is the authorization boundary. |
+| Durable instructions | `MemoryMiddleware` | Loads configured sources into private state before the agent and appends formatted memory on model requests. |
+| Progressive workflow discovery | `SkillsMiddleware`, `SkillToolResolver` | Loads skill metadata, injects discovery context, and discloses declared tools only when their skill is read or pinned. |
+| Context management | `SummarizationMiddleware`, `SummarizationToolMiddleware` | Projects effective history and automatically compacts, or exposes explicit `compact_conversation`. |
+| Blocking delegation | `SubAgentMiddleware` | The `task` tool invokes a local declarative or compiled worker and returns a parent tool result. |
+| Background delegation | `AsyncSubAgentMiddleware` | Launches, polls, updates, cancels, and lists remote Agent Protocol work while the parent continues. |
+| Completion review | `RubricMiddleware` | Optionally grades a natural completion and can return control to the model for revision. |
+| Model compatibility | `UnsupportedContentMiddleware` | Makes an outbound copy containing replacements for blocks unsupported by the resolved model. |
 
 ```mermaid
 flowchart TD
-    Start["Agent run starts"] --> Before["before_agent loaders and repair"]
-    Before --> Request["Middleware wraps model request"]
-    Request --> Model["Model receives prompt messages and tools"]
-    Model --> Calls{"Tool calls"}
-    Calls -->|"yes"| ToolWrap["Tool wrappers enforce or transform result"]
-    ToolWrap --> Request
-    Calls -->|"no"| Rubric{"Rubric supplied"}
-    Rubric -->|"no"| Finish["Finish"]
-    Rubric -->|"needs revision"| Feedback["Synthetic grader HumanMessage"]
-    Feedback --> Request
-    Rubric -->|"terminal verdict"| Finish
+    Begin["Agent invocation"] --> AgentHook["Agent hooks load or update state"]
+    AgentHook --> Request["Model wrappers shape messages prompts and tools"]
+    Request --> Model["Model call"]
+    Model --> Decision{"Tool calls"}
+    Decision -->|"yes"| Tool["Tool wrappers validate and execute"]
+    Tool --> Request
+    Decision -->|"no"| Complete["After-model middleware may review or resume"]
 ```
 
-This shows the principal hook boundaries: loaders and repair run before the agent, model wrappers change the request before each LLM call, and tool wrappers can transform results. `RubricMiddleware` uses the natural-stop boundary to create a controlled revision loop.
+This shows the relevant middleware lifecycle: model wrappers apply on every turn, while tool wrappers are the last interception point before dispatch.
 
-Middleware-owned state should be marked `PrivateStateAttr` when it must not cross a subagent or appear in public agent I/O. `_state.private_state_field_names` resolves those annotations at runtime; an unresolvable schema is warned about and skipped, so its nominally private fields can be forwarded. Keep synchronous and async hooks behaviorally aligned when extending a capability.
+## Default assembly is a policy order
 
-## Filesystem and permissions
+`create_deep_agent()` builds a core stack of filesystem, optional synchronous subagents, parent notification, automatic summarization, tool-call repair, and optional asynchronous subagents. Profile middleware, optional skills, provider caching, optional memory, HITL, and unsupported-content filtering form the tail. Profile exclusions are applied before caller middleware and again afterward; caller middleware therefore cannot restore an excluded entry. Finally, profile-controlled tool exclusion is appended last.
 
-`FilesystemMiddleware` owns `ls`, `read_file`, `write_file`, `edit_file`, `delete`, `glob`, `grep`, and optionally `execute`. An explicit `tools` allowlist must include `read_file`; unsupported `execute` and `delete` entries are not made usable merely by naming them. The default backend is `StateBackend()`, whereas execution requires a backend with the relevant sandbox capability. The constructor rejects a backend factory, nonpositive execution timeout, and a nonpositive configured grep cap.
+```mermaid
+flowchart LR
+    Fs["Filesystem"] --> Sync["Sync subagents when present"]
+    Sync --> Notify["Parent notifier"]
+    Notify --> Summary["Automatic summarization"]
+    Summary --> Repair["Tool-call repair"]
+    Repair --> Async["Async subagents when configured"]
+    Async --> Profile["Profile middleware and skills"]
+    Profile --> Cache["Provider caching and memory"]
+    Cache --> Safety["HITL and content adaptation"]
+    Safety --> Exclude["Middleware filtering then tool exclusion"]
+```
 
-At model-call time, it applies its prompt, filters unavailable tools, normalizes media ordering, scrubs unsupported multimodal blocks, and can offload an oversized latest human message. At tool-call time it offloads oversized text output to `<artifacts_root>/large_tool_results/{tool_call_id}`, replacing text with a line-numbered head-and-tail preview and retrieval instructions while retaining non-text blocks. Backend write failure retains the original message; exceptions from the tool itself deliberately propagate. Video `read_file` support is optional: `_video` lazily probes/imports PyAV and treats offset and limit as seconds, returning sampled text-and-image frame blocks.
+This is the main-stack assembly order; optional layers are omitted. The general-purpose subagent has a separate filesystem/summarization/repair/profile/skills/caching stack. Declarative subagents build their own stack for their resolved model; a fork also mirrors parent prompt-producing middleware. Only overrides of original general-purpose slots are inherited from the main agent. `TodoListMiddleware` is not in either default stack, but may be enabled explicitly or injected through a harness profile's `extra_middleware`.
 
-Filesystem permissions have two distinct owners. `FilesystemMiddleware` enforces deny rules in tool implementations. During graph assembly, `_fs_interrupt` converts `interrupt` rules to `HumanInTheLoopMiddleware` configuration with path-aware `when` predicates: exact operations match their call path, while bulk operations protect overlapping subtrees and conservatively interrupt pathless searches. Execution-capable backends reject unscoped permission configurations because execute-level permissions do not exist; approval is not an authorization feature supplied by tool exclusion.
+`_ToolExclusionMiddleware` is deliberately last: it removes excluded tools from model requests and returns an error for a matching call at the tool boundary. It keeps advertised and dispatchable tools consistent; it is explicitly not a security surface. Protect filesystem operations with permissions and HITL instead.
 
-## Context, memory, and caching
+## Replacement and exclusion are safety controls
 
-`SummarizationMiddleware` counts the effective prompt—including tool schemas when its counter supports them—and may truncate old large tool arguments before compaction. When configured thresholds are crossed, it offloads older messages and generates a summary; its private event reconstructs subsequent effective requests as the summary plus retained recent messages. The session identifier persists so history appends to one `/conversation_history/{session_id}.md` file. Inline media is stored separately and referenced from that history.
+### Replacement uses the public `.name` slot
 
-If a normal request raises `ContextOverflowError`, summarization is attempted even when the ordinary trigger did not fire. The fallback clips a sufficiently large trailing `ToolMessage` batch: `read_file` is head-sliced with a pointer to its original file, while other results are offloaded and stubbed. Failed history offload does not prevent summarization, but the summary has no recovery path and a warning is emitted.
+Caller or subagent `middleware=` is merged by `.name`, not Python subclass identity. A matching name replaces the assembled entry in the same position; a new name is inserted after the core stack and ahead of the profile/prompt-caching/memory tail. Replacements of `FilesystemMiddleware` must retain the graph's permission rules (or use exactly the same rules), preventing a replacement from silently weakening configured filesystem policy. Because later duplicate custom names overwrite earlier candidates during merge, use one deliberate instance per name.
 
-`SummarizationToolMiddleware` registers `compact_conversation`, reusing the automatic middleware's engine and event state. It is only invoked as a tool call, and its eligibility gate prevents premature compaction. The factory produces both layers with defaults derived from the resolved model profile.
+A same-name subclass can intentionally replace `SummarizationMiddleware`; a differently named subclass is a distinct capability and remains alongside the default. Name choice is therefore a compatibility and ordering decision, not cosmetic metadata. In a forked declarative subagent, spec middleware wins over inherited parent middleware with the same name.
 
-`MemoryMiddleware` loads configured `AGENTS.md` sources once into private `memory_contents`; sources are ordered, missing files are skipped, other download errors fail loading, and HTML comments are stripped before presentation. By default it appends that persistent reference material to the system prompt; `system_prompt=None` suppresses only injection. With `add_cache_control=True`, the last system block receives Anthropic ephemeral cache control only when the request model is `ChatAnthropic`.
+### Exclusion matching, aliases, and audit failures
 
-`append_prompt_caching_middleware` always adds Anthropic prompt caching with unsupported models ignored, and conditionally adds Bedrock and Fireworks equivalents if their optional integration packages are importable. Graph construction places this provider caching before optional memory so the latter can establish its second Anthropic breakpoint.
+`HarnessProfile.excluded_middleware` accepts runtime classes or public name strings. These forms have intentionally different safety properties:
 
-## Skills and delegation
+- **Class form is exact type matching**, not `isinstance`. Excluding a base class does not remove a caller's subclass. This prevents a broad exclusion from deleting an intentional replacement.
+- **String form is exact `.name` matching**, including public aliases such as `SummarizationMiddleware` for the private implementation. It is appropriate for declarative configuration, where classes cannot be passed.
+- A string that matches more than one concrete effective class **in a single stack raises `ValueError`** rather than removing all colliding middleware. Resolve the ambiguity with the runtime class form.
+- Each requested exclusion must match an assembled stack. Main-profile matches are accumulated across the main and general-purpose stacks; a miss raises `ValueError` as a typo or stale-profile signal. Declarative subagent profiles are audited against their own assembled stack.
+- `FilesystemMiddleware` and `SubAgentMiddleware` are required scaffolding and cannot be excluded by class or name: they back filesystem/permission enforcement and `task` dispatch. Config grammar also rejects empty, colon-containing, and underscore-prefixed string names.
 
-`SkillsMiddleware` implements progressive disclosure: each source is listed through backend APIs, direct child directories' `SKILL.md` files are downloaded, parsed for YAML metadata, and shown in the system prompt with a path for later `read_file`. It supports path or `(path, label)` sources and processes them in order, so the last skill with a duplicate name wins. Discovery is stored in `skills_metadata`, which is omitted from output and from subagent state, and is skipped when checkpointed state already holds a list, even an empty one; setting the field to `None` requests a reload on the next run; source failures are recorded and logged rather than silently turning into instructions.
+The lazy Anthropic cache stand-in preserves the real middleware's name, so name-based replacement or exclusion is stable without importing `langchain_anthropic`. For class-based exclusion it exposes `excluded_as`: once the real class is already loaded—necessarily true when the caller imports that class—the filter treats the stand-in as that class. This aliasing is needed so lazy loading does not create an exclusion bypass.
 
-`SubAgentMiddleware` owns the `task` tool. It validates that there is at least one subagent and creates an ephemeral child call that blocks until completion. Isolated children receive the delegated description; experimental `mode="fork"` continues effective parent conversation and prompt context but forbids child-defined skills and refuses recursive delegation. A child returns structured output as JSON when present, otherwise its final nonempty AI text. Graph assembly calculates private-state keys across schemas and supplies them to this middleware so they can be stripped across the child boundary.
+```mermaid
+flowchart TD
+    Assemble["Assemble built in and profile stack"] --> FilterOne["Filter profile exclusions"]
+    FilterOne --> Merge["Merge custom middleware by name"]
+    Merge --> FilterTwo["Filter exclusions again"]
+    FilterTwo --> Audit{"Every requested exclusion matched"}
+    Audit -->|"no"| Fail["Raise ValueError"]
+    Audit -->|"yes"| Tools["Append final tool exclusion"]
+```
 
-`AsyncSubAgentMiddleware` is separate remote machinery for Agent Protocol servers. It requires nonempty uniquely named definitions and uses cached LangGraph SDK clients keyed by URL and headers. `start_async_task` creates a remote thread and run, immediately returns its task id, and saves an `async_tasks` record in agent state. The check, update, cancel, and list tools operate only on those tracked records. A URL-less local ASGI transport requires asynchronous parent invocation; the synchronous path requires a reachable URL.
+This filtering sequence prevents excluded profile or caller middleware from re-entering a stack and turns configuration drift into an assembly failure.
 
-## Rubric, repair, and profile enforcement
+## Filesystem and content invariants
 
-`RubricMiddleware` is inert without a caller-supplied `rubric`. At a natural agent stop it sends a bounded, sanitized transcript to a lazily built separate grader agent, whose `GraderResponse` is constrained to `satisfied`, `needs_revision`, or `failed` and criterion-level consistency. Only `needs_revision` appends tagged grader feedback as a synthetic `HumanMessage` and jumps back to the model. `max_iterations_reached` and `grader_error` are middleware terminal results, not grader verdicts; non-satisfied terminal outcomes preserve the main agent's last response, so callers must inspect private state, events, or the callback to branch. Grader transcript contents are explicitly treated as untrusted observation, while the rubric defines done.
+`FilesystemMiddleware` provides filesystem tools through `BackendProtocol`, conditionally adds execution for `SandboxBackendProtocol`, and can evict oversized tool results to backend storage so model context is not saturated. The shared internal message-eviction helper offloads a large tool result only after the backend write succeeds, replaces text with a line-numbered head-and-tail preview while preserving non-text blocks, and otherwise leaves the original message intact. This helper is also used by summarization overflow recovery.
 
-`PatchToolCallsMiddleware` makes resumed history structurally safe before the agent starts. For every valid or invalid AI tool call with an id that has no `ToolMessage`, it inserts an error `ToolMessage`: valid calls are recorded as incomplete (possibly cancelled or interrupted), while invalid calls are recorded as malformed or truncated. It then rewrites the complete message list.
+`FilesystemPermission` supports allow, deny, and interrupt effects for read/write path rules. Permission paths must be absolute and cannot contain `..` or `~`; on real filesystem backends, checks cover both the requested path and its symlink-resolved target. Do not treat profile exclusion as an authorization substitute.
 
-Profiles may omit middleware and tools. `_ToolExclusionMiddleware` is deliberately appended after custom middleware: it removes excluded tools from the model request and rejects an excluded name at the tool-call boundary, preventing a custom request wrapper from re-advertising it. This aligns advertised and executable tools; it is not a security boundary.
+## Memory, skills, and caching
 
-## Change and test guidance
+`MemoryMiddleware` loads configured sources only when private `memory_contents` is absent. Missing files are skipped, other download errors raise, and formatted memory is injected into each model request unless its system prompt is disabled. The default prompt explicitly treats the loaded files as untrusted reference material: user instructions, safety policy, and verified tool evidence take priority. HTML comments are stripped before injection, so authoring markers do not reach the model.
 
-Add a plain tool for isolated, consumer-specific work; add middleware only when request shaping, stack-wide availability, or persistent state is required. Keep storage behind `BackendProtocol`, keep sensitive or non-propagating values private, and preserve recovery behavior when a backend offload fails. Keep filesystem policy enforcement distinct from profile presentation filtering and HITL assembly.
+The constructor requires a string template containing `{agent_memory}`, or `None` to suppress the memory fragment while retaining loading. With `add_cache_control=True`, it tags the final system-message block with Anthropic's ephemeral cache-control marker only for the resolved `ChatAnthropic` request model. Graph assembly enables this for configured main-agent memory (and fork memory), creating a breakpoint after mutable memory without sending an Anthropic-specific field to other providers.
 
-Focused coverage is in `tests/unit_tests/middleware/`: filesystem initialization and video behavior, memory and skills sync/async behavior, compaction and summarization factory behavior, rubric iteration, subagent initialization, tool exclusion, and tool schemas. Also run the relevant unit coverage in `tests/unit_tests/` for permissions, synchronous/async subagents, middleware stack construction, and profiles, plus integration coverage in `tests/integration_tests/` for filesystem, HITL, sandbox, and subagent boundaries when changing assembly behavior.
+`SkillsMiddleware` caches source metadata in state per thread, with later duplicate names overriding earlier sources. Set `skills_metadata` to `None` to request reload. Pinned skills append their readable instructions before the next model call. A skill's declared tools are disclosed only after its skill is read or pinned, with disclosure recorded in state; the middleware resolves eligible tools again at the tool boundary and leaves undisclosed calls invalid. A resolver should therefore be stable for the thread and support the invocation mode being used.
+
+Prompt-caching assembly always appends Anthropic caching with unsupported-model behavior ignored, and conditionally appends Bedrock and Fireworks caching when their optional middleware imports are available. The Anthropic entry is initially lazy: it passes non-Anthropic requests through and imports/constructs the real caching middleware only on the first Anthropic request, then retains that delegate for subsequent requests.
+
+## Context compaction: effective history, not log mutation
+
+The summarization factory chooses fraction-based trigger, retention, and argument-truncation defaults when the resolved model profile supplies `max_input_tokens`, and falls back to fixed token and message thresholds otherwise. It rejects a string rather than a resolved `BaseChatModel`.
+
+Automatic summarization retains raw message state and records private event and session state. A later request reconstructs effective history from the summary message and cutoff, while evicted messages are appended to a session-specific backend history file. It first projects raw messages through any prior event, may truncate older large tool-call arguments, and persists the new event and session ID while leaving raw messages intact. Archive failure does not block compaction, but produces an event with no recovery path.
+
+```mermaid
+flowchart TD
+    Raw["Raw state messages"] --> Effective["Apply prior summary event"]
+    Effective --> Budget{"Over trigger or input budget"}
+    Budget -->|"no"| Send["Send model request"]
+    Budget -->|"yes"| Prepare["Select older history"]
+    Prepare --> Media["Offload inline media to backend references"]
+    Media --> Archive["Append recoverable history"]
+    Media --> Summarize["Generate summary"]
+    Archive --> Event["Record cutoff summary and session"]
+    Summarize --> Event
+    Event --> Send
+```
+
+This shows compaction's effective-history projection; raw messages remain checkpoint state.
+
+The default Deep Agents summary prompt explains that offloaded-media references must be preserved and may be read later; automatic compaction converts inline media to backend references before archive and summary generation.
+
+`SummarizationToolMiddleware` registers `compact_conversation` but never compacts automatically. It shares automatic-engine event state, gates execution until roughly half the automatic trigger, and reports no-op or compaction failure through `ToolMessage` without updating the event. The manual-compaction factory resolves a model string, constructs a model-aware engine, and registers only `SummarizationToolMiddleware`; automatic compaction requires separately registering `SummarizationMiddleware`—which `create_deep_agent()` already adds.
+
+## Delegation and completion controls
+
+The synchronous `task` tool runs a selected declarative or compiled subagent and returns one parent `ToolMessage`, serializing `structured_response` when present or otherwise selecting the last non-empty `AIMessage` text. Forked declarative subagents receive effective compacted history and refuse recursive `task` delegation.
+
+An isolated async launch sends only its description. Experimental fork mode serializes the parent’s effective summarized conversation and task after removing artifacts and rehydrating offloaded media; the remote agent owns its prompt and tools. A URL-less local ASGI transport requires asynchronous parent invocation.
+
+`AsyncSubAgentMiddleware` provides launch, check, update, cancel, and list tools for remote Agent Protocol work. It persists merge-reduced `async_tasks` records containing remote identifiers, status, timestamps, and queued-run lineage; construction rejects empty or duplicate specifications and unsupported modes or update strategies. Its asynchronous lifecycle hooks poll unfinished work and give the model another turn after a newly observed outcome; synchronous hooks do not poll.
+
+`RubricMiddleware` is inactive without a rubric in invocation state. Otherwise it initializes private iteration state, grades at natural completion, can jump back to the model for revision, and leaves the last model response unchanged for failed, grader-error, or max-iteration outcomes. `UnsupportedContentMiddleware` runs late against the resolved request model and copies only human and tool messages whose blocks need replacement, preserving the original thread for a later capable model.
+
+## Focused change coverage
+
+Route changes to the narrow suite first, then graph integration tests when order or configuration changes are involved.
+
+| Change | Focused tests |
+| --- | --- |
+| Stack construction, name replacement, exclusion coverage/collisions, lazy cache aliases, and profile-supplied todo middleware | `tests/unit_tests/test_graph.py` |
+| Filesystem initialization, execution routing, blobs/video and permissions | `tests/unit_tests/middleware/test_filesystem_middleware_init.py`, `test_execute_route_prompt.py`, `test_blob_offload.py`, `test_filesystem_video.py` |
+| Memory loading, prompt templates/comment stripping, and Anthropic cache breakpoint | `tests/unit_tests/middleware/test_memory_middleware.py`, `test_memory_middleware_async.py` |
+| Metadata/reload, pinned skills, declared-tool resolution | `tests/unit_tests/middleware/test_skills_middleware.py`, `test_skills_middleware_async.py`, `test_pinned_skills.py`, `test_skill_tools.py`, `test_skill_tool_resolver.py` |
+| Factory defaults, automatic recovery, explicit compaction | `tests/unit_tests/middleware/test_summarization_factory.py`, `test_summarization_middleware.py`, `test_compaction_recovery.py`, `test_compact_tool.py` |
+| Local subagent configuration and remote async lifecycle | `tests/unit_tests/middleware/test_subagent_middleware_init.py`, `tests/unit_tests/test_async_subagents.py` |
+| Rubric loops and content compatibility | `tests/unit_tests/middleware/test_rubric_middleware.py` and the relevant filesystem/graph integration tests |

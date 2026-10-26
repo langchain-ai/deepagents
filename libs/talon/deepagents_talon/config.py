@@ -1,6 +1,9 @@
 """Configuration loading for the Talon runtime host.
 
 Talon is an experimental runtime and is subject to change or removal at any time.
+Set `DEEPAGENTS_TALON_VERBOSITY` per assistant process: 1 (the default) disables
+interim chat updates, 2 permits at most two for long tasks, and 3 allows unrestricted
+updates. Final replies and host-visible tool activity are unaffected.
 """
 
 from __future__ import annotations
@@ -18,6 +21,7 @@ if TYPE_CHECKING:
     from collections.abc import Mapping
 
     from deepagents_talon.history_profiles import EmbeddingProfile
+    from deepagents_talon.sandbox import SandboxSettings
 
 _ASSISTANT_ID_PATTERN = re.compile(r"[A-Za-z0-9_.-]{1,128}")
 _ENV_PREFIX = "DEEPAGENTS_TALON_"
@@ -71,7 +75,7 @@ class TalonConfig:
             Runtime configuration with a validated assistant id and namespaced home.
 
         Raises:
-            TalonConfigError: If the assistant id or history connection URI is invalid.
+            TalonConfigError: If the assistant id, verbosity, or history connection URI is invalid.
         """
         values = os.environ if env is None else env
         assistant_id = _first_present(
@@ -100,6 +104,7 @@ class TalonConfig:
             env={key: value for key, value in values.items() if _is_runtime_env(key)},
         )
 
+        _ = config.verbosity
         _ = config.history_reindex
         _ = config.history_vector_search
         _ = config.history_embedding_profile
@@ -131,6 +136,15 @@ class TalonConfig:
         return self.home
 
     @property
+    def verbosity(self) -> int:
+        """Interim updates: 1 disables them, 2 allows at most two, 3 is unrestricted."""
+        value = self.env.get("DEEPAGENTS_TALON_VERBOSITY", "1")
+        if value not in {"1", "2", "3"}:
+            msg = "DEEPAGENTS_TALON_VERBOSITY must be 1, 2, or 3"
+            raise TalonConfigError(msg)
+        return int(value)
+
+    @property
     def huggingface_cache_dir(self) -> Path:
         """Hugging Face model cache shared across assistants."""
         return self.home.parent / "cache" / "models" / "huggingface"
@@ -156,11 +170,40 @@ class TalonConfig:
         return self.home / "channels"
 
     @property
+    def sandbox(self) -> SandboxSettings | None:
+        """Remote sandbox for agent tools, or None to run them on the host."""
+        from deepagents_talon.sandbox import SandboxSettings  # noqa: PLC0415
+
+        provider = _env_value(self.env, "DEEPAGENTS_TALON_SANDBOX")
+        if provider is None:
+            return None
+        sandbox_id = _env_value(self.env, "DEEPAGENTS_TALON_SANDBOX_ID")
+        return SandboxSettings(
+            provider=provider,
+            sandbox_id=sandbox_id,
+            snapshot=_env_value(self.env, "DEEPAGENTS_TALON_SANDBOX_SNAPSHOT"),
+            default_snapshot=self._default_snapshot(provider, sandbox_id),
+            setup_script=_env_value(self.env, "DEEPAGENTS_TALON_SANDBOX_SETUP"),
+        )
+
+    def _default_snapshot(self, provider: str, sandbox_id: str | None) -> str | None:
+        # LangSmith snapshot names are shared across a workspace, so the
+        # provider's `deepagents-code` default can belong to another user.
+        if provider != "langsmith" or sandbox_id is not None:
+            return None
+        return f"talon-{self.assistant_id}"
+
+    @property
     def history_uri(self) -> str | None:
         """History URI, or None for the default local SQLite archive."""
         uri = self.env.get("DEEPAGENTS_TALON_HISTORY_URI")
         _validate_history_uri(uri)
         return uri
+
+    @property
+    def checkpoint_uri(self) -> str | None:
+        """Checkpoint backend URI, independent of the conversation history backend."""
+        return _env_value(self.env, "DEEPAGENTS_TALON_CHECKPOINT_URI")
 
     @property
     def checkpoint_path(self) -> Path:
@@ -213,6 +256,21 @@ class TalonConfig:
     def conversation_state_path(self) -> Path:
         """JSON file used for active conversation generations."""
         return self._state_path("conversations.json", "conversation state")
+
+    @property
+    def model_state_path(self) -> Path:
+        """JSON file holding the assistant-wide `/model` selection."""
+        return self._state_path("models.json", "model selection state")
+
+    @property
+    def effort_state_path(self) -> Path:
+        """JSON file holding reasoning effort overrides by model."""
+        return self._state_path("effort.json", "reasoning effort state")
+
+    @property
+    def smart_model_state_path(self) -> Path:
+        """JSON file holding the assistant's `/smart-model` override."""
+        return self._state_path("smart-model.json", "smart model selection state")
 
     def _state_path(self, name: str, description: str) -> Path:
         home = self.home.resolve()
@@ -269,6 +327,11 @@ def _first_present(
         if key in env:
             return env[key]
     return default
+
+
+def _env_value(env: Mapping[str, str], key: str) -> str | None:
+    value = env.get(key, "").strip()
+    return value or None
 
 
 def _validate_assistant_id(assistant_id: str | None) -> None:

@@ -152,14 +152,18 @@ async def run_mcp_login_list(*, config_path: str | None) -> int:
             continue
         try:
             resolved_config = resolve_mcp_server_env(server_name, server_config)
-        except (RuntimeError, TypeError) as exc:
+        except (RuntimeError, TypeError, ValueError) as exc:
             print(  # noqa: T201
                 f"Invalid MCP server config for {server_name!r}: {exc}",
                 file=sys.stderr,
             )
             unreadable += 1
             continue
-        storage = FileTokenStorage(server_name, server_url=resolved_config["url"])
+        storage = FileTokenStorage(
+            server_name,
+            server_url=resolved_config["url"],
+            oauth_client_id=(resolved_config.get("oauth") or {}).get("client_id"),
+        )
         try:
             tokens = await storage.get_tokens()
         except (OSError, RuntimeError, ValueError) as exc:

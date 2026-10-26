@@ -7,12 +7,14 @@ import logging
 from typing import TYPE_CHECKING, cast
 
 from deepagents_talon.background import BackgroundSubagents
+from deepagents_talon.channels.slack import _convert_event
 from deepagents_talon.config import TalonConfig
 from deepagents_talon.cron import CronJobStore, CronOrigin, CronSchedule
 from deepagents_talon.host import (
     _BACKGROUND_FOLLOW_UP,
     TalonHost,
     _BackgroundRoute,
+    _format_tool_approval_prompt,
     _save_conversation_resets,
 )
 from deepagents_talon.interfaces import (
@@ -233,9 +235,10 @@ class MediaAgent(BlockingAgent):
 
 
 class ApprovalAgent(BlockingAgent):
-    def __init__(self) -> None:
+    def __init__(self, *, action_count: int = 1) -> None:
         super().__init__()
         self.approvals: list[ToolApprovalRequest] = []
+        self.action_count = action_count
 
     async def invoke(self, request: AgentRequest) -> AgentResult:
         self.requests.append(request)
@@ -250,7 +253,8 @@ class ApprovalAgent(BlockingAgent):
                     "name": "dangerous_tool",
                     "args": {"path": "/secret"},
                 },
-            ),
+            )
+            * self.action_count,
         )
         self.approvals.append(approval)
         decision = await request.approval_handler(approval)
@@ -258,10 +262,11 @@ class ApprovalAgent(BlockingAgent):
 
 
 class AuthorizationAgent(BlockingAgent):
-    def __init__(self, *, terminal: bool = False) -> None:
+    def __init__(self, *, terminal: bool = False, redirect_uri: str | None = None) -> None:
         super().__init__()
         self.callbacks: list[str] = []
         self.terminal = terminal
+        self.redirect_uri = redirect_uri
 
     async def invoke(self, request: AgentRequest) -> AgentResult:
         self.requests.append(request)
@@ -272,6 +277,7 @@ class AuthorizationAgent(BlockingAgent):
             server_name="notion",
             invocation_id="tool-call-1",
             expires_at=asyncio.get_running_loop().time() + 30,
+            redirect_uri=self.redirect_uri,
         )
         await request.authorization_handler(
             AuthorizationURL(
@@ -403,6 +409,103 @@ async def test_channel_authorization_intercepts_bound_callback_outside_model(
         ("chat", "MCP server `notion` is authorized."),
         ("chat", "authorization:completed"),
     ]
+
+
+@pytest.mark.parametrize(
+    "redirect_uri", ["http://localhost:3000/callback", "http://127.0.0.1:6359/callback"]
+)
+async def test_slack_labeled_callback_completes_authorization(
+    tmp_path: Path, redirect_uri: str
+) -> None:
+    channel = RecordingChannel(provider="slack")
+    agent = AuthorizationAgent(redirect_uri=redirect_uri)
+    host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
+    await host.start()
+
+    conversation_id = "C1:1700000000.000100"
+    await host.receive_message(
+        channel,
+        ChannelMessage(conversation_id=conversation_id, text="login", sender_id="operator"),
+    )
+    await _wait_for_sent_count(channel, 1)
+    inbound = _convert_event(
+        {
+            "type": "app_mention",
+            "channel": "C1",
+            "ts": "1700000000.000200",
+            "thread_ts": "1700000000.000100",
+            "user": "operator",
+            "text": f"<{redirect_uri}?code=example&amp;state=state|callback>",
+        },
+        bot_id="bot",
+    )
+    assert inbound is not None
+    await host.receive_message(
+        channel,
+        ChannelMessage(
+            conversation_id=inbound.conversation_id,
+            text=inbound.text,
+            sender_id=inbound.sender_id,
+        ),
+    )
+    await _wait_for_sent_count(channel, 3)
+    await host.stop()
+
+    assert agent.callbacks == [f"{redirect_uri}?code=example&state=state"]
+    assert [request.text for request in agent.requests] == ["login"]
+    assert channel.sent[-2:] == [
+        (conversation_id, "MCP server `notion` is authorized."),
+        (conversation_id, "authorization:completed"),
+    ]
+
+
+async def test_custom_callback_requires_matching_endpoint_and_operator(tmp_path: Path) -> None:
+    channel = RecordingChannel(provider="telegram")
+    redirect_uri = "http://127.0.0.1:6359/callback"
+    agent = AuthorizationAgent(redirect_uri=redirect_uri)
+    host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
+    await host.start()
+    await host.receive_message(
+        channel, ChannelMessage(conversation_id="chat", text="login", sender_id="operator")
+    )
+    await _wait_for_sent_count(channel, 1)
+    callback = f"{redirect_uri}?code=secret-code&state=secret-state"
+    for conversation, sender, text in (
+        ("other-chat", "operator", callback),
+        ("chat", "attacker", callback),
+        ("chat", "operator", callback.replace(":6359", ":6360")),
+        ("chat", "operator", callback.replace("/callback", "/wrong")),
+        ("chat", "operator", callback.replace("127.0.0.1", "localhost")),
+    ):
+        await host.receive_message(
+            channel, ChannelMessage(conversation_id=conversation, text=text, sender_id=sender)
+        )
+        assert agent.callbacks == []
+    await host.receive_message(
+        channel, ChannelMessage(conversation_id="chat", text=callback, sender_id="operator")
+    )
+    await _wait_for_sent_count(channel, 8)
+    await host.stop()
+    assert agent.callbacks == [callback]
+    assert [request.text for request in agent.requests] == ["login"]
+
+
+async def test_unsolicited_custom_callback_never_reaches_model(tmp_path: Path) -> None:
+    channel = RecordingChannel(provider="telegram")
+    agent = BlockingAgent()
+    host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
+    await host.start()
+    await host.receive_message(
+        channel,
+        ChannelMessage(
+            conversation_id="chat",
+            text="http://127.0.0.1:6359/callback?code=secret-code&state=secret-state",
+            sender_id="operator",
+        ),
+    )
+    await host.stop()
+    assert agent.requests == []
+    assert channel.sent == [("chat", "No matching MCP authorization request is pending.")]
 
 
 async def test_terminal_channel_authorization_suppresses_redundant_agent_result(
@@ -595,6 +698,49 @@ async def test_host_interrupts_active_turn_and_continues_same_conversation(tmp_p
 
     assert [request.text for request in agent.requests] == ["block", "second"]
     assert agent.recoveries == ["test:chat"]
+    assert channel.sent == [("chat", "reply:second")]
+
+
+class SlowToStopTypingChannel(RecordingChannel):
+    """Typing indicator that takes a moment to stop once cancelled."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.typing_started = asyncio.Event()
+        self.typing_stopping = asyncio.Event()
+
+    async def send_typing(self, conversation_id: str) -> None:
+        await super().send_typing(conversation_id)
+        self.typing_started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            self.typing_stopping.set()
+            await asyncio.sleep(0.05)
+            raise
+
+
+async def test_message_arriving_as_a_turn_finishes_starts_its_own_turn(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Fail fast instead of waiting out the real 30 seconds if the cancel is lost.
+    monkeypatch.setattr("deepagents_talon.host._CANCEL_TIMEOUT_SECONDS", 1.0)
+    channel = SlowToStopTypingChannel()
+    agent = BlockingAgent()
+    host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
+    await host.start()
+
+    await host.receive_message(channel, ChannelMessage(conversation_id="chat", text="block"))
+    await channel.typing_started.wait()
+    agent.released.set()
+    # The first turn's model call is done and it is stopping its typing indicator.
+    await channel.typing_stopping.wait()
+    await host.receive_message(channel, ChannelMessage(conversation_id="chat", text="second"))
+    await _wait_for_request(agent, "second")
+    await _wait_for_sent_count(channel, 1)
+    await host.stop()
+
+    assert [request.text for request in agent.requests] == ["block", "second"]
     assert channel.sent == [("chat", "reply:second")]
 
 
@@ -869,30 +1015,22 @@ def _cron_job(tmp_path: Path, *, prompt: str = "scan the market", channel: str |
 async def test_scheduled_run_timeout_repairs_the_job_thread(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A run that never returns is bounded, and its thread is left usable.
-
-    The scheduler awaits `run_scheduled_job` directly rather than through `_tasks`, so
-    nothing else reaches the recovery that patches dangling tool calls. Without it the
-    thread ends on an assistant message whose tool calls have no results, and every
-    later fire of the job fails against the provider.
-    """
+    """A timed-out run is repaired without reusing its thread on the next fire."""
     monkeypatch.setattr("deepagents_talon.host._SCHEDULED_RUN_TIMEOUT_SECONDS", 0.05)
     channel = RecordingChannel()
     agent = BlockingAgent()
     host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
     job = _cron_job(tmp_path, prompt="block")
-    cron_id = f"{job.id}:talon-cron"
     await host.start()
     try:
         with pytest.raises(TimeoutError):
             await asyncio.wait_for(host.run_scheduled_job(job), 2)
 
-        assert agent.recoveries == [cron_id]
+        assert agent.recoveries == [agent.requests[0].conversation_id]
 
-        # The job is still usable: the next fire runs rather than inheriting a wedged
-        # thread, and it is not blocked behind the abandoned run.
         agent.released.set()
         assert await asyncio.wait_for(host.run_scheduled_job(job), 2) == "reply:block"
+        assert agent.requests[0].conversation_id != agent.requests[1].conversation_id
     finally:
         await host.stop()
 
@@ -916,6 +1054,7 @@ async def test_two_runs_of_one_job_never_overlap(tmp_path: Path) -> None:
         assert await asyncio.wait_for(first, 2) == "reply:block"
         assert await asyncio.wait_for(second, 2) == "reply:block"
         assert len(agent.requests) == 2
+        assert agent.requests[0].conversation_id != agent.requests[1].conversation_id
     finally:
         await host.stop()
 
@@ -1025,6 +1164,32 @@ async def test_turn_cancelled_awaiting_delivery_requeues_its_background_results(
             await asyncio.wait_for(turn, 2)
 
         assert agent.background.requeued == ["subagent-1"]
+        assert channel.sent == []
+    finally:
+        await host.stop()
+
+
+@pytest.mark.parametrize("suppressed", [False, True])
+async def test_turn_cancelled_stopping_typing_requeues_unsuppressed_results(
+    tmp_path: Path, *, suppressed: bool
+) -> None:
+    channel = SlowToStopTypingChannel()
+    agent = BackgroundResultAgent()
+    host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
+    await host.start()
+    try:
+        if suppressed:
+            host._terminal_authorizations.add("test:chat")
+        await host.receive_message(channel, ChannelMessage(conversation_id="chat", text="block"))
+        await channel.typing_started.wait()
+        turn = host._tasks["test:chat"]
+        agent.released.set()
+        await channel.typing_stopping.wait()
+        turn.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await asyncio.wait_for(turn, 2)
+
+        assert agent.background.requeued == ([] if suppressed else ["subagent-1"])
         assert channel.sent == []
     finally:
         await host.stop()
@@ -1180,7 +1345,7 @@ async def test_host_passes_inbound_photo_as_model_content(tmp_path: Path) -> Non
     content = cast("list[dict[str, object]]", agent.requests[0].metadata["model_content"])
     assert isinstance(content, list)
     assert content[0] == {"type": "text", "text": "look"}
-    assert content[1]["type"] == "image_url"
+    assert content[1]["type"] == "image"
 
 
 async def test_host_passes_inbound_video_path_in_text(tmp_path: Path) -> None:
@@ -1210,6 +1375,16 @@ async def test_host_passes_inbound_video_path_in_text(tmp_path: Path) -> None:
     assert "unsupported" not in request.text
     assert request.metadata["media_type"] == "video"
     assert request.metadata["media_paths"] == [str(video)]
+
+
+def test_approval_prompt_preserves_angle_brackets_for_other_channels() -> None:
+    approval = ToolApprovalRequest(
+        conversation_id="chat",
+        interrupt_id="interrupt",
+        action_requests=[{"name": "execute", "args": {"command": "sort < input.txt"}}],
+    )
+
+    assert '"command": "sort < input.txt"' in _format_tool_approval_prompt(approval)
 
 
 async def test_host_routes_tool_approval_reply_to_pending_run(tmp_path: Path) -> None:
@@ -1666,6 +1841,26 @@ async def test_host_runs_scheduled_job_and_delivers_result(tmp_path: Path) -> No
     assert channel.sent == [("chat", "reply:scheduled prompt")]
 
 
+async def test_scheduled_job_passes_its_pinned_skills(tmp_path: Path) -> None:
+    channel = RecordingChannel()
+    agent = BlockingAgent()
+    host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
+    store = CronJobStore(assistant_id="test", cron_dir=tmp_path / "test" / "cron")
+    job = store.create_job(
+        prompt="scheduled prompt",
+        schedule=CronSchedule.parse("in 5m"),
+        origin=CronOrigin(conversation_id="chat"),
+        skills=("weekly-report",),
+    )
+    await host.start()
+    try:
+        await host.run_scheduled_job(job)
+    finally:
+        await host.stop()
+
+    assert agent.requests[0].metadata["pinned_skills"] == ["weekly-report"]
+
+
 async def test_scheduled_job_runs_while_interactive_turn_remains_active(tmp_path: Path) -> None:
     channel = RecordingChannel()
     agent = BlockingAgent()
@@ -1686,7 +1881,7 @@ async def test_scheduled_job_runs_while_interactive_turn_remains_active(tmp_path
     assert [request.text for request in agent.requests] == ["block", "scheduled prompt"]
     assert agent.recoveries == []
     assert agent.requests[0].conversation_id == "test:chat"
-    assert agent.requests[1].conversation_id == f"{job.id}:talon-cron"
+    assert agent.requests[1].conversation_id.startswith(f"{job.id}:talon-cron:")
     assert not host._tasks["test:chat"].done()
     agent.released.set()
     await host.stop()
@@ -1882,7 +2077,7 @@ async def test_one_locked_conversation_does_not_stall_delivery_for_others(
             agent.background.pending.add(owner)
             host._background_routes[owner] = _BackgroundRoute(
                 channel=channel,
-                message=ChannelMessage(owner, "research"),
+                message=ChannelMessage(owner, "research", metadata={"history_chat": "100"}),
                 conversation_root=owner,
                 conversation_id=owner,
                 provider="test",
@@ -1902,6 +2097,8 @@ async def test_one_locked_conversation_does_not_stall_delivery_for_others(
 
         assert "waiting" in host._tasks
         assert "stuck" not in host._tasks
+        await host._tasks["waiting"]
+        assert agent.requests[0].metadata["history_chat"] == "100"
     finally:
         release.set()
         await asyncio.gather(holder, return_exceptions=True)
@@ -2073,5 +2270,39 @@ async def test_reset_counter_rollback_failure_is_logged_and_still_reverted(
         assert host._agent_conversation_id("test:chat") == "test:chat"
         assert json.loads(config.conversation_state_path.read_text()) == {"test:chat": 1}
         assert "Could not roll back the conversation reset counter" in caplog.text
+    finally:
+        await host.stop()
+
+
+@pytest.mark.parametrize("reply", ["approve", "deny"])
+async def test_host_batch_reprompts_partial_reply(tmp_path: Path, reply: str) -> None:
+    channel = RecordingChannel()
+    agent = ApprovalAgent(action_count=2)
+    host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
+    await host.start()
+    try:
+        await host.receive_message(
+            channel, ChannelMessage(conversation_id="chat", text="run", sender_id="operator")
+        )
+        await _wait_for_sent_count(channel, 1)
+        assert "run ALL actions" in channel.sent[0][1]
+        await host.receive_message(
+            channel, ChannelMessage(conversation_id="chat", text=reply, sender_id="other")
+        )
+        await _wait_for_sent_count(channel, 2)
+        assert "Only the operator" in channel.sent[1][1]
+        await host.receive_message(
+            channel, ChannelMessage(conversation_id="chat", text=f"{reply} 1", sender_id="operator")
+        )
+        await _wait_for_sent_count(channel, 3)
+        assert channel.sent[2] == channel.sent[0]
+        await host.receive_message(
+            channel, ChannelMessage(conversation_id="chat", text=reply, sender_id="operator")
+        )
+        await _wait_for_sent_count(channel, 4)
+        decision = "approve" if reply == "approve" else "reject"
+        assert channel.sent[3] == ("chat", f"decision:{decision}")
+        assert len(agent.requests) == 1
+        assert not host._pending_tool_approvals
     finally:
         await host.stop()

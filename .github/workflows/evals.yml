@@ -863,7 +863,7 @@ jobs:
       - name: "🐍 Set up Python + UV"
         uses: "./.github/actions/uv_setup"
         with:
-          python-version: "3.12"
+          python-version: "3.14"
           cache-suffix: evals-aggregate
           working-directory: libs/evals
 

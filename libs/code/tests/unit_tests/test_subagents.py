@@ -1,15 +1,18 @@
 """Unit tests for subagent loading functionality."""
 
 import logging
-from pathlib import Path
-
-import pytest
+from typing import TYPE_CHECKING
 
 from deepagents_code.subagents import (
     _load_subagents_from_dir,
     _parse_subagent_file,
     list_subagents,
 )
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+    import pytest
 
 
 def make_subagent_content(

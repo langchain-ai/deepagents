@@ -9,12 +9,15 @@ agent is given.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import TYPE_CHECKING, Any
 
 from langchain.agents.middleware import wrap_tool_call
 from langchain_core.messages import ToolMessage
 from langchain_core.tools import ToolException
+
+from deepagents_code.config_manifest import MCP_TOOL_TIMEOUT_SECONDS_DEFAULT
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -89,7 +92,9 @@ def normalize_mcp_arguments(
     return cleaned
 
 
-def mcp_tool_middleware() -> AgentMiddleware:
+def mcp_tool_middleware(
+    timeout_seconds: float = MCP_TOOL_TIMEOUT_SECONDS_DEFAULT,
+) -> AgentMiddleware:
     """Build the middleware wrapping every MCP tool call.
 
     Returns:
@@ -116,13 +121,35 @@ def mcp_tool_middleware() -> AgentMiddleware:
         )
 
         try:
-            return await handler(request)
+            return await asyncio.wait_for(
+                handler(request),
+                timeout=timeout_seconds,
+            )
         # A `ToolException` already reached its tool-local handler, which turned
         # the server's own error content into a failed `ToolMessage`. Re-raising
         # would bury an actionable instruction ("use the X tool instead") under
         # a generic wrapper.
         except ToolException:
             raise
+        except TimeoutError:
+            tool_name = request.tool_call.get("name") or getattr(tool, "name", "?")
+            logger.warning(
+                "MCP tool call timed out: server=%r tool=%r timeout=%s seconds",
+                server,
+                tool_name,
+                timeout_seconds,
+            )
+            return ToolMessage(
+                content=(
+                    f"MCP tool call to server {server!r}, tool {tool_name!r}, "
+                    f"timed out after {timeout_seconds:g} seconds. The operation "
+                    "may still be running server-side; retrying may duplicate "
+                    "work."
+                ),
+                tool_call_id=request.tool_call["id"],
+                name=tool_name,
+                status="error",
+            )
         except Exception as exc:
             from deepagents_code.mcp_auth import find_reauth_required
 

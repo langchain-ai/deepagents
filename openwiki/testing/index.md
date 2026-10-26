@@ -1,3 +1,3 @@
 # Files
 
-- [Testing Strategy and Local Test Guide](testing-guide.md) - Select package-local correctness, integration, benchmark, and evaluation coverage, and separately validate repository automation through workflow YAML contracts and executable shell harnesses. Use the narrowest boundary that proves the intended change.
+- [Testing Guide](testing-guide.md) - Focused dcode test routing for server lifecycle, runtime compatibility patches, workspace ownership, middleware integrity, and virtualized Textual transcripts. Use package Makefile targets as the command authority and prefer deterministic seams over process or model-backed tests.

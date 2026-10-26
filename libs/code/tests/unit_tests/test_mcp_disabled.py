@@ -1,7 +1,6 @@
 """Tests for the MCP disabled-servers persistence store."""
 
-from collections.abc import Iterator
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 
@@ -13,6 +12,10 @@ from deepagents_code.mcp_disabled import (
     set_server_disabled,
 )
 from unit_tests.conftest import redirect_managed_config
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+    from pathlib import Path
 
 
 @pytest.fixture
@@ -84,6 +87,20 @@ class TestSetServerDisabled:
         assert detail is not None
         # File contents preserved verbatim.
         assert cfg.read_text() == corrupt
+
+    def test_refuses_to_overwrite_mis_encoded_config(self, tmp_path: Path) -> None:
+        """A non-UTF-8 config gets the same refusal as unparseable TOML.
+
+        `tomllib` raises `UnicodeDecodeError` for it rather than
+        `TOMLDecodeError`, and escaping from the `/mcp` toggle exits the app.
+        """
+        cfg = tmp_path / "config.toml"
+        mis_encoded = "[mcp]\ndisabled_servers = []\n".encode("utf-16")
+        cfg.write_bytes(mis_encoded)
+        ok, detail = set_server_disabled("github", True, config_path=cfg)
+        assert not ok
+        assert detail is not None
+        assert cfg.read_bytes() == mis_encoded
 
 
 class TestIsServerDisabled:

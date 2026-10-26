@@ -2721,3 +2721,55 @@ class TestFilesystemDelete:
         assert result.error is not None
         assert "Error deleting" in result.error
         assert f.exists()
+
+
+class TestRealPath:
+    """`FilesystemBackend._real_path`, used by filesystem permissions."""
+
+    def _backend(self, tmp_path: Path) -> FilesystemBackend:
+        (tmp_path / "secrets").mkdir()
+        write_file(tmp_path / "secrets" / "key.txt", "k")
+        return FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+
+    def test_plain_and_missing_paths_unchanged(self, tmp_path: Path) -> None:
+        real_path = self._backend(tmp_path)._real_path
+        assert real_path("/secrets/key.txt") == "/secrets/key.txt"
+        assert real_path("/secrets/new/file.txt") == "/secrets/new/file.txt"
+        assert real_path("/") == "/"
+
+    def test_follows_directory_leaf_and_dangling_symlinks(self, tmp_path: Path) -> None:
+        backend = self._backend(tmp_path)
+        try:
+            (tmp_path / "link").symlink_to(tmp_path / "secrets", target_is_directory=True)
+            (tmp_path / "alias.txt").symlink_to(tmp_path / "secrets" / "key.txt")
+            (tmp_path / "dangling").symlink_to(tmp_path / "secrets" / "future")
+        except (NotImplementedError, OSError):
+            pytest.skip("platform does not support symlinks")
+        real_path = backend._real_path
+        assert real_path("/link/key.txt") == "/secrets/key.txt"
+        assert real_path("/link/missing.txt") == "/secrets/missing.txt"
+        assert real_path("/alias.txt") == "/secrets/key.txt"
+        assert real_path("/dangling/x.txt") == "/secrets/future/x.txt"
+
+    def test_escape_outside_root_raises(self, tmp_path: Path) -> None:
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        root = tmp_path / "root"
+        root.mkdir()
+        try:
+            (root / "escape").symlink_to(outside, target_is_directory=True)
+        except (NotImplementedError, OSError):
+            pytest.skip("platform does not support symlinks")
+        real_path = FilesystemBackend(root_dir=str(root), virtual_mode=True)._real_path
+        with pytest.raises(ValueError, match="outside root"):
+            real_path("/escape/x")
+
+    def test_non_virtual_mode_returns_real_path(self, tmp_path: Path) -> None:
+        self._backend(tmp_path)
+        try:
+            (tmp_path / "link").symlink_to(tmp_path / "secrets", target_is_directory=True)
+        except (NotImplementedError, OSError):
+            pytest.skip("platform does not support symlinks")
+        real_path = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)._real_path
+        expected = Path(os.path.realpath(tmp_path / "secrets" / "key.txt"))
+        assert real_path(str(tmp_path / "link" / "key.txt")) == "/" + expected.relative_to(expected.anchor).as_posix()

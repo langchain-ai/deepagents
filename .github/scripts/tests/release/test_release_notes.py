@@ -195,6 +195,9 @@ def test_mutation_workflow_commands_are_target_only() -> None:
     assert "working-directory: release-pr" not in automation
     assert "git push" not in automation
     assert "createApplyCommit" in automation
+    assert "github.rest.actions.createWorkflowDispatch" in automation
+    assert "workflow_id: 'release_notes_check.yml'" in automation
+    assert "steps.refresh-check.outcome == 'success'" in automation
 
     # The privileged draft/apply jobs must stay gated on the validate job's
     # should-run output, pinned to the release-bot environment, and read-only for
@@ -204,7 +207,10 @@ def test_mutation_workflow_commands_are_target_only() -> None:
         job = workflow["jobs"][job_name]
         assert "needs.validate.outputs.should-run == 'true'" in job["if"]
         assert job["environment"] == "release-bot"
-        assert job["permissions"] == {"contents": "read"}
+        expected_permissions = {"contents": "read"}
+        if job_name == "apply":
+            expected_permissions["actions"] = "write"
+        assert job["permissions"] == expected_permissions
         app_token = next(
             step for step in job["steps"] if step.get("id") == "app-token"
         )
@@ -255,7 +261,7 @@ def test_mutation_workflow_commands_are_target_only() -> None:
             for step in job["steps"]
             if step.get("name") == "Mark manual command complete"
         )
-        terminal_step = "post" if job_name == "draft" else "publish"
+        terminal_step = "post" if job_name == "draft" else "refresh-check"
         assert "github.event_name == 'issue_comment'" in complete["if"]
         assert "steps.acknowledge.outcome == 'success'" in complete["if"]
         assert f"steps.{terminal_step}.outcome == 'success'" in complete["if"]

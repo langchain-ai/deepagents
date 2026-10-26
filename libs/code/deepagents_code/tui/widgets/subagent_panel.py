@@ -85,6 +85,9 @@ class _SubagentRecord:
     duration_ms: int | None = None
     """Measured duration once finished; None while still running."""
 
+    replayed: bool = False
+    """Whether timing must span multiple attempts, including approval waits."""
+
     error: str | None = None
     """Failure reason, set only when status is error."""
 
@@ -367,14 +370,19 @@ class SubagentPanel(Vertical):
         self._refresh()
 
     def _handle_start(self, sub_id: str, eval_key: str, event: dict[str, Any]) -> None:
-        """Create/replace a running record and (re-)show the panel."""
+        """Create a running record without resetting replayed dispatches."""
         phase = self._ensure_phase(eval_key)
         self._active_eval_id = eval_key
+        if record := phase.records.get(sub_id):
+            record.replayed = True
+            return
 
         record = _SubagentRecord(
             id=sub_id,
             label=_sanitize(self._row_label(event), max_chars=200),
         )
+        if not self._any_running():
+            self.expanded = True
         phase.add(record)
         self._show()
         self._apply_body_height()
@@ -434,9 +442,13 @@ class SubagentPanel(Vertical):
             # dropped on the wire) carries the failure string — synthesize a
             # minimal record so it still surfaces instead of vanishing silently.
             record = self._adopt_orphan_finish(sub_id, eval_key, event)
+        if record.status != "running":
+            return
         record.status = "done" if outcome == "complete" else "error"
         duration = event.get("duration_ms")
-        if isinstance(duration, (int, float)):
+        if record.replayed or not isinstance(duration, (int, float)):
+            record.duration_ms = int(record.elapsed_seconds() * 1000)
+        else:
             record.duration_ms = int(duration)
         if outcome == "error":
             raw_err = event.get("error")
@@ -445,6 +457,7 @@ class SubagentPanel(Vertical):
             )
         if not self._any_running():
             self._stop_timer()
+            self.expanded = False
 
     def _adopt_orphan_finish(
         self, sub_id: str, eval_key: str, event: dict[str, Any]
@@ -510,7 +523,7 @@ class SubagentPanel(Vertical):
         """
         try:
             header = self.query_one("#subagent-header", Horizontal)
-        except (NoMatches, TooManyMatches):  # not mounted yet
+        except NoMatches, TooManyMatches:  # not mounted yet
             return False
         return event.get_content_offset(header) is not None
 
@@ -525,7 +538,7 @@ class SubagentPanel(Vertical):
         """
         try:
             phases = self.query_one("#subagent-phases", Static)
-        except (NoMatches, TooManyMatches):  # not mounted yet
+        except NoMatches, TooManyMatches:  # not mounted yet
             return None
         offset = event.get_content_offset(phases)
         if offset is None:
@@ -605,6 +618,7 @@ class SubagentPanel(Vertical):
         if not changed:
             return
         self._stop_timer()
+        self.expanded = False
         self._refresh()
 
     def _show(self) -> None:
@@ -612,14 +626,14 @@ class SubagentPanel(Vertical):
         self.add_class("-visible")
 
     def toggle(self) -> None:
-        """Toggle the body open/closed. This is the only thing that changes it."""
+        """Toggle the body open or closed for manual inspection."""
         self.expanded = not self.expanded
 
     def watch_expanded(self, expanded: bool) -> None:
         """Show/hide the body when the expanded state changes."""
         try:
             body = self.query_one("#subagent-body")
-        except (NoMatches, TooManyMatches):  # body not mounted yet
+        except NoMatches, TooManyMatches:  # body not mounted yet
             return
         body.set_class(not expanded, "-collapsed")
         # Drop vertical padding when collapsed so the header bar is thin.
@@ -711,7 +725,7 @@ class SubagentPanel(Vertical):
             return
         try:
             self.query_one(f"#{widget_id}", Static).update(content)
-        except (NoMatches, TooManyMatches):  # not mounted yet
+        except NoMatches, TooManyMatches:  # not mounted yet
             return
         self._last_render[widget_id] = content.plain
 
@@ -745,7 +759,7 @@ class SubagentPanel(Vertical):
             icon, tint = glyphs.checkmark, colors.success
         lead_text = f"{caret} {icon}  dynamic subagents"
         parts: list[Content] = [Content.styled(lead_text, tint)]
-        if self.expanded and total:
+        if total:
             parts.extend(
                 self._header_meta_parts(done, total, failed, cancelled, colors)
             )
@@ -765,7 +779,7 @@ class SubagentPanel(Vertical):
         cancelled: int,
         colors: Any,  # noqa: ANN401 — ThemeColors
     ) -> list[Content]:
-        """Whole-turn totals (phase count, failures, cancellations) when expanded.
+        """Whole-turn totals (phase count, failures, cancellations).
 
         Returns:
             The styled `Content` pieces appended after the header label.
@@ -791,7 +805,7 @@ class SubagentPanel(Vertical):
         """Render the left pane: one selectable row per phase (eval batch)."""
         try:
             scroll = self.query_one("#subagent-phases-scroll")
-        except (NoMatches, TooManyMatches):  # not mounted yet
+        except NoMatches, TooManyMatches:  # not mounted yet
             return
         # Hide only when there are no phases at all; otherwise always show the
         # list (even a single phase) for a consistent two-pane view.
@@ -854,7 +868,7 @@ class SubagentPanel(Vertical):
         """
         try:
             width = self.query_one("#subagent-agents", Static).size.width
-        except (NoMatches, TooManyMatches):  # not mounted yet
+        except NoMatches, TooManyMatches:  # not mounted yet
             width = 0
         if not width or width <= 0:
             width = _FALLBACK_WIDTH

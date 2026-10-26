@@ -8,13 +8,16 @@ import asyncio
 import io
 import json
 import sys
-from pathlib import Path
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from rich.console import Console
 
 from deepagents_code.ui import show_help
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 # ---------------------------------------------------------------------------
 # Section 1: Help screen Examples sections

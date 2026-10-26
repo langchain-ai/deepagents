@@ -41,6 +41,10 @@ env:
   UV_NO_SYNC: "true"
 
 jobs:
+  check-lockfiles:
+    name: "🔒 Check Lockfiles"
+    uses: ./.github/workflows/check_lockfiles.yml
+
   # Detect which packages have changes
   changes:
     name: "🔍 Detect Changes"
@@ -63,6 +67,8 @@ jobs:
       quickjs: ${{ steps.curated-apply.outputs.only != 'true' && steps.filter.outputs.quickjs == 'true' }}
       curated-apply-only: ${{ steps.curated-apply.outputs.only || 'false' }}
       curated-apply-parent-conclusion: ${{ steps.curated-apply.outputs.prior-conclusion }}
+      curated-apply-parent-sha: ${{ steps.curated-apply.outputs.parent-sha }}
+      curated-apply-parent-check: ${{ steps.curated-apply.outputs.parent-check }}
     steps:
       - name: "📋 Checkout Code"
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -107,11 +113,15 @@ jobs:
             --bot-id "$BOT_ID")"
           if [ "$only" = true ]; then
             parent="$(git rev-parse "$HEAD_SHA^")"
-            conclusion="$(gh api \
+            parent_check="$(gh api \
               -H 'X-GitHub-Api-Version: 2022-11-28' \
               "repos/$GITHUB_REPOSITORY/commits/$parent/check-runs?check_name=%E2%9C%85%20CI%20Success&filter=latest&per_page=100" \
-              --jq '[.check_runs[] | select(.name == "✅ CI Success")] | if length == 1 then .[0].conclusion else "" end' \
+              --jq '[.check_runs[] | select(.name == "✅ CI Success")] | if length == 1 then .[0] | {id, conclusion, details_url, check_suite: {id: .check_suite.id}} else {} end' \
               2>/dev/null || true)"
+            if ! parent_check="$(printf '%s' "$parent_check" | jq -cs 'if length == 1 and (.[0] | type) == "object" then .[0] else {} end' 2>/dev/null)"; then
+              parent_check='{}'
+            fi
+            conclusion="$(printf '%s' "$parent_check" | jq -r '.conclusion // ""')"
             case "$conclusion" in
               success|failure) ;;
               *)
@@ -123,6 +133,8 @@ jobs:
           fi
           echo "only=$only" >> "$GITHUB_OUTPUT"
           echo "prior-conclusion=${conclusion:-}" >> "$GITHUB_OUTPUT"
+          echo "parent-sha=${parent:-}" >> "$GITHUB_OUTPUT"
+          echo "parent-check=${parent_check:-}" >> "$GITHUB_OUTPUT"
 
       - name: "🔍 Check for changes"
         uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4
@@ -247,7 +259,7 @@ jobs:
     uses: ./.github/workflows/_lint.yml
     with:
       working-directory: "libs/code"
-      python-version: "3.12"
+      python-version: "3.14"
 
   lint-talon:
     name: "🧹 Lint talon"
@@ -256,7 +268,7 @@ jobs:
     uses: ./.github/workflows/_lint.yml
     with:
       working-directory: "libs/talon"
-      python-version: "3.12"
+      python-version: "3.14"
 
   lint-evals:
     name: "🧹 Lint evals"
@@ -265,7 +277,7 @@ jobs:
     uses: ./.github/workflows/_lint.yml
     with:
       working-directory: "libs/evals"
-      python-version: "3.13"
+      python-version: "3.14"
 
   lint-acp:
     name: "🧹 Lint acp"
@@ -339,7 +351,7 @@ jobs:
     uses: ./.github/workflows/_test.yml
     with:
       working-directory: "libs/code"
-      python-versions: '["3.12", "3.13", "3.14"]'
+      python-versions: '["3.14"]'
 
   test-talon:
     name: "🧪 Test deepagents-talon"
@@ -348,7 +360,7 @@ jobs:
     uses: ./.github/workflows/_test.yml
     with:
       working-directory: "libs/talon"
-      python-versions: '["3.12", "3.13", "3.14"]'
+      python-versions: '["3.14"]'
 
   test-evals:
     name: "🧪 Test evals"
@@ -357,7 +369,7 @@ jobs:
     uses: ./.github/workflows/_test.yml
     with:
       working-directory: "libs/evals"
-      python-versions: '["3.12", "3.13"]'
+      python-versions: '["3.14"]'
 
   test-acp:
     name: "🧪 Test acp"
@@ -515,10 +527,10 @@ jobs:
       - name: "📋 Checkout Code"
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: "🐍 Set up Python 3.12 + UV"
+      - name: "🐍 Set up Python 3.14 + UV"
         uses: "./.github/actions/uv_setup"
         with:
-          python-version: "3.12"
+          python-version: "3.14"
           cache-suffix: drbench-dataset
           working-directory: "libs/evals"
 
@@ -553,10 +565,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: "🐍 Setup Python 3.11"
+      - name: "🐍 Setup Python 3.14"
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: "3.11"
+          python-version: "3.14"
       # test_release_notes.py shells out to `node --test`; pin Node so the
       # helper-script tests don't rely on whatever the runner image preinstalls.
       - name: "🟢 Setup Node"
@@ -682,6 +694,7 @@ jobs:
     name: "✅ CI Success"
     needs:
       - changes
+      - check-lockfiles
       - lint-deepagents
       - lint-code
       - lint-talon
@@ -759,9 +772,76 @@ jobs:
             .github/scripts/checks/ci_gate.py
           persist-credentials: false
 
+      - name: Report inherited CI failure
+        if: >-
+          needs.changes.outputs.curated-apply-only == 'true' &&
+          needs.changes.outputs.curated-apply-parent-conclusion == 'failure'
+        continue-on-error: true
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          PARENT_SHA: ${{ needs.changes.outputs.curated-apply-parent-sha }}
+          PARENT_CHECK: ${{ needs.changes.outputs.curated-apply-parent-check }}
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const repoUrl = `${process.env.GITHUB_SERVER_URL}/${owner}/${repo}`;
+            const parentUrl = `${repoUrl}/commit/${process.env.PARENT_SHA}`;
+            const message = 'This curated-notes-only commit inherits failed parent CI. Package jobs were skipped, not passed; the CI Success gate remains failed.';
+            core.error(`${message} Parent commit: ${parentUrl}`);
+            const currentRunUrl = `${repoUrl}/actions/runs/${context.runId}`;
+            const lines = [message, '', `Parent commit: ${parentUrl}`];
+            let parentRunId;
+            const jobUrl = value => {
+              const prefix = `${repoUrl}/actions/runs/`;
+              return typeof value === 'string' && value.startsWith(prefix) &&
+                /^\d+\/job\/\d+$/.test(value.slice(prefix.length)) ? value : '';
+            };
+            const escape = value => String(value).replace(/[&<>"']/g, char => ({
+              '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+            })[char]);
+            try {
+              const check = JSON.parse(process.env.PARENT_CHECK);
+              const url = jobUrl(check.details_url);
+              if (url) {
+                parentRunId = url.split('/job/')[0].split('/').pop();
+                lines.push(`Parent CI run: ${url.split('/job/')[0]}`, `Parent CI Success check: ${url}`);
+                core.info(lines.slice(-2).join('\n'));
+              }
+              const checks = await github.paginate(github.rest.checks.listForSuite, {
+                owner, repo, check_suite_id: check.check_suite.id,
+                filter: 'latest', per_page: 100,
+              });
+              const failed = checks.filter(candidate => candidate.id !== check.id &&
+                ['failure', 'cancelled', 'timed_out', 'action_required', 'startup_failure', 'stale'].includes(candidate.conclusion));
+              lines.push('', 'Unsuccessful checks currently reported by the parent CI suite (may change after reruns):');
+              for (const candidate of failed) {
+                const link = jobUrl(candidate.details_url);
+                core.error(`Parent job ${JSON.stringify(candidate.name)} concluded ${candidate.conclusion}. Inspect ${link || parentUrl}`, {
+                  title: 'Inherited parent CI failure',
+                });
+                lines.push(`- <code>${escape(candidate.name)}</code>: ${candidate.conclusion}${link ? ` — ${link}` : ''}`);
+              }
+              if (!failed.length) {
+                const fallback = 'No unsuccessful sibling checks are currently available; inspect the linked parent CI check/run. The captured inherited failure is unchanged.';
+                core.info(fallback);
+                lines.push(fallback);
+              }
+            } catch {
+              const fallback = 'Parent check details could not be retrieved; inspect the parent commit checks. The inherited failure is unchanged.';
+              core.warning(fallback);
+              lines.push('', fallback);
+            }
+            lines.push('', '### Troubleshoot and retry',
+              '1. Open the unsuccessful parent job above and inspect its failing step. Fix a real failure through the normal PR/release refresh flow; retry only if the failure is transient.',
+              `2. For a transient failure, open the parent CI run and choose **Re-run failed jobs**${parentRunId ? ` (\`gh run rerun ${parentRunId} --failed --repo ${owner}/${repo}\`)` : ''}. Wait for its **CI Success** check to pass.`,
+              `3. Open [this head workflow run](${currentRunUrl}) and choose **Re-run all jobs** (\`gh run rerun ${context.runId} --repo ${owner}/${repo}\`) to re-read the parent result. **Re-run failed jobs** alone reuses the old detection output and will still inherit the failure.`,
+              '', 'Skipped package jobs are not passing tests. This head is only green after its own CI Success check passes.');
+            await core.summary.addHeading('Inherited parent CI failure').addRaw(lines.join('\n')).write();
+
       - name: "🎉 All Checks Passed"
         env:
           EVENT_NAME: ${{ github.event_name }}
+          LOCKFILES_RESULT: ${{ needs.check-lockfiles.result }}
           CURATED_APPLY_ONLY: ${{ needs.changes.outputs.curated-apply-only }}
           CURATED_APPLY_PARENT_CONCLUSION: ${{ needs.changes.outputs.curated-apply-parent-conclusion }}
           # Full needs context: the wildcard `toJSON(needs.*.result)` form
@@ -772,6 +852,10 @@ jobs:
           TALON_CHANGED: ${{ needs.changes.outputs.talon-src }}
         run: |
           set -euo pipefail
+          if [ "$LOCKFILES_RESULT" != success ]; then
+            echo "Lockfile validation did not pass: $LOCKFILES_RESULT"
+            exit 1
+          fi
           if [ "$CURATED_APPLY_ONLY" = true ]; then
             if [ "$CURATED_APPLY_PARENT_CONCLUSION" = success ]; then
               echo "The release-bot commit only updates the managed changelog; prior-head CI passed."

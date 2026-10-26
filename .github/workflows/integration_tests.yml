@@ -6,7 +6,7 @@
 # or type a custom path in the override field.
 
 name: "⏰ Integration Tests"
-run-name: "integration tests — ${{ inputs.working-directory-override || (inputs.working-directory == 'all' && 'all libs') || inputs.working-directory }} (py ${{ inputs.python-version || (contains(format('{0} {1}', inputs.working-directory, inputs.working-directory-override), 'libs/code') && '3.12, 3.13') || '3.11, 3.13' }})"
+run-name: "integration tests — ${{ inputs.working-directory-override || (inputs.working-directory == 'all' && 'all libs') || inputs.working-directory }} (py ${{ inputs.python-version || (contains(format('{0} {1}', inputs.working-directory, inputs.working-directory-override), 'libs/code') && '3.14') || '3.11, 3.13' }})"
 
 on:
   workflow_dispatch:
@@ -27,7 +27,7 @@ on:
         default: ""
       python-version:
         type: string
-        description: "Python version (defaults to 3.12 and 3.13 for libs/code; otherwise 3.11 and 3.13)"
+        description: "Python version (defaults to 3.14 for libs/code; otherwise 3.11 and 3.13)"
         default: ""
 
 permissions:
@@ -69,7 +69,7 @@ jobs:
           if [ -n "$PYTHON_VERSION_FORCE" ]; then
             python_version="[\"$PYTHON_VERSION_FORCE\"]"
           elif [ "$WORKING_DIRECTORY_OVERRIDE" = "libs/code" ] || [ "$WORKING_DIRECTORY" = "libs/code" ]; then
-            python_version='["3.12", "3.13"]'
+            python_version='["3.14"]'
           else
             python_version='["3.11", "3.13"]'
           fi

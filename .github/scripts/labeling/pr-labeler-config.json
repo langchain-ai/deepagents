@@ -81,6 +81,7 @@
     "org:external": "Issue or pull request created by someone outside the `langchain-ai` GitHub organization.",
     "org:internal": "Issue or pull request created by a member of the `langchain-ai` GitHub organization.",
     "org:open-swe": "Pull request created from an `open-swe/` branch.",
+    "priority:triage": "New issue awaiting maintainer review and priority assignment.",
     "package:deepagents": "Changes related to the `deepagents` SDK and agent harness.",
     "package:dcode": "Changes related to the `deepagents-code` terminal coding agent.",
     "package:acp": "Changes related to the Agent Client Protocol package.",
@@ -257,10 +258,6 @@
     {
       "label": "topic:prompts",
       "pattern": "(?:^|/)(?:system_prompt\\.md|default_agent_prompt\\.md|_prompt_caching\\.py)$"
-    },
-    {
-      "label": "topic:harness",
-      "prefix": "libs/deepagents/deepagents/profiles/"
     },
     {
       "label": "topic:multimodal",

@@ -1,141 +1,208 @@
 ---
-type: Talon delegation architecture
-title: Subagents and Skills
-description: How Talon isolates local research subagents, attaches capabilities explicitly, delegates work in the background, and reloads subagent configuration safely. Covers the MCP and approval protections that remain in child graphs.
-tags: [talon, subagents, skills, delegation, capability-isolation, mcp]
+type: delegation and progressive-disclosure concept
+title: Subagents, Skills, and Delegation
+description: Deep Agents separates isolated local delegation from durable Agent Protocol async tasks, with distinct polling, direct wake-up, and webhook delivery paths. Skills progressively disclose instructions and optional tools without granting authorization.
+tags: [deepagents, subagents, delegation, async-tasks, skills, middleware, agent-protocol]
+sources:
+  - id: openwiki-source-590f5ae570ac1e4ef175341c
+    resource: repo://examples/async-subagent-server/README.md
+  - id: openwiki-source-aaa77c489f52896366e1b57c
+    resource: repo://examples/async-subagent-server/server.py
+  - id: openwiki-source-dc1e984fa4e6a51458e9ff9d
+    resource: repo://libs/code/deepagents_code/plugins/adapters/skills_middleware.py
+  - id: openwiki-source-090c6e0a873de04d273989ad
+    resource: repo://libs/code/deepagents_code/skills/load.py
+  - id: openwiki-source-7315c344b29bd7441321ac75
+    resource: repo://libs/code/deepagents_code/skills/trust.py
+  - id: openwiki-source-07ceaf2cb5ec707fa4d2010f
+    resource: repo://libs/code/tests/unit_tests/skills/test_load.py
+  - id: openwiki-source-c1d8209cfeba420bc0ea985b
+    resource: repo://libs/code/tests/unit_tests/skills/test_skill_tools.py
+  - id: openwiki-source-dc6ee09317ebb7c0a7509f64
+    resource: repo://libs/code/tests/unit_tests/skills/test_skill_trust.py
+  - id: openwiki-source-c9abc2e44d0ff92f3de72601
+    resource: repo://libs/deepagents/CHANGELOG.md
+  - id: openwiki-source-0fc0e47059e4d07e23e50be2
+    resource: repo://libs/deepagents/deepagents/graph.py
+  - id: openwiki-source-41c16d89908bf285e252530e
+    resource: repo://libs/deepagents/deepagents/middleware/_parent_notifier.py
+  - id: openwiki-source-5c9c6a877b43f30407158658
+    resource: repo://libs/deepagents/deepagents/middleware/_skill_tools.py
+  - id: openwiki-source-e51c4102234507d1529a2440
+    resource: repo://libs/deepagents/deepagents/middleware/async_subagents.py
+  - id: openwiki-source-66cf9d0832d3cb55bec2b5ed
+    resource: repo://libs/deepagents/deepagents/middleware/skills.py
+  - id: openwiki-source-114a1c7a58992fa867a94ef0
+    resource: repo://libs/deepagents/deepagents/middleware/subagents.py
+  - id: openwiki-source-6ce85b02eabe462f99e0c912
+    resource: repo://libs/deepagents/tests/unit_tests/test_async_subagents.py
+generated: { by: "openwiki/0.4.2", at: "2026-10-24T08:05:08.866Z" }
 verified:
   - by: openwiki/0.4.2
-    at: 2026-09-19T08:04:56.519Z
-sources:
-  - id: openwiki-source-6a038e6e1a11f450bcafce54
-    resource: repo://libs/talon/deepagents_talon/__main__.py
-  - id: openwiki-source-ef66a16bd57d322614dc349d
-    resource: repo://libs/talon/deepagents_talon/async_subagents.py
-  - id: openwiki-source-cd45145a8c3a51b52eab3c2b
-    resource: repo://libs/talon/deepagents_talon/background.py
-  - id: openwiki-source-d98b6d615a63b95a7c893810
-    resource: repo://libs/talon/deepagents_talon/mcp_middleware.py
-  - id: openwiki-source-665a21e2fbd09a89d3f13ac0
-    resource: repo://libs/talon/deepagents_talon/runtime.py
-  - id: openwiki-source-2d1f686d24d8182f60108ae7
-    resource: repo://libs/talon/deepagents_talon/subagents.py
-  - id: openwiki-source-8ca4576d19f02a613c296c83
-    resource: repo://libs/talon/tests/test_async_subagents.py
-  - id: openwiki-source-82dab853903c3a574614fd1e
-    resource: repo://libs/talon/tests/unit_tests/test_background.py
-  - id: openwiki-source-a4cc4beb110c42a169caf195
-    resource: repo://libs/talon/tests/unit_tests/test_research_subagents.py
-  - id: openwiki-source-ba64217fcf5745a7cb863296
-    resource: repo://libs/talon/tests/unit_tests/test_subagent_reload.py
-generated: { by: "openwiki/0.4.2", at: "2026-09-19T08:04:56.519Z" }
+    at: 2026-10-24T08:05:08.866Z
 ---
 
-# Subagents and Skills
+# Subagents, Skills, and Delegation
 
-Talon is an experimental Deep Agents runtime with a deliberately narrower delegation contract than the SDK’s general subagent facility. A Talon local subagent is a **fresh, task-only graph**, not a continuation of the parent conversation. Its capabilities are explicitly selected from the runtime catalog, while work is normally detached into a bounded background worker. This makes the boundary useful for research and focused work without implicitly granting the child the parent’s history, memory, skills, filesystem access, shell, delegation tools, or arbitrary middleware.
+Deep Agents has three deliberately different mechanisms. The local `task` tool waits for a synchronous child and returns one correlated result. Remote-task tools create durable Agent Protocol work and persist its identity for later observation. Skills are a separate progressive-disclosure mechanism: they show instructions and optionally tool definitions, but do not confer permission. See [Runtime behavior](/openwiki/architecture/runtime-behavior.md), [Context management](/openwiki/concepts/context-management.md), and [Permissions and HITL](/openwiki/concepts/permissions-hitl.md).
 
-This page describes Talon’s runtime contract. For parent-context and SDK `fork` semantics, see [context management](/openwiki/concepts/context-management.md); for approval policy, see [permissions and human-in-the-loop](/openwiki/concepts/permissions-hitl.md); and for MCP configuration and authorization, see [MCP](/openwiki/integrations/mcp.md).
+## Assembly and the local boundary
 
-## Delegation model
-
-At startup, `DeepAgentRuntime` resolves local definitions from the assistant’s `agents/{name}/AGENTS.md` directories, optionally combines supplied and loader-backed definitions, rejects duplicate names across all sources, and builds a graph snapshot. The Talon CLI installs `load_async_subagents` as the remote-definition loader and supplies the Talon MCP middleware to the main graph.
+`create_deep_agent` partitions `subagents=` into declarative `SubAgent` specifications, caller-owned `CompiledSubAgent` runnables, and remote `AsyncSubAgent` specifications. The synchronous `SubAgentMiddleware` and `AsyncSubAgentMiddleware` are installed independently. Unless a harness profile disables it or a synchronous worker already has that name, the factory adds `general-purpose`; a profile may alter its prompt and description.
 
 ```mermaid
 flowchart TD
-    Parent["Main Talon graph"] --> Select["task with agent and optional tools"]
-    Select --> Boundary["TaskTools validates selection"]
-    Boundary --> Queue["BackgroundSubagents creates job"]
-    Queue --> Local["Fresh local child graph"]
-    Queue --> Remote["Remote graph stream"]
-    Local --> Result["In-memory result"]
-    Remote --> Result
-    Result --> NextTurn["Owning main conversation receives data"]
+    Parent["Parent model"] --> Local["task"]
+    Local --> Select{"Local mode"}
+    Select --> Isolated["Isolated task and filtered state"]
+    Select --> Fork["Effective history fork"]
+    Isolated --> LocalChild["Synchronous child"]
+    Fork --> LocalChild
+    LocalChild --> LocalInterrupt["Child HITL interrupt"]
+    LocalChild --> Reply["Correlated ToolMessage"]
+    Parent --> Start["start_async_task"]
+    Start --> Remote["Remote thread and run"]
+    Remote --> Record["Parent async_tasks record"]
+    Remote --> RemoteInterrupt["Remote child waiting interrupt"]
+    Record --> Poll["Parent check or async polling"]
 ```
-*The normal Talon path returns a task ID first and injects a completed result into a later turn of the owning conversation.*
 
-There is no implicit `general-purpose` child in Talon. If there are no configured subagents, there is no `task` delegation tool; configuring a local `general-purpose` name is just an ordinary explicit definition. Talon rejects the SDK’s `fork` mode from local, supplied, and compiled specs: its supported local mode is `fresh`, so a child never receives parent context.
+*Local delegation waits at the `task` boundary, including a child HITL pause. Remote delegation returns after recording the task; a remote `waiting` interrupt belongs to its child thread and is observed, not answered, by the parent.*
 
-## Local definitions and fresh compilation
+### Isolated tasks and forks
 
-A local definition is an `AGENTS.md` file below `agents/{directory}/`. It must contain YAML frontmatter with a non-empty `description`; `name` defaults to the directory name, and an optional `model` must be a string. The Markdown body becomes the child’s system prompt. Missing or malformed frontmatter and unreadable files are skipped, whereas duplicate resolved names or invalid operational options make resolution fail rather than silently select a different configuration. Talon uses `assistant_dir/agents` when present, otherwise its parent directory’s `agents` directory.
+The `task` schema accepts `description` and `subagent_type` (plus injected `runtime`) and rejects model-invented arguments. It requires a tool-call ID so it can emit a correlated `ToolMessage`; unknown worker types are tool errors. A compiled runnable must return `messages` to communicate back.
 
-The only accepted local `mode` is the default `fresh`. The optional `tools` field must be a list of unique, non-empty exact names, and `web` must be boolean. Before compiling, Talon resolves those names against the parent’s attachment catalog—filesystem tools and runtime tools—and fails closed if a configured name is unavailable. `web: true` additionally makes the configured web tools available; the agent name itself has no special web privilege.
+Isolation is the default. The child receives a new `HumanMessage` containing the description rather than the parent transcript. It excludes messages, todos, structured output, skill metadata and pins, disclosed skill tools, fork and rubric data, and middleware-private fields on both entry and return. Unchanged returned values are dropped, avoiding additive duplication and parallel-update conflicts. Declarative children inherit omitted tools, permissions, and `interrupt_on`; explicit child values replace the relevant inherited configuration, and filesystem-derived approval rules are merged. Compiled and remote children configure approval independently.
 
-A resolved local definition is compiled by `_compile_fresh` with:
+A local result is one `ToolMessage`: a non-null `structured_response` is JSON serialized; otherwise the last nonempty child `AIMessage` text is used. Public changed state may return, but excluded and private state cannot. The child retains ambient LangGraph configuration and is traced with `ls_agent_type="subagent"`.
 
-- the selected model, selected tools, and its own prompt;
-- a task-only input adapter that retains only `messages`;
-- no checkpointer and a recursion limit of 500 for a per-task dynamic compilation;
-- `HumanInTheLoopMiddleware` only for approved attached tools; and
-- Talon’s MCP middleware.
+`mode="fork"` is experimental. It reconstructs effective history after summarization, removes the parent message containing the pending tool call, and appends a preamble plus the delegated task. A declarative fork rebuilds inherited prompt-producing behavior; its own prompt is an addendum. It cannot declare an independent `skills` list, and its fork marker refuses nested `task` and `atask` calls. Thus a fork shares context at invocation, not an unrestricted recursive delegation capability.
 
-Accordingly, a child starts with the delegation description as its only user message. It does not inherit parent chat history, memory, skills, general filesystem tools, shell access, conversation/archive tools, reload tools, or delegation tools. The `TaskTools` wrapper also refuses a `task` call made from a child, preventing recursive local delegation.
+The compiled stack is not a transparent clone of the parent. Declarative children receive the provided state schema and have their own filesystem, summarization, patching, profile, skills, prompt-cache, and optional HITL middleware; compiled runnables are used as supplied and must themselves have a compatible `messages` state. In particular, parent `interrupt_on` applies by inheritance only to declarative specs; configure compiled and remote approval behavior on those agents themselves.
 
-## Capability attachments and per-task additions
+## Remote asynchronous delegation
 
-Talon exposes `get_agent_tools` as a credential- and prompt-free inventory. It reports a local child’s configured `tools`, the names that are eligible for per-task selection, and whether saved configuration differs from the active graph. An opaque compiled or remote child reports `tools: null`, because Talon does not inspect its capabilities.
+An `AsyncSubAgent` defines a name, description, `graph_id`, optional `url`, headers, `webhook`, `notify_parent`, `update_strategy`, and `isolated` or experimental `fork` mode. `start_async_task` creates a remote thread and run, returns the thread ID as the task ID, and records a `running` task. Isolated launch sends one user task. Fork launch snapshots reconstructed parent history, strips local artifacts and eviction metadata, restores blob-backed tool content, and serializes the snapshot. The remote graph still owns its own prompt, tools, credentials, approvals, schema, checkpointer, and thread. Matching parent configuration can help prompt-cache reuse for a fork, but the snapshot does not synchronize configuration and a cache hit is not guaranteed.
 
-The parent may call `task(..., tools=[...])` only for a named local child. Each requested tool must be a unique exact name in the main graph’s selectable catalog; delegation and management tools are excluded from that catalog. Invalid, duplicate, unavailable, or opaque-child selections are rejected without running a child. Valid selection **adds** missing tools to that child’s configured tools for that one task; it does not replace the declared set or write configuration back to disk.
+### Task state, observation, and updates
+
+The parent owns a merge-reduced `async_tasks` map keyed by task ID. A record retains task/thread identity, agent and newest-run IDs, cached status, timestamps, and—only for queued follow-ups—`superseded_run_ids`. A checkpointer persists this parent state; the Agent Protocol server separately persists the remote thread and runs.
 
 ```mermaid
-flowchart TD
-    Call["task request"] --> Valid{"Local name and unique selectable tools"}
-    Valid -->|No| Reject["Return selection error"]
-    Valid -->|Yes| Merge["Configured tools plus requested tools"]
-    Merge --> Compile["Compile fresh graph"]
-    Compile --> Invoke["One description message"]
-    Invoke --> Approval{"Child interrupted for approval"}
-    Approval -->|Yes| Protected["Report protected action did not run"]
-    Approval -->|No| Report["Return child result"]
+stateDiagram-v2
+    [*] --> running: start task
+    running --> success: completed and idle
+    running --> error: failed
+    running --> timeout: timed out
+    running --> waiting: completed and thread interrupted
+    running --> running: interrupt update
+    running --> pending: enqueue update
+    pending --> running: queued run starts
+    waiting --> running: resume or update
+    waiting --> pending: enqueue follow up
+    running --> cancelled: cancel
+    pending --> cancelled: cancel
+    waiting --> cancelled: cancel
+    success --> [*]
+    error --> [*]
+    timeout --> [*]
+    cancelled --> [*]
 ```
-*Per-task additions are an explicit, ephemeral capability expansion; approval policy is still applied to the resulting child graph.*
 
-## MCP and approval protections in child graphs
+*`pending` is the newest queued run, while earlier superseded runs can still execute; `waiting` is a child-thread human pause, not success.*
 
-Capability isolation does not remove protections for a capability that is deliberately attached. `_compile_fresh` always adds `talon_mcp_middleware()`. For tools marked with Talon’s MCP metadata, that middleware normalizes arguments against the tool schema, runs the call in the authorization invocation scope, and converts an `MCPError` to a sanitized error `ToolMessage` containing its code and message rather than protocol error data. This applies to configured attachments and to dynamic per-task MCP attachments, including when the task is backgrounded.
+The five tools are `start_async_task`, `check_async_task`, `update_async_task`, `cancel_async_task`, and `list_async_tasks`. `check_async_task` reads the tracked run and returns final output, failure information, or the child thread's pending interrupts. A run that succeeds while its thread is interrupted maps to nonterminal `waiting`; the parent cannot answer that interrupt. If another client resumes the child, observation can adopt the newest run. Server-side `interrupted` runs are reported as `cancelled`, and a parent-cancelled task is not revived by a newer external run.
 
-Fresh compilation also filters the current approval policy to truthy rules whose names occur in the child’s attached-tool map, then installs `HumanInTheLoopMiddleware` for that subset. If a detached child reaches an approval interrupt, the background worker reports that the protected action did not run; it cannot obtain an operator decision itself. Background workers explicitly clear the request authorization handler and force the operator flag false, so authorization prompts from a completed parent turn cannot remain stranded. They retain the safe copied request context needed by scoped tools, such as history scope and cron origin.
+`update_strategy="interrupt"` (the default) replaces active work on the same thread. `update_strategy="enqueue"` creates a follow-up behind it: the task's newest run may be `pending`, and the previous IDs are retained as superseded so their notifications cannot complete the newer task. Only one queued update per task is allowed in a model turn because parallel calls would otherwise lose tracking. A queued follow-up starts even if the earlier run pauses for a human, dropping that human request. Cancellation targets the newest active run and attempts earlier pending or running superseded runs newest-first; cancelling a waiting task records cancellation without trying to cancel its already-completed run. `update_strategy` and its queued-follow-up tracking are beta behavior.
 
-These two controls are intentionally separate: attaching an MCP tool preserves MCP argument, authorization-scope, and error-sanitization behavior; marking an attached tool for approval prevents the action until a suitable foreground approval flow is available.
+`waiting` means the remote run completed while its thread is paused for that remote agent's user; it is deliberately nonterminal, and its exact semantics are beta behavior. A parent can report the pending interrupts but cannot approve or answer them.
 
-## Background lifecycle and result delivery
+`list_async_tasks` filters cached records before refreshing selected nonterminal tasks. Failed SDK refreshes retain cached status. Unknown types and task IDs do not change tracked state. Clients are cached by URL and resolved headers; `x-auth-scheme: langsmith` is added unless the caller supplies it. Managed deployments use SDK environment credentials, while `headers` are the self-hosted authentication extension. URL-less in-process ASGI transport requires an async parent entrypoint such as `ainvoke`; synchronous calls require a reachable URL.
 
-`BackgroundSubagents` wraps both the inline `task` tool and `start_async_task`. Outside a child, it replaces the immediate call with an in-memory job, returns `subagent-{uuid}` to the main agent, and tells the model to continue the user conversation rather than poll. Jobs are scoped to the conversation’s thread ID. `list_subagents` exposes only that owner’s jobs, and `cancel_subagent` cannot cancel another conversation’s work.
+### Delivery channels are not interchangeable
 
-The worker uses its own thread ID, runs for at most one hour, and limits Talon to 128 retained jobs and four running jobs. It marks cancellation separately, truncates result text to 64,000 characters, reports generic failure or timeout text without exposing task arguments, and cancels remote streams on disconnect. A remote background task streams the original configured `graph_id`, URL, and headers; it does not use a later reload’s target.
+A completion can reach an application or parent in three ways with different authority and guarantees:
 
-A completed, non-cancelled result becomes a synthetic data message on a later turn of the same main conversation. The runtime acknowledges it only after that turn finishes. If the turn fails, delivery is retried; after three failed attempts the result is dropped and recorded as undelivered. If the host discards an otherwise completed reply, it can requeue only the result IDs consumed by that reply. Results and jobs are in memory, so they do not survive a runtime restart.
+```mermaid
+sequenceDiagram
+    participant Parent
+    participant Tools as Async task tools
+    participant Server as Agent Protocol server
+    participant Child as Child graph
+    participant Hook as Application webhook
+    Tools->>Server: create thread and run
+    Server->>Child: execute remote run
+    Child-->>Server: terminal run status
+    Server-->>Hook: configured webhook on finish
+    Child->>Parent: direct wake up if eligible
+    Parent->>Tools: poll unfinished task state
+    Tools->>Server: get run and thread
+    Tools-->>Parent: changed marked notification
+```
 
-At runtime shutdown, Talon cancels background workers before closing its checkpointer. If workers outlive the cancellation wait, the runtime leaves resources open and raises instead of closing storage while a worker may still write.
+*Webhook delivery goes to the configured application endpoint, direct wake-up creates a parent-thread run only when eligible, and polling remains the durable task-observation contract.*
 
-## Remote definitions
+`webhook` is passed to the Agent Protocol server when creating both launch and update runs. It is a server-to-application completion callback, not a command to mutate the parent `async_tasks` state or a substitute for `check_async_task`. Set `notify_parent=False` when the application delivers results itself, for example through that webhook; the parent can still observe its tasks while running. `notify_parent` and the direct-wake behavior are beta.
 
-Talon’s remote async subagents are configured as `[async_subagents.<name>]` tables in `~/.deepagents/config.toml`. Each entry requires non-empty string `description` and `graph_id`; optional `url` must be non-empty and optional `headers` must map strings to strings. An absent file or absent section produces no definitions. Unreadable or malformed TOML, a non-table section, or any invalid entry rejects the entire load, avoiding a partially active remote configuration.
+Every factory-built Deep Agent includes `_ParentNotifierMiddleware`. A child launched on the same deployment may directly wake its parent only when its reference includes the parent's thread and assistant IDs, the parent thread is `idle` or `error`, and a `reject` strategy still accepts the new run. The notifier reports top-level child success or model failure once per run; it re-raises `GraphInterrupt`, skips nested graphs, and logs rather than propagating delivery failure. Cross-deployment children, and children with `notify_parent=False`, retain only a parent-thread reference and cannot wake the parent. Same-deployment launches forward JSON-serializable run context when available; otherwise they pass `configurable.deepagents_parent`. Thread metadata records the parent thread, subagent name, and eligible parent assistant so later child-thread runs can retain linkage.
 
-The CLI creates `DeepAgentRuntime` with this loader. Definitions are read at startup and on explicit subagent reload, not for every turn. Local, supplied, and remotely loaded names must still be globally unique.
+Polling is separate from direct wake-up. On asynchronous invocation, `AsyncSubAgentMiddleware` records an incoming task notification, then polls unfinished work at agent start, before each model call, and after a final answer. A changed `success`, `error`, `timeout`, `cancelled`, or `waiting` outcome becomes a marked user message framed as system notification; a post-answer change jumps to `model` for another turn. Per-task polling is time-bounded, failures are skipped until a later poll, and an incoming notification from a superseded run is rewritten to say it is not the latest follow-up result. Synchronous hooks do not poll.
 
-## Reloading without changing active work
+## Skills: instructions and optional tool disclosure
 
-`reload_subagent_configuration` is available when Talon has an assistant directory or a loader. It resolves definitions and compiles a full replacement graph while holding the tools lock; only after both succeed does it replace the resolved definitions and active graph. A failed parse, attachment resolution, or graph construction therefore leaves the previous graph and its subagents active. The tool returns a non-sensitive failure message rather than configuration contents.
+`SkillsMiddleware` discovers `SKILL.md` metadata through backend APIs rather than direct filesystem access. Sources are loaded in order and later same-named skills override earlier ones. The resulting `skills_metadata`—including an empty list—is cached until explicitly set to `None`; recoverable load errors are held separately and rendered as bounded escaped diagnostics. The prompt lists metadata and paths and directs the model to read full instructions only when useful.
 
-An invocation captures the graph at its start in a context variable. Consequently, reload activates definitions for subsequent turns, while an active turn and any previously launched background job keep their original graph, tool attachments, and remote target. `get_agent_tools` exposes this distinction through the current graph’s attachment snapshot, the latest snapshot, `saved_changes_inactive`, and `current_turn_uses_previous_graph`. Removing a definition is not immediate revocation of work already running: inspect and cancel relevant jobs before treating a capability as withdrawn.
+Pins supply instructions to the next model call. Known distinct names are resolved in first-seen order, readable frontmatter-free bodies become attributed `HumanMessage` snapshots, and `pinned_skills` is cleared. Unknown, unreadable, oversized, or non-UTF-8 files are skipped. `allowed-tools` from a skill is parsed and displayed as a recommendation, not used as an enforcement rule; that metadata field is experimental.
 
-## Focused test coverage and change guidance
+The factory puts `SkillsMiddleware` after the core filesystem, local-task, notifier, summarization, patching, and optional async-task layers, after user and harness-profile middleware, and before prompt caching, memory, HITL, and unsupported-content handling. This placement lets skill disclosure inspect the compacted conversation and the final routed model request. A caller middleware named `SkillsMiddleware` replaces this slot; when no `skills=` argument is supplied, the factory can take its sources from that replacement. Forks inherit parent skill sources, while ordinary declarative children use only their own sources unless configured otherwise.
 
-The Talon tests exercise the contracts that should remain stable when changing this subsystem:
+### Disclosure gates visibility, not authority
 
-- local research tests verify one-message fresh context, no inherited private memory or skills, explicit tool attachment, the absence of implicit general-purpose delegation, fork rejection, dynamic-tool validation, `web` capability behavior, and reload inventory behavior;
-- MCP adapter and callback tests cover real tool invocation, open argument schemas, error behavior, in-flight adapter replacement, elicitation cancellation, and OAuth callback issuer preservation;
-- local-subagent MCP tests verify that static and dynamic attachments retain MCP normalization, authorization context, sanitized errors, and protections in both foreground and background delegation;
-- background tests cover conversation ownership, capacity, cancellation, delivery acknowledgement and requeueing, failure/timeout redaction, copied context with cleared authorization handler, remote-target snapshotting, and shutdown safety; and
-- reload tests cover add/edit/delete, failed replacement rollback, loader timing, persistent history continuity, and a turn that remains on its original graph while a new graph becomes active.
+A skill can name include groups through `metadata.include_tools`; `SkillsMiddleware(tools=...)` accepts fixed tools or a `SkillToolResolver`. Gated tools are absent from the ordinary tool node. A successful read of a known skill's `SKILL.md`, including a partial read, or a pinned-skill message can disclose the resolved definitions for a later model request. The middleware writes `_skill_tools_disclosed` on every model call, including `{}`, mapping only currently disclosed tool names to their include group.
 
-When extending Talon delegation, resolve a capability from the catalog before compilation, attach it only to the intended child graph, and add the required middleware inside that graph. Treat graph snapshots, per-task attachments, and background result ownership as security boundaries rather than convenience details.
+```mermaid
+sequenceDiagram
+    participant Model
+    participant Files as Filesystem tool
+    participant Skills as Skills middleware
+    participant Resolver
+    Model->>Files: read_file SKILL.md
+    Files-->>Skills: successful result
+    Skills->>Resolver: resolve include group
+    Skills-->>Model: later request has tool definition
+    Model->>Skills: call disclosed tool
+    Skills->>Resolver: resolve group again
+    Skills-->>Model: execute or invalid tool error
+```
+
+*The latest disclosure record and a current resolver result must both authorize tool dispatch within the agent, while ordinary permission and HITL still govern the actual action.*
+
+At execution, registered tools take precedence. An otherwise unregistered tool must appear in the latest disclosure record and resolve again to a same-named tool. Calls before disclosure, in the triggering turn, after compaction removes the trigger, or after resolver output changes take ordinary invalid-tool handling. An async resolver requires an async entrypoint and should be stable and inexpensive. For models that support mid-conversation tools, definitions are anchored after the complete read-result batch using Anthropic `tool_addition` or OpenAI Responses `additional_tools`; unsupported Anthropic root combinator schemas are withheld so recorded availability matches model visibility. Disclosure does not bypass filesystem permissions or human approval.
+
+### Code CLI discovery and local trust
+
+The Code CLI adapts the SDK skill loader for local filesystem discovery. It loads built-in, plugin, user, `.agents`, project, and experimental Claude sources in increasing precedence, so a later source replaces an earlier same-named skill; a failed source is logged but does not prevent the remaining sources from being discovered. Plugin sources are recursively discovered and namespace their skill names. This is a CLI/runtime integration layer: agent middleware itself continues to use the configured backend rather than direct paths.
+
+`PluginSkillsMiddleware` subclasses the SDK middleware rather than changing its source API. It records the process ID that loaded `skills_metadata`, so a thread reloads after the agent server restarts; it also rescans when the current `/skill:` selection is pinned but absent from cached metadata. Its selection handling trims pending pins to the current visible user turn, then reads the selected content through the trust boundary before emitting the SDK-style pinned message. The Code tests verify that an MCP tool marked skill-only is omitted from the initial tool schema and server summary, becomes callable only after a read or approved pin, and still flows through ordinary approval middleware.
+
+The CLI treats following a skill symlink as a trust decision. `load_skill_content` resolves `SKILL.md` and, when given an allowlist, refuses a result outside all approved roots. The static allowlist can be extended through `DEEPAGENTS_CODE_EXTRA_SKILLS_DIRS` or `[skills].extra_allowed_dirs`. In the plugin skills adapter, a rejected selected skill interrupts with a `skill_trust` request naming its resolved directory; approval persists that canonical directory in `~/.deepagents/.state/skill_trust.json` and the read is retried. Denial, an unwritable trust store, no roots, or a location change between approval and retry prevents the skill from running.
+
+Trust is deliberately fail-closed. The versioned store is atomically replaced on successful writes; normal enforcement treats corrupt, unreadable, or newer-format stores as empty, while strict audit callers surface the error. Before adding a saved directory to the containment allowlist, `load_trusted_skill_dirs` verifies that the stored path still resolves to itself. That means both a discovery symlink retarget and a later replacement of an approved directory by a symlink require fresh approval rather than granting the new target access. Trust permits reading skill instructions; it is neither a model-tool disclosure nor an authorization bypass.
+
+## Operations and focused tests
+
+Use isolated local work for tightly scoped work, a local fork only when effective conversation is needed, and a compiled worker when another graph owns its implementation. Use async work when remote execution must survive beyond a parent turn and be checked, updated, cancelled, or independently resumed. Choose `enqueue` only when preserving current work is more important than immediate follow-up; account for `pending`, superseded results, and dropped child prompts. Use a webhook for application integration, not as the parent-state authority channel, and disable direct wake-up if the application owns delivery.
+
+`test_async_subagents.py` covers launch and validation, isolated and fork payloads, state reduction, headers and linkage, live-status fallback, waiting recovery and cancellation, async-only ASGI, parent notifications and notification escaping, polling extra turns, queued follow-ups, and superseded-run notification handling. The Code skill tests cover source precedence and failure isolation plus trust-store CRUD, strict/error behavior, atomic-write failure, and post-approval symlink-swap rejection. Test integrations should separately exercise interrupt and enqueue behavior, cancellation of both latest and earlier queued runs, webhook receipt, the intended parent observation path, and trust interruption/resume through the actual client UI.
+
+The `examples/async-subagent-server` sample is a minimal FastAPI Agent Protocol peer with in-memory SQLite. It demonstrates thread and run creation, polling, result fetch, cancellation, and health endpoints, but it has no authentication or rate limiting. Its cancel route records cancellation without cancelling the in-flight coroutine. Run it with `uv run uvicorn server:app --port 2024`; production equivalents need authentication, durable storage, rate limits, and actual execution cancellation.
 
 ## Related
 
+- [Runtime behavior](/openwiki/architecture/runtime-behavior.md)
+- [SDK construction and execution](/openwiki/architecture/sdk-construction-execution.md)
 - [Context management](/openwiki/concepts/context-management.md)
-- [Permissions and human-in-the-loop](/openwiki/concepts/permissions-hitl.md)
-- [MCP](/openwiki/integrations/mcp.md)
-- [Talon](/openwiki/integrations/talon.md)
-- [Build a deep agent](/openwiki/workflows/build-a-deep-agent.md)
+- [Permissions and HITL](/openwiki/concepts/permissions-hitl.md)
+- [ACP integration](/openwiki/integrations/acp.md)
+- [Build a Deep Agent](/openwiki/workflows/build-a-deep-agent.md)

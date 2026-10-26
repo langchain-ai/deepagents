@@ -26,10 +26,15 @@ from langchain.agents.middleware.types import (
     TracePolicy,
     omit_payload,
 )
+from langchain_core.messages import AIMessage
 from langgraph.types import Command
 
 from deepagents_code._cli_context import CLIContextSchema
-from deepagents_code.cold_cache import cache_identity_params
+from deepagents_code.cold_cache import (
+    CacheActivity,
+    cache_identity_params,
+    cache_request,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -86,10 +91,9 @@ def _cache_endpoint_identity(
     a disagreement that never self-heals, because both sides keep recomputing
     their own answer, and every send would report `identity_changed`.
 
-    Never raises. Both call sites run *after* `handler()` has returned, so the
-    model call is already made and billed; letting a config-shaped surprise
+    Never raises. Cache identity must not prevent a model request. A malformed
     (a non-string `base_url` from a `class_path` provider that ignores it, say)
-    propagate would discard a paid response over a diagnostic value. Failing to
+    endpoint must not turn a diagnostic into a failed model call. Failing to
     the provider default is the same degradation an unreadable checkpointed
     endpoint already gets.
 
@@ -139,7 +143,7 @@ def _get_ls_provider(model: object) -> str | None:
     """
     try:
         ls_params = model._get_ls_params()  # ty: ignore[unresolved-attribute]
-    except (AttributeError, TypeError, RuntimeError, NotImplementedError):
+    except AttributeError, TypeError, RuntimeError, NotImplementedError:
         logger.debug("_get_ls_params raised for %s", type(model).__name__)
         return None
     if isinstance(ls_params, dict):
@@ -767,6 +771,8 @@ def _checkpoint_command(
     request_started_at: str,
     cache_endpoint: str,
     cache_params: dict[str, Any] | None = None,
+    *,
+    response: ModelResponse | None = None,
 ) -> Command[Any]:
     """Build the private resume-state update for a completed model call.
 
@@ -784,6 +790,7 @@ def _checkpoint_command(
             offloading reason as `cache_endpoint`. When `None` and
             `resolved.model_params_known` is true, falls back to the identity
             projection of the runtime overrides.
+        response: This request's response, used to attribute cache activity.
 
     Returns:
         Command carrying cache timing and effective model metadata.
@@ -834,7 +841,37 @@ def _checkpoint_command(
                 or None
             )
         )
+    if resolved.model_spec and response is not None:
+        activity = CacheActivity(
+            requested_at=request_started_at,
+            model_spec=resolved.model_spec,
+            endpoint=cache_endpoint,
+            params=cache_params,
+        )
+        update.update(_cache_activity_update(response, activity))
     return Command(update=update)
+
+
+def _cache_activity_update(
+    response: ModelResponse, activity: CacheActivity
+) -> dict[str, CacheActivity]:
+    """Record only cache activity reported by this specific model call.
+
+    Returns:
+        Updates for the last cache write and/or use, when reported.
+    """
+    from deepagents_code.cost_tracking import cache_token_counts
+
+    update: dict[str, CacheActivity] = {}
+    for message in response.result:
+        if not isinstance(message, AIMessage) or not message.usage_metadata:
+            continue
+        reads, writes = cache_token_counts(message.usage_metadata)
+        if any(writes):
+            update["_last_cache_write"] = activity
+        if reads or any(writes):
+            update["_last_cache_use"] = activity
+    return update
 
 
 class ConfigurableModelMiddleware(AgentMiddleware):
@@ -923,10 +960,6 @@ class ConfigurableModelMiddleware(AgentMiddleware):
                 strict_model_resolution=self._strict_model_resolution,
                 construction_model_result=self._model_result,
             )
-            request_started_at = _utc_now_iso()
-            response = handler(resolved.request)
-            if not self._persist_model_state:
-                return response
             cache_endpoint = (
                 _cache_endpoint_identity(resolved.model_spec, resolved.model_params)
                 if resolved.model_params is not None
@@ -935,11 +968,26 @@ class ConfigurableModelMiddleware(AgentMiddleware):
             cache_params = _effective_cache_params(
                 resolved.model_spec, resolved.model_params
             )
+            activity = CacheActivity(
+                requested_at=_utc_now_iso(),
+                model_spec=resolved.model_spec or "",
+                endpoint=cache_endpoint,
+                params=cache_params,
+            )
+            token = cache_request.set(activity if self._persist_model_state else None)
+            try:
+                response = handler(resolved.request)
+            finally:
+                cache_request.reset(token)
+            if not self._persist_model_state:
+                return response
+            request_started_at = activity["requested_at"]
         command = _checkpoint_command(
             resolved,
             request_started_at,
             cache_endpoint,
             cache_params,
+            response=response,
         )
         return ExtendedModelResponse(model_response=response, command=command)
 
@@ -964,13 +1012,6 @@ class ConfigurableModelMiddleware(AgentMiddleware):
                 strict_model_resolution=self._strict_model_resolution,
                 construction_model_result=self._model_result,
             )
-            request_started_at = _utc_now_iso()
-            response = await handler(resolved.request)
-            if not self._persist_model_state:
-                return response
-            # Offloaded: `_cache_endpoint_identity` and `_effective_cache_params`
-            # read the config and credential store, which `blockbuster` rejects on
-            # the server event loop.
             cache_endpoint = (
                 await asyncio.to_thread(
                     _cache_endpoint_identity,
@@ -987,7 +1028,25 @@ class ConfigurableModelMiddleware(AgentMiddleware):
                 resolved.model_spec,
                 resolved.model_params,
             )
+            activity = CacheActivity(
+                requested_at=_utc_now_iso(),
+                model_spec=resolved.model_spec or "",
+                endpoint=cache_endpoint,
+                params=cache_params,
+            )
+            token = cache_request.set(activity if self._persist_model_state else None)
+            try:
+                response = await handler(resolved.request)
+            finally:
+                cache_request.reset(token)
+            if not self._persist_model_state:
+                return response
+            request_started_at = activity["requested_at"]
         command = _checkpoint_command(
-            resolved, request_started_at, cache_endpoint, cache_params
+            resolved,
+            request_started_at,
+            cache_endpoint,
+            cache_params,
+            response=response,
         )
         return ExtendedModelResponse(model_response=response, command=command)

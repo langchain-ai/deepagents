@@ -9,12 +9,16 @@ correctly.
 import asyncio
 import base64
 import json
+import logging
 import os
 import re
+import shutil
 import stat
 import subprocess
 import sys
 from pathlib import Path, PurePosixPath
+from typing import Final
+from unittest.mock import Mock
 
 import pytest
 
@@ -27,20 +31,31 @@ from deepagents.backends.sandbox import (
     _EDIT_COMMAND_TEMPLATE,
     _EDIT_INLINE_MAX_BYTES,
     _EDIT_TMPFILE_TEMPLATE,
+    _EXECUTE_CAPTURE_CLIP_NOTICE,
+    _EXECUTE_CAPTURE_CLIP_NOTICE_CAPPED,
+    _EXECUTE_CAPTURE_EXCERPT_CLIP_NOTICE,
+    _EXECUTE_CAPTURE_HEAD_BYTES,
+    _EXECUTE_CAPTURE_HEAD_LINES,
+    _EXECUTE_CAPTURE_SENTINEL,
+    _EXECUTE_CAPTURE_TAIL_BYTES,
+    _EXECUTE_CAPTURE_TAIL_LINES,
     _GLOB_COMMAND_TEMPLATE,
     _GREP_PATH_GLOB_TEMPLATE,
     _READ_COMMAND_TEMPLATE,
     _WRITE_CHECK_TEMPLATE,
     BaseSandbox,
+    _build_capture_execute_cmd,
     _build_grep_cmd,
     _build_read_cmd,
     _check_preflight_result,
     _glob_search_root,
     _map_edit_error,
+    _parse_capture_execute_output,
     _parse_glob_output,
     _parse_grep_output,
     _parse_read_output,
 )
+from deepagents.backends.utils import TRUNCATION_MARKER_TEMPLATE
 
 
 class MockSandbox(BaseSandbox):
@@ -142,6 +157,48 @@ class MockSandbox(BaseSandbox):
 
 
 # -- template formatting tests -----------------------------------------------
+
+
+@pytest.mark.parametrize("use_async", [False, True])
+@pytest.mark.parametrize(
+    ("output", "truncated"),
+    [
+        ("", False),
+        ("Command timed out", False),
+        ("__DEEPAGENTS_EXEC_META__ 124\npartial output", True),
+        ("__DEEPAGENTS_EXEC_META__ invalid 0 0\npartial output", True),
+    ],
+)
+async def test_capture_offload_preserves_backend_failure(output: str, monkeypatch: pytest.MonkeyPatch, *, truncated: bool, use_async: bool) -> None:
+    sandbox = MockSandbox()
+    sandbox.enable_capture_offload = True
+    response = ExecuteResponse(output=output, exit_code=124, truncated=truncated)
+    monkeypatch.setattr(sandbox, "execute", Mock(return_value=response))
+
+    if use_async:
+        result = await sandbox.aexecute_with_offload("sleep 10", "/capture", max_inline_bytes=100)
+    else:
+        result = sandbox.execute_with_offload("sleep 10", "/capture", max_inline_bytes=100)
+
+    assert result.offloaded is False
+    assert result.response == response
+
+
+@pytest.mark.parametrize("use_async", [False, True])
+@pytest.mark.parametrize("offloaded", [False, True])
+async def test_capture_offload_preserves_child_failure(monkeypatch: pytest.MonkeyPatch, *, offloaded: bool, use_async: bool) -> None:
+    sandbox = MockSandbox()
+    sandbox.enable_capture_offload = True
+    response = ExecuteResponse(output=f"__DEEPAGENTS_EXEC_META__ 3 {int(offloaded)} 0 0\noops", exit_code=0)
+    monkeypatch.setattr(sandbox, "execute", Mock(return_value=response))
+
+    if use_async:
+        result = await sandbox.aexecute_with_offload("echo oops; exit 3", "/capture", max_inline_bytes=100)
+    else:
+        result = sandbox.execute_with_offload("echo oops; exit 3", "/capture", max_inline_bytes=100)
+
+    assert result.offloaded is offloaded
+    assert result.response == ExecuteResponse(output="oops", exit_code=3, truncated=False)
 
 
 def test_write_check_template_format() -> None:
@@ -587,6 +644,23 @@ def test_build_grep_cmd_slash_glob_does_not_mask_errors() -> None:
     """
     cmd = _build_grep_cmd("needle", "/test", "src/**/*.py")
     assert "|| true" not in cmd
+
+
+@pytest.mark.skipif(sys.platform == "win32" or not Path("/bin/sh").is_file(), reason="requires /bin/sh")
+def test_build_grep_cmd_slash_glob_runs_through_a_shell(tmp_path: Path) -> None:
+    """The template is wrapped in `python3 -c "..."`, so a stray double quote truncates the script."""
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "app.py").write_text("needle\n")
+
+    for max_count in (None, 5):
+        proc = subprocess.run(  # noqa: S603  # command is built from the project's sandbox template
+            ["/bin/sh", "-c", _build_grep_cmd("needle", str(tmp_path), "src/**/*.py", max_count)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert proc.returncode == 0
+        assert proc.stdout == f"{tmp_path}/src/app.py\x001:needle\n"
 
 
 def test_build_grep_cmd_no_glob_uses_grep() -> None:
@@ -2561,3 +2635,359 @@ def test_glob_search_root_is_forced_absolute() -> None:
     assert _glob_search_root("/workspace") == "/workspace"
     assert _glob_search_root(None) == "/"
     assert _glob_search_root("") == "/"
+
+
+class TestParseCaptureExecuteOutput:
+    """Meta-line parsing for capture-at-source `execute` offload.
+
+    Pure-function coverage, so these run everywhere -- unlike the end-to-end
+    offload tests, which need a real shell and are gated on `RUN_SANDBOX_TESTS`.
+    """
+
+    @staticmethod
+    def _meta(*fields: object) -> str:
+        return " ".join([_EXECUTE_CAPTURE_SENTINEL, *(str(f) for f in fields)]) + "\nBODY"
+
+    @pytest.mark.parametrize(
+        ("surplus", "expected_marker"),
+        [
+            (-10, False),  # single huge line: wc -l counted fewer lines than the budget
+            (-1, False),
+            # The wrapper only inserts a marker when the surplus is strictly
+            # positive, so `0` -- exactly head+tail lines, no middle to drop --
+            # must not select the marker-explaining note.
+            (0, False),
+            (1, True),
+            (4990, True),
+        ],
+    )
+    def test_marker_flag_set_only_by_positive_surplus(self, *, surplus: int, expected_marker: bool) -> None:
+        result = _parse_capture_execute_output(ExecuteResponse(output=self._meta(0, 1, 0, surplus)))
+
+        assert result.offloaded is True
+        assert result.preview_has_truncation_marker is expected_marker
+
+    def test_parses_exit_code_and_cap_flag(self) -> None:
+        result = _parse_capture_execute_output(ExecuteResponse(output=self._meta(3, 1, 1, 7)))
+
+        assert result.offloaded is True
+        assert result.response.exit_code == 3
+        assert result.response.truncated is True
+        assert result.response.output == "BODY"
+        assert result.preview_has_truncation_marker is True
+
+    def test_inline_output_is_not_offloaded(self) -> None:
+        result = _parse_capture_execute_output(ExecuteResponse(output=self._meta(0, 0, 0, 0)))
+
+        assert result.offloaded is False
+        assert result.preview_has_truncation_marker is False
+
+    @pytest.mark.parametrize(
+        "bad_surplus",
+        ["junk", "", "1.5"],
+    )
+    def test_unparseable_surplus_keeps_exit_code_and_cap_flag(self, bad_surplus: str) -> None:
+        """An unreadable surplus costs only the note's wording, never the exit code.
+
+        The surplus is parsed separately from the exit code precisely so a garbled
+        fifth field cannot discard a good exit code and cap flag by dropping the
+        whole result onto the raw-output fallback path -- which would also frame a
+        preview as complete output and leak the sentinel line to the model.
+        """
+        result = _parse_capture_execute_output(ExecuteResponse(output=self._meta(3, 1, 1, bad_surplus)))
+
+        assert result.offloaded is True
+        assert result.response.exit_code == 3
+        assert result.response.truncated is True
+        assert result.response.output == "BODY"
+        # Unknown surplus degrades to "no marker" rather than claiming one.
+        assert result.preview_has_truncation_marker is False
+
+    @pytest.mark.parametrize(
+        ("bad_meta", "reason"),
+        [
+            (f"{_EXECUTE_CAPTURE_SENTINEL} 0 1 0\nBODY", "legacy four-field meta line"),
+            (f"{_EXECUTE_CAPTURE_SENTINEL} 0 1 0 0 0\nBODY", "too many fields"),
+            (f"{_EXECUTE_CAPTURE_SENTINEL} junk 1 0 0\nBODY", "non-integer exit code"),
+            ("no sentinel here at all\nBODY", "sentinel absent"),
+            ("sh: warning: banner\n" + f"{_EXECUTE_CAPTURE_SENTINEL} 0 1 0 0\nBODY", "banner before sentinel"),
+        ],
+    )
+    def test_malformed_meta_falls_back_to_raw_output(self, bad_meta: str, reason: str) -> None:
+        result = _parse_capture_execute_output(ExecuteResponse(output=bad_meta))
+
+        assert result.offloaded is False, reason
+        assert result.response.output == bad_meta, reason
+        assert result.preview_has_truncation_marker is False, reason
+
+    def test_malformed_meta_is_logged(self, caplog: pytest.LogCaptureFixture) -> None:
+        """The fallback reframes a preview as complete output, so it must not be silent."""
+        with caplog.at_level(logging.WARNING, logger="deepagents.backends.sandbox"):
+            _parse_capture_execute_output(ExecuteResponse(output=f"{_EXECUTE_CAPTURE_SENTINEL} 0 1 0\nBODY"))
+
+        assert any("meta line absent or malformed" in r.getMessage() for r in caplog.records)
+
+    def test_unparseable_exit_code_is_logged(self, caplog: pytest.LogCaptureFixture) -> None:
+        """Same reason as its two sibling fallbacks: the caller cannot tell it happened."""
+        with caplog.at_level(logging.WARNING, logger="deepagents.backends.sandbox"):
+            _parse_capture_execute_output(ExecuteResponse(output=f"{_EXECUTE_CAPTURE_SENTINEL} junk 1 0 0\nBODY"))
+
+        assert any("non-integer exit code" in r.getMessage() for r in caplog.records)
+
+    def test_marker_flag_requires_offloaded(self) -> None:
+        """A response carrying no preview can never claim a marker, whatever the surplus."""
+        result = _parse_capture_execute_output(ExecuteResponse(output=self._meta(0, 0, 0, 5)))
+
+        assert result.offloaded is False
+        assert result.preview_has_truncation_marker is False
+
+    def test_unparseable_surplus_is_logged(self, caplog: pytest.LogCaptureFixture) -> None:
+        with caplog.at_level(logging.WARNING, logger="deepagents.backends.sandbox"):
+            _parse_capture_execute_output(ExecuteResponse(output=self._meta(0, 1, 0, "junk")))
+
+        assert any("non-integer preview line surplus" in r.getMessage() for r in caplog.records)
+
+    def test_backend_truncation_propagates_through_fallback(self) -> None:
+        result = _parse_capture_execute_output(ExecuteResponse(output="garbage", truncated=True))
+
+        assert result.offloaded is False
+        assert result.response.truncated is True
+
+
+class TestCaptureWrapperNotices:
+    """The wrapper's in-band notices must match what the note promises the model.
+
+    Every assertion here is on the static parts of the generated wrapper, so one
+    build shared across the class is enough.
+    """
+
+    cmd: Final = _build_capture_execute_cmd("echo hi", "/sandbox/cap", inline_budget=100)
+
+    def test_marker_format_derives_from_shared_template(self) -> None:
+        """Wrapper marker and preview note render the same shape, from one template."""
+        # The wrapper emits the marker via printf with the count as the operand.
+        assert TRUNCATION_MARKER_TEMPLATE.format(omitted_lines="%s") in self.cmd
+        # And nothing hardcodes a second, drifting copy of the shape.
+        assert TRUNCATION_MARKER_TEMPLATE.format(omitted_lines="%s") == "... [%s lines truncated] ..."
+
+    def test_wrapper_emits_clip_notice_only_in_byte_excerpt_branch(self) -> None:
+        # Guarded by a byte comparison, so a preview that loses nothing stays quiet.
+        assert _EXECUTE_CAPTURE_CLIP_NOTICE.format(captured_bytes="%s") in self.cmd
+        assert f'[ "$__da_bytes" -gt $(({_EXECUTE_CAPTURE_HEAD_BYTES} + {_EXECUTE_CAPTURE_TAIL_BYTES})) ]' in self.cmd
+
+    def test_clip_notice_has_a_capped_variant_selected_by_the_cap_flag(self) -> None:
+        """A capped capture must not advertise the cap as the total, nor promise the full output."""
+        assert '[ "$__da_capped" -eq 1 ]' in self.cmd
+        assert _EXECUTE_CAPTURE_CLIP_NOTICE_CAPPED.format(captured_bytes="%s") in self.cmd
+        assert _EXECUTE_CAPTURE_CLIP_NOTICE.format(captured_bytes="%s") in self.cmd
+        # Only the uncapped wording may claim the path holds everything.
+        assert _EXECUTE_CAPTURE_CLIP_NOTICE_CAPPED.count("full output at the path above") == 0
+
+    def test_head_tail_branch_discloses_its_byte_caps(self) -> None:
+        """The marker counts whole middle lines only, so byte-cap losses need their own notice.
+
+        Guarded by comparing the line-capped excerpt sizes against the byte caps, so a
+        preview whose excerpts fit stays quiet.
+        """
+        assert _EXECUTE_CAPTURE_EXCERPT_CLIP_NOTICE in self.cmd
+        assert f'[ "$__da_head_bytes" -gt {_EXECUTE_CAPTURE_HEAD_BYTES} ]' in self.cmd
+        assert f'[ "$__da_tail_bytes" -gt {_EXECUTE_CAPTURE_TAIL_BYTES} ]' in self.cmd
+        # Takes no operand, so it must not smuggle in a printf conversion.
+        assert "%" not in _EXECUTE_CAPTURE_EXCERPT_CLIP_NOTICE
+
+    def test_head_tail_line_budget_matches_surplus_arithmetic(self) -> None:
+        """The surplus the wrapper reports is relative to these two constants."""
+        assert f"$((__da_lines - {_EXECUTE_CAPTURE_HEAD_LINES} - {_EXECUTE_CAPTURE_TAIL_LINES}))" in self.cmd
+
+
+# -- grep directory exclusion ----------------------------------------------------
+# Runs the real grep / Python-template commands, since exclusion semantics live in
+# GNU grep's `--exclude-dir` and the template's glob walk rather than in parsing.
+
+_GREP: Final = shutil.which("grep")
+_GNU_GREP: Final = (
+    bool(_GREP)
+    and "(GNU grep)"
+    in subprocess.run(  # noqa: S603  # fixed argv, resolved grep binary
+        [_GREP or "grep", "--version"], capture_output=True, text=True, check=False
+    ).stdout
+)
+
+
+class _ShellSandbox(MockSandbox):
+    """Runs commands with the local shell."""
+
+    def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
+        proc = subprocess.run(  # noqa: S603  # command is built from the project's sandbox templates
+            ["/bin/sh", "-c", command],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        return ExecuteResponse(output=proc.stdout + proc.stderr, exit_code=proc.returncode, truncated=False)
+
+
+@pytest.fixture
+def checkout(tmp_path: Path) -> Path:
+    for rel in ("src/app.py", "src/app.js", ".git/packed-refs", "node_modules/pkg/index.js"):
+        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / rel).write_text("needle\n")
+    return tmp_path
+
+
+def _grep_paths(sandbox: BaseSandbox, path: Path, glob: str | None = None) -> set[str]:
+    result = sandbox.grep("needle", str(path), glob)
+    assert result.error is None
+    return {str(Path(match["path"]).relative_to(path)) for match in result.matches or []}
+
+
+@pytest.mark.skipif(sys.platform == "win32" or not Path("/bin/sh").is_file(), reason="requires /bin/sh")
+@pytest.mark.skipif(not _GNU_GREP, reason="the grep route targets GNU grep")
+def test_grep_skips_git_but_still_searches_an_explicit_git_root(checkout: Path) -> None:
+    sandbox = _ShellSandbox()
+
+    assert _grep_paths(sandbox, checkout) == {"src/app.py", "src/app.js", "node_modules/pkg/index.js"}
+    assert _grep_paths(sandbox, checkout / ".git") == {"packed-refs"}
+
+
+@pytest.mark.skipif(sys.platform == "win32" or not Path("/bin/sh").is_file(), reason="requires /bin/sh")
+@pytest.mark.skipif(not _GNU_GREP, reason="the grep route targets GNU grep")
+def test_grep_exclude_dirs_can_be_extended_on_the_grep_route(checkout: Path) -> None:
+    sandbox = _ShellSandbox()
+    sandbox.grep_exclude_dirs = (".git", "node_modules")
+
+    assert _grep_paths(sandbox, checkout, "*.js") == {"src/app.js"}
+
+
+@pytest.mark.skipif(sys.platform == "win32" or not Path("/bin/sh").is_file(), reason="requires /bin/sh")
+def test_grep_exclude_dirs_apply_to_path_globs(checkout: Path) -> None:
+    sandbox = _ShellSandbox()
+    sandbox.grep_exclude_dirs = (".git", "node_modules")
+
+    assert _grep_paths(sandbox, checkout, "**/*.js") == {"src/app.js"}
+
+
+@pytest.fixture(params=[False, True], ids=["gnu-grep", "ripgrep"])
+def grep_shell(request: pytest.FixtureRequest, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> _ShellSandbox:
+    if not _GNU_GREP or not Path("/bin/sh").is_file():
+        pytest.skip("requires GNU grep and /bin/sh")
+    rg = shutil.which("rg")
+    if request.param and rg is None:
+        pytest.skip("requires ripgrep")
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    for tool in ("grep", "head", "python3"):
+        executable = shutil.which(tool)
+        assert executable is not None
+        (tools / tool).symlink_to(executable)
+    marker = tmp_path / "rg-used"
+    if request.param:
+        (tools / "rg").write_text(f'#!/bin/sh\nprintf used > "{marker}"\nexec "{rg}" "$@"\n')
+        (tools / "rg").chmod(0o755)
+    monkeypatch.setenv("PATH", str(tools))
+    monkeypatch.setenv("RIPGREP_CONFIG_PATH", str(tmp_path / "missing-config"))
+    yield _ShellSandbox()
+    assert marker.exists() == request.param
+
+
+@pytest.mark.parametrize("glob", [None, "*.py", "{literal}.py", "!literal.py", "#literal.py"])
+async def test_grep_remote_tool_parity(grep_shell: _ShellSandbox, tmp_path: Path, glob: str | None) -> None:
+    root = tmp_path / "search"
+    expected = []
+    for rel in ("top:colon.py", "nested/deep.py", ".hidden.py", ".hidden/inside.py", "{literal}.py", "!literal.py", "#literal.py", "other.txt"):
+        target = root / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("not a match\nneedle[.*]: final", encoding="utf-8")
+        if glob is None or (glob == "*.py" and rel.endswith(".py")) or glob == rel:
+            expected.append({"path": str(target), "line": 2, "text": "needle[.*]: final"})
+    for rel in (".git/data.py", "nested/.git/data.py", "node_modules/data.py", "nested/node_modules/data.py"):
+        target = root / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("needle[.*]\n", encoding="utf-8")
+    (root / ".gitignore").write_text("*.py\n", encoding="utf-8")
+    (root / "link.py").symlink_to(root / "top:colon.py")
+    (root / "binary.py").write_bytes(b"\0needle[.*]\n")
+    grep_shell.grep_exclude_dirs = (".git", "node_modules")
+    for result in (grep_shell.grep("needle[.*]", str(root), glob), await grep_shell.agrep("needle[.*]", str(root), glob)):
+        assert result.error is None
+        assert sorted(result.matches or [], key=lambda match: match["path"]) == sorted(expected, key=lambda match: match["path"])
+        assert not result.truncated
+    single = grep_shell.grep("needle[.*]", str(root / "other.txt"), "*.py")
+    assert single.matches == []
+    assert grep_shell.grep("absent", str(root)).matches == []
+    assert grep_shell.grep("needle", str(root / "missing")).matches == []
+    assert grep_shell.grep("needle", str(root / "binary.py")).matches == []
+    assert grep_shell.grep("needle", str(root / "link.py")).matches == [{"path": str(root / "link.py"), "line": 2, "text": "needle[.*]: final"}]
+    alternatives = grep_shell.grep("not a match\nfinal", str(root), "[to]*.py")
+    assert alternatives.matches == [
+        {"path": str(root / "top:colon.py"), "line": 1, "text": "not a match"},
+        {"path": str(root / "top:colon.py"), "line": 2, "text": "needle[.*]: final"},
+    ]
+
+
+@pytest.mark.parametrize(
+    ("glob", "expected"),
+    [
+        ("{a,b}.py", {"{a,b}.py"}),
+        ("#x.py", {"#x.py"}),
+        ("!x.py", {"!x.py"}),
+        ("a.py ", {"a.py "}),
+        ("[a.py", {"[a.py"}),
+        ("[[:alpha:]].py", {"a.py", "b.py"}),
+        ("a.py\\", {"a.py\\"}),
+        (r"\a.py", {"a.py"}),
+        ("**.py", {"a.py", "b.py", "{a,b}.py", "#x.py", "!x.py", "[a.py"}),
+    ],
+)
+async def test_grep_glob_dialect_compatibility(grep_shell: _ShellSandbox, tmp_path: Path, glob: str, expected: set[str]) -> None:
+    root = tmp_path / "search"
+    root.mkdir()
+    for name in ("a.py", "b.py", "{a,b}.py", "#x.py", "!x.py", "a.py ", "a.py\\", "[a.py"):
+        (root / name).write_text("needle\n")
+    assert len(grep_shell.grep("needle", str(root)).matches or []) == 8
+    assert _grep_paths(grep_shell, root, glob) == expected
+    result = await grep_shell.agrep("needle", str(root), glob)
+    assert result.error is None
+    assert {Path(match["path"]).name for match in result.matches or []} == expected
+
+
+@pytest.mark.parametrize(
+    ("excluded", "expected"),
+    [
+        ("{a,b}", {"a/file", "b/file", "[ab]/file", "cache/file", "cache1/file"}),
+        ("[ab]", {"{a,b}/file", "[ab]/file", "cache/file", "cache1/file"}),
+        ("cache**", {"a/file", "b/file", "{a,b}/file", "[ab]/file"}),
+        (r"\a", {"b/file", "{a,b}/file", "[ab]/file", "cache/file", "cache1/file"}),
+    ],
+)
+def test_grep_exclusion_dialect_compatibility(grep_shell: _ShellSandbox, tmp_path: Path, excluded: str, expected: set[str]) -> None:
+    root = tmp_path / "search"
+    for name in ("a", "b", "{a,b}", "[ab]", "cache", "cache1"):
+        (root / name).mkdir(parents=True)
+        (root / name / "file").write_text("needle\n")
+    assert len(grep_shell.grep("needle", str(root)).matches or []) == 6
+    grep_shell.grep_exclude_dirs = (excluded,)
+    assert _grep_paths(grep_shell, root) == expected
+
+
+@pytest.mark.parametrize("pattern", ["needle\nother", "needle\n", "\nneedle"])
+def test_grep_newline_patterns_are_alternatives(grep_shell: _ShellSandbox, tmp_path: Path, pattern: str) -> None:
+    root = tmp_path / "search"
+    root.mkdir()
+    (root / "file").write_text("needle\nother\n")
+    assert len(grep_shell.grep("needle", str(root)).matches or []) == 1
+    result = grep_shell.grep(pattern, str(root))
+    assert result.error is None
+    assert [match["text"] for match in result.matches or []] == ["needle", "other"]
+
+
+@pytest.mark.parametrize("count", [2, 3, 4])
+def test_grep_remote_tool_truncation(grep_shell: _ShellSandbox, tmp_path: Path, count: int) -> None:
+    root = tmp_path / "search"
+    root.mkdir()
+    target = root / "matches.txt"
+    target.write_text("needle\n" * count, encoding="utf-8")
+    result = grep_shell.grep("needle", str(root), max_count=3)
+    assert result.error is None
+    assert len(result.matches or []) == min(count, 3)
+    assert result.truncated == (count > 3)

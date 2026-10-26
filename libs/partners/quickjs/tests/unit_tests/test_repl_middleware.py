@@ -29,7 +29,12 @@ from quickjs_rs import Runtime, ThreadWorker
 
 from langchain_quickjs import CodeInterpreterMiddleware
 from langchain_quickjs._format import format_outcome
-from langchain_quickjs._repl import _clear_exception_references, _Registry, _ThreadREPL
+from langchain_quickjs._repl import (
+    _DEFAULT_MAX_SUBAGENT_CONCURRENCY,
+    _clear_exception_references,
+    _Registry,
+    _ThreadREPL,
+)
 from langchain_quickjs._subagent import (
     _ensure_schema_title,
     _runtime_with_response_format,
@@ -978,6 +983,151 @@ async def test_async_task_global_propagates_graph_interrupt(repl: _ThreadREPL) -
     assert exc_info.value is interrupt
 
 
+class _QueuedFanout:
+    """Saturate the per-REPL task semaphore so the last dispatches must queue.
+
+    Holds every subagent open until `release` is called, which only happens
+    once the semaphore is full. The two dispatches beyond the cap therefore
+    start after a queued wait rather than immediately.
+    """
+
+    #: One more than the semaphore can admit at once, so some dispatches queue.
+    TOTAL_TASKS = _DEFAULT_MAX_SUBAGENT_CONCURRENCY + 2
+
+    def __init__(self) -> None:
+        self.saturated = asyncio.Event()
+        self.released = asyncio.Event()
+        self.started = 0
+        self.release_calls = 0
+        self.events: list[dict[str, Any]] = []
+
+    async def work(self, state: dict[str, Any], config: Any) -> dict[str, Any]:
+        self.started += 1
+        if self.started == _DEFAULT_MAX_SUBAGENT_CONCURRENCY:
+            self.saturated.set()
+        await self.released.wait()
+        return {"messages": [AIMessage(content="done")]}
+
+    async def release(self) -> str:
+        await self.saturated.wait()
+        self.release_calls += 1
+        self.released.set()
+        return "released"
+
+    async def run(self, repl: _ThreadREPL, *, extra_ptc_call: bool = False) -> Any:
+        task_tool = _task_tool_for_runnable(RunnableLambda(self.work))
+        release_tool = StructuredTool.from_function(
+            coroutine=self.release, name="release_tasks", description="Release tasks."
+        )
+        runtime = ToolRuntime(
+            state={},
+            context={},
+            config={"configurable": {}},
+            stream_writer=self.events.append,
+            tools=[task_tool, release_tool],
+            tool_call_id="outer_eval_call",
+            store=None,
+        )
+        repl.install_tools([release_tool])
+        extra = "await tools.releaseTasks({});" if extra_ptc_call else ""
+        return await repl.eval_async(
+            "(async () => {"
+            f"const tasks = Array.from({{length: {self.TOTAL_TASKS}}}, () => "
+            "task({description: 'identical', subagentType: 'worker'}));"
+            "await tools.releaseTasks({});"
+            "const results = await Promise.all(tasks);"
+            f"{extra} return results.length;"
+            "})()",
+            outer_runtime=runtime,
+        )
+
+
+async def test_queued_identical_tasks_have_distinct_replay_stable_ids(
+    repl: _ThreadREPL,
+) -> None:
+    attempts: list[list[str]] = []
+    for _ in range(2):
+        fanout = _QueuedFanout()
+        outcome = await fanout.run(repl)
+        assert outcome.error_type is None
+        assert outcome.result == str(_QueuedFanout.TOTAL_TASKS)
+        starts = [event["id"] for event in fanout.events if event["phase"] == "start"]
+        assert len(starts) == _QueuedFanout.TOTAL_TASKS
+        assert len(set(starts)) == _QueuedFanout.TOTAL_TASKS
+        attempts.append(starts)
+    # Membership is the contract; emission order follows semaphore wakeup,
+    # which this test has no business pinning.
+    assert set(attempts[0]) == set(attempts[1])
+
+
+async def test_queued_tasks_do_not_restore_spent_ptc_budget(
+    worker: ThreadWorker, runtime: Runtime
+) -> None:
+    repl = _ThreadREPL(
+        worker,
+        runtime,
+        timeout=5.0,
+        capture_console=True,
+        max_stdout_chars=4000,
+        max_ptc_calls=1,
+    )
+    fanout = _QueuedFanout()
+    outcome = await fanout.run(repl, extra_ptc_call=True)
+    assert outcome.error_type == "PTCCallBudgetExceeded"
+    assert fanout.started == _QueuedFanout.TOTAL_TASKS
+    assert fanout.release_calls == 1
+
+
+async def test_failed_dispatch_still_consumes_its_ordinal(
+    repl: _ThreadREPL,
+) -> None:
+    """Ordinals are positional, not success-gated.
+
+    Three dispatches carry identical payloads, so the ordinal is the only
+    thing separating their ids. The second one fails on the first attempt.
+    If a failure released its ordinal, the third dispatch would take it on
+    the replay and inherit the second's id, orphaning the original.
+    """
+
+    async def run(*, explode_on: int | None) -> list[str]:
+        events: list[dict[str, Any]] = []
+        seen = 0
+
+        async def work(state: dict[str, Any], config: Any) -> dict[str, Any]:
+            nonlocal seen
+            seen += 1
+            if seen == explode_on:
+                msg = "subagent exploded"
+                raise RuntimeError(msg)
+            return {"messages": [AIMessage(content="done")]}
+
+        runtime = ToolRuntime(
+            state={},
+            context={},
+            config={"configurable": {}},
+            stream_writer=events.append,
+            tools=[_task_tool_for_runnable(RunnableLambda(work))],
+            tool_call_id="outer_eval_call",
+            store=None,
+        )
+        await repl.eval_async(
+            "(async () => {"
+            "const tasks = [0, 1, 2].map(() => "
+            "task({description: 'identical', subagentType: 'worker'}));"
+            "return (await Promise.allSettled(tasks)).length;"
+            "})()",
+            outer_runtime=runtime,
+        )
+        return [e["id"] for e in events if e["phase"] == "start"]
+
+    interrupted = await run(explode_on=2)
+    replayed = await run(explode_on=None)
+
+    assert len(interrupted) == 3
+    assert len(set(interrupted)) == 3
+    assert interrupted == replayed
+
+
 def test_runtime_with_response_format_uses_configurable() -> None:
     runtime = _subagent_runtime(
         RunnableLambda(lambda _state, _config: {"messages": [AIMessage(content="ok")]})
@@ -1360,14 +1510,28 @@ async def test_async_task_global_rejects_state_without_messages(
     assert "messages" in outcome.error_message
 
 
+@pytest.mark.parametrize("limit", [None, 2, 40])
+@pytest.mark.parametrize("reset", [False, True])
 async def test_async_task_global_limits_concurrency_per_repl(
-    repl: _ThreadREPL,
+    limit: int | None, *, reset: bool
 ) -> None:
+    middleware = (
+        CodeInterpreterMiddleware()
+        if limit is None
+        else CodeInterpreterMiddleware(max_subagent_concurrency=limit)
+    )
+    expected_limit = 32 if limit is None else limit
+    repl = middleware._registry.get("concurrency")
+    if reset:
+        middleware._registry.reset_repl("concurrency")
+        repl = middleware._registry.get("concurrency")
+
     class _CountingRunner:
         def __init__(self) -> None:
             self.active = 0
             self.max_active = 0
             self.lock = threading.Lock()
+            self.release = asyncio.Event()
 
         async def ainvoke(
             self,
@@ -1381,7 +1545,10 @@ async def test_async_task_global_limits_concurrency_per_repl(
             with self.lock:
                 self.active += 1
                 self.max_active = max(self.max_active, self.active)
-            await asyncio.sleep(0.01)
+            if self.active == expected_limit:
+                self.release.set()
+            await self.release.wait()
+            await asyncio.sleep(0)
             with self.lock:
                 self.active -= 1
             return description
@@ -1401,21 +1568,23 @@ async def test_async_task_global_limits_concurrency_per_repl(
         afunc=_counting_async,
     )
 
-    outcome = await repl.eval_async(
-        "const calls = [];"
-        "for (let i = 0; i < 64; i++) {"
-        "  calls.push(task({"
-        "description: String(i), subagentType: 'worker', label: 'c' + i"
-        "}));"
-        "}"
-        "(await Promise.all(calls)).length",
-        outer_runtime=_subagent_runtime(runnable),
-    )
+    try:
+        outcome = await repl.eval_async(
+            "const calls = [];"
+            "for (let i = 0; i < 64; i++) {"
+            "  calls.push(task({"
+            "description: String(i), subagentType: 'worker', label: 'c' + i"
+            "}));"
+            "}"
+            "(await Promise.all(calls)).length",
+            outer_runtime=_subagent_runtime(runnable),
+        )
+    finally:
+        await middleware._registry.aevict("concurrency")
 
     assert outcome.error_type is None
     assert outcome.result == "64"
-    assert runner.max_active <= 32
-    assert runner.max_active > 1
+    assert runner.max_active == expected_limit
 
 
 async def test_async_promise_chain(repl: _ThreadREPL) -> None:
@@ -1479,3 +1648,17 @@ def test_sync_path_still_works(repl: _ThreadREPL) -> None:
     """After the v0.2 split, the sync path continues to use `ctx.eval`."""
     repl.eval_sync("let n = 7")
     assert repl.eval_sync("n * 6").result == "42"
+
+
+@pytest.mark.parametrize("limit", [0, -1, True, False, 1.5, float("inf"), None, "40"])
+def test_invalid_max_subagent_concurrency(limit: Any) -> None:
+    with pytest.raises(ValueError, match="positive integer"):
+        CodeInterpreterMiddleware(max_subagent_concurrency=limit)
+
+
+def test_subagent_prompt_uses_configured_concurrency() -> None:
+    from langchain_quickjs._prompt import render_subagent_system_prompt
+
+    prompt = render_subagent_system_prompt(max_subagent_concurrency=100)
+    assert "cap of 100 concurrent subagent calls" in prompt
+    assert "recommendation, not a required limit" in prompt

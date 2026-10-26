@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import locale
 import logging
 import os
 import subprocess
@@ -203,6 +204,24 @@ def test_run_git_redacts_credentials_from_timeout(
         _run_git(["clone"])
 
     assert "secret" not in str(exc_info.value)
+
+
+def test_run_git_decodes_output_as_utf8(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression test for #7119: git's error text is decoded as UTF-8.
+
+    Git writes paths as UTF-8, but Windows decodes text pipes with the ANSI code
+    page by default. Forcing cp1252 reproduces that on any platform: `č` is
+    `c4 8d` in UTF-8 and cp1252 has no `0x8d`, so a failed clone raised a
+    decoding error (`AttributeError` on Windows) instead of `MarketplaceError`.
+    """
+    # `subprocess` resolves an unspecified text encoding through this function.
+    monkeypatch.setattr(locale, "getencoding", lambda: "cp1252")
+    missing = tmp_path / "Kočí" / "missing"
+
+    with pytest.raises(MarketplaceError, match="Kočí"):
+        _run_git(["clone", str(missing), str(tmp_path / "clone")])
 
 
 def _marketplace(

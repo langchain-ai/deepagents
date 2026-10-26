@@ -397,6 +397,7 @@ def to_wire_notification_type(value: str) -> WireNotificationType:
         WireNotificationType.PERMISSION_PROMPT: WireNotificationType.PERMISSION_PROMPT,
         DcodeNotificationKind.AGENT_NEEDS_INPUT: WireNotificationType.AGENT_NEEDS_INPUT,
         DcodeNotificationKind.AGENT_COMPLETED: WireNotificationType.AGENT_COMPLETED,
+        DcodeNotificationKind.CACHE_EXPIRING: WireNotificationType.CACHE_EXPIRING,
         DcodeNotificationKind.COLD_CACHE_WARNING: (
             WireNotificationType.COLD_CACHE_WARNING
         ),

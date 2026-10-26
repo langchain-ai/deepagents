@@ -364,7 +364,12 @@ jobs:
     timeout-minutes: 10
     environment: release-bot
     permissions:
+      actions: write
       contents: read
+
+    # Applying moves the release PR head with a GitHub App token, which emits no
+    # pull_request event. Dispatch the required check explicitly so the new head
+    # never depends on a later comment event to acquire its merge gate.
     steps:
       - name: Generate release bot token
         id: app-token
@@ -501,8 +506,28 @@ jobs:
               throw error;
             }
 
+      - name: Refresh required check on the applied head
+        id: refresh-check
+        if: ${{ steps.publish.outcome == 'success' }}
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          PR_NUMBER: ${{ needs.validate.outputs.number }}
+        with:
+          script: |
+            try {
+              await github.rest.actions.createWorkflowDispatch({
+                ...context.repo,
+                workflow_id: 'release_notes_check.yml',
+                ref: 'main',
+                inputs: { pr_number: process.env.PR_NUMBER },
+              });
+            } catch (error) {
+              core.setOutput('error', error instanceof Error ? error.message : String(error));
+              throw error;
+            }
+
       - name: Mark manual command complete
-        if: ${{ github.event_name == 'issue_comment' && steps.acknowledge.outcome == 'success' && steps.publish.outcome == 'success' }}
+        if: ${{ github.event_name == 'issue_comment' && steps.acknowledge.outcome == 'success' && steps.refresh-check.outcome == 'success' }}
         continue-on-error: true
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
@@ -529,7 +554,7 @@ jobs:
       # updates are best-effort and must not turn a successful apply into a
       # misleading apply-failure comment.
       - name: Comment on apply failure
-        if: ${{ !cancelled() && (steps.prepare-apply.outcome != 'success' || steps.commit.outcome != 'success' || steps.publish.outcome != 'success') }}
+        if: ${{ !cancelled() && (steps.prepare-apply.outcome != 'success' || steps.commit.outcome != 'success' || steps.publish.outcome != 'success' || steps.refresh-check.outcome != 'success') }}
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           PR_NUMBER: ${{ needs.validate.outputs.number }}
@@ -540,6 +565,7 @@ jobs:
           PREPARE_ERROR: ${{ steps.prepare-apply.outputs.error }}
           COMMIT_ERROR: ${{ steps.commit.outputs.error }}
           PUBLISH_ERROR: ${{ steps.publish.outputs.error }}
+          REFRESH_ERROR: ${{ steps.refresh-check.outputs.error }}
           COMMIT_OUTCOME: ${{ steps.commit.outcome }}
         with:
           github-token: ${{ steps.app-token.outputs.token }}
@@ -550,6 +576,7 @@ jobs:
             const details = process.env.PREPARE_ERROR
               || process.env.COMMIT_ERROR
               || process.env.PUBLISH_ERROR
+              || process.env.REFRESH_ERROR
               || `commit=${process.env.COMMIT_OUTCOME || 'skipped'}; see the workflow logs.`;
             try {
               const { postApplyFailure } = require('./trusted-source/.github/scripts/release/release-notes.js');

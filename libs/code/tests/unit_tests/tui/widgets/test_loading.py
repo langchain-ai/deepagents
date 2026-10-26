@@ -60,3 +60,27 @@ class TestLoadingWidget:
 
             assert widget._hint_widget is not None
             assert str(widget._hint_widget.render()) == "(paused at 12s)"
+
+    async def test_hint_resizes_when_elapsed_text_grows(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A wider elapsed counter must relayout, not paint into the old width."""
+        async with LoadingWidgetApp().run_test() as pilot:
+            widget = pilot.app.query_one("#loading", LoadingWidget)
+            hint = widget._hint_widget
+            assert hint is not None
+            widget._start_time = 100.0
+
+            monkeypatch.setattr("deepagents_code.tui.widgets.loading.time", lambda: 159)
+            widget._update_animation()
+            await pilot.pause()
+            narrow = hint.size.width
+
+            monkeypatch.setattr("deepagents_code.tui.widgets.loading.time", lambda: 160)
+            widget._update_animation()
+            await pilot.pause()
+
+            text = "(1m 0s, esc to interrupt)"
+            assert str(hint.render()) == text
+            assert hint.size.width == len(text) > narrow

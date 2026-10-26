@@ -44,6 +44,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple, TextIO
 
 from packaging.requirements import InvalidRequirement, Requirement
+from packaging.specifiers import SpecifierSet
 from packaging.utils import NormalizedName, canonicalize_name
 from packaging.version import InvalidVersion, Version
 
@@ -186,15 +187,15 @@ unrecognized installs instead of updating a separate environment.
 _UPGRADE_COMMANDS: dict[InstallMethod, str] = {
     # Use `uv tool install -U` instead of `uv tool upgrade`: the latter
     # *respects* the requirement string baked into the uv tool receipt by the
-    # original install (or by any prior `dependency_refresh_command` that
-    # wrote `deepagents-code==<old_version>` into the receipt). When that
-    # requirement is pinned, `uv tool upgrade` "succeeds" but re-installs the
-    # same pinned version, silently leaving the user behind latest. A bare
-    # `uv tool install -U deepagents-code` rewrites the receipt's requirement
-    # to an unpinned `deepagents-code` and re-resolves to the latest stable
-    # release, which is what users running `/update` actually want.
-    # `dependency_refresh_command` builds the inverse command for the
-    # explicit "stay on this version, refresh deps" flow.
+    # original install (or by any prior `perform_upgrade` or
+    # `dependency_refresh_command`, which both write `deepagents-code==<version>`
+    # into the receipt). When that requirement is pinned, `uv tool upgrade`
+    # "succeeds" but re-installs the same pinned version, silently leaving the
+    # user behind latest. This bare form is the *displayed* manual hint;
+    # `perform_upgrade` runs the receipt-preserving `upgrade_install_command`
+    # instead, pinned to the inspected release. `dependency_refresh_command`
+    # builds the same pinned form at the current version for the explicit
+    # "stay on this version, refresh deps" flow.
     "uv": FALLBACK_UPGRADE_COMMAND,
     "brew": "brew upgrade deepagents-code",
 }
@@ -225,13 +226,32 @@ since that one-liner is the path we promote.
 """
 
 _UPGRADE_TIMEOUT = 120  # seconds
-"""Wall-clock cap for `perform_upgrade` and `perform_install_extra`."""
+"""Default wall-clock cap for install subprocesses.
+
+A Python migration uses `_MIGRATION_TIMEOUT` instead.
+"""
+
+_MIGRATION_TIMEOUT = 600  # seconds
+"""Wall-clock cap for a Python migration.
+
+A migration can download an interpreter and reinstall every package, and
+killing uv mid-rebuild can leave the tool environment broken.
+"""
 
 _TERMINATE_WAIT_TIMEOUT = 5  # seconds
 """Cap on reaping a killed install subprocess so cleanup cannot hang launch."""
 
 INSTALL_SCRIPT_COMMAND = "curl -LsSf https://langch.in/dcode | bash"
 """Promoted public install command for Deep Agents Code."""
+
+_PYTHON_MIGRATION_INSTALL_COMMAND = (
+    "curl -LsSf https://langch.in/dcode | DEEPAGENTS_CODE_PYTHON=3.14 bash"
+)
+"""Recovery installer for Python 3.14 migrations.
+
+The plain installer defaults to an older Python, so it would resolve the
+newest release compatible with that Python instead of one that requires 3.14.
+"""
 
 UPDATE_LOG_DIR: Path = default_cache_dir() / "deepagents-code" / "update_logs"
 """Directory for persisted update command logs.
@@ -257,9 +277,11 @@ RESUME_AUTO_UPDATE_GRACE_PERIOD = 7 * 24 * 60 * 60
 
 _STARTUP_AUTO_UPDATE_FAILED_VERSION_KEY = "startup_auto_update_failed_version"
 _STARTUP_AUTO_UPDATE_FAILED_AT_KEY = "startup_auto_update_failed_at"
+_STARTUP_AUTO_UPDATE_DEFERRED_KEY = "startup_auto_update_deferred"
 _STARTUP_AUTO_UPDATE_FAILURE_KEYS: tuple[str, ...] = (
     _STARTUP_AUTO_UPDATE_FAILED_VERSION_KEY,
     _STARTUP_AUTO_UPDATE_FAILED_AT_KEY,
+    _STARTUP_AUTO_UPDATE_DEFERRED_KEY,
 )
 _RESUME_AUTO_UPDATE_DEFERRED_AT_KEY = "resume_auto_update_deferred_at"
 
@@ -287,7 +309,7 @@ def is_installed_version_at_least(version: str) -> bool:
 
         installed = _parse_version(pkg_version("deepagents-code"))
         target = _parse_version(version)
-    except (InvalidVersion, PackageNotFoundError):
+    except InvalidVersion, PackageNotFoundError:
         return False
     return installed >= target
 
@@ -327,26 +349,18 @@ def _latest_from_releases(
     return best_str
 
 
-def read_installed_distribution_version() -> str | None:
-    """Read the currently installed `deepagents-code` distribution version.
-
-    Unlike `__version__`, this does not come from the module this process
-    imported at launch: it reads the running tool environment's
-    `deepagents_code-*.dist-info` directory name from disk, so it reflects the
-    install even after an in-session upgrade rewrote the environment. Used to
-    report what an upgrade actually installed.
+def _distribution_dist_infos() -> list[Path] | None:
+    """List the running environment's `deepagents_code-*.dist-info` directories.
 
     Returns:
-        The installed version string, or `None` when it cannot be determined
-            (missing/ambiguous dist-info, unreadable directory, or a version
-            this process's `packaging` rejects).
+        The matching directories, or `None` when site-packages is unreadable.
     """
     # `sysconfig`'s purelib resolves the per-platform layout (`lib/pythonX.Y/
     # site-packages` on POSIX, `Lib\site-packages` on Windows), so the
     # readback works for uv tool environments on every supported OS.
     site_packages = Path(sysconfig.get_path("purelib"))
     try:
-        candidates = [
+        return [
             entry
             for entry in site_packages.iterdir()
             if entry.name.startswith("deepagents_code-")
@@ -359,14 +373,33 @@ def read_installed_distribution_version() -> str | None:
             exc_info=True,
         )
         return None
+
+
+def read_installed_distribution_version() -> str | None:
+    """Read the currently installed `deepagents-code` distribution version.
+
+    Unlike `__version__`, this does not come from the module this process
+    imported at launch: it reads the running tool environment's
+    `deepagents_code-*.dist-info` directory name from disk, so it reflects the
+    install even after an in-session upgrade rewrote the environment. Used to
+    verify what an upgrade actually installed.
+
+    Returns:
+        The installed version string, or `None` when it cannot be determined
+            (missing/ambiguous dist-info, unreadable directory, or a version
+            this process's `packaging` rejects).
+    """
+    candidates = _distribution_dist_infos()
+    if candidates is None:
+        return None
     if len(candidates) != 1:
         # Zero matches means the distribution is missing from this environment;
         # more than one means leftover dist-infos make the installed version
-        # ambiguous. Neither is actionable from the caller — a successful
-        # upgrade just gets a less precise report — so debug is loud enough.
+        # ambiguous. `_verify_uv_install` decides how each affects an
+        # upgrade, so debug is loud enough here.
         logger.debug(
             "Expected exactly one deepagents_code dist-info under %s, found %d",
-            site_packages,
+            sysconfig.get_path("purelib"),
             len(candidates),
         )
         return None
@@ -397,7 +430,7 @@ def cached_release_requires_prereleases(version: str | None) -> bool | None:
             return None
         pins = [_canonical_prerelease_pin(pin) for pin in cached]
         return bool(pins) if all(pin is not None for pin in pins) else None
-    except (OSError, json.JSONDecodeError, TypeError):
+    except OSError, json.JSONDecodeError, TypeError:
         logger.debug("Failed to read cached release pre-release pins", exc_info=True)
         return None
 
@@ -441,7 +474,7 @@ def get_cached_update_available() -> tuple[bool, str | None]:
         if not isinstance(value, str):
             return False, None
         return _parse_version(value) > installed, value
-    except (OSError, json.JSONDecodeError, TypeError, InvalidVersion):
+    except OSError, json.JSONDecodeError, TypeError, InvalidVersion:
         logger.debug("Failed to read cache-only update answer", exc_info=True)
         return False, None
 
@@ -455,7 +488,7 @@ def _coerce_checked_at(value: object) -> float | None:
         return None
     try:
         datetime.fromtimestamp(checked_at, tz=UTC)
-    except (OverflowError, OSError, ValueError):
+    except OverflowError, OSError, ValueError:
         return None
     return checked_at
 
@@ -476,7 +509,7 @@ def get_last_update_check_time() -> float | None:
         if not isinstance(data, dict):
             return None
         checked_at = data.get("checked_at")
-    except (OSError, json.JSONDecodeError, TypeError):
+    except OSError, json.JSONDecodeError, TypeError:
         logger.debug("Failed to read last update check time", exc_info=True)
         return None
     return _coerce_checked_at(checked_at)
@@ -644,7 +677,7 @@ def _write_release_prerelease_pins(version: str, pins: Sequence[str]) -> None:
         data[_RELEASE_PRERELEASE_PINS_KEY] = values
         data.setdefault("checked_at", time.time())
         _atomic_write_cache(data)
-    except (OSError, json.JSONDecodeError, TypeError):
+    except OSError, json.JSONDecodeError, TypeError:
         logger.debug(
             "Failed to write release pre-release pins cache",
             exc_info=True,
@@ -714,7 +747,7 @@ def get_latest_version(
             )
             if fresh and cache_key in data and has_installed_release_time:
                 return cached_version
-    except (OSError, json.JSONDecodeError, TypeError):
+    except OSError, json.JSONDecodeError, TypeError:
         logger.debug("Failed to read update-check cache", exc_info=True)
 
     try:
@@ -749,7 +782,7 @@ def get_latest_version(
             logger.debug("PyPI response missing or empty 'releases' key")
         prerelease = _latest_from_releases(releases, include_prereleases=True)
         stable_prerelease_pins = _prerelease_pin_requirements(info.get("requires_dist"))
-    except (requests.RequestException, OSError, KeyError, json.JSONDecodeError):
+    except requests.RequestException, OSError, KeyError, json.JSONDecodeError:
         logger.debug("Failed to fetch latest version from PyPI", exc_info=True)
         return cached_version
 
@@ -770,7 +803,7 @@ def get_latest_version(
                 cached_pins = existing.get(_RELEASE_PRERELEASE_PINS_KEY)
                 if isinstance(cached_pins, dict):
                     prerelease_pins = cached_pins
-    except (OSError, json.JSONDecodeError, TypeError):
+    except OSError, json.JSONDecodeError, TypeError:
         logger.debug(
             "Failed to read cached pre-release pins before refresh", exc_info=True
         )
@@ -852,7 +885,7 @@ def release_prerelease_pins(
                                 revalidated.add(pin)
                         if len(revalidated) == len(cached):
                             return sorted(revalidated)
-    except (OSError, json.JSONDecodeError, TypeError):
+    except OSError, json.JSONDecodeError, TypeError:
         logger.debug(
             "Failed to read release pre-release pins cache",
             exc_info=True,
@@ -880,7 +913,7 @@ def release_prerelease_pins(
         info = payload.get("info")
         requires = info.get("requires_dist") if isinstance(info, dict) else None
         pins = _prerelease_pin_requirements(requires)
-    except (requests.RequestException, OSError, KeyError, json.JSONDecodeError):
+    except requests.RequestException, OSError, KeyError, json.JSONDecodeError:
         logger.warning(
             "Failed to fetch dependency metadata for v%s from PyPI; assuming "
             "no pre-release admission",
@@ -982,7 +1015,7 @@ def get_release_time(version: str | None) -> str | None:
                     value = times.get(version)
                     if isinstance(value, str):
                         return value
-    except (OSError, json.JSONDecodeError):
+    except OSError, json.JSONDecodeError:
         logger.debug("Failed to read release_times from cache", exc_info=True)
     return None
 
@@ -1030,7 +1063,7 @@ def _days_old_from_iso(iso: str | None) -> int | None:
         return None
     try:
         dt = datetime.fromisoformat(iso).astimezone()
-    except (ValueError, TypeError):
+    except ValueError, TypeError:
         logger.debug(
             "Failed to parse release timestamp %r for installed age",
             iso,
@@ -1125,7 +1158,7 @@ def get_sdk_release_time(
                     cached = times.get(version)
                     if isinstance(cached, str):
                         return cached
-    except (OSError, json.JSONDecodeError):
+    except OSError, json.JSONDecodeError:
         logger.debug("Failed to read sdk release_times from cache", exc_info=True)
 
     try:
@@ -1149,7 +1182,7 @@ def get_sdk_release_time(
         if not isinstance(files, list) or not files:
             return None
         iso = _upload_time(files[0])
-    except (requests.RequestException, OSError, json.JSONDecodeError):
+    except requests.RequestException, OSError, json.JSONDecodeError:
         logger.debug("Failed to fetch SDK release time from PyPI", exc_info=True)
         return None
 
@@ -1231,7 +1264,7 @@ def _read_update_state() -> dict[str, object]:
             raw = json.loads(UPDATE_STATE_FILE.read_text(encoding="utf-8"))
             if isinstance(raw, dict):
                 return raw
-    except (OSError, json.JSONDecodeError):
+    except OSError, json.JSONDecodeError:
         logger.debug("Failed to read update state file", exc_info=True)
     return {}
 
@@ -1292,19 +1325,32 @@ def clear_resume_auto_update_deferral() -> None:
 
 
 def should_skip_startup_auto_update_after_failure(version: str) -> bool:
-    """Return whether startup auto-update should skip a recently failed version."""
+    """Return whether startup auto-update should skip a recently failed version.
+
+    A deferred migration is not a failure, so it never starts the cooldown.
+    """
     data = _read_update_state()
     failed_version = data.get(_STARTUP_AUTO_UPDATE_FAILED_VERSION_KEY)
     failed_at = data.get(_STARTUP_AUTO_UPDATE_FAILED_AT_KEY)
     return bool(
         failed_version == version
+        and data.get(_STARTUP_AUTO_UPDATE_DEFERRED_KEY) is not True
         and isinstance(failed_at, (int, float))
         and time.time() - failed_at < STARTUP_AUTO_UPDATE_FAILURE_COOLDOWN
     )
 
 
-def mark_startup_auto_update_failed(version: str) -> bool:
-    """Persist a same-version startup auto-update retry cooldown marker.
+def mark_startup_auto_update_failed(version: str, *, deferred: bool = False) -> bool:
+    """Persist a same-version marker for a failed or deferred startup auto-update.
+
+    Only a failure starts a retry cooldown; a deferral is retried on the next
+    launch that finds no other session running.
+
+    Args:
+        version: Target version the attempt did not install.
+        deferred: Whether the attempt deliberately deferred a Python migration
+            rather than failing, so the next launch can say so and retry once
+            no other session is running.
 
     Returns:
         `True` if the marker was written, `False` otherwise.
@@ -1313,7 +1359,17 @@ def mark_startup_auto_update_failed(version: str) -> bool:
         {
             _STARTUP_AUTO_UPDATE_FAILED_VERSION_KEY: version,
             _STARTUP_AUTO_UPDATE_FAILED_AT_KEY: time.time(),
+            _STARTUP_AUTO_UPDATE_DEFERRED_KEY: deferred,
         }
+    )
+
+
+def startup_auto_update_was_deferred(version: str) -> bool:
+    """Return whether the last startup attempt at `version` deferred a migration."""
+    data = _read_update_state()
+    return (
+        data.get(_STARTUP_AUTO_UPDATE_FAILED_VERSION_KEY) == version
+        and data.get(_STARTUP_AUTO_UPDATE_DEFERRED_KEY) is True
     )
 
 
@@ -2036,11 +2092,11 @@ def create_update_log_file() -> Path | None:
     Callers that *advertise* the log to a user — "Update log: tail -f <path>" —
     must use this rather than `create_update_log_path`, which only computes a
     path. `perform_upgrade` refuses some upgrades before ever spawning an
-    installer (unknown or unsupported install method, `brew` missing from
-    `PATH`, the pre-release gate), and `_run_install_subprocess` degrades to
-    not persisting output when the log cannot be opened. In all of those cases
-    the path alone would name a file that never comes into existence, leaving
-    the user tailing an `ENOENT`.
+    installer (e.g. an unsupported install method, `brew` missing from `PATH`,
+    the pre-release gate, or a deferred Python migration), and
+    `_run_install_subprocess` degrades to not persisting output when the log
+    cannot be opened. In all of those cases the path alone would name a file
+    that never comes into existence, leaving the user tailing an `ENOENT`.
 
     Returns:
         The created log path, or `None` if it could not be created — callers
@@ -2158,6 +2214,7 @@ async def _run_install_subprocess(
     *,
     progress: UpgradeProgressCallback | None,
     log_path: Path | None,
+    max_seconds: float = _UPGRADE_TIMEOUT,
 ) -> tuple[bool, str]:
     """Run a shell command, streaming stdout/stderr to *progress* and a log file.
 
@@ -2166,14 +2223,14 @@ async def _run_install_subprocess(
     *combined_output* is the concatenated stdout+stderr, stripped.
 
     On timeout or `OSError`, the process is killed and a synthetic error
-    line is emitted both to the log and via *progress*. The wall-clock cap
-    is `_UPGRADE_TIMEOUT`.
+    line is emitted both to the log and via *progress*.
 
     Args:
         cmd: Shell command to execute.
         progress: Optional callback invoked for each output line.
         log_path: Optional path to persist command output. Falls back to a
             fresh `create_update_log_path()` when `None`.
+        max_seconds: Wall-clock cap for the command.
 
     Returns:
         `(success, output)` — *success* is `True` iff the subprocess exited 0.
@@ -2181,7 +2238,6 @@ async def _run_install_subprocess(
     Raises:
         asyncio.CancelledError: If the calling task is cancelled.
     """
-    timeout = _UPGRADE_TIMEOUT
     if log_path is None:
         log_path = create_update_log_path()
 
@@ -2234,12 +2290,12 @@ async def _run_install_subprocess(
                 ),
                 proc.wait(),
             ),
-            timeout=timeout,
+            timeout=max_seconds,
         )
     except TimeoutError:
         if proc is not None:
             await _terminate_install_process(proc)
-        msg = f"Command timed out after {timeout}s: {cmd}"
+        msg = f"Command timed out after {max_seconds}s: {cmd}"
         if log_file is not None:
             with suppress(OSError):
                 log_file.write(f"{msg}\n")
@@ -2318,6 +2374,30 @@ def _resolve_update_lock_file() -> Path | None:
     return chosen
 
 
+def _legacy_update_lock_file() -> Path | None:
+    """Find the lock path in a pre-existing legacy installation lock directory.
+
+    Never create the directory: fresh installs must not add an invalid tool
+    entry for uv. Existing roots remain available to older sessions, including
+    those that have not yet attempted their first update.
+
+    Returns:
+        The legacy path, or `None` when its root is absent, unsafe or inaccessible.
+    """
+    root = PATHS.installation.root
+    legacy = root.parent / f".{root.name}.deepagents-code-locks" / "update.lock"
+    try:
+        if legacy.parent.is_symlink() or legacy.is_symlink():
+            return None
+        if not legacy.parent.is_dir():
+            return None
+        if not legacy.exists() or legacy.is_file():
+            return legacy
+    except OSError:
+        logger.warning("Could not prepare legacy update lock %s", legacy, exc_info=True)
+    return None
+
+
 _WARNED_LOCK_UNAVAILABLE = False
 """Whether the "no update lock" warning already reached stderr this process."""
 
@@ -2344,6 +2424,12 @@ def update_install_lock() -> Iterator[bool]:
 
     Non-blocking by design: a loser returns immediately rather than stalling
     startup behind an install it does not need.
+
+    If a legacy directory exists, hold its lock alongside the current lock for
+    the entire install, creating the file if necessary: older sessions may
+    attempt their first update after we acquire the current lock. Keep its inode
+    after release so those sessions always contend on the same file. An older
+    process that creates a legacy directory later cannot share this protection.
 
     The locking itself never raises; exceptions from the caller's own body
     propagate as usual. When the lock is unusable — an unwritable state
@@ -2407,50 +2493,467 @@ def update_install_lock() -> Iterator[bool]:
         # usable for locking (CIFS/exFAT mounts routinely refuse `chmod`), so
         # abandoning the lock would disable this protection for no reason.
         harden_state_dir(lock_file.parent)
-        file_lock = FileLock(str(lock_file), timeout=0, thread_local=False)
+        legacy = _legacy_update_lock_file()
+        lock_files = [lock_file]
+        # Existing legacy roots also cover older sessions' first update attempts.
+        if legacy is not None:
+            lock_files.append(legacy)
+        acquired_locks = []
         try:
-            file_lock.acquire()
-        # `filelock.Timeout` subclasses `TimeoutError`, hence `OSError`, so this
-        # clause MUST stay above the one below. Reorder them and every "another
-        # process is installing" case silently becomes a fail-open `yield True`
-        # — the concurrent double-install this lock exists to prevent.
-        except Timeout:
-            logger.info(
-                "Skipping update install; %s is held by another dcode process",
-                lock_file,
-            )
-            yield False
-            return
-        except OSError:
-            logger.warning(
-                "Proceeding without the update lock; could not acquire %s. "
-                "If this persists, removing that file may clear it.",
-                lock_file,
-                exc_info=True,
-            )
-            yield True
-            return
-        try:
+            for lock_file in lock_files:
+                file_lock = FileLock(str(lock_file), timeout=0, thread_local=False)
+                try:
+                    file_lock.acquire()
+                # `filelock.Timeout` subclasses `TimeoutError`, hence `OSError`, so this
+                # clause MUST stay above the one below. Reorder them and every "another
+                # process is installing" case silently becomes a fail-open `yield True`
+                # — the concurrent double-install this lock exists to prevent.
+                except Timeout:
+                    logger.info(
+                        "Skipping update install; %s is held by another dcode process",
+                        lock_file,
+                    )
+                    yield False
+                    return
+                except OSError:
+                    logger.warning(
+                        "Proceeding without the update lock; could not acquire %s. "
+                        "If this persists, removing that file may clear it.",
+                        lock_file,
+                        exc_info=True,
+                    )
+                    yield True
+                    return
+                acquired_locks.append(file_lock)
             yield True
         finally:
-            # Releasing must not mask the install's own outcome, and the lock is
-            # dropped when the process exits regardless. But it is not harmless:
-            # `UnixFileLock._release` clears its fd handle *before* unlocking, so
-            # a raising `flock` leaks an fd that still holds the lock, and every
-            # later attempt in this session then reports a phantom concurrent
-            # install. Log it, or that failure is undiagnosable.
-            try:
-                file_lock.release()
-            except OSError:
-                logger.warning(
-                    "Failed to release the update lock at %s; further update "
-                    "attempts in this session may report a concurrent install "
-                    "until dcode is restarted",
-                    lock_file,
-                    exc_info=True,
-                )
+            for file_lock in reversed(acquired_locks):
+                # Releasing must not mask the install's own outcome, and the lock is
+                # dropped when the process exits regardless. But it is not harmless:
+                # `UnixFileLock._release` clears its fd handle *before* unlocking, so
+                # a raising `flock` leaks an fd that still holds the lock, and every
+                # later attempt in this session then reports a phantom concurrent
+                # install. Log it, or that failure is undiagnosable.
+                try:
+                    file_lock.release()
+                except OSError:
+                    logger.warning(
+                        "Failed to release the update lock at %s; further update "
+                        "attempts in this session may report a concurrent install "
+                        "until dcode is restarted",
+                        file_lock.lock_file,
+                        exc_info=True,
+                    )
     finally:
         _UPDATE_INSTALL_THREAD_LOCK.release()
+
+
+def _release_python_requirement(version: str) -> SpecifierSet:
+    """Fetch and validate the exact release's Python requirement.
+
+    Returns:
+        The validated release requirement.
+
+    Raises:
+        ValueError: If metadata is unavailable, invalid, or mismatched.
+    """
+    try:
+        import requests
+    except ImportError as exc:
+        msg = f"Could not load the HTTP client to read v{version} metadata: {exc}"
+        raise ValueError(msg) from exc
+
+    target = Version(version)
+    try:
+        response = requests.get(
+            f"{PYPI_URL.removesuffix('/json')}/{target}/json",
+            timeout=3,
+            **_pypi_request_kwargs(bypass_cache=True),
+        )
+        response.raise_for_status()
+        payload = response.json()
+    except requests.RequestException as exc:
+        # Includes `requests.JSONDecodeError`; other errors are bugs, not
+        # unavailable metadata.
+        msg = f"Could not fetch Python compatibility metadata for v{target}: {exc}"
+        raise ValueError(msg) from exc
+    info = payload.get("info") if isinstance(payload, dict) else None
+    if not isinstance(info, dict) or info.get("version") != str(target):
+        msg = f"Missing or mismatched release metadata for v{target}"
+        raise ValueError(msg)
+    requires_python = info.get("requires_python")
+    if not isinstance(requires_python, str) or not requires_python.strip():
+        msg = f"Missing Requires-Python metadata for v{target}"
+        raise ValueError(msg)
+    return SpecifierSet(requires_python)
+
+
+def _allows_python_314(requirement: SpecifierSet) -> bool:
+    """Check whether any stable 3.14 patch can satisfy the requirement.
+
+    Specifier boundaries and their next patch cover every interval that can
+    admit a CPython patch release, including individually excluded patches.
+    This checks eligibility; uv still resolves an available interpreter.
+
+    Returns:
+        Whether the requirement admits at least one stable 3.14 patch.
+    """
+    candidates = {Version("3.14")}
+    for specifier in requirement:
+        try:
+            boundary = Version(specifier.version.removesuffix(".*"))
+        except InvalidVersion:
+            continue
+        if boundary.release[:2] == (3, 14):
+            patch = boundary.micro
+            candidates.update(Version(f"3.14.{part}") for part in (patch, patch + 1))
+    return any(requirement.contains(candidate) for candidate in candidates)
+
+
+_UV_PYTHON_CONFLICT_PATTERN = re.compile(
+    r"requires-python|\bPython\s*(?:[<>=!~]=?|===)\s*\d", re.IGNORECASE
+)
+"""Matches uv resolver output that rejects a release for its Python version."""
+
+
+class _PythonRequirementUnavailableError(ValueError):
+    """The target's `Requires-Python` metadata could not be read."""
+
+
+class _PythonMigrationRefusedError(ValueError):
+    """No supported interpreter change can satisfy the target release."""
+
+
+def _upgrade_python(version: str) -> str | None:
+    """Choose the interpreter for the target release.
+
+    Returns `'3.14'` when the target excludes the running Python but admits a
+    3.14 patch release. A running Python newer than 3.14 is never moved down.
+
+    Returns:
+        The migration interpreter, or `None` to preserve the receipt.
+
+    Raises:
+        _PythonRequirementUnavailableError: If the target's metadata cannot be
+            read.
+        _PythonMigrationRefusedError: If the running Python is newer than 3.14
+            and incompatible, or no 3.14 patch satisfies the requirement.
+    """
+    try:
+        requirement = _release_python_requirement(version)
+    except ValueError as exc:
+        raise _PythonRequirementUnavailableError(str(exc)) from exc
+    running = ".".join(str(part) for part in sys.version_info[:3])
+    if requirement.contains(running):
+        return None
+    # The bridge only moves forward; a newer interpreter must not be silently
+    # downgraded to 3.14.
+    if sys.version_info[:2] > (3, 14):
+        msg = (
+            f"v{version} requires Python {requirement}; running Python {running} "
+            "is incompatible, and dcode does not move to an older interpreter. "
+            "Install a compatible interpreter manually."
+        )
+        raise _PythonMigrationRefusedError(msg)
+    if _allows_python_314(requirement):
+        return "3.14"
+    msg = (
+        f"v{version} requires Python {requirement}; running Python {running} is "
+        "incompatible and the supported migration to Python 3.14 cannot satisfy it. "
+        "Install a compatible interpreter manually."
+    )
+    raise _PythonMigrationRefusedError(msg)
+
+
+class _MigrationVerificationError(Exception):
+    """The rebuilt environment's interpreter could not confirm the install."""
+
+
+def _read_migrated_distribution_version() -> str:
+    """Verify the rebuilt environment using its new interpreter.
+
+    Assumes uv rebuilt the tool environment at the same `sys.prefix`. The
+    child also checks that it runs on Python 3.14, so a wrong interpreter
+    fails verification instead of reporting a stale version.
+
+    Returns:
+        The installed version.
+
+    Raises:
+        _MigrationVerificationError: If verification fails, with the reason.
+    """
+    import subprocess  # noqa: S404  # Run only the tool's interpreter with fixed code.
+
+    python = Path(sys.prefix) / (
+        "Scripts/python.exe" if os.name == "nt" else "bin/python"
+    )
+    try:
+        result = subprocess.run(  # noqa: S603  # Fixed argv, no shell or external code.
+            [
+                str(python),
+                "-I",
+                "-c",
+                (
+                    "import sys\n"
+                    "if sys.version_info[:2] != (3, 14):\n"
+                    "    got = sys.version.split()[0]\n"
+                    "    sys.exit(f'expected Python 3.14, got {got}')\n"
+                    "from importlib.metadata import version\n"
+                    "print(version('deepagents-code'))"
+                ),
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=True,
+            timeout=10,
+        )
+        return str(Version(result.stdout.strip()))
+    except (OSError, subprocess.SubprocessError, InvalidVersion) as exc:
+        reason = _verification_failure_reason(exc)
+        logger.warning(
+            "Could not verify the migrated tool environment: %s",
+            reason,
+            exc_info=True,
+        )
+        raise _MigrationVerificationError(reason) from exc
+
+
+def _verification_failure_reason(exc: Exception) -> str:
+    """Summarize why the migrated interpreter could not verify the install.
+
+    Returns:
+        The last line of the child's stderr when it has one, else the error.
+    """
+    stderr = getattr(exc, "stderr", None) or ""
+    if isinstance(stderr, bytes):
+        # `TimeoutExpired` can carry raw bytes even with `text=True`.
+        stderr = stderr.decode("utf-8", errors="replace")
+    lines = stderr.strip().splitlines()
+    # The last line names the cause (wrong interpreter, missing package);
+    # the exception alone only shows the exit status.
+    return lines[-1] if lines else str(exc) or type(exc).__name__
+
+
+def _sentence(exc: BaseException) -> str:
+    """Render an exception message as one sentence ending in a period.
+
+    Returns:
+        The message with exactly one trailing period.
+    """
+    return f"{str(exc).rstrip().rstrip('.')}."
+
+
+def _target_python(target_version: str) -> tuple[str | None, bool]:
+    """Pick the interpreter for *target_version*, tolerating missing metadata.
+
+    Returns:
+        `(python, requirement_unknown)`. *python* is the `--python` request,
+        or `None` to keep the receipt's interpreter. *requirement_unknown* is
+        `True` when the release metadata could not be read.
+    """
+    try:
+        return _upgrade_python(target_version), False
+    except _PythonRequirementUnavailableError:
+        # Keep the receipt's interpreter. The install pins `==version`, so uv
+        # refuses a target that needs a newer Python rather than changing
+        # anything. One failed request must not block upgrades that need no
+        # migration, or upgrades for users behind a mirror that cannot reach
+        # PyPI.
+        logger.warning(
+            "Could not read Python requirement for v%s; keeping the current "
+            "interpreter",
+            target_version,
+            exc_info=True,
+        )
+        return None, True
+
+
+def _migration_notice(target_version: str) -> str:
+    """Return the notice shown before a Python migration starts.
+
+    Returns:
+        A user-facing message that names the running Python.
+    """
+    return (
+        f"v{target_version} is incompatible with the running Python "
+        f"{'.'.join(str(part) for part in sys.version_info[:3])}. "
+        "This update will move dcode to Python 3.14; uv will acquire "
+        "the interpreter if needed. Selected extras and added packages "
+        "will be preserved. Configuration and conversations are unchanged. "
+        "Other open dcode sessions stop working until restarted."
+    )
+
+
+def migration_deferral_message(target_version: str) -> str:
+    """Return the guidance for a migration that this caller may not run.
+
+    Returns:
+        A user-facing message that names the safe `update` command, or on
+        Windows the uv command to run outside dcode.
+    """
+    if _is_windows():
+        # Windows locks the running interpreter, so uv cannot delete the
+        # environment that `dcode update` itself runs from.
+        return (
+            f"v{target_version} requires migrating dcode to Python 3.14. "
+            "On Windows, dcode cannot rebuild the environment it runs from. "
+            "Nothing was installed. Quit every dcode session, then run from "
+            f"your shell: {_windows_migration_command(target_version)}"
+        )
+    from deepagents_code._invocation import invoked_name
+
+    return (
+        f"v{target_version} requires migrating dcode to Python 3.14. "
+        "Migration is deferred because rebuilding the environment would break "
+        "running dcode sessions and their servers. Nothing was installed. "
+        f"Quit every dcode session, then run `{invoked_name()} update` from "
+        "your shell to migrate safely."
+    )
+
+
+def _windows_migration_command(target_version: str) -> str:
+    """Return the uv command that migrates dcode from outside its environment.
+
+    Returns:
+        The receipt-preserving command, or a bare one with a reminder when
+        the receipt cannot be read.
+    """
+    from deepagents_code.extras_info import ExtrasIntrospectionError
+
+    try:
+        return upgrade_install_command(version=target_version, python="3.14")
+    except ExtrasIntrospectionError, ToolRequirementIntrospectionError:
+        logger.warning(
+            "Could not read the uv receipt for the migration command",
+            exc_info=True,
+        )
+        return (
+            f"uv tool install -U --python 3.14 deepagents-code=={target_version} "
+            "(reselect extras and added packages)"
+        )
+
+
+_MIGRATION_RECOVERY = (
+    "Do not uninstall dcode first. "
+    f"Recovery installer: {_PYTHON_MIGRATION_INSTALL_COMMAND} "
+    "(reselect extras and added packages)."
+)
+"""Recovery steps for a migration that stopped partway."""
+
+
+async def _run_migration_subprocess(
+    cmd: str,
+    *,
+    progress: UpgradeProgressCallback | None,
+    log_path: Path | None,
+    on_notice: UpgradeProgressCallback | None,
+) -> tuple[bool, str]:
+    """Run a migration install, giving recovery steps if it is cancelled.
+
+    Cancellation (Ctrl+C) kills uv mid-rebuild, which can leave the tool
+    environment broken, so the recovery notice is sent before the
+    cancellation propagates.
+
+    Returns:
+        The `_run_install_subprocess` result.
+    """
+    try:
+        return await _run_install_subprocess(
+            cmd, progress=progress, log_path=log_path, max_seconds=_MIGRATION_TIMEOUT
+        )
+    except asyncio.CancelledError:
+        logger.warning("Python 3.14 migration was interrupted")
+        try:
+            await _emit_progress(
+                on_notice,
+                f"Python 3.14 migration was interrupted. {_MIGRATION_RECOVERY}",
+            )
+        except Exception:
+            # The cancellation must still propagate.
+            logger.warning("Could not show migration recovery steps", exc_info=True)
+        raise
+
+
+def _install_failure_guidance(
+    target_version: str, *, migrating: bool, requirement_unknown: bool, output: str
+) -> str | None:
+    """Return recovery steps for a failed uv install, if any apply.
+
+    Returns:
+        Migration guidance, or `None` when the generic failure path fits.
+    """
+    if migrating:
+        return (
+            "Python 3.14 migration failed. Check the update log for a timeout, "
+            "network errors, or dependency conflicts. If Python downloads are "
+            "disabled, provision Python 3.14 with uv or your administrator, or "
+            f"allow uv downloads and retry. {_MIGRATION_RECOVERY}"
+        )
+    if not requirement_unknown or not _UV_PYTHON_CONFLICT_PATTERN.search(output):
+        return None
+    from deepagents_code._invocation import invoked_name
+
+    # Callers hide uv's output after a notice, so name the likely fix.
+    return (
+        f"Could not check v{target_version}'s Python requirement before "
+        "installing. If the update log shows it needs a newer Python, retry "
+        f"`{invoked_name()} update` later, or use the Python 3.14 installer: "
+        f"{_PYTHON_MIGRATION_INSTALL_COMMAND} "
+        "(reselect extras and added packages)."
+    )
+
+
+async def _verify_uv_install(
+    target_version: str, *, migrating: bool
+) -> tuple[str | None, str | None]:
+    """Read back a uv install and compare it with *target_version*.
+
+    Returns:
+        `(installed_version, failure)`. *failure* is `None` when the install
+        matches the target, and otherwise describes what was found.
+    """
+    verification_error: str | None = None
+    installed_version: str | None = None
+    try:
+        installed_version = await asyncio.to_thread(
+            _read_migrated_distribution_version
+            if migrating
+            else read_installed_distribution_version
+        )
+    except _MigrationVerificationError as exc:
+        verification_error = str(exc)
+    if installed_version is None and not migrating:
+        dist_infos = await asyncio.to_thread(_distribution_dist_infos)
+        if dist_infos is not None and len(dist_infos) > 1:
+            # In-place readback is ambiguous when stale dist-info directories
+            # remain. uv exited 0 with an exact `==target` pin, so trust the
+            # pin rather than report a landed install as a failure. A missing
+            # dist-info or unreadable site-packages is never trusted.
+            logger.warning(
+                "Could not read back the installed version; trusting the "
+                "exact uv pin v%s",
+                target_version,
+            )
+            installed_version = target_version
+    try:
+        if installed_version is not None and Version(installed_version) == Version(
+            target_version
+        ):
+            return installed_version, None
+    except InvalidVersion:
+        logger.warning(
+            "Could not compare installed version %r with target v%s",
+            installed_version,
+            target_version,
+            exc_info=True,
+        )
+    if verification_error is not None:
+        return None, (
+            f"check with the migrated interpreter failed: {verification_error}"
+        )
+    return None, f"found {installed_version or 'no readable installed version'}"
 
 
 async def perform_upgrade(
@@ -2459,6 +2962,10 @@ async def perform_upgrade(
     log_path: Path | None = None,
     include_prereleases: bool | None = None,
     target_version: str | None = None,
+    on_notice: UpgradeProgressCallback | None = None,
+    allow_python_migration: bool = True,
+    on_migration_deferred: Callable[[], None] | None = None,
+    on_unverified_install: Callable[[], None] | None = None,
 ) -> tuple[bool, str, str | None]:
     """Attempt to upgrade `deepagents-code` using the detected install method.
 
@@ -2472,19 +2979,38 @@ async def perform_upgrade(
             `None`, follows the installed version's channel and the target
             release's dependency metadata. Pre-release upgrades require the uv
             install method; returns failure otherwise.
-        target_version: Release version being installed, used to detect stable
-            dcode releases that intentionally depend on pre-release packages.
+        target_version: Release to install. For uv, the install is pinned to
+            it exactly; it defaults to the latest release on the resolved
+            channel, and its `Requires-Python` decides whether to migrate the
+            interpreter. Other methods install their latest release and report
+            this value. Also used to detect pinned pre-release dependencies.
+        on_notice: Receives user-facing messages that must be shown in full:
+            the pre-install migration notice, and failures that carry their
+            own recovery steps. Callers should show no generic upgrade command
+            after one. *output* also includes the failure text.
+        allow_python_migration: When `False` and the target needs a Python
+            migration, install nothing and return failure with deferral
+            guidance (also sent to `on_notice`). Disable wherever a rebuilt
+            environment could break a running session. Always treated as
+            `False` on Windows, where uv cannot replace the environment of a
+            running interpreter.
+        on_migration_deferred: Called when the target needs a Python migration
+            that `allow_python_migration` forbids, so callers can report a
+            deferral rather than a failure.
+        on_unverified_install: Called when uv exited successfully but the
+            installed version could not be verified. The tool environment has
+            changed, so a caller that has not loaded its code yet must not
+            continue on the previous version.
 
     Returns:
         `(success, output, installed_version)` — *output* is the combined
-        stdout/stderr. *installed_version* is the version the successful
-        install actually resolved to, read back from the tool environment on
-        disk, or `None` when the upgrade failed or the installed version
-        could not be determined. A successful uv installer exit is reported
-        as a failure when the installed version remains below `target_version`.
-        Callers should report *installed_version* rather than the version their
-        update check observed: the install command is unpinned, so a release
-        published between check and install is what lands on disk.
+        stdout/stderr, preceded by a failure explanation where one applies.
+        For uv, *installed_version* is read back from the tool environment on
+        disk, or after a migration from the rebuilt environment's interpreter.
+        A successful installer exit is a failure unless it matches the exact
+        target. Without a migration, stale dist-info directories make that
+        readback ambiguous; the exact pin is then trusted. For other methods
+        it is *target_version*. It is `None` when the upgrade failed.
 
     Raises:
         OSError: Propagated from building the upgrade command or running the
@@ -2507,6 +3033,48 @@ async def perform_upgrade(
             None,
         )
     resolved_include_prereleases = _resolve_include_prereleases(include_prereleases)
+    python: str | None = None
+    requirement_unknown = False
+    recovery_installer = INSTALL_SCRIPT_COMMAND
+    if method == "uv":
+        target_version = target_version or await asyncio.to_thread(
+            get_latest_version, include_prereleases=resolved_include_prereleases
+        )
+        if not target_version:
+            return (
+                False,
+                "Could not determine the target release; retry the update later.",
+                None,
+            )
+        try:
+            python, requirement_unknown = await asyncio.to_thread(
+                _target_python, target_version
+            )
+        except _PythonMigrationRefusedError as exc:
+            logger.warning("Refused to install v%s: %s", target_version, exc)
+            refusal = (
+                f"Update stopped before installation: {_sentence(exc)} "
+                "Nothing was installed."
+            )
+            await _emit_progress(on_notice, refusal)
+            return False, refusal, None
+    if python is not None:
+        # The plain installer defaults to an older Python, which would resolve
+        # the newest compatible release instead of this target.
+        recovery_installer = _PYTHON_MIGRATION_INSTALL_COMMAND
+    if (
+        python is not None
+        and target_version
+        and (not allow_python_migration or _is_windows())
+    ):
+        logger.info("Deferred the Python 3.14 migration for v%s", target_version)
+        guidance = migration_deferral_message(target_version)
+        # Flag first: if showing the notice raises, the caller must still
+        # report a deferral rather than a failure.
+        if on_migration_deferred is not None:
+            on_migration_deferred()
+        await _emit_progress(on_notice, guidance)
+        return False, guidance, None
     # Targeted pre-release admission: a *stable* dcode target that mandates an
     # exact pre-release dependency (e.g. `deepagents==0.7.0a7`). Rather than opt
     # the whole resolution into pre-releases with a global `--prerelease allow`
@@ -2516,11 +3084,8 @@ async def perform_upgrade(
     # admitted. Kept separate from the explicit pre-release *channel* below,
     # where the user deliberately follows dcode's own pre-release feed.
     targeted_pins: list[str] = []
-    pin_target_version: str | None = None
     if not resolved_include_prereleases and include_prereleases is None:
         targeted_pins = release_prerelease_pins(target_version)
-        if targeted_pins:
-            pin_target_version = target_version
 
     if resolved_include_prereleases or targeted_pins:
         supported, reason = prerelease_upgrade_supported(method)
@@ -2539,21 +3104,16 @@ async def perform_upgrade(
             # this point originates in command-building or the subprocess
             # wrapper, not constraint staging.
             constraints_staged = True
-            fell_back_to_bare_command = False
             if method == "uv":
-                # Prefer the receipt-aware `uv tool install -U` builder so
-                # installed extras / `--with` packages survive the upgrade and
-                # any stale `==<version>` pin in the receipt is cleared. Fall
-                # back to the bare display command when extras or receipt
-                # introspection fails — the fallback might drop extras, but a
-                # successful unpinned upgrade is still strictly better than a
-                # pinned "upgrade" that quietly stays on the old version.
                 from deepagents_code.extras_info import ExtrasIntrospectionError
 
+                # Refuse rather than fall back to a bare command: it would drop
+                # extras and, during a migration, the interpreter choice too.
                 try:
                     cmd = upgrade_install_command(
                         include_prereleases=resolved_include_prereleases,
-                        version=pin_target_version,
+                        version=target_version,
+                        python=python,
                         constraints_path=constraints_path,
                         prerelease_strategy=prerelease_strategy,
                     )
@@ -2561,36 +3121,35 @@ async def perform_upgrade(
                     ExtrasIntrospectionError,
                     ToolRequirementIntrospectionError,
                 ) as exc:
-                    logger.warning(
-                        "Could not build receipt-aware uv upgrade command "
-                        "(%s: %s); falling back to the bare command. Installed "
-                        "extras may be dropped.",
-                        type(exc).__name__,
-                        exc,
+                    refusal = (
+                        "Could not preserve your installation options: "
+                        f"{_sentence(exc)} "
+                        "The existing installation was left unchanged. "
+                        "Retry after repairing the uv receipt, or rerun the "
+                        "installer and reselect extras and added packages: "
+                        f"{recovery_installer}"
                     )
-                    fell_back_to_bare_command = True
-                    cmd = upgrade_command(
-                        method,
-                        include_prereleases=resolved_include_prereleases,
-                        version=pin_target_version,
-                    )
-                    # The bare display command has no constraints knob, so add
-                    # the targeted flags here too — the fallback must not revert
-                    # to a global `--prerelease allow`.
-                    cmd = _append_uv_prerelease_flags(
-                        cmd,
-                        constraints_path=constraints_path,
-                        prerelease_strategy=prerelease_strategy,
-                    )
+                    await _emit_progress(on_notice, refusal)
+                    return False, refusal, None
             else:
                 cmd = upgrade_command(
                     method,
                     include_prereleases=resolved_include_prereleases,
                 )
 
-            success, output = await _run_install_subprocess(
-                cmd, progress=progress, log_path=log_path
-            )
+            if python is not None and target_version:
+                await _emit_progress(on_notice, _migration_notice(target_version))
+            if python is None:
+                success, output = await _run_install_subprocess(
+                    cmd,
+                    progress=progress,
+                    log_path=log_path,
+                    max_seconds=_UPGRADE_TIMEOUT,
+                )
+            else:
+                success, output = await _run_migration_subprocess(
+                    cmd, progress=progress, log_path=log_path, on_notice=on_notice
+                )
     except OSError as exc:
         if constraints_staged:
             # The constraints file was written successfully, so this OSError
@@ -2620,47 +3179,36 @@ async def perform_upgrade(
             None,
         )
 
-    if success and fell_back_to_bare_command:
-        # Surface the dropped-extras caveat only now that the bare upgrade has
-        # actually succeeded. Emitting it before `_run_install_subprocess` ran
-        # would misfire on a failed upgrade — telling the user to re-add extras
-        # for an install that was left untouched. The log line above is
-        # invisible in the TUI, so the progress stream is the user's only window
-        # into this.
-        await _emit_progress(
-            progress,
-            "Note: couldn't read your full install configuration; "
-            "installed extras or extra packages may not carry over. "
-            "Re-add them if a feature stops working after relaunch.",
+    guidance = (
+        None
+        if success or not target_version
+        else _install_failure_guidance(
+            target_version,
+            migrating=python is not None,
+            requirement_unknown=requirement_unknown,
+            output=output,
         )
+    )
+    if guidance is not None:
+        output = f"{guidance}\n{output}"
+        await _emit_progress(on_notice, guidance)
     installed_version: str | None = None
-    if success:
-        if pin_target_version is not None:
-            # The install was pinned to the exact target version, so that is
-            # what landed on disk; skip the filesystem readback.
-            installed_version = pin_target_version
-        elif method == "uv":
-            # uv updates the running tool environment in place, so its dist-info
-            # reflects what the resolver actually installed. Homebrew replaces
-            # and relinks a Cellar keg instead; this process still sees the old
-            # prefix and cannot verify the new formula this way.
-            installed_version = await asyncio.to_thread(
-                read_installed_distribution_version
+    if success and method == "uv" and target_version:
+        installed_version, found = await _verify_uv_install(
+            target_version, migrating=python is not None
+        )
+        if found is not None:
+            failure = (
+                f"Could not verify installation of v{target_version} ({found}). "
+                "The installed files may have changed. Check the update log and "
+                f"retry, or rerun the installer: {recovery_installer}"
             )
-            if (
-                installed_version is not None
-                and target_version is not None
-                and _parse_version(installed_version) < _parse_version(target_version)
-            ):
-                detail = (
-                    f"v{target_version} is still propagating to the package index; "
-                    f"dcode remains on v{installed_version}. "
-                    "Try again in a few minutes."
-                )
-                return False, detail, None
-            installed_version = installed_version or target_version
-        else:
-            installed_version = target_version
+            await _emit_progress(on_notice, failure)
+            if on_unverified_install is not None:
+                on_unverified_install()
+            return False, f"{failure}\n{output}", None
+    elif success:
+        installed_version = target_version
     return success, output, installed_version
 
 
@@ -3183,6 +3731,7 @@ def _uv_tool_install_command(
     extras_to_add: Iterable[str] = (),
     extras_to_remove: Iterable[str] = (),
     with_packages_to_add: Iterable[str] = (),
+    python: str | None = None,
     reinstall: bool = False,
     constraints_path: Path | None = None,
     prerelease_strategy: UvPrereleaseStrategy | None = None,
@@ -3207,6 +3756,8 @@ def _uv_tool_install_command(
             not duplicated; genuinely new names are appended after the preserved
             ones. Callers must validate these names before passing them — the
             builder only `shlex.quote`-s them.
+        python: Interpreter to pass as `--python` (e.g. `'3.14'`), overriding
+            the receipt. When `None`, the receipt's interpreter is reused.
         reinstall: When `True`, add `--reinstall` so uv rebuilds the tool
             environment from scratch instead of patching it in place. An
             in-place `-U` upgrade can leave stale files behind (e.g. an old
@@ -3263,7 +3814,7 @@ def _uv_tool_install_command(
         msg = f"uv tool receipt yielded an invalid extra name: {exc}"
         raise ExtrasIntrospectionError(msg) from exc
     cmd = "uv tool install --reinstall -U" if reinstall else "uv tool install -U"
-    python = _uv_tool_python(data=receipt)
+    python = python if python is not None else _uv_tool_python(data=receipt)
     if python is not None:
         cmd += f" --python {shlex.quote(python)}"
     cmd += f" {requirement}"
@@ -3296,10 +3847,9 @@ def _append_uv_prerelease_flags(
 ) -> str:
     """Append targeted `--constraints`/`--prerelease` flags to a uv command.
 
-    Shared by the receipt-aware builder and `perform_upgrade`'s bare-command
-    fallback so both emit the scoped pre-release form identically: a constraints
-    file pinning the exact pre-release dependency plus a non-`allow` strategy
-    (e.g. `if-necessary-or-explicit`). The constraints path is `shlex.quote`-d;
+    Emits the scoped pre-release form: a constraints file pinning the exact
+    pre-release dependency plus a non-`allow` strategy (e.g.
+    `if-necessary-or-explicit`). The constraints path is `shlex.quote`-d;
     the strategy is a fixed internal literal.
 
     Returns:
@@ -3370,31 +3920,29 @@ def upgrade_install_command(
     include_prereleases: bool | None = None,
     distribution_name: str = "deepagents-code",
     version: str | None = None,
+    python: str | None = None,
     constraints_path: Path | None = None,
     prerelease_strategy: UvPrereleaseStrategy | None = None,
 ) -> str:
-    """Return the uv command that upgrades dcode while clearing stale pins.
+    """Return the receipt-preserving uv command that upgrades dcode.
 
-    Built specifically to avoid the `uv tool upgrade` receipt-pin trap: when
-    the tool was originally installed via `uv tool install deepagents-code==X.Y.Z`
-    — or when a prior `dependency_refresh_command` rewrote the receipt with a
-    version-pinned requirement — `uv tool upgrade deepagents-code` will only
-    re-resolve *within* that pin and silently keep the user on the same
-    version. Re-running `uv tool install -U deepagents-code[<extras>]` (no
-    version pin) rewrites the receipt's requirement to unpinned so the next
-    upgrade can actually move forward. Callers can still pass `version` when
-    the resolver must allow pre-release dependencies for a stable app target;
-    that prevents the root `deepagents-code` package from floating to a newer
-    app pre-release. Installed extras and `--with` packages are preserved to
-    mirror `dependency_refresh_command`.
+    Uses `uv tool install -U` rather than `uv tool upgrade`, which only
+    re-resolves *within* a version pin already in the receipt and so can
+    silently keep the user on the same version. `perform_upgrade` passes the
+    exact release it inspected as `version`, so the install matches the
+    release it verifies afterward and the receipt records that pin. Installed
+    extras and `--with` packages are preserved to mirror
+    `dependency_refresh_command`.
 
     Args:
         include_prereleases: Whether to include alpha/beta/rc releases. When
             `None`, follows the installed version's channel.
         distribution_name: Name of the installed distribution to inspect for
             already-installed extras.
-        version: Optional exact target version. Use only when pre-release
-            dependency resolution must not also select a root app pre-release.
+        version: Optional exact `deepagents-code` version to pin in the
+            requirement.
+        python: Interpreter to pass as `--python` (e.g. `'3.14'`), overriding
+            the receipt. When `None`, the receipt's interpreter is reused.
         constraints_path: Optional uv constraints file pinning the exact
             pre-release dependency, forwarded as `--constraints <path>`.
         prerelease_strategy: Optional uv `--prerelease` strategy (e.g.
@@ -3407,14 +3955,14 @@ def upgrade_install_command(
     Propagates `ExtrasIntrospectionError` if a receipt-sourced extra name fails
     PEP 508 validation. Also propagates `ToolRequirementIntrospectionError` if the
     uv tool receipt's selected extras, `--with` packages, or interpreter cannot be
-    determined safely from the tool receipt. Callers choose whether to treat
-    those errors as failures or fall back to a simpler unpinned upgrade command
-    with a user-facing warning.
+    determined safely from the tool receipt. `perform_upgrade` refuses on
+    these errors rather than run a bare command that would drop extras.
     """
     return _uv_tool_install_command(
         version=version,
         include_prereleases=include_prereleases,
         distribution_name=distribution_name,
+        python=python,
         constraints_path=constraints_path,
         prerelease_strategy=prerelease_strategy,
     )

@@ -119,6 +119,7 @@ DEEPAGENTS_DEFAULT_SUMMARY_PROMPT = DEFAULT_SUMMARY_PROMPT.replace(
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
+    from langchain.agents.middleware.summarization import Summarizer
     from langchain.agents.middleware.types import ModelRequest, ModelResponse
     from langchain.chat_models import BaseChatModel
     from langchain_core.tools import BaseTool
@@ -138,6 +139,12 @@ SUMMARIZATION_EVENT_KEY = "_summarization_event"
 SUMMARIZATION_SESSION_ID_KEY = "_summarization_session_id"
 """State key holding the id that names the offload history file."""
 
+_BEDROCK_PROVIDERS = frozenset({"bedrock", "bedrock_converse"})
+"""`model_provider` values for Amazon Bedrock, which serves Claude among other models."""
+
+_NATIVE_REASONING_BLOCK_TYPES = frozenset({"thinking", "redacted_thinking", "reasoning_content"})
+"""Reasoning block types in the Anthropic and Bedrock Converse native formats."""
+
 
 class SummarizationEvent(TypedDict):
     """Represents a summarization event."""
@@ -150,6 +157,16 @@ class SummarizationEvent(TypedDict):
 
     file_path: str | None
     """Path where the conversation history was offloaded, or `None` if offload failed."""
+
+    created_at_index: NotRequired[int]
+    """Number of state messages when the summary was created.
+
+    Messages from `cutoff_index` up to this index were kept verbatim from before
+    the summary. Claude binds each reasoning block to the conversation before it
+    and can reject a request once that conversation changes, so their reasoning
+    blocks are left out of the messages the model sees. Absent on events created
+    before this field existed.
+    """
 
 
 class TriggerClause(TypedDict, total=False):
@@ -520,6 +537,44 @@ def _is_context_overflow(exc: Exception) -> bool:
     )
 
 
+def _bound_reasoning_types(message: AIMessage) -> frozenset[str]:
+    """Return the block types in `message` that carry reasoning bound to earlier history.
+
+    Only Claude binds reasoning this way. Bedrock messages count when their model
+    is Claude, read from `model_name`, so other Bedrock models such as OpenAI's keep
+    their reasoning. Messages tagged with any other provider keep theirs too
+    (Gemini, for example, also uses `thinking` blocks). Untagged messages, such as
+    those from integrations that do not set `model_provider`, are checked for the
+    native block types only.
+    """
+    provider = message.response_metadata.get("model_provider")
+    if provider is None:
+        return _NATIVE_REASONING_BLOCK_TYPES
+    model = str(message.response_metadata.get("model_name", "")).lower()
+    if provider == "anthropic" or (provider in _BEDROCK_PROVIDERS and ("claude" in model or "anthropic" in model)):
+        return _NATIVE_REASONING_BLOCK_TYPES | {"reasoning"}
+    return frozenset()
+
+
+def _drop_bound_reasoning(message: AnyMessage) -> AnyMessage:
+    """Return `message` without reasoning blocks bound to the conversation before it.
+
+    Args:
+        message: A message kept from before a summary.
+
+    Returns:
+        A copy of an AI message with those blocks removed, or `message` unchanged
+            when it has none.
+    """
+    if not isinstance(message, AIMessage) or not isinstance(message.content, list):
+        return message
+    bound = _bound_reasoning_types(message)
+    content = [block for block in message.content if not (isinstance(block, dict) and block.get("type") in bound)]
+    if len(content) == len(message.content):
+        return message
+    return message.model_copy(update={"content": content})
+
+
 class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
     """Summarization middleware with backend for conversation history offloading."""
 
@@ -555,6 +610,7 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
         summary_prompt: str = DEEPAGENTS_DEFAULT_SUMMARY_PROMPT,
         trim_tokens_to_summarize: int | None = _DEFAULT_TRIM_TOKEN_LIMIT,
         truncate_args_settings: TruncateArgsSettings | None = None,
+        summarizer: Summarizer | None = None,
         **deprecated_kwargs: Any,
     ) -> None:
         """Initialize summarization middleware with backend support.
@@ -570,9 +626,24 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
                 Defaults to keeping last 20 messages.
             token_counter: Function to count tokens in messages.
             summary_prompt: Prompt template for generating summaries.
-            trim_tokens_to_summarize: Max tokens to include when generating summary.
+            trim_tokens_to_summarize: Token budget for the older history sent to the
+                summarization model, measured by `token_counter`. Applied after
+                setting aside the recent messages selected by `keep`.
 
-                Defaults to 4000.
+                If the older history exceeds this budget, trim it to its most
+                recent messages before summarizing. History excluded by this
+                trimming is not summarized. This does not set the summarization
+                trigger or limit the generated summary's length.
+
+                For example, with `keep=("messages", 20)` and
+                `trim_tokens_to_summarize=4000`, preserve the latest 20 messages
+                and summarize up to 4,000 tokens from the end of the older
+                history. The agent receives that summary followed by the
+                preserved messages.
+
+                Pass `None` to summarize all selected history without this
+                trimming. Unlike `create_summarization_middleware`, which
+                defaults to `None`, this constructor defaults to 4000.
             truncate_args_settings: Settings for truncating large tool arguments in old messages.
 
                 Provide a [`TruncateArgsSettings`][deepagents.middleware.summarization.TruncateArgsSettings]
@@ -587,6 +658,42 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
 
                     # Truncate when 50% of context window reached, ignoring messages in last 10% of window
                     {"trigger": ("fraction", 0.5), "keep": ("fraction", 0.1), "max_length": 2000, "truncation_text": "...(truncated)"}
+
+            summarizer: Optional replacement for the summarization model call.
+
+                Used for both automatic summarization and the
+                `compact_conversation` tool. `model` is still used for its profile
+                and token counting, but is not called to write summaries.
+
+                Pass a model name or a `BaseChatModel` instance to summarize with
+                a different chat model; it is prompted with `summary_prompt`. Pass
+                a `Runnable` or function to generate the summary text another way;
+                it receives the messages to summarize and `summary_prompt` is not
+                used. See LangChain's `SummarizationMiddleware` for details.
+
+                !!! example
+
+                    ```python
+                    from deepagents import create_deep_agent
+                    from deepagents.backends import StateBackend
+                    from deepagents.middleware.summarization import SummarizationMiddleware
+
+                    backend = StateBackend()
+
+                    # Manage gpt-6-sol's context window, summarize with gpt-6-luna
+                    summarization = SummarizationMiddleware(
+                        model="openai:gpt-6-sol",
+                        backend=backend,
+                        trigger=("fraction", 0.85),
+                        keep=("fraction", 0.10),
+                        summarizer="openai:gpt-6-luna",
+                    )
+                    agent = create_deep_agent(
+                        model="openai:gpt-6-sol",
+                        backend=backend,
+                        middleware=[summarization],  # replaces the default
+                    )
+                    ```
 
         Raises:
             TypeError: If the removed `history_path_prefix` argument is provided.
@@ -616,6 +723,7 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
             token_counter=token_counter,
             summary_prompt=summary_prompt,
             trim_tokens_to_summarize=trim_tokens_to_summarize,
+            summarizer=summarizer,
             **deprecated_kwargs,
         )
 
@@ -812,6 +920,8 @@ A condensed summary follows:
 
         When a prior summarization event exists, the effective conversation is
         the summary message followed by all messages from `cutoff_index` onward.
+        Messages kept from before the summary lose their bound reasoning blocks
+        (see `SummarizationEvent.created_at_index`).
 
         Args:
             messages: Full message list from state.
@@ -838,8 +948,12 @@ A condensed summary follows:
             )
             return [summary_msg]
 
+        kept_from = event.get("created_at_index")
+        if not isinstance(kept_from, int):
+            kept_from = cutoff_idx
         result: list[AnyMessage] = [summary_msg]
-        result.extend(messages[cutoff_idx:])
+        for index, message in enumerate(messages[cutoff_idx:], start=cutoff_idx):
+            result.append(_drop_bound_reasoning(message) if index < kept_from else message)
         return result
 
     @staticmethod
@@ -1582,10 +1696,11 @@ A condensed summary follows:
             "cutoff_index": state_cutoff_index,
             "summary_message": new_messages[0],  # The HumanMessage with summary  # ty: ignore[invalid-argument-type]
             "file_path": file_path,
+            "created_at_index": len(request.messages),
         }
 
         # Modify request to use summarized messages
-        modified_messages = [*new_messages, *preserved_messages]
+        modified_messages = [*new_messages, *map(_drop_bound_reasoning, preserved_messages)]
         modified_request = request.override(messages=modified_messages)
         response, new_state_tail = self._call_with_budget(
             modified_request,
@@ -1721,10 +1836,11 @@ A condensed summary follows:
             "cutoff_index": state_cutoff_index,
             "summary_message": new_messages[0],  # The HumanMessage with summary  # ty: ignore[invalid-argument-type]
             "file_path": file_path,
+            "created_at_index": len(request.messages),
         }
 
         # Modify request to use summarized messages
-        modified_messages = [*new_messages, *preserved_messages]
+        modified_messages = [*new_messages, *map(_drop_bound_reasoning, preserved_messages)]
         modified_request = request.override(messages=modified_messages)
         response, new_state_tail = await self._acall_with_budget(
             modified_request,
@@ -1761,6 +1877,7 @@ def create_summarization_middleware(
     summary_prompt: str = DEEPAGENTS_DEFAULT_SUMMARY_PROMPT,
     trim_tokens_to_summarize: int | None = None,
     token_counter: TokenCounter = count_tokens_approximately,
+    summarizer: Summarizer | None = None,
 ) -> _DeepAgentsSummarizationMiddleware:
     """Create a Deep Agents `SummarizationMiddleware` with model-aware defaults.
 
@@ -1803,8 +1920,21 @@ def create_summarization_middleware(
             Use `resolve_model()` first if needed for model strings.
         backend: Backend instance for persisting conversation history.
         summary_prompt: Prompt template for generating summaries.
-        trim_tokens_to_summarize: Max tokens to include when generating summary.
+        trim_tokens_to_summarize: Token budget for the older history sent to the
+            summarization model, measured by `token_counter`. Applied after
+            setting aside the recent messages selected by the retention policy.
+
+            For example, `4000` summarizes up to 4,000 tokens from the end of
+            that older history; earlier history excluded by trimming is not
+            summarized. This does not set the summarization trigger or limit
+            the generated summary's length.
+
+            `None` skips this trimming and summarizes all selected history.
+            This factory defaults to `None`, unlike constructing
+            `SummarizationMiddleware` directly, which defaults to 4000.
         token_counter: Function to count tokens in messages.
+        summarizer: Optional replacement for the summarization model call. See
+            `SummarizationMiddleware`.
 
     Returns:
         Configured `SummarizationMiddleware` instance.
@@ -1828,6 +1958,7 @@ def create_summarization_middleware(
         summary_prompt=summary_prompt,
         trim_tokens_to_summarize=trim_tokens_to_summarize,
         truncate_args_settings=defaults["truncate_args_settings"],
+        summarizer=summarizer,
     )
 
 
@@ -2058,6 +2189,7 @@ class SummarizationToolMiddleware(AgentMiddleware):
             "cutoff_index": state_cutoff,
             "summary_message": summary_msg,  # ty: ignore[invalid-argument-type]
             "file_path": file_path,
+            "created_at_index": len(runtime.state.get("messages", [])),
         }
 
         return Command(

@@ -28,7 +28,13 @@ _MAX_BYTES = 1_048_576
 _MAX_TOOLS = 4096
 _MAX_NAME = 256
 _DEFAULTS = dict.fromkeys(
-    ("update_tool_approvals", "delete_conversations", "update_mcp_server", "start_async_task"),
+    (
+        "update_tool_approvals",
+        "delete_conversations",
+        "update_mcp_server",
+        "start_async_task",
+        "send_message",
+    ),
     True,
 )
 
@@ -153,7 +159,7 @@ class ToolApprovalStore:
                 saved = self.read()
         except TimeoutError:
             return {"status": "conflict", "message": "Tool approvals are busy; try again."}
-        except (OSError, ValueError, TypeError, RecursionError):
+        except OSError, ValueError, TypeError, RecursionError:
             return {"status": "error", "message": "Cannot update tool approvals."}
         return {
             "status": "updated",
@@ -170,7 +176,7 @@ class ToolApprovalStore:
         }
         try:
             saved = self.read()
-        except (OSError, ValueError, TypeError, RecursionError):
+        except OSError, ValueError, TypeError, RecursionError:
             return result | {
                 "status": "error",
                 "message": "Cannot read persisted tool approvals.",

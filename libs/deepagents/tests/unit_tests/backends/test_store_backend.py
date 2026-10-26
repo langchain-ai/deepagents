@@ -46,6 +46,25 @@ def test_store_backend_crud_and_search():
     assert {i["path"] for i in g} == {i["path"] for i in g2}
 
 
+@pytest.mark.parametrize("use_async", [False, True])
+@pytest.mark.parametrize("max_count", [None, 1])
+@pytest.mark.parametrize("glob", [None, "*.txt", "*.png"])
+async def test_store_backend_grep_skips_binary_uploads(*, use_async: bool, max_count: int | None, glob: str | None) -> None:
+    """Binary payloads neither appear in grep results nor consume the match limit."""
+    backend = StoreBackend(store=InMemoryStore(), namespace=lambda _rt: ("filesystem",))
+    responses = backend.upload_files([("/image.png", b"\xff\xff\xff"), ("/client.txt", b"GET /api")])
+    assert all(response.error is None for response in responses)
+
+    if use_async:
+        result = await backend.agrep("/", path="/", glob=glob, max_count=max_count)
+    else:
+        result = backend.grep("/", path="/", glob=glob, max_count=max_count)
+
+    assert result.error is None
+    assert result.matches == ([] if glob == "*.png" else [{"path": "/client.txt", "line": 1, "text": "GET /api"}])
+    assert result.truncated is False
+
+
 def test_store_backend_read_surfaces_pagination_metadata():
     """`StoreBackend.read` propagates the pagination metadata from `slice_read_response`."""
     mem_store = InMemoryStore()
@@ -148,6 +167,22 @@ def test_store_backend_reads_legacy_list_content() -> None:
     assert stored is not None
     assert stored.value["content"] == legacy_content
     assert "encoding" not in stored.value
+
+
+def test_store_backend_reports_utf8_byte_sizes() -> None:
+    mem_store = InMemoryStore()
+    be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
+    content = "hello 😀 €"
+    be.write("/unicode.txt", content)
+    expected_size = len(content.encode("utf-8"))
+
+    listing = be.ls("/").entries
+    assert listing is not None
+    assert listing[0]["size"] == expected_size
+
+    matches = be.glob("*.txt", path="/").matches
+    assert matches is not None
+    assert matches[0]["size"] == expected_size
 
 
 def test_store_backend_rejects_legacy_lists_with_non_string_items() -> None:

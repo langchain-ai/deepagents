@@ -1,9 +1,14 @@
 """Tests for artifacts_root parameterization."""
 
+from hashlib import sha256
+from unittest.mock import AsyncMock, Mock
+
+import pytest
 from langchain_core.messages import ToolMessage
 from langgraph.store.memory import InMemoryStore
 
 from deepagents.backends.composite import CompositeBackend
+from deepagents.backends.protocol import BackendProtocol, WriteResult
 from deepagents.backends.state import StateBackend
 from deepagents.backends.store import StoreBackend
 from deepagents.middleware.filesystem import FilesystemMiddleware
@@ -22,6 +27,28 @@ def _make_composite_backend(*, artifacts_root: str = "/"):
         routes={},
         artifacts_root=artifacts_root,
     )
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("routing", ["direct", "default", "routed"])
+@pytest.mark.parametrize("resolved_path", ["/sandbox/large_tool_results/call_1", None])
+async def test_eviction_advertises_backend_path(*, asynchronous: bool, routing: str, resolved_path: str | None) -> None:
+    backend = Mock(spec=BackendProtocol)
+    backend.write.return_value = WriteResult(path=resolved_path)
+    backend.awrite = AsyncMock(return_value=WriteResult(path=resolved_path))
+    requested = "/large_tool_results/call_1"
+    if routing == "default":
+        backend = CompositeBackend(default=backend, routes={})
+    elif routing == "routed":
+        backend = CompositeBackend(default=StateBackend(), routes={"/large_tool_results/": backend})
+    middleware = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=100)
+    message = ToolMessage(content="x" * 5000, tool_call_id="call_1")
+
+    result = await middleware._aintercept_large_tool_result(message) if asynchronous else middleware._intercept_large_tool_result(message)
+
+    expected = requested if routing == "routed" else resolved_path or requested
+    assert isinstance(result, ToolMessage)
+    assert f"at this path: {expected}" in result.content
 
 
 class TestCompositeBackendArtifactsRoot:
@@ -54,6 +81,23 @@ class TestFilesystemMiddlewareArtifactsRoot:
         [resp] = backend.download_files(["/workspace/large_tool_results/evict_123"])
         assert resp.error is None
         assert resp.content is not None
+        assert resp.content == b"x" * 5000
+
+    def test_long_tool_call_id_uses_bounded_path(self) -> None:
+        backend = _make_store_backend()
+        mw = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=100)
+        tool_call_id = "call_" + "thought_signature" * 300
+        path = f"/large_tool_results/call-{sha256(tool_call_id.encode()).hexdigest()}"
+        msg = ToolMessage(content="x" * 5000, tool_call_id=tool_call_id)
+
+        result = mw._intercept_large_tool_result(msg)
+
+        assert isinstance(result, ToolMessage)
+        assert result.tool_call_id == tool_call_id
+        assert path in result.content
+        assert f"{tool_call_id[:32]}..." in result.content
+        assert tool_call_id not in result.content
+        [resp] = backend.download_files([path])
         assert resp.content == b"x" * 5000
 
     def test_large_tool_result_eviction_default_root(self) -> None:
@@ -116,6 +160,23 @@ class TestCompositeBackendEvictionArtifactsRoot:
 
 class TestAsyncEvictionArtifactsRoot:
     """Tests for async eviction paths with custom artifacts_root."""
+
+    async def test_long_tool_call_id_uses_bounded_path(self) -> None:
+        backend = _make_store_backend()
+        mw = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=100)
+        tool_call_id = "call_" + "thought_signature" * 300
+        path = f"/large_tool_results/call-{sha256(tool_call_id.encode()).hexdigest()}"
+        msg = ToolMessage(content="x" * 5000, tool_call_id=tool_call_id)
+
+        result = await mw._aintercept_large_tool_result(msg)
+
+        assert isinstance(result, ToolMessage)
+        assert result.tool_call_id == tool_call_id
+        assert path in result.content
+        assert f"{tool_call_id[:32]}..." in result.content
+        assert tool_call_id not in result.content
+        [resp] = await backend.adownload_files([path])
+        assert resp.content == b"x" * 5000
 
     async def test_async_large_tool_result_eviction_uses_artifacts_root(self) -> None:
         backend = _make_composite_backend(artifacts_root="/workspace")

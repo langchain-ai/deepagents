@@ -62,7 +62,7 @@
 #     resolving the latest version: disallow, allow, if-necessary, explicit,
 #     or if-necessary-or-explicit (default: allow; explicitly setting it is
 #     mutually exclusive with DEEPAGENTS_CODE_VERSION)
-#   DEEPAGENTS_CODE_PYTHON — Python version to use (default: 3.13)
+#   DEEPAGENTS_CODE_PYTHON — Python version to use (default: 3.14)
 #   DEEPAGENTS_CODE_YES — set to 1 to accept an available update without
 #     prompting (assume "yes"). Exists so automated runs that still attach a
 #     terminal (CI, wrapper scripts) update instead of stalling at the y/n
@@ -142,7 +142,7 @@ Environment variables:
     resolving the latest version: disallow, allow, if-necessary, explicit,
     or if-necessary-or-explicit (default: allow; explicitly setting it is
     mutually exclusive with DEEPAGENTS_CODE_VERSION)
-  DEEPAGENTS_CODE_PYTHON — Python version to use (default: 3.13)
+  DEEPAGENTS_CODE_PYTHON — Python version to use (default: 3.14)
   DEEPAGENTS_CODE_YES — set to 1 to accept an available update without
     prompting (assume "yes")
   DEEPAGENTS_CODE_SKIP_OPTIONAL — set to 1 to skip optional tool checks
@@ -212,6 +212,8 @@ TEMP_DIRS=()
 INSTALL_LOCK_KIND=""
 INSTALL_LOCK_DIR=""
 INSTALL_LOCK_TOKEN=""
+LEGACY_INSTALL_LOCK_DIR=""
+LEGACY_INSTALL_LOCK_TOKEN=""
 INSTALL_LOCK_STALE_ID=""
 INSTALL_LOCK_RECLAIM_DIR=""
 INSTALL_LOCK_RECLAIM_TOKEN=""
@@ -601,8 +603,6 @@ if [ "$(id -u)" -eq 0 ]; then
   fi
 
   if [ -z "$TARGET_USER" ] || [ "$TARGET_USER" = "root" ]; then
-    log_warn "Could not determine non-root target user. Files under ${HOME} may remain owned by root."
-    log_warn "  Re-run as the target user, or repair only the exact installed paths reported above."
     fix_file_owner() { :; }
     fix_tree_owner() { :; }
   else
@@ -1156,7 +1156,9 @@ acquire_install_lock() {
   local installation_root
   local installation_parent
   local installation_name
+  local lock_parent
   local lock_root
+  local legacy_root
   local resolution
   local guessed
   # Keep this a command substitution: `set -e` must still abort if resolution
@@ -1168,19 +1170,43 @@ acquire_install_lock() {
   [ "$guessed" != "$resolution" ] || guessed=false
   installation_parent="${installation_root%/*}"
   installation_name="${installation_root##*/}"
-  lock_root="${installation_parent}/.${installation_name}.deepagents-code-locks"
+  # uv treats every directory inside its tool directory as a package. Keep
+  # locks beside that directory, outside the environment uv replaces on upgrade.
+  # Mirror _paths._installation_paths, including custom UV_TOOL_DIR locations.
+  installation_parent="${installation_parent:-/}"
+  lock_parent="$(dirname "$installation_parent")"
+  lock_root="${lock_parent%/}/.${installation_parent##*/}.${installation_name}.deepagents-code-locks"
+  if [ "${guessed:-false}" = true ]; then
+    log_warn "Could not ask uv for its tool directory; guessing the installer lock root."
+    log_warn "  Concurrent installs may not serialize. Lock root: ${lock_root}"
+  fi
+  # Coordinate through existing legacy roots, without creating an invalid uv
+  # tool entry on fresh installs. An older installer that creates a legacy root
+  # after this check cannot share this protection. Preserve existing roots for
+  # waiters and keep their lock until exit, including while waiting for the new one.
+  legacy_root="${installation_parent}/.${installation_name}.deepagents-code-locks"
+  if [ -e "$legacy_root" ] || [ -L "$legacy_root" ]; then
+    acquire_install_lock_root "$legacy_root"
+    LEGACY_INSTALL_LOCK_DIR="$INSTALL_LOCK_DIR"
+    LEGACY_INSTALL_LOCK_TOKEN="$INSTALL_LOCK_TOKEN"
+    INSTALL_LOCK_KIND=""
+    INSTALL_LOCK_TOKEN=""
+  fi
+  acquire_install_lock_root "$lock_root"
+}
+
+# Use the same metadata, stale-owner handling, and reclaim guard at both paths.
+acquire_install_lock_root() {
+  local lock_root="$1"
   if [ -L "$lock_root" ]; then
     log_error "Installer lock root is a symlink: $lock_root"
     log_error "Remove it or choose a different uv tool directory, then retry."
     exit 1
   fi
-  if [ "${guessed:-false}" = true ]; then
-    log_warn "Could not ask uv for its tool directory; guessing the installer lock root."
-    log_warn "  Concurrent installs may not serialize. Lock root: ${lock_root}"
-  fi
   if [ ! -d "$lock_root" ]; then
     if ! mkdir -p "$lock_root"; then
       log_error "Could not create the installer lock directory: ${lock_root}"
+      log_error "Check that the parent of the uv tool directory is writable."
       log_error "  This serializes concurrent installs; it is not related to DEEPAGENTS_HOME."
       exit 1
     fi
@@ -1280,6 +1306,14 @@ release_install_lock() {
   release_install_lock_reclaim_guard
   INSTALL_LOCK_KIND=""
   INSTALL_LOCK_TOKEN=""
+  if [ -n "${LEGACY_INSTALL_LOCK_TOKEN:-}" ] && \
+    [ "$(cat "$LEGACY_INSTALL_LOCK_DIR/token" 2>/dev/null || true)" = "$LEGACY_INSTALL_LOCK_TOKEN" ]; then
+    rm -rf "$LEGACY_INSTALL_LOCK_DIR" 2>/dev/null || true
+    # Keep the root even when empty: waiting installers have already resolved
+    # this path and retry mkdir of the lock directory without recreating its parent.
+  fi
+  LEGACY_INSTALL_LOCK_DIR=""
+  LEGACY_INSTALL_LOCK_TOKEN=""
 }
 
 # ---------------------------------------------------------------------------
@@ -1301,7 +1335,7 @@ PYTHON_REQUESTED=false
 if [[ -n "${DEEPAGENTS_CODE_PYTHON:-}" ]]; then
   PYTHON_REQUESTED=true
 fi
-PYTHON_VERSION="${DEEPAGENTS_CODE_PYTHON:-3.13}"
+PYTHON_VERSION="${DEEPAGENTS_CODE_PYTHON:-3.14}"
 SKIP_OPTIONAL="${DEEPAGENTS_CODE_SKIP_OPTIONAL:-0}"
 VERBOSE="${DEEPAGENTS_CODE_VERBOSE:-0}"
 ASSUME_YES="$(printf '%s' "${DEEPAGENTS_CODE_YES:-0}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
@@ -2520,7 +2554,7 @@ if [ "$uv_rc" -ne 0 ]; then
   if [ -n "$INSTALL_LOG" ] && [ -s "$INSTALL_LOG" ]; then
     log_error "Full log: ${INSTALL_LOG_DISPLAY}"
   fi
-  log_error "Common fixes: check your network, try a different Python version (DEEPAGENTS_CODE_PYTHON=3.12), or install manually."
+  log_error "Common fixes: check your network, try a different Python version (DEEPAGENTS_CODE_PYTHON=3.14), or install manually."
   exit "$uv_rc"
 fi
 if path_is_under_home "$TOOL_BIN_DIR"; then
@@ -2545,7 +2579,7 @@ while IFS= read -r uv_cache_dir; do
 done <<EOF
 ${UV_TOOL_CACHE_NEW}
 EOF
-if [ "$(id -u)" -eq 0 ]; then
+if [ "$(id -u)" -eq 0 ] && [ -n "$TARGET_USER" ] && [ "$TARGET_USER" != "root" ]; then
   while IFS= read -r uv_cache_dir; do
     [ -n "$uv_cache_dir" ] || continue
     [ -d "$uv_cache_dir" ] || continue

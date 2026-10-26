@@ -7,8 +7,9 @@ import time
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
+import httpx
 import pytest
-from deepagents.backends import LocalShellBackend
+from deepagents.backends import CompositeBackend
 from langchain.agents.middleware.types import AgentMiddleware
 from langchain_core.messages import AIMessage, RemoveMessage, ToolMessage
 from langgraph.checkpoint.memory import InMemorySaver
@@ -266,13 +267,13 @@ async def test_runtime_wires_backend_checkpointer_tools_skills_and_memory(
 
     await runtime.start()
 
-    assert isinstance(captured["backend"], LocalShellBackend)
+    assert isinstance(captured["backend"], CompositeBackend)
     assert captured["checkpointer"] is runtime.checkpointer
-    assert captured["system_prompt"] == "assistant instructions"
+    assert captured["system_prompt"].startswith("assistant instructions\n\n")
     assert captured["skills"] == [str(assistant_dir / "skills")]
     assert captured["memory"] == [str(assistant_dir / "memory" / "AGENTS.md")]
     assert (assistant_dir / "memory" / "AGENTS.md").is_file()
-    assert captured["backend"].cwd == tmp_path.resolve()
+    assert captured["backend"].default.cwd == tmp_path.resolve()
 
     tool_names = {_tool_name(tool) for tool in captured["tools"]}
     assert not {"fetch_url", "web_search"} & tool_names
@@ -284,28 +285,6 @@ async def test_runtime_wires_backend_checkpointer_tools_skills_and_memory(
         "remove_job",
         "custom_tool",
     } <= tool_names
-
-
-async def test_runtime_resolves_supplied_subagents() -> None:
-    subagents = [
-        {
-            "name": "researcher",
-            "description": "Research tasks",
-            "system_prompt": "Research carefully.",
-        },
-    ]
-
-    runtime = DeepAgentRuntime(
-        model="test:model",
-        subagents=cast("Any", subagents),
-        include_web_tools=False,
-        skills=(),
-        memory=(),
-    )
-
-    resolved = runtime._resolve_subagents()
-
-    assert resolved == subagents
 
 
 async def test_runtime_requires_approval_for_async_subagent_tools(
@@ -347,6 +326,7 @@ async def test_runtime_requires_approval_for_async_subagent_tools(
             "update_tool_approvals",
             "delete_conversations",
             "update_mcp_server",
+            "send_message",
         )
     }
     # The other async task tools never reach the model, so gating them could not fire.
@@ -360,7 +340,8 @@ async def test_runtime_merges_local_and_async_subagents(
     researcher_dir = tmp_path / "agent-home" / "agents" / "researcher"
     researcher_dir.mkdir(parents=True)
     (researcher_dir / "AGENTS.md").write_text(
-        "---\ndescription: Research tasks\n---\nResearch carefully.", encoding="utf-8"
+        "---\ndescription: Research tasks\nmodel: openai:model\n---\nResearch carefully.",
+        encoding="utf-8",
     )
     async_subagent = {
         "name": "remote_reviewer",
@@ -386,52 +367,9 @@ async def test_runtime_merges_local_and_async_subagents(
             "description": "Research tasks",
             "system_prompt": "Research carefully.",
             "tool_names": [],
+            "model": "openai:model",
         },
         async_subagent,
-    ]
-
-
-async def test_runtime_loads_local_subagents_from_user_agents_dir(
-    tmp_path: Path,
-) -> None:
-    assistant_dir = tmp_path / "agent-home" / "agent"
-    researcher_dir = tmp_path / "agent-home" / "agents" / "researcher"
-    reviewer_dir = tmp_path / "agent-home" / "agents" / "reviewer"
-    researcher_dir.mkdir(parents=True)
-    reviewer_dir.mkdir(parents=True)
-    (researcher_dir / "AGENTS.md").write_text(
-        "---\ndescription: Research tasks\nmodel: openai:model\n---\nResearch carefully.",
-        encoding="utf-8",
-    )
-    (reviewer_dir / "AGENTS.md").write_text(
-        "---\ndescription: Review changes\n---\nReview carefully.", encoding="utf-8"
-    )
-
-    runtime = DeepAgentRuntime(
-        model="test:model",
-        assistant_dir=assistant_dir,
-        include_web_tools=False,
-        skills=(),
-        memory=(),
-        env={},
-    )
-
-    resolved = runtime._resolve_subagents()
-
-    assert resolved == [
-        {
-            "name": "researcher",
-            "description": "Research tasks",
-            "system_prompt": "Research carefully.",
-            "model": "openai:model",
-            "tool_names": [],
-        },
-        {
-            "name": "reviewer",
-            "description": "Review changes",
-            "system_prompt": "Review carefully.",
-            "tool_names": [],
-        },
     ]
 
 
@@ -532,31 +470,6 @@ async def test_runtime_rejects_invalid_local_subagent_definitions(
     assert "invalid name, description, or model" in caplog.text
 
 
-async def test_runtime_passes_middleware_to_create_deep_agent(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    captured: dict[str, Any] = {}
-    middleware = PassthroughMiddleware()
-
-    def fake_create_deep_agent(**kwargs: Any) -> RecordingGraph:
-        captured.update(kwargs)
-        return RecordingGraph()
-
-    monkeypatch.setattr("deepagents_talon.runtime.create_deep_agent", fake_create_deep_agent)
-
-    runtime = DeepAgentRuntime(
-        model="test:model",
-        include_web_tools=False,
-        skills=(),
-        memory=(),
-        middleware=(middleware,),
-    )
-
-    await runtime.start()
-
-    assert middleware in captured["middleware"]
-
-
 @pytest.mark.parametrize("obsolete_value", ["", " , ", "bash, execute,custom/mcp"])
 async def test_runtime_uses_file_policy_and_ignores_obsolete_environment(
     tmp_path: Path,
@@ -597,6 +510,7 @@ async def test_runtime_uses_file_policy_and_ignores_obsolete_environment(
             "delete_conversations",
             "update_mcp_server",
             "start_async_task",
+            "send_message",
         )
     }
 
@@ -623,7 +537,7 @@ async def test_runtime_uses_configured_workspace_for_default_backend(
 
     await runtime.start()
 
-    assert captured["backend"].cwd == tmp_path.resolve()
+    assert captured["backend"].default.cwd == tmp_path.resolve()
 
 
 def test_runtime_default_backend_scrubs_credentials_from_shell_env(tmp_path: Path) -> None:
@@ -647,7 +561,7 @@ def test_runtime_default_backend_scrubs_credentials_from_shell_env(tmp_path: Pat
             "AWS_SESSION_TOKEN": "aws-session",
         },
     )
-    backend = cast("LocalShellBackend", runtime.backend)
+    backend = cast("CompositeBackend", runtime.backend)
 
     result = backend.execute(
         "printf '<%s><%s><%s><%s><%s><%s><%s><%s><%s><%s><%s><%s>' "
@@ -685,7 +599,7 @@ def test_runtime_default_backend_hardens_shell_env(tmp_path: Path) -> None:
             "LC_ALL": "C",
         },
     )
-    backend = cast("LocalShellBackend", runtime.backend)
+    backend = cast("CompositeBackend", runtime.backend)
 
     result = backend.execute(
         'printf "%s\\n%s\\n%s\\n%s\\n%s\\n%s" '
@@ -918,22 +832,6 @@ async def test_runtime_adds_activity_callback_when_enabled(
     assert "private-chat" not in caplog.text
 
 
-async def test_runtime_recursion_limit_reads_env_var(monkeypatch: pytest.MonkeyPatch) -> None:
-    graph = RecordingGraph()
-    monkeypatch.setattr("deepagents_talon.runtime.create_deep_agent", lambda **_kwargs: graph)
-    runtime = DeepAgentRuntime(
-        model="test:model",
-        include_web_tools=False,
-        skills=(),
-        memory=(),
-        env={"DEEPAGENTS_TALON_RECURSION_LIMIT": "1000"},
-    )
-    await runtime.start()
-
-    await runtime.invoke(AgentRequest(conversation_id="chat", text="hi"))
-    assert graph.calls[0][1]["recursion_limit"] == 1000
-
-
 async def test_runtime_recursion_limit_env_overrides_explicit_arg(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1072,6 +970,38 @@ async def test_cron_tools_use_current_request_origin(
     assert job.origin.channel == "whatsapp"
     assert job.origin.message_id == "msg-1"
     assert any(_tool_name(tool) == "create_job" for tool in captured["tools"])
+
+
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        {"channel": "slack", "sender_id": "U1"},
+        # A scheduled run has no sender; jobs it creates inherit its job's creator.
+        {"channel": "slack", "trigger": "cron", "cron_origin_sender_id": "U1"},
+    ],
+)
+async def test_cron_jobs_record_their_creator(
+    tmp_path, monkeypatch: pytest.MonkeyPatch, metadata: dict[str, object]
+) -> None:
+    store = CronJobStore(assistant_id="test", cron_dir=tmp_path / "cron")
+
+    def fake_create_deep_agent(**kwargs: Any) -> CronCallingGraph:
+        tools = cast("list[object]", kwargs["tools"])
+        return CronCallingGraph(
+            cast("InvokableTool", next(tool for tool in tools if _tool_name(tool) == "create_job"))
+        )
+
+    monkeypatch.setattr("deepagents_talon.runtime.create_deep_agent", fake_create_deep_agent)
+    runtime = DeepAgentRuntime(
+        model="test:model", cron_store=store, include_web_tools=False, skills=(), memory=()
+    )
+    await runtime.start()
+
+    await runtime.invoke(
+        AgentRequest(conversation_id="C1:1.1", text="schedule it", metadata=metadata)
+    )
+
+    assert store.list_jobs()[0].origin.sender_id == "U1"
 
 
 async def test_runtime_approves_tool_interrupt_with_channel_handler() -> None:
@@ -1270,6 +1200,7 @@ def test_is_retryable_matches_known_transient_errors() -> None:
         StatusError(408),
         StatusError(429),
         StatusError(503),
+        StatusError(529, "Overloaded"),
         StatusError(400, "maximum context length exceeded"),
         RuntimeError("failed to parse model response"),
         RuntimeError("invalid tool_call payload"),
@@ -1298,6 +1229,7 @@ def test_is_retryable_matches_statusless_provider_overload_errors() -> None:
             }
         ),
         RuntimeError("The server is overloaded. Please try again later."),
+        RuntimeError("Overloaded"),
     ]
 
     for error in errors:
@@ -1305,10 +1237,36 @@ def test_is_retryable_matches_statusless_provider_overload_errors() -> None:
         assert _is_retryable(error)
 
 
+@pytest.mark.parametrize("sdk", ["anthropic", "openai"])
+def test_is_retryable_matches_provider_sdk_transport_errors(sdk: str) -> None:
+    """Provider SDKs raise their own transport errors, which are not `ConnectionError`s.
+
+    Their default message is just "Connection error.", so no text marker catches them.
+    """
+    module = pytest.importorskip(sdk)
+    request = httpx.Request("POST", "https://api.example.test")
+
+    assert _is_retryable(module.APIConnectionError(request=request))
+    assert _is_retryable(module.APITimeoutError(request=request))
+
+
+def test_is_retryable_matches_transport_errors_by_class_name() -> None:
+    """Detection must not depend on which provider packages are installed."""
+
+    class APIConnectionError(Exception):
+        pass
+
+    class APITimeoutError(APIConnectionError):
+        pass
+
+    assert _is_retryable(APITimeoutError("Connection error."))
+
+
 def test_is_retryable_rejects_unrelated_context_and_client_errors() -> None:
     errors = [
         StatusError(400, "invalid request: unknown field"),
         StatusError(404, "not found"),
+        StatusError(501, "not implemented"),
         RuntimeError("invalid context manager"),
         RuntimeError("missing context variable"),
         RuntimeError("invalid connection setting"),

@@ -35,6 +35,7 @@ Follow Conventional Commits and include a scope. Allowed types and scopes are de
 - Wrap class, function, method, parameter, and variable names in backticks.
 - Do not put Linear issue-closing markers in titles; put issue relationships in the PR body.
 - For version-branch syncs, use `chore(repo): sync main into vX.Y`; `release` is a type, not a scope.
+- PRs should generally leave `README.md` files unchanged, including root and package READMEs. Only modify them when explicitly requested or necessary to correct information made inaccurate by the PR; avoid incidental README edits.
 - Keep each bump-worthy PR to one releasable component. Put cross-package dependency or lockfile churn in a separate `chore(deps):` PR. See [multi-component fan-out](.github/RELEASING.md#multi-component-fan-out) and [lockfile churn fan-out](.github/RELEASING.md#lockfile-churn-fan-out).
 
 ### Branch naming
@@ -133,6 +134,14 @@ Benchmarks live in `deepagents`, `code`, and `partners/quickjs`; other packages 
 ## CI and releases
 
 Use [`.github/RELEASING.md`](.github/RELEASING.md) for release-please behavior, version branches, changelog overrides, reverts, and release troubleshooting, including the CI guardrails that gate a release. Use [`.github/LAYOUT.md`](.github/LAYOUT.md) to find a workflow by what it does. Workflow files are authoritative for linting and labeling behavior.
+
+After changes land on `main`, wait for release-please and its lockfile updates before manually updating a release PR or drafting/applying its notes. Do not race the automation with a manual rebase; see [Waiting for a release PR refresh](.github/RELEASING.md#waiting-for-a-release-pr-refresh).
+
+Before merging a release PR:
+
+- Record its current `headRefOid` and inspect `ci.yml` runs for that SHA with `gh run list --workflow ci.yml --commit <head-sha>`. The PR check list alone can omit pending workflows. Missing runs, canceled runs without a successful replacement, and runs awaiting approval are not passing CI. Do not rely on an older successful run when a newer run is pending or failed.
+- Wait for the current CI workflow to finish and its CI Success check and other required checks to pass. For curated-notes-only commits, package jobs may be skipped, but the current head's CI Success check must still pass after validating the parent's result.
+- Use `--admin` only when explicitly requested. "Force merge after CI" does not authorize bypassing failed or unfinished CI. Pin the merge to the verified SHA with `--match-head-commit <verified-head-sha>`. If the head changes, repeat verification rather than dropping the flag or substituting an unverified SHA.
 
 Pin GitHub Actions to full-length commit SHAs; a tag reference is rejected. Verify whether a tag is annotated and dereference it before using its commit. Use the `gh` CLI to resolve one.
 

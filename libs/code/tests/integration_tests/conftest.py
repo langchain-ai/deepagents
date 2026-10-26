@@ -1,14 +1,17 @@
 """Pytest configuration for benchmark tests."""
 
 import os
-from collections.abc import Generator
+from typing import TYPE_CHECKING
 
 import pytest
 from langsmith import Client, get_tracing_context
 
+if TYPE_CHECKING:
+    from collections.abc import Generator
+
 
 @pytest.fixture(scope="session", autouse=True)
-def langsmith_client() -> Generator[Client | None, None, None]:
+def langsmith_client() -> Generator[Client | None]:
     """Create a LangSmith client if `LANGSMITH_API_KEY` is set.
 
     This fixture is session-scoped and automatically used by all tests.
@@ -30,7 +33,7 @@ def langsmith_client() -> Generator[Client | None, None, None]:
 
 
 @pytest.fixture(autouse=True)
-def flush_langsmith_after_test(langsmith_client: Client) -> Generator[None, None, None]:
+def flush_langsmith_after_test(langsmith_client: Client) -> Generator[None]:
     """Automatically flush LangSmith client after each test."""
     yield
 

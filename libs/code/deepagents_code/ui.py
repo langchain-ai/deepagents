@@ -9,6 +9,7 @@ import argparse
 from rich.markup import escape
 
 from deepagents_code import theme
+from deepagents_code._constants import DEFAULT_AGENT_NAME, DEFAULT_THREAD_LIMIT
 from deepagents_code._paths import PATHS
 from deepagents_code._version import DOCS_URL, __version__
 from deepagents_code.config import (
@@ -156,6 +157,7 @@ def show_help() -> None:
     console.print(
         "  -r, --resume [ID]          Resume thread: -r for most recent, -r ID for specific"  # noqa: E501
     )
+    console.print("                             With -n, an ID is required")
     console.print("  -a, --agent NAME           Agent to use")
     console.print("  -M, --model MODEL          Model to use (e.g., gpt-5.5)")
     console.print(
@@ -215,6 +217,12 @@ def show_help() -> None:
     )
     console.print("  --no-mcp                   Disable all MCP tool loading")
     console.print(
+        "  --no-tracing               Disable LangSmith agent tracing for this session"
+    )
+    console.print(
+        "                             Keeps local history and model-provider requests"
+    )
+    console.print(
         "  --trust-project-mcp        Trust project MCP configs (skip approval prompt)"
     )
     console.print(
@@ -243,12 +251,21 @@ def show_help() -> None:
         "  --allow-fs-tools LIST      Filesystem tool allowlist: 'all' or "
         "comma-separated tool names (must include 'read_file')"
     )
-    console.print("  -n, --non-interactive MSG  Run a single task and exit")
+    console.print(
+        "  -n, --non-interactive MSG  Run one task and exit; no human approvals"
+    )
+    console.print(
+        "                             Can change files and access the network"
+    )
+    console.print(
+        "                             Shell off unless a shell allow-list is configured"
+    )
     console.print("  -q, --quiet                Clean output for piping (needs -n)")
     console.print(
         "  --no-stream                Buffer full response instead of streaming"
     )
     console.print("  --show-reasoning           Show provider-visible reasoning")
+    console.print("                             On in the TUI, off by default with -n")
     console.print(
         "  --max-turns N              Max agentic turns before stopping (needs -n)"
     )
@@ -423,7 +440,7 @@ def show_skills_help() -> None:
     console.print("  trust             Manage trusted skill directories")
     console.print()
     _print_option_section(
-        "  --agent <name>    Specify agent identifier (default: agent)",
+        f"  --agent <name>    Specify agent identifier (default: {DEFAULT_AGENT_NAME})",
         "  --project         Use project-level skills instead of user-level",
         title="Common options",
     )
@@ -484,7 +501,7 @@ def show_skills_list_help() -> None:
     console.print("  dcode skills list [options]")
     console.print()
     _print_option_section(
-        "  --agent NAME            Agent identifier (default: agent)",
+        f"  --agent NAME            Agent identifier (default: {DEFAULT_AGENT_NAME})",
         "  --project               Show only project-level skills",
     )
     console.print()
@@ -502,7 +519,7 @@ def show_skills_create_help() -> None:
     console.print("  dcode skills create <name> [options]")
     console.print()
     _print_option_section(
-        "  --agent NAME            Agent identifier (default: agent)",
+        f"  --agent NAME            Agent identifier (default: {DEFAULT_AGENT_NAME})",
         "  --project               Create in project directory "
         "instead of user directory",
     )
@@ -520,7 +537,7 @@ def show_skills_info_help() -> None:
     console.print("  dcode skills info <name> [options]")
     console.print()
     _print_option_section(
-        "  --agent NAME            Agent identifier (default: agent)",
+        f"  --agent NAME            Agent identifier (default: {DEFAULT_AGENT_NAME})",
         "  --project               Search only in project skills",
     )
     console.print()
@@ -537,7 +554,7 @@ def show_skills_delete_help() -> None:
     console.print("  dcode skills delete <name> [options]")
     console.print()
     _print_option_section(
-        "  --agent NAME            Agent identifier (default: agent)",
+        f"  --agent NAME            Agent identifier (default: {DEFAULT_AGENT_NAME})",
         "  --project               Search only in project skills",
         "  -f, --force             Skip confirmation prompt",
         "  --dry-run               Show what would happen without making changes",
@@ -1037,7 +1054,8 @@ def show_threads_list_help() -> None:
         "  --branch TEXT             Filter by git branch name",
         "  --cwd [PATH]              Filter by working directory (no value = current)",
         "  --sort {created,updated}  Sort order (default: from config, or updated)",
-        "  -n, --limit N             Maximum threads to display (default: 20)",
+        "  -n, --limit N             Maximum threads to display "
+        f"(default: {DEFAULT_THREAD_LIMIT})",
         "  -v, --verbose             Show all columns (branch, created, prompt)",
         "  -r, --relative/--no-relative"
         "  Show relative timestamps (default: from config)",

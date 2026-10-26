@@ -3,14 +3,17 @@
 import argparse
 import io
 import sys
-from pathlib import Path
+from typing import TYPE_CHECKING
 from unittest.mock import patch
 
 import pytest
 from rich.console import Console
 
-from deepagents_code._constants import DEFAULT_AGENT_NAME
+from deepagents_code._constants import DEFAULT_AGENT_NAME, DEFAULT_THREAD_LIMIT
 from deepagents_code.main import _resolve_agent_arg, parse_args
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 class TestInitialPromptArg:
@@ -242,7 +245,23 @@ class TestSubcommandHelpFlags:
         """Running `deepagents threads list -h` should show threads list help."""
         self._run_help(
             ["deepagents", "threads", "list", "-h"],
-            must_contain="--limit",
+            must_contain=(
+                f"Maximum threads to display (default: {DEFAULT_THREAD_LIMIT})"
+            ),
+            must_not_contain="--sandbox",
+        )
+
+    @pytest.mark.parametrize("command", ["list", "create", "info", "delete"])
+    def test_skills_agent_default(self, command: str) -> None:
+        argv = ["deepagents", "skills", command]
+        if command != "list":
+            argv.append("example-skill")
+        with patch.object(sys, "argv", argv):
+            args = parse_args()
+        assert args.agent == DEFAULT_AGENT_NAME
+        self._run_help(
+            [*argv, "-h"],
+            must_contain=f"Agent identifier (default: {args.agent})",
             must_not_contain="--sandbox",
         )
 
@@ -267,6 +286,30 @@ class TestShortFlags:
 
 class TestQuietArg:
     """Tests for -q/--quiet argument parsing."""
+
+
+class TestNoTracingArg:
+    @pytest.mark.parametrize("extra", [[], ["--no-tracing"]])
+    def test_flag(self, monkeypatch: pytest.MonkeyPatch, extra: list[str]) -> None:
+        monkeypatch.setattr(sys, "argv", ["dcode", *extra])
+        assert parse_args().no_tracing is bool(extra)
+
+    def test_cli_disables_tracing_before_config_bootstrap(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from deepagents_code import config, main
+
+        monkeypatch.setattr(sys, "argv", ["dcode", "--no-tracing", "config"])
+        monkeypatch.setattr(config, "_bootstrap_state", config._BootstrapState())
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_TRACING", "true")
+        monkeypatch.setenv("LANGSMITH_TRACING_V2", "true")
+        monkeypatch.setenv("LANGSMITH_API_KEY", "private-key")
+        with pytest.raises(SystemExit) as exc:
+            main.cli_main()
+        assert exc.value.code == 0
+        output = capsys.readouterr().out
+        assert "LangSmith agent tracing: OFF" in output
+        assert "private-key" not in output
 
 
 class TestNoMcpArg:

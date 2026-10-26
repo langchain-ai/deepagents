@@ -78,6 +78,25 @@ def _runtime(root, monkeypatch, parent, child, **kwargs: object):
     )
 
 
+async def test_custom_help_tool_remains_attachable_without_builtin(tmp_path, monkeypatch) -> None:
+    _write_agent(tmp_path, "[ask_for_help]")
+
+    @tool
+    def ask_for_help(question: str) -> str:
+        """Answer a local question."""
+        return question
+
+    model = ToolModel(responses=[AIMessage(content="done")])
+    runtime = _runtime(tmp_path, monkeypatch, model, model, tools=[ask_for_help])
+    await runtime.start()
+    try:
+        inventory = await _inventory(runtime)
+        researcher = next(agent for agent in inventory["agents"] if agent["name"] == "researcher")
+        assert researcher["tools"] == ["ask_for_help"]
+    finally:
+        await runtime.stop()
+
+
 @pytest.mark.parametrize("background", [False, True])
 @pytest.mark.parametrize(
     ("name", "attached"),

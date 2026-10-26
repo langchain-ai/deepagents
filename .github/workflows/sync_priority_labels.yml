@@ -9,8 +9,8 @@
 # issues with different priorities, the highest wins
 # (priority:urgent > priority:high > priority:backlog).
 #
-# Only urgent and high propagate. Backlog is the default on issues, but leaves
-# linked PRs without a priority label. Retired `p0`-`p4` labels are stripped
+# Only urgent and high propagate. Triage and backlog leave linked PRs
+# without a priority label. Retired `p0`-`p4` labels are stripped
 # from PRs rather than mapped to a new priority. See .github/LABELS.md.
 
 name: Sync Priority Labels
@@ -67,10 +67,8 @@ jobs:
             const body = context.payload.pull_request.body || '';
 
             const PRIORITY_LABELS = ['priority:urgent', 'priority:high', 'priority:backlog'];
-            // `priority:backlog` is every issue's default, so copying it onto PRs
-            // would label nearly every PR with no signal gained. Only an
-            // explicit escalation propagates; a PR carrying backlog from an
-            // earlier run is stripped like a stale label.
+            // Only urgent and high propagate. Triage and backlog stay on issues;
+            // a PR carrying backlog from an earlier run is stripped.
             const PROPAGATED_PRIORITY_LABELS = ['priority:urgent', 'priority:high'];
             // Retired names are stripped from PRs; remove once no open item has one.
             const STALE_PRIORITY_LABELS = ['p0', 'p1', 'p2', 'p3', 'p4'];
@@ -213,10 +211,8 @@ jobs:
             const action = context.payload.action;
 
             const PRIORITY_LABELS = ['priority:urgent', 'priority:high', 'priority:backlog'];
-            // `priority:backlog` is every issue's default, so copying it onto PRs
-            // would label nearly every PR with no signal gained. Only an
-            // explicit escalation propagates; a PR carrying backlog from an
-            // earlier run is stripped like a stale label.
+            // Only urgent and high propagate. Triage and backlog stay on issues;
+            // a PR carrying backlog from an earlier run is stripped.
             const PROPAGATED_PRIORITY_LABELS = ['priority:urgent', 'priority:high'];
             // Retired names are stripped from PRs; remove once no open item has one.
             const STALE_PRIORITY_LABELS = ['p0', 'p1', 'p2', 'p3', 'p4'];
@@ -405,10 +401,8 @@ jobs:
             }
 
             const PRIORITY_LABELS = ['priority:urgent', 'priority:high', 'priority:backlog'];
-            // `priority:backlog` is every issue's default, so copying it onto PRs
-            // would label nearly every PR with no signal gained. Only an
-            // explicit escalation propagates; a PR carrying backlog from an
-            // earlier run is stripped like a stale label.
+            // Only urgent and high propagate. Triage and backlog stay on issues;
+            // a PR carrying backlog from an earlier run is stripped.
             const PROPAGATED_PRIORITY_LABELS = ['priority:urgent', 'priority:high'];
             // Retired names are stripped from PRs; remove once no open item has one.
             const STALE_PRIORITY_LABELS = ['p0', 'p1', 'p2', 'p3', 'p4'];

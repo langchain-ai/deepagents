@@ -8,7 +8,7 @@
 #   package paths — lockfiles, `pyproject.toml` lower bounds, etc. —
 #   release-please attributes the bump-worthy commit to those packages and opens
 #   a release PR for each. This is the general fan-out sibling of the
-#   empty-commit fan-out that `guard-empty-commit` (release-please.yml) blocks;
+#   empty-commit fan-out that the empty-commit guard in release-please.yml blocks;
 #   see "Lockfile churn fan-out" and "Multi-component fan-out" in
 #   .github/RELEASING.md.
 #

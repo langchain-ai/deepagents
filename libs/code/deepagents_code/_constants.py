@@ -13,6 +13,9 @@ from typing import Final
 DEFAULT_AGENT_NAME: Final[str] = "agent"
 """Default agent / assistant identifier when no `-a` flag is given."""
 
+DEFAULT_THREAD_LIMIT: Final[int] = 100
+"""Fallback for `get_thread_limit()`, the thread switcher batch size."""
+
 FS_TOOL_NAMES: Final[frozenset[str]] = frozenset(
     {"ls", "read_file", "write_file", "edit_file", "delete", "glob", "grep", "execute"}
 )

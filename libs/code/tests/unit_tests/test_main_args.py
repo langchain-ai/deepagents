@@ -681,6 +681,14 @@ class TestSandboxArgument:
             assert parsed.sandbox == "runloop"
             assert parsed.sandbox_snapshot_name == "bp"
 
+    def test_snapshot_name_accepted_for_daytona(self, mock_argv: MockArgvType) -> None:
+        with mock_argv(
+            "-n", "task", "--sandbox", "daytona", "--sandbox-snapshot-name", "snap"
+        ):
+            parsed = parse_args()
+            assert parsed.sandbox == "daytona"
+            assert parsed.sandbox_snapshot_name == "snap"
+
     def test_sandbox_id_rejected_for_unsupported_provider(
         self, mock_argv: MockArgvType, capsys: pytest.CaptureFixture[str]
     ) -> None:
@@ -833,6 +841,66 @@ class TestMaxTurnsArgument:
         assert mock_run.await_args.kwargs["max_turns"] == 5  # ty: ignore
 
 
+class TestHeadlessResumeArguments:
+    """`-r` in non-interactive mode needs an ID and continues that thread."""
+
+    def _cli(self, *argv: str, stdin_text: str | None = None) -> tuple[int, AsyncMock]:
+        """Drive `cli_main` and return its exit code and the headless runner mock."""
+        from deepagents_code.main import cli_main
+
+        mock_stdin = MagicMock()
+        mock_stdin.isatty.return_value = stdin_text is None
+        mock_stdin.read.return_value = stdin_text or ""
+        with (
+            patch.object(sys, "argv", ["deepagents", *argv]),
+            patch.object(sys, "stdin", mock_stdin),
+            patch("deepagents_code.main.check_optional_tools", return_value=[]),
+            patch(
+                "deepagents_code.main._should_ensure_managed_ripgrep",
+                return_value=False,
+            ),
+            patch("os.open", side_effect=OSError("No tty in test sandbox")),
+            patch(
+                "deepagents_code.client.non_interactive.run_non_interactive",
+                new_callable=AsyncMock,
+                return_value=0,
+            ) as mock_run,
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            cli_main()
+        code = exc_info.value.code
+        assert isinstance(code, int)
+        return code, mock_run
+
+    @pytest.mark.parametrize(
+        ("argv", "stdin_text"),
+        [(("-r", "-n", "continue"), None), (("-r",), "piped task")],
+        ids=["flag", "piped-stdin"],
+    )
+    def test_bare_resume_is_a_usage_error(
+        self, argv: tuple[str, ...], stdin_text: str | None
+    ) -> None:
+        code, mock_run = self._cli(*argv, stdin_text=stdin_text)
+        assert code == 2
+        mock_run.assert_not_awaited()
+
+    def test_resume_with_rubric_is_a_usage_error(self) -> None:
+        code, mock_run = self._cli("-r", "t-1", "-n", "continue", "--rubric", "done")
+        assert code == 2
+        mock_run.assert_not_awaited()
+
+    def test_resume_id_reaches_the_headless_runner(self) -> None:
+        from deepagents_code.client.headless_resume import ResumeRequest
+
+        code, mock_run = self._cli("-r", "t-1", "-n", "continue", "-M", "openai:x")
+        assert code == 0
+        await_args = mock_run.await_args
+        assert await_args is not None
+        assert await_args.kwargs["resume"] == ResumeRequest(
+            "t-1", adopt_agent=True, adopt_model=False
+        )
+
+
 class TestTimeoutArgument:
     """Tests for --timeout argument parsing, validation, and runtime behavior."""
 
@@ -896,6 +964,74 @@ def _make_args(
 
 class TestApplyStdinPipe:
     """Tests for apply_stdin_pipe — reading piped stdin into CLI args."""
+
+    @pytest.mark.parametrize(
+        ("platform", "terminal"),
+        [("win32", "CONIN$"), ("linux", "/dev/tty")],
+    )
+    def test_piped_prompt_restores_terminal_input(
+        self, platform: str, terminal: str
+    ) -> None:
+        """A seeded TUI reads the terminal after consuming piped context."""
+        args = _make_args(initial_prompt="explain this")
+        pipe = io.StringIO("context from pipe")
+        terminal_input = MagicMock()
+        terminal_input.isatty.return_value = True
+        with (
+            patch.object(sys, "platform", platform),
+            patch.object(sys, "stdin", pipe),
+            patch("deepagents_code.main.os.open", return_value=42) as open_terminal,
+            patch("deepagents_code.main.os.dup2") as duplicate,
+            patch("deepagents_code.main.os.close") as close_terminal,
+            patch("builtins.open", return_value=terminal_input) as reopen_stdin,
+        ):
+            apply_stdin_pipe(args)
+            assert sys.stdin is terminal_input
+
+        assert args.initial_prompt == "context from pipe\n\nexplain this"
+        assert args.non_interactive_message is None
+        open_terminal.assert_called_once_with(terminal, os.O_RDONLY)
+        duplicate.assert_called_once_with(42, 0)
+        close_terminal.assert_called_once_with(42)
+        reopen_stdin.assert_called_once_with(0, encoding="utf-8", closefd=False)
+
+    @pytest.mark.parametrize("platform", ["win32", "linux"])
+    def test_missing_terminal_keeps_headless_piped_input(self, platform: str) -> None:
+        """A pipeline without a console still routes its text to headless mode."""
+        args = _make_args()
+        pipe = io.StringIO("do the task")
+        with (
+            patch.object(sys, "platform", platform),
+            patch.object(sys, "stdin", pipe),
+            patch("deepagents_code.main.os.open", side_effect=OSError("no console")),
+            patch("deepagents_code.main.os.dup2") as duplicate,
+        ):
+            apply_stdin_pipe(args)
+            assert sys.stdin is pipe
+
+        assert args.non_interactive_message == "do the task"
+        duplicate.assert_not_called()
+
+    def test_failed_terminal_replacement_closes_handle(self) -> None:
+        """A failed Windows fd replacement warns and releases the opened handle."""
+        from deepagents_code.config import console
+
+        args = _make_args(initial_prompt="explain")
+        pipe = io.StringIO("context")
+        with (
+            patch.object(sys, "platform", "win32"),
+            patch.object(sys, "stdin", pipe),
+            patch("deepagents_code.main.os.open", return_value=42),
+            patch("deepagents_code.main.os.dup2", side_effect=OSError("bad fd")),
+            patch("deepagents_code.main.os.close") as close_terminal,
+            patch.object(console, "print") as warning,
+        ):
+            apply_stdin_pipe(args)
+            assert sys.stdin is pipe
+
+        assert args.initial_prompt == "context\n\nexplain"
+        close_terminal.assert_called_once_with(42)
+        assert "TTY restoration failed" in warning.call_args.args[0]
 
     def test_explicit_stdin_with_skill_runs_headless(self) -> None:
         """Explicit `--stdin` + `--skill` runs headless, not the seeded TUI."""
@@ -1156,6 +1292,29 @@ class TestUpdateSubcommand:
             "the install ran without holding the update lock"
         )
 
+    def test_update_explains_migration_before_install(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """`dcode update` prints notices as they arrive and permits migration."""
+        notice = "Python 3.14 is required; migrating [tool] environment."
+
+        def upgrade(
+            *, on_notice: Callable[[str], None], **_kwargs: object
+        ) -> tuple[bool, str, str]:
+            on_notice(notice)
+            assert notice in capsys.readouterr().out
+            return True, "", "99.0.0"
+
+        code, _, perform_upgrade_mock = self._run_update(
+            editable=False,
+            is_update_available_return=(True, "99.0.0"),
+            upgrade_side_effect=upgrade,
+        )
+        assert code == 0
+        # Every deferral points users here, so this path must be able to migrate.
+        kwargs = perform_upgrade_mock.call_args.kwargs
+        assert kwargs.get("allow_python_migration", True) is True
+
     def test_stable_update_with_prerelease_deps_keeps_upgrade_intent_none(
         self,
     ) -> None:
@@ -1171,11 +1330,10 @@ class TestUpdateSubcommand:
             bypass_cache=True,
             include_prereleases=None,
         )
-        perform_upgrade_mock.assert_awaited_once_with(
-            log_path="/tmp/deepagents-update.log",
-            include_prereleases=None,
-            target_version="99.0.0",
-        )
+        perform_upgrade_mock.assert_awaited_once()
+        kwargs = perform_upgrade_mock.call_args.kwargs
+        assert kwargs["include_prereleases"] is None
+        assert kwargs["target_version"] == "99.0.0"
 
     def test_prerelease_unsupported_install_refuses_before_pypi(
         self, capsys: pytest.CaptureFixture[str]
@@ -1974,3 +2132,49 @@ class TestModelParamsRetryOverrideWarning:
             self._run_headless(["dcode", "-n", "hi"])
 
         assert warning in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("config_value", "env_value", "cli_flag", "tui", "headless"),
+    [
+        (None, None, False, True, False),
+        (False, None, False, False, False),
+        (True, None, False, True, True),
+        (True, "0", False, False, False),
+        (False, "1", False, True, True),
+        (False, "invalid", False, False, False),
+        (None, "invalid", False, True, False),
+        (False, "0", True, True, True),
+        (None, None, True, True, True),
+    ],
+)
+def test_show_reasoning_defaults_by_mode(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    config_value: bool | None,
+    env_value: str | None,
+    cli_flag: bool,
+    tui: bool,
+    headless: bool,
+) -> None:
+    """Reasoning is on in the TUI and off headless unless explicitly set."""
+    from deepagents_code import _env_vars
+    from deepagents_code.app import _load_show_reasoning
+    from deepagents_code.main import (
+        _install_cli_provider,
+        _resolve_headless_show_reasoning,
+    )
+
+    config = tmp_path / "config.toml"
+    if config_value is not None:
+        config.write_text(f"[ui]\nshow_reasoning = {str(config_value).lower()}\n")
+    monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
+    monkeypatch.delenv(_env_vars.SHOW_REASONING, raising=False)
+    if env_value is not None:
+        monkeypatch.setenv(_env_vars.SHOW_REASONING, env_value)
+    argv = ["dcode", *(["--show-reasoning"] if cli_flag else [])]
+    monkeypatch.setattr(sys, "argv", argv)
+    _install_cli_provider(parse_args())
+
+    assert _load_show_reasoning() is tui
+    assert _resolve_headless_show_reasoning() is headless

@@ -11,7 +11,7 @@ import threading
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, cast
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import anyio
 import httpx
@@ -2993,6 +2993,56 @@ class TestBuildOAuthProvider:
 class TestLoopbackHandlers:
     """Tests for the local OAuth callback server."""
 
+    async def test_escape_aborts_browser_callback(
+        self, monkeypatch: pytest.MonkeyPatch, socket_enabled: object
+    ) -> None:
+        """Esc closes the callback server without entering paste-back fallback."""
+        from http.server import ThreadingHTTPServer
+
+        from prompt_toolkit.application import create_app_session
+        from prompt_toolkit.input import create_pipe_input
+        from prompt_toolkit.output import DummyOutput
+
+        from deepagents_code.mcp_auth import (
+            _LoopbackOAuthCallbackServer,
+            _make_loopback_handlers,
+        )
+        from deepagents_code.mcp_oauth_ui import (
+            CliOAuthInteraction,
+            MCPLoginAbortedError,
+        )
+
+        del socket_enabled
+        monkeypatch.setattr("webbrowser.get", lambda *_a, **_kw: object())
+        monkeypatch.setattr("webbrowser.open", lambda _url: True)
+        monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+        monkeypatch.setattr("sys.stderr.isatty", lambda: True)
+        monkeypatch.setattr(
+            "builtins.input", lambda _: pytest.fail("Esc must not prompt for a URL")
+        )
+        output = DummyOutput()
+        monkeypatch.setattr(
+            "prompt_toolkit.output.defaults.create_output", lambda **_: output
+        )
+        server = _LoopbackOAuthCallbackServer(port=0)
+        redirect, callback = _make_loopback_handlers(
+            callback_server=server, ui=CliOAuthInteraction()
+        )
+        try:
+            await redirect("https://auth.example/authorize")
+            assert isinstance(server._server, ThreadingHTTPServer)
+            assert server._server.socket.fileno() != -1
+            with (
+                create_pipe_input() as pipe,
+                create_app_session(input=pipe, output=output),
+            ):
+                pipe.send_text("\x1b")
+                with pytest.raises(MCPLoginAbortedError):
+                    await asyncio.wait_for(callback(), timeout=3)
+            assert server._server.socket.fileno() == -1
+        finally:
+            server.close()
+
     async def test_loopback_callback_returns_code_and_state(
         self, monkeypatch: pytest.MonkeyPatch, socket_enabled: object
     ) -> None:
@@ -4097,6 +4147,64 @@ class TestLogin:
         assert ui.authorize_urls, "authorize URL must be shown"
         shown_url, _opened = ui.authorize_urls[0]
         assert "team=T01234567" in shown_url
+
+    @pytest.mark.parametrize("secret", [None, "test-app-secret"])
+    async def test_slack_custom_app_login(
+        self, secret: str | None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Login uses the selected app without reusing another app's grant."""
+        from deepagents_code.mcp_auth import login
+        from deepagents_code.mcp_oauth_ui import OAuthInteraction
+        from deepagents_code.mcp_providers.slack import _SLACK_REDIRECT_URI
+
+        url = "https://mcp.slack.com/mcp"
+        default = FileTokenStorage("slack", server_url=url)
+        await default.set_tokens(_make_tokens("default-app-token"))
+        oauth = {"client_id": "custom-app"}
+        if secret:
+            monkeypatch.setenv("SLACK_APP_SECRET", secret)
+            oauth["client_secret"] = "${SLACK_APP_SECRET}"
+        selected = FileTokenStorage(
+            "slack", server_url=url, oauth_client_id="custom-app"
+        )
+        other = FileTokenStorage("slack", server_url=url, oauth_client_id="other-app")
+        assert len({default.path, selected.path, other.path}) == 3
+        ui = AsyncMock(spec=OAuthInteraction)
+
+        async def handshake(transport: StreamableHttpTransport) -> None:
+            provider = transport.auth
+            assert isinstance(provider, OAuthClientProvider)
+            assert await provider.context.storage.get_tokens() is None
+            info = await provider.context.storage.get_client_info()
+            assert info is not None
+            assert info.client_id == "custom-app"
+            assert info.client_secret == secret
+            assert info.redirect_uris is not None
+            assert str(info.redirect_uris[0]) == _SLACK_REDIRECT_URI
+            assert info.token_endpoint_auth_method == (
+                "client_secret_post" if secret else "none"
+            )
+            await provider.context.storage.set_tokens(_make_tokens("custom-app-token"))
+
+        with patch("deepagents_code.mcp_auth._drive_handshake", handshake):
+            await login(
+                server_name="slack",
+                server_config={
+                    "type": "http",
+                    "url": url,
+                    "auth": "oauth",
+                    "oauth": oauth,
+                },
+                ui=ui,
+            )
+        selected_tokens = await selected.get_tokens()
+        default_tokens = await default.get_tokens()
+        assert selected_tokens is not None
+        assert selected_tokens.access_token == "custom-app-token"
+        assert default_tokens is not None
+        assert default_tokens.access_token == "default-app-token"
+        assert await other.get_tokens() is None
+        ui.show_success.assert_awaited_once()
 
     async def test_slack_preseed_is_idempotent(self) -> None:
         """Preseeding Slack client info a second time reads rather than writes."""

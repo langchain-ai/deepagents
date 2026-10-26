@@ -148,6 +148,7 @@ async def test_host_indexes_only_acknowledged_final_delivery(tmp_path: Path, out
             AgentResult("final"),
             channel=channel,
             reply_conversation_id="one",
+            history_chat="one",
             suppress_result=outcome == "suppressed",
         )
         await settled(archive)

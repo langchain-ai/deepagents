@@ -5,10 +5,9 @@ import logging
 import subprocess
 import sys
 import warnings
-from collections.abc import Iterator, Mapping
 from dataclasses import replace
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 from unittest.mock import Mock, patch
 
 import pytest
@@ -60,6 +59,9 @@ from deepagents_code.model_config import (
 from deepagents_code.project_utils import (
     find_project_agent_md as _find_project_agent_md,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator, Mapping
 
 
 class TestRuntimeDotenvReload:
@@ -1511,6 +1513,27 @@ class TestDefaultModelSpecAllowlist:
             _get_default_model_spec()
 
 
+def _stored_provider_config(
+    monkeypatch: pytest.MonkeyPatch,
+    provider: str,
+    *,
+    base_url: str | None = None,
+) -> ModelConfig:
+    config = ModelConfig(providers={provider: {}})
+    monkeypatch.setattr(ModelConfig, "load", classmethod(lambda _cls: config))
+    monkeypatch.setattr(
+        model_config.auth_store,
+        "get_stored_key",
+        lambda name: "stored-key" if name == provider else None,
+    )
+    monkeypatch.setattr(
+        model_config.auth_store,
+        "get_stored_base_url",
+        lambda name: base_url if name == provider else None,
+    )
+    return config
+
+
 class TestWorkspaceStoredCredentials:
     """Stored auth remains workspace-local during server model construction."""
 
@@ -1625,33 +1648,245 @@ class TestWorkspaceStoredCredentials:
         assert "OPENAI_API_KEY" not in os.environ
         assert "OPENAI_BASE_URL" not in os.environ
 
-    @patch("langchain.chat_models.init_chat_model")
-    def test_stored_native_key_clears_workspace_endpoint(
+    @pytest.mark.parametrize(
+        ("endpoint_source", "usage_override", "endpoint_env"),
+        [
+            ("native", "default", "OPENAI_BASE_URL"),
+            ("native", "default", "OPENAI_API_BASE"),
+            ("native", "caller", "OPENAI_BASE_URL"),
+            ("native", "stream_options", "OPENAI_BASE_URL"),
+            ("stored", "default", "OPENAI_BASE_URL"),
+            ("prefixed", "default", "OPENAI_BASE_URL"),
+            ("config", "default", "OPENAI_BASE_URL"),
+            ("caller", "default", "OPENAI_BASE_URL"),
+            ("provider_alias", "default", "OPENAI_BASE_URL"),
+            ("model_alias", "default", "OPENAI_BASE_URL"),
+            ("caller_alias", "default", "OPENAI_BASE_URL"),
+        ],
+    )
+    async def test_stored_openai_streaming_usage(
         self,
-        mock_init_chat_model: Mock,
         monkeypatch: pytest.MonkeyPatch,
+        endpoint_source: str,
+        usage_override: str,
+        endpoint_env: str,
     ) -> None:
-        """A stored native key is not sent to a workspace gateway URL."""
-        from deepagents_code.config import create_model, use_environment
+        """Native streams report usage while endpoints and opt-outs stay honored."""
+        import os
 
-        mock_model = Mock()
-        mock_model.profile = {"max_input_tokens": 128000, "tool_calling": True}
-        mock_init_chat_model.return_value = mock_model
-        monkeypatch.setattr(
-            "deepagents_code.model_config.auth_store.get_stored_key",
-            lambda provider: "stored-key" if provider == "openai" else None,
+        import httpx
+        from langchain_openai import ChatOpenAI
+
+        from deepagents_code.config import use_environment
+
+        endpoint = "https://selected.example/v1"
+        config = _stored_provider_config(
+            monkeypatch,
+            "openai",
+            base_url=endpoint if endpoint_source == "stored" else None,
         )
-        monkeypatch.setattr(
-            "deepagents_code.model_config.auth_store.get_stored_base_url",
-            lambda _provider: None,
+        provider = config.providers["openai"]
+        if endpoint_source == "config":
+            provider["base_url"] = endpoint
+        elif endpoint_source == "provider_alias":
+            provider["params"] = {"openai_api_base": endpoint}
+        elif endpoint_source == "model_alias":
+            provider["params"] = {"gpt-5.5": {"openai_api_base": endpoint}}
+        monkeypatch.setenv("OPENAI_API_KEY", "inherited-key")
+        monkeypatch.setenv(endpoint_env, "https://gateway.example/v1")
+        environment = {
+            "OPENAI_API_KEY": "inherited-key",
+            endpoint_env: "https://gateway.example/v1",
+        }
+        if endpoint_source == "prefixed":
+            environment["DEEPAGENTS_CODE_OPENAI_BASE_URL"] = endpoint
+        extra_kwargs: dict[str, object] = {"use_responses_api": False}
+        if endpoint_source == "caller":
+            extra_kwargs["base_url"] = endpoint
+        elif endpoint_source == "caller_alias":
+            extra_kwargs["openai_api_base"] = endpoint
+        if usage_override == "caller":
+            extra_kwargs["stream_usage"] = False
+        elif usage_override == "stream_options":
+            extra_kwargs["model_kwargs"] = {"stream_options": {"include_usage": False}}
+
+        expected_usage = endpoint_source == "native" and usage_override == "default"
+
+        def respond(request: httpx.Request) -> httpx.Response:
+            assert request.headers["authorization"] == "Bearer stored-key"
+            payload = json.loads(request.content)
+            assert payload["stream"] is True
+            assert payload.get("stream_options", {}).get("include_usage", False) is (
+                expected_usage
+            )
+            expected_endpoint = (
+                "https://api.openai.com/v1" if endpoint_source == "native" else endpoint
+            )
+            assert str(request.url) == expected_endpoint + "/chat/completions"
+            chunk: dict[str, object] = {
+                "choices": [{"delta": {"content": "Hello"}, "finish_reason": "stop"}]
+            }
+            if expected_usage:
+                chunk["usage"] = {
+                    "prompt_tokens": 2,
+                    "completion_tokens": 1,
+                    "total_tokens": 3,
+                }
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/event-stream"},
+                text=f"data: {json.dumps(chunk)}\n\ndata: [DONE]\n\n",
+            )
+
+        with httpx.Client(transport=httpx.MockTransport(respond)) as http_client:
+            async with httpx.AsyncClient(
+                transport=httpx.MockTransport(respond)
+            ) as http_async_client:
+                extra_kwargs.update(
+                    http_client=http_client, http_async_client=http_async_client
+                )
+                with use_environment(environment):
+                    model = create_model(
+                        "openai:gpt-5.5", extra_kwargs=extra_kwargs
+                    ).model
+                assert isinstance(model, ChatOpenAI)
+                for chunks in (
+                    list(model.stream("Hi")),
+                    [chunk async for chunk in model.astream("Hi")],
+                ):
+                    assert (
+                        any(chunk.usage_metadata for chunk in chunks) is expected_usage
+                    )
+        assert os.environ[endpoint_env] == "https://gateway.example/v1"
+        assert os.environ["OPENAI_API_KEY"] == "inherited-key"
+
+    @pytest.mark.parametrize("client_kind", ["sync", "async"])
+    @pytest.mark.parametrize("stream_usage", [None, True])
+    async def test_stored_openai_key_preserves_custom_client_streaming(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        client_kind: str,
+        stream_usage: bool | None,
+    ) -> None:
+        """Caller-owned clients omit streaming usage unless explicitly enabled."""
+        import httpx
+        from openai import AsyncOpenAI, OpenAI
+
+        from deepagents_code.config import use_environment
+
+        _stored_provider_config(monkeypatch, "openai")
+        endpoint = "https://custom.example/v1"
+
+        def respond(request: httpx.Request) -> httpx.Response:
+            assert str(request.url) == endpoint + "/chat/completions"
+            payload = json.loads(request.content)
+            assert payload["stream"] is True
+            if stream_usage:
+                assert payload["stream_options"] == {"include_usage": True}
+            else:
+                assert "stream_options" not in payload
+            chunk = {
+                "choices": [{"delta": {"content": "Hello"}, "finish_reason": "stop"}]
+            }
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/event-stream"},
+                text=f"data: {json.dumps(chunk)}\n\ndata: [DONE]\n\n",
+            )
+
+        with httpx.Client(transport=httpx.MockTransport(respond)) as http_client:
+            async with httpx.AsyncClient(
+                transport=httpx.MockTransport(respond)
+            ) as http_async_client:
+                extra_kwargs: dict[str, object] = {
+                    "use_responses_api": False,
+                    "http_client": http_client,
+                    "http_async_client": http_async_client,
+                }
+                if client_kind == "sync":
+                    extra_kwargs["client"] = OpenAI(
+                        api_key="custom-key",
+                        base_url=endpoint,
+                        http_client=http_client,
+                        max_retries=0,
+                    ).chat.completions
+                else:
+                    extra_kwargs["async_client"] = AsyncOpenAI(
+                        api_key="custom-key",
+                        base_url=endpoint,
+                        http_client=http_async_client,
+                        max_retries=0,
+                    ).chat.completions
+                if stream_usage is not None:
+                    extra_kwargs["stream_usage"] = stream_usage
+                with use_environment({}):
+                    model = create_model(
+                        "openai:gpt-5.5", extra_kwargs=extra_kwargs
+                    ).model
+                chunks = (
+                    list(model.stream("Hi"))
+                    if client_kind == "sync"
+                    else [chunk async for chunk in model.astream("Hi")]
+                )
+                assert "".join(chunk.text for chunk in chunks) == "Hello"
+
+    @pytest.mark.parametrize(
+        ("provider", "endpoint_alias"),
+        [
+            ("baseten", "baseten_api_base"),
+            ("deepseek", "api_base"),
+            ("fireworks", "fireworks_api_base"),
+            ("groq", "groq_api_base"),
+            ("mistralai", "endpoint"),
+            ("together", "together_api_base"),
+            ("xai", "xai_api_base"),
+        ],
+    )
+    async def test_stored_key_preserves_explicit_endpoint_alias(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        provider: str,
+        endpoint_alias: str,
+    ) -> None:
+        """Explicit aliases select both clients' endpoints over native defaults."""
+        import httpx
+
+        from deepagents_code.config import use_environment
+
+        pytest.importorskip(f"langchain_{provider}")
+        _stored_provider_config(monkeypatch, provider)
+        endpoint = "https://selected.example/v1"
+        environment = dict.fromkeys(
+            model_config.PROVIDER_BASE_URL_ENV.get(provider, ()),
+            "https://gateway.example/v1",
         )
+        for name, value in environment.items():
+            monkeypatch.setenv(name, value)
 
-        with use_environment({"OPENAI_BASE_URL": "https://workspace.example/v1"}):
-            create_model("openai:gpt-5.5")
+        with use_environment(environment):
+            model = create_model(
+                f"{provider}:test-model", extra_kwargs={endpoint_alias: endpoint}
+            ).model
 
-        kwargs = mock_init_chat_model.call_args.kwargs
-        assert kwargs["api_key"] == "stored-key"
-        assert "base_url" not in kwargs
+        sync_client, async_client = (
+            getattr(model, name) for name in ("client", "async_client")
+        )
+        if provider != "mistralai":
+            sync_client, async_client = sync_client._client, async_client._client
+        try:
+            assert str(sync_client.base_url).rstrip("/") == endpoint
+            assert str(async_client.base_url).rstrip("/") == endpoint
+        finally:
+            sync_client.close()
+            if isinstance(async_client, httpx.AsyncClient):
+                await async_client.aclose()
+            else:
+                await async_client.close()
+            # OpenAI-based integrations may allocate separate root clients.
+            if root_client := getattr(model, "root_client", None):
+                root_client.close()
+            if root_async_client := getattr(model, "root_async_client", None):
+                await root_async_client.close()
 
     @patch("langchain.chat_models.init_chat_model")
     def test_explicit_key_does_not_use_stored_endpoint(
@@ -1683,38 +1918,372 @@ class TestWorkspaceStoredCredentials:
         assert kwargs["api_key"] == "caller-key"
         assert "base_url" not in kwargs
 
-    @patch("langchain.chat_models.init_chat_model")
-    def test_stored_anthropic_key_clears_endpoint_and_headers(
-        self,
-        mock_init_chat_model: Mock,
-        monkeypatch: pytest.MonkeyPatch,
+    @pytest.mark.parametrize("endpoint_source", ["native", "stored", "client_options"])
+    async def test_stored_google_key_uses_its_endpoint_in_sdk_client(
+        self, monkeypatch: pytest.MonkeyPatch, endpoint_source: str
     ) -> None:
-        """A native Anthropic key gets explicit native transport settings."""
-        from deepagents_code.config import create_model, use_environment
+        """Google cannot reread a gateway after scoped endpoint resolution."""
+        import os
 
-        mock_model = Mock()
-        mock_model.profile = {"max_input_tokens": 128000, "tool_calling": True}
-        mock_init_chat_model.return_value = mock_model
-        monkeypatch.setattr(
-            "deepagents_code.model_config.auth_store.get_stored_key",
-            lambda provider: "stored-key" if provider == "anthropic" else None,
+        from langchain_google_genai import ChatGoogleGenerativeAI
+
+        from deepagents_code.config import use_environment
+
+        endpoint = "https://selected.example"
+        _stored_provider_config(
+            monkeypatch,
+            "google_genai",
+            base_url=endpoint if endpoint_source == "stored" else None,
         )
-        monkeypatch.setattr(
-            "deepagents_code.model_config.auth_store.get_stored_base_url",
-            lambda _provider: None,
-        )
+        monkeypatch.setenv("GOOGLE_API_KEY", "inherited-key")
+        monkeypatch.setenv("GOOGLE_GEMINI_BASE_URL", "https://gateway.example")
+        environment = {
+            "GOOGLE_API_KEY": "inherited-key",
+            "GOOGLE_GEMINI_BASE_URL": "https://gateway.example",
+        }
+        extra_kwargs: dict[str, Any] = {"vertexai": False}
+        if endpoint_source == "client_options":
+            extra_kwargs["client_options"] = {"api_endpoint": endpoint}
+        with use_environment(environment):
+            result = create_model("google_genai:gemini-test", extra_kwargs=extra_kwargs)
+
+        model = result.model
+        assert isinstance(model, ChatGoogleGenerativeAI)
+        assert model.client is not None
+        try:
+            expected = (
+                "https://generativelanguage.googleapis.com/"
+                if endpoint_source == "native"
+                else endpoint
+            )
+            assert model.client._api_client._http_options.base_url == expected
+            assert model.client._api_client.api_key == "stored-key"
+            assert os.environ["GOOGLE_GEMINI_BASE_URL"] == "https://gateway.example"
+            assert os.environ["GOOGLE_API_KEY"] == "inherited-key"
+        finally:
+            model.client.close()
+            await model.client.aio.aclose()
+
+    @pytest.mark.parametrize(
+        ("provider", "endpoint_env", "expected_endpoint"),
+        [
+            ("groq", "GROQ_BASE_URL", "https://api.groq.com"),
+            ("groq", "GROQ_API_BASE", "https://api.groq.com"),
+            (
+                "fireworks",
+                "FIREWORKS_API_BASE",
+                "https://api.fireworks.ai/inference",
+            ),
+        ],
+    )
+    async def test_stored_optional_provider_key_uses_its_endpoint_in_sdk_clients(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        provider: str,
+        endpoint_env: str,
+        expected_endpoint: str,
+    ) -> None:
+        """Both sync and async SDK clients bypass inherited gateway fallbacks."""
+        import os
+
+        from deepagents_code.config import use_environment
+
+        pytest.importorskip(f"langchain_{provider}")
+        _stored_provider_config(monkeypatch, provider)
+        key_env = model_config.PROVIDER_API_KEY_ENV[provider]
+        monkeypatch.setenv(key_env, "inherited-key")
+        monkeypatch.setenv(endpoint_env, "https://gateway.example/v1")
         with use_environment(
-            {
-                "ANTHROPIC_BASE_URL": "https://workspace.example/v1",
-                "ANTHROPIC_CUSTOM_HEADERS": "X-Api-Key: gateway-key",
-            }
+            {key_env: "inherited-key", endpoint_env: "https://gateway.example/v1"}
         ):
-            create_model("anthropic:claude-sonnet-4-6")
+            model = create_model(f"{provider}:test-model").model
 
-        kwargs = mock_init_chat_model.call_args.kwargs
-        assert kwargs["api_key"] == "stored-key"
-        assert kwargs["base_url"] == "https://api.anthropic.com"
-        assert kwargs["default_headers"] == {}
+        attributes = (
+            ("_sdk_client", "_async_sdk_client")
+            if provider == "fireworks"
+            else ("client", "async_client")
+        )
+        sync_client, async_client = (getattr(model, name) for name in attributes)
+        if provider == "groq":
+            sync_client, async_client = sync_client._client, async_client._client
+        try:
+            for client in (sync_client, async_client):
+                assert str(client.base_url).rstrip("/") == expected_endpoint
+                assert client.api_key == "stored-key"
+            assert os.environ[endpoint_env] == "https://gateway.example/v1"
+            assert os.environ[key_env] == "inherited-key"
+        finally:
+            sync_client.close()
+            await async_client.close()
+
+    @pytest.mark.parametrize("class_kind", ["subclass", "openai"])
+    async def test_perplexity_class_path_invokes_with_resolved_endpoint(
+        self, monkeypatch: pytest.MonkeyPatch, class_kind: str
+    ) -> None:
+        """Class-path models use the configured endpoint for sync and async calls."""
+        import os
+        from functools import partial
+
+        import httpx
+        from langsmith import tracing_context
+
+        from deepagents_code.config import use_environment
+
+        endpoint = "https://selected.example/v1"
+        config = _stored_provider_config(monkeypatch, "perplexity")
+        config.providers["perplexity"]["base_url"] = endpoint
+        integration = None
+        if class_kind == "openai":
+            class_path = "langchain_openai:ChatOpenAI"
+        else:
+            integration = pytest.importorskip("langchain_perplexity.chat_models")
+
+            class CustomPerplexity(integration.ChatPerplexity):
+                pass
+
+            monkeypatch.setattr(
+                sys.modules[__name__],
+                "CustomPerplexity",
+                CustomPerplexity,
+                raising=False,
+            )
+            class_path = f"{__name__}:CustomPerplexity"
+        config.providers["perplexity"]["class_path"] = class_path
+        monkeypatch.setenv("PERPLEXITY_BASE_URL", "https://gateway.example/v1")
+
+        def respond(request: httpx.Request) -> httpx.Response:
+            assert str(request.url) == endpoint + "/chat/completions"
+            assert request.headers["authorization"] == "Bearer stored-key"
+            assert "base_url" not in json.loads(request.content)
+            return httpx.Response(
+                200,
+                json={
+                    "id": "test-completion",
+                    "model": "test-model",
+                    "choices": [{"message": {"role": "assistant", "content": "Hello"}}],
+                },
+            )
+
+        with httpx.Client(transport=httpx.MockTransport(respond)) as http_client:
+            async with httpx.AsyncClient(
+                transport=httpx.MockTransport(respond)
+            ) as http_async_client:
+                extra_kwargs: dict[str, object] = {}
+                if integration is not None:
+                    monkeypatch.setattr(
+                        integration,
+                        "Perplexity",
+                        partial(integration.Perplexity, http_client=http_client),
+                    )
+                    monkeypatch.setattr(
+                        integration,
+                        "AsyncPerplexity",
+                        partial(
+                            integration.AsyncPerplexity, http_client=http_async_client
+                        ),
+                    )
+                else:
+                    extra_kwargs.update(
+                        http_client=http_client,
+                        http_async_client=http_async_client,
+                        use_responses_api=False,
+                    )
+                with use_environment(
+                    {"PERPLEXITY_BASE_URL": "https://gateway.example/v1"}
+                ):
+                    model = create_model(
+                        "perplexity:test-model", extra_kwargs=extra_kwargs
+                    ).model
+                with tracing_context(enabled=False):
+                    assert model.invoke("Hi").content == "Hello"
+                    assert (await model.ainvoke("Hi")).content == "Hello"
+        assert os.environ["PERPLEXITY_BASE_URL"] == "https://gateway.example/v1"
+
+    @pytest.mark.parametrize("selector", ["parameter", "environment", "project"])
+    async def test_stored_google_key_preserves_vertex_endpoint(
+        self, monkeypatch: pytest.MonkeyPatch, selector: str
+    ) -> None:
+        """Selecting Vertex must not force Google's Gemini Developer API URL."""
+        from google.auth.credentials import AnonymousCredentials
+        from langchain_google_genai import ChatGoogleGenerativeAI
+
+        from deepagents_code.config import use_environment
+
+        _stored_provider_config(monkeypatch, "google_genai")
+        monkeypatch.setattr(
+            "google.genai._api_client.load_auth",
+            lambda **_kwargs: (AnonymousCredentials(), "test-project"),
+        )
+        monkeypatch.setenv("GOOGLE_API_KEY", "test-key")
+        monkeypatch.setenv("GOOGLE_GEMINI_BASE_URL", "https://gateway.example")
+        monkeypatch.delenv("GOOGLE_VERTEX_BASE_URL", raising=False)
+        monkeypatch.delenv("GOOGLE_GENAI_USE_VERTEXAI", raising=False)
+        extra_kwargs: dict[str, Any] = {"location": "us-central1"}
+        if selector == "parameter":
+            extra_kwargs["vertexai"] = True
+        elif selector == "environment":
+            monkeypatch.setenv("GOOGLE_GENAI_USE_VERTEXAI", "true")
+        else:
+            extra_kwargs["project"] = "test-project"
+
+        with use_environment({}):
+            model = create_model(
+                "google_genai:gemini-test", extra_kwargs=extra_kwargs
+            ).model
+
+        assert isinstance(model, ChatGoogleGenerativeAI)
+        assert model.client is not None
+        try:
+            assert model.client._api_client._http_options.base_url == (
+                "https://us-central1-aiplatform.googleapis.com/"
+            )
+        finally:
+            model.client.close()
+            await model.client.aio.aclose()
+
+    @pytest.mark.parametrize(
+        ("provider", "endpoint_source"),
+        [
+            ("openai", "native"),
+            ("anthropic", "native"),
+            ("fireworks", "native"),
+            ("perplexity", "native"),
+            ("anthropic", "stored"),
+            ("perplexity", "stored"),
+            ("openai", "caller"),
+        ],
+    )
+    async def test_stored_key_drops_gateway_headers_only_for_native_requests(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        provider: str,
+        endpoint_source: str,
+    ) -> None:
+        """Requests use native auth without changing another workspace's gateway."""
+        import os
+
+        import httpx
+        from langsmith import tracing_context
+
+        from deepagents_code.config import use_environment
+
+        pytest.importorskip(f"langchain_{provider}")
+        endpoint = "https://selected.example"
+        _stored_provider_config(
+            monkeypatch,
+            provider,
+            base_url=endpoint if endpoint_source == "stored" else None,
+        )
+        prefix = provider.upper()
+        auth_header = "X-Api-Key" if provider == "anthropic" else "Authorization"
+        native_auth = "stored-key" if provider == "anthropic" else "Bearer stored-key"
+        environment = {
+            f"{prefix}_BASE_URL": "https://gateway.example",
+            f"{prefix}_CUSTOM_HEADERS": (
+                f"{auth_header}: gateway-key\nX-Gateway-Token: gateway-token\n"
+                "x-request-source: inherited"
+            ),
+        }
+        for name, value in environment.items():
+            monkeypatch.setenv(name, value)
+        requests: list[httpx.Request] = []
+
+        def respond(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            if provider == "anthropic":
+                return httpx.Response(
+                    200,
+                    json={
+                        "id": "test-message",
+                        "type": "message",
+                        "role": "assistant",
+                        "model": "test-model",
+                        "content": [{"type": "text", "text": "Hello"}],
+                        "stop_reason": "end_turn",
+                        "usage": {"input_tokens": 1, "output_tokens": 1},
+                    },
+                )
+            return httpx.Response(
+                200,
+                json={
+                    "id": "test-completion",
+                    "model": "test-model",
+                    "choices": [
+                        {
+                            "message": {"role": "assistant", "content": "Hello"},
+                            "finish_reason": "stop",
+                        }
+                    ],
+                },
+            )
+
+        transport = httpx.MockTransport(respond)
+        monkeypatch.setattr(
+            httpx.Client, "_transport_for_url", lambda *_args: transport
+        )
+        monkeypatch.setattr(
+            httpx.AsyncClient, "_transport_for_url", lambda *_args: transport
+        )
+        if provider in {"openai", "anthropic"}:
+            module = (
+                "langchain_openai.chat_models.base"
+                if provider == "openai"
+                else "langchain_anthropic.chat_models"
+            )
+            monkeypatch.setattr(
+                f"{module}._get_default_httpx_client",
+                lambda *_args, **_kwargs: httpx.Client(transport=transport),
+            )
+            monkeypatch.setattr(
+                f"{module}._get_default_async_httpx_client",
+                lambda *_args, **_kwargs: httpx.AsyncClient(transport=transport),
+            )
+        extra_kwargs: dict[str, object] = {}
+        if provider in {"openai", "anthropic"} and endpoint_source == "native":
+            extra_kwargs["default_headers"] = {"X-Request-Source": "caller"}
+        if provider == "openai":
+            extra_kwargs["use_responses_api"] = False
+        if endpoint_source == "caller":
+            extra_kwargs["base_url"] = endpoint
+        with use_environment(environment):
+            model = create_model(
+                f"{provider}:test-model",
+                extra_kwargs=extra_kwargs,
+            ).model
+        clients = {
+            "openai": ("root_client", "root_async_client"),
+            "anthropic": ("_client", "_async_client"),
+            "fireworks": ("_sdk_client", "_async_sdk_client"),
+            "perplexity": ("client", "async_client"),
+        }[provider]
+        native_host = {
+            "openai": "api.openai.com",
+            "anthropic": "api.anthropic.com",
+            "fireworks": "api.fireworks.ai",
+            "perplexity": "api.perplexity.ai",
+        }[provider]
+        try:
+            with tracing_context(enabled=False):
+                assert model.invoke("Hi").content == "Hello"
+                assert (await model.ainvoke("Hi")).content == "Hello"
+            assert len(requests) == 2
+            for request in requests:
+                native = endpoint_source == "native"
+                assert request.url.host == (
+                    native_host if native else "selected.example"
+                )
+                assert request.headers[auth_header] == (
+                    native_auth if native else "gateway-key"
+                )
+                assert request.headers.get("x-gateway-token") == (
+                    None if native else "gateway-token"
+                )
+                if native and provider in {"openai", "anthropic"}:
+                    assert request.headers["x-request-source"] == "caller"
+            assert all(os.environ[name] == value for name, value in environment.items())
+        finally:
+            getattr(model, clients[0]).close()
+            await getattr(model, clients[1]).close()
 
     @patch("langchain.chat_models.init_chat_model")
     def test_corrupt_store_drops_the_inherited_endpoint(
@@ -2552,6 +3121,53 @@ class TestLangsmithKeyShadowedByEmptyOverride:
 
 class TestLangsmithSecretRedaction:
     """Tests for LangSmith trace secret redaction configuration."""
+
+    def test_deferred_install_preserves_live_environment(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import os
+        from concurrent.futures import ThreadPoolExecutor
+        from threading import Event
+
+        from langsmith import client as client_module
+
+        entered = Event()
+        updated = Event()
+
+        def load_profile() -> None:
+            entered.set()
+            assert updated.wait(timeout=5)
+
+        monkeypatch.setattr(
+            config_module,
+            "_bootstrap_state",
+            config_module._BootstrapState(done=True, redaction_pending=True),
+        )
+        monkeypatch.setenv("LANGSMITH_TRACING", "true")
+        monkeypatch.setenv("LANGSMITH_API_KEY", "lsv2_test")
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_REDACT", "true")
+        monkeypatch.setenv("DCODE_ENV_UPDATE", "before")
+        monkeypatch.setattr(
+            client_module._profiles, "load_profile_client_config", load_profile
+        )
+        with (
+            patch("langsmith.Client"),
+            patch("langsmith.configure") as configure,
+            patch.object(os.environ, "clear", wraps=os.environ.clear) as clear,
+            ThreadPoolExecutor(max_workers=1) as executor,
+        ):
+            worker = executor.submit(config_module.ensure_langsmith_secret_redaction)
+            try:
+                assert entered.wait(timeout=5)
+                os.environ["DCODE_ENV_UPDATE"] = "after"
+            finally:
+                updated.set()
+            worker.result(timeout=5)
+
+        clear.assert_not_called()
+        assert os.environ["DCODE_ENV_UPDATE"] == "after"
+        assert not config_module._bootstrap_state.redaction_pending
+        configure.assert_called_once()
 
     def test_redaction_can_be_disabled_by_env(
         self,
@@ -4127,7 +4743,7 @@ class TestQuietSdkLogging:
         for exc in (anyio.ClosedResourceError(), ValueError("bad json")):
             try:
                 _raise(exc)
-            except (anyio.ClosedResourceError, ValueError):
+            except anyio.ClosedResourceError, ValueError:
                 transport_logger.exception("Error parsing JSON response")
 
         assert captured == ["Error parsing JSON response"]
@@ -4601,9 +5217,12 @@ class TestCreateModelAnthropicThinkingBinding:
         }
         assert kwargs["betas"] == ["thinking-binding-controls-2026-08-01"]
 
+    @pytest.mark.parametrize(
+        "model_name", ["claude-opus-5", "claude-sonnet-5-5", "claude-haiku-5-5"]
+    )
     @pytest.mark.parametrize("display", [None, "summarized", "omitted"])
     def test_preserves_reasoning_display_in_anthropic_payload(
-        self, display: str | None
+        self, display: str | None, model_name: str
     ) -> None:
         """Binding controls retain visible reasoning and explicit display choices."""
         from langchain_anthropic import ChatAnthropic
@@ -4615,7 +5234,7 @@ class TestCreateModelAnthropicThinkingBinding:
         }
         if display is not None:
             params["thinking"] = {"type": "adaptive", "display": display}
-        model = create_model("anthropic:claude-opus-5", extra_kwargs=params).model
+        model = create_model(f"anthropic:{model_name}", extra_kwargs=params).model
         assert isinstance(model, ChatAnthropic)
 
         payload = model._get_request_payload([HumanMessage("Say hello")])
@@ -4627,6 +5246,51 @@ class TestCreateModelAnthropicThinkingBinding:
         }
         assert payload["output_config"]["effort"] == "high"
         assert "thinking-binding-controls-2026-08-01" in payload["betas"]
+
+    def test_haiku_sidecar_profile_and_forced_tool_payload(self) -> None:
+        from langchain_anthropic import ChatAnthropic
+        from langchain_core.messages import HumanMessage
+        from langchain_core.runnables import RunnableBinding
+        from pydantic import BaseModel
+
+        class Decision(BaseModel):
+            allowed: bool
+
+        result = create_model(
+            "anthropic:claude-haiku-5-5",
+            extra_kwargs={"api_key": "test-key", "reasoning_effort": "medium"},
+            bind_preserved_thinking=False,
+        )
+        model = result.model
+        assert isinstance(model, ChatAnthropic)
+        assert result.context_limit == 1_000_000
+        assert model.profile is not None
+        assert model.profile["max_output_tokens"] == 128_000
+        bound = model.bind_tools([Decision], tool_choice="Decision")
+        assert isinstance(bound, RunnableBinding)
+        payload = model._get_request_payload(
+            [HumanMessage("Is this allowed?")], **bound.kwargs
+        )
+        assert payload["tool_choice"] == {"type": "tool", "name": "Decision"}
+        assert payload["output_config"]["effort"] == "medium"
+        assert payload["thinking"] == {"type": "adaptive", "display": "summarized"}
+        assert not {"temperature", "top_p", "top_k", "betas"} & payload.keys()
+
+    def test_haiku_fallback_preserves_upstream_and_explicit_profiles(self) -> None:
+        result = create_model(
+            "anthropic:claude-haiku-5-5",
+            extra_kwargs={
+                "api_key": "test-key",
+                "profile": {"max_input_tokens": 250_000},
+            },
+        )
+        assert result.context_limit == 250_000
+        overridden = create_model(
+            "anthropic:claude-haiku-5-5",
+            extra_kwargs={"api_key": "test-key"},
+            profile_overrides={"max_input_tokens": 500_000},
+        )
+        assert overridden.context_limit == 500_000
 
     @patch("langchain.chat_models.init_chat_model")
     def test_opt_out_leaves_thinking_unset(self, mock_init: Mock) -> None:
@@ -4889,7 +5553,10 @@ class TestCreateModelEdgeCaseParsing:
         assert result.provider == "bedrock"
         assert result.model_name == model_id
         assert mock_init_chat_model.call_args.args == (model_id,)
-        assert mock_init_chat_model.call_args.kwargs["model_provider"] == "bedrock"
+        assert (
+            mock_init_chat_model.call_args.kwargs["model_provider"]
+            == "bedrock_converse"
+        )
 
     @patch("langchain.chat_models.init_chat_model")
     def test_versioned_bedrock_vendor_id_not_misparsed(
@@ -4911,7 +5578,10 @@ class TestCreateModelEdgeCaseParsing:
         assert result.provider == "bedrock"
         assert result.model_name == model_id
         assert mock_init_chat_model.call_args.args == (model_id,)
-        assert mock_init_chat_model.call_args.kwargs["model_provider"] == "bedrock"
+        assert (
+            mock_init_chat_model.call_args.kwargs["model_provider"]
+            == "bedrock_converse"
+        )
 
     @patch("langchain.chat_models.init_chat_model")
     def test_cross_region_bedrock_id_treated_as_bare_model(
@@ -4944,7 +5614,114 @@ class TestCreateModelEdgeCaseParsing:
 
         assert result.provider == "bedrock"
         assert result.model_name == model_id
-        assert mock_init_chat_model.call_args.kwargs["model_provider"] == "bedrock"
+        assert (
+            mock_init_chat_model.call_args.kwargs["model_provider"]
+            == "bedrock_converse"
+        )
+
+    @pytest.mark.parametrize(
+        ("model_spec", "init_provider"),
+        [
+            ("us.openai.gpt-6-sol", "bedrock_converse"),
+            ("global.openai.gpt-6-luna", "bedrock_converse"),
+            ("openai.gpt-oss-120b-1:0", "bedrock_converse"),
+            ("bedrock:us.openai.gpt-6-sol", "bedrock_converse"),
+            ("us.anthropic.claude-sonnet-4-5-20250929-v1:0", "bedrock"),
+            ("global.anthropic.claude-sonnet-4-5-20250929-v1:0", "bedrock"),
+            (
+                (
+                    "bedrock:arn:aws:bedrock:us-east-1:123456789012:"
+                    "application-inference-profile/abc"
+                ),
+                "bedrock",
+            ),
+        ],
+    )
+    @patch("langchain.chat_models.init_chat_model")
+    def test_non_anthropic_bedrock_id_uses_converse(
+        self, mock_init_chat_model: Mock, model_spec: str, init_provider: str
+    ) -> None:
+        """Non-Anthropic Bedrock IDs are built on Converse so tools reach the model.
+
+        `ChatBedrock` binds tools only for Anthropic models and silently drops
+        them for other vendors, which left the coding agent with no tools.
+        """
+        mock_model = Mock()
+        mock_model.profile = None
+        mock_init_chat_model.return_value = mock_model
+
+        result = create_model(model_spec)
+
+        assert result.provider == "bedrock"
+        assert mock_init_chat_model.call_args.kwargs["model_provider"] == init_provider
+
+    @pytest.mark.parametrize(
+        "model_spec",
+        [
+            "amazon.nova-pro-v1:0",
+            "us.amazon.nova-pro-v1:0",
+            "bedrock:eu.amazon.nova-pro-v1:0",
+        ],
+    )
+    @pytest.mark.parametrize("override_params", [False, True])
+    def test_nova_preserves_inference_settings_and_tools(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        model_spec: str,
+        override_params: bool,
+    ) -> None:
+        """Nova sends configured inference settings and tools through Converse."""
+        from langsmith import tracing_context
+
+        pytest.importorskip("langchain_aws")
+        model_id = model_spec.removeprefix("bedrock:")
+        (tmp_path / "config.toml").write_text(f"""
+[models.providers.bedrock]
+models = ["{model_id}"]
+[models.providers.bedrock.params."{model_id}".model_kwargs]
+max_tokens = 123
+temperature = 0.25
+top_p = 0.9
+stop_sequences = ["DONE"]
+""")
+        clear_caches()
+        client = Mock()
+        client.converse.return_value = {
+            "output": {"message": {"role": "assistant", "content": [{"text": "OK"}]}},
+            "stopReason": "end_turn",
+            "usage": {"inputTokens": 1, "outputTokens": 1, "totalTokens": 2},
+            "metrics": {"latencyMs": 1},
+        }
+        monkeypatch.setattr(
+            "langchain_aws.llms.bedrock.create_aws_client", lambda **_: Mock()
+        )
+        monkeypatch.setattr(
+            "langchain_aws.chat_models.bedrock_converse.create_aws_client",
+            lambda **_: Mock(),
+        )
+        kwargs: dict[str, object] = {"client": client, "region_name": "us-east-1"}
+        expected = {
+            "maxTokens": 123,
+            "temperature": 0.25,
+            "topP": 0.9,
+            "stopSequences": ["DONE"],
+        }
+        if override_params:
+            kwargs.update(max_tokens=456, temperature=0.0, stop_sequences=["STOP"])
+            expected.update(maxTokens=456, temperature=0.0, stopSequences=["STOP"])
+        with config_module.use_environment({}), tracing_context(enabled=False):
+            result = create_model(model_spec, extra_kwargs=kwargs)
+            result.model.bind_tools(
+                [{"name": "lookup", "description": "Look up a value", "parameters": {}}]
+            ).invoke("Hello")
+
+        request = client.converse.call_args.kwargs
+        assert result.provider == "bedrock"
+        assert request["modelId"] == model_id
+        assert request["inferenceConfig"] == expected
+        assert not request.get("additionalModelRequestFields")
+        assert request["toolConfig"]["tools"][0]["toolSpec"]["name"] == "lookup"
 
     @patch("langchain.chat_models.init_chat_model")
     def test_explicit_provider_not_hijacked_by_bedrock(
@@ -5153,6 +5930,98 @@ class TestPrefixedLangsmithBridge:
         config_mod._apply_prefixed_langsmith_env()
 
         assert os.environ["LANGSMITH_TRACING"] == ""
+
+
+class TestTracingOptOut:
+    @pytest.mark.parametrize("off", ["false", "0", "off", "no"])
+    def test_status_and_sdk_publication_honor_opt_out(
+        self, monkeypatch: pytest.MonkeyPatch, off: str
+    ) -> None:
+        import os
+
+        snapshot = dict.fromkeys(config_module._TRACING_ENABLE_ENV_VARS, "true")
+        snapshot.update(
+            {
+                "LANGSMITH_API_KEY": "kept-key",
+                "DEEPAGENTS_CODE_LANGSMITH_TRACING": off,
+                "DEEPAGENTS_CODE_LANGCHAIN_TRACING_V2": "true",
+            }
+        )
+        for key, value in snapshot.items():
+            monkeypatch.setenv(key, value)
+        status = config_module.get_tracing_status()
+        assert not status.enabled
+        assert status.explicitly_disabled
+        config_module.reconcile_tracing_environment(snapshot)
+        assert all(
+            os.environ[var] == "false" for var in config_module._TRACING_ENABLE_ENV_VARS
+        )
+        assert os.environ["LANGSMITH_API_KEY"] == "kept-key"
+        assert not config_module._tracing_enabled_from(snapshot)
+
+    @pytest.mark.parametrize("stored_key", [False, True])
+    def test_bootstrap_preserves_user_commands_and_server_opt_out(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stored_key: bool
+    ) -> None:
+        import os
+
+        from deepagents_code import auth_store
+        from deepagents_code.client.launch.server import _build_server_env
+
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".env").write_text(
+            "DEEPAGENTS_CODE_LANGSMITH_TRACING=true\nLANGSMITH_TRACING=true\n"
+        )
+        if stored_key:
+            auth_store.set_stored_key("langsmith", "stored-key")
+        monkeypatch.setattr(
+            config_module, "_bootstrap_state", config_module._BootstrapState()
+        )
+        monkeypatch.setenv("LANGSMITH_API_KEY", "env-key")
+        monkeypatch.setenv("LANGSMITH_TRACING", "true")
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_TRACING", "false")
+        monkeypatch.setenv("LANGCHAIN_TRACING_V2", "true")
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGCHAIN_TRACING_V2", "true")
+        config_module._ensure_bootstrap()
+        assert config_module._bootstrap_state.error is None
+        apply_stored_langsmith_auth()
+        assert all(
+            os.environ[var] == "false" for var in config_module._TRACING_ENABLE_ENV_VARS
+        )
+        server_env = _build_server_env()
+        assert server_env["DEEPAGENTS_CODE_LANGSMITH_TRACING"] == "false"
+        assert not config_module._tracing_enabled_from(server_env)
+        config_module.restore_user_langsmith_env(server_env)
+        assert server_env["LANGSMITH_TRACING"] == "true"
+        assert server_env["LANGCHAIN_TRACING_V2"] == "true"
+        assert "DEEPAGENTS_CODE_LANGSMITH_TRACING" not in server_env
+        if stored_key:
+            assert auth_store.get_stored_key("langsmith") == "stored-key"
+
+
+class TestClearLangSmithEnvCaches:
+    """Env changes must reach the SDK without importing it at startup."""
+
+    def test_clears_loaded_sdk_cache(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from langsmith import utils as ls_utils
+
+        monkeypatch.setenv("LANGSMITH_PROJECT", "before")
+        assert ls_utils.get_env_var("PROJECT") == "before"
+        monkeypatch.setenv("LANGSMITH_PROJECT", "after")
+
+        config_module._clear_langsmith_env_caches()
+
+        assert ls_utils.get_env_var("PROJECT") == "after"
+
+    def test_does_not_import_unloaded_sdk(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An SDK that was never imported has no cache to clear."""
+        monkeypatch.delitem(sys.modules, "langsmith.utils")
+
+        config_module._clear_langsmith_env_caches()
+
+        assert "langsmith.utils" not in sys.modules
 
 
 class TestTracingEnvironmentReconcile:
@@ -5505,6 +6374,81 @@ class TestUserLangsmithEnvironment:
             var in env or f"DEEPAGENTS_CODE_{var}" in env
             for var in config_mod._USER_LANGSMITH_ENV_VARS
         )
+
+
+class TestDeferredLangsmithRedaction:
+    """A deferred redacting-client install must not leave a tracing gap."""
+
+    @pytest.fixture(autouse=True)
+    def _fresh_bootstrap(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> Iterator[Mock]:
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(
+            config_module, "_bootstrap_state", config_module._BootstrapState()
+        )
+        with patch(
+            "deepagents_code.config.configure_langsmith_secret_redaction",
+            return_value=True,
+        ) as install:
+            self.install = install
+            yield install
+
+    def test_bootstrap_installs_client_unless_deferred(self) -> None:
+        config_module._ensure_bootstrap()
+
+        self.install.assert_called_once_with()
+        assert not config_module._bootstrap_state.redaction_pending
+
+    def test_create_model_installs_deferred_client_first(self) -> None:
+        """No model, so no traced run, can exist before the deferred install."""
+        config_module.defer_langsmith_secret_redaction()
+        config_module._ensure_bootstrap()
+        self.install.assert_not_called()
+
+        # The unknown provider fails after the gate, before any model exists.
+        with pytest.raises(ModelConfigError):
+            create_model("no-such-provider:model")
+
+        self.install.assert_called_once_with()
+        assert not config_module._bootstrap_state.redaction_pending
+
+    async def test_tui_startup_worker_installs_deferred_client(self) -> None:
+        from unittest.mock import AsyncMock
+
+        from deepagents_code.app import DeepAgentsApp
+
+        config_module.defer_langsmith_secret_redaction()
+        config_module._ensure_bootstrap()
+        app = DeepAgentsApp()
+        with patch.object(app, "_await_prewarm_imports", AsyncMock()):
+            await app._install_deferred_langsmith_redaction()
+
+        self.install.assert_called_once_with()
+        config_module.ensure_langsmith_secret_redaction()
+        self.install.assert_called_once_with()
+
+    def test_failed_install_stays_pending_for_next_caller(self) -> None:
+        config_module.defer_langsmith_secret_redaction()
+        self.install.side_effect = [RuntimeError("boom"), True]
+
+        with pytest.raises(RuntimeError, match="boom"):
+            config_module.ensure_langsmith_secret_redaction()
+        assert config_module._bootstrap_state.redaction_pending
+
+        config_module.ensure_langsmith_secret_redaction()
+        assert self.install.call_count == 2
+        assert not config_module._bootstrap_state.redaction_pending
+
+    def test_auth_install_supersedes_deferred_install(self) -> None:
+        """A deferred install must not replace a client built from newer keys."""
+        config_module.defer_langsmith_secret_redaction()
+        config_module._ensure_bootstrap()
+
+        apply_stored_langsmith_auth(replace_project=True)
+        config_module.ensure_langsmith_secret_redaction()
+
+        self.install.assert_called_once_with()
 
 
 class TestLazySingletons:

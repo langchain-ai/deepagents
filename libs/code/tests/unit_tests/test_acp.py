@@ -1,12 +1,13 @@
 """Tests for dcode-specific ACP approval context."""
 
-from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any, cast
 
 from langchain_core.messages import HumanMessage
 from langgraph.store.memory import InMemoryStore
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
+
     from langgraph.pregel import Pregel
 
     from deepagents_code._cli_context import CLIContextSchema

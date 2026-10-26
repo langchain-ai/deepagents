@@ -4,7 +4,7 @@ import asyncio
 import contextlib
 import re
 import time
-from pathlib import Path
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -30,6 +30,9 @@ from deepagents_code.tui.modals.plugin_manager.models import (
     _MarketplaceRow,
     _PluginRow,
 )
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 def test_plugin_options_preserve_selectable_rows_and_spacers() -> None:
@@ -1620,7 +1623,7 @@ async def test_install_preserves_mcp_login_guidance(
 
 @pytest.mark.parametrize(
     ("key", "expected_option_id"),
-    [("right", "action:install"), ("left", "details-back")],
+    [("right", "action:inspect"), ("left", "details-back")],
 )
 async def test_details_navigation_starts_at_matching_edge(
     key: str, expected_option_id: str

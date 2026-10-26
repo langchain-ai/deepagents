@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import stat
@@ -142,7 +143,7 @@ def _artifacts_root() -> _ArtifactsStorage:
     try:
         _harden_dir(root)
         _probe_writable(root)
-    except (OSError, RuntimeError):
+    except OSError, RuntimeError:
         logger.warning(
             "Predictable per-user artifacts directory is unavailable; routing "
             "large results from a stable virtual prefix to private temporary storage",
@@ -222,7 +223,7 @@ def _offload_fallback_root() -> Path:
         return _UNIQUE_OFFLOAD_FALLBACK_ROOT
     try:
         root = _prepare_user_dir()
-    except (RuntimeError, OSError):
+    except RuntimeError, OSError:
         logger.warning(
             "User data directory is not writable; falling back to temporary "
             "offload storage, which may not persist across restarts",
@@ -240,7 +241,7 @@ def _offload_fallback_root() -> Path:
     path = temp_root / f"deepagents-{suffix}"
     try:
         return _prepare_temp_dir(path)
-    except (OSError, RuntimeError):
+    except OSError, RuntimeError:
         logger.warning(
             "Per-user temporary offload directory is unavailable; creating "
             "a private unique directory",
@@ -333,7 +334,7 @@ def _sweep_offloaded_history(retention_days: int) -> int:
     try:
         archive_dir = _offload_fallback_root() / CONVERSATION_HISTORY_DIRNAME
         candidates = list(archive_dir.iterdir())
-    except (OSError, RuntimeError):
+    except OSError, RuntimeError:
         logger.warning(
             "Could not resolve offloaded history archives for sweep", exc_info=True
         )
@@ -362,13 +363,64 @@ def sweep_offloaded_history() -> int:
         return 0
 
 
+def _handoff_archive_prefix(thread_id: str) -> str:
+    """Persist source ownership in filenames without embedding paths or globs.
+
+    Returns:
+        The stable filename prefix for this source thread's handoffs.
+    """
+    owner = hashlib.sha256(thread_id.encode("utf-8")).hexdigest()
+    return f"handoff_{owner}_"
+
+
+def _delete_archive(archive_path: Path) -> bool:
+    """Remove one archive, logging filesystem failures for best-effort cleanup.
+
+    Returns:
+        Whether the archive was removed.
+    """
+    try:
+        archive_path.unlink()
+    except FileNotFoundError:
+        return False
+    except OSError:
+        logger.warning(
+            "Failed to delete offloaded conversation history %s",
+            archive_path,
+            exc_info=True,
+        )
+        return False
+    logger.debug("Deleted offloaded conversation history %s", archive_path)
+    return True
+
+
+def _delete_handoff_archives(archive_dir: Path, thread_id: str) -> bool:
+    """Remove every recovery snapshot owned by the deleted source thread.
+
+    Returns:
+        Whether at least one snapshot was removed.
+    """
+    deleted = False
+    try:
+        for archive in archive_dir.glob(f"{_handoff_archive_prefix(thread_id)}*.md"):
+            deleted = _delete_archive(archive) or deleted
+    except OSError:
+        logger.warning(
+            "Could not list handoff archives for thread %s", thread_id, exc_info=True
+        )
+    return deleted
+
+
 def delete_offloaded_history(thread_id: str) -> bool:
-    """Remove a thread's offloaded conversation-history archive.
+    """Remove a thread's compaction archive and handoff recovery snapshots.
 
     Deletes the per-thread markdown file written by the local-mode
     `conversation_history` backend (`{root}/conversation_history/{thread_id}.md`),
     resolving `root` with `_offload_fallback_root` so the persistent
     `~/.deepagents` location and any temporary fallback are both covered.
+    Handoff snapshots encode their source thread's ownership in their filenames
+    and are removed with that source, including snapshots from failed handoffs.
+    A child summary's recovery link lasts only as long as its source archive.
 
     Best-effort: filesystem failures are logged and swallowed rather than
     raised, so a failed cleanup never blocks thread deletion. Resolving the
@@ -384,7 +436,7 @@ def delete_offloaded_history(thread_id: str) -> bool:
         thread_id: Thread whose offloaded history should be removed.
 
     Returns:
-        `True` only if an archive file was removed. `False` in every other case:
+        `True` if at least one archive file was removed. `False` otherwise:
         an empty or rejected `thread_id`, an unresolvable offload root, a missing
         archive, or an `unlink` failure.
     """
@@ -392,7 +444,7 @@ def delete_offloaded_history(thread_id: str) -> bool:
         return False
     try:
         archive_dir = _offload_fallback_root() / CONVERSATION_HISTORY_DIRNAME
-    except (OSError, RuntimeError):
+    except OSError, RuntimeError:
         logger.warning(
             "Could not resolve offload root to clean history for thread %s",
             thread_id,
@@ -410,16 +462,5 @@ def delete_offloaded_history(thread_id: str) -> bool:
             thread_id,
         )
         return False
-    try:
-        archive_path.unlink()
-    except FileNotFoundError:
-        return False
-    except OSError:
-        logger.warning(
-            "Failed to delete offloaded conversation history for thread %s",
-            thread_id,
-            exc_info=True,
-        )
-        return False
-    logger.debug("Deleted offloaded conversation history for thread %s", thread_id)
-    return True
+    deleted = _delete_archive(archive_path)
+    return _delete_handoff_archives(archive_dir, thread_id) or deleted

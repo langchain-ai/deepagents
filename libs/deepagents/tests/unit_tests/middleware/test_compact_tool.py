@@ -214,6 +214,8 @@ class TestCompactSuccess:
         assert result.update is not None
         event = result.update["_summarization_event"]
         assert event["cutoff_index"] == 4
+        # Every message present when compacting predates the summary.
+        assert event["created_at_index"] == 10
         # Verify that the summarization event contains the expected values.
         # summary_message is a HumanMessage wrapping the summary text.
         summary_msg = event["summary_message"]
@@ -224,6 +226,31 @@ class TestCompactSuccess:
         update_messages = result.update["messages"]
         assert len(update_messages) == 1
         assert "Summarized 4 messages" in update_messages[0].content
+
+    def test_compact_uses_summarizer(self) -> None:
+        """The compact tool gets its summary from `summarizer` when one is set."""
+        model = _make_mock_model()
+        summ = SummarizationMiddleware(
+            model=model,
+            backend=_make_mock_backend(),
+            trigger=("fraction", 0.85),
+            summarizer=lambda messages: f"Summarizer saw {len(messages)} messages.",
+        )
+        mw = SummarizationToolMiddleware(summ)
+        runtime = _make_runtime(_make_messages(10))
+
+        with (
+            patch.object(summ, "_determine_cutoff_index", return_value=4),
+            patch.object(summ, "_partition_messages", side_effect=lambda msgs, idx: (msgs[:idx], msgs[idx:])),
+            patch.object(summ, "_offload_to_backend", return_value="/conversation_history/session_abc123.md"),
+            patch.object(summ._lc_helper, "_trim_messages_for_summary", side_effect=lambda msgs: msgs),
+        ):
+            result = mw._run_compact(runtime)
+
+        assert isinstance(result, Command)
+        assert result.update is not None
+        assert "Summarizer saw 4 messages." in result.update["_summarization_event"]["summary_message"].content
+        model.invoke.assert_not_called()
 
     def test_compact_success_with_prior_event(self) -> None:
         """State cutoff should be old_cutoff + new_cutoff - 1 with a prior event."""

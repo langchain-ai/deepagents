@@ -273,6 +273,7 @@ def _resolve(
         _ranked_source,
         resolve_auto_classifier_model_with_source,
         resolve_auto_classifier_timeout_with_source,
+        resolve_mcp_tool_timeout_with_source,
         resolve_startup_mode_with_source,
     )
     from deepagents_code.configuration.resolver import (
@@ -318,6 +319,13 @@ def _resolve(
         # runtime rejects; use the bounded resolver so the display matches what
         # the middleware actually enforces.
         timeout, source = resolve_auto_classifier_timeout_with_source(
+            toml_data=toml_data,
+            managed_toml_data=managed_toml_data,
+        )
+        return source != "default", source, timeout
+
+    if option.key == "mcp.tool_timeout":
+        timeout, source = resolve_mcp_tool_timeout_with_source(
             toml_data=toml_data,
             managed_toml_data=managed_toml_data,
         )
@@ -664,6 +672,30 @@ def _config_json_row(
     return row
 
 
+def _print_tracing_summary() -> None:
+    """Show local tracing state and the session/environment opt-outs."""
+    from langsmith.utils import tracing_is_enabled
+
+    from deepagents_code._invocation import invoked_name
+    from deepagents_code.config import (
+        _clear_langsmith_env_caches,
+        console,
+        is_tracing_disabled,
+    )
+
+    _clear_langsmith_env_caches()
+    enabled = not is_tracing_disabled() and tracing_is_enabled() is True
+    console.print("LangSmith agent tracing: " + ("ON" if enabled else "OFF"))
+    console.print(f"Disable for a session: {invoked_name()} --no-tracing", markup=False)
+    console.print("Or set DEEPAGENTS_CODE_LANGSMITH_TRACING=false", markup=False)
+    console.print(
+        "Local configuration only; existing servers are unaffected. "
+        "Local history and model-provider requests are unchanged.",
+        style="dim",
+    )
+    console.print()
+
+
 def _run_config(output_format: OutputFormat, *, verbose: bool) -> int:
     """Resolve every option and print its effective value and source.
 
@@ -728,6 +760,7 @@ def _run_config(output_format: OutputFormat, *, verbose: bool) -> int:
         )
         return 0
 
+    _print_tracing_summary()
     if verbose:
         _print_config_verbose(
             resolved,
@@ -1046,6 +1079,8 @@ def _run_get_section(
         )
         return 0
 
+    if any(opt.group == "Tracing" for opt in options):
+        _print_tracing_summary()
     if verbose:
         _print_config_verbose(resolved, store_error=store_error, health=health)
     else:

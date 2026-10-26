@@ -2,8 +2,6 @@
 
 import asyncio
 from asyncio import Future
-from collections.abc import AsyncIterator, Awaitable, Callable, Generator
-from pathlib import Path
 from time import time
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Literal, cast
@@ -61,6 +59,7 @@ from deepagents_code.tui.textual_adapter import (
     _is_renderable_auto_mode_event,
     _parse_auto_mode_review_event,
     _read_mentioned_file,
+    _tool_call_ids_from_current_turn,
     execute_task_textual,
 )
 from deepagents_code.tui.widgets.messages import (
@@ -74,7 +73,9 @@ from deepagents_code.tui.widgets.messages import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncIterator, Awaitable, Callable, Generator, Mapping
     from contextlib import AbstractContextManager
+    from pathlib import Path
 
     from langchain_core.runnables import RunnableConfig
 
@@ -86,7 +87,7 @@ def _session_state(
     thread_id: str = "thread-1",
     approval_mode: ApprovalMode | str = "manual",
     auto_approve: bool | None = None,
-) -> "TextualSessionState":
+) -> TextualSessionState:
     """Build real session state so the adapter sees its full contract."""
     from deepagents_code.app import TextualSessionState
 
@@ -97,7 +98,7 @@ def _session_state(
     )
 
 
-def _handlers_for(*events: HookEvent) -> "AbstractContextManager[object]":
+def _handlers_for(*events: HookEvent) -> AbstractContextManager[object]:
     """Make every `HooksManager` report handlers for exactly `events`."""
     return patch.object(
         HooksManager,
@@ -300,6 +301,241 @@ class TestInterruptCleanup:
         assistant_msg.stop_stream.assert_awaited_once_with()
         sync_message_content.assert_called_once_with("asst-1", "partial response")
         assert assistant_messages == {}
+
+    async def test_persisted_tool_request_is_not_appended_again(self) -> None:
+        """A checkpointed streamed tool call must not be duplicated by cleanup."""
+        from langchain_core.messages import AIMessage, HumanMessage
+
+        calls: list[str] = []
+        persisted = AIMessage(
+            content="",
+            id="assistant-1",
+            tool_calls=[
+                {
+                    "id": "call-1",
+                    "name": "execute",
+                    "args": {"command": "sleep 120", "timeout": 130},
+                }
+            ],
+        )
+        state = SimpleNamespace(
+            values={"messages": [HumanMessage(content="Run execute"), persisted]}
+        )
+
+        def cancel_runs(_config: object) -> None:
+            calls.append("cancel")
+
+        def get_state(_config: object) -> object:
+            calls.append("get_state")
+            return state
+
+        def update_state(_config: object, _values: dict[str, Any]) -> None:
+            calls.append("update")
+
+        agent = SimpleNamespace(
+            acancel_active_runs=AsyncMock(side_effect=cancel_runs),
+            aget_state=AsyncMock(side_effect=get_state),
+            aupdate_state=AsyncMock(side_effect=update_state),
+        )
+        adapter = TextualUIAdapter(
+            mount_message=AsyncMock(),
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            set_spinner=AsyncMock(),
+            set_active_message=MagicMock(),
+        )
+        adapter._current_tool_messages = {
+            "call-1": _make_tool_widget(
+                "execute", {"command": "sleep 120", "timeout": 130}
+            )
+        }
+        config: RunnableConfig = {"configurable": {"thread_id": "t-1"}}
+
+        await _handle_interrupt_cleanup(
+            adapter=adapter,
+            agent=agent,
+            config=config,
+            pending_text_by_namespace={},
+            captured_input_tokens=0,
+            captured_output_tokens=0,
+            turn_stats=SessionStats(),
+            start_time=0.0,
+        )
+
+        assert calls == ["cancel", "get_state", "update"]
+        agent.aupdate_state.assert_awaited_once()
+        saved = agent.aupdate_state.await_args.args[1]["messages"]
+        assert all(not isinstance(message, AIMessage) for message in saved)
+
+    async def test_fully_persisted_assistant_output_is_not_appended_again(self) -> None:
+        """Checkpointed text and tool calls require only the interruption notice."""
+        from langchain_core.messages import AIMessage
+
+        state = SimpleNamespace(
+            values={
+                "messages": [
+                    AIMessage(
+                        content="I will run that.",
+                        tool_calls=[{"id": "call-1", "name": "execute", "args": {}}],
+                    )
+                ]
+            }
+        )
+        agent = SimpleNamespace(
+            aget_state=AsyncMock(return_value=state),
+            aupdate_state=AsyncMock(),
+        )
+        adapter = TextualUIAdapter(
+            mount_message=AsyncMock(),
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            set_spinner=AsyncMock(),
+            set_active_message=MagicMock(),
+        )
+        adapter._current_tool_messages = {
+            "call-1": _make_tool_widget("execute", {"command": "sleep 120"})
+        }
+
+        await _handle_interrupt_cleanup(
+            adapter=adapter,
+            agent=agent,
+            config={"configurable": {"thread_id": "t-1"}},
+            pending_text_by_namespace={(): "I will run that."},
+            captured_input_tokens=0,
+            captured_output_tokens=0,
+            turn_stats=SessionStats(),
+            start_time=0.0,
+        )
+
+        agent.aupdate_state.assert_awaited_once()
+        saved = agent.aupdate_state.await_args.args[1]["messages"]
+        assert all(not isinstance(message, AIMessage) for message in saved)
+
+    async def test_repeated_text_from_new_invocation_is_preserved(self) -> None:
+        """Matching earlier text does not suppress unsaved output from a later call."""
+        from langchain_core.messages import AIMessage
+
+        state = SimpleNamespace(
+            values={
+                "messages": [
+                    AIMessage(content="Let me check."),
+                    AIMessage(
+                        content="",
+                        tool_calls=[{"id": "call-1", "name": "execute", "args": {}}],
+                    ),
+                ]
+            }
+        )
+        agent = SimpleNamespace(
+            aget_state=AsyncMock(return_value=state),
+            aupdate_state=AsyncMock(),
+        )
+        adapter = TextualUIAdapter(
+            mount_message=AsyncMock(),
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            set_spinner=AsyncMock(),
+            set_active_message=MagicMock(),
+        )
+        adapter._current_tool_messages = {
+            "call-1": _make_tool_widget("execute", {"command": "sleep 120"})
+        }
+
+        await _handle_interrupt_cleanup(
+            adapter=adapter,
+            agent=agent,
+            config={"configurable": {"thread_id": "t-1"}},
+            pending_text_by_namespace={(): "Let me check."},
+            captured_input_tokens=0,
+            captured_output_tokens=0,
+            turn_stats=SessionStats(),
+            start_time=0.0,
+        )
+
+        saved = agent.aupdate_state.await_args.args[1]["messages"]
+        recovered = next(message for message in saved if isinstance(message, AIMessage))
+        assert recovered.content == "Let me check."
+        assert recovered.tool_calls == []
+
+    async def test_checkpoint_read_failure_preserves_unsaved_output(self) -> None:
+        """An indeterminate checkpoint read must not discard partial output."""
+        from langchain_core.messages import AIMessage
+
+        agent = SimpleNamespace(
+            aget_state=AsyncMock(side_effect=RuntimeError("read failed")),
+            aupdate_state=AsyncMock(),
+        )
+        adapter = TextualUIAdapter(
+            mount_message=AsyncMock(),
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            set_spinner=AsyncMock(),
+            set_active_message=MagicMock(),
+        )
+        adapter._current_tool_messages = {
+            "call-1": _make_tool_widget("execute", {"command": "sleep 120"})
+        }
+
+        await _handle_interrupt_cleanup(
+            adapter=adapter,
+            agent=agent,
+            config={"configurable": {"thread_id": "t-1"}},
+            pending_text_by_namespace={(): "partial explanation"},
+            captured_input_tokens=0,
+            captured_output_tokens=0,
+            turn_stats=SessionStats(),
+            start_time=0.0,
+        )
+
+        agent.aupdate_state.assert_awaited_once()
+        recovered = agent.aupdate_state.await_args.args[1]["messages"][0]
+        assert isinstance(recovered, AIMessage)
+        assert recovered.content == "partial explanation"
+        assert [call["id"] for call in recovered.tool_calls] == ["call-1"]
+
+    async def test_partial_text_survives_when_tool_request_was_persisted(self) -> None:
+        """Only the checkpointed tool call is removed from mixed partial output."""
+        from langchain_core.messages import AIMessage
+
+        state = SimpleNamespace(
+            values={
+                "messages": [
+                    AIMessage(
+                        content="",
+                        tool_calls=[{"id": "call-1", "name": "execute", "args": {}}],
+                    )
+                ]
+            }
+        )
+        agent = SimpleNamespace(
+            aget_state=AsyncMock(return_value=state),
+            aupdate_state=AsyncMock(),
+        )
+        adapter = TextualUIAdapter(
+            mount_message=AsyncMock(),
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            set_spinner=AsyncMock(),
+            set_active_message=MagicMock(),
+        )
+        adapter._current_tool_messages = {
+            "call-1": _make_tool_widget("execute", {"command": "sleep 120"})
+        }
+
+        await _handle_interrupt_cleanup(
+            adapter=adapter,
+            agent=agent,
+            config={"configurable": {"thread_id": "t-1"}},
+            pending_text_by_namespace={(): "partial explanation"},
+            captured_input_tokens=0,
+            captured_output_tokens=0,
+            turn_stats=SessionStats(),
+            start_time=0.0,
+        )
+
+        recovered = agent.aupdate_state.await_args_list[0].args[1]["messages"][0]
+        assert recovered.content == "partial explanation"
+        assert recovered.tool_calls == []
 
     async def test_interrupt_cancels_active_remote_runs_before_state_writes(
         self,
@@ -785,7 +1021,7 @@ class TestBuildStreamConfig:
         config_module._repo_metadata_cache.clear()
 
     @pytest.fixture(autouse=True)
-    def _hermetic_git(self) -> Generator[None, None, None]:
+    def _hermetic_git(self) -> Generator[None]:
         """Stub git/repo lookups so tests don't read the host repo's real `.git`.
 
         These tests assert on the identity/turn keys, not on git attribution, so
@@ -894,11 +1130,27 @@ class TestBuildStreamConfig:
         ):
             assert _get_deepagents_version() is None
 
+        _get_deepagents_version.cache_clear()
         with patch(
             "deepagents_code.extras_info.resolve_sdk_version",
             return_value=("1.2.3", "resolved"),
         ):
             assert _get_deepagents_version() == "1.2.3"
+
+    def test_sdk_version_resolved_once_across_turns(self) -> None:
+        """Repeated stream configs reuse one SDK version lookup.
+
+        `build_stream_config` runs on every turn, and the lookup scans installed
+        distributions, so it must not repeat per turn.
+        """
+        with patch(
+            "deepagents_code.extras_info.resolve_sdk_version",
+            return_value=("1.2.3", "resolved"),
+        ) as resolver:
+            for turn in range(3):
+                config = build_stream_config(f"t-{turn}", assistant_id=None)
+                assert config["metadata"]["dcode_client_deepagents_version"] == "1.2.3"
+        resolver.assert_called_once()
 
     def test_versions_editable_with_resolved_sdk_version(self) -> None:
         """Editable suffix and SDK diagnostic version are populated independently."""
@@ -1161,7 +1413,7 @@ class TestFormatRubricEvent:
     """Tests for rubric custom-stream event formatting."""
 
     @pytest.fixture(autouse=True)
-    def _pin_unicode_glyphs(self) -> Generator[None, None, None]:
+    def _pin_unicode_glyphs(self) -> Generator[None]:
         """Pin Unicode glyphs so literal assertions hold on any terminal.
 
         `_format_rubric_event` resolves glyphs via `get_glyphs()`, which depends
@@ -1499,6 +1751,7 @@ class TestExecuteTaskTextualStreamCompletion:
         message = mount_message.await_args_list[0].args[0]
         assert str(message._content) == f"Operation stopped by hook: {stop}"
         callback.assert_called_once_with()
+        assert adapter.stream_completed
 
     async def test_interrupted_stream_skips_completion_callback(self) -> None:
         adapter = TextualUIAdapter(
@@ -1522,6 +1775,7 @@ class TestExecuteTaskTextualStreamCompletion:
             )
 
         callback.assert_not_called()
+        assert not adapter.stream_completed
 
 
 class TestExecuteTaskTextualTurnMarkers:
@@ -1634,6 +1888,8 @@ class TestExecuteTaskTextualTurnMarkers:
         )
 
         assert agent.configs[0]["metadata"]["ls_skill_name"] == "code-review"
+        assert agent.stream_inputs[0]["pinned_skills"] == ["code-review"]
+        assert agent.stream_inputs[0]["messages"][0]["content"] == "review this"
 
 
 class TestExecuteTaskTextualClientLifecycle:
@@ -1661,6 +1917,7 @@ class TestExecuteTaskTextualClientLifecycle:
         ):
             await execute_task_textual(
                 user_input="secret prompt",
+                skill_name="code-review",
                 agent=agent,
                 assistant_id="assistant",
                 session_state=_session_state(),
@@ -1670,6 +1927,7 @@ class TestExecuteTaskTextualClientLifecycle:
         on_user_prompt.assert_awaited_once()
         stream_input = agent.stream_inputs[0]
         assert isinstance(stream_input, dict)
+        assert "pinned_skills" not in stream_input
         assert stream_input["messages"] == [
             {"role": "system", "content": "replacement context"}
         ]
@@ -2125,6 +2383,53 @@ class TestExecuteTaskTextualUsageStats:
 class TestSessionCostEvents:
     """The graph's absolute cost total drives the client display."""
 
+    async def test_versioned_event_forwards_optional_breakdown(self) -> None:
+        adapter = TextualUIAdapter(
+            mount_message=AsyncMock(return_value=True),
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+        updates: list[tuple[float, Mapping[str, Any] | None]] = []
+
+        def on_cost(
+            total: float,
+            /,
+            *,
+            thread_id: str = "",
+            pricing_ok: bool | None = None,
+            breakdown: Mapping[str, Any] | None = None,
+        ) -> None:
+            assert thread_id == "thread-1"
+            assert pricing_ok is True
+            updates.append((total, breakdown))
+
+        adapter._on_session_cost = on_cost
+        detail = {"version": 1, "input_tokens": 12}
+        chunks = [
+            (
+                (),
+                "custom",
+                {
+                    "type": "session_cost",
+                    "version": 2,
+                    "total": 0.00001,
+                    "thread_id": "thread-1",
+                    "pricing_ok": True,
+                    "breakdown": detail,
+                },
+            )
+        ]
+
+        await execute_task_textual(
+            user_input="hello",
+            agent=_FakeAgent(chunks),
+            assistant_id="assistant",
+            session_state=_session_state(auto_approve=False),
+            adapter=adapter,
+        )
+
+        assert updates == [(0.00001, detail)]
+
     async def test_nested_usage_updates_provisional_cost(self) -> None:
         async def mount_message(_: object) -> bool:
             await asyncio.sleep(0)
@@ -2184,15 +2489,8 @@ class TestSessionCostEvents:
         assert updates[0] > 0
         assert turn_stats.per_kind["subagent"].request_count == 1
 
-    async def test_usage_already_counted_from_messages_is_not_added_twice(
-        self,
-    ) -> None:
-        """A nested request the message stream recorded stays a single charge.
-
-        The graph streams provisional usage for every nested call, including the
-        ones whose messages do reach this client. Both paths share one ledger, so
-        the second arrival must move neither the stats nor the displayed cost.
-        """
+    async def test_mixed_id_usage_counts_once(self) -> None:
+        """Mixed provider and fallback IDs still identify one nested request."""
         from langchain_core.messages import AIMessageChunk
 
         async def mount_message(_: object) -> bool:
@@ -2226,7 +2524,11 @@ class TestSessionCostEvents:
                 ("tools:task",),
                 "messages",
                 (
-                    AIMessageChunk(content="", id="child-1", usage_metadata=usage),  # ty: ignore[invalid-argument-type]
+                    AIMessageChunk(
+                        content="",
+                        id="lc_run--00000000-0000-0000-0000-000000000123",
+                        usage_metadata=usage,
+                    ),  # ty: ignore[invalid-argument-type]
                     {},
                 ),
             ),
@@ -2236,7 +2538,8 @@ class TestSessionCostEvents:
                 {
                     "type": "model_usage",
                     "version": 1,
-                    "request_id": "child-1",
+                    "request_id": "resp_child",
+                    "invocation_id": "00000000-0000-0000-0000-000000000123",
                     "usage_metadata": usage,
                     "model_name": "gpt-5.5",
                     "provider": "openai",
@@ -3012,6 +3315,239 @@ def _tool_call_message(
 def _text_message(text: str) -> SimpleNamespace:
     """Build a message-like object with content_blocks containing one text block."""
     return SimpleNamespace(content_blocks=[{"type": "text", "text": text}])
+
+
+class TestCacheReconciliation:
+    @pytest.mark.parametrize("detail", ["cache_read", "cache_creation"])
+    @pytest.mark.parametrize("streamed_usage", [False, True])
+    async def test_request_reconciles_before_output_finishes(
+        self, detail: str, streamed_usage: bool, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from datetime import UTC, datetime, timedelta
+
+        from deepagents_code.app import DeepAgentsApp
+        from deepagents_code.tui.widgets.status import StatusBar
+
+        app = DeepAgentsApp()
+        app._lc_thread_id = "cache-test"
+        app._status_bar = StatusBar()
+        now = datetime.now(UTC)
+        app._status_bar.set_cache_timing(now - timedelta(seconds=280), ttl_seconds=300)
+        toast = MagicMock()
+        monkeypatch.setattr(app, "notify", toast)
+        monkeypatch.setattr(type(app._hooks), "notify", AsyncMock())
+        monkeypatch.setattr(app, "_refresh_cache_display", MagicMock())
+        activity = {
+            "requested_at": now.isoformat(),
+            "model_spec": "anthropic:claude-sonnet-4-6",
+            "endpoint": "default",
+            "params": None,
+        }
+        start = {
+            "type": "model_attempt",
+            "phase": "start",
+            "call_id": "call-1",
+            "attempt": 0,
+            "cache_activity": activity,
+        }
+        from langchain_core.messages import AIMessageChunk
+
+        usage = AIMessageChunk(
+            content="",
+            usage_metadata={
+                "input_tokens": 2000,
+                "output_tokens": 0,
+                "total_tokens": 2000,
+                "input_token_details": {detail: 2000},
+            },
+        )
+
+        class Agent(_FakeAgent):
+            async def astream(self, *_: Any, **__: Any) -> AsyncIterator[tuple]:
+                yield ((), "custom", start)
+                assert app._cache_reconciliation_pending
+                await app._notify_cache_expiring()
+                toast.assert_not_called()
+                yield ((), "messages", (_text_message("hello"), {}))
+                assert app._cache_reconciliation_pending
+                yield (
+                    ("child",),
+                    "messages",
+                    (usage, {"dcode_cache_attempt": ["call-1", 0]}),
+                )
+                yield ((), "messages", (usage, {"dcode_cache_attempt": ["stale", 0]}))
+                yield ((), "custom", {**start, "call_id": "stale", "phase": "complete"})
+                assert app._cache_reconciliation_pending
+                if streamed_usage:
+                    yield (
+                        (),
+                        "messages",
+                        (usage, {"dcode_cache_attempt": ["call-1", 0]}),
+                    )
+                else:
+                    yield (
+                        (),
+                        "custom",
+                        {
+                            **start,
+                            "phase": "complete",
+                            "cache_read": detail == "cache_read",
+                            "cache_write": detail == "cache_creation",
+                        },
+                    )
+                assert not app._cache_reconciliation_pending
+                assert app._status_bar is not None
+                assert app._status_bar.cache_expires_at == now + timedelta(seconds=300)
+                assert app._last_cache_use == activity
+                assert (app._last_cache_write == activity) is (
+                    detail == "cache_creation"
+                )
+                yield ((), "custom", start)
+                yield ((), "messages", (_text_message("still streaming"), {}))
+                assert not app._cache_reconciliation_pending
+                with patch("deepagents_code.app.datetime") as clock:
+                    clock.now.return_value = now + timedelta(seconds=280)
+                    await app._notify_cache_expiring()
+                toast.assert_called_once()
+
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            on_cache_reconciliation=app._on_cache_reconciliation,
+        )
+        await execute_task_textual(
+            user_input="hi",
+            agent=Agent([]),
+            assistant_id="assistant",
+            session_state=_session_state(auto_approve=True),
+            adapter=adapter,
+        )
+        assert not app._cache_reconciliation_pending
+
+    @pytest.mark.parametrize(
+        "boundary", ["complete", "retry", "updates", "approval", "error", "cancel"]
+    )
+    async def test_no_usage_preserves_expiry_and_releases_suppression(
+        self, boundary: str
+    ) -> None:
+        from contextlib import nullcontext
+        from datetime import UTC, datetime, timedelta
+
+        from deepagents_code.app import DeepAgentsApp
+        from deepagents_code.tui.widgets.status import StatusBar
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._status_bar = StatusBar()
+            app._status_bar.set_cache_timing(
+                datetime.now(UTC) - timedelta(minutes=6), ttl_seconds=300
+            )
+            app._agent_running = True
+            app._cold_cache_suppressed_for_session = True
+            banner = app.query_one("#cache-expired-banner")
+            app._check_cache_expiry()
+            assert banner.display
+            expiry = app._status_bar.cache_expires_at
+            start = {
+                "type": "model_attempt",
+                "phase": "start",
+                "call_id": "call-1",
+                "attempt": 0,
+                "cache_activity": {
+                    "requested_at": datetime.now(UTC).isoformat(),
+                    "model_spec": "anthropic:claude-sonnet-4-6",
+                    "endpoint": "default",
+                    "params": None,
+                },
+            }
+
+            class Agent(_FakeAgent):
+                completed = False
+
+                async def astream(self, *_: Any, **__: Any) -> AsyncIterator[tuple]:
+                    if self.completed:
+                        return
+                    self.completed = True
+                    yield ((), "custom", start)
+                    assert app._cache_reconciliation_pending
+                    assert not banner.display
+                    if boundary == "error":
+                        msg = "failed"
+                        raise RuntimeError(msg)
+                    if boundary == "cancel":
+                        raise asyncio.CancelledError
+                    if boundary == "complete":
+                        yield ((), "custom", {**start, "phase": "complete"})
+                    elif boundary == "retry":
+                        yield (
+                            (),
+                            "custom",
+                            {
+                                "type": "model_retry",
+                                "call_id": "call-1",
+                                "failed_attempt": 0,
+                                "output_may_have_started": False,
+                                "attempt": 1,
+                                "max_retries": 1,
+                            },
+                        )
+                    elif boundary == "approval":
+                        yield _hitl_interrupt_chunk(
+                            {
+                                "action_requests": [
+                                    {"name": "execute", "args": {"command": "echo hi"}}
+                                ],
+                                "review_configs": [
+                                    {
+                                        "action_name": "execute",
+                                        "allowed_decisions": ["approve"],
+                                    }
+                                ],
+                            }
+                        )
+                    else:
+                        yield ((), "updates", {"model": {"messages": []}})
+                    assert not app._cache_reconciliation_pending
+                    assert banner.display
+                    assert app._status_bar is not None
+                    assert app._status_bar.cache_expires_at == expiry
+                    if boundary == "retry":
+                        yield ((), "custom", {**start, "attempt": 1})
+                        yield ((), "custom", {**start, "phase": "complete"})
+                        assert app._cache_reconciliation_pending
+
+            async def approval(*_: Any, **__: Any) -> asyncio.Future:
+                await asyncio.sleep(0)
+                assert not app._cache_reconciliation_pending
+                future = asyncio.Future()
+                future.set_result({"type": "approve"})
+                return future
+
+            adapter = TextualUIAdapter(
+                mount_message=_mock_mount,
+                update_status=_noop_status,
+                request_approval=approval,
+                on_cache_reconciliation=app._on_cache_reconciliation,
+            )
+            with (
+                pytest.raises(RuntimeError, match="failed")
+                if boundary == "error"
+                else nullcontext()
+            ):
+                await execute_task_textual(
+                    user_input="hi",
+                    agent=Agent([]),
+                    assistant_id="assistant",
+                    session_state=_session_state(auto_approve=False),
+                    adapter=adapter,
+                )
+            assert not app._cache_reconciliation_pending
+            assert app._status_bar.cache_expires_at == expiry
+            assert app._last_cache_use is None
+
+            assert banner.display
 
 
 class TestExecuteTaskTextualUserVisibleOutputStarted:
@@ -4730,6 +5266,7 @@ class TestExecuteTaskTextualAskUser:
         assert len(app_messages) == 1
         assert str(app_messages[0]._content) == expected_message
         assert token_events == ["pending", "show:False"]
+        assert not adapter.stream_completed
 
     async def test_dismissed_questions_accumulate_across_cancelled_calls(self) -> None:
         """Two dismissed calls of one question each read as plural.
@@ -5583,7 +6120,7 @@ class _MutatingItemsDict(dict):  # noqa: FURB189  # must subclass dict to overri
     need to override the C-level iteration that triggers the error.
     """
 
-    def items(self) -> Generator[tuple[str, Any], None, None]:  # ty: ignore
+    def items(self) -> Generator[tuple[str, Any]]:  # ty: ignore
         """Yield items while mutating the dict mid-iteration."""
         it = iter(dict.items(self))
         first = next(it)
@@ -5602,7 +6139,7 @@ class _MutatingValuesDict(dict):  # noqa: FURB189  # must subclass dict to overr
     need to override the C-level iteration that triggers the error.
     """
 
-    def values(self) -> Generator[Any, None, None]:  # ty: ignore
+    def values(self) -> Generator[Any]:  # ty: ignore
         """Yield values while mutating the dict mid-iteration."""
         it = iter(dict.values(self))
         first = next(it)
@@ -5668,6 +6205,45 @@ class TestDictIterationSafety:
         assert len(result.tool_calls) == 4
         names = {tc["name"] for tc in result.tool_calls}
         assert names == {"tool_0", "tool_1", "tool_2", "tool_3"}
+
+    def test_current_turn_tool_ids_stop_at_user_boundary(self) -> None:
+        """Repeated IDs from an earlier turn do not suppress new partial calls."""
+        from langchain_core.messages import AIMessage, HumanMessage
+
+        state = SimpleNamespace(
+            values={
+                "messages": [
+                    AIMessage(
+                        content="",
+                        tool_calls=[{"id": "reused", "name": "execute", "args": {}}],
+                    ),
+                    HumanMessage(content="next turn"),
+                    AIMessage(
+                        content="",
+                        tool_calls=[{"id": "current", "name": "execute", "args": {}}],
+                    ),
+                ]
+            }
+        )
+
+        assert _tool_call_ids_from_current_turn(state) == {"current"}
+
+    def test_serialized_checkpoint_tool_ids_are_supported(self) -> None:
+        """Remote state snapshots remain serialized at this boundary."""
+        state = SimpleNamespace(
+            values={
+                "messages": [
+                    {"type": "human", "content": "run it"},
+                    {
+                        "type": "ai",
+                        "content": "",
+                        "tool_calls": [{"id": "call-1", "name": "execute", "args": {}}],
+                    },
+                ]
+            }
+        )
+
+        assert _tool_call_ids_from_current_turn(state) == {"call-1"}
 
     def test_build_interrupted_ai_message_empty(self) -> None:
         """Returns None when there is no text and no tool calls."""
@@ -8333,3 +8909,90 @@ def _retry_lifecycle_session_state(tmp_path: Path, thread_id: str) -> tuple[Any,
     hooks._runtime = runtime
     session_state.hooks = hooks
     return session_state, runtime
+
+
+class TestServerSkillPinning:
+    """The adapter answers server skill trust requests and renders pins."""
+
+    @staticmethod
+    async def _run(
+        agent: _SequencedAgent,
+        *,
+        request_skill_trust: Callable[[str, str], Awaitable[bool]] | None = None,
+        on_skill_pinned: Callable[[str, str, str], None] | None = None,
+    ) -> None:
+        async def mount_message(_widget: object) -> bool:
+            await asyncio.sleep(0)
+            return True
+
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=AsyncMock(),
+            request_skill_trust=request_skill_trust,
+            on_skill_pinned=on_skill_pinned,
+        )
+        with (
+            patch(
+                "deepagents_code.tui.textual_adapter.dispatch_hook",
+                new_callable=AsyncMock,
+            ),
+            patch("deepagents_code.tui.textual_adapter.dispatch_hook_fire_and_forget"),
+        ):
+            await execute_task_textual(
+                user_input="hello",
+                agent=agent,
+                assistant_id="assistant",
+                session_state=_session_state(auto_approve=False),
+                adapter=adapter,
+            )
+
+    @pytest.mark.parametrize("approved", [True, False])
+    async def test_trust_request_resumes_with_the_answer(self, approved: bool) -> None:
+        request = {"type": "skill_trust", "skill": "review", "directory": "/outside"}
+        interrupt = SimpleNamespace(id="trust-1", value=request)
+        agent = _SequencedAgent(
+            streams_by_call=[[((), "updates", {"__interrupt__": [interrupt]})], []]
+        )
+        asked: list[tuple[str, str]] = []
+
+        async def request_skill_trust(skill: str, directory: str) -> bool:
+            await asyncio.sleep(0)
+            asked.append((skill, directory))
+            return approved
+
+        await self._run(agent, request_skill_trust=request_skill_trust)
+
+        assert asked == [("review", "/outside")]
+        resume = agent.stream_inputs[1]
+        assert isinstance(resume, Command)
+        assert resume.resume == {"trust-1": {"approved": approved}}
+
+    async def test_malformed_trust_request_is_denied_without_asking(self) -> None:
+        interrupt = SimpleNamespace(id="trust-1", value={"type": "skill_trust"})
+        agent = _SequencedAgent(
+            streams_by_call=[[((), "updates", {"__interrupt__": [interrupt]})], []]
+        )
+        ask = AsyncMock(return_value=True)
+
+        await self._run(agent, request_skill_trust=ask)
+
+        ask.assert_not_awaited()
+        resume = agent.stream_inputs[1]
+        assert isinstance(resume, Command)
+        assert resume.resume == {"trust-1": {"approved": False}}
+
+    async def test_pinned_message_reports_the_skill(self) -> None:
+        pinned = HumanMessage(
+            '<skill name="review" path="/s/SKILL.md">\nDo it.\n</skill>',
+            additional_kwargs={
+                "lc_source": "pinned_skill",
+                "skill": {"name": "review", "description": "Review code"},
+            },
+        )
+        agent = _SequencedAgent(streams_by_call=[[((), "messages", (pinned, {}))]])
+        seen: list[tuple[str, str, str]] = []
+
+        await self._run(agent, on_skill_pinned=lambda *parts: seen.append(parts))
+
+        assert seen == [("review", "Review code", "Do it.")]

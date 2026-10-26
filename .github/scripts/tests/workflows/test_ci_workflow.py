@@ -210,6 +210,7 @@ def test_lockfiles_gate_merges_even_with_inherited_ci(
             **os.environ,
             "EVENT_NAME": "pull_request",
             "LOCKFILES_RESULT": result,
+            "TEXT_HYGIENE_RESULT": "success",
             "CURATED_APPLY_ONLY": curated,
             "CURATED_APPLY_PARENT_CONCLUSION": "success",
             "TALON_CHANGED": "false",
@@ -220,6 +221,43 @@ def test_lockfiles_gate_merges_even_with_inherited_ci(
         check=False,
     )
     assert completed.returncode == (0 if result == "success" else 1)
+
+
+@pytest.mark.parametrize("curated", ["true", "false"])
+@pytest.mark.parametrize("result", ["success", "failure", "cancelled", "skipped"])
+def test_text_hygiene_gate_applies_to_curated_applies(
+    tmp_path: Path, curated: str, result: str
+) -> None:
+    """Bot-written changelogs never pass through local pre-commit.
+
+    The curated-apply shortcut passes on the parent's CI result alone, so the
+    hygiene check must be judged before it or bot commits would skip it.
+    """
+    workflow = _load_workflow(CI_WORKFLOW)
+    assert "text-hygiene" in workflow["jobs"]["ci_success"]["needs"]
+    step = _find_step(workflow, job="ci_success", name="🎉 All Checks Passed")
+    assert step["env"]["TEXT_HYGIENE_RESULT"] == "${{ needs.text-hygiene.result }}"
+    gate = tmp_path / ".ci-gate-base/.github/scripts/checks/ci_gate.py"
+    gate.parent.mkdir(parents=True)
+    gate.write_text((ROOT / ".github/scripts/checks/ci_gate.py").read_text())
+    completed = subprocess.run(
+        ["bash", "-c", step["run"]],
+        cwd=tmp_path,
+        env={
+            **os.environ,
+            "EVENT_NAME": "pull_request",
+            "LOCKFILES_RESULT": "success",
+            "TEXT_HYGIENE_RESULT": result,
+            "CURATED_APPLY_ONLY": curated,
+            "CURATED_APPLY_PARENT_CONCLUSION": "success",
+            "TALON_CHANGED": "false",
+            "NEEDS": json.dumps({"text-hygiene": {"result": result}}),
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert completed.returncode == (0 if result in {"success", "skipped"} else 1)
 
 
 def test_lockfile_workflow_checks_every_package() -> None:

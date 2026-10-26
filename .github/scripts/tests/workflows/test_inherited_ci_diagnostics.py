@@ -205,6 +205,7 @@ def test_detection_and_gate_preserve_parent_result(
         env={
             **env,
             "LOCKFILES_RESULT": "success",
+            "TEXT_HYGIENE_RESULT": "success",
             "CURATED_APPLY_ONLY": outputs["only"],
             "CURATED_APPLY_PARENT_CONCLUSION": outputs["prior-conclusion"],
         },

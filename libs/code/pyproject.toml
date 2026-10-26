@@ -30,7 +30,7 @@ dependencies = [
     "langgraph-checkpoint-sqlite>=3.1.2,<4.0.0",
 
     # Client-server architecture
-    "langgraph-sdk>=0.4.9,<1.0.0",
+    "langgraph-sdk>=0.4.10,<1.0.0",
     "langgraph-cli[inmem]>=0.4.40,<1.0.0",
     "langgraph-runtime-inmem>=0.36.7,<1.0.0",
     "httpx>=0.28.1",
@@ -61,7 +61,7 @@ dependencies = [
 
     # Tools
     "tavily-python>=0.7.26",
-    "langchain-quickjs>=0.3.9,<0.4.0",
+    "langchain-quickjs>=0.3.10,<0.4.0",
 
     # Cost estimation (bundled offline pricing data).
     # The local pricing overrides resolve through two *private* upstream names,

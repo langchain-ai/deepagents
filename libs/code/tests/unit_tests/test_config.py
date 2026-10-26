@@ -1024,6 +1024,88 @@ class TestProjectDotenvDeniedKeys:
         finally:
             config_mod._dotenv_loaded_values.clear()
 
+    @pytest.mark.parametrize(
+        ("env_name", "value"),
+        [
+            ("EXPERIMENTAL", "1"),
+            ("EXTENSIONS_TRUST", "always"),
+            ("PLUGIN_CACHE_DIR", "plugins"),
+            ("SHELL_ALLOW_LIST", "all"),
+            ("EXTRA_SKILLS_DIRS", "/"),
+        ],
+    )
+    def test_project_dotenv_cannot_set_user_trust_decisions(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        env_name: str,
+        value: str,
+    ) -> None:
+        """A repo cannot enable its own extensions or widen approval settings."""
+        import os
+
+        import deepagents_code._env_vars as env_vars
+        import deepagents_code.config as config_mod
+
+        key = getattr(env_vars, env_name)
+        project = tmp_path / "cloned-repo"
+        project.mkdir()
+        (project / ".env").write_text(
+            f"{key}={value}\nDEEPAGENTS_CODE_TEST_PROJECT_VALUE=allowed\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.delenv(key, raising=False)
+        monkeypatch.delenv("DEEPAGENTS_CODE_TEST_PROJECT_VALUE", raising=False)
+        monkeypatch.setattr(
+            config_mod,
+            "_GLOBAL_DOTENV_PATH",
+            tmp_path / "missing-global.env",
+        )
+        config_mod._dotenv_loaded_values.clear()
+
+        try:
+            config_mod._load_dotenv(start_path=project)
+            preview = config_mod._preview_dotenv_environ(start_path=project)
+
+            assert key not in os.environ
+            assert key not in preview
+            assert os.environ["DEEPAGENTS_CODE_TEST_PROJECT_VALUE"] == "allowed"
+            assert preview["DEEPAGENTS_CODE_TEST_PROJECT_VALUE"] == "allowed"
+        finally:
+            config_mod._dotenv_loaded_values.clear()
+
+    def test_global_dotenv_can_set_extension_trust(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The user's own global `.env` still sets the denied project keys."""
+        import os
+
+        import deepagents_code.config as config_mod
+        from deepagents_code._env_vars import EXPERIMENTAL, EXTENSIONS_TRUST
+
+        project = tmp_path / "cloned-repo"
+        project.mkdir()
+        global_dotenv = tmp_path / "global.env"
+        global_dotenv.write_text(
+            f"{EXPERIMENTAL}=1\n{EXTENSIONS_TRUST}=always\n", encoding="utf-8"
+        )
+
+        monkeypatch.delenv(EXPERIMENTAL, raising=False)
+        monkeypatch.delenv(EXTENSIONS_TRUST, raising=False)
+        monkeypatch.setattr(config_mod, "_GLOBAL_DOTENV_PATH", global_dotenv)
+        config_mod._dotenv_loaded_values.clear()
+
+        try:
+            config_mod._load_dotenv(start_path=project)
+
+            assert os.environ[EXPERIMENTAL] == "1"
+            assert os.environ[EXTENSIONS_TRUST] == "always"
+        finally:
+            config_mod._dotenv_loaded_values.clear()
+
     def test_project_dotenv_cannot_set_langgraph_recursion_default(
         self,
         tmp_path: Path,

@@ -689,6 +689,49 @@ jobs:
                 .write();
             }
 
+  # Run the file-hygiene pre-commit hooks on the files a PR changes, so commits
+  # that never pass through a local pre-commit (bot commits such as release-please
+  # and curated release notes, or contributors without hooks installed) are held
+  # to the same rules. Only changed files are checked: `main` still has older
+  # violations, some intentional (test fixtures, vendored data). Runs on every
+  # PR, including changelog-only curated-notes applies, which skip the package
+  # jobs above.
+  text-hygiene:
+    name: "📝 Text Hygiene"
+    if: github.event_name != 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - name: "📋 Checkout Code"
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: "🐍 Set up Python + uv"
+        uses: "./.github/actions/uv_setup"
+        with:
+          python-version: "3.14"
+          enable-cache: "false"
+
+      - name: "📝 Run hygiene hooks on changed files"
+        env:
+          FROM_REF: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+          TO_REF: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
+        run: |
+          set -euo pipefail
+          status=0
+          # Listed explicitly rather than via SKIP so a new `language: system`
+          # hook in .pre-commit-config.yaml is not silently pulled in here.
+          for hook in check-yaml check-toml end-of-file-fixer trailing-whitespace fix-smartquotes fix-spaces; do
+            uvx pre-commit@4.6.0 run "$hook" \
+              --from-ref "$FROM_REF" --to-ref "$TO_REF" \
+              --show-diff-on-failure --color always || status=1
+          done
+          if [ "$status" -ne 0 ]; then
+            echo "::error::Changed files fail pre-commit hygiene hooks. Run \`pre-commit install\`, then \`pre-commit run --from-ref origin/main --to-ref HEAD\` locally and commit the fixes."
+          fi
+          exit "$status"
+
   # Final status check - ensures all jobs passed
   ci_success:
     name: "✅ CI Success"
@@ -718,6 +761,7 @@ jobs:
       - test-quickjs-sdk-smoke
       - drbench-dataset
       - check-release-options
+      - text-hygiene
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -842,6 +886,7 @@ jobs:
         env:
           EVENT_NAME: ${{ github.event_name }}
           LOCKFILES_RESULT: ${{ needs.check-lockfiles.result }}
+          TEXT_HYGIENE_RESULT: ${{ needs.text-hygiene.result }}
           CURATED_APPLY_ONLY: ${{ needs.changes.outputs.curated-apply-only }}
           CURATED_APPLY_PARENT_CONCLUSION: ${{ needs.changes.outputs.curated-apply-parent-conclusion }}
           # Full needs context: the wildcard `toJSON(needs.*.result)` form
@@ -854,6 +899,12 @@ jobs:
           set -euo pipefail
           if [ "$LOCKFILES_RESULT" != success ]; then
             echo "Lockfile validation did not pass: $LOCKFILES_RESULT"
+            exit 1
+          fi
+          # Checked before the curated-apply shortcut below: a bot-written
+          # changelog is exactly the change local pre-commit never sees.
+          if [ "$TEXT_HYGIENE_RESULT" != success ] && [ "$TEXT_HYGIENE_RESULT" != skipped ]; then
+            echo "Text hygiene did not pass: $TEXT_HYGIENE_RESULT"
             exit 1
           fi
           if [ "$CURATED_APPLY_ONLY" = true ]; then

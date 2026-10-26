@@ -2700,6 +2700,19 @@ _STATIC_OPTIONS: tuple[ConfigOption[object], ...] = (
         env_var=_env_vars.OLLAMA_DISCOVERY,
     ),
     ConfigOption(
+        key="models.provider_tool_search",
+        group="Tools",
+        summary=(
+            "Opt into provider-native MCP tool discovery on supported direct "
+            "OpenAI/Anthropic models; unsupported models and gateways use eager tools."
+        ),
+        kind=OptionKind.BOOL,
+        default=False,
+        env_var=_env_vars.PROVIDER_TOOL_SEARCH,
+        empty_env_is_false=True,
+        toml_keys=("models", "provider_tool_search"),
+    ),
+    ConfigOption(
         key="models.openai_prompt_cache_key",
         group="Tools",
         summary=(

@@ -989,3 +989,30 @@ async def test_failed_restore_clears_checkpoint_before_agent_finishes(
         assert state.values["messages"][-1].content == "<result>42</result>"
     finally:
         middleware._registry.close()
+
+
+@pytest.mark.parametrize("invoke_mode", ["invoke", "ainvoke"])
+async def test_restore_error_reaches_tool_boundary_before_code_runs(
+    invoke_mode: str,
+) -> None:
+    from langchain_quickjs._repl import _SnapshotRestoreError
+
+    middleware = CodeInterpreterMiddleware()
+    repl = middleware._registry.get("restore-error-boundary")
+
+    async def evaluate():
+        if invoke_mode == "ainvoke":
+            return await repl.eval_async(
+                "globalThis.executed = true", snapshot_payload=b"invalid"
+            )
+        return repl.eval_sync("globalThis.executed = true", snapshot_payload=b"invalid")
+
+    try:
+        with pytest.raises(
+            _SnapshotRestoreError, match="Failed to restore QuickJS snapshot"
+        ) as caught:
+            await evaluate()
+        assert isinstance(caught.value, RuntimeError)
+        assert repl.eval_sync("typeof executed").result == "undefined"
+    finally:
+        middleware._registry.close()

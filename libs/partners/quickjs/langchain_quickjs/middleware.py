@@ -314,15 +314,7 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         def _make_tool_output(
             outcome: EvalOutcome,
             tool_call_id: str | None,
-        ) -> ToolMessage | Command:
-            if isinstance(outcome, _SnapshotRestoreError):
-                return outcome.to_command(
-                    ToolMessage(
-                        content=format_outcome(outcome, max_result_chars=max_chars),
-                        tool_call_id=tool_call_id,
-                        name=tool_name,
-                    )
-                )
+        ) -> ToolMessage:
             return ToolMessage(
                 content=format_outcome(outcome, max_result_chars=max_chars),
                 tool_call_id=tool_call_id,
@@ -342,6 +334,13 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
                     snapshot_payload=middleware._snapshot_for_eval(runtime.state),
                     tools=middleware._tools_for_eval(slot_id),
                 )
+            except _SnapshotRestoreError as exc:
+                outcome = repl.eval_sync(
+                    code,
+                    outer_runtime=runtime,
+                    tools=middleware._tools_for_eval(slot_id),
+                )
+                return exc.to_command(_make_tool_output(outcome, runtime.tool_call_id))
             finally:
                 if middleware._mode == "call":
                     middleware._registry.reset_repl(slot_id)
@@ -361,6 +360,14 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
                     tools=middleware._tools_for_eval(slot_id),
                     outer_loop=asyncio.get_running_loop(),
                 )
+            except _SnapshotRestoreError as exc:
+                outcome = await repl.eval_async(
+                    code,
+                    outer_runtime=runtime,
+                    tools=middleware._tools_for_eval(slot_id),
+                    outer_loop=asyncio.get_running_loop(),
+                )
+                return exc.to_command(_make_tool_output(outcome, runtime.tool_call_id))
             finally:
                 if middleware._mode == "call":
                     middleware._registry.reset_repl(slot_id)

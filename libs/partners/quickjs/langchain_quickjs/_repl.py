@@ -95,8 +95,8 @@ class EvalOutcome:
     error_stack: str | None = None
 
 
-class _SnapshotRestoreError(EvalOutcome):
-    """Evaluation result that also invalidates a failed persisted snapshot."""
+class _SnapshotRestoreError(RuntimeError):
+    """Raised when persisted state cannot be restored before evaluation."""
 
     def to_command(self, message: ToolMessage) -> Command:
         """Clear invalid checkpoint state alongside the evaluation result."""
@@ -807,20 +807,19 @@ class _ThreadREPL:
 
     async def _aprepare_for_eval(
         self, payload: bytes | None, tools: Sequence[BaseTool] | None
-    ) -> EvalOutcome:
-        """Restore once and return an outcome carrying checkpoint invalidation."""
-        outcome = EvalOutcome()
+    ) -> None:
+        """Restore once and bind current tools on the owning worker."""
         if not self._prepared_for_eval:
             self._prepared_for_eval = True
             if payload:
                 try:
                     await self._arestore_snapshot(payload, inject_globals=True)
-                except Exception:  # noqa: BLE001  # best-effort restore path
-                    outcome = _SnapshotRestoreError()
+                except Exception as exc:  # best-effort restore path
                     logger.warning("Failed to restore QuickJS snapshot", exc_info=True)
+                    msg = "Failed to restore QuickJS snapshot"
+                    raise _SnapshotRestoreError(msg) from exc
         if tools is not None:
             await self._ainstall_tools(tools)
-        return outcome
 
     async def _aeval_async(  # noqa: C901, PLR0912, PLR0915
         self,
@@ -851,7 +850,7 @@ class _ThreadREPL:
             outer_loop=outer_loop,
         )
         try:
-            outcome = await self._aprepare_for_eval(snapshot_payload, tools)
+            await self._aprepare_for_eval(snapshot_payload, tools)
             # Drive any final-expression Promise (e.g. a bare async
             # IIFE) to its resolved value before marshaling. Without
             # this the Promise object itself fails to marshal and

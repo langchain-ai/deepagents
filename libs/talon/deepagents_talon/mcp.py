@@ -416,6 +416,7 @@ async def load_mcp_tools(config: TalonConfig) -> MCPTools:
                 tool.metadata = {
                     **(tool.metadata or {}),
                     "_deepagents_talon_mcp": True,
+                    "_deepagents_talon_skill_only": server.get("skillOnly", False),
                 }
             loaded = list(_filter_tools(name, server, loaded))
         except (
@@ -700,6 +701,9 @@ def _load_config(path: Path, env: Mapping[str, str]) -> dict[str, dict[str, obje
 def _resolve_server_env(
     name: str, server: Mapping[str, object], env: Mapping[str, str]
 ) -> dict[str, object]:
+    if "skillOnly" in server and not isinstance(server["skillOnly"], bool):
+        msg = f"MCP server {name!r} skillOnly must be a boolean"
+        raise MCPConfigError(msg)
     resolved = copy.deepcopy(dict(server))
     for field in ("command", "url"):
         if field in resolved:

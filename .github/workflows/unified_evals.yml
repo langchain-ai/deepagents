@@ -41,6 +41,17 @@ on:
         description: "Positive decimal multiplier for each task's agent execution timeout, such as 1.5 or 2.0."
         type: string
         default: "1.0"
+      reasoning_effort:
+        description: "Reasoning effort passed to the chat model constructor as `reasoning_effort`. Empty = provider default."
+        type: choice
+        default: ""
+        options:
+          - ""
+          - minimal
+          - low
+          - medium
+          - high
+          - xhigh
       concurrency:
         type: string
         default: "4"
@@ -210,6 +221,7 @@ jobs:
           UNIFIED_ROLLOUTS: ${{ inputs.rollouts }}
           UNIFIED_N_RETRIES: ${{ inputs.n_retries }}
           UNIFIED_AGENT_TIMEOUT_MULTIPLIER: ${{ inputs.agent_timeout_multiplier }}
+          UNIFIED_REASONING_EFFORT: ${{ inputs.reasoning_effort }}
           # Set by the enumerate step above for the full profile only; empty
           # (unset) for lite, which unified_prep.py never reads in that case.
           UNIFIED_TASKS_JSON: ${{ env.UNIFIED_TASKS_JSON }}
@@ -236,6 +248,7 @@ jobs:
           IN_ROLLOUTS: ${{ inputs.rollouts }}
           IN_N_RETRIES: ${{ inputs.n_retries }}
           IN_AGENT_TIMEOUT_MULTIPLIER: ${{ inputs.agent_timeout_multiplier }}
+          IN_REASONING_EFFORT: ${{ inputs.reasoning_effort }}
           IN_CONCURRENCY: ${{ inputs.concurrency }}
           MAX_PARALLEL: ${{ steps.p.outputs.max_parallel }}
           MODEL_PARALLEL: ${{ steps.p.outputs.model_parallel }}
@@ -280,6 +293,7 @@ jobs:
             echo "| rollouts | \`${IN_ROLLOUTS}\` |"
             echo "| retries per failed trial (--max-retries) | \`${IN_N_RETRIES}\` |"
             echo "| agent timeout multiplier | \`${IN_AGENT_TIMEOUT_MULTIPLIER}\` |"
+            echo "| reasoning_effort | \`${IN_REASONING_EFFORT:-(provider default)}\` |"
             echo "| concurrency | \`${IN_CONCURRENCY}\` |"
             echo "| shard pool (max_parallel / model_parallel) | \`${MAX_PARALLEL:-?}\` / \`${MODEL_PARALLEL:-?}\` |"
             echo "| sandbox_env | \`${IN_SANDBOX_ENV}\` |"
@@ -317,6 +331,7 @@ jobs:
       rollouts: ${{ inputs.rollouts }}
       n_retries: ${{ inputs.n_retries }}
       agent_timeout_multiplier: ${{ inputs.agent_timeout_multiplier }}
+      reasoning_effort: ${{ inputs.reasoning_effort }}
       concurrency: ${{ inputs.concurrency }}
       sandbox_env: ${{ inputs.sandbox_env }}
       runner_label: ${{ inputs.runner_label }}
@@ -477,6 +492,8 @@ jobs:
           # incomplete rather than silently ranking on fewer categories.
           EXPECTED_LEAVES: ${{ needs.prep.outputs.expected_leaves }}
           EXPECTED_CATEGORIES: ${{ needs.prep.outputs.categories }}
+          # Part of each experiment name, so usage lookups match what runs logged.
+          UNIFIED_REASONING_EFFORT: ${{ inputs.reasoning_effort }}
         run: |
           mkdir -p _leaves
           usage_args=()

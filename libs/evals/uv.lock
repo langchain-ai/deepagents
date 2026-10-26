@@ -785,21 +785,21 @@ requires-dist = [
     { name = "dockerfile-parse", specifier = ">=2.0.1" },
     { name = "harbor", extras = ["langsmith"], specifier = ">=0.20.0,<0.21.0" },
     { name = "harbor-langsmith", specifier = ">=0.3.0,<0.4.0" },
-    { name = "langchain", extras = ["mcp"], specifier = ">=1.4.1,<2.0.0" },
-    { name = "langchain-anthropic", specifier = ">=1.5.4,<2.0.0" },
-    { name = "langchain-baseten", specifier = ">=0.2.1,<0.3.0" },
-    { name = "langchain-deepseek", specifier = ">=1.1.0,<1.2.0" },
-    { name = "langchain-fireworks", specifier = ">=1.4.4,<1.5.0" },
-    { name = "langchain-google-genai", specifier = ">=4.3.0,<5.0.0" },
-    { name = "langchain-groq", specifier = ">=1.1.3,<1.2.0" },
-    { name = "langchain-mistralai", specifier = ">=1.1.6,<1.2.0" },
-    { name = "langchain-nvidia-ai-endpoints", specifier = ">=1.4.3,<1.5.0" },
-    { name = "langchain-ollama", specifier = ">=1.1.0,<1.2.0" },
-    { name = "langchain-openai", specifier = ">=1.4.0,<2.0.0" },
-    { name = "langchain-openrouter", specifier = ">=0.2.6,<0.3.0" },
+    { name = "langchain", extras = ["mcp"], specifier = ">=1.4.1" },
+    { name = "langchain-anthropic", specifier = ">=1.5.4" },
+    { name = "langchain-baseten", specifier = ">=0.2.1" },
+    { name = "langchain-deepseek", specifier = ">=1.1.0" },
+    { name = "langchain-fireworks", specifier = ">=1.4.4" },
+    { name = "langchain-google-genai", specifier = ">=4.3.0" },
+    { name = "langchain-groq", specifier = ">=1.1.3" },
+    { name = "langchain-mistralai", specifier = ">=1.1.6" },
+    { name = "langchain-nvidia-ai-endpoints", specifier = ">=1.4.3" },
+    { name = "langchain-ollama", specifier = ">=1.1.0" },
+    { name = "langchain-openai", specifier = ">=1.4.0" },
+    { name = "langchain-openrouter", specifier = ">=0.2.6" },
     { name = "langchain-quickjs", editable = "../partners/quickjs" },
-    { name = "langchain-xai", specifier = ">=1.2.2,<1.3.0" },
-    { name = "langsmith", specifier = ">=0.10.9" },
+    { name = "langchain-xai", specifier = ">=1.2.2" },
+    { name = "langsmith", specifier = ">=0.14.12" },
     { name = "matplotlib", marker = "extra == 'charts'", specifier = ">=3.11.0" },
     { name = "modal", specifier = ">=1.4.3" },
     { name = "nltk", specifier = ">=3.10.3" },
@@ -1831,7 +1831,7 @@ wheels = [
 
 [[package]]
 name = "langchain-fireworks"
-version = "1.4.4"
+version = "1.7.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiohttp" },
@@ -1840,9 +1840,9 @@ dependencies = [
     { name = "openai" },
     { name = "requests" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/15/22/4d371099cbfb44a78f8d93b6e9f4aff77799045065ac4f5b5b163abe773b/langchain_fireworks-1.4.4.tar.gz", hash = "sha256:2dad0e6f2243e4e0c5286fbab5fd23539afc258007ec6f0e980bc60b85edcff5", size = 217152, upload-time = "2026-07-09T17:56:35.551Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/50/e9/5de0cce96ed7cdc02ff0d10abf6dabcc736c309626a742fa17eeaa6620b9/langchain_fireworks-1.7.1.tar.gz", hash = "sha256:e49c94cd4ee896234117e361543c767772d4f6bba627fa1e38e67a200fbec6ed", size = 244740, upload-time = "2026-10-07T20:24:20.718Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/a5/ab/37e901f77ca7619ff091a2252588e64b9c3aee2b4d93c23594faa40e3011/langchain_fireworks-1.4.4-py3-none-any.whl", hash = "sha256:977b187c3fa98d6446e5a8902e77b1834d5a8e7e43934864f381f257f0a0b0b1", size = 26141, upload-time = "2026-07-09T17:56:34.424Z" },
+    { url = "https://files.pythonhosted.org/packages/42/55/9618d9be59f5d11196623c75c991d4f0cdaba49102f014f516a53f40665b/langchain_fireworks-1.7.1-py3-none-any.whl", hash = "sha256:55ad528fd4bff3ea0155f0c4ae06f8ee1054b8deee418afc6d50d4bda844973d", size = 34877, upload-time = "2026-10-07T20:24:19.391Z" },
 ]
 
 [[package]]

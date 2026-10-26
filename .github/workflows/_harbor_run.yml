@@ -75,6 +75,10 @@ on:
       agent_timeout_multiplier:
         type: string
         default: "1.0"
+      reasoning_effort:
+        # Passed to the chat model constructor as `reasoning_effort`. Empty = provider default.
+        type: string
+        default: ""
       env_build_timeout_multiplier:
         # Scales each task's environment.build_timeout_sec (harbor's client-side
         # wait). Note: it does NOT extend the LangSmith build service's own limit.
@@ -283,6 +287,7 @@ jobs:
       HARBOR_ROLLOUTS_PER_TASK: ${{ inputs.rollouts }}
       HARBOR_N_RETRIES: ${{ inputs.n_retries || '0' }}
       HARBOR_AGENT_TIMEOUT_MULTIPLIER: ${{ inputs.agent_timeout_multiplier || '1.0' }}
+      HARBOR_REASONING_EFFORT: ${{ inputs.reasoning_effort }}
       HARBOR_ENV_BUILD_TIMEOUT_MULTIPLIER: ${{ inputs.env_build_timeout_multiplier || '1.0' }}
       HARBOR_OVERRIDE_STORAGE_MB: ${{ inputs.override_storage_mb || '0' }}
       HARBOR_DISABLE_VERIFICATION: ${{ inputs.disable_verification || 'false' }}
@@ -729,6 +734,15 @@ jobs:
             *) echo "::error::Invalid force_build (true|false): $HARBOR_FORCE_BUILD"; exit 1 ;;
           esac
 
+          # Allowlist the effort; Harbor splats model_kwargs into init_chat_model.
+          reasoning_args=()
+          case "$HARBOR_REASONING_EFFORT" in
+            "") ;;
+            minimal|low|medium|high|xhigh)
+              reasoning_args=(--agent-kwarg "model_kwargs={\"reasoning_effort\": \"$HARBOR_REASONING_EFFORT\"}") ;;
+            *) echo "::error::Invalid reasoning_effort (minimal|low|medium|high|xhigh): $HARBOR_REASONING_EFFORT"; exit 1 ;;
+          esac
+
           dataset_args=(--dataset "$HARBOR_DATASET")
           HARBOR_LANGSMITH_DATASET="$HARBOR_DATASET"
           if [ -n "$HARBOR_DATASET_PATH" ]; then
@@ -894,7 +908,7 @@ jobs:
           # by category (one model spans three datasets) and by run id/attempt (keep
           # re-runs separate); shards of a category share it, so harbor's stock plugin
           # (>=harbor-langsmith 0.3.0) converges them into one experiment. Reads
-          # HARBOR_MODEL/BRANCH/AGENT_IMPL/CATEGORY + GITHUB_RUN_ID/ATTEMPT from the env.
+          # HARBOR_MODEL/BRANCH/AGENT_IMPL/CATEGORY/REASONING_EFFORT + GITHUB_RUN_ID/ATTEMPT from the env.
           HARBOR_LANGSMITH_EXPERIMENT="$(python3 "$GITHUB_WORKSPACE/.github/scripts/evals/experiment_name.py")"
           echo "HARBOR_AGENT_GRAPH=$HARBOR_AGENT_GRAPH" >> "$GITHUB_ENV"
           echo "HARBOR_LANGSMITH_DATASET=$HARBOR_LANGSMITH_DATASET" >> "$GITHUB_ENV"
@@ -961,11 +975,12 @@ jobs:
 
           uv run harbor run \
             --yes \
-            --agent langgraph \
+            --agent deepagents_harbor.agent:DeepAgentsLangGraph \
             --agent-kwarg python_version=3.14 \
             --agent-kwarg project_path=deepagents_harbor/langgraph_project \
             --agent-kwarg config=langgraph.json \
             --agent-kwarg graph="$HARBOR_AGENT_GRAPH" \
+            "${reasoning_args[@]}" \
             "${dataset_args[@]}" \
             -n "$HARBOR_CONCURRENCY" \
             --n-attempts "$HARBOR_ROLLOUTS_PER_TASK" \

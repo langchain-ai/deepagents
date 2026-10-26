@@ -15,7 +15,7 @@ def test_evals_uses_published_harbor_langsmith_dependency() -> None:
     pyproject = tomllib.loads((EVALS / "pyproject.toml").read_text())
 
     deps = pyproject["project"]["dependencies"]
-    assert "harbor[langsmith]>=0.20.0,<0.21.0" in deps
+    assert "harbor[langsmith]>=0.25.0,<0.26.0" in deps
     # harbor-langsmith 0.3.0+ honors experiment_name (no job-id suffix); pin its
     # floor explicitly since harbor's extra leaves it unconstrained (would resolve
     # an older, still-suffixing release otherwise).

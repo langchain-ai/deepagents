@@ -26,7 +26,7 @@ dependencies = [
     # 0.20+: managed-Python agent venv. harbor-langsmith 0.3.0+ is the piece that honors
     # experiment_name (no job-id suffix), so shards of a leaf converge on one queryable experiment;
     # pin its floor explicitly since harbor's extra leaves it unconstrained.
-    "harbor[langsmith]>=0.20.0,<0.21.0",
+    "harbor[langsmith]>=0.25.0,<0.26.0",
     "harbor-langsmith>=0.3.0,<0.4.0",
     # LangSmith for observability
     "langsmith>=0.14.12",

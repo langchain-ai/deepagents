@@ -784,9 +784,12 @@ def test_make_bare_graph_rejects_invalid_skills_dir(
 def test_deepagents_langgraph_forwards_task_skills_dir(tmp_path: Path) -> None:
     project = Path(langgraph_agent.__file__).parent
     agent = DeepAgentsLangGraph(
-        project_path=project, logs_dir=tmp_path, skills_dir="/app/.agents/skills"
+        project_path=project,
+        graph="bare",
+        logs_dir=tmp_path,
+        skills_dir="/app/.agents/skills",
     )
-    plain = DeepAgentsLangGraph(project_path=project, logs_dir=tmp_path)
+    plain = DeepAgentsLangGraph(project_path=project, graph="bare", logs_dir=tmp_path)
 
     assert agent.configurable["skills_dir"] == "/app/.agents/skills"
     assert "skills_dir" not in plain.configurable

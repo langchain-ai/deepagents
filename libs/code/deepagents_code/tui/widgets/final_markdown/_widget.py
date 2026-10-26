@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, ClassVar
-from urllib.parse import unquote
 
 from rich.segment import Segment
 from textual.strip import Strip
@@ -325,8 +324,6 @@ class FinalMarkdown(Widget):
         """Open a clicked link with the shared URL safety check.
 
         Args:
-            href: The link target, quoted as `Markdown.LinkClicked` expects.
+            href: The original link target, with URL encoding preserved.
         """
-        await open_checked_url_async(
-            unquote(href), app=self.app, notify_on_success=True
-        )
+        await open_checked_url_async(href, app=self.app, notify_on_success=True)

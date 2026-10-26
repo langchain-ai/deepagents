@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from rich.cells import chop_cells
 from textual.content import Content
 
 from deepagents_code.tui.widgets.final_markdown._parse import LISTS, Node
@@ -128,9 +129,7 @@ class Layout:
     def fence(self, node: Node, width: int) -> Block:
         """Lay out a code block, folding lines longer than the block.
 
-        Folding matches `AssistantMessage`'s streaming fence CSS
-        (`text-wrap: nowrap; text-overflow: fold`), so the height holds when
-        the reply finishes.
+        Fold at cell boundaries without splitting wide characters.
 
         Returns:
             The fence block.
@@ -146,12 +145,10 @@ class Layout:
         rows = [blank(margin=False)]
         for line in code.split("\n", allow_blank=True):
             expanded = line.expand_tabs(8)
-            cuts = list(range(0, expanded.cell_length, inner))[1:]
-            # Textual cuts at cell positions but divides at character offsets,
-            # so a wide-character line yields pieces wider than the block that
-            # the fence label then crops. Crop them the same way.
-            for index, piece in enumerate(expanded.divide(cuts)):
-                piece = piece.truncate(inner)  # noqa: PLW2901  # see above
+            position = 0
+            for index, text in enumerate(chop_cells(expanded.plain, inner) or [""]):
+                piece = expanded[position : position + len(text)]
+                position += len(text)
                 rows.append(
                     Row(((pad, False), (piece, True)), joiner="" if index else "\n")
                 )

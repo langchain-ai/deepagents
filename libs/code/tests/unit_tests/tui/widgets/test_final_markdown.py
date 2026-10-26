@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
+from unittest.mock import AsyncMock
 
 import pytest
 from textual.app import App, ComposeResult
@@ -53,10 +54,7 @@ _CORPUS = {
     "long_word": "averyveryveryveryveryveryveryveryveryveryverylongword and more",
     "ends_with_fence": "para\n\n```\ncode\n```",
     "ends_with_heading": "para\n\n## End",
-    "wide_characters": (
-        "中文字符测试 一些宽字符的文本\n\n```\n"
-        "中文字符测试一些宽字符的文本用于测试换行\n```"
-    ),
+    "wide_characters": "中文字符测试 一些宽字符的文本",
 }
 """Markdown covering every block type `FinalMarkdown` lays out."""
 
@@ -114,6 +112,45 @@ class _FinalApp(App[None]):
 
     def compose(self) -> ComposeResult:
         yield FinalMarkdown(self.source)
+
+
+async def test_encoded_link_opens_original_target(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Clicking a finished link preserves encoded URL delimiters."""
+    url = "https://example.com/a%2Fb?q=a%26b%23c&signature=x%3Dy"
+    opener = AsyncMock(return_value=True)
+    monkeypatch.setattr(
+        "deepagents_code.tui.widgets.final_markdown._widget.open_checked_url_async",
+        opener,
+    )
+    app = _FinalApp(f"[Open]({url})")
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.click(FinalMarkdown, offset=(1, 0))
+        await pilot.pause()
+        opener.assert_awaited_once_with(url, app=app, notify_on_success=True)
+
+
+@pytest.mark.parametrize("width", [6, 12, 17])
+@pytest.mark.parametrize("theme", ["textual-dark", "ansi-dark"])
+async def test_wide_code_preserves_rendered_and_copied_characters(
+    width: int, theme: str
+) -> None:
+    """Code folds at cell boundaries without losing wide characters."""
+    code = "中文字符测试一些宽字符的文本用于测试换行\nprint('中文e\u0301')"
+    app = _FinalApp(f"```python\n{code}\n```")
+    async with app.run_test(size=(width, 100)) as pilot:
+        app.theme = theme
+        await pilot.pause()
+        widget = app.query_one(FinalMarkdown)
+        rows = widget.rows_for(width)
+        assert all(row.cell_length <= width for row in rows)
+        assert "".join(row.text for row in rows) == code.replace("\n", "")
+        assert "".join(line.strip() for line in _screen_lines(app, widget)) == (
+            code.replace("\n", "")
+        )
+        assert widget.get_selection(Selection(None, None)) == (code, "\n")
 
 
 async def test_copy_rejoins_wrapped_lines_and_drops_padding() -> None:

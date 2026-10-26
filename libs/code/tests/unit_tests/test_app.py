@@ -2746,9 +2746,10 @@ class TestModalScreenShiftTabHandling:
         self, newline_key: str, btw_app: tuple[DeepAgentsApp, MagicMock]
     ) -> None:
         """Side-question shortcuts edit text without changing approval mode."""
-        from textual.widgets import Markdown, TextArea
+        from textual.widgets import TextArea
 
         from deepagents_code.tui.modals.btw import BtwScreen
+        from deepagents_code.tui.widgets.final_markdown import FinalMarkdown
 
         app, remote = btw_app
         answer = remote.abtw
@@ -2781,7 +2782,7 @@ class TestModalScreenShiftTabHandling:
             await pilot.pause()
             assert answer.await_count == 1
             assert answer.await_args.args == ("first!\nsecond",)
-            assert app.screen.query_one(Markdown)._markdown == "Side answer"
+            assert app.screen.query_one(FinalMarkdown).source == "Side answer"
             await pilot.press("shift+tab")
             assert editor.text == ""
             assert app._approval_mode is mode
@@ -26799,7 +26800,9 @@ class TestResumeScrollPosition:
     async def test_compact_history_fills_initial_viewport(
         self, height: int, count: int
     ) -> None:
-        """Compact tails load until scrolling works or all history is mounted."""
+        """Compact tails load until they fill the viewport or history runs out."""
+        from deepagents_code.app import _MESSAGE_TOP_SPACER_ID
+
         app = DeepAgentsApp()
         app._message_timestamps_visible = False
         payload = _ThreadHistoryPayload(
@@ -26829,11 +26832,21 @@ class TestResumeScrollPosition:
                 thread_id="compact-resume", preloaded_payload=payload
             )
             chat = app.query_one("#chat", _ChatScroll)
+            messages = app.query_one("#messages", Container)
+            top = messages.query_one(f"#{_MESSAGE_TOP_SPACER_ID}")
             store = app._message_store
-            for _ in range(20):
+
+            def spacer_in_view() -> bool:
+                bottom = messages.virtual_region.y + top.virtual_region.bottom
+                return top.display and bottom > chat.scroll_y
+
+            for _ in range(40):
                 await pilot.pause()
-                if chat.max_scroll_y > 0 or not store.has_messages_above:
+                if not spacer_in_view() or not store.has_messages_above:
                     break
+
+            # No blank spacer rows stay on screen above the resumed tail.
+            assert not spacer_in_view()
 
             assert store.visible_count > store.INITIAL_WINDOW_SIZE + 1
             if height == 200:

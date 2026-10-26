@@ -1,3 +1,3 @@
 # Files
 
-- [Testing Guide](testing-guide.md) - Select and run package-local tests for the Deep Agents SDK, dcode, release automation, and CI workflow policy. The guide distinguishes deterministic unit coverage from process, protocol, UI, and model-backed evaluation boundaries.
+- [Testing Guide](testing-guide.md) - Focused dcode test routing for server lifecycle, runtime compatibility patches, workspace ownership, middleware integrity, and virtualized Textual transcripts. Use package Makefile targets as the command authority and prefer deterministic seams over process or model-backed tests.

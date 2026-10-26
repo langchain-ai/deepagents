@@ -37,10 +37,10 @@ sources:
     resource: repo://libs/partners/runloop/pyproject.toml
   - id: openwiki-source-03a39f44d8ccfde2fd47e57a
     resource: repo://libs/partners/vercel/pyproject.toml
-generated: { by: "openwiki/0.4.2", at: "2026-10-24T08:05:08.866Z" }
 verified:
   - by: openwiki/0.4.2
-    at: 2026-10-24T08:05:08.866Z
+    at: 2026-10-26T08:11:58.203Z
+generated: { by: "openwiki/0.4.2", at: "2026-10-26T08:11:58.203Z" }
 ---
 
 # Sandbox and Partner Integrations
@@ -90,7 +90,7 @@ supports_snapshot_name = true
 region = "us-east-1"
 ```
 
-`class_path` is trusted operator configuration: resolving it imports Python. A malformed or unreadable user configuration is recorded as a visible registry configuration error while unrelated startup can continue; malformed provider values that are not TOML tables are ignored. The configured default names the provider selected by a bare `--sandbox`; it never turns on sandbox mode for an invocation that did not opt in. Configuration layering and managed policy are described in [Configuration layering](/openwiki/concepts/config-layering.md).
+`class_path` is trusted operator configuration: resolving it imports Python. On the normal default-path load, a managed configuration that has a `[sandboxes]` section supplies that section instead of the user section. If the user file is malformed or unreadable, dcode retains applicable managed values and exposes the user-file problem through the registry configuration error; malformed provider values that are not TOML tables are ignored. Passing an explicit config path deliberately excludes managed policy. The configured default names the provider selected by a bare `--sandbox`; it never turns on sandbox mode for an invocation that did not opt in. Configuration layering and managed policy are described in [Configuration layering](/openwiki/concepts/config-layering.md).
 
 ## Factory lifecycle and ownership
 
@@ -164,7 +164,7 @@ The checked-in Daytona, Modal, Runloop, and Vercel adapters are separate partner
 - Treat provider metadata as declarations that drive dcode validation and UX, not proof that the provider enforces a security property. Verify provider-specific identity, credential, network, retention, timeout, cancellation, and isolation behavior separately.
 - Preserve the factory's ownership boundary when adding a provider: only fresh factory-created resources may be deleted. Ensure setup failures take the same cleanup path.
 - Do not generalize Daytona's `124` timeout result, deadline accounting, polling policy, or shared cleanup grace to another adapter without implementing and testing them there.
-- The focused dcode unit tests cover registry precedence, entry-point metadata fallback, malformed configuration, snapshot validation, setup failure, attachment ownership, and cleanup error reporting. Daytona unit tests additionally cover fixed and adaptive polling, finite versus unlimited command requests, deadline-bounded requests, partial-output recovery, cleanup failure, and shared cleanup grace. The optional integration suites exercise real creation, command execution, file transfer, and filesystem operations; they are skipped in the release pipeline and some error-path cases remain explicitly skipped pending provider support.
+- The focused dcode unit tests cover registry precedence, entry-point metadata fallback, malformed configuration and immutable provider mappings, snapshot validation, setup failure, attachment ownership, and cleanup error reporting. Daytona unit tests additionally cover fixed and adaptive polling, finite versus unlimited command requests, deadline-bounded requests, partial-output recovery, cleanup failure, and shared cleanup grace. The optional integration suites exercise real creation, command execution, file transfer, and filesystem operations; they are skipped in the release pipeline and some error-path cases remain explicitly skipped pending provider support.
 - For repository work on an adapter, follow the partner-package guidance: adding a partner also requires its independent release and CI wiring, including sandbox credential/integration-test surfaces where applicable.
 
 See [Development](/openwiki/operations/development.md) for repository workflows and [Run a dcode session](/openwiki/workflows/run-dcode-session.md) for the end-user session path.

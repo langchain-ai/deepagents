@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:a0396cd8b21a20eca8ce3042229a0f670f26c4cc06efd8ace97d226fa9d4d505",
+  "pageVersion": "sha256:a64a81b1e6da74c833e380f19913bf32d14b29da2165956eb8a0a5645f6f9c53",
   "claims": [
     {
       "id": "claim_015da03d55b2487a997c98855e97a7f2",
@@ -34,7 +34,7 @@
       "evidence": [
         {
           "resource": "repo://libs/code/pyproject.toml",
-          "version": "repo-file-v1:sha256:0914b62b0001bee2dd070011f2fe40759bcf3cbe2f97a7ab715a4602044790fd"
+          "version": "repo-file-v1:sha256:3316c97d237e80bdc387af5a49b6ce806ca51f472dd9d04f44d2944e0bc58337"
         },
         {
           "resource": "repo://libs/code/pyproject.toml#L138-L152",
@@ -233,10 +233,20 @@
           "version": "repo-lines-v1:sha256:574b39b20e81bf33d39fa86ed04f484af317b1c7d609b357eb74729679b22a93:eyJzZWxlY3RlZExpbmVDb3VudCI6NjYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjEyNmU4ODM0YTcxODY0ODNkNTAwOTE4Y2QyNWE1NTZmOWYzNzUzMjljZDYyMGI4NzU2Y2I4ZGFjMGE0Y2I3M2EiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjFhNzUwYmYyYzljNDNmNTJlMTU0YmIyOWU5NDFiNTdhOGQ3ODk2NDYzMGMwNjk2NTA0MDQ5NmMzZTAxZTIwNTQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjFlZTdlYTY5NzAyMGI2MmYzY2I2YWUzYTU1NzNjYmVhMzBmY2UyOTdmNTkwNGExNTY0ZjE3NWU1ZTE4Mjc3ZjUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
         }
       ]
+    },
+    {
+      "id": "claim_3350a38c2fb741978f61e7b5cfa5c3a9",
+      "statement": "On the default config path, dcode uses a managed `[sandboxes]` section in preference to the user section; corrupt or unreadable user configuration is surfaced through `parse_error` while managed values can still apply, and an explicit config path excludes managed policy.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/integrations/sandbox_config.py#L110-L216",
+          "version": "repo-lines-v1:sha256:bbc40002eb75012754f09f709e9ba1c27a33cd378fb90b1b186722bc8036fed7:eyJzZWxlY3RlZExpbmVDb3VudCI6MTA3LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI4MjBiNDUzZjVlMGM5MmQ1ZjZjMjUxYTVlYTE5NjBkNzJmM2JkMDc5NTZhZTg1N2RhMjBlMzFhODhjNTU5NjlmIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiIwZGMzMTIxOGRhMDk5ZTlkNTYwZWM1ODM3YjBlODE0MDM1ZDBmNzllMmQzY2IwMWQ5NzhiZTBmYzZkYmFlYWI3IiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI1ZWE4NmFjMzA1N2EyOTFmOTE1MDhjYjY1ZmRlYTNlNWQzOTQ2NTc2ODAxMmE2NGE0YWRlNWFiZmNmZDI5MTdjIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiIzODIzMThjYjAyOThkNjIwZjI5NTkwZmE3ZDMwNzEyMjc0OTVhZWRkYjMxZDQ2M2M4NmYyNmM0YWI3ODIzNTQ2In0"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-10-24T08:05:08.866Z"
+    "at": "2026-10-26T08:11:58.203Z"
   }
 }

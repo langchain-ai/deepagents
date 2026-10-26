@@ -12,18 +12,21 @@ of scrolling with a trackpad.
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING
+from typing import Literal
 
+import pytest
 from textual import events
 from textual.app import App, ComposeResult
 from textual.containers import Container
 from textual.widgets import Static
 
-from deepagents_code.app import DeepAgentsApp, _ChatScroll
+from deepagents_code.app import (
+    _MESSAGE_BOTTOM_SPACER_ID,
+    _MESSAGE_TOP_SPACER_ID,
+    DeepAgentsApp,
+    _ChatScroll,
+)
 from deepagents_code.tui.widgets.messages import UserMessage
-
-if TYPE_CHECKING:
-    import pytest
 
 
 class _ScrollProbeApp(App[None]):
@@ -238,3 +241,50 @@ class TestScrollDrivenHydration:
             assert end_after == app._message_store.total_count
             # Bind the store counter to a real widget: the tail row is mounted.
             assert messages.query(last_id)
+
+
+class TestSpacerGeometry:
+    """Spacers must hold the scroll height of the history they stand in for."""
+
+    @pytest.mark.parametrize(
+        ("direction", "spacer_id"),
+        [("above", _MESSAGE_TOP_SPACER_ID), ("below", _MESSAGE_BOTTOM_SPACER_ID)],
+    )
+    async def test_spacer_occupies_archived_rows(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        direction: Literal["above", "below"],
+        spacer_id: str,
+    ) -> None:
+        """A pruned edge keeps its estimated rows in the scrollable layout.
+
+        `#messages` uses `layout: stream`, which ignores inline heights. A
+        spacer that collapses to one row lets the view reach its scroll end
+        while history is still archived past it, so hydration in that
+        direction stalls before the transcript edge.
+        """
+        app = DeepAgentsApp()
+        async with app.run_test(size=(80, 10)) as pilot:
+            await pilot.pause()
+            await _mount_user_messages(app, 20)
+            await pilot.pause()
+
+            store = app._message_store
+            monkeypatch.setattr(store, "WINDOW_SIZE", 3)
+            monkeypatch.setattr(app, "_check_hydration_needed", lambda: None)
+            monkeypatch.setattr(app, "_check_hydration_below_needed", lambda: None)
+            messages = app.query_one("#messages", Container)
+            await app._prune_messages(direction, messages)
+            await pilot.pause()
+
+            start, end = store.get_visible_range()
+            archived_rows = (
+                store.range_height(0, start)
+                if direction == "above"
+                else store.range_height(end, store.total_count)
+            )
+            assert archived_rows > 1
+            spacer = messages.query_one(f"#{spacer_id}")
+            assert spacer.region.height == archived_rows
+            chat = app.query_one("#chat", _ChatScroll)
+            assert chat.max_scroll_y >= archived_rows

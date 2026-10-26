@@ -93,7 +93,7 @@ dependencies = [
     # Capped below 3.30: it runs a blocking temp-dir probe at import time
     # (_probe_link_follow_symlinks), which trips Blockbuster's os.getcwd guard
     # on the async server graph startup path.
-    "filelock>=3.29.7,<3.30",
+    "filelock>=3.29.7,<4.3",
     # `CancelScope` shields MCP token writes/lock ops from cancellation in
     # mcp_auth.py. Always installed transitively via mcp/httpx; declared here
     # because we import it directly.

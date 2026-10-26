@@ -85,7 +85,9 @@ permissions:
   actions: write
 
 concurrency:
-  group: unified-evals-${{ github.ref }}
+  # Keyed by the eval's configuration so different setups queue separately;
+  # a group holds only one pending run, so a shared key cancels queued dispatches.
+  group: unified-evals-${{ github.ref }}-${{ inputs.models }}-${{ inputs.agent_impls }}-${{ inputs.categories }}-${{ inputs.reasoning_effort }}
   cancel-in-progress: false
 
 jobs:

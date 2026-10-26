@@ -1430,44 +1430,6 @@ def _check_stdio_server(server_name: str, server_config: dict[str, Any]) -> None
         raise RuntimeError(msg)
 
 
-async def _check_remote_server(server_name: str, server_config: dict[str, Any]) -> None:
-    """Check network connectivity to a remote MCP server URL.
-
-    Args:
-        server_name: Server name for error messages.
-        server_config: Validated remote server config.
-
-    Raises:
-        RuntimeError: If the URL is missing, unreachable, or returns 5xx.
-    """
-    import httpx
-
-    url = server_config.get("url")
-    if url is None:
-        msg = f"MCP server '{server_name}': missing 'url' in config."
-        raise RuntimeError(msg)
-    try:
-        async with httpx.AsyncClient(timeout=2.0) as client:
-            response = await client.head(url)
-    except (httpx.HTTPError, httpx.InvalidURL, OSError) as exc:
-        # Name the failure *class* (e.g. `ConnectTimeout`, `InvalidURL`) so the
-        # failure mode stays diagnosable, but keep the URL redacted: `str(exc)`
-        # echoes the URL (which may carry `${VAR}`-injected credentials), while
-        # the class name never does.
-        msg = (
-            f"MCP server '{server_name}': configured URL is unreachable "
-            f"({type(exc).__name__}). "
-            "Check that the URL is correct and the server is running."
-        )
-        raise RuntimeError(msg) from exc
-    if response.status_code >= 500:  # noqa: PLR2004  # HTTP server-error band
-        msg = (
-            f"MCP server '{server_name}': configured URL returned HTTP "
-            f"{response.status_code}. Server may be down; retry later."
-        )
-        raise RuntimeError(msg)
-
-
 def _config_uses_env_interpolation(server_config: dict[str, Any]) -> bool:
     """Return whether a supported config value contains an env reference.
 
@@ -1703,13 +1665,7 @@ def _apply_tool_filter(
 
 
 _MCP_LOAD_CONCURRENCY = 8
-"""Upper bound on MCP servers preflighted/discovered concurrently.
-
-Independent servers are probed in parallel so graph load no longer scales
-linearly with server count, but the fan-out is capped so a large config cannot
-spawn an unbounded number of simultaneous socket/subprocess handshakes (or
-`asyncio.to_thread` `shutil.which` workers).
-"""
+"""Upper bound on simultaneous MCP setup and discovery pipelines."""
 
 
 def _warm_mcp_adapter_imports() -> None:
@@ -1862,7 +1818,10 @@ def _build_transport(
 
 
 async def _mount_backends(
-    backends: Mapping[str, ClientTransport],
+    backends: Mapping[
+        str,
+        Callable[[], Awaitable[ClientTransport | tuple[MCPServerStatus, str]]],
+    ],
     *,
     redact: Mapping[str, bool],
 ) -> tuple[
@@ -1878,7 +1837,8 @@ async def _mount_backends(
     and filters cannot be bypassed by ambiguous mounted names.
 
     Args:
-        backends: Ready transports keyed by server name.
+        backends: Transport factories keyed by server name, run immediately
+            before that server's discovery under the same concurrency bound.
         redact: Per-server flag for whether error detail may quote a config
             that interpolates `${VAR}` references.
 
@@ -1897,14 +1857,22 @@ async def _mount_backends(
     discovered: dict[str, list[Any]] = {}
     failures: dict[str, tuple[MCPServerStatus, str]] = {}
 
-    from fastmcp.client.transports import StdioTransport
+    from fastmcp.client.transports import ClientTransport, StdioTransport
 
     stack = AsyncExitStack()
     connected: dict[str, StatefulProxyClient[Any]] = {}
 
-    async def connect(server_name: str, transport: ClientTransport) -> None:
+    async def connect(
+        server_name: str,
+        prepare: Callable[[], Awaitable[ClientTransport | tuple[MCPServerStatus, str]]],
+    ) -> None:
         owned = AsyncExitStack()
         try:
+            transport = await prepare()
+            if not isinstance(transport, ClientTransport):
+                failures[server_name] = transport
+                return
+            owned.push_async_callback(_close_mcp_resource, "transport", transport.close)
             if isinstance(transport, StdioTransport):
                 # Register ownership in the worker too: cancellation must not lose
                 # a handle opened after the awaiting task has been cancelled.
@@ -1916,7 +1884,6 @@ async def _mount_backends(
                 await _finish_cleanup(
                     asyncio.create_task(asyncio.to_thread(prepare_stderr))
                 )
-            owned.push_async_callback(_close_mcp_resource, "transport", transport.close)
             backend = StatefulProxyClient(
                 transport=transport, log_handler=_server_log_handler(server_name)
             )
@@ -2085,27 +2052,18 @@ async def _load_tools_from_config(
     # ever reaching this function — never pays the adapter-import cost.
     await asyncio.to_thread(_warm_mcp_adapter_imports)
 
-    # Imported here, not at module scope: pulling FastMCP in eagerly would put
-    # it on the `dcode mcp --help` startup path.
-    from fastmcp.client.transports import ClientTransport as _ClientTransport
-
     server_items: list[tuple[str, dict[str, Any]]] = list(config["mcpServers"].items())
     # Resolve each server's transport once, up front. `_resolve_server_type` is
     # pure, so this is a readability/DRY win over recomputing it in preflight,
     # discovery, and the final fold-in loop below.
     transports = {name: _resolve_server_type(cfg) for name, cfg in server_items}
-    # Names whose connection got an OAuth provider, recorded during preflight
-    # and folded into `MCPServerInfo.uses_oauth` at discovery. Preflight fully
-    # completes before discovery starts, so this is populated by then. Computed
-    # here rather than in `_discover_server` because the decision needs the
-    # *resolved* config — the token file stem is derived from the expanded URL.
     oauth_servers: set[str] = set()
     # Whether each server's config interpolates `${VAR}`. Captured from the
     # *raw* config: once refs are expanded, an error message could echo a
     # resolved secret, so those servers' failures are reported without detail.
     redacts = {name: _config_uses_env_interpolation(cfg) for name, cfg in server_items}
 
-    async def _preflight_and_connect(
+    async def _prepare_transport(
         server_name: str,
         server_config: dict[str, Any],
     ) -> tuple[MCPServerStatus, str] | ClientTransport:
@@ -2141,9 +2099,7 @@ async def _load_tools_from_config(
             )
             return ("error", str(exc))
         try:
-            if server_type in _SUPPORTED_REMOTE_TYPES:
-                await _check_remote_server(server_name, server_config)
-            elif server_type == "stdio":
+            if server_type == "stdio":
                 # `shutil.which` makes blocking `os.access` calls; run it
                 # off the event loop so blockbuster doesn't reject it.
                 await asyncio.to_thread(_check_stdio_server, server_name, server_config)
@@ -2239,34 +2195,15 @@ async def _load_tools_from_config(
                 )
             return ("error", error)
 
-    # Preflight + connection build runs concurrently across servers (bounded).
-    # Results come back in submission order, so `skipped`/`connections` are
-    # assembled in config order and stay deterministic regardless of which
-    # server's probe finished first.
-    preflight_results = await _gather_bounded(
-        [
-            functools.partial(_preflight_and_connect, name, cfg)
-            for name, cfg in server_items
-        ],
-        limit=_MCP_LOAD_CONCURRENCY,
-    )
-
-    skipped: dict[str, tuple[MCPServerStatus, str]] = {}
-    backends: dict[str, ClientTransport] = {}
-    for (server_name, _server_config), result in zip(
-        server_items, preflight_results, strict=True
-    ):
-        if isinstance(result, _ClientTransport):
-            backends[server_name] = result
-        else:
-            skipped[server_name] = result
-
     runtime_manager = MCPSessionManager()
-    client, stack, by_server, mount_failures = await _mount_backends(
-        backends, redact=redacts
+    client, stack, by_server, skipped = await _mount_backends(
+        {
+            name: functools.partial(_prepare_transport, name, cfg)
+            for name, cfg in server_items
+        },
+        redact=redacts,
     )
     runtime_manager.adopt(client, stack)
-    skipped.update(mount_failures)
     tool_names = _unique_mcp_tool_names(
         [(server, tool.name) for server, tools in by_server.items() for tool in tools]
     )

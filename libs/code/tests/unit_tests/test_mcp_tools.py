@@ -46,7 +46,6 @@ from deepagents_code.mcp_tools import (
     MCPToolInfo,
     _apply_tool_filter,
     _build_transport,
-    _check_remote_server,
     _check_stdio_server,
     _gather_bounded,
     _json_error_snippet,
@@ -582,10 +581,9 @@ async def test_remote_transport_loading(
     )
     assert config == original
     mcp_servers.register("api", "search")
-    with patch("deepagents_code.mcp_tools._check_remote_server"):
-        tools, manager, _ = await get_mcp_tools(
-            write_config({"mcpServers": {"api": config}})
-        )
+    tools, manager, _ = await get_mcp_tools(
+        write_config({"mcpServers": {"api": config}})
+    )
     assert manager is not None
     try:
         assert [tool.name for tool in tools] == ["api_search"]
@@ -966,13 +964,7 @@ class TestGetMCPTools:
     @pytest.fixture(autouse=True)
     def _bypass_health_checks(self) -> Generator[None]:
         """Bypass pre-flight health checks for tests in this class."""
-        with (
-            patch("deepagents_code.mcp_tools._check_stdio_server"),
-            patch(
-                "deepagents_code.mcp_tools._check_remote_server",
-                new_callable=AsyncMock,
-            ),
-        ):
+        with patch("deepagents_code.mcp_tools._check_stdio_server"):
             yield
 
     async def test_get_mcp_tools_success(
@@ -1593,15 +1585,6 @@ def _failing_backend(error: BaseException) -> Any:  # noqa: ANN401
 
 class TestLoadToolsFromConfigOAuth:
     """OAuth-specific MCP loading behavior."""
-
-    @pytest.fixture(autouse=True)
-    def _bypass_health_checks(self) -> Generator[None]:
-        """Bypass remote health checks for tests in this class."""
-        with patch(
-            "deepagents_code.mcp_tools._check_remote_server",
-            new_callable=AsyncMock,
-        ):
-            yield
 
     async def test_missing_tokens_skip_server_with_login_hint(
         self,
@@ -2347,43 +2330,6 @@ class TestHealthChecks:
             if manager is not None:
                 await manager.cleanup()
 
-    async def test_expanded_url_is_redacted_from_preflight_error(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-        caplog: pytest.LogCaptureFixture,
-    ) -> None:
-        """Expanded URL credentials never reach status or warning text."""
-        secret = "url-token-must-not-leak"
-        monkeypatch.setenv("MCP_TOKEN", secret)
-        client = AsyncMock()
-        client.head.side_effect = httpx.InvalidURL(f"invalid URL containing {secret}")
-        client.__aenter__ = AsyncMock(return_value=client)
-        client.__aexit__ = AsyncMock(return_value=False)
-        caplog.set_level(logging.WARNING, logger="deepagents_code.mcp_tools")
-
-        with patch("httpx.AsyncClient", return_value=client):
-            tools, manager, infos = await _load_tools_from_config(
-                {
-                    "mcpServers": {
-                        "remote": {
-                            "transport": "http",
-                            "url": "not a url?token=${MCP_TOKEN}",
-                        }
-                    }
-                }
-            )
-
-        assert tools == []
-        assert infos[0].status == "error"
-        assert "configured URL is unreachable" in (infos[0].error or "")
-        # The failure *class* is surfaced for diagnosability; it never
-        # embeds the URL, so it is safe to include even when redacting.
-        assert "InvalidURL" in (infos[0].error or "")
-        assert secret not in (infos[0].error or "")
-        assert secret not in caplog.text
-        assert manager is not None
-        await manager.cleanup()
-
     async def test_expanded_url_is_redacted_from_discovery_error(
         self,
         monkeypatch: pytest.MonkeyPatch,
@@ -2413,10 +2359,6 @@ class TestHealthChecks:
 
         caplog.set_level(logging.DEBUG, logger="deepagents_code.mcp_tools")
         with (
-            patch(
-                "deepagents_code.mcp_tools._check_remote_server",
-                new_callable=AsyncMock,
-            ),
             patch(
                 "fastmcp.server.providers.proxy.StatefulProxyClient",
                 _fail_connect,
@@ -2452,9 +2394,7 @@ class TestHealthChecks:
     ) -> None:
         """Resolved values never reach the connection-build error path either.
 
-        Covers the `_preflight_and_connect` setup catch (token-store / provider
-        construction), which runs after preflight succeeds and after `${...}`
-        refs are expanded.
+        Covers the `_prepare_transport` setup catch after `${...}` refs expand.
         """
         secret = "build-token-must-not-leak"
         monkeypatch.setenv("MCP_TOKEN", secret)
@@ -2464,13 +2404,7 @@ class TestHealthChecks:
         )
         caplog.set_level(logging.DEBUG, logger="deepagents_code.mcp_tools")
 
-        with (
-            patch(
-                "deepagents_code.mcp_tools._check_remote_server",
-                new_callable=AsyncMock,
-            ),
-            patch("deepagents_code.mcp_auth.FileTokenStorage", return_value=storage),
-        ):
+        with patch("deepagents_code.mcp_auth.FileTokenStorage", return_value=storage):
             tools, manager, infos = await _load_tools_from_config(
                 {
                     "mcpServers": {
@@ -2522,13 +2456,7 @@ class TestToolOrdering:
     @pytest.fixture(autouse=True)
     def _bypass_health_checks(self) -> Generator[None]:
         """Bypass health checks for ordering tests."""
-        with (
-            patch("deepagents_code.mcp_tools._check_stdio_server"),
-            patch(
-                "deepagents_code.mcp_tools._check_remote_server",
-                new_callable=AsyncMock,
-            ),
-        ):
+        with patch("deepagents_code.mcp_tools._check_stdio_server"):
             yield
 
     async def test_tools_sorted_alphabetically(
@@ -2568,6 +2496,70 @@ class TestLoadToolsConcurrency:
             }
         }
 
+    @pytest.mark.parametrize("cancel", [False, True])
+    async def test_ready_server_discovers_while_sibling_setup_waits(
+        self,
+        mcp_servers: MCPServerRegistry,
+        cancel: bool,
+    ) -> None:
+        """A slow token read cannot hold up ready discovery or leak its session."""
+        from fastmcp.server.providers.proxy import StatefulProxyClient
+
+        for name in ("slow", "ready"):
+            mcp_servers.register(name, "tool")
+        release = asyncio.Event()
+        ready = asyncio.Event()
+        clients: list[StatefulProxyClient] = []
+        list_tools = StatefulProxyClient.list_tools
+
+        async def get_tokens(storage: FileTokenStorage) -> None:
+            if storage._server_name == "slow":
+                await release.wait()
+
+        async def discover(client: StatefulProxyClient) -> list[Tool]:
+            clients.append(client)
+            tools = await list_tools(client)
+            ready.set()
+            return tools
+
+        config = {
+            "mcpServers": {
+                name: {"url": f"https://example.invalid/{name}"}
+                for name in ("slow", "ready")
+            }
+        }
+        with (
+            patch.object(FileTokenStorage, "get_tokens", get_tokens),
+            patch.object(StatefulProxyClient, "list_tools", discover),
+            patch(
+                "httpx.AsyncClient.head", side_effect=AssertionError("unexpected HEAD")
+            ),
+        ):
+            task = asyncio.create_task(_load_tools_from_config(config))
+            manager = None
+            try:
+                await asyncio.wait_for(ready.wait(), timeout=5)
+                assert not task.done()
+                assert len(clients) == 1
+                assert clients[0].is_connected()
+                if cancel:
+                    task.cancel()
+                    with pytest.raises(asyncio.CancelledError):
+                        await asyncio.wait_for(task, timeout=5)
+                else:
+                    release.set()
+                    tools, manager, infos = await asyncio.wait_for(task, timeout=5)
+                    assert [info.name for info in infos] == ["slow", "ready"]
+                    assert all(info.status == "ok" for info in infos)
+                    assert [tool.name for tool in tools] == ["ready_tool", "slow_tool"]
+            finally:
+                release.set()
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+                if manager is not None:
+                    await manager.cleanup()
+            assert not any(client.is_connected() for client in clients)
+
     async def test_discovery_keeps_every_server_separate(
         self,
         mcp_servers: MCPServerRegistry,
@@ -2586,44 +2578,60 @@ class TestLoadToolsConcurrency:
         assert manager is not None
         await manager.cleanup()
 
-    async def test_preflight_concurrency_is_bounded(
+    async def test_setup_and_discovery_share_concurrency_bound(
         self,
         monkeypatch: pytest.MonkeyPatch,
         mcp_servers: MCPServerRegistry,
     ) -> None:
-        """No more than `_MCP_LOAD_CONCURRENCY` servers are probed at once.
+        """A slot stays occupied from token lookup through tool discovery."""
+        from fastmcp.server.providers.proxy import StatefulProxyClient
 
-        The bound now governs pre-flight: discovery is one batched call, so
-        there is no per-server discovery fan-out left to bound.
-        """
-        monkeypatch.setattr(
-            "deepagents_code.mcp_tools._MCP_LOAD_CONCURRENCY", 2, raising=True
-        )
+        monkeypatch.setattr("deepagents_code.mcp_tools._MCP_LOAD_CONCURRENCY", 2)
         names = ["s1", "s2", "s3", "s4", "s5"]
         for name in names:
-            mcp_servers.register(name, f"t_{name}")
-        # `_check_stdio_server` is sync and invoked via `asyncio.to_thread`, so
-        # the shared counters need a real lock (`+=` is not atomic across
-        # threads).
-        stats = {"inflight": 0, "max_inflight": 0}
-        stats_lock = threading.Lock()
+            mcp_servers.register(name, "tool")
+        started = asyncio.Event()
+        inflight = peak = 0
+        list_tools = StatefulProxyClient.list_tools
 
-        def _slow_check(_name: str, _cfg: dict[str, Any]) -> None:
-            with stats_lock:
-                stats["inflight"] += 1
-                stats["max_inflight"] = max(stats["max_inflight"], stats["inflight"])
-            time.sleep(0.03)
-            with stats_lock:
-                stats["inflight"] -= 1
+        async def get_tokens(_storage: FileTokenStorage) -> None:
+            nonlocal inflight, peak
+            inflight += 1
+            peak = max(peak, inflight)
+            if inflight == 2:
+                started.set()
+            await started.wait()
 
-        with patch("deepagents_code.mcp_tools._check_stdio_server", _slow_check):
-            tools, manager, infos = await _load_tools_from_config(self._config(*names))
+        async def discover(client: StatefulProxyClient) -> list[Tool]:
+            nonlocal inflight
+            try:
+                return await list_tools(client)
+            finally:
+                inflight -= 1
 
-        assert stats["max_inflight"] == 2
-        assert [i.name for i in infos] == names
-        assert len(tools) == len(names)
+        with (
+            patch.object(FileTokenStorage, "get_tokens", get_tokens),
+            patch.object(StatefulProxyClient, "list_tools", discover),
+        ):
+            tools, manager, infos = await asyncio.wait_for(
+                _load_tools_from_config(
+                    {
+                        "mcpServers": {
+                            name: {"url": "https://example.invalid/mcp"}
+                            for name in names
+                        }
+                    }
+                ),
+                timeout=5,
+            )
         assert manager is not None
-        await manager.cleanup()
+        try:
+            assert peak == 2
+            assert inflight == 0
+            assert [info.name for info in infos] == names
+            assert len(tools) == len(names)
+        finally:
+            await manager.cleanup()
 
     async def test_order_preserved_when_later_servers_finish_first(
         self,
@@ -2824,6 +2832,50 @@ class TestLoadToolsConcurrency:
                 for client in clients:
                     await client._disconnect(force=True)
 
+    @pytest.mark.parametrize("status", ["unauthenticated", "error"])
+    async def test_discovery_failure_classifies_and_closes_backend(
+        self,
+        mcp_servers: MCPServerRegistry,
+        status: str,
+    ) -> None:
+        """A failed discovery disconnects its backend without losing its sibling."""
+        from fastmcp.server.providers.proxy import StatefulProxyClient
+
+        mcp_servers.register("failed", "fail")
+        mcp_servers.register("healthy", "tool")
+        clients: dict[str, StatefulProxyClient] = {}
+        list_tools = StatefulProxyClient.list_tools
+        request = httpx.Request("POST", "https://example.invalid/mcp")
+        response = httpx.Response(
+            401 if status == "unauthenticated" else 503,
+            request=request,
+            headers={
+                "WWW-Authenticate": 'Bearer resource_metadata="https://example.invalid/oauth"'
+            },
+        )
+
+        async def discover(client: StatefulProxyClient) -> list[Tool]:
+            tools = await list_tools(client)
+            clients[tools[0].name] = client
+            if tools[0].name == "fail":
+                msg = "discovery failed"
+                raise httpx.HTTPStatusError(msg, request=request, response=response)
+            return tools
+
+        with patch.object(StatefulProxyClient, "list_tools", discover):
+            tools, manager, infos = await _load_tools_from_config(
+                self._config("failed", "healthy")
+            )
+        assert manager is not None
+        try:
+            assert [info.status for info in infos] == [status, "ok"]
+            assert [tool.name for tool in tools] == ["healthy_tool"]
+            assert not clients["fail"].is_connected()
+            assert clients["tool"].is_connected()
+        finally:
+            await manager.cleanup()
+        assert not any(client.is_connected() for client in clients.values())
+
     async def test_tool_build_cancellation_closes_adopted_resources(
         self,
         mcp_servers: MCPServerRegistry,
@@ -2844,23 +2896,18 @@ class TestLoadToolsConcurrency:
         assert manager.client is None
 
     async def test_cancellation_propagates_and_cancels_siblings(self) -> None:
-        """A cancelled worker propagates and tears down its siblings.
-
-        Driven through remote pre-flight because that is the per-server step
-        that still awaits on the event loop: stdio pre-flight is dispatched to
-        a worker thread, which cancellation cannot interrupt.
-        """
+        sibling_started = asyncio.Event()
         sibling_cancelled = asyncio.Event()
 
-        async def _check(server_name: str, _cfg: dict[str, Any]) -> None:
-            if server_name == "cancel":
-                await asyncio.sleep(0.01)
+        async def get_tokens(storage: FileTokenStorage) -> None:
+            if storage._server_name == "cancel":
+                await sibling_started.wait()
                 raise asyncio.CancelledError
+            sibling_started.set()
             try:
-                await asyncio.sleep(10)
-            except asyncio.CancelledError:
+                await asyncio.Event().wait()
+            finally:
                 sibling_cancelled.set()
-                raise
 
         config = {
             "mcpServers": {
@@ -2869,7 +2916,7 @@ class TestLoadToolsConcurrency:
             }
         }
         with (
-            patch("deepagents_code.mcp_tools._check_remote_server", _check),
+            patch.object(FileTokenStorage, "get_tokens", get_tokens),
             pytest.raises(asyncio.CancelledError),
         ):
             await _load_tools_from_config(config)
@@ -3115,10 +3162,7 @@ class TestToolFilterEndToEnd:
 
     @pytest.fixture(autouse=True)
     def _bypass_health_checks(self) -> Generator[None]:
-        with (
-            patch("deepagents_code.mcp_tools._check_stdio_server"),
-            patch("deepagents_code.mcp_tools._check_remote_server"),
-        ):
+        with patch("deepagents_code.mcp_tools._check_stdio_server"):
             yield
 
     async def test_allowed_tools_filters_loaded_tools(

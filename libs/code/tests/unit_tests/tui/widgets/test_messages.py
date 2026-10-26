@@ -28,13 +28,14 @@ from deepagents_code.tool_display import (
     JS_EVAL_HEADER_MAX_LENGTH,
 )
 from deepagents_code.tui.widgets.final_markdown import FinalMarkdown
-from deepagents_code.tui.widgets.message_store import MessageData
+from deepagents_code.tui.widgets.message_store import MessageData, MessageType
 from deepagents_code.tui.widgets.messages import (
     _TOOL_ROW_ACTION_CLASS,
     AppMessage,
     AssistantMessage,
     DiffMessage,
     ErrorMessage,
+    LazyToolGroupSummary,
     QueuedUserMessage,
     ReasoningMessage,
     RubricResultMessage,
@@ -62,6 +63,68 @@ MARKUP_INJECTION_CASES = [
     "[unclosed bracket",
     "nested [[brackets]]",
 ]
+
+
+class TestLazyToolGroupExpansion:
+    """Large lazy groups yield to UI work and clean up interrupted expansion."""
+
+    @pytest.mark.parametrize("interruption", [None, "failure", "cancel"])
+    async def test_batched_expansion(self, interruption: str | None) -> None:
+        rows = [
+            MessageData(type=MessageType.TOOL, content="", tool_name="read_file")
+            for _ in range(32)
+        ]
+        built: list[Static] = []
+        progress: list[int] = []
+
+        def build(data: MessageData) -> tuple[Static, None]:
+            if len(built) == 16:
+                if interruption == "failure":
+                    msg = "detail failed"
+                    raise ValueError(msg)
+                if interruption == "cancel":
+                    raise asyncio.CancelledError
+            widget = Static(data.id, id=data.id)
+            built.append(widget)
+            return widget, None
+
+        group = LazyToolGroupSummary(rows, detail_builder=build)
+        app = App()
+        async with app.run_test() as pilot:
+            await app.mount(group)
+
+            async def observe() -> None:
+                while not group._expanded:
+                    progress.append(len(built))
+                    await asyncio.sleep(0)
+
+            observer = asyncio.create_task(observe())
+            try:
+                if interruption == "cancel":
+                    with pytest.raises(asyncio.CancelledError):
+                        await group._set_expanded(True)
+                else:
+                    await group._set_expanded(True)
+            finally:
+                observer.cancel()
+                await asyncio.gather(observer, return_exceptions=True)
+
+            assert any(0 < count < len(rows) for count in progress)
+            assert not group._transitioning
+            assert group._details is not None
+            if interruption is not None:
+                assert not group._expanded
+                assert not group._details.children
+                assert not group._detail_widgets
+            else:
+                assert [widget.id for widget in group._details.children] == [
+                    data.id for data in rows
+                ]
+                await group._set_expanded(False)
+                await pilot.pause()
+                assert not group._details.children
+                await group._set_expanded(True)
+                assert len(group._details.children) == len(rows)
 
 
 class TestUserMessageMarkupSafety:

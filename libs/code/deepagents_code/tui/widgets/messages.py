@@ -5524,7 +5524,11 @@ class LazyToolGroupSummary(Vertical):
                 data.tool_expanded = widget._expanded
 
     async def _set_expanded(self, expanded: bool) -> None:
-        """Create or discard detail widgets for one explicit toggle."""
+        """Create or discard detail widgets for one explicit toggle.
+
+        Raises:
+            asyncio.CancelledError: When expansion is cancelled after cleanup.
+        """
         if expanded == self._expanded or self._transitioning:
             return
         details = self._details
@@ -5535,22 +5539,10 @@ class LazyToolGroupSummary(Vertical):
         try:
             if expanded:
                 try:
-                    entries = []
-                    for data in self._message_data:
-                        widget, footer = (
-                            self._detail_builder(data)
-                            if self._detail_builder is not None
-                            else (data.to_widget(), None)
-                        )
-                        entries.append((data, widget, footer))
-                    nodes = [
-                        node
-                        for _data, widget, footer in entries
-                        for node in (
-                            (widget, footer) if footer is not None else (widget,)
-                        )
-                    ]
-                    await details.mount(*nodes)
+                    entries = await self._mount_detail_batches(details)
+                except asyncio.CancelledError:
+                    await details.remove_children()
+                    raise
                 except Exception:
                     logger.warning("Failed to expand lazy tool group", exc_info=True)
                     try:
@@ -5593,6 +5585,31 @@ class LazyToolGroupSummary(Vertical):
             self.post_message(self.ExpansionChanged(self, expanded))
         finally:
             self._transitioning = False
+
+    async def _mount_detail_batches(
+        self, details: Vertical
+    ) -> list[tuple[MessageData, Widget, Widget | None]]:
+        """Mount bounded batches while yielding to UI work.
+
+        Returns:
+            Stored rows with their mounted detail widgets and optional footers.
+        """
+        entries: list[tuple[MessageData, Widget, Widget | None]] = []
+        for start in range(0, len(self._message_data), 8):
+            nodes: list[Widget] = []
+            for data in self._message_data[start : start + 8]:
+                widget, footer = (
+                    self._detail_builder(data)
+                    if self._detail_builder is not None
+                    else (data.to_widget(), None)
+                )
+                entries.append((data, widget, footer))
+                nodes.append(widget)
+                if footer is not None:
+                    nodes.append(footer)
+            await details.mount(*nodes)
+            await asyncio.sleep(0)
+        return entries
 
     @on(Click, ".lazy-tool-group-header")
     def _on_header_click(self, event: Click) -> None:

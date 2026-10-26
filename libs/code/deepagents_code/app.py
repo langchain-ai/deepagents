@@ -342,7 +342,12 @@ _MESSAGE_BOTTOM_SPACER_ID = "message-bottom-spacer"
 """DOM id for the spacer representing source messages below the mounted window."""
 
 _TIMESTAMP_FOOTER_EXCLUDED_TYPES: frozenset[MessageType] = frozenset(
-    {MessageType.APP, MessageType.SUMMARIZATION, MessageType.REASONING}
+    {
+        MessageType.APP,
+        MessageType.SUMMARIZATION,
+        MessageType.REASONING,
+        MessageType.TOOL_GROUP,
+    }
 )
 """Message types that never receive a timestamp footer.
 
@@ -351,7 +356,9 @@ feedback) are not conversation turns, so they do not get timestamp footers.
 `SUMMARIZATION` is an `APP`-style system notice and is excluded for the same
 reason. `REASONING` is part of the assistant turn that follows it rather than a
 turn of its own, so the answer's footer times the whole turn and a second footer
-above it would only add noise.
+above it would only add noise. `TOOL_GROUP` rows keep the footers on their
+detail rows instead: a live `ToolGroupSummary` has no footer, so a footer on the
+lazy row that replaces it at the end of a turn would add a row to the transcript.
 """
 
 _STREAMED_TEXT_WIDGETS = (AssistantMessage, ReasoningMessage)
@@ -363,7 +370,13 @@ builds a fresh `types.UnionType` on every iteration.
 """
 
 _SERVER_OUTPUT_MESSAGE_TYPES: frozenset[MessageType] = frozenset(
-    {MessageType.ASSISTANT, MessageType.REASONING, MessageType.TOOL, MessageType.SKILL}
+    {
+        MessageType.ASSISTANT,
+        MessageType.REASONING,
+        MessageType.TOOL,
+        MessageType.TOOL_GROUP,
+        MessageType.SKILL,
+    }
 )
 """Message types marking a thread the user did conversational work in.
 
@@ -388,6 +401,8 @@ intentionally treated as "nothing happened here" — `/rubric set` with no
 conversation is a config tweak, not work left behind.
 
 `REASONING` covers turns cut off before assistant text or a tool call arrives.
+`TOOL_GROUP` holds finished `TOOL` rows folded into one row, so it counts as
+the tool rows it replaced.
 `SKILL` is the loosest member: `SkillMessage` mounts just *before*
 `_send_to_agent`, which can bail out without reaching the server, so a
 `SKILL` row means a turn was attempted rather than completed. That
@@ -20362,13 +20377,15 @@ class DeepAgentsApp(App):
                     title_thread_id, title_model_spec, model_params=title_model_params
                 )
             # Close the final step's group once the turn ends with no trailing
-            # assistant text to trigger the boundary path. Grouping is cosmetic,
-            # so a failure here must not abort the turn — but log it, since
+            # assistant text to trigger the boundary path, then compact the
+            # turn's settled groups into lazy rows. Grouping is cosmetic, so a
+            # failure here must not abort the turn — but log it, since
             # `_mount_tool_group_summary` already handles its own mount errors and
             # anything reaching this point is unexpected.
             try:
                 self._close_active_tool_group()
                 await self._regroup_completed_tools()
+                await self._compact_finished_tool_groups()
             except Exception:
                 logger.exception("Failed to close/regroup tool group at turn end")
             task_succeeded = True
@@ -21949,9 +21966,11 @@ class DeepAgentsApp(App):
         # bottom-anchored transcript on every tool call.
         with self.batch_update():
             if not (is_groupable_tool or is_groupable_diff):
+                closing = self._active_tool_group
                 self._close_active_tool_group()
                 if not isinstance(widget, UserMessage):
                     await self._regroup_completed_tools()
+                    await self._compact_finished_tool_groups_unlocked(skip=closing)
             elif is_groupable_tool and (
                 self._active_tool_group is None
                 or not self._active_tool_group.is_attached
@@ -22336,6 +22355,126 @@ class DeepAgentsApp(App):
             if summary.is_attached:
                 summary.remove()
             summary._release_all_collapsible()
+
+    async def _compact_finished_tool_groups(self) -> None:
+        """Compact settled tool groups while transcript mutation is serialized."""
+        async with self._transcript_mutation_lock:
+            await self._compact_finished_tool_groups_unlocked()
+
+    async def _compact_finished_tool_groups_unlocked(
+        self, *, skip: ToolGroupSummary | None = None
+    ) -> None:
+        """Replace settled tool-group runs with lazy `TOOL_GROUP` rows.
+
+        A `ToolGroupSummary` keeps every folded tool row, its footer, and its
+        output mounted but hidden. A resumed thread stores the same run as one
+        `TOOL_GROUP` row, and its `LazyToolGroupSummary` builds the detail
+        widgets only on expand. This gives a live run that form once it settles.
+
+        Compaction is an optimization: a group that fails a check stays as is.
+
+        Args:
+            skip: The group that this step boundary closed. A diff for one of
+                its tools can still arrive in the same step, so it waits for the
+                next boundary or the end of the turn.
+        """
+        try:
+            messages = self.query_one("#messages", Container)
+        except NoMatches:
+            return
+        generation = self._transcript_generation
+        groups = [
+            group
+            for group in messages.query_children(ToolGroupSummary)
+            if group is not skip
+            and group is not self._active_tool_group
+            and group._finalized
+            and group._tools
+        ]
+        for group in groups:
+            if generation != self._transcript_generation:
+                return
+            try:
+                await self._compact_tool_group(messages, group)
+            except Exception:
+                logger.warning("Failed to compact a tool group", exc_info=True)
+
+    def _compactable_tool_group_members(
+        self, group: ToolGroupSummary
+    ) -> list[tuple[Widget, MessageData]] | None:
+        """Return a group's folded rows when all of them can become stored data.
+
+        Returns:
+            Each folded widget with its store row, in store order, or `None`
+                when a tool is not a settled success or a row is not stored.
+        """
+        live = (
+            list(self._ui_adapter._current_tool_messages.values())
+            if self._ui_adapter is not None
+            else []
+        )
+        tools = [w for w in group._collapsible if isinstance(w, ToolCallMessage)]
+        if not tools or any(
+            not tool.is_success or tool.has_display_caveat or tool in live
+            for tool in tools
+        ):
+            return None
+        members = [
+            (widget, self._message_store.get_message(widget.id or ""))
+            for widget in group._collapsible
+        ]
+        if any(data is None for _widget, data in members):
+            return None
+        return [(widget, data) for widget, data in members if data is not None]
+
+    async def _compact_tool_group(
+        self, messages: Container, group: ToolGroupSummary
+    ) -> None:
+        """Replace one settled tool group with a lazy `TOOL_GROUP` row.
+
+        A run that is partly archived changes in the store only. Its mounted
+        rows leave the DOM, and the new row stays outside the visible window.
+        """
+        members = self._compactable_tool_group_members(group)
+        if members is None:
+            return
+        for widget, _data in members:
+            if isinstance(widget, ToolCallMessage):
+                # Store what the user toggled, such as expanded output.
+                self._sync_tool_message_state(widget)
+        rows = [data for _widget, data in members]
+        row = MessageData(
+            type=MessageType.TOOL_GROUP,
+            content="",
+            timestamp=rows[0].timestamp,
+            tool_group_messages=rows,
+            tool_group_expanded=not group._collapsed,
+        )
+        index = self._message_store.replace_run([data.id for data in rows], row)
+        if index is None:
+            return
+        start, end = self._message_store.get_visible_range()
+        doomed = self._tool_group_widgets(messages, group, rows)
+        with self.batch_update():
+            if start <= index < end:
+                widget, _data, footer = self._build_hydration_entry(row)
+                nodes = (widget,) if footer is None else (widget, footer)
+                await messages.mount(*nodes, before=group)
+            await messages.remove_children(doomed)
+            self._sync_transcript_spacers(messages)
+        self._schedule_message_height_measurements([row.id])
+
+    @staticmethod
+    def _tool_group_widgets(
+        messages: Container, group: ToolGroupSummary, rows: list[MessageData]
+    ) -> list[Widget]:
+        """Return a group's summary plus the mounted rows and footers it folds."""
+        widgets: list[Widget] = [group]
+        for data in rows:
+            for widget_id in (data.id, _message_timestamp_footer_id(data.id)):
+                with suppress(NoMatches):
+                    widgets.append(messages.get_child_by_id(widget_id))
+        return widgets
 
     def _on_user_visible_output_started(self) -> None:
         """Record that the current turn has rendered model text or a tool call.

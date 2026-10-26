@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:a1ba6859f33ea24f1ab3bab1f4d723acf01aea0d5d7fdc2e1ee91d6ddc898759",
+  "pageVersion": "sha256:6b424e2836452e52e75ba907ab02578d8872fd1a61a0a163278c5582ad550eee",
   "claims": [
     {
       "id": "claim_cd69081ffe3242c191198ed88e2b1a48",
@@ -12,7 +12,7 @@
         },
         {
           "resource": "repo://libs/code/pyproject.toml",
-          "version": "repo-file-v1:sha256:0914b62b0001bee2dd070011f2fe40759bcf3cbe2f97a7ab715a4602044790fd"
+          "version": "repo-file-v1:sha256:3316c97d237e80bdc387af5a49b6ce806ca51f472dd9d04f44d2944e0bc58337"
         },
         {
           "resource": "repo://libs/deepagents/pyproject.toml",
@@ -381,10 +381,32 @@
           "version": "repo-lines-v1:sha256:3e6a6fe8f5542e049b0af7dfe36c60fa2a76f1221b42870aa19744519aabeb13:eyJzZWxlY3RlZExpbmVDb3VudCI6MywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYzM1ZjhmZGVhNjczNTY3OTU5NzE3ZjFlNjBlYmFlMTI4MWNjMzM3MmZkNGZhNmI0NmE1NjkyNmE2OTIyNDI5MyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNGZjZTY4OWYzMzFhNzMzOWI5NTkyODJlZDI0MmNmODc4NDUwNDAxMDc3NmJhZDA3ZmZmNjVkNmFiZjQyODRmZiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiOTk5ZWM5MmVhYzk2NWM1YWYyNzFlOTk3YTFlMjI0ZDQxOGM5N2E4NjJiZTFjYTE3MGNkYjMxZTEwOGZmNGMxNSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMTk1OWFmZTBmZDZmZmYyOWY4OTU1NDIyM2Y1ODlhMzhkNmJlN2YzOGQ5MGY3Yzc3OTg4YzFkM2NjN2U1ODg1ZiJ9"
         }
       ]
+    },
+    {
+      "id": "claim_62bfa04a745148d9a97b1d7a71716fd6",
+      "statement": "Because Evals and Talon declare dcode as an editable local source, a dcode manifest change puts `libs/code`, `libs/evals`, and `libs/talon` in the direct affected lockfile set before any additional transitive consumers are discovered.",
+      "evidence": [
+        {
+          "resource": "repo://.github/scripts/checks/check_lockfiles_pre_commit.py#L59-L79",
+          "version": "repo-lines-v1:sha256:55484a5085e1ce8df2fd57daacd278ae13f31b5a1ae46e193b4076deb7f061cd:eyJzZWxlY3RlZExpbmVDb3VudCI6MjEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjczMDQzOTg5YTMxOTUzZjhhYzg2ZTQ4YWI0NGM5ODlkNjY3MDA5MGY2YjUyNDc1ZTlhNjUwZmMwMGViMTFlM2QiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImIxYmUyNWQwYzRlNzNkMWJhZDRkZDUxYzA3YzA3MWM2YzI4OTBlMTgyYTA2ZTZiZjljOTIyMzRhODQ0ZmVlOWIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjYxMjU2ZjIxZDBlZGNkNjMzN2E5MDQzZTY4NjM0ZTU1ZGE4YjRiYmE2MmNlODk2MmMyMzVhNTAxYTQ4NGQ0NDgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImIzNzk2MGZmZTdiMmZlYWY5NDZhMGVhYjUzNDA1MGZhZGIzZjk5MGFmNGZlM2Y4ODk1ZTA3ZWNiYWJlNTg0MWYifQ"
+        },
+        {
+          "resource": "repo://libs/code/pyproject.toml#L213-L220",
+          "version": "repo-lines-v1:sha256:d17072bf7263abf884a8260ad4ae1059ed3b0302391e9a981c6677cba58f44ca:eyJzZWxlY3RlZExpbmVDb3VudCI6OCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMTZlZjAyYjBhNGFiNjg1M2FlNmIyYTI1YjNiMzU4ZmU1ODM3OTk3YjM0ZWU0MWY5MjI3Njc5YWExYzkwMWM4NyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMjUyZmM1OGIzZjRiOTczNzM2YjNhZDc5ZDFkNzQ5NTEwNTIzMGY2NWUzZDk4NjM3YTQ2YWU4ZTJmZWEyOTUyZCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNmZlYjcxZTU4NGZjZjYxMzlmMTU4ODY4OGM2NDE3Nzc0Y2ZjOTFjZjNhZGNlYmRhMzYzMjY2NWIyNGI4NzJlMSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMWQ1ZjFmODhjMzhlM2YzMTg2ZmE2OGJmYmNjNWY2ZWMyZjM1NmQ5NWE2OTUyMjY5YmQ0NDQ1N2ZkZWM4Yjk4YyJ9"
+        },
+        {
+          "resource": "repo://libs/evals/pyproject.toml#L139-L142",
+          "version": "repo-lines-v1:sha256:fabc576e82e480e60380b0262d24a6665373ae849ea01d188c05a64102ba02dc:eyJzZWxlY3RlZExpbmVDb3VudCI6NCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMTZlZjAyYjBhNGFiNjg1M2FlNmIyYTI1YjNiMzU4ZmU1ODM3OTk3YjM0ZWU0MWY5MjI3Njc5YWExYzkwMWM4NyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMmUzM2M2NzQ5MjMzNGMyODJiYWYyYzkwMmZkYzg2Zjg2Y2RhMjA4NTViOWFjOTI4YjU3ZWI1ZTBhM2ExMmM1OSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMjZmNzVhYTBlZjE5OTQwNjI1N2EzMzliZDVmYTVhODVkMTQ0ZWEwZTZmN2NjZWE2ZjE0Y2MxMDdlYzA2MmVjZSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNjMyYjkzMmRkMjJhYjNhNzU1YTUxZjBlZTM4M2QxOGIwNmQwMGYyZjU2ZWI4MTE5NzIxNThhNGRiNzc4Y2U5MCJ9"
+        },
+        {
+          "resource": "repo://libs/talon/pyproject.toml#L125-L127",
+          "version": "repo-lines-v1:sha256:f21f76576d9f14be9a1338cfcfdc77cd757509036b7ac828773f94e2521f8257:eyJzZWxlY3RlZExpbmVDb3VudCI6MywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMTZlZjAyYjBhNGFiNjg1M2FlNmIyYTI1YjNiMzU4ZmU1ODM3OTk3YjM0ZWU0MWY5MjI3Njc5YWExYzkwMWM4NyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiYzczN2U2NzEwNTUzNmQ0YWY0YjBkZjlkYWZkMTc4NzU2MmE2ZDFhNGNlOTdiYWE2YTUzYzRlOWM0Y2NmZTdlZiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZDMxYWFiNDQ2YTRiN2M4YjdkOWUzYWJiMzczNDU2YzNlYzY1MzAxNmE4MzRkZDZlMmYxYjQzZGU4YTlkMTIzMSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNjMyYjkzMmRkMjJhYjNhNzU1YTUxZjBlZTM4M2QxOGIwNmQwMGYyZjU2ZWI4MTE5NzIxNThhNGRiNzc4Y2U5MCJ9"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-10-25T08:05:05.473Z"
+    "at": "2026-10-26T08:11:58.203Z"
   }
 }

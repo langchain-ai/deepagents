@@ -68,7 +68,7 @@ def _initialize_repository(repository: Path) -> str:
 
 def _write_fake_gh(directory: Path, requests: Path) -> Path:
     bin_dir = directory / "bin"
-    bin_dir.mkdir()
+    bin_dir.mkdir(exist_ok=True)
     executable = bin_dir / "gh"
     # Record the args of every invocation so tests can assert the API is called
     # with the right endpoint and resolved SHA, then emit the canned response.
@@ -87,8 +87,15 @@ def _run_resolve_sha_step(
     *,
     api_response: str,
     api_exit: int = 0,
+    overrides: dict[str, str] | None = None,
+    check: bool = True,
+    initialized: bool = False,
 ) -> tuple[str, subprocess.CompletedProcess[str], str]:
-    release_sha = _initialize_repository(repository)
+    release_sha = (
+        _git(repository, "rev-parse", "HEAD")
+        if initialized
+        else _initialize_repository(repository)
+    )
     output = repository / "github-output.txt"
     summary = repository / "github-summary.md"
     requests = repository / "gh-requests.txt"
@@ -110,16 +117,18 @@ def _run_resolve_sha_step(
         "PACKAGE": "example",
         "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
         "WORKING_DIR": str(PACKAGE_PATH),
+        **(overrides or {}),
     }
     result = subprocess.run(
         ["bash", "-eo", "pipefail", "-c", _resolve_sha_step()],
         cwd=repository,
         env=env,
-        check=True,
+        check=check,
         capture_output=True,
         text=True,
     )
-    return summary.read_text(), result, requests.read_text()
+    summary_text = summary.read_text() if summary.exists() else ""
+    return summary_text, result, requests.read_text()
 
 
 def test_build_job_can_read_pull_requests() -> None:
@@ -216,3 +225,29 @@ def test_pr_lookup_failure_does_not_block_release(tmp_path: Path) -> None:
     assert "Associated PR" not in summary
     assert "::warning::Could not look up the pull request" in result.stdout
     assert "### Resolved release target" in summary
+
+
+def test_dangerous_release_sha_must_be_on_dispatched_ref(tmp_path: Path) -> None:
+    base_sha = _initialize_repository(tmp_path)
+    _git(tmp_path, "checkout", "-q", "-b", "side")
+    _git(tmp_path, "commit", "-q", "--allow-empty", "-m", "side commit")
+    side_sha = _git(tmp_path, "rev-parse", "HEAD")
+    _git(tmp_path, "checkout", "-q", "main")
+    _git(tmp_path, "commit", "-q", "--allow-empty", "-m", "dispatched head")
+
+    def run(release_sha: str) -> subprocess.CompletedProcess[str]:
+        _, result, _ = _run_resolve_sha_step(
+            tmp_path,
+            api_response="[]",
+            overrides={"IS_DANGEROUS": "true", "INPUT_SHA": release_sha},
+            check=False,
+            initialized=True,
+        )
+        return result
+
+    rejected = run(side_sha)
+    assert rejected.returncode == 1
+    assert "is not reachable from the dispatched commit" in rejected.stdout
+
+    accepted = run(base_sha)
+    assert accepted.returncode == 0, accepted.stdout + accepted.stderr

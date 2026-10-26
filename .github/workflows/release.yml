@@ -315,6 +315,11 @@ jobs:
             fi
             echo "Validated release-sha ${SHA}: ${PACKAGE}==${COMMIT_VERSION}"
           else
+            if ! git merge-base --is-ancestor "$SHA" "$GITHUB_SHA_FALLBACK"; then
+              echo "::error::release-sha ${SHA} is not reachable from the dispatched commit ${GITHUB_SHA_FALLBACK}."
+              echo "::error::With dangerous-nonmain-release, dispatch the workflow from the branch that contains the release commit."
+              exit 1
+            fi
             echo "Using release-sha $SHA (validation skipped: dangerous-nonmain-release)"
           fi
 

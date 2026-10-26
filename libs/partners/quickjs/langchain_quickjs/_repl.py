@@ -84,6 +84,7 @@ class EvalOutcome:
     is collected from `console.*` regardless.
     """
 
+    snapshot_restore_failed: bool = False
     stdout: str = ""
     stdout_truncated_chars: int = 0
     result: str | None = None
@@ -791,17 +792,20 @@ class _ThreadREPL:
 
     async def _aprepare_for_eval(
         self, payload: bytes | None, tools: Sequence[BaseTool] | None
-    ) -> None:
-        """Restore once and bind current tools on the owning worker."""
+    ) -> bool:
+        """Restore once and report failures for checkpoint invalidation."""
+        restore_failed = False
         if not self._prepared_for_eval:
             self._prepared_for_eval = True
             if payload:
                 try:
                     await self._arestore_snapshot(payload, inject_globals=True)
                 except Exception:  # noqa: BLE001  # best-effort restore path
+                    restore_failed = True
                     logger.warning("Failed to restore QuickJS snapshot", exc_info=True)
         if tools is not None:
             await self._ainstall_tools(tools)
+        return restore_failed
 
     async def _aeval_async(  # noqa: C901, PLR0912, PLR0915
         self,
@@ -832,7 +836,9 @@ class _ThreadREPL:
             outer_loop=outer_loop,
         )
         try:
-            await self._aprepare_for_eval(snapshot_payload, tools)
+            outcome.snapshot_restore_failed = await self._aprepare_for_eval(
+                snapshot_payload, tools
+            )
             # Drive any final-expression Promise (e.g. a bare async
             # IIFE) to its resolved value before marshaling. Without
             # this the Promise object itself fails to marshal and

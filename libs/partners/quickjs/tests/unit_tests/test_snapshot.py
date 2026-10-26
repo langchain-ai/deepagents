@@ -24,6 +24,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import bsdiff4
 import pytest
 from langchain.agents import create_agent
+from langchain.tools import ToolRuntime
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage
 from pydantic import Field
@@ -108,8 +109,6 @@ async def test_aafter_agent_snapshot_roundtrip_with_abefore_agent() -> None:
 
 @pytest.mark.parametrize("invoke_mode", ["invoke", "ainvoke"])
 async def test_restore_failure_is_deferred_until_eval(invoke_mode: str) -> None:
-    from langchain.tools import ToolRuntime
-
     mw = CodeInterpreterMiddleware()
     state = {"_quickjs_snapshot_payload": b"not-a-snapshot"}
     state.update(mw.before_agent(state=state, runtime=MagicMock()) or {})
@@ -126,10 +125,15 @@ async def test_restore_failure_is_deferred_until_eval(invoke_mode: str) -> None:
     )
     try:
         if invoke_mode == "ainvoke":
-            result = await mw.tools[0].coroutine(runtime=runtime, code="21 * 2")
+            result = await mw.tools[0].ainvoke({"runtime": runtime, "code": "21 * 2"})
         else:
-            result = mw.tools[0].func(runtime=runtime, code="21 * 2")
-        assert result.content == "<result>42</result>"
+            result = mw.tools[0].invoke({"runtime": runtime, "code": "21 * 2"})
+        from langgraph.types import Command
+
+        assert isinstance(result, Command)
+        assert result.update["_quickjs_snapshot_payload"] is None
+        assert result.update["_quickjs_snapshot_hmac"] is None
+        assert result.update["messages"][0].content == "<result>42</result>"
         update = mw.after_agent(state, MagicMock())
         restored = replay_snapshot_chain(
             state["_quickjs_snapshot_payload"], [update["_quickjs_snapshot_payload"]]
@@ -925,3 +929,63 @@ def test_snapshot_size_cap_clears_hmac() -> None:
         }
     finally:
         mw._registry.close()
+
+
+@pytest.mark.parametrize("invoke_mode", ["invoke", "ainvoke"])
+async def test_failed_restore_clears_checkpoint_before_agent_finishes(
+    invoke_mode: str,
+) -> None:
+    from langgraph.checkpoint.memory import InMemorySaver
+
+    from tests._common import FakeChatModel
+
+    key = b"restore-failure-test-key"
+    slot_id = "failed-restore-checkpoint"
+    payload = b"authenticated-but-invalid-snapshot"
+    middleware = CodeInterpreterMiddleware(snapshot_signing_key=key)
+    agent = create_agent(
+        model=FakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "eval",
+                                "args": {"code": "21 * 2"},
+                                "id": "restore",
+                                "type": "tool_call",
+                            }
+                        ],
+                    )
+                ]
+            )
+        ),
+        middleware=[middleware],
+        checkpointer=InMemorySaver(),
+        interrupt_after=["tools"],
+    )
+    config = {"configurable": {"thread_id": slot_id}}
+    agent.update_state(
+        config,
+        {
+            "_quickjs_slot_id": slot_id,
+            "_quickjs_snapshot_payload": ("snap", payload),
+            "_quickjs_snapshot_hmac": sign_snapshot(key, payload, slot_id),
+        },
+        as_node="CodeInterpreterMiddleware.after_agent",
+    )
+    assert agent.get_state(config).values.get("_quickjs_snapshot_hmac")
+    try:
+        inputs = {"messages": [HumanMessage(content="Evaluate.")]}
+        if invoke_mode == "ainvoke":
+            await agent.ainvoke(inputs, config)
+        else:
+            agent.invoke(inputs, config)
+        state = agent.get_state(config)
+        assert state.next
+        assert not state.values["_quickjs_snapshot_payload"]
+        assert state.values.get("_quickjs_snapshot_hmac") is None
+        assert state.values["messages"][-1].content == "<result>42</result>"
+    finally:
+        middleware._registry.close()

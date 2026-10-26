@@ -24,6 +24,7 @@ from langchain_core._api import beta
 from langchain_core.messages import SystemMessage, ToolMessage
 from langchain_core.tools import StructuredTool
 from langgraph.channels import DeltaChannel
+from langgraph.types import Command
 from pydantic import BaseModel, Field
 
 if TYPE_CHECKING:
@@ -308,17 +309,26 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         def _make_tool_message(
             outcome: Any,
             tool_call_id: str | None,
-        ) -> ToolMessage:
-            return ToolMessage(
+        ) -> ToolMessage | Command:
+            message = ToolMessage(
                 content=format_outcome(outcome, max_result_chars=max_chars),
                 tool_call_id=tool_call_id,
                 name=tool_name,
             )
+            if outcome.snapshot_restore_failed:
+                return Command(
+                    update={
+                        "messages": [message],
+                        "_quickjs_snapshot_payload": None,
+                        "_quickjs_snapshot_hmac": None,
+                    }
+                )
+            return message
 
         def sync_eval(
             runtime: ToolRuntime[None, Any],
             code: Annotated[str, code_doc],
-        ) -> ToolMessage:
+        ) -> ToolMessage | Command:
             slot_id = middleware._slot_id(runtime.state)
             repl = middleware._repl_for_eval(slot_id)
             try:
@@ -336,7 +346,7 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         async def async_eval(
             runtime: ToolRuntime[None, Any],
             code: Annotated[str, code_doc],
-        ) -> ToolMessage:
+        ) -> ToolMessage | Command:
             slot_id = middleware._slot_id(runtime.state)
             repl = middleware._repl_for_eval(slot_id)
             try:

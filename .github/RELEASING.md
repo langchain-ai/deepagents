@@ -780,12 +780,13 @@ Two situations call for this:
 
 ```txt
 BEGIN_COMMIT_OVERRIDE
-refactor(scope): corrected description
+refactor(scope): corrected description (#123)
 END_COMMIT_OVERRIDE
 ```
 
 Notes:
 
+- End each subject line with the PR number, `(#<num>)`, or the changelog entry won't link to the PR.
 - Place the block at the bottom of the PR body, after a horizontal rule.
 - To produce multiple changelog entries from one PR, separate corrected messages by a **blank line** with each starting `type(scope):`, or wrap each in `BEGIN_NESTED_COMMIT`/`END_NESTED_COMMIT` markers — release-please's splitter requires one of these forms; a bare newline between messages is parsed as a single commit's body.
 - Only effective with **squash merges**. release-please attaches the override to the squash commit by matching it to the PR's `merge_commit_sha`; for plain-merge or rebase-merge strategies the per-branch commits have no PR association and the override is ignored.
@@ -806,7 +807,7 @@ Use when the original commit is a mistake the changelog should not record (broke
    ---
 
    BEGIN_COMMIT_OVERRIDE
-   chore(<scope>): <short description of the original change>
+   chore(<scope>): <short description of the original change> (#<num>)
    END_COMMIT_OVERRIDE
    ```
 

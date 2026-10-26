@@ -511,7 +511,9 @@ class DeepAgentRuntime:
         )
         middleware.append(task_tools)
         middleware.append(self.background.configured(resolved))
-        if context_size is not None and not _has_summarization_tool_middleware(middleware):
+        if context_size is not None and not _has_summarization_tool_middleware(
+            [*middleware, *self.middleware]
+        ):
             middleware.append(create_summarization_tool_middleware(model, self.backend))
         diagnostics = ContextDoctor(
             backend=self.backend,

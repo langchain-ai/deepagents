@@ -786,7 +786,7 @@ END_COMMIT_OVERRIDE
 
 Notes:
 
-- End each override message's subject line with the PR number, `(#<num>)`. release-please builds the changelog's PR link from that suffix in the message it parses, and with an override it parses only the override, not the squash-merge subject. Without the suffix the entry links only the commit hash, which curated release notes drop, so the shipped note has no link.
+- End each subject line with the PR number, `(#<num>)`, or the changelog entry won't link to the PR.
 - Place the block at the bottom of the PR body, after a horizontal rule.
 - To produce multiple changelog entries from one PR, separate corrected messages by a **blank line** with each starting `type(scope):`, or wrap each in `BEGIN_NESTED_COMMIT`/`END_NESTED_COMMIT` markers — release-please's splitter requires one of these forms; a bare newline between messages is parsed as a single commit's body.
 - Only effective with **squash merges**. release-please attaches the override to the squash commit by matching it to the PR's `merge_commit_sha`; for plain-merge or rebase-merge strategies the per-branch commits have no PR association and the override is ignored.

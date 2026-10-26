@@ -328,7 +328,7 @@ This label transition signals to release-please that the merged PR has been full
 These workflows guard releases. Each one explains a failed check you may see on a PR:
 
 - **PR title lint** (`pr_lint.yml`) — enforces Conventional Commits with a mandatory scope on PR titles; its allowed types and scopes are the canonical list.
-- **Release-please parse check** (`release_please_parse_check.yml`) — runs `@conventional-commits/parser` on the would-be squash-merge message (`<title> (#<num>)` + body) at PR time. Fails the check and posts a sticky comment with a paste-ready `BEGIN_COMMIT_OVERRIDE` block when the parser would reject the body, preventing silent changelog drops. The parser is exact-pinned and must stay in lock-step with the version release-please itself depends on, declared in its own `package.json` upstream in `googleapis/release-please`.
+- **Release-please parse check** (`release_please_parse_check.yml`) — runs `@conventional-commits/parser` on the would-be squash-merge message (`<title> (#<num>)` + body, wrapped at 72 characters the way GitHub wraps it) at PR time. Fails the check and posts a sticky comment with a paste-ready `BEGIN_COMMIT_OVERRIDE` block when the parser would reject the body, preventing silent changelog drops. The parser is exact-pinned and must stay in lock-step with the version release-please itself depends on, declared in its own `package.json` upstream in `googleapis/release-please`.
 - **Fan-out guards** — one workflow per row; see [Multi-component fan-out](#multi-component-fan-out).
   - `release_please_scope_check.yml` — blocks a bump-worthy PR that touches real files in more than one managed component, or only lockfiles inside a managed package. Bypass label: `ci:allow-lockfile-release`.
   - `pr_scope_file_check.yml` — checks the PR scope against the files touched. Bypass label: `ci:allow-scope-mismatch`.
@@ -776,7 +776,7 @@ Append a `BEGIN_COMMIT_OVERRIDE` block (shown below) to the **merged PR's body**
 Two situations call for this:
 
 1. **Wrong type/scope inferred** — e.g. a `feat:` that should have been `refactor:` or `chore:`.
-2. **Parser cannot read the commit body** — `@conventional-commits/parser` (which release-please uses) is grammar-strict and does not honor markdown code fences. Bodies containing function calls split across lines (`name(` followed by a newline), even inside ` ``` ` blocks, throw a parse error and the commit is silently dropped from the changelog. The pre-merge `release_please_parse_check.yml` check catches this before merge; if a commit slipped through, use the override to recover.
+2. **Parser cannot read the commit body** — `@conventional-commits/parser` (which release-please uses) is grammar-strict and does not honor markdown code fences. Bodies containing function calls split across lines (`name(` followed by a newline), even inside ` ``` ` blocks, throw a parse error and the commit is silently dropped from the changelog. GitHub also wraps squash-merge body lines longer than 72 characters, except inside top-level code fences, so a long one-line call in an indented fence can be split and fail the same way. The pre-merge `release_please_parse_check.yml` check catches this before merge; if a commit slipped through, use the override to recover.
 
 ```txt
 BEGIN_COMMIT_OVERRIDE

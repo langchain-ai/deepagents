@@ -710,10 +710,23 @@ async def test_ptc_install_and_eval_resolve_to_same_repl() -> None:
     state = {"_quickjs_slot_id": "ptc-shared-slot"}
     req = SimpleNamespace(tools=[_greet_tool(), _echo_tool("eval")], state=state)
     mw._prepare_for_call(req)
-    first = mw._registry.get(state["_quickjs_slot_id"])
-    outcome = await first.eval_async("typeof tools.greet")
-    assert outcome.error_type is None, outcome.error_message
-    assert outcome.result == "function"
+    from langchain.tools import ToolRuntime
+
+    assert mw._registry.get_if_exists(state["_quickjs_slot_id"]) is None
+    runtime = ToolRuntime(
+        state=state,
+        context={},
+        config={},
+        stream_writer=lambda _: None,
+        tools=mw.tools,
+        tool_call_id="lazy-ptc",
+        store=None,
+    )
+    try:
+        result = await mw.tools[0].coroutine(runtime=runtime, code="typeof tools.greet")
+        assert result.content == "<result>function</result>"
+    finally:
+        mw._registry.close()
 
 
 async def test_middleware_eval_tool_returns_tool_message_only() -> None:

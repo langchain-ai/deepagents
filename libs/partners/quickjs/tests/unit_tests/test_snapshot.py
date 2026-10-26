@@ -73,7 +73,9 @@ def test_after_agent_snapshot_roundtrip_with_before_agent() -> None:
         )
         restore_slot_id = _assert_slot_update(before_update)
         restored = mw._registry.get(restore_slot_id)
-        assert restored.eval_sync("answer").result == "42"
+        assert (
+            restored.eval_sync("answer", snapshot_payload=materialized).result == "42"
+        )
     finally:
         mw._registry.close()
 
@@ -97,22 +99,42 @@ async def test_aafter_agent_snapshot_roundtrip_with_abefore_agent() -> None:
         )
         restore_slot_id = _assert_slot_update(before_update)
         restored = mw._registry.get(restore_slot_id)
-        assert restored.eval_sync("answer").result == "42"
+        assert (
+            restored.eval_sync("answer", snapshot_payload=materialized).result == "42"
+        )
     finally:
         mw._registry.close()
 
 
-def test_before_agent_clears_payload_on_restore_failure() -> None:
-    mw = CodeInterpreterMiddleware()
-    try:
-        update = mw.before_agent(
-            state={"_quickjs_snapshot_payload": b"not-a-snapshot"},
-            runtime=MagicMock(),
-        )
+@pytest.mark.parametrize("invoke_mode", ["invoke", "ainvoke"])
+async def test_restore_failure_is_deferred_until_eval(invoke_mode: str) -> None:
+    from langchain.tools import ToolRuntime
 
-        _assert_slot_update(update)
-        assert update["_quickjs_snapshot_payload"] is None
-        assert update["_quickjs_snapshot_hmac"] is None
+    mw = CodeInterpreterMiddleware()
+    state = {"_quickjs_snapshot_payload": b"not-a-snapshot"}
+    state.update(mw.before_agent(state=state, runtime=MagicMock()) or {})
+    assert mw._registry.get_if_exists(state["_quickjs_slot_id"]) is None
+    assert mw.after_agent(state, MagicMock()) is None
+    runtime = ToolRuntime(
+        state=state,
+        context={},
+        config={},
+        stream_writer=lambda _: None,
+        tools=mw.tools,
+        tool_call_id="restore-failure",
+        store=None,
+    )
+    try:
+        if invoke_mode == "ainvoke":
+            result = await mw.tools[0].coroutine(runtime=runtime, code="21 * 2")
+        else:
+            result = mw.tools[0].func(runtime=runtime, code="21 * 2")
+        assert result.content == "<result>42</result>"
+        update = mw.after_agent(state, MagicMock())
+        restored = replay_snapshot_chain(
+            state["_quickjs_snapshot_payload"], [update["_quickjs_snapshot_payload"]]
+        )
+        assert restored != b"not-a-snapshot"
     finally:
         mw._registry.close()
 
@@ -366,7 +388,7 @@ def test_after_agent_emits_patch_against_prior_state() -> None:
         )
         slot_id = _assert_slot_update(before_update)
         repl2 = mw._registry.get(slot_id)
-        repl2.eval_sync("globalThis.y = 2")
+        repl2.eval_sync("globalThis.y = 2", snapshot_payload=prior_full)
         second = mw.after_agent(
             state={
                 "_quickjs_slot_id": slot_id,
@@ -387,7 +409,7 @@ def test_after_agent_emits_patch_against_prior_state() -> None:
             state={"_quickjs_snapshot_payload": final}, runtime=MagicMock()
         )
         restored = mw._registry.get(_assert_slot_update(restore_update))
-        assert restored.eval_sync("x + y").result == "3"
+        assert restored.eval_sync("x + y", snapshot_payload=final).result == "3"
     finally:
         mw._registry.close()
 
@@ -706,9 +728,11 @@ def test_signed_snapshot_roundtrip_restores() -> None:
             },
             runtime=MagicMock(),
         )
-        assert before_update is None  # accepted, restored in place
+        assert before_update is None
         restored = mw._registry.get(_signing_thread_id(mw))
-        assert restored.eval_sync("answer").result == "42"
+        assert (
+            restored.eval_sync("answer", snapshot_payload=materialized).result == "42"
+        )
     finally:
         mw._registry.close()
 
@@ -847,7 +871,9 @@ async def test_asigned_snapshot_roundtrip_restores() -> None:
         )
         assert before_update is None
         restored = mw._registry.get(_signing_thread_id(mw))
-        assert restored.eval_sync("answer").result == "42"
+        assert (
+            restored.eval_sync("answer", snapshot_payload=materialized).result == "42"
+        )
     finally:
         mw._registry.close()
 
@@ -875,7 +901,9 @@ def test_no_key_restores_without_verification() -> None:
         )
         assert before_update is None
         restored = mw._registry.get(_signing_thread_id(mw))
-        assert restored.eval_sync("answer").result == "42"
+        assert (
+            restored.eval_sync("answer", snapshot_payload=materialized).result == "42"
+        )
     finally:
         mw._registry.close()
 

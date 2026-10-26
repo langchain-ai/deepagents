@@ -325,6 +325,8 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
                 outcome = repl.eval_sync(
                     code,
                     outer_runtime=runtime,
+                    snapshot_payload=middleware._snapshot_for_eval(runtime.state),
+                    tools=middleware._tools_for_eval(slot_id),
                 )
             finally:
                 if middleware._mode == "call":
@@ -341,6 +343,8 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
                 outcome = await repl.eval_async(
                     code,
                     outer_runtime=runtime,
+                    snapshot_payload=middleware._snapshot_for_eval(runtime.state),
+                    tools=middleware._tools_for_eval(slot_id),
                     outer_loop=asyncio.get_running_loop(),
                 )
             finally:
@@ -370,10 +374,25 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
 
     def _repl_for_eval(self, slot_id: str) -> Any:
         """Return the REPL slot for one eval invocation."""
-        repl = self._registry.get(slot_id)
-        if self._mode == "call" and self._ptc is not None:
-            repl.install_tools(list(self._ptc_tools_by_slot.get(slot_id, ())))
-        return repl
+        return self._registry.get(slot_id)
+
+    def _tools_for_eval(self, slot_id: str) -> tuple[BaseTool, ...] | None:
+        """Return current bindings without allocating an interpreter."""
+        return (
+            self._ptc_tools_by_slot.get(slot_id, ()) if self._ptc is not None else None
+        )
+
+    def _snapshot_for_eval(self, state: Mapping[str, object]) -> bytes | None:
+        """Return authenticated thread state for lazy restoration."""
+        payload = state.get("_quickjs_snapshot_payload")
+        if (
+            self._mode == "thread"
+            and isinstance(payload, bytes)
+            and payload
+            and self._snapshot_authenticated(payload, state)
+        ):
+            return payload
+        return None
 
     def _slot_id(self, state: Mapping[str, object]) -> str:
         """Return the private interpreter slot initialized by `before_agent`."""
@@ -426,7 +445,7 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         state: REPLState,
         runtime: "Runtime[ContextT]",  # noqa: ARG002
     ) -> dict[str, Any] | None:
-        """Ensure a private REPL slot exists and restore snapshot bytes."""
+        """Assign a private slot and authenticate snapshots without creating a VM."""
         slot_id = state.get("_quickjs_slot_id")
         update: dict[str, Any] | None = None
         if not isinstance(slot_id, str) or not slot_id:
@@ -440,20 +459,6 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         if not self._snapshot_authenticated(
             payload, {**state, "_quickjs_slot_id": slot_id}
         ):
-            return {
-                **(update or {}),
-                "_quickjs_snapshot_payload": None,
-                "_quickjs_snapshot_hmac": None,
-            }
-        repl = self._registry.get(slot_id)
-        try:
-            repl.restore_snapshot(payload, inject_globals=True)
-        except Exception:  # noqa: BLE001  # best-effort restore path
-            logger.warning(
-                "Failed to restore QuickJS snapshot for slot_id=%s",
-                slot_id,
-                exc_info=True,
-            )
             return {
                 **(update or {}),
                 "_quickjs_snapshot_payload": None,
@@ -464,42 +469,10 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
     async def abefore_agent(
         self,
         state: REPLState,
-        runtime: "Runtime[ContextT]",  # noqa: ARG002
+        runtime: "Runtime[ContextT]",
     ) -> dict[str, Any] | None:
-        """Async variant of `before_agent` snapshot restore."""
-        slot_id = state.get("_quickjs_slot_id")
-        update: dict[str, Any] | None = None
-        if not isinstance(slot_id, str) or not slot_id:
-            update = self._slot_update_for_runtime()
-            slot_id = update["_quickjs_slot_id"]
-        if self._mode != "thread":
-            return update
-        payload = state.get("_quickjs_snapshot_payload")
-        if not payload:
-            return update
-        if not self._snapshot_authenticated(
-            payload, {**state, "_quickjs_slot_id": slot_id}
-        ):
-            return {
-                **(update or {}),
-                "_quickjs_snapshot_payload": None,
-                "_quickjs_snapshot_hmac": None,
-            }
-        repl = self._registry.get(slot_id)
-        try:
-            await repl.arestore_snapshot(payload, inject_globals=True)
-        except Exception:  # noqa: BLE001  # best-effort restore path
-            logger.warning(
-                "Failed to restore QuickJS snapshot for slot_id=%s",
-                slot_id,
-                exc_info=True,
-            )
-            return {
-                **(update or {}),
-                "_quickjs_snapshot_payload": None,
-                "_quickjs_snapshot_hmac": None,
-            }
-        return update
+        """Async variant of lazy slot preparation."""
+        return self.before_agent(state, runtime)
 
     def wrap_model_call(
         self,
@@ -549,12 +522,11 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         return cached
 
     def _prepare_for_call(self, request: ModelRequest[ContextT]) -> str:
-        """Install PTC bindings for this turn and return the prompt addendum.
+        """Cache live PTC bindings and return the prompt addendum.
 
         Called from both sync and async model-call wrappers. Reads the
         live tool list off the request (middlewares upstream may have
-        filtered it), installs PTC bridges on the current thread's REPL,
-        and renders matching API-reference text.
+        filtered it) and renders matching API-reference text without creating a VM.
         """
         request_tools: list[BaseTool] = list(getattr(request, "tools", []) or [])
 
@@ -575,8 +547,6 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         )
         prompt = self._base_prompt(ptc_attached=bool(exposed)) + subagent_section
         slot_id = self._slot_id(getattr(request, "state", {}))
-        repl = self._registry.get(slot_id)
-        repl.install_tools(exposed)
         exposed_tools = tuple(exposed)
         self._ptc_tools_by_slot[slot_id] = exposed_tools
         # Rendering the TS-ish signature block is cheap but not free, so it is

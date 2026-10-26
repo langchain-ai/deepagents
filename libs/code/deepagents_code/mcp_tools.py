@@ -1664,6 +1664,9 @@ def _apply_tool_filter(
     ]
 
 
+_MCP_REMOTE_STARTUP_TIMEOUT = 2.0
+"""Maximum seconds for a remote server to connect and discover tools."""
+
 _MCP_LOAD_CONCURRENCY = 8
 """Upper bound on simultaneous MCP setup and discovery pipelines."""
 
@@ -1857,7 +1860,12 @@ async def _mount_backends(
     discovered: dict[str, list[Any]] = {}
     failures: dict[str, tuple[MCPServerStatus, str]] = {}
 
-    from fastmcp.client.transports import ClientTransport, StdioTransport
+    from fastmcp.client.transports import (
+        ClientTransport,
+        SSETransport,
+        StdioTransport,
+        StreamableHttpTransport,
+    )
 
     stack = AsyncExitStack()
     connected: dict[str, StatefulProxyClient[Any]] = {}
@@ -1892,11 +1900,25 @@ async def _mount_backends(
                 "backend client",
                 functools.partial(backend._disconnect, force=True),
             )
-            await backend.__aenter__()  # noqa: PLC2801 - explicit forced disconnect above
-            tools = await backend.list_tools()
+            timeout = (
+                _MCP_REMOTE_STARTUP_TIMEOUT
+                if isinstance(transport, (SSETransport, StreamableHttpTransport))
+                else None
+            )
+            async with asyncio.timeout(timeout):
+                await backend.__aenter__()  # noqa: PLC2801 - explicit forced disconnect above
+                tools = await backend.list_tools()
             connected[server_name] = backend
             discovered[server_name] = tools
             stack.push_async_callback(_close_backend_stack, owned.pop_all())
+        except TimeoutError:
+            error = (
+                f"MCP server {server_name!r}: connection and tool discovery timed out "
+                f"after {_MCP_REMOTE_STARTUP_TIMEOUT:g}s. "
+                "Check that the server is reachable and responding."
+            )
+            failures[server_name] = ("error", error)
+            logger.warning("MCP server '%s' skipped: %s", server_name, error)
         except Exception as exc:  # noqa: BLE001 - isolate each backend
             failures[server_name] = _classify_connect_failure(
                 server_name, exc, redact=redact.get(server_name, False)

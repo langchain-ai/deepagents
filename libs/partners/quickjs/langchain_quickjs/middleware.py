@@ -104,6 +104,13 @@ def _resolve_mode(
             raise ValueError(msg)
 
 
+def _same_tools(cached: tuple[BaseTool, ...], exposed: tuple[BaseTool, ...]) -> bool:
+    """Whether `exposed` is exactly the tools `cached` was rendered from."""
+    return len(cached) == len(exposed) and all(
+        a is b for a, b in zip(cached, exposed, strict=True)
+    )
+
+
 def _new_slot_id() -> str:
     """Create a private interpreter slot id."""
     return f"qjs_{uuid.uuid4().hex}"
@@ -286,8 +293,9 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         )
         self._memory_limit_mb = memory_limit // (1024 * 1024)
         self._base_prompt_cache: dict[bool, str] = {}
-        self._ptc_prompt_cache: tuple[frozenset[str], str] | None = None
         self._ptc_tools_by_slot: dict[str, tuple[BaseTool, ...]] = {}
+        # Rendered `tools` namespace per slot, with the tools it was rendered from.
+        self._ptc_prompt_by_slot: dict[str, tuple[tuple[BaseTool, ...], str]] = {}
         self.tools: list[BaseTool] = [self._build_tool()]
 
     def _build_tool(self) -> BaseTool:
@@ -569,19 +577,20 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         slot_id = self._slot_id(getattr(request, "state", {}))
         repl = self._registry.get(slot_id)
         repl.install_tools(exposed)
-        self._ptc_tools_by_slot[slot_id] = tuple(exposed)
-        # Rendering the TS-ish signature block is cheap but not free;
-        # cache by the set of exposed names. The set doesn't encode tool
-        # *identity* — if a tool keeps its name but its schema changes
-        # between turns, the cached prompt staleness is on the caller.
-        # Same tradeoff the TS package accepts; see the module docstring.
-        exposed_names = frozenset(t.name for t in exposed)
-        if self._ptc_prompt_cache is None or self._ptc_prompt_cache[0] != exposed_names:
-            self._ptc_prompt_cache = (
-                exposed_names,
-                render_ptc_prompt(exposed, tool_name=self._tool_name),
+        exposed_tools = tuple(exposed)
+        self._ptc_tools_by_slot[slot_id] = exposed_tools
+        # Rendering the TS-ish signature block is cheap but not free, so it is
+        # cached. One middleware instance serves every run of a compiled
+        # graph, and concurrent runs may expose different tools under the
+        # same names, so the cache is per slot and keyed on tool identity.
+        cached = self._ptc_prompt_by_slot.get(slot_id)
+        if cached is None or not _same_tools(cached[0], exposed_tools):
+            cached = (
+                exposed_tools,
+                render_ptc_prompt(exposed_tools, tool_name=self._tool_name),
             )
-        return prompt + self._ptc_prompt_cache[1]
+            self._ptc_prompt_by_slot[slot_id] = cached
+        return prompt + cached[1]
 
     def _extend(
         self, system_message: SystemMessage | None, prompt: str
@@ -627,6 +636,7 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         """Snapshot REPL state (optional) and evict this turn's REPL slot."""
         slot_id = self._slot_id(state)
         self._ptc_tools_by_slot.pop(slot_id, None)
+        self._ptc_prompt_by_slot.pop(slot_id, None)
         if self._mode != "thread":
             self._registry.evict(slot_id)
             return None
@@ -661,6 +671,7 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         """Async variant of `after_agent` snapshot+evict behavior."""
         slot_id = self._slot_id(state)
         self._ptc_tools_by_slot.pop(slot_id, None)
+        self._ptc_prompt_by_slot.pop(slot_id, None)
         if self._mode != "thread":
             await self._registry.aevict(slot_id)
             return None

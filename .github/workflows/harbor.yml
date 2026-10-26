@@ -117,7 +117,7 @@ on:
           - docker
           - langsmith
       agent_impl:
-        description: "Deep Agents implementation run through Harbor's LangGraph agent."
+        description: "Harness: a Deep Agents graph run through Harbor's LangGraph agent (dcode, bare, tau3), or Harbor's built-in codex (openai models), claude-code (anthropic models), or pi (openai or anthropic models)."
         required: true
         default: "dcode"
         type: choice
@@ -125,6 +125,9 @@ on:
           - dcode
           - bare
           - tau3
+          - codex
+          - claude-code
+          - pi
       n_tasks:
         description: "Maximum number of tasks to run (0 = all)."
         required: true

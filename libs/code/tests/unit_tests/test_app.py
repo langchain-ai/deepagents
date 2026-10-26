@@ -25941,7 +25941,7 @@ class TestRespawnServer:
             monkeypatch.setattr(
                 app,
                 "_discover_plugins_with_fingerprints",
-                lambda: (SimpleNamespace(plugins=[], warnings=[]), {}),
+                lambda: (SimpleNamespace(plugins=[], warnings=[], broken=()), {}),
             )
             monkeypatch.setattr(app, "_restart_server_manual_result", restart_manual)
             monkeypatch.setattr(
@@ -26116,7 +26116,7 @@ class TestRespawnServer:
             monkeypatch.setattr(
                 app,
                 "_discover_plugins_with_fingerprints",
-                lambda: (SimpleNamespace(plugins=[], warnings=[]), {}),
+                lambda: (SimpleNamespace(plugins=[], warnings=[], broken=()), {}),
             )
             monkeypatch.setattr(app, "_restart_server_manual_result", restart_manual)
             monkeypatch.setattr(

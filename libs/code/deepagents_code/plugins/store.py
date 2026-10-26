@@ -167,6 +167,10 @@ def _installed_plugins_path() -> Path:
     return _state_dir() / "installed_plugins.json"
 
 
+def _available_updates_path() -> Path:
+    return _state_dir() / "plugin_updates.json"
+
+
 def _invalid_state(
     path: Path, detail: str, *, strict: bool, cause: Exception | None = None
 ) -> dict[str, Any]:
@@ -347,6 +351,30 @@ def set_plugin_enabled(plugin_id: str, enabled: bool) -> None:
     _write_plugin_state(enabled_plugin_ids=enabled_plugin_ids)
 
 
+def load_available_plugin_updates() -> dict[str, str]:
+    """Load the plugin versions the last update check found but did not install.
+
+    Returns:
+        Available version keyed by plugin id; empty when unreadable.
+    """
+    available = _load_json(_available_updates_path()).get("available", {})
+    if not isinstance(available, dict):
+        return {}
+    return {
+        key: value
+        for key, value in available.items()
+        if isinstance(key, str) and isinstance(value, str)
+    }
+
+
+def save_available_plugin_updates(available: dict[str, str]) -> None:
+    """Persist the plugin versions found by an update check."""
+    _atomic_write_json(
+        _available_updates_path(),
+        {"version": _STORAGE_VERSION, "available": dict(sorted(available.items()))},
+    )
+
+
 def _parse_installed_plugin_json_entry(
     persisted_entry: object,
 ) -> InstalledPluginEntry | None:
@@ -465,6 +493,14 @@ def get_primary_install_entry(plugin_id: str) -> InstalledPluginEntry | None:
     return load_installed_plugins().get(plugin_id)
 
 
+def install_path_exists(install_path: str) -> bool:
+    """Return whether a registered install path is an existing directory."""
+    try:
+        return Path(install_path).is_dir()
+    except OSError, RuntimeError:
+        return False
+
+
 def remove_installed_plugin(
     plugin_id: str,
 ) -> InstalledPluginEntry | None:
@@ -488,6 +524,7 @@ def cache_and_register_plugin(
     *,
     version: str | None,
     validate: Callable[[Path], None] | None = None,
+    refresh: bool = False,
 ) -> Path:
     """Copy a plugin into the versioned cache and register the install.
 
@@ -496,6 +533,8 @@ def cache_and_register_plugin(
         source_dir: Source plugin root to copy from.
         version: Version declared by the plugin manifest, if any.
         validate: Optional validation to run before registering the cache.
+        refresh: Replace an existing versioned cache instead of reusing it,
+            so a damaged copy is restored from source.
 
     Returns:
         Absolute path to the cached plugin root.
@@ -510,7 +549,7 @@ def cache_and_register_plugin(
         raise FileNotFoundError(msg)
 
     cache_path = versioned_cache_path(plugin_id, version)
-    if cache_path.exists() and version is not None:
+    if not refresh and cache_path.exists() and version is not None:
         try:
             if any(cache_path.iterdir()):
                 if validate is not None:

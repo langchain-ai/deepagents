@@ -3094,7 +3094,10 @@ _STATIC_OPTIONS: tuple[ConfigOption[object], ...] = (
     ConfigOption(
         key="plugins.auto_update",
         group="Plugins",
-        summary="Update opted-in plugins after the first prompt; disable globally.",
+        summary=(
+            "Check plugins for updates after the first prompt and install "
+            "opted-in ones; disable globally."
+        ),
         kind=OptionKind.BOOL,
         default=True,
         env_var=_env_vars.PLUGIN_AUTO_UPDATE,

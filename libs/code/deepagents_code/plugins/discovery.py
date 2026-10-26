@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import logging
 import shutil
+import threading
+from dataclasses import dataclass, replace
 from functools import partial
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from deepagents_code.plugins.manifest import (
     PluginManifestError,
@@ -23,11 +26,17 @@ from deepagents_code.plugins.marketplace import (
     unresolved_source_message,
 )
 from deepagents_code.plugins.models import (
+    BrokenPluginInstall,
+    LocalMarketplaceSource,
     MarketplacePluginEntry,
     MarketplaceRecord,
+    MarketplaceSource,
     PluginDiscoveryResult,
     PluginInstance,
+    PluginManifest,
     PluginMarketplace,
+    PluginUpdate,
+    PluginUpdateResult,
     RepositoryMarketplaceSource,
     UrlMarketplaceSource,
     split_plugin_id,
@@ -37,18 +46,29 @@ from deepagents_code.plugins.store import (
     ensure_marketplace_cache_dir,
     ensure_plugin_data_dir,
     get_primary_install_entry,
+    install_path_exists,
+    load_available_plugin_updates,
     load_enabled_plugin_ids,
     load_installed_plugins,
     load_marketplace_records,
     plugin_data_dir,
     plugin_mutation_lock,
     remove_marketplace_record,
+    save_available_plugin_updates,
     save_marketplace_record,
     set_plugin_enabled,
     uninstall_plugin as uninstall_plugin_record,
 )
 
+if TYPE_CHECKING:
+    from collections.abc import Callable, Collection, Sequence, Set as AbstractSet
+
 logger = logging.getLogger(__name__)
+
+_reported_broken: set[tuple[str, str]] = set()
+"""Broken installs already shown to the user in this process."""
+
+_reported_broken_lock = threading.Lock()
 
 
 @plugin_mutation_lock()
@@ -177,8 +197,43 @@ def uninstall_plugin(plugin_id: str) -> None:
     uninstall_plugin_record(plugin_id)
 
 
+def _remote_marketplace_source(record: MarketplaceRecord) -> MarketplaceSource | None:
+    """Rebuild the remote source for a persisted marketplace record.
+
+    Returns:
+        The repository or URL source, or `None` for local marketplaces.
+    """
+    match record.source_type:
+        case "github" | "git":
+            return RepositoryMarketplaceSource(
+                source_type=record.source_type, value=record.source, ref=record.ref
+            )
+        case "url":
+            return UrlMarketplaceSource(source_type="url", value=record.source)
+        case _:
+            return None
+
+
+def _load_record_marketplace(
+    record: MarketplaceRecord, *, refresh_missing: bool
+) -> PluginMarketplace:
+    """Load a configured marketplace, optionally re-fetching a missing clone.
+
+    Returns:
+        Parsed marketplace.
+    """
+    location = Path(record.install_location)
+    source = _remote_marketplace_source(record) if refresh_missing else None
+    if source is not None and not location.exists():
+        marketplace, _ = materialize_marketplace_source(source)
+        return marketplace
+    return load_marketplace_location(location)
+
+
 def _resolve_marketplace_and_entry(
     plugin_id: str,
+    *,
+    refresh_missing: bool = False,
 ) -> tuple[PluginMarketplace, MarketplacePluginEntry]:
     try:
         plugin_name, marketplace_name = split_plugin_id(plugin_id)
@@ -189,7 +244,7 @@ def _resolve_marketplace_and_entry(
     if record is None:
         msg = f"Marketplace {marketplace_name!r} is not configured"
         raise MarketplaceError(msg)
-    marketplace = load_marketplace_location(Path(record.install_location))
+    marketplace = _load_record_marketplace(record, refresh_missing=refresh_missing)
     entry = next(
         (plugin for plugin in marketplace.plugins if plugin.name == plugin_name),
         None,
@@ -217,35 +272,15 @@ def install_plugin(plugin_id: str) -> PluginInstance:
         MarketplaceError: If the marketplace/plugin cannot be resolved, the
             source is unsupported, or the cached plugin fails to load.
     """
-    load_installed_plugins(strict=True)
+    installed = load_installed_plugins(strict=True)
     load_enabled_plugin_ids(strict=True)
     marketplace, entry = _resolve_marketplace_and_entry(plugin_id)
-    rejections: list[str] = []
-    source_root = materialize_plugin_source(marketplace, entry, rejections=rejections)
-    if source_root is None:
-        raise MarketplaceError(unresolved_source_message(plugin_id, entry, rejections))
-
-    try:
-        manifest, _manifest_path, manifest_warnings = load_manifest(
-            source_root, fallback_name=entry.name
-        )
-    except PluginManifestError as exc:
-        msg = f"Cannot install {plugin_id}: {exc}"
-        raise MarketplaceError(msg) from exc
-
-    for warning in manifest_warnings:
-        logger.debug("Plugin install warning for %s: %s", plugin_id, warning)
-
-    version = manifest.version if manifest is not None else None
-    cache_path = cache_and_register_plugin(
+    existing = installed.get(plugin_id)
+    cache_path = _copy_plugin_to_cache(
         plugin_id,
-        source_root,
-        version=version,
-        validate=partial(
-            _validate_plugin_copy,
-            plugin_id=plugin_id,
-            fallback_name=entry.name,
-        ),
+        marketplace,
+        entry,
+        refresh=existing is not None and not install_path_exists(existing.install_path),
     )
 
     set_plugin_enabled(plugin_id, True)
@@ -263,6 +298,84 @@ def install_plugin(plugin_id: str) -> PluginInstance:
         msg = f"Installed {plugin_id} but failed to load from cache: {detail}"
         raise MarketplaceError(msg)
     return instance
+
+
+@plugin_mutation_lock()
+def reinstall_plugin(plugin_id: str) -> PluginInstance:
+    """Restore an installed plugin's files from its marketplace source.
+
+    Unlike `install_plugin`, this always replaces the cached copy, even when the
+    registry already lists the same version, so it repairs missing or damaged
+    files. The enabled state and the plugin's data directory are left as-is.
+
+    Args:
+        plugin_id: Plugin id in `{name}@{marketplace}` form.
+
+    Returns:
+        Plugin instance loaded from the refreshed cache path.
+
+    Raises:
+        MarketplaceError: If the plugin is not installed, its source cannot be
+            resolved, or the refreshed copy fails to load.
+    """
+    _require_installed_plugin(plugin_id)
+    load_enabled_plugin_ids(strict=True)
+    marketplace, entry = _resolve_marketplace_and_entry(plugin_id, refresh_missing=True)
+    cache_path = _copy_plugin_to_cache(plugin_id, marketplace, entry, refresh=True)
+    instance, warnings = _plugin_from_install_path(
+        plugin_id=plugin_id,
+        root=cache_path,
+        marketplace_name=marketplace.name,
+        fallback_name=entry.name,
+    )
+    if instance is None:
+        msg = f"Reinstalled {plugin_id} but failed to load it: {'; '.join(warnings)}"
+        raise MarketplaceError(msg)
+    with _reported_broken_lock:
+        _reported_broken.difference_update(
+            key for key in tuple(_reported_broken) if key[0] == plugin_id
+        )
+    return instance
+
+
+def _copy_plugin_to_cache(
+    plugin_id: str,
+    marketplace: PluginMarketplace,
+    entry: MarketplacePluginEntry,
+    *,
+    refresh: bool,
+) -> Path:
+    """Materialize a plugin source, copy it into the cache, and register it.
+
+    Returns:
+        Absolute path to the cached plugin root.
+
+    Raises:
+        MarketplaceError: If the source cannot be resolved or its manifest is
+            invalid.
+    """
+    rejections: list[str] = []
+    source_root = materialize_plugin_source(marketplace, entry, rejections=rejections)
+    if source_root is None:
+        raise MarketplaceError(unresolved_source_message(plugin_id, entry, rejections))
+    try:
+        manifest, _manifest_path, manifest_warnings = load_manifest(
+            source_root, fallback_name=entry.name
+        )
+    except PluginManifestError as exc:
+        msg = f"Cannot install {plugin_id}: {exc}"
+        raise MarketplaceError(msg) from exc
+    for warning in manifest_warnings:
+        logger.debug("Plugin install warning for %s: %s", plugin_id, warning)
+    return cache_and_register_plugin(
+        plugin_id,
+        source_root,
+        version=manifest.version if manifest is not None else None,
+        validate=partial(
+            _validate_plugin_copy, plugin_id=plugin_id, fallback_name=entry.name
+        ),
+        refresh=refresh,
+    )
 
 
 def _validate_plugin_copy(
@@ -335,131 +448,273 @@ def plugin_auto_update_setting() -> tuple[bool, str]:
     return bool(resolved.value), _ranked_source(resolved)
 
 
-def auto_update_plugins() -> tuple[str, ...]:
-    """Stage updated versions of enabled remote marketplace plugins.
+@dataclass(frozen=True, slots=True, kw_only=True)
+class _PendingUpdate:
+    plugin_id: str
+    entry: MarketplacePluginEntry
+    source_root: Path
+    manifest: PluginManifest
+    update: PluginUpdate
+
+
+def _refresh_source(
+    record: MarketplaceRecord, *, include_local: bool
+) -> MarketplaceSource | None:
+    match record.source_type:
+        case "directory" | "file" if include_local:
+            return LocalMarketplaceSource(
+                source_type=record.source_type, value=record.source
+            )
+        case _:
+            return _remote_marketplace_source(record)
+
+
+def _refresh_marketplace(
+    record: MarketplaceRecord, *, include_local: bool, errors: list[str]
+) -> PluginMarketplace | None:
+    source = _refresh_source(record, include_local=include_local)
+    if source is None:
+        return None
+    try:
+        marketplace, _ = materialize_marketplace_source(source)
+        if marketplace.name != record.name:
+            msg = (
+                f"Marketplace {record.name!r} now declares the name "
+                f"{marketplace.name!r}"
+            )
+            raise MarketplaceError(msg)
+    except (OSError, RuntimeError, ValueError) as exc:
+        detail = redact_urls_in_text(str(exc))
+        logger.warning(
+            "Could not refresh plugin marketplace %s: %s", record.name, detail
+        )
+        errors.append(f"Could not refresh marketplace {record.name}: {detail}")
+        return None
+    return marketplace
+
+
+def _pending_update(
+    marketplace: PluginMarketplace, plugin_id: str, installed_version: str
+) -> _PendingUpdate | None:
+    plugin_name, _ = split_plugin_id(plugin_id)
+    entry = next((p for p in marketplace.plugins if p.name == plugin_name), None)
+    if entry is None:
+        msg = f"Plugin {plugin_id!r} not found in marketplace {marketplace.name}"
+        raise MarketplaceError(msg)
+    rejections: list[str] = []
+    source_root = materialize_plugin_source(marketplace, entry, rejections=rejections)
+    if source_root is None:
+        raise MarketplaceError(unresolved_source_message(plugin_id, entry, rejections))
+    manifest, _manifest_path, _warnings = load_manifest(
+        source_root, fallback_name=entry.name
+    )
+    if (
+        manifest is None
+        or manifest.name != plugin_name
+        or not manifest.version
+        or manifest.version == installed_version
+    ):
+        return None
+    update = PluginUpdate(
+        plugin_id=plugin_id,
+        installed_version=installed_version,
+        available_version=manifest.version,
+    )
+    return _PendingUpdate(
+        plugin_id=plugin_id,
+        entry=entry,
+        source_root=source_root,
+        manifest=manifest,
+        update=update,
+    )
+
+
+def _install_update(pending: _PendingUpdate) -> None:
+    cache_and_register_plugin(
+        pending.plugin_id,
+        pending.source_root,
+        version=pending.update.available_version,
+        validate=partial(
+            _validate_plugin_copy,
+            plugin_id=pending.plugin_id,
+            fallback_name=pending.entry.name,
+        ),
+    )
+
+
+def _collect_updates(
+    targets: AbstractSet[str],
+    *,
+    include_local: bool,
+    refresh_all: bool,
+    should_install: Callable[[PluginManifest], bool],
+) -> tuple[PluginUpdateResult, frozenset[str]]:
+    """Compare installed target plugins with their marketplaces.
 
     Unversioned plugins are skipped so the running session's shared cache is not
     replaced.
 
     Returns:
-        Plugin ids whose installed cache path changed.
-    """  # noqa: DOC501  # Marketplace errors are isolated per source/plugin.
+        Installed and available updates plus redacted per-source errors, and the
+        plugin ids whose comparison completed.
+    """
+    records = load_marketplace_records(strict=True)
+    installed = load_installed_plugins(strict=True)
+    updated: list[PluginUpdate] = []
+    available: list[PluginUpdate] = []
+    errors: list[str] = []
+    checked: set[str] = set()
+    for name, record in sorted(records.items()):
+        plugin_ids = [
+            plugin_id
+            for plugin_id in sorted(targets)
+            if plugin_id.rpartition("@")[2] == name
+            and plugin_id in installed
+            and installed[plugin_id].version is not None
+        ]
+        if not plugin_ids and not refresh_all:
+            continue
+        marketplace = _refresh_marketplace(
+            record, include_local=include_local, errors=errors
+        )
+        if marketplace is None:
+            continue
+        for plugin_id in plugin_ids:
+            installed_version = installed[plugin_id].version or ""
+            try:
+                pending = _pending_update(marketplace, plugin_id, installed_version)
+                checked.add(plugin_id)
+                if pending is None:
+                    continue
+                if not should_install(pending.manifest):
+                    available.append(pending.update)
+                    continue
+                _install_update(pending)
+                updated.append(pending.update)
+            except (OSError, RuntimeError, ValueError) as exc:
+                detail = redact_urls_in_text(str(exc))
+                logger.warning("Could not update plugin %s: %s", plugin_id, detail)
+                errors.append(f"Could not update plugin {plugin_id}: {detail}")
+    result = PluginUpdateResult(
+        updated=tuple(updated), available=tuple(available), errors=tuple(errors)
+    )
+    return result, frozenset(checked)
+
+
+def _record_available_updates(
+    result: PluginUpdateResult, checked: AbstractSet[str]
+) -> PluginUpdateResult:
+    """Persist available updates and mark those no earlier check reported.
+
+    Entries for plugins this check could not compare, such as after a failed
+    marketplace refresh, are kept so they are not announced again later.
+
+    Returns:
+        `result` with `newly_available` filled in.
+    """
+    previous = load_available_plugin_updates()
+    current = {
+        plugin_id: version
+        for plugin_id, version in previous.items()
+        if plugin_id not in checked
+    }
+    current.update((u.plugin_id, u.available_version) for u in result.available)
+    if current != previous:
+        try:
+            save_available_plugin_updates(current)
+        except OSError:
+            logger.warning("Could not save available plugin updates", exc_info=True)
+    newly = tuple(
+        u for u in result.available if previous.get(u.plugin_id) != u.available_version
+    )
+    return replace(result, newly_available=newly)
+
+
+def available_updates_message(updates: Sequence[PluginUpdate]) -> str:
+    """Build the notification announcing plugin updates that were not installed.
+
+    Returns:
+        One-line message pointing the user at `/plugins`.
+    """
+    from deepagents_code.config import get_glyphs
+
+    if len(updates) == 1:
+        update = updates[0]
+        name = update.plugin_id.rsplit("@", 1)[0]
+        arrow = get_glyphs().arrow_right
+        return (
+            f"Plugin update available: {name} {update.installed_version} {arrow} "
+            f"{update.available_version}. Open /plugins to update."
+        )
+    return f"Updates available for {len(updates)} plugins. Open /plugins to update."
+
+
+def check_plugin_updates() -> PluginUpdateResult:
+    """Refresh remote marketplaces and update enabled, opted-in plugins.
+
+    Plugins whose manifest opts into `autoUpdate` are installed; other plugins
+    with a different marketplace version are reported as available.
+
+    Returns:
+        Update outcome; empty when offline, disabled, or another mutation is
+        in progress.
+    """
     from filelock import Timeout
 
     from deepagents_code._env_vars import OFFLINE, is_env_truthy
 
     if is_env_truthy(OFFLINE) or not plugin_auto_update_setting()[0]:
-        return ()
-
+        return PluginUpdateResult()
     try:
         with plugin_mutation_lock(timeout=0):
-            records = load_marketplace_records(strict=True)
-            installed = load_installed_plugins(strict=True)
-            enabled = load_enabled_plugin_ids(strict=True)
-            updated: list[str] = []
-
-            for marketplace_name, record in sorted(records.items()):
-                match record.source_type:
-                    case "github" | "git":
-                        source = RepositoryMarketplaceSource(
-                            source_type=record.source_type,
-                            value=record.source,
-                            ref=record.ref,
-                        )
-                    case "url":
-                        source = UrlMarketplaceSource(
-                            source_type="url", value=record.source
-                        )
-                    case _:
-                        continue
-
-                try:
-                    marketplace, _ = materialize_marketplace_source(source)
-                    if marketplace.name != record.name:
-                        msg = (
-                            f"Marketplace {record.name!r} now declares the name "
-                            f"{marketplace.name!r}"
-                        )
-                        raise MarketplaceError(msg)
-                except (OSError, RuntimeError, ValueError) as exc:
-                    logger.warning(
-                        "Could not refresh plugin marketplace %s: %s",
-                        marketplace_name,
-                        redact_urls_in_text(str(exc)),
-                    )
-                    continue
-
-                for plugin_id, installed_entry in sorted(installed.items()):
-                    if plugin_id not in enabled or installed_entry.version is None:
-                        continue
-                    try:
-                        plugin_name, plugin_marketplace = split_plugin_id(plugin_id)
-                    except ValueError:
-                        continue
-                    if plugin_marketplace != marketplace_name:
-                        continue
-
-                    try:
-                        entry = next(
-                            (
-                                plugin
-                                for plugin in marketplace.plugins
-                                if plugin.name == plugin_name
-                            ),
-                            None,
-                        )
-                        if entry is None:
-                            msg = (
-                                f"Plugin {plugin_id!r} not found in marketplace "
-                                f"{marketplace_name}"
-                            )
-                            raise MarketplaceError(msg)
-                        update_rejections: list[str] = []
-                        source_root = materialize_plugin_source(
-                            marketplace, entry, rejections=update_rejections
-                        )
-                        if source_root is None:
-                            raise MarketplaceError(
-                                unresolved_source_message(
-                                    plugin_id, entry, update_rejections
-                                )
-                            )
-                        manifest, _manifest_path, _warnings = load_manifest(
-                            source_root, fallback_name=entry.name
-                        )
-                        if (
-                            manifest is None
-                            or manifest.name != plugin_name
-                            or not manifest.auto_update
-                            or not manifest.version
-                            or manifest.version == installed_entry.version
-                        ):
-                            continue
-
-                        cache_and_register_plugin(
-                            plugin_id,
-                            source_root,
-                            version=manifest.version,
-                            validate=partial(
-                                _validate_plugin_copy,
-                                plugin_id=plugin_id,
-                                fallback_name=entry.name,
-                            ),
-                        )
-                        updated.append(plugin_id)
-                    except (OSError, RuntimeError, ValueError) as exc:
-                        logger.warning(
-                            "Could not update plugin %s: %s",
-                            plugin_id,
-                            redact_urls_in_text(str(exc)),
-                        )
-
-            return tuple(updated)
+            result, checked = _collect_updates(
+                load_enabled_plugin_ids(strict=True),
+                include_local=False,
+                refresh_all=True,
+                should_install=lambda manifest: manifest.auto_update,
+            )
+            return _record_available_updates(result, checked)
     except Timeout:
         logger.debug(
-            "Skipping plugin auto-update because another mutation holds the lock"
+            "Skipping plugin update check because another mutation holds the lock"
         )
-        return ()
+        return PluginUpdateResult()
+
+
+@plugin_mutation_lock()
+def update_plugins(
+    plugin_ids: Collection[str] = (), *, check_only: bool = False
+) -> PluginUpdateResult:
+    """Update installed plugins to their marketplace versions.
+
+    Args:
+        plugin_ids: Plugins to update; every installed plugin when empty.
+        check_only: Report available updates without installing them.
+
+    Returns:
+        Update outcome.
+
+    Raises:
+        MarketplaceError: If a requested plugin is not installed.
+    """
+    installed = load_installed_plugins(strict=True)
+    targets = frozenset(plugin_ids) or frozenset(installed)
+    missing = sorted(targets - installed.keys())
+    if missing:
+        msg = f"Plugin {missing[0]!r} is not installed"
+        raise MarketplaceError(msg)
+    result, _checked = _collect_updates(
+        targets,
+        include_local=True,
+        refresh_all=False,
+        should_install=lambda _manifest: not check_only,
+    )
+    if result.updated:
+        remaining = load_available_plugin_updates()
+        for update in result.updated:
+            remaining.pop(update.plugin_id, None)
+        save_available_plugin_updates(remaining)
+    return result
 
 
 def discover_plugins() -> PluginDiscoveryResult:
@@ -472,6 +727,7 @@ def discover_plugins() -> PluginDiscoveryResult:
     enabled = load_enabled_plugin_ids()
     plugins: list[PluginInstance] = []
     warnings: list[str] = []
+    broken: list[BrokenPluginInstall] = []
 
     for plugin_id in sorted(enabled):
         try:
@@ -493,9 +749,15 @@ def discover_plugins() -> PluginDiscoveryResult:
             warnings.append(f"Plugin {plugin_id} cache could not be inspected: {exc}")
             continue
         if not root_exists:
-            warnings.append(
-                f"Plugin {plugin_id} cache miss at {entry.install_path}; "
-                "re-run install to refresh"
+            logger.debug(
+                "Plugin %s is enabled but its install path %s is not a directory",
+                plugin_id,
+                entry.install_path,
+            )
+            broken.append(
+                BrokenPluginInstall(
+                    plugin_id=plugin_id, install_path=entry.install_path
+                )
             )
             continue
         try:
@@ -512,7 +774,35 @@ def discover_plugins() -> PluginDiscoveryResult:
         if plugin is not None:
             plugins.append(plugin)
 
-    return PluginDiscoveryResult(plugins=tuple(plugins), warnings=tuple(warnings))
+    return PluginDiscoveryResult(
+        plugins=tuple(plugins), warnings=tuple(warnings), broken=tuple(broken)
+    )
+
+
+def claim_broken_install_notices(
+    broken: tuple[BrokenPluginInstall, ...],
+) -> tuple[BrokenPluginInstall, ...]:
+    """Return broken installs that have not yet been shown in this process.
+
+    Several consumers (skills, hooks, MCP, the plugin manager) run discovery
+    independently. Routing user-facing notices through this claim keeps each
+    broken install to one warning per process while leaving other discovery
+    warnings untouched. A successful `reinstall_plugin` releases the claim.
+
+    Args:
+        broken: Broken installs from a discovery result.
+
+    Returns:
+        The subset not previously claimed, in input order.
+    """
+    with _reported_broken_lock:
+        fresh = tuple(
+            item
+            for item in broken
+            if (item.plugin_id, item.install_path) not in _reported_broken
+        )
+        _reported_broken.update((item.plugin_id, item.install_path) for item in fresh)
+    return fresh
 
 
 def list_available_plugins() -> tuple[tuple[str, str, bool], ...]:

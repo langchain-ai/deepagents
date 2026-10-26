@@ -1180,6 +1180,7 @@ if TYPE_CHECKING:
     from deepagents_code.model_config import MissingProviderPackageError
     from deepagents_code.model_metadata import ModelMetadata, ModelPurpose
     from deepagents_code.plugins.models import (
+        BrokenPluginInstall,
         PluginDiscoveryResult,
         PluginInstance,
         PluginManifest,
@@ -3822,6 +3823,9 @@ class DeepAgentsApp(App):
         self._discovered_plugin_ids: frozenset[str] = frozenset()
         """Plugin ids found by the latest background skill discovery."""
 
+        self._discovered_broken_plugins: tuple[BrokenPluginInstall, ...] = ()
+        """Enabled plugins with missing files found by the latest skill discovery."""
+
         self._mcp_optimistic_original_server_info: dict[str, MCPServerInfo] = {}
         """Pre-disable server metadata for optimistic viewer toggles."""
 
@@ -6145,7 +6149,15 @@ class DeepAgentsApp(App):
         discovered = await self._discover_skills()
         if discovered:
             self._session_plugin_ids = self._discovered_plugin_ids
+            self._notify_broken_plugins(self._discovered_broken_plugins)
         return discovered
+
+    def _notify_broken_plugins(self, broken: tuple[BrokenPluginInstall, ...]) -> None:
+        """Warn once per process about each enabled plugin with missing files."""
+        from deepagents_code.plugins.discovery import claim_broken_install_notices
+
+        for item in claim_broken_install_notices(broken):
+            self.notify(item.message, severity="warning", timeout=10, markup=False)
 
     def _discover_skills_and_roots(
         self,
@@ -6163,9 +6175,12 @@ class DeepAgentsApp(App):
         from deepagents_code.skills.invocation import discover_skills_and_roots
 
         assistant_id = self._assistant_id or DEFAULT_ASSISTANT_ID
-        plugin_skill_sources, plugin_skill_roots, self._discovered_plugin_ids = (
-            discover_plugin_skill_state()
-        )
+        (
+            plugin_skill_sources,
+            plugin_skill_roots,
+            self._discovered_plugin_ids,
+            self._discovered_broken_plugins,
+        ) = discover_plugin_skill_state()
         return discover_skills_and_roots(
             assistant_id,
             plugin_skill_sources=plugin_skill_sources,
@@ -18744,6 +18759,12 @@ class DeepAgentsApp(App):
                         f"\n{len(plugin_result.warnings)} plugin warning(s) "
                         "during load."
                     )
+                if plugin_result.broken:
+                    count = len(plugin_result.broken)
+                    noun = "plugin needs" if count == 1 else "plugins need"
+                    report += (
+                        f"\n{count} {noun} repair; reinstall or disable via /plugins."
+                    )
 
                 if self._server_proc is not None and self._server_kwargs is not None:
                     if self._agent_running and self._agent_worker:
@@ -19203,25 +19224,32 @@ class DeepAgentsApp(App):
         )
 
     async def _auto_update_plugins(self) -> None:
-        """Update plugins on disk and notify when `/reload` can apply them."""
-        from deepagents_code.plugins.discovery import auto_update_plugins
+        """Update opted-in plugins and announce updates found for the rest."""
+        from deepagents_code.plugins.discovery import (
+            available_updates_message,
+            check_plugin_updates,
+        )
 
         try:
-            updated = await asyncio.to_thread(auto_update_plugins)
+            result = await asyncio.to_thread(check_plugin_updates)
         except Exception:
-            logger.exception("Plugin auto-update failed")
+            logger.exception("Plugin update check failed")
             return
-        if not updated:
-            return
-
-        names = [plugin_id.rsplit("@", 1)[0] for plugin_id in updated]
-        noun = "Plugin" if len(names) == 1 else "Plugins"
-        display = f"{len(names)} plugins" if names[2:] else " and ".join(names)
-        self.notify(
-            f"{noun} updated: {display}. Run /reload to apply.",
-            timeout=10,
-            markup=False,
-        )
+        if result.updated:
+            names = [update.plugin_id.rsplit("@", 1)[0] for update in result.updated]
+            noun = "Plugin" if len(names) == 1 else "Plugins"
+            display = f"{len(names)} plugins" if names[2:] else " and ".join(names)
+            self.notify(
+                f"{noun} updated: {display}. Run /reload to apply.",
+                timeout=10,
+                markup=False,
+            )
+        if result.newly_available:
+            self.notify(
+                available_updates_message(result.newly_available),
+                timeout=10,
+                markup=False,
+            )
 
     async def _handle_user_message(self, message: str) -> None:
         """Handle a user message to send to the agent.

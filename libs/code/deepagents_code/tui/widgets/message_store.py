@@ -678,8 +678,8 @@ class MessageStore:
     """
 
     INITIAL_WINDOW_SIZE: int = 30
-    WINDOW_SIZE: int = 800
-    HARD_WINDOW_SIZE: int = 900
+    WINDOW_SIZE: int = 350
+    HARD_WINDOW_SIZE: int = 400
     HYDRATE_BUFFER: int = 8
     PREFETCH_VIEWPORTS: int = 8
 

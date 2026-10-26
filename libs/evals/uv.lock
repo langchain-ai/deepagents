@@ -799,7 +799,7 @@ requires-dist = [
     { name = "langchain-openrouter", specifier = ">=0.2.6" },
     { name = "langchain-quickjs", editable = "../partners/quickjs" },
     { name = "langchain-xai", specifier = ">=1.2.2" },
-    { name = "langsmith", specifier = ">=0.10.9" },
+    { name = "langsmith", specifier = ">=0.14.12" },
     { name = "matplotlib", marker = "extra == 'charts'", specifier = ">=3.11.0" },
     { name = "modal", specifier = ">=1.4.3" },
     { name = "nltk", specifier = ">=3.10.3" },

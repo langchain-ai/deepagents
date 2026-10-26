@@ -17,9 +17,9 @@ classifiers = [
 ]
 dependencies = [
     # SDK — local editable in dev (see [tool.uv.sources]), versioned for published package
-    "deepagents>=0.6.12",
+    "deepagents>=0.7.32",
     "langchain[mcp]>=1.4.1",
-    "deepagents-code>=0.1.27",
+    "deepagents-code>=0.2.1",
     # Require Pydantic 2.13+ explicitly to avoid Python 3.14 warnings from LangChain's v1 imports.
     "pydantic>=2.13.0,<3.0.0",
     # Harbor runtime, with the built-in LangSmith sandbox env (`-e langsmith`, introduced in harbor 0.13.2).
@@ -29,7 +29,7 @@ dependencies = [
     "harbor[langsmith]>=0.20.0,<0.21.0",
     "harbor-langsmith>=0.3.0,<0.4.0",
     # LangSmith for observability
-    "langsmith>=0.10.9",
+    "langsmith>=0.14.12",
     # Sandbox runtimes
     "dockerfile-parse>=2.0.1",
     "modal>=1.4.3",

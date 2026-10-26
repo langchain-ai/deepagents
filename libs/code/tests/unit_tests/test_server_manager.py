@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import os
 import threading
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 if TYPE_CHECKING:
@@ -17,6 +17,7 @@ from deepagents_code._env_vars import SERVER_ENV_PREFIX
 from deepagents_code._server_config import ServerConfig
 from deepagents_code.client.launch.server import _ABANDONED_START_GRACE
 from deepagents_code.client.launch.server_manager import (
+    PrespawnedServer,
     _apply_server_config,
     _runtime_package_dependency,
     _write_pyproject,
@@ -516,3 +517,79 @@ class TestServerSession:
 
 class TestPreflightValidateMCPConfig:
     """Pre-flight validation of `--mcp-config` raises an actionable error."""
+
+
+class _FakeStart:
+    """Stand-in for `start_server_and_get_agent` that pauses at the spawn."""
+
+    def __init__(self) -> None:
+        self.events: list[str] = []
+        self.server = MagicMock()
+        self.result = (MagicMock(), self.server, None)
+
+    async def __call__(self, **kwargs: Any) -> tuple[Any, Any, None]:
+        self.events.append("spawn")
+        try:
+            await kwargs["after_spawn"]()
+            self.events.append("health")
+        except asyncio.CancelledError:
+            self.events.append("reaped")
+            raise
+        return self.result
+
+
+class TestPrespawnedServer:
+    """The early server start spawns, pauses, and has exactly one owner."""
+
+    async def test_adopt_runs_gate_before_health_check(self) -> None:
+        """The app's gate must finish before the health check runs."""
+        fake = _FakeStart()
+
+        async def gate() -> None:
+            await asyncio.sleep(0)
+            fake.events.append("gate")
+
+        with patch(
+            "deepagents_code.client.launch.server_manager.start_server_and_get_agent",
+            fake,
+        ):
+            prespawned = PrespawnedServer(assistant_id="agent")
+            await prespawned.wait_spawned()
+            assert fake.events == ["spawn"]
+            result = await prespawned.adopt(after_spawn=gate)
+            await prespawned.aclose()
+
+        assert result is fake.result
+        assert fake.events == ["spawn", "gate", "health"]
+        fake.server.stop.assert_not_called()
+
+    async def test_aclose_reaps_unadopted_start(self) -> None:
+        """A start that the app never adopts is cancelled, not left running."""
+        fake = _FakeStart()
+        with patch(
+            "deepagents_code.client.launch.server_manager.start_server_and_get_agent",
+            fake,
+        ):
+            prespawned = PrespawnedServer(assistant_id="agent")
+            await prespawned.wait_spawned()
+            await prespawned.aclose()
+
+        assert fake.events == ["spawn", "reaped"]
+
+    async def test_failed_start_surfaces_on_adopt(self) -> None:
+        """A start that fails before the spawn reports the error to the app."""
+        msg = "bad mcp config"
+
+        async def fail(**_: object) -> None:
+            await asyncio.sleep(0)
+            raise ValueError(msg)
+
+        with patch(
+            "deepagents_code.client.launch.server_manager.start_server_and_get_agent",
+            fail,
+        ):
+            prespawned = PrespawnedServer(assistant_id="agent")
+            await prespawned.wait_spawned()
+            with pytest.raises(ValueError, match=msg):
+                await prespawned.adopt(after_spawn=AsyncMock())
+            await prespawned.aclose()

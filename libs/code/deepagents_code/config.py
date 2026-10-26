@@ -38,10 +38,15 @@ from deepagents_code._env_vars import (
     AUTO_CLASSIFIER_TIMEOUT,
     DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS,
     DISABLED_PROJECT_MCP_SERVERS,
+    EXPERIMENTAL,
+    EXTENSIONS_TRUST,
+    EXTRA_SKILLS_DIRS,
     FORKED_SUBAGENTS,
     HIDE_SPLASH_VERSION,
     MCP_TOOL_TIMEOUT,
+    PLUGIN_CACHE_DIR,
     READ_PROJECT_DOTENV,
+    SHELL_ALLOW_LIST,
     UI_CHARSET_MODE,
     is_env_truthy,
 )
@@ -408,6 +413,11 @@ _PROJECT_DOTENV_DENIED_ENV_KEYS = frozenset(
         FORKED_SUBAGENTS,
         _LANGGRAPH_DEFAULT_RECURSION_LIMIT_ENV,
         "TERM_PROGRAM",
+        EXPERIMENTAL,
+        EXTENSIONS_TRUST,
+        PLUGIN_CACHE_DIR,
+        SHELL_ALLOW_LIST,
+        EXTRA_SKILLS_DIRS,
     }
 )
 """Env keys a *project* `.env` must not inject, even though they are otherwise
@@ -457,6 +467,23 @@ session degrades into repeated denials and approval prompts.
 Agents Code and is included in trace metadata. A project `.env` must not
 replace it: python-dotenv expands environment-variable references, which could
 otherwise forward a launch-environment value to the trace backend.
+
+`EXPERIMENTAL` and `EXTENSIONS_TRUST` together gate project Python extensions:
+the first enables them at all, and `always` in the second skips the
+"Project extensions run arbitrary Python" prompt. Honoring either from a
+project `.env` would let a cloned repo ship `.deepagents/extensions/` and run
+it as the user on launch without any trust decision.
+
+`PLUGIN_CACHE_DIR` relocates the plugin storage root, including the
+installed-plugin index that maps enabled plugin ids to the code they load. Like
+`DEEPAGENTS_HOME`, it moves files treated as user-trusted, so a repo must not
+point it at a directory it controls.
+
+`SHELL_ALLOW_LIST` decides which shell commands run without approval (`all`
+disables the prompt entirely), and `EXTRA_SKILLS_DIRS` widens the skill
+containment allowlist that stops a `SKILL.md` symlink from reading arbitrary
+files. Both are user-level approval decisions; `[skills].extra_allowed_dirs` in
+`~/.deepagents/config.toml` and the trusted env surfaces still set them.
 
 Unlike `_DOTENV_DENIED_ENV_KEYS` (denied from *any* `.env` because they turn
 `.env` loading into code execution), these are denied only from the *project*
@@ -2275,6 +2302,7 @@ Kept short so tracing metadata can never stall app flows.
 """
 
 
+@functools.cache
 def _get_deepagents_version() -> str | None:
     """Resolve the installed Deep Agents SDK version for diagnostics.
 
@@ -2282,6 +2310,10 @@ def _get_deepagents_version() -> str | None:
     this uses the shared resolver that prefers the editable source marker and
     appends an `+editable` suffix. A sibling monorepo workspace whose marker
     trails dcode's exact pin reports the pinned release baseline instead.
+
+    Cached for the process lifetime: `build_stream_config` calls this on every
+    turn, and the resolver scans installed distributions each time. The
+    installed SDK does not change while the process runs.
 
     Returns:
         The resolved Deep Agents SDK version, or `None` when unavailable.

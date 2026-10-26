@@ -19,7 +19,7 @@ from time import time
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Sequence
 
     from textual.widget import Widget
 
@@ -32,7 +32,11 @@ DEFAULT_HEIGHT_HINT = 5
 """Estimated terminal rows for a message whose rendered height is unknown."""
 
 MIN_HEIGHT_HINT = 1
-"""Smallest useful row estimate for spacer and range-height math."""
+"""Smallest row estimate for a displayed message in spacer and range math.
+
+A row folded out of view (e.g. a tool hidden behind a `ToolGroupSummary`) may
+store a smaller hint, down to 0. See `MessageStore.set_height_hint`.
+"""
 
 _ACTIVE_REASON = "active"
 """Protection reason for the currently-streaming message."""
@@ -319,7 +323,8 @@ class MessageData:
     via `set_height_hint`. Consumed by `estimate_height`/`range_height` to size
     the transcript spacers and to keep the scroll anchor stable across
     hydrate-above/below. When None (not yet measured), `estimate_height` falls
-    back to `DEFAULT_HEIGHT_HINT`. Always `>= MIN_HEIGHT_HINT` once set.
+    back to `DEFAULT_HEIGHT_HINT`. Always `>= MIN_HEIGHT_HINT` once set, except
+    for a row measured while hidden, which may be 0.
     """
 
     def __post_init__(self) -> None:
@@ -673,8 +678,8 @@ class MessageStore:
     """
 
     INITIAL_WINDOW_SIZE: int = 30
-    WINDOW_SIZE: int = 800
-    HARD_WINDOW_SIZE: int = 900
+    WINDOW_SIZE: int = 350
+    HARD_WINDOW_SIZE: int = 400
     HYDRATE_BUFFER: int = 8
     PREFETCH_VIEWPORTS: int = 8
 
@@ -802,6 +807,78 @@ class MessageStore:
         archived = self._messages[: self._visible_start]
         visible = self._messages[self._visible_start : self._visible_end]
         return archived, visible
+
+    def replace_run(
+        self, message_ids: Sequence[str], replacement: MessageData
+    ) -> int | None:
+        """Replace a contiguous run of rows with one row, in place.
+
+        Folds finished tool rows into one `TOOL_GROUP` row without a reload.
+        The search starts at the tail, where live runs are.
+
+        The visible range keeps the same rows mounted. A run that crosses a
+        window edge puts the replacement outside the window, because the
+        caller cannot mount half of one row. When every row in the run has a
+        measured height, the replacement takes their sum, so the transcript
+        spacers do not move.
+
+        Args:
+            message_ids: IDs of the run, in store order.
+            replacement: Row to store in place of the run.
+
+        Returns:
+            Index of the replacement row, or `None` when the IDs are not one
+                contiguous run of unprotected rows.
+        """
+        if replacement.id in self._index or any(
+            self.is_protected(message_id) for message_id in message_ids
+        ):
+            return None
+        start = self._find_from_tail(message_ids[0]) if message_ids else None
+        if start is None:
+            return None
+        end = start + len(message_ids)
+        run = self._messages[start:end]
+        if [m.id for m in run] != list(message_ids):
+            return None
+        hints = [m.height_hint for m in run]
+        if all(hint is not None for hint in hints):
+            replacement.height_hint = sum(hint or 0 for hint in hints)
+        self._messages[start:end] = [replacement]
+        for message_id in message_ids:
+            del self._index[message_id]
+        self._index[replacement.id] = replacement
+        self._shift_visible_range(start, end)
+        return start
+
+    def _find_from_tail(self, message_id: str) -> int | None:
+        """Return the index of a stored row, scanning from the newest row."""
+        message = self._index.get(message_id)
+        if message is None:
+            return None
+        for index in range(len(self._messages) - 1, -1, -1):
+            if self._messages[index] is message:
+                return index
+        return None
+
+    def _shift_visible_range(self, start: int, end: int) -> None:
+        """Move the visible range after `[start:end]` became one row at `start`."""
+        removed = end - start - 1
+        if end <= self._visible_start:
+            self._visible_start -= removed
+            self._visible_end -= removed
+            return
+        if start >= self._visible_end:
+            return
+        if start < self._visible_start:
+            # The run crossed the top edge: the replacement is archived above.
+            self._visible_start = start + 1
+        if end > self._visible_end:
+            # The run crossed the bottom edge: the replacement is archived below.
+            self._visible_end = start
+        else:
+            self._visible_end -= removed
+        self._visible_end = max(self._visible_end, self._visible_start)
 
     def get_message(self, message_id: str) -> MessageData | None:
         """Get a message by its ID.
@@ -1211,7 +1288,9 @@ class MessageStore:
         """
         return self._messages[self._visible_start : self._visible_end]
 
-    def set_height_hint(self, message_id: str, rows: int) -> bool:
+    def set_height_hint(
+        self, message_id: str, rows: int, *, hidden: bool = False
+    ) -> bool:
         """Update a measured message height, clamped to `MIN_HEIGHT_HINT`.
 
         The single write path for `height_hint`; `height_hint` is intentionally
@@ -1220,6 +1299,9 @@ class MessageStore:
         Args:
             message_id: Message ID to update.
             rows: Rendered height in terminal rows.
+            hidden: Whether the row is not displayed, e.g. folded into a tool
+                group. A hidden row takes no space, so its hint may drop to 0
+                instead of `MIN_HEIGHT_HINT`.
 
         Returns:
             Whether the message existed and was updated.
@@ -1227,7 +1309,7 @@ class MessageStore:
         msg_data = self._index.get(message_id)
         if msg_data is None:
             return False
-        msg_data.height_hint = max(MIN_HEIGHT_HINT, rows)
+        msg_data.height_hint = max(0 if hidden else MIN_HEIGHT_HINT, rows)
         return True
 
     def invalidate_height_hints(self, *, scale: float | None = None) -> None:
@@ -1243,14 +1325,16 @@ class MessageStore:
             if scale is None:
                 msg.height_hint = None
             else:
-                msg.height_hint = max(MIN_HEIGHT_HINT, round(msg.height_hint * scale))
+                # Never lift a hidden row's sub-floor hint up to the floor.
+                floor = min(MIN_HEIGHT_HINT, msg.height_hint)
+                msg.height_hint = max(floor, round(msg.height_hint * scale))
 
     @staticmethod
     def estimate_height(message: MessageData) -> int:
         """Return the best available row estimate for a message."""
         if message.height_hint is None:
             return DEFAULT_HEIGHT_HINT
-        return max(MIN_HEIGHT_HINT, message.height_hint)
+        return max(0, message.height_hint)
 
     def range_height(self, start: int, end: int) -> int:
         """Estimate rows in `[start:end]`.

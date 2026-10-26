@@ -113,6 +113,7 @@ jobs:
       pkg-name: ${{ steps.check-version.outputs.pkg-name }}
       version: ${{ steps.check-version.outputs.version }}
       is-prerelease: ${{ steps.check-version.outputs.is-prerelease }}
+      dist-sha256sums: ${{ steps.dist-checksums.outputs.sha256sums }}
     steps:
       - name: Parse package input
         id: parse
@@ -175,6 +176,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: "📝 Log dispatch inputs"
         continue-on-error: true
@@ -288,6 +290,11 @@ jobs:
           # Skipped in dangerous-nonmain-release: alpha branches may use throwaway
           # version strings that don't need to round-trip with `inputs.version`.
           if [ "$IS_DANGEROUS" != "true" ]; then
+            if ! git merge-base --is-ancestor "$SHA" refs/remotes/origin/main; then
+              echo "::error::release-sha ${SHA} is not reachable from main."
+              echo "::error::Pass a commit on main, or set dangerous-nonmain-release=true for backport or hotfix branch releases."
+              exit 1
+            fi
             if [ -z "$INPUT_VERSION" ]; then
               echo "::error::version input is required for non-alpha releases."
               exit 1
@@ -308,6 +315,11 @@ jobs:
             fi
             echo "Validated release-sha ${SHA}: ${PACKAGE}==${COMMIT_VERSION}"
           else
+            if ! git merge-base --is-ancestor "$SHA" "$GITHUB_SHA_FALLBACK"; then
+              echo "::error::release-sha ${SHA} is not reachable from the dispatched commit ${GITHUB_SHA_FALLBACK}."
+              echo "::error::With dangerous-nonmain-release, dispatch the workflow from the branch that contains the release commit."
+              exit 1
+            fi
             echo "Using release-sha $SHA (validation skipped: dangerous-nonmain-release)"
           fi
 
@@ -394,6 +406,21 @@ jobs:
           # reports it on installed wheels. Other packages ignore this env var.
           DEEPAGENTS_CODE_BUILD_COMMIT: ${{ steps.resolve-sha.outputs.sha }}
 
+      - name: Record dist checksums
+        id: dist-checksums
+        working-directory: ${{ steps.parse.outputs.working-dir }}/dist
+        run: |
+          set -euo pipefail
+          export LC_ALL=C
+          sums=$(sha256sum -- *)
+          printf '%s\n' "$sums"
+          delim="EOF_$(openssl rand -hex 8)"
+          {
+            echo "sha256sums<<${delim}"
+            printf '%s\n' "$sums"
+            echo "${delim}"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Upload build
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
@@ -457,9 +484,10 @@ jobs:
 
       - name: Validate version consistency
         if: inputs.version != '' && inputs.dangerous-nonmain-release != true
+        env:
+          BUILD_VERSION: ${{ steps.check-version.outputs.version }}
+          INPUT_VERSION: ${{ inputs.version }}
         run: |
-          BUILD_VERSION="${{ steps.check-version.outputs.version }}"
-          INPUT_VERSION="${{ inputs.version }}"
           if [ "$BUILD_VERSION" != "$INPUT_VERSION" ]; then
             echo "::error::Version mismatch — run name says '$INPUT_VERSION' but pyproject.toml says '$BUILD_VERSION'"
             exit 1
@@ -493,6 +521,7 @@ jobs:
           ref: ${{ needs.build.outputs.release-sha }}
           fetch-depth: 0
           fetch-tags: true
+          persist-credentials: false
 
       - name: Check tags
         id: check-tags
@@ -521,6 +550,7 @@ jobs:
           sparse-checkout: |
             .github/scripts/release/build_release_notes.py
           sparse-checkout-cone-mode: false
+          persist-credentials: false
 
       # Build the release body with the shared script. This replaces the
       # previous inline bash steps so the same logic can be reused locally for
@@ -586,6 +616,28 @@ jobs:
           name: dist
           path: ${{ env.WORKING_DIR }}/dist/
 
+      - name: Verify dist checksums
+        working-directory: ${{ env.WORKING_DIR }}/dist
+        env:
+          EXPECTED_SHA256SUMS: ${{ needs.build.outputs.dist-sha256sums }}
+        run: |
+          set -euo pipefail
+          export LC_ALL=C
+          if [ -z "$EXPECTED_SHA256SUMS" ]; then
+            echo "::error::The build job did not record dist checksums."
+            exit 1
+          fi
+          actual=$(sha256sum -- *)
+          if [ "$actual" != "$EXPECTED_SHA256SUMS" ]; then
+            echo "::error::Downloaded dist does not match the checksums recorded by the build job."
+            echo "Expected:"
+            printf '%s\n' "$EXPECTED_SHA256SUMS"
+            echo "Actual:"
+            printf '%s\n' "$actual"
+            exit 1
+          fi
+          printf '%s\n' "$actual"
+
       - name: Publish to test PyPI
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1
         with:
@@ -619,6 +671,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.build.outputs.release-sha }}
+          persist-credentials: false
 
       # We explicitly *don't* set up caching here. This ensures our tests are
       # maximally sensitive to catching breakage.
@@ -759,6 +812,7 @@ jobs:
           sparse-checkout: |
             .github/scripts/release/install_ripgrep.sh
           sparse-checkout-cone-mode: false
+          persist-credentials: false
 
       # The install itself has no timeout: release artifacts must be validated
       # with the real ripgrep path exercised. `DEEPAGENTS_RIPGREP_EXPECTED=1`
@@ -825,12 +879,13 @@ jobs:
           OPENAI_API_KEY: ${{ needs.build.outputs.package == 'deepagents' && secrets.OPENAI_API_KEY || '' }}
           RUNLOOP_API_KEY: ${{ needs.build.outputs.package == 'langchain-runloop' && secrets.RUNLOOP_API_KEY || '' }}
           VERCEL_TOKEN: ${{ needs.build.outputs.package == 'langchain-vercel-sandbox' && secrets.VERCEL_TOKEN || '' }}
+          PACKAGE: ${{ needs.build.outputs.package }}
 
         # The deepagents-code sandbox coverage overlaps with the partner-level
         # SandboxIntegrationTests, so keep those files out of release checks.
         run: |
           if [ -f Makefile ] && grep -q "integration_test" Makefile; then
-            if [ "${{ needs.build.outputs.package }}" = "deepagents-code" ]; then
+            if [ "$PACKAGE" = "deepagents-code" ]; then
               export PYTEST_ADDOPTS="${PYTEST_ADDOPTS:-} --ignore=tests/integration_tests/test_sandbox_factory.py --ignore=tests/integration_tests/test_sandbox_operations.py"
             fi
             make integration_test
@@ -865,6 +920,28 @@ jobs:
         with:
           name: dist
           path: ${{ env.WORKING_DIR }}/dist/
+
+      - name: Verify dist checksums
+        working-directory: ${{ env.WORKING_DIR }}/dist
+        env:
+          EXPECTED_SHA256SUMS: ${{ needs.build.outputs.dist-sha256sums }}
+        run: |
+          set -euo pipefail
+          export LC_ALL=C
+          if [ -z "$EXPECTED_SHA256SUMS" ]; then
+            echo "::error::The build job did not record dist checksums."
+            exit 1
+          fi
+          actual=$(sha256sum -- *)
+          if [ "$actual" != "$EXPECTED_SHA256SUMS" ]; then
+            echo "::error::Downloaded dist does not match the checksums recorded by the build job."
+            echo "Expected:"
+            printf '%s\n' "$EXPECTED_SHA256SUMS"
+            echo "Actual:"
+            printf '%s\n' "$actual"
+            exit 1
+          fi
+          printf '%s\n' "$actual"
 
       - name: Publish package distributions to PyPI
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1
@@ -995,7 +1072,7 @@ jobs:
           find_release_pr() {
             local label candidates number
             for label in "$@"; do
-              candidates=$(gh pr list --repo "${{ github.repository }}" \
+              candidates=$(gh pr list --repo "${GITHUB_REPOSITORY}" \
                 --state merged --label "$label" --limit 100 \
                 --search "\"release($PKG_NAME): $VERSION\" in:title" \
                 --json number,title) || return 1
@@ -1016,18 +1093,18 @@ jobs:
             local -a changes=(--add-label "auto:release-tagged")
             # gh pr edit requires the repository label to exist. --force
             # also succeeds when a previous release already created it.
-            gh label create "auto:release-tagged" --repo "${{ github.repository }}" \
+            gh label create "auto:release-tagged" --repo "${GITHUB_REPOSITORY}" \
               --color "d9dce0" \
               --description "The release has been tagged by the automated release workflow." \
               --force || return 1
-            labels=$(gh pr view "$pr" --repo "${{ github.repository }}" \
+            labels=$(gh pr view "$pr" --repo "${GITHUB_REPOSITORY}" \
               --json labels --jq '.labels[].name') || return 1
             for label in "auto:release-pending" "autorelease: pending"; do
               if printf '%s\n' "$labels" | grep -qFx "$label"; then
                 changes+=(--remove-label "$label")
               fi
             done
-            gh pr edit "$pr" --repo "${{ github.repository }}" "${changes[@]}"
+            gh pr edit "$pr" --repo "${GITHUB_REPOSITORY}" "${changes[@]}"
           }
 
           # Surface a manual-fix instruction on the run summary so a human reviewer
@@ -1056,7 +1133,7 @@ jobs:
           # for this commit" (alpha/hotfix path, eventual-consistency on fresh
           # merges) from a real API failure — the latter must not silently fall
           # through to label search, which could match an unrelated stale PR.
-          if API_OUT=$(gh api "/repos/${{ github.repository }}/commits/${RELEASE_SHA}/pulls" 2>&1); then
+          if API_OUT=$(gh api "/repos/${GITHUB_REPOSITORY}/commits/${RELEASE_SHA}/pulls" 2>&1); then
             PR_NUMBER=$(printf '%s' "$API_OUT" | jq -r '.[0].number // empty')
           else
             echo "::warning::commit-pulls API call failed: $API_OUT"
@@ -1065,7 +1142,7 @@ jobs:
           fi
 
           if [ -n "$PR_NUMBER" ]; then
-            if ! LABELS=$(gh pr view "$PR_NUMBER" --repo "${{ github.repository }}" \
+            if ! LABELS=$(gh pr view "$PR_NUMBER" --repo "${GITHUB_REPOSITORY}" \
               --json labels --jq '.labels[].name' 2>&1); then
               echo "::warning::gh pr view #$PR_NUMBER failed: $LABELS"
               echo "Falling through to label search."

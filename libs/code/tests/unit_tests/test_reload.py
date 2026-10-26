@@ -186,21 +186,22 @@ class TestReloadFromEnvironment:
         assert owner.openai_api_key == "sk-old"
 
     def test_preview_reload_reports_changes_without_mutating(
-        self, tmp_path: Path
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         """Previewing reload changes should not update settings or `os.environ`."""
+        monkeypatch.delenv("TAVILY_API_KEY", raising=False)
         current = tmp_path / "current"
         target = tmp_path / "target"
         current.mkdir()
         target.mkdir()
-        (target / ".env").write_text("DEEPAGENTS_CODE_SHELL_ALLOW_LIST=ls\n")
+        (target / ".env").write_text("TAVILY_API_KEY=tvly-project\n")
         credentials = Credentials.from_environment(start_path=current)
 
         changes = credentials.preview_reload_from_environment(start_path=target)
 
-        assert any(change.startswith("shell_allow_list:") for change in changes)
-        assert _shell_allow_list() is None
-        assert "DEEPAGENTS_CODE_SHELL_ALLOW_LIST" not in os.environ
+        assert "tavily_api_key: unset -> set" in changes
+        assert credentials.tavily_api_key is None
+        assert "TAVILY_API_KEY" not in os.environ
 
     def test_preview_reload_sees_shell_allow_list_toml_edit(
         self, tmp_path: Path

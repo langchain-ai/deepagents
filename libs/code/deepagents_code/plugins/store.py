@@ -493,6 +493,14 @@ def get_primary_install_entry(plugin_id: str) -> InstalledPluginEntry | None:
     return load_installed_plugins().get(plugin_id)
 
 
+def install_path_exists(install_path: str) -> bool:
+    """Return whether a registered install path is an existing directory."""
+    try:
+        return Path(install_path).is_dir()
+    except OSError, RuntimeError:
+        return False
+
+
 def remove_installed_plugin(
     plugin_id: str,
 ) -> InstalledPluginEntry | None:
@@ -516,6 +524,7 @@ def cache_and_register_plugin(
     *,
     version: str | None,
     validate: Callable[[Path], None] | None = None,
+    refresh: bool = False,
 ) -> Path:
     """Copy a plugin into the versioned cache and register the install.
 
@@ -524,6 +533,8 @@ def cache_and_register_plugin(
         source_dir: Source plugin root to copy from.
         version: Version declared by the plugin manifest, if any.
         validate: Optional validation to run before registering the cache.
+        refresh: Replace an existing versioned cache instead of reusing it,
+            so a damaged copy is restored from source.
 
     Returns:
         Absolute path to the cached plugin root.
@@ -538,7 +549,7 @@ def cache_and_register_plugin(
         raise FileNotFoundError(msg)
 
     cache_path = versioned_cache_path(plugin_id, version)
-    if cache_path.exists() and version is not None:
+    if not refresh and cache_path.exists() and version is not None:
         try:
             if any(cache_path.iterdir()):
                 if validate is not None:

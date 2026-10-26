@@ -32,7 +32,9 @@ PluginClosePhase = Literal["browsing", "checking", "reload_prompt"]
 `checking` runs the close check with the manager still painted; `reload_prompt`
 shows the inline reload confirmation in place of the browsing chrome.
 """
-PluginLoadState = Literal["disabled", "pending_reload", "enabled", "error"]
+PluginLoadState = Literal[
+    "disabled", "pending_reload", "enabled", "error", "needs_repair"
+]
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -52,11 +54,15 @@ class _PluginRow:
     unsupported_components: tuple[UnsupportedComponent, ...] = ()
     session_loaded: bool = False
     load_error: str | None = None
+    needs_repair: bool = False
+    """Whether the plugin is registered but its installed files are missing."""
     available_version: str | None = None
 
     @property
     def load_state(self) -> PluginLoadState:
         """Session-aware plugin status for list and detail copy."""
+        if self.needs_repair:
+            return "needs_repair"
         if self.load_error:
             return "error"
         if self.enabled != self.session_loaded:

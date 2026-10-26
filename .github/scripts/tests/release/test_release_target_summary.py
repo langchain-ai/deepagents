@@ -62,6 +62,7 @@ def _initialize_repository(repository: Path) -> str:
     )
     _git(repository, "add", str(PACKAGE_PATH / "pyproject.toml"))
     _git(repository, "commit", "-m", f"release(example): {VERSION}")
+    _git(repository, "update-ref", "refs/remotes/origin/main", "HEAD")
     return _git(repository, "rev-parse", "HEAD")
 
 

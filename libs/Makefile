@@ -69,7 +69,7 @@ hygiene: ## Fix text hygiene in files changed since HYGIENE_FROM (default origin
 	done; \
 	exit $$status
 
-lint: hygiene ## Check text hygiene, then lint all packages
+lint: ## Lint all packages
 	@set -e; \
 	for dir in $(LIB_PACKAGE_DIRS); do \
 		echo "🔍 Linting $$dir"; \
@@ -77,7 +77,7 @@ lint: hygiene ## Check text hygiene, then lint all packages
 	done
 	@echo "✅ All packages linted!"
 
-format: ## Format all packages
+format: hygiene ## Check text hygiene, then format all packages
 	@set -e; \
 	for dir in $(LIB_PACKAGE_DIRS); do \
 		echo "🎨 Formatting $$dir"; \

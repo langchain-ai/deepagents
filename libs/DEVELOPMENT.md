@@ -93,9 +93,8 @@ Run these from `libs/` to fan out across packages:
 
 | Command | What it does |
 | --- | --- |
-| `make lint` | Run `make hygiene`, then lint every package |
-| `make hygiene` | Fix whitespace, quotes and YAML/TOML syntax in files changed since `origin/main` (CI runs this on every PR) |
-| `make format` | Format every package |
+| `make lint` | Lint every package |
+| `make format` | Fix text hygiene and validate YAML/TOML in files changed since `origin/main`, then format every package |
 | `make lock` | Update all lockfiles |
 | `make lock-check` | Verify all lockfiles are up to date |
 | `make lock-bump DEP=<pkg>` | Bump one dependency across all lockfiles |

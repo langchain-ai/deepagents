@@ -1684,6 +1684,29 @@ class TestReloadSkillReport:
 
             return "\n".join(str(w._content) for w in app.query(AppMessage))
 
+    async def test_clears_session_skill_trust_denials(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A denied skill directory is prompted for again after `/reload`."""
+        from deepagents_code.app import DeepAgentsApp
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._skill_trust_denied.add("/outside")
+
+            async def _fake_discover() -> bool:  # noqa: RUF029  # awaited as coroutine by `_handle_command`
+                return True
+
+            monkeypatch.setattr(app, "_discover_skills", _fake_discover)
+
+            await app._handle_command("/reload")
+            if app._reload_task is not None:
+                await app._reload_task
+            await pilot.pause()
+
+            assert not app._skill_trust_denied
+
 
 async def test_reload_notifies_when_managed_policy_newly_masks_cli(
     tmp_path: Path,

@@ -2,6 +2,71 @@
 
 # Deep Agents Code Changelog
 
+## [0.2.2](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.2.1...deepagents-code==0.2.2) (2026-10-26)
+
+
+### Features
+
+* **code:** add GPT-6.1 Terra ([#7295](https://github.com/langchain-ai/deepagents/issues/7295)) ([315c2c9](https://github.com/langchain-ai/deepagents/commit/315c2c964e3cf0eded2c36eff5cd5bf8c2e6dfb9))
+* **code:** bring selected text into the chat input ([#6955](https://github.com/langchain-ai/deepagents/issues/6955)) ([09b14d9](https://github.com/langchain-ai/deepagents/commit/09b14d917a859021b7c66e2868e917ad6663034d))
+* **code:** detect and notify plugin updates ([#7234](https://github.com/langchain-ai/deepagents/issues/7234)) ([ebd7592](https://github.com/langchain-ai/deepagents/commit/ebd7592723b5989d155ee94b9ff7df9ac2afe425))
+
+
+### Bug Fixes
+
+* **code:** allowlist Git options in Auto mode's read-only fast path ([#7276](https://github.com/langchain-ai/deepagents/issues/7276)) ([2abf323](https://github.com/langchain-ai/deepagents/commit/2abf323e67b3c600d71b34bdfcc41008b753f75f))
+* **code:** contain JavaScript subagent failures ([#7211](https://github.com/langchain-ai/deepagents/issues/7211)) ([b93aff0](https://github.com/langchain-ai/deepagents/commit/b93aff082ede97cecbd21fd456f879c1fae5b9e2))
+* **code:** correct transcript height hints for folded tool rows ([#7251](https://github.com/langchain-ai/deepagents/issues/7251)) ([1a1d484](https://github.com/langchain-ai/deepagents/commit/1a1d4840dad2370f26acc5bdea5452081cb7502f))
+* **code:** explain repeated skill-trust denials and clear them on `/reload` ([#7291](https://github.com/langchain-ai/deepagents/issues/7291)) ([47cf0fb](https://github.com/langchain-ai/deepagents/commit/47cf0fb888591bf841637da371a344598ce09718))
+* **code:** flag and repair enabled plugins with missing installed files ([#7278](https://github.com/langchain-ai/deepagents/issues/7278)) ([89efee3](https://github.com/langchain-ai/deepagents/commit/89efee335dfdf08c874b54e4f6c911e3b7185ffb))
+* **code:** give transcript spacers their real height so scrolling reaches the newest message ([#7253](https://github.com/langchain-ai/deepagents/issues/7253)) ([793ac5a](https://github.com/langchain-ai/deepagents/commit/793ac5af081079977616fe1925b09670871121d3))
+* **code:** keep the TUI responsive when quitting during server startup ([#7190](https://github.com/langchain-ai/deepagents/issues/7190)) ([4a77435](https://github.com/langchain-ai/deepagents/commit/4a7743569b4de9080d48b841b2e5f7eebaceda6b))
+* **code:** only open `http` and `https` links from the TUI ([#7277](https://github.com/langchain-ai/deepagents/issues/7277)) ([f40ecaf](https://github.com/langchain-ai/deepagents/commit/f40ecafeca78a8d461f163f9d30bbd83c61644b2))
+* **code:** own sandbox lifetime from the client in non-interactive runs ([#6368](https://github.com/langchain-ai/deepagents/issues/6368)) ([4711bf2](https://github.com/langchain-ai/deepagents/commit/4711bf2fe0fc0c0f161db59f42a4708473b9769e))
+* **code:** preserve shipped bytecode for read-only installs ([#7196](https://github.com/langchain-ai/deepagents/issues/7196)) ([76fe0cb](https://github.com/langchain-ai/deepagents/commit/76fe0cb47947906fdea632bff17f71082d4a342f))
+* **code:** read the branch of reftable repositories through git ([#7268](https://github.com/langchain-ai/deepagents/issues/7268)) ([ca1b44e](https://github.com/langchain-ai/deepagents/commit/ca1b44e2ec16bf77082f12051d2fabe9da2850e5))
+* **code:** stop project `.env` from setting extension, shell, plugin, and skill trust ([#7275](https://github.com/langchain-ai/deepagents/issues/7275)) ([ebdee3e](https://github.com/langchain-ai/deepagents/commit/ebdee3ef5be4ecea4e1bd973c24e219ffaa4464e))
+* **code:** stop the local server from uploading usage metadata to LangSmith ([#7252](https://github.com/langchain-ai/deepagents/issues/7252)) ([305a185](https://github.com/langchain-ai/deepagents/commit/305a185c1c867c1641f73db21e2b180772f030e0))
+
+
+### Performance Improvements
+
+* **code:** build the agent graph during server startup ([#7214](https://github.com/langchain-ai/deepagents/issues/7214)) ([4d461e3](https://github.com/langchain-ai/deepagents/commit/4d461e3ab01e2c5ef9f96b2a5fb099907960d78c))
+* **code:** cache LangSmith secret redaction across traced runs ([#7209](https://github.com/langchain-ai/deepagents/issues/7209)) ([5a3039b](https://github.com/langchain-ai/deepagents/commit/5a3039b4b63464b8d62b573bac142b7d0cd76470))
+* **code:** cache the SDK version lookup in `build_stream_config` ([#7230](https://github.com/langchain-ai/deepagents/issues/7230)) ([d87a459](https://github.com/langchain-ai/deepagents/commit/d87a459bb10f3b9110ea7edc4f823433394b178e))
+* **code:** compact finished live tool runs into lazy `TOOL_GROUP` rows ([#7254](https://github.com/langchain-ai/deepagents/issues/7254)) ([a18ca04](https://github.com/langchain-ai/deepagents/commit/a18ca04b534718e396fdd1815e236ecfb3d5fea7))
+* **code:** drop dcode routes from the OpenAPI spec and defer Textual in the server ([#7242](https://github.com/langchain-ai/deepagents/issues/7242)) ([2815f6b](https://github.com/langchain-ai/deepagents/commit/2815f6bece7d01e9c8aa6730eb88d2cd25977573))
+* **code:** fetch only cost and cache channels after each turn ([#7206](https://github.com/langchain-ai/deepagents/issues/7206)) ([5162474](https://github.com/langchain-ai/deepagents/commit/516247424485d4d3623891503464b3d576625b1d))
+* **code:** filter the thread picker without remounting rows ([#7207](https://github.com/langchain-ai/deepagents/issues/7207)) ([3d34b96](https://github.com/langchain-ai/deepagents/commit/3d34b961d30c5dd81aa5079f63022a8a0636efa6))
+* **code:** forward delta-channel history reads to the SQLite saver ([#7244](https://github.com/langchain-ai/deepagents/issues/7244)) ([5fa7317](https://github.com/langchain-ai/deepagents/commit/5fa73172dec5a96f042ebd6aaec5237571df7e8d))
+* **code:** install the LangSmith redacting client after first paint ([#7215](https://github.com/langchain-ai/deepagents/issues/7215)) ([470b075](https://github.com/langchain-ai/deepagents/commit/470b0753986696b41952c772acd2ee316f930890))
+* **code:** keep `list_threads` on its covering index ([#7232](https://github.com/langchain-ai/deepagents/issues/7232)) ([b82f3b3](https://github.com/langchain-ai/deepagents/commit/b82f3b326da3267d3a822c2fe7a4ba6980792c31))
+* **code:** keep LangChain imports off the first-paint path ([#7189](https://github.com/langchain-ai/deepagents/issues/7189)) ([a429412](https://github.com/langchain-ai/deepagents/commit/a42941234fbf98d25db6794d0726fc48aac4fccf))
+* **code:** keep the `/btw` system prompt out of checkpoints ([#7202](https://github.com/langchain-ai/deepagents/issues/7202)) ([2025b7c](https://github.com/langchain-ai/deepagents/commit/2025b7ca6ad8976e42c24a925dddbea81d0c9cee))
+* **code:** let the server process cache its bytecode ([#7193](https://github.com/langchain-ai/deepagents/issues/7193)) ([e53babb](https://github.com/langchain-ai/deepagents/commit/e53babb2df71d995816fab39f3ac762ba670f85c))
+* **code:** merge streamed chunks once in the transcript recorder ([#7200](https://github.com/langchain-ai/deepagents/issues/7200)) ([4c91940](https://github.com/langchain-ai/deepagents/commit/4c91940b0af1dcfda1b8a4294c5bf959f73b1746))
+* **code:** omit `BtwOperation` hook inputs from traces ([#7199](https://github.com/langchain-ai/deepagents/issues/7199)) ([23ae4bb](https://github.com/langchain-ai/deepagents/commit/23ae4bb16ff0178791d2234b00dd06210a72076a))
+* **code:** queue in-process checkpoint writers instead of polling the ownership gate ([#7245](https://github.com/langchain-ai/deepagents/issues/7245)) ([d5801f1](https://github.com/langchain-ai/deepagents/commit/d5801f121c8f320a253ac13fd6a3988ea1f8bf71))
+* **code:** re-render streamed markdown only when blocks diverge ([#7210](https://github.com/langchain-ai/deepagents/issues/7210)) ([18f5543](https://github.com/langchain-ai/deepagents/commit/18f55433e0b82f4668e5228b04385023067cb9c4))
+* **code:** remove pruned transcript rows in one batch ([#7250](https://github.com/langchain-ai/deepagents/issues/7250)) ([ec98477](https://github.com/langchain-ai/deepagents/commit/ec9847732f947d9809c41e92f0d78c9131caeb2a))
+* **code:** render finished assistant replies as one widget ([#7255](https://github.com/langchain-ai/deepagents/issues/7255)) ([9243a1c](https://github.com/langchain-ai/deepagents/commit/9243a1cbb7a012fb327a278dee94e295a10aeb7f))
+* **code:** restore the terminal before the server finishes stopping ([#7192](https://github.com/langchain-ai/deepagents/issues/7192)) ([56971e2](https://github.com/langchain-ai/deepagents/commit/56971e2631ac26c57aaf9010f4c6c03c5170a0a7))
+* **code:** reuse the parent's local context in forked subagents ([#7233](https://github.com/langchain-ai/deepagents/issues/7233)) ([8d2c868](https://github.com/langchain-ai/deepagents/commit/8d2c868e010fdf0939e6285bb4965deea42bf1e6))
+* **code:** scale the stream flush interval to markdown render cost ([#7205](https://github.com/langchain-ai/deepagents/issues/7205)) ([e79aaa5](https://github.com/langchain-ai/deepagents/commit/e79aaa5a1e413fdd7a923ab5556981074ceed12f))
+* **code:** shrink the mounted transcript window to 350 rows ([#7256](https://github.com/langchain-ai/deepagents/issues/7256)) ([71c9792](https://github.com/langchain-ai/deepagents/commit/71c9792c998b30b4130f7379a8cda9d93398d3e7))
+* **code:** skip `traceable` thread hops when tracing is off ([#7247](https://github.com/langchain-ai/deepagents/issues/7247)) ([fb05a5d](https://github.com/langchain-ai/deepagents/commit/fb05a5db3a070f89e3022a3aa869225fb6dae647))
+* **code:** skip redundant goal-notice history scans in `GoalToolsMiddleware` ([#7201](https://github.com/langchain-ai/deepagents/issues/7201)) ([918a8c8](https://github.com/langchain-ai/deepagents/commit/918a8c80363d06d3ddb2d5847fe1062ad25ee45d))
+* **code:** skip the `langgraph-api` PyPI version check at server launch ([#7198](https://github.com/langchain-ai/deepagents/issues/7198)) ([61c9645](https://github.com/langchain-ai/deepagents/commit/61c9645699cdc33370a513d7ff6be05ef8e80379))
+* **code:** skip the final GC pass when the TUI exits ([#7191](https://github.com/langchain-ai/deepagents/issues/7191)) ([a3b1ea9](https://github.com/langchain-ai/deepagents/commit/a3b1ea9844af3447d265fb64e2d5f18c0d0bc90d))
+* **code:** skip the full shutdown wait for an abandoned server startup ([#7194](https://github.com/langchain-ai/deepagents/issues/7194)) ([a7e09c1](https://github.com/langchain-ai/deepagents/commit/a7e09c1a54bb3200b7e59ead1c1042ab9e0345fc))
+* **code:** spawn server before waiting on import prewarm ([#7184](https://github.com/langchain-ai/deepagents/issues/7184)) ([6d184fd](https://github.com/langchain-ai/deepagents/commit/6d184fd8f38f0a49729030a0e3b5d111ffc14e77))
+* **code:** spawn the server before importing the app module ([#7249](https://github.com/langchain-ai/deepagents/issues/7249)) ([89824bb](https://github.com/langchain-ai/deepagents/commit/89824bb4e8b32964013f9101f41e9ecaa5378476))
+* **code:** speed up `@` file completion scoring ([#7248](https://github.com/langchain-ai/deepagents/issues/7248)) ([bca2b9c](https://github.com/langchain-ai/deepagents/commit/bca2b9cb9c899fd063fd2fdf3c2d23539fbc7d7c))
+* **code:** start server runs without the in-memory queue's poll delay ([#7243](https://github.com/langchain-ai/deepagents/issues/7243)) ([e47f4e2](https://github.com/langchain-ai/deepagents/commit/e47f4e286571ac2f2873ad1a87baa5bb6eea470d))
+* **code:** start the server before post-paint init ([#7208](https://github.com/langchain-ai/deepagents/issues/7208)) ([4b2842c](https://github.com/langchain-ai/deepagents/commit/4b2842cd6c5370002fc326c2554b04b81a4aec8a))
+* **code:** stop relayouting the transcript on spinner ticks ([#7203](https://github.com/langchain-ai/deepagents/issues/7203)) ([84b3bbe](https://github.com/langchain-ai/deepagents/commit/84b3bbe9887f530a6a773ef21b541eb1812af68f))
+* **code:** stop walking the DOM on the 1 Hz cache-expiry tick ([#7246](https://github.com/langchain-ai/deepagents/issues/7246)) ([97f518d](https://github.com/langchain-ai/deepagents/commit/97f518d5870c77673db8551de831c9ec71295928))
+
 ## [0.2.1](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.2.0...deepagents-code==0.2.1) (2026-10-23)
 
 ### Features

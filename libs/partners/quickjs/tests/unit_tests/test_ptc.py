@@ -654,6 +654,42 @@ def test_middleware_ptc_list_of_tools_exposes_without_agent_tools() -> None:
     assert "tools.greet(" in prompt
 
 
+def test_middleware_ptc_prompt_follows_each_slots_own_tools() -> None:
+    """Same-named tools with different schemas never share a rendered prompt.
+
+    One middleware serves every run of a compiled graph, so concurrent runs
+    (slots) can expose different `lookup` tools, and a run can swap one in.
+    """
+    from types import SimpleNamespace
+
+    def lookup_tool(description: str) -> BaseTool:
+        def lookup(query: str) -> str:
+            return query
+
+        return StructuredTool.from_function(
+            lookup, name="lookup", description=description
+        )
+
+    mw = CodeInterpreterMiddleware(ptc=["lookup"])
+    acme = {"_quickjs_slot_id": "run-acme"}
+    globex = {"_quickjs_slot_id": "run-globex"}
+
+    acme_prompt = mw._prepare_for_call(
+        SimpleNamespace(tools=[lookup_tool("Search acme issues.")], state=acme)
+    )
+    globex_prompt = mw._prepare_for_call(
+        SimpleNamespace(tools=[lookup_tool("Search globex issues.")], state=globex)
+    )
+    swapped = mw._prepare_for_call(
+        SimpleNamespace(tools=[lookup_tool("Search acme pull requests.")], state=acme)
+    )
+
+    assert "Search acme issues." in acme_prompt
+    assert "Search globex issues." in globex_prompt
+    assert "acme" not in globex_prompt
+    assert "Search acme pull requests." in swapped
+
+
 def test_middleware_ptc_requires_private_slot_state() -> None:
     from types import SimpleNamespace
 

@@ -2,6 +2,13 @@
 
 # Changelog
 
+## [0.0.7](https://github.com/langchain-ai/deepagents/compare/langchain-modal==0.0.6...langchain-modal==0.0.7) (2026-10-26)
+
+
+### Bug Fixes
+
+* **modal:** handle per-file permission and directory errors ([#7241](https://github.com/langchain-ai/deepagents/issues/7241)) ([841d737](https://github.com/langchain-ai/deepagents/commit/841d737db72cd1549011426679a4c40aa26201d5))
+
 ## [0.0.6](https://github.com/langchain-ai/deepagents/compare/langchain-modal==0.0.5...langchain-modal==0.0.6) (2026-07-29)
 
 ### Bug Fixes

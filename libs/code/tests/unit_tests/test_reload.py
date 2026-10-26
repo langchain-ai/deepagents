@@ -1684,11 +1684,13 @@ class TestReloadSkillReport:
 
             return "\n".join(str(w._content) for w in app.query(AppMessage))
 
-    async def test_clears_session_skill_trust_denials(
-        self, monkeypatch: pytest.MonkeyPatch
+    @pytest.mark.parametrize("config_ok", [True, False])
+    async def test_skill_trust_denials_cleared_only_on_successful_reload(
+        self, monkeypatch: pytest.MonkeyPatch, *, config_ok: bool
     ) -> None:
-        """A denied skill directory is prompted for again after `/reload`."""
+        """A successful `/reload` re-prompts for denied skill directories."""
         from deepagents_code.app import DeepAgentsApp
+        from deepagents_code.tui.widgets.messages import AppMessage
 
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
@@ -1698,14 +1700,24 @@ class TestReloadSkillReport:
             async def _fake_discover() -> bool:  # noqa: RUF029  # awaited as coroutine by `_handle_command`
                 return True
 
+            async def _broken_settings() -> list[str]:  # noqa: RUF029  # awaited by reload
+                msg = "bad .env"
+                raise OSError(msg)
+
             monkeypatch.setattr(app, "_discover_skills", _fake_discover)
+            if not config_ok:
+                monkeypatch.setattr(
+                    app, "_reload_settings_from_environment", _broken_settings
+                )
 
             await app._handle_command("/reload")
             if app._reload_task is not None:
                 await app._reload_task
             await pilot.pause()
 
-            assert not app._skill_trust_denied
+            report = "\n".join(str(w._content) for w in app.query(AppMessage))
+            assert bool(app._skill_trust_denied) is not config_ok
+            assert ("Skill trust denials cleared" in report) is config_ok
 
 
 async def test_reload_notifies_when_managed_policy_newly_masks_cli(

@@ -18578,8 +18578,6 @@ class DeepAgentsApp(App):
             # Snapshot pre-reload state so the report can show diffs.
             old_skill_names = {s["name"] for s in self._discovered_skills}
             old_mcp_server_info = self._mcp_server_info
-            # Re-prompt for skill directories denied earlier in the session.
-            self._skill_trust_denied.clear()
 
             try:
                 changes = await self._reload_settings_from_environment()
@@ -18688,6 +18686,10 @@ class DeepAgentsApp(App):
                 if removed_skills:
                     skill_lines.append(f"  - Removed: {', '.join(removed_skills)}")
                 report += "\nSkills updated:\n" + "\n".join(skill_lines)
+            if self._skill_trust_denied:
+                # Re-prompt for skill directories denied earlier in the session.
+                self._skill_trust_denied.clear()
+                report += "\nSkill trust denials cleared; you'll be asked again."
 
             # Rediscover plugins and restart the owned server so plugin MCP config
             # is picked up without a separate slash command.

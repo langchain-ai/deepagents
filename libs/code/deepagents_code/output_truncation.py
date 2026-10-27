@@ -3,30 +3,36 @@
 LangChain has no normalized stop reason, so each provider's raw metadata is
 read here. `output_truncation` classifies one message. `EmptyTruncatedReplyMiddleware`
 turns an empty, truncated reply into a typed error, so the run fails visibly
-instead of ending as a silent success with nothing to show.
+instead of ending as a silent success with nothing to show. Subagent failures
+become task-tool errors, while partial answers carry a warning to the parent.
 """
 
 from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Final, Literal
+from typing import TYPE_CHECKING, Final, Literal, override
 
 from langchain.agents.middleware.types import (
     AgentMiddleware,
     TracePolicy,
     omit_payload,
 )
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, ToolMessage
 
 from deepagents_code.local_context import _FORKED_CONTEXT_KEY
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Mapping
 
-    from langchain.agents.middleware.types import ModelRequest, ModelResponse
+    from langchain.agents.middleware.types import (
+        ModelRequest,
+        ModelResponse,
+        ToolCallRequest,
+    )
     from langchain_core.language_models import BaseChatModel
     from langchain_core.messages import BaseMessage
+    from langgraph.types import Command
 
 logger = logging.getLogger(__name__)
 
@@ -298,6 +304,10 @@ class EmptyTruncatedReplyMiddleware(AgentMiddleware):
     def _check(response: ModelResponse, request: ModelRequest) -> None:
         if request.state.get(_FORKED_CONTEXT_KEY):
             return
+        EmptyTruncatedReplyMiddleware._check_empty(response, request)
+
+    @staticmethod
+    def _check_empty(response: ModelResponse, request: ModelRequest) -> None:
         message = _final_ai_message(response)
         if message is None or has_visible_reply(message):
             return
@@ -315,6 +325,46 @@ class EmptyTruncatedReplyMiddleware(AgentMiddleware):
         )
         logger.warning("%s", error)
         raise error
+
+    @override
+    def wrap_tool_call(
+        self,
+        request: ToolCallRequest,
+        handler: Callable[[ToolCallRequest], ToolMessage | Command],
+    ) -> ToolMessage | Command:
+        """Return truncated subagent failures to the parent.
+
+        Raises:
+            ModelOutputTruncatedError: If a tool other than `task` raised it.
+        """
+        try:
+            return handler(request)
+        except ModelOutputTruncatedError as error:
+            if request.tool_call["name"] != "task":
+                raise
+            return ToolMessage(
+                str(error), tool_call_id=request.tool_call["id"], status="error"
+            )
+
+    @override
+    async def awrap_tool_call(
+        self,
+        request: ToolCallRequest,
+        handler: Callable[[ToolCallRequest], Awaitable[ToolMessage | Command]],
+    ) -> ToolMessage | Command:
+        """Return truncated subagent failures to the parent.
+
+        Raises:
+            ModelOutputTruncatedError: If a tool other than `task` raised it.
+        """
+        try:
+            return await handler(request)
+        except ModelOutputTruncatedError as error:
+            if request.tool_call["name"] != "task":
+                raise
+            return ToolMessage(
+                str(error), tool_call_id=request.tool_call["id"], status="error"
+            )
 
     def wrap_model_call(
         self,
@@ -343,3 +393,27 @@ class EmptyTruncatedReplyMiddleware(AgentMiddleware):
         response = await handler(request)
         self._check(response, request)
         return response
+
+
+class SubagentTruncatedReplyMiddleware(EmptyTruncatedReplyMiddleware):
+    """Keep partial subagent answers and fail empty ones for the parent to handle."""
+
+    @staticmethod
+    def _check(response: ModelResponse, request: ModelRequest) -> None:
+        EmptyTruncatedReplyMiddleware._check_empty(response, request)
+        message = _final_ai_message(response)
+        if message is None or message.tool_calls:
+            return
+        truncation = output_truncation(message)
+        if truncation is None:
+            return
+        warning = f"Subagent reply was cut off: {describe_truncation(truncation)}."
+        content = (
+            f"{message.content}\n\n{warning}"
+            if isinstance(message.content, str)
+            else [*message.content, {"type": "text", "text": f"\n\n{warning}"}]
+        )
+        replacement = message.model_copy(update={"content": content})
+        response.result = [
+            replacement if item is message else item for item in response.result
+        ]

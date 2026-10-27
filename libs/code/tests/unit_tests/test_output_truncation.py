@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import copy
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
@@ -28,6 +28,7 @@ from deepagents_code.output_truncation import (
     EmptyTruncatedReplyMiddleware,
     ModelOutputTruncatedError,
     OutputTruncation,
+    SubagentTruncatedReplyMiddleware,
     output_truncation,
 )
 from deepagents_code.tui.widgets.messages import ErrorMessage
@@ -282,8 +283,10 @@ def test_reply_with_output_or_normal_stop_passes_through(
 
 @pytest.mark.parametrize("asynchronous", [False, True])
 @pytest.mark.filterwarnings("ignore:The feature `forked subagents` is in beta")
-async def test_forked_subagent_keeps_empty_truncated_reply(
-    *, asynchronous: bool
+@pytest.mark.parametrize("mode", ["fork", "isolated"])
+@pytest.mark.parametrize("content", ["", "Partial findings"])
+async def test_subagent_truncation_reaches_parent_without_aborting(
+    mode: Literal["fork", "isolated"], content: str, *, asynchronous: bool
 ) -> None:
     from deepagents import create_deep_agent
     from langchain_core.messages import ToolMessage
@@ -304,7 +307,7 @@ async def test_forked_subagent_keeps_empty_truncated_reply(
                         }
                     ],
                 ),
-                AIMessage(content="", response_metadata=_RESPONSES_INCOMPLETE),
+                AIMessage(content=content, response_metadata=_RESPONSES_INCOMPLETE),
                 AIMessage(content="Parent finished"),
             ]
         )
@@ -318,7 +321,11 @@ async def test_forked_subagent_keeps_empty_truncated_reply(
                     "name": "general-purpose",
                     "description": "General-purpose subagent",
                     "system_prompt": "Complete the task",
-                    "mode": "fork",
+                    "mode": mode,
+                    "middleware": [
+                        SubagentTruncatedReplyMiddleware(),
+                        CodeModelRetryMiddleware(max_retries=5),
+                    ],
                 }
             ],
         )
@@ -326,8 +333,16 @@ async def test_forked_subagent_keeps_empty_truncated_reply(
         result = await graph.ainvoke(inputs) if asynchronous else graph.invoke(inputs)
 
     task_result = next(m for m in result["messages"] if isinstance(m, ToolMessage))
-    assert task_result.content == ""
-    assert task_result.status == "success"
+    if content:
+        assert task_result.content == (
+            "Partial findings\n\nSubagent reply was cut off: "
+            "it reached its output token limit (max_output_tokens)."
+        )
+        assert task_result.status == "success"
+    else:
+        assert "stopped before replying" in task_result.text
+        assert "output token limit" in task_result.text
+        assert task_result.status == "error"
     assert result["messages"][-1].text == "Parent finished"
 
 

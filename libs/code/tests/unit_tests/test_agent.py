@@ -5186,7 +5186,10 @@ class TestCreateCliAgentInterpreterWiring:
         # The empty-truncated-reply guard must wrap GLM recovery (so recovery
         # retries first) and model retry (so its error is never retried).
         from deepagents_code.model_retry import CodeModelRetryMiddleware
-        from deepagents_code.output_truncation import EmptyTruncatedReplyMiddleware
+        from deepagents_code.output_truncation import (
+            EmptyTruncatedReplyMiddleware,
+            SubagentTruncatedReplyMiddleware,
+        )
 
         def position(kind: type) -> int:
             return next(
@@ -5197,6 +5200,22 @@ class TestCreateCliAgentInterpreterWiring:
         assert guard < position(_GlmTerminalStallRecovery)
         assert guard < position(CodeModelRetryMiddleware)
         for subagent in kwargs["subagents"]:
+            stack = subagent["middleware"]
+            guard = next(
+                i
+                for i, item in enumerate(stack)
+                if isinstance(item, SubagentTruncatedReplyMiddleware)
+            )
+            assert guard < next(
+                i
+                for i, item in enumerate(stack)
+                if isinstance(item, _GlmTerminalStallRecovery)
+            )
+            assert guard < next(
+                i
+                for i, item in enumerate(stack)
+                if isinstance(item, CodeModelRetryMiddleware)
+            )
             assert (
                 sum(
                     isinstance(item, _GlmTerminalStallRecovery)

@@ -130,9 +130,13 @@ Core coding tools remain immediately available. Only MCP tools exposed by the
 existing filters and skill policy are deferred; execution and approvals are unchanged.
 QuickJS retains its configured bindings but omits deferred schemas from its API reference.
 
-The initial compatibility scope is direct `ChatOpenAI` with `gpt-5.4` or `gpt-5.5`
-and direct `ChatAnthropic` with Claude Sonnet 4.5/4.6, Opus 4.5–4.8, or Haiku 4.5
-(including dated IDs). Claude 4.0/4.1 use eager tools. OpenAI requires
+Supported direct `ChatOpenAI` models are `gpt-5.4`, `gpt-5.5`, `gpt-6-astra`,
+`gpt-6-sol`, `gpt-6-luna`, and `gpt-6.1-sol`. Supported direct `ChatAnthropic`
+models include Sonnet 4.5/4.6, Opus 4.5–4.8, Haiku 4.5, Sonnet/Opus/Haiku 5/5.5,
+and Fable/Mythos 5/5.1 (including dated IDs). These follow the providers'
+[OpenAI](https://developers.openai.com/api/docs/guides/tools-tool-search) and
+[Anthropic](https://platform.claude.com/docs/en/agents-and-tools/tool-use/tool-search-tool)
+tool-search compatibility documentation. Claude 4.0/4.1 use eager tools. OpenAI requires
 Responses; an explicit `use_responses_api=false` disables deferral. Other models,
 custom providers, and gateways fall back to eager tools with a debug-console warning,
 including after `/model` switches. This is a conservative integration scope, not

@@ -42,14 +42,22 @@ def _supported_provider(request: ModelRequest) -> str | None:
             or request.model_settings.get("use_responses_api") is False
         ):
             return None
-        if name in {"gpt-5.4", "gpt-5.5"}:
+        if name in {
+            "gpt-5.4",
+            "gpt-5.5",
+            "gpt-6-astra",
+            "gpt-6-sol",
+            "gpt-6-luna",
+            "gpt-6.1-sol",
+        }:
             return "openai"
     if type(model) is ChatAnthropic:
         endpoint = getattr(model, "anthropic_api_url", None)
         if endpoint and urlparse(str(endpoint)).hostname != "api.anthropic.com":
             return None
         if re.fullmatch(
-            r"claude-(?:sonnet-4[.-][56]|opus-4[.-][5-8]|haiku-4[.-]5)"
+            r"claude-(?:sonnet-4[.-][56]|opus-4[.-][5-8]|haiku-4[.-]5|"
+            r"(?:sonnet|opus|haiku)-5(?:[.-]5)?|(?:fable|mythos)-5(?:[.-]1)?)"
             r"(?:-\d{8})?",
             name,
         ):

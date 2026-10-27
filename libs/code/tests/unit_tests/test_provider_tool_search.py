@@ -146,7 +146,7 @@ def test_serialization_execution_approval_and_resume() -> None:
     "kwargs",
     [
         {"model": "gpt-4.1"},
-        {"model": "gpt-6.1-sol"},
+        {"model": "gpt-unknown"},
         {
             "model": "gpt-5.4",
             "base_url": "https://gateway.smith.langchain.com/openai/v1",

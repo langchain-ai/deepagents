@@ -41,6 +41,13 @@ def mcp_lookup(query: str) -> str:
         ("claude-haiku-4-5-20251001", True),
         ("claude-sonnet-4-6", True),
         ("claude-opus-4.8", True),
+        ("claude-sonnet-5", True),
+        ("claude-sonnet-5-5", True),
+        ("claude-opus-5", True),
+        ("claude-opus-5-5", True),
+        ("claude-haiku-5-5", True),
+        ("claude-fable-5-1", True),
+        ("claude-mythos-5-1", True),
     ],
 )
 def test_anthropic_transport(model_name: str, *, deferred: bool) -> None:
@@ -182,7 +189,10 @@ def test_openai_search_stream_roundtrip() -> None:
     assert any(block["type"] == "tool_search_output" for block in replay["input"])
 
 
-async def test_async_provider_request() -> None:
+@pytest.mark.parametrize(
+    "model_name", ["gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "gpt-6.1-sol"]
+)
+async def test_async_provider_request(model_name: str) -> None:
     payloads = []
 
     def handle(request: httpx.Request) -> httpx.Response:
@@ -194,13 +204,13 @@ async def test_async_provider_request() -> None:
                 "object": "response",
                 "created_at": 0,
                 "status": "completed",
-                "model": "gpt-5.4",
+                "model": model_name,
                 "output": [],
             },
         )
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
-        model = ChatOpenAI(model="gpt-5.4", api_key="fake", http_async_client=client)
+        model = ChatOpenAI(model=model_name, api_key="fake", http_async_client=client)
         graph = create_agent(
             model,
             tools=[mcp_lookup],

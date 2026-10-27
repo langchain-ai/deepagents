@@ -4580,7 +4580,7 @@ class TestGetModelProfiles:
         profiles_path.parent.mkdir()
         profiles_path.write_text(
             f"_PROFILES = {{'{model}': {{'structured_output': False, "
-            "'reasoning_effort_default': 'high'}}"
+            "'max_input_tokens': 1234, 'reasoning_effort_default': 'high'}}"
         )
         spec = importlib.util.spec_from_file_location(
             f"langchain_{provider}", tmp_path / "__init__.py"
@@ -4593,6 +4593,7 @@ class TestGetModelProfiles:
         )
 
         assert profiles[model]["structured_output"] is False
+        assert profiles[model]["max_input_tokens"] == 1234
         assert profiles[model]["reasoning_effort_default"] == "high"
         assert profiles[model]["reasoning_effort_levels"] == [
             *(["none"] if provider == "openai" else []),
@@ -4605,24 +4606,22 @@ class TestGetModelProfiles:
         clear_caches()
 
     @pytest.mark.parametrize(
-        ("provider", "model", "context_limit", "efforts"),
+        ("provider", "model", "efforts"),
         [
             (
                 "anthropic",
                 "claude-haiku-5-5",
-                1_000_000,
                 ("low", "medium", "high", "xhigh", "max"),
             ),
             (
                 "openai",
                 "gpt-6.1-terra",
-                922_000,
                 ("none", "low", "medium", "high", "xhigh", "max"),
             ),
         ],
     )
-    def test_discovery_and_effort_without_upstream_profile(
-        self, provider: str, model: str, context_limit: int, efforts: tuple[str, ...]
+    def test_discovery_and_effort_with_provider_profiles(
+        self, provider: str, model: str, efforts: tuple[str, ...]
     ) -> None:
         from deepagents_code.reasoning_effort import (
             default_effort_for_model,
@@ -4631,12 +4630,11 @@ class TestGetModelProfiles:
 
         clear_caches()
         assert model in get_available_models()[provider]
-        spec = f"{provider}:{model}"
-        assert (
-            get_model_profiles()[spec]["profile"]["max_input_tokens"] == context_limit
-        )
-        assert default_effort_for_model(spec) == "medium"
-        assert supported_efforts_for_model(spec) == efforts
+        model_spec = f"{provider}:{model}"
+        assert model_spec in get_model_profiles()
+        assert default_effort_for_model(model_spec) == "medium"
+        assert supported_efforts_for_model(model_spec) == efforts
+        clear_caches()
 
 
 class TestCodexProviderMirror:

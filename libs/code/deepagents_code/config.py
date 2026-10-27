@@ -2295,13 +2295,10 @@ _editable_cache: tuple[bool, str | None] | None = None
 _langsmith_url_cache: tuple[str, str] | None = None
 """Module-level cache for successful LangSmith project URL lookups."""
 
-_langsmith_url_error_cache: tuple[str, str, LangSmithApiError] | None = None
-"""Module-level cache for LangSmith project lookups rejected with 401 or 403.
-
-Keyed by project name and the API key. A rejected key does
-not gain access during the session, so a retry only adds latency, but a
-different key gets a fresh lookup. Timeouts and network errors are not cached.
-"""
+_langsmith_url_error_cache: tuple[tuple[str | None, ...], LangSmithApiError] | None = (
+    None
+)
+"""Cache 401/403 lookups by project, API key, endpoint, and workspace settings."""
 
 _LANGSMITH_URL_LOOKUP_TIMEOUT_SECONDS = 2.0
 """Max seconds to wait for LangSmith project URL lookup.
@@ -5536,24 +5533,12 @@ def _lookup_failure(project_name: str, exc: Exception) -> LangSmithApiError:
     return LangSmithApiError(msg)
 
 
-def _raise_cached_lookup_error(project_name: str, api_key: str) -> None:
-    """Re-raise a cached 401/403 for this project and key without a network call.
-
-    Each call raises a new exception, so repeated raises do not grow the
-    traceback of the cached instance.
-
-    Args:
-        project_name: LangSmith project name to look up.
-        api_key: API key used for the lookup, or an empty string.
-
-    Raises:
-        LangSmithApiError: a copy of the cached error, chained to the
-            original SDK exception.
-    """  # noqa: DOC502 - raises a copy built with `type(cached_error)`
+def _raise_cached_lookup_error(cache_key: tuple[str | None, ...]) -> None:
+    """Re-raise a fresh copy of a rejection for the same lookup configuration."""
     if _langsmith_url_error_cache is None:
         return
-    cached_name, cached_key, cached_error = _langsmith_url_error_cache
-    if (cached_name, cached_key) == (project_name, api_key):
+    cached_key, cached_error = _langsmith_url_error_cache
+    if cached_key == cache_key:
         raise type(cached_error)(*cached_error.args) from cached_error.__cause__
 
 
@@ -5601,9 +5586,9 @@ def fetch_langsmith_project_url_or_raise(project_name: str) -> str:
 
     Successful results are cached at module level so repeated calls do not
     make additional network requests. A 401 or 403 is also cached for the
-    same API key and is re-raised without a network call, because a rejected
-    key does not gain access during the session. A different key gets a fresh
-    lookup. Timeouts and network errors are not cached.
+    same project, API key, endpoint, and workspace settings and is re-raised
+    without a network call. Changing these settings allows a fresh lookup.
+    Timeouts and network errors are not cached.
 
     When the environment sets the project URL for this project
     (`DEEPAGENTS_CODE_LANGSMITH_PROJECT_URL`), it is returned without a lookup.
@@ -5643,7 +5628,15 @@ def fetch_langsmith_project_url_or_raise(project_name: str) -> str:
     api_key = (
         resolve_env_var("LANGSMITH_API_KEY") or resolve_env_var("LANGCHAIN_API_KEY")
     ) or ""
-    _raise_cached_lookup_error(project_name, api_key)
+    cache_key = (
+        project_name,
+        api_key,
+        os.environ.get("LANGSMITH_ENDPOINT"),
+        os.environ.get("LANGCHAIN_ENDPOINT"),
+        os.environ.get("LANGSMITH_WORKSPACE_ID"),
+        os.environ.get("LANGCHAIN_WORKSPACE_ID"),
+    )
+    _raise_cached_lookup_error(cache_key)
 
     try:
         from langsmith import Client
@@ -5688,7 +5681,7 @@ def fetch_langsmith_project_url_or_raise(project_name: str) -> str:
     if lookup_error is not None:
         error = _lookup_failure(project_name, lookup_error)
         if _langsmith_http_status(lookup_error) in _LANGSMITH_REJECTED_STATUSES:
-            _langsmith_url_error_cache = (project_name, api_key, error)
+            _langsmith_url_error_cache = (cache_key, error)
         raise error from lookup_error
 
     if not result:

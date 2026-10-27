@@ -5036,6 +5036,41 @@ class TestFetchLangsmithProjectUrl:
             keys["LANGSMITH_API_KEY"] = "new-key"
             assert fetch_langsmith_project_url_or_raise("proj") == "https://ls/p/proj"
 
+    @pytest.mark.parametrize("status", [401, 403])
+    @pytest.mark.parametrize(
+        "setting",
+        [
+            "LANGSMITH_ENDPOINT",
+            "LANGCHAIN_ENDPOINT",
+            "LANGSMITH_WORKSPACE_ID",
+            "LANGCHAIN_WORKSPACE_ID",
+        ],
+    )
+    def test_rejected_lookup_retries_after_configuration_fix(
+        self, monkeypatch: pytest.MonkeyPatch, setting: str, status: int
+    ) -> None:
+        """Endpoint and workspace fixes retry without changing the API key."""
+        read_project = Mock(
+            side_effect=[_langsmith_http_error(status), Mock(url="https://ls/p/proj")]
+        )
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_API_KEY", "same-key")
+        monkeypatch.delenv(setting, raising=False)
+        with patch("langsmith.Client", _langsmith_client(read_project)):
+            for _ in range(2):
+                with pytest.raises(LangSmithApiError):
+                    fetch_langsmith_project_url_or_raise("proj")
+            assert read_project.call_count == 1
+
+            monkeypatch.setenv(
+                setting,
+                "https://correct.example.com"
+                if setting.endswith("ENDPOINT")
+                else "correct-workspace",
+            )
+            assert fetch_langsmith_project_url_or_raise("proj") == "https://ls/p/proj"
+
+        assert read_project.call_count == 2
+
     def test_server_error_is_not_cached_and_keeps_traceback(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:

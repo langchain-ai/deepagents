@@ -43,6 +43,10 @@ def _supported_endpoint(endpoint: object, provider: str) -> bool:
 def _supported_provider(request: ModelRequest) -> str | None:
     """Return a supported provider on direct or LangSmith native-format routes."""
     model = request.model
+    profile = model.profile or {}
+    capability = profile.get("provider_tool_search")
+    if capability is False:
+        return None
     name = getattr(model, "model_name", None) or getattr(model, "model", "")
     if not isinstance(name, str):
         return None
@@ -51,7 +55,7 @@ def _supported_provider(request: ModelRequest) -> str | None:
 
     if type(model) is ChatOpenAI:
         endpoint = getattr(model, "openai_api_base", None)
-        if not _supported_endpoint(endpoint, "openai"):
+        if capability is not True and not _supported_endpoint(endpoint, "openai"):
             return None
         if (
             model.use_responses_api is False
@@ -60,7 +64,7 @@ def _supported_provider(request: ModelRequest) -> str | None:
             return None
         if name.startswith("openai/"):
             name = name.removeprefix("openai/")
-        if name in {
+        if capability is True or name in {
             "gpt-5.4",
             "gpt-5.5",
             "gpt-6-astra",
@@ -71,11 +75,11 @@ def _supported_provider(request: ModelRequest) -> str | None:
             return "openai"
     if type(model) is ChatAnthropic:
         endpoint = getattr(model, "anthropic_api_url", None)
-        if not _supported_endpoint(endpoint, "anthropic"):
+        if capability is not True and not _supported_endpoint(endpoint, "anthropic"):
             return None
         if name.startswith("anthropic/"):
             name = name.removeprefix("anthropic/")
-        if re.fullmatch(
+        if capability is True or re.fullmatch(
             r"claude-(?:sonnet-4[.-][56]|opus-4[.-][5-8]|haiku-4[.-]5|"
             r"(?:sonnet|opus|haiku)-5(?:[.-]5)?|(?:fable|mythos)-5(?:[.-]1)?)"
             r"(?:-\d{8})?",

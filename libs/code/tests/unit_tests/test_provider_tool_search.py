@@ -233,7 +233,11 @@ def test_runtime_model_switch_serialization(monkeypatch: pytest.MonkeyPatch) -> 
         payloads, [text_output(), text_output(), text_output()]
     )
     unsupported = model.model_copy(
-        update={"model_name": "gpt-4.1", "use_responses_api": True}
+        update={
+            "model_name": "gpt-4.1",
+            "use_responses_api": True,
+            "profile": {"provider_tool_search": False},
+        }
     )
     resolved = MagicMock(model=unsupported, model_spec="openai:gpt-4.1")
     monkeypatch.setattr(
@@ -288,6 +292,11 @@ def test_cli_graph_default_and_opt_out(
     payloads: list[dict] = []
     model = model_with_transport(payloads, [text_output()])
     model.use_responses_api = True
+    from deepagents_code.config import _apply_profile_overrides
+
+    _apply_profile_overrides(
+        model, {"provider_tool_search": True}, model.model_name, label="test"
+    )
     graph, _ = create_cli_agent(
         model,
         "native-search-test",
@@ -314,3 +323,68 @@ def test_cli_graph_default_and_opt_out(
     assert not next(tool for tool in tools if tool.get("name") == "read_file").get(
         "defer_loading"
     )
+
+
+@pytest.mark.parametrize(
+    ("capability", "endpoint", "name", "deferred"),
+    [
+        (True, "https://custom.example/v1", "custom-model", True),
+        (False, None, "gpt-6.1-sol", False),
+        (None, "https://custom.example/v1", "gpt-6.1-sol", False),
+        ("true", "https://custom.example/v1", "custom-model", False),
+    ],
+)
+def test_profile_override_request_serialization(
+    capability: object, endpoint: str | None, name: str, *, deferred: bool
+) -> None:
+    from deepagents_code.config import _apply_profile_overrides
+    from deepagents_code.model_config import ModelConfig
+
+    config = ModelConfig(
+        providers={
+            "my_gateway": {
+                "profile": {
+                    "provider_tool_search": False,
+                    name: {"provider_tool_search": capability},
+                }
+            }
+        }
+    )
+    payloads: list[dict] = []
+    model = model_with_transport(
+        payloads, [text_output()], base_url=endpoint, model_name=name
+    )
+    model.use_responses_api = True
+    overrides = config.get_profile_overrides("my_gateway", model_name=name)
+    _apply_profile_overrides(model, overrides, name, label="config.toml")
+    graph = create_agent(
+        model,
+        tools=[core_read, mcp_lookup],
+        middleware=[MCPProviderToolSearchMiddleware([mcp_lookup])],
+    )
+    graph.invoke({"messages": [HumanMessage("hello")]})
+    assert (
+        any(item.get("type") == "tool_search" for item in payloads[0]["tools"])
+        is deferred
+    )
+    assert bool(payloads[0]["tools"][1].get("defer_loading")) is deferred
+    assert "provider_tool_search" not in payloads[0]
+    assert not payloads[0]["tools"][0].get("defer_loading")
+
+
+def test_profile_override_cannot_enable_chat_completions() -> None:
+    model = ChatOpenAI(
+        model="custom-model",
+        api_key="fake",
+        base_url="https://custom.example/v1",
+        use_responses_api=False,
+    )
+    from deepagents_code.config import _apply_profile_overrides
+
+    _apply_profile_overrides(
+        model, {"provider_tool_search": True}, model.model_name, label="test"
+    )
+    request = ModelRequest(model=model, tools=[mcp_lookup], messages=[])
+    assert MCPProviderToolSearchMiddleware([mcp_lookup])._prepare(request).tools == [
+        mcp_lookup
+    ]

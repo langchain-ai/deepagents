@@ -151,11 +151,8 @@ def _response(
     return ModelResponse(result=[message])
 
 
-def _request(tool_count: int = 0) -> ModelRequest:
-    tools = [object()] * tool_count
-    return cast(
-        "ModelRequest", SimpleNamespace(model="openai:gpt-6.1-sol", tools=tools)
-    )
+def _request() -> ModelRequest:
+    return cast("ModelRequest", SimpleNamespace(model="openai:gpt-6.1-sol"))
 
 
 @pytest.mark.parametrize("asynchronous", [False, True])
@@ -212,8 +209,8 @@ def test_reply_with_output_or_normal_stop_passes_through(
     assert middleware.wrap_model_call(_request(), lambda _: response) is response
 
 
-def test_zero_usage_points_at_tool_count_not_output_limit() -> None:
-    """OpenAI returns an empty, zero-usage reply when sent too many tools."""
+def test_zero_usage_does_not_blame_output_limit() -> None:
+    """A zero-usage reply did not run out of output budget."""
     message = AIMessage(
         content=[],
         response_metadata=_RESPONSES_INCOMPLETE,
@@ -223,14 +220,14 @@ def test_zero_usage_points_at_tool_count_not_output_limit() -> None:
 
     with pytest.raises(ModelOutputTruncatedError) as caught:
         middleware.wrap_model_call(
-            _request(tool_count=540),
+            _request(),
             lambda _: ModelResponse(result=[message]),
         )
 
     text = str(caught.value)
-    assert "The request had 540 tools" in text
+    assert "likely failed upstream rather than hitting the limit" in text
     assert "reasoning effort" not in text
-    assert copy.deepcopy(caught.value).tool_count == 540
+    assert copy.deepcopy(caught.value).no_usage is True
 
 
 def test_error_message_survives_server_serialization() -> None:

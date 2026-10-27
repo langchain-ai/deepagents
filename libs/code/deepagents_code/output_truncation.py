@@ -164,23 +164,22 @@ class ModelOutputTruncatedError(ValueError):
         truncation: OutputTruncation,
         model: str | None = None,
         *,
-        tool_count: int | None = None,
+        no_usage: bool = False,
     ) -> None:
         """Build the error message.
 
         Args:
             truncation: Why the provider stopped the reply.
             model: Model identifier, when known.
-            tool_count: Number of tools sent with the request, when the
-                provider reported no token usage. Its presence means the stop
-                reason is likely not the real cause.
+            no_usage: The provider reported zero tokens for the request, so
+                the stated reason is likely not the real cause.
         """
         self.truncation = truncation
         self.model = model
-        self.tool_count = tool_count
+        self.no_usage = no_usage
         subject = f"Model {model!r}" if model else "The model"
         msg = f"{subject} stopped before replying: {describe_truncation(truncation)}."
-        msg += _hint(truncation, tool_count)
+        msg += _hint(truncation, no_usage=no_usage)
         super().__init__(msg)
 
     def __reduce__(
@@ -191,27 +190,25 @@ class ModelOutputTruncatedError(ValueError):
         Returns:
             The class and its constructor arguments.
         """
-        return _rebuild_truncated_error, (self.truncation, self.model, self.tool_count)
+        return _rebuild_truncated_error, (self.truncation, self.model, self.no_usage)
 
 
 def _rebuild_truncated_error(
-    truncation: OutputTruncation, model: str | None, tool_count: int | None
+    truncation: OutputTruncation, model: str | None, no_usage: bool
 ) -> ModelOutputTruncatedError:
-    return ModelOutputTruncatedError(truncation, model, tool_count=tool_count)
+    return ModelOutputTruncatedError(truncation, model, no_usage=no_usage)
 
 
-def _hint(truncation: OutputTruncation, tool_count: int | None) -> str:
+def _hint(truncation: OutputTruncation, *, no_usage: bool) -> str:
     """Return advice for the user, or an empty string.
 
     A reply with zero reported tokens did not run out of output budget, even
-    when the provider says so. OpenAI returns that shape when a request has
-    too many tools, so point at the tool count instead of the output limit.
+    when the provider says so, so do not suggest changing the output budget.
     """
-    if tool_count is not None:
+    if no_usage:
         return (
-            " The provider reported no token usage, so the stated reason is"
-            f" likely not the cause. The request had {tool_count} tools; try"
-            " disabling some MCP servers."
+            " The provider reported no token usage, so the request likely"
+            " failed upstream rather than hitting the limit."
         )
     if truncation.reason == MAX_OUTPUT_TOKENS:
         return " Retry, or lower the reasoning effort."
@@ -274,9 +271,10 @@ class EmptyTruncatedReplyMiddleware(AgentMiddleware):
         truncation = output_truncation(message)
         if truncation is None:
             return
-        tool_count = len(request.tools) if _reported_no_usage(message) else None
         error = ModelOutputTruncatedError(
-            truncation, _model_name(message, request.model), tool_count=tool_count
+            truncation,
+            _model_name(message, request.model),
+            no_usage=_reported_no_usage(message),
         )
         logger.warning("%s", error)
         raise error

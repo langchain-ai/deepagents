@@ -274,7 +274,7 @@ def test_mutation_workflow_commands_are_target_only() -> None:
 
         step_names = [step.get("name") for step in job["steps"]]
         assert step_names.index("Acknowledge manual command") < step_names.index(
-            "Prepare isolated drafting input"
+            "Draft and post curated notes with bounded head-change retries"
             if job_name == "draft"
             else "Validate override and prepare changelog/body edits"
         )
@@ -283,62 +283,25 @@ def test_mutation_workflow_commands_are_target_only() -> None:
     # This also covers the old DCODE_RELEASE_BOT_TOKEN name as a substring.
     assert "RELEASE_BOT_TOKEN" not in automation
 
-    # Untrusted release text goes through a deterministic one-request helper, not
-    # an agent/tool loop. Only the selected model key is placed in that
-    # process, under a provider-neutral variable that the model never sees.
     draft_step = next(
-        step
-        for step in workflow["jobs"]["draft"]["steps"]
-        if step.get("id") == "draft-model"
+        step for step in workflow["jobs"]["draft"]["steps"] if step.get("id") == "post"
     )
-    assert "uses" not in draft_step
-    # The step wraps the helper only to capture its stderr into a step output, so
-    # the drafting-failure comment can report why the run failed instead of just
-    # "outcome: failure". That wrapper must not become a place to run other work:
-    # assert the helper is the single command that does anything externally
-    # visible, and that the only thing written is the step-output file.
-    draft_run = draft_step["run"]
-    helper_invocation = (
-        "node ./trusted-source/.github/scripts/release/draft-release-notes.js"
-    )
-    assert draft_run.count(helper_invocation) == 1
-    draft_commands = "\n".join(
-        line
-        for line in draft_run.splitlines()
-        if line.strip() and not line.lstrip().startswith("#")
-    )
-    assert draft_commands.count("node ") == 1
-    for forbidden in ("git ", "curl", "wget", "npm ", "npx ", "pip ", "eval ", "source "):
-        assert forbidden not in draft_commands
-    # Only $GITHUB_OUTPUT is written; nothing is appended to the environment or
-    # the step summary, and no other file is created.
-    assert draft_commands.count(">>") == 1
-    assert '>> "$GITHUB_OUTPUT"' in draft_commands
-    assert "GITHUB_ENV" not in draft_commands
-    assert "GITHUB_PATH" not in draft_commands
-    # The captured message reaches the failure comment through this output.
-    failure_step = next(
-        step
-        for step in workflow["jobs"]["draft"]["steps"]
-        if step.get("name") == "Comment on drafting failure"
-    )
-    assert failure_step["env"]["DRAFT_ERROR"] == (
-        "${{ steps.draft-model.outputs.error }}"
-    )
-    assert "process.env.DRAFT_ERROR" in failure_step["with"]["script"]
-    assert set(draft_step["env"]) == {
-        "INPUT_FILE",
-        "MODEL_API_KEY",
+    script = draft_step["with"]["script"]
+    assert "draftWithRetries" in script
+    assert "execFileSync(process.execPath," in script
+    child_env = script.split("env: {", 1)[1].split("}", 1)[0]
+    assert set(re.findall(r"^\s+(\w+):", child_env, re.MULTILINE)) == {
         "MODEL_SPEC",
+        "MODEL_API_KEY",
+        "INPUT_FILE",
         "OUTPUT_FILE",
     }
+    assert "process.env," not in child_env
     selected_key = draft_step["env"]["MODEL_API_KEY"]
-    assert "secrets.OPENAI_API_KEY" in selected_key
-    assert "secrets.ANTHROPIC_API_KEY" in selected_key
-    assert "secrets.GOOGLE_API_KEY" in selected_key
-    assert "./trusted-source" not in {
-        step.get("uses") for step in workflow["jobs"]["draft"]["steps"]
-    }
+    for provider in ("OPENAI", "ANTHROPIC", "GOOGLE"):
+        assert f"secrets.{provider}_API_KEY" in selected_key
+    assert "component: process.env.RELEASE_COMPONENT" in script
+    assert "version: process.env.RELEASE_VERSION" in script
     helper = (ROOT / ".github/scripts/release/draft-release-notes.js").read_text()
     assert "child_process" not in helper
     assert "https://api.openai.com/v1/chat/completions" in helper

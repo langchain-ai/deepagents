@@ -19,6 +19,8 @@ from langchain.agents.middleware.types import (
 )
 from langchain_core.messages import AIMessage
 
+from deepagents_code.local_context import _FORKED_CONTEXT_KEY
+
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Mapping
 
@@ -165,6 +167,8 @@ class ModelOutputTruncatedError(ValueError):
         model: str | None = None,
         *,
         no_usage: bool = False,
+        has_reasoning: bool = False,
+        invalid_tool_call: bool = False,
     ) -> None:
         """Build the error message.
 
@@ -173,13 +177,20 @@ class ModelOutputTruncatedError(ValueError):
             model: Model identifier, when known.
             no_usage: The provider reported zero tokens for the request, so
                 the stated reason is likely not the real cause.
+            has_reasoning: The reply contained reasoning content.
+            invalid_tool_call: The reply contains an unparseable tool call.
         """
         self.truncation = truncation
         self.model = model
         self.no_usage = no_usage
+        self.has_reasoning = has_reasoning
+        self.invalid_tool_call = invalid_tool_call
         subject = f"Model {model!r}" if model else "The model"
-        msg = f"{subject} stopped before replying: {describe_truncation(truncation)}."
-        msg += _hint(truncation, no_usage=no_usage)
+        stopped = (
+            "while writing a tool call" if invalid_tool_call else "before replying"
+        )
+        msg = f"{subject} stopped {stopped}: {describe_truncation(truncation)}."
+        msg += _hint(truncation, no_usage=no_usage, has_reasoning=has_reasoning)
         super().__init__(msg)
 
     def __reduce__(
@@ -190,16 +201,32 @@ class ModelOutputTruncatedError(ValueError):
         Returns:
             The class and its constructor arguments.
         """
-        return _rebuild_truncated_error, (self.truncation, self.model, self.no_usage)
+        return _rebuild_truncated_error, (
+            self.truncation,
+            self.model,
+            self.no_usage,
+            self.has_reasoning,
+            self.invalid_tool_call,
+        )
 
 
 def _rebuild_truncated_error(
-    truncation: OutputTruncation, model: str | None, no_usage: bool
+    truncation: OutputTruncation,
+    model: str | None,
+    no_usage: bool,
+    has_reasoning: bool,
+    invalid_tool_call: bool,
 ) -> ModelOutputTruncatedError:
-    return ModelOutputTruncatedError(truncation, model, no_usage=no_usage)
+    return ModelOutputTruncatedError(
+        truncation,
+        model,
+        no_usage=no_usage,
+        has_reasoning=has_reasoning,
+        invalid_tool_call=invalid_tool_call,
+    )
 
 
-def _hint(truncation: OutputTruncation, *, no_usage: bool) -> str:
+def _hint(truncation: OutputTruncation, *, no_usage: bool, has_reasoning: bool) -> str:
     """Return advice for the user, or an empty string.
 
     A reply with zero reported tokens did not run out of output budget, even
@@ -211,7 +238,11 @@ def _hint(truncation: OutputTruncation, *, no_usage: bool) -> str:
             " failed upstream rather than hitting the limit."
         )
     if truncation.reason == MAX_OUTPUT_TOKENS:
-        return " Retry, or lower the reasoning effort."
+        if has_reasoning:
+            return " Retry, or lower the reasoning effort."
+        return " Retry, or raise the output token limit."
+    if truncation.reason == CONTEXT_WINDOW_EXCEEDED:
+        return " Run /compact to free context space, then retry."
     return ""
 
 
@@ -265,7 +296,7 @@ class EmptyTruncatedReplyMiddleware(AgentMiddleware):
 
     @staticmethod
     def _check(response: ModelResponse, request: ModelRequest) -> None:
-        if request.state.get("_deepagents_forked_context"):
+        if request.state.get(_FORKED_CONTEXT_KEY):
             return
         message = _final_ai_message(response)
         if message is None or has_visible_reply(message):
@@ -277,6 +308,10 @@ class EmptyTruncatedReplyMiddleware(AgentMiddleware):
             truncation,
             _model_name(message, request.model),
             no_usage=_reported_no_usage(message),
+            has_reasoning=any(
+                block.get("type") == "reasoning" for block in message.content_blocks
+            ),
+            invalid_tool_call=bool(message.invalid_tool_calls),
         )
         logger.warning("%s", error)
         raise error

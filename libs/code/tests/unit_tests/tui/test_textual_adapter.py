@@ -8218,7 +8218,8 @@ class TestTruncatedReplyWarning:
             next(w for w in mounted if isinstance(w, AppMessage))
         )
 
-    async def test_partial_tool_call_is_warned(self) -> None:
+    @pytest.mark.parametrize("args", ["{}", "]"])
+    async def test_partial_tool_call_is_warned(self, args: str) -> None:
         from langchain_core.messages import AIMessageChunk
 
         mounted = await self._run(
@@ -8226,7 +8227,7 @@ class TestTruncatedReplyWarning:
                 content=[],
                 id="m-1",
                 tool_call_chunks=[
-                    {"name": "ls", "args": "{}", "id": "call-1", "index": 0}
+                    {"name": "ls", "args": args, "id": "call-1", "index": 0}
                 ],
                 chunk_position="last",
                 response_metadata={"stop_reason": "max_tokens"},

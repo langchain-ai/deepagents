@@ -193,6 +193,76 @@ async def test_empty_truncated_reply_raises(
 
 
 @pytest.mark.parametrize(
+    ("content", "expected_hint"),
+    [
+        ("", "Retry, or raise the output token limit."),
+        (
+            [{"type": "reasoning", "reasoning": "Thinking"}],
+            "Retry, or lower the reasoning effort.",
+        ),
+        (
+            [{"type": "reasoning", "summary": [], "id": "rs_1"}],
+            "Retry, or lower the reasoning effort.",
+        ),
+    ],
+)
+def test_output_limit_hint_matches_reply(
+    content: str | list[str | dict[str, Any]], expected_hint: str
+) -> None:
+    with pytest.raises(ModelOutputTruncatedError) as caught:
+        EmptyTruncatedReplyMiddleware().wrap_model_call(
+            _request(), lambda _: _response(content)
+        )
+
+    assert str(caught.value).endswith(expected_hint)
+    assert str(copy.deepcopy(caught.value)) == str(caught.value)
+
+
+def test_context_window_hint_suggests_compact() -> None:
+    with pytest.raises(ModelOutputTruncatedError, match="Run /compact"):
+        EmptyTruncatedReplyMiddleware().wrap_model_call(
+            _request(),
+            lambda _: _response(
+                metadata={"stop_reason": "model_context_window_exceeded"}
+            ),
+        )
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_invalid_truncated_tool_call_reports_interrupted_call(
+    *, asynchronous: bool
+) -> None:
+    message = AIMessage(
+        content="",
+        invalid_tool_calls=[
+            {"name": "ls", "args": '{"path":', "id": "call-1", "error": "Invalid JSON"}
+        ],
+        response_metadata={"finish_reason": "length"},
+    )
+    response = ModelResponse(result=[message])
+    middleware = EmptyTruncatedReplyMiddleware()
+
+    async def call() -> None:
+        if asynchronous:
+            await middleware.awrap_model_call(
+                _request(), AsyncMock(return_value=response)
+            )
+        else:
+            middleware.wrap_model_call(_request(), lambda _: response)
+
+    with pytest.raises(ModelOutputTruncatedError) as caught:
+        await call()
+
+    text = str(caught.value)
+    assert (
+        "stopped while writing a tool call: it reached its output token limit (length)"
+        in text
+    )
+    assert "before replying" not in text
+    assert str(copy.deepcopy(caught.value)) == text
+
+
+@pytest.mark.parametrize(
     "response",
     [
         pytest.param(_response("Partial answer"), id="partial-text"),
@@ -383,6 +453,7 @@ async def test_empty_truncated_reply_reaches_tui_as_error() -> None:
     app = DeepAgentsApp(agent=MagicMock())
     async with app.run_test() as pilot:
         await pilot.pause()
+        app._ui_adapter = MagicMock()
         with patch(
             "deepagents_code.tui.textual_adapter.execute_task_textual",
             new_callable=AsyncMock,

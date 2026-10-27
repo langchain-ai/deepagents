@@ -601,7 +601,7 @@ requires-dist = [
     { name = "langchain-aws", marker = "extra == 'aws'", specifier = ">=1.9.1,<2.0.0" },
     { name = "langchain-core", specifier = ">=1.7.0,<2.0.0" },
     { name = "langchain-google-genai", specifier = ">=4.4.2,<5.0.0" },
-    { name = "langchain-quickjs", marker = "extra == 'quickjs'", specifier = ">=0.3.10" },
+    { name = "langchain-quickjs", marker = "extra == 'quickjs'", specifier = ">=0.3.11" },
     { name = "langsmith", specifier = ">=0.14.13" },
     { name = "packaging", specifier = ">=23.2" },
     { name = "pillow", marker = "extra == 'video'", specifier = ">=12.3.0" },
@@ -1147,7 +1147,7 @@ wheels = [
 
 [[package]]
 name = "langchain-quickjs"
-version = "0.3.10"
+version = "0.3.11"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "bsdiff4" },
@@ -1157,9 +1157,9 @@ dependencies = [
     { name = "langgraph" },
     { name = "quickjs-rs" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/a6/4c/737e4e7ce59229495f5152b422001cecc560af819633ab63fce27f853d27/langchain_quickjs-0.3.10.tar.gz", hash = "sha256:92a706b7b44ede7aadfcbf575612e0d894819084580e3ee18538e60df85e571c", size = 241684, upload-time = "2026-10-26T21:24:00.946Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/42/21/c0a54049e9916cd181b404b6004bf4072084122c845721b2007596a2a2f0/langchain_quickjs-0.3.11.tar.gz", hash = "sha256:65bd6a7ee2833e60449a5de43cd52c56ba554cead5c00db8b868deb567796ca3", size = 244526, upload-time = "2026-10-27T17:02:12.884Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/19/e4/30da86ee84f269637a46bf5aaf06b4f8a99e8a8cc1a4c4166e3544499b89/langchain_quickjs-0.3.10-py3-none-any.whl", hash = "sha256:4549612865bbd08278d71c2e752f8fd608f57d5bfa40a29037f2b6af6b927348", size = 49112, upload-time = "2026-10-26T21:23:59.879Z" },
+    { url = "https://files.pythonhosted.org/packages/ba/e8/654efea648b34192640a9d33e8967caa6c1e1a5d5d3024e4f0de7087c552/langchain_quickjs-0.3.11-py3-none-any.whl", hash = "sha256:9f523074fdb10bc7b5cbb1e896cc4c06c78fadc3b2afcdca8396d02f9a1708cf", size = 49638, upload-time = "2026-10-27T17:02:11.309Z" },
 ]
 
 [[package]]

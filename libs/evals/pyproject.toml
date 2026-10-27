@@ -48,7 +48,7 @@ dependencies = [
     "langchain-xai>=1.2.2",
     # Eval-specific dependencies
     "datasets>=5.0.1",
-    "nltk>=3.10.3",
+    "nltk>=3.10.4",
     "openevals>=0.2.0",
     "tiktoken>=0.13.0",
     "langchain-quickjs>=0.3.3",

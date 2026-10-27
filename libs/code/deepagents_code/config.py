@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import functools
-import hashlib
 import importlib
 import json
 import keyword
@@ -2299,7 +2298,7 @@ _langsmith_url_cache: tuple[str, str] | None = None
 _langsmith_url_error_cache: tuple[str, str, LangSmithApiError] | None = None
 """Module-level cache for LangSmith project lookups rejected with 401 or 403.
 
-Keyed by project name and a fingerprint of the API key. A rejected key does
+Keyed by project name and the API key. A rejected key does
 not gain access during the session, so a retry only adds latency, but a
 different key gets a fresh lookup. Timeouts and network errors are not cached.
 """
@@ -5537,18 +5536,7 @@ def _lookup_failure(project_name: str, exc: Exception) -> LangSmithApiError:
     return LangSmithApiError(msg)
 
 
-def _langsmith_key_fingerprint(api_key: str | None) -> str:
-    """Return a short, non-reversible fingerprint of a LangSmith API key.
-
-    Returns:
-        A hex digest prefix, or an empty string when no key is set.
-    """
-    if not api_key:
-        return ""
-    return hashlib.sha256(api_key.encode()).hexdigest()[:16]
-
-
-def _raise_cached_lookup_error(project_name: str, key_fingerprint: str) -> None:
+def _raise_cached_lookup_error(project_name: str, api_key: str) -> None:
     """Re-raise a cached 401/403 for this project and key without a network call.
 
     Each call raises a new exception, so repeated raises do not grow the
@@ -5556,7 +5544,7 @@ def _raise_cached_lookup_error(project_name: str, key_fingerprint: str) -> None:
 
     Args:
         project_name: LangSmith project name to look up.
-        key_fingerprint: Fingerprint of the API key used for the lookup.
+        api_key: API key used for the lookup, or an empty string.
 
     Raises:
         LangSmithApiError: a copy of the cached error, chained to the
@@ -5565,7 +5553,7 @@ def _raise_cached_lookup_error(project_name: str, key_fingerprint: str) -> None:
     if _langsmith_url_error_cache is None:
         return
     cached_name, cached_key, cached_error = _langsmith_url_error_cache
-    if (cached_name, cached_key) == (project_name, key_fingerprint):
+    if (cached_name, cached_key) == (project_name, api_key):
         raise type(cached_error)(*cached_error.args) from cached_error.__cause__
 
 
@@ -5652,11 +5640,10 @@ def fetch_langsmith_project_url_or_raise(project_name: str) -> str:
 
     # Explicit api_key because Client() reads os.environ directly
     # and doesn't know about the DEEPAGENTS_CODE_ prefix.
-    api_key = resolve_env_var("LANGSMITH_API_KEY") or resolve_env_var(
-        "LANGCHAIN_API_KEY"
-    )
-    key_fingerprint = _langsmith_key_fingerprint(api_key)
-    _raise_cached_lookup_error(project_name, key_fingerprint)
+    api_key = (
+        resolve_env_var("LANGSMITH_API_KEY") or resolve_env_var("LANGCHAIN_API_KEY")
+    ) or ""
+    _raise_cached_lookup_error(project_name, api_key)
 
     try:
         from langsmith import Client
@@ -5701,7 +5688,7 @@ def fetch_langsmith_project_url_or_raise(project_name: str) -> str:
     if lookup_error is not None:
         error = _lookup_failure(project_name, lookup_error)
         if _langsmith_http_status(lookup_error) in _LANGSMITH_REJECTED_STATUSES:
-            _langsmith_url_error_cache = (project_name, key_fingerprint, error)
+            _langsmith_url_error_cache = (project_name, api_key, error)
         raise error from lookup_error
 
     if not result:

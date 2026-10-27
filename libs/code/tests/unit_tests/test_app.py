@@ -5639,8 +5639,8 @@ class TestTraceCommand:
 
             app_msgs = app.query(AppMessage)
             rendered = " ".join(str(w._content) for w in app_msgs)
-            assert "does not have permission to read project 'proj'" in rendered
-            assert "project read access" in rendered
+            assert "denied the lookup of project 'proj' (HTTP 403)" in rendered
+            assert "DEEPAGENTS_CODE_LANGSMITH_PROJECT_URL" in rendered
             assert "Verify LANGSMITH_API_KEY" not in rendered
             mock_open.assert_not_called()
 

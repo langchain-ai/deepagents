@@ -14593,13 +14593,16 @@ class DeepAgentsApp(App):
                 thread_id,
                 exc,
             )
+            from deepagents_code._env_vars import LANGSMITH_PROJECT_URL
+
             await self._mount_message(UserMessage(command))
             await self._mount_message(
                 AppMessage(
-                    "Your LangSmith API key does not have permission to read "
-                    f"project {project_name!r}, so the thread URL cannot be "
-                    "resolved. To enable `/trace`, use a key with project "
-                    "read access.",
+                    "LangSmith denied the lookup of project "
+                    f"{project_name!r} (HTTP 403), so the thread URL cannot be "
+                    "resolved. The API key may lack project read access, or "
+                    "may not belong to this workspace. Set "
+                    f"`{LANGSMITH_PROJECT_URL}` to skip the lookup.",
                 ),
             )
             return

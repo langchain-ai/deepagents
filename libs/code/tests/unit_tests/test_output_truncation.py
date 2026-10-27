@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
 from langchain.agents import create_agent
+from langchain.agents.middleware import ToolErrorMiddleware
 from langchain.agents.middleware.types import ModelRequest, ModelResponse
 from langchain_core.language_models import BaseChatModel
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
@@ -21,6 +22,7 @@ from langgraph_api.serde import json_dumpb, json_loads
 from langgraph_sdk.client import LangGraphClient
 
 from deepagents_code._glm_5p2_profile import _GlmTerminalStallRecovery
+from deepagents_code.agent import _format_task_error
 from deepagents_code.app import DeepAgentsApp
 from deepagents_code.client.remote_client import RemoteAgent, format_agent_exception
 from deepagents_code.model_retry import CodeModelRetryMiddleware
@@ -315,7 +317,10 @@ async def test_subagent_truncation_reaches_parent_without_aborting(
     with patch.object(GenericFakeChatModel, "bind_tools", return_value=model):
         graph = create_deep_agent(
             model,
-            middleware=[EmptyTruncatedReplyMiddleware()],
+            middleware=[
+                EmptyTruncatedReplyMiddleware(),
+                ToolErrorMiddleware(_format_task_error, tools=["task"]),
+            ],
             subagents=[
                 {
                     "name": "general-purpose",
@@ -342,6 +347,8 @@ async def test_subagent_truncation_reaches_parent_without_aborting(
     else:
         assert "stopped before replying" in task_result.text
         assert "output token limit" in task_result.text
+        assert "Retry, or raise the output token limit." in task_result.text
+        assert task_result.text.startswith("Subagent 'general-purpose' failed:")
         assert task_result.status == "error"
     assert result["messages"][-1].text == "Parent finished"
 

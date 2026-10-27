@@ -139,6 +139,7 @@ from deepagents_code.offload_middleware import (
 )
 from deepagents_code.output_truncation import (
     EmptyTruncatedReplyMiddleware,
+    ModelOutputTruncatedError,
     SubagentTruncatedReplyMiddleware,
 )
 from deepagents_code.plugins.adapters.skills_middleware import PluginSkillsMiddleware
@@ -166,6 +167,8 @@ def _format_task_error(error: Exception, request: ToolCallRequest) -> str | None
     subagent_type = request.tool_call.get("args", {}).get("subagent_type")
     subagent_name = subagent_type if isinstance(subagent_type, str) else "unknown"
     logger.debug("Subagent %r failed", subagent_name, exc_info=error)
+    if isinstance(error, ModelOutputTruncatedError):
+        return f"Subagent {subagent_name!r} failed: {error}"
     return f"Subagent {subagent_name!r} failed. You may retry this task."
 
 

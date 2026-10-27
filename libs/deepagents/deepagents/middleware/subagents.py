@@ -644,6 +644,23 @@ def _get_subagent_response_format(
     return value
 
 
+class _TaskTool(StructuredTool):
+    """`task` tool that lists its subagents for graph drawing; not `metadata`, which is traced."""
+
+    subagents: list[dict[str, Any]] = Field(default_factory=list, exclude=True)
+
+
+def _subagent_listing(subagents: Sequence[_SubAgentSpec]) -> list[dict[str, Any]]:
+    """List subagents in description order for `_TaskTool.subagents`."""
+    listing: list[dict[str, Any]] = []
+    for spec in subagents:
+        entry: dict[str, Any] = {"name": spec["name"], "description": spec["description"]}
+        if _is_forked_subagent(spec) or _is_forked_compiled_subagent(spec):
+            entry["forked"] = True
+        listing.append(entry)
+    return listing
+
+
 def _build_task_tool(  # noqa: C901, PLR0915
     subagents: Sequence[_SubAgentSpec],
     task_description: str | None = None,
@@ -690,13 +707,14 @@ def _build_task_tool(  # noqa: C901, PLR0915
         if not _is_forked_subagent(spec):
             return spec
         resolved = {key: value for key, value in spec.items() if key != "mode"}
-        fork_task_tool = StructuredTool.from_function(
+        fork_task_tool = _TaskTool.from_function(
             name="task",
             func=task,
             coroutine=atask,
             description=description,
             infer_schema=False,
             args_schema=TaskToolSchema,
+            subagents=_subagent_listing(subagents),
         )
         fork_middleware = list(spec.get("middleware", []))
         # The parent's `task` sits right after its filesystem tools; matching that
@@ -901,13 +919,14 @@ def _build_task_tool(  # noqa: C901, PLR0915
     # Build the graphs dict from the unified spec list
     subagent_graphs: dict[str, Runnable] = {spec["name"]: spec["runnable"] for spec in compiled_subagents}
 
-    return StructuredTool.from_function(
+    return _TaskTool.from_function(
         name="task",
         func=task,
         coroutine=atask,
         description=description,
         infer_schema=False,
         args_schema=TaskToolSchema,
+        subagents=_subagent_listing(subagents),
     )
 
 

@@ -31,6 +31,7 @@ from deepagents.middleware.subagents import (
     SUBAGENT_RESPONSE_FORMAT_CONFIG_KEY,
     SubAgentMiddleware,
     _build_task_tool,
+    _ForkTaskToolMiddleware,
     _is_forked_compiled_subagent,
     _is_forked_subagent,
     create_sub_agent,
@@ -751,6 +752,35 @@ class TestSubagentMiddlewareInit:
         task_description = middleware.tools[0].description or ""
 
         assert "inherits your full conversation and system prompt" in task_description
+
+    def test_task_tool_lists_subagents_for_graph_drawing(self) -> None:
+        with patch("deepagents.middleware.subagents._ForkTaskToolMiddleware", wraps=_ForkTaskToolMiddleware) as fork_middleware:
+            agent = create_deep_agent(
+                model=GenericFakeChatModel(messages=iter([AIMessage(content="done")])),
+                subagents=[
+                    {"name": "researcher", "description": "Researches.", "system_prompt": "Research."},
+                    {"name": "worker", "description": "Continues the current task.", "mode": "fork"},
+                    {
+                        "name": "graph",
+                        "description": "Runs a compiled graph.",
+                        "runnable": RunnableLambda(lambda _state: {"messages": [AIMessage(content="done")]}),
+                        "mode": "fork",
+                    },
+                ],
+            )
+
+        task_tool = agent.nodes["tools"].bound._tools_by_name["task"]
+        assert task_tool.subagents == [
+            {"name": "general-purpose", "description": GENERAL_PURPOSE_SUBAGENT["description"]},
+            {"name": "researcher", "description": "Researches."},
+            {"name": "worker", "description": "Continues the current task.", "forked": True},
+            {"name": "graph", "description": "Runs a compiled graph.", "forked": True},
+        ]
+        assert not task_tool.metadata
+        assert set(task_tool.args) == {"description", "subagent_type"}
+        assert "subagents" not in task_tool.model_dump()
+        fork_task_tool = fork_middleware.call_args.args[0]
+        assert fork_task_tool.subagents == task_tool.subagents
 
     def test_subagent_middleware_custom_system_prompt(self) -> None:
         """Test SubAgentMiddleware with a custom system prompt."""

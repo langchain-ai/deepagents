@@ -144,7 +144,7 @@ on:
         default: "3"
         type: string
       n_retries:
-        description: "Max retries per trial on transient failure (e.g. a LangSmith snapshot build error). 0 = no retries."
+        description: "Max retries per trial on setup failure (e.g. a LangSmith snapshot build or compose error). Agent exits, timeouts and missing rewards are never retried. 0 = no retries."
         required: true
         default: "0"
         type: string

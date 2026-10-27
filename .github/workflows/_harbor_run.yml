@@ -1011,6 +1011,14 @@ jobs:
           echo "Agent implementation: $HARBOR_AGENT_GRAPH"
           echo ""
 
+          # Retry setup failures only; retrying agent or verifier failures biases scores.
+          # RuntimeError also covers post-agent file transfers, which are infra failures too.
+          retry_args=(
+            --retry-include RuntimeError
+            --retry-include EnvironmentStartTimeoutError
+            --retry-include AgentSetupTimeoutError
+          )
+
           agent_model="$HARBOR_MODEL"
           case "$HARBOR_AGENT_IMPL" in
             codex|claude-code|pi) agent_model="${HARBOR_MODEL%%:*}/${HARBOR_MODEL#*:}" ;;
@@ -1023,6 +1031,7 @@ jobs:
             -n "$HARBOR_CONCURRENCY" \
             --n-attempts "$HARBOR_ROLLOUTS_PER_TASK" \
             --max-retries "$HARBOR_N_RETRIES" \
+            "${retry_args[@]}" \
             --agent-timeout-multiplier "$HARBOR_AGENT_TIMEOUT_MULTIPLIER" \
             --environment-build-timeout-multiplier "$HARBOR_ENV_BUILD_TIMEOUT_MULTIPLIER" \
             "${verification_flag[@]}" \
@@ -1103,7 +1112,7 @@ jobs:
               echo "- Included tasks: all"
             fi
             echo "- Rollouts per task: ${HARBOR_ROLLOUTS_PER_TASK}"
-            echo "- Configured retries per failed trial (--max-retries): ${HARBOR_N_RETRIES}"
+            echo "- Configured retries per setup-failed trial (--max-retries): ${HARBOR_N_RETRIES}"
             echo "- Agent timeout multiplier: ${HARBOR_AGENT_TIMEOUT_MULTIPLIER}"
             if [ "$SHARD_EMPTY" = "true" ]; then
               echo "- Actual retries: 0"

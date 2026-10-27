@@ -38,7 +38,7 @@ dependencies = [
     # Core model providers - others are added as optional
     "langchain-anthropic>=1.7.6,<2.0.0",
     "langchain-google-genai>=4.4.2,<5.0.0",
-    "langchain-openai>=1.7.2,<2.0.0",
+    "langchain-openai>=1.7.3,<2.0.0",
     # Require Pydantic 2.13+ explicitly to avoid Python 3.14 warnings from LangChain's v1 imports.
     "pydantic>=2.13.0,<3.0.0",
 
@@ -57,7 +57,7 @@ dependencies = [
     "markdownify>=1.2.3",
 
     # Sandbox integrations
-    "langsmith[sandbox]>=0.14.12",
+    "langsmith[sandbox]>=0.14.13",
 
     # Tools
     "tavily-python>=0.7.26",
@@ -124,7 +124,7 @@ nvidia = [
     "langchain-nvidia-ai-endpoints>=1.5.0,<2.0.0",
 ]
 ollama = ["langchain-ollama>=1.1.0,<2.0.0"]
-openai = ["langchain-openai>=1.7.2,<2.0.0"]
+openai = ["langchain-openai>=1.7.3,<2.0.0"]
 openrouter = ["langchain-openrouter>=0.2.9,<2.0.0"]
 perplexity = ["langchain-perplexity>=1.4.2,<2.0.0"]
 together = ["langchain-together>=0.4.0,<2.0.0"]

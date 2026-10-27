@@ -5260,9 +5260,9 @@ class TestCreateModelForwardsProviderProfile:
         )
         model = result.model
         assert isinstance(model, ChatOpenAI)
-        assert result.context_limit == 922_000
         assert result.unsupported_modalities == frozenset({"audio", "video"})
         assert model.profile is not None
+        assert result.context_limit == model.profile["max_input_tokens"]
         assert model.profile["max_output_tokens"] == 128_000
         bound = model.bind_tools([Decision], tool_choice="Decision")
         assert isinstance(bound, RunnableBinding)

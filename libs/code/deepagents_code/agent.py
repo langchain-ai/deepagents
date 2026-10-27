@@ -137,6 +137,11 @@ from deepagents_code.offload_middleware import (
     _create_cli_compaction_middleware,
     attach_offload_operation,
 )
+from deepagents_code.output_truncation import (
+    EmptyTruncatedReplyMiddleware,
+    ModelOutputTruncatedError,
+    SubagentTruncatedReplyMiddleware,
+)
 from deepagents_code.plugins.adapters.skills_middleware import PluginSkillsMiddleware
 from deepagents_code.project_utils import ProjectContext, get_server_project_context
 from deepagents_code.reliable_rubric import ReliableRubricMiddleware
@@ -162,6 +167,8 @@ def _format_task_error(error: Exception, request: ToolCallRequest) -> str | None
     subagent_type = request.tool_call.get("args", {}).get("subagent_type")
     subagent_name = subagent_type if isinstance(subagent_type, str) else "unknown"
     logger.debug("Subagent %r failed", subagent_name, exc_info=error)
+    if isinstance(error, ModelOutputTruncatedError):
+        return f"Subagent {subagent_name!r} failed: {error}"
     return f"Subagent {subagent_name!r} failed. You may retry this task."
 
 
@@ -2889,7 +2896,9 @@ def create_cli_agent(
         # Checkpoint nested spend before HITL can pause the subgraph, then hand
         # the completed delta back through owner-scoped state for the parent
         # graph to add to its durable total.
-        middleware.append(CostTrackingMiddleware(nested=True))
+        middleware.extend(
+            [CostTrackingMiddleware(nested=True), SubagentTruncatedReplyMiddleware()]
+        )
         # Interactive turns may legitimately be tool-free, so terminal-stall
         # recovery is installed only on headless stacks. The middleware itself
         # activates only for the measured Fireworks GLM-5.2 endpoint.
@@ -3059,6 +3068,12 @@ def create_cli_agent(
             environ=environment,
             model_result=model_result,
         ),
+        # Wrap every other model-call middleware. Inside model selection, the
+        # guard sees the resolved model for its error message. Outside GLM
+        # stall recovery, recovery still gets its one retry first. Outside
+        # `CodeModelRetryMiddleware`, the error is never retried. Outside
+        # `BtwOperation`, the side-question capture runs as before.
+        EmptyTruncatedReplyMiddleware(),
     ]
     if not interactive:
         agent_middleware.append(_GlmTerminalStallRecovery())

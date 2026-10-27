@@ -23,7 +23,6 @@ from langchain_core.tools.base import (
 )
 from langgraph.errors import GraphInterrupt
 from langgraph.prebuilt.tool_node import _get_all_injected_args
-from langgraph.types import Command
 from quickjs_rs import (
     UNDEFINED,
     ConcurrentEvalError,
@@ -56,7 +55,6 @@ from langchain_quickjs._subagent import (
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    from langchain_core.messages import ToolMessage
     from langchain_core.tools import BaseTool
     from langgraph.prebuilt import ToolRuntime
 
@@ -97,16 +95,6 @@ class EvalOutcome:
 
 class _SnapshotRestoreError(RuntimeError):
     """Raised when persisted state cannot be restored before evaluation."""
-
-    def to_command(self, message: ToolMessage) -> Command:
-        """Clear invalid checkpoint state alongside the evaluation result."""
-        return Command(
-            update={
-                "messages": [message],
-                "_quickjs_snapshot_payload": None,
-                "_quickjs_snapshot_hmac": None,
-            }
-        )
 
 
 class _PTCCallBudgetExceededError(RuntimeError):

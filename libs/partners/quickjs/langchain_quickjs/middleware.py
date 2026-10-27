@@ -321,6 +321,29 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
                 name=tool_name,
             )
 
+        def _restore_error_output(
+            exc: _SnapshotRestoreError, tool_call_id: str | None
+        ) -> Command:
+            return Command(
+                update={
+                    "messages": [
+                        _make_tool_output(
+                            EvalOutcome(
+                                error_type=type(exc).__name__,
+                                error_message=(
+                                    "Failed to restore JavaScript state; "
+                                    "saved state was cleared. "
+                                    "The requested code was not executed."
+                                ),
+                            ),
+                            tool_call_id,
+                        )
+                    ],
+                    "_quickjs_snapshot_payload": None,
+                    "_quickjs_snapshot_hmac": None,
+                }
+            )
+
         def sync_eval(
             runtime: ToolRuntime[None, Any],
             code: Annotated[str, code_doc],
@@ -335,12 +358,7 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
                     tools=middleware._tools_for_eval(slot_id),
                 )
             except _SnapshotRestoreError as exc:
-                outcome = repl.eval_sync(
-                    code,
-                    outer_runtime=runtime,
-                    tools=middleware._tools_for_eval(slot_id),
-                )
-                return exc.to_command(_make_tool_output(outcome, runtime.tool_call_id))
+                return _restore_error_output(exc, runtime.tool_call_id)
             finally:
                 if middleware._mode == "call":
                     middleware._registry.reset_repl(slot_id)
@@ -361,13 +379,7 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
                     outer_loop=asyncio.get_running_loop(),
                 )
             except _SnapshotRestoreError as exc:
-                outcome = await repl.eval_async(
-                    code,
-                    outer_runtime=runtime,
-                    tools=middleware._tools_for_eval(slot_id),
-                    outer_loop=asyncio.get_running_loop(),
-                )
-                return exc.to_command(_make_tool_output(outcome, runtime.tool_call_id))
+                return _restore_error_output(exc, runtime.tool_call_id)
             finally:
                 if middleware._mode == "call":
                     middleware._registry.reset_repl(slot_id)

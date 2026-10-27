@@ -125,15 +125,22 @@ async def test_restore_failure_is_deferred_until_eval(invoke_mode: str) -> None:
     )
     try:
         if invoke_mode == "ainvoke":
-            result = await mw.tools[0].ainvoke({"runtime": runtime, "code": "21 * 2"})
+            result = await mw.tools[0].ainvoke(
+                {"runtime": runtime, "code": "globalThis.executed = true"}
+            )
         else:
-            result = mw.tools[0].invoke({"runtime": runtime, "code": "21 * 2"})
+            result = mw.tools[0].invoke(
+                {"runtime": runtime, "code": "globalThis.executed = true"}
+            )
         from langgraph.types import Command
 
         assert isinstance(result, Command)
         assert result.update["_quickjs_snapshot_payload"] is None
         assert result.update["_quickjs_snapshot_hmac"] is None
-        assert result.update["messages"][0].content == "<result>42</result>"
+        assert "_SnapshotRestoreError" in result.update["messages"][0].content
+        assert "requested code was not executed" in result.update["messages"][0].content
+        repl = mw._registry.get(state["_quickjs_slot_id"])
+        assert repl.eval_sync("typeof executed").result == "undefined"
         update = mw.after_agent(state, MagicMock())
         restored = replay_snapshot_chain(
             state["_quickjs_snapshot_payload"], [update["_quickjs_snapshot_payload"]]
@@ -986,7 +993,7 @@ async def test_failed_restore_clears_checkpoint_before_agent_finishes(
         assert state.next
         assert not state.values["_quickjs_snapshot_payload"]
         assert state.values.get("_quickjs_snapshot_hmac") is None
-        assert state.values["messages"][-1].content == "<result>42</result>"
+        assert "requested code was not executed" in state.values["messages"][-1].content
     finally:
         middleware._registry.close()
 

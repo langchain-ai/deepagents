@@ -14475,6 +14475,7 @@ class DeepAgentsApp(App):
             LangSmithApiError,
             LangSmithImportError,
             LangSmithLookupTimeoutError,
+            LangSmithPermissionError,
             LangSmithProjectNotFoundError,
             _assemble_langsmith_thread_url,
             fetch_langsmith_project_url_or_raise,
@@ -14582,6 +14583,26 @@ class DeepAgentsApp(App):
                     f"{project_name!r} yet. The project is created automatically "
                     "the first time a run is traced — try `/trace` again after "
                     "your first message.",
+                ),
+            )
+            return
+        except LangSmithPermissionError as exc:
+            logger.warning(
+                "LangSmith API key cannot read projects; cannot resolve thread "
+                "URL for %s: %s",
+                thread_id,
+                exc,
+            )
+            from deepagents_code._env_vars import LANGSMITH_PROJECT_URL
+
+            await self._mount_message(UserMessage(command))
+            await self._mount_message(
+                AppMessage(
+                    "LangSmith denied the lookup of project "
+                    f"{project_name!r} (HTTP 403), so the thread URL cannot be "
+                    "resolved. The API key may lack project read access, or "
+                    "may not belong to this workspace. Set "
+                    f"`{LANGSMITH_PROJECT_URL}` to skip the lookup.",
                 ),
             )
             return

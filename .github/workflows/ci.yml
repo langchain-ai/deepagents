@@ -70,10 +70,14 @@ jobs:
       curated-apply-parent-sha: ${{ steps.curated-apply.outputs.parent-sha }}
       curated-apply-parent-check: ${{ steps.curated-apply.outputs.parent-check }}
     steps:
+      # On ordinary PRs paths-filter lists changed files through the API, so
+      # a shallow clone skips downloading full history (~370 MB of packs).
+      # Push and merge_group diff against git history, and release-please
+      # branches need the head's parent for the curated-apply check.
       - name: "📋 Checkout Code"
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          fetch-depth: 0
+          fetch-depth: ${{ (github.event_name == 'pull_request' && !startsWith(github.head_ref, 'release-please--')) && 1 || 0 }}
 
       - name: "📋 Checkout detector from trusted base ref"
         if: >-
@@ -352,6 +356,9 @@ jobs:
     with:
       working-directory: "libs/code"
       python-versions: '["3.14"]'
+      # The longest job on the critical path; `tests/unit_tests/conftest.py`
+      # reads `PYTEST_SHARD` and keeps a stable third of the tests per leg.
+      shards: '["1/3", "2/3", "3/3"]'
 
   test-talon:
     name: "🧪 Test deepagents-talon"

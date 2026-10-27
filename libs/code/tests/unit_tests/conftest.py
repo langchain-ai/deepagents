@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import os
 import tempfile
+import zlib
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
 import pytest
@@ -920,6 +921,27 @@ def wait_for_modal() -> WaitForModal:
         raise AssertionError(msg)
 
     return _wait
+
+
+def pytest_collection_modifyitems(
+    config: pytest.Config, items: list[pytest.Item]
+) -> None:
+    """Keep only this CI shard's tests when `PYTEST_SHARD` is `INDEX/TOTAL`.
+
+    Splitting by a stable hash of the node ID (not by file) spreads the large
+    `test_app.py` module evenly across runners.
+    """
+    shard = os.environ.get("PYTEST_SHARD", "")
+    if not shard or shard == "1/1":
+        return
+    index, total = (int(part) for part in shard.split("/"))
+    selected: list[pytest.Item] = []
+    deselected: list[pytest.Item] = []
+    for item in items:
+        bucket = zlib.crc32(item.nodeid.encode()) % total
+        (selected if bucket == index - 1 else deselected).append(item)
+    config.hook.pytest_deselected(items=deselected)
+    items[:] = selected
 
 
 @pytest.hookimpl(wrapper=True)

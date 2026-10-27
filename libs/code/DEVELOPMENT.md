@@ -115,40 +115,6 @@ When onboarding a new tracing project to Engine, capture the nature of that proj
 
 A server keeps the first workspace's tracing configuration for its lifetime. Workspaces sharing that server must use matching tracing credentials, projects, endpoints, profile selectors, tracing flags, and redaction policy. A conflicting workspace is refused before its settings can affect cached or concurrent runs; start a separate server for that workspace. Restart the server to change its tracing configuration.
 
-## Provider-native MCP tool search
-
-Native MCP tool discovery is enabled by default for supported models. Disable it
-through layered configuration, then `/reload`:
-
-```toml
-[models]
-provider_tool_search = false
-```
-
-Alternatively, set `DEEPAGENTS_CODE_PROVIDER_TOOL_SEARCH=false` before launch.
-Core coding tools remain immediately available. Only MCP tools exposed by the
-existing filters and skill policy are deferred; execution and approvals are unchanged.
-QuickJS retains its configured bindings but omits deferred schemas from its API reference.
-
-Supported direct `ChatOpenAI` models are `gpt-5.4`, `gpt-5.5`, `gpt-6-astra`,
-`gpt-6-sol`, `gpt-6-luna`, and `gpt-6.1-sol`. Supported direct `ChatAnthropic`
-models include Sonnet 4.5/4.6, Opus 4.5–4.8, Haiku 4.5, Sonnet/Opus/Haiku 5/5.5,
-and Fable/Mythos 5/5.1 (including dated IDs). These follow the providers'
-[OpenAI](https://developers.openai.com/api/docs/guides/tools-tool-search) and
-[Anthropic](https://platform.claude.com/docs/en/agents-and-tools/tool-use/tool-search-tool)
-tool-search compatibility documentation. Claude 4.0/4.1 use eager tools. OpenAI requires
-Responses; an explicit `use_responses_api=false` disables deferral. Other models,
-custom providers, and gateways fall back to eager tools with a debug-console warning,
-including after `/model` switches. This is a conservative integration scope, not
-proof that other endpoints lack native search. In particular, LangSmith gateway
-supports Responses and direct provider passthrough, but native search for
-`openai:gpt-6.1-sol` through that gateway has not been verified.
-
-Deferred schemas still travel in HTTP requests; the provider keeps them out of
-initial model context until discovery. No token-savings or time-to-first-token
-improvement is claimed without live measurements. Existing LangChain/provider
-minimums support the feature; no extra dependency is required.
-
 ## Idle context compaction
 
 Idle compaction is disabled by default. When enabled, the interactive client

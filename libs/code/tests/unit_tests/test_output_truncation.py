@@ -346,6 +346,79 @@ async def test_subagent_truncation_reaches_parent_without_aborting(
     assert result["messages"][-1].text == "Parent finished"
 
 
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("recovered", [False, True])
+@pytest.mark.filterwarnings("ignore:The feature `forked subagents` is in beta")
+async def test_forked_subagent_gets_glm_recovery_before_truncation_guard(
+    *, asynchronous: bool, recovered: bool
+) -> None:
+    from deepagents import create_deep_agent
+    from langchain_core.messages import ToolMessage
+
+    stalled = AIMessage(content="", response_metadata={"finish_reason": "length"})
+    model = GenericFakeChatModel(
+        messages=iter(
+            [
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "id": "task-1",
+                            "name": "task",
+                            "args": {
+                                "subagent_type": "general-purpose",
+                                "description": "Do the task",
+                            },
+                        }
+                    ],
+                ),
+                stalled,
+                AIMessage(content="Recovered findings") if recovered else stalled,
+                AIMessage(content="Parent finished"),
+            ]
+        )
+    )
+    with (
+        patch.object(GenericFakeChatModel, "bind_tools", return_value=model),
+        patch(
+            "deepagents_code._glm_5p2_profile._is_fireworks_glm_5p2_model",
+            return_value=True,
+        ),
+    ):
+        graph = create_deep_agent(
+            model,
+            middleware=[
+                EmptyTruncatedReplyMiddleware(),
+                _GlmTerminalStallRecovery(),
+                CodeModelRetryMiddleware(max_retries=0),
+            ],
+            subagents=[
+                {
+                    "name": "general-purpose",
+                    "description": "General-purpose subagent",
+                    "system_prompt": "Complete the task",
+                    "mode": "fork",
+                    "middleware": [
+                        SubagentTruncatedReplyMiddleware(),
+                        _GlmTerminalStallRecovery(),
+                        CodeModelRetryMiddleware(max_retries=0),
+                    ],
+                }
+            ],
+        )
+        inputs = {"messages": [HumanMessage(content="Delegate the task")]}
+        result = await graph.ainvoke(inputs) if asynchronous else graph.invoke(inputs)
+
+    task_result = next(m for m in result["messages"] if isinstance(m, ToolMessage))
+    if recovered:
+        assert task_result.content == "Recovered findings"
+        assert task_result.status == "success"
+    else:
+        assert "stopped before replying" in task_result.text
+        assert task_result.status == "error"
+    assert result["messages"][-1].text == "Parent finished"
+
+
 def test_zero_usage_does_not_blame_output_limit() -> None:
     """A zero-usage reply did not run out of output budget."""
     message = AIMessage(

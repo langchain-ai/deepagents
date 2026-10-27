@@ -398,6 +398,12 @@ class EmptyTruncatedReplyMiddleware(AgentMiddleware):
 class SubagentTruncatedReplyMiddleware(EmptyTruncatedReplyMiddleware):
     """Keep partial subagent answers and fail empty ones for the parent to handle."""
 
+    @property
+    @override
+    def name(self) -> str:
+        """Replace the inherited parent guard in place when merging fork middleware."""
+        return EmptyTruncatedReplyMiddleware.__name__
+
     @staticmethod
     def _check(response: ModelResponse, request: ModelRequest) -> None:
         EmptyTruncatedReplyMiddleware._check_empty(response, request)

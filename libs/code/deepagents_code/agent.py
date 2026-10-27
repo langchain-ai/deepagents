@@ -137,6 +137,7 @@ from deepagents_code.offload_middleware import (
     _create_cli_compaction_middleware,
     attach_offload_operation,
 )
+from deepagents_code.output_truncation import EmptyTruncatedReplyMiddleware
 from deepagents_code.plugins.adapters.skills_middleware import PluginSkillsMiddleware
 from deepagents_code.project_utils import ProjectContext, get_server_project_context
 from deepagents_code.reliable_rubric import ReliableRubricMiddleware
@@ -3046,6 +3047,12 @@ def create_cli_agent(
             environ=environment,
             model_result=model_result,
         ),
+        # Wrap every other model-call middleware. Inside model selection, the
+        # guard sees the resolved model for its error message. Outside GLM
+        # stall recovery, recovery still gets its one retry first. Outside
+        # `CodeModelRetryMiddleware`, the error is never retried. Outside
+        # `BtwOperation`, the side-question capture runs as before.
+        EmptyTruncatedReplyMiddleware(),
     ]
     if not interactive:
         agent_middleware.append(_GlmTerminalStallRecovery())

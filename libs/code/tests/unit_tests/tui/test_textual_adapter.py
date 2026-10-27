@@ -8168,6 +8168,104 @@ async def test_reasoning_streams_separately_and_collapses_before_answer() -> Non
     assert answer._content == "answer"
 
 
+class TestTruncatedReplyWarning:
+    """A reply cut off after some output keeps its output and gets a warning."""
+
+    @staticmethod
+    async def _run(*messages: Any) -> list[object]:
+        mount_message, mounted = _collect_mounts()
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+        await execute_task_textual(
+            user_input="hello",
+            agent=_FakeAgent([((), "messages", (m, {})) for m in messages]),
+            assistant_id="assistant",
+            session_state=_session_state(),
+            adapter=adapter,
+        )
+        return mounted
+
+    @staticmethod
+    def _warnings(mounted: list[object]) -> list[str]:
+        return [
+            str(widget._content)
+            for widget in mounted
+            if isinstance(widget, AppMessage) and "cut off" in str(widget._content)
+        ]
+
+    async def test_partial_reply_is_kept_and_warned_once(self) -> None:
+        from langchain_core.messages import AIMessageChunk
+
+        mounted = await self._run(
+            AIMessageChunk(content="Partial answer", id="m-1"),
+            AIMessageChunk(
+                content="",
+                id="m-1",
+                chunk_position="last",
+                response_metadata={"finish_reason": "length"},
+            ),
+        )
+
+        assert self._warnings(mounted) == [
+            "The reply was cut off: it reached its output token limit (length)."
+        ]
+        replies = [w for w in mounted if isinstance(w, AssistantMessage)]
+        assert len(replies) == 1
+        assert mounted.index(replies[0]) < mounted.index(
+            next(w for w in mounted if isinstance(w, AppMessage))
+        )
+
+    async def test_partial_tool_call_is_warned(self) -> None:
+        from langchain_core.messages import AIMessageChunk
+
+        mounted = await self._run(
+            AIMessageChunk(
+                content=[],
+                id="m-1",
+                tool_call_chunks=[
+                    {"name": "ls", "args": "{}", "id": "call-1", "index": 0}
+                ],
+                chunk_position="last",
+                response_metadata={"stop_reason": "max_tokens"},
+            ),
+        )
+
+        assert self._warnings(mounted) == [
+            "The reply was cut off: it reached its output token limit (max_tokens)."
+        ]
+
+    @pytest.mark.parametrize(
+        "message",
+        [
+            pytest.param(
+                {
+                    "content": [],
+                    "response_metadata": {
+                        "status": "incomplete",
+                        "incomplete_details": {"reason": "max_output_tokens"},
+                    },
+                },
+                id="empty-truncated-reply-is-a-server-error",
+            ),
+            pytest.param(
+                {"content": "Done.", "response_metadata": {"finish_reason": "stop"}},
+                id="normal-reply",
+            ),
+        ],
+    )
+    async def test_no_warning(self, message: dict[str, Any]) -> None:
+        from langchain_core.messages import AIMessageChunk
+
+        mounted = await self._run(
+            AIMessageChunk(id="m-1", chunk_position="last", **message)
+        )
+
+        assert self._warnings(mounted) == []
+
+
 class TestModelRetryLifecycleReconciliation:
     """Streamed model-attempt lifecycle and retry reconciliation in the TUI."""
 

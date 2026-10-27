@@ -33,10 +33,13 @@ def _supported_endpoint(endpoint: object, provider: str) -> bool:
     parsed = urlparse(str(endpoint))
     if parsed.hostname == f"api.{provider}.com":
         return True
+    paths = {"/v1", f"/{provider}/v1"}
+    if provider == "anthropic":
+        paths.add("/anthropic")
     return (
         parsed.scheme == "https"
         and is_langsmith_gateway_host(parsed.hostname)
-        and parsed.path.rstrip("/") in {"/v1", f"/{provider}/v1"}
+        and parsed.path.rstrip("/") in paths
     )
 
 

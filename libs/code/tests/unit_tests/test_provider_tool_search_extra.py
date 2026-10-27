@@ -51,7 +51,12 @@ def mcp_lookup(query: str) -> str:
     ],
 )
 @pytest.mark.parametrize(
-    "base_url", [None, "https://gateway.smith.langchain.com/anthropic/v1"]
+    "base_url",
+    [
+        None,
+        "https://gateway.smith.langchain.com/anthropic/v1",
+        "https://gateway.smith.langchain.com/anthropic",
+    ],
 )
 def test_anthropic_transport(
     model_name: str, base_url: str | None, *, deferred: bool
@@ -229,3 +234,46 @@ async def test_async_provider_request(model_name: str) -> None:
         await graph.ainvoke({"messages": [HumanMessage("hello")]})
     assert payloads[0]["tools"][0]["defer_loading"] is True
     assert payloads[0]["tools"][-1] == {"type": "tool_search"}
+
+
+def test_anthropic_gateway_environment_transport(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("LANGSMITH_GATEWAY", "true")
+    monkeypatch.setenv("LANGSMITH_GATEWAY_API_KEY", "fake")
+    monkeypatch.delenv("ANTHROPIC_API_URL", raising=False)
+    monkeypatch.delenv("ANTHROPIC_BASE_URL", raising=False)
+    payloads = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/anthropic/v1/messages"
+        payloads.append(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={
+                "id": "msg_gateway",
+                "type": "message",
+                "role": "assistant",
+                "model": "claude-sonnet-5-5",
+                "content": [{"type": "text", "text": "done"}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 10, "output_tokens": 1},
+            },
+        )
+
+    model = ChatAnthropic(model="claude-sonnet-5-5", max_tokens=128)
+    assert model.anthropic_api_url is not None
+    assert model.anthropic_api_url.rstrip("/").endswith("/anthropic")
+    model.__dict__["_client"] = anthropic.Anthropic(
+        api_key="fake",
+        base_url=model.anthropic_api_url,
+        http_client=httpx.Client(transport=httpx.MockTransport(handle)),
+    )
+    graph = create_agent(
+        model,
+        tools=[mcp_lookup],
+        middleware=[MCPProviderToolSearchMiddleware([mcp_lookup])],
+    )
+    graph.invoke({"messages": [HumanMessage("hello")]})
+    assert payloads[0]["tools"][0]["defer_loading"] is True
+    assert payloads[0]["tools"][-1]["type"] == "tool_search_tool_bm25_20251119"

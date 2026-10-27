@@ -94,7 +94,7 @@ Run these from `libs/` to fan out across packages:
 | Command | What it does |
 | --- | --- |
 | `make lint` | Lint every package |
-| `make format` | Fix text hygiene and validate YAML/TOML in files changed since `origin/main`, then format every package |
+| `make format` | Format every package |
 | `make lock` | Update all lockfiles |
 | `make lock-check` | Verify all lockfiles are up to date |
 | `make lock-bump DEP=<pkg>` | Bump one dependency across all lockfiles |

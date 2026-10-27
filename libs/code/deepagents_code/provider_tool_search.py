@@ -56,6 +56,9 @@ def _supported_provider(request: ModelRequest) -> str | None:
     from langchain_anthropic import ChatAnthropic
     from langchain_openai import ChatOpenAI
 
+    # Upstream profiles lack a native tool-search capability, and the middleware
+    # validates providers only. Keep model gates until upstream exposes one;
+    # profile.provider_tool_search overrides automatic detection in the meantime.
     if type(model) is ChatOpenAI:
         endpoint = getattr(model, "openai_api_base", None)
         if capability is not True and not _supported_endpoint(endpoint, "openai"):

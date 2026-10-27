@@ -6,6 +6,7 @@ from unittest.mock import MagicMock
 
 import anthropic
 import httpx
+import pytest
 from langchain.agents import create_agent
 from langchain.agents.middleware.types import AgentState, ModelRequest
 from langchain_anthropic import ChatAnthropic
@@ -23,7 +24,26 @@ def mcp_lookup(query: str) -> str:
     return query
 
 
-def test_anthropic_transport() -> None:
+@pytest.mark.filterwarnings(
+    "default:The model 'claude-(sonnet-4-20250514|opus-4-20250514|opus-4-1-20250805)' "
+    "is deprecated:DeprecationWarning"
+)
+@pytest.mark.parametrize(
+    ("model_name", "deferred"),
+    [
+        ("claude-sonnet-4-20250514", False),
+        ("claude-opus-4-20250514", False),
+        ("claude-opus-4-1-20250805", False),
+        ("claude-opus-4.1", False),
+        ("claude-sonnet-4-5", True),
+        ("claude-sonnet-4-5-20250929", True),
+        ("claude-opus-4-5-20251101", True),
+        ("claude-haiku-4-5-20251001", True),
+        ("claude-sonnet-4-6", True),
+        ("claude-opus-4.8", True),
+    ],
+)
+def test_anthropic_transport(model_name: str, *, deferred: bool) -> None:
     payloads = []
 
     def handle(request: httpx.Request) -> httpx.Response:
@@ -34,7 +54,7 @@ def test_anthropic_transport() -> None:
                 "id": "msg_1",
                 "type": "message",
                 "role": "assistant",
-                "model": "claude-sonnet-4-5",
+                "model": model_name,
                 "content": [{"type": "text", "text": "done"}],
                 "stop_reason": "end_turn",
                 "usage": {"input_tokens": 10, "output_tokens": 1},
@@ -42,7 +62,7 @@ def test_anthropic_transport() -> None:
         )
 
     model = ChatAnthropic(
-        model="claude-sonnet-4-5",
+        model=model_name,
         api_key="fake",
         max_tokens=128,
     )
@@ -55,8 +75,14 @@ def test_anthropic_transport() -> None:
         middleware=[MCPProviderToolSearchMiddleware([mcp_lookup])],
     )
     graph.invoke({"messages": [HumanMessage("hello")]})
-    assert payloads[0]["tools"][0]["defer_loading"] is True
-    assert payloads[0]["tools"][-1]["type"] == "tool_search_tool_bm25_20251119"
+    tools = payloads[0]["tools"]
+    if deferred:
+        assert tools[0]["defer_loading"] is True
+        assert tools[-1]["type"] == "tool_search_tool_bm25_20251119"
+    else:
+        assert len(tools) == 1
+        assert not tools[0].get("defer_loading")
+        assert tools[0]["name"] == "mcp_lookup"
 
 
 def test_quickjs_bindings_without_schema_reference() -> None:

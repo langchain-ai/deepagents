@@ -131,7 +131,8 @@ existing filters and skill policy are deferred; execution and approvals are unch
 QuickJS retains its configured bindings but omits deferred schemas from its API reference.
 
 The initial compatibility scope is direct `ChatOpenAI` with `gpt-5.4` or `gpt-5.5`
-and direct `ChatAnthropic` with Claude Sonnet/Opus 4.x or Haiku 4.5. OpenAI requires
+and direct `ChatAnthropic` with Claude Sonnet 4.5/4.6, Opus 4.5–4.8, or Haiku 4.5
+(including dated IDs). Claude 4.0/4.1 use eager tools. OpenAI requires
 Responses; an explicit `use_responses_api=false` disables deferral. Other models,
 custom providers, and gateways fall back to eager tools with a debug-console warning,
 including after `/model` switches. This is a conservative integration scope, not

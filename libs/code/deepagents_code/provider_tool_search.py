@@ -48,8 +48,10 @@ def _supported_provider(request: ModelRequest) -> str | None:
         endpoint = getattr(model, "anthropic_api_url", None)
         if endpoint and urlparse(str(endpoint)).hostname != "api.anthropic.com":
             return None
-        if re.match(r"^claude-(?:sonnet|opus)-4(?:[.-]|$)", name) or re.match(
-            r"^claude-haiku-4[.-]5(?:-|$)", name
+        if re.fullmatch(
+            r"claude-(?:sonnet-4[.-][56]|opus-4[.-][5-8]|haiku-4[.-]5)"
+            r"(?:-\d{8})?",
+            name,
         ):
             return "anthropic"
     return None

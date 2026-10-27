@@ -77,12 +77,15 @@ lint: ## Lint all packages
 	done
 	@echo "✅ All packages linted!"
 
-format: hygiene ## Check text hygiene, then format all packages
+format: ## Check text hygiene, then format all packages
 	@set -e; \
+	status=0; \
+	$(MAKE) hygiene || status=$$?; \
 	for dir in $(LIB_PACKAGE_DIRS); do \
 		echo "🎨 Formatting $$dir"; \
 		$(MAKE) -C "$$dir" format; \
-	done
+	done; \
+	exit $$status
 	@echo "✅ All packages formatted!"
 
 bench-all: ## Run benchmarks across all benched packages

@@ -775,11 +775,35 @@ function writeJson(file, value) {
   fs.writeFileSync(file, `${JSON.stringify(value, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
 }
 
-async function prepareDraft({ github, owner, repo, number, expectedHead, runnerTemp, instructions = '' }) {
+async function draftWithRetries({ github, owner, repo, number, expectedHead, component, version, runnerTemp, instructions = '', draft, core, ...bot }) {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const pr = await getPr(github, owner, repo, number);
+    const target = releaseTarget(pr);
+    if (!target || pr.draft || target.component !== component || target.version !== version) {
+      throw new Error('Release PR is no longer ready for the same release; re-run the draft command');
+    }
+    const head = attempt === 0 ? expectedHead : pr.head.sha;
+    try {
+      const files = await prepareDraft({ github, owner, repo, number, expectedHead: head, component, version, runnerTemp, instructions });
+      await draft(files);
+      return await postDraft({ github, owner, repo, stateFile: files.state, outputFile: files.output, core, ...bot });
+    } catch (error) {
+      if (error.code !== 'RELEASE_HEAD_CHANGED' || attempt === 2) throw error;
+      core.info(`Release PR head changed; regenerating notes (retry ${attempt + 1}/2)`);
+    }
+  }
+}
+
+async function prepareDraft({ github, owner, repo, number, expectedHead, component, version: expectedVersion, runnerTemp, instructions = '' }) {
   const pr = await getPr(github, owner, repo, number);
   const target = releaseTarget(pr);
-  if (!target || pr.draft || pr.head.sha !== expectedHead || !pr.base?.sha) {
+  if (!target || pr.draft || !pr.base?.sha ||
+      (component !== undefined && target.component !== component) ||
+      (expectedVersion !== undefined && target.version !== expectedVersion)) {
     throw new Error('Release PR changed before drafting started; re-run the draft command');
+  }
+  if (pr.head.sha !== expectedHead) {
+    throw Object.assign(new Error('Release PR head changed before drafting started'), { code: 'RELEASE_HEAD_CHANGED' });
   }
   const version = target.version;
   const changelog = await fetchChangelog(github, owner, repo, pr.head.sha, target.changelogPath);
@@ -851,11 +875,13 @@ async function postDraft({ github, owner, repo, stateFile, outputFile, appSlug, 
   if (
     !target ||
     pr.draft ||
-    pr.head.sha !== state.head ||
     target.component !== state.component ||
     target.version !== state.version
   ) {
     throw new Error('Release PR changed while notes were being drafted; re-run the draft command');
+  }
+  if (pr.head.sha !== state.head) {
+    throw Object.assign(new Error('Release PR changed while notes were being drafted; re-run the draft command'), { code: 'RELEASE_HEAD_CHANGED' });
   }
   const notes = validateDraftOutput(fs.readFileSync(outputFile, 'utf8'));
   const section = `${state.heading}\n\n${notes.trim()}\n`;
@@ -1542,6 +1568,7 @@ module.exports = {
   completeCommand,
   createApplyCommit,
   exactSha256,
+  draftWithRetries,
   extractPreviewSection,
   extractVersionSection,
   instructionsFromComment,

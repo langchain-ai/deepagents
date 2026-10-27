@@ -14915,6 +14915,39 @@ class TestToolsSlashCommand:
         assert "notion" in rendered
         assert "Login required" in rendered
 
+    def test_render_mcp_tool_counts(self) -> None:
+        from deepagents_code.mcp_tools import MCPServerInfo, MCPToolInfo
+        from deepagents_code.tool_catalog import (
+            ToolEntry,
+            build_catalog_from_server_info,
+        )
+
+        catalog = build_catalog_from_server_info(
+            [ToolEntry(name="read_file", description="Read a file")],
+            [
+                MCPServerInfo(
+                    name="docs",
+                    transport="http",
+                    tools=(
+                        MCPToolInfo(name="search_docs", description="Search docs"),
+                        MCPToolInfo(name="fetch_docs", description="Fetch docs"),
+                    ),
+                    status="ok",
+                ),
+                MCPServerInfo(
+                    name="[i]github",
+                    transport="http",
+                    tools=(MCPToolInfo(name="list_issues", description="List issues"),),
+                    status="ok",
+                ),
+            ],
+        )
+        rendered = self._display(DeepAgentsApp._render_tool_catalog(catalog))
+        assert "4 tools available" in rendered
+        assert "docs (2)" in rendered
+        assert "[i]github (1)" in rendered
+        assert "Built-in (1)" not in rendered
+
     def test_render_escapes_markup(self) -> None:
         from deepagents_code.mcp_tools import MCPServerInfo, MCPToolInfo
         from deepagents_code.tool_catalog import (

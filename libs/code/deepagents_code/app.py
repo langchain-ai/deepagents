@@ -15007,7 +15007,8 @@ class DeepAgentsApp(App):
         for group in catalog.groups:
             if not group.tools:
                 continue
-            blocks.append(f"### {_escape_markdown(group.label)}")
+            count = f" ({len(group.tools)})" if group.source == "mcp" else ""
+            blocks.append(f"### {_escape_markdown(group.label)}{count}")
             if group.source == "mcp":
                 has_mcp_tools = True
                 blocks.append(

@@ -24,8 +24,24 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _supported_endpoint(endpoint: object, provider: str) -> bool:
+    """Return whether the endpoint exposes the provider's native request format."""
+    if not endpoint:
+        return True
+    from deepagents_code.model_config import is_langsmith_gateway_host
+
+    parsed = urlparse(str(endpoint))
+    if parsed.hostname == f"api.{provider}.com":
+        return True
+    return (
+        parsed.scheme == "https"
+        and is_langsmith_gateway_host(parsed.hostname)
+        and parsed.path.rstrip("/") in {"/v1", f"/{provider}/v1"}
+    )
+
+
 def _supported_provider(request: ModelRequest) -> str | None:
-    """Return a verified direct provider, never infer gateway capabilities."""
+    """Return a supported provider on direct or LangSmith native-format routes."""
     model = request.model
     name = getattr(model, "model_name", None) or getattr(model, "model", "")
     if not isinstance(name, str):
@@ -35,13 +51,15 @@ def _supported_provider(request: ModelRequest) -> str | None:
 
     if type(model) is ChatOpenAI:
         endpoint = getattr(model, "openai_api_base", None)
-        if endpoint and urlparse(str(endpoint)).hostname != "api.openai.com":
+        if not _supported_endpoint(endpoint, "openai"):
             return None
         if (
             model.use_responses_api is False
             or request.model_settings.get("use_responses_api") is False
         ):
             return None
+        if name.startswith("openai/"):
+            name = name.removeprefix("openai/")
         if name in {
             "gpt-5.4",
             "gpt-5.5",
@@ -53,8 +71,10 @@ def _supported_provider(request: ModelRequest) -> str | None:
             return "openai"
     if type(model) is ChatAnthropic:
         endpoint = getattr(model, "anthropic_api_url", None)
-        if endpoint and urlparse(str(endpoint)).hostname != "api.anthropic.com":
+        if not _supported_endpoint(endpoint, "anthropic"):
             return None
+        if name.startswith("anthropic/"):
+            name = name.removeprefix("anthropic/")
         if re.fullmatch(
             r"claude-(?:sonnet-4[.-][56]|opus-4[.-][5-8]|haiku-4[.-]5|"
             r"(?:sonnet|opus|haiku)-5(?:[.-]5)?|(?:fable|mythos)-5(?:[.-]1)?)"
@@ -146,7 +166,8 @@ class MCPProviderToolSearchMiddleware(AgentMiddleware):
             if key not in self._warned:
                 logger.warning(
                     "Native MCP tool search is unavailable for %s; using eager tools. "
-                    "Custom endpoints/gateways require verified native support.",
+                    "Use supported models with OpenAI Responses or Anthropic Messages "
+                    "on a direct endpoint or LangSmith gateway.",
                     key,
                 )
                 self._warned.add(key)

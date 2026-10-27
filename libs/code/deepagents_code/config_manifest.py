@@ -2703,8 +2703,8 @@ _STATIC_OPTIONS: tuple[ConfigOption[object], ...] = (
         key="models.provider_tool_search",
         group="Tools",
         summary=(
-            "Use provider-native MCP tool discovery on supported direct "
-            "OpenAI/Anthropic models; unsupported models and gateways use eager tools."
+            "Use provider-native MCP tool discovery on supported OpenAI/Anthropic "
+            "models, directly or through LangSmith gateway; other routes stay eager."
         ),
         kind=OptionKind.BOOL,
         default=True,

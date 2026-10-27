@@ -50,7 +50,12 @@ def mcp_lookup(query: str) -> str:
         ("claude-mythos-5-1", True),
     ],
 )
-def test_anthropic_transport(model_name: str, *, deferred: bool) -> None:
+@pytest.mark.parametrize(
+    "base_url", [None, "https://gateway.smith.langchain.com/anthropic/v1"]
+)
+def test_anthropic_transport(
+    model_name: str, base_url: str | None, *, deferred: bool
+) -> None:
     payloads = []
 
     def handle(request: httpx.Request) -> httpx.Response:
@@ -70,6 +75,7 @@ def test_anthropic_transport(model_name: str, *, deferred: bool) -> None:
 
     model = ChatAnthropic(
         model=model_name,
+        base_url=base_url,
         api_key="fake",
         max_tokens=128,
     )
@@ -116,7 +122,10 @@ def test_quickjs_bindings_without_schema_reference() -> None:
     assert "REMOTE_SCHEMA_SENTINEL" in eager_prompt
 
 
-def test_openai_search_stream_roundtrip() -> None:
+@pytest.mark.parametrize(
+    "base_url", [None, "https://gateway.smith.langchain.com/openai/v1"]
+)
+def test_openai_search_stream_roundtrip(base_url: str | None) -> None:
     item = {
         "type": "tool_search_call",
         "id": "ts_1",
@@ -163,7 +172,8 @@ def test_openai_search_stream_roundtrip() -> None:
         )
 
     model = ChatOpenAI(
-        model="gpt-5.4",
+        model="gpt-6.1-sol",
+        base_url=base_url,
         api_key="fake",
         output_version="responses/v1",
         http_client=httpx.Client(transport=httpx.MockTransport(handle)),

@@ -59,7 +59,13 @@ def text_output() -> list[dict]:
     ]
 
 
-def model_with_transport(payloads: list[dict], outputs: list[list[dict]]) -> ChatOpenAI:
+def model_with_transport(
+    payloads: list[dict],
+    outputs: list[list[dict]],
+    *,
+    base_url: str | None = None,
+    model_name: str = "gpt-5.4",
+) -> ChatOpenAI:
     def handle(request: httpx.Request) -> httpx.Response:
         payloads.append(json.loads(request.content))
         body = response(outputs.pop(0))
@@ -67,13 +73,24 @@ def model_with_transport(payloads: list[dict], outputs: list[list[dict]]) -> Cha
         return httpx.Response(200, json=body)
 
     return ChatOpenAI(
-        model="gpt-5.4",
+        model=model_name,
+        base_url=base_url,
         api_key="fake",
         http_client=httpx.Client(transport=httpx.MockTransport(handle)),
     )
 
 
-def test_serialization_execution_approval_and_resume() -> None:
+@pytest.mark.parametrize(
+    ("base_url", "model_name"),
+    [
+        (None, "gpt-5.4"),
+        ("https://gateway.smith.langchain.com/openai/v1", "gpt-6.1-sol"),
+        ("https://gateway.smith.langchain.com/v1", "openai/gpt-6.1-sol"),
+    ],
+)
+def test_serialization_execution_approval_and_resume(
+    base_url: str | None, model_name: str
+) -> None:
     payloads: list[dict] = []
     search = [
         {
@@ -99,7 +116,12 @@ def test_serialization_execution_approval_and_resume() -> None:
             "status": "completed",
         },
     ]
-    model = model_with_transport(payloads, [search, text_output(), text_output()])
+    model = model_with_transport(
+        payloads,
+        [search, text_output(), text_output()],
+        base_url=base_url,
+        model_name=model_name,
+    )
     saver = InMemorySaver()
     graph = create_agent(
         model,
@@ -150,8 +172,21 @@ def test_serialization_execution_approval_and_resume() -> None:
         {
             "model": "gpt-5.4",
             "base_url": "https://gateway.smith.langchain.com/openai/v1",
+            "use_responses_api": False,
         },
         {"model": "gpt-5.4", "use_responses_api": False},
+        {
+            "model": "google/gemini-3-pro",
+            "base_url": "https://gateway.smith.langchain.com/v1",
+        },
+        {
+            "model": "gpt-6.1-sol",
+            "base_url": "https://gateway.smith.langchain.com/google/v1",
+        },
+        {
+            "model": "gpt-6.1-sol",
+            "base_url": "https://gateway.smith.langchain.com.evil.example/openai/v1",
+        },
     ],
 )
 def test_unsupported_requests_remain_eager(kwargs: dict) -> None:

@@ -4,10 +4,9 @@
 
 ## [0.3.11](https://github.com/langchain-ai/deepagents/compare/langchain-quickjs==0.3.10...langchain-quickjs==0.3.11) (2026-10-27)
 
-
 ### Bug Fixes
 
-* **quickjs:** defer runtime initialization until evaluation ([#7301](https://github.com/langchain-ai/deepagents/issues/7301)) ([12b4a78](https://github.com/langchain-ai/deepagents/commit/12b4a7801981e6edcc928da158dcb872a870a447))
+- Defer QuickJS runtime initialization until evaluation ([#7301](https://github.com/langchain-ai/deepagents/pull/7301)).
 
 ## [0.3.10](https://github.com/langchain-ai/deepagents/compare/langchain-quickjs==0.3.9...langchain-quickjs==0.3.10) (2026-10-26)
 

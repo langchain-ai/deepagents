@@ -486,6 +486,9 @@ Set to a truthy value to bring the standalone integrations screen back into the
 flow. Parsed by `is_env_truthy`: accepts `1`, `true`, `yes`, `on` as enabled.
 """
 
+PROVIDER_TOOL_SEARCH = "DEEPAGENTS_CODE_PROVIDER_TOOL_SEARCH"
+"""Toggle native MCP tool discovery on verified endpoints (defaults to on)."""
+
 OPENAI_PROMPT_CACHE_KEY = "DEEPAGENTS_CODE_OPENAI_PROMPT_CACHE_KEY"
 """Toggle injecting a per-thread OpenAI `prompt_cache_key` (defaults to on).
 

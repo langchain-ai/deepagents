@@ -2772,6 +2772,17 @@ def create_cli_agent(
     ):
         extension_registry = None
     mcp_tools = tuple(mcp_tools or ())
+    from deepagents_code.config_manifest import get_option
+    from deepagents_code.configuration.resolver import get_config_resolver
+    from deepagents_code.provider_tool_search import MCPProviderToolSearchMiddleware
+
+    search_option = get_option("models.provider_tool_search")
+    provider_tool_search = bool(
+        search_option
+        and get_config_resolver()
+        .resolve_options((search_option,))[search_option.key]
+        .value
+    )
     skill_tools = tuple(
         item
         for item in mcp_tools
@@ -2930,6 +2941,8 @@ def create_cli_agent(
                     tools=skill_tools,
                 ),
             )
+        if provider_tool_search and mcp_tools:
+            middleware.append(MCPProviderToolSearchMiddleware(mcp_tools))
         return middleware
 
     from deepagents_code._cli_context import INHERIT_CLASSIFIER_MODEL
@@ -3182,6 +3195,9 @@ def create_cli_agent(
         backend = sandbox  # Remote sandbox (ModalSandbox, etc.)
         # Note: Shell middleware not used in sandbox mode
         # File operations and execute tool are provided by the sandbox backend
+
+    if provider_tool_search and mcp_tools:
+        agent_middleware.append(MCPProviderToolSearchMiddleware(mcp_tools))
 
     if enable_interpreter:
         if sandbox is not None:

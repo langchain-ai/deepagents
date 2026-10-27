@@ -1012,11 +1012,14 @@ jobs:
           echo ""
 
           # Retry setup failures only; retrying agent or verifier failures biases scores.
+          # Harbor matches exact class names, so subclasses must be listed.
           # RuntimeError also covers post-agent file transfers, which are infra failures too.
           retry_args=(
             --retry-include RuntimeError
             --retry-include EnvironmentStartTimeoutError
             --retry-include AgentSetupTimeoutError
+            --retry-include ResourceCreationError
+            --retry-include SandboxAPIError
           )
 
           agent_model="$HARBOR_MODEL"

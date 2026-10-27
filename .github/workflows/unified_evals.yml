@@ -34,7 +34,7 @@ on:
         type: string
         default: "3"
       n_retries:
-        description: "Maximum additional attempts per trial after a setup failure (RuntimeError, EnvironmentStartTimeoutError, AgentSetupTimeoutError). Agent exits, timeouts and missing rewards are never retried."
+        description: "Maximum additional attempts per trial after a setup failure (e.g. sandbox creation, compose or agent install errors). Agent exits, timeouts and missing rewards are never retried."
         type: string
         default: "0"
       agent_timeout_multiplier:

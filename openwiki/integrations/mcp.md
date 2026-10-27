@@ -4,69 +4,29 @@ title: MCP Integration
 description: How dcode discovers, validates, loads, and cleans up Model Context Protocol servers, with explicit-config startup errors, isolated server failures, tool adaptation, and OAuth lifecycle. It also contrasts Talon's separate operator-selected MCP model.
 tags: [mcp, dcode, talon, oauth, configuration, trust, security, tools]
 sources:
-  - id: openwiki-source-05106e66a949150d557266a2
-    resource: repo://libs/code/deepagents_code/agent.py
-  - id: openwiki-source-cf199a6eaab544ebe004462c
-    resource: repo://libs/code/deepagents_code/client/commands/mcp.py
-  - id: openwiki-source-b9ef532d79a0667acf40e58b
-    resource: repo://libs/code/deepagents_code/client/launch/server_manager.py
   - id: openwiki-source-2fb89d2b59c886d0cb3ee3ea
     resource: repo://libs/code/deepagents_code/config_manifest.py
-  - id: openwiki-source-a97cce048cd7efd394ae7dca
-    resource: repo://libs/code/deepagents_code/mcp_auth.py
+  - id: openwiki-source-7f6b98925b5f1ba065df3a04
+    resource: repo://libs/code/deepagents_code/config.py
   - id: openwiki-source-216ca680d81dc35eb4d3e76e
     resource: repo://libs/code/deepagents_code/mcp_config.py
   - id: openwiki-source-20b5bbd05beabea1df7e2b53
     resource: repo://libs/code/deepagents_code/mcp_disabled.py
-  - id: openwiki-source-71cf5dd9cb185a031e8f6442
-    resource: repo://libs/code/deepagents_code/mcp_login_service.py
-  - id: openwiki-source-e59c3d25feac176713c41be3
-    resource: repo://libs/code/deepagents_code/mcp_middleware.py
-  - id: openwiki-source-beed8c79cb357e3d2be2cf07
-    resource: repo://libs/code/deepagents_code/mcp_oauth_ui.py
-  - id: openwiki-source-194d9c737d0182fc36d95ad7
-    resource: repo://libs/code/deepagents_code/mcp_providers/_registry.py
-  - id: openwiki-source-aff61f232b14ca8357b65d1d
-    resource: repo://libs/code/deepagents_code/mcp_providers/base.py
-  - id: openwiki-source-6965904fdd8bf5439f5f9ea7
-    resource: repo://libs/code/deepagents_code/mcp_proxy.py
   - id: openwiki-source-f6d553e7afdf54acac36e7d3
     resource: repo://libs/code/deepagents_code/mcp_tools.py
   - id: openwiki-source-4a7b6def251b42596a410ebc
     resource: repo://libs/code/deepagents_code/model_config.py
   - id: openwiki-source-a9eb680bb6bdae179f52a3ac
     resource: repo://libs/code/deepagents_code/server_graph.py
-  - id: openwiki-source-3300d75e0c132882e2e3b4ce
-    resource: repo://libs/code/deepagents_code/tool_catalog.py
-  - id: openwiki-source-c899e0edba5a620390e98cb1
-    resource: repo://libs/code/deepagents_code/tui/widgets/mcp_login.py
-  - id: openwiki-source-aad6a47bab3ae4304630d3c9
-    resource: repo://libs/code/deepagents_code/tui/widgets/mcp_viewer.py
-  - id: openwiki-source-cbc51c5482225638bedb76c9
-    resource: repo://libs/code/tests/unit_tests/test_agent_mcp_timeout.py
-  - id: openwiki-source-26017a12b2a7ce9851b888a4
-    resource: repo://libs/code/tests/unit_tests/test_mcp_auth.py
-  - id: openwiki-source-6fafd399a848bd81dad433e6
-    resource: repo://libs/code/tests/unit_tests/test_mcp_config.py
-  - id: openwiki-source-07907fdeb54ce7ca01b238f2
-    resource: repo://libs/code/tests/unit_tests/test_mcp_middleware.py
-  - id: openwiki-source-1ce25590f75ba42bdd04fce2
-    resource: repo://libs/code/tests/unit_tests/test_mcp_tools.py
-  - id: openwiki-source-31e40ff79779f51cafd03f01
-    resource: repo://libs/talon/deepagents_talon/mcp_auth.py
-  - id: openwiki-source-111101dcd1462ff54277b1fc
-    resource: repo://libs/talon/deepagents_talon/mcp_config.py
-  - id: openwiki-source-82cac27adeecff8a900a40fa
-    resource: repo://libs/talon/deepagents_talon/mcp.py
+generated: { by: "openwiki/0.4.2", at: "2026-10-27T08:05:40.296Z" }
 verified:
   - by: openwiki/0.4.2
-    at: 2026-10-24T08:05:08.866Z
-generated: { by: "openwiki/0.4.2", at: "2026-10-24T08:05:08.866Z" }
+    at: 2026-10-27T08:05:40.296Z
 ---
 
 # MCP Integration
 
-MCP configuration is executable integration input: a stdio entry starts a local command, while a remote entry may interpolate values into a URL or headers. dcode therefore separates configuration discovery and project trust, disabled-server policy, connection lifecycle, OAuth login, and tool-call failure handling. An explicit configuration is operator-selected; it does not make a repository configuration self-authorizing.
+MCP configuration is executable integration input: a stdio entry starts a local command, while a remote entry may interpolate values into a URL or headers. dcode therefore separates configuration discovery and project trust, disabled-server policy, environment construction, connection lifecycle, OAuth login, and tool-call failure handling. An explicit configuration is operator-selected; it does not make a repository configuration self-authorizing.
 
 ## Discovery, precedence, and trust
 
@@ -95,6 +55,14 @@ This flow distinguishes an operator-selected explicit file, which is validated b
 The separate `[mcp].disabled_servers` store persists names in user configuration. A name disables every same-named winning definition and is filtered before connection, though metadata keeps it visible in the UI. User and managed denies are combined; an unreadable managed deny policy disables all servers rather than allowing an uncertain configuration.
 
 For the client/server launch path, `_preflight_validate_mcp_config()` calls `load_mcp_config()` before environment serialization, workspace scaffolding, or `langgraph dev` startup. It preserves `MCPConfigError`, maps a missing file and JSON/shape `ValueError` or `TypeError` to a path-bearing `MCPConfigError`, and deliberately does not relabel an unrelated `RuntimeError` as configuration input. `no_mcp` or no explicit path bypasses this preflight. The child graph repeats the normal explicit load; preflight improves the error reported to the operator rather than changing configuration authority.
+
+## Environment inputs and project dotenv restrictions
+
+MCP interpolation reads dcode's active environment, which can be a construction-scoped immutable snapshot rather than the process-global `os.environ`. This lets server construction use the environment selected for its workspace while keeping that selection local to the construction context.
+
+A repository `.env` is deliberately not a project-MCP trust channel. Project dotenv discovery starts at the workspace and walks upward, and is enabled by default. `startup.read_project_dotenv` can disable only that project file; its precedence is managed policy, process environment, trusted global `~/.deepagents/.env`, `config.toml`, then the default. The toggle itself cannot be injected by either dotenv file. If the global dotenv cannot be read while it could have contained the user's opt-out, dcode skips the project dotenv rather than assuming permission to load it.
+
+Values from a project `.env` can supply ordinary configuration inputs, including values referenced by an MCP definition, but they cannot inject process-execution keys such as `PATH`, dynamic-loader settings, interpreter startup/path settings, shell hooks, or Git configuration injection. They also cannot set the project-MCP allow/deny environment policy, MCP tool timeout, extension trust, auto-classifier controls, or other user-level capability and approval decisions. Those restrictions prevent a cloned repository from pairing `.env` with `.mcp.json` to self-approve a command, SSRF target, or interpolated header. Shell exports and the trusted global dotenv remain eligible sources where the relevant option allows them.
 
 ## Activation, connection, and status
 
@@ -205,7 +173,7 @@ For dcode, use `--no-mcp` to suppress all MCP loading, `--mcp-config PATH` to se
 
 For Talon, set `DEEPAGENTS_TALON_MCP_CONFIG` to select the single JSON configuration (otherwise use `~/.deepagents/.mcp.json`), inspect it through the management tool where available, and use `deepagents-talon mcp login <server>` for a remote OAuth flow. Treat a configuration change as a capability change: schedule or force reload, then verify it through Talon's agent-tool/status capabilities before relying on it.
 
-Focused dcode tests cover environment expansion including Slack OAuth credential validation, token-file isolation, privacy, expiry, atomic/off-event-loop persistence, and refresh-state restoration. They also cover per-server load isolation, argument normalization, configured timeout output, cancellation propagation, reauthentication conversion, no-replay disconnect recovery, and timeout propagation through custom, general-purpose, and forked delegated agents. Talon's MCP tests cover configuration validation and redaction, revision conflicts and approval-sensitive updates, isolated server load failures, reload scheduling, tool filtering, OAuth status/login, and credential persistence.
+Focused dcode tests cover environment expansion (including immutable input and Slack OAuth credential validation), token-file isolation, privacy, expiry, atomic/off-event-loop persistence, and refresh-state restoration. Configuration tests should also cover the project-dotenv deny lists and the `startup.read_project_dotenv` fail-closed path, because a regression there can turn repository content into MCP trust or process-execution input. Runtime tests cover per-server load isolation, argument normalization, configured timeout output, cancellation propagation, reauthentication conversion, no-replay disconnect recovery, and timeout propagation through custom, general-purpose, and forked delegated agents. Talon's MCP tests cover configuration validation and redaction, revision conflicts and approval-sensitive updates, isolated server load failures, reload scheduling, tool filtering, OAuth status/login, and credential persistence.
 
 ## Related pages
 

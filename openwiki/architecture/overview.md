@@ -1,11 +1,10 @@
 ---
-type: system architecture
-title: Repository Architecture Overview
-description: Architecture and dependency map for the Deep Agents Python monorepo, including independently released distributions, dcode packaging, local uv sources, and lockfile fan-out. Distinguishes runtime ownership from wheel metadata and checkout-only development wiring.
-tags: [architecture, deepagents, dcode, dependencies, releases, uv, lockfiles]
+type: "Reference"
+title: "Repository Architecture Overview"
+openwiki_generated: true
 verified:
   - by: openwiki/0.4.2
-    at: 2026-10-26T08:11:58.203Z
+    at: 2026-10-27T08:05:40.296Z
 sources:
   - id: openwiki-source-9a1c436646ef8c4f6dde787a
     resource: repo://.github/RELEASING.md
@@ -45,37 +44,39 @@ sources:
     resource: repo://README.md
   - id: openwiki-source-482fa4ca84f42b04ba025fc1
     resource: repo://release-please-config.json
-generated: { by: "openwiki/0.4.2", at: "2026-10-26T08:11:58.203Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-10-27T08:05:40.296Z" }
 ---
+
 
 # Repository Architecture Overview
 
-This repository is a Python monorepo of independently versioned distributions, not one deployable service. `deepagents` is the reusable SDK; first-party distributions expose it through a protocol bridge, a terminal coding product, a local long-running host, and an evaluation suite. Partner distributions add optional integration capability. A dependency edge says which wheel a consumer installs—it does **not** transfer ownership of a runtime concern or provider implementation.
+This repository is a Python monorepo of independently packaged components, not one deployable service. `deepagents` is the reusable agent harness; first-party packages expose it through an ACP protocol bridge, the dcode terminal coding product, the Talon local host, and an evaluation suite. Partner packages add discrete capabilities. A package dependency identifies what a wheel installs; it does **not** make the dependent package the owner of that provider or runtime concern.
 
 - [SDK construction and execution](./sdk-construction-execution.md)
 - [Code agent](./code-agent.md)
 - [Source map](./source-map.md)
 - [Sandbox partners](../integrations/sandbox-partners.md)
 - [Development](../operations/development.md)
+- [Run evals](../workflows/run-evals.md)
 
-## Package and release boundaries
+## Package, Python, and release boundaries
 
-| Distribution | Source version | Python | Architectural role |
+| Distribution | Source version | Python contract | Architectural role |
 | --- | --- | --- | --- |
 | `deepagents` | `0.7.32` | `>=3.11,<4.0` | Reusable agent-harness SDK. |
 | `deepagents-acp` | `0.0.13` | `>=3.11,<4.0` | Agent Client Protocol bridge for Deep Agents graphs. |
-| `deepagents-code` / `dcode` | `0.2.1` | `>=3.14,<3.15` | Terminal coding-agent product. |
+| `deepagents-code` / `dcode` | `0.2.2` | `>=3.14,<3.15` | Terminal coding-agent product. |
 | `deepagents-talon` | `0.1.0` | `>=3.14,<3.15` | Experimental local host for channels and schedules. |
-| `deepagents-evals` | `0.0.1` | `>=3.14,<3.15` | Behavioral evaluation and Harbor benchmark suite. |
-| `langchain-quickjs` | `0.3.9` | `>=3.11,<4.0` | Optional JavaScript REPL middleware. |
+| `deepagents-evals` | `0.0.1` | `>=3.14,<3.15` | Behavioral-evaluation and Harbor benchmark suite. |
+| `langchain-quickjs` | `0.3.10` | `>=3.11,<4.0` | JavaScript REPL middleware partner. |
 
-Release Please manages separate release lines for the SDK, ACP, dcode, Talon, and the Daytona, Modal, Runloop, Vercel, and QuickJS partners; it does not manage `deepagents-evals`. `.release-please-manifest.json` records each managed component's latest released baseline, while its `pyproject.toml` is the source distribution metadata.
+Release Please separately manages the SDK, ACP, dcode, Talon, and the Daytona, Modal, Runloop, Vercel, and QuickJS partners; `deepagents-evals` is not managed. The manifest is the latest released baseline, while each package's `pyproject.toml` is source distribution metadata. Release Please creates a separate draft release PR per managed component. On merging that PR, the release workflow performs checks, publishes to PyPI, and creates the GitHub release; Release Please itself skips GitHub release creation.
 
-Managed components receive separate draft release PRs. After a release PR is merged, the release workflow performs pre-release checks, publishes to PyPI, and creates the GitHub release; Release Please is configured to skip its built-in GitHub-release action. dcode's exact SDK pin is a feature compatibility invariant: raise it in the PR that first needs newer SDK behavior, rather than waiting for a release.
+Keep dcode's exact SDK pin aligned with the first SDK functionality it needs. It is a compatibility floor, not a release-time cleanup.
 
-## Dependency contracts and checkout wiring
+## Dependency contracts versus checkout wiring
 
-`[project.dependencies]` and `[project.optional-dependencies]` are wheel metadata: they describe what an index-installed distribution requires. `[tool.uv.sources]` is separate checkout-only resolution metadata. It substitutes a sibling path while developing in this repository and is not published in the wheel. A path source is editable only when it explicitly sets `editable = true`.
+`[project.dependencies]` and `[project.optional-dependencies]` are published wheel contracts. `[tool.uv.sources]` is checkout-only resolver wiring: it substitutes sibling source during repository development and is not published. A path source is an editable install only if it explicitly has `editable = true`.
 
 ```mermaid
 flowchart TD
@@ -90,7 +91,7 @@ flowchart TD
   LangGraph["LangGraph runtime"]
 
   ACP -->|"wheel dependency"| SDK
-  Code -->|"wheel pin 0.7.32"| SDK
+  Code -->|"exact wheel pin"| SDK
   Code -->|"wheel dependency"| ACP
   Code -->|"wheel dependency"| QuickJS
   Code -->|"optional extras"| Providers
@@ -99,7 +100,7 @@ flowchart TD
   Evals -->|"wheel dependencies"| SDK
   Evals -->|"wheel dependencies"| Code
   Evals -->|"wheel dependency"| QuickJS
-  QuickJS -->|"wheel compatibility 0.7.x"| SDK
+  QuickJS -->|"SDK 0.7.x compatibility"| SDK
   SDK --> LangChain
   LangChain --> LangGraph
 
@@ -108,95 +109,83 @@ flowchart TD
   Code -. "editable checkout" .-> ACP
   Talon -. "editable checkouts" .-> SDK
   Talon -. "editable checkout" .-> Code
-  Evals -. "editable checkouts" .-> SDK
+  Evals -. "editable checkout" .-> SDK
   Evals -. "path checkout" .-> Code
   Evals -. "editable checkout" .-> QuickJS
   QuickJS -. "editable checkout" .-> SDK
 ```
 
-*Solid arrows are published package relationships; dotted arrows are local `uv` substitutions and do not change released wheel metadata.*
+*Solid arrows are published package relationships; dotted arrows are local `uv` substitutions and do not alter released wheel metadata.*
 
-### Published constraints
+### Published and optional contracts
 
-The material direct constraints are:
+ACP requires `deepagents` without a version bound, `agent-client-protocol>=0.10.1`, and `python-dotenv>=1.2.2`. dcode pins `deepagents==0.7.32`, requires ACP `>=0.0.13,<1.0.0`, and includes QuickJS `>=0.3.10,<0.4.0` as a normal dependency. Talon requires SDK `>=0.7.32` and dcode `>=0.2.2,<1.0.0`; evals requires SDK `>=0.7.32`, dcode `>=0.2.1`, and QuickJS `>=0.3.3`; QuickJS supports SDK `>=0.7.32,<0.8.0`.
 
-- ACP requires unbounded `deepagents`, plus `agent-client-protocol>=0.10.1` and `python-dotenv>=1.2.2`.
-- dcode pins `deepagents==0.7.32`, requires ACP `>=0.0.13,<1.0.0`, and requires QuickJS `>=0.3.9,<0.4.0`.
-- Talon requires SDK `>=0.7.32` and dcode `>=0.2.1,<1.0.0`.
-- Evals requires SDK `>=0.6.12`, dcode `>=0.1.27`, and QuickJS `>=0.3.3,<0.4.0`.
-- QuickJS supports the SDK `>=0.7.32,<0.8.0` line.
+The SDK keeps AWS, QuickJS, and video support optional, allowing a consumer to choose these integration dependencies. dcode deliberately has a larger normal install surface, including `langsmith[sandbox]` and QuickJS. It exposes six external sandbox-provider extras—`agentcore`, `daytona`, `modal`, `openshell`, `runloop`, and `vercel`—with `all-sandboxes` aggregating them. Its compatibility `quickjs` extra is empty because QuickJS is already installed normally. Extras make an adapter package available; provider credentials, remote resource lifecycle, and implementation stay at the provider boundary.
 
-The base SDK retains integration choice with consumers: AWS, QuickJS, and video support are extras rather than base requirements. This does not mean dcode has the same minimal install surface: dcode packages its core terminal, model-provider, and `langsmith[sandbox]` dependencies normally.
+### Local sources and lockfile fan-out
 
-### dcode sandbox packaging is optional
+ACP maps SDK editable. dcode maps SDK, ACP, and Daytona, Modal, QuickJS, Runloop, and Vercel partner checkouts editable. Talon maps SDK and dcode editable. Evals maps SDK and QuickJS editable but dcode through a non-editable path.
 
-dcode exposes six external sandbox adapters as install-time extras: `agentcore`, `daytona`, `modal`, `openshell`, `runloop`, and `vercel`. `deepagents-code[all-sandboxes]` aggregates those extras. The compatibility `quickjs` extra is deliberately empty because QuickJS is already a regular dependency, not a remote sandbox adapter.
-
-These extras make provider packages available to dcode's integration layer; they do not make dcode the owner of a provider backend. The checked-in Daytona, Modal, Runloop, and Vercel packages remain independently released partner distributions, and OpenShell has no sibling checkout mapping in dcode. Provider credentials, remote-resource semantics, and adapter implementation belong at the provider boundary.
-
-### Local source graph and lockfile fan-out
-
-Local wiring intentionally differs from wheel metadata. ACP maps the SDK editable. dcode maps the SDK, ACP, and the Daytona, Modal, QuickJS, Runloop, and Vercel partner checkouts editable—even though the sandbox providers are optional wheel extras. Talon maps the SDK and dcode editable. Evals maps SDK and QuickJS editable but maps dcode by a non-editable path.
-
-Lock freshness follows every first-party `uv` path source, not just editable mappings. The refresh helper starts from a changed manifest, includes its owning package, and repeatedly adds packages whose `[tool.uv.sources]` paths consume a member of that set. Thus a dcode manifest change can require `libs/code/uv.lock`, `libs/talon/uv.lock`, and `libs/evals/uv.lock` to be regenerated: Talon consumes dcode as an editable path and evals consumes it as a non-editable path. Do not hand-edit locks; use the closure-aware helper, then check the results.
+The lockfile helper follows **every** local path source, regardless of `editable`. Starting with a changed manifest, it includes that package and repeatedly adds local consumers. Thus a dcode manifest change requires re-locking dcode, Talon, and evals because both latter packages consume its source path. Do not hand-edit lockfiles:
 
 ```bash
 python .github/scripts/checks/refresh_lockfiles.py libs/code/pyproject.toml
 ```
 
-A local test may therefore pass against a sibling checkout while the published requirement remains incompatible. Review both the public constraint and the source mapping whenever a manifest changes.
+A local test can consequently succeed against sibling code while the published constraint is incompatible. For any manifest change, review both the wheel constraint and the local source mapping.
 
-## Runtime layering and ownership
+## Runtime layering and responsibility
 
-Deep Agents has a narrow reusable construction boundary:
+Deep Agents composes three layers:
 
-1. **LangGraph** runs graph state, checkpoints, streaming, and interrupts.
-2. **LangChain `create_agent()`** builds the model, tool, and middleware agent loop on that runtime.
-3. **Deep Agents** supplies the opinionated harness: backends, profiles, filesystem and execution behavior, subagent delegation, skills, memory, context management, and tool policy.
+1. **LangGraph** owns graph state, checkpoints, streaming, and interrupts.
+2. **LangChain `create_agent()`** assembles the model, tools, and middleware loop on that runtime.
+3. **Deep Agents** provides the opinionated harness: backend selection, profiles, filesystem and execution behavior, context management, skills, memory, delegation, and tool policy.
 
-`create_deep_agent()` is the SDK assembly boundary. It accepts the model, tools, backend, middleware, subagents, state/context schemas, checkpointer, store, and cache; resolves profiles and graph components; protects required middleware and `DeepAgentState` invariants; and returns a LangGraph compiled graph. It does not own a terminal UI, protocol session, channel adapter, or scheduler.
+`create_deep_agent()` is the SDK assembly boundary. It resolves the model/profile and backend; assembles default, profile, and caller middleware; produces default and supplied subagents; merges permissions into interrupt policy; and delegates to `create_agent()` with a `DeepAgentState` default plus caller checkpointer, store, cache, schemas, and graph name. Required middleware and state assumptions are protected, profile exclusions must actually match, and tool exclusion runs last so caller middleware cannot reintroduce an excluded tool.
 
-Applications extend the SDK with tools, middleware, subagents, skills, memory, permissions, schemas, checkpointers, stores, caches, and graph names. The general-purpose synchronous subagent is installed unless a profile disables it or the caller replaces it. Synchronous delegation is exposed through `SubAgentMiddleware` and the main graph's `task` tool. `AsyncSubAgent` specifications instead install `AsyncSubAgentMiddleware`, which starts a non-blocking deployed run rather than in-process delegation.
-
-For safe reuse, keep presentation, transport approval flow, channel routing, and cron policy in a product or host above the SDK.
-
-## Product, protocol, host, and quality roles
+The default general-purpose subagent is added unless its profile disables it or a caller supplies a spec with the same name. Synchronous delegation comes from `SubAgentMiddleware` and the main graph's `task` tool. An `AsyncSubAgent` instead installs `AsyncSubAgentMiddleware`, starting a non-blocking deployed run rather than in-process delegation. Keep UI, transport approvals, channel routing, and scheduling above this reusable SDK boundary.
 
 | Boundary | Owns | Does not own |
 | --- | --- | --- |
-| SDK | Harness composition, backends, profiles, middleware, and subagent integration. | Product presentation, transport, or scheduler lifecycle. |
-| ACP | Translation between ACP sessions/events and a graph. | Terminal-specific approval policy and UI. |
-| dcode | Terminal client/server product policy and coding-agent experience. | Generic SDK behavior or provider implementation. |
-| Talon | Local host lifecycle, channel adapters, schedules, and graph invocation. | Production multi-tenant containment. |
-| Evals | Repeatable behavioral measurement and benchmark execution. | Online request serving. |
-| Partners | Optional provider, sandbox, or middleware capability. | A mandatory SDK dependency. |
+| SDK | Harness composition, profiles, backends, middleware, and subagent integration. | Terminal UI, ACP session transport, or host scheduling. |
+| ACP | ACP session/event translation to and from a graph. | Terminal-specific policy and presentation. |
+| dcode | Coding-agent terminal experience, CLI policy, and client/server operation. | Generic SDK semantics or sandbox-provider implementation. |
+| Talon | Local host lifecycle, channels, schedules, and graph invocation. | Production multi-tenant containment. |
+| Evals | Repeatable trajectory measurement and benchmark execution. | Online request serving. |
+| Partners | Optional sandbox, provider, or middleware capability. | A mandatory SDK dependency. |
+
+## Protocol, product, host, and evaluation boundaries
 
 ### ACP and dcode
 
-`deepagents-acp` is the protocol boundary: it constructs or accepts Deep Agents graphs, converts ACP content and events, and works with compiled LangGraph graphs and checkpointing. dcode specializes that general translation. Its `AgentServerACP` wrapper writes trusted Auto-mode approval state, attaches prompt metadata to the final user message, and invokes the wrapped graph with CLI context. Keep that terminal policy out of generic ACP.
+`deepagents-acp` bridges ACP clients to a compiled graph or a graph factory receiving `AgentSessionContext`. The server tracks session-local model, mode, working directory, MCP configuration, plan, and cancellation state. Durable ACP `session/load` is advertised only when enabled and depends on a graph checkpointer that survives server restarts.
 
-`deepagents-code` is a reference product packaging of the SDK. Its terminal client and agent server run in separate processes: the client owns input, presentation, and approval interaction; the server owns graph execution and event streaming. Interactive and headless operation share the server runtime. Terminal configuration, skills, MCP servers, sandboxes, hooks, and user/project configuration therefore belong at this layer rather than in the SDK.
+Dcode is a reference terminal product packaged as `deepagents-code`, with `dcode` and `deepagents-code` console entry points. Its terminal client and agent server are separate processes: the client owns input, rendering, and approval interaction; the server owns graph execution and event streaming. Interactive and headless operation use the same server runtime.
 
-### Talon
+Dcode's ACP wrapper specializes the generic bridge rather than changing ACP itself. Per prompt, it persists trusted Auto approval mode for the ACP session, annotates the last user message with prompt metadata, and invokes the graph with CLI context. Keep this terminal policy out of the generic protocol translation.
 
-Talon is an experimental local host: one event loop owns channel adapters, a cron scheduler, and agent runtime. It provides WhatsApp, Telegram, Discord, and Slack adapters, persistent cron jobs, MCP loading from explicit paths or `~/.deepagents/.mcp.json`, and an echo runtime when no model is configured so operators can validate lifecycle and wiring.
+### Talon: local long-running host
 
-It is not a production or enterprise security boundary. Channel access is effectively access to configured agent capabilities, model credentials, MCP tools, and host resources. Sandboxing is opt-in: it moves shell and filesystem work, but MCP tools and channel media remain on the host. A sandbox startup failure exits rather than silently falling back to host execution.
+Talon is an experimental single-event-loop host for channels, cron, and the agent runtime. It has graceful shutdown, per-conversation interrupt-and-continue and `/stop`; adapters for WhatsApp, Telegram, Discord, and Slack; persistent cron; MCP loading; and optional LangSmith tracing. Without `AGENT_MODEL`, it starts an echo runtime to validate host wiring.
 
-Talon selects built-in SQLite, PostgreSQL, or MongoDB checkpoint storage by URI. Other schemes are supplied by trusted installed entry-point plugins. Checkpoint storage and conversation-history storage are independent; for remote checkpoints, thread IDs are not automatically namespaced by assistant ID, so operators must isolate assistant databases themselves.
+Talon is not a production security or multi-tenant isolation boundary. Channel access effectively grants access to configured agent capabilities, credentials, MCP tools, and host resources. By default shell and filesystem tools execute on the host. An opt-in sandbox can move them to a remote provider, but MCP tools, web tools, and channel-media handling remain host-side. Startup failure exits rather than falling back to host execution. Sandbox files are deleted on shutdown unless attaching an existing sandbox ID; host-side skills and memory remain usable.
+
+The `DEEPAGENTS_TALON_CHECKPOINT_URI` scheme selects built-in SQLite, PostgreSQL, or MongoDB checkpoint storage. Trusted installed entry-point plugins can provide other schemes, with built-ins taking precedence and unknown or duplicate schemes failing startup. Checkpoint and conversation-history stores are independent; remote checkpoint thread IDs are not automatically assistant-namespaced, so operators must isolate assistant databases. Talon's persisted history archive is separately assistant-namespaced.
 
 ### Evals and partners
 
-`deepagents-evals` is a quality boundary, not a serving component. An evaluation uses a real LLM, records tool calls, file mutations, and the final response, then scores correctness and efficiency. Harbor integration runs sandboxed benchmarks, including Terminal Bench 2.0. Use it to measure a change across complete trajectories rather than to define product serving behavior.
+`deepagents-evals` is a quality boundary, not a serving component. Each evaluation runs an agent against a real LLM, captures the trajectory—tool calls, file mutations, and final response—and scores correctness and efficiency. Its Harbor integration runs sandboxed benchmarks such as Terminal Bench 2.0. Use it to measure whole trajectories, not to define product runtime behavior.
 
-Partner distributions add discrete optional capability. QuickJS is JavaScript REPL middleware compatible with the SDK's `0.7.x` line. Sandbox partners are selected by a consuming host or product. Configure and test an integration at that boundary rather than promoting it to a core dependency unless every SDK consumer needs it.
+QuickJS is the JavaScript REPL middleware partner. Sandbox partners are selected by a product or host; test provider behavior at that integration boundary rather than promoting it into the SDK's base dependency set.
 
-## Change planning and focused checks
+## Operations and focused verification
 
-- For reusable graph construction, middleware, backend, profile, or delegation changes, start at `create_deep_agent()` and `libs/deepagents/tests/unit_tests/test_graph.py`.
-- For ACP translation or dcode approval behavior, keep the generic server and dcode wrapper separate; first identify whether a dcode symptom is in its terminal client or agent-server process.
-- For dcode package changes, test the relevant sandbox registry/factory or package metadata behavior; changing an extra does not by itself change generic SDK behavior.
-- For a manifest edit, inspect both wheel constraints and `uv` mappings, run the closure-aware lock refresh, and check every resulting lock. A checkout-only mapping can hide a release incompatibility.
-- For Talon changes, exercise the focused channel, scheduler/cron, checkpoint, sandbox, or history tests. Do not represent its sandbox as complete containment.
-- For eval changes, use the relevant trajectory and Harbor adapter tests, then run the intended real-LLM evaluation when credentials and cost permit.
-- For a managed release, wait for the generated release PR and its lockfile refresh, review its package-scoped changelog, and keep the dcode SDK pin synchronized with the functionality it uses.
+- For graph construction, profiles, backends, middleware, or delegation, start at `create_deep_agent()` and the SDK unit/integration tests; distinguish a missing tool from a visible tool later denied by backend or permission policy.
+- For ACP work, use `libs/acp/tests/test_agent.py`, session/model tests, and utility tests. Preserve the distinction between compiled-graph and factory configuration.
+- For dcode, first locate a symptom on the terminal-client or agent-server side. Use targeted unit or integration coverage; integration tests require `ANTHROPIC_API_KEY`, with `LANGSMITH_API_KEY` enabling tracing.
+- For Talon, exercise the focused host, runtime, channel, cron, checkpoint/history, sandbox, MCP, and approval-policy tests. Do not claim sandboxing is complete containment.
+- For eval changes, cover the relevant eval/Harbor adapter tests, then run the intended real-LLM evaluation when credentials, provider access, and cost permit.
+- For manifest edits, inspect published requirements and `uv` mappings, run closure-aware lock refresh, and commit every resulting lockfile.
+- For a managed release, wait for the generated draft release PR and lockfile update, review the package-scoped changelog, and ensure dcode's SDK pin reflects what its source uses.

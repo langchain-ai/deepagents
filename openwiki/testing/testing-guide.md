@@ -1,9 +1,13 @@
 ---
 type: testing guide
 title: Testing Guide
-description: Focused dcode test routing for server lifecycle, runtime compatibility patches, workspace ownership, middleware integrity, and virtualized Textual transcripts. Use package Makefile targets as the command authority and prefer deterministic seams over process or model-backed tests.
-tags: [testing, pytest, dcode, textual, middleware, lifecycle]
+description: Package-scoped test routing and focused deterministic seams for dcode startup, configuration and MCP security, plugins, Textual rendering, Harbor evaluation adapters, partner sandboxes, and workflow contracts. Use each package Makefile as the command authority and escalate to process or model-backed tests only at the boundary under test.
+tags: [testing, pytest, dcode, mcp, plugins, textual, evals, security]
 sources:
+  - id: openwiki-source-d3d0a0331dae6256926db101
+    resource: repo://.github/scripts/tests/evals/test_experiment_name.py
+  - id: openwiki-source-ce9e844e8d33dbc3e766d8f1
+    resource: repo://.github/scripts/tests/workflows/test_workflow_secret_scoping.py
   - id: openwiki-source-e6ad64b6a7d1df658edc7234
     resource: repo://libs/code/deepagents_code/_checkpointer_adapter.py
   - id: openwiki-source-b07cec8e891bf1f14e503026
@@ -16,6 +20,8 @@ sources:
     resource: repo://libs/code/deepagents_code/local_context.py
   - id: openwiki-source-528731d4c0ef5dde5cf54f4c
     resource: repo://libs/code/deepagents_code/memory_guard.py
+  - id: openwiki-source-ebf343f7e539893752210528
+    resource: repo://libs/code/deepagents_code/plugins/discovery.py
   - id: openwiki-source-91c9283d1547adfffd627c43
     resource: repo://libs/code/deepagents_code/thread_ownership.py
   - id: openwiki-source-2d3ba1d75dbc72b01448e124
@@ -26,14 +32,22 @@ sources:
     resource: repo://libs/code/tests/integration_tests/test_headless_resume.py
   - id: openwiki-source-6684124c441015e6f9246319
     resource: repo://libs/code/tests/unit_tests/conftest.py
+  - id: openwiki-source-3a86b75aef82efb4e1c2e384
+    resource: repo://libs/code/tests/unit_tests/plugins/test_plugin_updates.py
   - id: openwiki-source-7f916fdd682c58125bb1c675
     resource: repo://libs/code/tests/unit_tests/test_checkpointer_adapter.py
+  - id: openwiki-source-2843d86bbaef4173c77ca3e1
+    resource: repo://libs/code/tests/unit_tests/test_config.py
   - id: openwiki-source-ceb0295160537174ea07a3f2
     resource: repo://libs/code/tests/unit_tests/test_langsmith_runtime.py
   - id: openwiki-source-86a8d168faa54044d4aa6ec7
     resource: repo://libs/code/tests/unit_tests/test_local_context.py
+  - id: openwiki-source-1ce25590f75ba42bdd04fce2
+    resource: repo://libs/code/tests/unit_tests/test_mcp_tools.py
   - id: openwiki-source-d965874b5a639c3205f2eadd
     resource: repo://libs/code/tests/unit_tests/test_memory_guard.py
+  - id: openwiki-source-d86dd82872da8545a6c8d896
+    resource: repo://libs/code/tests/unit_tests/test_non_interactive.py
   - id: openwiki-source-7e558b3c5b3acbc58f79b60c
     resource: repo://libs/code/tests/unit_tests/test_run_queue_wakeup.py
   - id: openwiki-source-f598809da8d8fbff2d7ae090
@@ -44,12 +58,24 @@ sources:
     resource: repo://libs/code/tests/unit_tests/test_transcript_virtualization.py
   - id: openwiki-source-b7beeddb49bcfbe0565494c8
     resource: repo://libs/code/tests/unit_tests/tui/widgets/test_autocomplete.py
+  - id: openwiki-source-ec27b45f1b12de0b8c4944e5
+    resource: repo://libs/code/tests/unit_tests/tui/widgets/test_final_markdown.py
   - id: openwiki-source-585649cb24fc70035488ac0f
     resource: repo://libs/code/tests/unit_tests/tui/widgets/test_message_store.py
+  - id: openwiki-source-be7f6aa28551fac7310db803
+    resource: repo://libs/evals/Makefile
+  - id: openwiki-source-78f970513a111c43fc9971ce
+    resource: repo://libs/evals/tests/unit_tests/test_harbor_langgraph_agent.py
+  - id: openwiki-source-5e387cb8bab7ca8537e7d97c
+    resource: repo://libs/partners/modal/langchain_modal/sandbox.py
+  - id: openwiki-source-58c029ba26c6450b7d8eb97e
+    resource: repo://libs/partners/modal/Makefile
+  - id: openwiki-source-ac47f3f14a26a8141beddfc3
+    resource: repo://libs/partners/modal/tests/unit_tests/test_sandbox.py
 verified:
   - by: openwiki/0.4.2
-    at: 2026-10-25T08:05:05.473Z
-generated: { by: "openwiki/0.4.2", at: "2026-10-25T08:05:05.473Z" }
+    at: 2026-10-27T08:05:40.296Z
+generated: { by: "openwiki/0.4.2", at: "2026-10-27T08:05:40.296Z" }
 ---
 
 # Testing Guide
@@ -71,6 +97,14 @@ make -C libs/code lint
 ```
 
 `coverage` is the dedicated XML-report target; `update-snapshots` is limited to smoke snapshots. The dcode lint target also validates the generated command catalog and process working-directory rules. Unit-test collection establishes a synthetic `DEEPAGENTS_HOME` before imports, snapshots and restores `os.environ`, and clears global dotenv, tracing, and related runtime state so tests do not inherit a developer profile, credentials, or daemon discovery.
+
+The same package-local rule applies outside dcode. For example, `libs/evals` uses its `test` target with sockets disabled, while `make -C libs/evals evals MODEL=<id>` deliberately runs model-backed evals. `libs/partners/modal` separates socket-disabled unit tests from 30-second integration tests. Do not copy dcode's parallelism or coverage flags into those packages: inspect that package's Makefile and pass a focused `TEST_FILE`/`PYTEST_EXTRA` only where it supports them.
+
+```bash
+make -C libs/evals test TEST_FILE=tests/unit_tests/test_harbor_langgraph_agent.py
+make -C libs/partners/modal test TEST_FILE=tests/unit_tests/test_sandbox.py
+make -C libs/evals evals MODEL=<id>
+```
 
 ## Select the seam
 
@@ -193,3 +227,58 @@ For autocomplete, keep fuzzy ranking and controller behavior outside a Textual p
 5. For cancellation or ownership behavior, coordinate with events and assert cleanup/fencing after cancellation rather than relying on sleeps.
 6. Escalate to an integration test only for a real process, import-time configuration, durable persistence, or CLI/server contract.
 7. Run `make -C libs/code lint` before completion.
+
+## Headless, configuration, and MCP security seams
+
+Headless tests should exercise the decision that is specific to non-interactive execution, not a full terminal session. `run_non_interactive` starts the server with `interactive=False`; initial skills are passed as pinned metadata for the server to read rather than loaded by the client. An unanswerable skill-trust interrupt is resumed with an explicit denial. Project hooks are also deny-by-default in headless mode: only `--trust-project-hooks` enables them, and an interactive persisted grant is intentionally insufficient.
+
+For command approval, unit-test `_make_hitl_decision` with a resolved shell allowlist. No allowlist rejects `execute`; every pipeline segment must be allowed and dangerous shell syntax remains rejected. `SHELL_ALLOW_ALL` is the explicit exception. For lifecycle hooks, use a controllable coroutine to verify that a slow `SessionEnd` is cancelled after its bound and is fired at most once.
+
+Configuration tests must distinguish trusted user input from repository input. Test dotenv precedence with temporary global and project files: shell values win, project values precede global values, but project variables must not interpolate into the trusted global file. A project `.env` may set ordinary values but must not set trust, extension, plugin-cache, shell-allowlist, or similar user-security decisions; test the global-file counterpart separately. Keep `conftest.py` isolation in place when exercising reload paths, because a refresh otherwise rereads a developer's global dotenv or managed policy.
+
+MCP has two complementary seams:
+
+- Use the in-memory `FastMCP` registry when testing transport construction, schema/session behavior, and per-server failure isolation; it routes a real adapter without a subprocess or socket.
+- Use mocked discovery and loader boundaries for trust filtering. An untrusted project `.mcp.json` must not reach the loader (especially a remote URL with interpolated headers); explicit whole-project trust can admit it, but an explicit disabled server still wins. Include symlink or path-identity failures: an uncertain user/profile identity is demoted to project scope rather than promoted to trusted input.
+
+```mermaid
+flowchart TD
+    Config["Project configuration"] --> Trust{"Explicitly trusted"}
+    Trust -->|No| Filter["Drop or allow only approved servers"]
+    Trust -->|Yes| Filter
+    Filter --> Disabled{"Explicitly disabled"}
+    Disabled -->|Yes| Report["Report disabled and do not load"]
+    Disabled -->|No| Loader["Build transport and load tools"]
+```
+
+*Project MCP configuration crosses a trust filter before transport construction, and an explicit disable overrides a trust grant.*
+
+## Plugin state and final Markdown
+
+Plugin update tests should build a temporary marketplace, install a versioned plugin, and replace only marketplace materialization. `check_plugin_updates()` refreshes remote enabled plugins under the mutation lock; manifests opting into `autoUpdate` are installed, while other version changes are persisted as available updates and announced only when newly observed. A failed refresh retains the previously saved availability so recovery does not re-notify. Test the CLI's check/install transition and the plugin-manager row from the persisted state; an uninstalled explicit target must fail rather than silently creating state.
+
+For completed assistant replies, use a Textual pilot because rendering and selection are observable UI contracts. Stream each representative Markdown corpus into `AssistantMessage`, capture rendered rows, stop the stream, and assert its single `FinalMarkdown` widget renders identical rows across widths and themes. Separate pilots cover encoded URLs reaching the checked URL opener unchanged, wide-character code staying within cell width while selection preserves source text, and copy behavior rejoining layout wraps without padding. These tests prevent transcript jumps and unsafe link transformations at the streaming-to-final-renderer handoff.
+
+## Harbor adapters, partner sandboxes, and workflow contracts
+
+Harbor adapter tests are local graph-construction contracts, not Harbor job runs. Assert that `langgraph.json` maps the dcode, bare, and tau3 graph factories; fake model and agent factories to inspect the dcode graph's headless, auto-approved local configuration. The adapter must generate a bounded, ASCII-safe assistant id from a session id and hash normalized collisions, scrub provider and tracing credentials from the shell backend's temporary environment, then restore the process environment. For optional web search, test key-gated tool creation, result and response-size bounds, and failure-as-tool-output. Tau3 should translate only forwarded streamable HTTP MCP servers and reject dataset-provided stdio commands.
+
+`ModalSandbox` batch file operations are deliberately per-file: absolute paths are required, errors are encoded in each `FileDownloadResponse` or `FileUploadResponse`, and a failure must not prevent a later file from transferring. Use a mocked `modal.Sandbox` with a failing first open and a real `BytesIO`/temporary destination second open; assert both ordered results and handle closure.
+
+Workflow tests are static contracts. Parse YAML rather than executing GitHub Actions, normalize PyYAML's boolean interpretation of `on`, and assert exact environment mappings. The integration workflow scopes each secret expression to the package that needs it; the disabled release integration step retains its package-scoped wiring. OpenWiki uses read-only workflow permissions, a dedicated environment, credential-free checkout, and creates its write-capable app token only after the update command. The experiment-name helper is similarly tested as a compatibility contract: names retain the historical derivation, sanitize slash/colon characters, hash the raw branch for a stable slug, and omit optional empty category or reasoning segments.
+
+## Focused-file map
+
+Use these focused files when the change matches their contract; this is routing, not a requirement to run every file.
+
+| Change boundary | Focused test |
+| --- | --- |
+| Headless startup, HITL, hooks, and skill trust | `libs/code/tests/unit_tests/test_non_interactive.py` |
+| Dotenv precedence and project configuration trust | `libs/code/tests/unit_tests/test_config.py` |
+| MCP discovery, trust filtering, and transport behavior | `libs/code/tests/unit_tests/test_mcp_tools.py` |
+| Marketplace update persistence and UI state | `libs/code/tests/unit_tests/plugins/test_plugin_updates.py` |
+| Finished reply layout, selection, and URL handoff | `libs/code/tests/unit_tests/tui/widgets/test_final_markdown.py` |
+| Harbor LangGraph adapter configuration | `libs/evals/tests/unit_tests/test_harbor_langgraph_agent.py` |
+| Modal batch file error isolation | `libs/partners/modal/tests/unit_tests/test_sandbox.py` |
+| Experiment-name compatibility | `.github/scripts/tests/evals/test_experiment_name.py` |
+| Workflow credential boundaries | `.github/scripts/tests/workflows/test_workflow_secret_scoping.py` |

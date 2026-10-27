@@ -4,7 +4,7 @@ okf_version: "0.2"
 
 # Files
 
-- [Deep Agents Monorepo Quickstart](quickstart.md) - Route a Deep Agents change to its owning package, distinguish released requirements from local uv sources, and run the narrowest authoritative validation. Includes the dcode SDK compatibility pin and dependent lockfile handoffs.
+- [Deep Agents Monorepo Quickstart](quickstart.md) - Route a Deep Agents change to its owning independently packaged component, apply the published-versus-local dependency boundary, and run focused package validation. Links point to the deeper architecture, integration, evaluation, development, and testing guidance.
 
 # Directories
 

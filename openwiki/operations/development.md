@@ -3,69 +3,27 @@ type: operations guide
 title: Development, Dependencies, Lockfiles, and Releases
 description: Package-scoped uv development and release operations for the Deep Agents distributions. Explains published dependency contracts, editable local-source lockfile closure, frozen-lock behavior, and release-please publication safeguards.
 tags: [development, dependencies, uv, lockfiles, dcode, releases, release-please]
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-10-26T08:11:58.203Z
 sources:
-  - id: openwiki-source-9a1c436646ef8c4f6dde787a
-    resource: repo://.github/RELEASING.md
   - id: openwiki-source-9d81aa681a56a98960013750
     resource: repo://.github/scripts/checks/check_lockfiles_pre_commit.py
-  - id: openwiki-source-594b8b7a84e0fb527fbafd52
-    resource: repo://.github/scripts/checks/raise_langchain_minimums.py
-  - id: openwiki-source-3cf9b023d0ac578794148a01
-    resource: repo://.github/scripts/checks/refresh_lockfiles.py
-  - id: openwiki-source-92e05f1f5d419b3d69cc3a1e
-    resource: repo://.github/scripts/release/draft-release-notes.js
-  - id: openwiki-source-1bc32c2b33ab6e58128b0319
-    resource: repo://.github/scripts/tests/checks/test_raise_langchain_minimums.py
-  - id: openwiki-source-fa3e3af42f9e8d6ed58a473e
-    resource: repo://.github/workflows/check_lockfiles.yml
-  - id: openwiki-source-164e2da859b5277df81c7d94
-    resource: repo://.github/workflows/ci.yml
-  - id: openwiki-source-bc54cf7ca3addab1b243d7a6
-    resource: repo://.github/workflows/raise_langchain_minimums.yml
-  - id: openwiki-source-4541a26c837a99dc39a0ee0c
-    resource: repo://.github/workflows/release_notes.yml
+  - id: openwiki-source-c4ad51aa92764fc78390dd39
+    resource: repo://.github/workflows/release_please_parse_check.yml
   - id: openwiki-source-46fa34397e41ebf7491c7359
     resource: repo://.github/workflows/release-please.yml
-  - id: openwiki-source-4d1d392666be6dfdd7a91a2e
-    resource: repo://.github/workflows/release.yml
-  - id: openwiki-source-4d1645cb6317345817452838
-    resource: repo://.pre-commit-config.yaml
   - id: openwiki-source-5e59f90a38f5bdf9ed76984b
     resource: repo://.release-please-manifest.json
-  - id: openwiki-source-15628256fe9cd22197db74ed
-    resource: repo://libs/code/AGENTS.md
-  - id: openwiki-source-006b62af9993da1b48c11de8
-    resource: repo://libs/code/Makefile
   - id: openwiki-source-7ba50bd13eb62341a2061ef9
     resource: repo://libs/code/pyproject.toml
-  - id: openwiki-source-2c81844c6fc58eace9ea6aba
-    resource: repo://libs/code/scripts/check_process_cwd.py
-  - id: openwiki-source-0f308f1610986e2f3ed6d53c
-    resource: repo://libs/deepagents/Makefile
-  - id: openwiki-source-478a579b56d29c6928ec2320
-    resource: repo://libs/deepagents/pyproject.toml
-  - id: openwiki-source-fb60ee46c55b974b8341651c
-    resource: repo://libs/DEVELOPMENT.md
   - id: openwiki-source-f2bb883b9cbec377de535c00
     resource: repo://libs/evals/pyproject.toml
-  - id: openwiki-source-6985df297a9bf809e10bc5d8
-    resource: repo://libs/evals/uv.lock
-  - id: openwiki-source-49fbcc45434b619b68220bf9
-    resource: repo://libs/Makefile
-  - id: openwiki-source-b38d20ec21c25c8c726dc1b6
-    resource: repo://libs/partners/quickjs/pyproject.toml
-  - id: openwiki-source-5742b8b792426010995c1325
-    resource: repo://libs/partners/quickjs/uv.lock
   - id: openwiki-source-686a5e2ba1fe4ce0f98b9bf2
     resource: repo://libs/talon/pyproject.toml
-  - id: openwiki-source-966f1489233b6fc6ee5f2e4c
-    resource: repo://libs/talon/uv.lock
   - id: openwiki-source-482fa4ca84f42b04ba025fc1
     resource: repo://release-please-config.json
-generated: { by: "openwiki/0.4.2", at: "2026-10-26T08:11:58.203Z" }
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-10-27T08:05:40.296Z
+generated: { by: "openwiki/0.4.2", at: "2026-10-27T08:05:40.296Z" }
 ---
 
 # Development, Dependencies, Lockfiles, and Releases
@@ -142,7 +100,7 @@ flowchart TD
 
 *The lockfile repair set is the changed package plus its transitive reverse consumers declared through local sources.*
 
-For the current dcode source graph, a `libs/code/pyproject.toml` change requires consideration of `libs/code/uv.lock` and the direct editable consumers `libs/evals/uv.lock` and `libs/talon/uv.lock`; the helper computes the actual transitive closure from manifests rather than relying on this example. Conversely, an Evals manifest change has no consumer in its declared local-source graph, while a Talon manifest change affects Talon unless another discovered package locally consumes it.
+For the current dcode source graph, a `libs/code/pyproject.toml` change requires consideration of `libs/code/uv.lock` and the direct local-source consumers `libs/evals/uv.lock` and `libs/talon/uv.lock`; the helper computes the actual transitive closure from manifests rather than relying on this example. Conversely, an Evals manifest change has no consumer in its declared local-source graph, while a Talon manifest change affects Talon unless another discovered package locally consumes it.
 
 From the repository root, use the refresh helper for manifest changes:
 
@@ -179,17 +137,19 @@ Release-please manages a package only when it appears in both `release-please-co
 | --- | --- | --- |
 | `deepagents` | `libs/deepagents` | `0.7.32` |
 | `deepagents-acp` | `libs/acp` | `0.0.13` |
-| `deepagents-code` | `libs/code` | `0.2.1` |
+| `deepagents-code` | `libs/code` | `0.2.2` |
 | `deepagents-talon` | `libs/talon` | `0.1.0` |
 | `langchain-daytona` | `libs/partners/daytona` | `0.0.9` |
-| `langchain-modal` | `libs/partners/modal` | `0.0.6` |
+| `langchain-modal` | `libs/partners/modal` | `0.0.7` |
 | `langchain-runloop` | `libs/partners/runloop` | `0.0.7` |
 | `langchain-vercel-sandbox` | `libs/partners/vercel` | `0.0.2` |
-| `langchain-quickjs` | `libs/partners/quickjs` | `0.3.9` |
+| `langchain-quickjs` | `libs/partners/quickjs` | `0.3.10` |
 
 Configuration creates separate draft Python release PRs titled `release(${component}): ${version}`. All managed packages use pre-1.0 behavior: `feat` makes a patch bump and a breaking feature makes a minor bump. Generated changelogs show `feat`, `fix`, `perf`, and `revert`; docs, style, chore, refactor, test, CI, and hotfix entries are hidden.
 
 `skip-github-release` means release-please prepares PRs but `release.yml` publishes, tags, and creates GitHub releases. The detector recognizes a managed release only when the merge commit has a matching release title **and** changes that package's `CHANGELOG.md`. Ordinary empty commits are blocked before release-please can pathlessly fan out to every component.
+
+Before merge, the release-please parse check reconstructs the would-be squash-merge message and runs the exact-pinned Conventional Commits parser release-please uses. It rejects malformed bodies that release-please would otherwise silently drop from changelog processing and offers a `BEGIN_COMMIT_OVERRIDE` remediation; it deliberately validates parsing, not package-path or scope assignment.
 
 ## Release PR to publication
 

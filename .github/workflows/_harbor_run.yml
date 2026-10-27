@@ -974,20 +974,21 @@ jobs:
             --verifier-env 'JUDGE_REPEATS=1'
             --verifier-env 'JUDGE_CONCURRENCY=1'
           )
-          # Harbor's pi agent treats any OPENAI_BASE_URL (forwarded or in its own
-          # env) as a custom endpoint, so pi runs on its native providers without it.
-          # A non-default URL (e.g. a gateway) fails here rather than being bypassed.
-          if [ "$HARBOR_AGENT_IMPL" = "pi" ]; then
-            if [ "$OPENAI_BASE_URL" != "https://api.openai.com/v1" ]; then
-              echo "::error::pi needs a model_api agent arg to use a custom OPENAI_BASE_URL ($OPENAI_BASE_URL)"
-              exit 1
-            fi
+          # Harbor applies OPENAI_BASE_URL (forwarded or in its own env) to every
+          # provider, and pi treats it as a custom endpoint, so only OpenAI models on
+          # non-pi agents get it. Verifiers get it as a literal before the unset.
+          # A non-default URL (e.g. a gateway) fails pi here rather than being bypassed.
+          model_provider="${HARBOR_MODEL%%:*}"
+          verifier_env_args+=(--verifier-env "OPENAI_BASE_URL=$OPENAI_BASE_URL")
+          if [ "$HARBOR_AGENT_IMPL" = "pi" ] && [ "$OPENAI_BASE_URL" != "https://api.openai.com/v1" ]; then
+            echo "::error::pi needs a model_api agent arg to use a custom OPENAI_BASE_URL ($OPENAI_BASE_URL)"
+            exit 1
+          fi
+          if [ "$HARBOR_AGENT_IMPL" = "pi" ] || [ "$model_provider" != "openai" ]; then
             unset OPENAI_BASE_URL
           else
             agent_env_args+=(--agent-env 'OPENAI_BASE_URL=${OPENAI_BASE_URL}')
-            verifier_env_args+=(--verifier-env 'OPENAI_BASE_URL=${OPENAI_BASE_URL}')
           fi
-          model_provider="${HARBOR_MODEL%%:*}"
           case "$model_provider" in
             anthropic)    agent_env_args+=(--agent-env 'ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}') ;;
             openai)       agent_env_args+=(--agent-env 'OPENAI_API_KEY=${OPENAI_API_KEY}') ;;

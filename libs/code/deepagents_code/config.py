@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import functools
+import hashlib
 import importlib
 import json
 import keyword
@@ -2294,6 +2295,14 @@ _editable_cache: tuple[bool, str | None] | None = None
 
 _langsmith_url_cache: tuple[str, str] | None = None
 """Module-level cache for successful LangSmith project URL lookups."""
+
+_langsmith_url_error_cache: tuple[str, str, LangSmithApiError] | None = None
+"""Module-level cache for LangSmith project lookups rejected with 401 or 403.
+
+Keyed by project name and a fingerprint of the API key. A rejected key does
+not gain access during the session, so a retry only adds latency, but a
+different key gets a fresh lookup. Timeouts and network errors are not cached.
+"""
 
 _LANGSMITH_URL_LOOKUP_TIMEOUT_SECONDS = 2.0
 """Max seconds to wait for LangSmith project URL lookup.
@@ -5411,6 +5420,46 @@ class LangSmithProjectNotFoundError(LangSmithApiError):
     """
 
 
+class LangSmithPermissionError(LangSmithApiError):
+    """The LangSmith API key cannot read projects (lookup returned 403).
+
+    A key can have permission to write traces but not to read projects.
+    The trace URL cannot be resolved with such a key.
+    """
+
+
+_LANGSMITH_REJECTED_STATUSES = frozenset({401, 403})
+"""HTTP statuses that reject the API key itself and are cached per session."""
+
+
+def _langsmith_http_status(exc: BaseException) -> int | None:
+    """Find the HTTP status code behind a LangSmith SDK error.
+
+    The SDK raises its own exception types while it handles the HTTP error
+    from `requests`/`httpx`, so the response is on an exception further down
+    the `__cause__`/`__context__` chain, not on `exc` itself.
+
+    Args:
+        exc: Exception raised by the LangSmith SDK.
+
+    Returns:
+        The HTTP status code, or `None` when no exception in the chain has a
+            response (for example, a connection error).
+    """
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        # Do not test `response` for truthiness: `requests.Response` is falsy
+        # for 4xx/5xx statuses.
+        response = getattr(current, "response", None)
+        status = getattr(response, "status_code", None)
+        if isinstance(status, int):
+            return status
+        current = current.__cause__ or current.__context__
+    return None
+
+
 def _is_langsmith_not_found(exc: Exception) -> bool:
     """Whether a LangSmith SDK error indicates the project does not exist.
 
@@ -5422,6 +5471,127 @@ def _is_langsmith_not_found(exc: Exception) -> bool:
     except ImportError:
         return False
     return isinstance(exc, LangSmithNotFoundError)
+
+
+def _is_langsmith_user_error(exc: Exception) -> bool:
+    """Whether a LangSmith SDK error reports a client configuration problem.
+
+    Returns:
+        `True` for a `LangSmithUserError`, `False` otherwise.
+    """
+    try:
+        from langsmith.utils import LangSmithUserError
+    except ImportError:
+        return False
+    return isinstance(exc, LangSmithUserError)
+
+
+def _rejected_lookup_error(status: int, exc: Exception) -> LangSmithApiError:
+    """Build the typed error for a lookup that the server rejected (401/403).
+
+    Args:
+        status: HTTP status of the rejected request.
+        exc: Exception raised by the LangSmith SDK.
+
+    Returns:
+        `LangSmithPermissionError` for a 403, `LangSmithApiError` otherwise.
+    """
+    msg = str(exc) or repr(exc)
+    # The SDK raises `LangSmithUserError` for a 403 caused by an org-scoped
+    # key without a workspace ID. Its message tells the user what to set, so
+    # do not report it as a missing permission.
+    if status == 403 and not _is_langsmith_user_error(exc):  # noqa: PLR2004  # HTTP Forbidden
+        return LangSmithPermissionError(msg)
+    return LangSmithApiError(msg)
+
+
+def _lookup_failure(project_name: str, exc: Exception) -> LangSmithApiError:
+    """Log a failed project lookup and convert it to a typed error.
+
+    A 401 or 403 is an expected configuration problem, so it gets one log
+    line. Other failures keep the full traceback for diagnosis.
+
+    Args:
+        project_name: LangSmith project name that was looked up.
+        exc: Exception raised by the LangSmith SDK.
+
+    Returns:
+        The typed error to raise from `exc`.
+    """
+    status = _langsmith_http_status(exc)
+    if status in _LANGSMITH_REJECTED_STATUSES:
+        logger.debug(
+            "LangSmith project lookup for '%s' failed with HTTP %d",
+            project_name,
+            status,
+        )
+        return _rejected_lookup_error(status, exc)
+    logger.debug(
+        "Could not fetch LangSmith project URL for '%s'",
+        project_name,
+        exc_info=(type(exc), exc, exc.__traceback__),
+    )
+    msg = str(exc) or repr(exc)
+    if _is_langsmith_not_found(exc):
+        return LangSmithProjectNotFoundError(msg)
+    return LangSmithApiError(msg)
+
+
+def _langsmith_key_fingerprint(api_key: str | None) -> str:
+    """Return a short, non-reversible fingerprint of a LangSmith API key.
+
+    Returns:
+        A hex digest prefix, or an empty string when no key is set.
+    """
+    if not api_key:
+        return ""
+    return hashlib.sha256(api_key.encode()).hexdigest()[:16]
+
+
+def _raise_cached_lookup_error(project_name: str, key_fingerprint: str) -> None:
+    """Re-raise a cached 401/403 for this project and key without a network call.
+
+    Each call raises a new exception, so repeated raises do not grow the
+    traceback of the cached instance.
+
+    Args:
+        project_name: LangSmith project name to look up.
+        key_fingerprint: Fingerprint of the API key used for the lookup.
+
+    Raises:
+        LangSmithApiError: a copy of the cached error, chained to the
+            original SDK exception.
+    """  # noqa: DOC502 - raises a copy built with `type(cached_error)`
+    if _langsmith_url_error_cache is None:
+        return
+    cached_name, cached_key, cached_error = _langsmith_url_error_cache
+    if (cached_name, cached_key) == (project_name, key_fingerprint):
+        raise type(cached_error)(*cached_error.args) from cached_error.__cause__
+
+
+def _configured_project_url(project_name: str) -> str | None:
+    """Return the project URL set in the environment for `project_name`.
+
+    The URL applies only to the project named by the same environment, so a
+    user who switches to another project does not get links to the wrong one.
+
+    Args:
+        project_name: LangSmith project name being resolved.
+
+    Returns:
+        The configured URL, or `None` when unset, invalid, or for another
+            project.
+    """
+    from deepagents_code._env_vars import LANGSMITH_PROJECT, LANGSMITH_PROJECT_URL
+
+    environ = active_environment()
+    url = environ.get(LANGSMITH_PROJECT_URL, "").strip()
+    if not url or environ.get(LANGSMITH_PROJECT) != project_name:
+        return None
+    if not is_http_url(url):
+        logger.warning("Ignoring %s: not an http(s) URL", LANGSMITH_PROJECT_URL)
+        return None
+    return url
 
 
 def _assemble_langsmith_thread_url(project_url: str, thread_id: str) -> str:
@@ -5442,7 +5612,13 @@ def fetch_langsmith_project_url_or_raise(project_name: str) -> str:
     """Fetch the LangSmith project URL, raising on any failure.
 
     Successful results are cached at module level so repeated calls do not
-    make additional network requests.
+    make additional network requests. A 401 or 403 is also cached for the
+    same API key and is re-raised without a network call, because a rejected
+    key does not gain access during the session. A different key gets a fresh
+    lookup. Timeouts and network errors are not cached.
+
+    When the environment sets the project URL for this project
+    (`DEEPAGENTS_CODE_LANGSMITH_PROJECT_URL`), it is returned without a lookup.
 
     The network call runs in a daemon thread with a hard timeout of
     `_LANGSMITH_URL_LOOKUP_TIMEOUT_SECONDS`, so this function blocks the
@@ -5458,16 +5634,29 @@ def fetch_langsmith_project_url_or_raise(project_name: str) -> str:
         LangSmithImportError: `langsmith` is not installed.
         LangSmithLookupTimeoutError: lookup exceeded the hard timeout.
         LangSmithProjectNotFoundError: the project does not exist yet (404).
+        LangSmithPermissionError: the API key cannot read projects (403).
         LangSmithApiError: the SDK call raised (auth, network, etc.);
             wraps the original exception in `__cause__`.
-    """
-    global _langsmith_url_cache  # noqa: PLW0603  # Module-level cache requires global statement
+    """  # noqa: DOC502 - subclasses are built by `_lookup_failure`
+    global _langsmith_url_cache, _langsmith_url_error_cache  # noqa: PLW0603  # Module-level caches require global statement
 
+    if configured := _configured_project_url(project_name):
+        return configured
     if _langsmith_url_cache is not None:
         cached_name, cached_url = _langsmith_url_cache
         if cached_name == project_name:
             return cached_url
         # Different project name — fall through to fetch.
+
+    from deepagents_code.model_config import resolve_env_var
+
+    # Explicit api_key because Client() reads os.environ directly
+    # and doesn't know about the DEEPAGENTS_CODE_ prefix.
+    api_key = resolve_env_var("LANGSMITH_API_KEY") or resolve_env_var(
+        "LANGCHAIN_API_KEY"
+    )
+    key_fingerprint = _langsmith_key_fingerprint(api_key)
+    _raise_cached_lookup_error(project_name, key_fingerprint)
 
     try:
         from langsmith import Client
@@ -5487,13 +5676,6 @@ def fetch_langsmith_project_url_or_raise(project_name: str) -> str:
     def _lookup_url() -> None:
         nonlocal result, lookup_error
         try:
-            from deepagents_code.model_config import resolve_env_var
-
-            # Explicit api_key because Client() reads os.environ directly
-            # and doesn't know about the DEEPAGENTS_CODE_ prefix.
-            api_key = resolve_env_var("LANGSMITH_API_KEY") or resolve_env_var(
-                "LANGCHAIN_API_KEY"
-            )
             project = Client(api_key=api_key).read_project(project_name=project_name)
             result = project.url or None
         except Exception as exc:  # noqa: BLE001  # LangSmith SDK error types are not stable
@@ -5517,19 +5699,10 @@ def fetch_langsmith_project_url_or_raise(project_name: str) -> str:
         raise LangSmithLookupTimeoutError(msg)
 
     if lookup_error is not None:
-        logger.debug(
-            "Could not fetch LangSmith project URL for '%s'",
-            project_name,
-            exc_info=(
-                type(lookup_error),
-                lookup_error,
-                lookup_error.__traceback__,
-            ),
-        )
-        msg = str(lookup_error) or repr(lookup_error)
-        if _is_langsmith_not_found(lookup_error):
-            raise LangSmithProjectNotFoundError(msg) from lookup_error
-        raise LangSmithApiError(msg) from lookup_error
+        error = _lookup_failure(project_name, lookup_error)
+        if _langsmith_http_status(lookup_error) in _LANGSMITH_REJECTED_STATUSES:
+            _langsmith_url_error_cache = (project_name, key_fingerprint, error)
+        raise error from lookup_error
 
     if not result:
         # SDK returned a project with an empty URL — treat as an API anomaly.
@@ -5598,7 +5771,11 @@ def get_cached_langsmith_thread_url(thread_id: str) -> str | None:
         otherwise `None`.
     """
     project_name = get_langsmith_project_name()
-    if not project_name or _langsmith_url_cache is None:
+    if not project_name:
+        return None
+    if configured := _configured_project_url(project_name):
+        return _assemble_langsmith_thread_url(configured, thread_id)
+    if _langsmith_url_cache is None:
         return None
 
     cached_name, cached_url = _langsmith_url_cache
@@ -5608,9 +5785,10 @@ def get_cached_langsmith_thread_url(thread_id: str) -> str | None:
 
 
 def reset_langsmith_url_cache() -> None:
-    """Reset the LangSmith URL cache (for testing)."""
-    global _langsmith_url_cache  # noqa: PLW0603  # Module-level cache requires global statement
+    """Reset the LangSmith URL cache and cached 401/403 rejections (for testing)."""
+    global _langsmith_url_cache, _langsmith_url_error_cache  # noqa: PLW0603  # Module-level caches require global statement
     _langsmith_url_cache = None
+    _langsmith_url_error_cache = None
 
 
 def get_default_coding_instructions() -> str:

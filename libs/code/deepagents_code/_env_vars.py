@@ -380,6 +380,14 @@ KITTY_KEYBOARD = "DEEPAGENTS_CODE_KITTY_KEYBOARD"
 LANGSMITH_PROJECT = "DEEPAGENTS_CODE_LANGSMITH_PROJECT"
 """Override LangSmith project name for agent traces."""
 
+LANGSMITH_PROJECT_URL = "DEEPAGENTS_CODE_LANGSMITH_PROJECT_URL"
+"""LangSmith URL of the project named by `DEEPAGENTS_CODE_LANGSMITH_PROJECT`.
+
+When set, thread links and `/trace` use this URL instead of looking the project
+up, so the API key does not need project read access. It is ignored when the
+active project is a different one.
+"""
+
 LANGSMITH_REDACT = "DEEPAGENTS_CODE_LANGSMITH_REDACT"
 """Toggle LangSmith secret redaction for agent traces (defaults to on)."""
 

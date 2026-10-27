@@ -4,6 +4,7 @@ import json
 import logging
 import subprocess
 import sys
+import threading
 import warnings
 from dataclasses import replace
 from pathlib import Path
@@ -24,6 +25,9 @@ from deepagents_code.config import (
     RECOMMENDED_SAFE_SHELL_COMMANDS,
     SHELL_ALLOW_ALL,
     Credentials,
+    LangSmithApiError,
+    LangSmithLookupTimeoutError,
+    LangSmithPermissionError,
     LangsmithShadowResult,
     ModelResult,
     _apply_default_langsmith_project,
@@ -41,6 +45,8 @@ from deepagents_code.config import (
     create_model,
     credentials,
     detect_provider,
+    fetch_langsmith_project_url,
+    fetch_langsmith_project_url_or_raise,
     get_langsmith_project_name,
     is_http_url,
     is_langsmith_redaction_enabled,
@@ -4894,12 +4900,253 @@ class TestQuietSdkLogging:
         assert runtime_logger.propagate is True
 
 
+def _langsmith_http_error(
+    status: int, error_type: type[Exception] | None = None
+) -> Exception:
+    """Build an error shaped like the one `langsmith.Client` raises for a status.
+
+    The SDK raises its own error type while it handles a `requests.HTTPError`,
+    so the response is only on the implicit `__context__`, not on the error.
+    """
+    import requests
+    from langsmith import utils as ls_utils
+
+    response = requests.Response()
+    response.status_code = status
+    http_error = requests.HTTPError(f"{status} Client Error", response=response)
+    error = (error_type or ls_utils.LangSmithError)(
+        f"Failed to GET /sessions in LangSmith API. {http_error!r}"
+    )
+    error.__context__ = http_error
+    return error
+
+
+def _langsmith_client(read_project: Mock) -> Mock:
+    """Build a stand-in for `langsmith.Client` that delegates `read_project`."""
+    client_cls = Mock()
+    client_cls.return_value.read_project = read_project
+    return client_cls
+
+
 class TestFetchLangsmithProjectUrl:
     """Tests for fetch_langsmith_project_url()."""
 
     def setup_method(self) -> None:
         """Clear LangSmith URL cache before each test."""
         reset_langsmith_url_cache()
+
+    def teardown_method(self) -> None:
+        """Do not leak cached lookups into other tests."""
+        reset_langsmith_url_cache()
+
+    def test_403_is_permission_error_and_cached(self) -> None:
+        """A 403 raises the permission error and is not looked up again."""
+        read_project = Mock(side_effect=_langsmith_http_error(403))
+        with patch("langsmith.Client", _langsmith_client(read_project)):
+            with pytest.raises(LangSmithPermissionError) as first:
+                fetch_langsmith_project_url_or_raise("proj")
+            with pytest.raises(LangSmithPermissionError) as second:
+                fetch_langsmith_project_url_or_raise("proj")
+            # The non-raising variant also reads the cached rejection.
+            assert fetch_langsmith_project_url("proj") is None
+
+        assert read_project.call_count == 1
+        assert second.value is not first.value
+        assert second.value.__cause__ is first.value.__cause__
+
+    def test_401_is_api_error_and_cached(self) -> None:
+        """A 401 stays a generic API error, and is also cached."""
+        from langsmith import utils as ls_utils
+
+        error = _langsmith_http_error(401, ls_utils.LangSmithAuthError)
+        read_project = Mock(side_effect=error)
+        with patch("langsmith.Client", _langsmith_client(read_project)):
+            for _ in range(2):
+                with pytest.raises(LangSmithApiError) as raised:
+                    fetch_langsmith_project_url_or_raise("proj")
+                assert not isinstance(raised.value, LangSmithPermissionError)
+
+        assert read_project.call_count == 1
+
+    def test_403_cache_is_per_project(self) -> None:
+        """A cached 403 for one project does not block another project."""
+        read_project = Mock(
+            side_effect=[_langsmith_http_error(403), Mock(url="https://ls/p/other")]
+        )
+        with patch("langsmith.Client", _langsmith_client(read_project)):
+            with pytest.raises(LangSmithPermissionError):
+                fetch_langsmith_project_url_or_raise("proj")
+            assert fetch_langsmith_project_url_or_raise("other") == (
+                "https://ls/p/other"
+            )
+
+    def test_configured_project_url_skips_lookup(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A project URL set in the environment is used without a lookup."""
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_PROJECT", "shared")
+        monkeypatch.setenv(
+            "DEEPAGENTS_CODE_LANGSMITH_PROJECT_URL", "https://ls/o/org/projects/p/1"
+        )
+        read_project = Mock(side_effect=_langsmith_http_error(403))
+        with patch("langsmith.Client", _langsmith_client(read_project)):
+            assert (
+                fetch_langsmith_project_url_or_raise("shared")
+                == "https://ls/o/org/projects/p/1"
+            )
+
+        read_project.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("project", "url"),
+        [
+            pytest.param("other", "https://ls/o/org/projects/p/1", id="other-project"),
+            pytest.param("shared", "not a url", id="invalid-url"),
+        ],
+    )
+    def test_configured_project_url_ignored(
+        self, monkeypatch: pytest.MonkeyPatch, project: str, url: str
+    ) -> None:
+        """The URL is ignored for another project or when it is not a URL."""
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_PROJECT", "shared")
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_PROJECT_URL", url)
+        read_project = Mock(return_value=Mock(url="https://ls/p/looked-up"))
+        with patch("langsmith.Client", _langsmith_client(read_project)):
+            assert fetch_langsmith_project_url_or_raise(project) == (
+                "https://ls/p/looked-up"
+            )
+
+        read_project.assert_called_once()
+
+    def test_403_cache_is_per_api_key(self) -> None:
+        """A new API key gets a fresh lookup instead of the old key's 403."""
+        keys = {"LANGSMITH_API_KEY": "old-key"}
+        read_project = Mock(
+            side_effect=[_langsmith_http_error(403), Mock(url="https://ls/p/proj")]
+        )
+        with (
+            patch("langsmith.Client", _langsmith_client(read_project)),
+            patch(
+                "deepagents_code.model_config.resolve_env_var",
+                side_effect=lambda name: keys.get(name),
+            ),
+        ):
+            with pytest.raises(LangSmithPermissionError):
+                fetch_langsmith_project_url_or_raise("proj")
+            keys["LANGSMITH_API_KEY"] = "new-key"
+            assert fetch_langsmith_project_url_or_raise("proj") == "https://ls/p/proj"
+
+    def test_server_error_is_not_cached_and_keeps_traceback(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A 5xx is unexpected: it is retried and logged with its traceback."""
+        caplog.set_level(logging.DEBUG, logger=config_module.__name__)
+        read_project = Mock(side_effect=_langsmith_http_error(500))
+        with patch("langsmith.Client", _langsmith_client(read_project)):
+            for _ in range(2):
+                with pytest.raises(LangSmithApiError) as raised:
+                    fetch_langsmith_project_url_or_raise("proj")
+                assert not isinstance(raised.value, LangSmithPermissionError)
+
+        assert read_project.call_count == 2
+        records = [r for r in caplog.records if r.name == config_module.__name__]
+        assert records
+        assert all(r.exc_info is not None for r in records)
+
+    def test_org_scoped_key_403_is_not_permission_error(self) -> None:
+        """The SDK's org-scoped-key 403 keeps its own configuration message."""
+        from langsmith import utils as ls_utils
+
+        error = _langsmith_http_error(403, ls_utils.LangSmithUserError)
+        read_project = Mock(side_effect=error)
+        with (
+            patch("langsmith.Client", _langsmith_client(read_project)),
+            pytest.raises(LangSmithApiError) as raised,
+        ):
+            fetch_langsmith_project_url_or_raise("proj")
+
+        assert not isinstance(raised.value, LangSmithPermissionError)
+
+    def test_timeout_is_not_cached(self) -> None:
+        """A timed-out lookup is tried again on the next call."""
+        release = threading.Event()
+        read_project = Mock(side_effect=lambda **_: release.wait(5))
+        try:
+            with (
+                patch("langsmith.Client", _langsmith_client(read_project)),
+                patch.object(
+                    config_module, "_LANGSMITH_URL_LOOKUP_TIMEOUT_SECONDS", 0.01
+                ),
+            ):
+                for _ in range(2):
+                    with pytest.raises(LangSmithLookupTimeoutError):
+                        fetch_langsmith_project_url_or_raise("proj")
+        finally:
+            release.set()
+
+        assert read_project.call_count == 2
+
+    def test_network_error_is_not_cached(self) -> None:
+        """An error without an HTTP response is tried again on the next call."""
+        from langsmith import utils as ls_utils
+
+        error = ls_utils.LangSmithConnectionError("Connection error")
+        read_project = Mock(side_effect=error)
+        with patch("langsmith.Client", _langsmith_client(read_project)):
+            for _ in range(2):
+                with pytest.raises(LangSmithApiError):
+                    fetch_langsmith_project_url_or_raise("proj")
+
+        assert read_project.call_count == 2
+
+    def test_reset_clears_cached_rejection(self) -> None:
+        """After a reset, the next call looks the project up again."""
+        read_project = Mock(
+            side_effect=[_langsmith_http_error(403), Mock(url="https://ls/p/proj")]
+        )
+        with patch("langsmith.Client", _langsmith_client(read_project)):
+            with pytest.raises(LangSmithPermissionError):
+                fetch_langsmith_project_url_or_raise("proj")
+            reset_langsmith_url_cache()
+            assert fetch_langsmith_project_url_or_raise("proj") == "https://ls/p/proj"
+
+    def test_403_logs_one_line_without_traceback(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A rejected lookup logs the status and project, not a traceback."""
+        caplog.set_level(logging.DEBUG, logger=config_module.__name__)
+        read_project = Mock(side_effect=_langsmith_http_error(403))
+        with (
+            patch("langsmith.Client", _langsmith_client(read_project)),
+            pytest.raises(LangSmithPermissionError),
+        ):
+            fetch_langsmith_project_url_or_raise("proj")
+
+        records = [r for r in caplog.records if r.name == config_module.__name__]
+        assert len(records) == 1
+        assert records[0].exc_info is None
+        assert "403" in records[0].getMessage()
+        assert "proj" in records[0].getMessage()
+        assert "\n" not in caplog.text.strip()
+
+    def test_network_error_logs_traceback(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """An error that is not an HTTP response keeps its traceback."""
+        from langsmith import utils as ls_utils
+
+        caplog.set_level(logging.DEBUG, logger=config_module.__name__)
+        error = ls_utils.LangSmithConnectionError("Connection error")
+        read_project = Mock(side_effect=error)
+        with (
+            patch("langsmith.Client", _langsmith_client(read_project)),
+            pytest.raises(LangSmithApiError),
+        ):
+            fetch_langsmith_project_url_or_raise("proj")
+
+        records = [r for r in caplog.records if r.name == config_module.__name__]
+        assert len(records) == 1
+        assert records[0].exc_info is not None
 
 
 class TestBuildLangsmithThreadUrl:

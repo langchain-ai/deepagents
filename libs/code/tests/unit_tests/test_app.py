@@ -5610,6 +5610,39 @@ class TestTraceCommand:
             assert "401 Unauthorized" in rendered
             assert "LANGSMITH_API_KEY" in rendered
             assert "Check your network" not in rendered
+            assert "permission" not in rendered
+
+    async def test_trace_shows_permission_message_when_lookup_forbidden(
+        self,
+    ) -> None:
+        """A 403 says the key lacks project read access, not that it is invalid."""
+        from deepagents_code.config import LangSmithPermissionError
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._session_state = TextualSessionState(thread_id="test-thread-123")
+
+            with (
+                patch(
+                    "deepagents_code.config.get_langsmith_project_name",
+                    return_value="proj",
+                ),
+                patch(
+                    "deepagents_code.config.fetch_langsmith_project_url_or_raise",
+                    side_effect=LangSmithPermissionError("403 Forbidden"),
+                ),
+                patch("deepagents_code.app.webbrowser.open") as mock_open,
+            ):
+                await app._handle_trace_command("/trace")
+                await pilot.pause()
+
+            app_msgs = app.query(AppMessage)
+            rendered = " ".join(str(w._content) for w in app_msgs)
+            assert "does not have permission to read project 'proj'" in rendered
+            assert "project read access" in rendered
+            assert "Verify LANGSMITH_API_KEY" not in rendered
+            mock_open.assert_not_called()
 
     async def test_trace_shows_friendly_message_when_project_not_found(self) -> None:
         """A not-found project shows a 'created on first trace' hint, not an error."""

@@ -13,6 +13,8 @@ class DeepAgentsLangGraph(LangGraph):
     graph is `configurable`, so pass it there for the graph factory to load.
     """
 
+    capabilities = LangGraph.capabilities.model_copy(update={"skills": True})
+
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         """Initialize the agent and forward `skills_dir` into `configurable`."""
         super().__init__(*args, **kwargs)

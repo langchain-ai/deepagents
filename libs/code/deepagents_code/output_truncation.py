@@ -247,7 +247,7 @@ def _model_name(message: AIMessage, model: str | BaseChatModel) -> str | None:
 
 
 class EmptyTruncatedReplyMiddleware(AgentMiddleware):
-    """Fail the run when the provider cut off a reply before any output.
+    """Fail the main run when the provider cut off a reply before any output.
 
     Without this, a reply with no text, no tool calls, and a truncation stop
     reason ends the run as a success. The empty message is checkpointed and
@@ -265,6 +265,8 @@ class EmptyTruncatedReplyMiddleware(AgentMiddleware):
 
     @staticmethod
     def _check(response: ModelResponse, request: ModelRequest) -> None:
+        if request.state.get("_deepagents_forked_context"):
+            return
         message = _final_ai_message(response)
         if message is None or has_visible_reply(message):
             return

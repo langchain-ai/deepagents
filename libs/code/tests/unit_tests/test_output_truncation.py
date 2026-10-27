@@ -12,6 +12,7 @@ import pytest
 from langchain.agents import create_agent
 from langchain.agents.middleware.types import ModelRequest, ModelResponse
 from langchain_core.language_models import BaseChatModel
+from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 from langgraph.checkpoint.memory import InMemorySaver
@@ -152,7 +153,7 @@ def _response(
 
 
 def _request() -> ModelRequest:
-    return cast("ModelRequest", SimpleNamespace(model="openai:gpt-6.1-sol"))
+    return cast("ModelRequest", SimpleNamespace(model="openai:gpt-6.1-sol", state={}))
 
 
 @pytest.mark.parametrize("asynchronous", [False, True])
@@ -207,6 +208,57 @@ def test_reply_with_output_or_normal_stop_passes_through(
 ) -> None:
     middleware = EmptyTruncatedReplyMiddleware()
     assert middleware.wrap_model_call(_request(), lambda _: response) is response
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.filterwarnings("ignore:The feature `forked subagents` is in beta")
+async def test_forked_subagent_keeps_empty_truncated_reply(
+    *, asynchronous: bool
+) -> None:
+    from deepagents import create_deep_agent
+    from langchain_core.messages import ToolMessage
+
+    model = GenericFakeChatModel(
+        messages=iter(
+            [
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "id": "task-1",
+                            "name": "task",
+                            "args": {
+                                "subagent_type": "general-purpose",
+                                "description": "Do the task",
+                            },
+                        }
+                    ],
+                ),
+                AIMessage(content="", response_metadata=_RESPONSES_INCOMPLETE),
+                AIMessage(content="Parent finished"),
+            ]
+        )
+    )
+    with patch.object(GenericFakeChatModel, "bind_tools", return_value=model):
+        graph = create_deep_agent(
+            model,
+            middleware=[EmptyTruncatedReplyMiddleware()],
+            subagents=[
+                {
+                    "name": "general-purpose",
+                    "description": "General-purpose subagent",
+                    "system_prompt": "Complete the task",
+                    "mode": "fork",
+                }
+            ],
+        )
+        inputs = {"messages": [HumanMessage(content="Delegate the task")]}
+        result = await graph.ainvoke(inputs) if asynchronous else graph.invoke(inputs)
+
+    task_result = next(m for m in result["messages"] if isinstance(m, ToolMessage))
+    assert task_result.content == ""
+    assert task_result.status == "success"
+    assert result["messages"][-1].text == "Parent finished"
 
 
 def test_zero_usage_does_not_blame_output_limit() -> None:

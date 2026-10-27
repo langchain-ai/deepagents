@@ -240,14 +240,19 @@ def test_runtime_model_switch_serialization(monkeypatch: pytest.MonkeyPatch) -> 
     assert payloads[2]["tools"][-1] == {"type": "tool_search"}
 
 
-def test_cli_graph_opt_in_keeps_core_immediate(
-    tmp_path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("setting", [None, "false"])
+def test_cli_graph_default_and_opt_out(
+    tmp_path, monkeypatch: pytest.MonkeyPatch, setting: str | None
 ) -> None:
     from deepagents_code.agent import create_cli_agent
 
-    monkeypatch.setenv("DEEPAGENTS_CODE_PROVIDER_TOOL_SEARCH", "true")
+    if setting is None:
+        monkeypatch.delenv("DEEPAGENTS_CODE_PROVIDER_TOOL_SEARCH", raising=False)
+    else:
+        monkeypatch.setenv("DEEPAGENTS_CODE_PROVIDER_TOOL_SEARCH", setting)
     payloads: list[dict] = []
     model = model_with_transport(payloads, [text_output()])
+    model.use_responses_api = True
     graph, _ = create_cli_agent(
         model,
         "native-search-test",
@@ -261,12 +266,16 @@ def test_cli_graph_opt_in_keeps_core_immediate(
     )
     graph.invoke({"messages": [HumanMessage("hello")]})
     tools = payloads[0]["tools"]
+    deferred = setting is None
     assert (
-        next(tool for tool in tools if tool.get("name") == "mcp_lookup")[
-            "defer_loading"
-        ]
-        is True
+        bool(
+            next(tool for tool in tools if tool.get("name") == "mcp_lookup").get(
+                "defer_loading"
+            )
+        )
+        is deferred
     )
+    assert any(tool.get("type") == "tool_search" for tool in tools) is deferred
     assert not next(tool for tool in tools if tool.get("name") == "read_file").get(
         "defer_loading"
     )

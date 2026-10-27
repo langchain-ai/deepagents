@@ -117,15 +117,15 @@ A server keeps the first workspace's tracing configuration for its lifetime. Wor
 
 ## Provider-native MCP tool search
 
-Native MCP tool discovery is experimental and disabled by default. Opt in through
-layered configuration, then `/reload`:
+Native MCP tool discovery is enabled by default for supported models. Disable it
+through layered configuration, then `/reload`:
 
 ```toml
 [models]
-provider_tool_search = true
+provider_tool_search = false
 ```
 
-Alternatively, set `DEEPAGENTS_CODE_PROVIDER_TOOL_SEARCH=true` before launch.
+Alternatively, set `DEEPAGENTS_CODE_PROVIDER_TOOL_SEARCH=false` before launch.
 Core coding tools remain immediately available. Only MCP tools exposed by the
 existing filters and skill policy are deferred; execution and approvals are unchanged.
 QuickJS retains its configured bindings but omits deferred schemas from its API reference.

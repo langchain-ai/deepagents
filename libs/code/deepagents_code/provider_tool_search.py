@@ -1,4 +1,4 @@
-"""Opt-in provider-native discovery for MCP tools."""
+"""Provider-native discovery for MCP tools on supported models."""
 
 from __future__ import annotations
 

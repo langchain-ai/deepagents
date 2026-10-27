@@ -47,6 +47,7 @@ _FIELDS = frozenset(
         "oauth",
         "allowedTools",
         "disabledTools",
+        "skillOnly",
     }
 )
 _ENUMS = {
@@ -461,6 +462,9 @@ def _validate_server(server: dict[str, object]) -> None:
 
 
 def _validate_fields(server: dict[str, object]) -> None:
+    if "skillOnly" in server and not isinstance(server["skillOnly"], bool):
+        msg = "MCP skillOnly must be a boolean"
+        raise TypeError(msg)
     for field in ("command", "url", "auth"):
         if field in server and not isinstance(server[field], str):
             msg = "MCP settings must contain strings"

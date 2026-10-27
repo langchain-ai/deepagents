@@ -10,6 +10,7 @@ import json
 from typing import Any, Literal
 
 import pytest
+from langchain.tools import ToolRuntime
 from langchain_core.messages import ToolMessage
 from langchain_core.tools import BaseTool, StructuredTool
 from langgraph.types import Command
@@ -710,16 +711,27 @@ async def test_ptc_install_and_eval_resolve_to_same_repl() -> None:
     state = {"_quickjs_slot_id": "ptc-shared-slot"}
     req = SimpleNamespace(tools=[_greet_tool(), _echo_tool("eval")], state=state)
     mw._prepare_for_call(req)
-    first = mw._registry.get(state["_quickjs_slot_id"])
-    outcome = await first.eval_async("typeof tools.greet")
-    assert outcome.error_type is None, outcome.error_message
-    assert outcome.result == "function"
+    assert mw._registry.get_if_exists(state["_quickjs_slot_id"]) is None
+    runtime = ToolRuntime(
+        state=state,
+        context={},
+        config={},
+        stream_writer=lambda _: None,
+        tools=mw.tools,
+        tool_call_id="lazy-ptc",
+        store=None,
+    )
+    try:
+        result = await mw.tools[0].ainvoke(
+            {"runtime": runtime, "code": "typeof tools.greet"}
+        )
+        assert result.content == "<result>function</result>"
+    finally:
+        mw._registry.close()
 
 
 async def test_middleware_eval_tool_returns_tool_message_only() -> None:
     from types import SimpleNamespace
-
-    from langchain.tools import ToolRuntime
 
     command_tool = _command_tool()
     mw = CodeInterpreterMiddleware(ptc=[command_tool])
@@ -747,8 +759,6 @@ async def test_middleware_eval_tool_returns_tool_message_only() -> None:
 
 async def test_mode_call_reinstalls_ptc_tools_for_each_eval_call() -> None:
     from types import SimpleNamespace
-
-    from langchain.tools import ToolRuntime
 
     greet_tool = _greet_tool()
     mw = CodeInterpreterMiddleware(ptc=[greet_tool], mode="call")

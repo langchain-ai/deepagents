@@ -24,6 +24,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import bsdiff4
 import pytest
 from langchain.agents import create_agent
+from langchain.tools import ToolRuntime
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage
 from pydantic import Field
@@ -73,7 +74,9 @@ def test_after_agent_snapshot_roundtrip_with_before_agent() -> None:
         )
         restore_slot_id = _assert_slot_update(before_update)
         restored = mw._registry.get(restore_slot_id)
-        assert restored.eval_sync("answer").result == "42"
+        assert (
+            restored.eval_sync("answer", snapshot_payload=materialized).result == "42"
+        )
     finally:
         mw._registry.close()
 
@@ -97,22 +100,52 @@ async def test_aafter_agent_snapshot_roundtrip_with_abefore_agent() -> None:
         )
         restore_slot_id = _assert_slot_update(before_update)
         restored = mw._registry.get(restore_slot_id)
-        assert restored.eval_sync("answer").result == "42"
+        assert (
+            restored.eval_sync("answer", snapshot_payload=materialized).result == "42"
+        )
     finally:
         mw._registry.close()
 
 
-def test_before_agent_clears_payload_on_restore_failure() -> None:
+@pytest.mark.parametrize("invoke_mode", ["invoke", "ainvoke"])
+async def test_restore_failure_is_deferred_until_eval(invoke_mode: str) -> None:
     mw = CodeInterpreterMiddleware()
+    state = {"_quickjs_snapshot_payload": b"not-a-snapshot"}
+    state.update(mw.before_agent(state=state, runtime=MagicMock()) or {})
+    assert mw._registry.get_if_exists(state["_quickjs_slot_id"]) is None
+    assert mw.after_agent(state, MagicMock()) is None
+    runtime = ToolRuntime(
+        state=state,
+        context={},
+        config={},
+        stream_writer=lambda _: None,
+        tools=mw.tools,
+        tool_call_id="restore-failure",
+        store=None,
+    )
     try:
-        update = mw.before_agent(
-            state={"_quickjs_snapshot_payload": b"not-a-snapshot"},
-            runtime=MagicMock(),
-        )
+        if invoke_mode == "ainvoke":
+            result = await mw.tools[0].ainvoke(
+                {"runtime": runtime, "code": "globalThis.executed = true"}
+            )
+        else:
+            result = mw.tools[0].invoke(
+                {"runtime": runtime, "code": "globalThis.executed = true"}
+            )
+        from langgraph.types import Command
 
-        _assert_slot_update(update)
-        assert update["_quickjs_snapshot_payload"] is None
-        assert update["_quickjs_snapshot_hmac"] is None
+        assert isinstance(result, Command)
+        assert result.update["_quickjs_snapshot_payload"] is None
+        assert result.update["_quickjs_snapshot_hmac"] is None
+        assert "_SnapshotRestoreError" in result.update["messages"][0].content
+        assert "requested code was not executed" in result.update["messages"][0].content
+        repl = mw._registry.get(state["_quickjs_slot_id"])
+        assert repl.eval_sync("typeof executed").result == "undefined"
+        update = mw.after_agent(state, MagicMock())
+        restored = replay_snapshot_chain(
+            state["_quickjs_snapshot_payload"], [update["_quickjs_snapshot_payload"]]
+        )
+        assert restored != b"not-a-snapshot"
     finally:
         mw._registry.close()
 
@@ -366,7 +399,7 @@ def test_after_agent_emits_patch_against_prior_state() -> None:
         )
         slot_id = _assert_slot_update(before_update)
         repl2 = mw._registry.get(slot_id)
-        repl2.eval_sync("globalThis.y = 2")
+        repl2.eval_sync("globalThis.y = 2", snapshot_payload=prior_full)
         second = mw.after_agent(
             state={
                 "_quickjs_slot_id": slot_id,
@@ -387,7 +420,7 @@ def test_after_agent_emits_patch_against_prior_state() -> None:
             state={"_quickjs_snapshot_payload": final}, runtime=MagicMock()
         )
         restored = mw._registry.get(_assert_slot_update(restore_update))
-        assert restored.eval_sync("x + y").result == "3"
+        assert restored.eval_sync("x + y", snapshot_payload=final).result == "3"
     finally:
         mw._registry.close()
 
@@ -706,9 +739,11 @@ def test_signed_snapshot_roundtrip_restores() -> None:
             },
             runtime=MagicMock(),
         )
-        assert before_update is None  # accepted, restored in place
+        assert before_update is None
         restored = mw._registry.get(_signing_thread_id(mw))
-        assert restored.eval_sync("answer").result == "42"
+        assert (
+            restored.eval_sync("answer", snapshot_payload=materialized).result == "42"
+        )
     finally:
         mw._registry.close()
 
@@ -847,7 +882,9 @@ async def test_asigned_snapshot_roundtrip_restores() -> None:
         )
         assert before_update is None
         restored = mw._registry.get(_signing_thread_id(mw))
-        assert restored.eval_sync("answer").result == "42"
+        assert (
+            restored.eval_sync("answer", snapshot_payload=materialized).result == "42"
+        )
     finally:
         mw._registry.close()
 
@@ -875,7 +912,9 @@ def test_no_key_restores_without_verification() -> None:
         )
         assert before_update is None
         restored = mw._registry.get(_signing_thread_id(mw))
-        assert restored.eval_sync("answer").result == "42"
+        assert (
+            restored.eval_sync("answer", snapshot_payload=materialized).result == "42"
+        )
     finally:
         mw._registry.close()
 
@@ -897,3 +936,90 @@ def test_snapshot_size_cap_clears_hmac() -> None:
         }
     finally:
         mw._registry.close()
+
+
+@pytest.mark.parametrize("invoke_mode", ["invoke", "ainvoke"])
+async def test_failed_restore_clears_checkpoint_before_agent_finishes(
+    invoke_mode: str,
+) -> None:
+    from langgraph.checkpoint.memory import InMemorySaver
+
+    from tests._common import FakeChatModel
+
+    key = b"restore-failure-test-key"
+    slot_id = "failed-restore-checkpoint"
+    payload = b"authenticated-but-invalid-snapshot"
+    middleware = CodeInterpreterMiddleware(snapshot_signing_key=key)
+    agent = create_agent(
+        model=FakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "eval",
+                                "args": {"code": "21 * 2"},
+                                "id": "restore",
+                                "type": "tool_call",
+                            }
+                        ],
+                    )
+                ]
+            )
+        ),
+        middleware=[middleware],
+        checkpointer=InMemorySaver(),
+        interrupt_after=["tools"],
+    )
+    config = {"configurable": {"thread_id": slot_id}}
+    agent.update_state(
+        config,
+        {
+            "_quickjs_slot_id": slot_id,
+            "_quickjs_snapshot_payload": ("snap", payload),
+            "_quickjs_snapshot_hmac": sign_snapshot(key, payload, slot_id),
+        },
+        as_node="CodeInterpreterMiddleware.after_agent",
+    )
+    assert agent.get_state(config).values.get("_quickjs_snapshot_hmac")
+    try:
+        inputs = {"messages": [HumanMessage(content="Evaluate.")]}
+        if invoke_mode == "ainvoke":
+            await agent.ainvoke(inputs, config)
+        else:
+            agent.invoke(inputs, config)
+        state = agent.get_state(config)
+        assert state.next
+        assert not state.values["_quickjs_snapshot_payload"]
+        assert state.values.get("_quickjs_snapshot_hmac") is None
+        assert "requested code was not executed" in state.values["messages"][-1].content
+    finally:
+        middleware._registry.close()
+
+
+@pytest.mark.parametrize("invoke_mode", ["invoke", "ainvoke"])
+async def test_restore_error_reaches_tool_boundary_before_code_runs(
+    invoke_mode: str,
+) -> None:
+    from langchain_quickjs._repl import _SnapshotRestoreError
+
+    middleware = CodeInterpreterMiddleware()
+    repl = middleware._registry.get("restore-error-boundary")
+
+    async def evaluate():
+        if invoke_mode == "ainvoke":
+            return await repl.eval_async(
+                "globalThis.executed = true", snapshot_payload=b"invalid"
+            )
+        return repl.eval_sync("globalThis.executed = true", snapshot_payload=b"invalid")
+
+    try:
+        with pytest.raises(
+            _SnapshotRestoreError, match="Failed to restore QuickJS snapshot"
+        ) as caught:
+            await evaluate()
+        assert isinstance(caught.value, RuntimeError)
+        assert repl.eval_sync("typeof executed").result == "undefined"
+    finally:
+        middleware._registry.close()

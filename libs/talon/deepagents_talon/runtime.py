@@ -23,6 +23,7 @@ from deepagents import create_deep_agent
 from deepagents.backends import CompositeBackend, LocalShellBackend, StateBackend
 from deepagents.middleware.filesystem import FilesystemMiddleware
 from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
+from deepagents.middleware.skills import SkillsMiddleware
 from deepagents.middleware.summarization import (
     SummarizationToolMiddleware,
     create_summarization_tool_middleware,
@@ -30,7 +31,7 @@ from deepagents.middleware.summarization import (
 from deepagents.profiles.provider.provider_profiles import apply_provider_profile
 from langchain.chat_models import init_chat_model
 from langchain_core.messages import HumanMessage
-from langchain_core.tools import tool
+from langchain_core.tools import BaseTool, tool
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.prebuilt import ToolNode
 from langgraph.types import Command
@@ -65,6 +66,7 @@ from deepagents_talon.interfaces import (
     ToolApprovalRequest,
 )
 from deepagents_talon.mcp import _cancel_mcp_elicitation
+from deepagents_talon.mcp_middleware import MCP_SKILL_ONLY_METADATA_KEY
 from deepagents_talon.messaging import ProgressMessages, progress_messages, send_message
 from deepagents_talon.model_selection import (
     ACTIVE_MODEL,
@@ -101,7 +103,6 @@ if TYPE_CHECKING:
     from langchain.agents.middleware import AgentState, InterruptOnConfig
     from langchain.agents.middleware.types import AgentMiddleware
     from langchain_core.language_models import BaseChatModel
-    from langchain_core.tools import BaseTool
     from langgraph.types import Checkpointer
 
 logger = logging.getLogger(__name__)
@@ -443,6 +444,14 @@ class DeepAgentRuntime:
         ]
         snapshot = self._approval_snapshot(approvals)
         tools = self._build_tools(runtime_tools)
+        skill_tools = [
+            item
+            for item in tools
+            if isinstance(item, BaseTool)
+            and (item.metadata or {}).get(MCP_SKILL_ONLY_METADATA_KEY) is True
+        ]
+        skill_tool_ids = {id(item) for item in skill_tools}
+        tools = [item for item in tools if id(item) not in skill_tool_ids]
         tools.extend(self.approval_store.tools(snapshot))
         interrupt_on = self._interrupt_on(snapshot)
         context_size = _context_size_from_env(self.env)
@@ -490,7 +499,6 @@ class DeepAgentRuntime:
             ),
             ModelSelectionMiddleware(),
             ProgressMessages(),
-            *self.middleware,
         ]
         task_tools = TaskTools(
             model,
@@ -503,7 +511,9 @@ class DeepAgentRuntime:
         )
         middleware.append(task_tools)
         middleware.append(self.background.configured(resolved))
-        if context_size is not None and not _has_summarization_tool_middleware(middleware):
+        if context_size is not None and not _has_summarization_tool_middleware(
+            [*middleware, *self.middleware]
+        ):
             middleware.append(create_summarization_tool_middleware(model, self.backend))
         diagnostics = ContextDoctor(
             backend=self.backend,
@@ -511,13 +521,15 @@ class DeepAgentRuntime:
             skills=tuple(self._resolve_skills() or ()),
             memory=tuple(self._resolve_memory() or ()),
         )
+        middleware.extend(_skill_middleware(self.backend, diagnostics.skills, skill_tools))
+        middleware.extend(self.middleware)
         graph = create_deep_agent(
             model=model,
             tools=tools,
             system_prompt=diagnostics.system_prompt,
             subagents=resolved or None,
             backend=self.backend,
-            skills=list(diagnostics.skills) or None,
+            skills=None if skill_tools else list(diagnostics.skills) or None,
             middleware=middleware,
             interrupt_on=interrupt_on,
             memory=list(diagnostics.memory) or None,
@@ -1811,6 +1823,18 @@ def _local_subagent_options(spec: LocalSubAgent, frontmatter: dict[str, object])
         raise ValueError(msg)  # noqa: TRY004  # invalid frontmatter is one ValueError contract
     if web:
         spec["web"] = True
+
+
+class _TalonSkillsMiddleware(SkillsMiddleware):
+    """Disclose tools before Talon's MCP authorization wrapper runs."""
+
+
+def _skill_middleware(
+    backend: BackendProtocol, sources: Sequence[str], tools: Sequence[BaseTool]
+) -> list[SkillsMiddleware]:
+    if not tools or not sources:
+        return []
+    return [_TalonSkillsMiddleware(backend=backend, sources=list(sources), tools=tools)]
 
 
 def _resolve_local_tools(

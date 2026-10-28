@@ -166,3 +166,6 @@ markers = [
 division-by-zero = "error"
 # Add rules here to ignore, e.g.:
 # possibly-unresolved-reference = "ignore"
+
+[tool.uv.sources]
+langchain-core = { git = "https://github.com/langchain-ai/langchain", subdirectory = "libs/core", branch = "bengret/core/notification-message-factory" }

@@ -18,9 +18,9 @@ if TYPE_CHECKING:
     )
 
 from deepagents_code.plugins import discover_plugins
+from deepagents_code.plugins.discovery import load_record_marketplace
 from deepagents_code.plugins.marketplace import (
     MarketplaceError,
-    load_marketplace_location,
     materialize_plugin_source,
     redact_marketplace_source,
     redact_urls_in_text,
@@ -346,7 +346,7 @@ def _load_manager_state(
     marketplaces: list[_MarketplaceRow] = []
     for name, record in sorted(records.items()):
         try:
-            marketplace = load_marketplace_location(Path(record.install_location))
+            marketplace = load_record_marketplace(record)
         except MarketplaceError as exc:
             detail = redact_urls_in_text(str(exc))
             if record.source_type not in {"directory", "file"}:

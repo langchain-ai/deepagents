@@ -84,6 +84,8 @@ The layers compose: any LangGraph `CompiledStateGraph` can be passed in as a sub
 
 ## 📕 Releases & Versioning
 
+See the [changelog](https://github.com/langchain-ai/deepagents/blob/main/libs/deepagents/CHANGELOG.md) for release history.
+
 See our [Releases](https://docs.langchain.com/oss/python/release-policy) and [Versioning](https://docs.langchain.com/oss/python/versioning) policies.
 
 ## 🔒 Security

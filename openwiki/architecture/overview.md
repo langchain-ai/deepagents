@@ -1,10 +1,11 @@
 ---
-type: "Reference"
-title: "Repository Architecture Overview"
-openwiki_generated: true
+type: architecture overview
+title: Repository Architecture Overview
+description: Package graph, runtime ownership, Python and release boundaries, and the distinction between published dependency contracts and local development sources in the Deep Agents monorepo.
+tags: [architecture, monorepo, python, dependencies, releases]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-10-27T08:05:40.296Z
+    at: 2026-10-28T08:04:17.781Z
 sources:
   - id: openwiki-source-9a1c436646ef8c4f6dde787a
     resource: repo://.github/RELEASING.md
@@ -44,7 +45,7 @@ sources:
     resource: repo://README.md
   - id: openwiki-source-482fa4ca84f42b04ba025fc1
     resource: repo://release-please-config.json
-generated: { by: "openwiki/0.4.2", at: "2026-10-27T08:05:40.296Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-10-28T08:04:17.781Z" }
 ---
 
 
@@ -68,7 +69,7 @@ This repository is a Python monorepo of independently packaged components, not o
 | `deepagents-code` / `dcode` | `0.2.2` | `>=3.14,<3.15` | Terminal coding-agent product. |
 | `deepagents-talon` | `0.1.0` | `>=3.14,<3.15` | Experimental local host for channels and schedules. |
 | `deepagents-evals` | `0.0.1` | `>=3.14,<3.15` | Behavioral-evaluation and Harbor benchmark suite. |
-| `langchain-quickjs` | `0.3.10` | `>=3.11,<4.0` | JavaScript REPL middleware partner. |
+| `langchain-quickjs` | `0.3.11` | `>=3.11,<4.0` | JavaScript REPL middleware partner. |
 
 Release Please separately manages the SDK, ACP, dcode, Talon, and the Daytona, Modal, Runloop, Vercel, and QuickJS partners; `deepagents-evals` is not managed. The manifest is the latest released baseline, while each package's `pyproject.toml` is source distribution metadata. Release Please creates a separate draft release PR per managed component. On merging that PR, the release workflow performs checks, publishes to PyPI, and creates the GitHub release; Release Please itself skips GitHub release creation.
 
@@ -119,7 +120,7 @@ flowchart TD
 
 ### Published and optional contracts
 
-ACP requires `deepagents` without a version bound, `agent-client-protocol>=0.10.1`, and `python-dotenv>=1.2.2`. dcode pins `deepagents==0.7.32`, requires ACP `>=0.0.13,<1.0.0`, and includes QuickJS `>=0.3.10,<0.4.0` as a normal dependency. Talon requires SDK `>=0.7.32` and dcode `>=0.2.2,<1.0.0`; evals requires SDK `>=0.7.32`, dcode `>=0.2.1`, and QuickJS `>=0.3.3`; QuickJS supports SDK `>=0.7.32,<0.8.0`.
+ACP requires `deepagents` without a version bound, `agent-client-protocol>=0.10.1`, and `python-dotenv>=1.2.2`. dcode pins `deepagents==0.7.32`, requires ACP `>=0.0.13,<1.0.0`, and includes QuickJS `>=0.3.11,<0.4.0` as a normal dependency. Talon requires SDK `>=0.7.32` and dcode `>=0.2.2,<1.0.0`; evals requires SDK `>=0.7.32`, dcode `>=0.2.1`, and QuickJS `>=0.3.3`; QuickJS supports SDK `>=0.7.32,<0.8.0`.
 
 The SDK keeps AWS, QuickJS, and video support optional, allowing a consumer to choose these integration dependencies. dcode deliberately has a larger normal install surface, including `langsmith[sandbox]` and QuickJS. It exposes six external sandbox-provider extras—`agentcore`, `daytona`, `modal`, `openshell`, `runloop`, and `vercel`—with `all-sandboxes` aggregating them. Its compatibility `quickjs` extra is empty because QuickJS is already installed normally. Extras make an adapter package available; provider credentials, remote resource lifecycle, and implementation stay at the provider boundary.
 

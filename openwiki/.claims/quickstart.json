@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:1ce12be8c3ffe795e9f96917b3d378327af683cec109abff5c547bbbff3f6174",
+  "pageVersion": "sha256:90e2e832f2ee23c20559ac51b9809c7ee6a1603f5c61c0cb068e403f197c0d89",
   "claims": [
     {
       "id": "claim_7da573d3acfd4e42a24d96f63c118dc3",
@@ -181,28 +181,6 @@
       ]
     },
     {
-      "id": "claim_07991531861d426ba85ccf6e30c721a5",
-      "statement": "The evals lock records `deepagents-code` as a sibling directory source, whereas the Talon lock records it as an editable sibling source; both consumer resolutions include dcode metadata and may need refresh after a dcode manifest change.",
-      "evidence": [
-        {
-          "resource": "repo://libs/evals/pyproject.toml#L139-L145",
-          "version": "repo-lines-v1:sha256:8759133432709f5a0905767e84ecc9c3ded1ac0a56389a5cf94865bdd9e9320f:eyJzZWxlY3RlZExpbmVDb3VudCI6NywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMTZlZjAyYjBhNGFiNjg1M2FlNmIyYTI1YjNiMzU4ZmU1ODM3OTk3YjM0ZWU0MWY5MjI3Njc5YWExYzkwMWM4NyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNDY1NzQ2ZWY3MDVmYTYyYzg4ZGM5Y2RhNTEyM2M1YzRkOTRjNDliMjcyYWY1M2NmMjE1N2Q0MzRmMmYyMzIzMCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMjZmNzVhYTBlZjE5OTQwNjI1N2EzMzliZDVmYTVhODVkMTQ0ZWEwZTZmN2NjZWE2ZjE0Y2MxMDdlYzA2MmVjZSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMGE2N2ZjNjQxZDQ1NTI1ODk3YzE0MWUyODlhYTJhNDk0ZWYxZWExZjNmZDZkMjg5MmY3ODg3N2Q0MWJlNmM5YiJ9"
-        },
-        {
-          "resource": "repo://libs/evals/uv.lock#L780-L786",
-          "version": "repo-lines-v1:sha256:166ee5f06a2779fad84b7258dd9f759dda63db0422977f87efcaa2510f304780:eyJzZWxlY3RlZExpbmVDb3VudCI6NywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYjZhMjgwOTM5NDBmMjI5ZGYzNTAyMjVhYjFmODc2ZmJhYzExNWQ3NjFkNmQ0Yzc3ZDJlNWI4YWJjYjBmYWZjMiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiOThmY2JkYWNmODBmNjYxNzU4NjI4ZWNjNTY0ZTA4N2FmNjMzNTFkMmFkOTc0NjFiZTc4NjU5NGIwMjc2OWVhZiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiYmQwZTI3NGZlZDNjYzMxNmEwNWU5OTM1OTFiYzQ0ZmM5MmM1ZjdlMDY3ZDBkODYwNTQ4NTU4ODk4ZmNmZjU2NiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiOTdhZTZiYjFkNWY4NzNkZjU3YTk2NDljMGMyOGY0YmFmZjEwNjk3YTEzY2EwZGZjNGVlMjBhZmU5YWNlZDA3YSJ9"
-        },
-        {
-          "resource": "repo://libs/talon/pyproject.toml#L125-L130",
-          "version": "repo-lines-v1:sha256:89786e7afa792e87cf925d53f517ae67224876727f647b601ca58ee15c5c0589:eyJzZWxlY3RlZExpbmVDb3VudCI6NiwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMTZlZjAyYjBhNGFiNjg1M2FlNmIyYTI1YjNiMzU4ZmU1ODM3OTk3YjM0ZWU0MWY5MjI3Njc5YWExYzkwMWM4NyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNDY1NzQ2ZWY3MDVmYTYyYzg4ZGM5Y2RhNTEyM2M1YzRkOTRjNDliMjcyYWY1M2NmMjE1N2Q0MzRmMmYyMzIzMCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZDMxYWFiNDQ2YTRiN2M4YjdkOWUzYWJiMzczNDU2YzNlYzY1MzAxNmE4MzRkZDZlMmYxYjQzZGU4YTlkMTIzMSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZjZmZTE5ZWUzN2I3NmNkOGYxOWZlZTkxZWZhMDFhZmY1ZTk5NGNiYWIxNWQ2YzBmZTc0NjNiOWNiYzhhMWYzOCJ9"
-        },
-        {
-          "resource": "repo://libs/talon/uv.lock#L982-L989",
-          "version": "repo-lines-v1:sha256:c08fe5b0c9d3e595df3426c82e7adfc1075a1ebe094ea0f08215af641f6bf579:eyJzZWxlY3RlZExpbmVDb3VudCI6OCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYjZhMjgwOTM5NDBmMjI5ZGYzNTAyMjVhYjFmODc2ZmJhYzExNWQ3NjFkNmQ0Yzc3ZDJlNWI4YWJjYjBmYWZjMiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiZTA3MDY2NzhiMDQzYmMwMjZlNmE2Y2Y2ZWY3MzNiZDcxODkyODY5MjU4MDlkY2Y0YTBiNzUwMjMwNzE3ZGU2MyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiYmQwZTI3NGZlZDNjYzMxNmEwNWU5OTM1OTFiYzQ0ZmM5MmM1ZjdlMDY3ZDBkODYwNTQ4NTU4ODk4ZmNmZjU2NiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNWI1NWEyNWVmMDc3NmNhZjg3NDZkMTIwOGNhODQ5ZjI0NGMwYzVlMDAxZDM5YzI0MGJlMDA4Zjc3Y2RhMDNjNiJ9"
-        }
-      ]
-    },
-    {
       "id": "claim_d41d228c697d4267a90c6b536b90d39e",
       "statement": "Release Please manages separate release components for the SDK, ACP, dcode, Talon, and the Daytona, Modal, Runloop, Vercel, and QuickJS partners; the independently versioned evals package is not Release Please-managed.",
       "evidence": [
@@ -237,10 +215,24 @@
           "version": "repo-lines-v1:sha256:81e3c8181fe573d965076e64cd3716cac5e31e66f2ecda4c869fa543e23abdfd:eyJzZWxlY3RlZExpbmVDb3VudCI6MywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYzQ4Y2QxODgwZGI0YWIzZmMyZjhmMjM4ZDAzNjllNDFkODlhMzMwMmEzNzMyYmQ4ZmRiOTUzNWE5YmI0ZWRkOCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiODA3ZmIzYTI4MGUyM2M3NjAxMzMyNDA4NjE3YjJlNjNlYWRkMzY2ODRiNWQxZGI4YzYwYmRmM2RlYzVjOGE3NCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiYzFlNDcwZGRlZmQ2OTliZDRkZjNkZGE0YjZiY2NiZmEyMDRiMmYzMDg0MGIyMDlkOGU1YjA3N2ViZjJhOWFkZiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMzc1MjgwNDhkZTMxMjJkYmJmN2RkYzlhM2RjYzA5MmNjYTE4ZWUxMmNlOTYyZTlkNTU3NzQ2YTEwMGVjODNiMCJ9"
         }
       ]
+    },
+    {
+      "id": "claim_76e4c36e9cae44fb82c03d2d368a610c",
+      "statement": "The current Release Please manifest baselines are `0.7.32` for the SDK, `0.0.13` for ACP, `0.2.2` for dcode, `0.1.0` for Talon, and `0.0.9`, `0.0.7`, `0.0.7`, `0.0.2`, and `0.3.11` respectively for the Daytona, Modal, Runloop, Vercel, and QuickJS partners; evals is at `0.0.1`.",
+      "evidence": [
+        {
+          "resource": "repo://.release-please-manifest.json#L1-L11",
+          "version": "repo-lines-v1:sha256:550e6f9a91786e785d2b76f2732d0989e591cb8bcaa5e8b0285e399f02a96931:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE2ZmIwOGZkYTFhY2I5NTdiNjExNmJkMzc4MTFhMWZlNDFhMDE2MTFjMDYzMWVkYmY3ODZkNjg4OWEyN2E1NWMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        },
+        {
+          "resource": "repo://libs/evals/pyproject.toml#L1-L8",
+          "version": "repo-lines-v1:sha256:3da2c692c4957914a1f1a0d568d79cc40a2fe7b34dc357f2f59ad33b6cf2101f:eyJzZWxlY3RlZExpbmVDb3VudCI6OCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNzAyYTgxYzM4MzZlZGVmMmQwYmExMWQyMzUzZmI2ZGFiYzc3NzE1MGE3Y2E4M2VhMGQ5ZTlhNzAzMTNmZWFiYiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiZWVhMDI0MDUzOTcwNzUwMGE1ZmQ2YjBmMGY4OTMzYjJmNDZlNDFjYTE2MDNmODU4MDgwNWEwMWYxYTMzZGNmNyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjAsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZTNiMGM0NDI5OGZjMWMxNDlhZmJmNGM4OTk2ZmI5MjQyN2FlNDFlNDY0OWI5MzRjYTQ5NTk5MWI3ODUyYjg1NSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNmU4MzQxNjM0MWRkYTQ5OGYxZmI0ZDFjMjhiMjllOTQ4MTU4YzRjMzlmNzc3ZjdmNGM2YzU1OWRiZmJkNzk5OSJ9"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-10-27T08:05:40.296Z"
+    "at": "2026-10-28T08:04:17.781Z"
   }
 }

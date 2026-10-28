@@ -5508,6 +5508,115 @@ class TestOpenRouterHeaders:
         assert call_kwargs["app_categories"] == ["cli-agent"]
 
 
+class TestOpenRouterPromptCaching:
+    """Claude requests opt into caching without changing routing or overrides."""
+
+    @pytest.fixture(autouse=True)
+    def _bypass_credential_check(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        clear_caches()
+        monkeypatch.setattr(
+            "deepagents_code.model_config.has_provider_credentials", lambda _: True
+        )
+
+    @pytest.mark.parametrize(
+        ("model_name", "params", "expected"),
+        [
+            ("anthropic/claude-sonnet-4-5", {}, {"type": "ephemeral"}),
+            ("deepseek/deepseek-chat", {}, None),
+            (
+                "anthropic/claude-sonnet-4-5",
+                {"model_kwargs": {"cache_control": {"type": "ephemeral", "ttl": "1h"}}},
+                {"type": "ephemeral", "ttl": "1h"},
+            ),
+            (
+                "anthropic/claude-sonnet-4-5",
+                {"model_kwargs": {"cache_control": None}},
+                None,
+            ),
+            ("anthropic/claude-sonnet-4-5", {"cache_control": None}, None),
+        ],
+    )
+    @patch("langchain.chat_models.init_chat_model")
+    def test_defaults_and_overrides(
+        self, mock_init: Mock, model_name: str, params: dict, expected: dict | None
+    ) -> None:
+        mock_init.return_value = _make_init_chat_model_mock()
+        original = dict(params)
+
+        create_model(f"openrouter:{model_name}", extra_kwargs=params)
+
+        kwargs = mock_init.call_args.kwargs
+        assert (
+            kwargs.get(
+                "cache_control", kwargs.get("model_kwargs", {}).get("cache_control")
+            )
+            == expected
+        )
+        assert "order" not in (kwargs.get("openrouter_provider") or {})
+        assert params == original
+
+    @pytest.mark.parametrize("asynchronous", [False, True])
+    @pytest.mark.parametrize("streaming", [False, True])
+    async def test_serialized_request(
+        self, asynchronous: bool, streaming: bool
+    ) -> None:
+        import httpx
+
+        openrouter = pytest.importorskip("openrouter")
+        requests: list[dict] = []
+
+        def respond(request: httpx.Request) -> httpx.Response:
+            requests.append(json.loads(request.content))
+            completion = {
+                "id": "test-completion",
+                "system_fingerprint": None,
+                "object": "chat.completion.chunk" if streaming else "chat.completion",
+                "created": 0,
+                "model": "anthropic/claude-sonnet-4-5",
+                "choices": [
+                    {
+                        "index": 0,
+                        "finish_reason": "stop",
+                        "delta" if streaming else "message": {
+                            "role": "assistant",
+                            "content": "Hello",
+                        },
+                    }
+                ],
+            }
+            if streaming:
+                return httpx.Response(
+                    200,
+                    headers={"content-type": "text/event-stream"},
+                    text=f"data: {json.dumps(completion)}\n\ndata: [DONE]\n\n",
+                )
+            return httpx.Response(200, json=completion)
+
+        transport = httpx.MockTransport(respond)
+        with httpx.Client(transport=transport) as client:
+            async with httpx.AsyncClient(transport=transport) as async_client:
+                sdk = openrouter.OpenRouter(
+                    api_key="test-key", client=client, async_client=async_client
+                )
+                model = create_model(
+                    "openrouter:anthropic/claude-sonnet-4-5",
+                    extra_kwargs={"api_key": "test-key", "client": sdk},
+                ).model
+                if asynchronous:
+                    if streaming:
+                        _ = [chunk async for chunk in model.astream("Hello")]
+                    else:
+                        await model.ainvoke("Hello")
+                elif streaming:
+                    list(model.stream("Hello"))
+                else:
+                    model.invoke("Hello")
+
+        assert len(requests) == 1
+        assert requests[0]["cache_control"] == {"type": "ephemeral"}
+        assert "order" not in requests[0].get("provider", {})
+
+
 class TestCreateModelForwardsProviderProfile:
     """Tests that `create_model` forwards profile kwargs to `init_chat_model`.
 

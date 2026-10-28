@@ -1471,6 +1471,9 @@ class TestFooterCostBreakdown:
             breakdown = _empty_cost_breakdown()
             breakdown["input_tokens"] = 123
             app._set_session_cost(1.25, breakdown=breakdown)
+            app._thread_stats.record_request(
+                "model[1]", 123, 10, provider="custom", cost_usd=1.25
+            )
             app._agent_running = entrypoint == "footer"
             await pilot.pause()
             if entrypoint == "command":
@@ -1487,6 +1490,9 @@ class TestFooterCostBreakdown:
             body = modal.query_one(".cost-breakdown-body", Markdown)
             assert "123" in body._markdown
             assert "1.25" in body._markdown
+            assert "By type since this thread was loaded:" in body._markdown
+            assert "By model since this thread was loaded:" in body._markdown
+            assert r"custom:model\[1\]" in body._markdown
             stack_size = len(app.screen_stack)
             app.action_open_cost_breakdown()
             await pilot.pause()
@@ -1508,10 +1514,13 @@ class TestFooterCostBreakdown:
 
     @pytest.mark.parametrize("entrypoint", ["footer", "command"])
     @pytest.mark.parametrize("incomplete", [False, True])
-    async def test_missing_breakdown_notifies_without_empty_modal(
-        self, incomplete: bool, entrypoint: str, monkeypatch: pytest.MonkeyPatch
+    async def test_missing_breakdown_opens_summary_modal(
+        self, incomplete: bool, entrypoint: str
     ) -> None:
+        from textual.widgets import Markdown
+
         from deepagents_code.cost_tracking import _empty_cost_breakdown
+        from deepagents_code.tui.modals.cost_breakdown import CostBreakdownScreen
         from deepagents_code.tui.widgets.status import MetricsLine
 
         app = DeepAgentsApp(agent=MagicMock())
@@ -1525,8 +1534,6 @@ class TestFooterCostBreakdown:
                     else None
                 ),
             )
-            notify = MagicMock()
-            monkeypatch.setattr(app, "notify", notify)
             await pilot.pause()
             display = app.query_one("#tokens-display", MetricsLine)
             if entrypoint == "command":
@@ -1537,11 +1544,51 @@ class TestFooterCostBreakdown:
                 await pilot.click(display, offset=(offset, 0))
             await pilot.pause()
 
-            assert not isinstance(app.screen, ModalScreen)
-            assert notify.call_args.args[0] == (
-                "No cost details to show for this session yet."
-            )
-            assert "$1.25" in str(display.render())
+            assert isinstance(app.screen, CostBreakdownScreen)
+            body = app.screen.query_one(".cost-breakdown-body", Markdown)
+            assert "Estimated thread cost: $1.25" in body._markdown
+            assert "| Category |" not in body._markdown
+            await pilot.press("escape")
+            await pilot.pause()
+            assert app._is_input_focused()
+
+    @pytest.mark.parametrize(
+        "usage", ["none", "unreported", "restored", "unpriced", "broken"]
+    )
+    async def test_cost_command_explains_unavailable_estimates(
+        self, usage: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from textual.widgets import Markdown
+
+        from deepagents_code.app import _PRICING_UNAVAILABLE_MESSAGE
+        from deepagents_code.tui.modals.cost_breakdown import CostBreakdownScreen
+
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            expected = "No model usage recorded"
+            if usage == "unreported":
+                app._thread_has_completed_turn = True
+                expected = "provider didn't report token usage"
+            elif usage == "restored":
+                app._thread_has_restored_model_usage = True
+                expected = "This does not mean the usage was free."
+            elif usage in {"unpriced", "broken"}:
+                app._thread_stats.record_request("unknown", 100, 10, provider="custom")
+                monkeypatch.setattr(
+                    app, "_pricing_is_broken", lambda: usage == "broken"
+                )
+                expected = (
+                    _PRICING_UNAVAILABLE_MESSAGE
+                    if usage == "broken"
+                    else "pricing isn't available"
+                )
+            await pilot.press("/", "c", "o", "s", "t", "enter")
+            await pilot.pause()
+            assert isinstance(app.screen, CostBreakdownScreen)
+            body = app.screen.query_one(".cost-breakdown-body", Markdown)
+            assert expected in body._markdown
+            assert "| Category |" not in body._markdown
 
 
 class TestStatusBarPickerActions:

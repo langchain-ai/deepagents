@@ -90,7 +90,7 @@ def _parse_subagent_file(
     """
     try:
         content = file_path.read_text(encoding="utf-8")
-    except OSError as exc:
+    except (OSError, UnicodeDecodeError) as exc:
         logger.warning("Skipping subagent %s: could not read file (%s)", file_path, exc)
         return None
 

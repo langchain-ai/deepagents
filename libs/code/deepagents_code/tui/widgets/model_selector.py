@@ -596,11 +596,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         self._resolve_model = resolve_model
         self._catalog: ModelCatalog | None = None
         self._catalog_config: ModelConfig | None = None
-        # Standard /model defaults to the curated recommended subset so users
-        # face less decision fatigue; onboarding (`curated=True`) already
-        # constrains the list via `_curated`, so leaving this False there
-        # avoids double-flagging in `_apply_subset`.
-        self._recommended_only = not curated
+        self._recommended_only = False
         # Rows show friendly display names by default; Ctrl+N flips every row
         # to its raw `provider:model` spec (mirrors the `/theme` picker's
         # label/key toggle) so a user can read or copy the canonical id.
@@ -701,7 +697,10 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             names_hint = "Ctrl+N names" if self._show_specs else "Ctrl+N IDs"
             if self._default_scope is not None:
                 parts.append(f"Ctrl+S {self._default_scope.hint}")
-            parts.extend(("Ctrl+R recommended", names_hint, "Esc close"))
+            recommendations_hint = (
+                "Ctrl+R all models" if self._recommended_only else "Ctrl+R recommended"
+            )
+            parts.extend((recommendations_hint, names_hint, "Esc close"))
         sep = f" {glyphs.bullet} "
         return sep.join(parts)
 
@@ -2502,6 +2501,9 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
 
         info = self.query_one("#model-selector-info", Static)
         info.update(self._info_line_content())
+        if not self._help_error_shown:
+            self._stop_help_restore_timer()
+            self._restore_help_text()
 
         await self._update_display()
 

@@ -55,7 +55,7 @@ _AUTH_STATUS_CASES = [
             provider="anthropic",
             env_var="ANTHROPIC_API_KEY",
         ),
-        "[missing]",
+        "[not set]",
         f"{get_glyphs().warning} missing credentials",
     ),
     (
@@ -229,7 +229,7 @@ def test_codex_badge_configured_without_plan() -> None:
 
 
 def test_codex_badge_missing_prompts_sign_in() -> None:
-    """A missing codex credential renders the sign-in prompt, not `[missing]`."""
+    """A missing codex credential renders the sign-in prompt, not `[not set]`."""
     status = ProviderAuthStatus(
         state=ProviderAuthState.MISSING,
         provider=CODEX_PROVIDER,

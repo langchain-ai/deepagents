@@ -1596,6 +1596,12 @@ class AuthManagerScreen(ModalScreen[None]):
         background: $background;
     }
 
+    AuthManagerScreen OptionList > .option-list--option-highlighted {
+        background: $primary 20%;
+        color: $text;
+        text-style: bold;
+    }
+
     AuthManagerScreen .auth-manager-warning {
         height: auto;
         color: $warning;

@@ -1,23 +1,94 @@
 """Unit tests for FilesystemMiddleware initialization and configuration."""
 
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from langchain.agents import create_agent
 from langchain_anthropic import ChatAnthropic
+from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.tools import BaseTool, StructuredTool
 from langgraph.store.memory import InMemoryStore
 
 from deepagents.backends import CompositeBackend, StateBackend, StoreBackend
+from deepagents.backends.protocol import ExecuteResponse, SandboxBackendProtocol
 from deepagents.middleware.filesystem import (
+    _EXECUTE_TOOL_DESCRIPTION_WITH_GLOB_ONLY,
+    _EXECUTE_TOOL_DESCRIPTION_WITH_GREP_ONLY,
+    _GREP_TOOL_DESCRIPTION_WITHOUT_EXECUTE,
     GREP_TOOL_DESCRIPTION,
     READ_FILE_TOOL_DESCRIPTION,
     WRITE_FILE_TOOL_DESCRIPTION,
     FilesystemMiddleware,
 )
+from tests.unit_tests.chat_model import GenericFakeChatModel
 
 
 def build_composite_state_backend(*, routes: dict[str, Any]) -> CompositeBackend:
     return CompositeBackend(default=StateBackend(), routes=routes)
+
+
+class _SandboxBackend(SandboxBackendProtocol, StateBackend):
+    def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
+        return ExecuteResponse(output="", exit_code=0)
+
+
+def _ls_then_done(runs: int) -> GenericFakeChatModel:
+    turn = [AIMessage(content="", tool_calls=[{"name": "ls", "args": {"path": "/"}, "id": "ls"}]), AIMessage(content="done")]
+    return GenericFakeChatModel(messages=iter(turn * runs))
+
+
+def _grep_tools_sent(model: GenericFakeChatModel) -> list[BaseTool]:
+    return [next(tool for tool in call["tools"] if tool.name == "grep") for call in model.call_history]
+
+
+class TestRequestToolDescriptions:
+    """The grep and execute descriptions are rewritten per request without rebuilding the tool each call."""
+
+    @pytest.mark.parametrize(
+        ("backend", "expected_description"),
+        [
+            pytest.param(StateBackend(), _GREP_TOOL_DESCRIPTION_WITHOUT_EXECUTE, id="without-execute"),
+            pytest.param(_SandboxBackend(), GREP_TOOL_DESCRIPTION, id="with-execute"),
+        ],
+    )
+    async def test_model_gets_one_grep_tool_across_calls(self, backend: StateBackend, expected_description: str) -> None:
+        model = _ls_then_done(runs=2)
+        agent = create_agent(model=model, middleware=[FilesystemMiddleware(backend=backend)])
+
+        agent.invoke({"messages": [HumanMessage(content="go")]})
+        await agent.ainvoke({"messages": [HumanMessage(content="go")]})
+
+        grep_tools = _grep_tools_sent(model)
+        assert len(grep_tools) == 4
+        assert all(tool is grep_tools[0] for tool in grep_tools)
+        assert grep_tools[0].description == expected_description
+
+    def test_each_description_gets_its_own_copy(self) -> None:
+        middleware = FilesystemMiddleware(backend=_SandboxBackend())
+        execute = next(tool for tool in middleware.tools if tool.name == "execute")
+
+        def described(visible: set[str]) -> BaseTool:
+            (tool,) = middleware._with_filtered_execute_description([execute], visible_search_tools=visible)
+            return cast("BaseTool", tool)
+
+        grep_only, glob_only, grep_only_again = described({"grep"}), described({"glob"}), described({"grep"})
+
+        assert grep_only.description == _EXECUTE_TOOL_DESCRIPTION_WITH_GREP_ONLY
+        assert glob_only.description == _EXECUTE_TOOL_DESCRIPTION_WITH_GLOB_ONLY
+        assert grep_only is grep_only_again
+        assert glob_only is not grep_only
+
+    def test_each_source_tool_gets_its_own_copy(self) -> None:
+        middleware = FilesystemMiddleware(backend=StateBackend())
+        grep = next(tool for tool in middleware.tools if tool.name == "grep")
+        other_grep = grep.model_copy(update={"func": lambda **_: "other"})
+
+        (from_grep,) = middleware._with_filtered_grep_description([grep], include_execution=False)
+        (from_other,) = middleware._with_filtered_grep_description([other_grep], include_execution=False)
+
+        assert from_other is not from_grep
+        assert cast("StructuredTool", from_other).func is cast("StructuredTool", other_grep).func
+        assert cast("BaseTool", from_other).description == _GREP_TOOL_DESCRIPTION_WITHOUT_EXECUTE
 
 
 class TestLargeToolResultGuidanceInToolDescriptions:

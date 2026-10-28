@@ -1,6 +1,8 @@
+import logging
 import mimetypes
 import time
 import warnings
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -3887,41 +3889,62 @@ class TestPatchToolCallsMiddleware:
         await PatchToolCallsMiddleware().awrap_model_call(request, handler)
         assert [m.id for m in sent[0]] == ["1", "3", "2"]
 
+    @staticmethod
+    def _search_call(call_kind: str, turn: str) -> AIMessage:
+        if call_kind == "content_block":
+            return AIMessage(content=[{"type": "function_call", "call_id": "shared", "name": "search", "arguments": "{}"}], id=turn)
+        if call_kind == "invalid":
+            return AIMessage(content="", invalid_tool_calls=[{"id": "shared", "name": "search", "args": "{"}], id=turn)
+        return AIMessage(content="", tool_calls=[ToolCall(id="shared", name="search", args={})], id=turn)
+
     @pytest.mark.parametrize("call_kind", ["parsed", "invalid", "content_block"])
-    @pytest.mark.parametrize("first_result", [True, False])
-    @pytest.mark.parametrize("duplicate", [True, False])
-    def test_reused_tool_call_ids(self, call_kind: str, *, first_result: bool, duplicate: bool) -> None:
-        def call(turn: str) -> AIMessage:
-            if call_kind == "content_block":
-                return AIMessage(content=[{"type": "function_call", "call_id": "shared", "name": "search", "arguments": "{}"}], id=turn)
-            if call_kind == "invalid":
-                return AIMessage(content="", invalid_tool_calls=[{"id": "shared", "name": "search", "args": "{"}], id=turn)
-            return AIMessage(content="", tool_calls=[ToolCall(id="shared", name="search", args={})], id=turn)
+    def test_reused_tool_call_id_with_both_results_is_unchanged(self, call_kind: str) -> None:
+        input_messages = [
+            self._search_call(call_kind, "first"),
+            ToolMessage(content="first result", tool_call_id="shared"),
+            HumanMessage(content="Search again"),
+            self._search_call(call_kind, "second"),
+            ToolMessage(content="second result", tool_call_id="shared"),
+        ]
+        assert _patched_model_messages(input_messages) is input_messages
 
-        first_call, second_call = call("first"), call("second")
-        first = ToolMessage(content="first result", tool_call_id="shared", id="first-result")
-        second = ToolMessage(content="second result", tool_call_id="shared", id="second-result")
+    @pytest.mark.parametrize("call_kind", ["parsed", "invalid", "content_block"])
+    def test_reused_tool_call_id_drops_duplicate_results(self, call_kind: str) -> None:
+        first_call, second_call = self._search_call(call_kind, "first"), self._search_call(call_kind, "second")
+        first = ToolMessage(content="first result", tool_call_id="shared")
+        second = ToolMessage(content="second result", tool_call_id="shared")
         boundary = HumanMessage(content="Search again")
-        input_messages = [first_call, *([first] if first_result else [])]
-        if duplicate and first_result:
-            input_messages.append(ToolMessage(content="first duplicate", tool_call_id="shared"))
-        input_messages.extend([boundary, second_call, second])
-        if duplicate:
-            input_messages.append(ToolMessage(content="second duplicate", tool_call_id="shared"))
+        sent = _patched_model_messages(
+            [
+                first_call,
+                first,
+                ToolMessage(content="first duplicate", tool_call_id="shared"),
+                boundary,
+                second_call,
+                second,
+                ToolMessage(content="second duplicate", tool_call_id="shared"),
+            ]
+        )
+        assert sent == [first_call, first, boundary, second_call, second]
 
-        sent = _patched_model_messages(input_messages)
-        if not duplicate and (first_result or call_kind == "content_block"):
-            assert sent is input_messages
-            return
-        assert sent[-3:] == [boundary, second_call, second]
+    @pytest.mark.parametrize("call_kind", ["parsed", "invalid"])
+    def test_reused_tool_call_id_with_missing_first_result_gets_error(self, call_kind: str) -> None:
+        first_call, second_call = self._search_call(call_kind, "first"), self._search_call(call_kind, "second")
+        second = ToolMessage(content="second result", tool_call_id="shared")
+        boundary = HumanMessage(content="Search again")
+        sent = _patched_model_messages([first_call, boundary, second_call, second])
         assert sent[0] == first_call
-        if first_result:
-            assert sent[1] == first
-        elif call_kind == "content_block":
-            assert len(sent) == 4
-        else:
-            assert sent[1].status == "error"
-            assert sent[1].tool_call_id == "shared"
+        assert (sent[1].type, sent[1].tool_call_id, sent[1].status) == ("tool", "shared", "error")
+        assert sent[2:] == [boundary, second_call, second]
+
+    def test_content_block_call_without_result_gets_no_error(self) -> None:
+        input_messages = [
+            self._search_call("content_block", "first"),
+            HumanMessage(content="Search again"),
+            self._search_call("content_block", "second"),
+            ToolMessage(content="second result", tool_call_id="shared"),
+        ]
+        assert _patched_model_messages(input_messages) is input_messages
 
     @pytest.mark.parametrize("result_before_call", [True, False])
     def test_reused_tool_call_ids_with_misplaced_result(self, *, result_before_call: bool) -> None:
@@ -3934,14 +3957,84 @@ class TestPatchToolCallsMiddleware:
         sent = _patched_model_messages([*misplaced, second_call, second_result])
         assert sent == [first_call, first_result, boundary, second_call, second_result]
 
-    def test_result_for_content_block_call_is_kept(self) -> None:
-        input_messages = [
-            HumanMessage(content="Look it up", id="1"),
-            AIMessage(content=[{"type": "function_call", "call_id": "fc", "name": "search", "arguments": "{}"}], id="2"),
-            ToolMessage(content="found", tool_call_id="fc", id="3"),
+    @pytest.mark.parametrize(
+        "block",
+        [
+            {"type": "tool_use", "id": "c", "name": "search", "input": {}},
+            {"type": "tool_call", "id": "c", "name": "search", "args": {}},
+            {"type": "function_call", "call_id": "c", "name": "search", "arguments": "{}"},
+            {"type": "computer_call", "id": "cu_1", "call_id": "c", "action": {"type": "screenshot"}},
+            {"type": "non_standard", "value": {"type": "computer_call", "id": "cu_1", "call_id": "c", "action": {"type": "screenshot"}}},
+        ],
+        ids=["tool_use", "tool_call", "function_call", "computer_call", "non_standard"],
+    )
+    def test_result_for_content_block_call_moves_after_it(self, block: dict[str, Any]) -> None:
+        call = AIMessage(content=[block], id="call")
+        interjection = HumanMessage(content="Interject", id="human")
+        result = ToolMessage(content="found", tool_call_id="c", id="result")
+        assert _patched_model_messages([call, interjection, result]) == [call, result, interjection]
+
+    def test_call_in_both_tool_calls_and_content_gets_one_result(self) -> None:
+        call = AIMessage(
+            content=[{"type": "tool_use", "id": "t", "name": "search", "input": {}}],
+            tool_calls=[ToolCall(id="t", name="search", args={})],
+        )
+        result = ToolMessage(content="found", tool_call_id="t")
+        assert _patched_model_messages([call, result, ToolMessage(content="again", tool_call_id="t")]) == [call, result]
+
+    def test_repeated_ids_in_one_turn_keep_every_result(self) -> None:
+        # Some OpenAI-compatible backends send the same id, or an empty one, for every parallel call.
+        call = AIMessage(content="", tool_calls=[ToolCall(id="", name="a", args={}), ToolCall(id="", name="b", args={})])
+        interjection = HumanMessage(content="Interject")
+        first, second = ToolMessage(content="A result", tool_call_id=""), ToolMessage(content="B result", tool_call_id="")
+        assert _patched_model_messages([call, interjection, first, second]) == [call, first, second, interjection]
+
+    def test_parallel_results_follow_call_order(self) -> None:
+        call = AIMessage(content="", tool_calls=[ToolCall(id="1", name="a", args={}), ToolCall(id="2", name="b", args={})])
+        first, second = ToolMessage(content="A result", tool_call_id="1"), ToolMessage(content="B result", tool_call_id="2")
+        assert _patched_model_messages([call, second, first]) == [call, first, second]
+
+    def test_real_result_beats_synthetic_error(self) -> None:
+        # A result recorded after `before_agent` patched the call replaces the error result.
+        state_update = PatchToolCallsMiddleware().before_agent(
+            {"messages": [HumanMessage(content="Run it"), AIMessage(content="", tool_calls=[ToolCall(id="a", name="run", args={})])]}, None
+        )
+        assert state_update is not None
+        question, call, error = state_update["messages"][1:]
+        assert error.status == "error"
+        follow_up = HumanMessage(content="Any news?")
+        real = ToolMessage(content="real result", tool_call_id="a")
+        assert _patched_model_messages([question, call, error, follow_up, real]) == [question, call, real, follow_up]
+
+    def test_result_after_call_beats_stale_result_before_it(self) -> None:
+        stale = ToolMessage(content="stale", tool_call_id="x")
+        question = HumanMessage(content="Run it")
+        call = AIMessage(content="", tool_calls=[ToolCall(id="x", name="run", args={})])
+        real = ToolMessage(content="real", tool_call_id="x")
+        assert _patched_model_messages([stale, question, call, real]) == [question, call, real]
+
+    def test_valid_request_is_passed_through(self) -> None:
+        messages = [
+            HumanMessage(content="Look it up"),
+            AIMessage(content="", tool_calls=[ToolCall(id="a", name="search", args={})]),
+            ToolMessage(content="found", tool_call_id="a"),
         ]
-        assert PatchToolCallsMiddleware().before_agent({"messages": input_messages}, None) is None
-        assert _patched_model_messages(input_messages) is input_messages
+        request = ModelRequest(model=MagicMock(), messages=messages, state={"messages": messages})
+        sent: list[ModelRequest] = []
+
+        def handler(model_request: ModelRequest) -> ModelResponse:
+            sent.append(model_request)
+            return ModelResponse(result=[AIMessage(content="ok")])
+
+        PatchToolCallsMiddleware().wrap_model_call(request, handler)
+        assert sent == [request]
+        assert sent[0] is request
+
+    def test_dropped_orphan_result_is_logged(self, caplog: pytest.LogCaptureFixture) -> None:
+        messages = [HumanMessage(content="old"), ToolMessage(content="stray", tool_call_id="lost"), HumanMessage(content="new")]
+        with caplog.at_level(logging.WARNING, logger="deepagents.middleware.patch_tool_calls"):
+            _patched_model_messages(messages)
+        assert "lost" in caplog.text
 
 
 class TestTruncation:

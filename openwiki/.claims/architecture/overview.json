@@ -1,10 +1,10 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:a598e01218f734ce29418073d91d7e4c3358e7967b767e364e2ed88889d4b4b4",
+  "pageVersion": "sha256:d86313068720591f90dcb1dbb2c074412d1e80c2e111c246cdb0fbdb5f3cefb0",
   "claims": [
     {
       "id": "claim_7e77f7ec620944c29e36936e3abea92f",
-      "statement": "The repository is an independently versioned Python monorepo: source package metadata declares deepagents 0.7.32, dcode 0.2.2, ACP 0.0.13, Talon 0.1.0, evals 0.0.1, and QuickJS 0.3.10; Release Please has independent release lines for the first four and five partners but not evals, uses separate draft release pull requests, and delegates PyPI and GitHub release creation to the release workflow after a release PR is merged.",
+      "statement": "The repository is an independently versioned Python monorepo: source package metadata declares deepagents 0.7.32, dcode 0.2.2, ACP 0.0.13, Talon 0.1.0, evals 0.0.1, and QuickJS 0.3.11; Release Please has independent release lines for the first four and five partners but not evals, uses separate draft release pull requests, and delegates PyPI and GitHub release creation to the release workflow after a release PR is merged.",
       "evidence": [
         {
           "resource": "repo://.github/RELEASING.md",
@@ -12,31 +12,31 @@
         },
         {
           "resource": "repo://.release-please-manifest.json",
-          "version": "repo-file-v1:sha256:4790673e13b4c2092d1334349272cb31f5ecccce595fe930bd18bb898b6362aa"
+          "version": "repo-file-v1:sha256:550e6f9a91786e785d2b76f2732d0989e591cb8bcaa5e8b0285e399f02a96931"
         },
         {
           "resource": "repo://libs/acp/pyproject.toml",
-          "version": "repo-file-v1:sha256:f0c5215618b921ef1a72d9bacf95ad9b56634a5259b39bb8908ba33551432569"
+          "version": "repo-file-v1:sha256:7c581746d0db9ce6e876f15faeef16942dffbced2a6f6ea6ca6303d9f3ffe5d9"
         },
         {
           "resource": "repo://libs/code/pyproject.toml",
-          "version": "repo-file-v1:sha256:216841cdb96ad653c8a9f15bc217138cec00d3ddbfa79ba1e7f2e943699b74fd"
+          "version": "repo-file-v1:sha256:c0f7c97afb3288875a5a3c65ccf98332ceec5c4d65d35224f9c608bac2af84df"
         },
         {
           "resource": "repo://libs/deepagents/pyproject.toml",
-          "version": "repo-file-v1:sha256:78187d4b5062cb56bd13c6c09f24b4c9364bad8197bde0368e265a8f849d97e7"
+          "version": "repo-file-v1:sha256:3de053b7e2aa01457e0f78724ba5c19b6784dca5fabe6499e4130972ac66bf49"
         },
         {
           "resource": "repo://libs/evals/pyproject.toml",
-          "version": "repo-file-v1:sha256:0105e5efdbea24213520401c65988c879b9c357b1b8dd7ac3fd79767c8f53aed"
+          "version": "repo-file-v1:sha256:65a9f5307694a72ae4bc2b9a0cf9dc39a430bdbcd2eb1ce1cdb7264cd57486ba"
         },
         {
           "resource": "repo://libs/partners/quickjs/pyproject.toml",
-          "version": "repo-file-v1:sha256:3dc4d97f349e7fa1a504d2bf07778e6204942088b952084bbdc4aecfe6b557ea"
+          "version": "repo-file-v1:sha256:4ae406d77b5c27d95367046123036e5b67876b55ed2bcbdfb177384076cfe09d"
         },
         {
           "resource": "repo://libs/talon/pyproject.toml",
-          "version": "repo-file-v1:sha256:b733844f69ba30222fd3ca3a657a993a00004865f43c727e82a991adecdc3b34"
+          "version": "repo-file-v1:sha256:9bb5a17e482b25eaa88345780a86471f8d438cd9870b68d930539f23e37b286d"
         },
         {
           "resource": "repo://release-please-config.json",
@@ -50,23 +50,23 @@
       "evidence": [
         {
           "resource": "repo://libs/acp/pyproject.toml",
-          "version": "repo-file-v1:sha256:f0c5215618b921ef1a72d9bacf95ad9b56634a5259b39bb8908ba33551432569"
+          "version": "repo-file-v1:sha256:7c581746d0db9ce6e876f15faeef16942dffbced2a6f6ea6ca6303d9f3ffe5d9"
         },
         {
           "resource": "repo://libs/code/pyproject.toml",
-          "version": "repo-file-v1:sha256:216841cdb96ad653c8a9f15bc217138cec00d3ddbfa79ba1e7f2e943699b74fd"
+          "version": "repo-file-v1:sha256:c0f7c97afb3288875a5a3c65ccf98332ceec5c4d65d35224f9c608bac2af84df"
         },
         {
           "resource": "repo://libs/evals/pyproject.toml",
-          "version": "repo-file-v1:sha256:0105e5efdbea24213520401c65988c879b9c357b1b8dd7ac3fd79767c8f53aed"
+          "version": "repo-file-v1:sha256:65a9f5307694a72ae4bc2b9a0cf9dc39a430bdbcd2eb1ce1cdb7264cd57486ba"
         },
         {
           "resource": "repo://libs/partners/quickjs/pyproject.toml",
-          "version": "repo-file-v1:sha256:3dc4d97f349e7fa1a504d2bf07778e6204942088b952084bbdc4aecfe6b557ea"
+          "version": "repo-file-v1:sha256:4ae406d77b5c27d95367046123036e5b67876b55ed2bcbdfb177384076cfe09d"
         },
         {
           "resource": "repo://libs/talon/pyproject.toml",
-          "version": "repo-file-v1:sha256:b733844f69ba30222fd3ca3a657a993a00004865f43c727e82a991adecdc3b34"
+          "version": "repo-file-v1:sha256:9bb5a17e482b25eaa88345780a86471f8d438cd9870b68d930539f23e37b286d"
         }
       ]
     },
@@ -120,7 +120,7 @@
         },
         {
           "resource": "repo://libs/talon/pyproject.toml",
-          "version": "repo-file-v1:sha256:b733844f69ba30222fd3ca3a657a993a00004865f43c727e82a991adecdc3b34"
+          "version": "repo-file-v1:sha256:9bb5a17e482b25eaa88345780a86471f8d438cd9870b68d930539f23e37b286d"
         }
       ]
     },
@@ -150,7 +150,7 @@
       "evidence": [
         {
           "resource": "repo://libs/deepagents/pyproject.toml#L22-L35",
-          "version": "repo-lines-v1:sha256:3143205f8fde3906bf5d5c293532738ad1326a00626bb9b2df51cd05087c1ae2:eyJzZWxlY3RlZExpbmVDb3VudCI6MTQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFkOTVmNWU5ZWRlMDE4MTYwNDNjMDc5N2FjZThkYTJhYzRlOTlhOGE2YTYxMGZhOTg1NzBlZjM0YjkzNTYxMDkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY3Njk4NTcwNTkwZTBhZGNhNTM0ZDM5ODVmNmZhNmQ4NDc2OTVlMjdjOGQzYjU3YWMzYjY3OTVhNzRkYWJmOWIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjA5M2ViZjNhZWE3MzgxN2NmZTQzNmY4YTVhOWIxNGVhMDI4NmE2MmVhNDRhMWYyZTk4ZjUxODBhZTUyODNiY2MiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImQ4ODI2YmMxODkyZTllMTM5Y2MxOTczZjc5MTkxYzkyMTg2NjIzZjA4ZjdmMTgxYzI2NTFlYmNiZmU2ZmE0YmYifQ"
+          "version": "repo-lines-v1:sha256:562e453f218a42b4ac9d9e7f77c3373b7538f1d1dd2ba055a73f549317eb713a:eyJzZWxlY3RlZExpbmVDb3VudCI6MTQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFkOTVmNWU5ZWRlMDE4MTYwNDNjMDc5N2FjZThkYTJhYzRlOTlhOGE2YTYxMGZhOTg1NzBlZjM0YjkzNTYxMDkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY3Njk4NTcwNTkwZTBhZGNhNTM0ZDM5ODVmNmZhNmQ4NDc2OTVlMjdjOGQzYjU3YWMzYjY3OTVhNzRkYWJmOWIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjA5M2ViZjNhZWE3MzgxN2NmZTQzNmY4YTVhOWIxNGVhMDI4NmE2MmVhNDRhMWYyZTk4ZjUxODBhZTUyODNiY2MiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImQ4ODI2YmMxODkyZTllMTM5Y2MxOTczZjc5MTkxYzkyMTg2NjIzZjA4ZjdmMTgxYzI2NTFlYmNiZmU2ZmE0YmYifQ"
         }
       ]
     },
@@ -184,11 +184,11 @@
       "evidence": [
         {
           "resource": "repo://libs/code/pyproject.toml#L102-L151",
-          "version": "repo-lines-v1:sha256:4d7bf0cec9b8ff418d0f5687206511294c0a49675149c0e501598cf6b66e683f:eyJzZWxlY3RlZExpbmVDb3VudCI6NTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjJjNmRlZmVjNWE1NWU0ZTg2ZmVhMTg0ZWZmZjJlYThlNDIwMmNmOTc1MGFiODhmN2I1NDE3MTBhYTU0ZjhmZTkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc2OTIxYTcxYzBkNDU3MGMzODhkNjI5N2IzYjQ5OTJkZjNjMGZkYWIzMjZjYWZhY2E0YjQ4NzE4OGExZDZiMDMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjRiMzYyMDZlZWE2NWZlZjBiZTQ4MDIzZWVlN2NjOGQzY2UyZDdlZDc4YWZjN2Y4MjEyYmM4MGU1ZDZmN2IyOWEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUwZmEzNjJjYjQ5NGE1MWE5YTQ3NTA0Yjk5OTFhYjZmNGVmZWUxODcxZWRiYTY0NDFmYjk1MDA3OTc0OTJjMDgifQ"
+          "version": "repo-lines-v1:sha256:cf8621e0563c4641868f63f08d09cbdbbd3f92ddba6ba35e991d4e572c10a600:eyJzZWxlY3RlZExpbmVDb3VudCI6NTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjJjNmRlZmVjNWE1NWU0ZTg2ZmVhMTg0ZWZmZjJlYThlNDIwMmNmOTc1MGFiODhmN2I1NDE3MTBhYTU0ZjhmZTkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc2OTIxYTcxYzBkNDU3MGMzODhkNjI5N2IzYjQ5OTJkZjNjMGZkYWIzMjZjYWZhY2E0YjQ4NzE4OGExZDZiMDMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjRiMzYyMDZlZWE2NWZlZjBiZTQ4MDIzZWVlN2NjOGQzY2UyZDdlZDc4YWZjN2Y4MjEyYmM4MGU1ZDZmN2IyOWEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUwZmEzNjJjYjQ5NGE1MWE5YTQ3NTA0Yjk5OTFhYjZmNGVmZWUxODcxZWRiYTY0NDFmYjk1MDA3OTc0OTJjMDgifQ"
         },
         {
           "resource": "repo://libs/code/pyproject.toml#L26-L65",
-          "version": "repo-lines-v1:sha256:26fc497869e0d54f18e1ff751fd6b9af6d00fc322b7f179c6e42adb8622ab21e:eyJzZWxlY3RlZExpbmVDb3VudCI6NDAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFkOTVmNWU5ZWRlMDE4MTYwNDNjMDc5N2FjZThkYTJhYzRlOTlhOGE2YTYxMGZhOTg1NzBlZjM0YjkzNTYxMDkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImFhZmQwZDk4OTM5MWMwMDdhN2Q3YWM0NWI0OWJmY2Y3MjE0OWNlNjA3MTgzOTBiY2U0MTQzMDZkNGQ4YTQ2ZDQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjcwYzA5NGU2OGI4NjVhMzAyNzg0OTQ2Y2Q1M2RiNGI4YTM2YzQxNTBiMmRjMWJmNTNiNTFlODA1ZTY0NjA0MmEifQ"
+          "version": "repo-lines-v1:sha256:bdbd1b319239a4bd36f0427a9e67c608f5ee15837a0ef9825e384d17548d1735:eyJzZWxlY3RlZExpbmVDb3VudCI6NDAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFkOTVmNWU5ZWRlMDE4MTYwNDNjMDc5N2FjZThkYTJhYzRlOTlhOGE2YTYxMGZhOTg1NzBlZjM0YjkzNTYxMDkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImFhZmQwZDk4OTM5MWMwMDdhN2Q3YWM0NWI0OWJmY2Y3MjE0OWNlNjA3MTgzOTBiY2U0MTQzMDZkNGQ4YTQ2ZDQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjcwYzA5NGU2OGI4NjVhMzAyNzg0OTQ2Y2Q1M2RiNGI4YTM2YzQxNTBiMmRjMWJmNTNiNTFlODA1ZTY0NjA0MmEifQ"
         }
       ]
     },
@@ -198,7 +198,7 @@
       "evidence": [
         {
           "resource": "repo://libs/code/pyproject.toml#L107-L156",
-          "version": "repo-lines-v1:sha256:baf8270c993d0532ba8e0d69754b29995d1a3ad1f67f85a705171f49d9d98df2:eyJzZWxlY3RlZExpbmVDb3VudCI6NTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU5MjE4ZGM0Y2U5NzFjYmUzZDM4ZDc3NDMwZTYzOTkxODg4NGRkNzdkNzE4NGM3YjkzZGZkYzJlOTk4NjkxYjQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMyM2I3ZjBlM2Y0NDhjNGY1NGRmNzE4M2VmY2ExOTA4MzEwMTQzMzViZTY4ZDIwMDQ2YjNkOTZjYzVjNTk5MjMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImViOGRmYTk5ZDY2MDA2MDFhMGZiODVhNWI0YjUyYzI1NmNjMTIxNTE2NTQ1MWEyZDlhNWUyYWEwNGIyZGU3MjgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImRhYWRmMmU4OTA2NTcyNTNhYzE0ODYzZjU1NTNkYTg5NDcwYzZiNWE3MzEyYTI5NmM1MzI5YTMwOGI0ZjUxNzMifQ"
+          "version": "repo-lines-v1:sha256:712913323b39b8b975819344079ec04bade56abb97d1d3aca671f7732618003e:eyJzZWxlY3RlZExpbmVDb3VudCI6NTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU5MjE4ZGM0Y2U5NzFjYmUzZDM4ZDc3NDMwZTYzOTkxODg4NGRkNzdkNzE4NGM3YjkzZGZkYzJlOTk4NjkxYjQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMyM2I3ZjBlM2Y0NDhjNGY1NGRmNzE4M2VmY2ExOTA4MzEwMTQzMzViZTY4ZDIwMDQ2YjNkOTZjYzVjNTk5MjMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImViOGRmYTk5ZDY2MDA2MDFhMGZiODVhNWI0YjUyYzI1NmNjMTIxNTE2NTQ1MWEyZDlhNWUyYWEwNGIyZGU3MjgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImRhYWRmMmU4OTA2NTcyNTNhYzE0ODYzZjU1NTNkYTg5NDcwYzZiNWE3MzEyYTI5NmM1MzI5YTMwOGI0ZjUxNzMifQ"
         },
         {
           "resource": "repo://libs/code/pyproject.toml#L213-L230",
@@ -275,6 +275,6 @@
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-10-27T08:05:40.296Z"
+    "at": "2026-10-28T08:04:17.781Z"
   }
 }

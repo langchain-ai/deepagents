@@ -22,7 +22,7 @@ def format_auth_badge(status: ProviderAuthStatus) -> Content:
     """Format an auth manager badge for a provider.
 
     Used by the `/auth` manager, where each provider renders a bracketed,
-    styled badge (e.g. `[stored]`, `[env set: ANTHROPIC_API_KEY]`, `[missing]`).
+    styled badge (e.g. `[stored]`, `[env set: ANTHROPIC_API_KEY]`, `[not set]`).
 
     Args:
         status: Provider auth/readiness status.
@@ -33,7 +33,7 @@ def format_auth_badge(status: ProviderAuthStatus) -> Content:
     # The ChatGPT-OAuth codex provider has no API key, so its credential is a
     # file-backed OAuth token rather than a stored key. Give it distinctive
     # badges (`[chatgpt]` / `[sign in to chatgpt]`) so users don't read the
-    # generic `[stored]`/`[missing]` as a literal API key on disk.
+    # generic `[stored]`/`[not set]` as a literal API key on disk.
     if status.provider == CODEX_PROVIDER:
         return _format_codex_badge(status)
 
@@ -42,7 +42,7 @@ def format_auth_badge(status: ProviderAuthStatus) -> Content:
         case ProviderAuthState.CONFIGURED:
             return _format_configured_badge(status)
         case ProviderAuthState.MISSING:
-            return Content.styled("[missing]", "bold $warning")
+            return Content.styled("[not set]", "bold $warning")
         case ProviderAuthState.NOT_REQUIRED:
             return _auth_badge(status.detail or "no API key required")
         case ProviderAuthState.IMPLICIT:

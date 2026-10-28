@@ -6826,7 +6826,10 @@ class DeepAgentsApp(App):
 
         # Failure surfaces only in chat — keeps recovery hint adjacent to the
         # input. Banner is set to idle above to drop the connecting spinner.
-        text = f"Server failed to start: {self._server_startup_error}"
+        if isinstance(event.error, MissingCredentialsError):
+            text = f"Model setup required: {event.error}"
+        else:
+            text = f"Server failed to start: {self._server_startup_error}"
         if had_deferred_actions:
             text += (
                 "\n\nQueued changes were not applied. "
@@ -6837,9 +6840,9 @@ class DeepAgentsApp(App):
             and self._server_kwargs is not None
         ):
             text += (
-                "\n\nHint: run `/auth` to add a key for this provider, then "
-                "`/model <provider>:<model>` to retry startup. Or pick a "
-                "different provider directly with `/model`."
+                "\n\nThe app is still open. Run `/auth` to configure this "
+                "provider; startup will retry automatically after you save. "
+                "Or use `/model` to choose a different provider."
             )
         elif (
             self._server_startup_missing_provider_package is not None

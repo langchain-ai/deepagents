@@ -17514,6 +17514,38 @@ class TestDeferredActions:
                 h.close()
                 package_logger.removeHandler(h)
 
+    async def test_missing_credentials_explains_in_app_recovery(self) -> None:
+        """Credential failures explain setup and automatic retry, not a crash."""
+        from deepagents_code.model_config import MissingCredentialsError
+        from deepagents_code.tui.widgets.messages import ErrorMessage
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._server_kwargs = {"model_name": "anthropic:fake"}
+            app._connecting = True
+            app.on_deep_agents_app_server_start_failed(
+                DeepAgentsApp.ServerStartFailed(
+                    error=MissingCredentialsError(
+                        "Please set ANTHROPIC_API_KEY.",
+                        provider="anthropic",
+                        env_var="ANTHROPIC_API_KEY",
+                    )
+                )
+            )
+            await pilot.pause()
+
+            widget = app._startup_failure_widget
+            assert isinstance(widget, ErrorMessage)
+            text = str(widget._content)
+            assert "Model setup required: Please set ANTHROPIC_API_KEY." in text
+            assert "Server failed to start" not in text
+            assert "The app is still open" in text
+            assert "`/auth`" in text
+            assert "retry automatically" in text
+            assert "`/model`" in text
+            assert not app._connecting
+
     async def test_server_failure_missing_package_records_recovery_hint(
         self,
     ) -> None:

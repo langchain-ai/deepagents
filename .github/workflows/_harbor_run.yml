@@ -916,7 +916,7 @@ jobs:
               AGENT_IMPL="$HARBOR_AGENT_IMPL" python3 \
                 "$GITHUB_WORKSPACE/.github/scripts/evals/validate_agent_graph.py" \
                 "$GITHUB_WORKSPACE/libs/evals/deepagents_harbor/langgraph_project/langgraph.json"
-              agent_args=(--agent deepagents_harbor.agent:DeepAgentsLangGraph
+              agent_args=(--agent langgraph
                 --agent-kwarg python_version=3.14
                 --agent-kwarg project_path=deepagents_harbor/langgraph_project
                 --agent-kwarg config=langgraph.json

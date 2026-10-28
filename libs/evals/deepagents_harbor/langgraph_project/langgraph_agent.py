@@ -172,7 +172,7 @@ def _build_model(configurable: dict[str, object]) -> BaseChatModel:
 
 
 def _skills(configurable: dict[str, object]) -> list[str] | None:
-    """Return the task's skills source, forwarded by `DeepAgentsLangGraph`.
+    """Return the task's skills source, forwarded by Harbor's `langgraph` agent.
 
     Raises:
         ValueError: If `skills_dir` is not an absolute path without `..`.
@@ -438,8 +438,7 @@ def make_bare_graph(config: dict[str, object] | None = None) -> object:
     Args:
         config: LangGraph runtime config. Harbor passes the selected model in
             `configurable.model` and optional provider kwargs in
-            `configurable.model_kwargs`, plus the task's `skills_dir` when
-            run through `DeepAgentsLangGraph`.
+            `configurable.model_kwargs`, plus the task's `skills_dir`.
 
     Returns:
         A compiled LangGraph graph invokable by Harbor's LangGraph runner.

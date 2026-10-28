@@ -14,7 +14,6 @@ from fastmcp import FastMCP
 from langchain.mcp import MCPAdapter
 from langchain_core.tools import BaseTool
 
-from deepagents_harbor.agent import DeepAgentsLangGraph
 from deepagents_harbor.langgraph_project import langgraph_agent
 
 if TYPE_CHECKING:
@@ -779,20 +778,6 @@ def test_make_bare_graph_rejects_invalid_skills_dir(
         langgraph_agent.make_bare_graph(
             {"configurable": {"model": "p:m", "cwd": str(tmp_path), "skills_dir": skills_dir}}
         )
-
-
-def test_deepagents_langgraph_forwards_task_skills_dir(tmp_path: Path) -> None:
-    project = Path(langgraph_agent.__file__).parent
-    agent = DeepAgentsLangGraph(
-        project_path=project,
-        graph="bare",
-        logs_dir=tmp_path,
-        skills_dir="/app/.agents/skills",
-    )
-    plain = DeepAgentsLangGraph(project_path=project, graph="bare", logs_dir=tmp_path)
-
-    assert agent.configurable["skills_dir"] == "/app/.agents/skills"
-    assert "skills_dir" not in plain.configurable
 
 
 def test_make_tau3_graph_does_not_inject_system_prompt(monkeypatch):

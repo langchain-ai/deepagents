@@ -3437,6 +3437,7 @@ async def run_textual_cli_async(
         ModelConfigError,
         ModelSpec,
         NoCredentialsConfiguredError,
+        NoModelConfiguredError,
     )
     from deepagents_code.onboarding import should_run_onboarding
 
@@ -3453,7 +3454,7 @@ async def run_textual_cli_async(
     defer_server_start = False
     try:
         resolved_spec = model_name or _get_default_model_spec()
-    except NoCredentialsConfiguredError:
+    except NoCredentialsConfiguredError, NoModelConfiguredError:
         resolved_spec = ""
         defer_server_start = True
     except ModelConfigError as e:
@@ -6543,6 +6544,14 @@ def cli_main() -> None:
                 # No subcommand provided, show threads help screen
                 show_threads_help()
         elif args.non_interactive_message:
+            from deepagents_code.config import _get_default_model_spec
+            from deepagents_code.model_config import ModelConfigError
+
+            try:
+                args.model = getattr(args, "model", None) or _get_default_model_spec()
+            except ModelConfigError as exc:
+                console.print(str(exc), style="bold red", markup=False)
+                sys.exit(1)
             _print_configured_profile_notice()
             # Resolve recent-agent fallback only for actual session launches.
             assistant_id = _resolve_agent_arg(args)

@@ -285,7 +285,7 @@ class TestHeadlessApprovalFlagHandling:
             return real_open(path, flags, mode, dir_fd=dir_fd)
 
         with (
-            patch.object(sys, "argv", argv),
+            patch.object(sys, "argv", [*argv, "--model", "openai:test-model"]),
             patch.object(sys, "stdin", mock_stdin),
             patch("os.open", side_effect=_open_no_tty),
             patch("deepagents_code.main.check_optional_tools", return_value=[]),
@@ -774,7 +774,15 @@ class TestSkillFlagValidation:
             patch.object(
                 sys,
                 "argv",
-                ["deepagents", "--skill", "code-review", "--stdin", "-q"],
+                [
+                    "deepagents",
+                    "--skill",
+                    "code-review",
+                    "--stdin",
+                    "-q",
+                    "--model",
+                    "openai:test-model",
+                ],
             ),
             patch.object(sys, "stdin", mock_stdin),
             patch("deepagents_code.main.check_optional_tools", return_value=[]),
@@ -819,7 +827,11 @@ class TestMaxTurnsArgument:
         mock_stdin.isatty.return_value = False
         mock_stdin.read.return_value = "piped task"
         with (
-            patch.object(sys, "argv", ["deepagents", "--max-turns", "5"]),
+            patch.object(
+                sys,
+                "argv",
+                ["deepagents", "--max-turns", "5", "--model", "openai:test-model"],
+            ),
             patch.object(sys, "stdin", mock_stdin),
             patch("deepagents_code.main.check_optional_tools", return_value=[]),
             patch(

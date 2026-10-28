@@ -1862,7 +1862,11 @@ def build_release_notes(
     base_body = build_base_body(
         pkg_name=package,
         version=version,
-        changelog_body=changelog_body,
+        changelog_body=_with_section(
+            changelog_body,
+            f"[Full changelog](https://github.com/{repository}/blob/"
+            f"{release_sha}/{working_dir}/CHANGELOG.md)",
+        ),
         is_prerelease=is_pre,
         community=community,
         internal=internal,

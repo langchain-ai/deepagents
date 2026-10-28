@@ -1477,126 +1477,24 @@ class TestDefaultModelSpecAllowlist:
         assert "<default>" not in str(excinfo.value)
         assert "No model can be used" in str(excinfo.value)
 
-    def test_all_allowed_providers_missing_credentials(
-        self, monkeypatch: pytest.MonkeyPatch
+    @pytest.mark.parametrize(
+        "allowed", [("openai:available",), ("openai:*",), ("my_gateway:*",)]
+    )
+    def test_policy_without_saved_choice_requires_selection(
+        self, monkeypatch: pytest.MonkeyPatch, allowed: tuple[str, ...]
     ) -> None:
-        """Every candidate definitively lacking auth is a distinct failure.
-
-        Distinguishable from the bare no-credentials case because the remedy
-        differs: only a credential for an allowlisted provider helps.
-        """
         from deepagents_code.config import _get_default_model_spec
 
         self._pin(
             monkeypatch,
             ModelConfig(
-                allowed_models=("openai:gpt-5.6-terra", "anthropic:claude-opus-5"),
+                default_model="anthropic:blocked",
+                allowed_models=allowed,
                 allowed_models_source="config.toml",
             ),
         )
-        monkeypatch.setattr(
-            model_config,
-            "get_provider_auth_status",
-            lambda provider: model_config.ProviderAuthStatus(
-                state=model_config.ProviderAuthState.MISSING,
-                source=None,
-                provider=provider,
-            ),
-        )
-
-        with pytest.raises(model_config.NoAllowedModelCredentialsError) as excinfo:
-            _get_default_model_spec()
-
-        # Names what would fix it, and stays catchable as the base class so the
-        # existing deferred-start recovery keeps working.
-        assert "openai:gpt-5.6-terra" in str(excinfo.value)
-        assert isinstance(excinfo.value, model_config.NoCredentialsConfiguredError)
-
-    def test_disallowed_stored_default_is_skipped_for_an_allowed_candidate(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """A stale `[models].default` outside policy does not win."""
-        from deepagents_code.config import _get_default_model_spec
-
-        self._pin(
-            monkeypatch,
-            ModelConfig(
-                default_model="openai:blocked",
-                allowed_models=("anthropic:claude-opus-5",),
-                allowed_models_source="config.toml",
-            ),
-        )
-        monkeypatch.setattr(
-            model_config,
-            "get_provider_auth_status",
-            lambda provider: model_config.ProviderAuthStatus(
-                state=model_config.ProviderAuthState.CONFIGURED,
-                source=model_config.ProviderAuthSource.ENV,
-                provider=provider,
-            ),
-        )
-
-        assert _get_default_model_spec() == "anthropic:claude-opus-5"
-
-    def test_wildcard_expands_to_discovered_models(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """A `provider:*` wildcard yields the discovered lineup, not just config.
-
-        Built-in providers like `openai` have their models discovered from the
-        installed provider package, not from `[models.providers.openai].models`,
-        so a wildcard policy with valid credentials must not fall through to
-        the "No discoverable models" error.
-        """
-        from deepagents_code.config import _get_default_model_spec
-
-        self._pin(
-            monkeypatch,
-            ModelConfig(
-                allowed_models=("openai:*",),
-                allowed_models_source="config.toml",
-            ),
-        )
-        monkeypatch.setattr(
-            model_config,
-            "get_discovered_models",
-            lambda provider: (
-                ["gpt-5.6-terra", "gpt-5.5"] if provider == "openai" else []
-            ),
-        )
-        monkeypatch.setattr(
-            model_config,
-            "get_provider_auth_status",
-            lambda provider: model_config.ProviderAuthStatus(
-                state=model_config.ProviderAuthState.CONFIGURED,
-                source=model_config.ProviderAuthSource.ENV,
-                provider=provider,
-            ),
-        )
-
-        assert _get_default_model_spec() == "openai:gpt-5.6-terra"
-
-    def test_wildcard_with_no_discovered_models_fails_closed(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """A wildcard for a provider with no known models has no candidates."""
-        from deepagents_code.config import _get_default_model_spec
-
-        self._pin(
-            monkeypatch,
-            ModelConfig(
-                allowed_models=("openai:*",),
-                allowed_models_source="config.toml",
-            ),
-        )
-        monkeypatch.setattr(
-            model_config,
-            "get_discovered_models",
-            lambda _provider: [],
-        )
-
         with pytest.raises(
-            model_config.NoAllowedModelCredentialsError, match="No discoverable"
+            model_config.NoModelConfiguredError, match="No model configured"
         ):
             _get_default_model_spec()
 

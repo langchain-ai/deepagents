@@ -30,7 +30,7 @@ from deepagents_code.model_config import (
     ModelConfigError,
     ModelNotAllowedError,
     ModelSpec,
-    NoAllowedModelCredentialsError,
+    NoModelConfiguredError,
     ProviderAuthSource,
     ProviderAuthState,
     ProviderAuthStatus,
@@ -3028,243 +3028,89 @@ class TestModelConfigLoadRecent:
 
 
 class TestModelPrecedenceOrder:
-    """Tests for model selection precedence: default > recent > env."""
+    """Model resolution uses saved choices, never credentials or allowed lists."""
 
-    def test_disallowed_saved_values_fall_back_in_allowlist_order(
-        self, tmp_path: Path
+    @pytest.mark.parametrize(
+        ("settings", "expected"),
+        [
+            ('default = "openai:chosen"\nrecent = "anthropic:recent"', "openai:chosen"),
+            ('recent = "anthropic:recent"', "anthropic:recent"),
+            (
+                (
+                    'default = "openai:blocked"\nrecent = "anthropic:recent"\n'
+                    'allowed = ["anthropic:*"]'
+                ),
+                "anthropic:recent",
+            ),
+        ],
+    )
+    def test_saved_model_precedence(
+        self, tmp_path: Path, settings: str, expected: str
     ) -> None:
-        """Stale defaults cannot outrank an allowed authenticated fallback."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(f"[models]\n{settings}\n")
+
+        with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
+            assert model_config.ModelConfig.load().is_model_allowed(expected)
+            from deepagents_code.config import _get_default_model_spec
+
+            assert _get_default_model_spec() == expected
+
+    @pytest.mark.parametrize(
+        "environment",
+        [
+            {},
+            {"OPENAI_API_KEY": "test-key"},
+            {"ANTHROPIC_API_KEY": "test-key"},
+            {"GOOGLE_API_KEY": "test-key"},
+        ],
+    )
+    def test_credentials_do_not_select_model(
+        self, tmp_path: Path, environment: dict[str, str]
+    ) -> None:
+        from deepagents_code.config import _get_default_model_spec, create_model
+
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("")
+        with (
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+            patch(
+                "deepagents_code.auth_store.get_stored_key", return_value="stored-key"
+            ),
+            patch.dict("os.environ", environment, clear=True),
+        ):
+            with pytest.raises(NoModelConfiguredError, match="--model provider:model"):
+                _get_default_model_spec()
+            with pytest.raises(NoModelConfiguredError, match="--default-model"):
+                create_model()
+
+    @pytest.mark.parametrize(
+        "allowed", ['["openai:available"]', '["openai:*"]', '["my_gateway:*"]']
+    )
+    def test_allowlist_does_not_select_model(
+        self, tmp_path: Path, allowed: str
+    ) -> None:
         from deepagents_code.config import _get_default_model_spec
 
         config_path = tmp_path / "config.toml"
         config_path.write_text(
-            '[models]\nallowed = ["anthropic:claude-opus-5"]\n'
-            'default = "openai:gpt-5.6-terra"\n'
+            f'[models]\nallowed = {allowed}\ndefault = "anthropic:blocked"\n'
         )
-
         with (
             patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
-            patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"}, clear=True),
+            patch.dict("os.environ", {"OPENAI_API_KEY": "test-key"}, clear=True),
+            pytest.raises(NoModelConfiguredError),
         ):
-            result = _get_default_model_spec()
-
-        assert result == "anthropic:claude-opus-5"
+            _get_default_model_spec()
 
     def test_empty_allowlist_blocks_default_resolution(self, tmp_path: Path) -> None:
-        """A deny-all list never reaches unrestricted credential fallback."""
         from deepagents_code.config import _get_default_model_spec
 
         config_path = tmp_path / "config.toml"
         config_path.write_text("[models]\nallowed = []\n")
-
         with (
             patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
             pytest.raises(ModelNotAllowedError, match="allows no models"),
-        ):
-            _get_default_model_spec()
-
-    def test_allowlist_falls_back_to_remote_no_auth_provider(
-        self, tmp_path: Path
-    ) -> None:
-        """A remote Ollama endpoint with unknown auth remains a viable fallback.
-
-        `get_provider_auth_status` reports UNKNOWN for remote no-auth providers
-        because a LAN/hosted endpoint may not require credentials. Rejecting
-        that state here would block startup even though `create_model()`
-        deliberately permits it.
-        """
-        from deepagents_code.config import _get_default_model_spec
-
-        config_path = tmp_path / "config.toml"
-        config_path.write_text(
-            '[models]\nallowed = ["ollama:qwen3:4b"]\n\n'
-            "[models.providers.ollama]\n"
-            'base_url = "https://ollama.example.com"\n'
-            'models = ["qwen3:4b"]\n'
-        )
-
-        with (
-            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
-            patch.dict("os.environ", {}, clear=True),
-        ):
-            result = _get_default_model_spec()
-
-        assert result == "ollama:qwen3:4b"
-
-    def test_allowlist_wildcard_falls_back_to_configured_models(
-        self, tmp_path: Path
-    ) -> None:
-        """A `provider:*` entry expands to the provider's configured models.
-
-        The wildcard itself names no model, so default resolution picks the
-        first credentialed model the provider declares rather than selecting
-        the wildcard literally.
-        """
-        from deepagents_code.config import _get_default_model_spec
-
-        config_path = tmp_path / "config.toml"
-        config_path.write_text(
-            '[models]\nallowed = ["my_gateway:*"]\n\n'
-            "[models.providers.my_gateway]\n"
-            'base_url = "https://gateway.example.com/v1"\n'
-            'api_key_env = "MY_GATEWAY_API_KEY"\n'
-            'models = ["model-a", "model-b"]\n'
-        )
-
-        with (
-            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
-            patch.dict("os.environ", {"MY_GATEWAY_API_KEY": "test-key"}, clear=True),
-        ):
-            result = _get_default_model_spec()
-
-        assert result == "my_gateway:model-a"
-
-    def test_allowlist_wildcard_expands_discovered_builtin_lineup(
-        self, tmp_path: Path
-    ) -> None:
-        """A built-in `provider:*` wildcard expands registry-discovered models.
-
-        `openai` declares no `[models.providers.openai].models`; its lineup is
-        discovered from the installed provider package's profile data. With a
-        credential present, default resolution must pick a discovered model
-        rather than reporting "No discoverable models".
-        """
-        from deepagents_code.config import _get_default_model_spec
-
-        config_path = tmp_path / "config.toml"
-        config_path.write_text('[models]\nallowed = ["openai:*"]\n')
-
-        with (
-            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
-            patch.dict("os.environ", {"OPENAI_API_KEY": "test-key"}, clear=True),
-        ):
-            result = _get_default_model_spec()
-
-        assert result is not None
-        provider, _, model = result.partition(":")
-        assert provider == "openai"
-        assert model
-
-    def test_allowlist_wildcard_without_models_fails_closed(
-        self, tmp_path: Path
-    ) -> None:
-        """A wildcard for a provider with no discoverable models selects nothing.
-
-        `my_gateway` is declared with no `models` list and no registry or
-        `class_path` lineup to discover, so the wildcard contributes no
-        candidates. (A built-in like `openai` would expand to its discovered
-        profile lineup instead.)
-        """
-        from deepagents_code.config import _get_default_model_spec
-
-        config_path = tmp_path / "config.toml"
-        config_path.write_text(
-            '[models]\nallowed = ["my_gateway:*"]\n\n'
-            "[models.providers.my_gateway]\n"
-            'base_url = "https://gateway.example.com/v1"\n'
-            'api_key_env = "MY_GATEWAY_API_KEY"\n'
-        )
-
-        with (
-            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
-            patch.dict("os.environ", {"MY_GATEWAY_API_KEY": "test-key"}, clear=True),
-            pytest.raises(NoAllowedModelCredentialsError, match="No discoverable"),
-        ):
-            _get_default_model_spec()
-
-    def test_env_used_when_neither_set(self, tmp_path):
-        """Falls back to env var auto-detection when neither default nor recent set."""
-        from deepagents_code.config import _get_credentials, _get_default_model_spec
-
-        config_path = tmp_path / "config.toml"
-        config_path.write_text("")
-
-        owner = _get_credentials()
-        replacement = replace(
-            owner.active,
-            openai_api_key=None,
-            anthropic_api_key="test-key",
-        )
-        with (
-            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
-            patch("deepagents_code.auth_store.get_stored_key", return_value=None),
-            patch.object(owner, "_active", replacement),
-            patch.dict(
-                "os.environ",
-                {"ANTHROPIC_API_KEY": "test-key"},
-                clear=True,
-            ),
-        ):
-            result = _get_default_model_spec()
-
-        assert result == "anthropic:claude-opus-5"
-
-    def test_stored_key_used_when_neither_model_set(self, tmp_path):
-        """Falls back to stored TUI credentials when no env vars are set."""
-        from deepagents_code.config import _get_default_model_spec
-
-        config_path = tmp_path / "config.toml"
-        config_path.write_text("")
-
-        def stored_key(provider: str) -> str | None:
-            return "test-key" if provider == "anthropic" else None
-
-        with (
-            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
-            patch("deepagents_code.auth_store.get_stored_key", side_effect=stored_key),
-            patch.dict("os.environ", {}, clear=True),
-        ):
-            result = _get_default_model_spec()
-
-        assert result == "anthropic:claude-opus-5"
-
-    def test_vertex_project_does_not_drive_env_default(self, tmp_path):
-        """Vertex project alone should not select an automatic default model."""
-        from deepagents_code.config import _get_credentials, _get_default_model_spec
-
-        config_path = tmp_path / "config.toml"
-        config_path.write_text("")
-
-        owner = _get_credentials()
-        replacement = replace(
-            owner.active,
-            openai_api_key=None,
-            anthropic_api_key=None,
-            google_api_key=None,
-            google_cloud_project="test-project",
-            nvidia_api_key=None,
-        )
-        with (
-            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
-            patch("deepagents_code.auth_store.get_stored_key", return_value=None),
-            patch.dict("os.environ", {}, clear=True),
-            patch.object(owner, "_active", replacement),
-            pytest.raises(ModelConfigError),
-        ):
-            _get_default_model_spec()
-
-    def test_nvidia_key_does_not_drive_env_default(self, tmp_path):
-        """NVIDIA key alone should not select an automatic default model."""
-        from deepagents_code.config import _get_credentials, _get_default_model_spec
-
-        config_path = tmp_path / "config.toml"
-        config_path.write_text("")
-
-        owner = _get_credentials()
-        replacement = replace(
-            owner.active,
-            openai_api_key=None,
-            anthropic_api_key=None,
-            google_api_key=None,
-            google_cloud_project=None,
-            nvidia_api_key="test-key",
-        )
-        with (
-            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
-            patch("deepagents_code.auth_store.get_stored_key", return_value=None),
-            patch.dict("os.environ", {}, clear=True),
-            patch.object(owner, "_active", replacement),
-            pytest.raises(ModelConfigError),
         ):
             _get_default_model_spec()
 

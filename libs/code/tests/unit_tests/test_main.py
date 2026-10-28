@@ -2946,6 +2946,22 @@ class TestBuildMissingToolNotification:
 class TestRunTextualCliAsyncModelConfigError:
     """Verify default model config errors are handled before launching the TUI."""
 
+    @pytest.mark.parametrize("model", [None, "openai:selected"])
+    async def test_credentials_alone_defer_startup(
+        self, monkeypatch: pytest.MonkeyPatch, model: str | None
+    ) -> None:
+        monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+        monkeypatch.setattr(
+            ModelConfig, "load", classmethod(lambda _cls: ModelConfig())
+        )
+        launch = AsyncMock(return_value=AppResult(return_code=0, thread_id="t"))
+        with patch("deepagents_code.app.run_textual_app", launch):
+            await run_textual_cli_async("agent", model_name=model)
+
+        kwargs = launch.call_args.kwargs
+        assert kwargs["defer_server_start"] is (model is None)
+        assert kwargs["server_kwargs"]["model_name"] == model
+
     async def test_launches_tui_on_no_credentials(self) -> None:
         """Missing default credentials should be recoverable inside the TUI."""
         from deepagents_code.model_config import NoCredentialsConfiguredError
@@ -3020,6 +3036,70 @@ class TestRunTextualCliAsyncModelConfigError:
 
         assert result.return_code == 1
         assert result.thread_id is None
+
+
+class TestHeadlessModelSelection:
+    @pytest.mark.parametrize(
+        ("default", "recent", "explicit", "expected"),
+        [
+            ("openai:default", "anthropic:recent", None, "openai:default"),
+            (None, "anthropic:recent", None, "anthropic:recent"),
+            ("openai:default", None, "google_genai:chosen", "google_genai:chosen"),
+        ],
+    )
+    def test_headless_uses_explicit_or_saved_model(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        default: str | None,
+        recent: str | None,
+        explicit: str | None,
+        expected: str,
+    ) -> None:
+        monkeypatch.setattr(
+            ModelConfig,
+            "load",
+            classmethod(
+                lambda _cls: ModelConfig(default_model=default, recent_model=recent)
+            ),
+        )
+        argv = ["dcode", "-n", "hello", "--no-interpreter", "--no-mcp"]
+        if explicit:
+            argv.extend(["--model", explicit])
+        launch = AsyncMock(return_value=0)
+        with (
+            patch("sys.argv", argv),
+            patch("sys.stdin", SimpleNamespace(isatty=lambda: True)),
+            patch("deepagents_code.main.check_optional_tools", return_value=[]),
+            patch("deepagents_code.client.non_interactive.run_non_interactive", launch),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            cli_main()
+
+        assert exc_info.value.code == 0
+        assert launch.await_args is not None
+        assert launch.await_args.kwargs["model_name"] == expected
+
+    def test_missing_model_exits_before_launch(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        monkeypatch.setattr(
+            ModelConfig, "load", classmethod(lambda _cls: ModelConfig())
+        )
+        monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+        launch = AsyncMock()
+        with (
+            patch("sys.argv", ["dcode", "-n", "hello", "--no-interpreter"]),
+            patch("sys.stdin", SimpleNamespace(isatty=lambda: True)),
+            patch("deepagents_code.client.non_interactive.run_non_interactive", launch),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            cli_main()
+
+        assert exc_info.value.code == 1
+        launch.assert_not_called()
+        output = capsys.readouterr()
+        assert "No model configured" in output.out + output.err
+        assert "--model provider:model" in output.out + output.err
 
 
 class TestNormalizeCwdFilter:

@@ -17072,6 +17072,53 @@ class TestDispatchModelSwitch:
                     await drain
 
 
+class TestExplicitStartupModel:
+    async def test_first_launch_opens_picker_and_waits_for_selection(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from deepagents_code.tui.widgets.model_selector import ModelSelectorScreen
+
+        app = DeepAgentsApp(server_kwargs={"model_name": None}, defer_server_start=True)
+        start = AsyncMock()
+        monkeypatch.setattr(app, "_start_server_background", start)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert isinstance(app.screen, ModelSelectorScreen)
+            assert app._server_startup_deferred is True
+            start.assert_not_awaited()
+            await pilot.press("escape")
+            await pilot.pause()
+            assert not isinstance(app.screen, ModelSelectorScreen)
+            assert app._server_startup_deferred is True
+            start.assert_not_awaited()
+
+    @pytest.mark.parametrize("saved_model", [None, "openai:chosen"])
+    async def test_auth_does_not_choose_model(
+        self, monkeypatch: pytest.MonkeyPatch, saved_model: str | None
+    ) -> None:
+        from deepagents_code.model_config import ModelConfig
+
+        monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+        monkeypatch.setattr(
+            ModelConfig,
+            "load",
+            classmethod(lambda _cls: ModelConfig(recent_model=saved_model)),
+        )
+        app = DeepAgentsApp(server_kwargs={"model_name": None}, defer_server_start=True)
+        retry = AsyncMock()
+        monkeypatch.setattr(app, "_retry_startup_with_model", retry)
+
+        await app._resume_server_after_auth_change()
+
+        if saved_model:
+            retry.assert_awaited_once_with(saved_model)
+        else:
+            retry.assert_not_awaited()
+            assert app._server_kwargs is not None
+            assert app._server_kwargs["model_name"] is None
+            assert app._server_startup_deferred is True
+
+
 class TestDeferredActions:
     """Test deferred action queueing and draining."""
 

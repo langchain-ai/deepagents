@@ -236,28 +236,16 @@ class ModelNotAllowedError(ModelConfigError):
         self.context = context
 
 
-class NoCredentialsConfiguredError(ModelConfigError):
-    """Raised when no credentials are configured for any default-resolvable provider.
+class NoModelConfiguredError(ModelConfigError):
+    """Raised when neither a permitted default nor a recent model is saved."""
 
-    Distinct from `MissingCredentialsError` (which targets a specific provider
-    the user has selected): this fires from `_get_default_model_spec()` when
-    auto-detection finds no usable credentials at all. Callers (the deferred-
-    start path in the TUI and CLI) `isinstance`-check this type to recover by
-    launching the TUI with model creation deferred, rather than string-matching
-    the formatted message.
-    """
+
+class NoCredentialsConfiguredError(ModelConfigError):
+    """Legacy startup error for missing credentials, retained for compatibility."""
 
 
 class NoAllowedModelCredentialsError(NoCredentialsConfiguredError):
-    """Raised when `models.allowed` is active but none of its models can auth.
-
-    A `NoCredentialsConfiguredError` so existing deferred-start recovery keeps
-    working, but distinguishable because the recovery differs: adding *any*
-    credential fixes the base case, while here only a credential for a provider
-    named in the allowlist helps. Handlers that would otherwise silently retry
-    surface this message instead, so `/auth` never accepts a key and then
-    appears to do nothing.
-    """
+    """Legacy allowed-model credential error, retained for compatibility."""
 
 
 class UnknownProviderError(ModelConfigError):
@@ -3393,11 +3381,10 @@ class ModelConfig:
     - `None` -- no policy is active; every model is allowed.
     - `()` -- a policy is active and permits **nothing**. Model construction
       and default resolution both fail closed.
-    - non-empty -- only these entries are permitted, in preference order
-      (`_get_default_model_spec` walks the tuple in declaration order). An
-      entry is either an exact `provider:model` spec or a `provider:*`
-      wildcard permitting every model from that provider; a wildcard is never
-      selected as a default itself, but models it admits remain candidates.
+    - non-empty -- only these entries are permitted. An entry is either an
+      exact `provider:model` spec or a `provider:*` wildcard permitting every
+      model from that provider. The policy constrains model selection without
+      selecting a default.
 
     Test `is None`, never truthiness: `if not config.allowed_models` conflates
     "unrestricted" with "deny all" and inverts the policy.

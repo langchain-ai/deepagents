@@ -41,7 +41,6 @@ from langchain.agents.structured_output import (
     MultipleStructuredOutputsError,
     StructuredOutputValidationError,
 )
-from langchain_core._api import beta
 from langchain_core.messages import (
     AIMessage,
     AnyMessage,
@@ -488,7 +487,6 @@ def _strategy_from_model(
     return "ToolStrategy"
 
 
-@beta(obj_type="middleware")
 class RubricMiddleware(AgentMiddleware[RubricState, ContextT, ResponseT]):
     """Middleware that drives self-evaluated iteration against a rubric.
 

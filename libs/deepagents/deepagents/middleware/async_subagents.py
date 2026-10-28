@@ -523,7 +523,7 @@ def _notification_event(message: BaseMessage) -> TaskEvent | None:
 
 
 def _notification_body(update: _TaskUpdate) -> list[dict[str, Any]]:
-    """The body of a task update's notification; `_labeled` adds the header.
+    """The body of a task update's notification; `_labeled` adds the headers.
 
     The result keeps its own content blocks, so an image reaches the model as an image.
     """
@@ -534,7 +534,7 @@ def _notification_body(update: _TaskUpdate) -> list[dict[str, Any]]:
         "cancelled": "The task's run was cancelled before it finished, outside your tools. Decide whether to start it again, or tell the user.",
         "waiting": "The subagent is waiting for the user, who answers it on the subagent's own thread; you can't answer or approve it. Keep working.",
     }[update["status"]]
-    blocks = [_task_header(update)]
+    blocks: list[dict[str, Any]] = []
     if "result" in update:
         blocks += [_text_block("<result>\n"), *_result_blocks(update["result"]), _text_block("\n</result>\n")]
     if details := {key: update[key] for key in ("error", "interrupts") if key in update}:
@@ -554,7 +554,7 @@ def _superseded_notification_content(message: BaseMessage, event: TaskEvent) -> 
     if isinstance(closing, dict) and str(closing.get("text", "")).startswith("</task-notification>"):
         body = [block for block in content[:-1] if isinstance(block, dict)]
     else:
-        body = cast("list[dict[str, Any]]", _labeled([_task_header(event)], event).content)
+        body = _header_blocks(event)
     return [
         *body,
         _text_block(
@@ -565,11 +565,15 @@ def _superseded_notification_content(message: BaseMessage, event: TaskEvent) -> 
     ]
 
 
-def _labeled(blocks: list[dict[str, Any]], event: TaskEvent) -> HumanMessage:
-    """`blocks` under the notification header, labeled with `event`."""
-    header = _text_block(f"{NOTIFICATION_HEADER}\n{_NOTIFICATION_NOTE}\n")
-    message = HumanMessage(content=cast("list[str | dict[Any, Any]]", [header, *blocks]))
-    return add_notification_metadata(message, source=_NOTIFICATION_SOURCE, data=cast("dict[str, Any]", event))
+def _header_blocks(event: TaskEvent) -> list[dict[str, Any]]:
+    """The notification header and `event`'s task header."""
+    return [_text_block(f"{NOTIFICATION_HEADER}\n{_NOTIFICATION_NOTE}\n"), _task_header(event)]
+
+
+def _labeled(body: list[dict[str, Any]], event: TaskEvent) -> HumanMessage:
+    """`body` under the notification header, labeled with `event`."""
+    content: list[str | dict[Any, Any]] = [*_header_blocks(event), *body]
+    return add_notification_metadata(HumanMessage(content=content), source=_NOTIFICATION_SOURCE, data=dict(event))
 
 
 def _task_header(event: TaskEvent) -> dict[str, Any]:

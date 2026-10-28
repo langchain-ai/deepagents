@@ -11687,6 +11687,9 @@ class DeepAgentsApp(App):
             )
             return False
 
+        if not await self._validate_auto_classifier():
+            return False
+
         if not has_auto_mode_notice():
             pending: asyncio.Future[bool] | None = getattr(
                 self, "_auto_mode_confirmation_future", None
@@ -24316,7 +24319,8 @@ class DeepAgentsApp(App):
 
         # Gate the first Auto switch on the education confirmation.
         if target is ApprovalMode.AUTO and not has_auto_mode_notice():
-            self._prompt_auto_mode_confirmation()
+            if await self._validate_auto_classifier():
+                self._prompt_auto_mode_confirmation()
             return
 
         # Gate the first YOLO switcher entry on the same policy acknowledgement
@@ -24342,6 +24346,9 @@ class DeepAgentsApp(App):
             `True` when local UI state was updated to `target`.
         """
         from deepagents_code.approval_mode import ApprovalMode
+
+        if target is ApprovalMode.AUTO and not await self._validate_auto_classifier():
+            return False
 
         # With no usable agent/session pair there is no running graph to update.
         # Stage the selection locally; `execute_task_textual` persists it before
@@ -24399,6 +24406,32 @@ class DeepAgentsApp(App):
             ApprovalMode.YOLO,
         }:
             await self._auto_accept_pending_goal_rubric()
+        return True
+
+    async def _validate_auto_classifier(self) -> bool:
+        """Return whether Auto's reviewer can be resolved."""
+        spec = self._auto_classifier_review_model_spec()
+        if spec is None:
+            return True
+        try:
+            if self._remote_agent() is not None:
+                await self._resolve_auxiliary_model(spec)
+            else:
+                from deepagents_code.config import create_model
+
+                await asyncio.to_thread(
+                    create_model, spec, bind_preserved_thinking=False
+                )
+        except Exception as exc:
+            logger.warning(
+                "Auto classifier resolution failed for %s", spec, exc_info=True
+            )
+            self._warn_live_approval_mode_unavailable(
+                f"Auto is unavailable: {exc}. Approval mode unchanged. "
+                "Use /auth to configure credentials or /auto model "
+                "to choose a reviewer."
+            )
+            return False
         return True
 
     def _auto_classifier_display_spec(self) -> str | None:
@@ -24803,7 +24836,8 @@ class DeepAgentsApp(App):
 
         # Gate the first Auto switch on the education confirmation.
         if target is ApprovalMode.AUTO and not has_auto_mode_notice():
-            self._prompt_auto_mode_confirmation()
+            if await self._validate_auto_classifier():
+                self._prompt_auto_mode_confirmation()
             return
 
         if target is ApprovalMode.YOLO:

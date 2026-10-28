@@ -423,43 +423,21 @@ def _render_teardown_thread_hints(
 
 
 def _confirm_update_after_restart(console: Console, version: str) -> None:
-    """Rewrite the pre-restart `Launching...` line as a stable update status.
+    """Confirm the running update, replacing the restart status on terminals."""
+    if console.is_terminal:
+        from rich.control import Control
+        from rich.segment import ControlType
 
-    The `Updated to v{version}. Launching...` line is printed by the previous
-    generation right before `os.execv`; this runs in the re-exec'd process to
-    clear the transient action once the new version is actually running.
-
-    The in-place rewrite is attempted only on a real terminal: `os.execv` does
-    nothing between that print and this process's first output, so the cursor
-    is parked on the line directly below it. On non-terminals the escape codes
-    would corrupt redirected output, so the line is left as-is.
-
-    The row count is recomputed against the current terminal width, so a resize
-    during the upgrade/re-exec window could make the erase loop clear the wrong
-    number of wrapped rows. This is a benign visual glitch (no exception), and
-    is rare enough not to warrant defending against here.
-
-    Args:
-        console: The Rich console used for startup output.
-        version: The version now running, used in the confirmation line.
-    """
-    if not console.is_terminal:
-        return
-    from rich.control import Control
-    from rich.segment import ControlType
-
-    launch_status = f"Updated to v{version}. Launching..."
-    launch_rows = _terminal_row_count(console, launch_status)
-    # Move up to the bottom row of the old status and erase each rendered row.
-    # This preserves the rewrite when Rich wrapped the status in a narrow pane.
-    for _ in range(launch_rows):
-        console.control(
-            Control(
-                (ControlType.CURSOR_UP, 1),
-                (ControlType.CURSOR_MOVE_TO_COLUMN, 0),
-                (ControlType.ERASE_IN_LINE, 2),
+        launch_status = f"Restarting to load v{version}..."
+        launch_rows = _terminal_row_count(console, launch_status)
+        for _ in range(launch_rows):
+            console.control(
+                Control(
+                    (ControlType.CURSOR_UP, 1),
+                    (ControlType.CURSOR_MOVE_TO_COLUMN, 0),
+                    (ControlType.ERASE_IN_LINE, 2),
+                )
             )
-        )
     console.print(f"[green]Updated to v{version}.[/green]", highlight=False)
 
 
@@ -631,6 +609,7 @@ def _run_startup_auto_update(console: Console) -> None:
             by the fail-soft handler, so a process-exit request is never
             swallowed (the `os.execv` re-exec is simulated this way under test).
     """
+    from packaging.version import Version
     from rich.markup import escape
 
     from deepagents_code._env_vars import DEBUG_UPDATE, RESTARTED_AFTER_UPDATE
@@ -677,28 +656,22 @@ def _run_startup_auto_update(console: Console) -> None:
             return
         # Consume the re-exec sentinel recorded before the previous restart.
         restarted_for = os.environ.pop(RESTARTED_AFTER_UPDATE, None)
-        if restarted_for is not None and is_installed_version_at_least(restarted_for):
+        if restarted_for is not None and Version(cli_version) >= Version(restarted_for):
             # The re-exec landed on the upgraded version, so the prior
-            # "Launching..." line can be replaced with a stable completed status.
+            # "Restarting..." line can be replaced with a stable completed status.
             try:
                 _confirm_update_after_restart(console, restarted_for)
             except Exception:
                 # The upgrade already succeeded; this rewrite is purely
                 # cosmetic. Swallow rendering glitches with their own guard so
                 # the outer fail-soft handler does not misreport a successful
-                # upgrade as "Auto-update failed". The prior "Launching..."
+                # upgrade as "Auto-update failed". The prior "Restarting..."
                 # line simply stays.
                 logger.debug("Post-restart update confirmation failed", exc_info=True)
         available, latest = get_cached_update_available()
         if not available or latest is None:
             return
-        if is_installed_version_at_least(latest):
-            # The on-disk install already satisfies `latest` (e.g. the user ran
-            # `/update` in-session). `get_cached_update_available` compares the
-            # baked-in `__version__`, which lags an in-session upgrade, so
-            # re-running the upgrade here would be a redundant no-op and restart.
-            return
-        if restarted_for == latest:
+        if restarted_for == latest and Version(cli_version) < Version(latest):
             # Already restarted after upgrading to this version, yet it still
             # reports as available: the install did not change the running
             # version. Bail out instead of upgrading and restarting forever
@@ -715,6 +688,8 @@ def _run_startup_auto_update(console: Console) -> None:
                 f"Continuing with v{cli_version}.",
                 highlight=False,
             )
+            return
+        if is_installed_version_at_least(latest):
             return
         # A deferred migration is retried as soon as no other session is
         # running; the install lock section decides between migrating and
@@ -842,7 +817,7 @@ def _run_startup_auto_update(console: Console) -> None:
             # environment than this process. In that case restart through the
             # shim uv just upgraded, rather than this process's interpreter.
             # Warn before the restart so the notice lands above the
-            # `Launching...` line that `_confirm_update_after_restart` rewrites.
+            # `Restarting...` line that `_confirm_update_after_restart` rewrites.
             # Use the never-raises wrapper so a detector defect can't crash
             # startup after an otherwise-successful upgrade.
             shadow = detect_shadowed_dcode_safe()
@@ -860,7 +835,7 @@ def _run_startup_auto_update(console: Console) -> None:
                     markup=True,
                 )
             console.print(
-                f"[green]Updated to v{latest}. Launching...[/green]",
+                f"Restarting to load v{latest}...",
                 highlight=False,
             )
             # Record the target version so the re-exec'd process can detect a

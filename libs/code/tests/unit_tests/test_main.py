@@ -1195,7 +1195,7 @@ class TestStartupAutoUpdate:
         printed = " ".join(str(c.args[0]) for c in console.print.call_args_list)
         assert "again to start on v9.9.9" in printed
 
-    def test_restart_after_update_skips_rewrite_when_not_terminal(
+    def test_restart_after_update_confirms_without_escapes_when_not_terminal(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Redirected (non-terminal) output is not polluted with escape codes."""
@@ -1208,6 +1208,7 @@ class TestStartupAutoUpdate:
 
         with (
             patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch("deepagents_code._version.__version__", "9.9.9"),
             patch(
                 "deepagents_code.update_check.is_update_check_enabled",
                 return_value=True,
@@ -1230,12 +1231,14 @@ class TestStartupAutoUpdate:
 
         output = stream.getvalue()
         assert "\x1b" not in output
-        assert "Updated to v9.9.9." not in output
+        assert "Updated to v9.9.9." in output
 
+    @pytest.mark.parametrize("metadata_updated", [False, True])
     def test_failed_restart_does_not_confirm_update(
-        self, monkeypatch: pytest.MonkeyPatch
+        self, monkeypatch: pytest.MonkeyPatch, *, metadata_updated: bool
     ) -> None:
         """A re-exec that did not change the version must not confirm the update."""
+        monkeypatch.setattr("deepagents_code._version.__version__", "0.1.88")
         console = MagicMock()
         console.is_terminal = True
         console.width = 80
@@ -1254,7 +1257,7 @@ class TestStartupAutoUpdate:
             # The install did not change the running version.
             patch(
                 "deepagents_code.update_check.is_installed_version_at_least",
-                return_value=False,
+                return_value=metadata_updated,
             ),
             patch(
                 "deepagents_code.update_check.get_cached_update_available",
@@ -1272,18 +1275,13 @@ class TestStartupAutoUpdate:
         console.control.assert_not_called()
         printed = " ".join(str(c.args[0]) for c in console.print.call_args_list)
         assert "Updated to v9.9.9." not in printed
+        assert "restart loop" in printed
+        assert "Continuing with v0.1.88." in printed
 
     def test_version_check_failure_skips_confirm_in_isolation(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """The confirm must be gated solely by `is_installed_version_at_least`.
-
-        With nothing available (`(False, None)`) the function returns before the
-        restart-loop guard, so the only path that could print the stable update
-        status is the confirm block. This pins the
-        `is_installed_version_at_least(restarted_for)`
-        condition: dropping it would let the confirm fire here and fail the test.
-        """
+        """An unchanged running version must not confirm even with no cached update."""
         stream = StringIO()
         console = Console(file=stream, force_terminal=True, no_color=True, width=80)
         monkeypatch.setenv("DEEPAGENTS_CODE_RESTARTED_AFTER_UPDATE", "9.9.9")
@@ -1332,6 +1330,7 @@ class TestStartupAutoUpdate:
 
         with (
             patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch("deepagents_code._version.__version__", "9.9.8"),
             patch(
                 "deepagents_code.update_check.is_update_check_enabled",
                 return_value=True,
@@ -1374,7 +1373,8 @@ class TestStartupAutoUpdate:
         assert "Updated to v9.9.8." in output
         assert "v9.9.8. Launched." not in output
         # ...and the newer version still goes through the upgrade path.
-        assert "v9.9.9. Launching..." in output
+        assert "Restarting to load v9.9.9..." in output
+        assert "Updated to v9.9.9" not in output
 
     def test_project_mcp_prompt_interrupt_aborts_before_tui(self) -> None:
         """Ctrl+C at the project MCP prompt exits before launching Textual."""

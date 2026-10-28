@@ -1172,6 +1172,7 @@ class TestUpdateSubcommand:
         debug: bool = False,
         editable: bool,
         is_update_available_return: tuple[bool, str | None],
+        cached_update_return: tuple[bool, str | None] = (False, None),
         log_path: str = "/tmp/deepagents-update.log",
         prerelease: bool = False,
         flag_style: bool = False,
@@ -1210,6 +1211,10 @@ class TestUpdateSubcommand:
                 return_value=install_method,
             ),
             patch(
+                "deepagents_code.update_check.get_cached_update_available",
+                return_value=cached_update_return,
+            ),
+            patch(
                 "deepagents_code.update_check.is_update_available",
                 return_value=is_update_available_return,
             ) as is_update_mock,
@@ -1231,6 +1236,52 @@ class TestUpdateSubcommand:
         ):
             cli_main()
         return int(exc_info.value.code or 0), is_update_mock, perform_upgrade_mock
+
+    @pytest.mark.parametrize("flag_style", [False, True])
+    def test_fresh_cached_update_skips_check(
+        self, capsys: pytest.CaptureFixture[str], *, flag_style: bool
+    ) -> None:
+        """A known update installs without another lookup or checking message."""
+        code, check, upgrade = self._run_update(
+            editable=False,
+            cached_update_return=(True, "99.0.0"),
+            is_update_available_return=(False, None),
+            flag_style=flag_style,
+        )
+
+        assert code == 0
+        check.assert_not_called()
+        assert upgrade.call_args.kwargs["target_version"] == "99.0.0"
+        assert "Checking for updates" not in capsys.readouterr().out
+
+    @pytest.mark.parametrize("cached", [(False, None), (False, "0.0.1")])
+    def test_no_cached_update_refreshes(
+        self, capsys: pytest.CaptureFixture[str], cached: tuple[bool, str | None]
+    ) -> None:
+        """An absent update must not hide a release published since the last check."""
+        code, check, upgrade = self._run_update(
+            editable=False,
+            cached_update_return=cached,
+            is_update_available_return=(True, "99.0.0"),
+        )
+
+        assert code == 0
+        check.assert_called_once_with(bypass_cache=True, include_prereleases=None)
+        assert upgrade.call_args.kwargs["target_version"] == "99.0.0"
+        assert "Checking for updates" in capsys.readouterr().out
+
+    def test_prerelease_update_does_not_reuse_stable_cache(self) -> None:
+        """Explicit pre-release intent fetches the requested release channel."""
+        code, check, upgrade = self._run_update(
+            editable=False,
+            cached_update_return=(True, "99.0.0"),
+            is_update_available_return=(True, "100.0.0rc1"),
+            prerelease=True,
+        )
+
+        assert code == 0
+        check.assert_called_once_with(bypass_cache=True, include_prereleases=True)
+        assert upgrade.call_args.kwargs["target_version"] == "100.0.0rc1"
 
     def test_editable_install_skips_upgrade(self) -> None:
         """Editable install exits 0 without calling `is_update_available`/upgrade.

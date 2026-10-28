@@ -89,6 +89,21 @@ def _mixed_status_info() -> list[MCPServerInfo]:
 class TestMCPViewerScreen:
     """Tests for the MCP viewer screen widget."""
 
+    @pytest.mark.parametrize("connecting", [False, True])
+    async def test_empty_server_placeholder(self, connecting: bool) -> None:
+        """The empty state stays concise while retaining the loading message."""
+        app = MCPViewerTestApp()
+        async with app.run_test() as pilot:
+            screen = MCPViewerScreen(server_info=[], connecting=connecting)
+            app.push_screen(screen)
+            await pilot.pause()
+
+            placeholder = screen.query_one(".mcp-empty", Static)
+            expected = (
+                "Loading MCP tools..." if connecting else "No MCP servers configured."
+            )
+            assert _widget_text(placeholder) == expected
+
     async def test_refresh_focuses_filter_input(self) -> None:
         """Refreshing after server-ready must refocus the filter input.
 

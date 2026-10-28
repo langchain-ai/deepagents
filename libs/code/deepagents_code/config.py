@@ -7277,6 +7277,14 @@ def create_model(
     )
     if bind_preserved_thinking:
         _apply_anthropic_thinking_binding(provider, model_name, kwargs)
+    if (
+        provider == "openrouter"
+        and model_name.startswith("anthropic/")
+        and "cache_control" not in kwargs
+    ):
+        model_kwargs = dict(kwargs.get("model_kwargs") or {})
+        model_kwargs.setdefault("cache_control", {"type": "ephemeral"})
+        kwargs["model_kwargs"] = model_kwargs
 
     # dcode's model-node middleware owns the user-visible retry budget. Resolve
     # that budget separately, then force the provider's own retry loop off so

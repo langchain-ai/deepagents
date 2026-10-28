@@ -32750,11 +32750,18 @@ class DeepAgentsApp(App):
 
             self._last_model_unchanged = None
             params_suffix = _format_model_params(extra_kwargs)
+            classifier_suffix = (
+                ". Auto-mode classifier model also switched."
+                if self._auto_classifier_display_spec() is None
+                else ""
+            )
             if not persist:
                 # Session-only switch (e.g. adopting a resumed thread's model):
                 # announce but never touch the user's persisted recent/default.
                 await self._mount_message(
-                    AppMessage(f"Switched to {display}{params_suffix}"),
+                    AppMessage(
+                        f"Switched to {display}{params_suffix}{classifier_suffix}"
+                    ),
                 )
             elif not await asyncio.to_thread(save_recent_model, resolved_spec):
                 await self._mount_message(
@@ -32766,7 +32773,9 @@ class DeepAgentsApp(App):
                 )
             else:
                 await self._mount_message(
-                    AppMessage(f"Switched to {display}{params_suffix}"),
+                    AppMessage(
+                        f"Switched to {display}{params_suffix}{classifier_suffix}"
+                    ),
                 )
             if persist:
                 # Best-effort MRU update for the `/model` Recent section.

@@ -751,7 +751,7 @@ def generate_git_log(
 
     description = (
         "This commit history includes changes to this package. "
-        "Commits are listed newest first."
+        "The most recent commit is at the top; older commits follow below."
     )
     if truncated and commit_count:
         description += (

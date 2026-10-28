@@ -99,6 +99,8 @@ The layers compose: any LangGraph `CompiledStateGraph` can be passed in as a sub
 - [LangChain Academy](https://academy.langchain.com/) — Comprehensive, free courses on LangChain libraries and products, made by the LangChain team.
 - [Development Guide](libs/DEVELOPMENT.md) — local setup and package-specific checks
 - [Contributing Guide](https://docs.langchain.com/oss/python/contributing/overview) — how to contribute and find good first issues
+- [Release policy](https://docs.langchain.com/oss/python/release-policy) — releases and support
+- [Versioning policy](https://docs.langchain.com/oss/python/versioning) — version numbering and compatibility
 - [Code of Conduct](https://github.com/langchain-ai/langchain/?tab=coc-ov-file) — community guidelines and standards
 
 ---

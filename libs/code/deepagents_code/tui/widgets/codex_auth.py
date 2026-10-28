@@ -30,7 +30,7 @@ from textual.containers import Vertical
 from textual.content import Content
 from textual.screen import ModalScreen
 from textual.style import Style as TStyle
-from textual.widgets import Static
+from textual.widgets import Collapsible, Static
 from textual.worker import Worker, WorkerCancelled, WorkerFailed, WorkerState
 
 from deepagents_code import theme
@@ -165,11 +165,18 @@ class CodexAuthScreen(ModalScreen[bool]):
                 id="codex-auth-status",
                 classes="codex-auth-status",
             )
-            yield Static(
-                "",
-                id="codex-auth-url",
-                classes="codex-auth-url",
-            )
+            with Collapsible(
+                title="Browser URL",
+                collapsed=True,
+                collapsed_symbol=glyphs.disclosure_collapsed,
+                expanded_symbol=glyphs.disclosure_expanded,
+                id="codex-auth-url-disclosure",
+            ):
+                yield Static(
+                    "",
+                    id="codex-auth-url",
+                    classes="codex-auth-url",
+                )
             yield Static(
                 f"Esc cancel {glyphs.bullet} a browser window will open shortly",
                 classes="codex-auth-help",
@@ -235,6 +242,7 @@ class CodexAuthScreen(ModalScreen[bool]):
             status.update("Waiting for you to finish signing in...")
         else:
             status.update("Could not launch a browser — open this URL manually:")
+            self.query_one("#codex-auth-url-disclosure", Collapsible).collapsed = False
         colors = theme.get_theme_colors(self)
         ansi = self.app.theme in {"ansi-dark", "ansi-light"}
         link_style: str | TStyle = (

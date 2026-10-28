@@ -12,7 +12,15 @@ import anyio
 import pytest
 from textual.app import App, ComposeResult
 from textual.containers import Container
-from textual.widgets import Input, OptionList, RadioButton, RadioSet, Static
+from textual.content import Content
+from textual.widgets import (
+    Collapsible,
+    Input,
+    OptionList,
+    RadioButton,
+    RadioSet,
+    Static,
+)
 
 from deepagents_code import auth_store, model_config
 from deepagents_code._paths import PATHS
@@ -35,8 +43,6 @@ from deepagents_code.tui.widgets.codex_auth import CodexAuthScreen
 if TYPE_CHECKING:
     from collections.abc import Iterator
     from pathlib import Path
-
-    from textual.content import Content
 
 
 @pytest.fixture(autouse=True)
@@ -134,6 +140,39 @@ class _AuthHostApp(App[None]):
 
 class TestCodexAuthScreen:
     """Behavioral tests for ChatGPT sign-in modal helpers."""
+
+    @pytest.mark.parametrize("opened_in_browser", [True, False])
+    async def test_browser_url_disclosure(
+        self, monkeypatch: pytest.MonkeyPatch, opened_in_browser: bool
+    ) -> None:
+        """Hide the fallback URL until requested unless browser launch fails."""
+        url = "https://example.com/authorize?state=[test]"
+
+        async def login(screen: CodexAuthScreen) -> None:
+            screen.on_authorize_url(url, opened_in_browser)
+            await asyncio.Event().wait()
+
+        monkeypatch.setattr(CodexAuthScreen, "_run_login", login)
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            screen = CodexAuthScreen()
+            app.push_screen(screen)
+            await pilot.pause()
+            disclosure = screen.query_one(Collapsible)
+            label = screen.query_one("#codex-auth-url", Static)
+            assert disclosure.collapsed is opened_in_browser
+            assert label.region.height == (0 if opened_in_browser else 1)
+            content = label.render()
+            assert isinstance(content, Content)
+            assert str(content) == url
+            assert content.get_style_at_offset(0).link == url
+            await pilot.press("enter")
+            await pilot.pause()
+            assert disclosure.collapsed is not opened_in_browser
+            assert label.region.height == (1 if opened_in_browser else 0)
+            await pilot.press("escape")
+            await pilot.pause()
+            assert app.screen is not screen
 
     def test_link_hover_uses_pointer(self) -> None:
         """Hovering the inline authorize link sets a pointer cursor."""

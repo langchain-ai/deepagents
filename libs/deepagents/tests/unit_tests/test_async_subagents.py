@@ -16,7 +16,7 @@ import pytest
 from langchain.agents import create_agent
 from langchain.agents.middleware import HumanInTheLoopMiddleware
 from langchain.tools import ToolRuntime
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage, convert_to_messages, get_notification_metadata
 from langchain_core.tools import tool
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command, interrupt
@@ -2099,15 +2099,16 @@ class TestParentPull:
         assert update["async_tasks"]["thread_abc"]["status"] == "success"
         assert ignored is None
 
-    async def test_notification_is_labeled_as_synthetic(self) -> None:
+    async def test_notification_carries_notification_metadata(self) -> None:
         server = _FakeServer()
 
         await _finish(server)
 
-        kwargs = _woken_message(server)["additional_kwargs"]
-        assert kwargs["lc_synthetic"] is True
-        assert kwargs["lc_source"] == "async_subagent"
-        assert kwargs["lc_data"] == kwargs["deepagents_notification"]
+        [message] = convert_to_messages([_woken_message(server)])
+        metadata = get_notification_metadata(message)
+        assert metadata is not None
+        assert metadata["source"] == "async_subagent"
+        assert metadata.get("data") == message.additional_kwargs["deepagents_notification"]
 
     def test_notification_run_records_the_outcome_from_lc_data(self) -> None:
         middleware = AsyncSubAgentMiddleware(async_subagents=[_make_spec("remote", url=None)])

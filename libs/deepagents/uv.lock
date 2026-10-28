@@ -1085,7 +1085,7 @@ wheels = [
 [[package]]
 name = "langchain-core"
 version = "1.7.0"
-source = { git = "https://github.com/langchain-ai/langchain?subdirectory=libs%2Fcore&branch=bengret%2Fcore%2Fnotification-message-factory#ccb6fd98c19076f9025c3d0d5fc309803e09231c" }
+source = { git = "https://github.com/langchain-ai/langchain?subdirectory=libs%2Fcore&branch=bengret%2Fcore%2Fnotification-message-factory#595a08be1796f429fb93af091e538cedfcc3c73e" }
 dependencies = [
     { name = "httpx" },
     { name = "jsonpatch" },

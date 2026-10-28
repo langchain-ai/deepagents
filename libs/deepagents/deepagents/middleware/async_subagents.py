@@ -34,14 +34,16 @@ from langchain.agents.middleware.types import (
 from langchain.tools import ToolRuntime
 from langchain_core._api.beta_decorator import warn_beta
 from langchain_core.messages import (
+    NOTIFICATION_HEADER,
     AIMessage,
     AnyMessage,
     BaseMessage,
     ContentBlock,
     HumanMessage,
     ToolMessage,
+    add_notification_metadata,
     convert_to_messages,
-    create_notification_message,
+    get_notification_metadata,
 )
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import StructuredTool
@@ -474,8 +476,8 @@ _MAX_RESULT_CHARS = NUM_CHARS_PER_TOKEN * 20_000
 class TaskEvent(TypedDict):
     """How an async subagent's task ended or paused, as reported to the agent that started it.
 
-    A notification message carries it in `additional_kwargs["lc_data"]`, with
-    `lc_source` set to `"async_subagent"` and `lc_synthetic` to `True`.
+    A notification message carries it as notification metadata with source
+    `"async_subagent"`; read it with `get_notification_metadata(message)["data"]`.
 
     `additional_kwargs["deepagents_notification"]` also carries it; that key is
     deprecated.
@@ -513,8 +515,11 @@ class _TaskUpdate(TaskEvent, total=False):
 
 def _notification_event(message: BaseMessage) -> TaskEvent | None:
     """The task event a notification message carries, or `None` for any other message."""
-    kwargs = message.additional_kwargs
-    event = kwargs.get("lc_data") if kwargs.get("lc_source") == _NOTIFICATION_SOURCE else kwargs.get(_NOTIFICATION_KEY)
+    metadata = get_notification_metadata(message)
+    if metadata is not None and metadata["source"] == _NOTIFICATION_SOURCE:
+        event = metadata.get("data")
+    else:
+        event = message.additional_kwargs.get(_NOTIFICATION_KEY)
     return cast("TaskEvent", event) if isinstance(event, dict) else None
 
 
@@ -563,12 +568,9 @@ def _superseded_notification_content(message: BaseMessage, event: TaskEvent) -> 
 
 def _labeled(blocks: list[dict[str, Any]], event: TaskEvent) -> HumanMessage:
     """`blocks` under the notification header, labeled with `event`."""
-    return create_notification_message(
-        cast("list[ContentBlock]", blocks),
-        source=_NOTIFICATION_SOURCE,
-        data=cast("dict[str, Any]", event),
-        note=_NOTIFICATION_NOTE,
-    )
+    header = _text_block(f"{NOTIFICATION_HEADER}\n{_NOTIFICATION_NOTE}\n")
+    message = HumanMessage(content=cast("list[str | dict[Any, Any]]", [header, *blocks]))
+    return add_notification_metadata(message, source=_NOTIFICATION_SOURCE, data=cast("dict[str, Any]", event))
 
 
 def _task_header(event: TaskEvent) -> dict[str, Any]:

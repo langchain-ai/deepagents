@@ -6116,6 +6116,7 @@ def cli_main() -> None:
                     format_installed_age_suffix,
                     format_log_follow_command,
                     format_release_age_parenthetical,
+                    get_cached_update_available,
                     is_update_available,
                     perform_upgrade,
                     prerelease_upgrade_supported,
@@ -6146,11 +6147,17 @@ def cli_main() -> None:
                         )
                         sys.exit(1)
 
-                console.print("Checking for updates...", style="dim")
-                available, latest = is_update_available(
-                    bypass_cache=True,
-                    include_prereleases=include_prereleases,
+                available, latest = (
+                    get_cached_update_available()
+                    if include_prereleases is None
+                    else (False, None)
                 )
+                if not available:
+                    console.print("Checking for updates...", style="dim")
+                    available, latest = is_update_available(
+                        bypass_cache=True,
+                        include_prereleases=include_prereleases,
+                    )
                 if latest is None:
                     console.print(
                         "[bold yellow]Warning:[/bold yellow] Could not "

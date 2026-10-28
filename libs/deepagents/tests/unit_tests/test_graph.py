@@ -19,6 +19,7 @@ from langchain_anthropic.middleware import AnthropicPromptCachingMiddleware
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, SystemMessage
 from langchain_core.tools import BaseTool, StructuredTool
+from langgraph.channels.delta import DeltaChannel
 
 from deepagents._api.deprecation import LangChainDeprecationWarning
 from deepagents._tools import _apply_tool_description_overrides, _tool_name
@@ -53,6 +54,8 @@ from tests.unit_tests.chat_model import GenericFakeChatModel
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+
+    from langgraph.graph.state import CompiledStateGraph
 
 
 def _make_model(attrs: dict[str, Any]) -> MagicMock:
@@ -1246,6 +1249,28 @@ class TestStateSchema:
             create_deep_agent(model="testprov:some-model")
 
         assert mock_create.call_args.kwargs["state_schema"] is DeepAgentState
+
+    def test_default_subagent_messages_use_delta_channel(self) -> None:
+        subagents: dict[str, CompiledStateGraph] = {}
+
+        def capture_subagent(spec: SubAgent, **kwargs: Any) -> CompiledStateGraph:
+            runnable = create_sub_agent(spec, **kwargs)
+            subagents[spec["name"]] = runnable
+            return runnable
+
+        model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+        with patch("deepagents.middleware.subagents.create_sub_agent", side_effect=capture_subagent):
+            create_deep_agent(
+                model=model,
+                subagents=[
+                    {"name": "isolated", "description": "An isolated worker."},
+                    {"name": "forked", "description": "A forked worker.", "mode": "fork"},
+                ],
+            )
+
+        assert set(subagents) == {"general-purpose", "isolated", "forked"}
+        for runnable in subagents.values():
+            assert isinstance(runnable.channels["messages"], DeltaChannel)
 
     def test_custom_state_schema_passed_through(self) -> None:
         class MyState(DeepAgentState):

@@ -2,7 +2,7 @@
 
 import tomllib
 from typing import TYPE_CHECKING, ClassVar
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from textual.app import App, ComposeResult
@@ -289,6 +289,47 @@ class TestModelSelectorChrome:
 class TestRecommendedToggle:
     """Tests for the Ctrl+R recommended-only toggle in `/model`."""
 
+    async def test_new_models_visible_by_default_and_toggle_hint_tracks_action(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Uncurated discoveries stay visible until recommendations are requested."""
+        from deepagents_code.model_catalog import ModelCatalog
+
+        models = ["openai:future-model", "openai:gpt-5.6-sol"]
+
+        load_catalog = AsyncMock(
+            return_value=ModelCatalog(models=models, profiles={}, providers={})
+        )
+
+        monkeypatch.setattr(
+            "deepagents_code.tui.widgets.model_selector.load_recent_models", list
+        )
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            screen = ModelSelectorScreen(
+                catalog_loader=load_catalog, default_scope=MAIN_MODEL_DEFAULT_SCOPE
+            )
+            app.push_screen(screen)
+            await pilot.pause()
+
+            info = screen.query_one("#model-selector-info", Static)
+            help_text = screen.query_one(".model-selector-help", Static)
+            assert "Showing all models" in str(info.content)
+            assert "Ctrl+R recommended" in str(help_text.content)
+            assert "openai:future-model" in dict(screen._filtered_models)
+
+            await pilot.press("ctrl+r")
+            await pilot.pause()
+            assert "Showing recommended models" in str(info.content)
+            assert "Ctrl+R all models" in str(help_text.content)
+            assert "openai:future-model" not in dict(screen._filtered_models)
+
+            await pilot.press("ctrl+r")
+            await pilot.pause()
+            assert "Showing all models" in str(info.content)
+            assert "Ctrl+R recommended" in str(help_text.content)
+            assert "openai:future-model" in dict(screen._filtered_models)
+
     async def test_info_line_reflects_active_search(self) -> None:
         """Typing a filter should avoid stale recommended-only copy."""
         app = ModelSelectorTestApp()
@@ -297,6 +338,8 @@ class TestRecommendedToggle:
             app.push_screen(screen)
             await pilot.pause()
 
+            await pilot.press("ctrl+r")
+            await pilot.pause()
             info = screen.query_one("#model-selector-info", Static)
             assert "Showing recommended models" in str(info.content)
 

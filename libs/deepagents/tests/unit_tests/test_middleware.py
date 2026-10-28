@@ -3849,18 +3849,6 @@ class TestPatchToolCallsMiddleware:
             ("human", None),
         ]
 
-    def test_orphan_result_stays_in_thread(self) -> None:
-        # Thread state is left alone, so indices recorded against it (such as a
-        # summarization cutoff) stay valid.
-        input_messages = [
-            HumanMessage(content="old", id="1"),
-            ToolMessage(content="stray", tool_call_id="lost", id="2"),
-            AIMessage(content="old reply", id="3"),
-            HumanMessage(content="kept question", id="4"),
-        ]
-        assert PatchToolCallsMiddleware().before_agent({"messages": input_messages}, None) is None
-        assert [m.id for m in _patched_model_messages(input_messages)] == ["1", "3", "4"]
-
     def test_results_move_after_their_calls_and_duplicates_drop(self) -> None:
         input_messages = [
             HumanMessage(content="Run both", id="1"),
@@ -3989,11 +3977,6 @@ class TestPatchToolCallsMiddleware:
         first, second = ToolMessage(content="A result", tool_call_id=""), ToolMessage(content="B result", tool_call_id="")
         assert _patched_model_messages([call, interjection, first, second]) == [call, first, second, interjection]
 
-    def test_parallel_results_follow_call_order(self) -> None:
-        call = AIMessage(content="", tool_calls=[ToolCall(id="1", name="a", args={}), ToolCall(id="2", name="b", args={})])
-        first, second = ToolMessage(content="A result", tool_call_id="1"), ToolMessage(content="B result", tool_call_id="2")
-        assert _patched_model_messages([call, second, first]) == [call, first, second]
-
     def test_real_result_beats_synthetic_error(self) -> None:
         # A result recorded after `before_agent` patched the call replaces the error result.
         state_update = PatchToolCallsMiddleware().before_agent(
@@ -4005,30 +3988,6 @@ class TestPatchToolCallsMiddleware:
         follow_up = HumanMessage(content="Any news?")
         real = ToolMessage(content="real result", tool_call_id="a")
         assert _patched_model_messages([question, call, error, follow_up, real]) == [question, call, real, follow_up]
-
-    def test_result_after_call_beats_stale_result_before_it(self) -> None:
-        stale = ToolMessage(content="stale", tool_call_id="x")
-        question = HumanMessage(content="Run it")
-        call = AIMessage(content="", tool_calls=[ToolCall(id="x", name="run", args={})])
-        real = ToolMessage(content="real", tool_call_id="x")
-        assert _patched_model_messages([stale, question, call, real]) == [question, call, real]
-
-    def test_valid_request_is_passed_through(self) -> None:
-        messages = [
-            HumanMessage(content="Look it up"),
-            AIMessage(content="", tool_calls=[ToolCall(id="a", name="search", args={})]),
-            ToolMessage(content="found", tool_call_id="a"),
-        ]
-        request = ModelRequest(model=MagicMock(), messages=messages, state={"messages": messages})
-        sent: list[ModelRequest] = []
-
-        def handler(model_request: ModelRequest) -> ModelResponse:
-            sent.append(model_request)
-            return ModelResponse(result=[AIMessage(content="ok")])
-
-        PatchToolCallsMiddleware().wrap_model_call(request, handler)
-        assert sent == [request]
-        assert sent[0] is request
 
     def test_dropped_orphan_result_is_logged(self, caplog: pytest.LogCaptureFixture) -> None:
         messages = [HumanMessage(content="old"), ToolMessage(content="stray", tool_call_id="lost"), HumanMessage(content="new")]

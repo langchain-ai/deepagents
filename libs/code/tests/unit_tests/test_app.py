@@ -21959,6 +21959,83 @@ class _FailingApprovalModeWriter:
 class TestLiveApprovalModeWrites:
     """Verify live approval-mode write and toggle failure behavior."""
 
+    @pytest.mark.parametrize("distinct", [False, True])
+    async def test_auto_validates_effective_reviewer_before_activation(
+        self, distinct: bool, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from deepagents_code.approval_mode import ApprovalMode
+        from deepagents_code.model_metadata import ModelMetadata
+
+        app = DeepAgentsApp()
+        app._model_override = "openai:main-model"
+        app._auto_classifier_model = "openai:reviewer" if distinct else None
+        resolver = AsyncMock(return_value=ModelMetadata("reviewer", "openai"))
+        monkeypatch.setattr(app, "_remote_agent", lambda: object())
+        monkeypatch.setattr(app, "_resolve_auxiliary_model", resolver)
+        with (
+            patch.object(app, "_notify_auto_classifier_active"),
+            patch(
+                "deepagents_code.model_config.save_recent_startup_mode",
+                return_value=True,
+            ),
+        ):
+            assert await app._set_approval_mode(ApprovalMode.AUTO)
+
+        assert app._approval_mode is ApprovalMode.AUTO
+        resolver.assert_awaited_once_with(
+            "openai:reviewer" if distinct else "openai:main-model"
+        )
+
+    @pytest.mark.parametrize("entry", ["toggle", "command", "inline", "direct"])
+    @pytest.mark.parametrize("remote", [False, True])
+    async def test_auto_rejects_unresolvable_classifier(
+        self, entry: str, remote: bool, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from deepagents_code.approval_mode import ApprovalMode
+
+        app = DeepAgentsApp()
+        app._auto_classifier_model = "openai:unavailable-reviewer"
+        app._session_state = TextualSessionState(thread_id="thread-1")
+        resolver = AsyncMock(side_effect=ValueError("Missing OPENAI_API_KEY"))
+        monkeypatch.setattr(app, "_remote_agent", lambda: object() if remote else None)
+        monkeypatch.setattr(app, "_resolve_auxiliary_model", resolver)
+        constructor = MagicMock(side_effect=ValueError("Missing OPENAI_API_KEY"))
+        monkeypatch.setattr("deepagents_code.config.create_model", constructor)
+        write = AsyncMock(return_value=True)
+        monkeypatch.setattr(app, "_write_live_approval_mode", write)
+        with (
+            patch.object(app, "_warn_live_approval_mode_unavailable") as warn,
+            patch.object(app, "_prompt_auto_mode_confirmation") as prompt,
+            patch(
+                "deepagents_code.approval_mode.has_auto_mode_notice", return_value=False
+            ),
+            patch("deepagents_code.model_config.save_recent_startup_mode") as save,
+        ):
+            if entry == "toggle":
+                async with app.run_test() as pilot:
+                    await pilot.press("shift+tab")
+            elif entry == "command":
+                await app._handle_approval_mode_command(ApprovalMode.AUTO)
+            elif entry == "inline":
+                assert not await app._on_auto_approve_enabled()
+            else:
+                assert not await app._set_approval_mode(ApprovalMode.AUTO)
+
+        assert app._approval_mode is ApprovalMode.MANUAL
+        assert app._session_state.approval_mode is ApprovalMode.MANUAL
+        write.assert_not_awaited()
+        save.assert_not_called()
+        prompt.assert_not_called()
+        assert "Missing OPENAI_API_KEY" in warn.call_args.args[0]
+        assert "Approval mode unchanged" in warn.call_args.args[0]
+        if remote:
+            resolver.assert_awaited_once_with("openai:unavailable-reviewer")
+            constructor.assert_not_called()
+        else:
+            constructor.assert_called_once_with(
+                "openai:unavailable-reviewer", bind_preserved_thinking=False
+            )
+
     def test_auto_startup_enabled_without_sandbox(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -22308,9 +22385,10 @@ class TestLiveApprovalModeWrites:
         assert notify.call_args.kwargs["severity"] == "warning"
 
     async def test_toggle_auto_first_enable_shows_modal_and_saves_on_dismiss(
-        self,
+        self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """First Auto toggle shows the confirmation modal before switching."""
+        monkeypatch.setattr("deepagents_code.config.create_model", MagicMock())
         from deepagents_code.approval_mode import ApprovalMode
         from deepagents_code.tui.widgets.auto_mode_notice import (
             AutoModeNoticeScreen,
@@ -22836,7 +22914,10 @@ class TestLiveApprovalModeWrites:
                 app._prompt_yolo_switcher_acknowledgement()
                 push.assert_not_called()
 
-    async def test_on_auto_approve_enabled_first_modal_and_save(self) -> None:
+    async def test_on_auto_approve_enabled_first_modal_and_save(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr("deepagents_code.config.create_model", MagicMock())
         from deepagents_code.approval_mode import ApprovalMode
         from deepagents_code.tui.widgets.auto_mode_notice import (
             AutoModeNoticeScreen,

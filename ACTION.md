@@ -1,6 +1,12 @@
 # Deep Agents Code GitHub Action
 
-This repository's root `action.yml` runs `dcode` non-interactively in GitHub Actions.
+This repository's root [`action.yml`](action.yml) runs `dcode` non-interactively in GitHub Actions. This page is its usage guide; `action.yml` defines the Action's inputs, defaults, and execution steps.
+
+## When to use this
+
+Use the Action to run prompt-driven tasks unattended in CI, such as summarizing repository risks or performing scripted maintenance. Add `langchain-ai/deepagents` as a step in your workflow rather than setting up and invoking `dcode` yourself.
+
+Your workflow controls the credentials and GitHub token permissions available to the agent; `shell_allow_list` controls which shell commands it may run. Grant only the access the task needs. For interactive work that requires follow-up prompts or approvals, run `dcode` locally instead.
 
 ## Example
 

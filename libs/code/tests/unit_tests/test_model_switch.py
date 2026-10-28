@@ -9,7 +9,10 @@ import pytest
 from textual.app import App, ComposeResult
 
 from deepagents_code import model_config
-from deepagents_code._cli_context import INHERIT_SUMMARIZATION_MODEL
+from deepagents_code._cli_context import (
+    INHERIT_CLASSIFIER_MODEL,
+    INHERIT_SUMMARIZATION_MODEL,
+)
 from deepagents_code._paths import PATHS
 from deepagents_code.app import DeepAgentsApp, _extract_model_params_flag
 from deepagents_code.client.remote_client import RemoteAgent
@@ -485,6 +488,39 @@ class TestModelSwitchErrorHandling:
             "max_tokens": 1024,
         }
 
+    @pytest.mark.parametrize("persist", [True, False])
+    @pytest.mark.parametrize(
+        "classifier",
+        [
+            None,
+            "",
+            INHERIT_CLASSIFIER_MODEL,
+            "openai:classifier",
+            "anthropic:claude-sonnet-4-5",
+        ],
+    )
+    async def test_switch_notice_discloses_inherited_classifier(
+        self, monkeypatch: pytest.MonkeyPatch, classifier: str | None, persist: bool
+    ) -> None:
+        """Only an inherited classifier follows a successful main-model switch."""
+        app = DeepAgentsApp(server_kwargs={"auto_classifier_model": classifier})
+        app._agent = _make_remote_agent()
+        mount = AsyncMock()
+        monkeypatch.setattr(app, "_mount_message", mount)
+        runtime_state.model_name = "gpt-5.5"
+        runtime_state.model_provider = "openai"
+
+        await app._switch_model("anthropic:claude-sonnet-4-5", persist=persist)
+
+        message = mount.call_args.args[0]
+        assert isinstance(message, AppMessage)
+        suffix = (
+            ". Auto-mode classifier model also switched."
+            if not classifier or classifier == INHERIT_CLASSIFIER_MODEL
+            else ""
+        )
+        assert message._content == f"Switched to anthropic:claude-sonnet-4-5{suffix}"
+
     async def test_switched_to_message_echoes_params(self) -> None:
         """The 'Switched to' confirmation should echo `--model-params`."""
         app = DeepAgentsApp()
@@ -517,6 +553,7 @@ class TestModelSwitchErrorHandling:
         assert any(
             m == "Switched to anthropic:claude-sonnet-4-5 with model params "
             '{"num_ctx": 16384, "temperature": 0.7}'
+            ". Auto-mode classifier model also switched."
             for m in captured_messages
         )
 
@@ -589,7 +626,9 @@ class TestModelSwitchConcurrencyGuard:
             for call in mount.call_args_list
             if isinstance(call.args[0], AppMessage)
         ]
-        assert announcements == ["Switched to openai:newer"]
+        assert announcements == [
+            "Switched to openai:newer. Auto-mode classifier model also switched."
+        ]
         if newer_request == "command":
             config = tomllib.loads(model_config.DEFAULT_CONFIG_PATH.read_text())
             assert config["models"]["recent"] == "openai:newer"

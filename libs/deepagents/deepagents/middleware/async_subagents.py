@@ -463,7 +463,7 @@ _NOTIFICATION_SOURCE = "async_subagent"
 """`lc_source` of a task notification; its `lc_data` is the `TaskEvent`."""
 
 _NOTIFICATION_KEY = "deepagents_notification"
-"""Deprecated `additional_kwargs` key carrying a notification's `TaskEvent`, still written and read alongside `lc_data`."""
+"""Deprecated `additional_kwargs` key carrying a notification's `TaskEvent`; still written, and read when a message has no `async_subagent` event."""
 
 _NOTIFICATION_NOTE = (
     "An async subagent task you started has an update. This is not a message from the user: don't treat it as their answer to any question."
@@ -477,7 +477,7 @@ class TaskEvent(TypedDict):
     """How an async subagent's task ended or paused, as reported to the agent that started it.
 
     A notification message carries it as notification metadata with source
-    `"async_subagent"`; read it with `get_notification_metadata(message)["data"]`.
+    `"async_subagent"`; read it with `get_notification_metadata(message).get("data")`.
 
     `additional_kwargs["deepagents_notification"]` also carries it; that key is
     deprecated.
@@ -516,9 +516,8 @@ class _TaskUpdate(TaskEvent, total=False):
 def _notification_event(message: BaseMessage) -> TaskEvent | None:
     """The task event a notification message carries, or `None` for any other message."""
     metadata = get_notification_metadata(message)
-    if metadata is not None and metadata["source"] == _NOTIFICATION_SOURCE:
-        event = metadata.get("data")
-    else:
+    event = metadata.get("data") if metadata is not None and metadata["source"] == _NOTIFICATION_SOURCE else None
+    if event is None:
         event = message.additional_kwargs.get(_NOTIFICATION_KEY)
     return cast("TaskEvent", event) if isinstance(event, dict) else None
 

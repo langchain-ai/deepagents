@@ -18236,8 +18236,7 @@ class DeepAgentsApp(App):
                     msg += f"\n\n{self._format_cost_summary()}"
                 await self._mount_message(AppMessage(msg))
         elif cmd == "/cost":
-            await self._mount_message(UserMessage(command))
-            await self._mount_message(AppMessage(self._format_cost_summary()))
+            self.action_open_cost_breakdown()
         elif cmd == "/tools":
             await self._handle_tools_command(command)
         elif cmd == "/extensions":
@@ -27195,7 +27194,7 @@ class DeepAgentsApp(App):
         self._open_debug_console()
 
     def action_open_cost_breakdown(self) -> None:
-        """Open the session cost breakdown from the footer."""
+        """Open the session cost breakdown from the footer or `/cost`."""
         from deepagents_code.tui.modals.cost_breakdown import (
             format_cost_breakdown_table,
             open_cost_breakdown,

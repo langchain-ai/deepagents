@@ -336,6 +336,7 @@ jobs:
           # silently when this is absent, while the prompts still tell them to search.
           TAVILY_API_KEY: ${{ (matrix.category || inputs.category) == 'research' && secrets.TAVILY_API_KEY || '' }}
           XAI_API_KEY: ${{ startsWith(matrix.model, 'xai:') && secrets.XAI_API_KEY || '' }}
+          LANGSMITH_SANDBOX_API_KEY: ${{ secrets.LANGSMITH_SANDBOX_API_KEY }}
         run: |
           missing=()
 
@@ -347,7 +348,8 @@ jobs:
             docker)
               ;; # No additional credentials needed
             langsmith)
-              ;; # Uses LANGSMITH_API_KEY (already required above)
+              [ -z "$LANGSMITH_SANDBOX_API_KEY" ] && missing+=("LANGSMITH_SANDBOX_API_KEY")
+              ;;
             *)
               echo "::error::Unknown sandbox environment: $HARBOR_SANDBOX_ENV"
               exit 1
@@ -633,6 +635,9 @@ jobs:
           # is what keeps the agent's `web_search` tool absent for every other category.
           TAVILY_API_KEY: ${{ (matrix.category || inputs.category) == 'research' && secrets.TAVILY_API_KEY || '' }}
           XAI_API_KEY: ${{ startsWith(matrix.model, 'xai:') && secrets.XAI_API_KEY || '' }}
+          # LangSmith sandboxes run on AWS US; tracing and experiments use LANGSMITH_API_KEY.
+          LANGSMITH_SANDBOX_API_KEY: ${{ secrets.LANGSMITH_SANDBOX_API_KEY }}
+          LANGSMITH_SANDBOX_API_URL: "https://aws.api.smith.langchain.com/v2/sandboxes"
         run: |
           # Stage current checkout packages for LangGraph's sandbox install.
           local_deps_dir="deepagents_harbor/langgraph_project/.local_deps"

@@ -78,7 +78,7 @@ class CostBreakdownScreen(ModalScreen[None]):
             Widgets that make up the modal.
         """
         with VerticalScroll():
-            yield Static("Token & Cost Breakdown", classes="cost-breakdown-title")
+            yield Static("Cost & Token Breakdown", classes="cost-breakdown-title")
             yield Markdown(self._breakdown, classes="cost-breakdown-body")
             separator = f" {get_glyphs().separator} "
             yield Static(

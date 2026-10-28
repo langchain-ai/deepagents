@@ -1577,9 +1577,13 @@ def _convert_ai_message(data: dict[str, Any]) -> Any:  # noqa: ANN401
     tool_calls = data.get("tool_calls", [])
     usage_metadata = data.get("usage_metadata")
     response_metadata = data.get("response_metadata", {})
+    additional_kwargs = data.get("additional_kwargs")
 
     kwargs: dict[str, Any] = {
         "content": content,
+        "additional_kwargs": (
+            additional_kwargs if isinstance(additional_kwargs, dict) else {}
+        ),
         "id": data.get("id"),
         "response_metadata": response_metadata,
         "chunk_position": data.get("chunk_position"),

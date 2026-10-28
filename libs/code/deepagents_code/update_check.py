@@ -2771,18 +2771,11 @@ def _target_python(target_version: str) -> tuple[str | None, bool]:
 
 
 def _migration_notice(target_version: str) -> str:
-    """Return the notice shown before a Python migration starts.
-
-    Returns:
-        A user-facing message that names the running Python.
-    """
+    """Return a brief notice before a Python migration starts."""
     return (
-        f"v{target_version} is incompatible with the running Python "
-        f"{'.'.join(str(part) for part in sys.version_info[:3])}. "
-        "This update will move dcode to Python 3.14; uv will acquire "
-        "the interpreter if needed. Selected extras and added packages "
-        "will be preserved. Configuration and conversations are unchanged. "
-        "Other open dcode sessions stop working until restarted."
+        f"Updating to Python 3.14 for v{target_version}. "
+        "Keep other dcode sessions closed during the update. "
+        "Your settings and conversations will be preserved."
     )
 
 
@@ -2805,11 +2798,9 @@ def migration_deferral_message(target_version: str) -> str:
     from deepagents_code._invocation import invoked_name
 
     return (
-        f"v{target_version} requires migrating dcode to Python 3.14. "
-        "Migration is deferred because rebuilding the environment would break "
-        "running dcode sessions and their servers. Nothing was installed. "
-        f"Quit every dcode session, then run `{invoked_name()} update` from "
-        "your shell to migrate safely."
+        f"v{target_version} needs a Python update. Nothing was installed. "
+        f"Quit every dcode session, then run `{invoked_name()} update` "
+        "from your shell."
     )
 
 

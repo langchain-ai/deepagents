@@ -163,8 +163,13 @@ async def test_migration_preserves_install_context_and_announces_before_install(
     notices: list[str] = []
 
     def install(command: str, **_kwargs: object) -> tuple[bool, str]:
-        assert notices
-        assert "3.14" in notices[0]
+        assert notices == [
+            (
+                "Updating to Python 3.14 for v2.0.0. "
+                "Keep other dcode sessions closed during the update. "
+                "Your settings and conversations will be preserved."
+            )
+        ]
         args = shlex.split(command)
         assert args[:4] == ["uv", "tool", "install", "-U"]
         assert args[args.index("--python") + 1] == "3.14"

@@ -1452,10 +1452,12 @@ class TestStartupSequence:
 
 
 class TestFooterCostBreakdown:
-    """Tests for opening the shared cost modal directly from the footer."""
+    """Tests for opening the shared cost modal from the footer and `/cost`."""
 
-    async def test_footer_cost_opens_live_modal_and_restores_focus(
+    @pytest.mark.parametrize("entrypoint", ["footer", "command"])
+    async def test_cost_opens_live_modal_and_restores_focus(
         self,
+        entrypoint: str,
     ) -> None:
         from textual.widgets import Markdown
 
@@ -1469,12 +1471,15 @@ class TestFooterCostBreakdown:
             breakdown = _empty_cost_breakdown()
             breakdown["input_tokens"] = 123
             app._set_session_cost(1.25, breakdown=breakdown)
-            app._agent_running = True
+            app._agent_running = entrypoint == "footer"
             await pilot.pause()
-            display = app.query_one("#tokens-display", MetricsLine)
-            offset = display.content_region.x - display.region.x
-            offset += str(display.render()).index("$")
-            await pilot.click(display, offset=(offset, 0))
+            if entrypoint == "command":
+                await pilot.press("/", "c", "o", "s", "t", "enter")
+            else:
+                display = app.query_one("#tokens-display", MetricsLine)
+                offset = display.content_region.x - display.region.x
+                offset += str(display.render()).index("$")
+                await pilot.click(display, offset=(offset, 0))
             await pilot.pause()
 
             modal = app.screen
@@ -1501,9 +1506,10 @@ class TestFooterCostBreakdown:
             assert app._is_input_focused()
             app._agent_running = False
 
+    @pytest.mark.parametrize("entrypoint", ["footer", "command"])
     @pytest.mark.parametrize("incomplete", [False, True])
     async def test_missing_breakdown_notifies_without_empty_modal(
-        self, incomplete: bool, monkeypatch: pytest.MonkeyPatch
+        self, incomplete: bool, entrypoint: str, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         from deepagents_code.cost_tracking import _empty_cost_breakdown
         from deepagents_code.tui.widgets.status import MetricsLine
@@ -1523,9 +1529,12 @@ class TestFooterCostBreakdown:
             monkeypatch.setattr(app, "notify", notify)
             await pilot.pause()
             display = app.query_one("#tokens-display", MetricsLine)
-            offset = display.content_region.x - display.region.x
-            offset += str(display.render()).index("$")
-            await pilot.click(display, offset=(offset, 0))
+            if entrypoint == "command":
+                await pilot.press("/", "c", "o", "s", "t", "enter")
+            else:
+                offset = display.content_region.x - display.region.x
+                offset += str(display.render()).index("$")
+                await pilot.click(display, offset=(offset, 0))
             await pilot.pause()
 
             assert not isinstance(app.screen, ModalScreen)

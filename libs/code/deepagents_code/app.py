@@ -13852,6 +13852,7 @@ class DeepAgentsApp(App):
         if self._exiting:
             return
 
+        self._last_typed_at = None
         value = event.value
         mode: InputMode = event.mode  # ty: ignore[invalid-assignment]  # Textual event mode is str at type level but InputMode at runtime
 

@@ -476,7 +476,10 @@ class TestGitLogGeneration:
         )
 
         assert "<summary>Git log since example==1.0.0</summary>" in details
-        assert "newest first" in details
+        assert (
+            "The most recent commit is at the top; older commits follow below."
+            in details
+        )
         assert details.index(commits["hotfix"][:7]) < details.index(
             commits["feature"][:7]
         )

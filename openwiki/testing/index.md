@@ -1,3 +1,3 @@
 # Files
 
-- [Testing Guide](testing-guide.md) - Route a change to the owning package Makefile and the narrowest unit, integration, UI, protocol, host, or evaluation seam. This guide covers deterministic test conventions, warning policy, CI correspondence, benchmarks, and evaluation runs.
+- [Testing Guide](testing-guide.md) - Package-scoped test routing and focused deterministic seams for dcode startup, configuration and MCP security, plugins, Textual rendering, Harbor evaluation adapters, partner sandboxes, and workflow contracts. Use each package Makefile as the command authority and escalate to process or model-backed tests only at the boundary under test.

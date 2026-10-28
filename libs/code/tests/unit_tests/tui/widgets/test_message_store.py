@@ -309,6 +309,14 @@ class TestVirtualizationFlow:
         assert clamped is not None
         assert clamped.height_hint == MIN_HEIGHT_HINT
 
+        # A hidden (folded) row takes no space, so it may drop to 0 and stays
+        # there through a width rescale.
+        assert store.set_height_hint("id-1", 0, hidden=True)
+        assert clamped.height_hint == 0
+        assert store.range_height(0, 1) == 0
+        store.invalidate_height_hints(scale=2.0)
+        assert clamped.height_hint == 0
+
         # The generic update path must not smuggle an unclamped height through.
         with pytest.raises(ValueError, match="height_hint"):
             store.update_message("id-1", height_hint=-4)
@@ -432,6 +440,94 @@ class TestBulkLoad:
 
 class TestMessageStoreIndex:
     """Tests for the _index dict that backs O(1) lookups."""
+
+
+def _tool(message_id: str, hint: int | None = 1) -> MessageData:
+    return MessageData(
+        type=MessageType.TOOL,
+        content="",
+        id=message_id,
+        tool_name="read_file",
+        height_hint=hint,
+    )
+
+
+def _store_with(*ids: str, visible: tuple[int, int]) -> MessageStore:
+    store = MessageStore()
+    for message_id in ids:
+        store.append(_tool(message_id))
+    store._visible_start, store._visible_end = visible
+    return store
+
+
+def _group() -> MessageData:
+    return MessageData(
+        type=MessageType.TOOL_GROUP,
+        content="",
+        id="group",
+        tool_group_messages=[_tool("detail")],
+    )
+
+
+class TestReplaceRun:
+    """Tests for folding a contiguous run into one row."""
+
+    def test_run_inside_window_keeps_neighbors_mounted(self):
+        store = _store_with("a", "t1", "t2", "t3", "b", visible=(0, 5))
+
+        assert store.replace_run(["t1", "t2", "t3"], _group()) == 1
+
+        assert [m.id for m in store.get_visible_messages()] == ["a", "group", "b"]
+        assert store.get_message("t2") is None
+        assert store.get_message("group") is not None
+        assert store.range_height(0, 3) == 5
+
+    def test_run_above_window_shifts_range(self):
+        store = _store_with("t1", "t2", "a", "b", visible=(2, 4))
+
+        store.replace_run(["t1", "t2"], _group())
+
+        assert [m.id for m in store.get_visible_messages()] == ["a", "b"]
+
+    def test_run_across_top_edge_is_archived(self):
+        store = _store_with("t1", "t2", "t3", "a", visible=(1, 4))
+
+        store.replace_run(["t1", "t2", "t3"], _group())
+
+        assert [m.id for m in store.get_visible_messages()] == ["a"]
+        assert [m.id for m in store.get_messages_to_hydrate(5)] == ["group"]
+
+    def test_run_across_bottom_edge_is_archived(self):
+        store = _store_with("a", "t1", "t2", visible=(0, 2))
+
+        store.replace_run(["t1", "t2"], _group())
+
+        assert [m.id for m in store.get_visible_messages()] == ["a"]
+        assert [m.id for m in store.get_messages_to_hydrate_below(5)] == ["group"]
+
+    def test_unmeasured_run_leaves_hint_unset(self):
+        store = MessageStore()
+        store.append(_tool("t1"))
+        store.append(_tool("t2", hint=None))
+        group = _group()
+
+        store.replace_run(["t1", "t2"], group)
+
+        assert group.height_hint is None
+
+    @pytest.mark.parametrize("ids", [["t1", "t3"], ["t2", "t1"], ["t1", "x"], []])
+    def test_non_contiguous_run_is_refused(self, ids: list[str]):
+        store = _store_with("t1", "t2", "t3", visible=(0, 3))
+
+        assert store.replace_run(ids, _group()) is None
+        assert store.total_count == 3
+
+    def test_protected_run_is_refused(self):
+        store = _store_with("t1", "t2", visible=(0, 2))
+        store.protect_message("t2")
+
+        assert store.replace_run(["t1", "t2"], _group()) is None
+        assert store.get_message("t1") is not None
 
 
 if __name__ == "__main__":

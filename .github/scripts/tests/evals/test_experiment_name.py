@@ -51,6 +51,15 @@ def test_category_is_optional() -> None:
     assert without_cat == empty_cat  # empty and None both omit the category segment
 
 
+def test_reasoning_effort_follows_the_model() -> None:
+    kwargs = dict(model="m", branch="b", config="bare", category="autonomous", run_id="1", run_attempt="1")
+    base = en.experiment_name(**kwargs)
+    assert en.experiment_name(**kwargs, reasoning_effort="") == base
+    assert en.experiment_name(**kwargs, reasoning_effort="medium") == base.replace(
+        "-m-autonomous-", "-m-medium-autonomous-"
+    )
+
+
 def test_deterministic() -> None:
     kwargs = dict(
         model="m", branch="b", config="bare", category="context", run_id="9", run_attempt="2"

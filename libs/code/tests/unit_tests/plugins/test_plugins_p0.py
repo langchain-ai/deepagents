@@ -566,7 +566,7 @@ def test_manager_preview_does_not_create_plugin_data_dir(
     assert not data_dir.exists()
 
 
-def test_manager_state_marks_installed_plugin_with_missing_cache_as_error(
+def test_manager_state_marks_installed_plugin_with_missing_cache_as_needs_repair(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(
@@ -588,8 +588,10 @@ def test_manager_state_marks_installed_plugin_with_missing_cache_as_error(
     state = _load_manager_state(loaded_plugin_ids=frozenset())
     row = next(r for r in state.installed_plugins if r.plugin_id == plugin_id)
 
-    assert row.load_state == "error"
-    assert row.load_error is not None
-    assert "re-run install" in row.load_error
-    # The actionable reason also reaches the Errors tab, not just the row.
-    assert any("re-run install" in err for err in state.errors)
+    assert row.load_state == "needs_repair"
+    assert row.load_error is None
+    # The actionable reason also reaches the Errors tab, without the cache path.
+    repair_errors = [err for err in state.errors if plugin_id in err]
+    assert repair_errors == [
+        f"{plugin_id}: installed files are missing; reinstall or disable it."
+    ]

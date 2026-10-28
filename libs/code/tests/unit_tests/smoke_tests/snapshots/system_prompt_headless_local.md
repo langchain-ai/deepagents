@@ -259,7 +259,7 @@ Sources labeled "Deepagents" are specific to this agent tool; sources labeled "A
 
 **Available Skills:**
 
-- **deepagents-plugin-discovery**: Discover plugins from configured dcode marketplaces when a capability is missing or the user asks about available, disabled, or not-yet-installed plugins and connected marketplaces. (Compatibility: designed for deepagents-code with local CLI and profile access)
+- **deepagents-plugin-discovery**: Discover plugins from configured dcode marketplaces when a capability is missing or the user asks about available, disabled, not-yet-installed, or outdated plugins and connected marketplaces. (Compatibility: designed for deepagents-code with local CLI and profile access)
   -> Read `<built_in_skills_dir>/deepagents-plugin-discovery/SKILL.md` for full instructions
 - **deepagents-thread-inspector**: Inspect and explain conversations in the local Deep Agents Code SQLite session store. Use to look up the current thread's title or name, as a fallback when LangSmith trace tooling is unavailable, for offline or untraced sessions, or when asked to identify or summarize a local dcode thread, inspect checkpoint metadata, list recent local threads, or parse $DEEPAGENTS_HOME/.state/sessions.db and a thread UUID or prefix. (License: MIT, Compatibility: designed for deepagents-code)
   -> Read `<built_in_skills_dir>/deepagents-thread-inspector/SKILL.md` for full instructions

@@ -376,11 +376,15 @@ class TestSandboxTypeForwarding:
                 return_value=None,
             ),
             patch(
+                "deepagents_code.client.non_interactive.owned_sandbox",
+            ) as mock_owned_sandbox,
+            patch(
                 "deepagents_code.client.launch.server_manager.start_server_and_get_agent",
                 new_callable=AsyncMock,
                 return_value=(mock_agent, mock_server_proc, None),
             ) as mock_start_server,
         ):
+            mock_owned_sandbox.return_value.__aenter__.return_value = "owned-sandbox"
             mock_settings.return_value = None
             mock_settings.has_tavily = False
             runtime_state.model_name = None
@@ -392,6 +396,7 @@ class TestSandboxTypeForwarding:
             )
 
         _, kwargs = mock_start_server.call_args
+        assert kwargs["sandbox_id"] == "owned-sandbox"
         assert kwargs["sandbox_type"] == "modal"
         assert kwargs["profile_overrides"] == {"max_input_tokens": 32_000}
         assert kwargs["enable_interpreter"] is None
@@ -467,11 +472,15 @@ class TestSandboxTypeForwarding:
                 return_value=None,
             ),
             patch(
+                "deepagents_code.client.non_interactive.owned_sandbox",
+            ) as mock_owned_sandbox,
+            patch(
                 "deepagents_code.client.launch.server_manager.start_server_and_get_agent",
                 new_callable=AsyncMock,
                 return_value=(mock_agent, mock_server_proc, None),
             ) as mock_start_server,
         ):
+            mock_owned_sandbox.return_value.__aenter__.return_value = "owned-sandbox"
             mock_settings.return_value = None
             mock_settings.has_tavily = False
             runtime_state.model_name = None
@@ -483,6 +492,7 @@ class TestSandboxTypeForwarding:
             )
 
         _, kwargs = mock_start_server.call_args
+        assert kwargs["sandbox_id"] == "owned-sandbox"
         assert kwargs["sandbox_snapshot_name"] == "my-snap"
 
 

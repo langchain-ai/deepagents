@@ -25,7 +25,7 @@ dependencies = [
     "aiohttp>=3.14.5",
     "aiosqlite>=0.22.1",
     "deepagents>=0.7.32",
-    "deepagents-code>=0.2.1,<1.0.0",
+    "deepagents-code>=0.2.2,<1.0.0",
     "discord.py>=2.7.1",
     "fastmcp>=4.1.0",
     "httpx>=0.28.1",
@@ -35,12 +35,12 @@ dependencies = [
     "httpx2>=2.13.1",
     "langchain>=1.4.7,<2.0.0",
     "langchain-core>=1.7.0,<2.0.0",
-    "langgraph>=1.2.16,<2.0.0",
-    "langgraph-checkpoint>=4.3.0,<5.0.0",
+    "langgraph>=1.2.18,<2.0.0",
+    "langgraph-checkpoint>=4.3.1,<5.0.0",
     "langgraph-checkpoint-sqlite>=3.1.2,<4.0.0",
     "langgraph-prebuilt>=1.1.1,<2.0.0",
-    "langgraph-sdk>=0.4.9,<1.0.0",
-    "langsmith>=0.14.12",
+    "langgraph-sdk>=0.4.10,<1.0.0",
+    "langsmith>=0.14.14",
     "mcp>=2.3.0",
     # Require Pydantic 2.13+ explicitly to avoid Python 3.14 warnings from LangChain's v1 imports.
     "pydantic>=2.13.5",
@@ -60,10 +60,10 @@ history-voyage = [
     # `voyageai.Client`/`AsyncClient` directly.
     "voyageai>=0.5.0",
 ]
-history-openai = ["langchain-openai>=1.7.2,<2.0.0"]
+history-openai = ["langchain-openai>=1.7.3,<2.0.0"]
 # NVIDIA OpenShell sandbox (`DEEPAGENTS_TALON_SANDBOX=openshell`). The provider
 # lives in `deepagents-code`; this extra pulls in its backend package.
-openshell = ["deepagents-code[openshell]>=0.2.1,<1.0.0"]
+openshell = ["deepagents-code[openshell]>=0.2.2,<1.0.0"]
 mongodb = [
     "langgraph-checkpoint-mongodb>=0.5.1,<0.6.0",
     "langgraph-store-mongodb>=0.4.0,<0.5.0",
@@ -77,7 +77,7 @@ postgres = [
     "psycopg[binary]>=3.3.6",
 ]
 media = [
-    "deepagents-code[media]>=0.2.1,<1.0.0",
+    "deepagents-code[media]>=0.2.2,<1.0.0",
     "librosa>=0.11.0",
     "numpy>=2.5.4",
     "phonemizer>=3.3.0",

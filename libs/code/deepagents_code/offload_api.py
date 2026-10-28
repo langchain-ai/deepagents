@@ -23,6 +23,7 @@ from starlette.routing import Route
 
 from deepagents_code._async import _join_task_deferring_cancellation
 from deepagents_code._cli_context import CLIContextSchema
+from deepagents_code._run_queue_wakeup import install_run_queue_wakeup
 from deepagents_code.btw_api import btw, btw_cost, thread_usage
 from deepagents_code.cost_tracking import prepare_operation_cost
 from deepagents_code.hooks.interrupt import build_hook_interrupt_payload
@@ -209,7 +210,10 @@ def _start_runtime_prebuild() -> asyncio.Task[object]:
 
 @asynccontextmanager
 async def _lifespan(_app: Starlette) -> AsyncIterator[None]:
-    """Prebuild the runtime, then flush buffered traces once serving stops.
+    """Prepare the server, then flush buffered traces once serving stops.
+
+    Startup patches the run queue to start new runs without the poll delay
+    (see `_run_queue_wakeup`) and prebuilds the runtime.
 
     `Client` registers an `atexit` handler that only closes its session, never
     flushes, so without this hook anything still queued when dcode signals the
@@ -222,6 +226,7 @@ async def _lifespan(_app: Starlette) -> AsyncIterator[None]:
     Yields:
         Control for the lifetime of the application.
     """
+    install_run_queue_wakeup()
     prebuild = _start_runtime_prebuild()
     try:
         yield
@@ -1421,43 +1426,73 @@ async def cancel_offload(request: Request) -> JSONResponse:
     return JSONResponse({"status": _operation_outcomes.get(key, "finished")})
 
 
+# `include_in_schema=False` keeps these private dcode routes out of the server's
+# OpenAPI spec. Starlette parses each handler docstring as YAML for that spec;
+# Google-style docstrings fail to parse and log one traceback per route at
+# every server start.
 app = Starlette(
     lifespan=_lifespan,
     routes=[
-        Route("/dcode/model", startup_model_metadata, methods=["GET"]),
+        Route(
+            "/dcode/model",
+            startup_model_metadata,
+            methods=["GET"],
+            include_in_schema=False,
+        ),
         Route(
             "/dcode/threads/{thread_id:str}/models",
             model_catalog,
             methods=["POST"],
+            include_in_schema=False,
         ),
         Route(
             "/dcode/threads/{thread_id:str}/model",
             model_metadata,
             methods=["POST"],
+            include_in_schema=False,
         ),
-        Route("/dcode/threads/{thread_id:str}/btw", btw, methods=["POST"]),
-        Route("/dcode/threads/{thread_id:str}/cost", btw_cost, methods=["GET"]),
-        Route("/dcode/threads/{thread_id:str}/usage", thread_usage, methods=["GET"]),
+        Route(
+            "/dcode/threads/{thread_id:str}/btw",
+            btw,
+            methods=["POST"],
+            include_in_schema=False,
+        ),
+        Route(
+            "/dcode/threads/{thread_id:str}/cost",
+            btw_cost,
+            methods=["GET"],
+            include_in_schema=False,
+        ),
+        Route(
+            "/dcode/threads/{thread_id:str}/usage",
+            thread_usage,
+            methods=["GET"],
+            include_in_schema=False,
+        ),
         Route(
             "/dcode/threads/{thread_id:str}/workspace",
             workspace,
             methods=["POST"],
+            include_in_schema=False,
         ),
         Route(
             "/dcode/threads/{thread_id:str}/offload",
             offload,
             methods=["POST"],
+            include_in_schema=False,
         ),
         Route(
             "/dcode/threads/{thread_id:str}/handoff",
             _handoff,
             methods=["POST"],
+            include_in_schema=False,
         ),
         Route(
             "/dcode/threads/{thread_id:str}/offload/{operation_id:str}/cancel",
             cancel_offload,
             methods=["POST"],
+            include_in_schema=False,
         ),
-        Route("/extensions", _extensions, methods=["GET"]),
+        Route("/extensions", _extensions, methods=["GET"], include_in_schema=False),
     ],
 )

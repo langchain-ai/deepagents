@@ -458,6 +458,10 @@ class ManagedMemoryGuardMiddleware(AgentMiddleware):
             The tool result, or an error `ToolMessage` when the managed block
                 was altered.
         """
+        # Most calls are not guarded tools. Check the name inline so those calls
+        # skip the thread hop that path resolution needs.
+        if request.tool_call["name"] not in _GUARDED_TOOLS:
+            return await handler(request)
         path = await asyncio.to_thread(self._guarded_path, request)
         if path is None:
             return await handler(request)

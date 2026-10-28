@@ -1,24 +1,14 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:2eb7571c072ffb927e5c51be04cea0a470b6e591d737d1b8533a696ae0ac1784",
+  "pageVersion": "sha256:0ac0a4e010745f44f00594a2b3cefac78cb740c44059d36da9cba58790544c95",
   "claims": [
     {
-      "id": "claim_3f6e4d8c4f6f470a94669778d16a96b1",
-      "statement": "`create_deep_agent` separates declarative and compiled synchronous subagents from `AsyncSubAgent` specs, adds a default synchronous `general-purpose` worker unless the harness profile disables or replaces it, and installs the synchronous `task` middleware and asynchronous task middleware independently.",
+      "id": "claim_3955ede9d34942a89302a9aba6c32253",
+      "statement": "Dcode assembles discovered local subagents and its optional `general-purpose` worker as declarative SDK children, while passing configured `AsyncSubAgent` specifications separately to the SDK for remote Agent Protocol delegation.",
       "evidence": [
         {
-          "resource": "repo://libs/deepagents/deepagents/graph.py",
-          "version": "repo-file-v1:sha256:3826c92c9613a30d898d3fb4fb76ab49a6af0537b5ef74ec9e7340673f7f2261"
-        }
-      ]
-    },
-    {
-      "id": "claim_6572cea871b84b438b407966aa6125f9",
-      "statement": "A synchronous declarative subagent is isolated by default: it receives a new task message and state with messages, todos, structured response, skill metadata, pinned skills, disclosure metadata, fork marker, and private fields excluded; explicit child permissions or `interrupt_on` replace inherited values, while omitted values inherit the parent configuration.",
-      "evidence": [
-        {
-          "resource": "repo://libs/deepagents/deepagents/graph.py",
-          "version": "repo-file-v1:sha256:3826c92c9613a30d898d3fb4fb76ab49a6af0537b5ef74ec9e7340673f7f2261"
+          "resource": "repo://libs/code/deepagents_code/agent.py",
+          "version": "repo-file-v1:sha256:4928a5f5a25d4ab3be2bc9de402be3500d5a15549ec7eb1f8e92011f496ae588"
         },
         {
           "resource": "repo://libs/deepagents/deepagents/middleware/subagents.py",
@@ -27,294 +17,106 @@
       ]
     },
     {
-      "id": "claim_ef4bbe4985d0495dbed08d38b5dbc68a",
-      "statement": "Experimental `mode=\"fork\"` reconstructs the parent's effective history and prompt context for a delegated task but forbids an independent skills list and refuses nested `task` calls, preventing recursive delegation.",
+      "id": "claim_8ffaf2b76cd54d7aa43cb991f471c850",
+      "statement": "For a discovered dcode subagent, a missing or empty `model` installs `ConfigurableModelMiddleware` and follows runtime model selection; a nonempty declared model is policy-validated, attached to the child spec, and is not replaced by that middleware.",
       "evidence": [
         {
-          "resource": "repo://libs/deepagents/deepagents/graph.py",
-          "version": "repo-file-v1:sha256:3826c92c9613a30d898d3fb4fb76ab49a6af0537b5ef74ec9e7340673f7f2261"
+          "resource": "repo://libs/code/deepagents_code/agent.py",
+          "version": "repo-file-v1:sha256:4928a5f5a25d4ab3be2bc9de402be3500d5a15549ec7eb1f8e92011f496ae588"
         },
         {
-          "resource": "repo://libs/deepagents/deepagents/middleware/subagents.py",
-          "version": "repo-file-v1:sha256:66d1a30c8669309a306db73f0ce7376ee9ca1e627e7a4456b57bde7f84fec2e5"
+          "resource": "repo://libs/code/tests/unit_tests/test_agent.py",
+          "version": "repo-file-v1:sha256:95150e6c6dde78f93cfea3392b1c8d7623377034ae3437e9fe05505be89455da"
         }
       ]
     },
     {
-      "id": "claim_97cb9b66aab64e77b94505384ed90475",
-      "statement": "Async subagents launch Agent Protocol runs in remote threads and persist task metadata in `async_tasks`; dedicated tools check results, update by interrupting or enqueuing a follow-up, cancel tracked work, or list refreshed status, while URL-less ASGI transport requires an async parent invocation.",
+      "id": "claim_bd6407bc92014ef0aedb521652d33b9f",
+      "statement": "Dcode gives each synchronous declarative child its own CLI middleware stack, including nested cost tracking, truncation handling, retry, hooks and applicable approval, MCP, skill-only disclosure, memory-guard, shell-policy, and provider-search layers; setting an empty child `interrupt_on` prevents duplicate inherited SDK HITL, while remote async specs are not locally rewritten.",
       "evidence": [
         {
-          "resource": "repo://libs/deepagents/deepagents/middleware/async_subagents.py",
-          "version": "repo-file-v1:sha256:238ca0289ce3987e2e2335da2c42419bd80fcb0bdff0297a68677dcd58c65f9b"
-        }
-      ]
-    },
-    {
-      "id": "claim_2ac080509bc24b5e90ab72765100f14f",
-      "statement": "`SkillsMiddleware` discovers `SKILL.md` metadata through backend APIs, overlays same-named skills by source order, caches the resulting index in `skills_metadata` until it is set to `None`, and injects a progressive-disclosure prompt that directs the model to read full instructions on demand.",
-      "evidence": [
-        {
-          "resource": "repo://libs/deepagents/deepagents/middleware/skills.py",
-          "version": "repo-file-v1:sha256:f3cc2139f2b77bd599bf99df032efe27774462b2ecc80f6e58b7ea7edd2d7895"
-        }
-      ]
-    },
-    {
-      "id": "claim_6e7259219a4743babd7e4d33f19ec9a9",
-      "statement": "Skill-selected tools are not registered in the ordinary tool node; a successful `read_file` result for a known skill's `SKILL.md` or a pinned-skill message resolves `metadata.include_tools` for a subsequent model call, and records only gated tools in `_skill_tools_disclosed`.",
-      "evidence": [
-        {
-          "resource": "repo://libs/deepagents/deepagents/middleware/_skill_tools.py",
-          "version": "repo-file-v1:sha256:2d99b6159b5181f59ae6f97e5d65f5d8776851658aad70417334fdc1fcec08b9"
+          "resource": "repo://libs/code/deepagents_code/agent.py",
+          "version": "repo-file-v1:sha256:4928a5f5a25d4ab3be2bc9de402be3500d5a15549ec7eb1f8e92011f496ae588"
         },
         {
-          "resource": "repo://libs/deepagents/deepagents/middleware/skills.py",
-          "version": "repo-file-v1:sha256:f3cc2139f2b77bd599bf99df032efe27774462b2ecc80f6e58b7ea7edd2d7895"
+          "resource": "repo://libs/code/tests/unit_tests/test_agent.py",
+          "version": "repo-file-v1:sha256:95150e6c6dde78f93cfea3392b1c8d7623377034ae3437e9fe05505be89455da"
         }
       ]
     },
     {
-      "id": "claim_06a2b19774ec47c5a0d7adc1413d63a1",
-      "statement": "At execution time, `SkillsMiddleware` admits an otherwise unregistered skill tool only when the latest disclosure record maps its name to an include name and the resolver still returns it; unrecorded, same-turn, or stale-resolution calls remain invalid-tool errors.",
+      "id": "claim_ba9b95751b994fc7bfd9c912ce3501d9",
+      "statement": "With an explicit `--allow-fs-tools` list, dcode replaces the main filesystem middleware and injects an equivalent restriction into every synchronous declarative child; it refuses compiled subagents rather than silently bypassing the restriction, and leaves remote async agents to their own backend.",
       "evidence": [
         {
-          "resource": "repo://libs/deepagents/deepagents/middleware/skills.py",
-          "version": "repo-file-v1:sha256:f3cc2139f2b77bd599bf99df032efe27774462b2ecc80f6e58b7ea7edd2d7895"
+          "resource": "repo://libs/code/deepagents_code/agent.py",
+          "version": "repo-file-v1:sha256:4928a5f5a25d4ab3be2bc9de402be3500d5a15549ec7eb1f8e92011f496ae588"
+        },
+        {
+          "resource": "repo://libs/code/tests/unit_tests/test_agent.py",
+          "version": "repo-file-v1:sha256:95150e6c6dde78f93cfea3392b1c8d7623377034ae3437e9fe05505be89455da"
         }
       ]
     },
     {
-      "id": "claim_4a7cacd501d346db8ab63a690c558647",
-      "statement": "Async launches attach the parent thread ID and subagent name to remote thread metadata; same-deployment launches eligible for notification can also carry the parent assistant ID and forward run context or a `deepagents_parent` reference, whereas cross-deployment launches and `notify_parent=False` retain only the parent thread reference.",
+      "id": "claim_dd0e1edc6a7142b8984c385e763b116d",
+      "statement": "Dcode turns a child model reply that is truncated before visible output into a parent-visible error `ToolMessage` at the `task` boundary, while retaining a partial child answer with a truncation warning.",
       "evidence": [
         {
-          "resource": "repo://libs/deepagents/deepagents/graph.py",
-          "version": "repo-file-v1:sha256:3826c92c9613a30d898d3fb4fb76ab49a6af0537b5ef74ec9e7340673f7f2261"
+          "resource": "repo://libs/code/deepagents_code/agent.py",
+          "version": "repo-file-v1:sha256:4928a5f5a25d4ab3be2bc9de402be3500d5a15549ec7eb1f8e92011f496ae588"
         },
         {
-          "resource": "repo://libs/deepagents/deepagents/middleware/async_subagents.py",
-          "version": "repo-file-v1:sha256:238ca0289ce3987e2e2335da2c42419bd80fcb0bdff0297a68677dcd58c65f9b"
+          "resource": "repo://libs/code/deepagents_code/output_truncation.py",
+          "version": "repo-file-v1:sha256:87f4c187eab0f5ddd5f10b88b494f5fd453388c10666c2c31f2eed347857302b"
         },
         {
-          "resource": "repo://libs/deepagents/tests/unit_tests/test_async_subagents.py",
-          "version": "repo-file-v1:sha256:c35a3b6977a03f38f0b067591e40c67dc895b847e8488d755461376edcd33dcb"
+          "resource": "repo://libs/code/tests/unit_tests/test_output_truncation.py",
+          "version": "repo-file-v1:sha256:73221b74f7de4719be799259ac8fd8b22176a5504b376a03c34137e4fa8ce621"
         }
       ]
     },
     {
-      "id": "claim_68d3ae6f922d4e51834086bd39b771b8",
-      "statement": "A successful remote run whose thread is interrupted is tracked as nonterminal `waiting`; checks return its pending interrupts, an external resume can be recovered by adopting the newest run, and cancellation or update of a waiting task respectively preserves cancellation or replaces the outstanding human request.",
+      "id": "claim_2bc35dcc92ba4b339361198fd9e0076d",
+      "statement": "The dcode JavaScript interpreter isolates each proxied `task` dispatch in a checkpoint namespace, persists and aggregates its owner-scoped child cost receipts after child work settles, and transfers one receipt to the outer graph so checkpoint replay and parallel fan-out do not double-charge usage.",
       "evidence": [
         {
-          "resource": "repo://libs/deepagents/deepagents/middleware/async_subagents.py",
-          "version": "repo-file-v1:sha256:238ca0289ce3987e2e2335da2c42419bd80fcb0bdff0297a68677dcd58c65f9b"
+          "resource": "repo://libs/code/deepagents_code/_js_cost.py",
+          "version": "repo-file-v1:sha256:88e4956e79abac832f4fa4ff5b8aa19e57fcb8b9ca26003229d0f730f567bc0e"
         },
         {
-          "resource": "repo://libs/deepagents/tests/unit_tests/test_async_subagents.py",
-          "version": "repo-file-v1:sha256:c35a3b6977a03f38f0b067591e40c67dc895b847e8488d755461376edcd33dcb"
+          "resource": "repo://libs/code/tests/unit_tests/test_js_cost_tracking.py",
+          "version": "repo-file-v1:sha256:a75970a18221a93b515279d8c2001e9bf7a76feef78e84b93e1170c29db2b019"
         }
       ]
     },
     {
-      "id": "claim_c2099ef736a64772a7af5c67fe6b3d54",
-      "statement": "Every graph installs `_ParentNotifierMiddleware`; for a top-level Deep Agent child with a parent reference, the async hooks report success or model failure once and attempt to wake only an idle same-deployment parent, while pauses do not notify and delivery failures do not fail the child.",
+      "id": "claim_0c0887f2338f4c7391762f31b6ca18a3",
+      "statement": "`MCPProviderToolSearchMiddleware` defers only designated MCP tools on supported native OpenAI Responses or Anthropic routes, leaves execution and approval registrations intact, falls back to eager tools otherwise, and strips incompatible native search blocks from history before a model request.",
       "evidence": [
         {
-          "resource": "repo://libs/deepagents/deepagents/graph.py",
-          "version": "repo-file-v1:sha256:3826c92c9613a30d898d3fb4fb76ab49a6af0537b5ef74ec9e7340673f7f2261"
+          "resource": "repo://libs/code/deepagents_code/provider_tool_search.py",
+          "version": "repo-file-v1:sha256:b440a559b98cc0c009dfd0af0c14f2cf75dee26c49fc423ba605d73a1b1556d0"
         },
         {
-          "resource": "repo://libs/deepagents/deepagents/middleware/_parent_notifier.py",
-          "version": "repo-file-v1:sha256:99c09d664713da8d7d4eba1cd430c876f185961393b0885b1a23608fd894e2cf"
-        },
-        {
-          "resource": "repo://libs/deepagents/tests/unit_tests/test_async_subagents.py",
-          "version": "repo-file-v1:sha256:c35a3b6977a03f38f0b067591e40c67dc895b847e8488d755461376edcd33dcb"
+          "resource": "repo://libs/code/tests/unit_tests/test_provider_tool_search.py",
+          "version": "repo-file-v1:sha256:99feefd32aaf3a368f3bce8bf5ecbe6cbc846a94861e0f52e207f443f534d98c"
         }
       ]
     },
     {
-      "id": "claim_0822e09ac02e45ce842f3f47140485fc",
-      "statement": "On async invocations, `AsyncSubAgentMiddleware` polls unfinished tasks at agent start, before model calls, and after a final answer; changed terminal, timeout, or waiting outcomes are inserted as marked user messages framed as system notifications, and a post-answer notification sends the model for another turn.",
+      "id": "claim_dc3fdc9323e24528b8fee4144e527f82",
+      "statement": "Talon validates MCP `skillOnly` as a boolean; a skill-only MCP tool is hidden until its skill is read or pinned unless eager, and after disclosure it still passes through Talon's approval and authorization paths. Reloading MCP configuration reclassifies the available tools for an existing runtime.",
       "evidence": [
         {
-          "resource": "repo://libs/deepagents/deepagents/middleware/async_subagents.py",
-          "version": "repo-file-v1:sha256:238ca0289ce3987e2e2335da2c42419bd80fcb0bdff0297a68677dcd58c65f9b"
-        },
-        {
-          "resource": "repo://libs/deepagents/tests/unit_tests/test_async_subagents.py",
-          "version": "repo-file-v1:sha256:c35a3b6977a03f38f0b067591e40c67dc895b847e8488d755461376edcd33dcb"
-        }
-      ]
-    },
-    {
-      "id": "claim_c9279dffeead4b24aaa64a3ed477e532",
-      "statement": "The local `task` boundary rejects unknown model arguments, requires a tool-call ID, and returns either JSON-serialized structured output or the last nonempty child AI text in one correlated `ToolMessage`, filtering excluded, private, and unchanged state updates.",
-      "evidence": [
-        {
-          "resource": "repo://libs/deepagents/deepagents/middleware/subagents.py",
-          "version": "repo-file-v1:sha256:66d1a30c8669309a306db73f0ce7376ee9ca1e627e7a4456b57bde7f84fec2e5"
-        }
-      ]
-    },
-    {
-      "id": "claim_834706c2f03c49f3892b73e9b95cc5a1",
-      "statement": "Remote async task records are merge-reduced by task ID and retain task/thread identity, agent and run IDs, cached status, and lifecycle timestamps; list filtering uses cached status before refreshing nonterminal tasks, and SDK refresh failures preserve the cached status.",
-      "evidence": [
-        {
-          "resource": "repo://libs/deepagents/deepagents/middleware/async_subagents.py",
-          "version": "repo-file-v1:sha256:238ca0289ce3987e2e2335da2c42419bd80fcb0bdff0297a68677dcd58c65f9b"
-        }
-      ]
-    },
-    {
-      "id": "claim_e9824677bbc94d0fb00c1f6460738e6d",
-      "statement": "Pins are consumed before a model call: known distinct skills are read in first-seen order, their frontmatter-free bodies become attributed `HumanMessage` snapshots, and `pinned_skills` is cleared; unavailable or unreadable skills are skipped.",
-      "evidence": [
-        {
-          "resource": "repo://libs/deepagents/deepagents/middleware/skills.py",
-          "version": "repo-file-v1:sha256:f3cc2139f2b77bd599bf99df032efe27774462b2ecc80f6e58b7ea7edd2d7895"
-        }
-      ]
-    },
-    {
-      "id": "claim_de16b5f6612f4dc4ab358884adbf4a83",
-      "statement": "Skill disclosure controls model visibility and tool availability rather than authorization: after a read or pin, the middleware records exactly the gated tools shown to the model, but any disclosed tool remains subject to the ordinary permission and human-in-the-loop middleware stack.",
-      "evidence": [
-        {
-          "resource": "repo://libs/deepagents/deepagents/graph.py",
-          "version": "repo-file-v1:sha256:3826c92c9613a30d898d3fb4fb76ab49a6af0537b5ef74ec9e7340673f7f2261"
-        },
-        {
-          "resource": "repo://libs/deepagents/deepagents/middleware/_skill_tools.py",
-          "version": "repo-file-v1:sha256:2d99b6159b5181f59ae6f97e5d65f5d8776851658aad70417334fdc1fcec08b9"
-        },
-        {
-          "resource": "repo://libs/deepagents/deepagents/middleware/skills.py",
-          "version": "repo-file-v1:sha256:f3cc2139f2b77bd599bf99df032efe27774462b2ecc80f6e58b7ea7edd2d7895"
-        }
-      ]
-    },
-    {
-      "id": "claim_4b5a5cd762fe429b8ee01d36197c47ef",
-      "statement": "For models that support mid-conversation tools, skill disclosures are anchored after the read's complete tool-result batch using Anthropic `tool_addition` or OpenAI Responses `additional_tools` blocks; unsupported Anthropic root combinator schemas are withheld so the disclosure record matches model-visible definitions.",
-      "evidence": [
-        {
-          "resource": "repo://libs/deepagents/deepagents/middleware/_skill_tools.py",
-          "version": "repo-file-v1:sha256:2d99b6159b5181f59ae6f97e5d65f5d8776851658aad70417334fdc1fcec08b9"
-        },
-        {
-          "resource": "repo://libs/deepagents/deepagents/middleware/skills.py",
-          "version": "repo-file-v1:sha256:f3cc2139f2b77bd599bf99df032efe27774462b2ecc80f6e58b7ea7edd2d7895"
-        }
-      ]
-    },
-    {
-      "id": "claim_97152fb4a48340d99ea16b7df5fbfdfc",
-      "statement": "The self-hosted async-subagent example implements the Agent Protocol thread, run, polling, result-fetch, cancellation, and health endpoints over FastAPI with in-memory SQLite; it is explicitly demonstration-only, without authentication or rate limiting, and its cancellation route records cancellation without cancelling the in-flight agent coroutine.",
-      "evidence": [
-        {
-          "resource": "repo://examples/async-subagent-server/README.md",
-          "version": "repo-file-v1:sha256:5993458ae009fdcd244d14f5f97e6ade624fb2f51a1877a930f4095c7da56188"
-        },
-        {
-          "resource": "repo://examples/async-subagent-server/server.py",
-          "version": "repo-file-v1:sha256:af157f3b5f70cac3bab91b10def0c72f7a4bdfafc3289450070e74db535d1182"
-        }
-      ]
-    },
-    {
-      "id": "claim_5e7c4d7841184c19bacba7731f920d8e",
-      "statement": "`AsyncSubAgent.webhook` is forwarded to Agent Protocol run creation for both launches and updates, providing a server-to-application completion callback rather than a parent-state update or replacement for task polling.",
-      "evidence": [
-        {
-          "resource": "repo://libs/deepagents/CHANGELOG.md",
-          "version": "repo-file-v1:sha256:39e50203b2aebe2e4a1861854fa0e6b510657a4e11b87f195dabc190bef435f1"
-        },
-        {
-          "resource": "repo://libs/deepagents/deepagents/middleware/async_subagents.py",
-          "version": "repo-file-v1:sha256:238ca0289ce3987e2e2335da2c42419bd80fcb0bdff0297a68677dcd58c65f9b"
-        }
-      ]
-    },
-    {
-      "id": "claim_c93c2184f16e43539d47307e60598c7c",
-      "statement": "With `update_strategy=\"enqueue\"`, a follow-up is tracked as `pending` until it starts and records earlier runs as `superseded_run_ids`; notifications from those older runs are rewritten so they cannot be mistaken for the latest follow-up outcome, and cancellation attempts to stop earlier pending or running runs as well.",
-      "evidence": [
-        {
-          "resource": "repo://libs/deepagents/deepagents/middleware/async_subagents.py",
-          "version": "repo-file-v1:sha256:238ca0289ce3987e2e2335da2c42419bd80fcb0bdff0297a68677dcd58c65f9b"
-        },
-        {
-          "resource": "repo://libs/deepagents/tests/unit_tests/test_async_subagents.py",
-          "version": "repo-file-v1:sha256:c35a3b6977a03f38f0b067591e40c67dc895b847e8488d755461376edcd33dcb"
-        }
-      ]
-    },
-    {
-      "id": "claim_3172ed6bc8ae49f88b33d4d9cb0f9b57",
-      "statement": "`notify_parent` defaults to allowing a same-deployment child to wake an eligible idle or failed parent, but setting it to `False` removes the parent assistant reference while preserving parent-thread linkage and task observation, allowing an application webhook or other delivery mechanism to own delivery.",
-      "evidence": [
-        {
-          "resource": "repo://libs/deepagents/CHANGELOG.md",
-          "version": "repo-file-v1:sha256:39e50203b2aebe2e4a1861854fa0e6b510657a4e11b87f195dabc190bef435f1"
-        },
-        {
-          "resource": "repo://libs/deepagents/deepagents/middleware/async_subagents.py",
-          "version": "repo-file-v1:sha256:238ca0289ce3987e2e2335da2c42419bd80fcb0bdff0297a68677dcd58c65f9b"
-        }
-      ]
-    },
-    {
-      "id": "claim_c0db9b90d3fd48099b5886825c3ca4cd",
-      "statement": "The Code CLI loads skills from ordered built-in, plugin, user, `.agents`, project, and experimental Claude filesystem sources, with later sources overriding same-named skills and individual source failures isolated; plugin skill discovery is recursive and namespaces names.",
-      "evidence": [
-        {
-          "resource": "repo://libs/code/deepagents_code/skills/load.py",
-          "version": "repo-file-v1:sha256:383804e40498e406934c9a090c6207da6dd850642142b0a036cd43c35e99f78a"
-        },
-        {
-          "resource": "repo://libs/code/tests/unit_tests/skills/test_load.py",
-          "version": "repo-file-v1:sha256:e884c9b2f0dee479dcf431fa46b36336e2e39ceebd2045cf4eabf14a92c00a76"
-        }
-      ]
-    },
-    {
-      "id": "claim_8f1349ae7a6741678970a46cd7c687d6",
-      "statement": "The Code plugin skills adapter enforces containment when reading selected `SKILL.md` files: an outside resolved path triggers a `skill_trust` interrupt, and an approved directory is persisted then retried, while denial, failed persistence, empty roots, or a post-approval path change prevents the read.",
-      "evidence": [
-        {
-          "resource": "repo://libs/code/deepagents_code/plugins/adapters/skills_middleware.py",
-          "version": "repo-file-v1:sha256:8049feb266707460e3b81125dff56f205060a17d2736d0efe0eb7135fee689e2"
-        },
-        {
-          "resource": "repo://libs/code/deepagents_code/skills/load.py",
-          "version": "repo-file-v1:sha256:383804e40498e406934c9a090c6207da6dd850642142b0a036cd43c35e99f78a"
-        },
-        {
-          "resource": "repo://libs/code/deepagents_code/skills/trust.py",
-          "version": "repo-file-v1:sha256:060cc32e3bbb40abde600958f4402bd33016014a25255ebf4b85ba540aa59ad2"
-        }
-      ]
-    },
-    {
-      "id": "claim_10e6429f838a44018de1b99814ac7e17",
-      "statement": "Code skill-directory trust is persisted as a versioned store under `~/.deepagents/.state/skill_trust.json` with atomic writes and fail-closed enforcement; verified trusted roots must still resolve to their stored canonical paths, so corrupt or incompatible stores and post-approval symlink swaps do not grant access.",
-      "evidence": [
-        {
-          "resource": "repo://libs/code/deepagents_code/skills/trust.py",
-          "version": "repo-file-v1:sha256:060cc32e3bbb40abde600958f4402bd33016014a25255ebf4b85ba540aa59ad2"
-        },
-        {
-          "resource": "repo://libs/code/tests/unit_tests/skills/test_skill_trust.py",
-          "version": "repo-file-v1:sha256:f426e7cdbd2a9766282088590eb5b8e24804cf9cf718d0ab74a1c8f62d380c88"
+          "resource": "repo://libs/talon/tests/unit_tests/test_skill_mcp.py",
+          "version": "repo-file-v1:sha256:6e6c5ad7e9a7c6fbb3b64bff1bc1a4423eb5ca1c6f8442a5a80f58e1bfae7de1"
         }
       ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-10-23T08:06:06.503Z"
+    "at": "2026-10-28T08:04:17.781Z"
   }
 }

@@ -4,6 +4,7 @@ import json
 import logging
 import subprocess
 import sys
+import threading
 import warnings
 from dataclasses import replace
 from pathlib import Path
@@ -24,6 +25,9 @@ from deepagents_code.config import (
     RECOMMENDED_SAFE_SHELL_COMMANDS,
     SHELL_ALLOW_ALL,
     Credentials,
+    LangSmithApiError,
+    LangSmithLookupTimeoutError,
+    LangSmithPermissionError,
     LangsmithShadowResult,
     ModelResult,
     _apply_default_langsmith_project,
@@ -41,6 +45,8 @@ from deepagents_code.config import (
     create_model,
     credentials,
     detect_provider,
+    fetch_langsmith_project_url,
+    fetch_langsmith_project_url_or_raise,
     get_langsmith_project_name,
     is_http_url,
     is_langsmith_redaction_enabled,
@@ -1021,6 +1027,88 @@ class TestProjectDotenvDeniedKeys:
             assert FORKED_SUBAGENTS not in preview
             assert os.environ["DEEPAGENTS_CODE_TEST_PROJECT_VALUE"] == "allowed"
             assert preview["DEEPAGENTS_CODE_TEST_PROJECT_VALUE"] == "allowed"
+        finally:
+            config_mod._dotenv_loaded_values.clear()
+
+    @pytest.mark.parametrize(
+        ("env_name", "value"),
+        [
+            ("EXPERIMENTAL", "1"),
+            ("EXTENSIONS_TRUST", "always"),
+            ("PLUGIN_CACHE_DIR", "plugins"),
+            ("SHELL_ALLOW_LIST", "all"),
+            ("EXTRA_SKILLS_DIRS", "/"),
+        ],
+    )
+    def test_project_dotenv_cannot_set_user_trust_decisions(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        env_name: str,
+        value: str,
+    ) -> None:
+        """A repo cannot enable its own extensions or widen approval settings."""
+        import os
+
+        import deepagents_code._env_vars as env_vars
+        import deepagents_code.config as config_mod
+
+        key = getattr(env_vars, env_name)
+        project = tmp_path / "cloned-repo"
+        project.mkdir()
+        (project / ".env").write_text(
+            f"{key}={value}\nDEEPAGENTS_CODE_TEST_PROJECT_VALUE=allowed\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.delenv(key, raising=False)
+        monkeypatch.delenv("DEEPAGENTS_CODE_TEST_PROJECT_VALUE", raising=False)
+        monkeypatch.setattr(
+            config_mod,
+            "_GLOBAL_DOTENV_PATH",
+            tmp_path / "missing-global.env",
+        )
+        config_mod._dotenv_loaded_values.clear()
+
+        try:
+            config_mod._load_dotenv(start_path=project)
+            preview = config_mod._preview_dotenv_environ(start_path=project)
+
+            assert key not in os.environ
+            assert key not in preview
+            assert os.environ["DEEPAGENTS_CODE_TEST_PROJECT_VALUE"] == "allowed"
+            assert preview["DEEPAGENTS_CODE_TEST_PROJECT_VALUE"] == "allowed"
+        finally:
+            config_mod._dotenv_loaded_values.clear()
+
+    def test_global_dotenv_can_set_extension_trust(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The user's own global `.env` still sets the denied project keys."""
+        import os
+
+        import deepagents_code.config as config_mod
+        from deepagents_code._env_vars import EXPERIMENTAL, EXTENSIONS_TRUST
+
+        project = tmp_path / "cloned-repo"
+        project.mkdir()
+        global_dotenv = tmp_path / "global.env"
+        global_dotenv.write_text(
+            f"{EXPERIMENTAL}=1\n{EXTENSIONS_TRUST}=always\n", encoding="utf-8"
+        )
+
+        monkeypatch.delenv(EXPERIMENTAL, raising=False)
+        monkeypatch.delenv(EXTENSIONS_TRUST, raising=False)
+        monkeypatch.setattr(config_mod, "_GLOBAL_DOTENV_PATH", global_dotenv)
+        config_mod._dotenv_loaded_values.clear()
+
+        try:
+            config_mod._load_dotenv(start_path=project)
+
+            assert os.environ[EXPERIMENTAL] == "1"
+            assert os.environ[EXTENSIONS_TRUST] == "always"
         finally:
             config_mod._dotenv_loaded_values.clear()
 
@@ -4812,12 +4900,288 @@ class TestQuietSdkLogging:
         assert runtime_logger.propagate is True
 
 
+def _langsmith_http_error(
+    status: int, error_type: type[Exception] | None = None
+) -> Exception:
+    """Build an error shaped like the one `langsmith.Client` raises for a status.
+
+    The SDK raises its own error type while it handles a `requests.HTTPError`,
+    so the response is only on the implicit `__context__`, not on the error.
+    """
+    import requests
+    from langsmith import utils as ls_utils
+
+    response = requests.Response()
+    response.status_code = status
+    http_error = requests.HTTPError(f"{status} Client Error", response=response)
+    error = (error_type or ls_utils.LangSmithError)(
+        f"Failed to GET /sessions in LangSmith API. {http_error!r}"
+    )
+    error.__context__ = http_error
+    return error
+
+
+def _langsmith_client(read_project: Mock) -> Mock:
+    """Build a stand-in for `langsmith.Client` that delegates `read_project`."""
+    client_cls = Mock()
+    client_cls.return_value.read_project = read_project
+    return client_cls
+
+
 class TestFetchLangsmithProjectUrl:
     """Tests for fetch_langsmith_project_url()."""
 
     def setup_method(self) -> None:
         """Clear LangSmith URL cache before each test."""
         reset_langsmith_url_cache()
+
+    def teardown_method(self) -> None:
+        """Do not leak cached lookups into other tests."""
+        reset_langsmith_url_cache()
+
+    def test_403_is_permission_error_and_cached(self) -> None:
+        """A 403 raises the permission error and is not looked up again."""
+        read_project = Mock(side_effect=_langsmith_http_error(403))
+        with patch("langsmith.Client", _langsmith_client(read_project)):
+            with pytest.raises(LangSmithPermissionError) as first:
+                fetch_langsmith_project_url_or_raise("proj")
+            with pytest.raises(LangSmithPermissionError) as second:
+                fetch_langsmith_project_url_or_raise("proj")
+            # The non-raising variant also reads the cached rejection.
+            assert fetch_langsmith_project_url("proj") is None
+
+        assert read_project.call_count == 1
+        assert second.value is not first.value
+        assert second.value.__cause__ is first.value.__cause__
+
+    def test_401_is_api_error_and_cached(self) -> None:
+        """A 401 stays a generic API error, and is also cached."""
+        from langsmith import utils as ls_utils
+
+        error = _langsmith_http_error(401, ls_utils.LangSmithAuthError)
+        read_project = Mock(side_effect=error)
+        with patch("langsmith.Client", _langsmith_client(read_project)):
+            for _ in range(2):
+                with pytest.raises(LangSmithApiError) as raised:
+                    fetch_langsmith_project_url_or_raise("proj")
+                assert not isinstance(raised.value, LangSmithPermissionError)
+
+        assert read_project.call_count == 1
+
+    def test_403_cache_is_per_project(self) -> None:
+        """A cached 403 for one project does not block another project."""
+        read_project = Mock(
+            side_effect=[_langsmith_http_error(403), Mock(url="https://ls/p/other")]
+        )
+        with patch("langsmith.Client", _langsmith_client(read_project)):
+            with pytest.raises(LangSmithPermissionError):
+                fetch_langsmith_project_url_or_raise("proj")
+            assert fetch_langsmith_project_url_or_raise("other") == (
+                "https://ls/p/other"
+            )
+
+    def test_configured_project_url_skips_lookup(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A project URL set in the environment is used without a lookup."""
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_PROJECT", "shared")
+        monkeypatch.setenv(
+            "DEEPAGENTS_CODE_LANGSMITH_PROJECT_URL", "https://ls/o/org/projects/p/1"
+        )
+        read_project = Mock(side_effect=_langsmith_http_error(403))
+        with patch("langsmith.Client", _langsmith_client(read_project)):
+            assert (
+                fetch_langsmith_project_url_or_raise("shared")
+                == "https://ls/o/org/projects/p/1"
+            )
+
+        read_project.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("project", "url"),
+        [
+            pytest.param("other", "https://ls/o/org/projects/p/1", id="other-project"),
+            pytest.param("shared", "not a url", id="invalid-url"),
+        ],
+    )
+    def test_configured_project_url_ignored(
+        self, monkeypatch: pytest.MonkeyPatch, project: str, url: str
+    ) -> None:
+        """The URL is ignored for another project or when it is not a URL."""
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_PROJECT", "shared")
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_PROJECT_URL", url)
+        read_project = Mock(return_value=Mock(url="https://ls/p/looked-up"))
+        with patch("langsmith.Client", _langsmith_client(read_project)):
+            assert fetch_langsmith_project_url_or_raise(project) == (
+                "https://ls/p/looked-up"
+            )
+
+        read_project.assert_called_once()
+
+    def test_403_cache_is_per_api_key(self) -> None:
+        """A new API key gets a fresh lookup instead of the old key's 403."""
+        keys = {"LANGSMITH_API_KEY": "old-key"}
+        read_project = Mock(
+            side_effect=[_langsmith_http_error(403), Mock(url="https://ls/p/proj")]
+        )
+        with (
+            patch("langsmith.Client", _langsmith_client(read_project)),
+            patch(
+                "deepagents_code.model_config.resolve_env_var",
+                side_effect=lambda name: keys.get(name),
+            ),
+        ):
+            with pytest.raises(LangSmithPermissionError):
+                fetch_langsmith_project_url_or_raise("proj")
+            keys["LANGSMITH_API_KEY"] = "new-key"
+            assert fetch_langsmith_project_url_or_raise("proj") == "https://ls/p/proj"
+
+    @pytest.mark.parametrize("status", [401, 403])
+    @pytest.mark.parametrize(
+        "setting",
+        [
+            "LANGSMITH_ENDPOINT",
+            "LANGCHAIN_ENDPOINT",
+            "LANGSMITH_WORKSPACE_ID",
+            "LANGCHAIN_WORKSPACE_ID",
+        ],
+    )
+    def test_rejected_lookup_retries_after_configuration_fix(
+        self, monkeypatch: pytest.MonkeyPatch, setting: str, status: int
+    ) -> None:
+        """Endpoint and workspace fixes retry without changing the API key."""
+        read_project = Mock(
+            side_effect=[_langsmith_http_error(status), Mock(url="https://ls/p/proj")]
+        )
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_API_KEY", "same-key")
+        monkeypatch.delenv(setting, raising=False)
+        with patch("langsmith.Client", _langsmith_client(read_project)):
+            for _ in range(2):
+                with pytest.raises(LangSmithApiError):
+                    fetch_langsmith_project_url_or_raise("proj")
+            assert read_project.call_count == 1
+
+            monkeypatch.setenv(
+                setting,
+                "https://correct.example.com"
+                if setting.endswith("ENDPOINT")
+                else "correct-workspace",
+            )
+            assert fetch_langsmith_project_url_or_raise("proj") == "https://ls/p/proj"
+
+        assert read_project.call_count == 2
+
+    def test_server_error_is_not_cached_and_keeps_traceback(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A 5xx is unexpected: it is retried and logged with its traceback."""
+        caplog.set_level(logging.DEBUG, logger=config_module.__name__)
+        read_project = Mock(side_effect=_langsmith_http_error(500))
+        with patch("langsmith.Client", _langsmith_client(read_project)):
+            for _ in range(2):
+                with pytest.raises(LangSmithApiError) as raised:
+                    fetch_langsmith_project_url_or_raise("proj")
+                assert not isinstance(raised.value, LangSmithPermissionError)
+
+        assert read_project.call_count == 2
+        records = [r for r in caplog.records if r.name == config_module.__name__]
+        assert records
+        assert all(r.exc_info is not None for r in records)
+
+    def test_org_scoped_key_403_is_not_permission_error(self) -> None:
+        """The SDK's org-scoped-key 403 keeps its own configuration message."""
+        from langsmith import utils as ls_utils
+
+        error = _langsmith_http_error(403, ls_utils.LangSmithUserError)
+        read_project = Mock(side_effect=error)
+        with (
+            patch("langsmith.Client", _langsmith_client(read_project)),
+            pytest.raises(LangSmithApiError) as raised,
+        ):
+            fetch_langsmith_project_url_or_raise("proj")
+
+        assert not isinstance(raised.value, LangSmithPermissionError)
+
+    def test_timeout_is_not_cached(self) -> None:
+        """A timed-out lookup is tried again on the next call."""
+        release = threading.Event()
+        read_project = Mock(side_effect=lambda **_: release.wait(5))
+        try:
+            with (
+                patch("langsmith.Client", _langsmith_client(read_project)),
+                patch.object(
+                    config_module, "_LANGSMITH_URL_LOOKUP_TIMEOUT_SECONDS", 0.01
+                ),
+            ):
+                for _ in range(2):
+                    with pytest.raises(LangSmithLookupTimeoutError):
+                        fetch_langsmith_project_url_or_raise("proj")
+        finally:
+            release.set()
+
+        assert read_project.call_count == 2
+
+    def test_network_error_is_not_cached(self) -> None:
+        """An error without an HTTP response is tried again on the next call."""
+        from langsmith import utils as ls_utils
+
+        error = ls_utils.LangSmithConnectionError("Connection error")
+        read_project = Mock(side_effect=error)
+        with patch("langsmith.Client", _langsmith_client(read_project)):
+            for _ in range(2):
+                with pytest.raises(LangSmithApiError):
+                    fetch_langsmith_project_url_or_raise("proj")
+
+        assert read_project.call_count == 2
+
+    def test_reset_clears_cached_rejection(self) -> None:
+        """After a reset, the next call looks the project up again."""
+        read_project = Mock(
+            side_effect=[_langsmith_http_error(403), Mock(url="https://ls/p/proj")]
+        )
+        with patch("langsmith.Client", _langsmith_client(read_project)):
+            with pytest.raises(LangSmithPermissionError):
+                fetch_langsmith_project_url_or_raise("proj")
+            reset_langsmith_url_cache()
+            assert fetch_langsmith_project_url_or_raise("proj") == "https://ls/p/proj"
+
+    def test_403_logs_one_line_without_traceback(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A rejected lookup logs the status and project, not a traceback."""
+        caplog.set_level(logging.DEBUG, logger=config_module.__name__)
+        read_project = Mock(side_effect=_langsmith_http_error(403))
+        with (
+            patch("langsmith.Client", _langsmith_client(read_project)),
+            pytest.raises(LangSmithPermissionError),
+        ):
+            fetch_langsmith_project_url_or_raise("proj")
+
+        records = [r for r in caplog.records if r.name == config_module.__name__]
+        assert len(records) == 1
+        assert records[0].exc_info is None
+        assert "403" in records[0].getMessage()
+        assert "proj" in records[0].getMessage()
+        assert "\n" not in caplog.text.strip()
+
+    def test_network_error_logs_traceback(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """An error that is not an HTTP response keeps its traceback."""
+        from langsmith import utils as ls_utils
+
+        caplog.set_level(logging.DEBUG, logger=config_module.__name__)
+        error = ls_utils.LangSmithConnectionError("Connection error")
+        read_project = Mock(side_effect=error)
+        with (
+            patch("langsmith.Client", _langsmith_client(read_project)),
+            pytest.raises(LangSmithApiError),
+        ):
+            fetch_langsmith_project_url_or_raise("proj")
+
+        records = [r for r in caplog.records if r.name == config_module.__name__]
+        assert len(records) == 1
+        assert records[0].exc_info is not None
 
 
 class TestBuildLangsmithThreadUrl:
@@ -5144,6 +5508,115 @@ class TestOpenRouterHeaders:
         assert call_kwargs["app_categories"] == ["cli-agent"]
 
 
+class TestOpenRouterPromptCaching:
+    """Claude requests opt into caching without changing routing or overrides."""
+
+    @pytest.fixture(autouse=True)
+    def _bypass_credential_check(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        clear_caches()
+        monkeypatch.setattr(
+            "deepagents_code.model_config.has_provider_credentials", lambda _: True
+        )
+
+    @pytest.mark.parametrize(
+        ("model_name", "params", "expected"),
+        [
+            ("anthropic/claude-sonnet-4-5", {}, {"type": "ephemeral"}),
+            ("deepseek/deepseek-chat", {}, None),
+            (
+                "anthropic/claude-sonnet-4-5",
+                {"model_kwargs": {"cache_control": {"type": "ephemeral", "ttl": "1h"}}},
+                {"type": "ephemeral", "ttl": "1h"},
+            ),
+            (
+                "anthropic/claude-sonnet-4-5",
+                {"model_kwargs": {"cache_control": None}},
+                None,
+            ),
+            ("anthropic/claude-sonnet-4-5", {"cache_control": None}, None),
+        ],
+    )
+    @patch("langchain.chat_models.init_chat_model")
+    def test_defaults_and_overrides(
+        self, mock_init: Mock, model_name: str, params: dict, expected: dict | None
+    ) -> None:
+        mock_init.return_value = _make_init_chat_model_mock()
+        original = dict(params)
+
+        create_model(f"openrouter:{model_name}", extra_kwargs=params)
+
+        kwargs = mock_init.call_args.kwargs
+        assert (
+            kwargs.get(
+                "cache_control", kwargs.get("model_kwargs", {}).get("cache_control")
+            )
+            == expected
+        )
+        assert "order" not in (kwargs.get("openrouter_provider") or {})
+        assert params == original
+
+    @pytest.mark.parametrize("asynchronous", [False, True])
+    @pytest.mark.parametrize("streaming", [False, True])
+    async def test_serialized_request(
+        self, asynchronous: bool, streaming: bool
+    ) -> None:
+        import httpx
+
+        openrouter = pytest.importorskip("openrouter")
+        requests: list[dict] = []
+
+        def respond(request: httpx.Request) -> httpx.Response:
+            requests.append(json.loads(request.content))
+            completion = {
+                "id": "test-completion",
+                "system_fingerprint": None,
+                "object": "chat.completion.chunk" if streaming else "chat.completion",
+                "created": 0,
+                "model": "anthropic/claude-sonnet-4-5",
+                "choices": [
+                    {
+                        "index": 0,
+                        "finish_reason": "stop",
+                        "delta" if streaming else "message": {
+                            "role": "assistant",
+                            "content": "Hello",
+                        },
+                    }
+                ],
+            }
+            if streaming:
+                return httpx.Response(
+                    200,
+                    headers={"content-type": "text/event-stream"},
+                    text=f"data: {json.dumps(completion)}\n\ndata: [DONE]\n\n",
+                )
+            return httpx.Response(200, json=completion)
+
+        transport = httpx.MockTransport(respond)
+        with httpx.Client(transport=transport) as client:
+            async with httpx.AsyncClient(transport=transport) as async_client:
+                sdk = openrouter.OpenRouter(
+                    api_key="test-key", client=client, async_client=async_client
+                )
+                model = create_model(
+                    "openrouter:anthropic/claude-sonnet-4-5",
+                    extra_kwargs={"api_key": "test-key", "client": sdk},
+                ).model
+                if asynchronous:
+                    if streaming:
+                        _ = [chunk async for chunk in model.astream("Hello")]
+                    else:
+                        await model.ainvoke("Hello")
+                elif streaming:
+                    list(model.stream("Hello"))
+                else:
+                    model.invoke("Hello")
+
+        assert len(requests) == 1
+        assert requests[0]["cache_control"] == {"type": "ephemeral"}
+        assert "order" not in requests[0].get("provider", {})
+
+
 class TestCreateModelForwardsProviderProfile:
     """Tests that `create_model` forwards profile kwargs to `init_chat_model`.
 
@@ -5162,6 +5635,36 @@ class TestCreateModelForwardsProviderProfile:
         monkeypatch.setattr(
             "deepagents_code.model_config.has_provider_credentials", lambda _: True
         )
+
+    def test_terra_profile_and_responses_tool_payload(self) -> None:
+        from langchain_core.messages import HumanMessage
+        from langchain_core.runnables import RunnableBinding
+        from langchain_openai import ChatOpenAI
+        from pydantic import BaseModel
+
+        class Decision(BaseModel):
+            allowed: bool
+
+        result = create_model(
+            "openai:gpt-6.1-terra",
+            extra_kwargs={"api_key": "test-key", "reasoning_effort": "max"},
+        )
+        model = result.model
+        assert isinstance(model, ChatOpenAI)
+        assert result.unsupported_modalities == frozenset({"audio", "video"})
+        assert model.profile is not None
+        assert result.context_limit == model.profile["max_input_tokens"]
+        assert model.profile["max_output_tokens"] == 128_000
+        bound = model.bind_tools([Decision], tool_choice="Decision")
+        assert isinstance(bound, RunnableBinding)
+        payload = model._get_request_payload(
+            [HumanMessage("Is this allowed?")], **bound.kwargs
+        )
+        assert model.use_responses_api is True
+        assert payload["reasoning"]["effort"] == "max"
+        assert payload["tool_choice"] == {"type": "function", "name": "Decision"}
+        assert "input" in payload
+        assert "messages" not in payload
 
     @patch("langchain.chat_models.init_chat_model")
     def test_profile_pre_init_failure_wrapped_in_model_config_error(

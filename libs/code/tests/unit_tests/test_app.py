@@ -136,6 +136,17 @@ from deepagents_code.tui.widgets.startup_tip import StartupTip
 from deepagents_code.update_check import ExtraInstallOutcome
 
 
+@pytest.mark.parametrize("hidden_count", [0, 2])
+def test_displayed_row_slots_without_displayed_children(hidden_count: int) -> None:
+    """Empty and fully hidden layouts occupy no rows."""
+    from deepagents_code.app import _displayed_row_slots
+
+    children = [Static() for _ in range(hidden_count)]
+    for child in children:
+        child.display = False
+    assert _displayed_row_slots(children) == {}
+
+
 def _pop_goal_state_notice(update: dict[str, Any]) -> HumanMessage:
     """Remove and validate the canonical notice from a state update."""
     from langchain_core.messages import HumanMessage
@@ -2735,9 +2746,10 @@ class TestModalScreenShiftTabHandling:
         self, newline_key: str, btw_app: tuple[DeepAgentsApp, MagicMock]
     ) -> None:
         """Side-question shortcuts edit text without changing approval mode."""
-        from textual.widgets import Markdown, TextArea
+        from textual.widgets import TextArea
 
         from deepagents_code.tui.modals.btw import BtwScreen
+        from deepagents_code.tui.widgets.final_markdown import FinalMarkdown
 
         app, remote = btw_app
         answer = remote.abtw
@@ -2770,7 +2782,7 @@ class TestModalScreenShiftTabHandling:
             await pilot.pause()
             assert answer.await_count == 1
             assert answer.await_args.args == ("first!\nsecond",)
-            assert app.screen.query_one(Markdown)._markdown == "Side answer"
+            assert app.screen.query_one(FinalMarkdown).source == "Side answer"
             await pilot.press("shift+tab")
             assert editor.text == ""
             assert app._approval_mode is mode
@@ -5598,6 +5610,39 @@ class TestTraceCommand:
             assert "401 Unauthorized" in rendered
             assert "LANGSMITH_API_KEY" in rendered
             assert "Check your network" not in rendered
+            assert "permission" not in rendered
+
+    async def test_trace_shows_permission_message_when_lookup_forbidden(
+        self,
+    ) -> None:
+        """A 403 says the key lacks project read access, not that it is invalid."""
+        from deepagents_code.config import LangSmithPermissionError
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._session_state = TextualSessionState(thread_id="test-thread-123")
+
+            with (
+                patch(
+                    "deepagents_code.config.get_langsmith_project_name",
+                    return_value="proj",
+                ),
+                patch(
+                    "deepagents_code.config.fetch_langsmith_project_url_or_raise",
+                    side_effect=LangSmithPermissionError("403 Forbidden"),
+                ),
+                patch("deepagents_code.app.webbrowser.open") as mock_open,
+            ):
+                await app._handle_trace_command("/trace")
+                await pilot.pause()
+
+            app_msgs = app.query(AppMessage)
+            rendered = " ".join(str(w._content) for w in app_msgs)
+            assert "denied the lookup of project 'proj' (HTTP 403)" in rendered
+            assert "DEEPAGENTS_CODE_LANGSMITH_PROJECT_URL" in rendered
+            assert "Verify LANGSMITH_API_KEY" not in rendered
+            mock_open.assert_not_called()
 
     async def test_trace_shows_friendly_message_when_project_not_found(self) -> None:
         """A not-found project shows a 'created on first trace' hint, not an error."""
@@ -14902,6 +14947,39 @@ class TestToolsSlashCommand:
         assert "Unavailable MCP servers" in rendered
         assert "notion" in rendered
         assert "Login required" in rendered
+
+    def test_render_mcp_tool_counts(self) -> None:
+        from deepagents_code.mcp_tools import MCPServerInfo, MCPToolInfo
+        from deepagents_code.tool_catalog import (
+            ToolEntry,
+            build_catalog_from_server_info,
+        )
+
+        catalog = build_catalog_from_server_info(
+            [ToolEntry(name="read_file", description="Read a file")],
+            [
+                MCPServerInfo(
+                    name="docs",
+                    transport="http",
+                    tools=(
+                        MCPToolInfo(name="search_docs", description="Search docs"),
+                        MCPToolInfo(name="fetch_docs", description="Fetch docs"),
+                    ),
+                    status="ok",
+                ),
+                MCPServerInfo(
+                    name="[i]github",
+                    transport="http",
+                    tools=(MCPToolInfo(name="list_issues", description="List issues"),),
+                    status="ok",
+                ),
+            ],
+        )
+        rendered = self._display(DeepAgentsApp._render_tool_catalog(catalog))
+        assert "4 tools available" in rendered
+        assert "docs (2)" in rendered
+        assert "[i]github (1)" in rendered
+        assert "Built-in (1)" not in rendered
 
     def test_render_escapes_markup(self) -> None:
         from deepagents_code.mcp_tools import MCPServerInfo, MCPToolInfo
@@ -25929,7 +26007,7 @@ class TestRespawnServer:
             monkeypatch.setattr(
                 app,
                 "_discover_plugins_with_fingerprints",
-                lambda: (SimpleNamespace(plugins=[], warnings=[]), {}),
+                lambda: (SimpleNamespace(plugins=[], warnings=[], broken=()), {}),
             )
             monkeypatch.setattr(app, "_restart_server_manual_result", restart_manual)
             monkeypatch.setattr(
@@ -26104,7 +26182,7 @@ class TestRespawnServer:
             monkeypatch.setattr(
                 app,
                 "_discover_plugins_with_fingerprints",
-                lambda: (SimpleNamespace(plugins=[], warnings=[]), {}),
+                lambda: (SimpleNamespace(plugins=[], warnings=[], broken=()), {}),
             )
             monkeypatch.setattr(app, "_restart_server_manual_result", restart_manual)
             monkeypatch.setattr(
@@ -26788,7 +26866,9 @@ class TestResumeScrollPosition:
     async def test_compact_history_fills_initial_viewport(
         self, height: int, count: int
     ) -> None:
-        """Compact tails load until scrolling works or all history is mounted."""
+        """Compact tails load until they fill the viewport or history runs out."""
+        from deepagents_code.app import _MESSAGE_TOP_SPACER_ID
+
         app = DeepAgentsApp()
         app._message_timestamps_visible = False
         payload = _ThreadHistoryPayload(
@@ -26818,11 +26898,21 @@ class TestResumeScrollPosition:
                 thread_id="compact-resume", preloaded_payload=payload
             )
             chat = app.query_one("#chat", _ChatScroll)
+            messages = app.query_one("#messages", Container)
+            top = messages.query_one(f"#{_MESSAGE_TOP_SPACER_ID}")
             store = app._message_store
-            for _ in range(20):
+
+            def spacer_in_view() -> bool:
+                bottom = messages.virtual_region.y + top.virtual_region.bottom
+                return top.display and bottom > chat.scroll_y
+
+            for _ in range(40):
                 await pilot.pause()
-                if chat.max_scroll_y > 0 or not store.has_messages_above:
+                if not spacer_in_view() or not store.has_messages_above:
                     break
+
+            # No blank spacer rows stay on screen above the resumed tail.
+            assert not spacer_in_view()
 
             assert store.visible_count > store.INITIAL_WINDOW_SIZE + 1
             if height == 200:
@@ -29053,6 +29143,33 @@ class TestEnsureManagedRipgrep:
 
         assert call_order[:2] == ["ensure", "start_server"], call_order
 
+    async def test_start_server_background_adopts_prespawned_server(self) -> None:
+        """A server spawned before the app loaded is adopted, not duplicated."""
+        msg = "stop here"
+        prespawned = MagicMock()
+        prespawned.adopt = AsyncMock(side_effect=RuntimeError(msg))
+        app = DeepAgentsApp(
+            agent=MagicMock(), thread_id="t", prespawned_server=prespawned
+        )
+        app._server_kwargs = {}
+        app._mcp_preload_kwargs = None
+        app._default_assistant_id = None
+        start = MagicMock()
+
+        with (
+            patch.object(app, "_ensure_managed_ripgrep", AsyncMock(return_value=True)),
+            patch(
+                "deepagents_code.client.launch.server_manager.start_server_and_get_agent",
+                start,
+            ),
+            patch.object(app, "post_message"),
+        ):
+            await app._start_server_background()
+            await app._start_server_background()
+
+        prespawned.adopt.assert_awaited_once()
+        start.assert_called_once()
+
 
 class TestNotifyInterpreterToolsWithoutInterpreter:
     """Tests for `_notify_interpreter_tools_without_interpreter` (TUI advisory)."""
@@ -29769,6 +29886,42 @@ class TestToolGroupCollapse:
                 "an excluded tool's footer must not be folded into a neighbour"
             )
 
+    async def test_folded_run_height_hints_match_summary_line(self) -> None:
+        """A folded run is estimated at the summary's height, not per hidden row.
+
+        Archived rows are sized from these hints. If hidden rows each count as
+        a row and the summary line counts as none, the spacer is wrong by the
+        difference and scroll-back hydration moves the view.
+        """
+        from deepagents_code.tui.widgets.message_store import MessageData, MessageType
+        from deepagents_code.tui.widgets.messages import ToolGroupSummary
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t-group-hints")
+        app._load_thread_history = AsyncMock()  # ty: ignore
+        async with app.run_test() as pilot:
+            messages = app.query_one("#messages", Container)
+            await messages.remove_children()
+            specs = [
+                (f"h{i}", "read_file", {"file_path": f"{i}.py"}, "success")
+                for i in range(4)
+            ]
+            for tid, name, _args, _status in specs:
+                app._message_store.append(
+                    MessageData(
+                        type=MessageType.TOOL, content="", id=tid, tool_name=name
+                    )
+                )
+            await self._mount_tools(pilot, messages, specs)
+
+            await app._regroup_completed_tools()
+            await pilot.pause()
+            await pilot.pause()
+
+            summary = app.query_one(ToolGroupSummary)
+            summary_rows = summary.outer_size.height + summary.styles.margin.bottom
+            store = app._message_store
+            assert store.range_height(0, len(specs)) == summary_rows
+
     async def test_regroup_collapses_success_run(self) -> None:
         """A run of successful tools folds into one collapsed summary."""
         from deepagents_code.tui.widgets.messages import ToolGroupSummary
@@ -30274,6 +30427,182 @@ class TestToolGroupCollapse:
             rendered = summaries[0].render()
             assert isinstance(rendered, Content)
             assert "Ran 1 shell command, read 1 file" in rendered.plain
+
+
+class TestLiveToolGroupCompaction:
+    """Settled live tool groups become lazy `TOOL_GROUP` rows."""
+
+    @staticmethod
+    def _app(thread_id: str) -> DeepAgentsApp:
+        app = DeepAgentsApp(agent=MagicMock(), thread_id=thread_id)
+        app._load_thread_history = AsyncMock()  # ty: ignore
+        return app
+
+    @staticmethod
+    async def _run_step(
+        app: DeepAgentsApp, count: int, *, prefix: str = "t"
+    ) -> list[ToolCallMessage]:
+        """Mount `count` tools into one live group and finish each one."""
+        tools: list[ToolCallMessage] = []
+        for i in range(count):
+            tool = ToolCallMessage(
+                "read_file", {"file_path": f"{i}.py"}, id=f"{prefix}{i}"
+            )
+            await app._mount_message(tool)
+            tool.set_success(f"line {i}\n" * 200)
+            app._sync_tool_message_state(tool)
+            tools.append(tool)
+        return tools
+
+    @staticmethod
+    def _state(tool: ToolCallMessage) -> tuple[Any, ...]:
+        return (tool.id, tool.tool_name, tool.args, tool._output, tool._expanded)
+
+    async def test_turn_end_compaction_keeps_tool_details(self) -> None:
+        """A compacted group expands to the same rows the live group held."""
+        from deepagents_code.tui.widgets.messages import ToolGroupSummary
+
+        app = self._app("t-compact-details")
+        app._message_timestamps_visible = True
+        async with app.run_test() as pilot:
+            messages = app.query_one("#messages", Container)
+            await messages.remove_children()
+            await app._mount_message(UserMessage("go", id="prompt"))
+            tools = await self._run_step(app, 3)
+            tools[1].toggle_output()
+            expected = [self._state(tool) for tool in tools]
+            app._close_active_tool_group()
+            await pilot.pause()
+
+            await app._compact_finished_tool_groups()
+            await pilot.pause()
+
+            assert not app.query(ToolGroupSummary)
+            assert not messages.query_children(ToolCallMessage)
+            assert not app.query("#t0-timestamp-footer")
+            store = app._message_store
+            rows = store.get_visible_messages()
+            assert [row.type for row in rows] == [
+                MessageType.USER,
+                MessageType.TOOL_GROUP,
+            ]
+            assert not app.query(f"#{rows[1].id}-timestamp-footer")
+            summary = app.query_one(f"#{rows[1].id}", LazyToolGroupSummary)
+            await summary._set_expanded(True)
+            details = list(summary.query(ToolCallMessage))
+            assert [self._state(tool) for tool in details] == expected
+
+    async def test_compaction_preserves_transcript_height(self) -> None:
+        """The folded row takes the run's measured height, so spacers hold."""
+        app = self._app("t-compact-height")
+        async with app.run_test() as pilot:
+            messages = app.query_one("#messages", Container)
+            await messages.remove_children()
+            await app._mount_message(UserMessage("go", id="prompt"))
+            await self._run_step(app, 4)
+            await app._mount_message(AssistantMessage("done", id="answer"))
+            await pilot.pause()
+            store = app._message_store
+            # The summary line's rows are booked on the run's first tool.
+            store.set_height_hint("t0", 2)
+            before = store.range_height(0, store.total_count)
+
+            await app._compact_finished_tool_groups()
+
+            assert store.total_count == 3
+            assert store.get_visible_range() == (0, 3)
+            assert store.range_height(0, store.total_count) == before
+
+    async def test_step_boundary_compacts_only_older_groups(self) -> None:
+        """The group a boundary closes waits for a later boundary."""
+        from deepagents_code.tui.widgets.messages import ToolGroupSummary
+
+        app = self._app("t-compact-steps")
+        async with app.run_test() as pilot:
+            messages = app.query_one("#messages", Container)
+            await messages.remove_children()
+            await self._run_step(app, 2, prefix="a")
+            await app._mount_message(AssistantMessage("step two"))
+            assert len(app.query(ToolGroupSummary)) == 1
+
+            await self._run_step(app, 2, prefix="b")
+            await app._mount_message(AssistantMessage("step three"))
+            await pilot.pause()
+
+            assert len(app.query(LazyToolGroupSummary)) == 1
+            assert len(app.query(ToolGroupSummary)) == 1
+            assert app.query_one("#b0", ToolCallMessage).has_class("-grouped")
+
+    async def test_unsettled_groups_stay_live(self) -> None:
+        """Open groups and groups with a running tool are not compacted."""
+        from deepagents_code.tui.widgets.messages import ToolGroupSummary
+
+        app = self._app("t-compact-live")
+        async with app.run_test():
+            messages = app.query_one("#messages", Container)
+            await messages.remove_children()
+            running = ToolCallMessage("execute", {"command": "sleep 9"}, id="run")
+            await app._mount_message(running)
+            running.set_running()
+            app._sync_tool_message_state(running)
+            app._close_active_tool_group()
+            await self._run_step(app, 1, prefix="open")
+            assert app._active_tool_group is not None
+
+            await app._compact_finished_tool_groups()
+
+            assert len(app.query(ToolGroupSummary)) == 2
+            assert not app.query(LazyToolGroupSummary)
+            assert app._message_store.get_message("run") is not None
+            assert app._message_store.get_message("open0") is not None
+
+    async def test_ctrl_o_toggles_compacted_group(self) -> None:
+        """Ctrl+O reaches the lazy row that replaced the live group."""
+        app = self._app("t-compact-ctrl-o")
+        async with app.run_test() as pilot:
+            messages = app.query_one("#messages", Container)
+            await messages.remove_children()
+            await self._run_step(app, 2)
+            app._close_active_tool_group()
+            await app._compact_finished_tool_groups()
+            await pilot.pause()
+
+            await pilot.press("ctrl+o")
+            await pilot.pause()
+
+            summary = app.query_one(LazyToolGroupSummary)
+            assert summary._expanded is True
+            assert len(summary.query(ToolCallMessage)) == 2
+
+    async def test_partly_archived_group_compacts_in_store_only(self) -> None:
+        """A run with archived rows folds in the store and leaves the DOM."""
+        from deepagents_code.tui.widgets.messages import ToolGroupSummary
+
+        app = self._app("t-compact-archived")
+        async with app.run_test() as pilot:
+            messages = app.query_one("#messages", Container)
+            await messages.remove_children()
+            await app._mount_message(UserMessage("go", id="prompt"))
+            await self._run_step(app, 3)
+            await app._mount_message(AssistantMessage("done", id="answer"))
+            await pilot.pause()
+            assert await app._prune_messages("above", count=2) == 2
+
+            await app._compact_finished_tool_groups()
+            await pilot.pause()
+
+            assert not app.query(ToolGroupSummary)
+            assert not messages.query_children(ToolCallMessage)
+            store = app._message_store
+            assert [row.id for row in store.get_visible_messages()] == ["answer"]
+            archived = store.get_messages_to_hydrate(5)
+            assert [row.type for row in archived] == [
+                MessageType.USER,
+                MessageType.TOOL_GROUP,
+            ]
+            assert await app._hydrate_messages("above", count=1) == 1
+            await pilot.pause()
+            assert app.query_one(f"#{archived[1].id}", LazyToolGroupSummary)
 
 
 class TestUnsavedGoalContinuation:

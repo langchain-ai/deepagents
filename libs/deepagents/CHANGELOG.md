@@ -37,15 +37,15 @@
 
 ### Bug Fixes
 
-- `CompositeBackend` now handles routes without a trailing slash.
-- Text edits to binary files are now rejected.
-- In-memory `grep` now skips binary files.
+- `CompositeBackend` now handles routes without a trailing slash ([#7028](https://github.com/langchain-ai/deepagents/pull/7028)).
+- Text edits to binary files are now rejected ([#7069](https://github.com/langchain-ai/deepagents/pull/7069)).
+- In-memory `grep` now skips binary files ([#7032](https://github.com/langchain-ai/deepagents/pull/7032)).
 
 ## [0.7.28](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.27...deepagents==0.7.28) (2026-10-16)
 
 ### Bug Fixes
 
-- Fixed `ContextHubBackend.glob` to honor the `path` argument.
+- Fixed `ContextHubBackend.glob` to honor the `path` argument ([#6998](https://github.com/langchain-ai/deepagents/pull/6998)).
 
 ## [0.7.27](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.26...deepagents==0.7.27) (2026-10-16)
 
@@ -61,8 +61,8 @@
 
 ### Features
 
-- Async subagents now report when they’re waiting for a human. ([#6842](https://github.com/langchain-ai/deepagents/pull/6842))
-- Async subagent runs now appear under their parent’s trace and identify the agent that launched them. ([#6823](https://github.com/langchain-ai/deepagents/pull/6823), [#6836](https://github.com/langchain-ai/deepagents/pull/6836))
+- Async subagents now report when they're waiting for a human. ([#6842](https://github.com/langchain-ai/deepagents/pull/6842))
+- Async subagent runs now appear under their parent's trace and identify the agent that launched them. ([#6823](https://github.com/langchain-ai/deepagents/pull/6823), [#6836](https://github.com/langchain-ai/deepagents/pull/6836))
 - Summarization middleware now exposes its `summarizer`. ([#6900](https://github.com/langchain-ai/deepagents/pull/6900))
 
 ### Bug Fixes
@@ -109,7 +109,7 @@
 
 ### Features
 
-- Load a skill’s tools only when the skill is read. ([#6552](https://github.com/langchain-ai/deepagents/pull/6552))
+- Load a skill's tools only when the skill is read. ([#6552](https://github.com/langchain-ai/deepagents/pull/6552))
 
 ### Bug Fixes
 
@@ -125,15 +125,15 @@
 
 ### Bug Fixes
 
-- Fixed binary content in `StateBackend.upload_files` being tagged as base64.
+- Fixed binary content in `StateBackend.upload_files` being tagged as base64 ([#6551](https://github.com/langchain-ai/deepagents/pull/6551)).
 
 ## [0.7.19](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.18...deepagents==0.7.19) (2026-09-24)
 
 ### Bug Fixes
 
-- Recover when `read_file` media is rejected.
-- Filter unsupported multimodal content through separate middleware.
-- Bound tool offload paths and abbreviate long IDs.
+- Recover when `read_file` media is rejected ([#6515](https://github.com/langchain-ai/deepagents/pull/6515)).
+- Filter unsupported multimodal content through separate middleware ([#6366](https://github.com/langchain-ai/deepagents/pull/6366)).
+- Bound tool offload paths and abbreviate long IDs ([#6519](https://github.com/langchain-ai/deepagents/pull/6519)).
 
 ## [0.7.18](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.17...deepagents==0.7.18) (2026-09-22)
 

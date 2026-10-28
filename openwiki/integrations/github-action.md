@@ -5,7 +5,7 @@ description: Run one bounded, non-interactive dcode task from a GitHub Actions j
 tags: [github-actions, dcode, deepagents-code, ci, automation, memory, mcp, sandbox]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-10-23T08:06:06.503Z
+    at: 2026-10-28T08:04:17.781Z
 sources:
   - id: openwiki-source-b1423dca16677f7643488f74
     resource: repo://.github/scripts/tests/workflows/test_github_action.py
@@ -25,7 +25,7 @@ sources:
     resource: repo://libs/deepagents/deepagents/graph.py
   - id: openwiki-source-482fa4ca84f42b04ba025fc1
     resource: repo://release-please-config.json
-generated: { by: "openwiki/0.4.2", at: "2026-10-23T08:06:06.503Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-10-28T08:04:17.781Z" }
 ---
 
 # GitHub Action Integration
@@ -177,4 +177,4 @@ Run the focused check from the repository root:
 python -m pytest .github/scripts/tests/workflows/test_github_action.py -v
 ```
 
-Repository CI runs this file as part of `python -m pytest .github/scripts/tests -v` in the `Validate Release Options` job, which installs `packaging`, `pyyaml`, and `pytest`. Separately, changes under `libs/code` select the Code lint and unit-test jobs on Python 3.14. For local development and repository CI practices, see [Development, CI, and Releases](/openwiki/operations/development.md).
+Repository CI runs this file as part of `python -m pytest .github/scripts/tests -v` in the `Validate Release Options` job, which installs `packaging`, `pyyaml`, and `pytest`. This helper-script job runs independently of the changed-package filters (except for a curated release-notes-only apply), so root `action.yml` changes are still covered even though the dedicated Code lint and unit-test workflows are selected from `libs/code`, `libs/deepagents`, and shared workflow/action paths. The Code workflows run lint and sharded unit tests on Python 3.14 when their `code` selector is true, and run on pushes to `main`. For local development and repository CI practices, see [Development, CI, and Releases](/openwiki/operations/development.md).

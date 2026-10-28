@@ -22,16 +22,16 @@ classifiers = [
 dependencies = [
     "langchain>=1.4.7,<2.0.0",
     "langchain-core>=1.7.0,<2.0.0",
-    "langchain-anthropic>=1.7.6,<2.0.0",
+    "langchain-anthropic>=1.7.7,<2.0.0",
     "langchain-google-genai>=4.4.2,<5.0.0",
-    "langsmith>=0.14.12",
+    "langsmith>=0.14.14",
     "packaging>=23.2",
     "wcmatch>=11.0",
 ]
 
 [project.optional-dependencies]
-aws = ["langchain-aws>=1.9.0,<2.0.0"]
-quickjs = ["langchain-quickjs>=0.3.9"]
+aws = ["langchain-aws>=1.9.1,<2.0.0"]
+quickjs = ["langchain-quickjs>=0.3.11"]
 video = ["av>=18.0.0", "pillow>=12.3.0"]
 
 [project.urls]
@@ -58,9 +58,9 @@ test = [
   "ty>=0.0.62,<1.0.0",
   "pytest-asyncio>=1.4.0",
   "langchain-tests>=1.1.9",
-  "langchain-openai>=1.7.2,<2.0.0",
+  "langchain-openai>=1.7.3,<2.0.0",
   # The `aws` extra, so payload tests can drive real langchain-aws chat models.
-  "langchain-aws>=1.9.0,<2.0.0",
+  "langchain-aws>=1.9.1,<2.0.0",
   "twine",
   "build",
   # Lazy-imported at runtime so the core package does

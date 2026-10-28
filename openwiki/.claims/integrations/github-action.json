@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:35c7e59d58d0d7e834781b27a8b83353b805551d13cb27420c45f3dd05668a9f",
+  "pageVersion": "sha256:752522f475adb0c11a9c09547af557d2a69f1498a4157897736a898a2d184827",
   "claims": [
     {
       "id": "claim_66c8cdf2e322499f9163f44abcb9af36",
@@ -210,7 +210,7 @@
       "evidence": [
         {
           "resource": "repo://.github/workflows/ci.yml",
-          "version": "repo-file-v1:sha256:e0d03033c9a04ad401b9a77e9186ba6fd6a7fb8d68a88a3e3f1a4fd809316893"
+          "version": "repo-file-v1:sha256:3a752e54c725b4c83fe7aa81798893dd576779ad4abdbb89f7948edf85169d90"
         }
       ]
     },
@@ -281,10 +281,28 @@
           "version": "repo-lines-v1:sha256:1f2a198e870d20b516425c4ee64aa79b38aa8cd5b04eee4f4f0340f1421cd055:eyJzZWxlY3RlZExpbmVDb3VudCI6OCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMjEyOWIwM2I0YjliMGY2YmExNTY3ZjA3NTIwZmEwZDg4MDM4MTNmZDUyMjc2ZjlhOTNlOWFjMDMwNjg0YTU4NiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMmNiYzM3ZDI4MzZhOTkwMzJmYzA1Y2Q2MjhjYWU0ZDU2OTllNTdhNGJiNjYzNjI4Mjk1NmEzMWY2ZDI0ZDMxYyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZDc4ODkyOWI4YTk0ZmE4NzdiOTIwOTE4M2QxNzhmZDMwODc1NjcyYTQ3MmY5OTRhNjFmODBlMTUzZGYzYTNlYiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMTllZDc4NWRmYjUxNDJmN2RiYWM0OGIzMzM1MGYxYmI3OTNiNWZmYWU0Y2UzMzI1ZjA0N2EyMTYxMzY3OWY0MyJ9"
         }
       ]
+    },
+    {
+      "id": "claim_a6c7c1301cb04e9daca45e5366c8d017",
+      "statement": "The helper-script test job is not gated by the changed-package filters: it runs unless the change detector marks a curated release-notes-only apply, whereas the Code selector covers `libs/code`, `libs/deepagents`, and shared CI workflow/action paths.",
+      "evidence": [
+        {
+          "resource": "repo://.github/workflows/ci.yml#L160-L173",
+          "version": "repo-lines-v1:sha256:2bc70697b46a23f6d8c370fdb0c8a02c4c6b69f3e07ddbba7741dee0923b58af:eyJzZWxlY3RlZExpbmVDb3VudCI6MTQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg2ZWJmYjQ1MzhlNjIwZDE4Yzc3NjZlNjJhZjY5MGNiMDM0NjdkY2NjNWVmNTE2OGQ4ODhhMGJmYTAyZDI5MmEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjY4ZGRkNjAzMWI5NTFlZWFiMDEwZjgzMWEwYjllZjM5YTc4Yjk1NjQwMGFlZjJlNzFhZDc5MDc4YTNhYTc3NWYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjQwN2MyZTEwOTAyMjYzYWExNWIzOGE3ZjNjZTg3ZDhkOGNiMjFlYjMwNDgxM2MzYTNlZDg4YmFiOTY1MmNiOWEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjZiOGQ0NzBjZTcwOTRlMThkMjdkY2EzMmVhZmI1ODM1YTM5NDljZTVhODNjNzVjNTkxMjRiN2NmMmY0YmIyZjEifQ"
+        },
+        {
+          "resource": "repo://.github/workflows/ci.yml#L49-L71",
+          "version": "repo-lines-v1:sha256:957092c221d6813b284cf0e8c98af362869d1e96fe0f46ddf9ef06ceb03e9598:eyJzZWxlY3RlZExpbmVDb3VudCI6MjMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ4ZjkyMDE5NDAxNmUwNmM2MzhhM2NkMWI4NDFlNjY4ODQ5ZWU2OTg0YjM0YWM2ZjU4NTBkYjczMDRhMzE3N2UiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImM1N2RiYjE4MmQ5ZDE5NDhjOTc3NTZjYTYyNzBkMTQ2MDE3MGJjMjI4NWRiODQ1N2Y2MzQ3NzdkZGI1NWE0ZGYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjEzMjhjNGNhZjVkYzEzNjM1YmY1MWU4OTNkYjRiYjJmNmQ3Njg5YzQ0NjEyYzNkM2IxMTFlNzc2Y2FiZWRhOTciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImU0NzliMjdkNTZhZTc1ZDE5MThkYzU1M2RlNjlmNzNhNDAzZTc3YmI1ZWYzN2ZjN2FhODUxM2ZhNDM3MjhiZjkifQ"
+        },
+        {
+          "resource": "repo://.github/workflows/ci.yml#L566-L588",
+          "version": "repo-lines-v1:sha256:65750b7ed5a4333c0f1817c823aca7a13a178f5ec4132fb3b4966414500ece1e:eyJzZWxlY3RlZExpbmVDb3VudCI6MjMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImRlODc2YTJhNWYwY2E3M2I2YWY2YmE4N2IyYzU0MjM2YzQyZDNlZGNjOTBlNWE5YWVhMjFkNWE1OTVkMTBkYWMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjFiYzEyZTI1M2NkZWFmODJmYzViOWEyMWE5ODhhYzEzZTAwYTk4NzZiY2MyNzQ2OGI3NmIwYTBhNWRmZTQ5YTIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImJkNWQxNTcxZTU1MTZjMThmNjVjNmMzMTFkNmMyNzNiMWY4NGQ2YTc4NTA3ZDAxYjU5YTg0ODYwYjhiNGZlZmMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjcyMDRlZWRmYTlkOTgzY2UyY2JkNWNlODc0NWI4NmRkMDE5Zjc5YTRhYzk4NDRjZGU4YWQwZGUzZWQ3MzU1ZTEifQ"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-10-23T08:06:06.503Z"
+    "at": "2026-10-28T08:04:17.781Z"
   }
 }

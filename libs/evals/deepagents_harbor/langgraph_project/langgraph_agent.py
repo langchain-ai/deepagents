@@ -428,7 +428,7 @@ def _web_search_tool() -> BaseTool | None:
     return web_search
 
 
-def make_bare_graph(config: dict[str, object] | None = None) -> object:
+async def make_bare_graph(config: dict[str, object] | None = None) -> object:
     """Create a Deep Agents SDK graph Harbor should run directly.
 
     This path avoids the Deep Agents Code CLI harness while still attaching a
@@ -438,14 +438,16 @@ def make_bare_graph(config: dict[str, object] | None = None) -> object:
     Args:
         config: LangGraph runtime config. Harbor passes the selected model in
             `configurable.model` and optional provider kwargs in
-            `configurable.model_kwargs`, plus the task's `skills_dir`.
+            `configurable.model_kwargs`, plus the task's `skills_dir` and
+            `mcp_servers`.
 
     Returns:
         A compiled LangGraph graph invokable by Harbor's LangGraph runner.
 
     Raises:
         TypeError: If configurable values have unexpected types.
-        ValueError: If no model name is provided or `skills_dir` is invalid.
+        ValueError: If no model name is provided, `skills_dir` is invalid, or an
+            MCP server is invalid.
     """
     configurable = _configurable(config)
     model = _build_model(configurable)
@@ -459,11 +461,14 @@ def make_bare_graph(config: dict[str, object] | None = None) -> object:
     # No `system_prompt`: keep the bare agent on `create_deep_agent`'s
     # prompt-free default. The sandbox workdir is already enforced by the shell
     # backend's `root_dir`.
+    tools = await _mcp_tools(configurable)
     search_tool = _web_search_tool()
+    if search_tool is not None:
+        tools.append(search_tool)
     return create_deep_agent(
         model=model,
         backend=backend,
-        tools=[search_tool] if search_tool is not None else None,
+        tools=tools or None,
         skills=_skills(configurable),
     )
 
@@ -488,24 +493,17 @@ def _mcp_connections(configurable: dict[str, object]) -> dict[str, Any]:
         configurable: The graph's `configurable` mapping.
 
     Returns:
-        A mapping of server name to a FastMCP connection dict.
+        A mapping of server name to a FastMCP connection dict, empty when no
+        servers were forwarded.
 
     Raises:
-        ValueError: If no MCP servers were forwarded, a server uses an
-            unsupported (e.g. `stdio`) transport, or a server lacks a URL.
+        ValueError: If a server uses an unsupported (e.g. `stdio`) transport or
+            lacks a URL.
         TypeError: If `mcp_servers` is not a list of mappings.
     """
     servers = configurable.get("mcp_servers")
     if not servers:
-        msg = (
-            "tau3 graph requires MCP servers forwarded via "
-            "`configurable['mcp_servers']`. Harbor's LangGraph agent must forward "
-            "the task environment's MCP servers into the graph configurable; the "
-            "pinned Harbor release does not yet do this, so run tau3 with a "
-            "`harbor_package_override` that includes MCP-server forwarding until it "
-            "ships in a release."
-        )
-        raise ValueError(msg)
+        return {}
     if not isinstance(servers, list):
         msg = "`configurable.mcp_servers` must be a list"
         raise TypeError(msg)
@@ -522,8 +520,8 @@ def _mcp_connections(configurable: dict[str, object]) -> dict[str, Any]:
             transport = "http"
         if transport not in ("http", "sse"):
             msg = (
-                f"MCP server {name!r} uses unsupported transport {transport!r}; the "
-                "tau3 graph only allows remote transports (streamable-http, sse). "
+                f"MCP server {name!r} uses unsupported transport {transport!r}; "
+                "only remote transports (streamable-http, sse) are allowed. "
                 "stdio servers are rejected to avoid executing dataset-provided "
                 "commands in the agent sandbox."
             )
@@ -534,6 +532,22 @@ def _mcp_connections(configurable: dict[str, object]) -> dict[str, Any]:
             raise ValueError(msg)
         connections[name] = {"transport": transport, "url": url}
     return connections
+
+
+async def _mcp_tools(configurable: dict[str, object]) -> list[BaseTool]:
+    """Load tools from each MCP server Harbor forwarded for the task.
+
+    Args:
+        configurable: The graph's `configurable` mapping.
+
+    Returns:
+        The servers' tools, empty when no servers were forwarded.
+    """
+    tools: list[BaseTool] = []
+    for name, connection in _mcp_connections(configurable).items():
+        adapter = MCPAdapter({"mcpServers": {name: connection}})
+        tools.extend(await adapter.list_tools())
+    return tools
 
 
 async def make_tau3_graph(config: dict[str, object] | None = None) -> object:
@@ -559,10 +573,17 @@ async def make_tau3_graph(config: dict[str, object] | None = None) -> object:
     """
     configurable = _configurable(config)
     model = _build_model(configurable)
-    tools = []
-    for name, connection in _mcp_connections(configurable).items():
-        adapter = MCPAdapter({"mcpServers": {name: connection}})
-        tools.extend(await adapter.list_tools())
+    tools = await _mcp_tools(configurable)
+    if not tools:
+        msg = (
+            "tau3 graph requires MCP servers forwarded via "
+            "`configurable['mcp_servers']`. Harbor's LangGraph agent must forward "
+            "the task environment's MCP servers into the graph configurable; the "
+            "pinned Harbor release does not yet do this, so run tau3 with a "
+            "`harbor_package_override` that includes MCP-server forwarding until it "
+            "ships in a release."
+        )
+        raise ValueError(msg)
     # No `system_prompt`: the tau3-runtime conversation protocol comes from the
     # MCP tools' server-advertised descriptions, without adding an authored base
     # prompt.

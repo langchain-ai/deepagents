@@ -698,7 +698,7 @@ def test_build_model_respects_explicit_use_responses_api(
     assert captured_init == [{"model": "openai:gpt-5", "kwargs": {"use_responses_api": False}}]
 
 
-def test_make_bare_graph_builds_sdk_deepagent_with_local_shell(
+async def test_make_bare_graph_builds_sdk_deepagent_with_local_shell(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     captured_init: list[dict[str, object]] = []
@@ -723,7 +723,7 @@ def test_make_bare_graph_builds_sdk_deepagent_with_local_shell(
     monkeypatch.setattr(langgraph_agent, "LocalShellBackend", fake_local_shell_backend)
     monkeypatch.setattr(langgraph_agent, "create_deep_agent", fake_create_deep_agent)
 
-    result = langgraph_agent.make_bare_graph(
+    result = await langgraph_agent.make_bare_graph(
         {
             "configurable": {
                 "model": "test-provider:test-model",
@@ -749,12 +749,14 @@ def test_make_bare_graph_builds_sdk_deepagent_with_local_shell(
     assert "system_prompt" not in captured_create[0]
 
 
-def test_make_bare_graph_loads_task_skills(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+async def test_make_bare_graph_loads_task_skills(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     captured_create: list[dict[str, object]] = []
     monkeypatch.setattr(langgraph_agent, "init_chat_model", lambda *_a, **_k: object())
     monkeypatch.setattr(langgraph_agent, "create_deep_agent", lambda **k: captured_create.append(k))
 
-    langgraph_agent.make_bare_graph(
+    await langgraph_agent.make_bare_graph(
         {
             "configurable": {
                 "model": "p:m",
@@ -767,15 +769,49 @@ def test_make_bare_graph_loads_task_skills(monkeypatch: pytest.MonkeyPatch, tmp_
     assert captured_create[0]["skills"] == ["/app/.agents/skills"]
 
 
+async def test_make_bare_graph_attaches_task_mcp_tools(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    server = FastMCP("world")
+
+    @server.tool()
+    def list_files(path: str) -> str:
+        return path
+
+    def adapter(target: object) -> MCPAdapter:
+        assert target == {"mcpServers": {"world": {"transport": "http", "url": "http://world/mcp"}}}
+        return MCPAdapter(server)
+
+    monkeypatch.setattr(langgraph_agent, "MCPAdapter", adapter)
+    monkeypatch.setattr(langgraph_agent, "_build_model", lambda _: "model")
+    monkeypatch.setattr(langgraph_agent, "create_deep_agent", lambda **kwargs: kwargs["tools"])
+    monkeypatch.delenv("TAVILY_API_KEY", raising=False)
+
+    tools = await langgraph_agent.make_bare_graph(
+        {
+            "configurable": {
+                "cwd": str(tmp_path),
+                "mcp_servers": [
+                    {"name": "world", "transport": "streamable-http", "url": "http://world/mcp"}
+                ],
+            }
+        }
+    )
+
+    assert isinstance(tools, list)
+    assert [tool.name for tool in tools] == ["list_files"]
+    assert "docs" in str(await tools[0].ainvoke({"path": "docs"}))
+
+
 @pytest.mark.parametrize("skills_dir", ["relative/skills", "/app/../etc", 3])
-def test_make_bare_graph_rejects_invalid_skills_dir(
+async def test_make_bare_graph_rejects_invalid_skills_dir(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, skills_dir: object
 ) -> None:
     monkeypatch.setattr(langgraph_agent, "init_chat_model", lambda *_a, **_k: object())
     monkeypatch.setattr(langgraph_agent, "create_deep_agent", lambda **_k: object())
 
     with pytest.raises(ValueError, match="skills_dir"):
-        langgraph_agent.make_bare_graph(
+        await langgraph_agent.make_bare_graph(
             {"configurable": {"model": "p:m", "cwd": str(tmp_path), "skills_dir": skills_dir}}
         )
 
@@ -906,9 +942,17 @@ def test_mcp_connections_rejects_stdio_servers() -> None:
         )
 
 
-def test_mcp_connections_requires_forwarded_servers() -> None:
+def test_mcp_connections_empty_without_forwarded_servers() -> None:
+    assert langgraph_agent._mcp_connections({}) == {}
+
+
+async def test_make_tau3_graph_requires_forwarded_servers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(langgraph_agent, "_build_model", lambda _: "model")
+
     with pytest.raises(ValueError, match="mcp_servers"):
-        langgraph_agent._mcp_connections({})
+        await langgraph_agent.make_tau3_graph({"configurable": {}})
 
 
 def test_make_graph_offers_dcode_the_web_search_tool(

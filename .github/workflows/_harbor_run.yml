@@ -616,7 +616,8 @@ jobs:
 
       - name: "⚓ Run Harbor"
         env:
-          ANTHROPIC_API_KEY: ${{ startsWith(matrix.model, 'anthropic:') && secrets.ANTHROPIC_API_KEY || '' }}
+          # Harvey LAB verifiers judge with Claude regardless of the model under test.
+          ANTHROPIC_API_KEY: ${{ (startsWith(matrix.model, 'anthropic:') || startsWith(matrix.dataset || inputs.dataset, 'harveyai/')) && secrets.ANTHROPIC_API_KEY || '' }}
           BASETEN_API_KEY: ${{ startsWith(matrix.model, 'baseten:') && secrets.BASETEN_API_KEY || '' }}
           FIREWORKS_API_KEY: ${{ startsWith(matrix.model, 'fireworks:') && secrets.FIREWORKS_API_KEY || '' }}
           GOOGLE_API_KEY: ${{ startsWith(matrix.model, 'google_genai:') && secrets.GOOGLE_API_KEY || '' }}
@@ -1025,6 +1026,12 @@ jobs:
             --retry-include AgentSetupTimeoutError
             --retry-include ResourceCreationError
             --retry-include SandboxAPIError
+            --retry-include SandboxConnectionError
+            --retry-include ResourceTimeoutError
+            --retry-include ReadError
+            --retry-include ReadTimeout
+            --retry-include ConnectError
+            --retry-include RemoteProtocolError
           )
 
           agent_model="$HARBOR_MODEL"

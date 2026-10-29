@@ -1,50 +1,30 @@
 ---
 type: architecture
 title: SDK Construction and Execution
-description: How create_deep_agent constructs a Deep Agents LangChain graph, composes middleware and subagent stacks, propagates state, and configures compiled execution.
-tags: [deepagents, sdk-construction, middleware, subagents, langgraph, permissions]
+description: How create_deep_agent assembles a Deep Agents LangChain graph and how optional RubricMiddleware adds bounded, rubric-driven review after an ordinary agent completion.
+tags: [deepagents, sdk-construction, middleware, subagents, langgraph, rubric-evaluation]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-10-24T08:05:08.866Z
+    at: 2026-10-29T08:04:29.358Z
 sources:
-  - id: openwiki-source-b93533cac55718d75277d1cf
-    resource: repo://libs/deepagents/deepagents/_excluded_middleware.py
+  - id: openwiki-source-fd64c1b88759a3b897a5452c
+    resource: repo://libs/deepagents/deepagents/__init__.py
   - id: openwiki-source-822ae989625ba99d4c7cc08b
     resource: repo://libs/deepagents/deepagents/_messages_reducer.py
-  - id: openwiki-source-e3efb5f3e4a9e8517eb6d8f5
-    resource: repo://libs/deepagents/deepagents/backends/protocol.py
   - id: openwiki-source-0fc0e47059e4d07e23e50be2
     resource: repo://libs/deepagents/deepagents/graph.py
-  - id: openwiki-source-0fb4155c19dd248acd3ffe4f
-    resource: repo://libs/deepagents/deepagents/middleware/_fs_interrupt.py
-  - id: openwiki-source-41c16d89908bf285e252530e
-    resource: repo://libs/deepagents/deepagents/middleware/_parent_notifier.py
-  - id: openwiki-source-e51c4102234507d1529a2440
-    resource: repo://libs/deepagents/deepagents/middleware/async_subagents.py
-  - id: openwiki-source-66cf9d0832d3cb55bec2b5ed
-    resource: repo://libs/deepagents/deepagents/middleware/skills.py
-  - id: openwiki-source-114a1c7a58992fa867a94ef0
-    resource: repo://libs/deepagents/deepagents/middleware/subagents.py
-  - id: openwiki-source-13e0ea89aadd1a5e309ac7e3
-    resource: repo://libs/deepagents/tests/unit_tests/middleware/test_skill_tools_payload.py
-  - id: openwiki-source-f445d59792df76394a37a768
-    resource: repo://libs/deepagents/tests/unit_tests/test_artifacts_root.py
-  - id: openwiki-source-6ce85b02eabe462f99e0c912
-    resource: repo://libs/deepagents/tests/unit_tests/test_async_subagents.py
+  - id: openwiki-source-b93c32bc33a8fa17b52b8a0e
+    resource: repo://libs/deepagents/deepagents/middleware/rubric.py
   - id: openwiki-source-10e4084b6aa57e5cc82620b3
     resource: repo://libs/deepagents/tests/unit_tests/test_end_to_end.py
-  - id: openwiki-source-6d183faf1a4bc5a5ba451aba
-    resource: repo://libs/deepagents/tests/unit_tests/test_graph.py
-  - id: openwiki-source-851e3a9c96663d8db5ca3dec
-    resource: repo://libs/deepagents/tests/unit_tests/test_permissions.py
-  - id: openwiki-source-ca8183c87e6002c442ee2d62
-    resource: repo://libs/deepagents/tests/unit_tests/test_subagents.py
-generated: { by: "openwiki/0.4.2", at: "2026-10-24T08:05:08.866Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-10-29T08:04:29.358Z" }
 ---
 
 # SDK Construction and Execution
 
 `create_deep_agent()` is the SDK assembly boundary. It resolves the model and its harness profile, chooses a filesystem backend, partitions synchronous and remote subagent specifications, builds middleware, and delegates graph compilation to LangChain `create_agent()`. The result is a compiled LangGraph; it is not a separate Deep Agents execution loop.
+
+The ordinary graph finishes when LangChain reaches its normal terminal path after the model stops requesting tools. `RubricMiddleware` is an **opt-in caller middleware**—not part of the SDK's default stack and not a replacement for construction—that can intercept that natural completion. When invocation state supplies `rubric`, it grades the completed transcript with a separate nested agent and can jump back to the main model with revision feedback. Its status, iteration budget, run identity, frozen criteria, and evaluation history are private graph bookkeeping rather than public agent I/O.
 
 ## Construction flow
 
@@ -167,6 +147,65 @@ Remote polling runs only through asynchronous hooks. `abefore_agent` records lau
 
 The normal SDK-built stack adds `_ParentNotifierMiddleware`. For a top-level asynchronous task run that carries parent linkage, it reports success or model failure once. It wakes an idle or errored parent only when parent thread and assistant identifiers are available; a paused task is not woken this way, and a busy parent learns through polling. URL-targeted launches and `notify_parent=False` omit the assistant reference. A remote task waiting for input or approval must be resumed on its own thread.
 
+## Rubric-driven completion review
+
+`RubricMiddleware` is publicly exported from `deepagents`, but it is installed only when an application includes it in `middleware=`. This makes it appropriate for workflows that need an explicit definition of completion, rather than for routine construction or every agent turn:
+
+```python
+from deepagents import RubricMiddleware, create_deep_agent
+
+agent = create_deep_agent(
+    model=main_model,
+    middleware=[RubricMiddleware(model=grader_model, max_iterations=3)],
+)
+result = agent.invoke({
+    "messages": [{"role": "user", "content": "Implement the change."}],
+    "rubric": "Tests pass and the requested behavior is documented.",
+})
+```
+
+The middleware is a no-op when `rubric` is absent. When it is present, `before_agent` starts a grading run for a changed rubric or after a previous terminal result; it resets that run's iteration count and mints a run ID. A rubric that remains active between invocations keeps its budget and bookkeeping. This is deliberately different from ordinary model/tool execution: the grader is invoked only at the main graph's natural `after_agent` completion point, not after each tool call.
+
+```mermaid
+flowchart TD
+    Caller["Caller invokes compiled agent"] --> Main["Main LangChain agent loop"]
+    Main --> Natural["Model has no further tool calls"]
+    Natural --> HasRubric{"Rubric supplied"}
+    HasRubric -- "no" --> OrdinaryEnd["Ordinary graph completion"]
+    HasRubric -- "yes" --> Grader["Nested structured-output grader"]
+    Grader --> Verdict{"Grader result"}
+    Verdict -- "needs revision below cap" --> Feedback["Inject tagged revision HumanMessage"]
+    Feedback --> Main
+    Verdict -- "satisfied" --> Satisfied["Completion with satisfied status"]
+    Verdict -- "failed" --> Failed["Completion with failed status"]
+    Verdict -- "grader error" --> Error["Completion with grader error status"]
+    Verdict -- "needs revision at cap" --> Capped["Completion with max iterations status"]
+```
+
+Caption: the extension begins only after the ordinary agent would stop; only a `needs_revision` verdict below the configured cap returns control to the main model.
+
+### Grader boundary and verdict contract
+
+The grader is lazy: on its first use the middleware resolves its configured model and creates a distinct LangChain `create_agent()` graph named `rubric_grader`, with `GraderResponse` structured output. It can receive a custom grading prompt, verification tools, middleware, runtime context schema, and state schema. Static runtime context is forwarded to the nested call. `prepare_messages_for_grader` can transform the transcript before payload construction; `build_grader_state` can add custom nested-agent fields, but cannot replace the middleware-owned `messages` payload and requires `grader_state_schema`.
+
+The structured result has `satisfied`, `needs_revision`, or `failed`, an explanation, and per-criterion pass/fail entries. A failed criterion requires an actionable `gap`; validation rejects a result that calls itself satisfied while containing failures, or requests revision while all nonempty criteria pass. `failed` means the rubric is malformed, contradictory, or not evaluable—not that the grader infrastructure failed. An exception, absent or malformed structured response, or provider problem instead records `grader_error`; `GraphBubbleUp` is re-raised so a grader interrupt remains control flow, while cancellation and `KeyboardInterrupt` are not swallowed.
+
+The grader sees a bounded role-labelled transcript: at most the newest 30 messages, while retaining the original non-synthetic user message if it fell outside that window, and at most 4,000 characters per message. Rubric, transcript, and any frozen criteria are put in fresh nonce-suffixed delimiter blocks; literal closing tags are neutralized. The default grader prompt treats transcript content as untrusted observation, which prevents tool output or conversation text from redefining what the rubric requires.
+
+### Iteration, persistence, and observation
+
+On the first usable non-`failed` result, the middleware freezes the grader's criterion names. Later grader requests replay that list and request the same count, preventing the criterion set from shrinking during one grading run. An empty first response, or later under-coverage, triggers one corrective retry. If an under-covered result still claims `satisfied`, the middleware downgrades it to `needs_revision` and marks the evaluation `unverified`; it remains bounded by `max_iterations`. The first decomposition is not independently parsed or proven complete, so the freeze protects consistency across later iterations rather than guaranteeing complete initial coverage.
+
+For `needs_revision` below the cap, the middleware appends a synthetic `HumanMessage` tagged with `name="rubric_grader"` and `additional_kwargs["lc_source"]="rubric_grader"`, records the evaluation, and returns `jump_to="model"`. The feedback identifies failed criteria and gaps, and asks the main agent not to regress confirmed passes. At the cap, the final record is rewritten to `max_iterations_reached` and no jump occurs. `satisfied`, `failed`, `grader_error`, and the capped status also end grading without changing the main agent's final response. Consumers that need to branch on a non-satisfied ending must examine bookkeeping rather than infer success from the final AI message.
+
+`RubricState` exposes only the caller's `rubric` as public middleware I/O. `_rubric_status`, `_rubric_iterations`, `_rubric_evaluations`, `_current_grading_run_id`, `_active_rubric`, and `_rubric_criteria` are `PrivateStateAttr` fields. They therefore stay out of input/output schemas, but participate in graph state: with a checkpointer they can be inspected through `agent.get_state(config).values`. Each evaluation carries the run ID, zero-based iteration, result, explanation, criteria, and `unverified` flag. The middleware also emits `rubric_evaluation_start` and `rubric_evaluation_end` stream events and invokes `on_evaluation`; callback exceptions are logged and suppressed, so callbacks are observational rather than enforcement hooks.
+
+### Operational guidance and focused tests
+
+Choose a positive integer `max_iterations` (default `3`) and a dedicated, capable grader model. Give the grader only the verification tools and custom state it needs; it is a separate agent, not an implicit copy of the main Deep Agents harness. A grader call adds latency and model cost at each natural completion, and a failed or capped review intentionally preserves the last main-agent response. Instrument status or stream events if acceptance must gate a downstream action.
+
+Focused unit tests cover constructor validation, reset behavior across new and terminal rubrics, private status updates, revision jumps, cap handling, exception propagation, structured-output plumbing, bounded transcript construction, delimiter sanitization, criterion coverage retries, extension callbacks, context forwarding, and stream events. End-to-end fake-model tests wire `RubricMiddleware` through `create_deep_agent()` to cover the satisfied path, iteration loop, cap, no-rubric no-op, and interruption behavior.
+
 ## Permissions, skills, and artifact paths
 
 Filesystem enforcement and human approval are separate. `FilesystemMiddleware` independently enforces deny rules. Construction translates interrupt-mode filesystem permissions into path-sensitive `HumanInTheLoopMiddleware.interrupt_on` predicates and merges caller entries over generated entries for the same tool. The predicates distinguish exact-path from bulk operations, conservatively gate pathless or current-directory bulk calls, account for glob patterns that redirect outside the named path, and use resolved symlink targets when the backend supports resolution. Declarative inline agents inherit these controls unless overridden; remote agents do not. Resuming an interrupt requires a checkpointer.
@@ -183,6 +222,8 @@ The graph tests exercise profile selection, stack order and conditional installa
 
 - [Middleware stack](middleware-stack.md) — hook responsibilities and ordering.
 - [Runtime behavior](runtime-behavior.md) — runtime execution and operations.
-- [Middleware catalog](../concepts/middleware-catalog.md) — middleware capabilities.
+- [Middleware catalog](../concepts/middleware-catalog.md) — middleware capabilities, including completion-review extension points.
+- [State and persistence](../concepts/state-persistence.md) — checkpointed state and private bookkeeping.
+- [Testing guide](../testing/testing-guide.md) — test selection and execution.
 - [Subagents and skills](../concepts/subagents-skills.md) — delegation configuration.
 - [Build a Deep Agent](../workflows/build-a-deep-agent.md) — SDK usage workflow.

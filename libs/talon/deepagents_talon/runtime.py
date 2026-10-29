@@ -29,6 +29,7 @@ from deepagents.middleware.summarization import (
     create_summarization_tool_middleware,
 )
 from deepagents.profiles.provider.provider_profiles import apply_provider_profile
+from langchain.agents.middleware import HumanInTheLoopMiddleware
 from langchain.chat_models import init_chat_model
 from langchain_core.messages import HumanMessage
 from langchain_core.tools import BaseTool, tool
@@ -58,7 +59,7 @@ from deepagents_talon.config import TalonConfig
 from deepagents_talon.context_doctor import ContextDoctor
 from deepagents_talon.cron import CronJobStore, CronOrigin, CronTools
 from deepagents_talon.effort import ACTIVE_EFFORT, effort_levels, effort_settings
-from deepagents_talon.hooks import ACTIVE_HOOKS, TalonHooks
+from deepagents_talon.hooks import ACTIVE_HOOKS, TalonHooks, hook_approval_required
 from deepagents_talon.interfaces import (
     AgentRequest,
     AgentResult,
@@ -502,11 +503,15 @@ class DeepAgentRuntime:
             ),
             ModelSelectionMiddleware(),
             ProgressMessages(),
+        ]
+        middleware.append(HumanInTheLoopMiddleware(interrupt_on=interrupt_on))
+        # after_model runs in reverse order: hooks must resolve before approval.
+        middleware.append(
             ServerHooksMiddleware(
                 cwd=Path(self.env.get(_WORKSPACE_ENV) or Path.cwd()),
                 mcp_tools=[item for item in tools if isinstance(item, BaseTool)],
-            ),
-        ]
+            )
+        )
         task_tools = TaskTools(
             model,
             interrupt_on,
@@ -538,7 +543,6 @@ class DeepAgentRuntime:
             backend=self.backend,
             skills=None if skill_tools else list(diagnostics.skills) or None,
             middleware=middleware,
-            interrupt_on=interrupt_on,
             memory=list(diagnostics.memory) or None,
             checkpointer=self.checkpointer,
         )
@@ -978,6 +982,15 @@ class DeepAgentRuntime:
         policy = snapshot.interrupt_on
         if self._smart_model is not None:
             policy["ask_for_help"] = {"allowed_decisions": ["approve", "reject"]}
+        for name, config in policy.items():
+            if config:
+                approval: InterruptOnConfig = (
+                    config.copy()
+                    if isinstance(config, dict)
+                    else {"allowed_decisions": ["approve", "reject"]}
+                )
+                approval["when"] = hook_approval_required
+                policy[name] = approval
         return policy
 
     def _help_tool(self, spec: str) -> BaseTool:

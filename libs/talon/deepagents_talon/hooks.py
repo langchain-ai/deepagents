@@ -13,15 +13,30 @@ from deepagents_code.hooks.interrupt import build_hook_resume_value, parse_hook_
 from deepagents_code.hooks.models.domain import AgentIdentity
 from deepagents_code.hooks.models.transport import HookInvocationResponse
 from deepagents_code.hooks.runtime import HooksRuntime
+from deepagents_code.hooks.server_middleware import hook_permission_behavior
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
     from pathlib import Path
 
+    from langchain.tools.tool_node import ToolCallRequest
+
     from deepagents_code.hooks.models.transport import HookInvocationRequest
 
 _SUPPORTED_EVENTS = {"PreToolUse", "PostToolUse", "PostToolUseFailure", "Stop"}
 ACTIVE_HOOKS: ContextVar[TalonHooks | None] = ContextVar("talon_hooks", default=None)
+
+
+def hook_approval_required(request: ToolCallRequest) -> bool:
+    """Skip approval only when a hook has already blocked the call.
+
+    Args:
+        request: Tool call with its committed pre-execution hook outcomes.
+
+    Returns:
+        Whether normal Talon approval policy still applies.
+    """
+    return hook_permission_behavior(request.state, request.tool_call["id"] or "") != "deny"
 
 
 class TalonHookContext(TypedDict):

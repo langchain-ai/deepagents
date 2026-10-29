@@ -58,7 +58,7 @@ from deepagents_talon.config import TalonConfig
 from deepagents_talon.context_doctor import ContextDoctor
 from deepagents_talon.cron import CronJobStore, CronOrigin, CronTools
 from deepagents_talon.effort import ACTIVE_EFFORT, effort_levels, effort_settings
-from deepagents_talon.hooks import TalonHooks
+from deepagents_talon.hooks import ACTIVE_HOOKS, TalonHooks
 from deepagents_talon.interfaces import (
     AgentRequest,
     AgentResult,
@@ -390,9 +390,7 @@ class DeepAgentRuntime:
         self.sandbox_working_dir = sandbox_working_dir
         self.skills = tuple(skills) if skills is not None else None
         self.middleware = tuple(middleware)
-        self._hooks: contextvars.ContextVar[TalonHooks | None] = contextvars.ContextVar(
-            "talon_hooks", default=None
-        )
+        self._hooks = ACTIVE_HOOKS
         self.approval_store = approval_store or ToolApprovalStore(
             (assistant_dir or TalonConfig.from_env(self.env).home) / "tools.json"
         )

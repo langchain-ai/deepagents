@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, NotRequired, TypedDict, cast
+from dataclasses import replace
+from typing import TYPE_CHECKING, Any, NotRequired, TypedDict, cast
 
 from deepagents.middleware.subagents import SubAgent, SubAgentMiddleware
 from langchain.agents import create_agent
@@ -11,9 +12,12 @@ from langchain.tools import ToolRuntime  # noqa: TC002  # tool schemas inspect i
 from langchain_core.messages import HumanMessage, ToolMessage
 from langchain_core.runnables import RunnableLambda
 from langchain_core.tools import BaseTool, tool
-from langgraph.types import Command  # noqa: TC002  # tool schemas resolve return annotations
+from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.types import Command  # tool schemas resolve return annotations
 
+from deepagents_code.hooks.server_middleware import ServerHooksMiddleware
 from deepagents_talon.background import _IN_SUBAGENT
+from deepagents_talon.hooks import ACTIVE_HOOKS
 from deepagents_talon.mcp_middleware import talon_mcp_middleware
 
 if TYPE_CHECKING:
@@ -26,6 +30,8 @@ if TYPE_CHECKING:
     from langchain.agents.middleware.types import ModelRequest, ModelResponse
     from langchain.tools.tool_node import ToolCallRequest
     from langchain_core.language_models import BaseChatModel
+    from langchain_core.runnables import RunnableConfig
+    from langgraph.graph.state import CompiledStateGraph
 
 
 class LocalSubAgent(SubAgent):
@@ -150,7 +156,7 @@ class TaskTools(AgentMiddleware):
         async def task(
             description: str,
             subagent_type: str,
-            runtime: ToolRuntime,
+            runtime: ToolRuntime[dict[str, object]],
             tools: list[str] | None = None,
         ) -> str | Command:
             if not tools:
@@ -158,7 +164,7 @@ class TaskTools(AgentMiddleware):
                     {
                         "description": description,
                         "subagent_type": subagent_type,
-                        "runtime": runtime,
+                        "runtime": replace(runtime, context=None),
                     }
                 )
             tools = tools or []
@@ -227,20 +233,55 @@ def _compile_fresh(
     approvals = {
         key: value for key, value in (interrupt_on or {}).items() if value and key in available
     }
-    middleware = [talon_mcp_middleware()]
+    middleware: list[AgentMiddleware[Any, Any, Any]] = [talon_mcp_middleware()]
     if approvals:
         middleware.append(HumanInTheLoopMiddleware(interrupt_on=approvals))
-    graph = create_agent(
-        model=spec.get("model", model),
-        tools=spec.get("tools", []),
-        system_prompt=_SUBAGENT_CONTRACT + "\n\n" + spec.get("system_prompt", ""),
-        middleware=middleware,
-        checkpointer=False,
-    )
+
+    async def run(state: dict[str, object]) -> dict[str, object]:
+        parent = ACTIVE_HOOKS.get()
+        hooks = parent.child(spec["name"]) if parent is not None else None
+        hook_middleware: list[AgentMiddleware[Any, Any, Any]] = (
+            [
+                ServerHooksMiddleware(
+                    cwd=hooks.runtime.cwd, emit_stop=False, mcp_tools=list(available.values())
+                )
+            ]
+            if hooks
+            else []
+        )
+        graph = create_agent(
+            model=spec.get("model", model),
+            tools=spec.get("tools", []),
+            system_prompt=_SUBAGENT_CONTRACT + "\n\n" + spec.get("system_prompt", ""),
+            middleware=[*middleware, *hook_middleware],
+            checkpointer=InMemorySaver() if hooks else False,
+        )
+        if hooks is None:
+            return await graph.ainvoke(_task_only(state))
+        child_graph = cast("CompiledStateGraph[Any, Any, Any, Any]", graph)
+        config: RunnableConfig = {
+            "configurable": {"thread_id": hooks.context["thread_id"]},
+            "recursion_limit": 500,
+        }
+        result = await child_graph.ainvoke(_task_only(state), config, context=hooks.context)
+        for _ in range(_FRESH_AGENT_RECURSION_LIMIT):
+            hooks.record(result)
+            interrupts = result.get("__interrupt__", ())
+            if not interrupts:
+                return result
+            remaining, responses = await hooks.resume(interrupts)
+            if remaining:
+                return result
+            result = await child_graph.ainvoke(
+                Command(resume=responses), config, context=hooks.context
+            )
+        msg = "Subagent exceeded its hook resume limit"
+        raise RuntimeError(msg)
+
     return {
         "name": spec["name"],
         "description": spec["description"],
-        "runnable": RunnableLambda(_task_only) | graph,
+        "runnable": RunnableLambda(run),
     }
 
 

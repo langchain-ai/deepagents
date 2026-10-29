@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+from contextvars import ContextVar
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypedDict
 from uuid import UUID, uuid4
 
 from langchain_core.messages import BaseMessage
 
 from deepagents_code.hooks.interrupt import build_hook_resume_value, parse_hook_interrupt_payload
+from deepagents_code.hooks.models.domain import AgentIdentity
 from deepagents_code.hooks.models.transport import HookInvocationResponse
 from deepagents_code.hooks.runtime import HooksRuntime
 
@@ -19,6 +21,17 @@ if TYPE_CHECKING:
     from deepagents_code.hooks.models.transport import HookInvocationRequest
 
 _SUPPORTED_EVENTS = {"PreToolUse", "PostToolUse", "PostToolUseFailure", "Stop"}
+ACTIVE_HOOKS: ContextVar[TalonHooks | None] = ContextVar("talon_hooks", default=None)
+
+
+class TalonHookContext(TypedDict):
+    """Trusted per-invocation context consumed by the shared hook middleware."""
+
+    thread_id: str
+    prompt_id: str
+    approval_mode: str
+    hooks_snapshot_id: str
+    hooks_server_events: list[str]
 
 
 @dataclass
@@ -26,8 +39,25 @@ class TalonHooks:
     """Own one turn's hook snapshot, transcripts, and completed invocations."""
 
     runtime: HooksRuntime
-    context: dict[str, object]
+    context: TalonHookContext
+    agent: AgentIdentity | None = field(default=None, kw_only=True)
     _responses: dict[UUID, dict[str, object]] = field(default_factory=dict)
+
+    def child(self, name: str) -> TalonHooks:
+        """Create an isolated subagent session using this turn's hook snapshot.
+
+        Args:
+            name: Configured subagent name.
+
+        Returns:
+            Adapter with independent invocation identities and transcripts.
+        """
+        identity = str(uuid4())
+        return TalonHooks(
+            runtime=self.runtime,
+            context={**self.context, "thread_id": identity, "prompt_id": str(uuid4())},
+            agent=AgentIdentity(id=identity, name=name),
+        )
 
     @classmethod
     def load(cls, home: Path, cwd: Path, thread_id: str) -> TalonHooks | None:
@@ -118,7 +148,12 @@ class TalonHooks:
             msg = "Hook request does not belong to this turn"
             raise ValueError(msg)
         if request.invocation_id not in self._responses:
-            decision = await self.runtime.invoke(request.invocation)
+            invocation = request.invocation
+            if self.agent is not None:
+                invocation = invocation.model_copy(
+                    update={"context": invocation.context.model_copy(update={"agent": self.agent})}
+                )
+            decision = await self.runtime.invoke(invocation)
             self.runtime.presenter.present_decision(decision)
             self._responses[request.invocation_id] = build_hook_resume_value(
                 HookInvocationResponse(

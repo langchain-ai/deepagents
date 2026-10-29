@@ -118,29 +118,50 @@ async def test_pre_tool_hook_can_block_execution(
     )
     target = tmp_path / "effect"
     runtime = make_runtime(tmp_path, monkeypatch, command=shlex.join(["touch", str(target)]))
-    await runtime.start()
-    await runtime.invoke(AgentRequest(conversation_id="chat", text="run"))
+    snapshot = runtime.approval_store.ensure()
+    runtime.approval_store.update({"execute": True}, snapshot.revision)
+    approvals: list[ToolApprovalRequest] = []
 
+    async def decide(request: ToolApprovalRequest) -> ToolApprovalDecision:
+        approvals.append(request)
+        return "approve"
+
+    await runtime.start()
+    await runtime.invoke(AgentRequest(conversation_id="chat", text="run", approval_handler=decide))
+
+    assert approvals == []
     assert not target.exists()
     assert (await tool_results(runtime))[0].status == "error"
 
 
 @pytest.mark.parametrize("decision", ["approve", "reject"])
+@pytest.mark.parametrize("obsolete_value", ["", " , ", "bash, execute,custom/mcp"])
 async def test_hook_allow_does_not_bypass_talon_approval(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, decision: ToolApprovalDecision
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    decision: ToolApprovalDecision,
+    obsolete_value: str,
 ) -> None:
-    configure_hooks(
+    log = configure_hooks(
         tmp_path,
         ["PreToolUse"],
         {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "allow"}},
     )
     target = tmp_path / "effect"
     runtime = make_runtime(tmp_path, monkeypatch, command=shlex.join(["touch", str(target)]))
+    runtime.env.update(
+        {
+            "DEEPAGENTS_TALON_INTERRUPT_ON_TOOLS": obsolete_value,
+            "DEEPAGENTS_TALON_MCP_CONFIG_AUTO_APPROVE": "true",
+        }
+    )
     snapshot = runtime.approval_store.ensure()
     runtime.approval_store.update({"execute": True}, snapshot.revision)
     approvals: list[ToolApprovalRequest] = []
 
     async def decide(request: ToolApprovalRequest) -> ToolApprovalDecision:
+        assert log.exists()
+        assert len(log.read_text().splitlines()) == 1
         approvals.append(request)
         return decision
 
@@ -150,6 +171,56 @@ async def test_hook_allow_does_not_bypass_talon_approval(
     assert len(approvals) == 1
     assert approvals[0].action_requests[0]["name"] == "execute"
     assert target.exists() is (decision == "approve")
+    assert len(log.read_text().splitlines()) == 1
+
+
+async def test_hook_denial_does_not_skip_approval_for_other_calls(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    configure_hooks(
+        tmp_path,
+        ["PreToolUse"],
+        {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny"}},
+    )
+    blocked = tmp_path / "blocked"
+    allowed = tmp_path / "allowed"
+    runtime = make_runtime(tmp_path, monkeypatch)
+    model = ToolModel(
+        responses=[
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "execute",
+                        "args": {"command": shlex.join(["touch", str(blocked)])},
+                        "id": "blocked",
+                    },
+                    {
+                        "name": "write_file",
+                        "args": {"file_path": str(allowed), "content": "approved"},
+                        "id": "allowed",
+                    },
+                ],
+            ),
+            AIMessage(content="done"),
+        ]
+    )
+    monkeypatch.setattr("deepagents_talon.runtime._resolve_model_from_env", lambda *_a, **_k: model)
+    snapshot = runtime.approval_store.ensure()
+    runtime.approval_store.update({"execute": True, "write_file": True}, snapshot.revision)
+    approvals: list[ToolApprovalRequest] = []
+
+    async def decide(request: ToolApprovalRequest) -> ToolApprovalDecision:
+        approvals.append(request)
+        return "approve"
+
+    await runtime.start()
+    await runtime.invoke(AgentRequest(conversation_id="chat", text="run", approval_handler=decide))
+    assert [action["name"] for request in approvals for action in request.action_requests] == [
+        "write_file"
+    ]
+    assert not blocked.exists()
+    assert allowed.read_text() == "approved"
 
 
 async def test_post_failure_hook_receives_failed_execution(

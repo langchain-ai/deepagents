@@ -11,14 +11,23 @@ from langchain_core.messages import BaseMessage
 from deepagents_code.hooks.interrupt import build_hook_resume_value, parse_hook_interrupt_payload
 from deepagents_code.hooks.models.transport import HookInvocationResponse
 from deepagents_code.hooks.runtime import HooksRuntime
+from deepagents_code.hooks.server_middleware import hook_permission_behavior
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
     from pathlib import Path
 
+    from langchain.tools.tool_node import ToolCallRequest
+
     from deepagents_code.hooks.models.transport import HookInvocationRequest
 
 _SUPPORTED_EVENTS = {"PreToolUse", "PostToolUse", "PostToolUseFailure", "Stop"}
+
+
+def hook_approval_required(request: ToolCallRequest) -> bool:
+    """Require normal approval unless a hook already denied the call."""
+    return hook_permission_behavior(request.state, request.tool_call["id"] or "") != "deny"
+
 
 
 @dataclass

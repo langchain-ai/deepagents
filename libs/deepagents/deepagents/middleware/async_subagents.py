@@ -34,7 +34,6 @@ from langchain.agents.middleware.types import (
 from langchain.tools import ToolRuntime
 from langchain_core._api.beta_decorator import warn_beta
 from langchain_core.messages import (
-    NOTIFICATION_HEADER,
     AIMessage,
     AnyMessage,
     BaseMessage,
@@ -465,6 +464,8 @@ _NOTIFICATION_SOURCE = "async_subagent"
 _NOTIFICATION_KEY = "deepagents_notification"
 """Deprecated `additional_kwargs` key carrying a notification's `TaskEvent`; still written, and read when a message has no `async_subagent` event."""
 
+_NOTIFICATION_HEADER = "[SYSTEM NOTIFICATION - NOT USER INPUT]"
+
 _NOTIFICATION_NOTE = (
     "An async subagent task you started has an update. This is not a message from the user: don't treat it as their answer to any question."
 )
@@ -567,7 +568,7 @@ def _superseded_notification_content(message: BaseMessage, event: TaskEvent) -> 
 
 def _header_blocks(event: TaskEvent) -> list[dict[str, Any]]:
     """The notification header and `event`'s task header."""
-    return [_text_block(f"{NOTIFICATION_HEADER}\n{_NOTIFICATION_NOTE}\n"), _task_header(event)]
+    return [_text_block(f"{_NOTIFICATION_HEADER}\n{_NOTIFICATION_NOTE}\n"), _task_header(event)]
 
 
 def _labeled(body: list[dict[str, Any]], event: TaskEvent) -> HumanMessage:

@@ -96,6 +96,15 @@ on:
       force_build:
         type: boolean
         default: false
+      prewarm_snapshots:
+        # Build each task's LangSmith snapshots once before the shards start, so
+        # parallel trials reuse them instead of building the same snapshot at once.
+        type: boolean
+        default: true
+      prewarm_concurrency:
+        # Snapshot builds in flight during prewarm.
+        type: string
+        default: "4"
       harbor_package_override:
         description: "Optional Harbor package spec(s) to install over the locked versions. Provide one spec per line; all specs are resolved together. Leave empty to keep the locked Harbor packages."
         type: string
@@ -255,9 +264,76 @@ jobs:
               print(line)
           PY
 
+  prewarm:
+    name: "🔥 Prewarm snapshots"
+    needs: prep
+    # Single registry dataset only: flat matrices, local and synthetic datasets
+    # resolve tasks differently, and force_build names snapshots per trial.
+    if: >-
+      ${{ inputs.prewarm_snapshots && inputs.sandbox_env == 'langsmith'
+      && inputs.flat_matrix == '' && inputs.dataset_path == ''
+      && inputs.dataset != 'tau3-subset' && !inputs.force_build }}
+    runs-on: ubuntu-latest
+    environment: evals
+    timeout-minutes: 240
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: libs/evals
+    env:
+      UV_NO_SYNC: "true"
+    steps:
+      - name: "📋 Checkout Code"
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: "🐍 Set up Python + UV"
+        uses: "./.github/actions/uv_setup"
+        with:
+          python-version: "3.14"
+          cache-suffix: harbor
+          working-directory: libs/evals
+
+      - name: "📦 Install Dependencies"
+        run: uv sync --group test --locked
+
+      - name: "⚓ Install Harbor override"
+        if: ${{ inputs.harbor_package_override != '' }}
+        env:
+          HARBOR_PACKAGE_OVERRIDE: ${{ inputs.harbor_package_override }}
+        # Same newline-split install as the harbor job's override step.
+        run: |
+          specs=()
+          while IFS= read -r line; do
+            line="${line#"${line%%[![:space:]]*}"}"
+            line="${line%"${line##*[![:space:]]}"}"
+            [ -n "$line" ] && specs+=("$line")
+          done <<< "$HARBOR_PACKAGE_OVERRIDE"
+          uv pip install --reinstall --refresh "${specs[@]}"
+
+      - name: "🔥 Build missing snapshots"
+        # Shards still build any snapshot missing here, so never block them.
+        continue-on-error: true
+        env:
+          HARBOR_DATASET: ${{ inputs.dataset || 'terminal-bench/terminal-bench-2' }}
+          HARBOR_INCLUDE_TASKS: ${{ inputs.include_tasks }}
+          HARBOR_N_TASKS: ${{ inputs.n_tasks || '0' }}
+          PREWARM_CONCURRENCY: ${{ inputs.prewarm_concurrency }}
+          LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
+          LANGSMITH_SANDBOX_API_KEY: ${{ secrets.LANGSMITH_SANDBOX_API_KEY }}
+          LANGSMITH_SANDBOX_API_URL: "https://aws.api.smith.langchain.com/v2/sandboxes"
+        run: |
+          uv run python "$GITHUB_WORKSPACE/.github/scripts/evals/prewarm_harbor_snapshots.py" \
+            --dataset "$HARBOR_DATASET" \
+            --include-tasks "$HARBOR_INCLUDE_TASKS" \
+            --n-tasks "$HARBOR_N_TASKS" \
+            --concurrency "$PREWARM_CONCURRENCY"
+
   harbor:
     name: "📊 Evals - Harbor (${{ matrix.model }} / ${{ inputs.sandbox_env }} / ${{ inputs.agent_impl }})"
-    needs: prep
+    needs: [prep, prewarm]
+    # Runs whether prewarm succeeded, failed or was skipped.
+    if: ${{ !cancelled() && needs.prep.result == 'success' }}
     # Only this job runs task containers, so it is the only one whose architecture
     # matters; prep and aggregate stay on the default runner.
     # Per-leaf so one dispatch can mix runners: `research` pins arm64 while every

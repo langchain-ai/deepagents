@@ -36,6 +36,48 @@ protected action. Hooks inside opaque compiled or remote agents, and the
 
 Workspace `.deepagents/hooks.json`, Claude Code settings, plugin hooks, and client
 lifecycle events are not loaded by this adapter. Hook `allow`
-decisions do not bypass Talon's tool approvals. As in the shared engine,
-`updatedInput` is currently ignored, so RTK automatic command rewriting is not
-supported yet.
+decisions do not bypass Talon's tool approvals.
+
+## RTK command rewriting
+
+A `PreToolUse` hook may return `hookSpecificOutput.updatedInput` containing
+`{"command": "rtk git status"}` for a shell call. Hooks may also echo unchanged
+fields from `tool_input`, as the RTK hook does. Talon approves the rewritten
+command before execution; post-tool hooks receive that command too. Other native
+arguments (such as timeout) are preserved. Other tools and input fields remain
+unsupported and produce a diagnostic. If several handlers rewrite a command,
+the last valid rewrite in configuration order wins; each sees the original input.
+A denial from any handler still blocks execution.
+
+To use RTK, install `rtk` on the host and in the tool execution environment
+(including remote sandboxes). Save this as `rtk-hook.py` and set the `Bash` hook
+command above to `python3 /absolute/path/rtk-hook.py`:
+
+```python
+import json
+import subprocess
+import sys
+
+payload = json.load(sys.stdin)
+result = subprocess.run(
+    ["rtk", "rewrite", "--", payload["tool_input"]["command"]],
+    capture_output=True,
+    text=True,
+    check=False,
+)
+if result.returncode in (0, 3) and result.stdout.strip():
+    print(json.dumps({"hookSpecificOutput": {
+        "hookEventName": "PreToolUse",
+        "updatedInput": {"command": result.stdout.strip()},
+    }}))
+elif result.returncode == 2:
+    print(json.dumps({"hookSpecificOutput": {
+        "hookEventName": "PreToolUse",
+        "permissionDecision": "deny",
+        "permissionDecisionReason": "Blocked by RTK permission rules",
+    }}))
+```
+
+RTK exit codes 0 and 3 supply a rewrite, 1 preserves the original command, and
+2 blocks execution.
+RTK rewriting does not grant tool approval.

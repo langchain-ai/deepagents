@@ -18,7 +18,7 @@ from pydantic import BaseModel, Field
 from quickjs_rs import Runtime, ThreadWorker
 from typing_extensions import TypedDict
 
-from langchain_quickjs import CodeInterpreterMiddleware
+from langchain_quickjs import CodeInterpreterMiddleware, UnresolvedToolError
 from langchain_quickjs._ptc import (
     filter_tools_for_ptc,
     render_ptc_prompt,
@@ -505,6 +505,88 @@ async def test_tools_namespace_assignment_escapes_malicious_tool_name(
     assert outcome2.result == "function"
 
 
+async def test_resolver_calls_unlisted_tools_with_shared_budget(
+    worker: ThreadWorker, runtime: Runtime
+) -> None:
+    calls: list[dict] = []
+    greet = _greet_tool(calls)
+    resolved = _ThreadREPL(
+        worker,
+        runtime,
+        timeout=5.0,
+        capture_console=True,
+        max_stdout_chars=4000,
+        max_ptc_calls=2,
+        resolve_tool=lambda name: greet if name == "greet" else None,
+    )
+    resolved.install_tools([_echo_tool()])
+    outcome = await resolved.eval_async(
+        "await tools.echo({msg:'installed'}); await tools.greet({name:'found'})"
+    )
+    assert outcome.error_type is None
+    assert outcome.result == "hi found x1"
+    assert calls == [{"name": "found", "times": 1}]
+    exceeded = await resolved.eval_async(
+        "await tools.echo({msg:'a'}); await tools.greet({name:'b'});"
+        "await tools.greet({name:'c'})"
+    )
+    assert exceeded.error_type == "PTCCallBudgetExceeded"
+
+
+async def test_resolver_missing_names_and_namespace_introspection(
+    worker: ThreadWorker, runtime: Runtime
+) -> None:
+    names: list[str] = []
+
+    def resolve(name: str) -> BaseTool | None:
+        names.append(name)
+        return None
+
+    resolved = _ThreadREPL(
+        worker,
+        runtime,
+        timeout=5.0,
+        capture_console=True,
+        max_stdout_chars=4000,
+        resolve_tool=resolve,
+    )
+    resolved.install_tools([])
+    missing = await resolved.eval_async("await tools.missing({})")
+    assert missing.error_type == "TypeError"
+    assert names == ["missing"]
+    names.clear()
+    safe = await resolved.eval_async("await tools; JSON.stringify(tools)")
+    assert safe.error_type is None
+    assert safe.result == "{}"
+    assert names == []
+
+
+async def test_resolver_deferred_missing_tool_throws_catchable_typeerror(
+    worker: ThreadWorker, runtime: Runtime
+) -> None:
+    async def missing() -> str:
+        msg = "tools.remote is not a function"
+        raise UnresolvedToolError(msg)
+
+    proxy = StructuredTool.from_function(
+        name="remote", description="Resolve remotely.", coroutine=missing
+    )
+    resolved = _ThreadREPL(
+        worker,
+        runtime,
+        timeout=5.0,
+        capture_console=True,
+        max_stdout_chars=4000,
+        resolve_tool=lambda name: proxy,
+    )
+    resolved.install_tools([])
+    outcome = await resolved.eval_async(
+        "try { await tools.remote({}) } catch (e) { e.name + ':' + e.message }"
+    )
+    assert outcome.error_type is None
+    assert outcome.result == "TypeError:tools.remote is not a function"
+
+
 async def test_install_tools_is_idempotent(repl: _ThreadREPL) -> None:
     """Calling install_tools twice with the same set is a no-op for the guest."""
     calls: list[dict] = []
@@ -697,6 +779,34 @@ def test_middleware_ptc_requires_private_slot_state() -> None:
     mw = CodeInterpreterMiddleware(ptc=["greet"])
     with pytest.raises(ValueError, match="_quickjs_slot_id"):
         mw._prepare_for_call(SimpleNamespace(tools=[_greet_tool()]))
+
+
+@pytest.mark.parametrize("mode", ["thread", "call"])
+async def test_middleware_resolver_works_without_eager_ptc(mode: str) -> None:
+    from types import SimpleNamespace
+
+    greet = _greet_tool()
+    mw = CodeInterpreterMiddleware(resolve_tool=lambda name: greet, mode=mode)
+    state = {"_quickjs_slot_id": "resolver-only"}
+    prompt = mw._prepare_for_call(SimpleNamespace(tools=mw.tools, state=state))
+    assert "Greet a person" not in prompt
+    runtime = ToolRuntime(
+        state=state,
+        context={},
+        config={},
+        stream_writer=lambda _: None,
+        tools=mw.tools,
+        tool_call_id="resolver-eval",
+        store=None,
+    )
+    try:
+        for name in ["Ada", "Bob"]:
+            result = await mw.tools[0].ainvoke(
+                {"runtime": runtime, "code": f"await tools.greet({{name:'{name}'}})"}
+            )
+            assert f"hi {name} x1" in result.content
+    finally:
+        mw._registry.close()
 
 
 async def test_ptc_install_and_eval_resolve_to_same_repl() -> None:

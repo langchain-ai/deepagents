@@ -32,11 +32,11 @@ dependencies = [
     # Client-server architecture
     "langgraph-sdk>=0.4.10,<1.0.0",
     "langgraph-cli[inmem]>=0.4.40,<1.0.0",
-    "langgraph-runtime-inmem>=0.36.7,<1.0.0",
+    "langgraph-runtime-inmem>=0.36.9,<1.0.0",
     "httpx>=0.28.1",
 
     # Core model providers - others are added as optional
-    "langchain-anthropic>=1.7.6,<2.0.0",
+    "langchain-anthropic>=1.7.7,<2.0.0",
     "langchain-google-genai>=4.4.2,<5.0.0",
     "langchain-openai>=1.7.3,<2.0.0",
     # Require Pydantic 2.13+ explicitly to avoid Python 3.14 warnings from LangChain's v1 imports.
@@ -57,7 +57,7 @@ dependencies = [
     "markdownify>=1.2.3",
 
     # Sandbox integrations
-    "langsmith[sandbox]>=0.14.13",
+    "langsmith[sandbox]>=0.14.14",
 
     # Tools
     "tavily-python>=0.7.26",
@@ -106,7 +106,7 @@ dependencies = [
 
 [project.optional-dependencies]
 # Model providers
-anthropic = ["langchain-anthropic>=1.7.6,<2.0.0"]
+anthropic = ["langchain-anthropic>=1.7.7,<2.0.0"]
 baseten = ["langchain-baseten>=0.2.5,<1.0.0"]
 bedrock = ["langchain-aws>=1.9.1,<2.0.0"]
 cohere = ["langchain-cohere>=0.6.0,<1.0.0"]
@@ -135,7 +135,7 @@ all-providers = [
 ]
 
 # Sandbox providers
-agentcore = ["langchain-agentcore-codeinterpreter>=0.0.5,<1.0.0"]
+agentcore = ["langchain-agentcore-codeinterpreter>=0.0.6,<1.0.0"]
 daytona = ["langchain-daytona>=0.0.9"]
 modal = ["langchain-modal>=0.0.7"]
 openshell = ["langchain-nvidia-openshell>=0.1.1"]

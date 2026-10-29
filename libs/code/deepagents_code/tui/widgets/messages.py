@@ -5005,8 +5005,8 @@ class ToolGroupSummary(Static):
     """Collapsed one-line stand-in for an assistant step's tool calls.
 
     Tools are hidden from the moment they start; this single line shows live
-    progress ("Running 1 shell command…") and flips to the fully past-tense
-    line ("Ran 1 shell command") once every tool finishes. While the step is
+    progress ("Running 1 shell command…") after two seconds and flips to the
+    past-tense line ("Ran 1 shell command") once every tool finishes. While the step is
     live, finished calls stay visible in the past tense next to the ones still
     running in the present tense (e.g. "Ran 2 shell commands, running 1 agent…")
     so the work already done in the step doesn't disappear. Failed, rejected,
@@ -5041,6 +5041,7 @@ class ToolGroupSummary(Static):
     """
 
     _SPINNER_INTERVAL: ClassVar[float] = 0.1
+    _PROGRESS_REVEAL_DELAY_SECONDS: ClassVar[float] = 2.0
 
     _collapsed: var[bool] = var(True)
 
@@ -5081,6 +5082,7 @@ class ToolGroupSummary(Static):
         self._accepting_members = live
         self._finalized = not live
         self._spinner_pos = 0
+        self._progress_started_at: float | None = None
         self._timer: Timer | None = None
         # Cached summary phrasing, rebuilt only when membership changes (not on
         # every spinner tick). None means "recompute on next render".
@@ -5095,8 +5097,8 @@ class ToolGroupSummary(Static):
     def on_mount(self) -> None:
         """Apply initial visibility, render, and arm the spinner if live."""
         self._apply_visibility()
-        self._render_line()
         self._sync_timer()
+        self._render_line()
 
     def _attach_accessories(self, owner: Widget, accessories: Iterable[Widget]) -> None:
         """Record `owner`'s accessories and link them to its approval hiding.
@@ -5290,9 +5292,12 @@ class ToolGroupSummary(Static):
     def _sync_timer(self) -> None:
         """Run the spinner timer only while live members are in progress."""
         if not self._finalized and self._in_progress():
+            if self._progress_started_at is None:
+                self._progress_started_at = monotonic()
             if self._timer is None:
                 self._timer = self.set_interval(self._SPINNER_INTERVAL, self._tick)
         else:
+            self._progress_started_at = None
             self._stop_timer()
 
     def _stop_timer(self) -> None:
@@ -5378,6 +5383,7 @@ class ToolGroupSummary(Static):
         if not self.is_attached:
             return
         if not self._tools:
+            self.display = False
             self.update(Content(""), layout=layout)
             return
         glyphs = get_glyphs()
@@ -5386,8 +5392,18 @@ class ToolGroupSummary(Static):
         if not self._finalized and in_progress:
             # Tallied per bucket, not across both: a file whose second read is
             # still in flight must stay visible as being read.
-            pending = [t.summary_call for t in self._tools if t.is_pending]
+            show_progress = (
+                self._progress_started_at is not None
+                and monotonic() - self._progress_started_at
+                >= self._PROGRESS_REVEAL_DELAY_SECONDS
+            )
+            pending = (
+                [t.summary_call for t in self._tools if t.is_pending]
+                if show_progress
+                else []
+            )
             completed = [t.summary_call for t in self._tools if not t.is_pending]
+            self.display = bool(completed or pending)
             key = (_summary_cache_key(completed), _summary_cache_key(pending))
             summary_changed = self._present_text is None or key != self._present_key
             if summary_changed:
@@ -5395,11 +5411,19 @@ class ToolGroupSummary(Static):
                 self._present_key = key
             frames = glyphs.spinner_frames
             spinner = frames[self._spinner_pos % len(frames)]
-            self.update(
-                Content(f"{spinner} {self._present_text}{glyphs.ellipsis}"),
-                layout=layout or summary_changed,
+            mark = (
+                glyphs.disclosure_collapsed
+                if self._collapsed
+                else glyphs.disclosure_expanded
             )
+            text = (
+                f"{spinner} {self._present_text}{glyphs.ellipsis}"
+                if show_progress
+                else f"{mark} {self._present_text}"
+            )
+            self.update(Content(text), layout=layout or summary_changed)
         else:
+            self.display = True
             mark = (
                 glyphs.disclosure_collapsed
                 if self._collapsed

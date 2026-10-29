@@ -71,27 +71,54 @@ async def test_erasure_survives_restart_and_removed_hooks(tmp_path, *, clear):
         assert await saver.archive.sessions(WHATSAPP) == ([] if clear else ["keep"])
 
 
-async def test_cleanup_failure_retains_ownership_for_restart_retry(tmp_path, monkeypatch):
-    _, paths = _projections(tmp_path, "owned")
+@pytest.mark.parametrize("stage", ["transcripts", "checkpoints", "archive", "later_session"])
+async def test_cleanup_failure_retains_ownership_for_restart_retry(tmp_path, monkeypatch, stage):
+    parent, paths = _projections(tmp_path, "owned")
     database = tmp_path / "history.sqlite"
     async with make_saver(database) as saver:
         make_runtime(saver, tmp_path)
+        if stage == "later_session":
+            await _save(saver, "later", "later")
         await _save(saver, "owned", "owned")
+        delete_thread = saver.checkpointer.adelete_thread
         with monkeypatch.context() as patch:
 
             def fail(_path):
                 msg = "unlink failed"
                 raise OSError(msg)
 
-            patch.setattr("deepagents_talon.hook_transcripts._remove", fail)
+            async def fail_async(session):
+                if stage == "later_session" and session == "owned":
+                    await delete_thread(session)
+                else:
+                    fail(session)
+
+            if stage == "transcripts":
+                patch.setattr("deepagents_talon.hook_transcripts._remove", fail)
+            elif stage in {"checkpoints", "later_session"}:
+                patch.setattr(saver.checkpointer, "adelete_thread", fail_async)
+            else:
+                patch.setattr(saver.archive, "delete_session", fail_async)
             with pytest.raises(OSError, match="unlink failed"):
-                await saver.delete_conversations(WHATSAPP, ["owned"], current_session="active")
-        assert await saver.archive.sessions(WHATSAPP) == ["owned"]
+                await saver.clear_history(WHATSAPP)
+        assert await saver.archive.sessions(WHATSAPP) == (
+            ["later"] if stage == "later_session" else ["owned"]
+        )
+        reopened = TalonHooks.load(tmp_path, tmp_path, "owned")
+        assert reopened is not None
+        reopened.record({"messages": [HumanMessage("after failed reset")]})
+        projection = reopened.runtime.transcripts.materialize("owned").path
+        assert "after failed reset" in projection.read_text()
+        await _save(saver, "owned", "continued")
+        with pytest.raises(OSError, match="deleted"):
+            parent.record({"messages": [HumanMessage("stale writer")]})
     async with make_saver(database) as saver:
         make_runtime(saver, tmp_path)
         await saver.clear_history(WHATSAPP)
         assert all(not path.exists() for path in paths)
         assert await saver.archive.sessions(WHATSAPP) == []
+        with pytest.raises(OSError, match="deleted"):
+            reopened.record({"messages": [HumanMessage("revoked again")]})
 
 
 async def test_inflight_materialization_finishes_before_erasure(tmp_path, monkeypatch):
@@ -137,6 +164,11 @@ def test_cleanup_does_not_follow_symlinks(tmp_path):
     other.root.symlink_to(outside, target_is_directory=True)
     with pytest.raises(OSError, match="Unsafe"):
         erase_hook_transcripts(tmp_path, "other")
+    assert secret.read_text() == "unrelated"
+    marker_store = ConversationTranscripts(tmp_path, "marker")
+    (marker_store.root / ".deleted").symlink_to(secret)
+    with pytest.raises(OSError, match="Unsafe"):
+        ConversationTranscripts(tmp_path, "marker", reopen=True)
     assert secret.read_text() == "unrelated"
 
 

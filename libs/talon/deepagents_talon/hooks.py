@@ -74,7 +74,7 @@ class TalonHooks:
         if not (home / "hooks.json").is_file():
             return None
         with TRANSCRIPT_LOCK:
-            transcripts = ConversationTranscripts(home, thread_id)
+            transcripts = ConversationTranscripts(home, thread_id, reopen=True)
             runtime = HooksRuntime.create(
                 cwd=cwd,
                 config_dir=home,

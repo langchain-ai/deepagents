@@ -6,6 +6,7 @@ import hashlib
 import shutil
 import threading
 from typing import TYPE_CHECKING
+from uuid import uuid4
 
 from deepagents_code.hooks.transcript import TranscriptStore
 
@@ -50,8 +51,11 @@ def erase_hook_transcripts(home: Path, session: str) -> None:
     with TRANSCRIPT_LOCK:
         owner = _owner_root(home, session)
         marker = owner / ".deleted"
-        if not marker.exists() and not marker.is_symlink():
-            marker.touch(mode=0o600, exist_ok=False)
+        if marker.is_symlink():
+            msg = "Unsafe hook transcript revocation marker"
+            raise OSError(msg)
+        marker.touch(mode=0o600, exist_ok=True)
+        marker.write_text(uuid4().hex)
         for path in owner.iterdir():
             if path.name != ".deleted":
                 _remove(path)
@@ -66,15 +70,22 @@ def erase_hook_transcripts(home: Path, session: str) -> None:
 class ConversationTranscripts(TranscriptStore):
     """Keep isolated child IDs inside their durable parent's erasure boundary."""
 
-    def __init__(self, home: Path, session: str) -> None:
-        """Open a parent-owned store, refusing previously erased sessions."""
+    def __init__(self, home: Path, session: str, *, reopen: bool = False) -> None:
+        """Open a store; fresh turns may reopen erased sessions after reset rollback."""
         with TRANSCRIPT_LOCK:
             super().__init__(_owner_root(home, session))
+            self._revocation = self._marker() if reopen else None
             self._check(self.root)
 
-    def _check(self, path: Path) -> None:
+    def _marker(self) -> bytes | None:
         marker = self.root / ".deleted"
-        if marker.exists() or marker.is_symlink():
+        if marker.is_symlink():
+            msg = "Unsafe hook transcript revocation marker"
+            raise OSError(msg)
+        return marker.read_bytes() if marker.exists() else None
+
+    def _check(self, path: Path) -> None:
+        if self._marker() != self._revocation:
             msg = "Hook transcript conversation has been deleted"
             raise OSError(msg)
         for candidate in (self.root.parent.parent, self.root.parent, self.root):

@@ -1,11 +1,11 @@
 ---
 type: architecture overview
 title: Repository Architecture Overview
-description: Package graph, runtime ownership, Python and release boundaries, and the distinction between published dependency contracts and local development sources in the Deep Agents monorepo.
+description: Package graph, ownership boundaries, Python and release contracts, and the distinction between published dependencies and local development sources in the Deep Agents monorepo.
 tags: [architecture, monorepo, python, dependencies, releases]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-10-28T08:04:17.781Z
+    at: 2026-10-29T08:04:29.358Z
 sources:
   - id: openwiki-source-9a1c436646ef8c4f6dde787a
     resource: repo://.github/RELEASING.md
@@ -35,8 +35,16 @@ sources:
     resource: repo://libs/evals/pyproject.toml
   - id: openwiki-source-8565b7f246ed6e34051d8dfe
     resource: repo://libs/evals/README.md
+  - id: openwiki-source-da577cbe81ec29338f1388b2
+    resource: repo://libs/partners/daytona/pyproject.toml
+  - id: openwiki-source-936554ac5f0a201f8696be25
+    resource: repo://libs/partners/modal/pyproject.toml
   - id: openwiki-source-b38d20ec21c25c8c726dc1b6
     resource: repo://libs/partners/quickjs/pyproject.toml
+  - id: openwiki-source-8d2c8381956c1c023bcdb565
+    resource: repo://libs/partners/runloop/pyproject.toml
+  - id: openwiki-source-03a39f44d8ccfde2fd47e57a
+    resource: repo://libs/partners/vercel/pyproject.toml
   - id: openwiki-source-686a5e2ba1fe4ce0f98b9bf2
     resource: repo://libs/talon/pyproject.toml
   - id: openwiki-source-fdd0c2c3830b8e9a88502a57
@@ -45,9 +53,8 @@ sources:
     resource: repo://README.md
   - id: openwiki-source-482fa4ca84f42b04ba025fc1
     resource: repo://release-please-config.json
-generated: { by: "openwiki/0.4.2", at: "2026-10-28T08:04:17.781Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-10-29T08:04:29.358Z" }
 ---
-
 
 # Repository Architecture Overview
 
@@ -58,7 +65,7 @@ This repository is a Python monorepo of independently packaged components, not o
 - [Source map](./source-map.md)
 - [Sandbox partners](../integrations/sandbox-partners.md)
 - [Development](../operations/development.md)
-- [Run evals](../workflows/run-evals.md)
+- [Quickstart](../quickstart.md)
 
 ## Package, Python, and release boundaries
 
@@ -69,9 +76,13 @@ This repository is a Python monorepo of independently packaged components, not o
 | `deepagents-code` / `dcode` | `0.2.2` | `>=3.14,<3.15` | Terminal coding-agent product. |
 | `deepagents-talon` | `0.1.0` | `>=3.14,<3.15` | Experimental local host for channels and schedules. |
 | `deepagents-evals` | `0.0.1` | `>=3.14,<3.15` | Behavioral-evaluation and Harbor benchmark suite. |
+| `langchain-daytona` | `0.0.9` | `>=3.11,<4.0` | Daytona sandbox integration. |
+| `langchain-modal` | `0.0.7` | `>=3.11,<4.0` | Modal sandbox integration. |
+| `langchain-runloop` | `0.0.7` | `>=3.11,<4.0` | Runloop sandbox integration. |
+| `langchain-vercel-sandbox` | `0.0.2` | `>=3.11,<4.0` | Vercel Sandbox integration. |
 | `langchain-quickjs` | `0.3.11` | `>=3.11,<4.0` | JavaScript REPL middleware partner. |
 
-Release Please separately manages the SDK, ACP, dcode, Talon, and the Daytona, Modal, Runloop, Vercel, and QuickJS partners; `deepagents-evals` is not managed. The manifest is the latest released baseline, while each package's `pyproject.toml` is source distribution metadata. Release Please creates a separate draft release PR per managed component. On merging that PR, the release workflow performs checks, publishes to PyPI, and creates the GitHub release; Release Please itself skips GitHub release creation.
+Release Please separately manages the SDK, ACP, dcode, Talon, and the five partners; `deepagents-evals` is not managed. The manifest is the latest released baseline, while each package's `pyproject.toml` is source distribution metadata. Release Please creates a separate draft release PR per managed component. On merging that PR, the release workflow performs checks, publishes to PyPI, and creates the GitHub release; Release Please itself skips GitHub release creation.
 
 Keep dcode's exact SDK pin aligned with the first SDK functionality it needs. It is a compatibility floor, not a release-time cleanup.
 
@@ -87,6 +98,10 @@ flowchart TD
   Talon["deepagents-talon"]
   Evals["deepagents-evals"]
   QuickJS["langchain-quickjs"]
+  Daytona["langchain-daytona"]
+  Modal["langchain-modal"]
+  Runloop["langchain-runloop"]
+  Vercel["langchain-vercel-sandbox"]
   Providers["Optional sandbox providers"]
   LangChain["LangChain create_agent"]
   LangGraph["LangGraph runtime"]
@@ -102,31 +117,44 @@ flowchart TD
   Evals -->|"wheel dependencies"| Code
   Evals -->|"wheel dependency"| QuickJS
   QuickJS -->|"SDK 0.7.x compatibility"| SDK
+  Daytona -->|"SDK 0.7.x compatibility"| SDK
+  Modal -->|"SDK 0.7.x compatibility"| SDK
+  Runloop -->|"SDK 0.7.x compatibility"| SDK
+  Vercel -->|"SDK 0.7.x compatibility"| SDK
   SDK --> LangChain
   LangChain --> LangGraph
 
   ACP -. "editable checkout" .-> SDK
   Code -. "editable checkouts" .-> SDK
   Code -. "editable checkout" .-> ACP
+  Code -. "editable checkouts" .-> Daytona
+  Code -. "editable checkouts" .-> Modal
+  Code -. "editable checkout" .-> QuickJS
+  Code -. "editable checkouts" .-> Runloop
+  Code -. "editable checkout" .-> Vercel
   Talon -. "editable checkouts" .-> SDK
   Talon -. "editable checkout" .-> Code
   Evals -. "editable checkout" .-> SDK
   Evals -. "path checkout" .-> Code
   Evals -. "editable checkout" .-> QuickJS
   QuickJS -. "editable checkout" .-> SDK
+  Daytona -. "editable checkout" .-> SDK
+  Modal -. "editable checkout" .-> SDK
+  Runloop -. "editable checkout" .-> SDK
+  Vercel -. "editable checkout" .-> SDK
 ```
 
 *Solid arrows are published package relationships; dotted arrows are local `uv` substitutions and do not alter released wheel metadata.*
 
 ### Published and optional contracts
 
-ACP requires `deepagents` without a version bound, `agent-client-protocol>=0.10.1`, and `python-dotenv>=1.2.2`. dcode pins `deepagents==0.7.32`, requires ACP `>=0.0.13,<1.0.0`, and includes QuickJS `>=0.3.11,<0.4.0` as a normal dependency. Talon requires SDK `>=0.7.32` and dcode `>=0.2.2,<1.0.0`; evals requires SDK `>=0.7.32`, dcode `>=0.2.1`, and QuickJS `>=0.3.3`; QuickJS supports SDK `>=0.7.32,<0.8.0`.
+ACP requires `deepagents` without a version bound, `agent-client-protocol>=0.10.1`, and `python-dotenv>=1.2.2`. dcode pins `deepagents==0.7.32`, requires ACP `>=0.0.13,<1.0.0`, and includes QuickJS `>=0.3.11,<0.4.0` as a normal dependency. Talon requires SDK `>=0.7.32` and dcode `>=0.2.2,<1.0.0`; evals requires SDK `>=0.7.32`, dcode `>=0.2.1`, and QuickJS `>=0.3.3`. QuickJS and each sandbox-partner wheel require SDK `>=0.7.32,<0.8.0`.
 
 The SDK keeps AWS, QuickJS, and video support optional, allowing a consumer to choose these integration dependencies. dcode deliberately has a larger normal install surface, including `langsmith[sandbox]` and QuickJS. It exposes six external sandbox-provider extras—`agentcore`, `daytona`, `modal`, `openshell`, `runloop`, and `vercel`—with `all-sandboxes` aggregating them. Its compatibility `quickjs` extra is empty because QuickJS is already installed normally. Extras make an adapter package available; provider credentials, remote resource lifecycle, and implementation stay at the provider boundary.
 
 ### Local sources and lockfile fan-out
 
-ACP maps SDK editable. dcode maps SDK, ACP, and Daytona, Modal, QuickJS, Runloop, and Vercel partner checkouts editable. Talon maps SDK and dcode editable. Evals maps SDK and QuickJS editable but dcode through a non-editable path.
+ACP maps SDK editable. dcode maps SDK, ACP, and Daytona, Modal, QuickJS, Runloop, and Vercel partner checkouts editable. Talon maps SDK and dcode editable. Evals maps SDK and QuickJS editable but dcode through a non-editable path. Each of the five partner packages maps the SDK editable.
 
 The lockfile helper follows **every** local path source, regardless of `editable`. Starting with a changed manifest, it includes that package and repeatedly adds local consumers. Thus a dcode manifest change requires re-locking dcode, Talon, and evals because both latter packages consume its source path. Do not hand-edit lockfiles:
 

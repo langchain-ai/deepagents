@@ -2,5 +2,5 @@
 
 - [CI, Labels, and Workflow Security](ci-labeling.md) - Operational contracts for reusable CI, maintainer-controlled label exceptions, package selection, ripgrep coverage, and trusted release automation.
 - [dcode Costs, Traces, and Session Operations](cost-and-sessions.md) - Operate dcode's durable thread checkpoints and estimated cost accounting while keeping transient UI telemetry distinct. Covers server-side offload settlement, trace redaction and lifecycle, ownership fencing, and focused verification.
-- [Development, Dependencies, Lockfiles, and Releases](development.md) - Package-scoped uv development, published dependency contracts, editable-source lockfile maintenance, and release operations. Explains Release Please baselines and the trusted curated-release-notes draft and apply workflow.
+- [Development, Dependencies, Lockfiles, and Releases](development.md) - Package-scoped uv development, published dependency contracts, editable-source lockfile maintenance, and Release Please operations. Explains coordinated manifests, generated locks, curated release notes, and safe publication boundaries.
 - [Security and Trust Boundaries](security.md) - Operational boundaries for Deep Agents tools, local execution, dcode workspace trust, extensions and MCP, ACP approvals, Talon channels, credentials, and plugins.

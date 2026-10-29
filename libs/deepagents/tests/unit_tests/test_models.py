@@ -8,6 +8,7 @@ from importlib.metadata import PackageNotFoundError
 from unittest.mock import MagicMock, patch
 
 import pytest
+from langchain_anthropic import ChatAnthropic
 from langchain_core.language_models import BaseChatModel
 
 from deepagents._models import (
@@ -185,10 +186,32 @@ class TestResolveModel:
     def test_unknown_provider_passes_no_extra_kwargs(self) -> None:
         with patch("deepagents._models.init_chat_model") as mock:
             mock.return_value = MagicMock(spec=BaseChatModel)
-            result = resolve_model("anthropic:claude-sonnet-4-6")
+            result = resolve_model("some_provider:some-model")
 
-        mock.assert_called_once_with("anthropic:claude-sonnet-4-6")
+        mock.assert_called_once_with("some_provider:some-model")
         assert result is mock.return_value
+
+    def test_anthropic_streams_without_a_streaming_callback(self) -> None:
+        model = resolve_model("anthropic:claude-sonnet-4-6")
+        assert model._should_stream(async_api=False)
+        assert model._should_stream(async_api=True)
+
+    @pytest.mark.parametrize("opt_out", [{"streaming": False}, {"disable_streaming": True}])
+    def test_anthropic_profile_can_disable_streaming(self, opt_out: dict) -> None:
+        original = dict(_PROVIDER_PROFILES)
+        try:
+            register_provider_profile("anthropic", ProviderProfile(init_kwargs=opt_out))
+            model = resolve_model("anthropic:claude-sonnet-4-6")
+            assert not model._should_stream(async_api=False)
+            assert not model._should_stream(async_api=True)
+        finally:
+            _PROVIDER_PROFILES.clear()
+            _PROVIDER_PROFILES.update(original)
+
+    def test_anthropic_instance_preserves_streaming_opt_out(self) -> None:
+        model = ChatAnthropic(model_name="claude-sonnet-4-6", streaming=False)
+        assert resolve_model(model) is model
+        assert not model._should_stream(async_api=False)
 
 
 class TestGetModelIdentifier:

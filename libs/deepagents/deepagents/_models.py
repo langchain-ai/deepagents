@@ -40,7 +40,8 @@ def resolve_model(model: str | BaseChatModel) -> BaseChatModel:
     String models are resolved via `init_chat_model`, composed with any
     provider-specific initialization behavior registered in the
     `ProviderProfile` registry. Built-in registrations supply NVIDIA NIM and
-    OpenRouter app attribution headers plus the OpenAI Responses API default;
+    OpenRouter app attribution headers, the OpenAI Responses API default,
+    and Anthropic streaming for first-token observability;
     users can layer additional providers or overrides via
     `register_provider_profile`.
 

@@ -155,7 +155,7 @@ def _build_default_model() -> "ChatAnthropic":
     # Deferred: only the default model needs the `anthropic` SDK.
     from langchain_anthropic import ChatAnthropic  # noqa: PLC0415
 
-    return ChatAnthropic(model_name="claude-sonnet-4-6")
+    return ChatAnthropic(model_name="claude-sonnet-4-6", streaming=True)
 
 
 @deprecated(

@@ -2620,8 +2620,10 @@ class TestBuildDefaultModelContract:
     def test_get_default_model_emits_langchain_deprecation_warning(self) -> None:
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
-            get_default_model()
+            model = get_default_model()
 
+        assert model._should_stream(async_api=False)
+        assert model._should_stream(async_api=True)
         deprecations = [w for w in caught if issubclass(w.category, DeprecationWarning)]
         assert len(deprecations) == 1
         assert deprecations[0].category is LangChainDeprecationWarning

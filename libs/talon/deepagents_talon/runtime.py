@@ -36,6 +36,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.prebuilt import ToolNode
 from langgraph.types import Command
 
+from deepagents_code.hooks.server_middleware import ServerHooksMiddleware
 from deepagents_code.tools import create_web_search_tool, fetch_url
 from deepagents_talon.archive import ArchiveScope, conversation_tools
 from deepagents_talon.archive_saver import ConversationSaver
@@ -57,6 +58,7 @@ from deepagents_talon.config import TalonConfig
 from deepagents_talon.context_doctor import ContextDoctor
 from deepagents_talon.cron import CronJobStore, CronOrigin, CronTools
 from deepagents_talon.effort import ACTIVE_EFFORT, effort_levels, effort_settings
+from deepagents_talon.hooks import TalonHooks
 from deepagents_talon.interfaces import (
     AgentRequest,
     AgentResult,
@@ -388,6 +390,9 @@ class DeepAgentRuntime:
         self.sandbox_working_dir = sandbox_working_dir
         self.skills = tuple(skills) if skills is not None else None
         self.middleware = tuple(middleware)
+        self._hooks: contextvars.ContextVar[TalonHooks | None] = contextvars.ContextVar(
+            "talon_hooks", default=None
+        )
         self.approval_store = approval_store or ToolApprovalStore(
             (assistant_dir or TalonConfig.from_env(self.env).home) / "tools.json"
         )
@@ -499,6 +504,10 @@ class DeepAgentRuntime:
             ),
             ModelSelectionMiddleware(),
             ProgressMessages(),
+            ServerHooksMiddleware(
+                cwd=Path(self.env.get(_WORKSPACE_ENV) or Path.cwd()),
+                mcp_tools=[item for item in tools if isinstance(item, BaseTool)],
+            ),
         ]
         task_tools = TaskTools(
             model,
@@ -752,7 +761,16 @@ class DeepAgentRuntime:
         scheduled_token = _SCHEDULED_TURN.set(request.metadata.get("trigger") == "cron")
         authorization_token = set_authorization_handler(request.authorization_handler)
         breakout_token = BREAKOUT_HANDLER.set(request.breakout_handler)
+        hooks_token = self._hooks.set(None)
         try:
+            self._hooks.set(
+                await asyncio.to_thread(
+                    TalonHooks.load,
+                    self.assistant_dir or TalonConfig.from_env(self.env).home,
+                    Path(self.env.get(_WORKSPACE_ENV) or Path.cwd()),
+                    request.conversation_id,
+                )
+            )
             with (
                 progress_messages(request.message_handler, self.verbosity),
                 _history_context(request),
@@ -771,6 +789,7 @@ class DeepAgentRuntime:
                 self.background.record_delivery_failure(pending)
             raise
         finally:
+            self._hooks.reset(hooks_token)
             APPROVAL_OPERATOR.reset(operator_token)
             ACTIVE_APPROVALS.reset(policy_token)
             reset_authorization_handler(authorization_token)
@@ -1139,7 +1158,9 @@ class DeepAgentRuntime:
         last_exc: Exception | None = None
         for attempt in range(self.max_retries):
             try:
-                return await invoke(payload, config=config)
+                hooks = self._hooks.get()
+                kwargs = {"context": hooks.context} if hooks is not None else {}
+                state = await invoke(payload, config=config, **kwargs)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -1154,6 +1175,10 @@ class DeepAgentRuntime:
                     exc,
                 )
                 await asyncio.sleep(backoff)
+            else:
+                if hooks is not None:
+                    hooks.record(state)
+                return state
         if last_exc is not None:
             raise last_exc
         msg = "agent invocation retry loop exited unexpectedly"
@@ -1181,13 +1206,22 @@ class DeepAgentRuntime:
         state = await self._invoke_with_retries(
             content, request.conversation_id, activity, source=source, pinned_skills=pinned_skills
         )
-        for _ in range(DEFAULT_MAX_APPROVAL_ROUNDS):
+        approval_rounds = 0
+        for _ in range(max(self.recursion_limit, DEFAULT_MAX_APPROVAL_ROUNDS)):
             interrupts = _interrupts_from_state(state)
             if not interrupts:
                 return state
-            resume = await self._build_approval_resume(request, interrupts)
+            hooks = self._hooks.get()
+            pending, payload = await hooks.resume(interrupts) if hooks else (interrupts, {})
+            if pending:
+                if approval_rounds >= DEFAULT_MAX_APPROVAL_ROUNDS:
+                    break
+                approval_rounds += 1
+                approvals = await self._build_approval_resume(request, pending)
+                payload.update(cast("Mapping[str, object]", approvals.resume))
+            resume = Command(resume=payload)
             state = await self._resume_with_retries(resume, request.conversation_id, activity)
-        msg = "agent hit tool approval interrupt limit"
+        msg = "agent hit hook or tool approval interrupt limit"
         raise RuntimeError(msg)
 
     async def _build_approval_resume(

@@ -323,7 +323,7 @@ jobs:
           LANGSMITH_SANDBOX_API_KEY: ${{ secrets.LANGSMITH_SANDBOX_API_KEY }}
           LANGSMITH_SANDBOX_API_URL: "https://aws.api.smith.langchain.com/v2/sandboxes"
         run: |
-          uv run python "$GITHUB_WORKSPACE/.github/scripts/evals/prewarm_harbor_snapshots.py" \
+          uv run python -u "$GITHUB_WORKSPACE/.github/scripts/evals/prewarm_harbor_snapshots.py" \
             --dataset "$HARBOR_DATASET" \
             --include-tasks "$HARBOR_INCLUDE_TASKS" \
             --n-tasks "$HARBOR_N_TASKS" \

@@ -1,30 +1,40 @@
 ---
-type: capability reference
+type: middleware reference
 title: Middleware Catalog and Extension Rules
-description: Explains Deep Agents middleware responsibilities, stack assembly, and the safety rules for replacing or excluding middleware. Covers lazy prompt caching and memory prompt lifecycle behavior.
-tags: [middleware, deepagents, filesystem, summarization, compaction, async-tasks, skills, subagents, permissions]
+description: Reference for Deep Agents middleware assembly and safe extension, with a detailed lifecycle for RubricMiddleware’s structured grading and revision loop. Explains invocation state, bounded grader input, terminal outcomes, and how to observe evaluation state.
+tags: [middleware, deepagents, rubric, grading, agent-lifecycle, extensions]
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-10-29T08:04:29.358Z
 sources:
+  - id: openwiki-source-fd64c1b88759a3b897a5452c
+    resource: repo://libs/deepagents/deepagents/__init__.py
   - id: openwiki-source-b93533cac55718d75277d1cf
     resource: repo://libs/deepagents/deepagents/_excluded_middleware.py
   - id: openwiki-source-0fc0e47059e4d07e23e50be2
     resource: repo://libs/deepagents/deepagents/graph.py
+  - id: openwiki-source-fc54598423086acf9d53d9fd
+    resource: repo://libs/deepagents/deepagents/middleware/__init__.py
   - id: openwiki-source-7a16b9a53a07e882b7305459
     resource: repo://libs/deepagents/deepagents/middleware/_prompt_caching.py
   - id: openwiki-source-46a23efe78a78f9b3cd75d00
     resource: repo://libs/deepagents/deepagents/middleware/memory.py
+  - id: openwiki-source-b93c32bc33a8fa17b52b8a0e
+    resource: repo://libs/deepagents/deepagents/middleware/rubric.py
   - id: openwiki-source-625509b0456f4d7c72702c52
     resource: repo://libs/deepagents/tests/unit_tests/middleware/test_memory_middleware.py
+  - id: openwiki-source-023a5fe4719690fecce2bbf1
+    resource: repo://libs/deepagents/tests/unit_tests/middleware/test_rubric_middleware.py
+  - id: openwiki-source-10e4084b6aa57e5cc82620b3
+    resource: repo://libs/deepagents/tests/unit_tests/test_end_to_end.py
   - id: openwiki-source-6d183faf1a4bc5a5ba451aba
     resource: repo://libs/deepagents/tests/unit_tests/test_graph.py
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-10-24T08:05:08.866Z
-generated: { by: "openwiki/0.4.2", at: "2026-10-24T08:05:08.866Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-10-29T08:04:29.358Z" }
 ---
 
 # Middleware Catalog and Extension Rules
 
-`deepagents.middleware` is the public import surface for middleware that prepares a model request, intercepts tool execution, or owns cross-turn state. It re-exports filesystem permissions, memory, skills and `SkillToolResolver`, summarization, synchronous and asynchronous subagents, rubric evaluation, and unsupported-content filtering. Use these public classes and factories as extension points. Graph-only helpers—prompt caching, parent notification, tool-call repair, and tool exclusion—are assembly details rather than consumer APIs.
+`deepagents.middleware` is the public import surface for middleware that prepares a model request, intercepts tool execution, or owns cross-turn state. It re-exports filesystem permissions, memory, skills and `SkillToolResolver`, summarization, synchronous and asynchronous subagents, rubric evaluation, and unsupported-content filtering. `RubricMiddleware` is also exported from `deepagents`. Use these public classes and factories as extension points. Graph-only helpers—prompt caching, parent notification, tool-call repair, and tool exclusion—are assembly details rather than consumer APIs.
 
 Middleware differs from a plain `tools=[]` callable because it can run at agent, model, and tool hooks, shape the request on every model call, and persist typed state. Use a plain tool for a self-contained consumer operation; use middleware when the capability needs prompt/tool shaping, policy enforcement, or lifecycle state.
 
@@ -37,7 +47,7 @@ Middleware differs from a plain `tools=[]` callable because it can run at agent,
 | Context management | `SummarizationMiddleware`, `SummarizationToolMiddleware` | Projects effective history and automatically compacts, or exposes explicit `compact_conversation`. |
 | Blocking delegation | `SubAgentMiddleware` | The `task` tool invokes a local declarative or compiled worker and returns a parent tool result. |
 | Background delegation | `AsyncSubAgentMiddleware` | Launches, polls, updates, cancels, and lists remote Agent Protocol work while the parent continues. |
-| Completion review | `RubricMiddleware` | Optionally grades a natural completion and can return control to the model for revision. |
+| Completion review | `RubricMiddleware` | Activates from invocation state, grades a natural completion with a separate structured-output agent, and may return control to the model for revision. |
 | Model compatibility | `UnsupportedContentMiddleware` | Makes an outbound copy containing replacements for blocks unsupported by the resolved model. |
 
 ```mermaid
@@ -84,15 +94,9 @@ A same-name subclass can intentionally replace `SummarizationMiddleware`; a diff
 
 ### Exclusion matching, aliases, and audit failures
 
-`HarnessProfile.excluded_middleware` accepts runtime classes or public name strings. These forms have intentionally different safety properties:
+`HarnessProfile.excluded_middleware` accepts runtime classes or public name strings. Class form is exact effective-class matching; string form is exact `.name` matching. It rejects name collisions that span distinct classes, required filesystem/subagent scaffolding, and exclusions that match no assembled stack, so profile drift and ambiguous removals fail at construction rather than silently changing a stack.
 
-- **Class form is exact type matching**, not `isinstance`. Excluding a base class does not remove a caller's subclass. This prevents a broad exclusion from deleting an intentional replacement.
-- **String form is exact `.name` matching**, including public aliases such as `SummarizationMiddleware` for the private implementation. It is appropriate for declarative configuration, where classes cannot be passed.
-- A string that matches more than one concrete effective class **in a single stack raises `ValueError`** rather than removing all colliding middleware. Resolve the ambiguity with the runtime class form.
-- Each requested exclusion must match an assembled stack. Main-profile matches are accumulated across the main and general-purpose stacks; a miss raises `ValueError` as a typo or stale-profile signal. Declarative subagent profiles are audited against their own assembled stack.
-- `FilesystemMiddleware` and `SubAgentMiddleware` are required scaffolding and cannot be excluded by class or name: they back filesystem/permission enforcement and `task` dispatch. Config grammar also rejects empty, colon-containing, and underscore-prefixed string names.
-
-The lazy Anthropic cache stand-in preserves the real middleware's name, so name-based replacement or exclusion is stable without importing `langchain_anthropic`. For class-based exclusion it exposes `excluded_as`: once the real class is already loaded—necessarily true when the caller imports that class—the filter treats the stand-in as that class. This aliasing is needed so lazy loading does not create an exclusion bypass.
+The lazy Anthropic prompt-caching stand-in keeps the real middleware name for name-based replacement and exclusion, defers importing and constructing the real middleware until an Anthropic request, and reports the loaded real class through `excluded_as` for class-form exclusion.
 
 ```mermaid
 flowchart TD
@@ -106,68 +110,105 @@ flowchart TD
 
 This filtering sequence prevents excluded profile or caller middleware from re-entering a stack and turns configuration drift into an assembly failure.
 
-## Filesystem and content invariants
+## RubricMiddleware: state-activated completion review
 
-`FilesystemMiddleware` provides filesystem tools through `BackendProtocol`, conditionally adds execution for `SandboxBackendProtocol`, and can evict oversized tool results to backend storage so model context is not saturated. The shared internal message-eviction helper offloads a large tool result only after the backend write succeeds, replaces text with a line-numbered head-and-tail preview while preserving non-text blocks, and otherwise leaves the original message intact. This helper is also used by summarization overflow recovery.
+Add `RubricMiddleware(model=...)` to `create_deep_agent(..., middleware=[...])`, then supply a non-empty `rubric` in invocation state. The middleware is otherwise a no-op: it does not construct or call a grader. Its grader is built lazily on first use as a nested `create_agent` with `response_format=GraderResponse`; the model may be a model string or `BaseChatModel`. The nested agent can receive a custom system prompt, verification tools, middleware, and a context/state schema.
 
-`FilesystemPermission` supports allow, deny, and interrupt effects for read/write path rules. Permission paths must be absolute and cannot contain `..` or `~`; on real filesystem backends, checks cover both the requested path and its symlink-resolved target. Do not treat profile exclusion as an authorization substitute.
+```python
+from deepagents import RubricMiddleware, create_deep_agent
 
-## Memory, skills, and caching
+agent = create_deep_agent(
+    model="anthropic:claude-sonnet-4-6",
+    middleware=[RubricMiddleware(model="anthropic:claude-sonnet-4-6", max_iterations=3)],
+)
+result = agent.invoke({
+    "messages": [("user", "Draft the release notes.")],
+    "rubric": "- Documents the breaking change\n- Lists migration steps",
+})
+```
 
-`MemoryMiddleware` loads configured sources only when private `memory_contents` is absent. Missing files are skipped, other download errors raise, and formatted memory is injected into each model request unless its system prompt is disabled. The default prompt explicitly treats the loaded files as untrusted reference material: user instructions, safety policy, and verified tool evidence take priority. HTML comments are stripped before injection, so authoring markers do not reach the model.
+`rubric` is the only public `RubricState` addition. Status, iteration count, accumulated evaluations, active-rubric tracking, run ID, and frozen criterion names are private state attributes. On a checkpointed thread, inspect `agent.get_state(config).values` to branch on `_rubric_status` or review `_rubric_evaluations`; do not infer acceptance from the final assistant text alone.
 
-The constructor requires a string template containing `{agent_memory}`, or `None` to suppress the memory fragment while retaining loading. With `add_cache_control=True`, it tags the final system-message block with Anthropic's ephemeral cache-control marker only for the resolved `ChatAnthropic` request model. Graph assembly enables this for configured main-agent memory (and fork memory), creating a breakpoint after mutable memory without sending an Anthropic-specific field to other providers.
+A new grading run starts when the rubric string changes, or when the same sticky rubric is invoked after a terminal status. It receives a fresh UUID and iteration budget while evaluations remain accumulated. A non-terminal in-progress rubric is not reset.
 
-`SkillsMiddleware` caches source metadata in state per thread, with later duplicate names overriding earlier sources. Set `skills_metadata` to `None` to request reload. Pinned skills append their readable instructions before the next model call. A skill's declared tools are disclosed only after its skill is read or pinned, with disclosure recorded in state; the middleware resolves eligible tools again at the tool boundary and leaves undisclosed calls invalid. A resolver should therefore be stable for the thread and support the invocation mode being used.
+### Grader contract and bounded evidence
 
-Prompt-caching assembly always appends Anthropic caching with unsupported-model behavior ignored, and conditionally appends Bedrock and Fireworks caching when their optional middleware imports are available. The Anthropic entry is initially lazy: it passes non-Anthropic requests through and imports/constructs the real caching middleware only on the first Anthropic request, then retains that delegate for subsequent requests.
+`GraderResponse` has a top-level `result`, `explanation`, and required `criteria`. A criterion is discriminated by `passed`: passing entries have a name; failing entries additionally require an actionable `gap`. Validation rejects a `satisfied` response with a failed criterion and a non-empty `needs_revision` response whose criteria all pass. This makes the structured response the boundary between a probabilistic grader and loop control.
 
-## Context compaction: effective history, not log mutation
+The grader receives a role-labelled transcript, not graph state wholesale. Input is bounded to the last 30 messages, with the original non-synthetic `HumanMessage` prepended if it fell out of that window, and each rendered message is limited to 4,000 characters. Text, tool calls, and opaque content blocks are represented safely. The caller’s rubric and transcript are placed in distinct random nonce-suffixed delimiter blocks; literal closing `rubric`, `transcript`, and `criteria` tags are escaped before interpolation. The default grader prompt treats transcript content—including tool output—as untrusted observation and trusts the rubric alone for the definition of done.
 
-The summarization factory chooses fraction-based trigger, retention, and argument-truncation defaults when the resolved model profile supplies `max_input_tokens`, and falls back to fixed token and message thresholds otherwise. It rejects a string rather than a resolved `BaseChatModel`.
+On the first usable non-`failed` evaluation with criteria, the middleware freezes only the criterion names. Later payloads replay that checklist alongside the rubric and request the same count in order, without replaying prior pass/fail judgments. This prevents the set from shrinking during a run, but the middleware deliberately does **not** parse free-form rubric prose or validate whether the first decomposition was exhaustive; later coverage is count-based, so a renamed but equally sized list and an over-complete list are usable.
 
-Automatic summarization retains raw message state and records private event and session state. A later request reconstructs effective history from the summary message and cutoff, while evicted messages are appended to a session-specific backend history file. It first projects raw messages through any prior event, may truncate older large tool-call arguments, and persists the new event and session ID while leaving raw messages intact. Archive failure does not block compaction, but produces an event with no recovery path.
+If the response is empty before a list exists, or contains fewer entries than the frozen list, the middleware performs one corrected regrade. A retry failure retains the first valid response rather than converting it to an infrastructure error. If a twice-underreported response claims `satisfied`, it is downgraded to `needs_revision`, marked `unverified=True`, and cannot terminate the loop. An underreported `needs_revision` is allowed through because it makes no acceptance claim. `failed` is exempt because no criterion list is appropriate for an ungradable rubric.
+
+### Revision lifecycle and attribution
+
+The after-agent hook only grades natural stops: the main model has returned without another tool call. `needs_revision` below the cap appends a synthetic `HumanMessage` containing the explanation, failed gaps, and—when verified—passing criteria that must not regress; it then returns `jump_to="model"`. This synthetic message is deliberately distinct from user input: it has `name="rubric_grader"` and `additional_kwargs={"lc_source": "rubric_grader"}`. Transcript selection ignores that tag when finding the original user request, preventing old grader feedback from becoming the user prompt after truncation.
 
 ```mermaid
 flowchart TD
-    Raw["Raw state messages"] --> Effective["Apply prior summary event"]
-    Effective --> Budget{"Over trigger or input budget"}
-    Budget -->|"no"| Send["Send model request"]
-    Budget -->|"yes"| Prepare["Select older history"]
-    Prepare --> Media["Offload inline media to backend references"]
-    Media --> Archive["Append recoverable history"]
-    Media --> Summarize["Generate summary"]
-    Archive --> Event["Record cutoff summary and session"]
-    Summarize --> Event
-    Event --> Send
+    Invoke["Invoke with rubric in state"] --> Reset["Start or retain grading run"]
+    Reset --> Main["Main agent model and tools"]
+    Main --> Natural{"Natural stop with no tool calls"}
+    Natural -->|"no"| Main
+    Natural -->|"yes"| Bound["Build bounded sanitized transcript"]
+    Bound --> Grade["Nested grader returns structured verdict"]
+    Grade --> Coverage{"Coverage usable"}
+    Coverage -->|"no"| Retry["One corrected grader retry"]
+    Retry --> CoverageGate["Apply verdict gate"]
+    Coverage -->|"yes"| CoverageGate
+    CoverageGate -->|"needs revision below cap"| Feedback["Synthetic grader feedback not user input"]
+    Feedback --> Main
+    CoverageGate -->|"satisfied"| Accepted["Terminal satisfied"]
+    CoverageGate -->|"failed or grader error"| End["Terminal without rewriting last model response"]
+    CoverageGate -->|"cap reached"| End
 ```
 
-This shows compaction's effective-history projection; raw messages remain checkpoint state.
+This lifecycle shows the revision loop. The feedback edge is a middleware-authored message attributed to `rubric_grader`, not a new user turn.
 
-The default Deep Agents summary prompt explains that offloaded-media references must be preserved and may be read later; automatic compaction converts inline media to backend references before archive and summary generation.
+### Terminal outcomes, failure boundaries, and observation
 
-`SummarizationToolMiddleware` registers `compact_conversation` but never compacts automatically. It shares automatic-engine event state, gates execution until roughly half the automatic trigger, and reports no-op or compaction failure through `ToolMessage` without updating the event. The manual-compaction factory resolves a model string, constructs a model-aware engine, and registers only `SummarizationToolMiddleware`; automatic compaction requires separately registering `SummarizationMiddleware`—which `create_deep_agent()` already adds.
+Only `needs_revision` continues. The terminal result has one of these meanings:
 
-## Delegation and completion controls
+| Result | Meaning | Effect on main-agent response |
+| --- | --- | --- |
+| `satisfied` | The grader accepted the structured, usable criterion accounting. | End normally. |
+| `failed` | The **grader** says the rubric is malformed, contradictory, or impossible to evaluate. | End; preserve the last main-model response. |
+| `max_iterations_reached` | A revision verdict reached `max_iterations`; this includes a permanently unverified `satisfied` downgrade. | End; preserve the last main-model response. |
+| `grader_error` | Grader machinery failed—for example provider, credentials, or structured-output failures. This is not `failed`. | End; preserve the last main-model response. |
 
-The synchronous `task` tool runs a selected declarative or compiled subagent and returns one parent `ToolMessage`, serializing `structured_response` when present or otherwise selecting the last non-empty `AIMessage` text. Forked declarative subagents receive effective compacted history and refuse recursive `task` delegation.
+Every evaluation has a `grading_run_id`, zero-based iteration, result, explanation, criteria, and `unverified` flag. The middleware emits `rubric_evaluation_start` and `rubric_evaluation_end` through the runtime stream writer and invokes `on_evaluation` after finalizing an evaluation. Ordinary callback exceptions are logged and suppressed, so callbacks are observability hooks rather than control flow. The cap emits an info log; incomplete-grader exhaustion emits a warning. Grader trace metadata records configured model and the observed or inferred structured-output strategy where available.
 
-An isolated async launch sends only its description. Experimental fork mode serializes the parent’s effective summarized conversation and task after removing artifacts and rehydrating offloaded media; the remote agent owns its prompt and tools. A URL-less local ASGI transport requires asynchronous parent invocation.
+`GraphBubbleUp` from a grader or evaluation callback propagates as graph control flow rather than becoming `grader_error`. `KeyboardInterrupt` and async cancellation also propagate because only `Exception` is caught around ordinary grader failures. Conversely, a caught grader exception becomes a recorded `grader_error` evaluation with diagnostic model/strategy details.
 
-`AsyncSubAgentMiddleware` provides launch, check, update, cancel, and list tools for remote Agent Protocol work. It persists merge-reduced `async_tasks` records containing remote identifiers, status, timestamps, and queued-run lineage; construction rejects empty or duplicate specifications and unsupported modes or update strategies. Its asynchronous lifecycle hooks poll unfinished work and give the model another turn after a newly observed outcome; synchronous hooks do not poll.
+### Safe customization
 
-`RubricMiddleware` is inactive without a rubric in invocation state. Otherwise it initializes private iteration state, grades at natural completion, can jump back to the model for revision, and leaves the last model response unchanged for failed, grader-error, or max-iteration outcomes. `UnsupportedContentMiddleware` runs late against the resolved request model and copies only human and tool messages whose blocks need replacement, preserving the original thread for a later capable model.
+Use constructor arguments instead of replacing the lifecycle where possible:
+
+- `tools` gives the nested grader verification tools; without them it reasons from the transcript.
+- `grader_middleware`, `grader_context_schema`, and `grader_state_schema` configure the nested agent. Runtime context is forwarded to it.
+- `prepare_messages_for_grader` can filter or transform a copy of transcript messages before payload construction; it must not mutate the original state.
+- `build_grader_state` adds custom nested-agent fields, requires `grader_state_schema`, and cannot set SDK-owned `messages`.
+- `on_evaluation` is for reporting and must tolerate being suppressed on its own exceptions.
+
+For a subclass wrapping one grader request, override `_invoke_grader` / `_ainvoke_grader`, forwarding `correction` and `context`, rather than `_grade` / `_agrade`; the latter own the one-retry coverage rule. Overrides and custom input construction should retain `_build_grader_payload`, which enforces transcript bounds and delimiter sanitization.
+
+## Memory and other operational invariants
+
+MemoryMiddleware loads configured sources only when private `memory_contents` is absent, skips missing files but raises on other download errors, and injects formatted memory into each model request unless its system prompt is disabled.
+
+Memory middleware strips HTML comments from loaded content before prompt injection and its default prompt tells the model to treat file memory as untrusted reference material. When cache control is enabled, it marks the final system block only for the runtime Anthropic model, including when prompt injection is suppressed.
+
+`FilesystemPermission` supports allow, deny, and interrupt effects for read/write path rules. Permission paths must be absolute and cannot contain `..` or `~`; on real filesystem backends, checks cover both the requested path and its symlink-resolved target. Do not treat profile exclusion as an authorization substitute.
 
 ## Focused change coverage
 
-Route changes to the narrow suite first, then graph integration tests when order or configuration changes are involved.
+Route Rubric changes to the narrow suite first, then run the end-to-end fake-model coverage when modifying graph integration or loop behavior.
 
 | Change | Focused tests |
 | --- | --- |
-| Stack construction, name replacement, exclusion coverage/collisions, lazy cache aliases, and profile-supplied todo middleware | `tests/unit_tests/test_graph.py` |
-| Filesystem initialization, execution routing, blobs/video and permissions | `tests/unit_tests/middleware/test_filesystem_middleware_init.py`, `test_execute_route_prompt.py`, `test_blob_offload.py`, `test_filesystem_video.py` |
-| Memory loading, prompt templates/comment stripping, and Anthropic cache breakpoint | `tests/unit_tests/middleware/test_memory_middleware.py`, `test_memory_middleware_async.py` |
-| Metadata/reload, pinned skills, declared-tool resolution | `tests/unit_tests/middleware/test_skills_middleware.py`, `test_skills_middleware_async.py`, `test_pinned_skills.py`, `test_skill_tools.py`, `test_skill_tool_resolver.py` |
-| Factory defaults, automatic recovery, explicit compaction | `tests/unit_tests/middleware/test_summarization_factory.py`, `test_summarization_middleware.py`, `test_compaction_recovery.py`, `test_compact_tool.py` |
-| Local subagent configuration and remote async lifecycle | `tests/unit_tests/middleware/test_subagent_middleware_init.py`, `tests/unit_tests/test_async_subagents.py` |
-| Rubric loops and content compatibility | `tests/unit_tests/middleware/test_rubric_middleware.py` and the relevant filesystem/graph integration tests |
+| Construction validation, state reset, structured output, bounded/sanitized transcripts, coverage retry/gate, extensions, callbacks, events, and terminal semantics | `libs/deepagents/tests/unit_tests/middleware/test_rubric_middleware.py` |
+| Natural-stop integration, no-rubric no-op, revision loop, cap, checkpoint observation, and interrupt propagation | `libs/deepagents/tests/unit_tests/test_end_to_end.py` (`TestRubricMiddlewareEndToEnd`) |
+| Real-model traced demonstration, frozen checklist, and revision prompts | `examples/rubric_middleware/README.md`, `examples/rubric_middleware/rubric_agent.py` |
+| Stack construction, name replacement, exclusion coverage/collisions, lazy cache aliases, and profile-supplied todo middleware | `libs/deepagents/tests/unit_tests/test_graph.py` |
+| Memory loading, prompt templates/comment stripping, and Anthropic cache breakpoint | `libs/deepagents/tests/unit_tests/middleware/test_memory_middleware.py`, `libs/deepagents/tests/unit_tests/middleware/test_memory_middleware_async.py` |

@@ -6,18 +6,20 @@ import asyncio
 import json
 import shlex
 import sys
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
 from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
-from langchain_core.messages import AIMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.tools import tool
 
+from deepagents_talon.hooks import ACTIVE_HOOKS, TalonHooks
 from deepagents_talon.interfaces import AgentRequest, ToolApprovalRequest
 from deepagents_talon.runtime import DeepAgentRuntime
+from deepagents_talon.subagents import _compile_fresh
 
 if TYPE_CHECKING:
-    from pathlib import Path
-
     from deepagents_talon.interfaces import ToolApprovalDecision
 
 
@@ -27,7 +29,11 @@ class ToolModel(FakeMessagesListChatModel):
 
 
 def configure_hooks(
-    home: Path, events: list[str], response: dict[str, object] | None = None
+    home: Path,
+    events: list[str],
+    response: dict[str, object] | None = None,
+    *,
+    matcher: str = "Bash",
 ) -> Path:
     home.mkdir(parents=True, exist_ok=True)
     script = home / "hook.py"
@@ -45,7 +51,7 @@ def configure_hooks(
                 "hooks": {
                     event: [
                         {
-                            **({"matcher": "Bash"} if event != "Stop" else {}),
+                            **({"matcher": matcher} if event != "Stop" else {}),
                             "hooks": [{"type": "command", "command": command}],
                         }
                     ]
@@ -281,3 +287,169 @@ async def test_hook_configuration_reloads_between_turns(
     await runtime.invoke(AgentRequest(conversation_id="chat", text="run again"))
 
     assert not target.exists()
+
+
+@pytest.mark.parametrize("background", [False, True])
+@pytest.mark.parametrize("dynamic", [False, True])
+@pytest.mark.parametrize("policy", ["allow", "deny", "approval"])
+async def test_subagent_hooks_enforce_policy(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    background: bool,
+    dynamic: bool,
+    policy: str,
+) -> None:
+    log = configure_hooks(
+        tmp_path,
+        ["PreToolUse", "PostToolUse", "Stop"],
+        {
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "deny" if policy == "deny" else "allow",
+            }
+        },
+        matcher="lookup",
+    )
+    effects: list[str] = []
+
+    @tool
+    def lookup() -> str:
+        """Look up evidence."""
+        effects.append("ran")
+        return "child evidence"
+
+    child = ToolModel(
+        responses=[
+            AIMessage(content="", tool_calls=[{"name": "lookup", "args": {}, "id": "lookup"}]),
+            AIMessage(content="child done"),
+        ]
+    )
+    parent = ToolModel(
+        responses=[
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "task",
+                        "id": "delegate",
+                        "args": {
+                            "description": "child question",
+                            "subagent_type": "researcher",
+                            **({"tools": ["lookup"]} if dynamic else {}),
+                        },
+                    }
+                ],
+            ),
+            AIMessage(content="parent done"),
+        ]
+    )
+    monkeypatch.setattr(
+        "deepagents_talon.runtime._resolve_model_from_env", lambda *_a, **_k: parent
+    )
+    runtime = DeepAgentRuntime(
+        model="test:hooks",
+        assistant_dir=tmp_path,
+        include_web_tools=False,
+        skills=(),
+        memory=(),
+        tools=[lookup],
+        subagents=[
+            {
+                "name": "researcher",
+                "description": "Research",
+                "model": child,
+                "system_prompt": "Research",
+                "tools": [] if dynamic else [lookup],
+            }
+        ],
+        env={"DEEPAGENTS_TALON_WORKSPACE": str(tmp_path)},
+    )
+    if policy == "approval":
+        snapshot = runtime.approval_store.ensure()
+        runtime.approval_store.update({"lookup": True}, snapshot.revision)
+    await runtime.start()
+    try:
+        await runtime.invoke(
+            AgentRequest(
+                conversation_id="chat",
+                text="delegate",
+                metadata={} if background else {"trigger": "cron"},
+            )
+        )
+        await asyncio.gather(*(job.worker for job in runtime.background._jobs.values()))
+        events = [json.loads(line) for line in log.read_text().splitlines()]
+        child_events = [event for event in events if event.get("agent_id")]
+        assert child_events
+        assert child_events[0]["hook_event_name"] == "PreToolUse"
+        assert child_events[0]["agent_type"] == "researcher"
+        assert child_events[0]["cwd"] == str(tmp_path)
+        assert effects == (["ran"] if policy == "allow" else [])
+        if policy == "allow":
+            assert any(event["hook_event_name"] == "PostToolUse" for event in child_events)
+        assert all(event["hook_event_name"] != "Stop" for event in child_events)
+        transcript = await asyncio.to_thread(Path(child_events[0]["transcript_path"]).read_text)
+        assert "child question" in transcript
+        assert "parent done" not in transcript
+    finally:
+        await runtime.stop()
+
+
+async def test_concurrent_subagents_keep_snapshots_and_transcripts_isolated(tmp_path: Path) -> None:
+    log = configure_hooks(tmp_path, ["PreToolUse", "PostToolUseFailure"], matcher="lookup")
+    hooks = TalonHooks.load(tmp_path, tmp_path, "parent")
+    assert hooks is not None
+    # An edit after the parent starts must not change either worker's snapshot.
+    configure_hooks(
+        tmp_path,
+        ["PreToolUse"],
+        {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny"}},
+        matcher="lookup",
+    )
+
+    @tool
+    async def lookup() -> ToolMessage:
+        """Return a failed lookup."""
+        await asyncio.sleep(0)
+        return ToolMessage(content="lookup failed", tool_call_id="lookup", status="error")
+
+    async def run(question: str) -> None:
+        model = ToolModel(
+            responses=[
+                AIMessage(content="", tool_calls=[{"name": "lookup", "args": {}, "id": "lookup"}]),
+                AIMessage(content="done"),
+            ]
+        )
+        agent = _compile_fresh(
+            {
+                "name": "researcher",
+                "description": "Research",
+                "system_prompt": "Research",
+                "tools": [lookup],
+            },
+            model,
+            None,
+        )
+        await agent["runnable"].ainvoke({"messages": [HumanMessage(question)]})
+
+    token = ACTIVE_HOOKS.set(hooks)
+    try:
+        await asyncio.gather(run("first question"), run("second question"))
+    finally:
+        ACTIVE_HOOKS.reset(token)
+    events = [json.loads(line) for line in log.read_text().splitlines()]
+    sessions = {event["session_id"] for event in events}
+    assert len(sessions) == 2
+    assert len({event["agent_id"] for event in events}) == 2
+    transcripts = set()
+    for session in sessions:
+        child_events = [event for event in events if event["session_id"] == session]
+        assert [event["hook_event_name"] for event in child_events] == [
+            "PreToolUse",
+            "PostToolUseFailure",
+        ]
+        transcript = await asyncio.to_thread(Path(child_events[-1]["transcript_path"]).read_text)
+        assert "lookup failed" in transcript
+        assert ("first question" in transcript) != ("second question" in transcript)
+        transcripts.add(child_events[-1]["transcript_path"])
+    assert len(transcripts) == 2

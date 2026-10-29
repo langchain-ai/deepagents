@@ -34,7 +34,7 @@ dependencies = [
     # declared here because we import it directly.
     "httpx2>=2.13.1",
     "langchain>=1.4.7,<2.0.0",
-    "langchain-core>=1.7.2,<2.0.0",
+    "langchain-core>=1.7.3,<2.0.0",
     "langgraph>=1.2.18,<2.0.0",
     "langgraph-checkpoint>=4.3.1,<5.0.0",
     "langgraph-checkpoint-sqlite>=3.1.2,<4.0.0",

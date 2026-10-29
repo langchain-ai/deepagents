@@ -25,6 +25,10 @@ Do not add dependencies unless required. When adding one, justify its maintenanc
 
 Use inline `# noqa: RULE` with a justification for individual exceptions. Reserve `[tool.ruff.lint.per-file-ignores]` for categorical policies that apply to a whole class of files, such as tests not requiring docstrings. Do not hide a single violation with a file-wide ignore. If you cannot justify a suppression, the code is probably the problem. See [`libs/DEVELOPMENT.md`](libs/DEVELOPMENT.md#suppressing-ruff-rules) for worked examples.
 
+## Opening issues
+
+Before opening an issue on a user's behalf, ask for its priority and whether it should be assigned to the user or someone else. If someone else, confirm who. Wait for their answers before creating the issue; do not infer priority or assignee.
+
 ## PR conventions
 
 ### Titles and scope

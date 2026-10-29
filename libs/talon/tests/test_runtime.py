@@ -626,7 +626,7 @@ async def test_runtime_applies_configured_context_size_and_adds_compact_tool(
     await runtime.start()
 
     assert captured["init_args"] == ("anthropic:claude-sonnet-4-6",)
-    assert captured["init_kwargs"] == {}
+    assert captured["init_kwargs"] == {"streaming": True}
     assert model.profile == {"max_input_tokens": 75_000, "tool_calling": True}
     assert captured["model"] is model
     assert captured["compact_model"] is model

@@ -2279,17 +2279,45 @@ class TestWorkspaceStoredCredentials:
         def respond(request: httpx.Request) -> httpx.Response:
             requests.append(request)
             if provider == "anthropic":
+                assert json.loads(request.content)["stream"] is True
+                events = [
+                    {
+                        "type": "message_start",
+                        "message": {
+                            "id": "test-message",
+                            "type": "message",
+                            "role": "assistant",
+                            "model": "test-model",
+                            "content": [],
+                            "stop_reason": None,
+                            "usage": {"input_tokens": 1, "output_tokens": 0},
+                        },
+                    },
+                    {
+                        "type": "content_block_start",
+                        "index": 0,
+                        "content_block": {"type": "text", "text": ""},
+                    },
+                    {
+                        "type": "content_block_delta",
+                        "index": 0,
+                        "delta": {"type": "text_delta", "text": "Hello"},
+                    },
+                    {"type": "content_block_stop", "index": 0},
+                    {
+                        "type": "message_delta",
+                        "delta": {"stop_reason": "end_turn", "stop_sequence": None},
+                        "usage": {"output_tokens": 1},
+                    },
+                    {"type": "message_stop"},
+                ]
                 return httpx.Response(
                     200,
-                    json={
-                        "id": "test-message",
-                        "type": "message",
-                        "role": "assistant",
-                        "model": "test-model",
-                        "content": [{"type": "text", "text": "Hello"}],
-                        "stop_reason": "end_turn",
-                        "usage": {"input_tokens": 1, "output_tokens": 1},
-                    },
+                    headers={"content-type": "text/event-stream"},
+                    text="".join(
+                        f"event: {event['type']}\ndata: {json.dumps(event)}\n\n"
+                        for event in events
+                    ),
                 )
             return httpx.Response(
                 200,

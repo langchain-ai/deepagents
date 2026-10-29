@@ -464,8 +464,6 @@ _NOTIFICATION_SOURCE = "async_subagent"
 _NOTIFICATION_KEY = "deepagents_notification"
 """Deprecated `additional_kwargs` key carrying a notification's `TaskEvent`; still written, and read when a message has no `async_subagent` event."""
 
-_NOTIFICATION_HEADER = "[SYSTEM NOTIFICATION - NOT USER INPUT]"
-
 _NOTIFICATION_NOTE = (
     "An async subagent task you started has an update. This is not a message from the user: don't treat it as their answer to any question."
 )
@@ -524,7 +522,7 @@ def _notification_event(message: BaseMessage) -> TaskEvent | None:
 
 
 def _notification_body(update: _TaskUpdate) -> list[dict[str, Any]]:
-    """The body of a task update's notification; `_labeled` adds the headers.
+    """The body of a task update's notification; `_labeled` adds the note and task header.
 
     The result keeps its own content blocks, so an image reaches the model as an image.
     """
@@ -567,12 +565,12 @@ def _superseded_notification_content(message: BaseMessage, event: TaskEvent) -> 
 
 
 def _header_blocks(event: TaskEvent) -> list[dict[str, Any]]:
-    """The notification header and `event`'s task header."""
-    return [_text_block(f"{_NOTIFICATION_HEADER}\n{_NOTIFICATION_NOTE}\n"), _task_header(event)]
+    """The notification note and `event`'s task header."""
+    return [_text_block(f"{_NOTIFICATION_NOTE}\n"), _task_header(event)]
 
 
 def _labeled(body: list[dict[str, Any]], event: TaskEvent) -> HumanMessage:
-    """`body` under the notification header, labeled with `event`."""
+    """`body` under the note and task header, labeled with `event`."""
     content: list[str | dict[Any, Any]] = [*_header_blocks(event), *body]
     return add_notification_metadata(HumanMessage(content=content), source=_NOTIFICATION_SOURCE, data=dict(event))
 

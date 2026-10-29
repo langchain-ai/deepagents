@@ -1771,7 +1771,7 @@ def _woken_message(server: _FakeServer) -> dict[str, Any]:
     (wake,) = server.wakes()
     assert (wake["assistant_id"], wake["multitask_strategy"]) == ("lead_assistant", "reject")
     message = wake["input"]["messages"][0]
-    assert "NOT USER INPUT" in _text(message)
+    assert "This is not a message from the user" in _text(message)
     return message
 
 
@@ -2358,7 +2358,7 @@ class TestQueuedUpdates:
         assert "async_tasks" not in update
         replaced = update["messages"][0]
         assert replaced.id == message.id
-        assert replaced.text.startswith("[SYSTEM NOTIFICATION - NOT USER INPUT]")
+        assert replaced.text.startswith("An async subagent task you started has an update.")
         assert "not the result of the follow-up" in replaced.text
         assert replaced.additional_kwargs["deepagents_notification"] == event
         server = _FakeServer(run={"run_id": "run_followup", "status": "pending"})
@@ -2393,7 +2393,7 @@ class TestQueuedUpdates:
         middleware = AsyncSubAgentMiddleware(async_subagents=[_make_spec("remote", url=None, update_strategy="enqueue")])
         replaced = middleware.before_agent(state, MagicMock())["messages"][0]
         assert "FULL REPORT" in replaced.text
-        assert replaced.text.count("NOT USER INPUT") == 1
+        assert replaced.text.count("This is not a message from the user") == 1
         assert "not the result of the follow-up" in replaced.text
         assert "Use the result to continue" not in replaced.text
         assert replaced.text.count("</task-notification>") == 1

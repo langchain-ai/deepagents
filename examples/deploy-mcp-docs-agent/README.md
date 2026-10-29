@@ -60,7 +60,7 @@ deploy-mcp-docs-agent/
 
 ## Resources
 
-- [deepagents deploy docs](https://docs.langchain.com/deepagents/deploy)
-- [MCP server docs](https://docs.langchain.com/deepagents/mcp)
+- [deepagents deploy docs](https://docs.langchain.com/langsmith/python/managed-deep-agents-deploy)
+- [MCP server docs](https://docs.langchain.com/langsmith/python/managed-deep-agents-mcp-connectors)
 - [LangChain Academy](https://academy.langchain.com/) — Comprehensive, free courses on LangChain libraries and products, made by the LangChain team.
 - [Code of Conduct](https://github.com/langchain-ai/langchain/?tab=coc-ov-file) — community guidelines and standards

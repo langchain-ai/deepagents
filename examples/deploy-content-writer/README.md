@@ -77,8 +77,8 @@ deploy-content-writer/
 
 ## Resources
 
-- [deepagents deploy docs](https://docs.langchain.com/deepagents/deploy)
-- [Custom auth docs](https://docs.langchain.com/deepagents/auth)
-- [Per-user memory docs](https://docs.langchain.com/deepagents/memory)
+- [deepagents deploy docs](https://docs.langchain.com/langsmith/python/managed-deep-agents-deploy)
+- [Custom auth docs](https://docs.langchain.com/langsmith/python/managed-deep-agents-identity)
+- [Per-user memory docs](https://docs.langchain.com/langsmith/python/managed-deep-agents-memory)
 - [LangChain Academy](https://academy.langchain.com/) — Comprehensive, free courses on LangChain libraries and products, made by the LangChain team.
 - [Code of Conduct](https://github.com/langchain-ai/langchain/?tab=coc-ov-file) — community guidelines and standards

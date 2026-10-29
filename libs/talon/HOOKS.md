@@ -3,9 +3,11 @@
 Talon reuses the `deepagents-code` command-hook engine for the main agent's
 `PreToolUse`, `PostToolUse`, `PostToolUseFailure`, and `Stop` events.
 
-Add `hooks.json` to the Talon assistant directory (`DEEPAGENTS_TALON_HOME` for
-the CLI). Configuration is loaded at the start of each turn; active turns retain
-their snapshot. For example:
+Add `hooks.json` to the Talon assistant directory. For the CLI, use
+`$DEEPAGENTS_TALON_HOME/$DEEPAGENTS_TALON_ASSISTANT_ID/hooks.json`;
+the base directory defaults to `~/.deepagents` and the assistant ID to `default`
+(so the default path is `~/.deepagents/default/hooks.json`). Configuration is
+loaded at the start of each turn; active turns retain their snapshot. For example:
 
 ```json
 {

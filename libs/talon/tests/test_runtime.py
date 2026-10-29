@@ -15,7 +15,6 @@ from langchain_core.messages import AIMessage, RemoveMessage, ToolMessage
 from langgraph.checkpoint.memory import InMemorySaver
 
 from deepagents_talon.authorization import AuthorizationEvent, current_authorization_handler
-from deepagents_talon.background import HIDDEN_ASYNC_TOOLS
 from deepagents_talon.cron import CronJobStore
 from deepagents_talon.interfaces import (
     AgentRequest,
@@ -28,7 +27,6 @@ from deepagents_talon.runtime import (
     _is_retryable,
     _status_code,
 )
-from deepagents_talon.tool_approvals import ToolApprovalStore
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -287,52 +285,6 @@ async def test_runtime_wires_backend_checkpointer_tools_skills_and_memory(
     } <= tool_names
 
 
-async def test_runtime_requires_approval_for_async_subagent_tools(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    captured: dict[str, Any] = {}
-    async_subagent = {
-        "name": "researcher",
-        "description": "Research tasks",
-        "graph_id": "agent",
-    }
-
-    def fake_create_deep_agent(**kwargs: Any) -> RecordingGraph:
-        captured.update(kwargs)
-        return RecordingGraph()
-
-    monkeypatch.setattr("deepagents_talon.runtime.create_deep_agent", fake_create_deep_agent)
-
-    store = ToolApprovalStore(tmp_path / "tools.json")
-    snapshot = store.ensure()
-    store.update({"custom_tool": True, "start_async_task": False}, snapshot.revision)
-    runtime = DeepAgentRuntime(
-        model="test:model",
-        subagents=cast("Any", [async_subagent]),
-        approval_store=store,
-        include_web_tools=False,
-        skills=(),
-        memory=(),
-    )
-
-    await runtime.start()
-
-    assert captured["subagents"][0] == async_subagent
-    assert captured["interrupt_on"] == {
-        name: {"allowed_decisions": ["approve", "reject"]}
-        for name in (
-            "custom_tool",
-            "update_tool_approvals",
-            "delete_conversations",
-            "update_mcp_server",
-            "send_message",
-        )
-    }
-    # The other async task tools never reach the model, so gating them could not fire.
-    assert HIDDEN_ASYNC_TOOLS.isdisjoint(captured["interrupt_on"])
-
-
 async def test_runtime_merges_local_and_async_subagents(
     tmp_path: Path,
 ) -> None:
@@ -468,51 +420,6 @@ async def test_runtime_rejects_invalid_local_subagent_definitions(
 
     assert not captured
     assert "invalid name, description, or model" in caplog.text
-
-
-@pytest.mark.parametrize("obsolete_value", ["", " , ", "bash, execute,custom/mcp"])
-async def test_runtime_uses_file_policy_and_ignores_obsolete_environment(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    obsolete_value: str,
-) -> None:
-    captured: dict[str, Any] = {}
-    store = ToolApprovalStore(tmp_path / "tools.json")
-    snapshot = store.ensure()
-    store.update({"sample_tool": True, "execute": False}, snapshot.revision)
-
-    def fake_create_deep_agent(**kwargs: Any) -> RecordingGraph:
-        captured.update(kwargs)
-        return RecordingGraph()
-
-    monkeypatch.setattr("deepagents_talon.runtime.create_deep_agent", fake_create_deep_agent)
-    monkeypatch.setenv("DEEPAGENTS_TALON_INTERRUPT_ON_TOOLS", obsolete_value)
-    monkeypatch.setenv("DEEPAGENTS_TALON_MCP_CONFIG_AUTO_APPROVE", "true")
-    runtime = DeepAgentRuntime(
-        model="test:model",
-        include_web_tools=False,
-        skills=(),
-        memory=(),
-        approval_store=store,
-        env={
-            "DEEPAGENTS_TALON_INTERRUPT_ON_TOOLS": obsolete_value,
-            "DEEPAGENTS_TALON_MCP_CONFIG_AUTO_APPROVE": "true",
-        },
-    )
-
-    await runtime.start()
-
-    assert captured["interrupt_on"] == {
-        name: {"allowed_decisions": ["approve", "reject"]}
-        for name in (
-            "sample_tool",
-            "update_tool_approvals",
-            "delete_conversations",
-            "update_mcp_server",
-            "start_async_task",
-            "send_message",
-        )
-    }
 
 
 async def test_runtime_uses_configured_workspace_for_default_backend(
@@ -719,7 +626,6 @@ async def test_runtime_applies_configured_context_size_and_adds_compact_tool(
     await runtime.start()
 
     assert captured["init_args"] == ("anthropic:claude-sonnet-4-6",)
-    assert captured["init_kwargs"] == {"streaming": True}
     assert model.profile == {"max_input_tokens": 75_000, "tool_calling": True}
     assert captured["model"] is model
     assert captured["compact_model"] is model

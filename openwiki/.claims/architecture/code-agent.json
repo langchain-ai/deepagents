@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:d8e3368b41c5c30b725f179891ee6a3d80c3944a1fbe53276389d138aba3e9e2",
+  "pageVersion": "sha256:5f0eb226dd27aac6b9e12d03b0b67d2d34e0166f03d30d9e2bf6fc3b3d23610d",
   "claims": [
     {
       "id": "claim_d463e7db72ac47529b1cd7e9f1097352",
@@ -173,10 +173,112 @@
           "version": "repo-lines-v1:sha256:000e40f2ab1e6461e4a54a93fc404f1243d624792279ee35ddb1c7fd56fc1fcc:eyJzZWxlY3RlZExpbmVDb3VudCI6MjEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjYxOGVhMzA5NWY1NmRjMDNhOTJlYmZhNzU4NzhhMmExM2I3ZjRiN2U0YTcxY2EwZGMzZmQ3ZmFiMmU5Y2I0NDEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjYzNzU5NjJkNTA1NTUwZGMyZTlmZDI5N2FjZDE5NDA2OTUyYTYzMmY0YmRmMzFlZjc4NDdiMDJhMjM4NTQ4NWYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUxNmI5NTVmYjJlNWJlYzk3ZDA1N2FkOGQ1YjQxZjE1NmZkYWEwOTE1NmUxMGUxM2RhNDgwYjhjNzA0N2IxYTgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQ5N2I1N2UxNDYwMWY0MzczNGI2Y2IxNmI5MDMxYmZiNWM1Y2UyZTgwMDk4MzQ5OTU3YWYxM2FmMGFlZmQ1NDMifQ"
         }
       ]
+    },
+    {
+      "id": "claim_4926284a42df4a38b7038429af41ef27",
+      "statement": "The Textual transcript store retains lightweight `MessageData` records while mounting only a sliding window of widgets; tool records carry the state needed to reconstruct a tool row, and completed group details are retained as `TOOL_GROUP` data.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/tui/widgets/message_store.py#L134-L203",
+          "version": "repo-lines-v1:sha256:ecd2f04433454c57698f3e054c82ab364d4b63ea8b07bc5f5401e9c5abf68080:eyJzZWxlY3RlZExpbmVDb3VudCI6NzAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImI2ZmJhZTBiOTFkNDRmYzBkNDlmNWRlNjkxZGE2ZmM0MzFmMjYwMTM0YmY3MzFlMGUyMWY3NjQ4MDk0MzM0Y2IiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM5OGUxZTNlMDQyZjE2YWViMDI4YjVlYWNlMWZjNGIwNWYwNjc5Y2JiYjNjMDk1MmUyNjA4NWY0MzU5NDQxYmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImMzYzQ1MjhlOWU0OWQ0MDk0ZThjMmQ3ZGExNWY4Y2E5Y2U3MzM2MGVkODIwYzI3ZWNlZmRhZjVkNTY2OTg3YjIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjZkMDQ3ZTNmMTY0ODJlYzg0YTQzNTY3MTcxZDBhY2NkYTIyMjZjMmRkOWY4YmM4NDkxMzY2YTViOTUxYmJkOTcifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/tui/widgets/message_store.py#L2-L9",
+          "version": "repo-lines-v1:sha256:ffc5bf248fe4e87c6869f39a598257bd310c8fa59600068445d3e6b117516e35:eyJzZWxlY3RlZExpbmVDb3VudCI6OCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMDFiYTQ3MTljODBiNmZlOTExYjA5MWE3YzA1MTI0YjY0ZWVlY2U5NjRlMDljMDU4ZWY4Zjk4MDVkYWNhNTQ2YiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNTJiMzk4YTg1ZTFlYzhjOWMzOTgxMDdiOTQwOTZjMzRkNmZiZTY0NzExYjZjNDgyYTVhNTQyMTQ3ZDBlMTE3NCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjEsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNTQ3MDRlZjI5NzY2MWUwNjBkZTc5OTAzYzc0MGQyMTlmZWU1YTdiOWI4NjE4MTBkMDc0ZTE0ZTMxMjBhZmQ3YSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMWFhZjc2MzdjYjZlN2U1ZGI4NWQ2MzQyNzQ2MDE0ZGYwNDFjY2Q1NThhOTIwYjI5ZWI2YWM3MTlkN2JhZjVjMiJ9"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/tui/widgets/message_store.py#L660-L705",
+          "version": "repo-lines-v1:sha256:5c38ae15c4a17a31a80f7932680f6a470dd2ae6e26b1d8b12099222e18a0488b:eyJzZWxlY3RlZExpbmVDb3VudCI6NDYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE2ZGFmMWNkZGYwZGJhYmQ5YjExNzZhZDQ3M2M4ODcwMjc3NmJiYTQ4N2M5NTMwYTBjY2JkZWZhYWRiNDE5MTEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjVhZWM0MzUxMDQxMDczOWE0NmFiZDY2MDkwOWM2YTAzOWZmMWU1MzRmNWRhYTc4OTEyN2NhZmEzYjE1NGFlMmMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImIzZGYyYWNmMDZlOGMzZjAzYzcxMzVjNmU4YWM1YTljYTU0MzJhYmUwNmE3NGFjYTBmZGQ5YTUzYTAwOGY5ODciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjhmZWVmNDkzNjRhNzk1MmY2YjYzOTE1ZGFjYmM2OTI2OWY5YTU3MGFlNWFkNTJmYzZkMTUxZmY4YTY4NTE0MzYifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_b40bb633b50f4905a22ac3ccb660009c",
+      "statement": "On history restoration, dcode matches `ToolMessage` results to calls by `tool_call_id`, projects them into `MessageData`, bulk-loads the store, and mounts only the initial tail window while older messages hydrate on demand.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/app.py#L20841-L20859",
+          "version": "repo-lines-v1:sha256:7ce77803bf07e29990974377ba8779ea0e27f6eba4c7017a7fab435e41bfc05d:eyJzZWxlY3RlZExpbmVDb3VudCI6MTksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxYWJjZDBjYzY5MTNkNGY1MWViMjFlNGY1YWZjMmU5MGY4NmQzNmE0NTBiYjQyY2IwNWM2ZjNlMGQ3MDZmOGMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjlmNDkyZmVjMDljYmEwZDNmZTVhNmIxNjA3YTk3NTg4YzdiZjgxNTU2NjYwODMwNzIzNzA1MzhlZDBlZjQyNzEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijg5ZGQ3NWE1NTg3OGI3MTc0OTY2N2VhOWE0OTI0NzMwMzViMTZhZTQzYTlmZmZmOTRkMGNiYjBhNGQ4OTc1MjYifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/app.py#L20952-L21059",
+          "version": "repo-lines-v1:sha256:7061fb4a448461f812a9e78745be3d7d31df9d43c94ab44f2413950f77f7b41d:eyJzZWxlY3RlZExpbmVDb3VudCI6MTA4LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJjMDczZDhmNTQ0MWE0NzY2NDhiMTJjODBkNTYwY2I2MWM4N2Y0ZmNjMzRjYjYyMmNmYTU4Y2EyNWYxNTcxNmEyIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJhMjczY2VhNmE4MDZiZWQ2ZmY2MDIyZTk2NzIzYTM3NzFiZGJlOWQ3NjgyYzM5MTdlNjk4MjMxZTA2Yjc2YmM2IiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI2ZTVmOTMxNGQ2MzExZDcxZDM1NjNlNWQ1MmVmYzVhOGM0MDkxMjkzNzE0ZWQwMzc4ZWM3ZGU2ZGRjNmE5YjdmIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiIzZDVjZmRmZDU3NDhlYzc2OWM2YmNkYWU3MWZmN2Q3NmEwMWNhNjAzY2I0ODc4ZTAzZmZlMzg4NTI3YTM5NmIxIn0"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/app.py#L21431-L21445",
+          "version": "repo-lines-v1:sha256:f6bd28e249354c51d4fd55c52e51dbf1eabe39be2aa4cfd849574d8914a26814:eyJzZWxlY3RlZExpbmVDb3VudCI6MTUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjhiYWQ4MjFkYmY2ZWRiMGYzMjlhYWYzMDBlNjgxNWI3ZGJkN2I2NzRhZDc5NTI3YTU0YWFjN2Y1OGQyMmZmNTYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImRiNDdjZTVkNDc4MDY4NjUxOWIyOTdmZDY0YmFmNmUyNDViMzA5YzcwMWRhM2RjZTE5NTBiYzM1MjM1MzgwMzIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjlmMWU3ZmM3OTJlMTM1Yzg3ODVkMDBhNTIyZDVlNTdiYjQyOGVkOTc5ODA0OWY1NGM2ZGQzNTNjODQ0NzAxMzgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjMzNDViMjc4NTYyYWU0NDVlMmU5Y2YxOGJjZjU2NWE1MzkyZTNkMTExYWQ2MjU1ODI1NjI1YzQ2OTRmMjBlOTIifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/app.py#L21596-L21623",
+          "version": "repo-lines-v1:sha256:53663e05fc1f64df1203be3b2537d7b842719b7dd5e6e956d2a1ba6d4fb98a98:eyJzZWxlY3RlZExpbmVDb3VudCI6MjgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjlmZGE0OGU5NzQzODc3YmFlMmI4OWU1MDM0NmI0NjFkOTgxNzk3MWUyYTEyMmVhMjRhZjY4NGZlNTU3ZDE4OGQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjZiNTIwNzdiZWMwZmQxMTM0NjhhYWUyNTNlOTU1NTM4ZWIyMzNjMDI1MTNmMDdmNjExYjc0NmVlNzc2MzcwZmEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjRkMWE0OTc5NmYzY2Y2M2JjNjlhYWY5Mzc2OGY2NTFiMDc5MzY0ZGM3ZDg4OWVhNTJiZDQwNmUwMDAwZjNjODQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImE5ZjMxNTI1YWIyMTI4YWY4ZDBkNDVjZDc4ZGU2ODE5NGFhNWMxZGJkZmU4NDRlY2YxOThhZThkNjU3YmVlMTEifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_d5a433be463a4c988d3052c3ae0e28fd",
+      "statement": "`LazyToolGroupSummary` creates tool-detail widgets only when expanded, mounts retained rows in batches of eight with an event-loop yield between batches, and on cancellation or expansion failure removes partial children while retaining a collapsed summary.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/tui/widgets/messages.py#L5439-L5500",
+          "version": "repo-lines-v1:sha256:dff2b651d2562fd28614ceeebb5c8a3bc6ad5b2299d4f6588ecd23667aade680:eyJzZWxlY3RlZExpbmVDb3VudCI6NjIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM2ZjhjZDJmZmIxMzY3ODZmMzM3NmYxZjM4ZDg2MzhiYjcwMWQ5YTZkZGQ2ZmYyMWU5YTAzMThmMTk3NzE5OTIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU1NjBkMjJhY2Q3ZTc2NGY2ODlkNWY0MjhlNzIwNzE2NDI2MzYzMjkwOTY1ZmVmNWNhYzZhMTQwMDEwMjRjMjUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijg2ZmFkMmYxMTEyNjMzZjM0ZmY5YjlmOGMyM2Y5YTM0OTkyNDczNzkyYmM1NWUxNDI4MGQwY2YwODZmZDY3NzkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjUxZjc2NjVlNTllODVhZmQxYmQ1NmE0NTY1OTgyYTk3N2U3MmE3M2MzNDI5YWJmZTZjZjUwYjExNmZiYzM0NzIifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/tui/widgets/messages.py#L5539-L5612",
+          "version": "repo-lines-v1:sha256:753297e8f7486897c3ddb9035c866faf8e0d831f2e9c1f86c022d44daf28cf72:eyJzZWxlY3RlZExpbmVDb3VudCI6NzQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImUyNDk2ZTYxNWFiMTM0MTU0NTI0ODM4MDRhZGIyZjNhZDViYzg4ZmRmNTU4OTBhNTNkYmJkYTMyZDE1MjcxNTkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjZlNWVhMTEzYTE4ZTU1ODJkNWI5YmQyNmFkMmE3NTg4YmUzNWFjM2ZlODk1OTg4MmQ2MzFhMzZmYjkwYmUzYTAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQxNjk4ZmUwOTc3ZGZhZTljMjU1OTk3NTc5Y2EyMzQ1YmM2NjI5ZWUwOTRiNjczZWZkNjA2NjU4MTdkN2UzM2MifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/tui/widgets/messages.py#L5613-L5636",
+          "version": "repo-lines-v1:sha256:2862ee8f4b5e15e02f76d24fa973e9578abeac25059abde5ad57f356dfa2dd39:eyJzZWxlY3RlZExpbmVDb3VudCI6MjQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjEzMjk1OTQ1M2VkOTY1YzBiOWFlYzJmNjU3YmMxNTRmZTNlN2U2ODRmNjNjODAwZTUzOGJjZjkxY2JkMWNiMTkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjVhMTUzY2RjMWQ4ODRkNWQyMjhmMThlYWJhMzFhYzBhMzQ2ZWEzNGZjYTRiNTBkZGQyOTMwMjJiY2M1N2MxMjYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjJmODA1ZGJkNjFkMGJmN2E1ZWNjNjhkZTc1YmI4MjE5YzgzYWZkYTEyODQ1MWNiMDIxYTFmOGYzMDRjNGVkNGQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImQ5YjEwYWVmYWY1ZGQ4MTFlMDJiYzdjNWQ3MGQxMjE1NTg4NWYwMzkxMmE0YTQ2ZTYzNzllODllY2EzNGY2YzgifQ"
+        },
+        {
+          "resource": "repo://libs/code/tests/unit_tests/tui/widgets/test_messages.py#L68-L127",
+          "version": "repo-lines-v1:sha256:b194ce2e924645dd3b00aab0a1f673ba1068113285349d02998c427884d2a706:eyJzZWxlY3RlZExpbmVDb3VudCI6NjAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjFiMGEwODMxYmY1YzM3MzRlMTk2OTkzMTliODg2NjFlM2FhNzQyZDAyNTI0ODViZmU2NGM0ZDRmYWZlYTVjODgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjA2ZDVlNmRmMzAyNWY3MWU0Y2IxZWM0ODZmNzY4Mzg4YTA4MjIxNzBlMTc5ZTI0NDZkY2JhOGZhZjkyODIxNDIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImQzZDE3MWRlNzU0MzFhMDIxYTBkOTRmYTc2ZmFiZjBkNzEzOWM4OThjMWEwYjQ0YjQzY2E2MDkwM2ZhMWI4NDUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjZjNmMzYTU2MWU1YjI5ZjIyM2IwNTFkZGQyZmUxZDdmOWQ2YmM5OGQzMGM1NTFjMGY3ZGEzNGE3NjA1NDRkZjcifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_21ff37401f374f7b833feefb2494bd5f",
+      "statement": "Lazy group expansion is persisted across virtualization: collapse snapshots child tool expansion state before unmounting, successful transitions emit `ExpansionChanged`, and the app records group expansion state and snapshots details before pruning.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/app.py#L22217-L22253",
+          "version": "repo-lines-v1:sha256:b398f921f9b89b712ec63d8fc4c858c3dda50ad312c468f60f0a10ed1b0d5c44:eyJzZWxlY3RlZExpbmVDb3VudCI6MzcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxYWJjZDBjYzY5MTNkNGY1MWViMjFlNGY1YWZjMmU5MGY4NmQzNmE0NTBiYjQyY2IwNWM2ZjNlMGQ3MDZmOGMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImVmOTFjMWFjYzc3ZDQ0NDM0MTk0Y2RmYmVhMTFmY2UwM2YwYzhlNjMwMjQ3NTQ1YTJkYTcxMDJhOGZmNjlhZmQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjMyYTIyMTU5ZDI5ZWE0NjQ3NjgyNjdiZTY3M2FjMGJmMjIxMTBmNmIxZmZjNzM2MmUxYzE4MGMzMjg3YTZmM2EiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImYyODEyYWI2OTdkY2ZiZTkwMjUzYjU5YTBiMmI2NmNjMDMxNTJiMTQzNzI2NzIxYjU3YTI2NGZkOTM4NTVjMDEifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/app.py#L22632-L22642",
+          "version": "repo-lines-v1:sha256:cd5b5ee76dae9a6269bf6a69aef675e805721a560691dd1775a1e8324fe6b09b:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ0ZTJkMjg3M2U4NjI1NTlkMmMyOTU1YzNlZGI1MTBmY2I4YjBjM2M2M2E5MzkwNGQzNjY3MDI3OGFmNTc1ZjQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjVjMGI5ODdkOWYwYmQzZjk4NTVmMWFiZjFhNGJhZTUzNjJlMWQ2YTg1ZTU0Nzk1ZWQwODNiNWVlY2Q5YTg0NDAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImE1NDIxOGMzNWQ1Y2JkNjdmNDQ4ZTMxN2EzZTZiZGVmZGI0MTc3MjAxOTA5N2YwYWVhY2VkMjY4NWZjYzFhZTIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjNkMDlkOGU1NjFjZjdhZTgwMzE3YTZiYTE1MDVjODFjZWNmYTM5YTU5M2YzMTMxY2FjYjRkNDg3ODdlMDFhZmMifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/tui/widgets/messages.py#L5544-L5549",
+          "version": "repo-lines-v1:sha256:97bdcaf1db696a721b392501ff1ca203418c92f61516160f199660132cc04175:eyJzZWxlY3RlZExpbmVDb3VudCI6NiwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYWE3MjRhMzlhMzllODkyMWRhYTlhN2NhZTc3MDA1OWUxY2UyMDU0MTM4YTI5YWE0MmVmMTQwY2ViNjk0MGExYiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMDFiYTQ3MTljODBiNmZlOTExYjA5MWE3YzA1MTI0YjY0ZWVlY2U5NjRlMDljMDU4ZWY4Zjk4MDVkYWNhNTQ2YiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiM2YxYjgyZGYwY2ZjZjVhNGM3ZjA4ZDhmYjVkOWNjMjIxZGEwYTZhOTA2OWUyYWE2NTVjNDY1MDRmMzMxNGE0OCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNzBjY2I3Mjc3M2ViZjk1ZDcwNjA1NmU2MTAwOTI4ZDZlYzM1ODJiYjJlNGI4ZjEyNTc3YmQ4ZGVmOTdkMzYxMCJ9"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/tui/widgets/messages.py#L5590-L5609",
+          "version": "repo-lines-v1:sha256:f1f657779727aab1d0e388b9a87849fab35519300876581eff6b9edabf0d3d37:eyJzZWxlY3RlZExpbmVDb3VudCI6MjAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE1N2QyYmZkYWI1ZjI1ZTc5ZTIzZWI0MjlhMjg1N2EwYTcxOTc3NTM3NDA0N2ZiNjViZGM1MDU0ODkzMzQyMDgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc0YzNjODk0NDQ2ODBmZTE5ZmEyYTQzNjUyN2I1NTBjMDkzZjlhYWM1Njg1MzQ1MWUxYWQ5MTA0MWQyZTdmOGQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijc0ODQ3YWI2ZTExZDdkZGU3NThmNTk0ZTZhOGFlYzJhMjEwYWUzNDhiMWQwZTBhYWUzM2VkM2JlZGIwODZhNWIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjJmODA1ZGJkNjFkMGJmN2E1ZWNjNjhkZTc1YmI4MjE5YzgzYWZkYTEyODQ1MWNiMDIxYTFmOGYzMDRjNGVkNGQifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_1d529a3dacb94d388dff715b4f1e49ca",
+      "statement": "The app synchronizes mutable tool-widget state into `MessageStore` and protects pending or running tool rows from virtualization until a known terminal status is recorded.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/app.py#L22590-L22630",
+          "version": "repo-lines-v1:sha256:da173f9b21ffaf0dba79e4c8d87d8a174343c6014586719879118d4ea255116e:eyJzZWxlY3RlZExpbmVDb3VudCI6NDEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjA4N2FjY2FmNjQyYTJkNTUwMTZkMGE4NjZiZDk0YWZkMDkxMzIyYTMwYTFkNzgwNTVjYTVhNmQzOTVlM2I4MzMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjdhYzYzOGE3NWM1Mjk4ZmVmZDc1YzRmY2MwOGQ3NjlkYzViNzljZTAzMTg3NzA1NGQ5YmYyNDhhNjE4MzNhYzciLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImVjOTlmNTg3OTFhNTQ0YTEyOTg4ZmEwMjJjMzRkMmM4YmFhMDY1NWRiNmYxOTk3MzEwYmZlZDBiMzRiNDNmZWIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImU0ZmQ3OTljMzJkNWM5MjZjOGJkMzkzZGMxYzg3ZDFkOTI4N2RlZGZhYzgxYjc3MDI0ZDVhMGI5ZDk3MDE1ZWQifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/tui/widgets/message_store.py#L48-L72",
+          "version": "repo-lines-v1:sha256:20fdef7edb8fd000a02100b432ec97678e0cc75c0b4ce7db79b809030624b173:eyJzZWxlY3RlZExpbmVDb3VudCI6MjUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImM2OGMzMWY5ZDQxMDkwZDE2Yzc4OWFiODkxNjNiMTU1YmNlMDVhYzcyYzM2YWI3MTNjZjExMTE4MzZhZTk5NzQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImEzMDNlY2RkNGE0ZDEwZjE5YzczZmQ0MmZkMTI0MzdmZDMzNTRhODI2ODE2MDVkYTUyNTVhOTdhMzkwNjhkYmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImI2MTNkNzViZjI1MjQ4NmE1ZGI0MTY1MmY0NDUzOTI0NWUxZWI2ODIyOGJiMzc4YTk5OWE3YzcyYzM1Y2M4YzciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImVlMjJlZmFmNzljMGE3NDYxZjg1ZjlhNGE0ZmI0MGRkOGM5MmM1NWIzOGQ0MWE2MmFhZGVjNzZmZjhlYzFhOTQifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/tui/widgets/message_store.py#L699-L705",
+          "version": "repo-lines-v1:sha256:9608c7ac2f3bb50b58ebbc6ce4ff1b44b3f77cabecdb1078a746a63e8285f2cf:eyJzZWxlY3RlZExpbmVDb3VudCI6NywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYjFhNjkwYmFiYzg5NWRkZmEyMjg1MzNmMzQzMWE2ZmFjNDVjZGRkNmNkZTc4OTFjYzkxNGZlMjZkYTc4ZmRkMSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNWFlYzQzNTEwNDEwNzM5YTQ2YWJkNjYwOTA5YzZhMDM5ZmYxZTUzNGY1ZGFhNzg5MTI3Y2FmYTNiMTU0YWUyYyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNTAzNjdiN2EwMmQxNTQ1M2ZkOGM5Zjk5M2RlMDNiMTdhYmNkMWYxMWM4ZDhlYTYxNjZmZWMzMzcwZDM0NThmNiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiOGZlZWY0OTM2NGE3OTUyZjZiNjM5MTVkYWNiYzY5MjY5ZjlhNTcwYWU1YWQ1MmZjNmQxNTFmZjhhNjg1MTQzNiJ9"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-10-27T08:05:40.296Z"
+    "at": "2026-10-29T08:04:29.358Z"
   }
 }

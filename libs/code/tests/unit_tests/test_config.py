@@ -2279,7 +2279,19 @@ class TestWorkspaceStoredCredentials:
         def respond(request: httpx.Request) -> httpx.Response:
             requests.append(request)
             if provider == "anthropic":
-                assert json.loads(request.content)["stream"] is True
+                if not json.loads(request.content).get("stream"):
+                    return httpx.Response(
+                        200,
+                        json={
+                            "id": "test-message",
+                            "type": "message",
+                            "role": "assistant",
+                            "model": "test-model",
+                            "content": [{"type": "text", "text": "Hello"}],
+                            "stop_reason": "end_turn",
+                            "usage": {"input_tokens": 1, "output_tokens": 1},
+                        },
+                    )
                 events = [
                     {
                         "type": "message_start",

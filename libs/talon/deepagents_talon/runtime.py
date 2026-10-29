@@ -397,7 +397,9 @@ class DeepAgentRuntime:
         )
         self._active_approvals: ApprovalSnapshot | None = None
         self.memory = tuple(memory) if memory is not None else None
-        self.checkpointer = checkpointer if checkpointer is not None else InMemorySaver()
+        self.checkpointer = _transcript_saver(
+            checkpointer, assistant_dir or TalonConfig.from_env(self.env).home
+        )
         self.include_web_tools = include_web_tools
         self.recursion_limit = resolved_recursion_limit
         self.max_retries = max_retries
@@ -2087,3 +2089,10 @@ def _current_history_scope() -> ArchiveScope:
         msg = "Conversation tools require a channel and chat supplied by the host"
         raise RuntimeError(msg)
     return scope
+
+
+def _transcript_saver(saver: Checkpointer | None, home: Path) -> Checkpointer:
+    """Bind local hook erasure to archive deletion independently of hook config."""
+    if isinstance(saver, ConversationSaver):
+        saver.transcript_home = home
+    return saver if saver is not None else InMemorySaver()

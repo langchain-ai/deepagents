@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from contextvars import ContextVar
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, TypedDict
 from uuid import UUID, uuid4
 
@@ -14,6 +14,7 @@ from deepagents_code.hooks.models.domain import AgentIdentity
 from deepagents_code.hooks.models.transport import HookInvocationResponse
 from deepagents_code.hooks.runtime import HooksRuntime
 from deepagents_code.hooks.server_middleware import hook_permission_behavior
+from deepagents_talon.hook_transcripts import TRANSCRIPT_LOCK, ConversationTranscripts
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -72,12 +73,15 @@ class TalonHooks:
         """Load trusted assistant hooks once per turn, excluding workspace hooks."""
         if not (home / "hooks.json").is_file():
             return None
-        runtime = HooksRuntime.create(
-            cwd=cwd,
-            config_dir=home,
-            transcript_root=home / "transcripts",
-            workspace_trusted=False,
-        )
+        with TRANSCRIPT_LOCK:
+            transcripts = ConversationTranscripts(home, thread_id, reopen=True)
+            runtime = HooksRuntime.create(
+                cwd=cwd,
+                config_dir=home,
+                transcript_root=transcripts.root,
+                workspace_trusted=False,
+            )
+            runtime = replace(runtime, transcripts=transcripts)
         runtime.presenter.present_diagnostics(runtime.snapshot.diagnostics)
         return cls(
             runtime=runtime,

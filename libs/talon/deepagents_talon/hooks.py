@@ -29,7 +29,6 @@ def hook_approval_required(request: ToolCallRequest) -> bool:
     return hook_permission_behavior(request.state, request.tool_call["id"] or "") != "deny"
 
 
-
 @dataclass
 class TalonHooks:
     """Own one turn's hook snapshot, transcripts, and completed invocations."""
@@ -40,16 +39,7 @@ class TalonHooks:
 
     @classmethod
     def load(cls, home: Path, cwd: Path, thread_id: str) -> TalonHooks | None:
-        """Load operator hooks, excluding workspace and plugin configuration.
-
-        Args:
-            home: Talon configuration directory containing `hooks.json`.
-            cwd: Host working directory for hook commands.
-            thread_id: Conversation owning this turn.
-
-        Returns:
-            An isolated turn adapter, or `None` when no hooks file exists.
-        """
+        """Load trusted assistant hooks once per turn, excluding workspace hooks."""
         if not (home / "hooks.json").is_file():
             return None
         runtime = HooksRuntime.create(
@@ -73,11 +63,7 @@ class TalonHooks:
         )
 
     def record(self, state: object) -> None:
-        """Record committed messages before fulfilling hooks.
-
-        Args:
-            state: Graph result, including interrupted results.
-        """
+        """Record committed messages before fulfilling hooks."""
         if isinstance(state, dict):
             self.runtime.append_messages(
                 str(self.context["thread_id"]),
@@ -91,17 +77,7 @@ class TalonHooks:
     async def resume(
         self, interrupts: Sequence[object]
     ) -> tuple[tuple[object, ...], dict[str, object]]:
-        """Fulfill hook interrupts and leave approvals to Talon.
-
-        Args:
-            interrupts: Interrupts returned by the graph.
-
-        Returns:
-            Remaining interrupts and completed hook resume values.
-
-        Raises:
-            ValueError: If a hook request has an invalid identity or snapshot.
-        """
+        """Fulfill hook interrupts, validating their identities and leaving approvals to Talon."""
         remaining: list[object] = []
         responses: dict[str, object] = {}
         seen: set[str] = set()

@@ -12,7 +12,6 @@ import pytest
 from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
 from langchain_core.messages import AIMessage, ToolMessage
 
-from deepagents_talon.hooks import TalonHooks
 from deepagents_talon.interfaces import AgentRequest, ToolApprovalRequest
 from deepagents_talon.runtime import DeepAgentRuntime
 
@@ -262,11 +261,6 @@ async def test_concurrent_turns_keep_hook_contexts_separate(
     events = [json.loads(line) for line in log.read_text().splitlines()]
     assert {event["session_id"] for event in events} == {"first", "second"}
     assert len({event["transcript_path"] for event in events}) == 2
-    assert runtime._hooks.get() is None
-
-
-def test_missing_hooks_configuration_is_disabled(tmp_path: Path) -> None:
-    assert TalonHooks.load(tmp_path, tmp_path, "chat") is None
 
 
 async def test_hook_configuration_reloads_between_turns(

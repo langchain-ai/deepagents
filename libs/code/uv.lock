@@ -2959,7 +2959,7 @@ wheels = [
 
 [[package]]
 name = "langgraph-api"
-version = "0.16.6"
+version = "0.16.9"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anyio" },
@@ -2998,9 +2998,9 @@ dependencies = [
     { name = "websockets" },
     { name = "zstandard" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/e9/7b/d9348fa2594a7ebc68d1be5bf3e2a13d38a9ddc415a637c274c8e4e5468b/langgraph_api-0.16.6.tar.gz", hash = "sha256:f3b7760d2a1ae0138d20010a334f1547c56ce711c780b2d00a51e6386293c950", size = 872451, upload-time = "2026-10-23T17:05:33.858Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/90/09/4e766b2e0d4b156bb403c0bfdb0e62e4ac85fba2a65e5a0efd47b8715626/langgraph_api-0.16.9.tar.gz", hash = "sha256:f0e70730bb68d65e0064e26a35c2715c28880c1c0ca55f56ae26616e1c8f6754", size = 872724, upload-time = "2026-10-28T22:10:27.732Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/df/3f/55ff431954599624b1916744b777752a805a788700f1c996580557ebcbb2/langgraph_api-0.16.6-py3-none-any.whl", hash = "sha256:ef51c356ed24d068189f0ee4e0d3def7b998320d6fd866341a0008bec43e99cd", size = 650492, upload-time = "2026-10-23T17:05:31.782Z" },
+    { url = "https://files.pythonhosted.org/packages/5c/7e/645132e231381837590c697f910d2c329e74b83532b3eabdcb1a4fff0959/langgraph_api-0.16.9-py3-none-any.whl", hash = "sha256:a6c5da8af6359cfb522ae4d702846ed3ff672bb460f51f585a96541e88d179f6", size = 650713, upload-time = "2026-10-28T22:10:25.539Z" },
 ]
 
 [[package]]

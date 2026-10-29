@@ -47,8 +47,8 @@ research_sub_agent = {
 # Model Gemini 3 
 # model = ChatGoogleGenerativeAI(model="gemini-3-pro-preview", temperature=0.0)
 
-# Model Claude 4.5
-model = init_chat_model(model="anthropic:claude-sonnet-4-5-20250929", temperature=0.0)
+# Model Claude Sonnet 5
+model = init_chat_model(model="anthropic:claude-sonnet-5")
 
 # Create the agent
 agent = create_deep_agent(

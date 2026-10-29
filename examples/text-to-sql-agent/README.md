@@ -257,7 +257,7 @@ View your traces at: <https://smith.langchain.com/>
 
 - [Deep Agents Documentation](https://docs.langchain.com/oss/python/deepagents/overview)
 - [LangChain](https://www.langchain.com/)
-- [Claude Sonnet 4.5](https://www.anthropic.com/claude)
+- [Claude Sonnet 5](https://www.anthropic.com/claude)
 - [Chinook Database](https://github.com/lerocha/chinook-database)
 - [LangChain Academy](https://academy.langchain.com/) — Comprehensive, free courses on LangChain libraries and products, made by the LangChain team.
 - [Code of Conduct](https://github.com/langchain-ai/langchain/?tab=coc-ov-file) — community guidelines and standards

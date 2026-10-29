@@ -27,8 +27,8 @@ def create_sql_deep_agent():
     db_path = os.path.join(base_dir, "chinook.db")
     db = SQLDatabase.from_uri(f"sqlite:///{db_path}", sample_rows_in_table_info=3)
 
-    # Initialize Claude Sonnet 4.5 for toolkit initialization
-    model = ChatAnthropic(model="claude-sonnet-4-5-20250929", temperature=0)
+    # Initialize Claude Sonnet 5 for toolkit initialization
+    model = ChatAnthropic(model="claude-sonnet-5")
 
     # Create SQL toolkit and get tools
     toolkit = SQLDatabaseToolkit(db=db, llm=model)
@@ -36,7 +36,7 @@ def create_sql_deep_agent():
 
     # Create the Deep Agent with all parameters
     agent = create_deep_agent(
-        model=model,  # Claude Sonnet 4.5 with temperature=0
+        model=model,  # Claude Sonnet 5
         memory=["./AGENTS.md"],  # Agent identity and general instructions
         skills=[
             "./skills/"
@@ -52,7 +52,7 @@ def create_sql_deep_agent():
 def main():
     """Main entry point for the SQL Deep Agent CLI"""
     parser = argparse.ArgumentParser(
-        description="Text-to-SQL Deep Agent powered by LangChain Deep Agents and Claude Sonnet 4.5",
+        description="Text-to-SQL Deep Agent powered by LangChain Deep Agents and Claude Sonnet 5",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:

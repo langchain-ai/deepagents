@@ -153,7 +153,7 @@ async def web_search(query: str) -> str:
 from deepagents import create_deep_agent  # noqa: E402
 
 _agent = create_deep_agent(
-    model=ChatAnthropic(model="claude-sonnet-4-5"),
+    model=ChatAnthropic(model="claude-sonnet-5"),
     system_prompt=(
         "You are a thorough research agent. Investigate topics using web search and produce "
         "a well-structured research summary (300–500 words). Cite sources where possible.\n\n"

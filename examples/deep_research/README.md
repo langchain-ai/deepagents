@@ -75,14 +75,14 @@ This provides a user-friendly chat interface and visualization of files in state
 
 ### Custom Model
 
-By default, `deepagents` uses `"claude-sonnet-4-5-20250929"`. You can customize this by passing any [LangChain model object](https://python.langchain.com/docs/integrations/chat/). See the Deep Agents package [README](https://github.com/langchain-ai/deepagents?tab=readme-ov-file#model) for more details.
+When no model is passed, `deepagents` falls back to `"claude-sonnet-4-6"`, but relying on that default is deprecated since `0.5.3`, so pass a model explicitly. You can use any [LangChain model object](https://python.langchain.com/docs/integrations/chat/). See the Deep Agents package [README](https://github.com/langchain-ai/deepagents?tab=readme-ov-file#model) for more details.
 
 ```python
 from langchain.chat_models import init_chat_model
 from deepagents import create_deep_agent
 
 # Using Claude
-model = init_chat_model(model="anthropic:claude-sonnet-4-5-20250929", temperature=0.0)
+model = init_chat_model(model="anthropic:claude-sonnet-5")
 
 # Using Gemini
 from langchain_google_genai import ChatGoogleGenerativeAI

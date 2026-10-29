@@ -70,7 +70,7 @@ Replace the `create_deep_agent` call in `server.py` with your own agent. The Age
 
 ```python
 _agent = create_deep_agent(
-    model=ChatAnthropic(model="claude-sonnet-4-5"),
+    model=ChatAnthropic(model="claude-sonnet-5"),
     system_prompt="You are a ...",
     tools=[your_tool],
 )

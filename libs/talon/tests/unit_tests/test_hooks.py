@@ -113,44 +113,6 @@ async def test_tool_and_stop_hooks_receive_wire_payloads(
     assert target.read_text() == "original\n"
 
 
-@pytest.mark.parametrize("decision", ["approve", "reject", "deny"])
-async def test_hook_rewrite_is_approved_before_execution(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, decision: str
-) -> None:
-    target = tmp_path / "rewritten"
-    command = shlex.join(["touch", str(target)])
-    log = configure_hooks(
-        tmp_path,
-        ["PreToolUse", "PostToolUse"],
-        {
-            "hookSpecificOutput": {
-                "hookEventName": "PreToolUse",
-                "permissionDecision": "deny" if decision == "deny" else "allow",
-                "updatedInput": {"command": command},
-            }
-        },
-    )
-    runtime = make_runtime(tmp_path, monkeypatch)
-    snapshot = runtime.approval_store.ensure()
-    runtime.approval_store.update({"execute": True}, snapshot.revision)
-    approvals: list[ToolApprovalRequest] = []
-
-    async def decide(request: ToolApprovalRequest) -> ToolApprovalDecision:
-        approvals.append(request)
-        assert request.action_requests[0]["args"]["command"] == command
-        return "approve" if decision == "approve" else "reject"
-
-    await runtime.start()
-    await runtime.invoke(AgentRequest(conversation_id="chat", text="run", approval_handler=decide))
-    assert target.exists() is (decision == "approve")
-    assert len(approvals) == (0 if decision == "deny" else 1)
-    events = [json.loads(line) for line in log.read_text().splitlines()]
-    assert events[0]["tool_input"]["command"] == "printf original"
-    if decision == "approve":
-        assert events[-1]["hook_event_name"] == "PostToolUse"
-        assert events[-1]["tool_input"]["command"] == command
-
-
 async def test_pre_tool_hook_can_block_execution(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

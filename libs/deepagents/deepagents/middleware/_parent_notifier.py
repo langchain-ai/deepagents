@@ -1,6 +1,6 @@
 """Lets a deep agent started as an async subagent wake the agent that started it."""
 
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable
 from typing import Any, Literal
 
 from langchain.agents.middleware.types import (
@@ -21,6 +21,7 @@ from deepagents.middleware.async_subagents import (
     _current_run_id,
     _failure_text,
     _final_content,
+    _is_top_level_graph,
     _launching_agent,
     _notify_parent,
     _task_event,
@@ -88,8 +89,3 @@ class _ParentNotifierMiddleware(AgentMiddleware[AgentState, ContextT, ResponseT]
         metadata = config.get("metadata") or {}
         name = str(metadata.get("subagent_name") or metadata.get("graph_id") or "subagent")
         await _notify_parent(config, _task_event(config, name, status, **details), context)
-
-
-def _is_top_level_graph(config: Mapping[str, Any]) -> bool:
-    """Whether this is the outermost graph of a task run, not a graph nested in it."""
-    return "|" not in str((config.get("configurable") or {}).get("checkpoint_ns") or "")

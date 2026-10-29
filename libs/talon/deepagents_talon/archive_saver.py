@@ -15,9 +15,11 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.serde.types import _DeltaSnapshot
 
 from deepagents_talon.archive import ArchiveScope
+from deepagents_talon.hook_transcripts import erase_hook_transcripts
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Collection, Mapping, Sequence
+    from pathlib import Path
 
     from langchain_core.messages import MessageLikeRepresentation
     from langchain_core.runnables import RunnableConfig
@@ -54,6 +56,7 @@ class ConversationSaver(BaseCheckpointSaver[V]):
         super().__init__(serde=checkpointer.serde)
         self.checkpointer = checkpointer
         self.archive = archive
+        self.transcript_home: Path | None = None
         self._lock = asyncio.Lock()
         self._active_sessions: dict[str, int] = {}
 
@@ -80,6 +83,7 @@ class ConversationSaver(BaseCheckpointSaver[V]):
         clone = ConversationSaver(
             self.checkpointer.with_allowlist(extra_allowlist), archive=self.archive
         )
+        clone.transcript_home = self.transcript_home
         clone._lock = self._lock
         clone._active_sessions = self._active_sessions
         return clone
@@ -303,6 +307,8 @@ class ConversationSaver(BaseCheckpointSaver[V]):
             await self._delete_session(thread_id)
 
     async def _delete_session(self, session: str) -> None:
+        if self.transcript_home is not None:
+            erase_hook_transcripts(self.transcript_home, session)
         await self.checkpointer.adelete_thread(session)
         await self.archive.delete_session(session)
 

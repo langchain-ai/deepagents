@@ -1,3 +1,3 @@
 # Files
 
-- [Testing Guide](testing-guide.md) - Focused, deterministic test routing for Deep Agents rubric completion, dcode model-policy resolution, and Textual lazy tool-detail rendering. Use package Makefiles and fake models or UI pilots to validate the behavior boundary that changed.
+- [Testing Guide](testing-guide.md) - Focused, network-free test routing for Deep Agents rubric revisions, pinned skills, summarization, async subagent follow-ups, and Talon hook safety. Use package Makefiles and assert observable state, messages, effects, and cleanup rather than internal call order.

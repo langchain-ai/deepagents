@@ -5,7 +5,7 @@ description: Package graph, ownership boundaries, Python and release contracts, 
 tags: [architecture, monorepo, python, dependencies, releases]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-10-29T08:04:29.358Z
+    at: 2026-10-30T08:04:27.172Z
 sources:
   - id: openwiki-source-9a1c436646ef8c4f6dde787a
     resource: repo://.github/RELEASING.md
@@ -53,7 +53,7 @@ sources:
     resource: repo://README.md
   - id: openwiki-source-482fa4ca84f42b04ba025fc1
     resource: repo://release-please-config.json
-generated: { by: "openwiki/0.4.2", at: "2026-10-29T08:04:29.358Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-10-30T08:04:27.172Z" }
 ---
 
 # Repository Architecture Overview
@@ -64,6 +64,7 @@ This repository is a Python monorepo of independently packaged components, not o
 - [Code agent](./code-agent.md)
 - [Source map](./source-map.md)
 - [Sandbox partners](../integrations/sandbox-partners.md)
+- [Talon](../integrations/talon.md)
 - [Development](../operations/development.md)
 - [Quickstart](../quickstart.md)
 
@@ -129,11 +130,11 @@ flowchart TD
   Code -. "editable checkout" .-> ACP
   Code -. "editable checkouts" .-> Daytona
   Code -. "editable checkouts" .-> Modal
-  Code -. "editable checkout" .-> QuickJS
+  Code -. "editable checkouts" .-> QuickJS
   Code -. "editable checkouts" .-> Runloop
-  Code -. "editable checkout" .-> Vercel
+  Code -. "editable checkouts" .-> Vercel
   Talon -. "editable checkouts" .-> SDK
-  Talon -. "editable checkout" .-> Code
+  Talon -. "editable checkouts" .-> Code
   Evals -. "editable checkout" .-> SDK
   Evals -. "path checkout" .-> Code
   Evals -. "editable checkout" .-> QuickJS
@@ -202,6 +203,8 @@ Talon is an experimental single-event-loop host for channels, cron, and the agen
 Talon is not a production security or multi-tenant isolation boundary. Channel access effectively grants access to configured agent capabilities, credentials, MCP tools, and host resources. By default shell and filesystem tools execute on the host. An opt-in sandbox can move them to a remote provider, but MCP tools, web tools, and channel-media handling remain host-side. Startup failure exits rather than falling back to host execution. Sandbox files are deleted on shutdown unless attaching an existing sandbox ID; host-side skills and memory remain usable.
 
 The `DEEPAGENTS_TALON_CHECKPOINT_URI` scheme selects built-in SQLite, PostgreSQL, or MongoDB checkpoint storage. Trusted installed entry-point plugins can provide other schemes, with built-ins taking precedence and unknown or duplicate schemes failing startup. Checkpoint and conversation-history stores are independent; remote checkpoint thread IDs are not automatically assistant-namespaced, so operators must isolate assistant databases. Talon's persisted history archive is separately assistant-namespaced.
+
+Talon's persistent tool-approval policy is assistant-local and maps exact tool names to booleans. Updates use atomic compare-and-swap revisions; saved changes take effect on the next invocation, current turns retain their snapshots, and invalid policy files fail closed. This controls approval prompts rather than tool availability or sandbox isolation.
 
 ### Evals and partners
 

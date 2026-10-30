@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:e9f3c029ccedd0d9dc329e8ff032ddd948ae59738a156e87718a53c4bfdec5e7",
+  "pageVersion": "sha256:a3c92dfcf0b8997592b91fb32eb5089968d7d987488f84d8b28eadeacbad3333",
   "claims": [
     {
       "id": "claim_7da573d3acfd4e42a24d96f63c118dc3",
@@ -217,20 +217,6 @@
       ]
     },
     {
-      "id": "claim_76e4c36e9cae44fb82c03d2d368a610c",
-      "statement": "The current Release Please manifest baselines are `0.7.32` for the SDK, `0.0.13` for ACP, `0.2.2` for dcode, `0.1.0` for Talon, and `0.0.9`, `0.0.7`, `0.0.7`, `0.0.2`, and `0.3.11` respectively for the Daytona, Modal, Runloop, Vercel, and QuickJS partners; evals is at `0.0.1`.",
-      "evidence": [
-        {
-          "resource": "repo://.release-please-manifest.json#L1-L11",
-          "version": "repo-lines-v1:sha256:550e6f9a91786e785d2b76f2732d0989e591cb8bcaa5e8b0285e399f02a96931:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE2ZmIwOGZkYTFhY2I5NTdiNjExNmJkMzc4MTFhMWZlNDFhMDE2MTFjMDYzMWVkYmY3ODZkNjg4OWEyN2E1NWMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
-        },
-        {
-          "resource": "repo://libs/evals/pyproject.toml#L1-L8",
-          "version": "repo-lines-v1:sha256:3da2c692c4957914a1f1a0d568d79cc40a2fe7b34dc357f2f59ad33b6cf2101f:eyJzZWxlY3RlZExpbmVDb3VudCI6OCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNzAyYTgxYzM4MzZlZGVmMmQwYmExMWQyMzUzZmI2ZGFiYzc3NzE1MGE3Y2E4M2VhMGQ5ZTlhNzAzMTNmZWFiYiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiZWVhMDI0MDUzOTcwNzUwMGE1ZmQ2YjBmMGY4OTMzYjJmNDZlNDFjYTE2MDNmODU4MDgwNWEwMWYxYTMzZGNmNyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjAsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZTNiMGM0NDI5OGZjMWMxNDlhZmJmNGM4OTk2ZmI5MjQyN2FlNDFlNDY0OWI5MzRjYTQ5NTk5MWI3ODUyYjg1NSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNmU4MzQxNjM0MWRkYTQ5OGYxZmI0ZDFjMjhiMjllOTQ4MTU4YzRjMzlmNzc3ZjdmNGM2YzU1OWRiZmJkNzk5OSJ9"
-        }
-      ]
-    },
-    {
       "id": "claim_f9e4042cf2bf47a28e805f877c0e1000",
       "statement": "Package manifests separate publishable dependency constraints in `[project.dependencies]` from local `[tool.uv.sources]` overrides; ACP, dcode, evals, Talon, and QuickJS use sibling-path source mappings, with the evals dcode mapping not marked editable.",
       "evidence": [
@@ -256,7 +242,7 @@
         },
         {
           "resource": "repo://libs/partners/quickjs/pyproject.toml#L25-L32",
-          "version": "repo-lines-v1:sha256:b7f78ee2c100ecb5a70a81b37e58ab1d551453b14dc6edd5d337bdc985e134aa:eyJzZWxlY3RlZExpbmVDb3VudCI6OCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYWQ5NWY1ZTllZGUwMTgxNjA0M2MwNzk3YWNlOGRhMmFjNGU5OWE4YTZhNjEwZmE5ODU3MGVmMzRiOTM1NjEwOSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiZjk0MTZlMDlmNzhiYTMxNmMwMzI1NjgyMTNiODU1ZWU3NTZlNDE1NjVkOTE4ZjA5NTE5YzgxZmQ2MjBmNDA2MCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMTEzNWZlZmJlYzdiNWU2NjIxZmNhMTQ4YjMwOTIzODU4NWI2NWRhZjU3NmM1NDI4ZjZlYzJjNDg2NzM4YThmMCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiM2U5MDhmODEyNzFjNWE2ZTUxODUwNWQ4OGZkYzZlOWUzZjhkOWQ4Y2M3NzgyMTM3YWU3MzgyYWJhMjFkYjJkNyJ9"
+          "version": "repo-lines-v1:sha256:571c6ef4d340d1e19e2585e3a99e8162c0846ebb65daca02e61c38b3ebda3afa:eyJzZWxlY3RlZExpbmVDb3VudCI6OCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYWQ5NWY1ZTllZGUwMTgxNjA0M2MwNzk3YWNlOGRhMmFjNGU5OWE4YTZhNjEwZmE5ODU3MGVmMzRiOTM1NjEwOSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiZjk0MTZlMDlmNzhiYTMxNmMwMzI1NjgyMTNiODU1ZWU3NTZlNDE1NjVkOTE4ZjA5NTE5YzgxZmQ2MjBmNDA2MCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMTEzNWZlZmJlYzdiNWU2NjIxZmNhMTQ4YjMwOTIzODU4NWI2NWRhZjU3NmM1NDI4ZjZlYzJjNDg2NzM4YThmMCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiM2U5MDhmODEyNzFjNWE2ZTUxODUwNWQ4OGZkYzZlOWUzZjhkOWQ4Y2M3NzgyMTM3YWU3MzgyYWJhMjFkYjJkNyJ9"
         },
         {
           "resource": "repo://libs/partners/quickjs/pyproject.toml#L62-L69",
@@ -281,6 +267,6 @@
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-10-29T08:04:29.358Z"
+    "at": "2026-10-30T08:04:27.172Z"
   }
 }

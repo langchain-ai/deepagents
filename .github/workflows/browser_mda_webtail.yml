@@ -1,0 +1,128 @@
+name: "🌐 Browser MDA eval — WebTailBench"
+
+# WebTailBench rather than WebVoyager, which changes one thing that matters:
+# rows ship a 3-6 item rubric instead of a reference answer, so the judge
+# scores the fraction of criteria met rather than answering two yes/no
+# questions. A task where the agent found the flights but not the fare
+# difference is not simply "wrong".
+#
+# Both arms are deployments, so the browser is Browserbase or a sandbox rather
+# than the runner -- no Chrome to install here.
+on:
+  workflow_dispatch:
+    inputs:
+      arms:
+        description: 'JSON list, e.g. ["facade","agent-browser"]'
+        type: string
+        default: '["facade","agent-browser"]'
+      dataset:
+        description: "LangSmith dataset name"
+        type: string
+        default: webtailbench-150
+      file:
+        description: "JSONL seeded into the workspace if the dataset is absent"
+        type: string
+        default: webtailbench_150.jsonl
+      concurrency:
+        description: "Parallel tasks per arm"
+        type: string
+        default: "6"
+      limit:
+        description: "Only the first N tasks (0 = all)"
+        type: string
+        default: "0"
+  # workflow_dispatch only works once this file is on the default branch.
+  # Until then, pushing this branch starts a run with the defaults above.
+  push:
+    branches: [evals/webtail-run]
+
+jobs:
+  prep:
+    runs-on: ubuntu-latest
+    environment: oss
+    outputs:
+      dataset_id: ${{ steps.seed.outputs.dataset_id }}
+    steps:
+      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: true
+      - name: Ensure the dataset exists
+        id: seed
+        working-directory: browser-mda/benchmarks/webtailbench
+        env:
+          LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
+          DATASET: ${{ github.event.inputs.dataset || 'webtailbench-150' }}
+          FILE: ${{ github.event.inputs.file || 'webtailbench_150.jsonl' }}
+        run: |
+          set -euo pipefail
+          uv run --with "langsmith>=0.14.7" python ensure_dataset.py \
+            --dataset "$DATASET" --file "$FILE"
+
+  eval:
+    needs: prep
+    strategy:
+      fail-fast: false
+      matrix:
+        arm: ${{ fromJSON(github.event.inputs.arms || '["facade","agent-browser"]') }}
+    name: "webtail (${{ matrix.arm }})"
+    runs-on: ubuntu-latest
+    environment: oss
+    # The rubric judge makes one Jev call per criterion, so grading is slower
+    # per row here than on WebVoyager.
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: true
+
+      - name: Run the suite
+        working-directory: browser-mda/benchmarks/webtailbench
+        env:
+          # LANGSMITH_API_KEY owns the deployments and the experiments;
+          # ANTHROPIC_API_KEY is the gateway key the Jev judge authenticates
+          # with. One key cannot do both -- that mismatch is what produced
+          # `PermissionDeniedError: Invalid tenant ID`.
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
+          ARM: ${{ matrix.arm }}
+          DATASET: ${{ github.event.inputs.dataset || 'webtailbench-150' }}
+          DATASET_ID: ${{ needs.prep.outputs.dataset_id }}
+          CONCURRENCY: ${{ github.event.inputs.concurrency || '6' }}
+          LIMIT: ${{ github.event.inputs.limit || '0' }}
+        run: |
+          set -euo pipefail
+          LIMIT_ARG=()
+          if [ "$LIMIT" != "0" ]; then
+            LIMIT_ARG=(--limit "$LIMIT")
+          fi
+          uv run --with "langsmith>=0.14.7" --with langgraph-sdk --with httpx \
+            python -u bench_webtail.py \
+              --arm "$ARM" \
+              --dataset "$DATASET" \
+              --dataset-id "$DATASET_ID" \
+              --concurrency "$CONCURRENCY" \
+              "${LIMIT_ARG[@]}" \
+            | tee eval.log
+
+      - name: Summarise
+        if: always()
+        working-directory: browser-mda/benchmarks/webtailbench
+        env:
+          ARM: ${{ matrix.arm }}
+        run: |
+          {
+            echo "## $ARM — WebTailBench"
+            echo
+            grep -E "^experiment project" eval.log || true
+            echo
+            grep -E "^scored|^feedback posted|^project:" eval.log || true
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: always()
+        with:
+          name: webtail-${{ matrix.arm }}-log
+          path: browser-mda/benchmarks/webtailbench/eval.log

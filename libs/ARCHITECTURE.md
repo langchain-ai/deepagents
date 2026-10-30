@@ -66,7 +66,7 @@ Deep Agents installs scaffolding middleware first, inserts caller-supplied middl
 
 The mental model is:
 
-- **Base scaffolding** creates the capabilities expected of a deep agent: planning, filesystem access, subagent delegation, summarization, and request cleanup.
+- **Base scaffolding** creates the capabilities expected of a deep agent: filesystem access, subagent delegation, summarization, and request cleanup. Task planning and todo management are opt-in, not part of the default stack.
 - **Caller middleware** is where applications add their own behavior without rebuilding the harness from scratch.
 - **Profile and tail middleware** tune the final request surface: provider-specific behavior, tool exclusions, prompt caching, memory injection, and human approval.
 
@@ -78,7 +78,7 @@ For the exact default stack and ordering, use the [Customization docs](https://d
 
 The model's visible tools are the result of several layers working together:
 
-- Built-in middleware contributes the standard Deep Agents tools, including todo management, filesystem tools, and subagent delegation.
+- Built-in middleware contributes the standard Deep Agents tools, including filesystem tools and subagent delegation. Todo management (write_todos) is opt-in: pass langchain.agents.middleware.TodoListMiddleware through middleware= to create_deep_agent().
 - Caller-provided `tools=` are added to that set.
 - The resolved backend determines whether shell execution is available. If it is not, the `execute` tool is removed from the model request and shell-specific prompt text is omitted.
 - Harness profiles can hide tools with `excluded_tools` when a provider or model needs a smaller or differently described surface.

@@ -143,10 +143,17 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
                 is not counted against it. A slow or blocking host call can
                 therefore stall an `eval` for longer than `timeout` seconds, so
                 do not rely on it to bound total wall-clock duration.
-                Disabling the deadline permits infinite synchronous execution.
-                Asyncio cancellation or an outer async timeout cannot terminate
-                a spinning worker thread; use enforceable termination such as
-                process isolation when running untrusted code without a deadline.
+
+            !!! danger
+
+                Leave the deadline enabled unless you absolutely need to
+                disable it. With `timeout=None`, an `eval` that never returns
+                (for example `while (true) {}`) runs forever: nothing inside
+                the interpreter stops it, and asyncio cancellation or an outer
+                async timeout cannot terminate the spinning worker thread.
+                Only set `None` when the host enforces its own external limit
+                that can actually stop execution, such as a process or
+                container kill, or a workflow task timeout.
         max_ptc_calls: Maximum number of `tools.*` bridge calls allowed
             during one `eval` execution. Exceeding this budget throws
             from the host-function bridge before invoking the tool.

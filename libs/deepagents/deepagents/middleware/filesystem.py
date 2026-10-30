@@ -35,6 +35,7 @@ from langchain.tools.tool_node import ToolCallRequest
 from langchain_core.exceptions import ModelInvalidRequestError
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, RemoveMessage, ToolMessage
 from langchain_core.messages.content import ContentBlock
+from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool, StructuredTool
 from langgraph.channels.delta import DeltaChannel
 from langgraph.channels.untracked_value import UntrackedValue
@@ -404,6 +405,26 @@ class FilesystemPermission:
             if "~" in parts:
                 msg = f"Permission path must not contain '~': {path!r}"
                 raise NotImplementedError(msg)
+
+
+PROGRAMMATIC_TOOL_CALL_CONFIG_KEY = "__deepagents_programmatic_tool_call_id"
+"""Configurable key naming a tool call made from code rather than by the model.
+
+A caller that invokes tools directly, such as a code interpreter, sets it to the
+`tool_call_id` of that call. Such calls skip human-in-the-loop middleware, so the
+filesystem tools treat `interrupt` rules as denials for them. Matching the id
+keeps the marker from applying to nested calls that inherit the config.
+"""
+
+
+def _is_programmatic_call(config: RunnableConfig, tool_call_id: str | None) -> bool:
+    """Whether the tool call `tool_call_id` was made from code, per `PROGRAMMATIC_TOOL_CALL_CONFIG_KEY`."""
+    marker = (config.get("configurable") or {}).get(PROGRAMMATIC_TOOL_CALL_CONFIG_KEY)
+    return marker is not None and marker == tool_call_id
+
+
+def _approval_error(operation: FilesystemOperation, path: str) -> str:
+    return f"Error: {operation} on {path} requires human approval, which a tool call made from code cannot request. Call the tool directly instead."
 
 
 def _check_fs_permission(
@@ -2062,6 +2083,32 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             raise NotImplementedError(msg)
         self._permissions = list(permissions or [])
 
+    def _rules_for(self, runtime: ToolRuntime[None, FilesystemState]) -> list[FilesystemPermission]:
+        """Rules this call must satisfy: code can't pause for approval, so `interrupt` denies it."""
+        if not _is_programmatic_call(runtime.config, runtime.tool_call_id):
+            return self._permissions
+        return [replace(rule, mode="deny") if rule.mode == "interrupt" else rule for rule in self._permissions]
+
+    def _approval_error_for(self, runtime: ToolRuntime[None, FilesystemState], operation: FilesystemOperation, path: str) -> str | None:
+        """Error for a call from code that reaches an approval-gated path, after deny checks passed."""
+        rules = self._rules_for(runtime)
+        if rules is self._permissions or _permission_error(rules, operation, self.backend, path) is None:
+            return None
+        return _approval_error(operation, path)
+
+    def _permission_error_for(self, runtime: ToolRuntime[None, FilesystemState], operation: FilesystemOperation, path: str) -> str | None:
+        """Deny error for `path`, or the approval error when a call from code needs a human."""
+        return _permission_error(self._permissions, operation, self.backend, path) or self._approval_error_for(runtime, operation, path)
+
+    def _delete_permission_error_for(self, runtime: ToolRuntime[None, FilesystemState], path: str, *, has_descendants: bool) -> str | None:
+        """Delete-specific counterpart of `_permission_error_for`."""
+        if (error := _delete_permission_error(self._permissions, self.backend, path, has_descendants=has_descendants)) is not None:
+            return error
+        rules = self._rules_for(runtime)
+        if rules is not self._permissions and _delete_permission_error(rules, self.backend, path, has_descendants=has_descendants) is not None:
+            return _approval_error("write", path)
+        return None
+
     def _create_ls_tool(self) -> BaseTool:
         """Create the ls (list files) tool."""
         tool_description = self._custom_tool_descriptions.get("ls") or LIST_FILES_TOOL_DESCRIPTION
@@ -2081,7 +2128,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     tool_call_id=runtime.tool_call_id,
                     status="error",
                 )
-            if (error := _permission_error(self._permissions, "read", self.backend, validated_path)) is not None:
+            if (error := self._permission_error_for(runtime, "read", validated_path)) is not None:
                 return ToolMessage(
                     content=error,
                     name="ls",
@@ -2097,7 +2144,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     status="error",
                 )
             infos = ls_result.entries or []
-            paths = _apply_permissions_to_ls_results(self._permissions, infos, backend=self.backend)
+            paths = _apply_permissions_to_ls_results(self._rules_for(runtime), infos, backend=self.backend)
             return ToolMessage(
                 content=_format_file_paths(paths),
                 tool_call_id=runtime.tool_call_id,
@@ -2120,7 +2167,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     tool_call_id=runtime.tool_call_id,
                     status="error",
                 )
-            if (error := _permission_error(self._permissions, "read", self.backend, validated_path)) is not None:
+            if (error := self._permission_error_for(runtime, "read", validated_path)) is not None:
                 return ToolMessage(
                     content=error,
                     name="ls",
@@ -2136,7 +2183,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     status="error",
                 )
             infos = ls_result.entries or []
-            paths = _apply_permissions_to_ls_results(self._permissions, infos, backend=self.backend)
+            paths = _apply_permissions_to_ls_results(self._rules_for(runtime), infos, backend=self.backend)
             return ToolMessage(
                 content=_format_file_paths(paths),
                 tool_call_id=runtime.tool_call_id,
@@ -2285,7 +2332,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     tool_call_id=runtime.tool_call_id,
                     status="error",
                 )
-            if (error := _permission_error(self._permissions, "read", self.backend, validated_path)) is not None:
+            if (error := self._permission_error_for(runtime, "read", validated_path)) is not None:
                 return ToolMessage(
                     content=error,
                     name="read_file",
@@ -2312,7 +2359,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     tool_call_id=runtime.tool_call_id,
                     status="error",
                 )
-            if (error := _permission_error(self._permissions, "read", self.backend, validated_path)) is not None:
+            if (error := self._permission_error_for(runtime, "read", validated_path)) is not None:
                 return ToolMessage(
                     content=error,
                     name="read_file",
@@ -2352,7 +2399,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     status="error",
                 )
 
-            if (error := _permission_error(self._permissions, "write", self.backend, validated_path)) is not None:
+            if (error := self._permission_error_for(runtime, "write", validated_path)) is not None:
                 return ToolMessage(
                     content=error,
                     name="write_file",
@@ -2391,7 +2438,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     status="error",
                 )
 
-            if (error := _permission_error(self._permissions, "write", self.backend, validated_path)) is not None:
+            if (error := self._permission_error_for(runtime, "write", validated_path)) is not None:
                 return ToolMessage(
                     content=error,
                     name="write_file",
@@ -2446,7 +2493,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     status="error",
                 )
 
-            if (error := _permission_error(self._permissions, "write", self.backend, validated_path)) is not None:
+            if (error := self._permission_error_for(runtime, "write", validated_path)) is not None:
                 return ToolMessage(
                     content=error,
                     name="edit_file",
@@ -2488,7 +2535,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     status="error",
                 )
 
-            if (error := _permission_error(self._permissions, "write", self.backend, validated_path)) is not None:
+            if (error := self._permission_error_for(runtime, "write", validated_path)) is not None:
                 return ToolMessage(
                     content=error,
                     name="edit_file",
@@ -2540,7 +2587,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 )
 
             has_descendants = _delete_target_may_have_descendants(resolved_backend, validated_path, permissions_configured=bool(self._permissions))
-            if (error := _delete_permission_error(self._permissions, resolved_backend, validated_path, has_descendants=has_descendants)) is not None:
+            if (error := self._delete_permission_error_for(runtime, validated_path, has_descendants=has_descendants)) is not None:
                 return ToolMessage(
                     content=error,
                     name="delete",
@@ -2581,7 +2628,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             has_descendants = await _adelete_target_may_have_descendants(
                 resolved_backend, validated_path, permissions_configured=bool(self._permissions)
             )
-            if (error := _delete_permission_error(self._permissions, resolved_backend, validated_path, has_descendants=has_descendants)) is not None:
+            if (error := self._delete_permission_error_for(runtime, validated_path, has_descendants=has_descendants)) is not None:
                 return ToolMessage(
                     content=error,
                     name="delete",
@@ -2639,7 +2686,10 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     tool_call_id=runtime.tool_call_id,
                     status="error",
                 )
-            if (error := _resolved_permission_error(self._permissions, "read", self.backend, permission_path)) is not None:
+            if (
+                error := _resolved_permission_error(self._permissions, "read", self.backend, permission_path)
+                or self._approval_error_for(runtime, "read", permission_path)
+            ) is not None:
                 return ToolMessage(
                     content=error,
                     name="glob",
@@ -2711,7 +2761,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     status="error",
                 )
             infos = glob_result.matches or []
-            paths = _apply_permissions_to_glob_results(self._permissions, infos, backend=self.backend)
+            paths = _apply_permissions_to_glob_results(self._rules_for(runtime), infos, backend=self.backend)
             return ToolMessage(
                 content=_format_glob_tool_result(
                     paths,
@@ -2746,7 +2796,10 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     tool_call_id=runtime.tool_call_id,
                     status="error",
                 )
-            if (error := _resolved_permission_error(self._permissions, "read", self.backend, permission_path)) is not None:
+            if (
+                error := _resolved_permission_error(self._permissions, "read", self.backend, permission_path)
+                or self._approval_error_for(runtime, "read", permission_path)
+            ) is not None:
                 return ToolMessage(
                     content=error,
                     name="glob",
@@ -2786,7 +2839,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     status="error",
                 )
             infos = glob_result.matches or []
-            paths = _apply_permissions_to_glob_results(self._permissions, infos, backend=self.backend)
+            paths = _apply_permissions_to_glob_results(self._rules_for(runtime), infos, backend=self.backend)
             return ToolMessage(
                 content=_format_glob_tool_result(
                     paths,
@@ -2835,7 +2888,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                         tool_call_id=runtime.tool_call_id,
                         status="error",
                     )
-                if (error := _permission_error(self._permissions, "read", self.backend, path)) is not None:
+                if (error := self._permission_error_for(runtime, "read", path)) is not None:
                     return ToolMessage(
                         content=error,
                         name="grep",
@@ -2846,7 +2899,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             effective_max_count = max_count if max_count is not None else self._grep_max_count
             grep_result = _grep_backend(resolved_backend, pattern, path, glob, effective_max_count)
             matches = grep_result.matches or []
-            filtered_matches = _filter_grep_matches_by_permission(self._permissions, matches, operation="read", backend=self.backend)
+            filtered_matches = _filter_grep_matches_by_permission(self._rules_for(runtime), matches, operation="read", backend=self.backend)
             formatted, status = _format_grep_tool_result(
                 GrepResult(error=grep_result.error, matches=filtered_matches, truncated=grep_result.truncated),
                 output_mode,
@@ -2881,7 +2934,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                         tool_call_id=runtime.tool_call_id,
                         status="error",
                     )
-                if (error := _permission_error(self._permissions, "read", self.backend, path)) is not None:
+                if (error := self._permission_error_for(runtime, "read", path)) is not None:
                     return ToolMessage(
                         content=error,
                         name="grep",
@@ -2892,7 +2945,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             effective_max_count = max_count if max_count is not None else self._grep_max_count
             grep_result = await _agrep_backend(resolved_backend, pattern, path, glob, effective_max_count)
             matches = grep_result.matches or []
-            filtered_matches = _filter_grep_matches_by_permission(self._permissions, matches, operation="read", backend=self.backend)
+            filtered_matches = _filter_grep_matches_by_permission(self._rules_for(runtime), matches, operation="read", backend=self.backend)
             formatted, status = _format_grep_tool_result(
                 GrepResult(error=grep_result.error, matches=filtered_matches, truncated=grep_result.truncated),
                 output_mode,

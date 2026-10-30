@@ -1,8 +1,11 @@
 ---
 type: model and profile configuration
-title: dcode Models and Profiles
-description: Explains the separation between Deep Agents SDK construction and harness profiles, dcode model policy and capability configuration, and narrow runtime recovery for truncated model output.
+title: Profiles and Models
+description: Explains how Deep Agents provider and harness profiles, dcode model policy and capability configuration, and provider package compatibility remain separate.
 tags: [models, sdk-profiles, dcode, provider-configuration, model-catalog, reasoning]
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-10-30T08:04:27.172Z
 sources:
   - id: openwiki-source-aaf94db4700b8db4f60bdba9
     resource: repo://libs/code/deepagents_code/_glm_5p2_profile.py
@@ -36,15 +39,16 @@ sources:
     resource: repo://libs/deepagents/deepagents/profiles/harness/harness_profiles.py
   - id: openwiki-source-1098130d42873f13aba9f5c2
     resource: repo://libs/deepagents/deepagents/profiles/provider/provider_profiles.py
+  - id: openwiki-source-478a579b56d29c6928ec2320
+    resource: repo://libs/deepagents/pyproject.toml
   - id: openwiki-source-dd120a1be03e34bad3c59b22
     resource: repo://libs/evals/deepagents_harbor/langgraph_project/langgraph_agent.py
-generated: { by: "openwiki/0.4.2", at: "2026-10-29T08:04:29.358Z" }
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-10-29T08:04:29.358Z
+  - id: openwiki-source-665a21e2fbd09a89d3f13ac0
+    resource: repo://libs/talon/deepagents_talon/runtime.py
+generated: { by: "openwiki/0.4.2", at: "2026-10-30T08:04:27.172Z" }
 ---
 
-# dcode Models and Profiles
+# Profiles and Models
 
 “Profile” has several deliberately separate meanings. The Deep Agents SDK uses **provider profiles** to construct a model from a string and **harness profiles** to adapt the agent graph. dcode uses **capability profiles** to describe a model for selection, prompt metadata, and reasoning controls; it also has a launch-selected user profile that owns configuration and state. Installing an integration or registering an SDK profile does not, by itself, make a model selectable, credentialed, or permitted in dcode.
 
@@ -86,9 +90,13 @@ Harness lookup similarly prefers an exact spec and falls back to provider-level 
 
 Harness exclusions are not authorization controls. Required filesystem and subagent scaffolding cannot be removed, unmatched exclusions fail assembly, and tool exclusion runs after tool-injecting and custom middleware. This ordering makes tool exclusion the supported way to hide an injected tool from the model.
 
+Talon is a separate, experimental host that honors the same construction boundary. Its runtime resolves an environment-adjusted model and, when that result is still a string, calls `apply_provider_profile()` before `init_chat_model()`; it leaves a prebuilt model unchanged. For an OpenAI base URL or unified gateway, it starts from profile kwargs and then applies the host connection values, with the unified gateway explicitly disabling `use_responses_api`; an optional context-size setting is applied to the constructed model afterward. Talon therefore consumes provider profiles but does not make them a model-selection or harness-policy mechanism.
+
 ## dcode configuration, construction, and capability data
 
-The distribution pins `deepagents==0.7.32`. Anthropic, Google GenAI, and OpenAI integrations are core dependencies; other supported integrations are optional provider extras, including the `all-providers` convenience extra. Packaging only makes an integration importable: enablement, credentials, configured lists, capability requirements, and `models.allowed` separately control usability.
+The dcode distribution requires Python `>=3.14,<3.15` and pins `deepagents==0.7.32`; the SDK manifest is itself version `0.7.32` and supports Python `>=3.11,<4.0`. In a workspace, dcode's `tool.uv.sources` can point `deepagents` at the sibling editable checkout, but that development override does not widen the released dcode requirement. Keep the exact pin and the SDK manifest version aligned when changing profile-facing behavior.
+
+Anthropic, Google GenAI, and OpenAI integrations are core dcode dependencies; other supported integrations are optional provider extras, including the `all-providers` convenience extra. The SDK core manifest includes Anthropic and Google GenAI, while its `aws`, `quickjs`, and `video` integrations are optional extras. Packaging only makes an integration importable: enablement, credentials, configured lists, capability requirements, and `models.allowed` separately control usability.
 
 A provider configuration can supply `enabled`, explicit `models`, credential/base-URL names, constructor `params`, capability `profile` overrides, or a trusted `class_path`. The latter imports and instantiates arbitrary Python from user configuration and consequently has the same trust implications as other local executable configuration. Provider-wide `params` and `profile` fields can contain per-model subtables; the per-model mapping shallowly wins.
 

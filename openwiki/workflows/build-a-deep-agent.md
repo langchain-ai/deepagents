@@ -1,11 +1,8 @@
 ---
 type: workflow
-title: Build and Customize a Deep Agent
-description: Assemble and safely customize a Deep Agents graph by selecting inputs, profiles, middleware, subagents, permissions, and focused construction-invariant tests.
-tags: [deepagents, langgraph, middleware, profiles, subagents, permissions, testing]
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-10-24T08:05:08.866Z
+title: Build a Deep Agent
+description: Assemble and safely customize a Deep Agents graph with skills, context compaction, rubric completion, synchronous delegation, and durable remote async task follow-ups.
+tags: [deepagents, langgraph, middleware, subagents, async-tasks, rubric, testing]
 sources:
   - id: openwiki-source-68ae2141dbec1e0915410ac3
     resource: repo://libs/ARCHITECTURE.md
@@ -23,6 +20,8 @@ sources:
     resource: repo://libs/deepagents/deepagents/middleware/async_subagents.py
   - id: openwiki-source-fed4b84a38685f37e58018c5
     resource: repo://libs/deepagents/deepagents/middleware/filesystem.py
+  - id: openwiki-source-b93c32bc33a8fa17b52b8a0e
+    resource: repo://libs/deepagents/deepagents/middleware/rubric.py
   - id: openwiki-source-66cf9d0832d3cb55bec2b5ed
     resource: repo://libs/deepagents/deepagents/middleware/skills.py
   - id: openwiki-source-f763e99e439a1356866a7aa4
@@ -37,10 +36,13 @@ sources:
     resource: repo://libs/deepagents/tests/unit_tests/test_graph.py
   - id: openwiki-source-851e3a9c96663d8db5ca3dec
     resource: repo://libs/deepagents/tests/unit_tests/test_permissions.py
-generated: { by: "openwiki/0.4.2", at: "2026-10-24T08:05:08.866Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-10-30T08:04:27.172Z" }
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-10-30T08:04:27.172Z
 ---
 
-# Build and Customize a Deep Agent
+# Build a Deep Agent
 
 `create_deep_agent` is the public assembly boundary for the Deep Agents harness. It resolves a model and harness profile, constructs middleware around LangChain `create_agent`, and returns a compiled LangGraph graph. Filesystem access, delegation, context summarization, skills, asynchronous work, and human approval are middleware, so an option can change both the model-visible and executable tool surface.
 
@@ -75,8 +77,11 @@ result = agent.invoke(
 flowchart TD
     Input["Builder inputs"] --> Resolve["Resolve model and harness profile"]
     Resolve --> Backend["Use supplied backend or StateBackend"]
-    Backend --> Agents["Classify inline and async subagents"]
-    Agents --> Core["Filesystem, optional task, parent notifier, summarization, patch calls, optional async"]
+    Backend --> Agents["Classify subagent specifications"]
+    Agents --> Sync["Inline SubAgent and CompiledSubAgent add task"]
+    Agents --> Remote["AsyncSubAgent adds remote async task tools"]
+    Sync --> Core["Assemble filesystem and core middleware"]
+    Remote --> Core
     Core --> Tail["Profile, skills, prompt caching, memory, approval, unsupported content"]
     Tail --> FirstFilter["Apply profile middleware exclusions"]
     FirstFilter --> Custom["Replace matching middleware or insert new middleware"]
@@ -85,7 +90,7 @@ flowchart TD
     ToolFilter --> Compile["create_agent with recursion limit 9999"]
 ```
 
-Caption: Construction classifies subagents, assembles the complete core and tail, applies exclusions around custom middleware, then compiles the LangGraph agent.
+Caption: Construction routes synchronous `task` delegation and durable remote async-task control into different middleware before applying the shared customization pipeline.
 
 The core is `FilesystemMiddleware`; `SubAgentMiddleware` only when synchronous subagents exist; `_ParentNotifierMiddleware`; summarization; `PatchToolCallsMiddleware`; and `AsyncSubAgentMiddleware` when remote/background specs exist. The tail is profile extra middleware, optional `SkillsMiddleware`, provider prompt-caching middleware, optional memory, auto-derived HITL, and `UnsupportedContentMiddleware`.
 
@@ -182,7 +187,31 @@ Provider-payload tests additionally verify the placement of disclosure blocks: i
 
 Skills are scoped to their middleware instance. An isolated declarative subagent gets skills only from its own `skills` or matching middleware configuration. A fork mirrors parent prompt-producing middleware, including skills, but starts with its own disclosure record.
 
-## 6. Treat capability, permission, and approval as separate controls
+## 6. Add rubric completion when the final answer needs verification
+
+`RubricMiddleware` is opt-in custom middleware; `create_deep_agent` does not add it automatically. Include it in `middleware=` and provide `rubric` in invocation state to state what completion means. On a natural agent stop (an AI response without tool calls), it builds a separate, lazily initialized grader agent with structured `GraderResponse` output and evaluates a bounded, sanitized transcript. Without a rubric, the middleware is a no-op.
+
+```python
+from deepagents import create_deep_agent
+from deepagents.middleware.rubric import RubricMiddleware
+
+agent = create_deep_agent(
+    model=model,
+    middleware=[RubricMiddleware(model=grader_model, max_iterations=3)],
+)
+result = agent.invoke(
+    {
+        "messages": [{"role": "user", "content": "Implement the change."}],
+        "rubric": "- The implementation is complete\n- Focused tests pass",
+    }
+)
+```
+
+A `needs_revision` verdict injects actionable grader feedback as a marked `HumanMessage` and jumps to the model for another attempt. `satisfied` ends normally. `failed` means the grader considers the rubric malformed or impossible to evaluate; `grader_error` means grader machinery failed; and a continuing verdict at `max_iterations` becomes `max_iterations_reached`. These terminal outcomes leave the agent's most recent answer intact, so automation that must distinguish success from a cap, a malformed rubric, or grader failure should read `_rubric_status` from returned/checkpointed state, consume `on_evaluation`, or observe the `rubric_evaluation_*` stream events.
+
+The middleware keeps `rubric` public but records its status, iteration count, grading-run ID, frozen criterion list, and evaluation history in private state. A different rubric—or reusing the same rubric after a terminal result—starts a new grading run and budget. The grader treats transcript content as untrusted, uses nonce-delimited rubric/transcript payloads, and validates structured criterion verdicts. It retries one under-covered evaluation; a purported `satisfied` result that remains under-covered is downgraded rather than accepted. Do not depend on a rubric in parent state to constrain delegated workers: synchronous subagent boundaries deliberately prevent the parent rubric from being inherited or overwritten.
+
+## 7. Treat capability, permission, and approval as separate controls
 
 Filesystem operations run through the backend. `execute` works only when it implements `SandboxBackendProtocol`; otherwise its tool returns an error. A state-backed backend adds the `files` state channel, including when a `CompositeBackend` route uses `StateBackend`. Backend selection is therefore both a persistence and shell-capability choice.
 
@@ -192,13 +221,13 @@ Filesystem permissions are ordered, first-match `allow`, `deny`, or `interrupt` 
 
 Recursive deletion is stricter than ordinary first-match resolution: it is all-or-nothing and refuses a directory deletion if a deny-write pattern overlaps the target subtree in either direction. A confirmed plain-file delete can use normal first-match behavior. A backend that supports execution rejects filesystem permissions because the policy does not govern shell execution. A `CompositeBackend` is permitted when its default backend is not sandbox-capable, including when a sandbox exists only on a route; scope rules accordingly and configure containment at the tool/backend boundary. Permissions and HITL are therefore not sandboxing.
 
-## 7. Verify the final graph and invocation path
+## 8. Verify the final graph and invocation path
 
 For builder, profile, ordering, exclusion, state-schema, or inheritance changes, begin with `tests/unit_tests/test_graph.py`. Its focused cases inspect the middleware passed to `create_agent` and the compiled tool node: default delegation, prompt assembly, provider-caching and skills placement, same-name replacement, state-schema propagation, and fork behavior. Treat these as construction-invariant regressions, not broad behavioral smoke tests. Cover both sides of the changed branch: default general-purpose enabled/disabled; matching-name replacement versus novel insertion; and exclusions before and after custom middleware. In particular, cover class versus name exclusion, protected scaffolding rejection, no-match failure, and collision failure when changing profile filtering.
 
 For async-subagent changes, run `tests/unit_tests/test_async_subagents.py` for middleware-level state, local/remote-client behavior, fork snapshots, child-owned waiting/approval behavior, notification delivery, and webhooks. Its queued-update cases verify `pending` state, accumulated `superseded_run_ids`, rejection of parallel same-turn follow-ups, non-terminal earlier notifications, and cancellation of queued and earlier active runs. Then run the `TestAsyncSubagentEndToEnd` cases in `tests/unit_tests/test_end_to_end.py`; they use mocked LangGraph SDK clients to exercise the complete graph loop from a model tool call through remote launch or control and the resulting `async_tasks` state, including coexistence of synchronous `task` and all five asynchronous controls.
 
-For compaction changes, run `tests/unit_tests/middleware/test_compact_tool.py` for manual-tool registration, eligibility, successful event/archive updates, cumulative cutoffs, corrupt-event fallback, and no-state-change failure handling. Pair it with `tests/unit_tests/middleware/test_summarization_middleware.py` when changing automatic summaries, offload/media handling, overflow recovery, or reasoning-boundary behavior. For permission changes, run `tests/unit_tests/test_permissions.py`. It covers rule validation and first-match behavior, deny enforcement, recursive-delete containment, sandbox-backend rejection, path-aware interrupt predicates including pathless/current-directory and absolute-glob bypass cases, and symlink-resolved enforcement. For skill tools, run the semantic suite and the provider-payload suite; the latter validates actual Anthropic and OpenAI request placement, not just in-memory model history.
+For compaction changes, run `tests/unit_tests/middleware/test_compact_tool.py` for manual-tool registration, eligibility, successful event/archive updates, cumulative cutoffs, corrupt-event fallback, and no-state-change failure handling. Pair it with `tests/unit_tests/middleware/test_summarization_middleware.py` when changing automatic summaries, offload/media handling, overflow recovery, or reasoning-boundary behavior. For rubric completion, run `tests/unit_tests/middleware/test_rubric_middleware.py` for state resets, transcript isolation, structured grading, under-coverage handling, terminal outcomes, and callback/stream behavior; pair it with `TestRubricMiddlewareEndToEnd` in `tests/unit_tests/test_end_to_end.py` to check real graph looping and checkpointed state. For permission changes, run `tests/unit_tests/test_permissions.py`. It covers rule validation and first-match behavior, deny enforcement, recursive-delete containment, sandbox-backend rejection, path-aware interrupt predicates including pathless/current-directory and absolute-glob bypass cases, and symlink-resolved enforcement. For skill tools, run the semantic suite and the provider-payload suite; the latter validates actual Anthropic and OpenAI request placement, not just in-memory model history.
 
 ```bash
 cd libs/deepagents
@@ -207,7 +236,8 @@ make test TEST_FILE=tests/unit_tests/test_graph.py
 make test TEST_FILE=tests/unit_tests/test_async_subagents.py
 make test TEST_FILE=tests/unit_tests/middleware/test_compact_tool.py
 make test TEST_FILE=tests/unit_tests/middleware/test_summarization_middleware.py
-make test TEST_FILE=tests/unit_tests/test_end_to_end.py PYTEST_EXTRA="-k AsyncSubagent"
+make test TEST_FILE=tests/unit_tests/middleware/test_rubric_middleware.py
+make test TEST_FILE=tests/unit_tests/test_end_to_end.py PYTEST_EXTRA="-k 'AsyncSubagent or RubricMiddleware'"
 make test TEST_FILE=tests/unit_tests/test_permissions.py
 make test TEST_FILE=tests/unit_tests/middleware/test_skill_tools.py
 make test TEST_FILE=tests/unit_tests/middleware/test_skill_tools_payload.py
@@ -223,5 +253,6 @@ make lint
 4. Choose isolated versus forked subagents deliberately; configure compiled and remote workers independently.
 5. For remote workers, use `ainvoke` if no `url` is supplied; retain `async_tasks`; configure the child graph's state, resources, and approvals independently; and test launch, waiting, webhook/notification, control, enqueue, superseded outcomes, and cancellation.
 6. For compaction, test automatic and manual paths, eligibility, archive failure, malformed events, reasoning boundaries, and fork snapshots after compaction.
-7. For skills, test reload, read/pin-gated disclosure, compaction withdrawal, resolver stability, checkpoint rebuilding, and real provider payloads.
-8. Treat filesystem permissions, HITL approval, and backend sandboxing as distinct safeguards; test recursive deletion and symlink paths.
+7. For rubric completion, pass a rubric at invocation, test satisfied/revision/capped/error outcomes, and inspect private status or evaluation events rather than inferring completion from the last answer.
+8. For skills, test reload, read/pin-gated disclosure, compaction withdrawal, resolver stability, checkpoint rebuilding, and real provider payloads.
+9. Treat filesystem permissions, HITL approval, and backend sandboxing as distinct safeguards; test recursive deletion and symlink paths.

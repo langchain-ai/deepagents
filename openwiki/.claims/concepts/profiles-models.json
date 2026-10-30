@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:5b23bc5ddafc052b519291e51ec867ce26cde23239373a9873abf54b7890d6dc",
+  "pageVersion": "sha256:5fbe4e9242dbf8ea7863eda2aaceea8ff8a14b5ff28cbf0ad83d7736079a99bb",
   "claims": [
     {
       "id": "claim_f69e854889dc465d8c71bec1dd14bbd5",
@@ -172,7 +172,7 @@
       "evidence": [
         {
           "resource": "repo://libs/code/pyproject.toml",
-          "version": "repo-file-v1:sha256:22ec363c9f012dd844da3b0bf989d5505c65be37c15ff61b31209406e42c80c9"
+          "version": "repo-file-v1:sha256:f1f057e358ca817b9c4d3a2cdb1a46ed0ffa38a6e86c623ad53f80a8e090b144"
         }
       ]
     },
@@ -275,10 +275,46 @@
           "version": "repo-file-v1:sha256:1fbe49e42dd963e5038c30ccbefe896ac2746dfe01299feee14b8c96d987f39a"
         }
       ]
+    },
+    {
+      "id": "claim_7f00ab756ebf4225ac9f05bfb43bb47e",
+      "statement": "dcode requires Python >=3.14,<3.15 and pins deepagents==0.7.32, while the deepagents 0.7.32 manifest supports Python >=3.11,<4.0; the dcode workspace's editable deepagents source is a development override rather than a released compatibility expansion.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/pyproject.toml#L213-L215",
+          "version": "repo-lines-v1:sha256:6e6868776aab674b3df0ee549a3d04ff3151e21856ed6ae8344979e72bbc14b7:eyJzZWxlY3RlZExpbmVDb3VudCI6MywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMTZlZjAyYjBhNGFiNjg1M2FlNmIyYTI1YjNiMzU4ZmU1ODM3OTk3YjM0ZWU0MWY5MjI3Njc5YWExYzkwMWM4NyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMTQ5NTkyNjQxZTExMjBkZDE1YzdjYWE4YmIxNjVkNTU1YzkwODUwMWJhM2ZiZjUzYmVmM2ZlMmMxY2E5N2RmMCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNmZlYjcxZTU4NGZjZjYxMzlmMTU4ODY4OGM2NDE3Nzc0Y2ZjOTFjZjNhZGNlYmRhMzYzMjY2NWIyNGI4NzJlMSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMDVkYjkzYmUzZDg3ZGU3MmJiMGFhNzQxYTRiNzhhZGEwYzA3NGJhMGJmZmYwY2FiZDlmMzFjYmM4YWZhNTNjMiJ9"
+        },
+        {
+          "resource": "repo://libs/code/pyproject.toml#L26-L29",
+          "version": "repo-lines-v1:sha256:be823e874cf2d1bb2f3beda0dff4a239b5e6d369616fc7f29a52e6e54a45b6fd:eyJzZWxlY3RlZExpbmVDb3VudCI6NCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYWQ5NWY1ZTllZGUwMTgxNjA0M2MwNzk3YWNlOGRhMmFjNGU5OWE4YTZhNjEwZmE5ODU3MGVmMzRiOTM1NjEwOSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNGJjYjFhY2U3YTk0Y2MyNGEzYmJkMjE0NThlZmNhNGMxMmI3ZTFhYmEzOWZhNGUxM2NhZmViZjZjMWU2YTFhMCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiYWFmZDBkOTg5MzkxYzAwN2E3ZDdhYzQ1YjQ5YmZjZjcyMTQ5Y2U2MDcxODM5MGJjZTQxNDMwNmQ0ZDhhNDZkNCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMjk4MTJmOTcxN2VmMDBmNmVhNTk1ZDJmOGY2NDIwNDg1MjE3MmIwOTE1OTI3OGZkYjJiMWM0MzM1NTJiYzlmYyJ9"
+        },
+        {
+          "resource": "repo://libs/code/pyproject.toml#L5-L13",
+          "version": "repo-lines-v1:sha256:c42d94422e9aa4d9d47a33349036f5d4c9f0390733c0119cd01daf0c6def74c5:eyJzZWxlY3RlZExpbmVDb3VudCI6OSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNzAyYTgxYzM4MzZlZGVmMmQwYmExMWQyMzUzZmI2ZGFiYzc3NzE1MGE3Y2E4M2VhMGQ5ZTlhNzAzMTNmZWFiYiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiYzA0OTk4ZTEzNzE2NmY1MmJhNzA5NDBmNTcwODNjZWRiNTY0ZWE4NWFlYzhjOGRjZjNkNTFkYzY0MDMzNDJhYyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZjEzN2FhYWFjOGFmNGYwY2JiMDhhNzFmNmU1NGMyOGZiMGE0ODFiN2VhZGVlYTEyMTM0YzQ3Mzg3NTM0ZTdmOCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNmVjMWJjNjYwNjVmZjFlMzg2NTc1NzkyMzM5NWZlNTdjOWRiMGFhMTQ1NzYyODEwZDU3NDBhY2QzYmQwM2IxZSJ9"
+        },
+        {
+          "resource": "repo://libs/deepagents/pyproject.toml#L2-L8",
+          "version": "repo-lines-v1:sha256:40053111728a175410e32457e728457d109a4e6d5d455742f6afde52bef8dee0:eyJzZWxlY3RlZExpbmVDb3VudCI6NywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMTM0ZGVlNTM2YjI1Y2VkODU3NDc5OGQ3ZTYxZGU2MDJhYWUxNjlkYThjYjk3MGFjZTFiYjhmZGE1Yzk0ZGJmNyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMjhjMGU5MDkzY2QzZTgwYTIzMTNiYWE0YzlmNWNmYzIwMjU0MmJmMzg2NmYxZTAzNTJmNzI3ODJlY2Y0ODA3MSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjEsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNzAyYTgxYzM4MzZlZGVmMmQwYmExMWQyMzUzZmI2ZGFiYzc3NzE1MGE3Y2E4M2VhMGQ5ZTlhNzAzMTNmZWFiYiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiODZlNGQ0ZDY5ZTk0NThhYWUxMDViYjQ3MjAwMzY4NjRlMGZiOWQ3MTc5NWMxMzYxZmQ2YWY4MTBjMDNkZTMzMyJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_7908a4bf80fb4414b2d454eb5b0a8d1f",
+      "statement": "Talon applies the SDK ProviderProfile when its environment-adjusted model remains a string, then constructs it with init_chat_model; prebuilt models bypass that construction, and Talon's OpenAI gateway/base-URL settings layer over the profile-derived kwargs.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/deepagents_talon/runtime.py#L1601-L1631",
+          "version": "repo-lines-v1:sha256:fe46932272a95a197c3f06ca6223d4e31e71f21afc5ec13219150f4b7e6c9ead:eyJzZWxlY3RlZExpbmVDb3VudCI6MzEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY2NDBmZWIwN2I5NzIzMjg5YTZjNWJhZjBjYTFiMDUzYjk1NzRmYzY2MjdmM2YwY2IwMTk5NjY2NDkwYWJiM2QiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjNiNDQ3YTlkMDRlZTAwZWYwNmI3YmNhZGM4MWU1MmExNWMyNjgzNTk4OGE0ZDNjMzViNjBhYzgzMTMyMzMxZWYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjhjYzRhN2QxY2M3OTZhYmEzZTQ2NzIzMzI3ZjUxN2U5ZjgxMTk4MmQyNTBmMDcwMjk4NmU0YjU3NjRhZDk1ODkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQ0NmM2ZWMyZDZkZWNmNTU4NjM2MTE3ZTczYzMwMWZlYjcwOGNhZTlmNjdjYmZkNjNlNmQyMmZlNmI2OTBlNTYifQ"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/runtime.py#L945-L951",
+          "version": "repo-lines-v1:sha256:bb7d0cab1a2d1c3ae2862ee2e2608661ea7ab6abd6cd23b34556c3bb96ad138c:eyJzZWxlY3RlZExpbmVDb3VudCI6NywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMzIyYjQyNTQxZTNmNjI3ZjhjZjQyMDY3NjhkZTI4NjA4MTVlZGJiYTc5YWE2ZTczMTZlNmQwNjAwNWM1M2VkMiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNTYyMmI3NzRiMTFhMjU0ZGU5NTUyYzIxYjE5NjExYTcxODU3NjVhMjEwNmZjZDM5MmRlNDVhZmNhYzAzOTk4OCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNjM0Mzk1NmMzMzZmNGQzZTNhYjBhNDM1NDcyMDhmMzg2ZjQwNjIzNTYwZjk5NTU3YmIzY2EzNmY5YzhiMmU3NCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZGI4MmM5OGM3NmRmM2QxMmUxZDQzMmFmMWNiODk5MWJmY2M0YjUwOGFiYjE2Njg3OTM5MzczNjRmMzZkYjRiYiJ9"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-10-29T08:04:29.358Z"
+    "at": "2026-10-30T08:04:27.172Z"
   }
 }

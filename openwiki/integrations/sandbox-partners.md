@@ -3,9 +3,6 @@ type: integration architecture
 title: Sandbox and Partner Integrations
 description: How dcode discovers, configures, and owns the lifecycle of optional remote sandbox providers, and how the separate QuickJS package supplies durable in-process JavaScript REPL middleware.
 tags: [dcode, sandbox, integrations, providers, quickjs, persistence]
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-10-29T08:04:29.358Z
 sources:
   - id: openwiki-source-9f207ab48c42b84dcfd05f43
     resource: repo://libs/code/deepagents_code/integrations/sandbox_config.py
@@ -59,7 +56,10 @@ sources:
     resource: repo://libs/partners/runloop/pyproject.toml
   - id: openwiki-source-03a39f44d8ccfde2fd47e57a
     resource: repo://libs/partners/vercel/pyproject.toml
-generated: { by: "openwiki/0.4.2", at: "2026-10-29T08:04:29.358Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-10-30T08:04:27.172Z" }
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-10-30T08:04:27.172Z
 ---
 
 # Sandbox and Partner Integrations
@@ -122,7 +122,9 @@ The dcode Daytona provider creates fresh sandboxes, does not attach by `sandbox_
 
 Six curated external adapters—AgentCore, Daytona, Modal, OpenShell, Runloop, and Vercel—are optional `deepagents-code` extras and are aggregated by `deepagents-code[all-sandboxes]`. `langsmith[sandbox]` is a normal dcode dependency. `langchain-quickjs>=0.3.11,<0.4.0` is also a normal dcode dependency; the empty `deepagents-code[quickjs]` extra remains solely for backwards-compatible installation commands. The OpenShell extra installs `langchain-nvidia-openshell>=0.1.1`.
 
-Partner packages are independently versioned distributions with their own environment, `pyproject.toml`, `Makefile`, and tests. The checked-in Daytona, Modal, Runloop, and Vercel packages each depend on Deep Agents and their provider SDK; QuickJS similarly depends on Deep Agents, `quickjs-rs`, LangChain, LangGraph, and `bsdiff4`. The dcode development environment maps Daytona, Modal, QuickJS, Runloop, and Vercel to editable local checkouts; it does not map OpenShell. This supports co-development without changing the ownership boundary: dcode's registry owns discovery and dcode's factory owns lifecycle, while a partner owns its backend behavior.
+The checked-in manifests define a deliberately compatible release line: `deepagents-code` 0.2.2 requires Python `>=3.14,<3.15` and `deepagents==0.7.32`; the Daytona 0.0.9, Modal 0.0.7, Runloop 0.0.7, Vercel 0.0.2, and QuickJS 0.3.11 partner packages require `deepagents>=0.7.32,<0.8.0`. They require Python `>=3.11,<4.0`, so dcode's Python requirement is the stricter constraint in a combined installation. The provider adapters respectively declare `daytona>=0.197.0`, unbounded `modal`, unbounded `runloop-api-client`, and `vercel>=0.5.9`; QuickJS declares `quickjs-rs>=0.2.5,<0.3.0`, LangChain, LangGraph, and `bsdiff4>=1.3.0`. Widen these independently versioned constraints only after testing the integration boundary, rather than assuming the dcode extra's lower bound certifies every partner release.
+
+Partner packages are independently versioned distributions with their own environment, `pyproject.toml`, `Makefile`, and tests. The dcode development environment maps Daytona, Modal, QuickJS, Runloop, and Vercel to editable local checkouts; it does not map OpenShell. This supports co-development without changing the ownership boundary: dcode's registry owns discovery and dcode's factory owns lifecycle, while a partner owns its backend behavior.
 
 Third parties can publish a provider entry point; an operator can configure an internal provider class. For a new repository partner, the partner guidance also requires wiring repository release, CI, test-matrix, credential, labeling, and package-management surfaces.
 

@@ -258,9 +258,9 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
             !!! warning
 
                 Use `"inline"` only when the event loop belongs to a single
-                conversation, such as one Temporal workflow. On a loop shared
-                by several users or conversations, one runaway `eval` blocks
-                all of them. Combined with `timeout=None`, only an external
+                conversation, such as one durable-execution workflow run. On a
+                loop shared by several users or conversations, one runaway
+                `eval` blocks all of them. Combined with `timeout=None`, only an external
                 limit can stop it.
 
     Example:

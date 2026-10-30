@@ -35,7 +35,6 @@ from langchain.tools.tool_node import ToolCallRequest
 from langchain_core.exceptions import ModelInvalidRequestError
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, RemoveMessage, ToolMessage
 from langchain_core.messages.content import ContentBlock
-from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool, StructuredTool
 from langgraph.channels.delta import DeltaChannel
 from langgraph.channels.untracked_value import UntrackedValue
@@ -417,10 +416,15 @@ keeps the marker from applying to nested calls that inherit the config.
 """
 
 
-def _is_programmatic_call(config: RunnableConfig, tool_call_id: str | None) -> bool:
-    """Whether the tool call `tool_call_id` was made from code, per `PROGRAMMATIC_TOOL_CALL_CONFIG_KEY`."""
+def _is_programmatic_call(runtime: ToolRuntime[Any, Any]) -> bool:
+    """Whether this tool call was made from code, per `PROGRAMMATIC_TOOL_CALL_CONFIG_KEY`.
+
+    A runtime without a config, such as one built to call a tool's function
+    directly, carries no marker, so its call counts as a model call.
+    """
+    config = getattr(runtime, "config", None) or {}
     marker = (config.get("configurable") or {}).get(PROGRAMMATIC_TOOL_CALL_CONFIG_KEY)
-    return marker is not None and marker == tool_call_id
+    return marker is not None and marker == runtime.tool_call_id
 
 
 def _approval_error(operation: FilesystemOperation, path: str) -> str:
@@ -2085,7 +2089,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
 
     def _rules_for(self, runtime: ToolRuntime[None, FilesystemState]) -> list[FilesystemPermission]:
         """Rules this call must satisfy: code can't pause for approval, so `interrupt` denies it."""
-        if not _is_programmatic_call(runtime.config, runtime.tool_call_id):
+        if not _is_programmatic_call(runtime):
             return self._permissions
         return [replace(rule, mode="deny") if rule.mode == "interrupt" else rule for rule in self._permissions]
 

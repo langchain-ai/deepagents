@@ -6,6 +6,8 @@ own `tool_call_id`; the filesystem tools then fail closed on approval-gated
 paths instead of silently allowing them.
 """
 
+from types import SimpleNamespace
+
 from langchain.tools import ToolRuntime
 from langchain_core.messages import ToolMessage
 from langgraph.store.memory import InMemoryStore
@@ -105,3 +107,8 @@ class TestModelCallsUnchanged:
     def test_listing_without_marker_includes_gated_paths(self):
         result = _call("glob", {"pattern": "**/*"}, marker=None)
         assert "/hr/pay.csv" in result.content
+
+    def test_runtime_without_config_is_a_model_call(self):
+        tool = next(t for t in FilesystemMiddleware(backend=_backend(), permissions=_RULES).tools if t.name == "read_file")
+        result = tool.func(file_path="/hr/pay.csv", runtime=SimpleNamespace(tool_call_id="call_1", state={}))
+        assert "250000" in result.content

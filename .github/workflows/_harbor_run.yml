@@ -982,6 +982,7 @@ jobs:
               model_provider="${HARBOR_MODEL%%:*}"
               case "$HARBOR_AGENT_IMPL:$model_provider" in
                 codex:openai|claude-code:anthropic|pi:openai|pi:anthropic) ;;
+                codex:fireworks|claude-code:fireworks|pi:fireworks) ;;
                 *) echo "::error::$HARBOR_AGENT_IMPL does not support $model_provider models"; exit 1 ;;
               esac
               agent_args=(--agent "$HARBOR_AGENT_IMPL")
@@ -1113,6 +1114,28 @@ jobs:
           agent_model="$HARBOR_MODEL"
           case "$HARBOR_AGENT_IMPL" in
             codex|claude-code|pi) agent_model="${HARBOR_MODEL%%:*}/${HARBOR_MODEL#*:}" ;;
+          esac
+          # Fireworks serves OpenAI Responses and Anthropic Messages, so each CLI
+          # reaches it through its native protocol as a custom endpoint.
+          fireworks_url="https://api.fireworks.ai/inference"
+          case "$HARBOR_AGENT_IMPL:$model_provider" in
+            codex:fireworks|pi:fireworks)
+              agent_model="openai/${HARBOR_MODEL#*:}"
+              agent_env_args+=(
+                --agent-env 'OPENAI_API_KEY=${FIREWORKS_API_KEY}'
+                --agent-env "OPENAI_BASE_URL=$fireworks_url/v1"
+              )
+              if [ "$HARBOR_AGENT_IMPL" = pi ]; then
+                agent_args+=(--agent-kwarg model_api=openai-responses)
+              fi
+              ;;
+            claude-code:fireworks)
+              agent_model="anthropic/${HARBOR_MODEL#*:}"
+              agent_env_args+=(
+                --agent-env 'ANTHROPIC_API_KEY=${FIREWORKS_API_KEY}'
+                --agent-env "ANTHROPIC_BASE_URL=$fireworks_url"
+              )
+              ;;
           esac
           uv run harbor run \
             --yes \

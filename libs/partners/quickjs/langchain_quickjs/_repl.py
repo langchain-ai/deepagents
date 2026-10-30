@@ -41,6 +41,11 @@ from quickjs_rs import (
     TimeoutError as QJSTimeoutError,
 )
 
+try:
+    from deepagents.middleware.filesystem import PROGRAMMATIC_TOOL_CALL_CONFIG_KEY
+except ImportError:  # pragma: no cover - compatibility with older deepagents
+    PROGRAMMATIC_TOOL_CALL_CONFIG_KEY = "__deepagents_programmatic_tool_call_id"
+
 from langchain_quickjs._format import (
     coerce_tool_output_for_ptc,
     format_handle,
@@ -55,6 +60,7 @@ from langchain_quickjs._subagent import (
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
+    from langchain_core.runnables import RunnableConfig
     from langchain_core.tools import BaseTool
     from langgraph.prebuilt import ToolRuntime
 
@@ -252,6 +258,20 @@ def _synth_tool_call_id(tool_name: str) -> str:
     return f"ptc_{tool_name}_{uuid.uuid4().hex[:8]}"
 
 
+def _programmatic_config(config: RunnableConfig, tool_call_id: str) -> RunnableConfig:
+    """Copy `config`, marking `tool_call_id` as a tool call made from code.
+
+    Tools such as deepagents' filesystem tools read the marker to enforce
+    policy that PTC calls skip, like human approval. It names the call's own
+    id so nested calls that inherit the config are not marked.
+    """
+    configurable = {
+        **(config.get("configurable") or {}),
+        PROGRAMMATIC_TOOL_CALL_CONFIG_KEY: tool_call_id,
+    }
+    return {**config, "configurable": configurable}
+
+
 def _inject_tool_args_for_ptc(
     tool: Any,
     payload: dict[str, Any],
@@ -280,7 +300,7 @@ def _inject_tool_args_for_ptc(
     derived = type(outer_runtime)(
         state=outer_runtime.state,
         tool_call_id=tool_call_id,
-        config=outer_runtime.config,
+        config=_programmatic_config(outer_runtime.config, tool_call_id),
         context=outer_runtime.context,
         store=outer_runtime.store,
         stream_writer=outer_runtime.stream_writer,

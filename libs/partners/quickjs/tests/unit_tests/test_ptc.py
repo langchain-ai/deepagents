@@ -10,6 +10,7 @@ import json
 from typing import Any, Literal
 
 import pytest
+from deepagents.middleware.filesystem import PROGRAMMATIC_TOOL_CALL_CONFIG_KEY
 from langchain.tools import ToolRuntime
 from langchain_core.messages import ToolMessage
 from langchain_core.tools import BaseTool, StructuredTool
@@ -949,3 +950,57 @@ async def test_pydantic_return_arrives_as_object_matching_schema(
     )
     assert outcome.error_type is None, outcome.error_message
     assert outcome.result == "object:ok:3"
+
+
+# ---------------------------------------------------------------------------
+# Tool calls made from code are marked as such
+# ---------------------------------------------------------------------------
+
+
+async def test_ptc_file_reads_fail_closed_on_approval_rules() -> None:
+    from types import SimpleNamespace
+
+    from deepagents.backends import StoreBackend
+    from deepagents.middleware.filesystem import (
+        FilesystemMiddleware,
+        FilesystemPermission,
+    )
+    from langgraph.store.memory import InMemoryStore
+
+    store = InMemoryStore()
+    for path, content in {"/hr/pay.csv": "ada,250000", "/docs/a.md": "hello"}.items():
+        store.put(("fs",), path, {"content": content, "encoding": "utf-8"})
+    fs = FilesystemMiddleware(
+        backend=StoreBackend(store=store, namespace=lambda _ctx: ("fs",)),
+        permissions=[
+            FilesystemPermission(
+                operations=["read"], paths=["/hr/**"], mode="interrupt"
+            )
+        ],
+    )
+    mw = CodeInterpreterMiddleware(ptc=["read_file"])
+    state = {"_quickjs_slot_id": "ptc-approval-slot"}
+    mw._prepare_for_call(SimpleNamespace(tools=[*fs.tools, mw.tools[0]], state=state))
+    runtime = ToolRuntime(
+        state=state,
+        context={},
+        config={"configurable": {}},
+        stream_writer=lambda _: None,
+        tools=mw.tools,
+        tool_call_id="outer-eval",
+        store=None,
+    )
+    code = (
+        'const gated = await tools.readFile({ file_path: "/hr/pay.csv" });'
+        'const open = await tools.readFile({ file_path: "/docs/a.md" });'
+        "console.log(JSON.stringify({ gated, open }))"
+    )
+    try:
+        result = await mw.tools[0].ainvoke({"runtime": runtime, "code": code})
+    finally:
+        mw._registry.close()
+
+    assert "requires human approval" in result.content
+    assert "250000" not in result.content
+    assert "hello" in result.content
+    assert PROGRAMMATIC_TOOL_CALL_CONFIG_KEY not in runtime.config["configurable"]

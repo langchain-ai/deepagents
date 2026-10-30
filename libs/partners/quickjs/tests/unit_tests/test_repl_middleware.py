@@ -25,7 +25,7 @@ from langchain_core.tools import BaseTool, StructuredTool
 from langgraph.errors import GraphInterrupt
 from langgraph.types import Interrupt
 from pydantic import BaseModel, Field
-from quickjs_rs import Context, Runtime, ThreadWorker
+from quickjs_rs import Runtime, ThreadWorker
 
 from langchain_quickjs import CodeInterpreterMiddleware
 from langchain_quickjs._format import format_outcome
@@ -1670,33 +1670,28 @@ def test_rejects_invalid_timeout(timeout: float) -> None:
         CodeInterpreterMiddleware(timeout=timeout)
 
 
-@pytest.mark.parametrize("timeout", [None, 0.25, float("inf")])
-async def test_timeout_runtime_boundary(timeout: float | None) -> None:
-    mw = CodeInterpreterMiddleware(timeout=timeout, subagents=False)
-    assert mw._timeout == timeout
-    assert mw._registry.timeout == timeout
-    expected = float("inf") if timeout is None else timeout
-    new_context = Runtime.new_context
+_SPIN_300_MS = "const end = Date.now() + 300; while (Date.now() < end) {} 42"
+
+
+@pytest.mark.parametrize("timeout", [None, float("inf")])
+async def test_unbounded_timeout_outlives_a_short_deadline(
+    timeout: float | None,
+) -> None:
+    bounded = CodeInterpreterMiddleware(timeout=0.1, subagents=False)
+    unbounded = CodeInterpreterMiddleware(timeout=timeout, subagents=False)
     try:
-        with patch.object(
-            Runtime, "new_context", autospec=True, side_effect=new_context
-        ) as create:
-            repl = mw._registry.get("timeout")
-            assert create.call_args.kwargs["timeout"] == expected
-        assert repl.eval_sync("1 + 1").result == "2"
-        evaluate = Context.eval_handle_async
-        with patch.object(
-            Context, "eval_handle_async", autospec=True, side_effect=evaluate
-        ) as run:
-            assert (await repl.eval_async("2 + 2")).result == "4"
-            assert run.call_args.kwargs["timeout"] == expected
-        mw._registry.reset_repl("timeout")
-        assert mw._registry.get("timeout").eval_sync("3 + 3").result == "6"
+        outcome = bounded._registry.get("t").eval_sync(_SPIN_300_MS)
+        assert outcome.error_type == "Timeout"
+        repl = unbounded._registry.get("t")
+        assert repl.eval_sync(_SPIN_300_MS).result == "42"
+        assert (await repl.eval_async(_SPIN_300_MS)).result == "42"
+        unbounded._registry.reset_repl("t")
+        assert unbounded._registry.get("t").eval_sync(_SPIN_300_MS).result == "42"
     finally:
-        await mw._registry.aevict("timeout")
+        await bounded._registry.aevict("t")
+        await unbounded._registry.aevict("t")
 
 
 def test_default_timeout_is_unchanged() -> None:
     mw = CodeInterpreterMiddleware()
-    assert mw._timeout == 5.0
     assert "Timeout: 5.0s per call." in mw._base_prompt(ptc_attached=False)

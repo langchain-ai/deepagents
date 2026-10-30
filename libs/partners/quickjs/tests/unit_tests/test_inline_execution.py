@@ -112,6 +112,22 @@ def test_rejects_invalid_execution() -> None:
         CodeInterpreterMiddleware(execution="fibers")  # type: ignore[arg-type]
 
 
+@pytest.mark.parametrize(
+    ("execution", "timeout", "warned"),
+    [("inline", None, True), ("inline", 5.0, False), ("worker", None, False)],
+)
+def test_warns_only_for_inline_without_timeout(
+    caplog: pytest.LogCaptureFixture,
+    execution: ExecutionMode,
+    timeout: float | None,
+    *,
+    warned: bool,
+) -> None:
+    with caplog.at_level("WARNING", logger="langchain_quickjs.middleware"):
+        CodeInterpreterMiddleware(execution=execution, timeout=timeout)
+    assert ("blocks the caller's event loop" in caplog.text) is warned
+
+
 def test_evict_closes_the_private_loop() -> None:
     registry = _Registry(
         memory_limit=64 * 1024 * 1024,

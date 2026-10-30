@@ -148,6 +148,8 @@ Top-level `await` works on the async path — the promise settles before the cal
 
 Each slot runs on its own worker thread by default, so a slow `eval` never stalls the caller. `execution="inline"` runs the REPL on the calling thread instead — a plain `await` on the caller's loop on the async path — for hosts whose event loop cannot be woken from another thread. A long `eval` then blocks the caller, one slot must not be driven concurrently from several threads, and PTC tools should be async (a sync tool completes through an executor thread).
 
+Use `execution="inline"` only when the event loop belongs to a single conversation, such as one Temporal workflow. On a loop shared by several users or conversations, one runaway `eval` blocks all of them; with `timeout=None` as well, only an external limit can stop it.
+
 ### Result formatting
 
 Every eval renders into one wire format consumed by the model:

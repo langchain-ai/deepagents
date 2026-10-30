@@ -255,6 +255,14 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
             long `eval` then blocks the caller, one slot must not be driven
             concurrently from several threads, and PTC tools should be async.
 
+            !!! warning
+
+                Use `"inline"` only when the event loop belongs to a single
+                conversation, such as one Temporal workflow. On a loop shared
+                by several users or conversations, one runaway `eval` blocks
+                all of them. Combined with `timeout=None`, only an external
+                limit can stop it.
+
     Example:
         ```python
         from deepagents import create_deep_agent
@@ -313,6 +321,12 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         self._ptc = ptc
         self._mode = _resolve_mode(mode=mode)
         self._execution = _resolve_execution(execution=execution)
+        if self._execution == "inline" and timeout is None:
+            logger.warning(
+                'CodeInterpreterMiddleware(execution="inline", timeout=None): a '
+                "runaway eval blocks the caller's event loop indefinitely; only "
+                "an external limit such as a process kill can stop it."
+            )
         self._max_snapshot_bytes = (
             memory_limit if max_snapshot_bytes is None else max_snapshot_bytes
         )

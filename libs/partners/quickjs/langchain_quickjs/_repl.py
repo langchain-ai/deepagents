@@ -358,7 +358,7 @@ class _ThreadREPL:
         worker: ThreadWorker,
         runtime: Runtime,
         *,
-        timeout: float,
+        timeout: float | None,
         capture_console: bool,
         max_stdout_chars: int,
         max_ptc_calls: int | None = 256,
@@ -371,7 +371,7 @@ class _ThreadREPL:
         # for sync evals. Async evals pass `timeout=` per call so each
         # call gets a fresh budget — matches what a REPL user expects,
         # and what we describe in the system prompt.
-        self._per_call_timeout = timeout
+        self._per_call_timeout = float("inf") if timeout is None else timeout
         self._capture_console = capture_console
         # Static budget config; mutable counters live in `_ptc_state`.
         self._max_ptc_calls = max_ptc_calls
@@ -953,7 +953,7 @@ class _Registry:
     """
 
     memory_limit: int
-    timeout: float
+    timeout: float | None
     capture_console: bool
     max_stdout_chars: int
     max_ptc_calls: int | None = 256

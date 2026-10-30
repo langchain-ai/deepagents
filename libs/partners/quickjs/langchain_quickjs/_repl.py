@@ -318,6 +318,21 @@ def _tool_uses_injected_tool_call_id(tool: Any) -> bool:
     )
 
 
+def _tool_run_kwargs(
+    tool: BaseTool, tool_call: dict[str, Any], outer_runtime: ToolRuntime | None
+) -> dict[str, Any]:
+    """Keyword arguments for `run`/`arun` of a bridge call, under the eval's config."""
+    config = outer_runtime.config if outer_runtime is not None else None
+    return {
+        "callbacks": config.get("callbacks") if config is not None else None,
+        "run_id": uuid.uuid4(),
+        "config": config,
+        "tool_call_id": (
+            tool_call.get("id") if _tool_uses_injected_tool_call_id(tool) else None
+        ),
+    }
+
+
 def _bridge_symbol_name(tool_name: str) -> str:
     """Build a stable, JS-safe global symbol for one PTC bridge."""
     # Keep only identifier-safe characters and salt with a short hash to
@@ -638,22 +653,10 @@ class _ThreadREPL:
         outer_loop: asyncio.AbstractEventLoop | None,
     ) -> Any:
         """Run the tool with the outer runtime's loop and config when available."""
-        args = tool_call["args"]
-        tool_call_id = tool_call.get("id")
 
         async def _call() -> Any:
             return await tool.arun(
-                args,
-                callbacks=(
-                    outer_runtime.config.get("callbacks")
-                    if outer_runtime is not None
-                    else None
-                ),
-                run_id=uuid.uuid4(),
-                config=outer_runtime.config if outer_runtime is not None else None,
-                tool_call_id=(
-                    tool_call_id if _tool_uses_injected_tool_call_id(tool) else None
-                ),
+                tool_call["args"], **_tool_run_kwargs(tool, tool_call, outer_runtime)
             )
 
         if outer_loop is None:
@@ -688,34 +691,47 @@ class _ThreadREPL:
                 # it, fail loud.
                 msg = f"tool '{camel}' not registered"
                 raise RuntimeError(msg)
-            if self._ptc_state is None:
-                msg = "PTC bridge called outside active eval"
-                raise ConcurrentEvalError(msg)
-            state = self._ptc_state.consume_call_budget(
-                function_name=f"tools.{camel}",
-                max_ptc_calls=self._max_ptc_calls,
-            )
-            self._ptc_state = state
             payload = _normalize_tool_input(raw_input)
-            call_id = _synth_tool_call_id(tool.name)
-            # Inject runtime/state/store ourselves. The bridge uses `arun`
-            # rather than the tool-call envelope path so the result can be
-            # unwrapped back to native JS-visible values after the standard
-            # tool lifecycle callbacks have fired.
-            args = _inject_tool_args_for_ptc(
-                tool, payload, state.outer_runtime, call_id
-            )
-            result = await self._ainvoke_tool_on_outer_loop(
-                tool,
-                {"name": tool.name, "args": args, "id": call_id, "type": "tool_call"},
-                outer_runtime=state.outer_runtime,
-                outer_loop=state.outer_loop,
-            )
+            result = await self._acall_tool(tool, payload, f"tools.{camel}")
             return coerce_tool_output_for_ptc(result)
 
         bridge_symbol = _bridge_symbol_name(camel)
         ctx.register(bridge_symbol, _bridge, is_async=True)
         return bridge_symbol
+
+    def _start_tool_call(
+        self, tool: BaseTool, payload: dict[str, Any], function_name: str
+    ) -> tuple[_PTCState, dict[str, Any]]:
+        """Count one bridge call against the eval's budget and build its tool call.
+
+        Bridges call `run`/`arun` rather than going through `ToolNode`, so the
+        result unwraps to a native JS value after the standard tool callbacks
+        fire. They inject runtime/state/store themselves for that reason.
+        """
+        if self._ptc_state is None:
+            msg = "PTC bridge called outside active eval"
+            raise ConcurrentEvalError(msg)
+        state = self._ptc_state.consume_call_budget(
+            function_name=function_name, max_ptc_calls=self._max_ptc_calls
+        )
+        self._ptc_state = state
+        call_id = _synth_tool_call_id(tool.name)
+        args = _inject_tool_args_for_ptc(tool, payload, state.outer_runtime, call_id)
+        return state, {
+            "name": tool.name,
+            "args": args,
+            "id": call_id,
+            "type": "tool_call",
+        }
+
+    async def _acall_tool(
+        self, tool: BaseTool, payload: dict[str, Any], function_name: str
+    ) -> Any:
+        """Run one bridge call on the agent's loop when there is one."""
+        state, call = self._start_tool_call(tool, payload, function_name)
+        return await self._ainvoke_tool_on_outer_loop(
+            tool, call, outer_runtime=state.outer_runtime, outer_loop=state.outer_loop
+        )
 
     def eval_sync(
         self,

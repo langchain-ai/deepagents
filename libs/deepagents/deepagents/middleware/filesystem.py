@@ -2004,6 +2004,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         # Store configuration (private - internal implementation details)
         self._custom_system_prompt = system_prompt
         self._custom_tool_descriptions = custom_tool_descriptions or {}
+        self._described_tool_copies: dict[str, tuple[BaseTool, BaseTool]] = {}
         self._tool_token_limit_before_evict = tool_token_limit_before_evict
         self._human_message_token_limit_before_evict = human_message_token_limit_before_evict
         self._max_execute_timeout = max_execute_timeout
@@ -2921,6 +2922,19 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         """Return the grep description for the current execution visibility."""
         return self._custom_tool_descriptions.get("grep") or (GREP_TOOL_DESCRIPTION if include_execution else _GREP_TOOL_DESCRIPTION_WITHOUT_EXECUTE)
 
+    def _copy_with_description(self, tool: BaseTool, description: str) -> BaseTool:
+        """Return a copy of `tool` with `description`, reused while the source tool is unchanged.
+
+        `BaseTool.model_copy` drops the memoized tool-call schema, so a fresh copy
+        per model call would rebuild the schema on every call.
+        """
+        cached = self._described_tool_copies.get(description)
+        if cached is not None and cached[0] is tool:
+            return cached[1]
+        copied = tool.model_copy(update={"description": description})
+        self._described_tool_copies[description] = (tool, copied)
+        return copied
+
     def _with_filtered_grep_description(
         self,
         tools: list[BaseTool | dict[str, Any]],
@@ -2944,7 +2958,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
 
             if isinstance(tool, BaseTool):
                 if tool.description in default_descriptions and tool.description != target_description:
-                    rewritten.append(tool.model_copy(update={"description": target_description}))
+                    rewritten.append(self._copy_with_description(tool, target_description))
                     changed = True
                 else:
                     rewritten.append(tool)
@@ -3020,7 +3034,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
 
             if isinstance(tool, BaseTool):
                 if tool.description in default_descriptions and tool.description != target_description:
-                    rewritten.append(tool.model_copy(update={"description": target_description}))
+                    rewritten.append(self._copy_with_description(tool, target_description))
                     changed = True
                 else:
                     rewritten.append(tool)

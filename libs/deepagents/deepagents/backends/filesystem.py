@@ -1202,7 +1202,9 @@ class FilesystemBackend(BackendProtocol):
 
         results: dict[str, list[tuple[int, str]]] = {}
         file_errors: list[str] = []
-        root = base_full if base_full.is_dir() else base_full.parent
+        is_single_file = base_full.is_file()
+        root = base_full if not is_single_file else base_full.parent
+        paths = (base_full,) if is_single_file else root.rglob("*")
 
         def _log_timeout() -> None:
             logger.warning(
@@ -1233,7 +1235,7 @@ class FilesystemBackend(BackendProtocol):
             return f"{type(exc).__name__}: {detail}" if detail else type(exc).__name__
 
         try:
-            for fp in root.rglob("*"):
+            for fp in paths:
                 if time.monotonic() > deadline:
                     _log_timeout()
                     return results, True, None
@@ -1242,7 +1244,7 @@ class FilesystemBackend(BackendProtocol):
                         continue
                 except (PermissionError, OSError, RuntimeError):
                     continue
-                if glob_matcher is not None:
+                if glob_matcher is not None and not is_single_file:
                     rel_path = fp.relative_to(root).as_posix()
                     if not glob_matcher(rel_path):
                         continue

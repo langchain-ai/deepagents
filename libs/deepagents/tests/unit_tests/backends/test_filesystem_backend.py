@@ -1417,6 +1417,21 @@ def test_python_fallback_no_cap_returns_all_matches(tmp_path: Path) -> None:
     assert len(result.matches) == 6
 
 
+def test_grep_python_fallback_single_file_does_not_search_siblings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A file path limits fallback grep to that file, like ripgrep."""
+    target = tmp_path / "target.txt"
+    sibling = tmp_path / "sibling.txt"
+    target.write_text("needle\n")
+    sibling.write_text("needle\n")
+    backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+    monkeypatch.setattr(backend, "_ripgrep_search", lambda *_args, **_kwargs: (None, False))
+
+    result = backend.grep("needle", path=str(target))
+
+    assert result.error is None
+    assert result.matches == [{"path": str(target), "line": 1, "text": "needle"}]
+
+
 def test_python_fallback_below_cap_not_truncated(tmp_path: Path) -> None:
     """A cap larger than the number of matches leaves the result untruncated."""
     (tmp_path / "a.txt").write_text("needle\nneedle\n")

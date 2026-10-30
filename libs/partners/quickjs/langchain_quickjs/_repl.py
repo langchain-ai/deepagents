@@ -1159,10 +1159,15 @@ class _Registry:
         slot.worker.close()
 
     async def _acreate_runtime(self) -> Runtime:
-        return Runtime(
+        runtime = Runtime(
             memory_limit=self.memory_limit,
             transform_flags=SourceTransform.TOP_LEVEL_CONST_TO_VAR,
         )
+        if self.files is not None:
+            runtime.set_module_loader(
+                normalize=_fs.normalize_module, load=_fs.load_module
+            )
+        return runtime
 
     def close(self) -> None:
         with self._lock:

@@ -1,6 +1,6 @@
 """Read-only, Node-shaped `fs` for the REPL, over the agent's own file tools.
 
-Each operation calls the agent's `read_file` or `ls` tool through the
+Each operation calls the agent's `read_file`, `ls`, or `glob` tool through the
 `tools.*` bridge: path checks and deny rules apply, approval gates do not.
 A request on that one call's runtime config asks the tool for its raw
 result on `ToolMessage.artifact` instead of the text formatted for the model.
@@ -11,6 +11,8 @@ shim throws as Node errors.
 
 from __future__ import annotations
 
+import base64
+import json
 import posixpath
 from dataclasses import dataclass, replace
 from importlib import resources
@@ -44,6 +46,9 @@ class _Operation(NamedTuple):
 _OPERATIONS = {
     "readFile": _Operation("read_file", "open", lambda a: {"file_path": a["path"]}),
     "readdir": _Operation("ls", "scandir", lambda a: {"path": a["path"]}),
+    "glob": _Operation(
+        "glob", "glob", lambda a: {"pattern": a["pattern"], "path": a["cwd"]}
+    ),
 }
 
 TOOL_NAMES = frozenset(operation.tool for operation in _OPERATIONS.values())
@@ -53,6 +58,7 @@ _DECODERS: dict[str | None, Callable[[bytes], str | bytes]] = {
     None: lambda b: b,
     "utf8": lambda b: b.decode("utf-8", "replace"),
     "utf-8": lambda b: b.decode("utf-8", "replace"),
+    "base64": lambda b: base64.b64encode(b).decode("ascii"),
 }
 
 _NODE_ERRORS = {
@@ -85,10 +91,10 @@ def fs(*, max_read_bytes: int = _DEFAULT_MAX_READ_BYTES) -> FilesystemCapability
     """Give REPL code read-only, Node-style access to the agent's files.
 
     Code can then call `fs.readFileSync(path, "utf8")`, `fs.promises.readFile`,
-    and `readdir`. Results are the files' contents, not
+    `readdir`, `existsSync` and `glob`. Results are the files' contents, not
     the formatted text the filesystem tools return to the model.
 
-    Each call goes through the agent's own `read_file` or `ls` tool,
+    Each call goes through the agent's own `read_file`, `ls`, or `glob` tool,
     the same way `tools.*` calls do, so the tools' path checks and deny rules
     apply. Approval gates do not: with `fs()` enabled, code can read paths that
     an `interrupt` rule or `interrupt_on` gates for the model, without a pause,
@@ -163,12 +169,19 @@ def response(op: str, args: dict[str, Any], message: Any) -> Any:
         return _error("ENOSYS", detail, op, args)
     if op == "readFile":
         return _DECODERS[args["encoding"]](artifact["content"])
-    return [posixpath.basename(e["path"].rstrip("/")) for e in artifact["entries"]]
+    if op == "readdir":
+        return [
+            {"name": posixpath.basename(e["path"].rstrip("/")), "isDir": e["is_dir"]}
+            for e in artifact["entries"]
+        ]
+    cwd = posixpath.join("/", args["cwd"])
+    paths = [posixpath.relpath(p, cwd) for p in artifact["paths"]]
+    return {"paths": paths, "truncated": artifact["truncated"]}
 
 
 def _error(code: str, detail: str, op: str, args: dict[str, Any]) -> dict[str, Any]:
     syscall = _OPERATIONS[op].syscall
-    path = args["path"]
+    path = args.get("path") or args.get("cwd") or "/"
     return {
         "__lc_fs_error": {
             "code": code,
@@ -179,8 +192,53 @@ def _error(code: str, detail: str, op: str, args: dict[str, Any]) -> dict[str, A
     }
 
 
+_MODULE_ALIASES = {
+    "fs": "node:fs",
+    "node:fs": "node:fs",
+    "fs/promises": "node:fs/promises",
+    "node:fs/promises": "node:fs/promises",
+    "path": "node:path",
+    "node:path": "node:path",
+}
+
+_MODULE_EXPORTS = {
+    "node:fs": ("readFileSync", "readdirSync", "existsSync", "globSync", "promises"),
+    "node:fs/promises": ("readFile", "readdir", "glob"),
+    "node:path": (
+        "sep",
+        "isAbsolute",
+        "normalize",
+        "join",
+        "resolve",
+        "dirname",
+        "basename",
+        "extname",
+    ),
+}
+"""Named exports of each module, which ES modules must list statically."""
+
+
+def normalize_module(base: str, specifier: str) -> str | None:
+    """Resolve an `import()` specifier to one of the `fs` modules, or `None`."""
+    del base
+    return _MODULE_ALIASES.get(specifier)
+
+
+def load_module(name: str) -> str | None:
+    """Return ES module source re-exporting one of the shim's modules."""
+    exports = _MODULE_EXPORTS.get(name)
+    if exports is None:
+        return None
+    return (
+        f"const m = globalThis.__lc_fs.modules[{json.dumps(name)}];\n"
+        "export default m;\n"
+        f"export const {{ {', '.join(exports)} }} = m;\n"
+    )
+
+
 SHIM = (
     resources.files("langchain_quickjs")
     .joinpath("_fs_shim.js")
     .read_text(encoding="utf-8")
+    .replace("__ALIASES__", json.dumps(_MODULE_ALIASES))
 )

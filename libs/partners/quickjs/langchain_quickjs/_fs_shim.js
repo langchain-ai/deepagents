@@ -1,5 +1,7 @@
-// Installs `fs` over the host functions in `_fs.py`. Runs before every eval,
-// so it replaces an older copy that a restored snapshot carried.
+// Installs `fs`, `require`, and the modules behind `import()` over the
+// host functions in `_fs.py`. Runs before every eval, so it replaces an older
+// copy that a restored snapshot carried. `__ALIASES__` is replaced with
+// `_MODULE_ALIASES` at import time.
 (() => {
 const unwrap = (r) => {
   const e = r !== null && typeof r === "object" ? r.__lc_fs_error : undefined;
@@ -49,6 +51,29 @@ const resolve = (...parts) => {
   }
   return normalize(r.startsWith("/") ? r : "/" + r);
 };
+const basename = (p, ext) => {
+  const b = normalize(p).split("/").pop();
+  return ext && b !== ext && b.endsWith(ext) ? b.slice(0, -ext.length) : b;
+};
+const path = {
+  sep: "/",
+  isAbsolute: (p) => p.startsWith("/"),
+  normalize,
+  join: (...parts) => normalize(parts.filter((s) => s !== "").join("/") || "."),
+  resolve,
+  dirname: (p) => {
+    const n = normalize(p);
+    const i = n.lastIndexOf("/");
+    return i < 0 ? "." : i === 0 ? "/" : n.slice(0, i);
+  },
+  basename,
+  extname: (p) => {
+    const b = basename(p);
+    const i = b.lastIndexOf(".");
+    return i <= 0 ? "" : b.slice(i);
+  },
+};
+path.posix = path;
 
 const stringArg = (value, name) => {
   if (typeof value === "string") return value;
@@ -61,20 +86,61 @@ const readArgs = (p, opts) => {
   const enc = typeof opts === "string" ? opts : opts?.encoding;
   return { path: pathArg(p), encoding: enc == null ? null : String(enc).toLowerCase() };
 };
+const dirents = (entries, dir, opts) => opts?.withFileTypes
+  ? entries.map((e) => ({
+    name: e.name, parentPath: dir, path: dir,
+    isFile: () => !e.isDir, isDirectory: () => e.isDir, isSymbolicLink: () => false,
+  }))
+  : entries.map((e) => e.name);
+const globArgs = (pattern, opts) => ({
+  pattern: stringArg(pattern, "pattern"),
+  cwd: opts?.cwd == null ? "/" : pathArg(opts.cwd, "cwd"),
+});
+const globPaths = (r) => {
+  if (r.truncated) globalThis.console?.warn("fs.glob: the search stopped early; results are incomplete");
+  return r.paths;
+};
+
 const promises = {
   readFile: async (p, opts) => bufferLike(await acall("readFile", readArgs(p, opts))),
-  readdir: async (p) => acall("readdir", { path: pathArg(p) }),
+  readdir: async (p, opts) =>
+    dirents(await acall("readdir", { path: pathArg(p) }), pathArg(p), opts),
+  glob: async function* (pattern, opts) {
+    yield* globPaths(await acall("glob", globArgs(pattern, opts)));
+  },
 };
 const fs = {
   readFileSync: (p, opts) => bufferLike(call("readFile", readArgs(p, opts))),
-  readdirSync: (p) => call("readdir", { path: pathArg(p) }),
+  readdirSync: (p, opts) => dirents(call("readdir", { path: pathArg(p) }), pathArg(p), opts),
+  existsSync: (p) => {
+    try {
+      const abs = pathArg(p);
+      return abs === "/" || fs.readdirSync(path.dirname(abs)).includes(basename(abs));
+    } catch (e) {
+      // A host failure, such as the call budget, has no code, and `ENOSYS` means
+      // there is no `ls` tool to ask. A missing parent throws `EIO`, because `ls`
+      // reports no error code, so `EIO` means the path does not exist.
+      if (e?.code === undefined || e.code === "ENOSYS") throw e;
+      return false;
+    }
+  },
+  globSync: (pattern, opts) => globPaths(call("glob", globArgs(pattern, opts))),
   promises,
 };
+const modules = { "node:fs": fs, "node:fs/promises": promises, "node:path": path };
+const aliases = __ALIASES__;
 // A top-level `function fs() {}` in code makes the global non-configurable;
 // keep the code's own binding then rather than fail every later eval.
 const define = (name, value) => {
   if (Object.getOwnPropertyDescriptor(globalThis, name)?.configurable === false) return;
   Object.defineProperty(globalThis, name, { value, writable: true, configurable: true, enumerable: false });
 };
+define("__lc_fs", { modules });
 define("fs", fs);
+define("require", (id) => {
+  if (Object.prototype.hasOwnProperty.call(aliases, id)) return modules[aliases[id]];
+  const err = new Error(`Cannot find module '${id}'`);
+  err.code = "MODULE_NOT_FOUND";
+  throw err;
+});
 })();

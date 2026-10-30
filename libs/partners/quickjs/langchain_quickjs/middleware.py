@@ -227,8 +227,8 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
                 threads.
         capabilities: Host features to give REPL code. `fs()` gives it
             read-only, Node-style access to the agent's files through the
-            agent's own `read_file` and `ls` tools, with their path checks and
-            deny rules. Each `fs` call counts toward `max_ptc_calls`.
+            agent's own `read_file`, `ls`, and `glob` tools, with their path
+            checks and deny rules. Each `fs` call counts toward `max_ptc_calls`.
             Code can then read paths that `interrupt` rules or `interrupt_on`
             gate, without a pause, even when `ptc` is not set. File contents
             up to `max_read_bytes` appear in traces.

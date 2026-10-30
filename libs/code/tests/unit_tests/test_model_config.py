@@ -4569,28 +4569,34 @@ class TestLoadMcpServerTrustLists:
 class TestGetModelProfiles:
     """Tests for get_model_profiles() function."""
 
-    def test_anthropic_fallback_fills_only_missing_profile_fields(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    @pytest.mark.parametrize(
+        ("provider", "model"),
+        [("anthropic", "claude-haiku-5-5"), ("openai", "gpt-6.1-terra")],
+    )
+    def test_fallback_fills_only_missing_profile_fields(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, provider: str, model: str
     ) -> None:
         profiles_path = tmp_path / "data" / "_profiles.py"
         profiles_path.parent.mkdir()
         profiles_path.write_text(
-            "_PROFILES = {'claude-haiku-5-5': {'structured_output': False, "
-            "'reasoning_effort_default': 'high'}}"
+            f"_PROFILES = {{'{model}': {{'structured_output': False, "
+            "'max_input_tokens': 1234, 'reasoning_effort_default': 'high'}}"
         )
         spec = importlib.util.spec_from_file_location(
-            "langchain_anthropic", tmp_path / "__init__.py"
+            f"langchain_{provider}", tmp_path / "__init__.py"
         )
         monkeypatch.setattr(importlib.util, "find_spec", lambda _: spec)
         clear_caches()
 
         profiles = model_config._load_provider_profiles(
-            "langchain_anthropic.data._profiles"
+            f"langchain_{provider}.data._profiles"
         )
 
-        assert profiles["claude-haiku-5-5"]["structured_output"] is False
-        assert profiles["claude-haiku-5-5"]["reasoning_effort_default"] == "high"
-        assert profiles["claude-haiku-5-5"]["reasoning_effort_levels"] == [
+        assert profiles[model]["structured_output"] is False
+        assert profiles[model]["max_input_tokens"] == 1234
+        assert profiles[model]["reasoning_effort_default"] == "high"
+        assert profiles[model]["reasoning_effort_levels"] == [
+            *(["none"] if provider == "openai" else []),
             "low",
             "medium",
             "high",
@@ -4599,24 +4605,36 @@ class TestGetModelProfiles:
         ]
         clear_caches()
 
-    def test_haiku_discovery_and_effort_without_upstream_profile(self) -> None:
+    @pytest.mark.parametrize(
+        ("provider", "model", "efforts"),
+        [
+            (
+                "anthropic",
+                "claude-haiku-5-5",
+                ("low", "medium", "high", "xhigh", "max"),
+            ),
+            (
+                "openai",
+                "gpt-6.1-terra",
+                ("none", "low", "medium", "high", "xhigh", "max"),
+            ),
+        ],
+    )
+    def test_discovery_and_effort_with_provider_profiles(
+        self, provider: str, model: str, efforts: tuple[str, ...]
+    ) -> None:
         from deepagents_code.reasoning_effort import (
             default_effort_for_model,
             supported_efforts_for_model,
         )
 
         clear_caches()
-        assert "claude-haiku-5-5" in get_available_models()["anthropic"]
-        spec = "anthropic:claude-haiku-5-5"
-        assert get_model_profiles()[spec]["profile"]["max_input_tokens"] == 1_000_000
-        assert default_effort_for_model(spec) == "medium"
-        assert supported_efforts_for_model(spec) == (
-            "low",
-            "medium",
-            "high",
-            "xhigh",
-            "max",
-        )
+        assert model in get_available_models()[provider]
+        model_spec = f"{provider}:{model}"
+        assert model_spec in get_model_profiles()
+        assert default_effort_for_model(model_spec) == "medium"
+        assert supported_efforts_for_model(model_spec) == efforts
+        clear_caches()
 
 
 class TestCodexProviderMirror:

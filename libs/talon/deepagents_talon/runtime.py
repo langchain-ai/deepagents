@@ -23,18 +23,21 @@ from deepagents import create_deep_agent
 from deepagents.backends import CompositeBackend, LocalShellBackend, StateBackend
 from deepagents.middleware.filesystem import FilesystemMiddleware
 from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
+from deepagents.middleware.skills import SkillsMiddleware
 from deepagents.middleware.summarization import (
     SummarizationToolMiddleware,
     create_summarization_tool_middleware,
 )
 from deepagents.profiles.provider.provider_profiles import apply_provider_profile
+from langchain.agents.middleware import HumanInTheLoopMiddleware
 from langchain.chat_models import init_chat_model
 from langchain_core.messages import HumanMessage
-from langchain_core.tools import tool
+from langchain_core.tools import BaseTool, tool
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.prebuilt import ToolNode
 from langgraph.types import Command
 
+from deepagents_code.hooks.server_middleware import ServerHooksMiddleware
 from deepagents_code.tools import create_web_search_tool, fetch_url
 from deepagents_talon.archive import ArchiveScope, conversation_tools
 from deepagents_talon.archive_saver import ConversationSaver
@@ -56,6 +59,7 @@ from deepagents_talon.config import TalonConfig
 from deepagents_talon.context_doctor import ContextDoctor
 from deepagents_talon.cron import CronJobStore, CronOrigin, CronTools
 from deepagents_talon.effort import ACTIVE_EFFORT, effort_levels, effort_settings
+from deepagents_talon.hooks import ACTIVE_HOOKS, TalonHooks, hook_approval_required
 from deepagents_talon.interfaces import (
     AgentRequest,
     AgentResult,
@@ -65,6 +69,7 @@ from deepagents_talon.interfaces import (
     ToolApprovalRequest,
 )
 from deepagents_talon.mcp import _cancel_mcp_elicitation
+from deepagents_talon.mcp_middleware import MCP_SKILL_ONLY_METADATA_KEY
 from deepagents_talon.messaging import ProgressMessages, progress_messages, send_message
 from deepagents_talon.model_selection import (
     ACTIVE_MODEL,
@@ -101,7 +106,6 @@ if TYPE_CHECKING:
     from langchain.agents.middleware import AgentState, InterruptOnConfig
     from langchain.agents.middleware.types import AgentMiddleware
     from langchain_core.language_models import BaseChatModel
-    from langchain_core.tools import BaseTool
     from langgraph.types import Checkpointer
 
 logger = logging.getLogger(__name__)
@@ -387,12 +391,15 @@ class DeepAgentRuntime:
         self.sandbox_working_dir = sandbox_working_dir
         self.skills = tuple(skills) if skills is not None else None
         self.middleware = tuple(middleware)
+        self._hooks = ACTIVE_HOOKS
         self.approval_store = approval_store or ToolApprovalStore(
             (assistant_dir or TalonConfig.from_env(self.env).home) / "tools.json"
         )
         self._active_approvals: ApprovalSnapshot | None = None
         self.memory = tuple(memory) if memory is not None else None
-        self.checkpointer = checkpointer if checkpointer is not None else InMemorySaver()
+        self.checkpointer = _transcript_saver(
+            checkpointer, assistant_dir or TalonConfig.from_env(self.env).home
+        )
         self.include_web_tools = include_web_tools
         self.recursion_limit = resolved_recursion_limit
         self.max_retries = max_retries
@@ -443,6 +450,14 @@ class DeepAgentRuntime:
         ]
         snapshot = self._approval_snapshot(approvals)
         tools = self._build_tools(runtime_tools)
+        skill_tools = [
+            item
+            for item in tools
+            if isinstance(item, BaseTool)
+            and (item.metadata or {}).get(MCP_SKILL_ONLY_METADATA_KEY) is True
+        ]
+        skill_tool_ids = {id(item) for item in skill_tools}
+        tools = [item for item in tools if id(item) not in skill_tool_ids]
         tools.extend(self.approval_store.tools(snapshot))
         interrupt_on = self._interrupt_on(snapshot)
         context_size = _context_size_from_env(self.env)
@@ -490,8 +505,15 @@ class DeepAgentRuntime:
             ),
             ModelSelectionMiddleware(),
             ProgressMessages(),
-            *self.middleware,
         ]
+        middleware.append(HumanInTheLoopMiddleware(interrupt_on=interrupt_on))
+        # after_model runs in reverse order: hooks must resolve before approval.
+        middleware.append(
+            ServerHooksMiddleware(
+                cwd=Path(self.env.get(_WORKSPACE_ENV) or Path.cwd()),
+                mcp_tools=[item for item in tools if isinstance(item, BaseTool)],
+            )
+        )
         task_tools = TaskTools(
             model,
             interrupt_on,
@@ -503,7 +525,9 @@ class DeepAgentRuntime:
         )
         middleware.append(task_tools)
         middleware.append(self.background.configured(resolved))
-        if context_size is not None and not _has_summarization_tool_middleware(middleware):
+        if context_size is not None and not _has_summarization_tool_middleware(
+            [*middleware, *self.middleware]
+        ):
             middleware.append(create_summarization_tool_middleware(model, self.backend))
         diagnostics = ContextDoctor(
             backend=self.backend,
@@ -511,15 +535,16 @@ class DeepAgentRuntime:
             skills=tuple(self._resolve_skills() or ()),
             memory=tuple(self._resolve_memory() or ()),
         )
+        middleware.extend(_skill_middleware(self.backend, diagnostics.skills, skill_tools))
+        middleware.extend(self.middleware)
         graph = create_deep_agent(
             model=model,
             tools=tools,
             system_prompt=diagnostics.system_prompt,
             subagents=resolved or None,
             backend=self.backend,
-            skills=list(diagnostics.skills) or None,
+            skills=None if skill_tools else list(diagnostics.skills) or None,
             middleware=middleware,
-            interrupt_on=interrupt_on,
             memory=list(diagnostics.memory) or None,
             checkpointer=self.checkpointer,
         )
@@ -740,7 +765,16 @@ class DeepAgentRuntime:
         scheduled_token = _SCHEDULED_TURN.set(request.metadata.get("trigger") == "cron")
         authorization_token = set_authorization_handler(request.authorization_handler)
         breakout_token = BREAKOUT_HANDLER.set(request.breakout_handler)
+        hooks_token = self._hooks.set(None)
         try:
+            self._hooks.set(
+                await asyncio.to_thread(
+                    TalonHooks.load,
+                    self.assistant_dir or TalonConfig.from_env(self.env).home,
+                    Path(self.env.get(_WORKSPACE_ENV) or Path.cwd()),
+                    request.conversation_id,
+                )
+            )
             with (
                 progress_messages(request.message_handler, self.verbosity),
                 _history_context(request),
@@ -759,6 +793,7 @@ class DeepAgentRuntime:
                 self.background.record_delivery_failure(pending)
             raise
         finally:
+            self._hooks.reset(hooks_token)
             APPROVAL_OPERATOR.reset(operator_token)
             ACTIVE_APPROVALS.reset(policy_token)
             reset_authorization_handler(authorization_token)
@@ -949,6 +984,15 @@ class DeepAgentRuntime:
         policy = snapshot.interrupt_on
         if self._smart_model is not None:
             policy["ask_for_help"] = {"allowed_decisions": ["approve", "reject"]}
+        for name, config in policy.items():
+            if config:
+                approval: InterruptOnConfig = (
+                    config.copy()
+                    if isinstance(config, dict)
+                    else {"allowed_decisions": ["approve", "reject"]}
+                )
+                approval["when"] = hook_approval_required
+                policy[name] = approval
         return policy
 
     def _help_tool(self, spec: str) -> BaseTool:
@@ -1127,7 +1171,9 @@ class DeepAgentRuntime:
         last_exc: Exception | None = None
         for attempt in range(self.max_retries):
             try:
-                return await invoke(payload, config=config)
+                hooks = self._hooks.get()
+                kwargs = {"context": hooks.context} if hooks is not None else {}
+                state = await invoke(payload, config=config, **kwargs)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -1142,6 +1188,10 @@ class DeepAgentRuntime:
                     exc,
                 )
                 await asyncio.sleep(backoff)
+            else:
+                if hooks is not None:
+                    hooks.record(state)
+                return state
         if last_exc is not None:
             raise last_exc
         msg = "agent invocation retry loop exited unexpectedly"
@@ -1169,13 +1219,22 @@ class DeepAgentRuntime:
         state = await self._invoke_with_retries(
             content, request.conversation_id, activity, source=source, pinned_skills=pinned_skills
         )
-        for _ in range(DEFAULT_MAX_APPROVAL_ROUNDS):
+        approval_rounds = 0
+        for _ in range(max(self.recursion_limit, DEFAULT_MAX_APPROVAL_ROUNDS)):
             interrupts = _interrupts_from_state(state)
             if not interrupts:
                 return state
-            resume = await self._build_approval_resume(request, interrupts)
+            hooks = self._hooks.get()
+            pending, payload = await hooks.resume(interrupts) if hooks else (interrupts, {})
+            if pending:
+                if approval_rounds >= DEFAULT_MAX_APPROVAL_ROUNDS:
+                    break
+                approval_rounds += 1
+                approvals = await self._build_approval_resume(request, pending)
+                payload.update(cast("Mapping[str, object]", approvals.resume))
+            resume = Command(resume=payload)
             state = await self._resume_with_retries(resume, request.conversation_id, activity)
-        msg = "agent hit tool approval interrupt limit"
+        msg = "agent hit hook or tool approval interrupt limit"
         raise RuntimeError(msg)
 
     async def _build_approval_resume(
@@ -1813,6 +1872,18 @@ def _local_subagent_options(spec: LocalSubAgent, frontmatter: dict[str, object])
         spec["web"] = True
 
 
+class _TalonSkillsMiddleware(SkillsMiddleware):
+    """Disclose tools before Talon's MCP authorization wrapper runs."""
+
+
+def _skill_middleware(
+    backend: BackendProtocol, sources: Sequence[str], tools: Sequence[BaseTool]
+) -> list[SkillsMiddleware]:
+    if not tools or not sources:
+        return []
+    return [_TalonSkillsMiddleware(backend=backend, sources=list(sources), tools=tools)]
+
+
 def _resolve_local_tools(
     spec: LocalSubAgent,
     catalog: Mapping[str, BaseTool],
@@ -2018,3 +2089,10 @@ def _current_history_scope() -> ArchiveScope:
         msg = "Conversation tools require a channel and chat supplied by the host"
         raise RuntimeError(msg)
     return scope
+
+
+def _transcript_saver(saver: Checkpointer | None, home: Path) -> Checkpointer:
+    """Bind local hook erasure to archive deletion independently of hook config."""
+    if isinstance(saver, ConversationSaver):
+        saver.transcript_home = home
+    return saver if saver is not None else InMemorySaver()

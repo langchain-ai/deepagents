@@ -584,6 +584,151 @@ def _git_init_commit(tmp_path: Path, *, branch: str | None = None) -> None:
 class TestSectionGit:
     """Tests for _section_git."""
 
+    def test_clean_branch_and_available_mains(self, tmp_path: Path) -> None:
+        _git_init_commit(tmp_path, branch="main")
+        subprocess.run(["git", "branch", "master"], cwd=tmp_path, check=True)
+
+        out = _run_section(_section_git(), tmp_path, with_header=True)
+
+        assert "**Git**: Current branch `main`, `main`, `master` available\n" in out
+        assert "uncommitted" not in out
+
+    @pytest.mark.parametrize("filename", ["file.txt", "space name", "line\nbreak"])
+    def test_counts_staged_modified_and_untracked_entries(
+        self, tmp_path: Path, filename: str
+    ) -> None:
+        _git_init_commit(tmp_path, branch="main")
+        (tmp_path / filename).write_text("initial")
+        subprocess.run(["git", "add", "--", filename], cwd=tmp_path, check=True)
+        subprocess.run(
+            ["git", "commit", "-m", "add file"],
+            cwd=tmp_path,
+            env=_git_env(tmp_path),
+            capture_output=True,
+            check=True,
+        )
+        (tmp_path / filename).write_text("modified")
+        (tmp_path / "staged").write_text("staged")
+        subprocess.run(["git", "add", "staged"], cwd=tmp_path, check=True)
+        (tmp_path / "untracked").write_text("untracked")
+
+        out = _run_section(_section_git(), tmp_path, with_header=True)
+
+        assert ", 3 uncommitted changes\n" in out
+
+    def test_counts_rename_once(self, tmp_path: Path) -> None:
+        _git_init_commit(tmp_path, branch="main")
+        (tmp_path / "original").write_text("content")
+        subprocess.run(["git", "add", "original"], cwd=tmp_path, check=True)
+        subprocess.run(
+            ["git", "commit", "-m", "add file"],
+            cwd=tmp_path,
+            env=_git_env(tmp_path),
+            capture_output=True,
+            check=True,
+        )
+        subprocess.run(["git", "mv", "original", "renamed"], cwd=tmp_path, check=True)
+
+        out = _run_section(_section_git(), tmp_path, with_header=True)
+
+        assert ", 1 uncommitted change\n" in out
+
+    def test_detached_head(self, tmp_path: Path) -> None:
+        _git_init_commit(tmp_path, branch="main")
+        subprocess.run(
+            ["git", "checkout", "--detach"],
+            cwd=tmp_path,
+            capture_output=True,
+            check=True,
+        )
+        commit = subprocess.check_output(
+            ["git", "rev-parse", "--short", "HEAD"], cwd=tmp_path, text=True
+        ).strip()
+
+        out = _run_section(_section_git(), tmp_path, with_header=True)
+
+        assert f"**Git**: Detached HEAD at `{commit}`, `main` available\n" in out
+
+    def test_branch_named_detached(self, tmp_path: Path) -> None:
+        _git_init_commit(tmp_path, branch="(detached)")
+
+        out = _run_section(_section_git(), tmp_path, with_header=True)
+
+        assert "**Git**: Current branch `(detached)`\n" in out
+
+    def test_counts_unmerged_path_once(self, tmp_path: Path) -> None:
+        _git_init_commit(tmp_path, branch="main")
+        blob = subprocess.check_output(
+            ["git", "hash-object", "-w", "--stdin"],
+            input="content",
+            text=True,
+            cwd=tmp_path,
+        ).strip()
+        subprocess.run(
+            ["git", "update-index", "--index-info"],
+            input="".join(
+                f"100644 {blob} {stage}\tconflicted\n" for stage in (1, 2, 3)
+            ),
+            cwd=tmp_path,
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+        (tmp_path / "conflicted").write_text("content")
+
+        out = _run_section(_section_git(), tmp_path, with_header=True)
+
+        assert ", 1 uncommitted change\n" in out
+
+    def test_unborn_branch(self, tmp_path: Path) -> None:
+        subprocess.run(
+            ["git", "init", "-b", "new-branch"],
+            cwd=tmp_path,
+            capture_output=True,
+            check=True,
+        )
+        (tmp_path / "untracked").write_text("content")
+
+        out = _run_section(_section_git(), tmp_path, with_header=True)
+
+        assert "**Git**: Current branch `new-branch`, 1 uncommitted change\n" in out
+
+    def test_bare_repository(self, tmp_path: Path) -> None:
+        subprocess.run(
+            ["git", "init", "--bare", "-b", "main"],
+            cwd=tmp_path,
+            capture_output=True,
+            check=True,
+        )
+
+        out = _run_section(_section_git(), tmp_path, with_header=True)
+
+        assert "**Git**:" in out
+        assert "uncommitted" not in out
+
+    def test_outside_repository(self, tmp_path: Path) -> None:
+        out = _run_section(_section_git(), tmp_path, with_header=True)
+
+        assert "**Git**:" not in out
+
+    def test_fallback_when_porcelain_v2_is_unavailable(self, tmp_path: Path) -> None:
+        _git_init_commit(tmp_path, branch="main")
+        (tmp_path / "untracked").write_text("content")
+        script = """git() {
+  if [ "$1" = status ] && [ "$2" = --porcelain=v2 ]; then
+    return 129
+  fi
+  command git "$@"
+}
+""" + _section_git()
+
+        out = _run_section(script, tmp_path, with_header=True)
+
+        assert (
+            "**Git**: Current branch `main`, `main` available, 1 uncommitted change\n"
+            in out
+        )
+
 
 class TestSectionGhCli:
     """Tests for _section_gh_cli."""

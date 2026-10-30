@@ -92,3 +92,14 @@ def test_render_eval_tool_description_mode_specific(
     assert "Top-level `await` is supported" in description
     assert "will not resolve" not in description
     assert description.startswith("Execute JavaScript in a sandboxed REPL.")
+
+
+@pytest.mark.parametrize("mode", ["thread", "turn", "call"])
+def test_render_repl_without_timeout(mode: Literal["thread", "turn", "call"]) -> None:
+    prompt = render_repl_system_prompt(
+        tool_name="eval", timeout=None, memory_limit_mb=64, mode=mode
+    )
+    assert "- Memory: 64 MB total." in prompt
+    assert "timeout" not in prompt.lower()
+    assert "Nones" not in prompt
+    assert "infs" not in prompt

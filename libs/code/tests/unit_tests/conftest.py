@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import os
 import tempfile
+import zlib
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
 import pytest
@@ -23,6 +24,8 @@ if TYPE_CHECKING:
     from pathlib import Path
     from unittest.mock import MagicMock
 
+    from textual.css.model import RuleSet
+    from textual.css.types import CSSLocation
     from textual.pilot import Pilot
     from textual.screen import Screen
 
@@ -118,6 +121,40 @@ def _warm_model_caches() -> Generator[None]:
             os.environ.pop(discovery_var, None)
         else:
             os.environ[discovery_var] = original
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _share_css_parse_cache() -> Generator[None]:
+    """Share parsed Textual CSS across every `App` a worker boots.
+
+    Textual caches parsed rules per `Stylesheet`, so each `run_test()` re-parses
+    the app's CSS from scratch; across ~1,600 app boots that was ~18% of suite
+    wall time. Keying on the stylesheet variables keeps theme changes correct.
+    """
+    from textual.css.stylesheet import Stylesheet
+
+    original = Stylesheet._parse_rules
+    cache: dict[tuple[object, ...], list[RuleSet]] = {}
+
+    def _parse_rules(
+        self: Stylesheet,
+        css: str,
+        read_from: CSSLocation,
+        is_default_rules: bool = False,
+        tie_breaker: int = 0,
+        scope: str = "",
+    ) -> list[RuleSet]:
+        variables = tuple(sorted(self._variables.items()))
+        key = (css, read_from, is_default_rules, tie_breaker, scope, variables)
+        if key not in cache:
+            cache[key] = original(
+                self, css, read_from, is_default_rules, tie_breaker, scope
+            )
+        return cache[key]
+
+    with pytest.MonkeyPatch.context() as patcher:
+        patcher.setattr(Stylesheet, "_parse_rules", _parse_rules)
+        yield
 
 
 @pytest.fixture(autouse=True)
@@ -920,6 +957,27 @@ def wait_for_modal() -> WaitForModal:
         raise AssertionError(msg)
 
     return _wait
+
+
+def pytest_collection_modifyitems(
+    config: pytest.Config, items: list[pytest.Item]
+) -> None:
+    """Keep only this CI shard's tests when `PYTEST_SHARD` is `INDEX/TOTAL`.
+
+    Splitting by a stable hash of the node ID (not by file) spreads the large
+    `test_app.py` module evenly across runners.
+    """
+    shard = os.environ.get("PYTEST_SHARD", "")
+    if not shard or shard == "1/1":
+        return
+    index, total = (int(part) for part in shard.split("/"))
+    selected: list[pytest.Item] = []
+    deselected: list[pytest.Item] = []
+    for item in items:
+        bucket = zlib.crc32(item.nodeid.encode()) % total
+        (selected if bucket == index - 1 else deselected).append(item)
+    config.hook.pytest_deselected(items=deselected)
+    items[:] = selected
 
 
 @pytest.hookimpl(wrapper=True)

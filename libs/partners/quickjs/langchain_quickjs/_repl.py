@@ -96,6 +96,10 @@ class EvalOutcome:
     error_stack: str | None = None
 
 
+class _SnapshotRestoreError(RuntimeError):
+    """Raised when persisted state cannot be restored before evaluation."""
+
+
 class _PTCCallBudgetExceededError(RuntimeError):
     """Raised when one eval exceeds its configured PTC call budget."""
 
@@ -356,7 +360,7 @@ class _ThreadREPL:
         worker: ReplWorker,
         runtime: Runtime,
         *,
-        timeout: float,
+        timeout: float | None,
         capture_console: bool,
         max_stdout_chars: int,
         max_ptc_calls: int | None = 256,
@@ -369,7 +373,7 @@ class _ThreadREPL:
         # for sync evals. Async evals pass `timeout=` per call so each
         # call gets a fresh budget — matches what a REPL user expects,
         # and what we describe in the system prompt.
-        self._per_call_timeout = timeout
+        self._per_call_timeout = float("inf") if timeout is None else timeout
         self._capture_console = capture_console
         # Static budget config; mutable counters live in `_ptc_state`.
         self._max_ptc_calls = max_ptc_calls
@@ -377,6 +381,7 @@ class _ThreadREPL:
         self._max_subagent_concurrency = max_subagent_concurrency
         self._console = _ConsoleBuffer(max_stdout_chars)
         self._ctx: Context | None = None
+        self._prepared_for_eval = False
         # PTC state. `_registered_tools` tracks which camel-case names
         # have already had their host-function bridge installed on the
         # QuickJS context. Host functions cannot be un-registered, so we
@@ -719,6 +724,8 @@ class _ThreadREPL:
         code: str,
         *,
         outer_runtime: ToolRuntime | None = None,
+        snapshot_payload: bytes | None = None,
+        tools: Sequence[BaseTool] | None = None,
     ) -> EvalOutcome:
         # Both sync and async entry points funnel through ctx.eval_async on
         # the worker loop. Sync ctx.eval can't dispatch async host functions
@@ -736,6 +743,8 @@ class _ThreadREPL:
             self._aeval_async(
                 code,
                 outer_runtime=outer_runtime,
+                snapshot_payload=snapshot_payload,
+                tools=tools,
             )
         )
 
@@ -744,12 +753,16 @@ class _ThreadREPL:
         code: str,
         *,
         outer_runtime: ToolRuntime | None = None,
+        snapshot_payload: bytes | None = None,
+        tools: Sequence[BaseTool] | None = None,
         outer_loop: asyncio.AbstractEventLoop | None = None,
     ) -> EvalOutcome:
         return await self._worker.run_async(
             self._aeval_async(
                 code,
                 outer_runtime=outer_runtime,
+                snapshot_payload=snapshot_payload,
+                tools=tools,
                 outer_loop=outer_loop,
             )
         )
@@ -790,11 +803,29 @@ class _ThreadREPL:
             inject_globals=inject_globals,
         )
 
+    async def _aprepare_for_eval(
+        self, payload: bytes | None, tools: Sequence[BaseTool] | None
+    ) -> None:
+        """Restore once and bind current tools on the owning worker."""
+        if not self._prepared_for_eval:
+            self._prepared_for_eval = True
+            if payload:
+                try:
+                    await self._arestore_snapshot(payload, inject_globals=True)
+                except Exception as exc:  # best-effort restore path
+                    logger.warning("Failed to restore QuickJS snapshot", exc_info=True)
+                    msg = "Failed to restore QuickJS snapshot"
+                    raise _SnapshotRestoreError(msg) from exc
+        if tools is not None:
+            await self._ainstall_tools(tools)
+
     async def _aeval_async(  # noqa: C901, PLR0912, PLR0915
         self,
         code: str,
         *,
         outer_runtime: ToolRuntime | None = None,
+        snapshot_payload: bytes | None = None,
+        tools: Sequence[BaseTool] | None = None,
         outer_loop: asyncio.AbstractEventLoop | None = None,
     ) -> EvalOutcome:
         """Uses `ctx.eval_async` directly.
@@ -817,6 +848,7 @@ class _ThreadREPL:
             outer_loop=outer_loop,
         )
         try:
+            await self._aprepare_for_eval(snapshot_payload, tools)
             # Drive any final-expression Promise (e.g. a bare async
             # IIFE) to its resolved value before marshaling. Without
             # this the Promise object itself fails to marshal and
@@ -931,7 +963,7 @@ class _Registry:
     """
 
     memory_limit: int
-    timeout: float
+    timeout: float | None
     capture_console: bool
     max_stdout_chars: int
     max_ptc_calls: int | None = 256

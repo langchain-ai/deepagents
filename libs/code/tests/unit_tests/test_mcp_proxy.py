@@ -67,10 +67,6 @@ async def test_runtime_reauth_preserves_login_instructions(
         "http://test/mcp", auth=auth, httpx_client_factory=client_factory
     )
 
-    async def preflight(*_args: object) -> None:
-        pass
-
-    monkeypatch.setattr(mcp_tools, "_check_remote_server", preflight)
     monkeypatch.setattr(mcp_tools, "_build_transport", lambda *_a, **_kw: transport)
     async with app.router.lifespan_context(app):
         tools, manager, infos = await mcp_tools._load_tools_from_config(

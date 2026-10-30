@@ -10,7 +10,7 @@ import os
 import shlex
 import string
 import time
-from contextlib import contextmanager
+from contextlib import asynccontextmanager, contextmanager
 from datetime import timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, Protocol
@@ -33,7 +33,7 @@ from deepagents_code.integrations.sandbox_provider import (
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
-    from collections.abc import Generator, Mapping
+    from collections.abc import AsyncGenerator, Generator, Mapping
     from types import ModuleType
 
     from deepagents.backends.protocol import SandboxBackendProtocol
@@ -1540,3 +1540,70 @@ __all__ = [
     "get_default_working_dir",
     "verify_sandbox_deps",
 ]
+
+
+@asynccontextmanager
+async def owned_sandbox(
+    provider: str,
+    *,
+    sandbox_id: str | None = None,
+    snapshot_name: str | None = None,
+    quiet: bool = False,
+) -> AsyncGenerator[str | None]:
+    """Own a sandbox's lifetime from the client process.
+
+    Yields the sandbox ID to hand to the server. When no ID was supplied and
+    the provider supports reuse by ID, the sandbox is created here and deleted
+    on exit -- regardless of how the server process later terminates. In every
+    other case the given ID (or None) is yielded unchanged and the server keeps
+    ownership through `create_sandbox`, exactly as before.
+
+    Why this exists: `create_sandbox` runs inside the langgraph server and
+    releases the sandbox from an `atexit` handler. The client stops that
+    server with SIGTERM, which bypasses `atexit`, so the sandbox leaked until
+    the provider's own timeout reclaimed it. Deleting from the client's control
+    flow removes the dependence on how the server process dies.
+
+    Yields:
+        The sandbox ID for the server to reuse, or `None`.
+    """
+    if provider == "none" or sandbox_id is not None:
+        yield sandbox_id
+        return
+
+    registry = _get_registry()
+    metadata = registry.get_metadata(provider)
+    if metadata is None or not metadata.supports_sandbox_id:
+        yield None
+        return
+    if snapshot_name is not None and not metadata.supports_snapshot_name:
+        yield None  # let create_sandbox raise its usual error server-side
+        return
+
+    provider_obj = _get_provider(provider, registry=registry)
+    provider_kwargs: dict[str, Any] = dict(registry.get_params(provider))
+    if snapshot_name is not None:
+        provider_kwargs["snapshot"] = snapshot_name
+
+    if not quiet:
+        console.print(f"[yellow]Starting {provider} sandbox...[/yellow]")
+    backend = await provider_obj.aget_or_create(**provider_kwargs)
+    if not quiet:
+        console.print(
+            f"[green]{get_glyphs().checkmark} {provider.capitalize()} sandbox "
+            f"ready: {backend.id}[/green]"
+        )
+    try:
+        yield backend.id
+    finally:
+        try:
+            await provider_obj.adelete(sandbox_id=backend.id)
+            if not quiet:
+                console.print(
+                    f"[dim]{get_glyphs().checkmark} {provider.capitalize()} "
+                    f"sandbox {backend.id} terminated[/dim]"
+                )
+        except Exception:
+            logger.warning(
+                "Failed to delete %s sandbox %s", provider, backend.id, exc_info=True
+            )

@@ -171,6 +171,22 @@ def _build_model(configurable: dict[str, object]) -> BaseChatModel:
     return init_chat_model(name, **kwargs)
 
 
+def _skills(configurable: dict[str, object]) -> list[str] | None:
+    """Return the task's skills source, forwarded by `DeepAgentsLangGraph`.
+
+    Raises:
+        ValueError: If `skills_dir` is not an absolute path without `..`.
+    """
+    value = configurable.get("skills_dir")
+    if value is None:
+        return None
+    path = Path(value) if isinstance(value, str) else None
+    if path is None or not path.is_absolute() or ".." in path.parts:
+        msg = "`configurable.skills_dir` must be an absolute path without `..`"
+        raise ValueError(msg)
+    return [path.as_posix()]
+
+
 def _workdir(configurable: dict[str, object]) -> Path:
     value = configurable.get("cwd")
     if value is None:
@@ -422,14 +438,15 @@ def make_bare_graph(config: dict[str, object] | None = None) -> object:
     Args:
         config: LangGraph runtime config. Harbor passes the selected model in
             `configurable.model` and optional provider kwargs in
-            `configurable.model_kwargs`.
+            `configurable.model_kwargs`, plus the task's `skills_dir` when
+            run through `DeepAgentsLangGraph`.
 
     Returns:
         A compiled LangGraph graph invokable by Harbor's LangGraph runner.
 
     Raises:
         TypeError: If configurable values have unexpected types.
-        ValueError: If no model name is provided.
+        ValueError: If no model name is provided or `skills_dir` is invalid.
     """
     configurable = _configurable(config)
     model = _build_model(configurable)
@@ -448,6 +465,7 @@ def make_bare_graph(config: dict[str, object] | None = None) -> object:
         model=model,
         backend=backend,
         tools=[search_tool] if search_tool is not None else None,
+        skills=_skills(configurable),
     )
 
 

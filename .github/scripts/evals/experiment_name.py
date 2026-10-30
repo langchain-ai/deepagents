@@ -38,16 +38,19 @@ def experiment_name(
     category: str | None,
     run_id: str,
     run_attempt: str,
+    reasoning_effort: str | None = None,
 ) -> str:
     """Return the deterministic experiment name for one leaf.
 
     Shape:
-    ``deepagents-harbor-{branch}-{sha8}-{config}-{model}[-{category}]-{run_id}-{run_attempt}``
-    where branch/config/model/category are sanitized and ``sha8`` is the first 8
-    hex chars of ``sha256(branch)`` (of the raw, unsanitized branch).
+    ``deepagents-harbor-{branch}-{sha8}-{config}-{model}[-{effort}][-{category}]-{run_id}-{run_attempt}``
+    where branch/config/model/effort/category are sanitized and ``sha8`` is the
+    first 8 hex chars of ``sha256(branch)`` (of the raw, unsanitized branch).
     """
     branch_slug = f"{_sanitize(branch)}-{hashlib.sha256(branch.encode('utf-8')).hexdigest()[:8]}"
     name = f"deepagents-harbor-{branch_slug}-{_sanitize(config)}-{_sanitize(model)}"
+    if reasoning_effort:
+        name += f"-{_sanitize(reasoning_effort)}"
     if category:
         name += f"-{_sanitize(category)}"
     return f"{name}-{run_id}-{run_attempt}"
@@ -67,6 +70,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--category", default=os.getenv("HARBOR_CATEGORY", ""))
     parser.add_argument("--run-id", default=os.getenv("GITHUB_RUN_ID", ""))
     parser.add_argument("--run-attempt", default=os.getenv("GITHUB_RUN_ATTEMPT", ""))
+    parser.add_argument("--reasoning-effort", default=os.getenv("HARBOR_REASONING_EFFORT", ""))
     args = parser.parse_args(argv)
 
     print(
@@ -77,6 +81,7 @@ def main(argv: list[str] | None = None) -> int:
             category=args.category,
             run_id=args.run_id,
             run_attempt=args.run_attempt,
+            reasoning_effort=args.reasoning_effort,
         )
     )
     return 0

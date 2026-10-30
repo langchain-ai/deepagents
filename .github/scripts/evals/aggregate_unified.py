@@ -385,6 +385,7 @@ def combine(
     experiments: dict[str, object] | None = None,
     run_id: str = "",
     run_attempt: str = "",
+    reasoning_effort: str = "",
 ) -> dict:
     issues_out = list(issues or [])
     for leaf in leaves:
@@ -523,6 +524,7 @@ def combine(
                     category=leaf["category"],
                     run_id=run_id,
                     run_attempt=run_attempt,
+                    reasoning_effort=reasoning_effort,
                 )
                 for leaf in row_leaves
             ]
@@ -960,6 +962,7 @@ def main(argv: list[str] | None = None) -> int:
         experiments=experiments,
         run_id=os.environ.get("GITHUB_RUN_ID", ""),
         run_attempt=os.environ.get("GITHUB_RUN_ATTEMPT", ""),
+        reasoning_effort=os.environ.get("UNIFIED_REASONING_EFFORT", ""),
     )
     try:
         write_outputs(

@@ -40,15 +40,43 @@ _DOCUMENTED_EFFORTS = {
             "baseten:zai-org/glm-5.3",
             "baseten:zai-org/glm-5.3-fast",
             "baseten:zai-org/glm-5.3-flash",
+            "baseten:deepseek-ai/deepseek-v4-pro",
+            "baseten:deepseek-ai/deepseek-v4-pro-0813",
+            "baseten:deepseek-ai/deepseek-v4.1-flash",
+            "baseten:deepseek-ai/deepseek-v4.1-flash-fast",
         ),
         ("none", "low", "high", "max"),
     ),
+    "baseten:deepseek-ai/deepseek-v4-flash-0731": (
+        "none",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max",
+    ),
 }
+
+
+def _native_spec(spec: str) -> str:
+    provider, _, name = spec.partition(":")
+    namespace, _, model = name.partition("/")
+    if provider == "openai" and namespace in {"openai", "anthropic", "baseten"}:
+        return f"{namespace}:{model}"
+    return spec
 
 
 def _family(spec: str) -> str:
     provider, _, name = spec.lower().partition(":")
     name = name.rsplit("/", 1)[-1]
+    if provider in {"deepseek", "openai"} and name in {
+        "deepseek-flash",
+        "deepseek-v4-pro",
+        "deepseek-v4-flash",
+        "deepseek-v4-flash-vision-exp",
+    }:
+        return "deepseek"
     if provider == "openai":
         if name.startswith(("qwen3", "qwen-plus", "qwen-flash")):
             if any(part in name for part in ("instruct", "coder", "omni")):
@@ -68,7 +96,10 @@ def effort_levels(spec: str) -> tuple[str, ...]:
     Returns:
         Native effort labels, Qwen budget presets, or GLM thinking modes.
     """
+    spec = _native_spec(spec)
     family = _family(spec)
+    if family == "deepseek":
+        return ("none", "low", "high", "max")
     if family == "qwen":
         return tuple(QWEN_BUDGETS)
     if family == "glm":
@@ -77,11 +108,7 @@ def effort_levels(spec: str) -> tuple[str, ...]:
         return ("on",) if "glm-5.3" in spec.lower() else ("off", "on")
     provider, _, name = spec.partition(":")
     if provider == "openai" and "/" in name:
-        namespace, name = name.rsplit("/", 1)
-        if namespace in {"openai", "anthropic"}:
-            spec = f"{namespace}:{name}"
-        else:
-            return ()
+        return ()
     return supported_efforts_for_model(spec) or _DOCUMENTED_EFFORTS.get(spec.lower(), ())
 
 
@@ -101,7 +128,15 @@ def effort_settings(spec: str, effort: str) -> dict[str, Any]:
     if effort not in effort_levels(spec):
         msg = "Unsupported reasoning effort for this model"
         raise ValueError(msg)
+    spec = _native_spec(spec)
     family = _family(spec)
+    if family == "deepseek":
+        settings: dict[str, Any] = {
+            "extra_body": {"thinking": {"type": "disabled" if effort == "none" else "enabled"}}
+        }
+        if effort != "none":
+            settings["reasoning_effort"] = effort
+        return settings
     if family == "qwen":
         body: dict[str, object] = {}
         if budget := QWEN_BUDGETS[effort]:

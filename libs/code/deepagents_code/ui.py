@@ -479,6 +479,8 @@ def show_plugins_help() -> None:
     console.print("[bold]Commands:[/bold]", style=theme.PRIMARY)
     console.print("  list|ls                      List available plugins")
     console.print("  install <id>                 Install a marketplace plugin")
+    console.print("  reinstall <id>               Restore an installed plugin's files")
+    console.print("  update [<id>...] [--check]   Update installed plugins")
     console.print("  uninstall <id>               Uninstall a plugin")
     console.print("  enable <id>                  Enable an installed plugin")
     console.print("  disable <id>                 Disable a plugin")
@@ -491,6 +493,7 @@ def show_plugins_help() -> None:
     console.print("  dcode plugin marketplace add ./marketplace")
     console.print("  dcode plugin install quality-review-plugin@company-tools")
     console.print("  dcode plugin enable quality-review-plugin@company-tools")
+    console.print("  dcode plugin update --check")
     console.print()
 
 

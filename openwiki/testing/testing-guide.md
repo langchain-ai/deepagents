@@ -1,195 +1,158 @@
 ---
 type: testing guide
 title: Testing Guide
-description: Focused dcode test routing for server lifecycle, runtime compatibility patches, workspace ownership, middleware integrity, and virtualized Textual transcripts. Use package Makefile targets as the command authority and prefer deterministic seams over process or model-backed tests.
-tags: [testing, pytest, dcode, textual, middleware, lifecycle]
+description: Focused, network-free test routing for Deep Agents rubric revisions, pinned skills, summarization, async subagent follow-ups, and Talon hook safety. Use package Makefiles and assert observable state, messages, effects, and cleanup rather than internal call order.
+tags: [testing, pytest, deepagents, talon, middleware, hooks]
 sources:
-  - id: openwiki-source-e6ad64b6a7d1df658edc7234
-    resource: repo://libs/code/deepagents_code/_checkpointer_adapter.py
-  - id: openwiki-source-b07cec8e891bf1f14e503026
-    resource: repo://libs/code/deepagents_code/_langsmith_runtime.py
-  - id: openwiki-source-526a6c8ea414f4f02ee9c4a9
-    resource: repo://libs/code/deepagents_code/_run_queue_wakeup.py
-  - id: openwiki-source-b9ef532d79a0667acf40e58b
-    resource: repo://libs/code/deepagents_code/client/launch/server_manager.py
-  - id: openwiki-source-8896ee5af2462c92e51bfb6e
-    resource: repo://libs/code/deepagents_code/local_context.py
-  - id: openwiki-source-528731d4c0ef5dde5cf54f4c
-    resource: repo://libs/code/deepagents_code/memory_guard.py
-  - id: openwiki-source-91c9283d1547adfffd627c43
-    resource: repo://libs/code/deepagents_code/thread_ownership.py
-  - id: openwiki-source-2d3ba1d75dbc72b01448e124
-    resource: repo://libs/code/deepagents_code/tui/widgets/message_store.py
-  - id: openwiki-source-006b62af9993da1b48c11de8
-    resource: repo://libs/code/Makefile
-  - id: openwiki-source-36838b2ce6fb7679d6e662cb
-    resource: repo://libs/code/tests/integration_tests/test_headless_resume.py
-  - id: openwiki-source-6684124c441015e6f9246319
-    resource: repo://libs/code/tests/unit_tests/conftest.py
-  - id: openwiki-source-7f916fdd682c58125bb1c675
-    resource: repo://libs/code/tests/unit_tests/test_checkpointer_adapter.py
-  - id: openwiki-source-ceb0295160537174ea07a3f2
-    resource: repo://libs/code/tests/unit_tests/test_langsmith_runtime.py
-  - id: openwiki-source-86a8d168faa54044d4aa6ec7
-    resource: repo://libs/code/tests/unit_tests/test_local_context.py
-  - id: openwiki-source-d965874b5a639c3205f2eadd
-    resource: repo://libs/code/tests/unit_tests/test_memory_guard.py
-  - id: openwiki-source-7e558b3c5b3acbc58f79b60c
-    resource: repo://libs/code/tests/unit_tests/test_run_queue_wakeup.py
-  - id: openwiki-source-f598809da8d8fbff2d7ae090
-    resource: repo://libs/code/tests/unit_tests/test_server_manager.py
-  - id: openwiki-source-a5e918d96b1dae3f7adec3f5
-    resource: repo://libs/code/tests/unit_tests/test_thread_ownership.py
-  - id: openwiki-source-7b9fdc9826d14adc6230d61c
-    resource: repo://libs/code/tests/unit_tests/test_transcript_virtualization.py
-  - id: openwiki-source-b7beeddb49bcfbe0565494c8
-    resource: repo://libs/code/tests/unit_tests/tui/widgets/test_autocomplete.py
-  - id: openwiki-source-585649cb24fc70035488ac0f
-    resource: repo://libs/code/tests/unit_tests/tui/widgets/test_message_store.py
+  - id: openwiki-source-8037e2358a2c4f9b2c722a11
+    resource: repo://AGENTS.md
+  - id: openwiki-source-e51c4102234507d1529a2440
+    resource: repo://libs/deepagents/deepagents/middleware/async_subagents.py
+  - id: openwiki-source-b93c32bc33a8fa17b52b8a0e
+    resource: repo://libs/deepagents/deepagents/middleware/rubric.py
+  - id: openwiki-source-66cf9d0832d3cb55bec2b5ed
+    resource: repo://libs/deepagents/deepagents/middleware/skills.py
+  - id: openwiki-source-0f308f1610986e2f3ed6d53c
+    resource: repo://libs/deepagents/Makefile
+  - id: openwiki-source-a6f0952b514b04c99bc51705
+    resource: repo://libs/deepagents/tests/unit_tests/middleware/test_pinned_skills.py
+  - id: openwiki-source-023a5fe4719690fecce2bbf1
+    resource: repo://libs/deepagents/tests/unit_tests/middleware/test_rubric_middleware.py
+  - id: openwiki-source-8e7076889e81540fe4fcb8c5
+    resource: repo://libs/deepagents/tests/unit_tests/middleware/test_summarization_middleware.py
+  - id: openwiki-source-6ce85b02eabe462f99e0c912
+    resource: repo://libs/deepagents/tests/unit_tests/test_async_subagents.py
+  - id: openwiki-source-10e4084b6aa57e5cc82620b3
+    resource: repo://libs/deepagents/tests/unit_tests/test_end_to_end.py
+  - id: openwiki-source-fb60ee46c55b974b8341651c
+    resource: repo://libs/DEVELOPMENT.md
+  - id: openwiki-source-d8846ad7008aa3a1566511a7
+    resource: repo://libs/talon/deepagents_talon/hook_transcripts.py
+  - id: openwiki-source-ba53b2ab73965694b2510a58
+    resource: repo://libs/talon/Makefile
+  - id: openwiki-source-c0f076507fca2b1a9eaae92f
+    resource: repo://libs/talon/tests/unit_tests/test_hook_transcripts.py
+  - id: openwiki-source-7dcd7e37c18e77553a46cce3
+    resource: repo://libs/talon/tests/unit_tests/test_hooks.py
+generated: { by: "openwiki/0.4.2", at: "2026-10-30T08:04:27.172Z" }
 verified:
   - by: openwiki/0.4.2
-    at: 2026-10-25T08:05:05.473Z
-generated: { by: "openwiki/0.4.2", at: "2026-10-25T08:05:05.473Z" }
+    at: 2026-10-30T08:04:27.172Z
 ---
 
 # Testing Guide
 
-For dcode changes, test the observable contract at the narrowest deterministic seam. Use a fake backend, temporary SQLite database, controlled environment, patched collaborator, or Textual `run_test` pilot before adding a subprocess test. Reserve process coverage for a boundary that cannot be represented faithfully—such as CLI/server startup or import-time profile state—and reserve model-backed evaluation for an explicit evaluation run. This complements [Development](../operations/development.md), [Run a dcode session](../workflows/run-dcode-session.md), and the architectural [code-agent](../architecture/code-agent.md) and [source map](../architecture/source-map.md) pages.
+Put a network-free regression in the owning package's `tests/unit_tests/` tree and make it prove an observable contract: returned or persisted state, model-visible messages, a safe side effect, emitted notification, or cleanup result. Put a test that genuinely crosses a network boundary in `tests/integration_tests/`. Do not add `@pytest.mark.asyncio`: package configuration enables automatic asyncio handling. Warnings not explicitly accepted by the repository fail the suite. See [Development](../operations/development.md), [runtime behavior](../architecture/runtime-behavior.md), [middleware catalog](../concepts/middleware-catalog.md), and [Talon](../integrations/talon.md).
 
-## Run the package authority
+## Run the owning package command
 
-Run commands through `libs/code/Makefile`; do not replace its socket, parallelism, timeout, or coverage policy with ad-hoc pytest invocations. `make test` defaults `TEST_FILE` to `tests/unit_tests/`, runs with xdist, disables network sockets except Unix sockets, and accepts extra pytest arguments through `PYTEST_EXTRA`. `integration_tests` switches the target to `tests/integration_tests/` and applies its 30-second timeout.
+Use the package Makefile rather than an ad hoc pytest command. It preserves the package's dependency group, coverage settings, socket policy, parallelism, and timeout.
 
 ```bash
-make -C libs/code test TEST_FILE=tests/unit_tests/test_server_manager.py
-make -C libs/code test TEST_FILE=tests/unit_tests/test_thread_ownership.py
-make -C libs/code test TEST_FILE=tests/unit_tests/test_transcript_virtualization.py
-make -C libs/code test TEST_FILE=tests/unit_tests/tui/widgets/test_message_store.py
-make -C libs/code test PYTEST_EXTRA='-k wakeup' TEST_FILE=tests/unit_tests/test_run_queue_wakeup.py
-make -C libs/code integration_tests TEST_FILE=tests/integration_tests/<focused_test>.py
-make -C libs/code lint
+make -C libs/deepagents test TEST_FILE=tests/unit_tests/middleware/test_rubric_middleware.py
+make -C libs/deepagents test TEST_FILE=tests/unit_tests/middleware/test_pinned_skills.py
+make -C libs/deepagents test TEST_FILE=tests/unit_tests/middleware/test_summarization_middleware.py
+make -C libs/deepagents test TEST_FILE=tests/unit_tests/test_async_subagents.py
+make -C libs/deepagents test TEST_FILE=tests/unit_tests/test_end_to_end.py PYTEST_EXTRA='-k RubricMiddleware'
+make -C libs/talon test TEST_FILE=tests/test_runtime.py
+make -C libs/talon test TEST_FILE=tests/unit_tests/test_hooks.py
+make -C libs/talon test TEST_FILE=tests/unit_tests/test_hook_transcripts.py
 ```
 
-`coverage` is the dedicated XML-report target; `update-snapshots` is limited to smoke snapshots. The dcode lint target also validates the generated command catalog and process working-directory rules. Unit-test collection establishes a synthetic `DEEPAGENTS_HOME` before imports, snapshots and restores `os.environ`, and clears global dotenv, tracing, and related runtime state so tests do not inherit a developer profile, credentials, or daemon discovery.
+`libs/deepagents` defaults `TEST_FILE` to `tests/unit_tests/`, runs pytest with xdist, and disables sockets except Unix sockets; its integration aliases select `tests/integration_tests/` and set a 30-second timeout. Talon's `test` target first runs its WhatsApp bridge tests, then runs socket-disabled pytest with a 10-second timeout; it accepts the same `TEST_FILE` and `PYTEST_EXTRA` narrowing. Follow a behavior change with the owning package's `make lint`.
 
-## Select the seam
+## Choose the seam that exposes the contract
 
 ```mermaid
 flowchart TD
-    Change["Changed observable contract"] --> Boundary{"Can a controlled collaborator prove it"}
-    Boundary -->|Yes| Unit["Unit test with fake state or temporary files"]
-    Boundary -->|No| Integration["Focused local process or persistence test"]
-    Unit --> Make["Package Makefile test target"]
+    Change["Changed behavior"] --> Boundary{"Can controlled inputs expose it"}
+    Boundary -->|Middleware state or message| Unit["Focused unit test with fake model or backend"]
+    Boundary -->|Graph wiring| Graph["create_deep_agent with InMemorySaver"]
+    Boundary -->|Remote task client| Transport["httpx MockTransport or mocked SDK client"]
+    Boundary -->|Hook process and file safety| Talon["Real Talon graph with temporary home"]
+    Boundary -->|External service itself| Integration["Focused integration test"]
+    Unit --> Make["Owning Makefile target"]
+    Graph --> Make
+    Transport --> Make
+    Talon --> Make
     Integration --> Make
-    Make --> Lint["Package Makefile lint target"]
 ```
 
-*Start at the controlled unit seam; cross a process boundary only when it is the behavior under test.*
+*Use controlled local seams until the external boundary is the behavior being changed; assertions should survive an implementation refactor that preserves the contract.*
 
-- **Server lifecycle and configuration:** patch `ServerProcess`, runtime scaffolding, and `RemoteAgent`; assert configuration transfer, readiness, workspace binding, and cleanup rather than spawning a server.
-- **Private upstream compatibility:** seed real lightweight upstream state, install the patch, then assert both the optimized path and the safe fallback when the upstream shape does not qualify.
-- **Concurrency and durable state:** use a temporary sessions database and real locks; coordinate with events instead of sleeps. A small helper subprocess is appropriate when the invariant is explicitly cross-process.
-- **Middleware:** invoke the sync and async hook with fake tool handlers or backends. Verify the protected output and failure response, not the middleware's incidental helper calls.
-- **Textual UI:** use `App.run_test` and its pilot only for actual mount, scroll, focus, or interaction behavior. Keep store arithmetic and autocomplete ranking as ordinary unit tests.
+## Rubric revisions: hook semantics and graph wiring
 
-## Server startup, handoff, and cleanup
+`RubricMiddleware` does nothing without a rubric. A new rubric, or reuse after a terminal attempt, resets its private attempt bookkeeping. At a natural agent stop, the after-agent hook grades the transcript: a revision verdict injects feedback and returns the graph to `model`; a terminal evaluation is recorded and allowed to finish. `GraphBubbleUp` is control flow, not a grader error, and propagates.
 
-`start_server_and_get_agent` captures the project context, validates MCP configuration, derives one `ServerConfig`, transfers it to the server environment, creates and scaffolds a temporary runtime, and waits for the `agent` graph. Only after readiness does it construct a `RemoteAgent` and bind the user workspace plus a session-workspace claim and fingerprint. The returned server is then owned by the successful caller; `server_session` is the higher-level lifecycle owner.
+The rubric grader freezes the first nonempty criterion list for an attempt. If a later response under-covers it, the middleware requests one correction. A `satisfied` response that remains under-covered is downgraded so it cannot falsely end the revision loop.
+
+Test at two levels:
+
+- In `tests/unit_tests/middleware/test_rubric_middleware.py`, stub the grading boundary for constructor validation, state reset or stickiness, feedback, cap behavior, callbacks/events, sync/async parity, and exception propagation. Stub the grader invocation—not a sequence of incidental helper calls—when testing the coverage retry.
+- In `tests/unit_tests/test_end_to_end.py`, combine `create_deep_agent`, scripted fake chat models, and `InMemorySaver`. Assert visible revision turns and the persisted rubric state with `get_state`; cover immediate success, loop-and-revise, cap termination, and recovery after a corrected full criterion response.
+
+## Pinned skills: assert the conversation boundary
+
+`SkillsMiddleware` loads skill metadata once per thread; resetting `skills_metadata` to `None` requests a reload. `pinned_skills` is different from metadata discovery: before the next model call, each named readable skill is added as a separate `HumanMessage` marked `lc_source="pinned_skill"`, so the model sees its instructions. Skill tools listed by a pinned skill remain available only while the pin remains in context.
+
+`tests/unit_tests/middleware/test_pinned_skills.py` is the focused graph-level contract suite. Build an agent over a temporary skills directory with `InMemorySaver` and a fake model, then inspect model call history and checkpointed messages. Cover these observables:
+
+- pins follow the user message in supplied order and duplicate names are emitted once;
+- a pin is a stored snapshot, survives later turns, and is omitted from the immediate result payload;
+- unknown, deleted, empty, oversized, or non-UTF-8 skills are skipped without preventing readable pins;
+- parallel tool calls that request pins produce both pinned messages; a subagent result cannot pin a parent; and compaction removes the pin's tool disclosure.
+
+Exercise both `invoke` and `ainvoke` where behavior is shared. Do not assert that a private pinning helper was called; assert the model-visible messages, metadata, bound tools, and persisted transcript.
+
+## Summarization: preserve recoverability and media references
+
+The summarization middleware turns a threshold-crossing message history into a summary plus retained recent messages, offloading evicted history to the backend. The resulting summary is marked `lc_source="summarization"`, refers to the history file only when persistence succeeded, and retains a session identifier in state so later summaries append to the same file. Independent states sharing a backend receive distinct session files.
+
+Inline media is a key safety boundary. Tests use the local `MockBackend` and mock summarizer to verify that data URLs become content-addressed backend files and archive references, identical data is uploaded once, and image URLs survive. A per-item decode or upload failure must be represented by a placeholder and warning rather than silently preserving raw data or losing the fact that media existed. History-write failure still permits a summary, but its event has no nonexistent file path.
+
+Use `tests/unit_tests/middleware/test_summarization_middleware.py` for threshold/no-op, message and notification shape, archive/session identity, media rewrite and failure behavior, token counting, truncation, and sync/async parity. Prefer a fake backend that records writes over assertions about internal formatting calls. The tests use `pytest.mark.anyio` where needed; do not introduce `pytest.mark.asyncio`.
+
+## Async subagent follow-ups: task state is the contract
+
+`AsyncSubAgentMiddleware` supplies tools to start, check, update, cancel, and list remote Agent Protocol tasks. Task identifiers and status live in `async_tasks`, allowing them to survive compaction. An update creates a run on the same remote thread and retains the task ID. The default `interrupt` strategy replaces the current run; `enqueue` leaves the follow-up pending behind it and records the superseded run IDs. Only one follow-up to a task may be sent in a parent turn.
 
 ```mermaid
-sequenceDiagram
-    participant Caller
-    participant Config as ServerConfig
-    participant Runtime as Temporary Runtime
-    participant Proc as ServerProcess
-    participant Remote as RemoteAgent
-    Caller->>Config: derive from project and CLI inputs
-    Caller->>Runtime: apply environment and scaffold files
-    Caller->>Proc: start and wait for agent graph
-    Proc-->>Caller: ready URL
-    Caller->>Remote: create and bind workspace claim
-    Caller-->>Caller: hand off server on success
-    Caller->>Proc: stop if startup does not hand off
+flowchart TD
+    Existing["Tracked task"] --> Update["update_async_task"]
+    Update --> Strategy{"Update strategy"}
+    Strategy -->|interrupt| NewRun["New remote run and running task"]
+    Strategy -->|enqueue| Queued["Pending follow-up and superseded run IDs"]
+    NewRun --> Poll["Async hooks poll current run"]
+    Queued --> Poll
+    Poll --> Outcome{"Observed outcome"}
+    Outcome -->|success| Notice["Notification with result"]
+    Outcome -->|waiting| Notice
+    Outcome -->|error or cancelled| Notice
+    Notice --> State["Persist refreshed async_tasks state"]
 ```
 
-*Startup hands a server to its caller only after graph readiness and workspace binding; every earlier failure path reaps it.*
+*The tracked task follows the newest run; an older completion must not be treated as completion of an enqueued follow-up.*
 
-Use `test_server_manager.py` for these contracts:
+In `tests/unit_tests/test_async_subagents.py`, mock the SDK client or use `httpx.MockTransport`; no server is necessary. Assert the outgoing remote payload and resulting `Command` state/message, not client call order. Include both sync and async tool entrypoints for update strategy behavior, status polling, queued task listing, cancellation of queued and earlier active runs, and rejection of parallel follow-ups. Parent-pull tests should show that completion is injected before a model call or causes one additional turn after a final answer, while timeouts and unreadable remote state do not block or fabricate a result.
 
-- Round-trip a `ServerConfig` through the environment and test the filesystem allowlist as a fail-closed boundary. An explicit allowlist must include `read_file`; empty, malformed, non-list, and non-string serialized values are invalid.
-- Capture configuration passed into the process seam. Relative explicit MCP paths must be normalized from the captured project context, while server-owned MCP/trust policy is absent from a managed workspace claim.
-- Test generated runtime contents directly: source checkouts use a local package dependency, the generated graph map exposes only `agent`, and the HTTP app uses custom route authentication.
-- Block `wait_for_graph_ready`, cancel the startup task, and schedule a loop callback. Assert that `stop()` runs outside the event loop. On a readiness failure, assert abandoned startup gets a short grace period except when sandbox cleanup requires the full graceful window.
+## Talon runtime, hooks, and transcript erasure
 
-For the real CLI/server/persistence boundary, keep a separate integration test such as headless resume. Give helper and CLI subprocesses a temporary `HOME` and `DEEPAGENTS_HOME` before importing dcode, because profile paths and the sessions database are captured at import time. This prevents a resume test from touching a developer profile.
+`DeepAgentRuntime` owns the Talon graph wiring: it supplies the backend, checkpointer, tools, skills, memory, subagents, middleware, and per-conversation graph configuration. `tests/test_runtime.py` uses recording graphs and local temporary workspaces to test those observable wiring and lifecycle contracts: replacement tools are transactional, the active graph remains stable while an approval is outstanding, repeated conversation IDs retain the thread, and interrupted work is repaired with a matching tool result before its interruption marker.
 
-## Runtime compatibility patches
+For hook behavior, run a real local Talon graph with a fake chat model and a temporary `hooks.json`, as `tests/unit_tests/test_hooks.py` does. Assert wire payloads and effects:
 
-dcode carries narrowly scoped patches over private upstream APIs. Their tests should be contract tests, not broad mocks: pin the expected upstream shape, show the improvement with realistic state, and prove that version drift degrades safely.
+- `PreToolUse` can deny execution before the side effect, but hook allow does not bypass Talon's separate approval decision;
+- post-failure hooks receive failed execution, configuration reloads on later turns, and workspace hook files are not trusted as home configuration;
+- concurrent conversations and subagents keep session IDs, hook snapshots, and transcript paths isolated.
 
-### Checkpointer delta history
-
-The LangGraph API custom checkpointer adapter inherits the base delta-history method, which prevents normal attribute forwarding to an inner saver. `install_delta_history_forwarding()` patches only adapters that still expose the base methods. The replacement delegates to an inner saver only if that saver overrides the base operation; otherwise it preserves the base ancestor walk.
-
-In `test_checkpointer_adapter.py`, seed a `StateGraph` with a `DeltaChannel` into a temporary `AsyncSqliteSaver`. Compare the adapter's original result to the patched result and spy on the SQLite fast path. A companion saver deliberately lacking an override proves the fallback still returns the normal history. Keep the server-only import environment minimal (`REDIS_URI`) rather than starting a server.
-
-### LangSmith and run scheduling
-
-`install_untraced_inline_override()` is process-global and belongs only in the server process. It runs the two known traceable bookkeeping callbacks inline when tracing is off; any other call still uses LangSmith's default thread hop because it may perform I/O. Test a traced and untraced decorated coroutine: untraced success and failure must avoid `run_in_executor`, while tracing still preserves nested run relationships and the executor path.
-
-`install_run_queue_wakeup()` replaces the in-memory runtime's fixed scheduler poll with an event signaled after `Runs.put`, while leaving the upstream claim operation and fallback polling interval intact. It installs idempotently only when `Runs.next` and `Runs.put` have the pinned static-method signatures; an unexpected shape must leave the runtime unmodified. Reset both methods and the wakeup object per test, then use an event barrier to show a pending insert wakes a waiting `Runs.next` without a timing sleep.
-
-## Workspace ownership and checkpoint writers
-
-Thread ownership protects a locally persisted thread from independent clients and stale server processes. Acquiring a thread produces a lease token; mutations carry that token in `x-dcode-thread-owner`. Before a checkpoint write, `writer_guard` serializes writers through local and filesystem gates and verifies both the recorded token and the client reservation. A released, crashed, or superseded client therefore fences its old server from writing.
-
-```mermaid
-sequenceDiagram
-    participant Client as Client Lease
-    participant Guard as Writer Guard
-    participant DB as SQLite Saver
-    Client->>Client: acquire thread and token
-    Client->>Guard: mutation with token
-    Guard->>Guard: take writer gate and validate lease
-    Guard->>DB: checkpoint write or delete
-    DB-->>Guard: result
-    Guard-->>Client: release gate
-```
-
-*The writer gate makes ownership validation and the database mutation one fenced operation.*
-
-Use `test_thread_ownership.py` with a temporary database to cover failure ordering that a mock cannot establish:
-
-- A helper subprocess cannot acquire an already leased thread, but another thread remains available; releasing the lease permits a replacement owner.
-- A client crash, ownership rotation, or failed restart invalidates an old token. The old server must reject writes, while the successor token can write.
-- The ownership-fenced saver rejects tokenless or stale `aput` and `aput_writes`, and forbids deletion while another client owns the thread. Reads remain possible and deletion succeeds once the lease is released.
-- Cancellation is safety-critical: cancellation during acquisition or deletion must wait for the blocking operation, release reservation/gates afterward, and never expose a half-finished database mutation. Concurrent local writers queue through the local async gate rather than polling each other.
-
-## Local context and managed memory
-
-`LocalContextMiddleware` gathers project context through the active backend, so the same detection runs in a local shell or remote sandbox. Its local-context snapshot, fingerprint, and refresh cutoff are private graph state: they do not become public output or trace state. When summarization reaches a valid cutoff, a changed snapshot is appended as a tagged message rather than replacing the saved initial snapshot. A forked subagent on the same thread reuses the parent snapshot; a different thread detects its own context.
-
-Test both `before_agent` and `abefore_agent` with concrete sync or async fake backends. Cover malformed/out-of-range summarization cutoffs, deduplication by snapshot fingerprint, and escaping of context embedded in message content. A dotenv test must demonstrate that project credentials can load while `BASH_ENV` cannot influence backend startup detection.
-
-`ManagedMemoryGuardMiddleware` protects marker-delimited onboarding-name blocks in configured memory files. It allows unrelated edits, but if `edit_file` or `write_file` changes or removes a managed block, it restores that block while retaining unrelated edits and returns a tool error. Deletes of a guarded file or a parent directory are rejected before the tool runs when a managed block exists; an existing unreadable file also fails closed. Test the synchronous and asynchronous wrappers, partial-marker removal, preserving unrelated edits, and the no-follow symlink restore hardening where `os.O_NOFOLLOW` is available.
-
-## Virtualized transcripts and completion
-
-The message store retains lightweight `MessageData` for the full transcript while mounting only a visible window of Textual widgets. Archived rows are represented by spacers whose height comes from measured or default height hints. Streaming and live-tool rows are protected against pruning, with independent protection reasons so releasing one reason cannot accidentally unprotect another. On resume, `bulk_load` mounts a bounded tail rather than all historic widgets.
-
-Transcript virtualization must be tested at two seams:
-
-1. In `tui/widgets/test_message_store.py`, test store ranges, hydration thresholds, edge hydration, height-hint clamping and scaling, bounded tail loading, and protection invariants with `MessageData` only.
-2. In `test_transcript_virtualization.py`, run a real `DeepAgentsApp` pilot. Assert wheel/trackpad, keyboard, and scrollbar movement produce `_ChatScroll.Scrolled` when the vertical offset changes; then prune a small window and prove scrolling toward either spacer remounts the archived boundary widgets. Also assert spacers occupy the archived row height, so the view can reach a history edge instead of stalling.
-
-For autocomplete, keep fuzzy ranking and controller behavior outside a Textual pilot. Compare optimized fuzzy search against a simple reference scorer over a fixed corpus, and test controller handling with a mocked completion view. Treat project filenames as untrusted display/input data: unsafe control or deceptive names must not enter suggestions or the chat input. Thread completion is a separate `@@` grammar that searches durable thread metadata and inserts the canonical `@@(thread:<uuid>)` token.
+Hook transcripts have an erasure boundary per durable parent conversation. Erasure writes a revocation marker before deleting child projections, legacy projections, and backups; existing writers compare the marker and reject later writes. The transcript store refuses symlinked directories, markers, and paths. `tests/unit_tests/test_hook_transcripts.py` should use actual temporary files and the saver/runtime helpers to verify restart and retry behavior, in-flight materialization serialization, isolation from other owners, removal of backups, and symlink safety. These are security and data-deletion contracts—test filesystem outcomes and rejected writes, not the order of private cleanup calls.
 
 ## Completion checklist
 
-1. Identify the observable contract and choose a controlled unit seam first.
-2. Run the focused `libs/code` Makefile target; use `PYTEST_EXTRA` only to add pytest selection or diagnostics.
-3. Own environment, temporary files, database rows, global patch state, and cleanup in the test fixture.
-4. For private-API patches, assert both the qualifying fast path and an upstream-drift fallback.
-5. For cancellation or ownership behavior, coordinate with events and assert cleanup/fencing after cancellation rather than relying on sleeps.
-6. Escalate to an integration test only for a real process, import-time configuration, durable persistence, or CLI/server contract.
-7. Run `make -C libs/code lint` before completion.
+1. Identify the observable behavior and route it to the narrowest network-free test under `tests/unit_tests/`.
+2. Use fake models, fake backends, a mock transport, or a temporary Talon home to control inputs and failures.
+3. For rubric and pinning, inspect model-visible messages and checkpoint state; use an end-to-end fake-model graph only for graph wiring.
+4. For summarization, prove archive references, session isolation, warnings, and no-data-loss failure behavior.
+5. For async subagents, assert persisted task state, notification content, and remote payload semantics for both update strategies.
+6. For Talon hooks, prove deny/approval precedence, concurrent isolation, and transcript erasure safety with real local side effects.
+7. Avoid `pytest.mark.asyncio`, sleeps, provider calls, and internal-call-order assertions; run the owning `make lint` after the focused tests pass.

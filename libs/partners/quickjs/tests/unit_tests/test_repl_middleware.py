@@ -1662,3 +1662,36 @@ def test_subagent_prompt_uses_configured_concurrency() -> None:
     prompt = render_subagent_system_prompt(max_subagent_concurrency=100)
     assert "cap of 100 concurrent subagent calls" in prompt
     assert "recommendation, not a required limit" in prompt
+
+
+@pytest.mark.parametrize("timeout", [0.0, -1.0, float("-inf"), float("nan")])
+def test_rejects_invalid_timeout(timeout: float) -> None:
+    with pytest.raises(ValueError, match="`timeout` must be > 0 or None"):
+        CodeInterpreterMiddleware(timeout=timeout)
+
+
+_SPIN_300_MS = "const end = Date.now() + 300; while (Date.now() < end) {} 42"
+
+
+@pytest.mark.parametrize("timeout", [None, float("inf")])
+async def test_unbounded_timeout_outlives_a_short_deadline(
+    timeout: float | None,
+) -> None:
+    bounded = CodeInterpreterMiddleware(timeout=0.1, subagents=False)
+    unbounded = CodeInterpreterMiddleware(timeout=timeout, subagents=False)
+    try:
+        outcome = bounded._registry.get("t").eval_sync(_SPIN_300_MS)
+        assert outcome.error_type == "Timeout"
+        repl = unbounded._registry.get("t")
+        assert repl.eval_sync(_SPIN_300_MS).result == "42"
+        assert (await repl.eval_async(_SPIN_300_MS)).result == "42"
+        unbounded._registry.reset_repl("t")
+        assert unbounded._registry.get("t").eval_sync(_SPIN_300_MS).result == "42"
+    finally:
+        await bounded._registry.aevict("t")
+        await unbounded._registry.aevict("t")
+
+
+def test_default_timeout_is_unchanged() -> None:
+    mw = CodeInterpreterMiddleware()
+    assert "Timeout: 5.0s per call." in mw._base_prompt(ptc_attached=False)

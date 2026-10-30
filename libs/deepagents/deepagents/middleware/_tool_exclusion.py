@@ -26,6 +26,9 @@ def _tool_name(tool: BaseTool | dict[str, str]) -> str | None:
     """Extract tool name from a `BaseTool` or dict tool."""
     if isinstance(tool, dict):
         name = tool.get("name")
+        if not isinstance(name, str):
+            function = tool.get("function")
+            name = function.get("name") if isinstance(function, dict) else None
         return name if isinstance(name, str) else None
     name = getattr(tool, "name", None)
     return name if isinstance(name, str) else None

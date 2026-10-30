@@ -329,6 +329,17 @@ class TestToolDescriptionOverrides:
         assert rewritten is not tool
         assert tool.description == "old"
 
+    def test_description_override_on_nested_function_dict_copies_without_mutation(self) -> None:
+        tool: dict[str, Any] = {
+            "type": "function",
+            "function": {"name": "my_tool", "description": "old"},
+        }
+        result = _apply_tool_description_overrides([tool], {"my_tool": "new desc"})
+        assert result is not None
+        assert result[0]["function"]["description"] == "new desc"
+        assert result[0]["function"] is not tool["function"]
+        assert tool["function"]["description"] == "old"
+
     def test_plain_callable_is_left_unchanged(self) -> None:
         def my_func() -> None:
             pass
@@ -954,6 +965,23 @@ class TestToolExclusionMiddleware:
         filtered = request.override.call_args.kwargs["tools"]
         assert len(filtered) == 1
         assert filtered[0].name == "keep"
+        handler.assert_called_once_with(overridden_request)
+        assert result == "response"
+
+    def test_filters_nested_function_dicts_from_request(self) -> None:
+        tool_a = {"type": "function", "function": {"name": "keep"}}
+        tool_b = {"type": "function", "function": {"name": "drop"}}
+        request = MagicMock()
+        request.tools = [tool_a, tool_b]
+        overridden_request = MagicMock()
+        request.override.return_value = overridden_request
+        handler = MagicMock(return_value="response")
+
+        mw = _ToolExclusionMiddleware(excluded=frozenset({"drop"}))
+        result = mw.wrap_model_call(request, handler)
+
+        filtered = request.override.call_args.kwargs["tools"]
+        assert filtered == [tool_a]
         handler.assert_called_once_with(overridden_request)
         assert result == "response"
 

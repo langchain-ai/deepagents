@@ -21,6 +21,9 @@ def _tool_name(tool: BaseTool | Callable | dict[str, Any]) -> str | None:
     """
     if isinstance(tool, dict):
         name = tool.get("name")
+        if not isinstance(name, str):
+            function = tool.get("function")
+            name = function.get("name") if isinstance(function, dict) else None
         return name if isinstance(name, str) else None
     name = getattr(tool, "name", None)
     return name if isinstance(name, str) else None
@@ -55,7 +58,13 @@ def _apply_tool_description_overrides(
             continue
         if isinstance(tool, dict):
             rewritten_tool = cast("dict[str, Any]", tool).copy()
-            rewritten_tool["description"] = override
+            function = rewritten_tool.get("function")
+            if isinstance(function, dict) and "name" not in rewritten_tool:
+                rewritten_function = function.copy()
+                rewritten_function["description"] = override
+                rewritten_tool["function"] = rewritten_function
+            else:
+                rewritten_tool["description"] = override
             copied_tools.append(rewritten_tool)
             continue
         if isinstance(tool, BaseTool):

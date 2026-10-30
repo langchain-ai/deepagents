@@ -853,6 +853,113 @@ class ExecuteArtifact(TypedDict):
     """Backend path to captured output, which may be incomplete when truncated."""
 
 
+RAW_FILE_RESULT_CONFIG_KEY: Final = "deepagents_raw_file_result"
+"""`config["configurable"]` key that asks one `read_file`, `ls`, or `glob` call for its raw result.
+
+Its value is a `RawFileResultRequest`. Code that calls the tools itself sets it
+on the `ToolRuntime.config` it passes; a `wrap_tool_call` middleware can set it
+on `request.runtime.config`. The tool then attaches a `ReadFileArtifact`,
+`LsArtifact`, or `GlobArtifact` to `ToolMessage.artifact`, or a
+`FileToolErrorArtifact` when the call fails. The model cannot set the key,
+because it is not a tool argument.
+
+Tracing callbacks receive the artifact, so a raw read puts the file's contents,
+up to `max_bytes`, into traces. When a `wrap_tool_call` middleware sets the
+request on a model's tool call, the `ToolMessage` carrying the bytes lands in
+agent state (`messages`), so checkpoints and streams hold the contents too.
+"""
+
+
+class RawFileResultRequest(TypedDict):
+    """The value of `RAW_FILE_RESULT_CONFIG_KEY`: a request for one tool call's raw result."""
+
+    tool_call_id: str
+    """The ID of the one tool call the request applies to.
+
+    A call with any other ID ignores the request, so nested calls that inherit
+    the config return their usual results.
+    """
+
+    max_bytes: int | None
+    """Largest file `read_file` returns, or `None` for no limit.
+
+    A larger file fails with `"file_too_large"`, and its bytes stay off the
+    artifact and out of traces. The backend still loads the whole file first.
+    """
+
+
+FileToolErrorCode = Literal[FileOperationError, "file_too_large"]
+"""Why a raw `read_file`, `ls`, or `glob` call failed.
+
+The `FileOperationError` codes, plus `"file_too_large"` for a file over the
+request's `max_bytes`.
+"""
+
+
+class ReadFileArtifact(TypedDict):
+    """The raw result of a successful `read_file` call, on `ToolMessage.artifact`.
+
+    Attached only to the call a `RawFileResultRequest` names. A failed call
+    carries a `FileToolErrorArtifact` instead.
+    """
+
+    content: bytes
+    """The whole file, byte for byte, from the backend's `download_files`.
+
+    `offset` and `limit` do not apply.
+    """
+
+
+class LsArtifactEntry(TypedDict):
+    """One entry of an `LsArtifact`."""
+
+    path: str
+    """The entry's path as the backend reports it; a directory's may end in `/`."""
+
+    is_dir: bool
+    """Whether the entry is a directory; `False` when the backend does not say."""
+
+
+class LsArtifact(TypedDict):
+    """The raw result of a successful `ls` call, on `ToolMessage.artifact`.
+
+    Attached only to the call a `RawFileResultRequest` names. A failed call
+    carries a `FileToolErrorArtifact` instead.
+    """
+
+    entries: list[LsArtifactEntry]
+    """The directory's entries, without those the permission rules deny."""
+
+
+class GlobArtifact(TypedDict):
+    """The raw result of a successful `glob` call, on `ToolMessage.artifact`.
+
+    Attached only to the call a `RawFileResultRequest` names. A failed call
+    carries a `FileToolErrorArtifact` instead.
+    """
+
+    paths: list[str]
+    """Matched paths, without those the permission rules deny."""
+
+    truncated: bool
+    """Whether the search stopped early, so `paths` is incomplete."""
+
+
+class FileToolErrorArtifact(TypedDict):
+    """Why a `read_file`, `ls`, or `glob` call failed, on `ToolMessage.artifact`.
+
+    Attached only to the call a `RawFileResultRequest` names.
+    `ToolMessage.status` is `"error"` and `ToolMessage.content` holds the message.
+    """
+
+    code: FileToolErrorCode | None
+    """The failure's code, or `None` when the backend reported only a message.
+
+    `"permission_denied"` also covers a refusal by the agent's permission rules,
+    and `"invalid_path"` a path the tool rejected before calling the backend.
+    """
+
+
 @dataclass(frozen=True, slots=True)
 class ExecuteOffloadResult:
     """Result of [`BaseSandbox.execute_with_offload`][deepagents.backends.sandbox.BaseSandbox.execute_with_offload].

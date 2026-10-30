@@ -271,7 +271,7 @@ for call in run.tool_calls:
         print(delta)
 ```
 
-This visibility does not route PTC calls through `ToolNode` or add per-call human-in-the-loop approval; the configured PTC allowlist remains the security boundary. The inner calls are not added as synthetic graph messages.
+PTC calls run through the tool-call middleware listed after `CodeInterpreterMiddleware`, as model tool calls do. With `HumanInTheLoopMiddleware(interrupt_mode="per_call")` listed after it, a gated call from code pauses the run for review, and the reviewer's approve, edit, or reject applies to that call. Batched mode reviews only the tool calls in the model's message. The inner calls are not added as synthetic graph messages.
 
 - Tool return values retain JS-native scalar, list, and object shapes where possible. `ToolMessage` and `Command` envelopes are unwrapped at the bridge boundary, and nested non-native Python values are stringified in place.
 

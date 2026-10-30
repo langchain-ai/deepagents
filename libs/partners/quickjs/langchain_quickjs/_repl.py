@@ -21,7 +21,7 @@ from langchain_core.tools.base import (
     _is_injected_arg_type,
     get_all_basemodel_annotations,
 )
-from langgraph.errors import GraphInterrupt
+from langgraph.errors import GraphBubbleUp
 from langgraph.prebuilt.tool_node import _get_all_injected_args
 from quickjs_rs import (
     UNDEFINED,
@@ -32,6 +32,7 @@ from quickjs_rs import (
     JSError,
     MarshalError,
     MemoryLimitError,
+    QuickJSError,
     Runtime,
     Snapshot,
     SourceTransform,
@@ -57,6 +58,8 @@ if TYPE_CHECKING:
 
     from langchain_core.tools import BaseTool
     from langgraph.prebuilt import ToolRuntime
+
+    from langchain_quickjs._dispatch import EvalJournal
 
 logger = logging.getLogger(__name__)
 
@@ -91,6 +94,8 @@ class EvalOutcome:
     error_type: str | None = None
     error_message: str = ""
     error_stack: str | None = None
+    notes: list[str] = field(default_factory=list)
+    """Model-facing notes from middleware about `tools.*` calls, in call order."""
 
 
 class _SnapshotRestoreError(RuntimeError):
@@ -135,6 +140,8 @@ class _PTCState:
     remaining_calls: int | None
     outer_runtime: ToolRuntime | None = None
     outer_loop: asyncio.AbstractEventLoop | None = None
+    journal: EvalJournal | None = None
+    """Dispatches `tools.*` through the agent's tool-call chain when set."""
     task_dispatch_count: int = 0
     """Ordinal for the next `task()` dispatch in this eval.
 
@@ -331,18 +338,46 @@ def _bridge_symbol_name(tool_name: str) -> str:
     return f"__tools_{normalized}_{digest}"
 
 
+# Bridges resolve to `[0, value]` or `[1, errorName, message]`. Host
+# exceptions reach JS as a sanitized `HostError`, so an error result the model
+# should read (a tool error, a reviewer's rejection) travels as data and is
+# thrown here as a JS `Error` with that name and message.
+_PTC_CALL_SOURCE = (
+    "if (!globalThis.__ptcCall) Object.defineProperty(globalThis, '__ptcCall', {"
+    " value: (bridge) => async (input) => {"
+    " const r = await bridge(input);"
+    " if (r[0] === 0) return r[1];"
+    " const e = new Error(r[2]); e.name = r[1]; throw e; },"
+    " writable: false, configurable: false });"
+)
+
+
 def _render_tools_namespace_assignment(bridges: dict[str, str]) -> str:
     """Return JS that atomically rebuilds `globalThis.tools` from bridges."""
-    statements = ["globalThis.tools = {};"]
+    statements = [_PTC_CALL_SOURCE, "globalThis.tools = {};"]
     for tool_name, bridge_symbol in sorted(bridges.items()):
         quoted_tool_name = json.dumps(tool_name)
         quoted_bridge_symbol = json.dumps(bridge_symbol)
         statements.append(
             "globalThis.tools"
-            f"[{quoted_tool_name}] = globalThis[{quoted_bridge_symbol}];"
+            f"[{quoted_tool_name}] = __ptcCall(globalThis[{quoted_bridge_symbol}]);"
         )
     statements.append("undefined")
     return " ".join(statements)
+
+
+def _snapshot_if_quiescent(ctx: Context) -> Snapshot | None:
+    """Snapshot the heap, or return `None` if the context is mid-flight.
+
+    QuickJS refuses a snapshot while another eval runs on the context or a
+    host call from an earlier eval is still pending. The eval itself still
+    runs: an overlapping eval fails with `ConcurrentEval` as before, and an
+    eval that pauses re-runs from the heap as it is.
+    """
+    try:
+        return ctx.create_snapshot()
+    except QuickJSError:
+        return None
 
 
 class _ThreadREPL:
@@ -600,6 +635,8 @@ class _ThreadREPL:
                 msg = "task call limiter not initialized"
                 raise RuntimeError(msg)
 
+            if state.journal is not None:
+                state.journal.check_running()
             payload = _normalize_tool_input(raw_input)
             dispatch_ordinal = state.task_dispatch_count
             self._ptc_state = replace(state, task_dispatch_count=dispatch_ordinal + 1)
@@ -610,7 +647,10 @@ class _ThreadREPL:
                         state=state,
                         dispatch_ordinal=dispatch_ordinal,
                     )
-                except GraphInterrupt:
+                except GraphBubbleUp as e:
+                    # Recorded so JS catching the rejection cannot hide the pause.
+                    if state.journal is not None:
+                        state.journal.suspend(e)
                     raise
                 except Exception as e:
                     # Subagent dispatches are part of the eval language, not
@@ -697,6 +737,11 @@ class _ThreadREPL:
             )
             self._ptc_state = state
             payload = _normalize_tool_input(raw_input)
+            if state.journal is not None:
+                result = await state.journal.dispatch(tool, payload)
+                if result.status == "error":
+                    return [1, "ToolError", str(result.value)]
+                return [0, result.value]
             call_id = _synth_tool_call_id(tool.name)
             # Inject runtime/state/store ourselves. The bridge uses `arun`
             # rather than the tool-call envelope path so the result can be
@@ -711,7 +756,7 @@ class _ThreadREPL:
                 outer_runtime=state.outer_runtime,
                 outer_loop=state.outer_loop,
             )
-            return coerce_tool_output_for_ptc(result)
+            return [0, coerce_tool_output_for_ptc(result)]
 
         bridge_symbol = _bridge_symbol_name(camel)
         ctx.register(bridge_symbol, _bridge, is_async=True)
@@ -724,6 +769,7 @@ class _ThreadREPL:
         outer_runtime: ToolRuntime | None = None,
         snapshot_payload: bytes | None = None,
         tools: Sequence[BaseTool] | None = None,
+        journal: EvalJournal | None = None,
     ) -> EvalOutcome:
         # Both sync and async entry points funnel through ctx.eval_async on
         # the worker loop. Sync ctx.eval can't dispatch async host functions
@@ -735,6 +781,7 @@ class _ThreadREPL:
                 outer_runtime=outer_runtime,
                 snapshot_payload=snapshot_payload,
                 tools=tools,
+                journal=journal,
             )
         )
 
@@ -746,6 +793,7 @@ class _ThreadREPL:
         snapshot_payload: bytes | None = None,
         tools: Sequence[BaseTool] | None = None,
         outer_loop: asyncio.AbstractEventLoop | None = None,
+        journal: EvalJournal | None = None,
     ) -> EvalOutcome:
         return await self._worker.run_async(
             self._aeval_async(
@@ -754,6 +802,7 @@ class _ThreadREPL:
                 snapshot_payload=snapshot_payload,
                 tools=tools,
                 outer_loop=outer_loop,
+                journal=journal,
             )
         )
 
@@ -809,7 +858,7 @@ class _ThreadREPL:
         if tools is not None:
             await self._ainstall_tools(tools)
 
-    async def _aeval_async(  # noqa: C901, PLR0912, PLR0915
+    async def _aeval_async(
         self,
         code: str,
         *,
@@ -817,6 +866,57 @@ class _ThreadREPL:
         snapshot_payload: bytes | None = None,
         tools: Sequence[BaseTool] | None = None,
         outer_loop: asyncio.AbstractEventLoop | None = None,
+        journal: EvalJournal | None = None,
+    ) -> EvalOutcome:
+        """Run one eval; with a journal, make it safe to pause and re-run.
+
+        If any `tools.*` call paused for review, the eval's own outcome is
+        discarded, whatever JS did with the rejection: the heap goes back to
+        the snapshot taken before the code ran, so the re-run after the resume
+        starts from the same heap, and the merged interrupt is raised once
+        every in-flight call has settled.
+        """
+        if journal is None:
+            return await self._aeval_once(
+                code,
+                outer_runtime=outer_runtime,
+                snapshot_payload=snapshot_payload,
+                tools=tools,
+                outer_loop=outer_loop,
+            )
+        try:
+            outcome = await self._aeval_once(
+                code,
+                outer_runtime=outer_runtime,
+                snapshot_payload=snapshot_payload,
+                tools=tools,
+                outer_loop=outer_loop,
+                journal=journal,
+            )
+        except GraphBubbleUp as e:
+            if not journal.suspended:
+                journal.suspend(e)
+        except Exception:
+            if not journal.suspended:
+                raise
+        if not journal.suspended:
+            outcome.notes = journal.notes
+            return outcome
+        bubble = await journal.settle()
+        if journal.heap is not None:
+            ctx = self._require_ctx()
+            self._runtime.restore_snapshot(journal.heap, ctx, inject_globals=True)
+        raise bubble
+
+    async def _aeval_once(  # noqa: C901, PLR0912, PLR0915
+        self,
+        code: str,
+        *,
+        outer_runtime: ToolRuntime | None = None,
+        snapshot_payload: bytes | None = None,
+        tools: Sequence[BaseTool] | None = None,
+        outer_loop: asyncio.AbstractEventLoop | None = None,
+        journal: EvalJournal | None = None,
     ) -> EvalOutcome:
         """Uses `ctx.eval_async` directly.
 
@@ -836,9 +936,12 @@ class _ThreadREPL:
             remaining_calls=self._max_ptc_calls,
             outer_runtime=outer_runtime,
             outer_loop=outer_loop,
+            journal=journal,
         )
         try:
             await self._aprepare_for_eval(snapshot_payload, tools)
+            if journal is not None:
+                journal.heap = _snapshot_if_quiescent(ctx)
             # Drive any final-expression Promise (e.g. a bare async
             # IIFE) to its resolved value before marshaling. Without
             # this the Promise object itself fails to marshal and

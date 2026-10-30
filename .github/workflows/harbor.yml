@@ -171,6 +171,14 @@ on:
           - medium
           - high
           - xhigh
+      openai_base_url:
+        description: "Agent endpoint for `openai:` models on Deep Agents graphs and Codex. Empty = OpenAI. Fireworks uses `FIREWORKS_API_KEY`; verifiers stay on OpenAI."
+        required: false
+        type: choice
+        default: ""
+        options:
+          - ""
+          - https://api.fireworks.ai/inference/v1
       env_build_timeout_multiplier:
         description: "Multiplier for each task's environment build timeout (harbor's client-side wait). Note: does not extend the LangSmith build service's own limit."
         required: false
@@ -362,6 +370,7 @@ jobs:
       include_tasks: ${{ inputs.include_tasks }}
       agent_timeout_multiplier: ${{ inputs.agent_timeout_multiplier }}
       reasoning_effort: ${{ inputs.reasoning_effort }}
+      openai_base_url: ${{ inputs.openai_base_url }}
       env_build_timeout_multiplier: ${{ inputs.env_build_timeout_multiplier }}
       override_storage_mb: ${{ inputs.override_storage_mb }}
       disable_verification: ${{ inputs.disable_verification }}

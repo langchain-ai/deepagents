@@ -79,6 +79,10 @@ on:
         # Passed to the chat model constructor as `reasoning_effort`. Empty = provider default.
         type: string
         default: ""
+      openai_base_url:
+        # Agent endpoint for `openai:` models; verifiers stay on OpenAI. Empty = OpenAI.
+        type: string
+        default: ""
       env_build_timeout_multiplier:
         # Scales each task's environment.build_timeout_sec (harbor's client-side
         # wait). Note: it does NOT extend the LangSmith build service's own limit.
@@ -364,6 +368,7 @@ jobs:
       HARBOR_N_RETRIES: ${{ inputs.n_retries || '0' }}
       HARBOR_AGENT_TIMEOUT_MULTIPLIER: ${{ inputs.agent_timeout_multiplier || '1.0' }}
       HARBOR_REASONING_EFFORT: ${{ inputs.reasoning_effort }}
+      HARBOR_OPENAI_BASE_URL: ${{ inputs.openai_base_url }}
       HARBOR_ENV_BUILD_TIMEOUT_MULTIPLIER: ${{ inputs.env_build_timeout_multiplier || '1.0' }}
       HARBOR_OVERRIDE_STORAGE_MB: ${{ inputs.override_storage_mb || '0' }}
       HARBOR_DISABLE_VERIFICATION: ${{ inputs.disable_verification || 'false' }}
@@ -395,7 +400,7 @@ jobs:
         env:
           ANTHROPIC_API_KEY: ${{ startsWith(matrix.model, 'anthropic:') && secrets.ANTHROPIC_API_KEY || '' }}
           BASETEN_API_KEY: ${{ startsWith(matrix.model, 'baseten:') && secrets.BASETEN_API_KEY || '' }}
-          FIREWORKS_API_KEY: ${{ startsWith(matrix.model, 'fireworks:') && secrets.FIREWORKS_API_KEY || '' }}
+          FIREWORKS_API_KEY: ${{ (startsWith(matrix.model, 'fireworks:') || inputs.openai_base_url == 'https://api.fireworks.ai/inference/v1') && secrets.FIREWORKS_API_KEY || '' }}
           GOOGLE_API_KEY: ${{ startsWith(matrix.model, 'google_genai:') && secrets.GOOGLE_API_KEY || '' }}
           GROQ_API_KEY: ${{ startsWith(matrix.model, 'groq:') && secrets.GROQ_API_KEY || '' }}
           LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
@@ -450,6 +455,10 @@ jobs:
               exit 1
               ;;
           esac
+
+          if [ "$model_provider" = "openai" ] && [ "$HARBOR_OPENAI_BASE_URL" = "https://api.fireworks.ai/inference/v1" ] && [ -z "$FIREWORKS_API_KEY" ]; then
+            missing+=("FIREWORKS_API_KEY")
+          fi
 
           if [[ "$HARBOR_DATASET" == *tau3* ]] && [ "$model_provider" != "openai" ] && [ -z "$OPENAI_API_KEY" ]; then
             missing+=("OPENAI_API_KEY")
@@ -695,7 +704,7 @@ jobs:
           # Harvey LAB verifiers judge with Claude regardless of the model under test.
           ANTHROPIC_API_KEY: ${{ (startsWith(matrix.model, 'anthropic:') || startsWith(matrix.dataset || inputs.dataset, 'harveyai/')) && secrets.ANTHROPIC_API_KEY || '' }}
           BASETEN_API_KEY: ${{ startsWith(matrix.model, 'baseten:') && secrets.BASETEN_API_KEY || '' }}
-          FIREWORKS_API_KEY: ${{ startsWith(matrix.model, 'fireworks:') && secrets.FIREWORKS_API_KEY || '' }}
+          FIREWORKS_API_KEY: ${{ (startsWith(matrix.model, 'fireworks:') || inputs.openai_base_url == 'https://api.fireworks.ai/inference/v1') && secrets.FIREWORKS_API_KEY || '' }}
           GOOGLE_API_KEY: ${{ startsWith(matrix.model, 'google_genai:') && secrets.GOOGLE_API_KEY || '' }}
           GROQ_API_KEY: ${{ startsWith(matrix.model, 'groq:') && secrets.GROQ_API_KEY || '' }}
           LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
@@ -1063,18 +1072,35 @@ jobs:
           # A non-default URL (e.g. a gateway) fails pi here rather than being bypassed.
           model_provider="${HARBOR_MODEL%%:*}"
           verifier_env_args+=(--verifier-env "OPENAI_BASE_URL=$OPENAI_BASE_URL")
-          if [ "$HARBOR_AGENT_IMPL" = "pi" ] && [ "$OPENAI_BASE_URL" != "https://api.openai.com/v1" ]; then
-            echo "::error::pi needs a model_api agent arg to use a custom OPENAI_BASE_URL ($OPENAI_BASE_URL)"
+          agent_openai_url="$OPENAI_BASE_URL"
+          openai_key_ref='${OPENAI_API_KEY}'
+          case "$HARBOR_OPENAI_BASE_URL" in
+            ""|"$OPENAI_BASE_URL") ;;
+            https://api.fireworks.ai/inference/v1)
+              if [ "$model_provider" != "openai" ]; then
+                echo "::error::openai_base_url applies only to openai: models ($HARBOR_MODEL)"
+                exit 1
+              fi
+              agent_openai_url="$HARBOR_OPENAI_BASE_URL"
+              openai_key_ref='${FIREWORKS_API_KEY}'
+              ;;
+            *)
+              echo "::error::Unsupported openai_base_url: $HARBOR_OPENAI_BASE_URL"
+              exit 1
+              ;;
+          esac
+          if [ "$HARBOR_AGENT_IMPL" = "pi" ] && [ "$agent_openai_url" != "https://api.openai.com/v1" ]; then
+            echo "::error::pi needs a model_api agent arg to use a custom OPENAI_BASE_URL ($agent_openai_url)"
             exit 1
           fi
           if [ "$HARBOR_AGENT_IMPL" = "pi" ] || [ "$model_provider" != "openai" ]; then
             unset OPENAI_BASE_URL
           else
-            agent_env_args+=(--agent-env 'OPENAI_BASE_URL=${OPENAI_BASE_URL}')
+            agent_env_args+=(--agent-env "OPENAI_BASE_URL=$agent_openai_url")
           fi
           case "$model_provider" in
             anthropic)    agent_env_args+=(--agent-env 'ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}') ;;
-            openai)       agent_env_args+=(--agent-env 'OPENAI_API_KEY=${OPENAI_API_KEY}') ;;
+            openai)       agent_env_args+=(--agent-env "OPENAI_API_KEY=$openai_key_ref") ;;
             google_genai) agent_env_args+=(--agent-env 'GOOGLE_API_KEY=${GOOGLE_API_KEY}') ;;
             openrouter)   agent_env_args+=(--agent-env 'OPENROUTER_API_KEY=${OPENROUTER_API_KEY}') ;;
             baseten)      agent_env_args+=(--agent-env 'BASETEN_API_KEY=${BASETEN_API_KEY}') ;;

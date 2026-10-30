@@ -18,7 +18,7 @@ from langchain_core.callbacks import CallbackManagerForLLMRun
 from langchain_core.exceptions import ContextOverflowError, ModelInvalidRequestError
 from langchain_core.language_models import BaseChatModel, LanguageModelInput
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage, get_notification_metadata
 from langchain_core.messages.content import ContentBlock
 from langchain_core.outputs import ChatGeneration, ChatResult
 from langchain_core.runnables import Runnable
@@ -4824,6 +4824,7 @@ class TestRubricMiddlewareEndToEnd:
         injected = [m for m in result["messages"] if m.additional_kwargs.get("lc_source") == RUBRIC_GRADER_MESSAGE_SOURCE]
         assert len(injected) == 1
         assert injected[0].name == RUBRIC_GRADER_MESSAGE_SOURCE
+        assert get_notification_metadata(injected[0]) == {"source": RUBRIC_GRADER_MESSAGE_SOURCE}
         assert "add tests" in injected[0].content
         assert "no tests" in injected[0].content
 

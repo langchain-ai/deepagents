@@ -365,7 +365,7 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
                     code,
                     outer_runtime=runtime,
                     snapshot_payload=middleware._snapshot_for_eval(runtime.state),
-                    tools=middleware._tools_for_eval(slot_id),
+                    tools=middleware._tools_for_eval(slot_id, runtime),
                 )
             except _SnapshotRestoreError as exc:
                 return _restore_error_output(exc, runtime.tool_call_id)
@@ -385,7 +385,7 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
                     code,
                     outer_runtime=runtime,
                     snapshot_payload=middleware._snapshot_for_eval(runtime.state),
-                    tools=middleware._tools_for_eval(slot_id),
+                    tools=middleware._tools_for_eval(slot_id, runtime),
                     outer_loop=asyncio.get_running_loop(),
                 )
             except _SnapshotRestoreError as exc:
@@ -419,10 +419,24 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         """Return the REPL slot for one eval invocation."""
         return self._registry.get(slot_id)
 
-    def _tools_for_eval(self, slot_id: str) -> tuple[BaseTool, ...] | None:
-        """Return current bindings without allocating an interpreter."""
-        return (
-            self._ptc_tools_by_slot.get(slot_id, ()) if self._ptc is not None else None
+    def _tools_for_eval(
+        self, slot_id: str, runtime: ToolRuntime[None, Any]
+    ) -> tuple[BaseTool, ...] | None:
+        """Return current bindings without allocating an interpreter.
+
+        A model call caches the bindings. A run resumed by another middleware
+        instance can reach the eval before any model call, so fall back to the
+        tool node's tools.
+        """
+        if self._ptc is None:
+            return None
+        cached = self._ptc_tools_by_slot.get(slot_id)
+        if cached is not None:
+            return cached
+        return tuple(
+            filter_tools_for_ptc(
+                list(runtime.tools), self._ptc, self_tool_name=self._tool_name
+            )
         )
 
     def _snapshot_for_eval(self, state: Mapping[str, object]) -> bytes | None:

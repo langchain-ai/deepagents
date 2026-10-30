@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 import httpx
 import pytest
 from langchain.agents.middleware.types import ModelRequest
+from langchain.chat_models import init_chat_model
 from langchain_core.messages import AIMessage, HumanMessage
 from pydantic import Field
 
@@ -31,6 +32,15 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 
+BASETEN_DEEPSEEK_MODELS = (
+    "deepseek-ai/DeepSeek-V4-Flash-0731",
+    "deepseek-ai/DeepSeek-V4-Pro",
+    "deepseek-ai/DeepSeek-V4-Pro-0813",
+    "deepseek-ai/DeepSeek-V4.1-Flash",
+    "deepseek-ai/DeepSeek-V4.1-Flash-Fast",
+)
+
+
 class EffortAgent(SelectableAgent):
     default_model = "openai:gpt-6.1-sol"
 
@@ -38,7 +48,7 @@ class EffortAgent(SelectableAgent):
         super().__init__()
         self.catalog = {
             "openai": ["gpt-6.1-sol", "baseten/zai-org/GLM-5.3-Flash"],
-            "baseten": ["zai-org/GLM-5.3-Flash"],
+            "baseten": ["zai-org/GLM-5.3-Flash", *BASETEN_DEEPSEEK_MODELS],
             "deepseek": ["deepseek-flash"],
         }
 
@@ -49,6 +59,7 @@ class EffortAgent(SelectableAgent):
         "baseten:zai-org/GLM-5.3-Flash",
         "openai:baseten/zai-org/GLM-5.3-Flash",
         "deepseek:deepseek-flash",
+        "baseten:deepseek-ai/DeepSeek-V4-Pro-0813",
     ],
 )
 async def test_effort_persists_per_model_and_captures_each_turn(tmp_path: Path, spec: str) -> None:
@@ -158,6 +169,38 @@ def test_deepseek_uses_documented_efforts(provider: str, monkeypatch) -> None:
                 effort_settings(spec, invalid)
     assert effort_levels(f"{provider}deepseek-unknown") == ()
     assert effort_levels(f"{provider}deepseek-r1") == ()
+
+
+@pytest.mark.parametrize("name", BASETEN_DEEPSEEK_MODELS)
+@pytest.mark.parametrize("prefix", ["baseten:", "openai:baseten/"])
+def test_baseten_deepseek_efforts_and_provider_payload(name: str, prefix: str, monkeypatch) -> None:
+    pytest.importorskip("langchain_baseten")
+    monkeypatch.setattr("deepagents_talon.effort.supported_efforts_for_model", lambda _spec: ())
+    spec = f"{prefix}{name}"
+    levels = ("none", "low", "high", "max")
+    if name == "deepseek-ai/DeepSeek-V4-Flash-0731":
+        levels = ("none", "minimal", "low", "medium", "high", "xhigh", "max")
+    assert effort_levels(spec) == levels
+    provider = "baseten" if prefix == "baseten:" else "openai"
+    model = init_chat_model(
+        spec,
+        api_key="test",
+        base_url="https://inference.baseten.co/v1",
+    )
+    assert model._llm_type == ("baseten-chat" if provider == "baseten" else "openai-chat")
+    for level in levels:
+        settings = effort_settings(spec, level)
+        assert settings == {"reasoning_effort": level}
+        payload = model._get_request_payload([HumanMessage(content="hello")], **settings)
+        assert payload["model"] == (name if provider == "baseten" else f"baseten/{name}")
+        assert payload["reasoning_effort"] == level
+        assert "thinking" not in payload
+        assert "extra_body" not in payload
+    with pytest.raises(ValueError, match="Unsupported"):
+        effort_settings(spec, "on")
+    if name != "deepseek-ai/DeepSeek-V4-Flash-0731":
+        with pytest.raises(ValueError, match="Unsupported"):
+            effort_settings(spec, "xhigh")
 
 
 def test_anthropic_serializes_effort_to_output_config() -> None:

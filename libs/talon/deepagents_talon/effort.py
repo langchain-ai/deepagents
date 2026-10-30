@@ -40,8 +40,21 @@ _DOCUMENTED_EFFORTS = {
             "baseten:zai-org/glm-5.3",
             "baseten:zai-org/glm-5.3-fast",
             "baseten:zai-org/glm-5.3-flash",
+            "baseten:deepseek-ai/deepseek-v4-pro",
+            "baseten:deepseek-ai/deepseek-v4-pro-0813",
+            "baseten:deepseek-ai/deepseek-v4.1-flash",
+            "baseten:deepseek-ai/deepseek-v4.1-flash-fast",
         ),
         ("none", "low", "high", "max"),
+    ),
+    "baseten:deepseek-ai/deepseek-v4-flash-0731": (
+        "none",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max",
     ),
 }
 

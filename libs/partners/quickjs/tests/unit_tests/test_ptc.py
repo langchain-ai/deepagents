@@ -505,6 +505,25 @@ async def test_tools_namespace_assignment_escapes_malicious_tool_name(
     assert outcome2.result == "function"
 
 
+async def test_unmarshalable_tool_result_is_recoverable(repl: _ThreadREPL) -> None:
+    async def nested() -> dict[str, object]:
+        value: dict[str, object] = {}
+        for _ in range(300):
+            value = {"nested": value}
+        return value
+
+    tool = StructuredTool.from_function(
+        name="nested", description="Return deeply nested data.", coroutine=nested
+    )
+    repl.install_tools([tool])
+    outcome = await repl.eval_async("globalThis.marker = 42; await tools.nested({})")
+    assert outcome.error_type == "MarshalError"
+    assert "Ask the tool for less" in outcome.error_message
+    recovered = await repl.eval_async("marker")
+    assert recovered.error_type is None
+    assert recovered.result == "42"
+
+
 async def test_install_tools_is_idempotent(repl: _ThreadREPL) -> None:
     """Calling install_tools twice with the same set is a no-op for the guest."""
     calls: list[dict] = []

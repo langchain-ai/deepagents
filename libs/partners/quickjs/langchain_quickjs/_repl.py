@@ -903,6 +903,14 @@ class _ThreadREPL:
             outcome.error_type = "OutOfMemory"
             outcome.error_message = str(e)
             _clear_exception_references(e)
+        except MarshalError as e:
+            outcome.error_type = "MarshalError"
+            outcome.error_message = (
+                f"{e}. A value could not be passed into JavaScript; if it was "
+                "a tool result, it may be too large or too deeply nested. "
+                "Ask the tool for less, such as fewer rows or fields."
+            )
+            _clear_exception_references(e)
         except _TaskBridgeError as e:
             outcome.error_type = e.error_type
             outcome.error_message = e.error_message

@@ -144,8 +144,6 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
                 therefore stall an `eval` for longer than `timeout` seconds, so
                 do not rely on it to bound total wall-clock duration.
 
-            !!! danger
-
                 Avoid `timeout=None` unless absolutely needed: a runaway `eval`
                 then runs forever, and asyncio cancellation cannot stop it.
                 Only use it with an external limit that can, such as a

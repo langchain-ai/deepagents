@@ -6,6 +6,7 @@ import contextlib
 import inspect
 import json
 import re
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, get_type_hints
 
 from pydantic import TypeAdapter
@@ -17,6 +18,8 @@ if TYPE_CHECKING:
 
 _CAMEL_SEP = re.compile(r"[-_]([a-z])")
 _JS_IDENTIFIER = re.compile(r"^[A-Za-z_$][A-Za-z0-9_$]*$")
+# Names a declared alias must not shadow: the TS helpers the prompt itself uses.
+_RESERVED_TYPE_NAMES = frozenset({"Array", "Promise", "Record"})
 _REPL_SYSTEM_PROMPT_TEMPLATE = (
     "### Interpreter\n\n"
     "{repl_intro_line}\n\n"
@@ -394,16 +397,21 @@ def render_ptc_prompt(tools: Sequence[BaseTool], *, tool_name: str = "eval") -> 
     """Build the `tools` namespace section of the system prompt."""
     if not tools:
         return ""
+    registry = _TypeRegistry()
     blocks: list[str] = []
     for tool in tools:
         camel = to_camel_case(tool.name)
         schema = _safe_json_schema(tool)
-        return_type = _render_return_type(tool)
-        signature = _render_signature(camel, schema, return_type=return_type)
+        return_type = _render_return_type(tool, registry)
+        signature = _render_signature(
+            camel, schema, return_type=return_type, registry=registry
+        )
         description = (
             (tool.description or "").strip().splitlines()[0] if tool.description else ""
         )
         blocks.append(f"/** {description} */\n{signature}")
+    if registry.declarations:
+        blocks.insert(0, "\n".join(registry.declarations))
     body = "\n\n".join(blocks)
     return (
         "\n\n"
@@ -466,19 +474,22 @@ def _render_signature(
     schema: dict[str, Any] | None,
     *,
     return_type: str = "unknown",
+    registry: _TypeRegistry | None = None,
 ) -> str:
     return_clause = f"Promise<{return_type}>"
     default_signature = (
         f"tools.{fn_name}(input: Record<string, unknown>): {return_clause}"
     )
-    if not schema or not isinstance(schema.get("properties"), dict):
+    scope = _RefScope.for_schema(schema, registry)
+    root = scope.definition(schema["$ref"]) if schema and "$ref" in schema else schema
+    if not root or not isinstance(root.get("properties"), dict):
         return default_signature
-    props: dict[str, Any] = schema["properties"]
-    required = set(schema.get("required", []))
+    props: dict[str, Any] = root["properties"]
+    required = set(root.get("required", []))
     fields = []
     for key, prop in props.items():
         optional = "" if key in required else "?"
-        type_str = _json_schema_to_ts(prop)
+        type_str = _json_schema_to_ts(prop, scope)
         desc = prop.get("description")
         prefix = f"/**\n *{desc}\n */ " if desc else ""
         fields.append(f"  {prefix}{key}{optional}: {type_str};")
@@ -491,13 +502,9 @@ def _render_signature(
 # Return types come from the tool's underlying function annotation. We feed
 # the annotation through `pydantic.TypeAdapter` to get a JSON Schema and
 # render it through the same `_json_schema_to_ts` we use for input args.
-# Compound shapes (TypedDict, BaseModel, recursive types) end up as `$ref`
-# in the schema and currently render as `unknown` — same behaviour as
-# nested-model input args. Until that path resolves `$ref` / `$defs`,
-# the simpler unified renderer is the right trade-off here.
 
 
-def _render_return_type(tool: BaseTool) -> str:
+def _render_return_type(tool: BaseTool, registry: _TypeRegistry | None = None) -> str:
     """Render the return annotation as a TS type, defaulting to `unknown`."""
     target = getattr(tool, "func", None) or getattr(tool, "coroutine", None)
     if target is None:
@@ -513,16 +520,120 @@ def _render_return_type(tool: BaseTool) -> str:
         schema = TypeAdapter(annotation).json_schema()
     except Exception:  # noqa: BLE001 — schema generation is best-effort
         return "unknown"
-    return _json_schema_to_ts(schema)
+    return _json_schema_to_ts(schema, _RefScope.for_schema(schema, registry))
 
 
-def _json_schema_to_ts(prop: dict[str, Any]) -> str:
-    """Shallow JSON-Schema → TS type renderer."""
+class _TypeRegistry:
+    """Named TS aliases for JSON Schema definitions, shared across every tool.
+
+    Nested Pydantic models arrive as `$ref`s into `$defs`. Rendering each one
+    once as `type Name = ...` keeps models that several fields or tools share
+    from being repeated, and lets self-referential models refer to themselves
+    by name instead of expanding forever.
+    """
+
+    def __init__(self) -> None:
+        self._definitions: dict[str, str] = {}
+        self.declarations: list[str] = []
+
+    def alias(self, name: str, definition: dict[str, Any]) -> tuple[str, bool]:
+        """Return the alias for `definition` and whether it is new.
+
+        The same definition reached from several tools reuses one alias; a
+        different definition with a clashing name gets a numeric suffix.
+        """
+        identity = json.dumps(definition, sort_keys=True, default=str)
+        base = _to_type_name(name)
+        alias, suffix = base, 1
+        while (
+            alias in _RESERVED_TYPE_NAMES
+            or self._definitions.get(alias, identity) != identity
+        ):
+            suffix += 1
+            alias = f"{base}{suffix}"
+        is_new = alias not in self._definitions
+        self._definitions[alias] = identity
+        return alias, is_new
+
+    def declare(self, alias: str, type_str: str) -> None:
+        self.declarations.append(f"type {alias} = {type_str};")
+
+
+@dataclass
+class _RefScope:
+    """Resolves the local `$ref`s of one schema against its definitions."""
+
+    definitions: dict[str, Any]
+    registry: _TypeRegistry
+
+    @classmethod
+    def for_schema(
+        cls, schema: dict[str, Any] | None, registry: _TypeRegistry | None
+    ) -> _RefScope:
+        schema = schema or {}
+        definitions = schema.get("$defs", schema.get("definitions"))
+        return cls(
+            definitions if isinstance(definitions, dict) else {},
+            registry or _TypeRegistry(),
+        )
+
+    def definition(self, ref: Any) -> dict[str, Any] | None:
+        name = _ref_name(ref)
+        found = self.definitions.get(name) if name is not None else None
+        return found if isinstance(found, dict) else None
+
+    def resolve(self, ref: Any) -> str:
+        """Render a `$ref` as its alias, declaring the alias on first use."""
+        definition = self.definition(ref)
+        if definition is None:
+            return "unknown"
+        alias, is_new = self.registry.alias(_ref_name(ref) or "", definition)
+        if is_new:
+            # The alias is registered before rendering, so a recursive
+            # reference inside `definition` resolves to the name.
+            self.registry.declare(alias, _json_schema_to_ts(definition, self))
+        return alias
+
+
+def _ref_name(ref: Any) -> str | None:
+    """Return the definition name of a local `#/$defs/...` reference."""
+    if not isinstance(ref, str):
+        return None
+    for prefix in ("#/$defs/", "#/definitions/"):
+        if ref.startswith(prefix):
+            return ref.removeprefix(prefix).replace("~1", "/").replace("~0", "~")
+    return None
+
+
+def _to_type_name(name: str) -> str:
+    """Turn a definition name such as `Page_User_` into a TS identifier."""
+    parts = [part for part in re.split(r"[^A-Za-z0-9]+", name) if part]
+    type_name = "".join(part[:1].upper() + part[1:] for part in parts)
+    return re.sub(r"^\d+", "", type_name) or "Model"
+
+
+def _json_schema_to_ts(prop: dict[str, Any], scope: _RefScope | None = None) -> str:
+    """JSON-Schema → TS type renderer; nested definitions render by name."""
+    if not isinstance(prop, dict):
+        return "unknown"
+    if "$ref" in prop:
+        return scope.resolve(prop["$ref"]) if scope else "unknown"
+    if "const" in prop:
+        return json.dumps(prop["const"])
     if "enum" in prop:
         return " | ".join(json.dumps(v) for v in prop["enum"])
-    if "anyOf" in prop:
-        parts = [_json_schema_to_ts(part) for part in prop["anyOf"]]
-        return " | ".join(dict.fromkeys(parts))
+    for key, separator in (("anyOf", " | "), ("oneOf", " | "), ("allOf", " & ")):
+        if isinstance(prop.get(key), list):
+            parts = [
+                _json_schema_to_ts(part, scope)
+                for part in prop[key]
+                if isinstance(part, dict)
+            ]
+            return separator.join(dict.fromkeys(parts)) or "unknown"
+    return _render_typed_schema(prop, scope)
+
+
+def _render_typed_schema(prop: dict[str, Any], scope: _RefScope | None) -> str:
     t = prop.get("type")
     if t == "string":
         return "string"
@@ -534,16 +645,25 @@ def _json_schema_to_ts(prop: dict[str, Any]) -> str:
         return "null"
     if t == "array":
         items = prop.get("items")
-        inner = _json_schema_to_ts(items) if isinstance(items, dict) else "unknown"
-        return f"{inner}[]"
+        inner = (
+            _json_schema_to_ts(items, scope) if isinstance(items, dict) else "unknown"
+        )
+        return f"({inner})[]" if " | " in inner or " & " in inner else f"{inner}[]"
     if t == "object":
-        sub_props = prop.get("properties")
-        if isinstance(sub_props, dict) and sub_props:
-            required = set(prop.get("required", []))
-            fields = [
-                f"{k}{'' if k in required else '?'}: {_json_schema_to_ts(v)}"
-                for k, v in sub_props.items()
-            ]
-            return "{ " + "; ".join(fields) + " }"
-        return "Record<string, unknown>"
+        return _render_object(prop, scope)
     return "unknown"
+
+
+def _render_object(prop: dict[str, Any], scope: _RefScope | None) -> str:
+    sub_props = prop.get("properties")
+    if isinstance(sub_props, dict) and sub_props:
+        required = set(prop.get("required", []))
+        fields = [
+            f"{k}{'' if k in required else '?'}: {_json_schema_to_ts(v, scope)}"
+            for k, v in sub_props.items()
+        ]
+        return "{ " + "; ".join(fields) + " }"
+    additional = prop.get("additionalProperties")
+    if isinstance(additional, dict) and additional:
+        return f"Record<string, {_json_schema_to_ts(additional, scope)}>"
+    return "Record<string, unknown>"

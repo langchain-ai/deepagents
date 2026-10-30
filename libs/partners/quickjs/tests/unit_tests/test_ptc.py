@@ -882,10 +882,9 @@ def _stub() -> None:
         (type(None), "Promise<null>"),
         # Containers of primitives.
         (list[int], "Promise<number[]>"),
-        # `dict[str, V]` uses `additionalProperties` in the schema, which
-        # `_json_schema_to_ts` doesn't currently read — value type collapses
-        # to `unknown`.
-        (dict[str, int], "Promise<Record<string, unknown>>"),
+        # `dict[str, V]` renders its `additionalProperties` value type.
+        (dict[str, int], "Promise<Record<string, number>>"),
+        (list[int | None], "Promise<(number | null)[]>"),
         # Optional / Literal / unions all flow through `anyOf` or `enum`.
         (int | None, "Promise<number | null>"),
         (Literal["active", "resolved"], 'Promise<"active" | "resolved">'),
@@ -893,10 +892,10 @@ def _stub() -> None:
         # Top-level TypedDict / BaseModel — Pydantic inlines the schema.
         (_UserLookup, "Promise<{ id: number; name: string }>"),
         (_Status, "Promise<{ status: string; count: number }>"),
-        # Compound types that hit `$ref` (collections of TypedDict /
-        # BaseModel) — we don't resolve refs, so they collapse to `unknown`.
-        (list[_UserLookup], "Promise<unknown[]>"),
-        (list[_Status], "Promise<unknown[]>"),
+        # Collections of TypedDict / BaseModel hit `$ref` and render as a
+        # named alias declared once above the signatures.
+        (list[_UserLookup], "Promise<UserLookup[]>"),
+        (list[_Status], "Promise<Status[]>"),
     ],
 )
 def test_render_ptc_prompt_return_types(annotation: Any, expected: str) -> None:
@@ -949,3 +948,147 @@ async def test_pydantic_return_arrives_as_object_matching_schema(
     )
     assert outcome.error_type is None, outcome.error_message
     assert outcome.result == "object:ok:3"
+
+
+# ---------------------------------------------------------------------------
+# Nested schema (`$defs` / `$ref`) rendering
+# ---------------------------------------------------------------------------
+
+
+class _Address(BaseModel):
+    city: str
+    postal_code: str
+
+
+class _User(BaseModel):
+    name: str
+    address: _Address
+
+
+class _BatchInput(BaseModel):
+    users: list[_User]
+
+
+class _TreeNode(BaseModel):
+    value: int
+    children: list[_TreeNode] = []
+    parent: _TreeNode | None = None
+
+
+class _Contact(BaseModel):
+    home: _Address | None = Field(default=None, description="Home address.")
+    others: dict[str, _Address] = {}
+
+
+def _normalize_users(users: list[_User]) -> list[_User]:
+    return users
+
+
+def _walk(value: int, children: list[_TreeNode] | None = None) -> _TreeNode:
+    return _TreeNode(value=value, children=children or [])
+
+
+def _ptc_body(tools: list[BaseTool]) -> str:
+    """Return the fenced API reference block of the rendered PTC prompt."""
+    return render_ptc_prompt(tools).rsplit("```typescript\n", 1)[1]
+
+
+def test_nested_models_render_as_named_types() -> None:
+    """Nested input and return models resolve instead of collapsing to `unknown`."""
+    tool = StructuredTool.from_function(
+        name="normalize_users",
+        description="Normalize users.",
+        func=_normalize_users,
+        args_schema=_BatchInput,
+    )
+    body = _ptc_body([tool])
+    assert "unknown" not in body, body
+    assert "type Address = { city: string; postal_code: string };" in body
+    assert "type User = { name: string; address: Address };" in body
+    assert "  users: User[];\n}): Promise<User[]>" in body
+
+
+def test_optional_and_mapping_fields_resolve_refs() -> None:
+    """`Optional[Model]` and `dict[str, Model]` render the referenced alias."""
+    tool = StructuredTool.from_function(
+        name="save_contact",
+        description="Save a contact.",
+        func=lambda **_: None,
+        args_schema=_Contact,
+    )
+    body = _ptc_body([tool])
+    assert "home?: Address | null;" in body
+    assert "*Home address." in body
+    assert "others?: Record<string, Address>;" in body
+
+
+def test_self_referential_model_renders_by_name() -> None:
+    """A recursive model refers to its own alias rather than expanding forever."""
+    tool = StructuredTool.from_function(
+        name="walk",
+        description="Walk a tree.",
+        func=_walk,
+        args_schema=_TreeNode,
+    )
+    body = _ptc_body([tool])
+    assert (
+        "type TreeNode = { value: number; children?: TreeNode[]; "
+        "parent?: TreeNode | null };"
+    ) in body
+    assert "  children?: TreeNode[];" in body
+    assert "): Promise<TreeNode>" in body
+
+
+def test_shared_models_are_declared_once_across_tools() -> None:
+    """A model used by several tools gets a single declaration."""
+    tools: list[BaseTool] = [
+        StructuredTool.from_function(
+            name="normalize_users",
+            description="Normalize users.",
+            func=_normalize_users,
+            args_schema=_BatchInput,
+        ),
+        StructuredTool.from_function(
+            name="save_contact",
+            description="Save a contact.",
+            func=lambda **_: None,
+            args_schema=_Contact,
+        ),
+    ]
+    body = _ptc_body(tools)
+    assert body.count("type Address = ") == 1, body
+    assert "Address2" not in body
+
+
+def test_conflicting_model_names_get_distinct_aliases() -> None:
+    """Different models that share a name (or shadow a TS helper) are suffixed."""
+
+    class Promise(BaseModel):
+        ok: bool
+
+    class _Address(BaseModel):
+        street: str
+
+    class _Other(BaseModel):
+        address: _Address
+        promise: Promise
+
+    tools: list[BaseTool] = [
+        StructuredTool.from_function(
+            name="normalize_users",
+            description="Normalize users.",
+            func=_normalize_users,
+            args_schema=_BatchInput,
+        ),
+        StructuredTool.from_function(
+            name="other",
+            description="Other.",
+            func=lambda **_: None,
+            args_schema=_Other,
+        ),
+    ]
+    body = _ptc_body(tools)
+    assert "type Address = { city: string; postal_code: string };" in body
+    assert "type Address2 = { street: string };" in body
+    assert "type Promise2 = { ok: boolean };" in body
+    assert "  address: Address2;\n  promise: Promise2;" in body

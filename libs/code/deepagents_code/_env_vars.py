@@ -351,6 +351,9 @@ HIDE_SPLASH_VERSION = "DEEPAGENTS_CODE_HIDE_SPLASH_VERSION"
 IDLE_COMPACTION_TOKENS = "DEEPAGENTS_CODE_IDLE_COMPACTION_TOKENS"
 """Minimum context tokens for opt-in idle compaction; 0 disables it."""
 
+COMPACTION_STRATEGY = "DEEPAGENTS_CODE_COMPACTION_STRATEGY"
+"""How compaction replaces evicted history: `summarize` or `retrieve`."""
+
 HISTORY_RETENTION_DAYS = "DEEPAGENTS_CODE_HISTORY_RETENTION_DAYS"
 """Days an offloaded conversation-history archive is kept before the startup
 sweep deletes it.

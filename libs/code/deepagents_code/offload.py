@@ -9,7 +9,9 @@ import stat
 import tempfile
 import time
 from dataclasses import dataclass
+from functools import cache
 from pathlib import Path, PurePath
+from typing import Literal, cast
 
 from deepagents_code._paths import get_deepagents_home
 
@@ -281,6 +283,47 @@ def _history_retention_days() -> int:
     if type(value) is int and value >= 0:
         return value
     return HISTORY_RETENTION_DAYS_DEFAULT
+
+
+type CompactionStrategy = Literal["summarize", "retrieve"]
+"""How compaction replaces evicted history (`history.compaction_strategy`)."""
+
+RETRIEVAL_SUMMARY = "No summary was written; the full transcript was saved instead."
+"""Summary text returned by `retrieve` compaction instead of a model summary.
+
+The server returns it as the handoff summary, so the client can recognize a
+retrieval handoff and seed the new thread with a transcript pointer instead.
+"""
+
+
+def resolve_compaction_strategy() -> CompactionStrategy:
+    """Resolve `history.compaction_strategy` through the manifest.
+
+    Returns:
+        `retrieve` when configured, otherwise `summarize`. An unrecognized value
+        is logged once and treated as `summarize`.
+    """
+    from deepagents_code.config_manifest import _resolve_option, get_option
+
+    option = get_option("history.compaction_strategy")
+    if option is None:
+        return "summarize"
+    value = _resolve_option(option).value
+    strategy = value.strip().lower() if isinstance(value, str) else value
+    if strategy in {"summarize", "retrieve"}:
+        return cast("CompactionStrategy", strategy)
+    _warn_invalid_compaction_strategy(repr(value))
+    return "summarize"
+
+
+@cache
+def _warn_invalid_compaction_strategy(value: str) -> None:
+    """Log an unrecognized `history.compaction_strategy` value once per value."""
+    logger.warning(
+        "Ignoring history.compaction_strategy = %s; expected 'summarize' or "
+        "'retrieve'. Using 'summarize'.",
+        value,
+    )
 
 
 def _delete_expired_archive(candidate: Path, archive_dir: Path, cutoff: float) -> bool:

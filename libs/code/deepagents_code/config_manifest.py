@@ -2957,6 +2957,19 @@ _STATIC_OPTIONS: tuple[ConfigOption[object], ...] = (
         env_var=_env_vars.IDLE_COMPACTION_TOKENS,
         toml_keys=("history", "idle_compaction_tokens"),
     ),
+    ConfigOption(
+        key="history.compaction_strategy",
+        group="History",
+        summary=(
+            "How compaction replaces evicted history: 'summarize' writes a model "
+            "summary, 'retrieve' skips the summary and points the agent at the "
+            "saved transcript to search as needed (experimental)."
+        ),
+        kind=OptionKind.STR,
+        default="summarize",
+        env_var=_env_vars.COMPACTION_STRATEGY,
+        toml_keys=("history", "compaction_strategy"),
+    ),
     # --- Warnings ------------------------------------------------------
     ConfigOption(
         key="warnings.cache_prompt",

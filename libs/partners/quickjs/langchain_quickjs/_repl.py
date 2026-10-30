@@ -367,7 +367,7 @@ def _render_tools_namespace_assignment(
             " if (typeof name !== 'string' || name in target"
             " || name === 'then' || name === 'toJSON')"
             " return target[name];"
-            " return (input) => {"
+            " return async (input) => {"
             f" if (!globalThis[{found}](name))"
             " throw new TypeError(`tools.${name} is not a function`);"
             f" return globalThis[{resolved}](name, input).then((result) => {{"

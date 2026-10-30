@@ -554,6 +554,17 @@ async def test_resolver_missing_names_and_namespace_introspection(
     missing = await resolved.eval_async("await tools.missing({})")
     assert missing.error_type == "TypeError"
     assert names == ["missing"]
+    caught = await resolved.eval_async(
+        "await tools.missing({}).catch(e => e.name + ':' + e.message)"
+    )
+    assert caught.error_type is None
+    assert caught.result == "TypeError:tools.missing is not a function"
+    settled = await resolved.eval_async(
+        "const [result] = await Promise.allSettled([tools.missing({})]);"
+        "result.status + ':' + result.reason.name"
+    )
+    assert settled.error_type is None
+    assert settled.result == "rejected:TypeError"
     names.clear()
     safe = await resolved.eval_async("await tools; JSON.stringify(tools)")
     assert safe.error_type is None

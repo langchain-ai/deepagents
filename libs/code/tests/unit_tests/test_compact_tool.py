@@ -20,6 +20,7 @@ from langchain_core.messages import AIMessage, AnyMessage, HumanMessage
 from deepagents_code._cli_context import CLIContextSchema
 from deepagents_code.config import MODEL_RETRIES_ATTR
 from deepagents_code.hooks.models.domain import HookEvent, PreCompactDecision
+from deepagents_code.offload import RETRIEVAL_SUMMARY, resolve_compaction_strategy
 from deepagents_code.offload_middleware import (
     _SUMMARY_TRIM_FALLBACK,
     CLICompactionMiddleware,
@@ -1279,3 +1280,176 @@ class TestRetryingModelInvoker:
         model = SimpleNamespace(invoke=invoke, ainvoke=ainvoke)
         setattr(model, MODEL_RETRIES_ATTR, 2)
         return model
+
+
+class TestRetrievalCompaction:
+    """Cover the `retrieve` strategy, which skips summaries entirely."""
+
+    async def test_offload_archives_history_without_a_model_call(
+        self, tmp_path: Path
+    ) -> None:
+        """`/offload` points at the verbatim transcript instead of a summary."""
+        from deepagents.backends import FilesystemBackend
+        from deepagents.middleware.summarization import SummarizationMiddleware
+        from langchain_core.language_models.fake_chat_models import FakeListChatModel
+
+        model = FakeListChatModel(responses=["Model summary"])
+        backend = FilesystemBackend(root_dir=tmp_path, virtual_mode=True)
+        summarization = SummarizationMiddleware(
+            model, backend=backend, keep=("messages", 2)
+        )
+        middleware = CLICompactionMiddleware(summarization, strategy="retrieve")
+        messages: list[AnyMessage] = [
+            HumanMessage("The failing test is test_kestrel_region."),
+            AIMessage("Error: KeyError: 'eu-west-2'"),
+            HumanMessage("Fix it."),
+            AIMessage("Fixed."),
+        ]
+
+        update = await middleware.arun_forced_compaction_update(
+            {"messages": messages}, SimpleNamespace(context=None)
+        )
+
+        assert update is not None
+        assert model.i == 0
+        event = update["_summarization_event"]
+        content = event["summary_message"].text
+        assert event["file_path"] is not None
+        assert event["file_path"] in content
+        assert "No summary was written" in content
+        assert "Model summary" not in content
+        assert event["summary_message"].additional_kwargs["lc_source"] == (
+            "summarization"
+        )
+        transcript = (await backend.adownload_files([event["file_path"]]))[0].content
+        assert transcript is not None
+        for message in messages[:2]:
+            assert message.text in transcript.decode("utf-8")
+
+    async def test_auto_compaction_points_at_the_transcript(
+        self, tmp_path: Path
+    ) -> None:
+        """Threshold compaction sends the retrieval pointer, not a summary."""
+        from deepagents.backends import FilesystemBackend
+        from deepagents.middleware.summarization import SummarizationMiddleware
+        from langchain.agents.middleware.types import ModelRequest
+        from langchain_core.language_models.fake_chat_models import FakeListChatModel
+
+        model = FakeListChatModel(responses=["Model summary"])
+        backend = FilesystemBackend(root_dir=tmp_path, virtual_mode=True)
+        summarization = SummarizationMiddleware(
+            model,
+            backend=backend,
+            trigger=("messages", 4),
+            keep=("messages", 2),
+        )
+        middleware = CLICompactionMiddleware(summarization, strategy="retrieve")
+        messages: list[AnyMessage] = [
+            HumanMessage("one"),
+            AIMessage("two"),
+            HumanMessage("three"),
+            AIMessage("four"),
+            HumanMessage("five"),
+        ]
+        request = ModelRequest(
+            model=model,
+            messages=messages,
+            system_message=None,
+            runtime=cast("Any", SimpleNamespace(context=None)),
+            state={"messages": messages},
+        )
+        seen: list[ModelRequest] = []
+
+        async def handler(next_request: ModelRequest) -> AIMessage:  # noqa: RUF029  # awaited by the middleware
+            seen.append(next_request)
+            return AIMessage("ok")
+
+        await middleware.awrap_model_call(request, cast("Any", handler))
+
+        assert model.i == 0
+        sent = seen[-1].messages
+        assert "No summary was written" in sent[0].text
+        assert [message.text for message in sent[1:]] == ["four", "five"]
+
+    def test_runtime_summarizer_skips_the_summary_model(self) -> None:
+        """A `/model` override keeps retrieval and never builds a summary model."""
+        from deepagents.backends import StateBackend
+        from deepagents.middleware.summarization import SummarizationMiddleware
+        from langchain_core.language_models.fake_chat_models import FakeListChatModel
+
+        startup = SummarizationMiddleware(
+            FakeListChatModel(responses=["unused"]), backend=StateBackend()
+        )
+        middleware = CLICompactionMiddleware(
+            startup,
+            summarization_model_spec="provider:summary-model",
+            strategy="retrieve",
+        )
+        runtime = SimpleNamespace(context={"model": "provider:active-model"})
+        active = SimpleNamespace(model=FakeListChatModel(responses=["unused"]))
+
+        with patch(
+            "deepagents_code.config.create_model", return_value=active
+        ) as create_model:
+            actual = middleware._summarization_for_runtime(runtime)
+
+        create_model.assert_called_once()
+        assert create_model.call_args.args[0] == "provider:active-model"
+        assert actual is not startup
+        assert actual._lc_helper._create_summary([]) == RETRIEVAL_SUMMARY
+        message = actual._build_new_messages_with_path("", "/history/t.md")[0]
+        assert "/history/t.md" in message.text
+
+    def test_handoff_seed_points_at_the_transcript(self) -> None:
+        """A retrieval handoff seeds the child with pointers, not a summary."""
+        from deepagents_code.app import _handoff_seed_text
+
+        seed = _handoff_seed_text(RETRIEVAL_SUMMARY, "thread-1", "/history/t.md")
+
+        assert RETRIEVAL_SUMMARY not in seed
+        assert "You are continuing thread thread-1" in seed
+        assert "/history/t.md" in seed
+
+
+class TestResolveCompactionStrategy:
+    """Cover `history.compaction_strategy` resolution."""
+
+    @pytest.mark.parametrize(
+        ("value", "expected"),
+        [("retrieve", "retrieve"), (" Retrieve ", "retrieve"), ("bogus", "summarize")],
+    )
+    def test_env_value(
+        self,
+        value: str,
+        expected: str,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Known values resolve case-insensitively; others fall back."""
+        monkeypatch.setattr(
+            "deepagents_code.model_config.DEFAULT_CONFIG_PATH",
+            tmp_path / "missing.toml",
+        )
+        monkeypatch.setattr(
+            "deepagents_code.config_manifest.load_managed_config_toml",
+            lambda **_: {},
+        )
+        monkeypatch.setenv("DEEPAGENTS_CODE_COMPACTION_STRATEGY", value)
+
+        assert resolve_compaction_strategy() == expected
+
+    def test_defaults_to_summarize(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Unset configuration keeps model summaries."""
+        monkeypatch.setattr(
+            "deepagents_code.model_config.DEFAULT_CONFIG_PATH",
+            tmp_path / "missing.toml",
+        )
+        monkeypatch.setattr(
+            "deepagents_code.config_manifest.load_managed_config_toml",
+            lambda **_: {},
+        )
+        monkeypatch.delenv("DEEPAGENTS_CODE_COMPACTION_STRATEGY", raising=False)
+
+        assert resolve_compaction_strategy() == "summarize"

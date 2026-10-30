@@ -131,6 +131,7 @@ from deepagents_code.offload import (
     CONVERSATION_HISTORY_DIRNAME,
     _artifacts_root,
     _offload_fallback_root,
+    resolve_compaction_strategy,
 )
 from deepagents_code.offload_middleware import (
     OffloadOperation,
@@ -3371,6 +3372,7 @@ def create_cli_agent(
         cli_max_retries=cli_max_retries,
         summarization_model_spec=summarization_model,
         environ=environment,
+        strategy=resolve_compaction_strategy(),
     )
     if auto_mode_config is not None and resolved_interrupt_on is not None:
         from deepagents_code.auto_mode import AutoModeHITLMiddleware

@@ -23,6 +23,7 @@ from deepagents_code.hooks.models.domain import (
     PostToolUseFailureDecision,
     PreCompactDecision,
     PreToolUseDecision,
+    PreToolUseEvent,
     SessionEndDecision,
     SessionStartDecision,
     StopDecision,
@@ -45,6 +46,7 @@ from deepagents_code.hooks.models.wire import (
     SubagentStopSpecificOutput,
     UserPromptSubmitSpecificOutput,
 )
+from deepagents_code.hooks.tools import to_wire_tool_input
 from deepagents_code.hooks.validate_terminal_sequence import validate_terminal_sequence
 
 if TYPE_CHECKING:
@@ -76,6 +78,7 @@ class _Reduction:
     permission: PermissionEffect = field(
         default_factory=lambda: PermissionEffect(behavior="none")
     )
+    updated_command: str | None = None
     continue_loop: bool = False
     suppress_original_prompt: bool = False
 
@@ -328,7 +331,7 @@ def _merge_user_prompt_submit(
 @_merge_specific.register
 def _merge_pre_tool_use(
     specific: PreToolUseSpecificOutput,
-    _invocation: HookInvocation,
+    invocation: HookInvocation,
     state: _Reduction,
     handler_id: str,
 ) -> None:
@@ -343,9 +346,26 @@ def _merge_pre_tool_use(
         )
         behavior = None
     if specific.updated_input is not None:
-        _diagnose_unsupported_updated_input(state, handler_id)
-        if behavior in {"allow", "ask"}:
-            behavior = None
+        event = invocation.event
+        command = specific.updated_input.get("command")
+        if (
+            isinstance(event, PreToolUseEvent)
+            and event.call.name == "execute"
+            and event.call.mcp_server is None
+            and all(
+                key == "command"
+                or (key, value)
+                in to_wire_tool_input(event.call.name, event.call.args).items()
+                for key, value in specific.updated_input.items()
+            )
+            and isinstance(command, str)
+            and command.strip()
+        ):
+            state.updated_command = command
+        else:
+            _diagnose_unsupported_updated_input(state, handler_id)
+            if behavior in {"allow", "ask"}:
+                behavior = None
     if behavior is not None:
         _merge_permission(
             state,
@@ -513,6 +533,7 @@ def _decision(invocation: HookInvocation, state: _Reduction) -> HookDecision:
         return PreToolUseDecision(
             event=event,
             permission=state.permission,
+            updated_command=state.updated_command,
             context=state.context,
             **common,
         )

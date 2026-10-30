@@ -405,6 +405,7 @@ class PreToolUseDecision(BaseHookDecision):
 
     event: Literal[HookEvent.PRE_TOOL_USE]
     permission: PermissionEffect
+    updated_command: str | None = None
     context: list[str] = Field(default_factory=list)
 
 

@@ -6,7 +6,7 @@ An `eval` tool is available. It runs JavaScript in a persistent REPL.
 - Top-level `await` works; Promises resolve before the call returns.
 - Runtime sandbox: no built-in filesystem, network, stdlib, or wall-clock APIs (`fetch`, `require`, `fs`, `process`, real `Date.now()` are unavailable or stubbed).
 - The REPL has no access to host tools, files, or the network: it is pure computation. Return values to communicate results.
-- No per-call timeout. Memory: 64 MB total.
+- Memory: 64 MB total.
 - `console.log` output is captured and returned alongside the result.
 
 ### Dispatching Subagents with `task`

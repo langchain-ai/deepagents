@@ -99,7 +99,7 @@ def test_render_repl_without_timeout(mode: Literal["thread", "turn", "call"]) ->
     prompt = render_repl_system_prompt(
         tool_name="eval", timeout=None, memory_limit_mb=64, mode=mode
     )
-    assert "No per-call timeout. Memory: 64 MB total." in prompt
-    assert "Timeout" not in prompt
+    assert "- Memory: 64 MB total." in prompt
+    assert "timeout" not in prompt.lower()
     assert "Nones" not in prompt
     assert "infs" not in prompt

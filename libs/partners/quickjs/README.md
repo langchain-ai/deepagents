@@ -112,21 +112,11 @@ hi 2
 
 ### Timeouts and memory
 
-Each call has a per-call VM execution timeout (default 5 s). Set
-`timeout=None` to disable the deadline. Positive values are accepted; zero,
-negative values, and NaN are rejected. Breaching an enabled deadline produces:
+Each call has a per-call wall-clock timeout (default 5 s). Breaching it produces:
 
 ```xml
 <error type="Timeout">...</error>
 ```
-
-**Warning:** Disabling the deadline permits infinite synchronous execution.
-Asyncio cancellation or an outer async timeout cannot terminate a spinning
-worker thread. Use enforceable termination, such as process isolation, for
-untrusted code without a deadline. Time awaiting Python host tools is not
-counted against the VM execution budget, even with a deadline enabled.
-Memory and stack limits are unchanged. The model sees “No per-call timeout”
-when the deadline is disabled.
 
 The runtime has a shared memory limit across every context under it (default 64 MiB). OOM surfaces as:
 
@@ -283,7 +273,7 @@ This visibility does not route PTC calls through `ToolNode` or add per-call huma
 ```python
 CodeInterpreterMiddleware(
     memory_limit=64 * 1024 * 1024,  # bytes, shared across contexts
-    timeout=5.0,                     # per-call seconds; None disables the deadline
+    timeout=5.0,                     # per-call seconds
     max_ptc_calls=256,     # per-eval `tools.*` bridge calls, None disables (DoS risk)
     tool_name="eval",                # what the model calls it
     max_result_chars=4000,           # result/stdout truncation, each
@@ -300,7 +290,7 @@ CodeInterpreterMiddleware(
 | Type | Cause |
 | --- | --- |
 | `SyntaxError`, `TypeError`, `ReferenceError`, ... | User-code error. Re-surfaces the JS error name verbatim. |
-| `Timeout` (only with a deadline enabled) | Call exceeded `timeout=`. |
+| `Timeout` | Call exceeded `timeout=`. |
 | `OutOfMemory` | Runtime hit `memory_limit=`. |
 | `PTCCallBudgetExceeded` | Uncaught `tools.*` call-budget overflow in one eval (`max_ptc_calls=`). |
 | `Deadlock` | Top-level promise never resolved with no async host work in flight. |

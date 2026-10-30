@@ -243,8 +243,8 @@ def test_system_prompt_snapshot_without_timeout(
     )
     _invoke_for_snapshot(agent, {"messages": [HumanMessage(content="hi")]})
     prompt = _capture_system_prompt(model)
-    assert "No per-call timeout" in prompt
-    assert "Timeout" not in prompt
+    assert "- Memory: 64 MB total." in prompt
+    assert "timeout" not in prompt.lower()
     _assert_snapshot(
         snapshots_dir / "quickjs_system_prompt_no_timeout.md",
         prompt,

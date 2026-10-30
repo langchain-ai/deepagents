@@ -26,7 +26,7 @@ _REPL_SYSTEM_PROMPT_TEMPLATE = (
     "APIs (`fetch`, `require`, `fs`, `process`, real `Date.now()` are "
     "unavailable or stubbed).\n"
     "{side_effects_line}\n"
-    "{timeout_line} Memory: {memory_limit_mb} MB total.\n"
+    "- {timeout_line}Memory: {memory_limit_mb} MB total.\n"
     "- `console.log` output is captured and returned alongside the result."
 )
 _SUBAGENT_SYSTEM_PROMPT_TEMPLATE = """
@@ -316,11 +316,7 @@ def render_repl_system_prompt(
         repl_intro_line=repl_intro_line,
         state_persistence_line=state_persistence_line,
         side_effects_line=side_effects_line,
-        timeout_line=(
-            "- No per-call timeout."
-            if timeout is None
-            else f"- Timeout: {timeout}s per call."
-        ),
+        timeout_line=("" if timeout is None else f"Timeout: {timeout}s per call. "),
         memory_limit_mb=memory_limit_mb,
     )
 

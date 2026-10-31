@@ -712,21 +712,6 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
             await self._registry.aevict(slot_id)
         return update
 
-    def close(self) -> None:
-        """Release every interpreter this middleware holds.
-
-        A run that ends in an interrupt or an exception skips `after_agent`,
-        so its interpreter stays open until the run is resumed. Call this
-        when the host is done with the middleware (application shutdown, an
-        abandoned interrupt) to free those interpreters and their worker
-        threads. Safe to call more than once; later runs start fresh.
-        """
-        self._registry.close()
-
-    async def aclose(self) -> None:
-        """Async variant of `close`."""
-        await self._registry.aclose()
-
     def __del__(self) -> None:
         """Best-effort Runtime cleanup on GC; never raises at shutdown."""
         # During interpreter finalization the daemon worker threads can no

@@ -1059,19 +1059,11 @@ class _Registry:
         )
 
     def close(self) -> None:
-        for slot in self._pop_all_slots():
-            self._close_slot(slot)
-
-    async def aclose(self) -> None:
-        """Async variant of `close`: closes each slot via its worker loop."""
-        for slot in self._pop_all_slots():
-            await self._aclose_slot(slot)
-
-    def _pop_all_slots(self) -> list[_Slot]:
         with self._lock:
             slots = list(self._slots.values())
             self._slots.clear()
-        return slots
+        for slot in slots:
+            self._close_slot(slot)
 
 
 async def _aclose_runtime(runtime: Runtime) -> None:

@@ -141,34 +141,6 @@ def test_process_exits_after_run(scenario: str) -> None:
     assert "exiting" in proc.stdout
 
 
-def test_close_releases_interpreters_after_interrupt() -> None:
-    before = _worker_threads()
-    middleware = CodeInterpreterMiddleware(ptc=[])
-    result = _interrupting_agent(middleware).invoke(
-        {"messages": [("user", "go")]}, config=_CONFIG
-    )
-    assert "__interrupt__" in result
-    assert _worker_threads() - before
-
-    middleware.close()
-    assert not _worker_threads() - before
-    middleware.close()
-
-
-async def test_aclose_releases_interpreters_after_interrupt() -> None:
-    before = _worker_threads()
-    middleware = CodeInterpreterMiddleware(ptc=[])
-    result = await _interrupting_agent(middleware).ainvoke(
-        {"messages": [("user", "go")]}, config=_CONFIG
-    )
-    assert "__interrupt__" in result
-    assert _worker_threads() - before
-
-    await middleware.aclose()
-    assert not _worker_threads() - before
-    await middleware.aclose()
-
-
 def test_garbage_collection_releases_interpreters() -> None:
     before = _worker_threads()
     middleware = CodeInterpreterMiddleware(ptc=[])

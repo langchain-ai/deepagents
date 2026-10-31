@@ -22,7 +22,6 @@ agent = create_deep_agent(
   - [Sandbox](#sandbox)
   - [Console capture](#console-capture)
   - [Timeouts and memory](#timeouts-and-memory)
-  - [Where the REPL runs](#where-the-repl-runs)
   - [Result formatting](#result-formatting)
 - [Dispatching subagents (`task`)](#dispatching-subagents-task)
 - [Programmatic tool calling (PTC)](#programmatic-tool-calling-ptc)
@@ -143,12 +142,6 @@ Set `max_ptc_calls=None` only in trusted environments. Disabling the
 budget allows unbounded PTC-call loops and increases DoS risk.
 
 Top-level `await` works on the async path — the promise settles before the call returns. An un-resolvable top-level promise (no host work in flight, no resolver) surfaces as `<error type="Deadlock">`.
-
-### Where the REPL runs
-
-Each slot runs on its own worker thread by default, so a slow `eval` never stalls the caller. `execution="inline"` runs the REPL on the calling thread instead — a plain `await` on the caller's loop on the async path — for hosts whose event loop cannot be woken from another thread. A long `eval` then blocks the caller, one slot must not be driven concurrently from several threads, and PTC tools should be async (a sync tool completes through an executor thread).
-
-Use `execution="inline"` only when the event loop belongs to a single conversation, such as one durable-execution workflow run. On a loop shared by several users or conversations, one runaway `eval` blocks all of them; with `timeout=None` as well, only an external limit can stop it.
 
 ### Result formatting
 
@@ -296,7 +289,6 @@ CodeInterpreterMiddleware(
     mode="thread",                   # "thread" | "turn" | "call"
     max_snapshot_bytes=None,         # defaults to `memory_limit`; larger snapshots are dropped
     ptc=None,                        # None | list[str] | list[BaseTool]
-    execution="worker",              # "worker" (thread per slot) | "inline" (caller's thread and loop)
 )
 ```
 

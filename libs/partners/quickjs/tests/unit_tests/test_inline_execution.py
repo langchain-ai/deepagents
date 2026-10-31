@@ -335,6 +335,23 @@ def test_inline_sync_invoke_runs_ptc_on_a_private_loop() -> None:
     assert "1,21,35" in _result_text(result)
 
 
+@pytest.mark.parametrize(("execution", "warned"), [("inline", True), ("worker", False)])
+async def test_warns_once_about_sync_ptc_tools_only_inline(
+    caplog: pytest.LogCaptureFixture, execution: ExecutionMode, *, warned: bool
+) -> None:
+    middleware = CodeInterpreterMiddleware(
+        execution=execution, ptc=[list_user_ids, current_loop_id]
+    )
+    with caplog.at_level("WARNING", logger="langchain_quickjs.middleware"):
+        for _ in range(2):
+            await _agent("await tools.listUserIds({})", middleware).ainvoke(
+                {"messages": [HumanMessage(content="go")]}
+            )
+    sync_warnings = [r for r in caplog.records if "is sync under" in r.message]
+    assert len(sync_warnings) == int(warned)
+    assert all("list_user_ids" in r.message for r in sync_warnings)
+
+
 async def test_inline_sync_invoke_from_a_thread_with_a_running_loop(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

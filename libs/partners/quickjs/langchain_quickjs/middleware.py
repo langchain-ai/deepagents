@@ -130,6 +130,14 @@ def _same_tools(cached: tuple[BaseTool, ...], exposed: tuple[BaseTool, ...]) -> 
     )
 
 
+def _is_sync_only(tool: BaseTool) -> bool:
+    """Whether `tool` has no async implementation and runs on an executor thread."""
+    if hasattr(tool, "coroutine"):
+        return tool.coroutine is None
+    # BaseTool has no public async marker; an inherited `_arun` means executor.
+    return type(tool)._arun is BaseTool._arun  # noqa: SLF001
+
+
 def _new_slot_id() -> str:
     """Create a private interpreter slot id."""
     return f"qjs_{uuid.uuid4().hex}"
@@ -350,6 +358,7 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         self._ptc_tools_by_slot: dict[str, tuple[BaseTool, ...]] = {}
         # Rendered `tools` namespace per slot, with the tools it was rendered from.
         self._ptc_prompt_by_slot: dict[str, tuple[tuple[BaseTool, ...], str]] = {}
+        self._warned_sync_ptc: set[str] = set()
         self.tools: list[BaseTool] = [self._build_tool()]
 
     def _build_tool(self) -> BaseTool:
@@ -630,6 +639,8 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         slot_id = self._slot_id(getattr(request, "state", {}))
         exposed_tools = tuple(exposed)
         self._ptc_tools_by_slot[slot_id] = exposed_tools
+        if self._execution == "inline":
+            self._warn_sync_ptc_tools(exposed_tools)
         # Rendering the TS-ish signature block is cheap but not free, so it is
         # cached. One middleware instance serves every run of a compiled
         # graph, and concurrent runs may expose different tools under the
@@ -642,6 +653,19 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
             )
             self._ptc_prompt_by_slot[slot_id] = cached
         return prompt + cached[1]
+
+    def _warn_sync_ptc_tools(self, tools: tuple[BaseTool, ...]) -> None:
+        """Warn once per sync PTC tool: inline, it can hang on some hosts."""
+        for tool in tools:
+            if tool.name in self._warned_sync_ptc or not _is_sync_only(tool):
+                continue
+            self._warned_sync_ptc.add(tool.name)
+            logger.warning(
+                'PTC tool %r is sync under execution="inline"; it runs on an '
+                "executor thread and hangs on event loops that cannot be woken "
+                "from another thread. Give it an async implementation.",
+                tool.name,
+            )
 
     def _extend(
         self, system_message: SystemMessage | None, prompt: str

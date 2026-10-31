@@ -4,7 +4,7 @@ import asyncio
 import contextlib
 import logging
 import uuid
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import TYPE_CHECKING, Annotated, Any, Literal, NotRequired
 
 from deepagents.middleware._utils import append_to_system_message
@@ -25,15 +25,19 @@ from langchain_core.messages import SystemMessage, ToolMessage
 from langchain_core.tools import StructuredTool
 from langgraph.channels import DeltaChannel
 from langgraph.types import Command
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, create_model
 
 if TYPE_CHECKING:
     from langgraph.runtime import Runtime
 
 from langchain_quickjs._format import format_outcome
+from langchain_quickjs._fs import TOOL_NAMES as FS_TOOL_NAMES
+from langchain_quickjs._fs import FilesystemCapability
 from langchain_quickjs._prompt import (
+    render_eval_code_description,
     render_eval_tool_code_doc,
     render_eval_tool_description,
+    render_fs_system_prompt,
     render_repl_system_prompt,
     render_subagent_system_prompt,
 )
@@ -85,12 +89,7 @@ class REPLState(AgentState):
 class EvalSchema(BaseModel):
     """Input schema for the `eval` tool."""
 
-    code: str = Field(
-        description=(
-            "JavaScript expression or statement(s) to evaluate. "
-            "No fs/network/real-clock access."
-        ),
-    )
+    code: str = Field(description=render_eval_code_description(files=False))
 
 
 def _resolve_mode(
@@ -233,6 +232,13 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
                 where the checkpointer is not fully trusted. Use the same key across
                 all processes that share a thread, and rotate it by starting fresh
                 threads.
+        capabilities: Host features to give REPL code. `fs()` gives it
+            read-only, Node-style access to the agent's files through the
+            agent's own `read_file` and `ls` tools, with their path checks and
+            deny rules. Each `fs` call counts toward `max_ptc_calls`.
+            Code can then read paths that `interrupt` rules or `interrupt_on`
+            gate, without a pause, even when `ptc` is not set. File contents
+            up to `max_read_bytes` appear in traces.
 
     Example:
         ```python
@@ -265,6 +271,7 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         mode: PersistenceMode | None = None,
         max_snapshot_bytes: int | None = None,
         snapshot_signing_key: str | bytes | None = None,
+        capabilities: Sequence[FilesystemCapability] = (),
     ) -> None:
         """Initialize REPL middleware state and build the exposed eval tool."""
         super().__init__()
@@ -280,6 +287,14 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         if type(max_subagent_concurrency) is not int or max_subagent_concurrency < 1:
             msg = "`max_subagent_concurrency` must be a positive integer"
             raise ValueError(msg)
+        capabilities = tuple(capabilities)
+        if any(not isinstance(c, FilesystemCapability) for c in capabilities):
+            msg = "`capabilities` entries must come from `fs()`"
+            raise TypeError(msg)
+        if len(capabilities) > 1:
+            msg = "`capabilities` may include `fs()` at most once"
+            raise ValueError(msg)
+        self._files = capabilities[0] if capabilities else None
         self._memory_limit = memory_limit
         self._timeout = timeout
         self._max_ptc_calls = max_ptc_calls
@@ -306,9 +321,10 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
             max_ptc_calls=max_ptc_calls,
             subagents_enabled=subagents,
             max_subagent_concurrency=max_subagent_concurrency,
+            files=self._files,
         )
         self._memory_limit_mb = memory_limit // (1024 * 1024)
-        self._base_prompt_cache: dict[bool, str] = {}
+        self._base_prompt_cache: dict[tuple[bool, bool], str] = {}
         self._ptc_tools_by_slot: dict[str, tuple[BaseTool, ...]] = {}
         # Rendered `tools` namespace per slot, with the tools it was rendered from.
         self._ptc_prompt_by_slot: dict[str, tuple[tuple[BaseTool, ...], str]] = {}
@@ -319,7 +335,12 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         max_chars = self._max_result_chars
         middleware = self
         code_doc = render_eval_tool_code_doc(mode=self._mode)
-        tool_description = render_eval_tool_description(mode=self._mode)
+        files = self._files is not None
+        tool_description = render_eval_tool_description(mode=self._mode, files=files)
+        args_schema = EvalSchema
+        if files:
+            field = (str, Field(description=render_eval_code_description(files=True)))
+            args_schema = create_model("EvalSchema", __base__=EvalSchema, code=field)
 
         def _make_tool_output(
             outcome: EvalOutcome,
@@ -401,7 +422,7 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
             func=sync_eval,
             coroutine=async_eval,
             infer_schema=False,
-            args_schema=EvalSchema,
+            args_schema=args_schema,
             metadata={"ls_code_input_language": "javascript"},
         )
 
@@ -545,14 +566,15 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
             ),
         )
 
-    def _base_prompt(self, *, ptc_attached: bool) -> str:
+    def _base_prompt(self, *, ptc_attached: bool, files_attached: bool = False) -> str:
         """Return the base REPL system prompt, rendered lazily and memoized.
 
-        The text depends only on construction-time config and `ptc_attached`,
-        so it's computed on first use per boolean and cached. Avoids rendering
+        The text depends only on construction-time config and the two flags,
+        so it's computed on first use per combination and cached. Avoids rendering
         the `tools.*` variant at all when PTC is disabled.
         """
-        cached = self._base_prompt_cache.get(ptc_attached)
+        key = (ptc_attached, files_attached)
+        cached = self._base_prompt_cache.get(key)
         if cached is None:
             cached = render_repl_system_prompt(
                 tool_name=self._tool_name,
@@ -560,8 +582,13 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
                 memory_limit_mb=self._memory_limit_mb,
                 mode=self._mode,
                 ptc_attached=ptc_attached,
+                files_attached=files_attached,
             )
-            self._base_prompt_cache[ptc_attached] = cached
+            if files_attached and self._files is not None:
+                cached += render_fs_system_prompt(
+                    max_read_bytes=self._files.max_read_bytes
+                )
+            self._base_prompt_cache[key] = cached
         return cached
 
     def _prepare_for_call(self, request: ModelRequest[ContextT]) -> str:
@@ -580,15 +607,22 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
                 max_subagent_concurrency=self._max_subagent_concurrency,
             )
 
+        files_attached = self._files is not None and any(
+            getattr(t, "name", None) in FS_TOOL_NAMES for t in request_tools
+        )
         if self._ptc is None:
-            return self._base_prompt(ptc_attached=False) + subagent_section
+            base = self._base_prompt(ptc_attached=False, files_attached=files_attached)
+            return base + subagent_section
 
         exposed = filter_tools_for_ptc(
             request_tools,
             self._ptc,
             self_tool_name=self._tool_name,
         )
-        prompt = self._base_prompt(ptc_attached=bool(exposed)) + subagent_section
+        prompt = (
+            self._base_prompt(ptc_attached=bool(exposed), files_attached=files_attached)
+            + subagent_section
+        )
         slot_id = self._slot_id(getattr(request, "state", {}))
         exposed_tools = tuple(exposed)
         self._ptc_tools_by_slot[slot_id] = exposed_tools

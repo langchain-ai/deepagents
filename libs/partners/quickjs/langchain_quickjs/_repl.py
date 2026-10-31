@@ -41,6 +41,7 @@ from quickjs_rs import (
     TimeoutError as QJSTimeoutError,
 )
 
+from langchain_quickjs import _fs
 from langchain_quickjs._format import (
     coerce_tool_output_for_ptc,
     format_handle,
@@ -57,6 +58,8 @@ if TYPE_CHECKING:
 
     from langchain_core.tools import BaseTool
     from langgraph.prebuilt import ToolRuntime
+
+    from langchain_quickjs._fs import FilesystemCapability
 
 logger = logging.getLogger(__name__)
 
@@ -318,6 +321,27 @@ def _tool_uses_injected_tool_call_id(tool: Any) -> bool:
     )
 
 
+def _tool_run_kwargs(
+    tool: BaseTool,
+    tool_call: dict[str, Any],
+    outer_runtime: ToolRuntime | None,
+    *,
+    wrap_result: bool = False,
+) -> dict[str, Any]:
+    """Keyword arguments for `run`/`arun` of a bridge call, under the eval's config.
+
+    `wrap_result` gets a `ToolMessage`, with its error `status`, from any tool.
+    """
+    config = outer_runtime.config if outer_runtime is not None else None
+    wrap = wrap_result or _tool_uses_injected_tool_call_id(tool)
+    return {
+        "callbacks": config.get("callbacks") if config is not None else None,
+        "run_id": uuid.uuid4(),
+        "config": config,
+        "tool_call_id": tool_call.get("id") if wrap else None,
+    }
+
+
 def _bridge_symbol_name(tool_name: str) -> str:
     """Build a stable, JS-safe global symbol for one PTC bridge."""
     # Keep only identifier-safe characters and salt with a short hash to
@@ -364,6 +388,7 @@ class _ThreadREPL:
         max_ptc_calls: int | None = 256,
         subagents_enabled: bool = True,
         max_subagent_concurrency: int = _DEFAULT_MAX_SUBAGENT_CONCURRENCY,
+        files: FilesystemCapability | None = None,
     ) -> None:
         self._worker = worker
         self._runtime = runtime
@@ -377,6 +402,7 @@ class _ThreadREPL:
         self._max_ptc_calls = max_ptc_calls
         self._subagents_enabled = subagents_enabled
         self._max_subagent_concurrency = max_subagent_concurrency
+        self._files = files
         self._console = _ConsoleBuffer(max_stdout_chars)
         self._ctx: Context | None = None
         self._prepared_for_eval = False
@@ -413,6 +439,8 @@ class _ThreadREPL:
         if self._subagents_enabled:
             self._task_calls = asyncio.Semaphore(self._max_subagent_concurrency)
             self._register_task_bridge()
+        if self._files is not None:
+            self._register_fs_bridges(self._files)
 
     def _require_ctx(self) -> Context:
         """Return the live QuickJS context or raise if this REPL is closed."""
@@ -636,25 +664,15 @@ class _ThreadREPL:
         *,
         outer_runtime: ToolRuntime | None,
         outer_loop: asyncio.AbstractEventLoop | None,
+        wrap_result: bool = False,
     ) -> Any:
         """Run the tool with the outer runtime's loop and config when available."""
-        args = tool_call["args"]
-        tool_call_id = tool_call.get("id")
+        kwargs = _tool_run_kwargs(
+            tool, tool_call, outer_runtime, wrap_result=wrap_result
+        )
 
         async def _call() -> Any:
-            return await tool.arun(
-                args,
-                callbacks=(
-                    outer_runtime.config.get("callbacks")
-                    if outer_runtime is not None
-                    else None
-                ),
-                run_id=uuid.uuid4(),
-                config=outer_runtime.config if outer_runtime is not None else None,
-                tool_call_id=(
-                    tool_call_id if _tool_uses_injected_tool_call_id(tool) else None
-                ),
-            )
+            return await tool.arun(tool_call["args"], **kwargs)
 
         if outer_loop is None:
             return await _call()
@@ -688,34 +706,116 @@ class _ThreadREPL:
                 # it, fail loud.
                 msg = f"tool '{camel}' not registered"
                 raise RuntimeError(msg)
-            if self._ptc_state is None:
-                msg = "PTC bridge called outside active eval"
-                raise ConcurrentEvalError(msg)
-            state = self._ptc_state.consume_call_budget(
-                function_name=f"tools.{camel}",
-                max_ptc_calls=self._max_ptc_calls,
-            )
-            self._ptc_state = state
             payload = _normalize_tool_input(raw_input)
-            call_id = _synth_tool_call_id(tool.name)
-            # Inject runtime/state/store ourselves. The bridge uses `arun`
-            # rather than the tool-call envelope path so the result can be
-            # unwrapped back to native JS-visible values after the standard
-            # tool lifecycle callbacks have fired.
-            args = _inject_tool_args_for_ptc(
-                tool, payload, state.outer_runtime, call_id
-            )
-            result = await self._ainvoke_tool_on_outer_loop(
-                tool,
-                {"name": tool.name, "args": args, "id": call_id, "type": "tool_call"},
-                outer_runtime=state.outer_runtime,
-                outer_loop=state.outer_loop,
-            )
+            result = await self._acall_tool(tool, payload, f"tools.{camel}")
             return coerce_tool_output_for_ptc(result)
 
         bridge_symbol = _bridge_symbol_name(camel)
         ctx.register(bridge_symbol, _bridge, is_async=True)
         return bridge_symbol
+
+    def _start_tool_call(
+        self,
+        tool: BaseTool,
+        payload: dict[str, Any],
+        function_name: str,
+        *,
+        raw_result_limit: int | None = None,
+    ) -> tuple[_PTCState, dict[str, Any]]:
+        """Count one bridge call against the eval's budget and build its tool call.
+
+        Bridges call `run`/`arun` rather than going through `ToolNode`, so the
+        result unwraps to a native JS value after the standard tool callbacks
+        fire. They inject runtime/state/store themselves for that reason.
+
+        For an `fs` call, `raw_result_limit` makes only the returned state's runtime
+        ask the file tool for this call's raw result, up to that many bytes.
+        """
+        if self._ptc_state is None:
+            msg = "PTC bridge called outside active eval"
+            raise ConcurrentEvalError(msg)
+        state = self._ptc_state.consume_call_budget(
+            function_name=function_name, max_ptc_calls=self._max_ptc_calls
+        )
+        self._ptc_state = state
+        call_id = _synth_tool_call_id(tool.name)
+        runtime = state.outer_runtime
+        if raw_result_limit is not None and runtime is not None:
+            runtime = _fs.request_raw_result(runtime, call_id, raw_result_limit)
+            state = replace(state, outer_runtime=runtime)
+        args = _inject_tool_args_for_ptc(tool, payload, state.outer_runtime, call_id)
+        return state, {
+            "name": tool.name,
+            "args": args,
+            "id": call_id,
+            "type": "tool_call",
+        }
+
+    async def _acall_tool(
+        self,
+        tool: BaseTool,
+        payload: dict[str, Any],
+        function_name: str,
+        *,
+        raw_result_limit: int | None = None,
+    ) -> Any:
+        """Run one bridge call on the agent's loop when there is one."""
+        state, call = self._start_tool_call(
+            tool, payload, function_name, raw_result_limit=raw_result_limit
+        )
+        return await self._ainvoke_tool_on_outer_loop(
+            tool,
+            call,
+            outer_runtime=state.outer_runtime,
+            outer_loop=state.outer_loop,
+            wrap_result=raw_result_limit is not None,
+        )
+
+    def _register_fs_bridges(self, files: FilesystemCapability) -> None:
+        """Install the host functions behind the `fs` shim.
+
+        Each resolves the agent's file tool from the eval's own `ToolRuntime`,
+        so `fs` works for an eval with no model call in this process, such as
+        one resumed after an interrupt.
+        """
+        ctx = self._require_ctx()
+
+        def _sync(op: str, args: dict[str, Any]) -> Any:
+            planned = _fs.request(op, args, self._eval_tools())
+            if isinstance(planned, dict):
+                return planned
+            tool, payload = planned
+            state, call = self._start_tool_call(
+                tool, payload, f"fs.{op}", raw_result_limit=files.max_read_bytes
+            )
+            kwargs = _tool_run_kwargs(tool, call, state.outer_runtime, wrap_result=True)
+            if state.outer_loop is None:
+                return _fs.response(op, args, tool.run(call["args"], **kwargs))
+            # Run on the agent's loop, as `tools.*` calls do. Blocking this worker
+            # thread is safe because that loop is awaiting this eval.
+            coro = tool.arun(call["args"], **kwargs)
+            future = asyncio.run_coroutine_threadsafe(coro, state.outer_loop)
+            return _fs.response(op, args, future.result())
+
+        async def _async(op: str, args: dict[str, Any]) -> Any:
+            planned = _fs.request(op, args, self._eval_tools())
+            if isinstance(planned, dict):
+                return planned
+            message = await self._acall_tool(
+                *planned, f"fs.{op}", raw_result_limit=files.max_read_bytes
+            )
+            return _fs.response(op, args, message)
+
+        ctx.register(_fs.SYNC_HOST_FUNCTION, _sync, is_async=False)
+        ctx.register(_fs.ASYNC_HOST_FUNCTION, _async, is_async=True)
+
+    def _eval_tools(self) -> Sequence[BaseTool]:
+        """The tools of the running eval's `ToolRuntime`."""
+        if self._ptc_state is None:
+            msg = "fs called outside active eval"
+            raise ConcurrentEvalError(msg)
+        runtime = self._ptc_state.outer_runtime
+        return runtime.tools if runtime is not None else ()
 
     def eval_sync(
         self,
@@ -806,6 +906,8 @@ class _ThreadREPL:
                     logger.warning("Failed to restore QuickJS snapshot", exc_info=True)
                     msg = "Failed to restore QuickJS snapshot"
                     raise _SnapshotRestoreError(msg) from exc
+        if self._files is not None:
+            self._require_ctx().eval(_fs.SHIM)
         if tools is not None:
             await self._ainstall_tools(tools)
 
@@ -959,6 +1061,7 @@ class _Registry:
     max_ptc_calls: int | None = 256
     subagents_enabled: bool = True
     max_subagent_concurrency: int = _DEFAULT_MAX_SUBAGENT_CONCURRENCY
+    files: FilesystemCapability | None = None
     _slots: dict[str, _Slot] = field(default_factory=dict)
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
@@ -1008,6 +1111,7 @@ class _Registry:
             max_ptc_calls=self.max_ptc_calls,
             subagents_enabled=self.subagents_enabled,
             max_subagent_concurrency=self.max_subagent_concurrency,
+            files=self.files,
         )
 
         with self._lock:
@@ -1032,6 +1136,7 @@ class _Registry:
             max_ptc_calls=self.max_ptc_calls,
             subagents_enabled=self.subagents_enabled,
             max_subagent_concurrency=self.max_subagent_concurrency,
+            files=self.files,
         )
         return _Slot(worker=worker, runtime=runtime, repl=repl)
 

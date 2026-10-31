@@ -1,3 +1,3 @@
 # Files
 
-- [Testing Guide](testing-guide.md) - Focused, network-free test routing for Deep Agents rubric revisions, pinned skills, summarization, async subagent follow-ups, and Talon hook safety. Use package Makefiles and assert observable state, messages, effects, and cleanup rather than internal call order.
+- [Testing Guide](testing-guide.md) - Focused, network-free guidance for testing observable Deep Agents middleware contracts, QuickJS prompt and REPL lifecycle behavior, and Talon reasoning-effort selection, persistence, and provider translation.

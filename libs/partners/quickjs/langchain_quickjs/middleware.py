@@ -3,9 +3,7 @@
 import asyncio
 import contextlib
 import logging
-import threading
 import uuid
-import weakref
 from collections.abc import Awaitable, Callable, Mapping
 from typing import TYPE_CHECKING, Annotated, Any, Literal, NotRequired
 
@@ -241,8 +239,8 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
             left behind when a run errors, is cancelled, has its stream closed,
             or pauses on an interrupt that is never resumed. Slots in use by
             an eval are never closed. A closed slot's next eval starts from the
-            last persisted snapshot. Expiry runs on one background daemon
-            thread per middleware. Defaults to 600 seconds; `None` disables.
+            last persisted snapshot. Expiry is checked whenever a slot is
+            acquired or evicted. Defaults to 600 seconds; `None` disables.
 
     Example:
         ```python
@@ -327,17 +325,8 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         self._ptc_tools_by_slot: dict[str, tuple[BaseTool, ...]] = {}
         # Rendered `tools` namespace per slot, with the tools it was rendered from.
         self._ptc_prompt_by_slot: dict[str, tuple[tuple[BaseTool, ...], str]] = {}
-        # Guards the two per-slot caches; the registry's reaper thread clears
-        # them through `on_expire`. Held weakly so the reaper never keeps the
-        # middleware (and its `__del__` cleanup) alive.
-        self._slot_cache_lock = threading.Lock()
-        drop_caches = weakref.WeakMethod(self._drop_slot_caches)
-
-        def _on_expire(slot_id: str) -> None:
-            if (drop := drop_caches()) is not None:
-                drop(slot_id)
-
-        self._registry.on_expire = _on_expire
+        # Expired slots' caches are dropped under the registry lock.
+        self._registry.on_expire = self._drop_slot_caches
         self.tools: list[BaseTool] = [self._build_tool()]
 
     def _build_tool(self) -> BaseTool:
@@ -549,9 +538,8 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         return slot_id
 
     def _drop_slot_caches(self, slot_id: str) -> None:
-        with self._slot_cache_lock:
-            self._ptc_tools_by_slot.pop(slot_id, None)
-            self._ptc_prompt_by_slot.pop(slot_id, None)
+        self._ptc_tools_by_slot.pop(slot_id, None)
+        self._ptc_prompt_by_slot.pop(slot_id, None)
 
     def _prepare_slot(self, state: REPLState) -> dict[str, Any] | None:
         slot_id = state.get("_quickjs_slot_id")
@@ -655,16 +643,14 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         # cached. One middleware instance serves every run of a compiled
         # graph, and concurrent runs may expose different tools under the
         # same names, so the cache is per slot and keyed on tool identity.
-        with self._slot_cache_lock:
-            self._ptc_tools_by_slot[slot_id] = exposed_tools
-            cached = self._ptc_prompt_by_slot.get(slot_id)
+        self._ptc_tools_by_slot[slot_id] = exposed_tools
+        cached = self._ptc_prompt_by_slot.get(slot_id)
         if cached is None or not _same_tools(cached[0], exposed_tools):
             cached = (
                 exposed_tools,
                 render_ptc_prompt(exposed_tools, tool_name=self._tool_name),
             )
-            with self._slot_cache_lock:
-                self._ptc_prompt_by_slot[slot_id] = cached
+            self._ptc_prompt_by_slot[slot_id] = cached
         return prompt + cached[1]
 
     def _extend(

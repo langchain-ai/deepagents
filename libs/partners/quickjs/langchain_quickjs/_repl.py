@@ -956,10 +956,8 @@ class _Registry:
     Each LangGraph `thread_id` gets its own `_Slot` (worker + Runtime
     + Context). Eviction is driven externally via `evict(thread_id)` —
     typically from the middleware's `after_agent` hook. When `idle_ttl` is
-    set, the registry also closes slots that sit unleased for that long: one
-    daemon reaper thread per registry, started with the first slot, sleeps
-    until the earliest deadline and exits once the registry is empty or
-    closed.
+    set, every `acquire`/`evict` also closes slots that have sat unleased for
+    longer than that, so slots abandoned by failed runs don't pile up.
     """
 
     memory_limit: int
@@ -971,17 +969,10 @@ class _Registry:
     max_subagent_concurrency: int = _DEFAULT_MAX_SUBAGENT_CONCURRENCY
     idle_ttl: float | None = None
     clock: Callable[[], float] = time.monotonic
-    # Called with each expired slot's id, on the reaper thread.
+    # Called with each expired slot's id, under the registry lock.
     on_expire: Callable[[str], None] | None = None
     _slots: dict[str, _Slot] = field(default_factory=dict)
     _lock: threading.Lock = field(default_factory=threading.Lock)
-    _wakeup: threading.Condition = field(init=False)
-    _changed: bool = False
-    _closed: bool = False
-    _reaper: threading.Thread | None = None
-
-    def __post_init__(self) -> None:
-        self._wakeup = threading.Condition(self._lock)
 
     def get(self, thread_id: str) -> _ThreadREPL:
         with self._lock:
@@ -992,23 +983,31 @@ class _Registry:
         if slot is None:
             slot = self._build_slot_locked(thread_id)
             self._slots[thread_id] = slot
-            self._ensure_reaper_locked()
         slot.last_used = self.clock()
         return slot
 
     def acquire(self, thread_id: str) -> _Slot:
         """Lease the slot for `thread_id`, creating it if needed.
 
-        A leased slot is never closed by the reaper. Pair with `release`.
+        A leased slot is never closed. Pair with `release`.
         """
         with self._lock:
+            expired = self._pop_expired_locked()
             slot = self._get_or_build_locked(thread_id)
             slot.leases += 1
-            return slot
+        for stale in expired:
+            self._close_slot(stale)
+        return slot
 
     async def aacquire(self, thread_id: str) -> _Slot:
-        """Async variant of `acquire`."""
-        return self.acquire(thread_id)
+        """Async variant of `acquire`: closes expired slots on their workers."""
+        with self._lock:
+            expired = self._pop_expired_locked()
+            slot = self._get_or_build_locked(thread_id)
+            slot.leases += 1
+        for stale in expired:
+            await self._aclose_slot(stale)
+        return slot
 
     def touch(self, thread_id: str) -> None:
         """Mark the slot for `thread_id` as used now, if it exists."""
@@ -1039,77 +1038,27 @@ class _Registry:
         with self._lock:
             slot.leases -= 1
             slot.last_used = self.clock()
-            # The slot may now be reapable; let the reaper recompute.
-            self._notify_locked()
             return slot.retired and slot.leases == 0
 
-    # idle-TTL reaper
-
-    def _notify_locked(self) -> None:
-        self._changed = True
-        self._wakeup.notify()
-
-    def _ensure_reaper_locked(self) -> None:
-        if self.idle_ttl is None or self._closed:
-            return
-        if self._reaper is not None and self._reaper.is_alive():
-            self._notify_locked()
-            return
-        self._reaper = threading.Thread(
-            target=self._reaper_loop, name="quickjs-slot-reaper", daemon=True
-        )
-        self._reaper.start()
-
-    def _reaper_loop(self) -> None:
-        while True:
-            delay = self._reap_once()
-            with self._lock:
-                if self._closed or not self._slots:
-                    if self._reaper is threading.current_thread():
-                        self._reaper = None
-                    return
-                if not self._changed:
-                    # `None` (every slot leased) waits for a release.
-                    self._wakeup.wait(timeout=delay)
-
-    def _reap_once(self) -> float | None:
-        """Close expired idle slots; return seconds until the next deadline.
-
-        Returns `None` when no slot can expire until something changes
-        (no slots, or every slot is leased).
-        """
-        if self.idle_ttl is None:
-            return None
-        with self._lock:
-            self._changed = False
-            now = self.clock()
-            expired_ids: list[str] = []
-            next_deadline: float | None = None
-            for thread_id, slot in self._slots.items():
-                if slot.leases:
-                    continue
-                deadline = slot.last_used + self.idle_ttl
-                if deadline <= now:
-                    expired_ids.append(thread_id)
-                elif next_deadline is None or deadline < next_deadline:
-                    next_deadline = deadline
-            expired = [self._slots.pop(tid) for tid in expired_ids]
-            # Under the lock, so a concurrent `touch` + cache refresh for the
-            # same id can't land between the pop and this callback.
-            if self.on_expire is not None:
-                for thread_id in expired_ids:
-                    with contextlib.suppress(Exception):
-                        self.on_expire(thread_id)
-        for slot in expired:
-            self._close_slot(slot)
-        return None if next_deadline is None else max(next_deadline - now, 0.0)
+    def _pop_expired_locked(self) -> list[_Slot]:
+        if self.idle_ttl is None or not self._slots:
+            return []
+        cutoff = self.clock() - self.idle_ttl
+        expired_ids = [
+            thread_id
+            for thread_id, slot in self._slots.items()
+            if slot.leases == 0 and slot.last_used <= cutoff
+        ]
+        if self.on_expire is not None:
+            for thread_id in expired_ids:
+                self.on_expire(thread_id)
+        return [self._slots.pop(thread_id) for thread_id in expired_ids]
 
     def _pop_for_close_locked(self, thread_id: str) -> _Slot | None:
         """Remove a slot; return it if it can close now, else retire it."""
         slot = self._slots.pop(thread_id, None)
         if slot is None:
             return None
-        self._notify_locked()
         if slot.leases:
             slot.retired = True
             return None
@@ -1122,21 +1071,27 @@ class _Registry:
             return slot.repl if slot is not None else None
 
     def evict(self, thread_id: str) -> None:
-        """Close and remove the slot for `thread_id`. No-op if absent.
+        """Close and remove the slot for `thread_id` and any expired slots.
 
         A leased slot is removed now and closed when its last lease ends.
         """
         with self._lock:
             slot = self._pop_for_close_locked(thread_id)
+            to_close = self._pop_expired_locked()
         if slot is not None:
-            self._close_slot(slot)
+            to_close.append(slot)
+        for stale in to_close:
+            self._close_slot(stale)
 
     async def aevict(self, thread_id: str) -> None:
-        """Async variant of `evict`: closes the runtime via the worker loop."""
+        """Async variant of `evict`: closes runtimes via their worker loops."""
         with self._lock:
             slot = self._pop_for_close_locked(thread_id)
+            to_close = self._pop_expired_locked()
         if slot is not None:
-            await self._aclose_slot(slot)
+            to_close.append(slot)
+        for stale in to_close:
+            await self._aclose_slot(stale)
 
     def reset_repl(self, thread_id: str) -> None:
         """Replace the slot REPL while keeping its worker and runtime alive."""
@@ -1209,11 +1164,8 @@ class _Registry:
 
     def close(self) -> None:
         with self._lock:
-            self._closed = True
             slots = list(self._slots.values())
             self._slots.clear()
-            # Wake the reaper so it exits; it is a daemon, so never joined.
-            self._notify_locked()
         for slot in slots:
             self._close_slot(slot)
 

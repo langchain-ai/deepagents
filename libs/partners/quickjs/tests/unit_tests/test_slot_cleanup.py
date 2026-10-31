@@ -9,9 +9,8 @@ slots must not accumulate forever.
 from __future__ import annotations
 
 import asyncio
-import time
-from typing import TYPE_CHECKING, Any, Literal
-from unittest.mock import patch
+from typing import Any, Literal
+from unittest.mock import MagicMock, patch
 
 import pytest
 from langchain.agents import create_agent
@@ -23,9 +22,6 @@ from langgraph.types import Command, interrupt
 from langchain_quickjs import CodeInterpreterMiddleware
 from langchain_quickjs._repl import _Registry
 from tests._common import FakeChatModel
-
-if TYPE_CHECKING:
-    from collections.abc import Callable
 
 InvokeMode = Literal["invoke", "ainvoke"]
 
@@ -198,36 +194,18 @@ class _Clock:
         return self.now
 
 
-def _registry(
-    clock: Callable[[], float] | None = None,
-    idle_ttl: float | None = 60.0,
-    *,
-    reaper: bool = False,
-) -> _Registry:
-    """Build a registry. Without `reaper`, tests step `_reap_once` by hand."""
-    reg = _Registry(
+def _registry(clock: _Clock, idle_ttl: float | None = 60.0) -> _Registry:
+    return _Registry(
         memory_limit=32 * 1024 * 1024,
         timeout=5.0,
         capture_console=True,
         max_stdout_chars=4000,
         idle_ttl=idle_ttl,
-        clock=clock or time.monotonic,
+        clock=clock,
     )
-    if not reaper:
-        reg._ensure_reaper_locked = lambda: None  # type: ignore[method-assign]
-    return reg
 
 
-def _wait_for(predicate: Callable[[], bool], timeout: float = 5.0) -> bool:
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if predicate():
-            return True
-        time.sleep(0.01)
-    return predicate()
-
-
-def test_idle_slot_is_reaped_without_further_traffic() -> None:
+def test_idle_slot_expires_on_next_acquire_for_another_thread() -> None:
     clock = _Clock()
     expired: list[str] = []
     reg = _registry(clock)
@@ -237,12 +215,12 @@ def test_idle_slot_is_reaped_without_further_traffic() -> None:
         reg.release(slot)
 
         clock.now += 59
-        assert reg._reap_once() == pytest.approx(1.0)
+        reg.release(reg.acquire("other"))
         assert "idle" in reg._slots
 
         clock.now += 2
         with patch.object(reg, "_close_slot", wraps=reg._close_slot) as close_spy:
-            assert reg._reap_once() is None
+            reg.release(reg.acquire("other"))
         close_spy.assert_called_once_with(slot)
         assert "idle" not in reg._slots
         assert expired == ["idle"]
@@ -250,22 +228,44 @@ def test_idle_slot_is_reaped_without_further_traffic() -> None:
         reg.close()
 
 
-def test_leased_slot_is_never_reaped() -> None:
+async def test_idle_slot_expires_on_aevict() -> None:
+    clock = _Clock()
+    reg = _registry(clock)
+    try:
+        await reg.arelease(await reg.aacquire("idle"))
+        clock.now += 61
+        await reg.aevict("unrelated")
+        assert "idle" not in reg._slots
+    finally:
+        reg.close()
+
+
+def test_leased_slot_is_never_expired() -> None:
     clock = _Clock()
     reg = _registry(clock)
     try:
         slot = reg.acquire("busy")
         clock.now += 3600
-        assert reg._reap_once() is None  # nothing can expire while leased
+        reg.release(reg.acquire("other"))
         assert reg._slots["busy"] is slot
-        assert slot.repl.eval_sync("1 + 1").result == "2"
+    finally:
+        reg.close()
 
+
+def test_eval_longer_than_ttl_is_not_closed() -> None:
+    clock = _Clock()
+    reg = _registry(clock, idle_ttl=1.0)
+    try:
+        slot = reg.acquire("long")
+        slot.repl.eval_sync("var x = 1")
+        # 10x the TTL passes mid-eval while other threads hit the registry.
+        clock.now += 10
+        reg.evict("other")
+        reg.release(reg.acquire("other"))
+        assert slot.repl.eval_sync("x + 1").result == "2"
         reg.release(slot)  # release refreshes last_used
-        assert reg._reap_once() == pytest.approx(60.0)
-        assert "busy" in reg._slots
-        clock.now += 61
-        reg._reap_once()
-        assert "busy" not in reg._slots
+        reg.release(reg.acquire("other"))
+        assert reg._slots["long"] is slot
     finally:
         reg.close()
 
@@ -278,7 +278,7 @@ def test_touch_postpones_expiry() -> None:
         clock.now += 50
         reg.touch("t")
         clock.now += 50
-        reg._reap_once()
+        reg.release(reg.acquire("other"))
         assert "t" in reg._slots
     finally:
         reg.close()
@@ -299,70 +299,59 @@ def test_evicting_a_busy_slot_defers_close_to_release() -> None:
         reg.close()
 
 
-def test_idle_ttl_none_starts_no_reaper() -> None:
+def test_idle_ttl_none_disables_expiry() -> None:
     clock = _Clock()
-    reg = _registry(clock, idle_ttl=None, reaper=True)
+    reg = _registry(clock, idle_ttl=None)
     try:
         reg.release(reg.acquire("kept"))
-        assert reg._reaper is None
         clock.now += 10**9
-        assert reg._reap_once() is None
+        reg.release(reg.acquire("other"))
         assert "kept" in reg._slots
     finally:
         reg.close()
 
 
-def test_reaper_thread_reaps_idle_slot_and_exits_when_empty() -> None:
-    reg = _registry(idle_ttl=0.05, reaper=True)
-    try:
-        reg.release(reg.acquire("idle"))
-        reaper = reg._reaper
-        assert reaper is not None
-        assert reaper.daemon
-        assert _wait_for(lambda: not reg._slots)
-        reaper.join(timeout=5)
-        assert not reaper.is_alive()
-        assert reg._reaper is None
-
-        # A new slot starts a new reaper.
-        reg.release(reg.acquire("again"))
-        assert reg._reaper is not None
-        assert reg._reaper is not reaper
-        assert _wait_for(lambda: not reg._slots)
-    finally:
-        reg.close()
-
-
-def test_reaper_thread_skips_leased_slot_until_release() -> None:
-    reg = _registry(idle_ttl=0.05, reaper=True)
-    try:
-        slot = reg.acquire("busy")
-        time.sleep(0.3)
-        assert reg._slots.get("busy") is slot
-        reg.release(slot)
-        assert _wait_for(lambda: "busy" not in reg._slots)
-    finally:
-        reg.close()
-
-
-def test_close_stops_the_reaper() -> None:
-    reg = _registry(idle_ttl=60.0, reaper=True)
-    reg.release(reg.acquire("a"))
-    reaper = reg._reaper
-    assert reaper is not None
-    reg.close()
-    reaper.join(timeout=5)
-    assert not reaper.is_alive()
-
-
-def test_reaper_clears_middleware_ptc_caches() -> None:
-    mw = CodeInterpreterMiddleware(idle_ttl=0.05)
+def test_expiry_clears_middleware_ptc_caches() -> None:
+    clock = _Clock()
+    mw = CodeInterpreterMiddleware(idle_ttl=60)
+    mw._registry.clock = clock
     try:
         mw._ptc_tools_by_slot["s"] = ()
         mw._ptc_prompt_by_slot["s"] = ((), "")
         mw._registry.release(mw._registry.acquire("s"))
-        assert _wait_for(lambda: "s" not in mw._ptc_tools_by_slot)
+        clock.now += 61
+        mw._registry.release(mw._registry.acquire("other"))
+        assert "s" not in mw._ptc_tools_by_slot
         assert "s" not in mw._ptc_prompt_by_slot
+    finally:
+        mw._registry.close()
+
+
+def test_before_agent_closes_stale_slot_and_its_caches() -> None:
+    mw = CodeInterpreterMiddleware()
+    try:
+        state: dict[str, Any] = {"messages": [], "_quickjs_slot_id": "stale"}
+        stale = mw._registry.acquire("stale")
+        mw._registry.release(stale)
+        mw._ptc_tools_by_slot["stale"] = ()
+        mw._ptc_prompt_by_slot["stale"] = ((), "")
+
+        mw.before_agent(state, MagicMock())  # type: ignore[arg-type]
+
+        assert mw._registry.get_if_exists("stale") is None
+        assert "stale" not in mw._ptc_tools_by_slot
+        assert "stale" not in mw._ptc_prompt_by_slot
+    finally:
+        mw._registry.close()
+
+
+async def test_abefore_agent_closes_stale_slot() -> None:
+    mw = CodeInterpreterMiddleware()
+    try:
+        state: dict[str, Any] = {"messages": [], "_quickjs_slot_id": "stale"}
+        await mw._registry.arelease(await mw._registry.aacquire("stale"))
+        await mw.abefore_agent(state, MagicMock())  # type: ignore[arg-type]
+        assert mw._registry.get_if_exists("stale") is None
     finally:
         mw._registry.close()
 

@@ -6,15 +6,15 @@ import contextlib
 import inspect
 import json
 import re
-from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, get_type_hints
 
-from pydantic import TypeAdapter
+from pydantic import BaseModel, TypeAdapter
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Iterator, Sequence
 
     from langchain_core.tools import BaseTool
+    from pydantic.json_schema import JsonSchemaMode
 
 _CAMEL_SEP = re.compile(r"[-_]([a-z])")
 _JS_IDENTIFIER = re.compile(r"^[A-Za-z_$][A-Za-z0-9_$]*$")
@@ -397,21 +397,28 @@ def render_ptc_prompt(tools: Sequence[BaseTool], *, tool_name: str = "eval") -> 
     """Build the `tools` namespace section of the system prompt."""
     if not tools:
         return ""
-    registry = _TypeRegistry()
+    schemas, scope = _collect_pydantic_schemas(tools)
     blocks: list[str] = []
-    for tool in tools:
+    for index, tool in enumerate(tools):
         camel = to_camel_case(tool.name)
-        schema = _safe_json_schema(tool)
-        return_type = _render_return_type(tool, registry)
+        input_schema = schemas.get((index, "input"))
+        output_schema = schemas.get((index, "output"))
         signature = _render_signature(
-            camel, schema, return_type=return_type, registry=registry
+            camel,
+            input_schema if input_schema is not None else _safe_json_schema(tool),
+            return_type=(
+                _render_root_type(output_schema, scope)
+                if output_schema is not None
+                else _render_return_type(tool)
+            ),
+            scope=scope if input_schema is not None else None,
         )
         description = (
             (tool.description or "").strip().splitlines()[0] if tool.description else ""
         )
         blocks.append(f"/** {description} */\n{signature}")
-    if registry.declarations:
-        blocks.insert(0, "\n".join(registry.declarations))
+    if scope.declarations:
+        blocks.insert(0, "\n".join(scope.declarations))
     body = "\n\n".join(blocks)
     return (
         "\n\n"
@@ -474,14 +481,13 @@ def _render_signature(
     schema: dict[str, Any] | None,
     *,
     return_type: str = "unknown",
-    registry: _TypeRegistry | None = None,
+    scope: _RefScope | None = None,
 ) -> str:
     return_clause = f"Promise<{return_type}>"
     default_signature = (
         f"tools.{fn_name}(input: Record<string, unknown>): {return_clause}"
     )
-    scope = _RefScope.for_schema(schema, registry)
-    root = scope.definition(schema["$ref"]) if schema and "$ref" in schema else schema
+    root = scope.root(schema) if scope and schema else schema
     if not root or not isinstance(root.get("properties"), dict):
         return default_signature
     props: dict[str, Any] = root["properties"]
@@ -499,114 +505,180 @@ def _render_signature(
     return f"tools.{fn_name}(input: {{\n{body}\n}}): {return_clause}"
 
 
-# Return types come from the tool's underlying function annotation. We feed
-# the annotation through `pydantic.TypeAdapter` to get a JSON Schema and
-# render it through the same `_json_schema_to_ts` we use for input args.
+_SchemaKey = tuple[int, Literal["input", "output"]]
 
 
-def _render_return_type(tool: BaseTool, registry: _TypeRegistry | None = None) -> str:
-    """Render the return annotation as a TS type, defaulting to `unknown`."""
+def _collect_pydantic_schemas(
+    tools: Sequence[BaseTool],
+) -> tuple[dict[_SchemaKey, dict[str, Any]], _RefScope]:
+    """Generate every tool's Pydantic input/return schema in one batch.
+
+    `TypeAdapter.json_schemas` puts all nested models in one shared `$defs`,
+    deduplicated by class and with clashing class names qualified by Pydantic.
+    Schemas that can't join the batch are left out and rendered per tool.
+    """
+    adapters: list[tuple[_SchemaKey, JsonSchemaMode, TypeAdapter[Any]]] = []
+    for index, tool in enumerate(tools):
+        for key, adapter in (
+            ((index, "input"), _input_adapter(tool)),
+            ((index, "output"), _return_adapter(tool)),
+        ):
+            if adapter is not None:
+                adapters.append((key, "validation", adapter))
+    if not adapters:
+        return {}, _RefScope({})
+    try:
+        roots, definitions = TypeAdapter.json_schemas(adapters)
+    except Exception:  # noqa: BLE001 — fall back to per-tool rendering
+        return {}, _RefScope({})
+    schemas = {key: schema for (key, _mode), schema in roots.items()}
+    return schemas, _RefScope(definitions.get("$defs", {}))
+
+
+def _input_adapter(tool: BaseTool) -> TypeAdapter[Any] | None:
+    """Return an adapter for a plain Pydantic `args_schema`, else `None`.
+
+    A model that customizes `model_json_schema` is left to the per-tool path,
+    which renders the schema it declares.
+    """
+    args_schema = tool.args_schema
+    if not (isinstance(args_schema, type) and issubclass(args_schema, BaseModel)):
+        return None
+    try:
+        adapter = TypeAdapter(args_schema)
+        if adapter.json_schema() != args_schema.model_json_schema():
+            return None
+    except Exception:  # noqa: BLE001 — prompt rendering is best-effort
+        return None
+    return adapter
+
+
+def _return_adapter(tool: BaseTool) -> TypeAdapter[Any] | None:
+    annotation = _return_annotation(tool)
+    if annotation is None:
+        return None
+    try:
+        adapter = TypeAdapter(annotation)
+        adapter.json_schema()
+    except Exception:  # noqa: BLE001 — schema generation is best-effort
+        return None
+    return adapter
+
+
+def _return_annotation(tool: BaseTool) -> Any:
+    """Return the tool function's return annotation, or `None` if unusable."""
     target = getattr(tool, "func", None) or getattr(tool, "coroutine", None)
     if target is None:
-        return "unknown"
+        return None
     annotation = inspect.Signature.empty
     with contextlib.suppress(TypeError, ValueError, NameError):
         signature = inspect.signature(target)
         resolved = get_type_hints(target)
         annotation = resolved.get("return", signature.return_annotation)
     if annotation is inspect.Signature.empty or annotation is Any:
+        return None
+    return annotation
+
+
+def _render_return_type(tool: BaseTool) -> str:
+    """Render a return annotation outside the batch, defaulting to `unknown`."""
+    annotation = _return_annotation(tool)
+    if annotation is None:
         return "unknown"
     try:
         schema = TypeAdapter(annotation).json_schema()
     except Exception:  # noqa: BLE001 — schema generation is best-effort
         return "unknown"
-    return _json_schema_to_ts(schema, _RefScope.for_schema(schema, registry))
+    return _json_schema_to_ts(schema)
 
 
-class _TypeRegistry:
-    """Named TS aliases for JSON Schema definitions, shared across every tool.
+def _render_root_type(schema: dict[str, Any], scope: _RefScope) -> str:
+    """Render a root schema, inlining a top-level model unless it is recursive."""
+    ref = schema.get("$ref")
+    if scope.is_recursive(ref):
+        return scope.resolve(ref)
+    return _json_schema_to_ts(scope.root(schema), scope)
 
-    Nested Pydantic models arrive as `$ref`s into `$defs`. Rendering each one
-    once as `type Name = ...` keeps models that several fields or tools share
-    from being repeated, and lets self-referential models refer to themselves
-    by name instead of expanding forever.
+
+class _RefScope:
+    """Renders the shared Pydantic `$defs` as named TS aliases.
+
+    Each definition is declared once as `type Name = ...`, on first use, so a
+    model shared by several fields or tools isn't repeated and a recursive
+    model refers to its own alias.
     """
 
-    def __init__(self) -> None:
-        self._definitions: dict[str, str] = {}
+    def __init__(self, definitions: dict[str, Any]) -> None:
+        self.definitions = definitions
         self.declarations: list[str] = []
+        self._declared: set[str] = set()
+        self._aliases: dict[str, str] = {}
+        used: set[str] = set(_RESERVED_TYPE_NAMES)
+        for name in definitions:
+            alias = base = _to_type_name(name)
+            suffix = 1
+            while alias in used:
+                suffix += 1
+                alias = f"{base}{suffix}"
+            used.add(alias)
+            self._aliases[name] = alias
 
-    def alias(self, name: str, definition: dict[str, Any]) -> tuple[str, bool]:
-        """Return the alias for `definition` and whether it is new.
+    def root(self, schema: dict[str, Any]) -> dict[str, Any]:
+        """Resolve a top-level `$ref` so the root model renders inline."""
+        definition = self.definitions.get(_ref_name(schema.get("$ref")) or "")
+        return definition if isinstance(definition, dict) else schema
 
-        The same definition reached from several tools reuses one alias; a
-        different definition with a clashing name gets a numeric suffix.
-        """
-        identity = json.dumps(definition, sort_keys=True, default=str)
-        base = _to_type_name(name)
-        alias, suffix = base, 1
-        while (
-            alias in _RESERVED_TYPE_NAMES
-            or self._definitions.get(alias, identity) != identity
-        ):
-            suffix += 1
-            alias = f"{base}{suffix}"
-        is_new = alias not in self._definitions
-        self._definitions[alias] = identity
-        return alias, is_new
-
-    def declare(self, alias: str, type_str: str) -> None:
-        self.declarations.append(f"type {alias} = {type_str};")
-
-
-@dataclass
-class _RefScope:
-    """Resolves the local `$ref`s of one schema against its definitions."""
-
-    definitions: dict[str, Any]
-    registry: _TypeRegistry
-
-    @classmethod
-    def for_schema(
-        cls, schema: dict[str, Any] | None, registry: _TypeRegistry | None
-    ) -> _RefScope:
-        schema = schema or {}
-        definitions = schema.get("$defs", schema.get("definitions"))
-        return cls(
-            definitions if isinstance(definitions, dict) else {},
-            registry or _TypeRegistry(),
-        )
-
-    def definition(self, ref: Any) -> dict[str, Any] | None:
-        name = _ref_name(ref)
-        found = self.definitions.get(name) if name is not None else None
-        return found if isinstance(found, dict) else None
+    def is_recursive(self, ref: Any) -> bool:
+        """Return whether the definition `ref` points at can reach itself."""
+        start = _ref_name(ref)
+        pending, seen = [start], set()
+        while pending:
+            definition = self.definitions.get(pending.pop() or "")
+            for found in _local_refs(definition):
+                if found == start:
+                    return True
+                if found not in seen:
+                    seen.add(found)
+                    pending.append(found)
+        return False
 
     def resolve(self, ref: Any) -> str:
         """Render a `$ref` as its alias, declaring the alias on first use."""
-        definition = self.definition(ref)
-        if definition is None:
+        name = _ref_name(ref)
+        definition = self.definitions.get(name) if name is not None else None
+        if name is None or not isinstance(definition, dict):
             return "unknown"
-        alias, is_new = self.registry.alias(_ref_name(ref) or "", definition)
-        if is_new:
-            # The alias is registered before rendering, so a recursive
-            # reference inside `definition` resolves to the name.
-            self.registry.declare(alias, _json_schema_to_ts(definition, self))
+        alias = self._aliases[name]
+        if name not in self._declared:
+            # Mark before rendering so a recursive reference resolves to the name.
+            self._declared.add(name)
+            self.declarations.append(
+                f"type {alias} = {_json_schema_to_ts(definition, self)};"
+            )
         return alias
+
+
+def _local_refs(node: Any) -> Iterator[str | None]:
+    """Yield the definition names referenced anywhere inside `node`."""
+    if isinstance(node, dict):
+        if "$ref" in node:
+            yield _ref_name(node["$ref"])
+        for value in node.values():
+            yield from _local_refs(value)
+    elif isinstance(node, list):
+        for value in node:
+            yield from _local_refs(value)
 
 
 def _ref_name(ref: Any) -> str | None:
     """Return the definition name of a local `#/$defs/...` reference."""
-    if not isinstance(ref, str):
+    if not isinstance(ref, str) or not ref.startswith("#/$defs/"):
         return None
-    for prefix in ("#/$defs/", "#/definitions/"):
-        if ref.startswith(prefix):
-            return ref.removeprefix(prefix).replace("~1", "/").replace("~0", "~")
-    return None
+    return ref.removeprefix("#/$defs/").replace("~1", "/").replace("~0", "~")
 
 
 def _to_type_name(name: str) -> str:
-    """Turn a definition name such as `Page_User_` into a TS identifier."""
+    """Turn a definition name such as `mod__Address` into a TS identifier."""
     parts = [part for part in re.split(r"[^A-Za-z0-9]+", name) if part]
     type_name = "".join(part[:1].upper() + part[1:] for part in parts)
     return re.sub(r"^\d+", "", type_name) or "Model"

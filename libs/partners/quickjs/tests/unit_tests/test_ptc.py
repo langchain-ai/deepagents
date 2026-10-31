@@ -14,7 +14,7 @@ from langchain.tools import ToolRuntime
 from langchain_core.messages import ToolMessage
 from langchain_core.tools import BaseTool, StructuredTool
 from langgraph.types import Command
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, create_model
 from quickjs_rs import Runtime, ThreadWorker
 from typing_extensions import TypedDict
 
@@ -1060,35 +1060,58 @@ def test_shared_models_are_declared_once_across_tools() -> None:
     assert "Address2" not in body
 
 
-def test_conflicting_model_names_get_distinct_aliases() -> None:
-    """Different models that share a name (or shadow a TS helper) are suffixed."""
-
-    class Promise(BaseModel):
-        ok: bool
-
-    class _Address(BaseModel):
-        street: str
-
-    class _Other(BaseModel):
-        address: _Address
-        promise: Promise
-
+def test_same_named_models_from_different_modules_get_distinct_aliases() -> None:
+    """Pydantic qualifies clashing class names; each gets its own alias."""
+    home = create_model("Address", __module__="billing", city=(str, ...))
+    work = create_model("Address", __module__="shipping", street=(str, ...))
     tools: list[BaseTool] = [
         StructuredTool.from_function(
-            name="normalize_users",
-            description="Normalize users.",
-            func=_normalize_users,
-            args_schema=_BatchInput,
-        ),
-        StructuredTool.from_function(
-            name="other",
-            description="Other.",
+            name=f"save_{name}",
+            description="Save an address.",
             func=lambda **_: None,
-            args_schema=_Other,
-        ),
+            args_schema=create_model(f"Save{name}", address=(model, ...)),
+        )
+        for name, model in (("home", home), ("work", work))
     ]
     body = _ptc_body(tools)
-    assert "type Address = { city: string; postal_code: string };" in body
-    assert "type Address2 = { street: string };" in body
+    assert "type BillingAddress = { city: string };" in body, body
+    assert "type ShippingAddress = { street: string };" in body
+    assert "  address: BillingAddress;" in body
+    assert "  address: ShippingAddress;" in body
+
+
+def test_model_named_after_ts_helper_is_renamed() -> None:
+    """A model named like a TS helper used by the prompt doesn't shadow it."""
+    promise = create_model("Promise", ok=(bool, ...))
+    tool = StructuredTool.from_function(
+        name="check",
+        description="Check.",
+        func=lambda **_: None,
+        args_schema=create_model("CheckInput", result=(promise, ...)),
+    )
+    body = _ptc_body([tool])
     assert "type Promise2 = { ok: boolean };" in body
-    assert "  address: Address2;\n  promise: Promise2;" in body
+    assert "  result: Promise2;" in body
+
+
+def test_custom_args_schema_falls_back_to_declared_schema() -> None:
+    """A customized `model_json_schema` is rendered as declared, per tool."""
+
+    class _Custom(BaseModel):
+        query: str
+
+        @classmethod
+        def model_json_schema(cls, *args: Any, **kwargs: Any) -> dict[str, Any]:
+            return {
+                "type": "object",
+                "properties": {"q": {"type": "string"}},
+                "required": ["q"],
+            }
+
+    tool = StructuredTool.from_function(
+        name="search",
+        description="Search.",
+        func=lambda **_: None,
+        args_schema=_Custom,
+    )
+    assert "  q: string;" in _ptc_body([tool])

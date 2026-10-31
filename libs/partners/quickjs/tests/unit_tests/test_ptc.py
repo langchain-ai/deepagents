@@ -882,10 +882,8 @@ def _stub() -> None:
         (type(None), "Promise<null>"),
         # Containers of primitives.
         (list[int], "Promise<number[]>"),
-        # `dict[str, V]` uses `additionalProperties` in the schema, which
-        # `_json_schema_to_ts` doesn't currently read — value type collapses
-        # to `unknown`.
-        (dict[str, int], "Promise<Record<string, unknown>>"),
+        (dict[str, int], "Promise<Record<string, number>>"),
+        (list[int | None], "Promise<(number | null)[]>"),
         # Optional / Literal / unions all flow through `anyOf` or `enum`.
         (int | None, "Promise<number | null>"),
         (Literal["active", "resolved"], 'Promise<"active" | "resolved">'),
@@ -893,10 +891,9 @@ def _stub() -> None:
         # Top-level TypedDict / BaseModel — Pydantic inlines the schema.
         (_UserLookup, "Promise<{ id: number; name: string }>"),
         (_Status, "Promise<{ status: string; count: number }>"),
-        # Compound types that hit `$ref` (collections of TypedDict /
-        # BaseModel) — we don't resolve refs, so they collapse to `unknown`.
-        (list[_UserLookup], "Promise<unknown[]>"),
-        (list[_Status], "Promise<unknown[]>"),
+        # Collections of TypedDict / BaseModel resolve their `$ref` inline.
+        (list[_UserLookup], "Promise<{ id: number; name: string }[]>"),
+        (list[_Status], "Promise<{ status: string; count: number }[]>"),
     ],
 )
 def test_render_ptc_prompt_return_types(annotation: Any, expected: str) -> None:
@@ -949,3 +946,60 @@ async def test_pydantic_return_arrives_as_object_matching_schema(
     )
     assert outcome.error_type is None, outcome.error_message
     assert outcome.result == "object:ok:3"
+
+
+# ---------------------------------------------------------------------------
+# Nested models
+# ---------------------------------------------------------------------------
+
+
+class _Address(BaseModel):
+    city: str
+
+
+class _User(BaseModel):
+    name: str
+    address: _Address
+    home: _Address | None = None
+
+
+class _UsersInput(BaseModel):
+    users: list[_User]
+
+
+class _TreeNode(BaseModel):
+    value: int
+    children: list[_TreeNode] = []
+
+
+def _normalize_users(users: list[_User]) -> list[_User]:
+    """Normalize users."""
+    return users
+
+
+def _walk(value: int, children: list[_TreeNode] | None = None) -> _TreeNode:
+    """Walk a tree."""
+    return _TreeNode(value=value, children=children or [])
+
+
+def _ptc_body(tools: list[BaseTool]) -> str:
+    """Return the fenced API reference block of the rendered PTC prompt."""
+    return render_ptc_prompt(tools).rsplit("```typescript\n", 1)[1]
+
+
+def test_nested_models_render_inline() -> None:
+    """Nested, list-of-model and Optional fields render inline, not `unknown`."""
+    user = "{ name: string; address: { city: string }; home?: { city: string } | null }"
+    tool = StructuredTool.from_function(
+        _normalize_users, name="normalize_users", args_schema=_UsersInput
+    )
+    body = _ptc_body([tool])
+    assert f"  users: {user}[];\n}}): Promise<{user}[]>" in body
+
+
+def test_recursive_model_back_reference_renders_unknown() -> None:
+    """A model's reference to itself is cut off as `unknown`."""
+    tool = StructuredTool.from_function(_walk, name="walk", args_schema=_TreeNode)
+    body = _ptc_body([tool])
+    assert "  children?: { value: number; children?: unknown[] }[];" in body
+    assert "): Promise<{ value: number; children?: unknown[] }>" in body

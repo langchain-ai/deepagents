@@ -348,7 +348,9 @@ def test_ptc_calls_surface_in_native_tool_stream() -> None:
     assert ptc_call.completed
     assert ptc_call.error is None
     assert deltas == [{"progress": "working"}]
-    assert ptc_call.output.startswith("done:working|ptc_stream_progress_")
+    # The nested call runs through the tool node, so it streams a ToolMessage
+    # and carries an id derived from the eval call's id.
+    assert ptc_call.output.content == "done:working|call_1.ptc0"
 
 
 def test_ptc_calls_do_not_add_child_graph_messages() -> None:
@@ -675,4 +677,5 @@ def test_wrong_arg_name_surfaces_to_model() -> None:
     message_types = [message.type for message in result["messages"]]
     assert message_types == ["human", "ai", "tool", "ai"]
     tool_message = result["messages"][-2]
-    assert tool_message.text.startswith("Error invoking tool")
+    # The validation error is a JS exception the code could have caught.
+    assert tool_message.text.startswith('<error type="ToolError">Error invoking tool')

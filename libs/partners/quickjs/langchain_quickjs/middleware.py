@@ -5,6 +5,7 @@ import contextlib
 import logging
 import uuid
 from collections.abc import Awaitable, Callable, Mapping
+from contextvars import ContextVar
 from typing import TYPE_CHECKING, Annotated, Any, Literal, NotRequired
 
 from deepagents.middleware._utils import append_to_system_message
@@ -30,8 +31,10 @@ from langgraph.types import Command
 from pydantic import BaseModel, Field
 
 if TYPE_CHECKING:
+    from langgraph.prebuilt.tool_node import ToolCallRequest
     from langgraph.runtime import Runtime
 
+from langchain_quickjs._dispatch import EvalJournal, ToolChain
 from langchain_quickjs._format import format_outcome
 from langchain_quickjs._prompt import (
     render_eval_tool_code_doc,
@@ -68,6 +71,9 @@ _DEFAULT_MAX_RESULT_CHARS = 4_000
 _DEFAULT_TOOL_NAME = "eval"
 
 PersistenceMode = Literal["thread", "turn", "call"]
+
+# The tool-call chain below this middleware, set while an `eval` call runs.
+_EVAL_CHAIN: ContextVar[ToolChain | None] = ContextVar("_EVAL_CHAIN", default=None)
 
 
 class REPLState(AgentState):
@@ -207,10 +213,12 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
             Duplicate names are deduplicated.
 
             !!! warning
-                PTC calls currently execute through the REPL bridge and
-                do **not** go through the normal `ToolNode` path. As a
-                result, `interrupt_on` / HITL approval workflows are not
-                enforced per PTC-invoked tool call.
+                Each PTC call runs through the tool-call middleware listed
+                after this one, as a model tool call does, so
+                `HumanInTheLoopMiddleware` listed after it can pause the call
+                for review. That needs `interrupt_mode="per_call"`; batched
+                mode reviews only the tool calls in the model's message.
+                Middleware listed before this one does not see PTC calls.
 
             The REPL's own tool is always excluded; a model asking for
             `tools.eval("...")` would recurse pointlessly.
@@ -370,6 +378,7 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
                     outer_runtime=runtime,
                     snapshot_payload=middleware._snapshot_for_eval(runtime.state),
                     tools=middleware._tools_for_eval(slot_id, runtime),
+                    journal=middleware._journal_for_eval(runtime, None),
                 )
             except _SnapshotRestoreError as exc:
                 return _restore_error_output(exc, runtime.tool_call_id)
@@ -384,13 +393,15 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         ) -> ToolMessage | Command:
             slot_id = middleware._slot_id(runtime.state)
             repl = middleware._repl_for_eval(slot_id)
+            loop = asyncio.get_running_loop()
             try:
                 outcome = await repl.eval_async(
                     code,
                     outer_runtime=runtime,
                     snapshot_payload=middleware._snapshot_for_eval(runtime.state),
                     tools=middleware._tools_for_eval(slot_id, runtime),
-                    outer_loop=asyncio.get_running_loop(),
+                    outer_loop=loop,
+                    journal=middleware._journal_for_eval(runtime, loop),
                 )
             except _SnapshotRestoreError as exc:
                 return _restore_error_output(exc, runtime.tool_call_id)
@@ -445,6 +456,47 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
             list(runtime.tools), self._ptc, self_tool_name=self._tool_name
         )
         return tuple(tool for tool in available if tool.name in set(names))
+
+    def _journal_for_eval(
+        self, runtime: ToolRuntime[None, Any], loop: asyncio.AbstractEventLoop | None
+    ) -> EvalJournal | None:
+        """Return a journal when this eval runs inside the agent's tool chain."""
+        chain = _EVAL_CHAIN.get()
+        if (
+            self._ptc is None
+            or chain is None
+            or chain.request.tool_call.get("id") != runtime.tool_call_id
+        ):
+            return None
+        return EvalJournal(chain=chain, outer_loop=loop)
+
+    def wrap_tool_call(
+        self,
+        request: "ToolCallRequest",
+        handler: Callable[["ToolCallRequest"], ToolMessage | Command],
+    ) -> ToolMessage | Command:
+        """Expose the chain below this middleware to `tools.*` calls from an eval."""
+        if request.tool_call["name"] != self._tool_name:
+            return handler(request)
+        token = _EVAL_CHAIN.set(ToolChain(request, handler, is_async=False))
+        try:
+            return handler(request)
+        finally:
+            _EVAL_CHAIN.reset(token)
+
+    async def awrap_tool_call(
+        self,
+        request: "ToolCallRequest",
+        handler: Callable[["ToolCallRequest"], Awaitable[ToolMessage | Command]],
+    ) -> ToolMessage | Command:
+        """Async variant of `wrap_tool_call`."""
+        if request.tool_call["name"] != self._tool_name:
+            return await handler(request)
+        token = _EVAL_CHAIN.set(ToolChain(request, handler, is_async=True))
+        try:
+            return await handler(request)
+        finally:
+            _EVAL_CHAIN.reset(token)
 
     def _snapshot_for_eval(self, state: Mapping[str, object]) -> bytes | None:
         """Return authenticated thread state for lazy restoration."""

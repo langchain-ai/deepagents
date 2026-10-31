@@ -1022,7 +1022,7 @@ wheels = [
 
 [[package]]
 name = "langchain-quickjs"
-version = "0.3.11"
+version = "0.3.12"
 source = { editable = "." }
 dependencies = [
     { name = "bsdiff4" },

@@ -32,14 +32,17 @@ _FS_SYSTEM_PROMPT_TEMPLATE = """
 ### Files: Node.js `fs` (read-only)
 
 `fs` is a global over this agent's files, the same files your file tools see. \
-It behaves like Node's `fs`. Use the global; `require` and `import` are not \
-available. Paths are absolute; relative paths resolve from `/`.
+It behaves like Node's `fs`. `require("fs")`, `require("path")`, and \
+`await import("node:fs/promises")` also work; static `import` statements do not. \
+Paths are absolute; relative paths resolve from `/`.
 
 - `fs.readFileSync(path, "utf8")` returns the whole file as a string, with no \
 line numbers or headers. Without an encoding it returns a `Uint8Array` whose \
-`toString()` decodes UTF-8. Use `await fs.promises.readFile(path, "utf8")` with \
-`Promise.all` for many files.
-- `fs.readdirSync(dir)` and `fs.promises.readdir(dir)` return entry names.
+`toString()` decodes UTF-8; `"base64"` is also supported. Use \
+`await fs.promises.readFile(path, "utf8")` with `Promise.all` for many files.
+- `fs.readdirSync(dir, {{ withFileTypes }})`, `fs.existsSync(path)`, and \
+`fs.globSync(pattern, {{ cwd }})` (or `for await` over `fs.promises.glob`) find \
+files. Glob patterns match the way your glob tool does.
 - Errors are Node errors: check `err.code` (`ENOENT`, `EACCES`, `EISDIR`, or \
 `ERR_FS_FILE_TOO_LARGE` over {max_read}).
 - There are no writes and no callback-style APIs."""
@@ -294,8 +297,8 @@ def render_repl_system_prompt(
     if files_attached:
         sandbox_line = (
             "- Runtime sandbox: no network, stdlib, or wall-clock APIs (`fetch`, "
-            "`require`, `process`, real `Date.now()` are unavailable or stubbed). "
-            "Files are readable through `fs`, documented below."
+            "`process`, real `Date.now()` are unavailable or stubbed). Files are "
+            "readable through `fs`, documented below."
         )
     else:
         sandbox_line = (

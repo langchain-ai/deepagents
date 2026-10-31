@@ -109,6 +109,26 @@ def test_reads_whole_file_unformatted(*, run_async: bool) -> None:
     assert _run(code, run_async=run_async) == [150, 150]
 
 
+def test_import_and_require_resolve_to_the_same_modules() -> None:
+    code = """
+    const same = async (id, name, expected) => {
+      const m = await import(id);
+      return [m[name], m.default[name], require(id)[name]].every((f) => f === expected);
+    };
+    let missing;
+    try { require("child_process") } catch (e) { missing = e.code }
+    JSON.stringify([
+      await same("fs", "readFileSync", fs.readFileSync),
+      await same("node:fs", "readFileSync", fs.readFileSync),
+      await same("fs/promises", "readFile", fs.promises.readFile),
+      await same("node:fs/promises", "readFile", fs.promises.readFile),
+      await same("path", "join", require("path").join),
+      await same("node:path", "dirname", require("node:path").dirname),
+      missing,
+    ])"""
+    assert _run(code) == [True] * 6 + ["MODULE_NOT_FOUND"]
+
+
 def test_reads_exact_bytes(tmp_path: Path) -> None:
     (tmp_path / "bin.dat").write_bytes(b"a\r\nb\x00\xff")
     (tmp_path / "crlf.txt").write_bytes(b"x\r\ny\r\n")
@@ -121,6 +141,7 @@ def test_reads_exact_bytes(tmp_path: Path) -> None:
       Array.from(await fs.promises.readFile("/bin.dat")),
       fs.readFileSync("/crlf.txt", "utf8"),
       fs.readFileSync("/crlf.txt", { encoding: "UTF-8" }),
+      fs.readFileSync("/bin.dat", "base64"),
     ])"""
     backend = FilesystemBackend(root_dir=tmp_path, virtual_mode=True)
     assert _run(code, backend=backend) == [
@@ -131,6 +152,7 @@ def test_reads_exact_bytes(tmp_path: Path) -> None:
         [97, 13, 10, 98, 0, 255],
         "x\r\ny\r\n",
         "x\r\ny\r\n",
+        "YQ0KYgD/",
     ]
 
 
@@ -181,15 +203,34 @@ def test_raw_result_requests_stay_on_fs_calls() -> None:
 
 
 def test_listings_show_what_the_tools_permit() -> None:
-    code = """JSON.stringify([
-      fs.readdirSync("/").sort(),
-      (await fs.promises.readdir("docs/../docs")).sort(),
+    code = """
+    const globbed = [];
+    for await (const p of fs.promises.glob("**/*")) globbed.push(p);
+    JSON.stringify([
+      fs.readdirSync("/", { withFileTypes: true })
+        .map((d) => [d.name, d.isDirectory(), d.isFile(), d.parentPath])
+        .sort(),
+      (await fs.promises.readdir("/docs")).sort(),
       fs.readdirSync("/secret"),
+      fs.globSync("**/*").sort(),
+      globbed.sort(),
+      fs.globSync("*.md", { cwd: "/docs" }),
+      ["/docs", "docs/a.md", "/nope", "/nope/x", "/", "/secret/key.txt"]
+        .map(fs.existsSync),
     ])"""
+    visible = ["data.json", "docs/a.md", "docs/b.txt", "hr/salaries.csv"]
     assert _run(code, permissions=_RULES) == [
-        ["data.json", "docs", "hr"],
+        [
+            ["data.json", False, True, "/"],
+            ["docs", True, False, "/"],
+            ["hr", True, False, "/"],
+        ],
         ["a.md", "b.txt"],
         [],
+        visible,
+        visible,
+        ["a.md"],
+        [True, True, False, False, True, False],
     ]
 
 
@@ -230,7 +271,7 @@ def test_failures_are_node_errors(tmp_path: Path) -> None:
 
 
 def test_fs_calls_count_toward_the_call_budget() -> None:
-    code = 'fs.readFileSync("/docs/b.txt"); fs.readdirSync("/"); fs.readdirSync("/")'
+    code = 'fs.readFileSync("/docs/b.txt"); fs.existsSync("/a"); fs.existsSync("/a")'
     result = _run(code, middleware_kwargs={"max_ptc_calls": 2})
     assert 'type="PTCCallBudgetExceeded"' in result
     assert "function=fs.readdir" in result
@@ -267,16 +308,29 @@ def _read_file_as_text(file_path: str) -> str:
 def test_globals_prompt_and_schema_follow_the_capability(
     capabilities: list[FilesystemCapability], tools: list[Any], prompt_text: str
 ) -> None:
-    model = _model("JSON.stringify(typeof fs)")
+    code = """
+    let imported = "imported";
+    try { await import("fs") } catch { imported = "failed" }
+    JSON.stringify([typeof fs, typeof require, imported])
+    """
+    model = _model(code)
     middleware = CodeInterpreterMiddleware(capabilities=capabilities)
     agent = create_agent(model, tools=tools, middleware=[middleware])
     state = agent.invoke({"messages": [{"role": "user", "content": "go"}]})
     eval_tool = middleware.tools[0]
-    code = eval_tool.tool_call_schema.model_json_schema()["properties"]["code"]
+    schema = eval_tool.tool_call_schema.model_json_schema()["properties"]["code"]
     access = "Read-only `fs` when the agent has file tools"
     on = bool(capabilities)
-    assert _results(state) == ["object" if capabilities else "undefined"]
-    assert (access in eval_tool.description, access in code["description"]) == (on, on)
+    expected = (
+        ["object", "function", "imported"]
+        if on
+        else ["undefined", "undefined", "failed"]
+    )
+    assert _results(state) == [expected]
+    assert (access in eval_tool.description, access in schema["description"]) == (
+        on,
+        on,
+    )
     assert prompt_text in model.prompts[0]
 
 
@@ -329,6 +383,16 @@ def test_fs_errors_when_a_file_tool_returns_no_raw_result(
     state = agent.invoke({"messages": [{"role": "user", "content": "go"}]})
     thrown, text = _results(state)[0]
     assert (thrown, message in text) == (code, True)
+
+
+def test_exists_sync_throws_when_the_agent_has_no_ls_tool() -> None:
+    js = 'let r; try { fs.existsSync("/a") } catch (e) { r = e.code } JSON.stringify(r)'
+    middleware = CodeInterpreterMiddleware(capabilities=[fs()])
+    agent = create_agent(
+        _model(js), tools=[_read_file_as_text], middleware=[middleware]
+    )
+    state = agent.invoke({"messages": [{"role": "user", "content": "go"}]})
+    assert _results(state) == ["ENOSYS"]
 
 
 def test_a_fresh_process_restores_state_and_replaces_a_stale_fs() -> None:
@@ -396,10 +460,10 @@ def test_fs_is_installed_after_a_failed_snapshot_restore() -> None:
     try:
         with pytest.raises(_SnapshotRestoreError):
             repl.eval_sync("1", snapshot_payload=b"not a snapshot")
-        outcome = repl.eval_sync("JSON.stringify([typeof fs])")
+        outcome = repl.eval_sync("JSON.stringify([typeof fs, typeof require])")
     finally:
         registry.close()
-    assert json.loads(outcome.result or "") == ["object"]
+    assert json.loads(outcome.result or "") == ["object", "function"]
 
 
 def test_code_that_declares_its_own_fs_keeps_running() -> None:
@@ -407,7 +471,9 @@ def test_code_that_declares_its_own_fs_keeps_running() -> None:
     repl = registry.get("slot")
     try:
         repl.eval_sync("function fs() { return 'mine' }; 1")
-        outcome = repl.eval_sync("JSON.stringify([fs()])")
+        outcome = repl.eval_sync(
+            'JSON.stringify([fs(), typeof require("fs").readFileSync])'
+        )
     finally:
         registry.close()
-    assert json.loads(outcome.result or "") == ["mine"]
+    assert json.loads(outcome.result or "") == ["mine", "function"]

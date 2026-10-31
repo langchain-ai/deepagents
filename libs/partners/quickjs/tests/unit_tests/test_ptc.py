@@ -1092,3 +1092,122 @@ def test_conflicting_model_names_get_distinct_aliases() -> None:
     assert "type Address2 = { street: string };" in body
     assert "type Promise2 = { ok: boolean };" in body
     assert "  address: Address2;\n  promise: Promise2;" in body
+
+
+def _dict_schema_tool(name: str, schema: dict[str, Any]) -> BaseTool:
+    """A tool whose `args_schema` is raw JSON Schema, as MCP adapters build."""
+    return StructuredTool(
+        name=name,
+        description=f"{name} tool.",
+        args_schema=schema,
+        func=lambda **_: None,
+    )
+
+
+_MCP_ROLLOUT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "service": {"type": "string", "description": "Service to check."},
+        "options": {"$ref": "#/$defs/Options"},
+        "regions": {"type": "array", "items": {"$ref": "#/$defs/Region"}},
+    },
+    "required": ["service"],
+    "$defs": {
+        "Options": {
+            "type": "object",
+            "properties": {"dry_run": {"type": "boolean"}},
+        },
+        "Region": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+                "options": {"$ref": "#/$defs/Options"},
+            },
+            "required": ["name"],
+        },
+    },
+}
+
+
+def test_dict_schema_renders_fields_with_refs_inline() -> None:
+    """MCP-style dict schemas render their fields, expanding `$defs` in place."""
+    body = _ptc_body([_dict_schema_tool("request_rollout_check", _MCP_ROLLOUT_SCHEMA)])
+    assert "Record<string, unknown>" not in body, body
+    assert "type " not in body.split("/**", 1)[0], body
+    assert "*/ service: string;" in body
+    assert "  options?: { dry_run?: boolean };" in body
+    assert "  regions?: { name: string; options?: { dry_run?: boolean } }[];" in body
+
+
+def test_dict_schemas_are_not_aliased_across_tools() -> None:
+    """Dict schemas stay standalone even when Pydantic tools declare aliases."""
+    tools: list[BaseTool] = [
+        StructuredTool.from_function(
+            name="normalize_users",
+            description="Normalize users.",
+            func=_normalize_users,
+            args_schema=_BatchInput,
+        ),
+        _dict_schema_tool("request_rollout_check", _MCP_ROLLOUT_SCHEMA),
+    ]
+    body = _ptc_body(tools)
+    assert "type User = " in body
+    assert "type Options" not in body
+    assert "type Region" not in body
+    assert "  options?: { dry_run?: boolean };" in body
+
+
+def test_dict_schema_recursive_ref_stops_at_back_edge() -> None:
+    """A recursive `$ref` renders `unknown` where it loops back."""
+    schema: dict[str, Any] = {
+        "type": "object",
+        "properties": {"root": {"$ref": "#/$defs/Node"}},
+        "$defs": {
+            "Node": {
+                "type": "object",
+                "properties": {
+                    "value": {"type": "integer"},
+                    "children": {"type": "array", "items": {"$ref": "#/$defs/Node"}},
+                },
+            },
+        },
+    }
+    body = _ptc_body([_dict_schema_tool("walk", schema)])
+    assert "  root?: { value?: number; children?: unknown[] };" in body, body
+
+
+def test_dict_schema_root_ref_is_a_back_edge() -> None:
+    """A root `$ref` counts as expanding, so a self-reference stops at once."""
+    schema: dict[str, Any] = {
+        "$ref": "#/$defs/Node",
+        "$defs": {
+            "Node": {
+                "type": "object",
+                "properties": {
+                    "value": {"type": "integer"},
+                    "next": {"$ref": "#/$defs/Node"},
+                },
+            },
+        },
+    }
+    body = _ptc_body([_dict_schema_tool("walk", schema)])
+    assert "  value?: number;\n  next?: unknown;" in body, body
+
+
+def test_dict_schema_ref_expansion_is_depth_capped() -> None:
+    """A long non-recursive `$ref` chain stops expanding at the depth cap."""
+    depth = 20
+    defs: dict[str, Any] = {
+        f"L{i}": {"type": "object", "properties": {"n": {"$ref": f"#/$defs/L{i + 1}"}}}
+        for i in range(depth)
+    }
+    defs[f"L{depth}"] = {"type": "string"}
+    schema: dict[str, Any] = {
+        "type": "object",
+        "properties": {"n": {"$ref": "#/$defs/L0"}},
+        "$defs": defs,
+    }
+    body = _ptc_body([_dict_schema_tool("deep", schema)])
+    assert body.count("{ n?:") == 8, body
+    assert "n?: unknown" in body
+    assert "string" not in body

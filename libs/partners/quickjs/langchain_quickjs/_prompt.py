@@ -6,7 +6,7 @@ import contextlib
 import inspect
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Literal, get_type_hints
 
 from pydantic import TypeAdapter
@@ -20,6 +20,8 @@ _CAMEL_SEP = re.compile(r"[-_]([a-z])")
 _JS_IDENTIFIER = re.compile(r"^[A-Za-z_$][A-Za-z0-9_$]*$")
 # Names a declared alias must not shadow: the TS helpers the prompt itself uses.
 _RESERVED_TYPE_NAMES = frozenset({"Array", "Promise", "Record"})
+# How many `$ref`s deep an inline (dict / MCP) schema expands before `unknown`.
+_MAX_INLINE_REF_DEPTH = 8
 _REPL_SYSTEM_PROMPT_TEMPLATE = (
     "### Interpreter\n\n"
     "{repl_intro_line}\n\n"
@@ -404,7 +406,11 @@ def render_ptc_prompt(tools: Sequence[BaseTool], *, tool_name: str = "eval") -> 
         schema = _safe_json_schema(tool)
         return_type = _render_return_type(tool, registry)
         signature = _render_signature(
-            camel, schema, return_type=return_type, registry=registry
+            camel,
+            schema,
+            return_type=return_type,
+            registry=registry,
+            inline_refs=isinstance(tool.args_schema, dict),
         )
         description = (
             (tool.description or "").strip().splitlines()[0] if tool.description else ""
@@ -461,6 +467,9 @@ def _safe_json_schema(tool: BaseTool) -> dict[str, Any] | None:
     try:
         if tool.args_schema is None:
             return None
+        # MCP adapters (and other dict-based tools) pass raw JSON Schema.
+        if isinstance(tool.args_schema, dict):
+            return tool.args_schema
         model_json_schema = getattr(tool.args_schema, "model_json_schema", None)
         if callable(model_json_schema):
             return model_json_schema()
@@ -475,13 +484,17 @@ def _render_signature(
     *,
     return_type: str = "unknown",
     registry: _TypeRegistry | None = None,
+    inline_refs: bool = False,
 ) -> str:
     return_clause = f"Promise<{return_type}>"
     default_signature = (
         f"tools.{fn_name}(input: Record<string, unknown>): {return_clause}"
     )
-    scope = _RefScope.for_schema(schema, registry)
-    root = scope.definition(schema["$ref"]) if schema and "$ref" in schema else schema
+    scope = _RefScope.for_schema(schema, registry, inline=inline_refs)
+    root = schema
+    if schema and "$ref" in schema:
+        root = scope.definition(schema["$ref"])
+        scope = scope.entering(schema["$ref"])
     if not root or not isinstance(root.get("properties"), dict):
         return default_signature
     props: dict[str, Any] = root["properties"]
@@ -561,21 +574,40 @@ class _TypeRegistry:
 
 @dataclass
 class _RefScope:
-    """Resolves the local `$ref`s of one schema against its definitions."""
+    """Resolves the local `$ref`s of one schema against its definitions.
+
+    Pydantic schemas render refs as shared aliases. Inline scopes (raw dict
+    schemas, e.g. MCP tools) expand each ref in place instead, so every
+    signature stands alone; a ref back into one being expanded, or past
+    `_MAX_INLINE_REF_DEPTH`, renders as `unknown`.
+    """
 
     definitions: dict[str, Any]
     registry: _TypeRegistry
+    inline: bool = False
+    expanding: tuple[str, ...] = ()
 
     @classmethod
     def for_schema(
-        cls, schema: dict[str, Any] | None, registry: _TypeRegistry | None
+        cls,
+        schema: dict[str, Any] | None,
+        registry: _TypeRegistry | None,
+        *,
+        inline: bool = False,
     ) -> _RefScope:
         schema = schema or {}
         definitions = schema.get("$defs", schema.get("definitions"))
         return cls(
             definitions if isinstance(definitions, dict) else {},
             registry or _TypeRegistry(),
+            inline=inline,
         )
+
+    def entering(self, ref: Any) -> _RefScope:
+        """Return this scope with `ref` marked as being expanded inline."""
+        if not self.inline:
+            return self
+        return replace(self, expanding=(*self.expanding, _ref_name(ref) or ""))
 
     def definition(self, ref: Any) -> dict[str, Any] | None:
         name = _ref_name(ref)
@@ -583,10 +615,17 @@ class _RefScope:
         return found if isinstance(found, dict) else None
 
     def resolve(self, ref: Any) -> str:
-        """Render a `$ref` as its alias, declaring the alias on first use."""
+        """Render a `$ref` inline or as its alias, declaring the alias on first use."""
         definition = self.definition(ref)
         if definition is None:
             return "unknown"
+        if self.inline:
+            if (
+                _ref_name(ref) in self.expanding
+                or len(self.expanding) >= _MAX_INLINE_REF_DEPTH
+            ):
+                return "unknown"
+            return _json_schema_to_ts(definition, self.entering(ref))
         alias, is_new = self.registry.alias(_ref_name(ref) or "", definition)
         if is_new:
             # The alias is registered before rendering, so a recursive

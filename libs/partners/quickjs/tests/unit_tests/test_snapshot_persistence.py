@@ -8,10 +8,12 @@ from typing import Any, Literal
 import pytest
 from deepagents import create_deep_agent
 from langchain.agents import create_agent
+from langchain.agents.middleware import AgentMiddleware, HumanInTheLoopMiddleware
 from langchain.tools import ToolRuntime
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.tools import tool
 from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.types import Command
 
 from langchain_quickjs import CodeInterpreterMiddleware, _repl
 from tests._common import FakeChatModel
@@ -486,3 +488,120 @@ async def test_live_bindings_change_before_first_and_subsequent_eval(
     finally:
         middleware.after_agent(state, None)
     assert not middleware._registry._slots
+
+
+@tool
+def greet(name: str) -> str:
+    """Greet someone."""
+    return f"hello {name}"
+
+
+@pytest.mark.parametrize("invoke_mode", ["invoke", "ainvoke"])
+async def test_ptc_tools_bound_when_rebuilt_agent_resumes_paused_eval(
+    invoke_mode: InvokeMode,
+) -> None:
+    """An eval resumed by a rebuilt agent still sees `tools.*`.
+
+    The eval waits for approval, so no model call runs on the new middleware
+    instance before the eval does.
+    """
+    checkpointer = InMemorySaver()
+    config = {"configurable": {"thread_id": f"rebuilt-{invoke_mode}"}}
+    eval_call = AIMessage(
+        content="",
+        tool_calls=[
+            {
+                "name": "eval",
+                "args": {"code": "await tools.greet({name: 'ada'})"},
+                "id": "call_1",
+                "type": "tool_call",
+            },
+        ],
+    )
+
+    def build(messages: list[AIMessage]) -> Any:
+        return create_agent(
+            model=FakeChatModel(messages=iter(messages)),
+            tools=[greet],
+            middleware=[
+                CodeInterpreterMiddleware(ptc=["greet"]),
+                HumanInTheLoopMiddleware(interrupt_on={"eval": True}),
+            ],
+            checkpointer=checkpointer,
+        )
+
+    async def run(agent: Any, payload: Any) -> Any:
+        if invoke_mode == "ainvoke":
+            return await agent.ainvoke(payload, config)
+        return agent.invoke(payload, config)
+
+    paused = await run(
+        build([eval_call, AIMessage(content="done")]),
+        {"messages": [HumanMessage(content="go")]},
+    )
+    assert paused["__interrupt__"]
+
+    result = await run(
+        build([AIMessage(content="done")]),
+        Command(resume={"decisions": [{"type": "approve"}]}),
+    )
+    tool_message = next(m for m in result["messages"] if isinstance(m, ToolMessage))
+    assert tool_message.content == "<result>hello ada</result>"
+
+
+@tool
+def secret() -> str:
+    """Return something hidden from the model on this turn."""
+    return "secret"
+
+
+class _HideSecret(AgentMiddleware):
+    """Remove `secret` from every model call, as a per-turn tool filter would."""
+
+    def wrap_model_call(self, request: Any, handler: Any) -> Any:
+        tools = [t for t in request.tools if t.name != "secret"]
+        return handler(request.override(tools=tools))
+
+    async def awrap_model_call(self, request: Any, handler: Any) -> Any:
+        tools = [t for t in request.tools if t.name != "secret"]
+        return await handler(request.override(tools=tools))
+
+
+async def test_tools_hidden_from_the_model_stay_unbound_on_rebuilt_resume() -> None:
+    checkpointer = InMemorySaver()
+    config = {"configurable": {"thread_id": "hidden"}}
+    eval_call = AIMessage(
+        content="",
+        tool_calls=[
+            {
+                "name": "eval",
+                "args": {
+                    "code": "typeof tools.secret + ',' + typeof tools.greet",
+                },
+                "id": "call_1",
+                "type": "tool_call",
+            },
+        ],
+    )
+
+    def build(messages: list[AIMessage]) -> Any:
+        return create_agent(
+            model=FakeChatModel(messages=iter(messages)),
+            tools=[greet, secret],
+            middleware=[
+                _HideSecret(),
+                CodeInterpreterMiddleware(ptc=["greet", "secret"]),
+                HumanInTheLoopMiddleware(interrupt_on={"eval": True}),
+            ],
+            checkpointer=checkpointer,
+        )
+
+    await build([eval_call, AIMessage(content="done")]).ainvoke(
+        {"messages": [HumanMessage(content="go")]}, config
+    )
+    result = await build([AIMessage(content="done")]).ainvoke(
+        Command(resume={"decisions": [{"type": "approve"}]}), config
+    )
+
+    tool_message = next(m for m in result["messages"] if isinstance(m, ToolMessage))
+    assert tool_message.content == "<result>undefined,function</result>"

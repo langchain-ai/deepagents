@@ -2,6 +2,13 @@
 
 # Changelog
 
+## [0.3.12](https://github.com/langchain-ai/deepagents/compare/langchain-quickjs==0.3.11...langchain-quickjs==0.3.12) (2026-10-31)
+
+
+### Features
+
+* **quickjs:** allow disabling the per-call `timeout` ([#6958](https://github.com/langchain-ai/deepagents/issues/6958)) ([3b992d2](https://github.com/langchain-ai/deepagents/commit/3b992d2d8dfa3bade91e612b2d6ef2dfb57603b6))
+
 ## [0.3.11](https://github.com/langchain-ai/deepagents/compare/langchain-quickjs==0.3.10...langchain-quickjs==0.3.11) (2026-10-27)
 
 ### Bug Fixes

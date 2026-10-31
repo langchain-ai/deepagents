@@ -379,7 +379,7 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
             code: Annotated[str, code_doc],
         ) -> ToolMessage | Command:
             slot_id = middleware._slot_id(runtime.state)
-            repl = middleware._repl_for_eval(slot_id)
+            repl = await middleware._registry.aget(slot_id)
             try:
                 outcome = await repl.eval_async(
                     code,
@@ -392,7 +392,7 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
                 return _restore_error_output(exc, runtime.tool_call_id)
             finally:
                 if middleware._mode == "call":
-                    middleware._registry.reset_repl(slot_id)
+                    await middleware._registry.areset_repl(slot_id)
             return _make_tool_output(outcome, runtime.tool_call_id)
 
         return StructuredTool.from_function(

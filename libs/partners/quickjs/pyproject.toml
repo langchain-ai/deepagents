@@ -24,7 +24,7 @@ keywords = ["deepagents", "langchain", "langgraph", "repl", "javascript", "quick
 
 dependencies = [
     "deepagents>=0.7.32,<0.8.0",
-    "quickjs-rs>=0.2.5,<0.3.0",
+    "quickjs-rs>=0.2.7,<0.3.0",
     "langchain>=1.4.7,<2.0.0",
     "langchain-core>=1.7.3,<2.0.0",
     "langgraph>=1.2.18,<2.0.0",

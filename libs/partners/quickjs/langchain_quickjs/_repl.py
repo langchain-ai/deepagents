@@ -14,7 +14,7 @@ import logging
 import threading
 import uuid
 from dataclasses import dataclass, field, replace
-from typing import TYPE_CHECKING, Any, get_type_hints
+from typing import TYPE_CHECKING, Any, TypedDict, Unpack, get_type_hints
 
 from langchain_core.tools.base import (
     InjectedToolCallId,
@@ -345,6 +345,15 @@ def _render_tools_namespace_assignment(bridges: dict[str, str]) -> str:
     return " ".join(statements)
 
 
+class _REPLOptions(TypedDict):
+    timeout: float | None
+    capture_console: bool
+    max_stdout_chars: int
+    max_ptc_calls: int | None
+    subagents_enabled: bool
+    max_subagent_concurrency: int
+
+
 class _ThreadREPL:
     """One QuickJS context + console buffer, per LangGraph thread.
 
@@ -364,6 +373,43 @@ class _ThreadREPL:
         max_ptc_calls: int | None = 256,
         subagents_enabled: bool = True,
         max_subagent_concurrency: int = _DEFAULT_MAX_SUBAGENT_CONCURRENCY,
+    ) -> None:
+        self._setup(
+            worker,
+            runtime,
+            timeout=timeout,
+            capture_console=capture_console,
+            max_stdout_chars=max_stdout_chars,
+            max_ptc_calls=max_ptc_calls,
+            subagents_enabled=subagents_enabled,
+            max_subagent_concurrency=max_subagent_concurrency,
+        )
+        # Context creation + console install must happen on the worker
+        # thread. Block caller here so the REPL is ready to use when
+        # __init__ returns.
+        worker.run_sync(self._ainit())
+
+    @classmethod
+    async def acreate(
+        cls, worker: ThreadWorker, runtime: Runtime, **options: Unpack[_REPLOptions]
+    ) -> _ThreadREPL:
+        """Async constructor: awaits the worker instead of blocking on it."""
+        repl = cls.__new__(cls)
+        repl._setup(worker, runtime, **options)  # noqa: SLF001  # instance built above
+        await worker.run_async(repl._ainit())  # noqa: SLF001  # same instance
+        return repl
+
+    def _setup(
+        self,
+        worker: ThreadWorker,
+        runtime: Runtime,
+        *,
+        timeout: float | None,
+        capture_console: bool,
+        max_stdout_chars: int,
+        max_ptc_calls: int | None,
+        subagents_enabled: bool,
+        max_subagent_concurrency: int,
     ) -> None:
         self._worker = worker
         self._runtime = runtime
@@ -401,10 +447,6 @@ class _ThreadREPL:
         # outside the current eval.
         self._ptc_state: _PTCState | None = None
         self._task_calls: asyncio.Semaphore | None = None
-        # Context creation + console install must happen on the worker
-        # thread. Block caller here so the REPL is ready to use when
-        # __init__ returns.
-        worker.run_sync(self._ainit())
 
     async def _ainit(self) -> None:
         self._ctx = self._runtime.new_context(timeout=self._per_call_timeout)
@@ -960,15 +1002,72 @@ class _Registry:
     subagents_enabled: bool = True
     max_subagent_concurrency: int = _DEFAULT_MAX_SUBAGENT_CONCURRENCY
     _slots: dict[str, _Slot] = field(default_factory=dict)
+    # Token per slot id with a build in flight. `evict` drops it, so a build
+    # that overlaps an evict is discarded instead of installed.
+    _builds: dict[str, object] = field(default_factory=dict)
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
     def get(self, thread_id: str) -> _ThreadREPL:
         with self._lock:
             slot = self._slots.get(thread_id)
-            if slot is None:
-                slot = self._build_slot_locked(thread_id)
-                self._slots[thread_id] = slot
-            return slot.repl
+            if slot is not None:
+                return slot.repl
+            token = self._builds.setdefault(thread_id, object())
+        # Build outside the lock so a slow build never stalls other callers.
+        try:
+            new_slot = self._build_slot(thread_id)
+        except BaseException:
+            self._forget_build(thread_id, token)
+            raise
+        if self._install(thread_id, new_slot, token):
+            return new_slot.repl
+        self._close_slot(new_slot)
+        return self._current_repl(thread_id)
+
+    async def aget(self, thread_id: str) -> _ThreadREPL:
+        """Async `get`: the slot's own worker builds it; this loop only awaits."""
+        with self._lock:
+            slot = self._slots.get(thread_id)
+            if slot is not None:
+                return slot.repl
+            token = self._builds.setdefault(thread_id, object())
+        # Shielded so a cancelled caller closes the slot instead of stranding it.
+        build = asyncio.ensure_future(self._abuild_slot(thread_id))
+        try:
+            new_slot = await asyncio.shield(build)
+        except asyncio.CancelledError:
+            self._forget_build(thread_id, token)
+            await self._aclose_slot(await build)
+            raise
+        except Exception:
+            self._forget_build(thread_id, token)
+            raise
+        if self._install(thread_id, new_slot, token):
+            return new_slot.repl
+        await self._aclose_slot(new_slot)
+        return self._current_repl(thread_id)
+
+    def _install(self, thread_id: str, slot: _Slot, token: object) -> bool:
+        """Install a freshly built slot unless one exists or it was evicted."""
+        with self._lock:
+            if thread_id in self._slots or self._builds.get(thread_id) is not token:
+                return False
+            del self._builds[thread_id]
+            self._slots[thread_id] = slot
+            return True
+
+    def _forget_build(self, thread_id: str, token: object) -> None:
+        with self._lock:
+            if self._builds.get(thread_id) is token:
+                del self._builds[thread_id]
+
+    def _current_repl(self, thread_id: str) -> _ThreadREPL:
+        with self._lock:
+            slot = self._slots.get(thread_id)
+        if slot is None:
+            msg = f"QuickJS slot {thread_id!r} was evicted while it was being built"
+            raise RuntimeError(msg)
+        return slot.repl
 
     def get_if_exists(self, thread_id: str) -> _ThreadREPL | None:
         """Return existing REPL for `thread_id` without creating a new slot."""
@@ -979,16 +1078,20 @@ class _Registry:
     def evict(self, thread_id: str) -> None:
         """Close and remove the slot for `thread_id`. No-op if absent."""
         with self._lock:
-            slot = self._slots.pop(thread_id, None)
+            slot = self._pop_slot_locked(thread_id)
         if slot is not None:
             self._close_slot(slot)
 
     async def aevict(self, thread_id: str) -> None:
-        """Async variant of `evict`: closes the runtime via the worker loop."""
+        """Async variant of `evict`: closes the slot without blocking the loop."""
         with self._lock:
-            slot = self._slots.pop(thread_id, None)
+            slot = self._pop_slot_locked(thread_id)
         if slot is not None:
             await self._aclose_slot(slot)
+
+    def _pop_slot_locked(self, thread_id: str) -> _Slot | None:
+        self._builds.pop(thread_id, None)
+        return self._slots.pop(thread_id, None)
 
     def reset_repl(self, thread_id: str) -> None:
         """Replace the slot REPL while keeping its worker and runtime alive."""
@@ -999,16 +1102,7 @@ class _Registry:
 
         with contextlib.suppress(Exception):
             slot.repl.close()
-        new_repl = _ThreadREPL(
-            slot.worker,
-            slot.runtime,
-            timeout=self.timeout,
-            capture_console=self.capture_console,
-            max_stdout_chars=self.max_stdout_chars,
-            max_ptc_calls=self.max_ptc_calls,
-            subagents_enabled=self.subagents_enabled,
-            max_subagent_concurrency=self.max_subagent_concurrency,
-        )
+        new_repl = _ThreadREPL(slot.worker, slot.runtime, **self._repl_options())
 
         with self._lock:
             current = self._slots.get(thread_id)
@@ -1019,20 +1113,48 @@ class _Registry:
         with contextlib.suppress(Exception):
             new_repl.close()
 
-    def _build_slot_locked(self, thread_id: str) -> _Slot:
-        name = f"quickjs-worker-{thread_id[:8]}"
-        worker = ThreadWorker(name=name)
-        runtime = worker.run_sync(self._acreate_runtime())
-        repl = _ThreadREPL(
-            worker,
-            runtime,
-            timeout=self.timeout,
-            capture_console=self.capture_console,
-            max_stdout_chars=self.max_stdout_chars,
-            max_ptc_calls=self.max_ptc_calls,
-            subagents_enabled=self.subagents_enabled,
-            max_subagent_concurrency=self.max_subagent_concurrency,
+    async def areset_repl(self, thread_id: str) -> None:
+        """Async variant of `reset_repl`: awaits the slot's worker."""
+        with self._lock:
+            slot = self._slots.get(thread_id)
+        if slot is None:
+            return
+
+        with contextlib.suppress(Exception):
+            await slot.repl.aclose()
+        new_repl = await _ThreadREPL.acreate(
+            slot.worker, slot.runtime, **self._repl_options()
         )
+
+        with self._lock:
+            current = self._slots.get(thread_id)
+            if current is slot:
+                slot.repl = new_repl
+                return
+        # Slot was removed/replaced while rebuilding.
+        with contextlib.suppress(Exception):
+            await new_repl.aclose()
+
+    def _repl_options(self) -> _REPLOptions:
+        return {
+            "timeout": self.timeout,
+            "capture_console": self.capture_console,
+            "max_stdout_chars": self.max_stdout_chars,
+            "max_ptc_calls": self.max_ptc_calls,
+            "subagents_enabled": self.subagents_enabled,
+            "max_subagent_concurrency": self.max_subagent_concurrency,
+        }
+
+    def _build_slot(self, thread_id: str) -> _Slot:
+        worker = ThreadWorker(name=f"quickjs-worker-{thread_id[:8]}")
+        runtime = worker.run_sync(self._acreate_runtime())
+        repl = _ThreadREPL(worker, runtime, **self._repl_options())
+        return _Slot(worker=worker, runtime=runtime, repl=repl)
+
+    async def _abuild_slot(self, thread_id: str) -> _Slot:
+        worker = ThreadWorker(name=f"quickjs-worker-{thread_id[:8]}")
+        runtime = await worker.run_async(self._acreate_runtime())
+        repl = await _ThreadREPL.acreate(worker, runtime, **self._repl_options())
         return _Slot(worker=worker, runtime=runtime, repl=repl)
 
     def _close_slot(self, slot: _Slot) -> None:
@@ -1051,7 +1173,7 @@ class _Registry:
             await slot.repl.aclose()
         with contextlib.suppress(Exception):
             await slot.worker.run_async(_aclose_runtime(slot.runtime))
-        slot.worker.close()
+        await slot.worker.aclose()
 
     async def _acreate_runtime(self) -> Runtime:
         return Runtime(

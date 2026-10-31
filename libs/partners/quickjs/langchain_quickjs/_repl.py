@@ -8,14 +8,13 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import gc
 import hashlib
 import json
 import logging
 import threading
 import uuid
 from dataclasses import dataclass, field, replace
-from typing import TYPE_CHECKING, Any, TypedDict, get_type_hints
+from typing import TYPE_CHECKING, Any, TypedDict, Unpack, get_type_hints
 
 from langchain_core.tools.base import (
     InjectedToolCallId,
@@ -62,8 +61,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _DEFAULT_MAX_SUBAGENT_CONCURRENCY = 32
-# Longest a slot close waits on its worker before abandoning it.
-_WORKER_CLOSE_TIMEOUT = 5.0
 _TASK_FUNCTION_NAME = "task"
 
 
@@ -348,6 +345,15 @@ def _render_tools_namespace_assignment(bridges: dict[str, str]) -> str:
     return " ".join(statements)
 
 
+class _REPLOptions(TypedDict):
+    timeout: float | None
+    capture_console: bool
+    max_stdout_chars: int
+    max_ptc_calls: int | None
+    subagents_enabled: bool
+    max_subagent_concurrency: int
+
+
 class _ThreadREPL:
     """One QuickJS context + console buffer, per LangGraph thread.
 
@@ -385,29 +391,11 @@ class _ThreadREPL:
 
     @classmethod
     async def acreate(
-        cls,
-        worker: ThreadWorker,
-        runtime: Runtime,
-        *,
-        timeout: float | None,
-        capture_console: bool,
-        max_stdout_chars: int,
-        max_ptc_calls: int | None = 256,
-        subagents_enabled: bool = True,
-        max_subagent_concurrency: int = _DEFAULT_MAX_SUBAGENT_CONCURRENCY,
+        cls, worker: ThreadWorker, runtime: Runtime, **options: Unpack[_REPLOptions]
     ) -> _ThreadREPL:
         """Async constructor: awaits the worker instead of blocking on it."""
         repl = cls.__new__(cls)
-        repl._setup(  # noqa: SLF001  # initializing the instance built above
-            worker,
-            runtime,
-            timeout=timeout,
-            capture_console=capture_console,
-            max_stdout_chars=max_stdout_chars,
-            max_ptc_calls=max_ptc_calls,
-            subagents_enabled=subagents_enabled,
-            max_subagent_concurrency=max_subagent_concurrency,
-        )
+        repl._setup(worker, runtime, **options)  # noqa: SLF001  # instance built above
         await worker.run_async(repl._ainit())  # noqa: SLF001  # same instance
         return repl
 
@@ -997,24 +985,6 @@ class _Slot:
     repl: _ThreadREPL
 
 
-@dataclass(eq=False)
-class _Build:
-    """One in-flight async slot build, shared by every caller waiting on it."""
-
-    loop: asyncio.AbstractEventLoop
-    task: asyncio.Task[_Slot | None] | None = None
-    waiters: int = 0
-
-
-class _REPLOptions(TypedDict):
-    timeout: float | None
-    capture_console: bool
-    max_stdout_chars: int
-    max_ptc_calls: int | None
-    subagents_enabled: bool
-    max_subagent_concurrency: int
-
-
 @dataclass
 class _Registry:
     """Per-thread Runtime registry.
@@ -1032,93 +1002,72 @@ class _Registry:
     subagents_enabled: bool = True
     max_subagent_concurrency: int = _DEFAULT_MAX_SUBAGENT_CONCURRENCY
     _slots: dict[str, _Slot] = field(default_factory=dict)
-    # In-flight async builds, one per slot id. `evict` drops the entry, which
-    # tells the build to close its result instead of installing it.
-    _builds: dict[str, _Build] = field(default_factory=dict)
-    # Bumped by `evict`, so a sync build that raced an evict is discarded.
-    _evictions: dict[str, int] = field(default_factory=dict)
+    # Token per slot id with a build in flight. `evict` drops it, so a build
+    # that overlaps an evict is discarded instead of installed.
+    _builds: dict[str, object] = field(default_factory=dict)
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
     def get(self, thread_id: str) -> _ThreadREPL:
-        # Build outside the lock: building waits on a new worker thread, and
-        # holding the lock meanwhile would stall every other caller, including
-        # async ones on an event loop.
         with self._lock:
             slot = self._slots.get(thread_id)
             if slot is not None:
                 return slot.repl
-            evictions = self._evictions.get(thread_id, 0)
-        new_slot = self._build_slot(thread_id)
-        with self._lock:
-            slot = self._slots.get(thread_id)
-            if slot is None and self._evictions.get(thread_id, 0) == evictions:
-                self._slots[thread_id] = new_slot
-                return new_slot.repl
+            token = self._builds.setdefault(thread_id, object())
+        # Build outside the lock so a slow build never stalls other callers.
+        try:
+            new_slot = self._build_slot(thread_id)
+        except BaseException:
+            self._forget_build(thread_id, token)
+            raise
+        if self._install(thread_id, new_slot, token):
+            return new_slot.repl
         self._close_slot(new_slot)
-        if slot is None:
-            msg = f"QuickJS slot {thread_id!r} was evicted while it was being created"
-            raise RuntimeError(msg)
-        return slot.repl
+        return self._current_repl(thread_id)
 
     async def aget(self, thread_id: str) -> _ThreadREPL:
-        """Async `get`: builds a missing slot without blocking the event loop.
-
-        Concurrent callers for one slot id share a single build. The build
-        runs in its own task, so a cancelled caller never leaves a half-made
-        slot behind: if every caller has gone, or the slot is evicted before
-        the build finishes, the build closes what it made.
-        """
-        loop = asyncio.get_running_loop()
+        """Async `get`: the slot's own worker builds it; this loop only awaits."""
         with self._lock:
             slot = self._slots.get(thread_id)
             if slot is not None:
                 return slot.repl
-            build = self._builds.get(thread_id)
-            if build is None or build.loop is not loop:
-                build = _Build(loop=loop)
-                self._builds[thread_id] = build
-                build.task = loop.create_task(self._abuild(thread_id, build))
-            build.waiters += 1
-        task = build.task
-        if task is None:  # pragma: no cover - set before the lock is released
-            msg = "QuickJS slot build was not started"
-            raise RuntimeError(msg)
+            token = self._builds.setdefault(thread_id, object())
+        # Shielded so a cancelled caller closes the slot instead of stranding it.
+        build = asyncio.ensure_future(self._abuild_slot(thread_id))
         try:
-            new_slot = await asyncio.shield(task)
+            new_slot = await asyncio.shield(build)
         except asyncio.CancelledError:
-            with self._lock:
-                build.waiters -= 1
-                if build.waiters == 0 and self._builds.get(thread_id) is build:
-                    # Nobody is waiting: the build closes its slot when done.
-                    del self._builds[thread_id]
+            self._forget_build(thread_id, token)
+            await self._aclose_slot(await build)
             raise
-        with self._lock:
-            build.waiters -= 1
-        if new_slot is None:
-            msg = f"QuickJS slot {thread_id!r} was evicted while it was being created"
-            raise RuntimeError(msg)
-        return new_slot.repl
-
-    async def _abuild(self, thread_id: str, build: _Build) -> _Slot | None:
-        """Build a slot on its worker; install it unless it is no longer wanted."""
-        try:
-            new_slot = await self._abuild_slot(thread_id)
-        except BaseException:
-            with self._lock:
-                if self._builds.get(thread_id) is build:
-                    del self._builds[thread_id]
+        except Exception:
+            self._forget_build(thread_id, token)
             raise
-        with self._lock:
-            wanted = self._builds.get(thread_id) is build
-            if wanted:
-                del self._builds[thread_id]
-                current = self._slots.get(thread_id)
-                if current is None:
-                    self._slots[thread_id] = new_slot
-                    return new_slot
-        # Evicted, abandoned by every caller, or beaten by a sync `get`.
+        if self._install(thread_id, new_slot, token):
+            return new_slot.repl
         await self._aclose_slot(new_slot)
-        return current if wanted else None
+        return self._current_repl(thread_id)
+
+    def _install(self, thread_id: str, slot: _Slot, token: object) -> bool:
+        """Install a freshly built slot unless one exists or it was evicted."""
+        with self._lock:
+            if thread_id in self._slots or self._builds.get(thread_id) is not token:
+                return False
+            del self._builds[thread_id]
+            self._slots[thread_id] = slot
+            return True
+
+    def _forget_build(self, thread_id: str, token: object) -> None:
+        with self._lock:
+            if self._builds.get(thread_id) is token:
+                del self._builds[thread_id]
+
+    def _current_repl(self, thread_id: str) -> _ThreadREPL:
+        with self._lock:
+            slot = self._slots.get(thread_id)
+        if slot is None:
+            msg = f"QuickJS slot {thread_id!r} was evicted while it was being built"
+            raise RuntimeError(msg)
+        return slot.repl
 
     def get_if_exists(self, thread_id: str) -> _ThreadREPL | None:
         """Return existing REPL for `thread_id` without creating a new slot."""
@@ -1141,9 +1090,7 @@ class _Registry:
             await self._aclose_slot(slot)
 
     def _pop_slot_locked(self, thread_id: str) -> _Slot | None:
-        # Builds still in flight for this id will close their result.
         self._builds.pop(thread_id, None)
-        self._evictions[thread_id] = self._evictions.get(thread_id, 0) + 1
         return self._slots.pop(thread_id, None)
 
     def reset_repl(self, thread_id: str) -> None:
@@ -1167,7 +1114,7 @@ class _Registry:
             new_repl.close()
 
     async def areset_repl(self, thread_id: str) -> None:
-        """Async `reset_repl`: swaps the REPL by awaiting the slot's worker."""
+        """Async variant of `reset_repl`: awaits the slot's worker."""
         with self._lock:
             slot = self._slots.get(thread_id)
         if slot is None:
@@ -1200,23 +1147,14 @@ class _Registry:
 
     def _build_slot(self, thread_id: str) -> _Slot:
         worker = ThreadWorker(name=f"quickjs-worker-{thread_id[:8]}")
-        try:
-            runtime = worker.run_sync(self._acreate_runtime())
-            repl = _ThreadREPL(worker, runtime, **self._repl_options())
-        except BaseException:
-            worker.close()
-            raise
+        runtime = worker.run_sync(self._acreate_runtime())
+        repl = _ThreadREPL(worker, runtime, **self._repl_options())
         return _Slot(worker=worker, runtime=runtime, repl=repl)
 
     async def _abuild_slot(self, thread_id: str) -> _Slot:
-        # Every step runs on the slot's own worker; this loop only awaits it.
         worker = ThreadWorker(name=f"quickjs-worker-{thread_id[:8]}")
-        try:
-            runtime = await worker.run_async(self._acreate_runtime())
-            repl = await _ThreadREPL.acreate(worker, runtime, **self._repl_options())
-        except BaseException:
-            await _aclose_worker(worker)
-            raise
+        runtime = await worker.run_async(self._acreate_runtime())
+        repl = await _ThreadREPL.acreate(worker, runtime, **self._repl_options())
         return _Slot(worker=worker, runtime=runtime, repl=repl)
 
     def _close_slot(self, slot: _Slot) -> None:
@@ -1231,14 +1169,11 @@ class _Registry:
         slot.worker.close()
 
     async def _aclose_slot(self, slot: _Slot) -> None:
-        # Bounded: a wedged worker never answers, and this runs on the
-        # caller's event loop at the end of every run.
         with contextlib.suppress(Exception):
-            async with asyncio.timeout(_WORKER_CLOSE_TIMEOUT):
-                with contextlib.suppress(Exception):
-                    await slot.repl.aclose()
-                await slot.worker.run_async(_aclose_runtime(slot.runtime))
-        await _aclose_worker(slot.worker)
+            await slot.repl.aclose()
+        with contextlib.suppress(Exception):
+            await slot.worker.run_async(_aclose_runtime(slot.runtime))
+        await slot.worker.aclose()
 
     async def _acreate_runtime(self) -> Runtime:
         return Runtime(
@@ -1256,36 +1191,3 @@ class _Registry:
 
 async def _aclose_runtime(runtime: Runtime) -> None:
     runtime.close()
-
-
-async def _agc() -> None:
-    gc.collect()
-
-
-async def _aclose_worker(worker: ThreadWorker) -> None:
-    """Stop `worker` without blocking the caller's event loop.
-
-    The worker tears itself down on its own thread; this only awaits it, for
-    at most `_WORKER_CLOSE_TIMEOUT` seconds, and a wedged worker is abandoned
-    (it is a daemon thread).
-    """
-    aclose = getattr(worker, "aclose", None)
-    if aclose is not None:
-        await aclose(timeout=_WORKER_CLOSE_TIMEOUT)
-        return
-    # quickjs-rs releases without `ThreadWorker.aclose()`: do what `close()`
-    # does, awaiting instead of joining. Drop this once the floor has aclose.
-    loop = worker._loop  # noqa: SLF001  # no public accessor before aclose()
-    thread = worker._thread  # noqa: SLF001  # no public accessor before aclose()
-    if loop is None or thread is None:
-        return
-    with contextlib.suppress(Exception):
-        await asyncio.wait_for(worker.run_async(_agc()), _WORKER_CLOSE_TIMEOUT)
-    worker._loop = None  # noqa: SLF001  # mark closed, as close() does
-    worker._thread = None  # noqa: SLF001  # mark closed, as close() does
-    with contextlib.suppress(RuntimeError):
-        loop.call_soon_threadsafe(loop.stop)
-    deadline = asyncio.get_running_loop().time() + _WORKER_CLOSE_TIMEOUT
-    # A thread exposes nothing awaitable, so poll instead of joining.
-    while thread.is_alive() and asyncio.get_running_loop().time() < deadline:  # noqa: ASYNC110
-        await asyncio.sleep(0.005)

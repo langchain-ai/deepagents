@@ -8,7 +8,6 @@ the loop waited on the worker thread.
 from __future__ import annotations
 
 import asyncio
-import gc
 import threading
 import time
 from typing import TYPE_CHECKING, Any
@@ -16,7 +15,6 @@ from typing import TYPE_CHECKING, Any
 import pytest
 from quickjs_rs import Runtime
 
-import langchain_quickjs._repl as repl_module
 from langchain_quickjs import CodeInterpreterMiddleware
 from langchain_quickjs._repl import _Registry, _ThreadREPL
 
@@ -87,23 +85,17 @@ def slow_build(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     return calls
 
 
-@pytest.fixture
-def slow_close(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Make runtime close and the worker's teardown gc each take SLOW seconds."""
+def _slow_worker_teardown(registry: _Registry, slot_id: str) -> asyncio.Future[None]:
+    """Leave a task on the slot's worker that takes SLOW seconds to cancel."""
 
-    async def _aclose_runtime(runtime: Runtime) -> None:
-        time.sleep(SLOW)  # noqa: ASYNC251  # blocks the worker thread on purpose
-        runtime.close()
+    async def _linger() -> None:
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            time.sleep(SLOW)  # noqa: ASYNC251  # blocks the worker thread on purpose
+            raise
 
-    collect = gc.collect
-
-    def _slow_collect(*args: Any) -> int:
-        if threading.current_thread().name.startswith("quickjs-worker-"):
-            time.sleep(SLOW)
-        return collect(*args)
-
-    monkeypatch.setattr(repl_module, "_aclose_runtime", _aclose_runtime)
-    monkeypatch.setattr(gc, "collect", _slow_collect)
+    return registry._slots[slot_id].worker.run_async(_linger())
 
 
 async def test_build_does_not_block_loop(slow_build: list[str]) -> None:
@@ -116,17 +108,18 @@ async def test_build_does_not_block_loop(slow_build: list[str]) -> None:
 
 
 @pytest.mark.parametrize("mode", ["call", "thread"])
-@pytest.mark.usefixtures("slow_close")
 async def test_evict_does_not_block_loop(mode: str) -> None:
     mw = CodeInterpreterMiddleware(mode=mode)  # type: ignore[arg-type]
     slot_id = f"evict-{mode}"
     repl = await mw._registry.aget(slot_id)
     await repl.eval_async("globalThis.x = 1")
+    lingering = _slow_worker_teardown(mw._registry, slot_id)
     state: dict[str, Any] = {"_quickjs_slot_id": slot_id}
     gap, _ = await _max_gap(mw.aafter_agent(state, None))  # type: ignore[arg-type]
     assert gap < MAX_GAP
     assert mw._registry.get_if_exists(slot_id) is None
     await _wait_for_no_worker(slot_id)
+    assert lingering.cancelled()
 
 
 async def test_call_mode_reset_does_not_block_loop(
@@ -149,12 +142,19 @@ async def test_call_mode_reset_does_not_block_loop(
     await registry.aevict("reset-01")
 
 
-async def test_concurrent_misses_build_once(slow_build: list[str]) -> None:
+@pytest.mark.usefixtures("slow_build")
+async def test_concurrent_misses_share_one_slot() -> None:
     registry = _registry()
-    repls = await asyncio.gather(*(registry.aget("shared-1") for _ in range(5)))
-    assert len(slow_build) == 1
+    repls = await asyncio.gather(*(registry.aget("shared-1") for _ in range(3)))
     assert all(r is repls[0] for r in repls)
+    assert registry._builds == {}
+    # Duplicate builds are closed; only the installed slot's worker remains.
+    deadline = time.monotonic() + 5.0
+    while len(_worker_threads("shared-1")) > 1 and time.monotonic() < deadline:  # noqa: ASYNC110
+        await asyncio.sleep(0.01)
+    assert len(_worker_threads("shared-1")) == 1
     await registry.aevict("shared-1")
+    await _wait_for_no_worker("shared-1")
 
 
 @pytest.mark.usefixtures("slow_build")
@@ -181,26 +181,3 @@ async def test_evict_mid_build_leaves_registry_empty() -> None:
     await _wait_for_no_worker("evicted1")
     assert registry._slots == {}
     assert registry._builds == {}
-
-
-async def test_wedged_worker_returns_control(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(repl_module, "_WORKER_CLOSE_TIMEOUT", 0.2)
-    registry = _registry()
-    await registry.aget("wedged-1")
-    slot = registry._slots["wedged-1"]
-    release = threading.Event()
-
-    async def _stuck() -> None:
-        release.wait()
-
-    stuck = slot.worker.run_async(_stuck())
-    try:
-        start = time.monotonic()
-        gap, _ = await _max_gap(registry.aevict("wedged-1"))
-        assert time.monotonic() - start < 1.5
-        assert gap < MAX_GAP
-        assert registry.get_if_exists("wedged-1") is None
-    finally:
-        release.set()
-        stuck.cancel()
-    await _wait_for_no_worker("wedged-1")

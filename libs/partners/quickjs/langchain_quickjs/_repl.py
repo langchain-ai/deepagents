@@ -1036,9 +1036,8 @@ class _Registry:
         return _Slot(worker=worker, runtime=runtime, repl=repl)
 
     def _close_slot(self, slot: _Slot) -> None:
-        # Close the context on its owning worker thread before closing the
-        # runtime. This avoids unsendable handle wrappers being finalized on
-        # a non-owner thread during later GC.
+        # Close the context and runtime on the owning worker thread, which
+        # runs all of the slot's QuickJS work, before stopping the worker.
         with contextlib.suppress(Exception):
             slot.repl.close()
         # Best-effort; never block shutdown on a misbehaving runtime.

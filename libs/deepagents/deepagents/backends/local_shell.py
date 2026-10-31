@@ -7,7 +7,9 @@ run directly on the host machine with full system access.
 
 from __future__ import annotations
 
+import logging
 import os
+import signal
 import subprocess
 import sys
 import uuid
@@ -20,8 +22,90 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 
+logger = logging.getLogger(__name__)
+
 DEFAULT_EXECUTE_TIMEOUT = 120
 """Default timeout in seconds for shell command execution."""
+
+_KILL_DRAIN_TIMEOUT = 5
+"""Seconds to wait for a killed command to be reaped before giving up.
+
+Bounded so a child that somehow survives `SIGKILL` (an uninterruptible
+syscall, say) makes `execute` log and return rather than block forever.
+"""
+
+
+def _kill_process_tree(process: subprocess.Popen[str]) -> None:
+    """Kill `process` and, on POSIX, every process in its session.
+
+    Commands are started in a new session, so anything the shell spawns lands
+    in a process group of its own and survives `Popen.kill()`, which signals
+    the direct child only. Signaling the group instead reaps the shell and its
+    descendants together, so a timed-out `npm run dev` does not keep holding
+    its port. Windows creates no new session here, so the direct child is
+    killed as before.
+
+    Args:
+        process: The running child to terminate.
+    """
+    if sys.platform != "win32":
+        try:
+            os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+        except OSError:
+            # The group already exited, or this process may not signal it.
+            # Fall through so the direct child is still killed.
+            logger.debug("Could not signal process group for pid %s", process.pid, exc_info=True)
+        else:
+            return
+    try:
+        process.kill()
+    except OSError:
+        logger.debug("Could not kill pid %s", process.pid, exc_info=True)
+
+
+def _run_shell_command(
+    command: str,
+    *,
+    timeout: float,
+    env: dict[str, str],
+    cwd: str,
+) -> subprocess.CompletedProcess[str]:
+    """Run `command` through the shell, killing the whole tree on timeout.
+
+    Args:
+        command: Shell command string.
+        timeout: Wall-clock budget in seconds.
+        env: Environment for the child process.
+        cwd: Working directory for the child process.
+
+    Returns:
+        The completed process with stdout and stderr captured as text.
+
+    Raises:
+        subprocess.TimeoutExpired: If `timeout` elapses. The process tree is
+            killed before the error propagates.
+    """
+    process = subprocess.Popen(  # noqa: S602
+        command,
+        shell=True,  # Intentional: designed for LLM-controlled shell execution
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        stdin=subprocess.DEVNULL,  # Prevent hanging on commands that read stdin (e.g. python, cat)
+        text=True,
+        env=env,
+        cwd=cwd,
+        start_new_session=(sys.platform != "win32"),
+    )
+    try:
+        stdout, stderr = process.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        _kill_process_tree(process)
+        try:
+            process.communicate(timeout=_KILL_DRAIN_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            logger.warning("Command did not exit after kill; abandoning pid %s", process.pid)
+        raise
+    return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
 
 
 class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
@@ -301,17 +385,11 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
             raise ValueError(msg)
 
         try:
-            result = subprocess.run(  # noqa: S602
+            result = _run_shell_command(
                 command,
-                check=False,
-                shell=True,  # Intentional: designed for LLM-controlled shell execution
-                capture_output=True,
-                stdin=subprocess.DEVNULL,  # Prevent hanging on commands that read stdin (e.g. python, cat)
-                text=True,
                 timeout=effective_timeout,
                 env=self._env,
                 cwd=str(self.cwd),  # Use the root_dir from FilesystemBackend
-                start_new_session=(sys.platform != "win32"),
             )
 
             # Combine stdout and stderr

@@ -3,6 +3,7 @@
 import os
 import sys
 import tempfile
+import time
 import warnings
 from pathlib import Path
 
@@ -397,3 +398,27 @@ class TestLocalShellVirtualModeDefault:
 
         deprecations = [w for w in captured if issubclass(w.category, DeprecationWarning) and "virtual_mode" in str(w.message)]
         assert deprecations == []
+
+
+def test_execute_timeout_kills_the_whole_process_tree() -> None:
+    """A timed-out command must not leave its children running.
+
+    `subprocess.run(timeout=...)` signals only the direct child, and because
+    commands start in a new session the shell's own children are in a separate
+    process group, so they survived the timeout and kept holding whatever they
+    had open (a dev server's port, a build lock).
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        marker = Path(tmpdir) / "orphan-survived"
+        backend = LocalShellBackend(root_dir=tmpdir, timeout=1, inherit_env=True)
+
+        # A backgrounded grandchild that would touch the marker well after the
+        # parent shell is killed, plus a parent that outlives the timeout.
+        result = backend.execute(f"(sleep 2; touch {marker}) & sleep 10")
+
+        assert result.exit_code == 124
+        assert "timed out" in result.output
+
+        # Give the grandchild more than its own delay to prove it is gone.
+        time.sleep(3)
+        assert not marker.exists(), "backgrounded grandchild outlived the timeout"

@@ -54,7 +54,7 @@ from langchain_quickjs._subagent import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Sequence
+    from collections.abc import Sequence
 
     from langchain_core.tools import BaseTool
     from langgraph.prebuilt import ToolRuntime
@@ -968,9 +968,6 @@ class _Registry:
     subagents_enabled: bool = True
     max_subagent_concurrency: int = _DEFAULT_MAX_SUBAGENT_CONCURRENCY
     idle_ttl: float | None = None
-    clock: Callable[[], float] = time.monotonic
-    # Called with each expired slot's id, under the registry lock.
-    on_expire: Callable[[str], None] | None = None
     _slots: dict[str, _Slot] = field(default_factory=dict)
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
@@ -983,7 +980,7 @@ class _Registry:
         if slot is None:
             slot = self._build_slot_locked(thread_id)
             self._slots[thread_id] = slot
-        slot.last_used = self.clock()
+        slot.last_used = time.monotonic()
         return slot
 
     def acquire(self, thread_id: str) -> _Slot:
@@ -1009,13 +1006,6 @@ class _Registry:
             await self._aclose_slot(stale)
         return slot
 
-    def touch(self, thread_id: str) -> None:
-        """Mark the slot for `thread_id` as used now, if it exists."""
-        with self._lock:
-            slot = self._slots.get(thread_id)
-            if slot is not None:
-                slot.last_used = self.clock()
-
     def lease_if_exists(self, thread_id: str) -> _Slot | None:
         """Lease the slot for `thread_id` without creating one."""
         with self._lock:
@@ -1037,21 +1027,18 @@ class _Registry:
     def _release_locked(self, slot: _Slot) -> bool:
         with self._lock:
             slot.leases -= 1
-            slot.last_used = self.clock()
+            slot.last_used = time.monotonic()
             return slot.retired and slot.leases == 0
 
     def _pop_expired_locked(self) -> list[_Slot]:
         if self.idle_ttl is None or not self._slots:
             return []
-        cutoff = self.clock() - self.idle_ttl
+        cutoff = time.monotonic() - self.idle_ttl
         expired_ids = [
             thread_id
             for thread_id, slot in self._slots.items()
             if slot.leases == 0 and slot.last_used <= cutoff
         ]
-        if self.on_expire is not None:
-            for thread_id in expired_ids:
-                self.on_expire(thread_id)
         return [self._slots.pop(thread_id) for thread_id in expired_ids]
 
     def _pop_for_close_locked(self, thread_id: str) -> _Slot | None:

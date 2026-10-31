@@ -325,8 +325,6 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         self._ptc_tools_by_slot: dict[str, tuple[BaseTool, ...]] = {}
         # Rendered `tools` namespace per slot, with the tools it was rendered from.
         self._ptc_prompt_by_slot: dict[str, tuple[tuple[BaseTool, ...], str]] = {}
-        # Expired slots' caches are dropped under the registry lock.
-        self._registry.on_expire = self._drop_slot_caches
         self.tools: list[BaseTool] = [self._build_tool()]
 
     def _build_tool(self) -> BaseTool:
@@ -636,9 +634,6 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         prompt = self._base_prompt(ptc_attached=bool(exposed)) + subagent_section
         slot_id = self._slot_id(getattr(request, "state", {}))
         exposed_tools = tuple(exposed)
-        # Keep the slot from expiring between this model call and its evals,
-        # which read the tools cached here.
-        self._registry.touch(slot_id)
         # Rendering the TS-ish signature block is cheap but not free, so it is
         # cached. One middleware instance serves every run of a compiled
         # graph, and concurrent runs may expose different tools under the

@@ -2252,6 +2252,7 @@ class SummarizationToolMiddleware(AgentMiddleware):
                             "— no messages were summarized or removed."
                         ),
                         tool_call_id=tool_call_id,
+                        status="error",
                     )
                 ],
             }

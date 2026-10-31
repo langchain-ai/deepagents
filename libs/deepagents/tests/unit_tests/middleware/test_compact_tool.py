@@ -405,6 +405,7 @@ class TestCompactErrorHandling:
         msg = result.update["messages"][0]
         assert "Compaction failed" in msg.content
         assert "model unavailable" in msg.content
+        assert msg.status == "error"
         # Should NOT have a _summarization_event (state not modified)
         assert "_summarization_event" not in result.update
 
@@ -434,6 +435,7 @@ class TestCompactErrorHandling:
         assert result.update is not None
         msg = result.update["messages"][0]
         assert "Compaction failed" in msg.content
+        assert msg.status == "error"
         assert "_summarization_event" not in result.update
 
     def test_offload_failure_returns_error_tool_message(self) -> None:
@@ -462,6 +464,7 @@ class TestCompactErrorHandling:
         assert result.update is not None
         msg = result.update["messages"][0]
         assert "Compaction failed" in msg.content
+        assert msg.status == "error"
         assert "_summarization_event" not in result.update
 
 

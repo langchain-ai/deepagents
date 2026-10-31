@@ -352,6 +352,22 @@ def _normalize_content(file_data: FileData) -> str:
     return content
 
 
+def _normalize_newlines(text: str) -> str:
+    r"""Rewrite CRLF and bare CR terminators to LF.
+
+    Gives callers an LF-only view of content that may have been stored with
+    Windows or classic-Mac terminators. Stored content is never rewritten, so
+    `edit()` still matches against the bytes the file was written with.
+
+    Args:
+        text: Content that may carry `\r\n` or bare `\r` terminators.
+
+    Returns:
+        The same text with every line terminator collapsed to `\n`.
+    """
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
 def sanitize_tool_call_id(tool_call_id: str) -> str:
     r"""Return a bounded, path-safe component for a tool call ID."""
     sanitized_id = tool_call_id.replace(".", "_").replace("/", "_").replace("\\", "_")
@@ -683,7 +699,7 @@ def slice_read_response(
     # Normalize line endings to LF, but only across the requested window.
     # State/Store backends may carry CRLF or CR content as written;
     # downstream tooling (edit match, grep, format) assumes LF.
-    sliced = "".join(lines[start_idx:end_idx]).replace("\r\n", "\n").replace("\r", "\n")
+    sliced = _normalize_newlines("".join(lines[start_idx:end_idx]))
     next_offset = end_idx if end_idx < total_lines else None
     return ReadResult(
         file_data=_copy_file_data_with_content(file_data, sliced),
@@ -1098,7 +1114,9 @@ def grep_matches_from_files(
 ) -> GrepResult:
     """Return structured grep matches from an in-memory files mapping.
 
-    Performs literal text search (not regex).
+    Performs literal text search (not regex). CRLF and bare CR terminators are
+    treated as line boundaries and stripped from the returned `text`, so line
+    numbers and match text agree with `read` on the same file.
 
     Returns a `GrepResult` with matches on success. When `max_count` is set, at
     most that many matches are returned; if more exist the scan stops and the
@@ -1128,7 +1146,13 @@ def grep_matches_from_files(
         if file_data.get("encoding") == "base64":
             continue
         content_str = _normalize_content(file_data)
-        for line_num, line in enumerate(content_str.split("\n"), 1):
+        # Use the same line grammar as `slice_read_response` so grep's line
+        # numbers and match text agree with what `read` returns: CRLF and bare
+        # CR are terminators, not content. `splitlines()` is not used here
+        # because it would also split on Unicode separators and would drop the
+        # trailing empty line that this loop's EOF-match behavior relies on.
+        search_view = _normalize_newlines(content_str)
+        for line_num, line in enumerate(search_view.split("\n"), 1):
             if pattern in line:  # Simple substring search for literal matching
                 if max_count is not None and len(matches) >= max_count:
                     # A further match beyond `max_count` proves more exist; stop

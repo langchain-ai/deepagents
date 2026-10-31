@@ -778,3 +778,33 @@ async def test_store_backend_adelete_treats_wildcard_as_literal_key() -> None:
 
     missing = await be.adelete("*")
     assert missing.error is not None and "not found" in missing.error
+
+
+@pytest.mark.parametrize("use_async", [False, True])
+@pytest.mark.parametrize("newline", ["\n", "\r\n", "\r"])
+async def test_store_backend_grep_agrees_with_read_on_any_line_ending(*, use_async: bool, newline: str) -> None:
+    """A stored file keeps its terminators, so grep has to read them the way `read` does.
+
+    Reported upstream as grep retaining CRLF terminators in the match text and
+    collapsing a bare-CR file into a single line.
+    """
+    backend = StoreBackend(store=InMemoryStore(), namespace=lambda _rt: ("filesystem",))
+    backend.write("/notes.txt", newline.join(["before", "needle", "after"]))
+
+    if use_async:
+        result = await backend.agrep("needle", path="/notes.txt")
+    else:
+        result = backend.grep("needle", path="/notes.txt")
+
+    assert result.matches is not None
+    assert len(result.matches) == 1
+    match = result.matches[0]
+    assert match["line"] == 2
+    assert match["text"] == "needle"
+
+    # The line number grep reports must address that line for `read`.
+    read_result = backend.read("/notes.txt", offset=match["line"] - 1, limit=1)
+    assert read_result.file_data is not None
+    assert read_result.start_line == match["line"]
+    assert read_result.total_lines == 3
+    assert read_result.file_data["content"].rstrip("\n") == match["text"]

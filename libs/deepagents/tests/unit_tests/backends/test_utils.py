@@ -731,3 +731,88 @@ class TestGrepRefusedGlobIsAResultNotAnException:
 
         assert result.error is not None
         assert "traversal" in result.error
+
+
+class TestGrepLineEndings:
+    r"""`grep_matches_from_files` must use the same line grammar as `read`.
+
+    `StateBackend`/`StoreBackend` store content exactly as written, so a file
+    can carry `\r\n` or bare `\r` terminators. Both helpers back the same pair
+    of tools on the same file, so an agent that greps to find a line and then
+    reads around it has to land on that line.
+    """
+
+    @staticmethod
+    def _files(content: str) -> dict[str, Any]:
+        return {"/notes.txt": {"content": content}}
+
+    @pytest.mark.parametrize("newline", ["\n", "\r\n", "\r"])
+    def test_match_is_reported_on_its_own_line(self, newline: str) -> None:
+        content = newline.join(["before", "needle", "after"])
+
+        result = grep_matches_from_files(self._files(content), "needle", "/")
+
+        assert result.matches is not None
+        assert len(result.matches) == 1
+        assert result.matches[0]["line"] == 2
+        assert result.matches[0]["text"] == "needle"
+
+    @pytest.mark.parametrize("newline", ["\n", "\r\n", "\r"])
+    def test_match_text_carries_no_terminator(self, newline: str) -> None:
+        r"""A trailing `\r` in the match text reaches the model and breaks `edit`."""
+        content = newline.join(["before", "needle", "after"]) + newline
+
+        result = grep_matches_from_files(self._files(content), "needle", "/")
+
+        assert result.matches is not None
+        assert "\r" not in result.matches[0]["text"]
+
+    @pytest.mark.parametrize("newline", ["\n", "\r\n", "\r"])
+    def test_grep_line_number_addresses_the_same_line_read_returns(self, newline: str) -> None:
+        """The invariant that matters: grep's line number is a valid `read` offset."""
+        content = newline.join(["before", "needle", "after"])
+        matches = grep_matches_from_files(self._files(content), "needle", "/").matches
+        assert matches is not None
+
+        line = matches[0]["line"]
+        read = slice_read_response(FileData(content=content, encoding="utf-8"), offset=line - 1, limit=1)
+
+        assert read.file_data is not None
+        assert read.start_line == line
+        assert read.file_data["content"].rstrip("\n") == matches[0]["text"]
+
+    def test_every_line_of_a_cr_file_is_searched_separately(self) -> None:
+        """A CR file used to collapse into one line, so `max_count` never capped."""
+        content = "hit\rhit\rhit"
+
+        result = grep_matches_from_files(self._files(content), "hit", "/", max_count=2)
+
+        assert result.matches is not None
+        assert len(result.matches) == 2
+        assert result.truncated is True
+
+    def test_mixed_terminators_in_one_file(self) -> None:
+        content = "before\r\nneedle\rafter\nlast"
+
+        matches = grep_matches_from_files(self._files(content), "needle", "/").matches
+
+        assert matches is not None
+        assert matches[0]["line"] == 2
+        assert matches[0]["text"] == "needle"
+
+    def test_crlf_does_not_create_a_blank_line_between_rows(self) -> None:
+        r"""Splitting CRLF on LF alone would leave a stray `\r`, not an extra line."""
+        content = "a\r\nb\r\nc"
+
+        matches = grep_matches_from_files(self._files(content), "", "/").matches
+
+        assert matches is not None
+        assert [m["line"] for m in matches] == [1, 2, 3]
+        assert [m["text"] for m in matches] == ["a", "b", "c"]
+
+    def test_trailing_newline_still_yields_a_final_empty_line(self) -> None:
+        """Pre-existing EOF behavior: the terminator leaves an empty last line."""
+        matches = grep_matches_from_files(self._files("a\r\n"), "", "/").matches
+
+        assert matches is not None
+        assert [(m["line"], m["text"]) for m in matches] == [(1, "a"), (2, "")]

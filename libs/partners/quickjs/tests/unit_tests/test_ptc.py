@@ -627,7 +627,7 @@ def test_middleware_ptc_default_off_omits_prompt_block() -> None:
     from types import SimpleNamespace
 
     req = SimpleNamespace(tools=[_greet_tool()])
-    prompt = mw._prepare_for_call(req)
+    prompt, _ = mw._prepare_for_call(req)
     assert "`tools` namespace" not in prompt
 
 
@@ -637,7 +637,7 @@ def test_middleware_ptc_list_includes_prompt_block() -> None:
     mw = CodeInterpreterMiddleware(ptc=["greet", "eval"])
     state = {"_quickjs_slot_id": "ptc-prompt"}
     req = SimpleNamespace(tools=[_greet_tool(), _echo_tool("eval")], state=state)
-    prompt = mw._prepare_for_call(req)
+    prompt, _ = mw._prepare_for_call(req)
     # Greet included
     assert "tools.greet(" in prompt
     # The REPL's own tool never appears
@@ -651,7 +651,7 @@ def test_middleware_ptc_list_of_tools_exposes_without_agent_tools() -> None:
     mw = CodeInterpreterMiddleware(ptc=[_greet_tool()])
     state = {"_quickjs_slot_id": "ptc-tool-only"}
     req = SimpleNamespace(tools=[], state=state)
-    prompt = mw._prepare_for_call(req)
+    prompt, _ = mw._prepare_for_call(req)
     assert "tools.greet(" in prompt
 
 
@@ -675,13 +675,13 @@ def test_middleware_ptc_prompt_follows_each_slots_own_tools() -> None:
     acme = {"_quickjs_slot_id": "run-acme"}
     globex = {"_quickjs_slot_id": "run-globex"}
 
-    acme_prompt = mw._prepare_for_call(
+    acme_prompt, _ = mw._prepare_for_call(
         SimpleNamespace(tools=[lookup_tool("Search acme issues.")], state=acme)
     )
-    globex_prompt = mw._prepare_for_call(
+    globex_prompt, _ = mw._prepare_for_call(
         SimpleNamespace(tools=[lookup_tool("Search globex issues.")], state=globex)
     )
-    swapped = mw._prepare_for_call(
+    swapped, _ = mw._prepare_for_call(
         SimpleNamespace(tools=[lookup_tool("Search acme pull requests.")], state=acme)
     )
 

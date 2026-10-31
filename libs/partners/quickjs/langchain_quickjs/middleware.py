@@ -500,10 +500,11 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         runtime: "Runtime[ContextT]",  # noqa: ARG002
     ) -> dict[str, Any] | None:
         """Assign a private slot and authenticate snapshots without creating a VM."""
-        stale_slot_id = self._stale_slot_id(state)
-        if stale_slot_id is not None:
-            self._drop_slot_caches(stale_slot_id)
-            self._registry.evict(stale_slot_id)
+        # Never runs on resume, so a live slot here was left by a run that died
+        # before `after_agent`; close it so the next eval restores the snapshot.
+        if slot_id := state.get("_quickjs_slot_id"):
+            self._drop_slot_caches(slot_id)
+            self._registry.evict(slot_id)
         return self._prepare_slot(state)
 
     async def abefore_agent(
@@ -512,28 +513,11 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         runtime: "Runtime[ContextT]",  # noqa: ARG002
     ) -> dict[str, Any] | None:
         """Async variant of `before_agent`."""
-        stale_slot_id = self._stale_slot_id(state)
-        if stale_slot_id is not None:
-            self._drop_slot_caches(stale_slot_id)
-            await self._registry.aevict(stale_slot_id)
+        # See `before_agent`: any live slot here was left by a dead run.
+        if slot_id := state.get("_quickjs_slot_id"):
+            self._drop_slot_caches(slot_id)
+            await self._registry.aevict(slot_id)
         return self._prepare_slot(state)
-
-    def _stale_slot_id(self, state: Mapping[str, object]) -> str | None:
-        """Return this thread's slot id if a previous run left its slot open.
-
-        `before_agent` runs only when a new run starts, never on resume from
-        an interrupt. A slot still registered here belongs to a run that
-        ended without reaching `after_agent` (an error, a cancellation, a
-        closed stream, or an interrupt abandoned for a new input). Its JS
-        state is not what was checkpointed, so it is closed and the next eval
-        restores from the persisted snapshot instead.
-        """
-        slot_id = state.get("_quickjs_slot_id")
-        if not isinstance(slot_id, str) or not slot_id:
-            return None
-        if self._registry.get_if_exists(slot_id) is None:
-            return None
-        return slot_id
 
     def _drop_slot_caches(self, slot_id: str) -> None:
         self._ptc_tools_by_slot.pop(slot_id, None)

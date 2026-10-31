@@ -9,7 +9,8 @@ slots must not accumulate forever.
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Literal
+import time
+from typing import TYPE_CHECKING, Any, Literal
 from unittest.mock import patch
 
 import pytest
@@ -22,6 +23,9 @@ from langgraph.types import Command, interrupt
 from langchain_quickjs import CodeInterpreterMiddleware
 from langchain_quickjs._repl import _Registry
 from tests._common import FakeChatModel
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 InvokeMode = Literal["invoke", "ainvoke"]
 
@@ -194,18 +198,36 @@ class _Clock:
         return self.now
 
 
-def _registry(clock: _Clock, idle_ttl: float | None = 60.0) -> _Registry:
-    return _Registry(
+def _registry(
+    clock: Callable[[], float] | None = None,
+    idle_ttl: float | None = 60.0,
+    *,
+    reaper: bool = False,
+) -> _Registry:
+    """Build a registry. Without `reaper`, tests step `_reap_once` by hand."""
+    reg = _Registry(
         memory_limit=32 * 1024 * 1024,
         timeout=5.0,
         capture_console=True,
         max_stdout_chars=4000,
         idle_ttl=idle_ttl,
-        clock=clock,
+        clock=clock or time.monotonic,
     )
+    if not reaper:
+        reg._ensure_reaper_locked = lambda: None  # type: ignore[method-assign]
+    return reg
 
 
-def test_idle_slot_is_closed_after_ttl() -> None:
+def _wait_for(predicate: Callable[[], bool], timeout: float = 5.0) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.01)
+    return predicate()
+
+
+def test_idle_slot_is_reaped_without_further_traffic() -> None:
     clock = _Clock()
     expired: list[str] = []
     reg = _registry(clock)
@@ -215,49 +237,49 @@ def test_idle_slot_is_closed_after_ttl() -> None:
         reg.release(slot)
 
         clock.now += 59
-        reg.sweep()
+        assert reg._reap_once() == pytest.approx(1.0)
         assert "idle" in reg._slots
 
         clock.now += 2
         with patch.object(reg, "_close_slot", wraps=reg._close_slot) as close_spy:
-            other = reg.acquire("other")  # any access sweeps lazily
+            assert reg._reap_once() is None
         close_spy.assert_called_once_with(slot)
         assert "idle" not in reg._slots
         assert expired == ["idle"]
-        reg.release(other)
     finally:
         reg.close()
 
 
-async def test_idle_slot_is_closed_after_ttl_async() -> None:
-    clock = _Clock()
-    reg = _registry(clock)
-    try:
-        slot = await reg.aacquire("idle")
-        await reg.arelease(slot)
-        clock.now += 61
-        await reg.asweep()
-        assert "idle" not in reg._slots
-    finally:
-        reg.close()
-
-
-def test_busy_slot_is_never_closed_by_ttl() -> None:
+def test_leased_slot_is_never_reaped() -> None:
     clock = _Clock()
     reg = _registry(clock)
     try:
         slot = reg.acquire("busy")
         clock.now += 3600
-        reg.sweep()
+        assert reg._reap_once() is None  # nothing can expire while leased
         assert reg._slots["busy"] is slot
         assert slot.repl.eval_sync("1 + 1").result == "2"
 
         reg.release(slot)  # release refreshes last_used
-        reg.sweep()
+        assert reg._reap_once() == pytest.approx(60.0)
         assert "busy" in reg._slots
         clock.now += 61
-        reg.sweep()
+        reg._reap_once()
         assert "busy" not in reg._slots
+    finally:
+        reg.close()
+
+
+def test_touch_postpones_expiry() -> None:
+    clock = _Clock()
+    reg = _registry(clock)
+    try:
+        reg.release(reg.acquire("t"))
+        clock.now += 50
+        reg.touch("t")
+        clock.now += 50
+        reg._reap_once()
+        assert "t" in reg._slots
     finally:
         reg.close()
 
@@ -277,16 +299,72 @@ def test_evicting_a_busy_slot_defers_close_to_release() -> None:
         reg.close()
 
 
-def test_idle_ttl_none_disables_sweep() -> None:
+def test_idle_ttl_none_starts_no_reaper() -> None:
     clock = _Clock()
-    reg = _registry(clock, idle_ttl=None)
+    reg = _registry(clock, idle_ttl=None, reaper=True)
     try:
         reg.release(reg.acquire("kept"))
+        assert reg._reaper is None
         clock.now += 10**9
-        reg.sweep()
+        assert reg._reap_once() is None
         assert "kept" in reg._slots
     finally:
         reg.close()
+
+
+def test_reaper_thread_reaps_idle_slot_and_exits_when_empty() -> None:
+    reg = _registry(idle_ttl=0.05, reaper=True)
+    try:
+        reg.release(reg.acquire("idle"))
+        reaper = reg._reaper
+        assert reaper is not None
+        assert reaper.daemon
+        assert _wait_for(lambda: not reg._slots)
+        reaper.join(timeout=5)
+        assert not reaper.is_alive()
+        assert reg._reaper is None
+
+        # A new slot starts a new reaper.
+        reg.release(reg.acquire("again"))
+        assert reg._reaper is not None
+        assert reg._reaper is not reaper
+        assert _wait_for(lambda: not reg._slots)
+    finally:
+        reg.close()
+
+
+def test_reaper_thread_skips_leased_slot_until_release() -> None:
+    reg = _registry(idle_ttl=0.05, reaper=True)
+    try:
+        slot = reg.acquire("busy")
+        time.sleep(0.3)
+        assert reg._slots.get("busy") is slot
+        reg.release(slot)
+        assert _wait_for(lambda: "busy" not in reg._slots)
+    finally:
+        reg.close()
+
+
+def test_close_stops_the_reaper() -> None:
+    reg = _registry(idle_ttl=60.0, reaper=True)
+    reg.release(reg.acquire("a"))
+    reaper = reg._reaper
+    assert reaper is not None
+    reg.close()
+    reaper.join(timeout=5)
+    assert not reaper.is_alive()
+
+
+def test_reaper_clears_middleware_ptc_caches() -> None:
+    mw = CodeInterpreterMiddleware(idle_ttl=0.05)
+    try:
+        mw._ptc_tools_by_slot["s"] = ()
+        mw._ptc_prompt_by_slot["s"] = ((), "")
+        mw._registry.release(mw._registry.acquire("s"))
+        assert _wait_for(lambda: "s" not in mw._ptc_tools_by_slot)
+        assert "s" not in mw._ptc_prompt_by_slot
+    finally:
+        mw._registry.close()
 
 
 @pytest.mark.parametrize("bad", [0, -1.0])

@@ -2,6 +2,28 @@
 
 # Deep Agents Code Changelog
 
+## [0.2.3](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.2.2...deepagents-code==0.2.3) (2026-10-31)
+
+
+### Features
+
+* **code:** defer MCP schemas with provider-native tool search ([#7304](https://github.com/langchain-ai/deepagents/issues/7304)) ([f9cbdba](https://github.com/langchain-ai/deepagents/commit/f9cbdbaebe9a07c3024d389bbaa2cabde4fc3a7b))
+* **code:** show MCP tool counts in `/tools` headers ([#7327](https://github.com/langchain-ai/deepagents/issues/7327)) ([93143ba](https://github.com/langchain-ai/deepagents/commit/93143ba1b501bd94307f6e7009f8abca11abcd9c))
+* **code:** support `DEEPAGENTS_CODE_LANGSMITH_PROJECT_URL` and cache rejected project lookups ([#7332](https://github.com/langchain-ai/deepagents/issues/7332)) ([028439e](https://github.com/langchain-ai/deepagents/commit/028439ef1bfdca7207713d018fe9b476ba1f996e))
+
+
+### Bug Fixes
+
+* **code:** delay tool group progress to avoid flashing ([#7357](https://github.com/langchain-ai/deepagents/issues/7357)) ([cd24d8c](https://github.com/langchain-ai/deepagents/commit/cd24d8c52849fdb24e0ac2cab2f909f8df6ba5ca))
+* **code:** enable Claude prompt caching on OpenRouter ([#7358](https://github.com/langchain-ai/deepagents/issues/7358)) ([417af26](https://github.com/langchain-ai/deepagents/commit/417af26f694d7d65f82e7f89e037c4565a47f955))
+* **code:** surface model replies that stop before producing output ([#7333](https://github.com/langchain-ai/deepagents/issues/7333)) ([4ff9266](https://github.com/langchain-ai/deepagents/commit/4ff926659cfb1281b01d6821052135cef151dde3))
+
+
+### Performance Improvements
+
+* **code:** remove redundant MCP startup probes ([#7303](https://github.com/langchain-ai/deepagents/issues/7303)) ([1f4237a](https://github.com/langchain-ai/deepagents/commit/1f4237af32eef17581e507f914424d523fd7b296))
+* **code:** reuse Git status for local context branch detection ([#7299](https://github.com/langchain-ai/deepagents/issues/7299)) ([da49416](https://github.com/langchain-ai/deepagents/commit/da49416595221317b8a2951a1f861b54fd3ad499))
+
 ## [0.2.2](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.2.1...deepagents-code==0.2.2) (2026-10-26)
 
 This update includes considerable security and performance improvements. We recommend upgrading as soon as feasible.

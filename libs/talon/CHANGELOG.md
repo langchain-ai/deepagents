@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.1.1](https://github.com/langchain-ai/deepagents/compare/deepagents-talon==0.1.0...deepagents-talon==0.1.1) (2026-10-31)
+
+
+### Features
+
+* **talon:** add main-agent command hooks ([#7380](https://github.com/langchain-ai/deepagents/issues/7380)) ([13e3eab](https://github.com/langchain-ai/deepagents/commit/13e3eab6064015e700e8c3e1c41efcc222d8d62b))
+* **talon:** run command hooks in local subagents ([#7381](https://github.com/langchain-ai/deepagents/issues/7381)) ([f8a6a7f](https://github.com/langchain-ai/deepagents/commit/f8a6a7fdd7241dea0c40fb31d30cd3c4c98f95fb))
+* **talon:** support DeepSeek reasoning levels ([#7439](https://github.com/langchain-ai/deepagents/issues/7439)) ([3a217ce](https://github.com/langchain-ai/deepagents/commit/3a217cec7183b601f2b33e0144e09bb50ad44f01))
+* **talon:** support skill-scoped MCP tools ([#7280](https://github.com/langchain-ai/deepagents/issues/7280)) ([2a5b748](https://github.com/langchain-ai/deepagents/commit/2a5b748dcc1e76c3eb5cd1735351e230788f00d7))
+
+
+### Bug Fixes
+
+* **talon:** erase hook transcripts with conversation history ([#7382](https://github.com/langchain-ai/deepagents/issues/7382)) ([701c986](https://github.com/langchain-ai/deepagents/commit/701c986640635807ee19b5b0adce63ea9c8f888d))
+* **talon:** preserve gateway provider reasoning controls ([#7047](https://github.com/langchain-ai/deepagents/issues/7047)) ([1e3bbef](https://github.com/langchain-ai/deepagents/commit/1e3bbef613ab916161115fe47b29463a905147b0))
+
 ## [0.1.0](https://github.com/langchain-ai/deepagents/compare/deepagents-talon==0.0.9...deepagents-talon==0.1.0) (2026-10-22)
 
 ### ⚠ BREAKING CHANGES

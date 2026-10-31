@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:5fbe4e9242dbf8ea7863eda2aaceea8ff8a14b5ff28cbf0ad83d7736079a99bb",
+  "pageVersion": "sha256:b73868114ac6318ab4e3a3e38931ba0dc707dcd1f9c8c5e3f8d3245a7bfe329e",
   "claims": [
     {
       "id": "claim_f69e854889dc465d8c71bec1dd14bbd5",
@@ -311,10 +311,70 @@
           "version": "repo-lines-v1:sha256:bb7d0cab1a2d1c3ae2862ee2e2608661ea7ab6abd6cd23b34556c3bb96ad138c:eyJzZWxlY3RlZExpbmVDb3VudCI6NywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMzIyYjQyNTQxZTNmNjI3ZjhjZjQyMDY3NjhkZTI4NjA4MTVlZGJiYTc5YWE2ZTczMTZlNmQwNjAwNWM1M2VkMiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNTYyMmI3NzRiMTFhMjU0ZGU5NTUyYzIxYjE5NjExYTcxODU3NjVhMjEwNmZjZDM5MmRlNDVhZmNhYzAzOTk4OCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNjM0Mzk1NmMzMzZmNGQzZTNhYjBhNDM1NDcyMDhmMzg2ZjQwNjIzNTYwZjk5NTU3YmIzY2EzNmY5YzhiMmU3NCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZGI4MmM5OGM3NmRmM2QxMmUxZDQzMmFmMWNiODk5MWJmY2M0YjUwOGFiYjE2Njg3OTM5MzczNjRmMzZkYjRiYiJ9"
         }
       ]
+    },
+    {
+      "id": "claim_38193c3edaf1401db116b74d8071b139",
+      "statement": "Talon's /effort command validates a model-specific label against its resolved levels before persisting an assistant-wide per-model selection; unsupported labels do not write state or create a model turn, while default removes the selection.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/deepagents_talon/config.py#L265-L282",
+          "version": "repo-lines-v1:sha256:55ef62425f6bc73f6356af75da4ff34a7cbfae4b21b481c95e00bd345f0e3bc4:eyJzZWxlY3RlZExpbmVDb3VudCI6MTgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImYzZDAwY2YyNzA5NjRkNDRhMTNkZmFjODc1MmIwOWZjYzQzNWIwZjE5YjMxNmFiY2Y4MWE3YWE2NGJiMTIyZDYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjJiMWQ2ZDI1MDc1ZDg5Njk4NDRlNWI5MjYxNmNhYjc3OTMwNDI2ODY3MTY1YzdmNGUyNjQ2YjgzYTc0N2UyZDkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImEyOGZmNWVjYzRmN2Q2ZWExOWFmZTRlM2NjOTk4ODBiMmMxYzA3M2JjNzQ1OWUxNWRiOTEyOGViNmFmZjVmNGEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImRhNzIwZmMxNTFjODdkMTU2MDdmOWQ2NTM4NTRkODkwODk4YzJhZjlkMDMwNzI5ZWI4MGQ0MGNhOGRlYWE3MzgifQ"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/host.py#L754-L789",
+          "version": "repo-lines-v1:sha256:c754f00722a91cde33d35a80af587d718922eddb32df5c1d95a5a9933515e315:eyJzZWxlY3RlZExpbmVDb3VudCI6MzYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZjMTQxZWFhMTEyM2IxNzZiOWMwNGNiYTE2NWI5NWI2NjZhN2IyMWE4NGVmNmQ2MWYzNGMzYzFjNzYwZWY2MTIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ4Mzg3MzgzOTg0MjczOTMxMDRjODQ4NDg2N2U1NjgwYmVhYzQzYzcwZDQzOGJiODg2YTdkOTBlNDk0MTllMzEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjdiOWI1ODk5YTUwMTcwZTE4ZDVjMWJhMDgxMDM0ZjQyNDBiYTUyNmM2OWRjMjcxZmFiNTM1ZmQ2N2RiNmJlYzUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjAxMTVmZDgxM2RhMDcwZDM5OTk0ZjZlNjM5Y2Y1MjQ2MDFiOGRjMDQyYWRkYjVlOTZmNTY5ODNmNzVjZTM3M2MifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_2a2b15962fef42e4a8a56474cd6fe48b",
+      "statement": "Talon derives effort controls from normalized native aliases and special DeepSeek, Qwen, and GLM families, otherwise using dcode's advertised levels or Talon's documented exact-model fallback; effort_settings rejects other labels and maps admitted controls to generic reasoning_effort or provider-native extra_body settings.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/deepagents_talon/effort.py#L62-L150",
+          "version": "repo-lines-v1:sha256:c9c984f1005499b3b849881ee1b351b4928f6d1322eeafaf4b443648c1b07ce1:eyJzZWxlY3RlZExpbmVDb3VudCI6ODksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU0NzBhYjhlZDdiOTRjOWNmNDE4MWJiYjExMWRiMGM5OGY5NTYzMGM0YTNiOGQ2YWQ1NzMzMWNjNGFkNTkzOWYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM5NzE4OWI5ZjMzNTk1NGNhOGMyNThmOGQ2Y2NmNDc5NGQwZjg2NjRhMGM5ZWRlZTVkNzExZDc3ZGFlZjE0YzAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjA5ZjkzMDgzYzE5NzEyMWI5ODI3MDBiYThhZmFiZDE3MjJjZjFkM2U3NDA0NTA5ZTgwZWZhMjcyNDdmNjJmMDciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjFlZDMyYjQ1ZWE2MzZhNzY1N2NlYTcxMDhkMmUyMWI3NTE2OTk5MGI0OWVhNTU5OTcyNGQ3MDllNGZkN2ZhOGYifQ"
+        },
+        {
+          "resource": "repo://libs/talon/tests/unit_tests/test_effort.py#L141-L304",
+          "version": "repo-lines-v1:sha256:dc11f04e29e88681071e4a9142406f2107d19db339c2ae0c1ae19e6c216f55c8:eyJzZWxlY3RlZExpbmVDb3VudCI6MTY0LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI0MjNjM2IyOGJjMTA1Y2M3NzFkYTdlMmM1ZGRjNWMxNGJlNDI1NTE1NDQ0OTFlOWUzMjNlN2Y1MTdiODEzNDhhIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiIxYWNhOWYxZTZlNGYyOGNmNzRjMDlkMmVhNDYyNjUzN2IzOWRmNjVhZTIwNGZmZmNjMGZmMWNkOGE0N2RkMTJlIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJmZDFmN2RkY2M3ODIwMjg1MzFlNWJiNDQyM2I2NzJhNDQxNTk3MDdkYWNjMjQ1ZDdmZWQ1N2MyYjVkZTIwYzRmIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiJlMjU5YjhjMTQzMjI5NWZlOTY0NmVhOWJlODUwNjczYmRiNjU3OTlhYjFhNTY3MWRhOWM5YTE2M2FlOWY0ZGY5In0"
+        }
+      ]
+    },
+    {
+      "id": "claim_55a130b8cc534384aa6b99ed99cbc577",
+      "statement": "For a Talon turn, the runtime revalidates the requested effort, scopes settings with a ContextVar, and resets it on exit; ModelSelectionMiddleware merges those settings into main-agent model requests while preserving unrelated nested extra_body settings and skipping delegated subagents.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/deepagents_talon/model_selection.py#L272-L291",
+          "version": "repo-lines-v1:sha256:45e4b1156a25308f20cac4f83aceb373b6a212f350069e3a96662b1500be935b:eyJzZWxlY3RlZExpbmVDb3VudCI6MjAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImYxZDQyNDYwYjRmMzNhYTA3MmI2ZWZlYzczZjhkYWI0NWMyYzhiYzIzMTQyMTlkNDZhY2Y2MjI2NDY2NzliYmYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImNkN2UzNGFmMDU5MjhjODkyYzU5YjVhZmJjZGRkZDNkNzRkZjEzYTY5MjlmNzcyMmJkNjk4Mjk4MDgwNjViNjkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjEzMTdmMzBmMGM1MDFiODk5ZjQ5NjExMmQ1NTBlMGUxYjc4NDU5NWI1Y2ZhZGE2NDhiOTBkZGQ3NWJiMWZkNjEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjIwNjk3MTJmMzlhMTdmNjYyOWM3MWI0MGZjYjM4YjUzMDQwNTI3ZDJkOTI4ZWRkZWE5YTgxNDc1ZWE5NWNiMzUifQ"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/runtime.py#L628-L646",
+          "version": "repo-lines-v1:sha256:af2886cf75166a71d7279faf82781bb0d55d78e8f74955234082602f5b1a7bfc:eyJzZWxlY3RlZExpbmVDb3VudCI6MTksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjIzZTg4YjFkY2VhMWQxNDNlYzJjNDAwMjcyNTNjNjIxMmE4ZmM4Mzg1Yzg2MzliZTM2Y2M2YzQzNWRlMDc1NmMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQzMDY1ZDVjMTZmMjczNjY1MGYzMzg0NjQ2MWFjMDkwNmE4ZDY0NjlhNTU0YWMxNzlhMWYzNjcxZmQ3NmQwZTkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjRkNDIxNjM2MGJkM2M5YmIxYzZlN2Q0ODZmMmFhZTIwY2VlMWE0MjIzMDJmNDY0ZDZmOGRlMTIzNzNmNWRmNjEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjJlZjY2MWU2Y2E3YTM3ODI1ZTUzNGFlODI1ZWVmMmJiOWYxY2M4MDVkMTllYjE0NzliMDNjNmQzMzUzNzdhMDcifQ"
+        },
+        {
+          "resource": "repo://libs/talon/tests/unit_tests/test_effort.py#L320-L364",
+          "version": "repo-lines-v1:sha256:3c1b39b69f7289e530677941e345e7a3aaf59cd5ed75d8483a2cf5cd59516904:eyJzZWxlY3RlZExpbmVDb3VudCI6NDUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg0ZmUyOWM3ZmQ2NDc2ZDNjNWE2Njc2YzRjOWIzNTAyZGMyYmI0MDJmZGYyODAxMmM5ZDMzODk1MDFlNjhhZTciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQzODMyYzFiZDY3ZGE2NjcwZmI1ODg5NjVmOWQyZjljZWI5NDk0MWEyMWFiZWVlOWU4MjY2ZGM2ZTI0YWZiYmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijk5NDk3NTBhNzhkODc4YTFkMjI5NWQ3MGFlNDQ3OWUzOTc2MmVkMTE5NGZmYzg0Zjg3NWFjNTRjYjE3ZGVlOWMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_7064308273194a42a67200df8a2bb4ec",
+      "statement": "Talon discovers selectable models only from credentialed providers in its own environment plus validated unified-gateway models, requires an exact catalog match before constructing a non-default selection, and caches constructed models; this model-selection boundary is distinct from /effort controls.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/deepagents_talon/model_selection.py#L138-L236",
+          "version": "repo-lines-v1:sha256:bc8a354902c9a3aa5eaec082b65fb7e195c8a81c1fe034d7f5a8a3ba19dac86b:eyJzZWxlY3RlZExpbmVDb3VudCI6OTksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjRmY2Q3ZGZhYTMwZGRjYWEwYTQyZDM2MDViNjNkYWE3MjdlNjAxODdiMGEwNzhiOWVjMzM5Y2FiZDUyMGM2OTYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjFiZmVlMzE5NzFjZWI2NDNhOTkzNmE1NzZhOWE1N2I1MGVkZmZmNzVjYjE5ZDAxOTk3ZTA5ZjE5Mjc2Njk0MDIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjlhODJlYmU5ZWQ0MDdjM2E2YmE0YjAwMzQyOTJiYWE1MmMxMWNlNWFlMjg2MTA3NDAyZGU0NzkyZWVlY2FjZmMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImZkMGIwOWEzMjFlZTBkMTFjYTBiNTZjNGI5ODc5YmI0YzJjY2Q1OTViMTgyZmYwZDdiMjMwOGY4ZjRjNTUwZTMifQ"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/runtime.py#L608-L626",
+          "version": "repo-lines-v1:sha256:52e5966177c54a271b0f83ae68ff7243f856d5f2b2fb0a7e5f139088a7159d12:eyJzZWxlY3RlZExpbmVDb3VudCI6MTksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE2YTU5MTYyZDI2YzA5MWZkMmUwYTA1ZjljOGQzYTg3ODBlYTcyZjI5MDIyY2UwZThmODZiNmQ4MjIyNTg0MjAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQxMDQyNGJkZTNhZDkxZmY4ZGFlYTgxYTRhYTUwNGIyZmU5ZDM3OTIzZjU5Mzc5MTUyZDU0M2Q3YjRkZWFmNzEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijc5YmQ3MjkxNzdmZGU2MmFmMDVhZjhiZGE3MTZjMmFiM2VmYzllYjM4Y2ZhYmRkOThlYjI2ZDkzNjM4NmUwZmYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijg1ZDhhZTFkNTk5OGFlNzg1NjNjZTIyNTBlMGVhYTE1ZDIzMDBiZDQyODk3YWMwYjAzNzVjMjc4ZTQzMGQ5MjgifQ"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-10-30T08:04:27.172Z"
+    "at": "2026-10-31T08:04:00.426Z"
   }
 }

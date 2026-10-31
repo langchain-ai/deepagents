@@ -14,7 +14,7 @@ from langchain.tools import ToolRuntime
 from langchain_core.messages import ToolMessage
 from langchain_core.tools import BaseTool, StructuredTool
 from langgraph.types import Command
-from pydantic import BaseModel, Field, create_model
+from pydantic import BaseModel, Field
 from quickjs_rs import Runtime, ThreadWorker
 from typing_extensions import TypedDict
 
@@ -882,7 +882,6 @@ def _stub() -> None:
         (type(None), "Promise<null>"),
         # Containers of primitives.
         (list[int], "Promise<number[]>"),
-        # `dict[str, V]` renders its `additionalProperties` value type.
         (dict[str, int], "Promise<Record<string, number>>"),
         (list[int | None], "Promise<(number | null)[]>"),
         # Optional / Literal / unions all flow through `anyOf` or `enum`.
@@ -892,10 +891,9 @@ def _stub() -> None:
         # Top-level TypedDict / BaseModel — Pydantic inlines the schema.
         (_UserLookup, "Promise<{ id: number; name: string }>"),
         (_Status, "Promise<{ status: string; count: number }>"),
-        # Collections of TypedDict / BaseModel hit `$ref` and render as a
-        # named alias declared once above the signatures.
-        (list[_UserLookup], "Promise<UserLookup[]>"),
-        (list[_Status], "Promise<Status[]>"),
+        # Collections of TypedDict / BaseModel resolve their `$ref` inline.
+        (list[_UserLookup], "Promise<{ id: number; name: string }[]>"),
+        (list[_Status], "Promise<{ status: string; count: number }[]>"),
     ],
 )
 def test_render_ptc_prompt_return_types(annotation: Any, expected: str) -> None:
@@ -951,40 +949,36 @@ async def test_pydantic_return_arrives_as_object_matching_schema(
 
 
 # ---------------------------------------------------------------------------
-# Nested schema (`$defs` / `$ref`) rendering
+# Nested models
 # ---------------------------------------------------------------------------
 
 
 class _Address(BaseModel):
     city: str
-    postal_code: str
 
 
 class _User(BaseModel):
     name: str
     address: _Address
+    home: _Address | None = None
 
 
-class _BatchInput(BaseModel):
+class _UsersInput(BaseModel):
     users: list[_User]
 
 
 class _TreeNode(BaseModel):
     value: int
     children: list[_TreeNode] = []
-    parent: _TreeNode | None = None
-
-
-class _Contact(BaseModel):
-    home: _Address | None = Field(default=None, description="Home address.")
-    others: dict[str, _Address] = {}
 
 
 def _normalize_users(users: list[_User]) -> list[_User]:
+    """Normalize users."""
     return users
 
 
 def _walk(value: int, children: list[_TreeNode] | None = None) -> _TreeNode:
+    """Walk a tree."""
     return _TreeNode(value=value, children=children or [])
 
 
@@ -993,125 +987,19 @@ def _ptc_body(tools: list[BaseTool]) -> str:
     return render_ptc_prompt(tools).rsplit("```typescript\n", 1)[1]
 
 
-def test_nested_models_render_as_named_types() -> None:
-    """Nested input and return models resolve instead of collapsing to `unknown`."""
+def test_nested_models_render_inline() -> None:
+    """Nested, list-of-model and Optional fields render inline, not `unknown`."""
+    user = "{ name: string; address: { city: string }; home?: { city: string } | null }"
     tool = StructuredTool.from_function(
-        name="normalize_users",
-        description="Normalize users.",
-        func=_normalize_users,
-        args_schema=_BatchInput,
+        _normalize_users, name="normalize_users", args_schema=_UsersInput
     )
     body = _ptc_body([tool])
-    assert "unknown" not in body, body
-    assert "type Address = { city: string; postal_code: string };" in body
-    assert "type User = { name: string; address: Address };" in body
-    assert "  users: User[];\n}): Promise<User[]>" in body
+    assert f"  users: {user}[];\n}}): Promise<{user}[]>" in body
 
 
-def test_optional_and_mapping_fields_resolve_refs() -> None:
-    """`Optional[Model]` and `dict[str, Model]` render the referenced alias."""
-    tool = StructuredTool.from_function(
-        name="save_contact",
-        description="Save a contact.",
-        func=lambda **_: None,
-        args_schema=_Contact,
-    )
+def test_recursive_model_back_reference_renders_unknown() -> None:
+    """A model's reference to itself is cut off as `unknown`."""
+    tool = StructuredTool.from_function(_walk, name="walk", args_schema=_TreeNode)
     body = _ptc_body([tool])
-    assert "home?: Address | null;" in body
-    assert "*Home address." in body
-    assert "others?: Record<string, Address>;" in body
-
-
-def test_self_referential_model_renders_by_name() -> None:
-    """A recursive model refers to its own alias rather than expanding forever."""
-    tool = StructuredTool.from_function(
-        name="walk",
-        description="Walk a tree.",
-        func=_walk,
-        args_schema=_TreeNode,
-    )
-    body = _ptc_body([tool])
-    assert (
-        "type TreeNode = { value: number; children?: TreeNode[]; "
-        "parent?: TreeNode | null };"
-    ) in body
-    assert "  children?: TreeNode[];" in body
-    assert "): Promise<TreeNode>" in body
-
-
-def test_shared_models_are_declared_once_across_tools() -> None:
-    """A model used by several tools gets a single declaration."""
-    tools: list[BaseTool] = [
-        StructuredTool.from_function(
-            name="normalize_users",
-            description="Normalize users.",
-            func=_normalize_users,
-            args_schema=_BatchInput,
-        ),
-        StructuredTool.from_function(
-            name="save_contact",
-            description="Save a contact.",
-            func=lambda **_: None,
-            args_schema=_Contact,
-        ),
-    ]
-    body = _ptc_body(tools)
-    assert body.count("type Address = ") == 1, body
-    assert "Address2" not in body
-
-
-def test_same_named_models_from_different_modules_get_distinct_aliases() -> None:
-    """Pydantic qualifies clashing class names; each gets its own alias."""
-    home = create_model("Address", __module__="billing", city=(str, ...))
-    work = create_model("Address", __module__="shipping", street=(str, ...))
-    tools: list[BaseTool] = [
-        StructuredTool.from_function(
-            name=f"save_{name}",
-            description="Save an address.",
-            func=lambda **_: None,
-            args_schema=create_model(f"Save{name}", address=(model, ...)),
-        )
-        for name, model in (("home", home), ("work", work))
-    ]
-    body = _ptc_body(tools)
-    assert "type BillingAddress = { city: string };" in body, body
-    assert "type ShippingAddress = { street: string };" in body
-    assert "  address: BillingAddress;" in body
-    assert "  address: ShippingAddress;" in body
-
-
-def test_model_named_after_ts_helper_is_renamed() -> None:
-    """A model named like a TS helper used by the prompt doesn't shadow it."""
-    promise = create_model("Promise", ok=(bool, ...))
-    tool = StructuredTool.from_function(
-        name="check",
-        description="Check.",
-        func=lambda **_: None,
-        args_schema=create_model("CheckInput", result=(promise, ...)),
-    )
-    body = _ptc_body([tool])
-    assert "type Promise2 = { ok: boolean };" in body
-    assert "  result: Promise2;" in body
-
-
-def test_custom_args_schema_falls_back_to_declared_schema() -> None:
-    """A customized `model_json_schema` is rendered as declared, per tool."""
-
-    class _Custom(BaseModel):
-        query: str
-
-        @classmethod
-        def model_json_schema(cls, *args: Any, **kwargs: Any) -> dict[str, Any]:
-            return {
-                "type": "object",
-                "properties": {"q": {"type": "string"}},
-                "required": ["q"],
-            }
-
-    tool = StructuredTool.from_function(
-        name="search",
-        description="Search.",
-        func=lambda **_: None,
-        args_schema=_Custom,
-    )
-    assert "  q: string;" in _ptc_body([tool])
+    assert "  children?: { value: number; children?: unknown[] }[];" in body
+    assert "): Promise<{ value: number; children?: unknown[] }>" in body

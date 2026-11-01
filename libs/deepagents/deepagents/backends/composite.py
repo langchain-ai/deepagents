@@ -106,6 +106,31 @@ def _route_glob_pattern(pattern: str, route_prefix: str) -> str | None:
     return rewritten
 
 
+def _restore_error_path(error: str | None, *, original_path: str, stripped_path: str) -> str | None:
+    """Restore the caller's original path in a routed backend's error message.
+
+    Routed backends receive the path with the route prefix stripped (e.g.
+    `/memories/AGENTS.md` reaches the `/memories/` route as `/AGENTS.md`). On
+    error they report that stripped path, which misleads the agent into
+    retrying a path that resolves to a *different* backend. Every built-in
+    backend quotes the path in its error message (``'<path>'``), so we can
+    restore the original path by replacing the quoted stripped path with the
+    quoted original path.
+
+    Args:
+        error: The routed backend's error message, or `None` on success.
+        original_path: The path the caller supplied (with the route prefix).
+        stripped_path: The path actually handed to the routed backend.
+
+    Returns:
+        The error message with the original path restored, or `None` if there
+        was no error or the stripped path did not appear in the message.
+    """
+    if error is None or stripped_path == original_path:
+        return error
+    return error.replace(f"'{stripped_path}'", f"'{original_path}'")
+
+
 def _remap_file_info_path(fi: FileInfo, route_prefix: str) -> FileInfo:
     """Create a new FileInfo with the route prefix prepended to the path."""
     return cast(
@@ -324,6 +349,7 @@ class CompositeBackend(BackendProtocol):
         if route_prefix is not None:
             ls_result = self._coerce_ls_result(backend.ls(backend_path))
             if ls_result.error:
+                ls_result.error = _restore_error_path(ls_result.error, original_path=path, stripped_path=backend_path)
                 return ls_result
             return LsResult(entries=[_remap_file_info_path(fi, route_prefix) for fi in (ls_result.entries or [])])
 
@@ -361,6 +387,7 @@ class CompositeBackend(BackendProtocol):
         if route_prefix is not None:
             ls_result = self._coerce_ls_result(await backend.als(backend_path))
             if ls_result.error:
+                ls_result.error = _restore_error_path(ls_result.error, original_path=path, stripped_path=backend_path)
                 return ls_result
             return LsResult(entries=[_remap_file_info_path(fi, route_prefix) for fi in (ls_result.entries or [])])
 
@@ -405,7 +432,10 @@ class CompositeBackend(BackendProtocol):
             `ReadResult`
         """
         backend, stripped_key = self._get_backend_and_key(file_path)
-        return backend.read(stripped_key, offset=offset, limit=limit)
+        res = backend.read(stripped_key, offset=offset, limit=limit)
+        if res.error is not None:
+            res.error = _restore_error_path(res.error, original_path=file_path, stripped_path=stripped_key)
+        return res
 
     async def aread(
         self,
@@ -415,7 +445,10 @@ class CompositeBackend(BackendProtocol):
     ) -> ReadResult:
         """Async version of read."""
         backend, stripped_key = self._get_backend_and_key(file_path)
-        return await backend.aread(stripped_key, offset=offset, limit=limit)
+        res = await backend.aread(stripped_key, offset=offset, limit=limit)
+        if res.error is not None:
+            res.error = _restore_error_path(res.error, original_path=file_path, stripped_path=stripped_key)
+        return res
 
     @staticmethod
     def _coerce_grep_result(raw: GrepResult | list[GrepMatch] | str) -> GrepResult:
@@ -723,6 +756,8 @@ class CompositeBackend(BackendProtocol):
         res = backend.write(stripped_key, content)
         if res.path is not None and stripped_key != file_path:
             res.path = file_path
+        if res.error is not None:
+            res.error = _restore_error_path(res.error, original_path=file_path, stripped_path=stripped_key)
         return res
 
     async def awrite(
@@ -735,6 +770,8 @@ class CompositeBackend(BackendProtocol):
         res = await backend.awrite(stripped_key, content)
         if res.path is not None and stripped_key != file_path:
             res.path = file_path
+        if res.error is not None:
+            res.error = _restore_error_path(res.error, original_path=file_path, stripped_path=stripped_key)
         return res
 
     def edit(
@@ -759,6 +796,8 @@ class CompositeBackend(BackendProtocol):
         res = backend.edit(stripped_key, old_string, new_string, replace_all=replace_all)
         if res.path is not None:
             res.path = file_path
+        if res.error is not None:
+            res.error = _restore_error_path(res.error, original_path=file_path, stripped_path=stripped_key)
         return res
 
     async def aedit(
@@ -773,6 +812,8 @@ class CompositeBackend(BackendProtocol):
         res = await backend.aedit(stripped_key, old_string, new_string, replace_all=replace_all)
         if res.path is not None:
             res.path = file_path
+        if res.error is not None:
+            res.error = _restore_error_path(res.error, original_path=file_path, stripped_path=stripped_key)
         return res
 
     def delete(self, file_path: str) -> DeleteResult:
@@ -798,6 +839,8 @@ class CompositeBackend(BackendProtocol):
             return DeleteResult(error=_DELETE_UNSUPPORTED_ERROR.format(file_path=file_path))
         if res.path is not None:
             res.path = file_path
+        if res.error is not None:
+            res.error = _restore_error_path(res.error, original_path=file_path, stripped_path=stripped_key)
         return res
 
     async def adelete(self, file_path: str) -> DeleteResult:
@@ -809,6 +852,8 @@ class CompositeBackend(BackendProtocol):
             return DeleteResult(error=_DELETE_UNSUPPORTED_ERROR.format(file_path=file_path))
         if res.path is not None:
             res.path = file_path
+        if res.error is not None:
+            res.error = _restore_error_path(res.error, original_path=file_path, stripped_path=stripped_key)
         return res
 
     def execute(

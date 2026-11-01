@@ -1829,3 +1829,82 @@ async def test_composite_adelete_unsupported_route_returns_error() -> None:
     assert result.path is None
     assert result.error is not None
     assert "not supported" in result.error
+
+
+def _memories_composite() -> CompositeBackend:
+    """A CompositeBackend with a StoreBackend routed at ``/memories/``."""
+    mem_store = InMemoryStore()
+    return CompositeBackend(
+        default=StoreBackend(store=mem_store, namespace=lambda _rt: ("default",)),
+        routes={"/memories/": StoreBackend(store=mem_store, namespace=lambda _rt: ("memories",))},
+    )
+
+
+def test_composite_read_error_restores_routed_path() -> None:
+    """read() on a routed path reports the original path, not the stripped key."""
+    be = _memories_composite()
+    result = be.read("/memories/AGENTS.md")
+    assert result.error is not None
+    assert "/memories/AGENTS.md" in result.error
+    assert "'/AGENTS.md'" not in result.error
+
+
+def test_composite_edit_error_restores_routed_path() -> None:
+    """edit() on a missing routed file reports the original path."""
+    be = _memories_composite()
+    result = be.edit("/memories/AGENTS.md", "a", "b")
+    assert result.error is not None
+    assert "/memories/AGENTS.md" in result.error
+    assert "'/AGENTS.md'" not in result.error
+
+
+class _ErroringLsBackend(StoreBackend):
+    """StoreBackend whose `ls`/`als` report the stripped path in their error."""
+
+    def ls(self, path: str) -> LsResult:
+        return LsResult(error=f"Path '{path}': path_not_found", entries=None)
+
+    async def als(self, path: str) -> LsResult:
+        return LsResult(error=f"Path '{path}': path_not_found", entries=None)
+
+
+def test_composite_ls_error_restores_routed_path() -> None:
+    """ls() on a missing routed directory reports the original path."""
+    be = CompositeBackend(
+        default=StoreBackend(store=InMemoryStore(), namespace=lambda _rt: ("default",)),
+        routes={"/memories/": _ErroringLsBackend(store=InMemoryStore(), namespace=lambda _rt: ("memories",))},
+    )
+    result = be.ls("/memories/missing")
+    assert result.error is not None
+    assert "Path '/memories/missing'" in result.error
+    assert "'/missing'" not in result.error
+
+
+def test_composite_delete_error_restores_routed_path() -> None:
+    """delete() on a missing routed file reports the original path."""
+    be = _memories_composite()
+    result = be.delete("/memories/ghost.txt")
+    assert result.error is not None
+    assert "/memories/ghost.txt" in result.error
+    assert "'/ghost.txt'" not in result.error
+
+
+async def test_composite_aread_error_restores_routed_path() -> None:
+    """aread() on a routed path reports the original path, not the stripped key."""
+    be = _memories_composite()
+    result = await be.aread("/memories/AGENTS.md")
+    assert result.error is not None
+    assert "/memories/AGENTS.md" in result.error
+    assert "'/AGENTS.md'" not in result.error
+
+
+async def test_composite_als_error_restores_routed_path() -> None:
+    """als() on a missing routed directory reports the original path."""
+    be = CompositeBackend(
+        default=StoreBackend(store=InMemoryStore(), namespace=lambda _rt: ("default",)),
+        routes={"/memories/": _ErroringLsBackend(store=InMemoryStore(), namespace=lambda _rt: ("memories",))},
+    )
+    result = await be.als("/memories/missing")
+    assert result.error is not None
+    assert "Path '/memories/missing'" in result.error
+    assert "'/missing'" not in result.error

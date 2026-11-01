@@ -650,6 +650,21 @@ def _final_content(values: Mapping[str, Any]) -> list[ContentBlock]:
         return [{"type": "text", "text": str(last.get("content", "") if isinstance(last, Mapping) else last)}]
 
 
+def _serialize_structured_response(structured: Any) -> str:  # noqa: ANN401  # mirrors the sync task tool's unstructured payload
+    """Serialize a subagent's `structured_response` to JSON, mirroring the sync `task` tool.
+
+    A Pydantic model is dumped with `model_dump_json`, a dataclass instance via
+    `dataclasses.asdict`, and anything else with `json.dumps`. This matches the
+    sync subagent path so `check_async_task` returns the same JSON the `task`
+    tool would.
+    """
+    if hasattr(structured, "model_dump_json"):
+        return structured.model_dump_json()
+    if dataclasses.is_dataclass(structured) and not isinstance(structured, type):
+        return json.dumps(dataclasses.asdict(structured))
+    return json.dumps(structured)
+
+
 _DELIVERABLE_THREAD_STATUSES = frozenset({"idle", "error"})
 """Parent thread statuses a notification run can start on: neither running nor waiting for a human."""
 
@@ -964,7 +979,12 @@ def _build_check_result(run: Run, thread_id: str, thread: Thread | None) -> dict
         result["note"] = "The latest run hasn't started yet. If it is a queued follow-up, an earlier run may still be working."
     elif status == "success":
         values = thread.get("values") if thread else None
-        result["result"] = _final_content(values if isinstance(values, Mapping) else {})
+        mapping = values if isinstance(values, Mapping) else {}
+        structured = mapping.get("structured_response")
+        if structured is not None:
+            result["result"] = [{"type": "text", "text": _serialize_structured_response(structured)}]
+        else:
+            result["result"] = _final_content(mapping)
     elif status == "error":
         error_detail = run.get("error")
         result["error"] = str(error_detail) if error_detail else "The async subagent encountered an error."

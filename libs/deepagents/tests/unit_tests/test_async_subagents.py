@@ -698,6 +698,54 @@ class TestCheckTool:
         assert tasks["thread_abc"]["status"] == "success"
         assert tasks["thread_abc"]["last_updated_at"] != "2024-01-15T10:30:00Z"
 
+    @patch("deepagents.middleware.async_subagents.get_sync_client")
+    def test_check_completed_task_prefers_structured_response(self, mock_get_client: MagicMock) -> None:
+        """A finished task with `structured_response` returns that as JSON, not the last message."""
+        mock_client = MagicMock()
+        mock_client.runs.get.return_value = {"run_id": "run_xyz", "status": "success"}
+        mock_client.threads.get.return_value = {
+            "values": {
+                "messages": [
+                    {"role": "assistant", "content": "Returning structured response: account='AC-1'"},
+                ],
+                "structured_response": {"account": "AC-1"},
+            }
+        }
+        mock_get_client.return_value = mock_client
+
+        tools = _build_async_subagent_tools([_make_spec()])
+        check = tools[1]
+        result = check.func(task_id="thread_abc", runtime=self._make_check_runtime("tc_check"))
+
+        parsed = json.loads(result.update["messages"][0].content)
+        assert parsed["status"] == "success"
+        assert json.loads(parsed["result"]) == {"account": "AC-1"}
+
+    @patch("deepagents.middleware.async_subagents.get_sync_client")
+    def test_check_completed_task_serializes_dataclass_structured_response(self, mock_get_client: MagicMock) -> None:
+        """A dataclass `structured_response` is serialized via `dataclasses.asdict`, like the sync task tool."""
+
+        @dataclass
+        class Account:
+            account: str
+
+        mock_client = MagicMock()
+        mock_client.runs.get.return_value = {"run_id": "run_xyz", "status": "success"}
+        mock_client.threads.get.return_value = {
+            "values": {
+                "messages": [{"role": "assistant", "content": "done"}],
+                "structured_response": Account(account="AC-1"),
+            }
+        }
+        mock_get_client.return_value = mock_client
+
+        tools = _build_async_subagent_tools([_make_spec()])
+        check = tools[1]
+        result = check.func(task_id="thread_abc", runtime=self._make_check_runtime("tc_check"))
+
+        parsed = json.loads(result.update["messages"][0].content)
+        assert json.loads(parsed["result"]) == {"account": "AC-1"}
+
     def _check(self, mock_client: MagicMock, status: str = "running") -> Command:
         check = _build_async_subagent_tools([_make_spec()])[1]
         with patch("deepagents.middleware.async_subagents.get_sync_client", return_value=mock_client):

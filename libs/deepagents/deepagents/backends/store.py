@@ -680,9 +680,18 @@ class StoreBackend(BackendProtocol):
 
         for path, content in files:
             try:
-                content_str = content.decode("utf-8")
-                encoding = "utf-8"
+                decoded = content.decode("utf-8")
+                # A NUL byte decodes cleanly to U+0000, which PostgreSQL's
+                # JSONB rejects. Treat such content as binary so it is
+                # base64-encoded and survives a round-trip through the store.
+                is_text = "\x00" not in decoded
             except UnicodeDecodeError:
+                is_text = False
+
+            if is_text:
+                content_str = decoded
+                encoding = "utf-8"
+            else:
                 content_str = base64.standard_b64encode(content).decode("ascii")
                 encoding = "base64"
 

@@ -1,3 +1,4 @@
+import base64
 from typing import Any, Never
 
 import pytest
@@ -63,6 +64,37 @@ async def test_store_backend_grep_skips_binary_uploads(*, use_async: bool, max_c
     assert result.error is None
     assert result.matches == ([] if glob == "*.png" else [{"path": "/client.txt", "line": 1, "text": "GET /api"}])
     assert result.truncated is False
+
+
+def test_store_backend_upload_stores_nul_bytes_as_base64() -> None:
+    """Bytes that decode to UTF-8 containing U+0000 are stored as base64.
+
+    A NUL byte is valid UTF-8, so it decodes cleanly; but PostgreSQL's JSONB
+    rejects U+0000, so a PostgreSQL-backed store would fail to persist it.
+    Such content must be base64-encoded (like other binary data) and round-trip
+    losslessly.
+    """
+    backend = StoreBackend(store=InMemoryStore(), namespace=lambda _rt: ("filesystem",))
+    responses = backend.upload_files([("/payload.bin", b"ASCII\x00")])
+    assert responses[0].error is None
+
+    read_result = backend.read("/payload.bin")
+    assert read_result.file_data is not None
+    assert read_result.file_data["encoding"] == "base64"
+    assert "\x00" not in read_result.file_data["content"]
+
+    assert base64.standard_b64decode(read_result.file_data["content"]) == b"ASCII\x00"
+
+
+def test_store_backend_upload_keeps_plain_text_as_utf8() -> None:
+    """Text without NUL bytes still stores as utf-8 (no behavior change)."""
+    backend = StoreBackend(store=InMemoryStore(), namespace=lambda _rt: ("filesystem",))
+    backend.upload_files([("/plain.txt", b"hello world")])
+
+    read_result = backend.read("/plain.txt")
+    assert read_result.file_data is not None
+    assert read_result.file_data["encoding"] == "utf-8"
+    assert read_result.file_data["content"] == "hello world"
 
 
 def test_store_backend_read_surfaces_pagination_metadata():

@@ -66,6 +66,7 @@ class MockSandbox(BaseSandbox):
         self.commands: list[str] = []
         self._next_output: str = "1"
         self._next_exit_code: int = 0
+        self._next_truncated: bool = False
         self._uploaded: list[tuple[str, bytes]] = []
         self._file_store: dict[str, bytes] = {}
         # exit_code is int | None (a backend may report an unknown status).
@@ -90,7 +91,9 @@ class MockSandbox(BaseSandbox):
             exit_code = self._next_exit_code
             self._next_output = "1"
             self._next_exit_code = 0
-        return ExecuteResponse(output=output, exit_code=exit_code, truncated=False)
+        truncated = self._next_truncated
+        self._next_truncated = False
+        return ExecuteResponse(output=output, exit_code=exit_code, truncated=truncated)
 
     def _simulate_edit_tmpfile(self, command: str) -> ExecuteResponse:
         """Simulate the server-side temp-file edit script.
@@ -518,6 +521,32 @@ def test_ls_command_base64_encodes_path() -> None:
     assert "python3 -c" in sandbox.last_command
 
 
+def test_ls_reports_transport_truncation() -> None:
+    """When the transport clips the listing, ls() flags it truncated."""
+    sandbox = MockSandbox()
+    sandbox._next_output = json.dumps({"path": "/test/a.txt", "is_dir": False})
+    sandbox._next_truncated = True
+
+    result = sandbox.ls("/test")
+
+    assert result.error is None
+    assert result.entries == [{"path": "/test/a.txt", "is_dir": False}]
+    assert result.truncated is True
+    assert result.truncation_reason == "transport"
+
+
+def test_ls_not_truncated_when_transport_complete() -> None:
+    """A complete listing leaves truncated=False and truncation_reason=None."""
+    sandbox = MockSandbox()
+    sandbox._next_output = json.dumps({"path": "/test/a.txt", "is_dir": False})
+
+    result = sandbox.ls("/test")
+
+    assert result.error is None
+    assert result.truncated is False
+    assert result.truncation_reason is None
+
+
 # -- grep tests ---------------------------------------------------------------
 
 
@@ -702,6 +731,27 @@ def test_parse_grep_output_below_cap_not_truncated() -> None:
     assert result.truncated is False
     assert result.matches is not None
     assert len(result.matches) == 3
+
+
+def test_parse_grep_output_reports_transport_truncation() -> None:
+    """When the transport clipped the output, the result is flagged truncated."""
+    resp = ExecuteResponse(output="/test/f0.py\x001:needle", exit_code=0, truncated=True)
+    result = _parse_grep_output(resp, "/test")
+    assert result.truncated is True
+    assert result.matches == [{"path": "/test/f0.py", "line": 1, "text": "needle"}]
+
+
+def test_grep_reports_transport_truncation() -> None:
+    """grep() surfaces a clipped transport as truncated=True."""
+    sandbox = MockSandbox()
+    sandbox._next_output = "/test/file.txt\00012:needle here"
+    sandbox._next_truncated = True
+
+    result = sandbox.grep("needle", "/test")
+
+    assert result.error is None
+    assert result.matches == [{"path": "/test/file.txt", "line": 12, "text": "needle here"}]
+    assert result.truncated is True
 
 
 def test_grep_slash_glob_returns_matches_from_python_template() -> None:

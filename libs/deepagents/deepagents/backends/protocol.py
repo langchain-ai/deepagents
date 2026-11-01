@@ -327,6 +327,19 @@ class DeleteResult:
     path: str | None = None
 
 
+GlobTruncationReason = Literal["budget", "unreadable", "transport"]
+"""Why a `GlobResult` (or `LsResult`) is incomplete.
+
+The distinction decides what advice is useful to the caller:
+
+- `budget`: the walk hit its time limit or match cap. Narrowing the pattern or
+  the path surfaces the rest.
+- `unreadable`: a subtree could not be read (e.g. permissions). Narrowing will
+  *never* surface those files, so advising it sends the caller in a loop.
+- `transport`: the sandbox transport clipped the output.
+"""
+
+
 @dataclass
 class LsResult:
     """Result from backend `ls` operations.
@@ -334,10 +347,18 @@ class LsResult:
     Attributes:
         error: Error message on failure, `None` on success.
         entries: List of file info dicts on success, `None` on failure.
+        truncated: True when the listing was cut short (e.g. the transport
+            clipped the output) and `entries` is therefore incomplete but
+            still valid.
+        truncation_reason: Why `entries` is incomplete. Set whenever the
+            producing backend can distinguish the cause; `None` when
+            `truncated` is False or the cause is unknown.
     """
 
     error: str | None = None
     entries: list["FileInfo"] | None = None
+    truncated: bool = False
+    truncation_reason: GlobTruncationReason | None = None
 
 
 @dataclass
@@ -363,19 +384,6 @@ def _apply_grep_max_count(result: GrepResult, max_count: int | None) -> GrepResu
     if max_count is None or result.matches is None or len(result.matches) <= max_count:
         return result
     return GrepResult(error=result.error, matches=result.matches[:max_count], truncated=True)
-
-
-GlobTruncationReason = Literal["budget", "unreadable", "transport"]
-"""Why a `GlobResult` is incomplete.
-
-The distinction decides what advice is useful to the caller:
-
-- `budget`: the walk hit its time limit or match cap. Narrowing the pattern or
-  the path surfaces the rest.
-- `unreadable`: a subtree could not be read (e.g. permissions). Narrowing will
-  *never* surface those files, so advising it sends the caller in a loop.
-- `transport`: the sandbox transport clipped the output.
-"""
 
 
 @dataclass

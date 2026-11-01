@@ -880,7 +880,7 @@ except PermissionError:
 " 2>/dev/null"""
 
 
-def _parse_ls_output(output: str, path: str) -> LsResult:
+def _parse_ls_output(output: str, path: str, *, truncated: bool = False) -> LsResult:
     file_infos: list[FileInfo] = []
     error: str | None = None
     for line in output.strip().split("\n"):
@@ -896,7 +896,11 @@ def _parse_ls_output(output: str, path: str) -> LsResult:
         file_infos.append({"path": data["path"], "is_dir": data["is_dir"]})
     if error is not None:
         return LsResult(entries=None, error=f"Path '{path}': {error}")
-    return LsResult(entries=file_infos)
+    return LsResult(
+        entries=file_infos,
+        truncated=truncated,
+        truncation_reason="transport" if truncated else None,
+    )
 
 
 def _build_read_cmd(file_path: str, offset: int, limit: int) -> str:
@@ -1056,7 +1060,7 @@ def _parse_grep_output(result: ExecuteResponse, path: str | None, max_count: int
         detail = output.strip() if output else f"exit code {result.exit_code}"
         return GrepResult(error=f"Path '{path or '.'}': {detail}")
     if not output:
-        return GrepResult(matches=[])
+        return GrepResult(matches=[], truncated=result.truncated)
     matches: list[GrepMatch] = []
     parse_error: str | None = None
     for line in output.split("\n"):
@@ -1069,10 +1073,13 @@ def _parse_grep_output(result: ExecuteResponse, path: str | None, max_count: int
             parse_error = line
     if parse_error is not None and not matches:
         return GrepResult(error=f"Path '{path or '.'}': {parse_error}")
-    if max_count is not None and len(matches) > max_count:
-        # More matches existed than the caller asked for; return the cap and
-        # flag the result as incomplete.
-        return GrepResult(matches=matches[:max_count], truncated=True)
+    if (max_count is not None and len(matches) > max_count) or result.truncated:
+        # More matches existed than the caller asked for, or the transport
+        # clipped the output; return what we have and flag the result as
+        # incomplete.
+        if max_count is not None and len(matches) > max_count:
+            matches = matches[:max_count]
+        return GrepResult(matches=matches, truncated=True)
     return GrepResult(matches=matches)
 
 
@@ -1703,12 +1710,12 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
     def ls(self, path: str) -> LsResult:
         """Structured listing with file metadata using os.scandir."""
         result = self.execute(_build_ls_cmd(path))
-        return _parse_ls_output(result.output, path)
+        return _parse_ls_output(result.output, path, truncated=result.truncated)
 
     async def als(self, path: str) -> LsResult:
         """Async version of `ls`, delegating to `aexecute`."""
         result = await self.aexecute(_build_ls_cmd(path))
-        return _parse_ls_output(result.output, path)
+        return _parse_ls_output(result.output, path, truncated=result.truncated)
 
     def read(
         self,

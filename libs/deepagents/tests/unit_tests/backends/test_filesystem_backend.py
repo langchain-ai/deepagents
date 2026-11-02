@@ -2429,6 +2429,46 @@ class TestEditCrlfNormalization:
         assert "## Summary 2" in final
         assert "Human: next" in final
 
+    def test_edit_preserves_crlf_line_endings(self, tmp_path: Path):
+        """Editing one line of a CRLF file must not convert the rest to LF."""
+        (tmp_path / "app.py").write_bytes(b"x = 1\r\ny = 2\r\nz = 3\r\n")
+        be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+
+        result = be.edit("/app.py", "y = 2", "y = 20")
+
+        assert result.error is None
+        assert (tmp_path / "app.py").read_bytes() == b"x = 1\r\ny = 20\r\nz = 3\r\n"
+
+    def test_edit_multiline_lf_strings_on_crlf_file(self, tmp_path: Path):
+        """LF strings, as returned by read(), match a CRLF file and are written back as CRLF."""
+        (tmp_path / "app.py").write_bytes(b"a\r\nb\r\nc\r\n")
+        be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+
+        result = be.edit("/app.py", "a\nb\n", "a\nb2\nb3\n")
+
+        assert result.error is None
+        assert (tmp_path / "app.py").read_bytes() == b"a\r\nb2\r\nb3\r\nc\r\n"
+
+    def test_edit_mixed_line_endings_untouched_lines_kept(self, tmp_path: Path):
+        """Lines outside the edit keep their own line ending in a mixed file."""
+        (tmp_path / "mixed.txt").write_bytes(b"one\r\ntwo\nthree\r\n")
+        be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+
+        result = be.edit("/mixed.txt", "two", "2")
+
+        assert result.error is None
+        assert (tmp_path / "mixed.txt").read_bytes() == b"one\r\n2\nthree\r\n"
+
+    def test_edit_mixed_line_endings_across_lf_lines(self, tmp_path: Path):
+        """An edit spanning the LF lines of a mixed file keeps the CRLF lines around it."""
+        (tmp_path / "mixed.txt").write_bytes(b"one\r\ntwo\nthree\r\n")
+        be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+
+        result = be.edit("/mixed.txt", "two\nthree", "2\n3")
+
+        assert result.error is None
+        assert (tmp_path / "mixed.txt").read_bytes() == b"one\r\n2\n3\r\n"
+
 
 def test_ls_nonexistent_path_sets_error(tmp_path: Path) -> None:
     """Ls on a missing path must surface the failure on .error, not return []."""

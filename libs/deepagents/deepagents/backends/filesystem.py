@@ -566,21 +566,13 @@ class FilesystemBackend(BackendProtocol):
             if not resolved_path.exists() or not resolved_path.is_file():
                 return EditResult(error=f"Error: File '{file_path}' not found")
 
-            # Read securely
+            # Read securely. newline="" keeps the file's line endings intact so
+            # an edit does not rewrite every CRLF line as LF.
             fd = os.open(resolved_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
-            with os.fdopen(fd, "r", encoding="utf-8") as f:
+            with os.fdopen(fd, "r", encoding="utf-8", newline="") as f:
                 content = f.read()
 
-            # Normalize line endings in old_string/new_string to match the
-            # text-mode read above. Python universal newlines (the default
-            # when newline=None) converts \r\n and bare \r to \n on read.
-            # Callers that obtained content via binary-mode reads (e.g.
-            # download_files) may pass strings with \r\n or \r that would
-            # fail to match the \n-only content.
-            old_string = old_string.replace("\r\n", "\n").replace("\r", "\n")
-            new_string = new_string.replace("\r\n", "\n").replace("\r", "\n")
-
-            result = perform_string_replacement(content, old_string, new_string, replace_all)
+            result = _replace_preserving_line_endings(content, old_string, new_string, replace_all=replace_all)
 
             if isinstance(result, str):
                 return EditResult(error=result)
@@ -1521,6 +1513,44 @@ class FilesystemBackend(BackendProtocol):
                     raise
                 responses.append(FileDownloadResponse(path=path, content=None, error=error))
         return responses
+
+
+def _normalize_newlines(text: str) -> str:
+    """Convert CRLF and bare CR line endings to LF."""
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def _replace_preserving_line_endings(
+    content: str,
+    old_string: str,
+    new_string: str,
+    *,
+    replace_all: bool,
+) -> tuple[str, int] | str:
+    """Replace `old_string` in `content` while keeping the file's line endings.
+
+    `read()` returns LF-only text, so `old_string` is usually LF even when the
+    file uses CRLF. Match it in the file's own line ending first, then in the
+    other one (mixed-ending files). If neither matches, fall back to
+    LF-normalized content.
+
+    Args:
+        content: Raw file content, read with line endings preserved.
+        old_string: The text to search for.
+        new_string: The replacement text.
+        replace_all: Whether to replace all occurrences.
+
+    Returns:
+        Tuple of `(new_content, occurrences)` on success, or an error message.
+    """
+    old_lf = _normalize_newlines(old_string)
+    new_lf = _normalize_newlines(new_string)
+    endings = ("\r\n", "\n") if "\r\n" in content else ("\n", "\r\n")
+    for eol in endings:
+        old_native = old_lf.replace("\n", eol)
+        if old_native and old_native in content:
+            return perform_string_replacement(content, old_native, new_lf.replace("\n", eol), replace_all)
+    return perform_string_replacement(_normalize_newlines(content), old_lf, new_lf, replace_all)
 
 
 def _map_exception_to_standard_error(exc: Exception) -> FileOperationError | None:

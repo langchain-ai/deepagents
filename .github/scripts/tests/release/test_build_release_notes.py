@@ -3325,15 +3325,19 @@ class TestBuildReleaseNotes:
         assert "Released by:" not in body
         assert any("Offline mode" in w for w in warnings)
 
-    def test_offline_with_changelog(self, tmp_path: Path) -> None:
+    @pytest.mark.parametrize("package_path", ["libs/deepagents", "libs/partners/modal"])
+    def test_offline_with_changelog(self, tmp_path: Path, package_path: str) -> None:
         _init_repo(tmp_path)
         _commit(
-            tmp_path, PACKAGE_PATH / "module.py", "BASE = 1\n", "feat(example): base"
+            tmp_path,
+            Path(package_path) / "module.py",
+            "BASE = 1\n",
+            "feat(example): base",
         )
         _git(tmp_path, "tag", "example==1.0.0")
         _commit(
             tmp_path,
-            PACKAGE_PATH / "CHANGELOG.md",
+            Path(package_path) / "CHANGELOG.md",
             "## 1.0.1\n\n### Bug Fixes\n\n* fix something\n",
             "release(example): 1.0.1",
         )
@@ -3346,10 +3350,18 @@ class TestBuildReleaseNotes:
             release_sha=head,
             repository=REPOSITORY,
             offline=True,
-            working_dir=str(PACKAGE_PATH),
+            working_dir=package_path,
         )
         assert "### Bug Fixes" in body
         assert "* fix something" in body
+        link = (
+            f"[Full changelog](https://github.com/{REPOSITORY}/blob/"
+            f"{head}/{package_path}/CHANGELOG.md)"
+        )
+        assert link in body
+        assert (
+            body.index("* fix something") < body.index(link) < body.index("<details>")
+        )
         assert "<details>" in body
 
     def test_offline_prerelease(self, tmp_path: Path) -> None:
@@ -3371,6 +3383,10 @@ class TestBuildReleaseNotes:
         )
         assert "> [!WARNING]" in body
         assert "pip install example==1.1.0a1" in body
+        assert (
+            f"[Full changelog](https://github.com/{REPOSITORY}/blob/"
+            f"{head}/{PACKAGE_PATH}/CHANGELOG.md)"
+        ) in body
 
     def test_is_prerelease_override_forces_banner(self, tmp_path: Path) -> None:
         """The caller's flag wins over version sniffing.

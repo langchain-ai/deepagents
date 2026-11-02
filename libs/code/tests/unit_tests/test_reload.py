@@ -2312,6 +2312,10 @@ class TestReloadPluginsViaReload:
             # claim anything about MCP — the two lines would contradict.
             text = "\n".join(str(w._content) for w in app.query(AppMessage))
             assert ("MCP server changes" in text) is restarted
+            assert (
+                "MCP configuration re-read (including .mcp.json)." in text
+            ) is restarted
+            assert "restarted for plugin MCP" not in text
             assert ("keeps its current skills" in text) is not restarted
 
     @pytest.mark.parametrize(

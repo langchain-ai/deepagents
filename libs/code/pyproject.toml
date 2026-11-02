@@ -27,6 +27,8 @@ dependencies = [
     # Framework
     "deepagents==0.7.32",
     "langchain>=1.4.7,<2.0.0",
+    # TODO: Remove this temporary floor once the pinned deepagents release
+    # requires langchain-core>=1.7.2 for add_notification_metadata.
     "langchain-core>=1.7.2,<2.0.0",
     "langgraph-checkpoint-sqlite>=3.1.3,<4.0.0",
 

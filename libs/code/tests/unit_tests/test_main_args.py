@@ -901,6 +901,23 @@ class TestHeadlessResumeArguments:
         assert code == 2
         mock_run.assert_not_awaited()
 
+    @pytest.mark.parametrize("saved", [None, "openai:other"])
+    def test_resume_without_override_adopts_thread_model(
+        self, monkeypatch: pytest.MonkeyPatch, saved: str | None
+    ) -> None:
+        from deepagents_code.model_config import ModelConfig
+
+        monkeypatch.setattr(
+            ModelConfig,
+            "load",
+            classmethod(lambda _cls: ModelConfig(default_model=saved)),
+        )
+        code, mock_run = self._cli("-r", "t-1", "-n", "continue")
+        assert code == 0
+        assert mock_run.await_args is not None
+        assert mock_run.await_args.kwargs["model_name"] is None
+        assert mock_run.await_args.kwargs["resume"].adopt_model is True
+
     def test_resume_id_reaches_the_headless_runner(self) -> None:
         from deepagents_code.client.headless_resume import ResumeRequest
 

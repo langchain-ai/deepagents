@@ -6548,7 +6548,10 @@ def cli_main() -> None:
             from deepagents_code.model_config import ModelConfigError
 
             try:
-                args.model = getattr(args, "model", None) or _get_default_model_spec()
+                if args.resume_thread is None:
+                    args.model = (
+                        getattr(args, "model", None) or _get_default_model_spec()
+                    )
             except ModelConfigError as exc:
                 console.print(str(exc), style="bold red", markup=False)
                 sys.exit(1)

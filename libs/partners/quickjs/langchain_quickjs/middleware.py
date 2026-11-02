@@ -214,11 +214,13 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
 
             !!! warning
                 Each PTC call runs through the tool-call middleware listed
-                after this one, as a model tool call does, so
-                `HumanInTheLoopMiddleware` listed after it can pause the call
-                for review. That needs `interrupt_mode="per_call"`; batched
-                mode reviews only the tool calls in the model's message.
-                Middleware listed before this one does not see PTC calls.
+                after this one, as a model tool call does; middleware listed
+                before it does not see PTC calls. Batched HITL mode reviews
+                only the model's own tool calls, so gating PTC calls needs
+                `HumanInTheLoopMiddleware(interrupt_mode="per_call")`.
+                `create_deep_agent` builds its HITL middleware in batched mode,
+                so its `interrupt_on` and `FilesystemPermission(mode="interrupt")`
+                rules do not pause PTC calls.
 
             The REPL's own tool is always excluded; a model asking for
             `tools.eval("...")` would recurse pointlessly.

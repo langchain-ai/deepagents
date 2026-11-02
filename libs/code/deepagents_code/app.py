@@ -29444,7 +29444,7 @@ class DeepAgentsApp(App):
             # exception — its `args`/repr may include an `OAuthToken` from
             # the MCP SDK. `format_login_failure` unwraps `ExceptionGroup`
             # roots and degrades to a class-name chain for unknown types.
-            summary = format_login_failure(login_error)
+            summary = format_login_failure(login_error, include_login_hint=True)
             logger.warning("MCP login for %r failed: %s", server_name, summary)
             screen.finish(success=False, message=f"Login failed: {summary}")
             await asyncio.wait_for(outcome_future, timeout=5.0)

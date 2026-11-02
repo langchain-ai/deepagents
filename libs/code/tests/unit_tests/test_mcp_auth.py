@@ -2447,7 +2447,8 @@ class TestFormatLoginFailure:
             error = client.ConnectError(sentinel, request=request)
             expected = "Could not connect"
         exc = ExceptionGroup(sentinel, [ExceptionGroup(sentinel, [error])])
-        summary = format_login_failure(exc)
+        assert format_login_failure(exc) == "ExceptionGroup -> [ExceptionGroup]"
+        summary = format_login_failure(exc, include_login_hint=True)
         assert expected in summary
         assert "retry login" in summary
         assert sentinel not in summary
@@ -2477,7 +2478,10 @@ class TestFormatLoginFailure:
         exc = FakeMcpError(sentinel)
         summary = format_login_failure(exc)
         assert sentinel not in summary
-        assert "FakeMcpError" in summary
+        assert summary == "FakeMcpError"
+        login_summary = format_login_failure(exc, include_login_hint=True)
+        assert "Retry login" in login_summary
+        assert sentinel not in login_summary
 
     def test_preserves_message_for_config_errors(self) -> None:
         """Config errors are pre-handshake and token-free, so keep the message.

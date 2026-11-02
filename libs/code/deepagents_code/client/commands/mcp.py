@@ -299,7 +299,7 @@ async def run_mcp_login(*, server: str, config_path: str | None) -> int:
         OSError,
     ) as exc:
         print(  # noqa: T201
-            f"Login failed: {format_login_failure(exc)}",
+            f"Login failed: {format_login_failure(exc, include_login_hint=True)}",
             file=sys.stderr,
         )
         return 1

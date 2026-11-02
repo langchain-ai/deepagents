@@ -2002,7 +2002,9 @@ async def _run_device_flow(
     raise RuntimeError(msg)
 
 
-def format_login_failure(exc: BaseException) -> str:
+def format_login_failure(
+    exc: BaseException, *, include_login_hint: bool = False
+) -> str:
     """Return a token-safe single-line summary of an OAuth-login exception.
 
     OAuth handshakes commonly surface as `ExceptionGroup` (anyio task
@@ -2015,6 +2017,7 @@ def format_login_failure(exc: BaseException) -> str:
 
     Args:
         exc: Root exception caught from the login worker.
+        include_login_hint: Add recovery guidance only during an explicit login.
 
     Returns:
         A user-displayable string that is safe to log and to render.
@@ -2056,7 +2059,7 @@ def format_login_failure(exc: BaseException) -> str:
             break
         current = current.__cause__ or current.__context__
     chain = " -> ".join(parts) if parts else type(exc).__name__
-    return f"{_login_failure_hint(exc)} ({chain})"
+    return f"{_login_failure_hint(exc)} ({chain})" if include_login_hint else chain
 
 
 def _login_failure_hint(exc: BaseException) -> str:

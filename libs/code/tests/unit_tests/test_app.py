@@ -22010,6 +22010,9 @@ class TestLiveApprovalModeWrites:
                 "deepagents_code.approval_mode.has_auto_mode_notice", return_value=False
             ),
             patch("deepagents_code.model_config.save_recent_startup_mode") as save,
+            patch(
+                "deepagents_code.config.is_yolo_switcher_enabled", return_value=False
+            ),
         ):
             if entry == "toggle":
                 async with app.run_test() as pilot:
@@ -22035,6 +22038,45 @@ class TestLiveApprovalModeWrites:
             constructor.assert_called_once_with(
                 "openai:unavailable-reviewer", bind_preserved_thinking=False
             )
+
+    @pytest.mark.parametrize("notice_shown", [False, True])
+    @pytest.mark.parametrize("acknowledged", [False, True])
+    async def test_toggle_skips_unavailable_auto_to_yolo(
+        self, notice_shown: bool, acknowledged: bool, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from deepagents_code.approval_mode import ApprovalMode
+        from deepagents_code.tui.widgets.yolo_mode_notice import YoloModeNoticeScreen
+
+        app = DeepAgentsApp()
+        app._auto_classifier_model = "openai:unavailable-reviewer"
+        monkeypatch.setattr(
+            "deepagents_code.config.create_model",
+            MagicMock(side_effect=ValueError("Missing OPENAI_API_KEY")),
+        )
+        monkeypatch.setattr(
+            "deepagents_code.config.is_yolo_switcher_enabled", lambda: True
+        )
+        monkeypatch.setattr(
+            "deepagents_code.approval_mode.has_auto_mode_notice", lambda: notice_shown
+        )
+        monkeypatch.setattr(
+            "deepagents_code.approval_mode.has_yolo_acknowledgement",
+            lambda: acknowledged,
+        )
+        save_ack = MagicMock(return_value=True)
+        monkeypatch.setattr(
+            "deepagents_code.approval_mode.save_yolo_acknowledgement", save_ack
+        )
+        async with app.run_test() as pilot:
+            await pilot.press("shift+tab")
+            if not acknowledged:
+                assert app._approval_mode is ApprovalMode.MANUAL
+                assert isinstance(app.screen, YoloModeNoticeScreen)
+                await pilot.press("enter")
+                save_ack.assert_called_once_with()
+            assert app._approval_mode is ApprovalMode.YOLO
+            await pilot.press("shift+tab")
+            assert app._approval_mode is ApprovalMode.MANUAL
 
     def test_auto_startup_enabled_without_sandbox(
         self, monkeypatch: pytest.MonkeyPatch

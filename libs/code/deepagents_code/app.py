@@ -24317,10 +24317,17 @@ class DeepAgentsApp(App):
             )
             return
 
-        # Gate the first Auto switch on the education confirmation.
+        if target is ApprovalMode.AUTO and not await self._validate_auto_classifier():
+            target = next_approval_mode(
+                self._approval_mode,
+                auto_eligible=False,
+                yolo_switcher_enabled=yolo_switcher_enabled,
+            )
+            if target is None:
+                return
+
         if target is ApprovalMode.AUTO and not has_auto_mode_notice():
-            if await self._validate_auto_classifier():
-                self._prompt_auto_mode_confirmation()
+            self._prompt_auto_mode_confirmation()
             return
 
         # Gate the first YOLO switcher entry on the same policy acknowledgement

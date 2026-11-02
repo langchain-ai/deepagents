@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING
 from unittest.mock import Mock
@@ -26,6 +27,8 @@ from deepagents_code.tui.modals.plugin_manager.state import _load_manager_state
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+    from deepagents_code.plugins.models import MarketplaceSource, PluginMarketplace
 
 
 @pytest.fixture(autouse=True)
@@ -69,6 +72,42 @@ def test_browsing_fetches_only_missing_catalog(monkeypatch: pytest.MonkeyPatch) 
     assert list_available_plugins() == (("docs@langchain-plugins", "", False),)
     assert _load_manager_state().marketplaces == state.marketplaces
     assert materialize.call_count == 1
+    assert not load_installed_plugins()
+    assert not load_enabled_plugin_ids()
+
+
+def test_cached_default_catalog_refreshes_without_installed_plugins(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from pathlib import Path
+
+    from deepagents_code.plugins import discovery
+    from deepagents_code.plugins.marketplace import load_marketplace_location
+
+    assert list_available_plugins() == (("docs@langchain-plugins", "", False),)
+    location = Path(load_marketplace_records()["langchain-plugins"].install_location)
+
+    def refresh(source: MarketplaceSource) -> tuple[PluginMarketplace, Path]:
+        assert source.value == "langchain-ai/langchain-plugins"
+        catalog = json.loads(location.read_text(encoding="utf-8"))
+        catalog["plugins"].append(
+            {
+                "name": "new-plugin",
+                "source": {"source": "github", "repo": "example/new"},
+            }
+        )
+        location.write_text(json.dumps(catalog), encoding="utf-8")
+        return load_marketplace_location(location), location
+
+    monkeypatch.setattr(discovery, "materialize_marketplace_source", refresh)
+    monkeypatch.setattr(
+        discovery, "plugin_auto_update_setting", lambda: (True, "default")
+    )
+    assert not check_plugin_updates().errors
+    assert {row[0] for row in list_available_plugins()} == {
+        "docs@langchain-plugins",
+        "new-plugin@langchain-plugins",
+    }
     assert not load_installed_plugins()
     assert not load_enabled_plugin_ids()
 

@@ -598,7 +598,13 @@ def _collect_updates(
             and plugin_id in installed
             and installed[plugin_id].version is not None
         ]
-        if not plugin_ids and (not refresh_all or record.name == "langchain-plugins"):
+        if not plugin_ids and (
+            not refresh_all
+            or (
+                record.name == "langchain-plugins"
+                and not Path(record.install_location).exists()
+            )
+        ):
             continue
         marketplace = _refresh_marketplace(
             record, include_local=include_local, errors=errors

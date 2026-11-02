@@ -1026,17 +1026,14 @@ source, model class, and request endpoint all differ. See
 
 CODEX_MODELS: frozenset[str] = frozenset(
     {
-        "gpt-5.6-luna",
-        "gpt-5.6-sol",
-        "gpt-5.6-terra",
-        "gpt-5.5",
-        "gpt-5.4",
-        "gpt-5.4-mini",
-        "gpt-5.3-codex",
-        "gpt-5.2",
+        "gpt-6-astra",
+        "gpt-6-luna",
+        "gpt-6-sol",
+        "gpt-6.1-sol",
+        "gpt-6.1-terra",
     }
 )
-"""Curated allowlist of models the Codex (ChatGPT OAuth) backend serves.
+"""Curated lineup from https://developers.openai.com/codex/models.
 
 The provider mirrors `openai` profiles, but only models in this set are
 exposed under `openai_codex`. The Codex backend serves a narrower lineup than

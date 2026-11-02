@@ -4808,7 +4808,7 @@ _DEFAULT_AUTO_CLASSIFIER_MODELS = {
     "google_genai": "google_genai:gemini-3.8-flash",
     "google_vertexai": "google_vertexai:gemini-3.8-flash",
     "openai": "openai:gpt-5.6-luna",
-    "openai_codex": "openai_codex:gpt-5.6-luna",
+    "openai_codex": "openai_codex:gpt-6-luna",
 }
 
 

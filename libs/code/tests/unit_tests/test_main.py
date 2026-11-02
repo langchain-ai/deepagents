@@ -2424,7 +2424,7 @@ class TestRunTextualCliAsyncMcp:
             ("google_genai:gemini-3.1-pro", "google_genai:gemini-3.8-flash"),
             ("google_vertexai:gemini-3.1-pro", "google_vertexai:gemini-3.8-flash"),
             ("openai:gpt-5.6-sol", "openai:gpt-5.6-luna"),
-            ("openai_codex:gpt-5.6-sol", "openai_codex:gpt-5.6-luna"),
+            ("openai_codex:gpt-6.1-sol", "openai_codex:gpt-6-luna"),
             ("xai:grok-4.5", None),
         ],
     )

@@ -18500,6 +18500,54 @@ class TestStartMcpLogin:
 class TestBuildModelSwitchErrorBody:
     """Tests for `_build_model_switch_error_body` link-aware formatting."""
 
+    @pytest.mark.parametrize("with_diagnostics", [True, False])
+    def test_workspace_conflict_is_not_a_model_failure(
+        self, with_diagnostics: bool
+    ) -> None:
+        import httpx
+        from langgraph_sdk.errors import ConflictError
+        from textual.content import Content
+
+        from deepagents_code.app import _build_model_switch_error_body
+
+        body: dict[str, object] = {"detail": "workspace policy conflict"}
+        if with_diagnostics:
+            body["diagnostics"] = {
+                "category": "policy_drift",
+                "reason": "project policy changed",
+                "changes": [
+                    {
+                        "name": "trust_project_mcp",
+                        "state": "changed",
+                        "bound": False,
+                        "current": True,
+                    }
+                ],
+                "snapshot_status": "current",
+            }
+        response = httpx.Response(
+            409, request=httpx.Request("POST", "http://test/workspace")
+        )
+        exc = ConflictError("workspace policy conflict", response=response, body=body)
+        result = _build_model_switch_error_body(exc)
+        text = result.plain if isinstance(result, Content) else result
+        assert "Model switch blocked" in text
+        assert "The model was not changed" in text
+        assert "Failed to switch model" not in text
+        if with_diagnostics:
+            assert "trust_project_mcp" in text
+            assert "/clear" in text
+            assert "existing conversation is preserved" in text
+        else:
+            assert "/clear" not in text
+
+    def test_non_workspace_failure_keeps_original_detail(self) -> None:
+        from deepagents_code.app import _build_model_switch_error_body
+
+        assert "Failed to switch model" in str(
+            _build_model_switch_error_body(ValueError("bad model"))
+        )
+
 
 class TestServerStartupError:
     """Test error messages when the server fails to start."""

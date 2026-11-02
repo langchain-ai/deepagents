@@ -2426,6 +2426,34 @@ class TestFindOauthChallenge:
 class TestFormatLoginFailure:
     """Tests for the token-safe summary helper used in app + CLI logs."""
 
+    @pytest.mark.parametrize("client", [httpx, httpx2])
+    @pytest.mark.parametrize("kind", ["timeout", "connect", "forbidden"])
+    def test_nested_transport_failure_has_safe_guidance(
+        self, client, kind: str
+    ) -> None:
+        sentinel = "SECRET_OAUTH_PAYLOAD"
+        request = client.Request("POST", f"https://example.com/token?secret={sentinel}")
+        if kind == "forbidden":
+            error = client.HTTPStatusError(
+                sentinel,
+                request=request,
+                response=client.Response(403, request=request),
+            )
+            expected = "Authorization was rejected"
+        elif kind == "timeout":
+            error = client.ReadTimeout(sentinel, request=request)
+            expected = "timed out"
+        else:
+            error = client.ConnectError(sentinel, request=request)
+            expected = "Could not connect"
+        exc = ExceptionGroup(sentinel, [ExceptionGroup(sentinel, [error])])
+        assert format_login_failure(exc) == "ExceptionGroup -> [ExceptionGroup]"
+        summary = format_login_failure(exc, include_login_hint=True)
+        assert expected in summary
+        assert "retry login" in summary
+        assert sentinel not in summary
+        assert "example.com" not in summary
+
     def test_returns_reauth_message_for_nested_reauth_error(self) -> None:
         """ExceptionGroup wrapping `MCPReauthRequiredError` surfaces its message."""
         exc = ExceptionGroup(
@@ -2450,7 +2478,10 @@ class TestFormatLoginFailure:
         exc = FakeMcpError(sentinel)
         summary = format_login_failure(exc)
         assert sentinel not in summary
-        assert "FakeMcpError" in summary
+        assert summary == "FakeMcpError"
+        login_summary = format_login_failure(exc, include_login_hint=True)
+        assert "Retry login" in login_summary
+        assert sentinel not in login_summary
 
     @pytest.mark.parametrize("wrapped", [False, True])
     def test_slack_disabled_app_has_safe_remediation(self, *, wrapped: bool) -> None:

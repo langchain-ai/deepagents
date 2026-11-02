@@ -1,14 +1,16 @@
 ---
 type: composite-action integration
 title: GitHub Action Integration
-description: Run one bounded, non-interactive dcode task from a GitHub Actions job. Documents the public action contract, runner execution boundary, package-release relationship, memory cache lifecycle, and CI coverage.
+description: Run one bounded, non-interactive dcode task from a GitHub Actions job. Documents the root action compatibility contract, dcode execution boundary, memory cache lifecycle, release alignment, and CI coverage.
 tags: [github-actions, dcode, deepagents-code, ci, automation, memory, mcp, sandbox]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-10-28T08:04:17.781Z
+    at: 2026-11-02T08:04:35.090Z
 sources:
   - id: openwiki-source-b1423dca16677f7643488f74
     resource: repo://.github/scripts/tests/workflows/test_github_action.py
+  - id: openwiki-source-4d9cccca7700db7220ec055e
+    resource: repo://.github/workflows/_test.yml
   - id: openwiki-source-164e2da859b5277df81c7d94
     resource: repo://.github/workflows/ci.yml
   - id: openwiki-source-46fa34397e41ebf7491c7359
@@ -25,7 +27,7 @@ sources:
     resource: repo://libs/deepagents/deepagents/graph.py
   - id: openwiki-source-482fa4ca84f42b04ba025fc1
     resource: repo://release-please-config.json
-generated: { by: "openwiki/0.4.2", at: "2026-10-28T08:04:17.781Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-11-02T08:04:35.090Z" }
 ---
 
 # GitHub Action Integration
@@ -177,4 +179,6 @@ Run the focused check from the repository root:
 python -m pytest .github/scripts/tests/workflows/test_github_action.py -v
 ```
 
-Repository CI runs this file as part of `python -m pytest .github/scripts/tests -v` in the `Validate Release Options` job, which installs `packaging`, `pyyaml`, and `pytest`. This helper-script job runs independently of the changed-package filters (except for a curated release-notes-only apply), so root `action.yml` changes are still covered even though the dedicated Code lint and unit-test workflows are selected from `libs/code`, `libs/deepagents`, and shared workflow/action paths. The Code workflows run lint and sharded unit tests on Python 3.14 when their `code` selector is true, and run on pushes to `main`. For local development and repository CI practices, see [Development, CI, and Releases](/openwiki/operations/development.md).
+Repository CI runs this file as part of `python -m pytest .github/scripts/tests -v` in the `Validate Release Options` job. That job uses Python 3.14, installs `packaging`, `pyyaml`, and `pytest`, and also pins Node 24 because the helper-test suite includes Node-based checks. It runs on the CI workflow's pull-request, merge-group, and `main`-push events unless the change detector identifies a curated release-notes-only apply.
+
+This is the direct CI coverage for root `action.yml`: the dedicated `code` selector **does not include root `action.yml`**. It selects Code lint and sharded Python-3.14 unit tests for changes under `libs/code` or `libs/deepagents`, or for the shared `ci.yml`, `_lint.yml`, `_test.yml`, and `.github/actions/**` infrastructure paths; those jobs also run on pushes to `main`. Thus an action-wrapper change should be validated by the helper-script job and focused test above, while a CLI or shared-workflow change may additionally select the Code reusable workflows. The reusable test workflow installs the package test group with frozen uv resolution and runs `make test` on non-Windows legs with `RUN_SANDBOX_TESTS=true`. For local development and repository CI practices, see [Development, CI, and Releases](/openwiki/operations/development.md).

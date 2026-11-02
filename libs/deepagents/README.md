@@ -38,6 +38,8 @@ Deep Agents is an open source agent harness — an opinionated agent that runs o
 - **Skills** — reusable behaviors the agent can load on demand
 - **Tools** — bring your own functions or any MCP server
 
+> **Deep Agents Code** — a pre-built coding agent in your terminal, similar to Claude Code or Cursor, powered by any LLM. Install with `curl -LsSf https://langch.in/dcode | bash`. See the [documentation](https://docs.langchain.com/deepagents-code) for the full feature set.
+
 ```python
 from deepagents import create_deep_agent
 

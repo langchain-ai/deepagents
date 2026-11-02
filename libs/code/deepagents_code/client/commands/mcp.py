@@ -268,6 +268,7 @@ async def run_mcp_login(*, server: str, config_path: str | None) -> int:
         return 1
 
     import httpx
+    from mcp.shared.exceptions import MCPError
     from pydantic import ValidationError
 
     from deepagents_code.mcp_auth import format_login_failure, token_store_dir
@@ -297,6 +298,8 @@ async def run_mcp_login(*, server: str, config_path: str | None) -> int:
         ValidationError,
         KeyError,
         OSError,
+        MCPError,
+        ExceptionGroup,
     ) as exc:
         print(  # noqa: T201
             f"Login failed: {format_login_failure(exc, include_login_hint=True)}",

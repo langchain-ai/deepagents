@@ -626,11 +626,16 @@ def _render_fields(schema: dict[str, Any], refs: Mapping[str, str]) -> list[str]
 # `unknown` for `ToolMessage` / `Command` envelopes, whose data is only known
 # at runtime. We feed the annotation through `pydantic.TypeAdapter` in
 # serialization mode, matching how the bridge dumps the value, and render it
-# through the same `_json_schema_to_ts` we use for input args.
+# through the same `_json_schema_to_ts` we use for input args. MCP tools have
+# no useful annotation, so their type comes from the server's declared
+# `outputSchema` instead, when the tool's metadata carries one.
 
 
 def _return_schema(tool: BaseTool) -> dict[str, Any] | None:
     """Return the JSON Schema of the value JS gets from `tool`, if known."""
+    mcp_schema = _mcp_artifact_schema(tool)
+    if mcp_schema is not None:
+        return mcp_schema
     annotation = _return_annotation(tool)
     if tool.response_format == "content_and_artifact":
         annotation = _artifact_annotation(annotation)
@@ -644,6 +649,31 @@ def _return_schema(tool: BaseTool) -> dict[str, Any] | None:
         return TypeAdapter(annotation).json_schema(mode="serialization")
     except Exception:  # noqa: BLE001 — schema generation is best-effort
         return None
+
+
+def _mcp_artifact_schema(tool: BaseTool) -> dict[str, Any] | None:
+    """Return the schema of an MCP tool's artifact when its server declares one.
+
+    The declared schema is read from `metadata["mcp"]["tool"]["output_schema"]`.
+    A server that declares an `outputSchema` must return matching
+    `structuredContent`, which reaches JS as the artifact
+    `{structured_content: ...}`.
+    """
+    if tool.response_format != "content_and_artifact":
+        return None
+    mcp = (tool.metadata or {}).get("mcp")
+    mcp_tool = mcp.get("tool") if isinstance(mcp, dict) else None
+    output = mcp_tool.get("output_schema") if isinstance(mcp_tool, dict) else None
+    if not isinstance(output, dict):
+        return None
+    return {
+        "type": "object",
+        "properties": {
+            "structured_content": {k: v for k, v in output.items() if k != "$defs"}
+        },
+        "required": ["structured_content"],
+        "$defs": output.get("$defs") or {},
+    }
 
 
 def _return_annotation(tool: BaseTool) -> Any:

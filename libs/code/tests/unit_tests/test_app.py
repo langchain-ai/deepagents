@@ -14407,6 +14407,40 @@ class TestRequestApprovalBranching:
 class TestDeferredShowApproval:
     """_deferred_show_approval should swap placeholder once idle."""
 
+    async def test_enter_submission_ends_typing_deferral(self) -> None:
+        """Submitting a queued prompt reveals approval without the idle delay."""
+        from deepagents_code.tui.widgets.approval import ApprovalMenu
+
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = True
+            with patch("deepagents_code.app._monotonic", return_value=100.0):
+                await pilot.press("h", "i")
+                assert app._is_user_typing()
+
+                future = await app._request_approval(
+                    [
+                        {
+                            "name": "write_file",
+                            "args": {"path": "/tmp/x", "content": "hi"},
+                        }
+                    ],
+                    None,
+                )
+                assert app.query(".approval-placeholder")
+                assert not app.query(ApprovalMenu)
+
+                await pilot.press("enter")
+                await pilot.pause(0.3)
+
+                assert [m.text for m in app._pending_messages] == ["hi"]
+                assert not app._is_user_typing()
+                assert not app.query(".approval-placeholder")
+                assert app.query(ApprovalMenu)
+                assert not future.done()
+                future.cancel()
+
     async def test_bails_if_placeholder_detached_and_cancels_future(self) -> None:
         """If placeholder is detached, worker cancels the future and exits."""
         from deepagents_code.tui.widgets.approval import ApprovalMenu

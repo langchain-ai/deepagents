@@ -271,7 +271,7 @@ for call in run.tool_calls:
         print(delta)
 ```
 
-PTC calls run through the tool-call middleware listed after `CodeInterpreterMiddleware`, as model tool calls do. With `HumanInTheLoopMiddleware(interrupt_mode="per_call")` listed after it, a gated call from code pauses the run for review, and the reviewer's approve, edit, or reject applies to that call. Batched mode reviews only the tool calls in the model's message. The inner calls are not added as synthetic graph messages.
+PTC calls run through the tool-call middleware listed after `CodeInterpreterMiddleware`, as model tool calls do. With `HumanInTheLoopMiddleware(interrupt_mode="per_call")` listed after it, a gated call from code pauses the run for review, and the reviewer's approve, edit, or reject applies to that call. Until a `langchain` release reviews calls missing from the model's message in batched mode, only `interrupt_mode="per_call"` reviews calls from code. That includes `create_deep_agent`, which builds its HITL middleware in batched mode: its `interrupt_on` and `FilesystemPermission(mode="interrupt")` rules do not yet pause calls from code. The inner calls are not added as synthetic graph messages.
 
 - Tool return values retain JS-native scalar, list, and object shapes where possible. `ToolMessage` and `Command` envelopes are unwrapped at the bridge boundary, and nested non-native Python values are stringified in place.
 

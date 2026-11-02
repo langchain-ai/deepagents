@@ -2110,6 +2110,60 @@ class TestSubAgents:
             for checkpoint in history
         )
 
+    @pytest.mark.parametrize("use_async", [False, True], ids=["sync", "async"])
+    async def test_subagent_checkpoints_record_task_tool_call_id(self, *, use_async: bool) -> None:
+        parent_model = _ScriptedChatModel(
+            responses=[
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "task",
+                            "args": {"description": "Add", "subagent_type": "adder"},
+                            "id": "call_add",
+                            "type": "tool_call",
+                        },
+                        {
+                            "name": "task",
+                            "args": {"description": "Multiply", "subagent_type": "multiplier"},
+                            "id": "call_multiply",
+                            "type": "tool_call",
+                        },
+                    ],
+                ),
+                AIMessage(content="Done."),
+            ]
+        )
+        checkpointer = InMemorySaver()
+        agent = create_deep_agent(
+            model=parent_model,
+            checkpointer=checkpointer,
+            subagents=[
+                CompiledSubAgent(
+                    name=name,
+                    description=f"Does {name} work.",
+                    runnable=create_agent(model=_ScriptedChatModel(responses=[AIMessage(content=name)]), name=name),
+                )
+                for name in ("adder", "multiplier")
+            ],
+        )
+        config = {"configurable": {"thread_id": f"subagent-tool-call-id-{use_async}"}}
+        inputs = {"messages": [HumanMessage(content="Add and multiply")]}
+
+        if use_async:
+            await agent.ainvoke(inputs, config)
+        else:
+            agent.invoke(inputs, config)
+
+        call_ids_by_namespace: dict[str, set[str | None]] = {}
+        for checkpoint in checkpointer.list(config):
+            namespace = checkpoint.config["configurable"]["checkpoint_ns"]
+            call_ids_by_namespace.setdefault(namespace, set()).add(checkpoint.metadata.get("lc_tool_call_id"))
+
+        assert call_ids_by_namespace.pop("") == {None}
+        assert sorted(map(sorted, call_ids_by_namespace.values())) == [["call_add"], ["call_multiply"]]
+        assert all(namespace.startswith("tools:") for namespace in call_ids_by_namespace)
+
     def test_compiled_subagent_lc_agent_name_in_stream_metadata(self) -> None:
         """lc_agent_name in streamed chunks must reflect the CompiledSubAgent's declared name.
 

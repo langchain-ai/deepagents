@@ -18243,8 +18243,7 @@ class DeepAgentsApp(App):
                     msg += f"\n\n{self._format_cost_summary()}"
                 await self._mount_message(AppMessage(msg))
         elif cmd == "/cost":
-            await self._mount_message(UserMessage(command))
-            await self._mount_message(AppMessage(self._format_cost_summary()))
+            self.action_open_cost_breakdown()
         elif cmd == "/tools":
             await self._handle_tools_command(command)
         elif cmd == "/extensions":
@@ -27240,24 +27239,31 @@ class DeepAgentsApp(App):
         self._open_debug_console()
 
     def action_open_cost_breakdown(self) -> None:
-        """Open the session cost breakdown from the footer."""
+        """Open the session cost breakdown from the footer or `/cost`."""
+        from deepagents_code.tui.modals.cost_breakdown import open_cost_breakdown
+
+        open_cost_breakdown(self, self._format_cost_modal)
+
+    def _format_cost_modal(self) -> str:
+        """Build the modal content.
+
+        Returns:
+            Available token details and the escaped cost explanation.
+        """
         from deepagents_code.tui.modals.cost_breakdown import (
             format_cost_breakdown_table,
-            open_cost_breakdown,
         )
 
-        open_cost_breakdown(
-            self,
-            lambda: format_cost_breakdown_table(
-                self._session_cost_usd, self._session_cost_breakdown
-            ),
+        table = format_cost_breakdown_table(
+            self._session_cost_usd, self._session_cost_breakdown
         )
+        summary = "  \n".join(
+            _escape_markdown(line) for line in self._format_cost_summary().splitlines()
+        )
+        return f"{table}\n\n{summary}" if table else summary
 
     def _open_debug_console(self) -> None:
         """Push the read-only Debug Console modal."""
-        from deepagents_code.tui.modals.cost_breakdown import (
-            format_cost_breakdown_table,
-        )
         from deepagents_code.tui.widgets.debug_console import DebugConsoleScreen
 
         def handle_result(_: None) -> None:
@@ -27274,9 +27280,7 @@ class DeepAgentsApp(App):
                 # counts, tokens, and other in-memory fields stay current while
                 # the modal is open. The builder is intentionally I/O-free.
                 snapshot_provider=self._build_debug_snapshot,
-                cost_breakdown_provider=lambda: format_cost_breakdown_table(
-                    self._session_cost_usd, self._session_cost_breakdown
-                ),
+                cost_breakdown_provider=self._format_cost_modal,
                 mcp_servers_provider=lambda: self._mcp_server_info or [],
                 cleared_upto=self._debug_console_cleared_upto,
                 on_clear=persist_clear,

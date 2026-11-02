@@ -57,7 +57,7 @@ from pydantic import BaseModel, Field
 from deepagents.middleware._blob_offload import _BLOB_PAYLOADS_KEY, _ahydrate_tool_messages, _hydrate_tool_messages
 from deepagents.middleware._utils import append_to_system_message
 from deepagents.middleware.filesystem import NUM_CHARS_PER_TOKEN
-from deepagents.middleware.subagents import _fork_messages
+from deepagents.middleware.subagents import _final_refusal, _fork_messages, _refusal_notice
 from deepagents.middleware.summarization import SUMMARIZATION_EVENT_KEY
 
 logger = logging.getLogger(__name__)
@@ -644,10 +644,13 @@ def _final_content(values: Mapping[str, Any]) -> list[ContentBlock]:
     if not messages:
         return [{"type": "text", "text": "(completed with no output messages)"}]
     try:
-        return convert_to_messages(messages[-1:])[0].content_blocks
+        last_message = convert_to_messages(messages[-1:])[0]
     except ValueError:  # a message LangChain can't read, e.g. from a non-LangChain server
         last = messages[-1]
         return [{"type": "text", "text": str(last.get("content", "") if isinstance(last, Mapping) else last)}]
+    if refusal := _final_refusal([last_message]):
+        return [{"type": "text", "text": _refusal_notice(refusal)}]
+    return last_message.content_blocks
 
 
 _DELIVERABLE_THREAD_STATUSES = frozenset({"idle", "error"})

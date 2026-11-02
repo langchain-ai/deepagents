@@ -42,6 +42,7 @@ from quickjs_rs import (
     TimeoutError as QJSTimeoutError,
 )
 
+from langchain_quickjs._dispatch import ToolReturn, recording_copy
 from langchain_quickjs._format import (
     coerce_tool_output_for_ptc,
     format_handle,
@@ -682,7 +683,8 @@ class _ThreadREPL:
         tool_call_id = tool_call.get("id")
 
         async def _call() -> Any:
-            return await tool.arun(
+            record = ToolReturn()
+            output = await recording_copy(tool, record).arun(
                 args,
                 callbacks=(
                     outer_runtime.config.get("callbacks")
@@ -695,6 +697,8 @@ class _ThreadREPL:
                     tool_call_id if _tool_uses_injected_tool_call_id(tool) else None
                 ),
             )
+            # Nothing is recorded when `arun` handled a tool error itself.
+            return record.value if record.ran else output
 
         if outer_loop is None:
             return await _call()
@@ -756,7 +760,10 @@ class _ThreadREPL:
                 outer_runtime=state.outer_runtime,
                 outer_loop=state.outer_loop,
             )
-            return [0, coerce_tool_output_for_ptc(result)]
+            value = coerce_tool_output_for_ptc(
+                result, response_format=tool.response_format
+            )
+            return [0, value]
 
         bridge_symbol = _bridge_symbol_name(camel)
         ctx.register(bridge_symbol, _bridge, is_async=True)

@@ -6,8 +6,9 @@ import contextlib
 import inspect
 import json
 import re
-from typing import TYPE_CHECKING, Any, Literal, get_type_hints
+from typing import TYPE_CHECKING, Any, Literal, get_args, get_origin, get_type_hints
 
+from langchain_core.messages.tool import ToolOutputMixin
 from pydantic import TypeAdapter
 
 if TYPE_CHECKING:
@@ -411,9 +412,11 @@ def render_ptc_prompt(tools: Sequence[BaseTool], *, tool_name: str = "eval") -> 
         "The agent tools listed below are exposed on the global object at "
         "`globalThis.tools` (also reachable as `tools`). Each takes a single "
         "object argument and returns a Promise that resolves to the tool's "
-        "native value: strings as strings, numbers as numbers, lists as "
-        "arrays, dicts as objects, and `None` as `null`. You do NOT need to "
-        "`JSON.parse` results — they are already typed.\n\n"
+        "data, not the text the tool would show you: strings as strings, "
+        "numbers as numbers, lists as arrays, dicts, models, and dataclasses "
+        "as objects, bytes as `Uint8Array`, and `None` as `null`. A tool that "
+        "returns separate content and an artifact resolves to the artifact. "
+        "You do NOT need to `JSON.parse` results — they are already typed.\n\n"
         "Invocation pattern: `await tools.<name>({ ... })`.\n\n"
         "- Use `await` to get tool results; combine with `Promise.all` for "
         "independent calls so they run concurrently.\n"
@@ -488,32 +491,71 @@ def _render_signature(
     return f"tools.{fn_name}(input: {{\n{body}\n}}): {return_clause}"
 
 
-# Return types come from the tool's underlying function annotation. We feed
-# the annotation through `pydantic.TypeAdapter` to get a JSON Schema and
-# render it through the same `_json_schema_to_ts` we use for input args.
-# Compound shapes (TypedDict, BaseModel, recursive types) end up as `$ref`
-# in the schema and currently render as `unknown` — same behaviour as
-# nested-model input args. Until that path resolves `$ref` / `$defs`,
-# the simpler unified renderer is the right trade-off here.
+# Return types come from the tool's underlying function annotation, narrowed
+# to the value JS gets: a `content_and_artifact` tool's artifact element, and
+# `unknown` for `ToolMessage` / `Command` envelopes, whose data is only known
+# at runtime. We feed the annotation through `pydantic.TypeAdapter` in
+# serialization mode, matching how the bridge dumps the value, and render it
+# through the same `_json_schema_to_ts` we use for input args. Compound shapes
+# (TypedDict, BaseModel, recursive types) end up as `$ref` in the schema and
+# currently render as `unknown` — same behaviour as nested-model input args.
+# Until that path resolves `$ref` / `$defs`, the simpler unified renderer is
+# the right trade-off here.
 
 
 def _render_return_type(tool: BaseTool) -> str:
-    """Render the return annotation as a TS type, defaulting to `unknown`."""
+    """Render the type of the value JS gets from `tool`, defaulting to `unknown`."""
+    annotation = _return_annotation(tool)
+    if tool.response_format == "content_and_artifact":
+        annotation = _artifact_annotation(annotation)
+    if (
+        annotation is inspect.Signature.empty
+        or annotation is Any
+        or _mentions_tool_envelope(annotation)
+    ):
+        return "unknown"
+    try:
+        schema = TypeAdapter(annotation).json_schema(mode="serialization")
+    except Exception:  # noqa: BLE001 — schema generation is best-effort
+        return "unknown"
+    return _json_schema_to_ts(schema)
+
+
+def _return_annotation(tool: BaseTool) -> Any:
+    """Return the tool function's resolved return annotation, if it has one."""
     target = getattr(tool, "func", None) or getattr(tool, "coroutine", None)
     if target is None:
-        return "unknown"
+        return inspect.Signature.empty
     annotation = inspect.Signature.empty
     with contextlib.suppress(TypeError, ValueError, NameError):
         signature = inspect.signature(target)
         resolved = get_type_hints(target)
         annotation = resolved.get("return", signature.return_annotation)
-    if annotation is inspect.Signature.empty or annotation is Any:
-        return "unknown"
-    try:
-        schema = TypeAdapter(annotation).json_schema()
-    except Exception:  # noqa: BLE001 — schema generation is best-effort
-        return "unknown"
-    return _json_schema_to_ts(schema)
+    return annotation
+
+
+def _artifact_annotation(annotation: Any) -> Any:
+    """Return `A` from a `tuple[C, A]` annotation, else no annotation.
+
+    A `None` artifact falls back to the content, so an `A` that admits `None`
+    has no single type to render.
+    """
+    args = get_args(annotation)
+    if get_origin(annotation) is not tuple or len(args) != 2:  # noqa: PLR2004
+        return inspect.Signature.empty
+    artifact = args[1]
+    admits_none = artifact is None or type(None) in (artifact, *get_args(artifact))
+    if admits_none or artifact is ...:
+        return inspect.Signature.empty
+    return artifact
+
+
+def _mentions_tool_envelope(annotation: Any) -> bool:
+    """Return whether the annotation names a `ToolMessage` or `Command`."""
+    origin = get_origin(annotation) or annotation
+    if isinstance(origin, type) and issubclass(origin, ToolOutputMixin):
+        return True
+    return any(_mentions_tool_envelope(arg) for arg in get_args(annotation))
 
 
 def _json_schema_to_ts(prop: dict[str, Any]) -> str:
@@ -525,7 +567,8 @@ def _json_schema_to_ts(prop: dict[str, Any]) -> str:
         return " | ".join(dict.fromkeys(parts))
     t = prop.get("type")
     if t == "string":
-        return "string"
+        # quickjs_rs marshals `bytes` to and from `Uint8Array`.
+        return "Uint8Array" if prop.get("format") == "binary" else "string"
     if t in {"integer", "number"}:
         return "number"
     if t == "boolean":

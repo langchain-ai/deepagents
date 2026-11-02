@@ -293,7 +293,7 @@ def test_ptc_dict_with_nested_non_native_values_does_not_break_eval() -> None:
 
     _assert_result_contains(
         _eval_tool_message(result).content,
-        "21:2024-01-01 12:30:00:2024-01-02 15:45:00",
+        "21:2024-01-01T12:30:00:2024-01-02T15:45:00",
     )
 
 

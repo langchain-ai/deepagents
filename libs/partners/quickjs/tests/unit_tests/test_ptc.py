@@ -7,12 +7,20 @@ the REPL so one `eval` can orchestrate many tool invocations.
 from __future__ import annotations
 
 import json
-from typing import Any, Literal
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from typing import Annotated, Any, Literal
 
 import pytest
 from langchain.tools import ToolRuntime
 from langchain_core.messages import ToolMessage
-from langchain_core.tools import BaseTool, StructuredTool
+from langchain_core.tools import (
+    BaseTool,
+    InjectedToolCallId,
+    StructuredTool,
+    ToolException,
+    tool,
+)
 from langgraph.types import Command
 from pydantic import BaseModel, Field
 from quickjs_rs import Runtime, ThreadWorker
@@ -949,3 +957,185 @@ async def test_pydantic_return_arrives_as_object_matching_schema(
     )
     assert outcome.error_type is None, outcome.error_message
     assert outcome.result == "object:ok:3"
+
+
+# ---------------------------------------------------------------------------
+# Tool data reaching JS
+# ---------------------------------------------------------------------------
+
+
+class _SearchArtifact(TypedDict):
+    """Module-scope TypedDict used as an artifact annotation."""
+
+    total: int
+    query: str
+
+
+@tool(response_format="content_and_artifact")
+def _search(query: str) -> tuple[str, _SearchArtifact]:
+    """Search, returning model text and a separate data value."""
+    return f"Found 2 results for {query}", {"total": 2, "query": query}
+
+
+@dataclass
+class _Event:
+    """Module-scope dataclass returned by a PTC tool."""
+
+    name: str
+    when: datetime
+
+
+def _next_event() -> _Event:
+    """Return the next event."""
+    return _Event(name="launch", when=datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC))
+
+
+def _thumbnail() -> bytes:
+    """Return image bytes."""
+    return b"\x89PNG\x00\xff"
+
+
+def _message_with_artifact() -> ToolMessage:
+    """Return a ToolMessage carrying an artifact."""
+    return ToolMessage(
+        content="2 rows", artifact={"rows": [1, 2]}, tool_call_id="ignored"
+    )
+
+
+def _failed_message() -> ToolMessage:
+    """Return an error ToolMessage that also carries an artifact."""
+    return ToolMessage(
+        content="not found",
+        artifact={"code": "missing"},
+        tool_call_id="ignored",
+        status="error",
+    )
+
+
+@tool
+def _whoami(tool_call_id: Annotated[str, InjectedToolCallId]) -> dict[str, bool]:
+    """Report whether the call has an id."""
+    return {"has_id": bool(tool_call_id)}
+
+
+async def test_artifact_tool_gives_js_its_artifact(repl: _ThreadREPL) -> None:
+    repl.install_tools([_search.model_copy(update={"name": "search"})])
+    outcome = await repl.eval_async(
+        "const r = await tools.search({query: 'ada'});\n`${r.total}:${r.query}`"
+    )
+    assert outcome.error_type is None, outcome.error_message
+    assert outcome.result == "2:ada"
+
+
+def test_artifact_tool_return_type_is_its_artifact() -> None:
+    prompt = render_ptc_prompt([_search.model_copy(update={"name": "search"})])
+    assert "Promise<{ total: number; query: string }>" in prompt, prompt
+
+
+async def test_artifact_tool_without_artifact_gives_js_its_content(
+    repl: _ThreadREPL,
+) -> None:
+    @tool(response_format="content_and_artifact")
+    def lookup(key: str) -> tuple[str, dict[str, int] | None]:
+        """Look up a key."""
+        return f"no entry for {key}", None
+
+    assert "Promise<unknown>" in render_ptc_prompt([lookup])
+    repl.install_tools([lookup])
+    outcome = await repl.eval_async("await tools.lookup({key: 'k'})")
+    assert outcome.error_type is None, outcome.error_message
+    assert outcome.result == "no entry for k"
+
+
+async def test_base_tool_subclass_return_reaches_js_as_object(
+    repl: _ThreadREPL,
+) -> None:
+    class _Inventory(BaseTool):
+        name: str = "inventory"
+        description: str = "Count items."
+
+        def _run(self, item: str) -> dict[str, int]:
+            return {item: 3}
+
+    repl.install_tools([_Inventory()])
+    outcome = await repl.eval_async("(await tools.inventory({item: 'pens'})).pens")
+    assert outcome.error_type is None, outcome.error_message
+    assert outcome.result == "3"
+
+
+async def test_handled_tool_error_reaches_js_as_its_text(repl: _ThreadREPL) -> None:
+    def _fail(query: str) -> tuple[str, dict[str, int]]:
+        msg = f"no index for {query}"
+        raise ToolException(msg)
+
+    tool_ = StructuredTool.from_function(
+        name="search",
+        description="Search.",
+        func=_fail,
+        response_format="content_and_artifact",
+        handle_tool_error=True,
+    )
+    repl.install_tools([tool_])
+    outcome = await repl.eval_async("await tools.search({query: 'q'})")
+    assert outcome.error_type is None, outcome.error_message
+    assert outcome.result == "no index for q"
+
+
+async def test_dataclass_return_arrives_as_json_shaped_object(
+    repl: _ThreadREPL,
+) -> None:
+    tool_ = StructuredTool.from_function(
+        name="next_event", description="Next event.", func=_next_event
+    )
+    repl.install_tools([tool_])
+    outcome = await repl.eval_async(
+        "const e = await tools.nextEvent({});\n`${e.name}@${e.when}`"
+    )
+    assert outcome.error_type is None, outcome.error_message
+    assert outcome.result == "launch@2026-01-02T03:04:05Z"
+
+
+async def test_bytes_return_arrives_as_uint8array(repl: _ThreadREPL) -> None:
+    tool_ = StructuredTool.from_function(
+        name="thumbnail", description="Thumbnail.", func=_thumbnail
+    )
+    assert "Promise<Uint8Array>" in render_ptc_prompt([tool_])
+    repl.install_tools([tool_])
+    outcome = await repl.eval_async(
+        "const b = await tools.thumbnail({});\n"
+        "`${b instanceof Uint8Array}:${b.length}:${b[5]}`"
+    )
+    assert outcome.error_type is None, outcome.error_message
+    assert outcome.result == "true:6:255"
+
+
+async def test_injected_tool_call_id_tool_returns_an_object(
+    repl: _ThreadREPL,
+) -> None:
+    repl.install_tools([_whoami.model_copy(update={"name": "whoami"})])
+    outcome = await repl.eval_async("(await tools.whoami({})).has_id")
+    assert outcome.error_type is None, outcome.error_message
+    assert outcome.result == "true"
+
+
+async def test_returned_tool_message_gives_js_its_artifact(
+    repl: _ThreadREPL,
+) -> None:
+    tool_ = StructuredTool.from_function(
+        name="rows", description="Rows.", func=_message_with_artifact
+    )
+    repl.install_tools([tool_])
+    outcome = await repl.eval_async("(await tools.rows({})).rows.length")
+    assert outcome.error_type is None, outcome.error_message
+    assert outcome.result == "2"
+    assert "Promise<unknown>" in render_ptc_prompt([tool_])
+
+
+async def test_error_tool_message_gives_js_its_content(repl: _ThreadREPL) -> None:
+    tool_ = StructuredTool.from_function(
+        name="fetch_row", description="Fetch a row.", func=_failed_message
+    )
+    repl.install_tools([tool_])
+    outcome = await repl.eval_async("await tools.fetchRow({})")
+    assert outcome.error_type is None, outcome.error_message
+    assert outcome.result == "not found"

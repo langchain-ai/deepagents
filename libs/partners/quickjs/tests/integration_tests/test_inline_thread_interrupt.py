@@ -23,12 +23,15 @@ _SCENARIO = textwrap.dedent(
     class HostInterrupt(BaseException):
         pass
 
+    eval_started = threading.Event()
+
     def workflow() -> None:
         middleware = CodeInterpreterMiddleware(execution="inline", subagents=False)
 
         async def run() -> None:
             repl = middleware._registry.get("slot")
             try:
+                eval_started.set()
                 outcome = await repl.eval_async(
                     "const end = Date.now() + 3000; while (Date.now() < end) {} 1"
                 )
@@ -43,7 +46,8 @@ _SCENARIO = textwrap.dedent(
 
     thread = threading.Thread(target=workflow)
     thread.start()
-    time.sleep(2.0)  # the host's deadlock timeout
+    eval_started.wait(10)
+    time.sleep(2.0)  # the host's deadlock timeout, measured from the busy eval
     ctypes.pythonapi.PyThreadState_SetAsyncExc(
         ctypes.c_ulong(thread.ident), ctypes.py_object(HostInterrupt)
     )

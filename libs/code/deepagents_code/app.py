@@ -18856,9 +18856,10 @@ class DeepAgentsApp(App):
                                 "no servers were loaded."
                             )
                         else:
-                            report += (
-                                "\nMCP configuration re-read (including .mcp.json)."
-                            )
+                            if restart_result.mcp_status == "fresh":
+                                report += (
+                                    "\nMCP configuration re-read (including .mcp.json)."
+                                )
                             report += "\n" + _format_mcp_server_changes(
                                 old_mcp_server_info,
                                 restart_result.mcp_server_info,

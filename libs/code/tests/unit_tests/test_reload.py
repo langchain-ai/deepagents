@@ -2285,7 +2285,9 @@ class TestReloadPluginsViaReload:
 
             async def _fake_restart() -> _ServerRespawnResult:  # noqa: RUF029
                 order.append("restart")
-                return _ServerRespawnResult(restarted=restarted)
+                return _ServerRespawnResult(
+                    restarted=restarted, mcp_status="fresh", mcp_server_info=[]
+                )
 
             monkeypatch.setattr(app, "_discover_skills", _fake_discover)
             monkeypatch.setattr(app, "_reload_hooks", reload_hooks)
@@ -2395,6 +2397,7 @@ class TestReloadPluginsViaReload:
             text = "\n".join(str(w._content) for w in app.query(AppMessage))
             assert expected in text
             assert forbidden not in text
+            assert "MCP configuration re-read" not in text
 
     async def test_reload_names_the_mcp_refresh_failure(
         self, monkeypatch: pytest.MonkeyPatch

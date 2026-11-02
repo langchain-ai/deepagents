@@ -5576,6 +5576,8 @@ class DeepAgentsApp(App):
 
         if self._server_startup_deferred:
             await self._mount_deferred_start_notice()
+            if not self._onboarding_session:
+                await self._show_model_selector()
 
         # Fire-and-forget workers — none of these block the event loop.
 
@@ -26397,6 +26399,7 @@ class DeepAgentsApp(App):
                 ModelConfigError,
                 NoAllowedModelCredentialsError,
                 NoCredentialsConfiguredError,
+                NoModelConfiguredError,
             )
 
             try:
@@ -26407,7 +26410,7 @@ class DeepAgentsApp(App):
                 # actionable, and silence after closing `/auth` reads as a hang.
                 await self._mount_message(ErrorMessage(str(exc)))
                 return False
-            except NoCredentialsConfiguredError:
+            except NoCredentialsConfiguredError, NoModelConfiguredError:
                 # No usable default to fall back to — nothing to retry.
                 return False
             except ModelConfigError as exc:
@@ -32964,6 +32967,7 @@ class DeepAgentsApp(App):
             ModelConfigError,
             NoAllowedModelCredentialsError,
             NoCredentialsConfiguredError,
+            NoModelConfiguredError,
         )
 
         try:
@@ -32974,7 +32978,7 @@ class DeepAgentsApp(App):
             # `/auth` look broken, so name the models that would work.
             await self._mount_message(ErrorMessage(str(exc)))
             return False
-        except NoCredentialsConfiguredError:
+        except NoCredentialsConfiguredError, NoModelConfiguredError:
             return False
         except ModelConfigError as exc:
             await self._mount_message(ErrorMessage(str(exc)))

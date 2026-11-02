@@ -285,7 +285,7 @@ class TestHeadlessApprovalFlagHandling:
             return real_open(path, flags, mode, dir_fd=dir_fd)
 
         with (
-            patch.object(sys, "argv", argv),
+            patch.object(sys, "argv", [*argv, "--model", "openai:test-model"]),
             patch.object(sys, "stdin", mock_stdin),
             patch("os.open", side_effect=_open_no_tty),
             patch("deepagents_code.main.check_optional_tools", return_value=[]),
@@ -774,7 +774,15 @@ class TestSkillFlagValidation:
             patch.object(
                 sys,
                 "argv",
-                ["deepagents", "--skill", "code-review", "--stdin", "-q"],
+                [
+                    "deepagents",
+                    "--skill",
+                    "code-review",
+                    "--stdin",
+                    "-q",
+                    "--model",
+                    "openai:test-model",
+                ],
             ),
             patch.object(sys, "stdin", mock_stdin),
             patch("deepagents_code.main.check_optional_tools", return_value=[]),
@@ -819,7 +827,11 @@ class TestMaxTurnsArgument:
         mock_stdin.isatty.return_value = False
         mock_stdin.read.return_value = "piped task"
         with (
-            patch.object(sys, "argv", ["deepagents", "--max-turns", "5"]),
+            patch.object(
+                sys,
+                "argv",
+                ["deepagents", "--max-turns", "5", "--model", "openai:test-model"],
+            ),
             patch.object(sys, "stdin", mock_stdin),
             patch("deepagents_code.main.check_optional_tools", return_value=[]),
             patch(
@@ -888,6 +900,23 @@ class TestHeadlessResumeArguments:
         code, mock_run = self._cli("-r", "t-1", "-n", "continue", "--rubric", "done")
         assert code == 2
         mock_run.assert_not_awaited()
+
+    @pytest.mark.parametrize("saved", [None, "openai:other"])
+    def test_resume_without_override_adopts_thread_model(
+        self, monkeypatch: pytest.MonkeyPatch, saved: str | None
+    ) -> None:
+        from deepagents_code.model_config import ModelConfig
+
+        monkeypatch.setattr(
+            ModelConfig,
+            "load",
+            classmethod(lambda _cls: ModelConfig(default_model=saved)),
+        )
+        code, mock_run = self._cli("-r", "t-1", "-n", "continue")
+        assert code == 0
+        assert mock_run.await_args is not None
+        assert mock_run.await_args.kwargs["model_name"] is None
+        assert mock_run.await_args.kwargs["resume"].adopt_model is True
 
     def test_resume_id_reaches_the_headless_runner(self) -> None:
         from deepagents_code.client.headless_resume import ResumeRequest

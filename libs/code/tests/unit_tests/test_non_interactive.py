@@ -4491,6 +4491,10 @@ class TestHeadlessResume:
 
     @pytest.fixture
     def start_server(self, monkeypatch: pytest.MonkeyPatch) -> AsyncMock:
+        monkeypatch.setattr(
+            "deepagents_code.client.headless_resume.resume_launch_model",
+            AsyncMock(return_value="openai:thread-model"),
+        )
         agent = _headless_agent()
         agent.aensure_thread = AsyncMock()
         agent.aget_state = AsyncMock(return_value=SimpleNamespace(values={}))

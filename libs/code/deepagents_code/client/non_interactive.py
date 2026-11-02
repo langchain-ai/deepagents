@@ -2944,6 +2944,15 @@ async def run_non_interactive(
     except ResumeError as exc:
         _print_resume_error(console, exc)
         return 1
+    if resume is not None and resume.adopt_model and model_name is None:
+        from deepagents_code.client.headless_resume import resume_launch_model
+        from deepagents_code.model_config import ModelConfigError
+
+        try:
+            model_name = await resume_launch_model(thread_id)
+        except ModelConfigError as exc:
+            _print_resume_error(console, exc)
+            return 1
     if quiet:
         # Printed despite `-q`: scripts parse it to resume the thread later.
         console.print(

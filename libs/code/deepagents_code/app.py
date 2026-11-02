@@ -2642,8 +2642,32 @@ def _build_model_switch_error_body(exc: BaseException) -> str | Content:
             ") or see the provider reference: ",
             (exc.docs_url, TStyle(underline=True, link=exc.docs_url)),
         )
-    from deepagents_code.client.remote_client import format_agent_exception
+    from langgraph_sdk.errors import ConflictError
 
+    from deepagents_code.client.remote_client import (
+        format_agent_exception,
+        workspace_conflict_diagnostics,
+    )
+
+    if isinstance(exc, ConflictError):
+        diagnostics = workspace_conflict_diagnostics(exc)
+        if diagnostics is not None and diagnostics.category in {
+            "policy_drift",
+            "config_drift",
+        }:
+            text = (
+                "Model switch blocked: this conversation's workspace settings "
+                "changed. The model was not changed.\n\n"
+                "Restore the original settings and relaunch to continue this "
+                "conversation, or use /clear to start a new conversation with "
+                "the current settings. The existing conversation is preserved."
+            )
+        else:
+            text = (
+                "Model switch blocked by a workspace conflict. "
+                f"The model was not changed.\n\n{format_agent_exception(exc)}"
+            )
+        return _build_agent_error_body(text, exc)
     return f"Failed to switch model: {format_agent_exception(exc)}"
 
 

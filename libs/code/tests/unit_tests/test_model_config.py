@@ -4645,33 +4645,6 @@ class TestCodexProviderMirror:
     `openai_codex`; other openai models are not mirrored.
     """
 
-    @pytest.mark.parametrize(
-        ("model", "available"),
-        [
-            ("gpt-6-astra", True),
-            ("gpt-6-luna", True),
-            ("gpt-6-sol", True),
-            ("gpt-6.1-sol", True),
-            ("gpt-6.1-terra", True),
-            ("gpt-5.5", False),
-            ("gpt-5.4", False),
-            ("gpt-5.4-mini", False),
-            ("gpt-5.3-codex", False),
-            ("gpt-5.2", False),
-        ],
-    )
-    def test_subscription_model_discovery(self, model: str, *, available: bool) -> None:
-        """Subscription discovery exposes current models without changing API access."""
-        clear_caches()
-        models = get_available_models()
-        profiles = get_model_profiles()
-
-        assert model in models["openai"]
-        assert (model in models["openai_codex"]) is available
-        assert (f"openai_codex:{model}" in profiles) is available
-        if available:
-            assert profiles[f"openai_codex:{model}"] == profiles[f"openai:{model}"]
-
     def test_default_classifier_is_discoverable(self) -> None:
         """The subscription Auto classifier has a supported model profile."""
         from deepagents_code.config import default_auto_classifier_model

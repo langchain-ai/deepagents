@@ -696,7 +696,7 @@ requires-dist = [
     { name = "langchain-core", specifier = ">=1.7.3,<2.0.0" },
     { name = "langchain-google-genai", specifier = ">=4.4.2,<5.0.0" },
     { name = "langchain-quickjs", marker = "extra == 'quickjs'", specifier = ">=0.3.11" },
-    { name = "langsmith", specifier = ">=0.14.16" },
+    { name = "langsmith", specifier = ">=0.14.17" },
     { name = "packaging", specifier = ">=23.2" },
     { name = "pillow", marker = "extra == 'video'", specifier = ">=12.3.0" },
     { name = "wcmatch", specifier = ">=11.0" },
@@ -860,7 +860,7 @@ requires-dist = [
     { name = "langgraph-cli", extras = ["inmem"], specifier = ">=0.4.40,<1.0.0" },
     { name = "langgraph-runtime-inmem", specifier = ">=0.37.0,<1.0.0" },
     { name = "langgraph-sdk", specifier = ">=0.4.11,<1.0.0" },
-    { name = "langsmith", extras = ["sandbox"], specifier = ">=0.14.16" },
+    { name = "langsmith", extras = ["sandbox"], specifier = ">=0.14.17" },
     { name = "markdownify", specifier = ">=1.2.3" },
     { name = "mcp", specifier = ">=2.0.0" },
     { name = "packaging", specifier = ">=26.2" },
@@ -1003,7 +1003,7 @@ requires-dist = [
     { name = "langgraph-prebuilt", specifier = ">=1.1.1,<2.0.0" },
     { name = "langgraph-sdk", specifier = ">=0.4.11,<1.0.0" },
     { name = "langgraph-store-mongodb", marker = "extra == 'mongodb'", specifier = ">=0.4.0,<0.5.0" },
-    { name = "langsmith", specifier = ">=0.14.16" },
+    { name = "langsmith", specifier = ">=0.14.17" },
     { name = "librosa", marker = "extra == 'media'", specifier = ">=0.11.0" },
     { name = "mcp", specifier = ">=2.3.0" },
     { name = "numpy", marker = "extra == 'media'", specifier = ">=2.5.4" },
@@ -2213,7 +2213,7 @@ wheels = [
 
 [[package]]
 name = "langsmith"
-version = "0.14.16"
+version = "0.14.17"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anyio" },
@@ -2231,9 +2231,9 @@ dependencies = [
     { name = "xxhash" },
     { name = "zstandard" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/f5/45/576803a72da96d9c0866b3815f08f447ed16c14acb52174129daca6847d6/langsmith-0.14.16.tar.gz", hash = "sha256:4e5816cbe1541f4d04d71f652eb8f4137889861bebcf7137bcba3553ae9e335e", size = 5096529, upload-time = "2026-10-29T17:53:27.747Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/12/4b/c91526e3038d5d5869fa5dba647215826fb8b2b8a3c042d20581a3e5d735/langsmith-0.14.17.tar.gz", hash = "sha256:53efa2db8293d0a8d60efebe0945c595b635873774b302066ed0a746ddf87562", size = 5106102, upload-time = "2026-11-02T00:58:45.943Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/11/3a/9a072c02a22089ddf20f0f33ea95bee5a5951b31839f118b04f27b94be6e/langsmith-0.14.16-py3-none-any.whl", hash = "sha256:b9ea1a57622b0788b181d78605f974fb206c5f6f75793076ffec23cef4d904c8", size = 933680, upload-time = "2026-10-29T17:53:25.465Z" },
+    { url = "https://files.pythonhosted.org/packages/a8/11/4da3faa7fd20c487c4770f14aa2b4247871e787ad305c2ba528fcf0f2bcc/langsmith-0.14.17-py3-none-any.whl", hash = "sha256:0aa2c79936c93c7cea9c55656f05e21cc5da715fecbdbda439d084adc08429be", size = 940828, upload-time = "2026-11-02T00:58:43.727Z" },
 ]
 
 [package.optional-dependencies]

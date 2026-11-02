@@ -25872,7 +25872,7 @@ class TestFormatMcpServerChanges:
 
         assert (
             _format_mcp_server_changes(servers, servers)
-            == "MCP server changes: no changes detected."
+            == "MCP server changes: no metadata changes detected."
         )
 
     def test_reports_unavailable_metadata_when_refresh_failed(self) -> None:
@@ -26057,7 +26057,7 @@ class TestFormatMcpServerChanges:
         ]
 
         assert _format_mcp_server_changes(servers, servers) == (
-            "MCP server changes: no changes detected "
+            "MCP server changes: no metadata changes detected "
             "(still needs attention: notion; use /mcp)."
         )
 
@@ -26075,7 +26075,7 @@ class TestFormatMcpServerChanges:
         ]
 
         assert _format_mcp_server_changes(servers, servers) == (
-            "MCP server changes: no changes detected "
+            "MCP server changes: no metadata changes detected "
             "(still needs attention: notion; use /mcp)."
         )
 
@@ -26093,7 +26093,7 @@ class TestFormatMcpServerChanges:
         ]
 
         assert _format_mcp_server_changes(servers, servers) == (
-            "MCP server changes: no changes detected "
+            "MCP server changes: no metadata changes detected "
             "(still needs attention: <config:mcp.json>; use /mcp)."
         )
 

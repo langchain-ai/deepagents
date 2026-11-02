@@ -1080,10 +1080,10 @@ def _format_mcp_server_changes(
     ):
         if stuck:
             return (
-                "MCP server changes: no changes detected "
+                "MCP server changes: no metadata changes detected "
                 f"(still needs attention: {', '.join(stuck)}; use /mcp)."
             )
-        return "MCP server changes: no changes detected."
+        return "MCP server changes: no metadata changes detected."
 
     lines = ["MCP server changes:"]
     if loaded:
@@ -18843,7 +18843,7 @@ class DeepAgentsApp(App):
                     if restart_result.restarted:
                         server_fresh = True
                         self._session_plugin_ids = discovered_plugin_ids
-                        report += "\nAgent server restarted for plugin MCP."
+                        report += "\nAgent server restarted."
                         if restart_result.mcp_status == "disabled":
                             # `--no-mcp`: there is nothing to refresh, so an
                             # empty diff is the truth rather than an unknown.
@@ -18856,6 +18856,10 @@ class DeepAgentsApp(App):
                                 "no servers were loaded."
                             )
                         else:
+                            if restart_result.mcp_status == "fresh":
+                                report += (
+                                    "\nMCP configuration re-read (including .mcp.json)."
+                                )
                             report += "\n" + _format_mcp_server_changes(
                                 old_mcp_server_info,
                                 restart_result.mcp_server_info,

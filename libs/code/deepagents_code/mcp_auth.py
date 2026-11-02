@@ -2002,6 +2002,39 @@ async def _run_device_flow(
     raise RuntimeError(msg)
 
 
+def _slack_mcp_setup_failure(exc: BaseException) -> str | None:
+    """Return safe setup guidance for Slack's disabled-app rejection, if present."""
+    from mcp.shared.exceptions import MCPError
+
+    visited: set[int] = set()
+    stack = [exc]
+    while stack:
+        current = stack.pop()
+        if id(current) in visited:
+            continue
+        visited.add(id(current))
+        if isinstance(current, MCPError) and (
+            match := re.fullmatch(
+                r"App is not enabled for Slack MCP server access\. "
+                r"Please enable it here: "
+                r"https://api\.slack\.com/apps/(A[A-Z0-9]+)/app-assistant",
+                current.message,
+            )
+        ):
+            return (
+                "Slack MCP access is disabled for this app. Ask an app owner to "
+                "enable 'Slack Model Context Protocol (MCP) Server' under Agents "
+                f"at https://api.slack.com/apps/{match[1]}/app-assistant, "
+                "then retry login."
+            )
+        if isinstance(current, BaseExceptionGroup):
+            stack.extend(current.exceptions)
+        cause = current.__cause__ or current.__context__
+        if cause is not None:
+            stack.append(cause)
+    return None
+
+
 def format_login_failure(exc: BaseException) -> str:
     """Return a token-safe single-line summary of an OAuth-login exception.
 
@@ -2009,7 +2042,8 @@ def format_login_failure(exc: BaseException) -> str:
     groups) or as MCP-SDK errors whose `args`/`repr` may include an
     `OAuthToken`. Never call `str()`/`repr()` on the raw exception for
     display or logging — instead, prefer a known-safe nested
-    `MCPReauthRequiredError` message, fall back to the messages of our
+    `MCPReauthRequiredError` message or recognized Slack setup guidance,
+    fall back to the messages of our
     own loopback-related exception types, and degrade to a class-name
     chain for anything else.
 
@@ -2022,6 +2056,9 @@ def format_login_failure(exc: BaseException) -> str:
     reauth = find_reauth_required(exc)
     if reauth is not None:
         return str(reauth)
+    slack_setup = _slack_mcp_setup_failure(exc)
+    if slack_setup is not None:
+        return slack_setup
 
     from deepagents_code.mcp_oauth_ui import MCPLoginAbortedError
     from deepagents_code.mcp_tools import MCPConfigError

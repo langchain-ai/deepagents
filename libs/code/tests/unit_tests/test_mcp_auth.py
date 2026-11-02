@@ -2452,6 +2452,48 @@ class TestFormatLoginFailure:
         assert sentinel not in summary
         assert "FakeMcpError" in summary
 
+    @pytest.mark.parametrize("wrapped", [False, True])
+    def test_slack_disabled_app_has_safe_remediation(self, *, wrapped: bool) -> None:
+        from mcp.shared.exceptions import MCPError
+
+        error = MCPError(
+            code=-32000,
+            message=(
+                "App is not enabled for Slack MCP server access. "
+                "Please enable it here: "
+                "https://api.slack.com/apps/A0CCRHL9PGS/app-assistant"
+            ),
+            data={"access_token": "TOKEN_PAYLOAD_DO_NOT_LEAK"},
+        )
+        exc = ExceptionGroup("TOKEN_PAYLOAD_DO_NOT_LEAK", [error]) if wrapped else error
+        summary = format_login_failure(exc)
+        assert "Ask an app owner" in summary
+        assert "Slack Model Context Protocol (MCP) Server" in summary
+        assert "https://api.slack.com/apps/A0CCRHL9PGS/app-assistant" in summary
+        assert "retry login" in summary
+        assert "TOKEN_PAYLOAD_DO_NOT_LEAK" not in summary
+
+    @pytest.mark.parametrize(
+        "message",
+        [
+            "TOKEN_PAYLOAD_DO_NOT_LEAK",
+            (
+                "App is not enabled for Slack MCP server access. "
+                "Please enable it here: https://evil.test/apps/A123/app-assistant"
+            ),
+            (
+                "App is not enabled for Slack MCP server access. "
+                "Please enable it here: "
+                "https://api.slack.com/apps/A123/app-assistant?token=SECRET"
+            ),
+        ],
+    )
+    def test_unknown_mcp_errors_do_not_expose_messages(self, message: str) -> None:
+        from mcp.shared.exceptions import MCPError
+
+        summary = format_login_failure(MCPError(code=-32000, message=message))
+        assert summary == "MCPError"
+
     def test_preserves_message_for_config_errors(self) -> None:
         """Config errors are pre-handshake and token-free, so keep the message.
 

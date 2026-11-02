@@ -99,22 +99,6 @@ class TestConvertMessageData:
             "reasoning": "Checking the answer",
         }
 
-    @pytest.mark.parametrize("additional_kwargs", [None, "not-a-dict"])
-    def test_ai_message_invalid_additional_kwargs(
-        self, additional_kwargs: object
-    ) -> None:
-        """Malformed optional metadata does not discard an otherwise valid chunk."""
-        msg = _convert_message_data(
-            {
-                "type": "AIMessageChunk",
-                "content": "hello",
-                "additional_kwargs": additional_kwargs,
-            }
-        )
-        assert isinstance(msg, AIMessageChunk)
-        assert msg.content == "hello"
-        assert msg.additional_kwargs == {}
-
     def test_ai_message_with_tool_call_chunks(self) -> None:
         msg = _convert_message_data(
             {

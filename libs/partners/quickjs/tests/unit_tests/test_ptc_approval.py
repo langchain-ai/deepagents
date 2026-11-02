@@ -12,7 +12,7 @@ from deepagents.middleware.filesystem import FilesystemMiddleware
 from langchain.agents import create_agent
 from langchain.agents.middleware import HumanInTheLoopMiddleware
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
-from langchain_core.tools import tool
+from langchain_core.tools import BaseTool, tool
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command, interrupt
 
@@ -73,6 +73,19 @@ def search(query: str) -> tuple[str, dict[str, Any]]:
     return f"found {query}", {"docs": [1, 2, 3]}
 
 
+class _Confirm(BaseTool):
+    """A `BaseTool` subclass that asks a human, then returns structured data."""
+
+    name: str = "confirm"
+    description: str = "Ask a human to confirm, returning a record."
+
+    def _run(self, question: str) -> dict[str, str]:
+        return {"question": question, "answer": interrupt({"question": question})}
+
+
+confirm = _Confirm()
+
+
 @tool
 async def task(description: str, subagent_type: str) -> str:
     """Stand in for the Deep Agents subagent tool behind JS `task()`."""
@@ -103,10 +116,10 @@ def _agent(
     script.append(AIMessage("done"))
     return create_agent(
         model=FakeChatModel(messages=iter(script[1:] if resuming else script)),
-        tools=[danger, note, flaky, slow, ask, search, task],
+        tools=[danger, note, flaky, slow, ask, search, confirm, task],
         middleware=[
             CodeInterpreterMiddleware(
-                ptc=["danger", "note", "flaky", "slow", "ask", "search"]
+                ptc=["danger", "note", "flaky", "slow", "ask", "search", "confirm"]
             ),
             HumanInTheLoopMiddleware(
                 interrupt_on={"danger": True}, interrupt_mode="per_call"
@@ -395,6 +408,23 @@ async def test_interrupts_inside_a_tool_keep_their_own_answers() -> None:
     assert _eval_result(out) == "<result>answer:yes1|answer:yes2</result>"
 
 
+@pytest.mark.parametrize("invoke_mode", ["invoke", "ainvoke"])
+async def test_base_tool_subclass_keeps_its_answers_and_returns_its_value(
+    invoke_mode: Literal["invoke", "ainvoke"],
+) -> None:
+    answers = iter(["yes1", "yes2"])
+    code = (
+        "const a = await tools.confirm({question: 'q1'});"
+        " const b = await tools.confirm({question: 'q2'}); `${a.answer}|${b.answer}`"
+    )
+    out, pauses = await _run(
+        _agent(code), lambda _: next(answers), invoke_mode=invoke_mode
+    )
+
+    assert [p[0]["question"] for p in pauses] == ["q1", "q2"]
+    assert _eval_result(out) == "<result>yes1|yes2</result>"
+
+
 async def test_subagent_dispatch_after_a_caught_pause_does_not_run() -> None:
     code = """
     let r;
@@ -407,7 +437,8 @@ async def test_subagent_dispatch_after_a_caught_pause_does_not_run() -> None:
     assert _eval_result(out) == "<result>sub:after-danger:b</result>"
 
 
-async def test_content_and_artifact_tool_returns_its_content() -> None:
-    out, _ = await _run(_agent("await tools.search({query: 'x'})"), lambda _: APPROVE)
+async def test_content_and_artifact_tool_returns_its_artifact() -> None:
+    code = "(await tools.search({query: 'x'})).docs.length"
+    out, _ = await _run(_agent(code), lambda _: APPROVE)
 
-    assert _eval_result(out) == "<result>found x</result>"
+    assert _eval_result(out) == "<result>3</result>"

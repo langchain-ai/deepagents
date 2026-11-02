@@ -9,10 +9,6 @@ gives it three properties the eval needs when a call pauses for approval:
 - A finished call, including one whose tool raised, is journaled in the
   checkpoint. When the eval re-runs after the human answers, the call returns
   its recorded result instead of running again, so side effects happen once.
-  Graph-state writes are kept only for tools whose function this module can
-  wrap (`StructuredTool` or `Tool` with a `content` response format); the tool
-  node runs any other tool under the eval's config, and a pause drops what
-  such a tool wrote to graph state.
 - An interrupt raised by the call is scoped to the call's own task, so its
   interrupt id, and therefore the human's decision, belongs to that call.
 - The task name carries a digest of the tool name and arguments. A re-run that
@@ -25,6 +21,7 @@ gives it three properties the eval needs when a call pauses for approval:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import functools
 import hashlib
 import json
@@ -45,7 +42,7 @@ from langchain_quickjs._format import coerce_tool_output_for_ptc
 
 if TYPE_CHECKING:
     import concurrent.futures
-    from collections.abc import Awaitable, Callable, Iterable
+    from collections.abc import Awaitable, Callable, Iterable, Iterator
 
     from langchain_core.runnables import RunnableConfig
     from langchain_core.tools import BaseTool
@@ -90,43 +87,62 @@ def call_digest(name: str, args: dict[str, Any]) -> str:
 
 
 @dataclass(slots=True)
-class _Returned:
-    """What the tool function itself returned, before the tool node formats it."""
+class ToolReturn:
+    """What a tool's `_run` or `_arun` returned, before model formatting."""
 
     ran: bool = False
     value: Any = None
 
 
-def _watch(
-    fn: Callable[..., Any], seen: _Returned, config: RunnableConfig
-) -> Callable[..., Any]:
-    @functools.wraps(fn)
-    def wrapper(*args: Any, **kwargs: Any) -> Any:
-        token = var_child_runnable_config.set(config)
-        try:
-            seen.value = fn(*args, **kwargs)
-        finally:
-            var_child_runnable_config.reset(token)
-        seen.ran = True
-        return seen.value
+def recording_copy(
+    tool: BaseTool, record: ToolReturn, *, config: RunnableConfig | None = None
+) -> BaseTool:
+    """Return a copy of `tool` that keeps its own return value in `record`.
 
-    return wrapper
+    `run`/`arun` and the tool node format a return value for the model: they
+    drop a `content_and_artifact` tool's artifact without a tool call id and
+    turn a dict into JSON text with one. JavaScript wants the value itself.
+    Every `BaseTool` runs through `_run` or `_arun`, so recording there works
+    for any tool while callbacks, validation, and error handling still run.
+
+    With `config`, the tool body runs under it instead of the config its
+    caller set, which keeps an `interrupt()` inside the tool scoped to the
+    call's own task.
+    """
+    copy = tool.model_copy()
+    run, arun = copy._run, copy._arun  # noqa: SLF001 — the entry points every tool implements
+
+    # `wraps` keeps the signatures `run`/`arun` inspect for `config` / `run_manager`.
+    @functools.wraps(run)
+    def _run(*args: Any, **kwargs: Any) -> Any:
+        with _config_scope(config):
+            record.value = run(*args, **kwargs)
+        record.ran = True
+        return record.value
+
+    @functools.wraps(arun)
+    async def _arun(*args: Any, **kwargs: Any) -> Any:
+        with _config_scope(config):
+            record.value = await arun(*args, **kwargs)
+        record.ran = True
+        return record.value
+
+    # Instance attributes shadow the methods without touching the class.
+    object.__setattr__(copy, "_run", _run)
+    object.__setattr__(copy, "_arun", _arun)
+    return copy
 
 
-def _awatch(
-    fn: Callable[..., Awaitable[Any]], seen: _Returned, config: RunnableConfig
-) -> Callable[..., Any]:
-    @functools.wraps(fn)
-    async def wrapper(*args: Any, **kwargs: Any) -> Any:
-        token = var_child_runnable_config.set(config)
-        try:
-            seen.value = await fn(*args, **kwargs)
-        finally:
-            var_child_runnable_config.reset(token)
-        seen.ran = True
-        return seen.value
-
-    return wrapper
+@contextlib.contextmanager
+def _config_scope(config: RunnableConfig | None) -> Iterator[None]:
+    if config is None:
+        yield
+        return
+    token = var_child_runnable_config.set(config)
+    try:
+        yield
+    finally:
+        var_child_runnable_config.reset(token)
 
 
 def _run_coroutine(fn: Callable[..., Awaitable[Any]]) -> Callable[..., Any]:
@@ -140,54 +156,44 @@ def _run_coroutine(fn: Callable[..., Awaitable[Any]]) -> Callable[..., Any]:
     return wrapper
 
 
-def _watched_tool(
-    tool: BaseTool, seen: _Returned, *, sync: bool, config: RunnableConfig
-) -> BaseTool:
-    """Return a copy of `tool` that runs under `config` and records its return value.
+def _with_sync_entry(tool: BaseTool) -> BaseTool:
+    """Give an async-only function tool a sync entry point for a sync graph.
 
-    The tool node runs a tool under the `eval` call's config. Running the
-    function under the call's own task config instead keeps an `interrupt()`
-    inside the tool scoped to that call. The tool node also turns a return
-    value into model text (JSON or `str()`), and middleware may add text for
-    the model; JavaScript wants the value itself, so `seen` keeps it. The copy
-    gives an async-only tool a sync entry point so a sync graph can run it, as
-    the REPL bridge always could.
-
-    Only `StructuredTool` and `Tool` expose their function, and only a
-    `content` response format returns the value itself; other tools run as
-    they are.
+    The REPL bridge could always run such a tool; the tool node runs it
+    synchronously under `invoke`.
     """
     if (
-        not isinstance(tool, (StructuredTool, Tool))
-        or tool.response_format != "content"
+        isinstance(tool, (StructuredTool, Tool))
+        and tool.func is None
+        and tool.coroutine is not None
     ):
-        return tool
-    func = tool.func
-    if func is None and sync and tool.coroutine is not None:
-        func = _run_coroutine(tool.coroutine)
-    update: dict[str, Any] = {}
-    if func is not None:
-        update["func"] = _watch(func, seen, config)
-    if tool.coroutine is not None:
-        update["coroutine"] = _awatch(tool.coroutine, seen, config)
-    return tool.model_copy(update=update)
+        return tool.model_copy(update={"func": _run_coroutine(tool.coroutine)})
+    return tool
 
 
-def _model_text(value: Any, message: ToolMessage) -> Any:
+def _model_text(value: Any, message: ToolMessage, response_format: str) -> Any:
     """The content the tool node gives the model for `value`, before middleware."""
-    if isinstance(value, ToolMessage):
-        return value.content
+    content, artifact = value, None
+    if (
+        response_format == "content_and_artifact"
+        and isinstance(value, tuple)
+        and len(value) == 2  # noqa: PLR2004 — a (content, artifact) pair
+    ):
+        content, artifact = value
     plain = _format_output(
-        value, None, message.tool_call_id, message.name or "", "success"
+        content, artifact, message.tool_call_id, message.name or "", "success"
     )
+    if isinstance(plain, list):
+        plain = next((m for m in reversed(plain) if isinstance(m, ToolMessage)), None)
     return plain.content if isinstance(plain, ToolMessage) else None
 
 
-def _result_of(result: Any, seen: _Returned) -> CallResult:
+def _result_of(result: Any, seen: ToolReturn, tool: BaseTool) -> CallResult:
     """Reduce the chain's return value to the status and JS-facing value.
 
-    JavaScript gets what the tool function returned. If middleware changed the
-    text the model would have read for it, that text is kept as a note.
+    JavaScript gets the data in what the tool itself returned. If middleware
+    changed the text the model would have read for it, that text is kept as a
+    note.
     """
     messages = result if isinstance(result, list) else [result]
     message = next((m for m in reversed(messages) if isinstance(m, ToolMessage)), None)
@@ -196,11 +202,13 @@ def _result_of(result: Any, seen: _Returned) -> CallResult:
     if not seen.ran:
         return CallResult(status="success", value=coerce_tool_output_for_ptc(result))
     note = None
-    if message is not None and message.content != _model_text(seen.value, message):
-        note = message.text
-    return CallResult(
-        status="success", value=coerce_tool_output_for_ptc(seen.value), note=note
+    model_text = (
+        _model_text(seen.value, message, tool.response_format) if message else None
     )
+    if message is not None and message.content != model_text:
+        note = message.text
+    value = coerce_tool_output_for_ptc(seen.value, response_format=tool.response_format)
+    return CallResult(status="success", value=value, note=note)
 
 
 @dataclass
@@ -269,10 +277,12 @@ class EvalJournal:
 
         def run(config: RunnableConfig) -> dict[str, Any]:
             ran.append(True)
-            seen, writes = _Returned(), []
+            seen, writes = ToolReturn(), []
             request = self._request(tool, call, config, seen, writes)
             try:
-                return _as_record(_result_of(self.chain.handler(request), seen), writes)
+                return _as_record(
+                    _result_of(self.chain.handler(request), seen, tool), writes
+                )
             except GraphBubbleUp:
                 raise
             except Exception as exc:  # noqa: BLE001  # journaled, re-raised by dispatch
@@ -281,7 +291,7 @@ class EvalJournal:
 
         async def arun(config: RunnableConfig) -> dict[str, Any]:
             ran.append(True)
-            seen, writes = _Returned(), []
+            seen, writes = ToolReturn(), []
             request = self._request(tool, call, config, seen, writes)
             try:
                 result = await self.chain.handler(request)
@@ -290,7 +300,7 @@ class EvalJournal:
             except Exception as exc:  # noqa: BLE001  # journaled, re-raised by dispatch
                 failure.append(exc)
                 return _raised_record(exc, writes)
-            return _as_record(_result_of(result, seen), writes)
+            return _as_record(_result_of(result, seen, tool), writes)
 
         name = f"ptc.{tool.name}.{call_digest(tool.name, args)}"
         # The record may not be serialized yet, so it is read, never changed.
@@ -316,7 +326,7 @@ class EvalJournal:
         tool: BaseTool,
         call: ToolCall,
         config: RunnableConfig,
-        seen: _Returned,
+        seen: ToolReturn,
         writes: list[tuple[str, Any]],
     ) -> ToolCallRequest:
         """Build the nested call's request under its own task's config."""
@@ -324,7 +334,8 @@ class EvalJournal:
             config, self.runtime.config, writes, self.state_lock
         )
         runtime = replace(self.runtime, tool_call_id=call["id"], config=config)
-        watched = _watched_tool(tool, seen, sync=not self.chain.is_async, config=config)
+        runnable = tool if self.chain.is_async else _with_sync_entry(tool)
+        watched = recording_copy(runnable, seen, config=config)
         return self.chain.request.override(
             tool_call=call, tool=watched, runtime=runtime
         )

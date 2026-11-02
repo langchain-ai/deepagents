@@ -240,7 +240,7 @@ parallel, not to grind through it one tool call at a time.
 
 ### API Reference — `tools` namespace
 
-The agent tools listed below are exposed on the global object at `globalThis.tools` (also reachable as `tools`). Each takes a single object argument and returns a Promise that resolves to the tool's native value: strings as strings, numbers as numbers, lists as arrays, dicts as objects, and `None` as `null`. You do NOT need to `JSON.parse` results — they are already typed.
+The agent tools listed below are exposed on the global object at `globalThis.tools` (also reachable as `tools`). Each takes a single object argument and returns a Promise that resolves to the tool's data, not the text the tool would show you: strings as strings, numbers as numbers, lists as arrays, dicts, models, and dataclasses as objects, bytes as `Uint8Array`, and `None` as `null`. A tool that returns separate content and an artifact resolves to the artifact. You do NOT need to `JSON.parse` results — they are already typed.
 
 Invocation pattern: `await tools.<name>({ ... })`.
 

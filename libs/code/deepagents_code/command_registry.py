@@ -216,10 +216,12 @@ COMMANDS: tuple[SlashCommand, ...] = (
     ),
     SlashCommand(
         name="/offload",
-        description="Offload older messages or choose the summarization model",
+        description=(
+            "Offload older messages or choose the summarization model or strategy"
+        ),
         bypass_tier=BypassTier.QUEUED,
-        hidden_keywords="compact summary summarize model",
-        argument_hint="[model [<spec>|clear]]",
+        hidden_keywords="compact summary summarize model strategy retrieve",
+        argument_hint="[model [<spec>|clear] | strategy [summarize|retrieve]]",
         aliases=("/compact",),
     ),
     SlashCommand(  # Static alias; not auto-generated from skill discovery

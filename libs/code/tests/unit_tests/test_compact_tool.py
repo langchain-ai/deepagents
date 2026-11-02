@@ -1400,6 +1400,31 @@ class TestRetrievalCompaction:
         message = actual._build_new_messages_with_path("", "/history/t.md")[0]
         assert "/history/t.md" in message.text
 
+    def test_run_context_switches_strategy_without_mutating_startup(self) -> None:
+        """`/offload strategy` applies per run and leaves summaries intact."""
+        from deepagents.backends import StateBackend
+        from deepagents.middleware.summarization import SummarizationMiddleware
+        from langchain_core.language_models.fake_chat_models import FakeListChatModel
+
+        startup = SummarizationMiddleware(
+            FakeListChatModel(responses=["unused"]), backend=StateBackend()
+        )
+        middleware = CLICompactionMiddleware(startup)
+
+        retrieval = middleware._summarization_for_runtime(
+            SimpleNamespace(context={"compaction_strategy": "retrieve"})
+        )
+        summarize = middleware._summarization_for_runtime(
+            SimpleNamespace(context={"compaction_strategy": "summarize"})
+        )
+
+        assert retrieval._lc_helper._create_summary([]) == RETRIEVAL_SUMMARY
+        pointer = retrieval._build_new_messages_with_path("", "/history/t.md")[0]
+        assert "No summary was written" in pointer.text
+        assert summarize is startup
+        summary = startup._build_new_messages_with_path("gist", "/history/t.md")[0]
+        assert "<summary>" in summary.text
+
     def test_handoff_seed_points_at_the_transcript(self) -> None:
         """A retrieval handoff seeds the child with pointers, not a summary."""
         from deepagents_code.app import _handoff_seed_text

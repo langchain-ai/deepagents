@@ -548,6 +548,7 @@ _CONTEXT_STR_OR_NONE_FIELDS = (
     "model",
     "classifier_model",
     "summarization_model",
+    "compaction_strategy",
     "approval_mode",
     "thread_id",
     "hooks_snapshot_id",

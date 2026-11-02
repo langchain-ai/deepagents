@@ -1504,6 +1504,16 @@ def _warn_invalid_cache_prompt(value: str) -> None:
     )
 
 
+_COMPACTION_STRATEGY_NOTES = {
+    "summarize": "older messages are replaced by a model-written summary.",
+    "retrieve": (
+        "older messages are replaced by a pointer to their saved transcript, "
+        "with no summary model call. Saved transcripts are not auto-deleted."
+    ),
+}
+"""What each `/offload strategy` choice does, shown when it is selected."""
+
+
 def _handoff_seed_text(summary: str, thread_id: str, archive_path: str) -> str:
     """Build the first message of a cache handoff thread.
 
@@ -4123,6 +4133,9 @@ class DeepAgentsApp(App):
 
         self._summarization_model_selection = 0
         """Latest summary selection; older workers may finish installation only."""
+
+        self._compaction_strategy_override: str | None = None
+        """Strategy chosen with `/offload strategy`; `None` keeps the startup one."""
 
         self._last_model_unchanged: tuple[str, float] | None = None
         """Most recent same-model toast, as `(text, monotonic timestamp)`.
@@ -10476,6 +10489,7 @@ class DeepAgentsApp(App):
             model=self._effective_model_spec(),
             model_params=self._model_params_override or {},
             summarization_model=self._summarization_model_override,
+            compaction_strategy=self._compaction_strategy_override,
             profile_overrides=self._profile_override or {},
             model_context_limit=runtime_state.model_context_limit,
             thread_id=thread_id,
@@ -18304,6 +18318,8 @@ class DeepAgentsApp(App):
             await self._handle_effort_command(command)
         elif cmd.split()[:2] == ["/offload", "model"]:
             await self._handle_summarization_model_command(command)
+        elif cmd.split()[:2] == ["/offload", "strategy"]:
+            await self._handle_compaction_strategy_command(command)
         elif cmd == "/model" or cmd.startswith("/model "):
             model_arg = None
             set_default = False
@@ -20442,6 +20458,7 @@ class DeepAgentsApp(App):
                     model=self._model_override,
                     model_params=self._model_params_override or {},
                     summarization_model=self._summarization_model_override,
+                    compaction_strategy=self._compaction_strategy_override,
                     profile_overrides=self._profile_override or {},
                     model_context_limit=runtime_state.model_context_limit,
                     classifier_model=self._auto_classifier_context_value(),
@@ -32356,6 +32373,51 @@ class DeepAgentsApp(App):
             return last
         self.notify(message, markup=False)
         return (message, now)
+
+    async def _handle_compaction_strategy_command(self, command: str) -> None:
+        """Show or set how compaction replaces older messages.
+
+        A choice applies to this session at once and is saved as
+        `[history].compaction_strategy` for later sessions.
+
+        Args:
+            command: The raw slash command line as typed.
+        """
+        from deepagents_code._env_vars import COMPACTION_STRATEGY
+        from deepagents_code.model_config import save_compaction_strategy
+        from deepagents_code.offload import resolve_compaction_strategy
+
+        await self._mount_message(UserMessage(command))
+        argument = " ".join(command.split()[2:]).lower()
+        if not argument:
+            current = self._compaction_strategy_override or (
+                await asyncio.to_thread(resolve_compaction_strategy)
+            )
+            await self._mount_message(
+                AppMessage(
+                    f"Compaction strategy: {current}. Change it with "
+                    "/offload strategy summarize or /offload strategy retrieve."
+                )
+            )
+            return
+        if argument not in _COMPACTION_STRATEGY_NOTES:
+            await self._mount_message(
+                ErrorMessage("Usage: /offload strategy [summarize|retrieve]")
+            )
+            return
+        self._compaction_strategy_override = argument
+        notice = (
+            f"Compaction strategy set to {argument}: "
+            f"{_COMPACTION_STRATEGY_NOTES[argument]}"
+        )
+        if not await asyncio.to_thread(save_compaction_strategy, argument):
+            notice += " It applies to this session only; saving it failed."
+        elif os.environ.get(COMPACTION_STRATEGY):
+            notice += (
+                f" {COMPACTION_STRATEGY} is set and overrides the saved choice "
+                "in future sessions."
+            )
+        await self._mount_message(AppMessage(notice))
 
     async def _handle_summarization_model_command(self, command: str) -> None:
         """Set, clear, or select the session's summary-model override.

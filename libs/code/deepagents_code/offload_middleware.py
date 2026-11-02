@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import hashlib
 import json
 import logging
@@ -533,6 +534,19 @@ def _install_retrieval_compaction(summarization: SummarizationMiddleware) -> Non
     summarization._build_new_messages_with_path = (  # ty: ignore[invalid-assignment]
         _retrieval_messages
     )
+
+
+def _retrieval_copy(summarization: SummarizationMiddleware) -> SummarizationMiddleware:
+    """Return a retrieval-mode copy that leaves `summarization` untouched.
+
+    Returns:
+        A shallow copy sharing the backend, model, and thresholds, with its own
+            summary hooks replaced by `_install_retrieval_compaction`.
+    """
+    retrieval = copy.copy(summarization)
+    retrieval._lc_helper = copy.copy(summarization._lc_helper)
+    _install_retrieval_compaction(retrieval)
+    return retrieval
 
 
 class _OffloadState(CostState, SummarizationState, total=False):
@@ -1104,14 +1118,13 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
                 rebuilding a runtime-selected model for `/offload`.
             summarization_model_spec: Startup model spec to use only for summaries.
             environ: Workspace environment retained for lazy model construction.
-            strategy: `retrieve` replaces every summary with a pointer to the
-                saved transcript instead of calling a model.
+            strategy: Startup strategy; `retrieve` replaces every summary with
+                a pointer to the saved transcript instead of calling a model. A
+                run's `compaction_strategy` context overrides it.
         """
-        # Read by `_create_compact_tool`, which the parent constructor calls.
-        self._strategy = strategy
-        if strategy == "retrieve":
-            _install_retrieval_compaction(summarization)
         super().__init__(summarization, system_prompt=system_prompt)
+        self._strategy: CompactionStrategy = strategy
+        self._retrieval_summarization: SummarizationMiddleware | None = None
         self._cli_max_retries = cli_max_retries
         self._summarization_model_spec = summarization_model_spec
         self._environ = environ
@@ -1386,21 +1399,31 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
         async def async_compact(runtime: ToolRuntime[Any, Any]) -> Command:
             return await middleware._arun_compact(runtime)
 
-        description = (
-            "Compact the conversation by moving older messages into a saved "
-            "transcript you can search later. Use this proactively when the "
-            "conversation is getting long to free up context window space."
-            if self._strategy == "retrieve"
-            else "Compact the conversation by summarizing older messages into "
-            "a concise summary. Use this proactively when the conversation "
-            "is getting long to free up context window space."
-        )
         return StructuredTool.from_function(
             name="compact_conversation",
-            description=description,
+            description=(
+                "Compact the conversation by replacing older messages with a "
+                "summary or a pointer to their saved transcript. Use this "
+                "proactively when the conversation is getting long to free up "
+                "context window space."
+            ),
             func=sync_compact,
             coroutine=async_compact,
         )
+
+    def _effective_strategy(self, runtime: _HasRunContext) -> CompactionStrategy:
+        """Return the run's compaction strategy, or the startup one.
+
+        Returns:
+            A recognized per-run strategy, otherwise the startup strategy.
+        """
+        context = CLIContextSchema.from_payload(runtime.context)
+        requested = context.compaction_strategy if context is not None else None
+        if requested == "retrieve":
+            return "retrieve"
+        if requested == "summarize":
+            return "summarize"
+        return self._strategy
 
     def _summarization_for_runtime(
         self, runtime: _HasRunContext
@@ -1419,15 +1442,20 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
                 different models.
         """
         config = _runtime_model_config(runtime)
+        strategy = self._effective_strategy(runtime)
         summary_model_spec = config.summarization_model_spec
         if summary_model_spec == INHERIT_SUMMARIZATION_MODEL:
             summary_model_spec = None
         elif summary_model_spec is None:
             summary_model_spec = self._summarization_model_spec
-        if self._strategy == "retrieve":
+        if strategy == "retrieve":
             summary_model_spec = None
         if not config.model_spec and not summary_model_spec:
-            return self._summarization
+            if strategy == "summarize":
+                return self._summarization
+            if self._retrieval_summarization is None:
+                self._retrieval_summarization = _retrieval_copy(self._summarization)
+            return self._retrieval_summarization
 
         cache_key = json.dumps(
             [
@@ -1436,6 +1464,7 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
                 config.model_params,
                 config.profile_overrides,
                 config.context_limit,
+                strategy,
             ],
             sort_keys=True,
             default=repr,
@@ -1502,7 +1531,7 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
         summarization = create_summarization_middleware(
             model, self._summarization._backend
         )
-        if self._strategy == "retrieve":
+        if strategy == "retrieve":
             _install_retrieval_compaction(summarization)
         elif summary_model_spec:
             _install_lazy_summary_model(

@@ -37,7 +37,7 @@ aliases, descriptions, visibility, or hidden-command metadata.
 | `/mcp` |  | Manage MCP servers and authentication |
 | `/model` |  | Switch models or edit model settings |
 | `/notifications` |  | Review notifications and configure warning settings |
-| `/offload` | `/compact` | Offload older messages or choose the summarization model |
+| `/offload` | `/compact` | Offload older messages or choose the summarization model or strategy |
 | `/plugins` |  | Manage plugins |
 | `/prompts` |  | Search and reuse a previous prompt |
 | `/quit` | `/q` | Exit app |

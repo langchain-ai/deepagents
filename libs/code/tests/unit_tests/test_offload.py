@@ -1350,3 +1350,34 @@ class TestForcedOffloadCallId:
             second = offload_middleware._forced_offload_call_id()
 
         assert first == second
+
+
+class TestOffloadStrategyCommand:
+    """`/offload strategy` switches compaction without editing config by hand."""
+
+    async def test_sets_session_and_saves_choice(self) -> None:
+        """A valid choice reaches the run context and is persisted."""
+        app = DeepAgentsApp()
+        app._mount_message = AsyncMock()  # ty: ignore[invalid-assignment]
+
+        with patch(
+            "deepagents_code.model_config.save_compaction_strategy",
+            return_value=True,
+        ) as save:
+            await app._handle_command("/offload strategy Retrieve")
+
+        save.assert_called_once_with("retrieve")
+        assert app._offload_context("t")["compaction_strategy"] == "retrieve"
+
+    async def test_rejects_unknown_strategy(self) -> None:
+        """An unknown choice changes nothing and shows usage."""
+        app = DeepAgentsApp()
+        mounted = AsyncMock()
+        app._mount_message = mounted  # ty: ignore[invalid-assignment]
+
+        with patch("deepagents_code.model_config.save_compaction_strategy") as save:
+            await app._handle_command("/offload strategy forget")
+
+        save.assert_not_called()
+        assert app._compaction_strategy_override is None
+        assert isinstance(mounted.await_args_list[-1].args[0], ErrorMessage)

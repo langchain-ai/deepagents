@@ -4228,6 +4228,20 @@ def _save_toml_field(
         return True
 
 
+def save_compaction_strategy(strategy: str, config_path: Path | None = None) -> bool:
+    """Persist `[history].compaction_strategy`.
+
+    Args:
+        strategy: `summarize` or `retrieve`.
+        config_path: Path to config file. Defaults to
+            `~/.deepagents/config.toml`.
+
+    Returns:
+        `True` when the preference was saved, otherwise `False`.
+    """
+    return _save_toml_field("history", "compaction_strategy", strategy, config_path)
+
+
 def save_goal_auto_accept_criteria(
     enabled: bool,
     config_path: Path | None = None,

@@ -65,6 +65,8 @@ class CLIContextSchema:
 
     summarization_model: str | None = None
 
+    compaction_strategy: str | None = None
+
     profile_overrides: dict[str, Any] = field(default_factory=dict)
 
     model_context_limit: int | None = None
@@ -146,6 +148,7 @@ class CLIContextSchema:
             model=_str("model"),
             model_params=_mapping("model_params"),
             summarization_model=_str("summarization_model"),
+            compaction_strategy=_str("compaction_strategy"),
             profile_overrides=_mapping("profile_overrides"),
             model_context_limit=limit,
             classifier_model=_str("classifier_model"),
@@ -191,6 +194,13 @@ class CLIContext(TypedDict, total=False):
     consumers are the summary-generation slots installed by
     `offload_middleware._summarization_for_runtime`, so compaction thresholds
     and token counting still track the main model.
+    """
+
+    compaction_strategy: str | None
+    """Compaction strategy for this run: `summarize` or `retrieve`.
+
+    `None` (or absent) keeps the graph's startup strategy. Set by
+    `/offload strategy` so a switch takes effect without restarting the server.
     """
 
     profile_overrides: dict[str, Any]

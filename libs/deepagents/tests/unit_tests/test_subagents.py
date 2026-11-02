@@ -2111,7 +2111,7 @@ class TestSubAgents:
         )
 
     @pytest.mark.parametrize("use_async", [False, True], ids=["sync", "async"])
-    async def test_subagent_checkpoints_record_task_tool_call_id(self, *, use_async: bool) -> None:
+    async def test_subagent_checkpoints_record_subagent_tool_call_id(self, *, use_async: bool) -> None:
         parent_model = _ScriptedChatModel(
             responses=[
                 AIMessage(
@@ -2158,7 +2158,7 @@ class TestSubAgents:
         call_ids_by_namespace: dict[str, set[str | None]] = {}
         for checkpoint in checkpointer.list(config):
             namespace = checkpoint.config["configurable"]["checkpoint_ns"]
-            call_ids_by_namespace.setdefault(namespace, set()).add(checkpoint.metadata.get("lc_tool_call_id"))
+            call_ids_by_namespace.setdefault(namespace, set()).add(checkpoint.metadata.get("lc_subagent_tool_call_id"))
 
         assert call_ids_by_namespace.pop("") == {None}
         assert sorted(map(sorted, call_ids_by_namespace.values())) == [["call_add"], ["call_multiply"]]

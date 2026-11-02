@@ -6840,7 +6840,7 @@ class DeepAgentsApp(App):
             and self._server_kwargs is not None
         ):
             text += (
-                "\n\nThe app is still open. Run `/auth` to configure this "
+                "\n\nRun `/auth` to configure this "
                 "provider; startup will retry automatically after you save. "
                 "Or use `/model` to choose a different provider."
             )

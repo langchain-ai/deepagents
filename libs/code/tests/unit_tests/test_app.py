@@ -17540,7 +17540,6 @@ class TestDeferredActions:
             text = str(widget._content)
             assert "Model setup required: Please set ANTHROPIC_API_KEY." in text
             assert "Server failed to start" not in text
-            assert "The app is still open" in text
             assert "`/auth`" in text
             assert "retry automatically" in text
             assert "`/model`" in text

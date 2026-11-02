@@ -76,9 +76,9 @@ from the per-provider sections below.
 
 
 _RECOMMENDED_MODELS: dict[str, str] = {
-    "anthropic:claude-opus-4-8": "Claude Opus 4.8",
-    "anthropic:claude-opus-5": "Claude Opus 5",
-    "anthropic:claude-sonnet-5": "Claude Sonnet 5",
+    "anthropic:claude-fable-5-1": "Claude Fable 5.1",
+    "anthropic:claude-opus-5-5": "Claude Opus 5.5",
+    "anthropic:claude-sonnet-5-5": "Claude Sonnet 5.5",
     "baseten:deepseek-ai/DeepSeek-V4-Flash-0731": "DeepSeek V4 Flash 0731",
     "baseten:deepseek-ai/DeepSeek-V4.1-Flash": "DeepSeek V4.1 Flash",
     "baseten:deepseek-ai/DeepSeek-V4-Pro": "DeepSeek V4 Pro",
@@ -98,7 +98,8 @@ _RECOMMENDED_MODELS: dict[str, str] = {
     "fireworks:accounts/fireworks/models/kimi-k3": "Kimi K3",
     "fireworks:accounts/fireworks/models/minimax-m3": "MiniMax-M3",
     "fireworks:accounts/fireworks/models/qwen3p7-plus": "Qwen 3.7 Plus",
-    "google_genai:gemini-3.7-flash": "Gemini 3.7 Flash",
+    "google_genai:gemini-3.8-flash": "Gemini 3.8 Flash",
+    "google_genai:gemini-4-argon": "Gemini 4 Argon",
     "meta:muse-spark-1.2": "Muse Spark 1.2",
     "ollama:deepseek-v4-flash:cloud": "DeepSeek V4 Flash",
     "ollama:deepseek-v4.1-flash:cloud": "DeepSeek V4.1 Flash",
@@ -106,21 +107,21 @@ _RECOMMENDED_MODELS: dict[str, str] = {
     "ollama:glm-5.3:cloud": "GLM 5.3",
     "ollama:glm-5.3-flash:cloud": "GLM 5.3 Flash",
     "ollama:minimax-m3:cloud": "MiniMax-M3",
-    "openai:gpt-5.6-luna": "GPT-5.6 Luna",
-    "openai:gpt-5.6-sol": "GPT-5.6 Sol",
-    "openai:gpt-5.6-terra": "GPT-5.6 Terra",
     "openai:gpt-6-astra": "GPT-6 Astra",
+    "openai:gpt-6-luna": "GPT-6 Luna",
+    "openai:gpt-6.1-sol": "GPT-6.1 Sol",
+    "openai:gpt-6.1-terra": "GPT-6.1 Terra",
     "openai_codex:gpt-5.6-luna": "GPT-5.6 Luna",
     "openai_codex:gpt-5.6-sol": "GPT-5.6 Sol",
     "openai_codex:gpt-5.6-terra": "GPT-5.6 Terra",
-    "openrouter:anthropic/claude-opus-4.8": "Claude Opus 4.8",
-    "openrouter:anthropic/claude-sonnet-5": "Claude Sonnet 5",
+    "openrouter:anthropic/claude-opus-5.5": "Claude Opus 5.5",
+    "openrouter:anthropic/claude-sonnet-5.5": "Claude Sonnet 5.5",
     "openrouter:deepseek/deepseek-v4-flash-0731": "DeepSeek V4 Flash 0731",
     "openrouter:deepseek/deepseek-v4-flash:free": "DeepSeek V4 Flash (free)",
     "openrouter:deepseek/deepseek-v4.1-flash": "DeepSeek V4.1 Flash",
     "openrouter:deepseek/deepseek-v4-pro": "DeepSeek V4 Pro",
     "openrouter:deepseek/deepseek-v4-pro-0813": "DeepSeek V4 Pro 0813",
-    "openrouter:google/gemini-3.7-flash": "Gemini 3.7 Flash",
+    "openrouter:google/gemini-4-argon": "Gemini 4 Argon",
     "openrouter:moonshotai/kimi-k3": "Kimi K3",
     "openrouter:nvidia/nemotron-3-ultra-550b-a55b": "Nemotron 3 Ultra 550B A55B",
     "openrouter:openrouter/fusion": "OpenRouter Fusion",
@@ -596,10 +597,6 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         self._resolve_model = resolve_model
         self._catalog: ModelCatalog | None = None
         self._catalog_config: ModelConfig | None = None
-        # Standard /model defaults to the curated recommended subset so users
-        # face less decision fatigue; onboarding (`curated=True`) already
-        # constrains the list via `_curated`, so leaving this False there
-        # avoids double-flagging in `_apply_subset`.
         self._recommended_only = not curated
         # Rows show friendly display names by default; Ctrl+N flips every row
         # to its raw `provider:model` spec (mirrors the `/theme` picker's
@@ -701,7 +698,10 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             names_hint = "Ctrl+N names" if self._show_specs else "Ctrl+N IDs"
             if self._default_scope is not None:
                 parts.append(f"Ctrl+S {self._default_scope.hint}")
-            parts.extend(("Ctrl+R recommended", names_hint, "Esc close"))
+            recommendations_hint = (
+                "Ctrl+R all models" if self._recommended_only else "Ctrl+R recommended"
+            )
+            parts.extend((recommendations_hint, names_hint, "Esc close"))
         sep = f" {glyphs.bullet} "
         return sep.join(parts)
 
@@ -2502,6 +2502,9 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
 
         info = self.query_one("#model-selector-info", Static)
         info.update(self._info_line_content())
+        if not self._help_error_shown:
+            self._stop_help_restore_timer()
+            self._restore_help_text()
 
         await self._update_display()
 

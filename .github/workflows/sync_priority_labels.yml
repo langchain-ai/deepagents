@@ -61,6 +61,7 @@ jobs:
       - name: Sync priority label to PR
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
+          retries: 3
           script: |
             const { owner, repo } = context.repo;
             const prNumber = context.payload.pull_request.number;
@@ -205,6 +206,7 @@ jobs:
       - name: Propagate priority label to linked PRs
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
+          retries: 3
           script: |
             const { owner, repo } = context.repo;
             const issueNumber = context.payload.issue.number;
@@ -391,6 +393,7 @@ jobs:
       - name: Backfill priority labels on open PRs
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
+          retries: 3
           script: |
             const { owner, repo } = context.repo;
             const rawMax = '${{ inputs.max_items }}';

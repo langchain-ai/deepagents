@@ -2230,6 +2230,184 @@ def _command_paths_stay_in_worktree(parts: Sequence[str], root: Path) -> bool:
     return True
 
 
+# Options that keep a read-only Git subcommand free of side effects. This is an
+# allowlist on purpose: Git has options that write files (`--output`), run
+# programs (`--ext-diff`, `--textconv`, `--show-signature`), or read outside the
+# repository (`--no-index`), and new releases add more. An option missing here
+# is not blocked. The command goes to the classifier instead.
+_GIT_DIFF_FLAGS = frozenset(
+    {
+        "--cached",
+        "--check",
+        "--color",
+        "--exit-code",
+        "--ignore-all-space",
+        "--merge-base",
+        "--minimal",
+        "--name-only",
+        "--name-status",
+        "--no-color",
+        "--no-ext-diff",
+        "--no-patch",
+        "--no-textconv",
+        "--numstat",
+        "--patch",
+        "--quiet",
+        "--raw",
+        "--shortstat",
+        "--staged",
+        "--stat",
+        "--summary",
+        "--unified",
+        "--word-diff",
+        "-R",
+        "-p",
+        "-w",
+    }
+)
+_GIT_LOG_FLAGS = _GIT_DIFF_FLAGS | {
+    "--abbrev-commit",
+    "--all",
+    "--decorate",
+    "--first-parent",
+    "--follow",
+    "--graph",
+    "--left-right",
+    "--merges",
+    "--no-merges",
+    "--oneline",
+    "--reverse",
+}
+_GIT_LOG_VALUED = frozenset(
+    {
+        "--after",
+        "--author",
+        "--before",
+        "--date",
+        "--format",
+        "--grep",
+        "--max-count",
+        "--pretty",
+        "--since",
+        "--until",
+        "-G",
+        "-S",
+        "-n",
+    }
+)
+# Subcommand -> (options without a value, options that take a value).
+_GIT_READ_OPTIONS: Mapping[str, tuple[frozenset[str], frozenset[str]]] = {
+    "diff": (_GIT_DIFF_FLAGS, frozenset({"--diff-filter"})),
+    "log": (_GIT_LOG_FLAGS, _GIT_LOG_VALUED | {"--diff-filter"}),
+    "ls-files": (
+        frozenset(
+            {
+                "--cached",
+                "--deleted",
+                "--directory",
+                "--error-unmatch",
+                "--exclude-standard",
+                "--full-name",
+                "--ignored",
+                "--modified",
+                "--others",
+                "--stage",
+                "-c",
+                "-d",
+                "-i",
+                "-m",
+                "-o",
+                "-s",
+                "-z",
+            }
+        ),
+        frozenset({"--exclude", "-x"}),
+    ),
+    "rev-parse": (
+        frozenset(
+            {
+                "--abbrev-ref",
+                "--absolute-git-dir",
+                "--git-common-dir",
+                "--git-dir",
+                "--is-bare-repository",
+                "--is-inside-work-tree",
+                "--quiet",
+                "--short",
+                "--show-cdup",
+                "--show-prefix",
+                "--show-toplevel",
+                "--symbolic-full-name",
+                "--verify",
+                "-q",
+            }
+        ),
+        frozenset(),
+    ),
+    "show": (
+        _GIT_DIFF_FLAGS | {"--abbrev-commit", "--oneline"},
+        frozenset({"--date", "--format", "--pretty"}),
+    ),
+    "status": (
+        frozenset(
+            {
+                "--branch",
+                "--ignored",
+                "--long",
+                "--porcelain",
+                "--short",
+                "--show-stash",
+                "-b",
+                "-s",
+                "-z",
+            }
+        ),
+        frozenset(),
+    ),
+}
+_GIT_COUNT_RE = re.compile(r"-\d+")
+
+
+def _git_option_allowed(
+    arg: str, subcommand: str, flags: frozenset[str], valued: frozenset[str]
+) -> bool | None:
+    """Classify one option argument.
+
+    Returns:
+        `True` for an allowed option, `None` for an allowed option whose value is
+            the next argument, and `False` for anything else.
+    """
+    if subcommand == "log" and _GIT_COUNT_RE.fullmatch(arg):
+        return True
+    # Only long options carry an inline value. A short option such as `-p=x`
+    # is a bundle of letters, so it must match exactly.
+    if arg.startswith("--") and "=" in arg:
+        return arg.split("=", 1)[0] in flags | valued
+    if arg in flags:
+        return True
+    return None if arg in valued else False
+
+
+def _git_read_args_allowed(subcommand: str, args: Sequence[str]) -> bool:
+    flags, valued = _GIT_READ_OPTIONS[subcommand]
+    args_iter = iter(args)
+    for arg in args_iter:
+        if arg == "--":
+            # Everything after `--` is a pathspec.
+            return True
+        if not arg.startswith("-"):
+            # Refs and paths. A Git ref name cannot start with `-`.
+            continue
+        allowed = _git_option_allowed(arg, subcommand, flags, valued)
+        if allowed is False:
+            return False
+        if allowed is None:
+            value = next(args_iter, None)
+            if value is None or value.startswith("-"):
+                return False
+    return True
+
+
 def _fixed_repo_command_allowed(command: object, root: Path) -> bool:
     if (
         not isinstance(command, str)
@@ -2246,15 +2424,8 @@ def _fixed_repo_command_allowed(command: object, root: Path) -> bool:
     return (
         len(parts) >= _MIN_COMMAND_PARTS
         and parts[0] == "git"
-        and parts[1]
-        in {
-            "diff",
-            "log",
-            "ls-files",
-            "rev-parse",
-            "show",
-            "status",
-        }
+        and parts[1] in _GIT_READ_OPTIONS
+        and _git_read_args_allowed(parts[1], parts[2:])
     )
 
 

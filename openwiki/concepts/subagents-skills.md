@@ -1,48 +1,36 @@
 ---
 type: delegation and progressive-disclosure concept
-title: Subagents, Skills, and Delegation
-description: Deep Agents separates isolated local delegation from durable Agent Protocol async tasks, with distinct polling, direct wake-up, and webhook delivery paths. Skills progressively disclose instructions and optional tools without granting authorization.
-tags: [deepagents, subagents, delegation, async-tasks, skills, middleware, agent-protocol]
+title: Subagents and Skills
+description: Deep Agents separates synchronous local delegation from durable remote Agent Protocol tasks, while skills progressively disclose instructions and optional tools without granting authorization. Deep Agents Code adds product-specific filesystem discovery, plugin namespacing, and trust checks; Harbor forwards task skills only to the bare SDK graph.
+tags: [deepagents, subagents, delegation, async-tasks, skills, middleware, agent-protocol, code-cli, harbor]
 sources:
-  - id: openwiki-source-590f5ae570ac1e4ef175341c
-    resource: repo://examples/async-subagent-server/README.md
-  - id: openwiki-source-aaa77c489f52896366e1b57c
-    resource: repo://examples/async-subagent-server/server.py
-  - id: openwiki-source-dc1e984fa4e6a51458e9ff9d
-    resource: repo://libs/code/deepagents_code/plugins/adapters/skills_middleware.py
-  - id: openwiki-source-090c6e0a873de04d273989ad
-    resource: repo://libs/code/deepagents_code/skills/load.py
-  - id: openwiki-source-7315c344b29bd7441321ac75
-    resource: repo://libs/code/deepagents_code/skills/trust.py
-  - id: openwiki-source-07ceaf2cb5ec707fa4d2010f
-    resource: repo://libs/code/tests/unit_tests/skills/test_load.py
-  - id: openwiki-source-c1d8209cfeba420bc0ea985b
-    resource: repo://libs/code/tests/unit_tests/skills/test_skill_tools.py
-  - id: openwiki-source-dc6ee09317ebb7c0a7509f64
-    resource: repo://libs/code/tests/unit_tests/skills/test_skill_trust.py
-  - id: openwiki-source-c9abc2e44d0ff92f3de72601
-    resource: repo://libs/deepagents/CHANGELOG.md
-  - id: openwiki-source-0fc0e47059e4d07e23e50be2
-    resource: repo://libs/deepagents/deepagents/graph.py
-  - id: openwiki-source-41c16d89908bf285e252530e
-    resource: repo://libs/deepagents/deepagents/middleware/_parent_notifier.py
-  - id: openwiki-source-5c9c6a877b43f30407158658
-    resource: repo://libs/deepagents/deepagents/middleware/_skill_tools.py
-  - id: openwiki-source-e51c4102234507d1529a2440
-    resource: repo://libs/deepagents/deepagents/middleware/async_subagents.py
-  - id: openwiki-source-66cf9d0832d3cb55bec2b5ed
-    resource: repo://libs/deepagents/deepagents/middleware/skills.py
+  - id: openwiki-source-d4716b8ae162796c2c7ad991
+    resource: repo://libs/code/deepagents_code/_js_cost.py
+  - id: openwiki-source-05106e66a949150d557266a2
+    resource: repo://libs/code/deepagents_code/agent.py
+  - id: openwiki-source-91cefe99e900fdb6f941b515
+    resource: repo://libs/code/deepagents_code/output_truncation.py
+  - id: openwiki-source-2197a24480aac91a9ddcb920
+    resource: repo://libs/code/deepagents_code/provider_tool_search.py
+  - id: openwiki-source-7246ad9a05cb1ad11e4569a6
+    resource: repo://libs/code/tests/unit_tests/test_agent.py
+  - id: openwiki-source-8574be7f7f29e3e1dd328837
+    resource: repo://libs/code/tests/unit_tests/test_js_cost_tracking.py
+  - id: openwiki-source-e4a7bc21d51c04aa0c75f854
+    resource: repo://libs/code/tests/unit_tests/test_output_truncation.py
+  - id: openwiki-source-510074a1c07e7ddc05cddcb0
+    resource: repo://libs/code/tests/unit_tests/test_provider_tool_search.py
   - id: openwiki-source-114a1c7a58992fa867a94ef0
     resource: repo://libs/deepagents/deepagents/middleware/subagents.py
-  - id: openwiki-source-6ce85b02eabe462f99e0c912
-    resource: repo://libs/deepagents/tests/unit_tests/test_async_subagents.py
-generated: { by: "openwiki/0.4.2", at: "2026-10-24T08:05:08.866Z" }
+  - id: openwiki-source-5dbe50a53795f3db46509bac
+    resource: repo://libs/talon/tests/unit_tests/test_skill_mcp.py
+generated: { by: "openwiki/0.4.2", at: "2026-10-28T08:04:17.781Z" }
 verified:
   - by: openwiki/0.4.2
-    at: 2026-10-24T08:05:08.866Z
+    at: 2026-10-28T08:04:17.781Z
 ---
 
-# Subagents, Skills, and Delegation
+# Subagents and Skills
 
 Deep Agents has three deliberately different mechanisms. The local `task` tool waits for a synchronous child and returns one correlated result. Remote-task tools create durable Agent Protocol work and persist its identity for later observation. Skills are a separate progressive-disclosure mechanism: they show instructions and optionally tool definitions, but do not confer permission. See [Runtime behavior](/openwiki/architecture/runtime-behavior.md), [Context management](/openwiki/concepts/context-management.md), and [Permissions and HITL](/openwiki/concepts/permissions-hitl.md).
 
@@ -80,6 +68,35 @@ A local result is one `ToolMessage`: a non-null `structured_response` is JSON se
 `mode="fork"` is experimental. It reconstructs effective history after summarization, removes the parent message containing the pending tool call, and appends a preamble plus the delegated task. A declarative fork rebuilds inherited prompt-producing behavior; its own prompt is an addendum. It cannot declare an independent `skills` list, and its fork marker refuses nested `task` and `atask` calls. Thus a fork shares context at invocation, not an unrestricted recursive delegation capability.
 
 The compiled stack is not a transparent clone of the parent. Declarative children receive the provided state schema and have their own filesystem, summarization, patching, profile, skills, prompt-cache, and optional HITL middleware; compiled runnables are used as supplied and must themselves have a compatible `messages` state. In particular, parent `interrupt_on` applies by inheritance only to declarative specs; configure compiled and remote approval behavior on those agents themselves.
+
+### Deep Agents Code child-graph assembly
+
+The SDK boundary above is generic. `create_cli_agent` is the product assembler: it discovers Code definitions, converts each to a declarative SDK worker, then hands the completed list (plus configured remote `AsyncSubAgent`s) to `create_deep_agent`. It always supplies its own `general-purpose` worker when no discovered worker uses that name. In dcode that worker is a fork by default; `FORKED_SUBAGENTS=false` makes it isolated. A user-defined `general-purpose` is neither duplicated nor rewritten.
+
+```mermaid
+flowchart TD
+    Discovery["AGENTS.md discovery"] --> Declarative["Declarative Code subagents"]
+    General["Default general-purpose fork"] --> LocalList["Synchronous child specs"]
+    Declarative --> LocalList
+    LocalList --> SDK["create_deep_agent task graph"]
+    Remote["Configured AsyncSubAgent specs"] --> SDK
+    SDK --> LocalTask["Local task child graph"]
+    SDK --> RemoteTask["Remote Agent Protocol task"]
+```
+
+*dcode assembles local child graphs itself, while remote specs remain SDK Agent Protocol delegation rather than dcode-compiled children.*
+
+A missing, null, or empty frontmatter `model` is an inherited/runtime model: dcode adds `ConfigurableModelMiddleware`, so later runtime model selection reaches that child. A nonempty declared model is policy-validated and assigned to the spec; it deliberately does not get that middleware, so a runtime model switch cannot replace the explicit choice. The declaring `AGENTS.md` path is included when a declared model fails policy validation.
+
+Each dcode declarative child receives a tailored middleware list rather than inheriting the complete parent list. It can include asynchronous approval routing, nested cost tracking, truncated-reply handling, retry, a restrictive shell allowlist, server hooks, MCP timeout middleware, a managed-memory guard, skill-only MCP disclosure, and provider-native MCP tool search. Headless children also get GLM terminal-stall recovery. When dcode installs its asynchronous approval middleware, it sets `interrupt_on={}` on the spec to prevent the SDK from adding a second inherited synchronous HITL layer. Remote async specs run their own deployment and are not modified by this local-child assembly.
+
+`--allow-fs-tools` is also enforced at this boundary. An explicit allowlist replaces the main filesystem middleware **and** injects a matching filesystem middleware into every synchronous declarative child (with tool descriptions selected for that child's explicit model when present). dcode refuses a compiled child in this path because it cannot safely inject middleware into its already-built graph; remote children are unaffected because their filesystem is remote.
+
+#### Result and cost boundaries
+
+Dcode replaces the generic empty-output guard in child stacks with `SubagentTruncatedReplyMiddleware`. A provider-truncated child reply with no visible text or tool call raises `ModelOutputTruncatedError`, which the parent-side guard converts to an error `ToolMessage` for `task`. A partial textual child answer is retained but annotated with a truncation warning; forked children use the child check rather than silently suppressing this failure. Thus a parent can choose to retry or use a partial result instead of treating an empty provider cutoff as success.
+
+Nested `CostTrackingMiddleware` checkpoints child spend before an approval pause, then transfers the completed owner-scoped delta through state for the parent graph to add to its durable session total. The same ownership pattern supports JavaScript `js_eval` fan-out: its task proxy creates a request-isolated checkpoint namespace per task occurrence, waits for dispatched children, and returns one `_session_cost_transfers` receipt only to the outer owner. Receipt records are de-duplicated by checkpoint namespace, so parallel or replayed child work is not re-priced merely because the parent resumes.
 
 ## Remote asynchronous delegation
 
@@ -186,23 +203,42 @@ The Code CLI adapts the SDK skill loader for local filesystem discovery. It load
 
 `PluginSkillsMiddleware` subclasses the SDK middleware rather than changing its source API. It records the process ID that loaded `skills_metadata`, so a thread reloads after the agent server restarts; it also rescans when the current `/skill:` selection is pinned but absent from cached metadata. Its selection handling trims pending pins to the current visible user turn, then reads the selected content through the trust boundary before emitting the SDK-style pinned message. The Code tests verify that an MCP tool marked skill-only is omitted from the initial tool schema and server summary, becomes callable only after a read or approved pin, and still flows through ordinary approval middleware.
 
+Talon uses the same disclosure/authorization separation in its real runtime. An MCP server's `skillOnly` field must be boolean. When it is true, its tool is hidden until a skill read or pin (unless configured eager); when the tool becomes visible, Talon's approval handler still runs before the effect and the tool's authorization invocation is present. Reloading Talon's MCP configuration reclassifies tools for an existing conversation, so a newly skill-only tool is no longer offered eagerly and a removed one is not retained.
+
+### Native MCP search is a separate visibility optimization
+
+Provider-native search is not the same as skill disclosure. When enabled, `MCPProviderToolSearchMiddleware` marks only the supplied, currently present MCP tools as deferred and adds the provider's search facility; executor registrations remain unchanged, so a discovered call still passes through normal HITL. It activates only for recognised OpenAI Responses or Anthropic native-format endpoints and supported models (or an explicit boolean model-profile capability). Unsupported routes, Chat Completions, disabled profiles, or runtime model switches to unsupported models keep MCP tools eager and log a one-time warning.
+
+Before a request, the middleware removes incompatible native tool-search blocks from historical AI messages, preserving text and compatible provider blocks. This prevents an OpenAI/Anthropic search transcript from being replayed to the wrong provider. Skill-only tools are removed from dcode's initial `tools` and MCP server summary first, so provider search cannot make a tool discoverable before its skill disclosure.
+
 The CLI treats following a skill symlink as a trust decision. `load_skill_content` resolves `SKILL.md` and, when given an allowlist, refuses a result outside all approved roots. The static allowlist can be extended through `DEEPAGENTS_CODE_EXTRA_SKILLS_DIRS` or `[skills].extra_allowed_dirs`. In the plugin skills adapter, a rejected selected skill interrupts with a `skill_trust` request naming its resolved directory; approval persists that canonical directory in `~/.deepagents/.state/skill_trust.json` and the read is retried. Denial, an unwritable trust store, no roots, or a location change between approval and retry prevents the skill from running.
 
 Trust is deliberately fail-closed. The versioned store is atomically replaced on successful writes; normal enforcement treats corrupt, unreadable, or newer-format stores as empty, while strict audit callers surface the error. Before adding a saved directory to the containment allowlist, `load_trusted_skill_dirs` verifies that the stored path still resolves to itself. That means both a discovery symlink retarget and a later replacement of an approved directory by a symlink require fresh approval rather than granting the new target access. Trust permits reading skill instructions; it is neither a model-tool disclosure nor an authorization bypass.
+
+### Code CLI subagent discovery is a separate product layer
+
+The SDK accepts programmatic `SubAgent`, `CompiledSubAgent`, and `AsyncSubAgent` specifications; it does not discover agent definitions from the host filesystem. Deep Agents Code adds that product behavior. It reads `.deepagents/agents/{agent_name}/AGENTS.md`, requires YAML frontmatter with a nonempty `description`, uses the directory name only when `name` is omitted, and uses the markdown body as the system prompt. Invalid files are logged and ignored; a present but invalid `name` is rejected rather than silently falling back. User definitions load first and project definitions overwrite equal names.
+
+`create_cli_agent` turns those metadata records into declarative SDK subagents. An optional frontmatter model is checked against the configured model policy; otherwise the worker follows the runtime model. The CLI contributes its own approval, retry, cost-tracking, shell-policy, server-hook, and applicable MCP middleware to these workers. If no discovered definition is named `general-purpose`, it provides one and ordinarily configures it as a fork, controlled by `FORKED_SUBAGENTS`. This composition is deliberately not an SDK discovery contract.
+
+### Harbor forwards a task skill source only to the bare SDK graph
+
+Harbor's `DeepAgentsLangGraph` adapter takes the task environment's `skills_dir` and puts it in the graph `configurable` mapping because the upstream Harbor LangGraph runner does not forward that field. `make_bare_graph` validates that configured value as an absolute, traversal-free path and passes it as the sole `skills=` source to `create_deep_agent`, so the SDK middleware can load task-supplied skills inside the benchmark sandbox.
+
+This forwarding does **not** enable skills in Harbor's Code CLI graph: `make_graph` invokes `create_cli_agent(..., enable_skills=False)`. Consequently, benchmark authors and operators should choose the bare graph when a Harbor task's `skills_dir` must be available; Code CLI skill discovery remains a distinct local-product mechanism rather than a fallback for Harbor task skills.
 
 ## Operations and focused tests
 
 Use isolated local work for tightly scoped work, a local fork only when effective conversation is needed, and a compiled worker when another graph owns its implementation. Use async work when remote execution must survive beyond a parent turn and be checked, updated, cancelled, or independently resumed. Choose `enqueue` only when preserving current work is more important than immediate follow-up; account for `pending`, superseded results, and dropped child prompts. Use a webhook for application integration, not as the parent-state authority channel, and disable direct wake-up if the application owns delivery.
 
-`test_async_subagents.py` covers launch and validation, isolated and fork payloads, state reduction, headers and linkage, live-status fallback, waiting recovery and cancellation, async-only ASGI, parent notifications and notification escaping, polling extra turns, queued follow-ups, and superseded-run notification handling. The Code skill tests cover source precedence and failure isolation plus trust-store CRUD, strict/error behavior, atomic-write failure, and post-approval symlink-swap rejection. Test integrations should separately exercise interrupt and enqueue behavior, cancellation of both latest and earlier queued runs, webhook receipt, the intended parent observation path, and trust interruption/resume through the actual client UI.
+`test_async_subagents.py` covers launch and validation, isolated and fork payloads, state reduction, headers and linkage, live-status fallback, waiting recovery and cancellation, async-only ASGI, parent notifications and notification escaping, polling extra turns, queued follow-ups, and superseded-run notification handling. SDK skill middleware tests cover parsing, caching/reload, pins, resolver behavior, visibility gates, and provider-specific disclosure payloads. Code tests cover source precedence and failure isolation, custom-subagent parsing and override behavior, inherited versus explicit models, child middleware and approval wiring, filesystem-allowlist injection, skill-only MCP gating, and trust-store CRUD, strict/error behavior, atomic-write failure, and post-approval symlink-swap rejection. `test_provider_tool_search.py` exercises native request serialization, approval/resume, capability and endpoint guards, model switches, and cross-provider history filtering; Talon's `test_skill_mcp.py` verifies activation, approval, authorization, configuration validation, and reload reclassification. `test_js_cost_tracking.py` and output-truncation tests cover durable child cost receipts, parallel/failed/paused fan-out, and parent-visible truncated child outcomes. Harbor's unit tests exercise forwarding and validation of graph configuration, including its task skill source. Test integrations should separately exercise interrupt and enqueue behavior, cancellation of both latest and earlier queued runs, webhook receipt, the intended parent observation path, Harbor `skills_dir` forwarding with the bare graph, and trust interruption/resume through the actual client UI.
 
 The `examples/async-subagent-server` sample is a minimal FastAPI Agent Protocol peer with in-memory SQLite. It demonstrates thread and run creation, polling, result fetch, cancellation, and health endpoints, but it has no authentication or rate limiting. Its cancel route records cancellation without cancelling the in-flight coroutine. Run it with `uv run uvicorn server:app --port 2024`; production equivalents need authentication, durable storage, rate limits, and actual execution cancellation.
 
 ## Related
 
-- [Runtime behavior](/openwiki/architecture/runtime-behavior.md)
+- [Code agent](/openwiki/architecture/code-agent.md)
 - [SDK construction and execution](/openwiki/architecture/sdk-construction-execution.md)
-- [Context management](/openwiki/concepts/context-management.md)
-- [Permissions and HITL](/openwiki/concepts/permissions-hitl.md)
-- [ACP integration](/openwiki/integrations/acp.md)
-- [Build a Deep Agent](/openwiki/workflows/build-a-deep-agent.md)
+- [Plugins](/openwiki/concepts/plugins.md)
+- [State persistence](/openwiki/concepts/state-persistence.md)
+- [Run evaluations](/openwiki/workflows/run-evals.md)

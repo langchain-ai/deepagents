@@ -7,6 +7,7 @@ import asyncio
 import logging
 import webbrowser
 from typing import TYPE_CHECKING
+from urllib.parse import urlsplit
 
 from deepagents_code.unicode_security import check_url_safety, strip_dangerous_unicode
 
@@ -28,6 +29,40 @@ def _event_app(event: object, app: App | None = None) -> App | None:
 
 
 logger = logging.getLogger(__name__)
+
+_ALLOWED_URL_SCHEMES: frozenset[str] = frozenset({"http", "https"})
+"""URL schemes that may reach `webbrowser.open`.
+
+Links can come from model output, and the OS sends any other scheme (such as
+`mailto:` or a custom app scheme) to its registered handler. Add a scheme here
+only after review.
+"""
+
+
+def _reject_unsupported_scheme(url: str, app: App | None) -> bool:
+    """Block a URL whose scheme is not in `_ALLOWED_URL_SCHEMES`.
+
+    Args:
+        url: The URL about to be opened.
+        app: App used to post the warning toast, or `None`.
+
+    Returns:
+        `True` when the URL was blocked and a warning toast was posted.
+    """
+    try:
+        scheme = urlsplit(url).scheme.lower()
+    except ValueError:
+        scheme = ""
+    if scheme in _ALLOWED_URL_SCHEMES:
+        return False
+    logger.warning("Blocked URL with unsupported scheme: %s", url)
+    _notify(
+        app,
+        f"Blocked link with unsupported scheme: {strip_dangerous_unicode(url)}\n"
+        "Only http and https links can be opened.",
+        severity="warning",
+    )
+    return True
 
 
 def _notify(
@@ -185,7 +220,10 @@ async def open_url_async(
     Returns:
         `True` when the browser accepted the URL; `False` otherwise
             (in which case a warning toast has already been posted).
+            URLs with a scheme other than `http` or `https` are never opened.
     """
+    if _reject_unsupported_scheme(url, app):
+        return False
     try:
         opened = await asyncio.to_thread(webbrowser.open, url)
     except (webbrowser.Error, OSError) as exc:
@@ -212,8 +250,9 @@ def open_style_link(event: Click, *, app: App | None = None) -> None:
     click, matching the behavior of links in the Markdown widget.
 
     URLs that fail the safety check (e.g. containing hidden Unicode or
-    homograph domains) are blocked and not opened; the event bubbles and a
-    warning is logged and displayed as a Textual notification.
+    homograph domains) or use a scheme other than `http` or `https` are
+    blocked and not opened; the event bubbles and a warning is logged and
+    displayed as a Textual notification.
 
     On success the event is stopped so it does not bubble further and, unless
     the user has opted out, a best-effort informational toast reports the URL
@@ -240,6 +279,8 @@ def open_style_link(event: Click, *, app: App | None = None) -> None:
             f"Blocked suspicious URL: {strip_dangerous_unicode(url)}\n{detail}",
             severity="warning",
         )
+        return
+    if _reject_unsupported_scheme(url, notify_app):
         return
 
     try:

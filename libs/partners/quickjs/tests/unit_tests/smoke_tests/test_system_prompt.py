@@ -231,3 +231,22 @@ def test_system_prompt_snapshot_with_mixed_foreign_functions(
         mode=mode,
     )
     _assert_snapshot(snapshot_path, prompt, update_snapshots=update_snapshots)
+
+
+def test_system_prompt_snapshot_without_timeout(
+    snapshots_dir: Path, *, update_snapshots: bool
+) -> None:
+    model = _smoke_model()
+    agent = create_deep_agent(
+        model=model,
+        middleware=[CodeInterpreterMiddleware(timeout=None)],
+    )
+    _invoke_for_snapshot(agent, {"messages": [HumanMessage(content="hi")]})
+    prompt = _capture_system_prompt(model)
+    assert "- Memory: 64 MB total." in prompt
+    assert "timeout" not in prompt.lower()
+    _assert_snapshot(
+        snapshots_dir / "quickjs_system_prompt_no_timeout.md",
+        prompt,
+        update_snapshots=update_snapshots,
+    )

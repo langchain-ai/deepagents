@@ -17,6 +17,7 @@ from deepagents_code._git import (
     read_git_branch_via_subprocess,
     read_git_remote_url_from_filesystem,
     read_git_remote_url_via_subprocess,
+    resolve_git_branch,
 )
 
 if TYPE_CHECKING:
@@ -37,10 +38,10 @@ def _run_git(root: Path, *args: str) -> None:
     )
 
 
-def _init_git_repo(root: Path) -> None:
+def _init_git_repo(root: Path, *init_args: str) -> None:
     """Create a committed repository suitable for real worktree tests."""
     root.mkdir()
-    _run_git(root, "init")
+    _run_git(root, "init", *init_args)
     _run_git(root, "config", "user.email", "test@example.com")
     _run_git(root, "config", "user.name", "Test")
     _run_git(root, "config", "commit.gpgsign", "false")
@@ -252,6 +253,33 @@ class TestReadGitBranchFromFilesystem:
 
         mock_read.side_effect = OSError("Permission denied")
         assert read_git_branch_from_filesystem(tmp_path) is None
+
+    def test_reftable_head_placeholder_is_not_a_branch(self, tmp_path: Path) -> None:
+        """Regression test for #7120: the reftable `HEAD` placeholder is not a branch.
+
+        Reftable repositories keep refs out of `HEAD` and leave a placeholder there.
+        No branch can be named `.invalid` (ref components can't start with a dot),
+        so the reader must defer to git instead of reporting it.
+        """
+        git_dir = tmp_path / ".git"
+        git_dir.mkdir()
+        (git_dir / "HEAD").write_text("ref: refs/heads/.invalid\n")
+
+        assert read_git_branch_from_filesystem(tmp_path) is None
+
+    def test_reftable_repository_resolves_branch_through_git(
+        self, tmp_path: Path
+    ) -> None:
+        """Regression test for #7120: reftable repositories read the branch via git."""
+        repo = tmp_path / "repo"
+        try:
+            _init_git_repo(repo, "--ref-format=reftable")
+        except subprocess.CalledProcessError:
+            pytest.skip("reftable repositories need git 2.45 or newer")
+        _run_git(repo, "branch", "-m", "feature")
+
+        assert read_git_branch_from_filesystem(repo) is None
+        assert resolve_git_branch(repo) == "feature"
 
 
 class TestReadGitRemoteUrlFromFilesystem:

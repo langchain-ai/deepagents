@@ -32,6 +32,7 @@ RELEASE_INTEGRATION_ENV = {
     "MODAL_TOKEN_ID": "${{ needs.build.outputs.package == 'langchain-modal' && secrets.MODAL_TOKEN_ID || '' }}",
     "MODAL_TOKEN_SECRET": "${{ needs.build.outputs.package == 'langchain-modal' && secrets.MODAL_TOKEN_SECRET || '' }}",
     "OPENAI_API_KEY": "${{ needs.build.outputs.package == 'deepagents' && secrets.OPENAI_API_KEY || '' }}",
+    "PACKAGE": "${{ needs.build.outputs.package }}",
     "RUNLOOP_API_KEY": "${{ needs.build.outputs.package == 'langchain-runloop' && secrets.RUNLOOP_API_KEY || '' }}",
     "VERCEL_TOKEN": "${{ needs.build.outputs.package == 'langchain-vercel-sandbox' && secrets.VERCEL_TOKEN || '' }}",
 }

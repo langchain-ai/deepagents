@@ -285,7 +285,7 @@ class TestHeadlessApprovalFlagHandling:
             return real_open(path, flags, mode, dir_fd=dir_fd)
 
         with (
-            patch.object(sys, "argv", argv),
+            patch.object(sys, "argv", [*argv, "--model", "openai:test-model"]),
             patch.object(sys, "stdin", mock_stdin),
             patch("os.open", side_effect=_open_no_tty),
             patch("deepagents_code.main.check_optional_tools", return_value=[]),
@@ -774,7 +774,15 @@ class TestSkillFlagValidation:
             patch.object(
                 sys,
                 "argv",
-                ["deepagents", "--skill", "code-review", "--stdin", "-q"],
+                [
+                    "deepagents",
+                    "--skill",
+                    "code-review",
+                    "--stdin",
+                    "-q",
+                    "--model",
+                    "openai:test-model",
+                ],
             ),
             patch.object(sys, "stdin", mock_stdin),
             patch("deepagents_code.main.check_optional_tools", return_value=[]),
@@ -819,7 +827,11 @@ class TestMaxTurnsArgument:
         mock_stdin.isatty.return_value = False
         mock_stdin.read.return_value = "piped task"
         with (
-            patch.object(sys, "argv", ["deepagents", "--max-turns", "5"]),
+            patch.object(
+                sys,
+                "argv",
+                ["deepagents", "--max-turns", "5", "--model", "openai:test-model"],
+            ),
             patch.object(sys, "stdin", mock_stdin),
             patch("deepagents_code.main.check_optional_tools", return_value=[]),
             patch(
@@ -888,6 +900,23 @@ class TestHeadlessResumeArguments:
         code, mock_run = self._cli("-r", "t-1", "-n", "continue", "--rubric", "done")
         assert code == 2
         mock_run.assert_not_awaited()
+
+    @pytest.mark.parametrize("saved", [None, "openai:other"])
+    def test_resume_without_override_adopts_thread_model(
+        self, monkeypatch: pytest.MonkeyPatch, saved: str | None
+    ) -> None:
+        from deepagents_code.model_config import ModelConfig
+
+        monkeypatch.setattr(
+            ModelConfig,
+            "load",
+            classmethod(lambda _cls: ModelConfig(default_model=saved)),
+        )
+        code, mock_run = self._cli("-r", "t-1", "-n", "continue")
+        assert code == 0
+        assert mock_run.await_args is not None
+        assert mock_run.await_args.kwargs["model_name"] is None
+        assert mock_run.await_args.kwargs["resume"].adopt_model is True
 
     def test_resume_id_reaches_the_headless_runner(self) -> None:
         from deepagents_code.client.headless_resume import ResumeRequest
@@ -1172,6 +1201,7 @@ class TestUpdateSubcommand:
         debug: bool = False,
         editable: bool,
         is_update_available_return: tuple[bool, str | None],
+        cached_update_return: tuple[bool, str | None] = (False, None),
         log_path: str = "/tmp/deepagents-update.log",
         prerelease: bool = False,
         flag_style: bool = False,
@@ -1210,6 +1240,10 @@ class TestUpdateSubcommand:
                 return_value=install_method,
             ),
             patch(
+                "deepagents_code.update_check.get_cached_update_available",
+                return_value=cached_update_return,
+            ),
+            patch(
                 "deepagents_code.update_check.is_update_available",
                 return_value=is_update_available_return,
             ) as is_update_mock,
@@ -1231,6 +1265,52 @@ class TestUpdateSubcommand:
         ):
             cli_main()
         return int(exc_info.value.code or 0), is_update_mock, perform_upgrade_mock
+
+    @pytest.mark.parametrize("flag_style", [False, True])
+    def test_fresh_cached_update_skips_check(
+        self, capsys: pytest.CaptureFixture[str], *, flag_style: bool
+    ) -> None:
+        """A known update installs without another lookup or checking message."""
+        code, check, upgrade = self._run_update(
+            editable=False,
+            cached_update_return=(True, "99.0.0"),
+            is_update_available_return=(False, None),
+            flag_style=flag_style,
+        )
+
+        assert code == 0
+        check.assert_not_called()
+        assert upgrade.call_args.kwargs["target_version"] == "99.0.0"
+        assert "Checking for updates" not in capsys.readouterr().out
+
+    @pytest.mark.parametrize("cached", [(False, None), (False, "0.0.1")])
+    def test_no_cached_update_refreshes(
+        self, capsys: pytest.CaptureFixture[str], cached: tuple[bool, str | None]
+    ) -> None:
+        """An absent update must not hide a release published since the last check."""
+        code, check, upgrade = self._run_update(
+            editable=False,
+            cached_update_return=cached,
+            is_update_available_return=(True, "99.0.0"),
+        )
+
+        assert code == 0
+        check.assert_called_once_with(bypass_cache=True, include_prereleases=None)
+        assert upgrade.call_args.kwargs["target_version"] == "99.0.0"
+        assert "Checking for updates" in capsys.readouterr().out
+
+    def test_prerelease_update_does_not_reuse_stable_cache(self) -> None:
+        """Explicit pre-release intent fetches the requested release channel."""
+        code, check, upgrade = self._run_update(
+            editable=False,
+            cached_update_return=(True, "99.0.0"),
+            is_update_available_return=(True, "100.0.0rc1"),
+            prerelease=True,
+        )
+
+        assert code == 0
+        check.assert_called_once_with(bypass_cache=True, include_prereleases=True)
+        assert upgrade.call_args.kwargs["target_version"] == "100.0.0rc1"
 
     def test_editable_install_skips_upgrade(self) -> None:
         """Editable install exits 0 without calling `is_update_available`/upgrade.

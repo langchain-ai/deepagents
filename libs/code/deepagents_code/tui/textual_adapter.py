@@ -151,6 +151,7 @@ from deepagents_code.model_retry import (
     retry_marker_from_event,
     retry_status_from_event,
 )
+from deepagents_code.output_truncation import describe_truncation, output_truncation
 from deepagents_code.skills.invocation import pinned_skill_parts
 from deepagents_code.skills.load_errors import (
     format_skills_load_errors,
@@ -237,6 +238,46 @@ def _dispatch_tool_use_hook(
 def _dispatch_tool_error_hook(tool_name: str) -> None:
     """Dispatch a `tool.error` hook with the payload documented in `hooks`."""
     dispatch_hook_fire_and_forget("tool.error", build_tool_error_payload(tool_name))
+
+
+class _PartialTruncationTracker:
+    """Find streamed replies that showed some output but were cut off.
+
+    A reply cut off before any output fails on the server
+    (`EmptyTruncatedReplyMiddleware`) and reaches the user as an error. This
+    tracker covers the other case: the user saw part of a reply, so the turn
+    goes on, but the user must know that the reply is incomplete.
+    """
+
+    def __init__(self) -> None:
+        self._replied: set[tuple[tuple, str | None]] = set()
+        self._warned: set[tuple[tuple, str | None]] = set()
+
+    def observe(self, ns_key: tuple, message: object) -> str | None:
+        """Record one streamed chunk of a model reply.
+
+        Args:
+            ns_key: Namespace of the agent that streamed the chunk.
+            message: The streamed chunk. Objects that are not messages are
+                ignored.
+
+        Returns:
+            Warning text the first time a reply with output is cut off,
+                else `None`.
+        """
+        from langchain_core.messages import BaseMessage
+
+        if not isinstance(message, BaseMessage):
+            return None
+        key = (ns_key, message.id)
+        tool_chunks = getattr(message, "tool_call_chunks", None)
+        if tool_chunks or getattr(message, "tool_calls", None) or message.text.strip():
+            self._replied.add(key)
+        truncation = output_truncation(message)
+        if truncation is None or key not in self._replied or key in self._warned:
+            return None
+        self._warned.add(key)
+        return f"The reply was cut off: {describe_truncation(truncation)}."
 
 
 def _is_ask_user_transcript(body: str) -> bool:
@@ -2010,6 +2051,7 @@ async def execute_task_textual(
 
     displayed_tool_ids: set[str] = set()
     tool_call_buffers: dict[ToolCallBufferKey, ToolCallBuffer] = {}
+    truncation_tracker = _PartialTruncationTracker()
     # Tool-call ids that already received terminal hooks before a resumed
     # `ToolMessage` can stream. When the turn still resumes, middleware
     # synthetic messages would otherwise re-dispatch `tool.result`; this set
@@ -3464,6 +3506,14 @@ async def execute_task_textual(
                             )
                             pending_text_by_namespace[ns_key] = ""
                             assistant_message_by_namespace.pop(ns_key, None)
+
+                    if truncation_warning := truncation_tracker.observe(
+                        ns_key, message
+                    ):
+                        try:
+                            await adapter._mount_message(AppMessage(truncation_warning))
+                        except Exception:
+                            logger.exception("Failed to mount truncation warning")
 
             await adapter._reconcile_cache()
 

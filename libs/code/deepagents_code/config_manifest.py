@@ -2700,6 +2700,19 @@ _STATIC_OPTIONS: tuple[ConfigOption[object], ...] = (
         env_var=_env_vars.OLLAMA_DISCOVERY,
     ),
     ConfigOption(
+        key="models.provider_tool_search",
+        group="Tools",
+        summary=(
+            "Use provider-native MCP tool discovery on supported OpenAI/Anthropic "
+            "models, directly or through LangSmith gateway; other routes stay eager."
+        ),
+        kind=OptionKind.BOOL,
+        default=True,
+        env_var=_env_vars.PROVIDER_TOOL_SEARCH,
+        empty_env_is_false=True,
+        toml_keys=("models", "provider_tool_search"),
+    ),
+    ConfigOption(
         key="models.openai_prompt_cache_key",
         group="Tools",
         summary=(
@@ -3094,7 +3107,10 @@ _STATIC_OPTIONS: tuple[ConfigOption[object], ...] = (
     ConfigOption(
         key="plugins.auto_update",
         group="Plugins",
-        summary="Update opted-in plugins after the first prompt; disable globally.",
+        summary=(
+            "Check plugins for updates after the first prompt and install "
+            "opted-in ones; disable globally."
+        ),
         kind=OptionKind.BOOL,
         default=True,
         env_var=_env_vars.PLUGIN_AUTO_UPDATE,

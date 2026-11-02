@@ -16,6 +16,7 @@ if TYPE_CHECKING:
     from langchain.agents.middleware.types import AgentMiddleware, ToolCallRequest
 
 MCP_TOOL_METADATA_KEY = "_deepagents_talon_mcp"
+MCP_SKILL_ONLY_METADATA_KEY = "_deepagents_talon_skill_only"
 
 
 def talon_mcp_middleware() -> AgentMiddleware:

@@ -221,11 +221,65 @@ class InstalledPluginEntry:
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
+class BrokenPluginInstall:
+    """An enabled, registered plugin whose installed files are missing.
+
+    Attributes:
+        plugin_id: Plugin id in `{name}@{marketplace}` form.
+        install_path: Registered install path, kept for debug diagnostics only.
+    """
+
+    plugin_id: str
+    install_path: str
+
+    @property
+    def message(self) -> str:
+        """Concise, user-facing description of the problem and how to fix it."""
+        return (
+            f"Plugin {self.plugin_id} needs repair: its installed files are "
+            "missing, so its tools are unavailable. Reinstall or disable it "
+            "from /plugins."
+        )
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class PluginDiscoveryResult:
-    """Result from plugin discovery."""
+    """Result from plugin discovery.
+
+    `broken` lists enabled plugins whose installed files are missing. They are
+    reported separately from `warnings` so callers can present them once with
+    repair guidance instead of repeating an internal warning per consumer.
+    """
 
     plugins: tuple[PluginInstance, ...]
     warnings: tuple[str, ...] = ()
+    broken: tuple[BrokenPluginInstall, ...] = ()
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class PluginUpdate:
+    """A marketplace plugin version that differs from the installed one."""
+
+    plugin_id: str
+    installed_version: str
+    available_version: str
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class PluginUpdateResult:
+    """Outcome of checking installed plugins against their marketplaces.
+
+    Attributes:
+        updated: Plugins whose newer version was installed.
+        available: Plugins with a newer version that was not installed.
+        newly_available: Subset of `available` not reported by a previous check.
+        errors: Per-marketplace or per-plugin failures, already redacted.
+    """
+
+    updated: tuple[PluginUpdate, ...] = ()
+    available: tuple[PluginUpdate, ...] = ()
+    newly_available: tuple[PluginUpdate, ...] = ()
+    errors: tuple[str, ...] = ()
 
 
 def split_plugin_id(plugin_id: str) -> tuple[str, str]:

@@ -3,9 +3,6 @@ type: operations reference
 title: dcode Costs, Traces, and Session Operations
 description: Operate dcode's durable thread checkpoints and estimated cost accounting while keeping transient UI telemetry distinct. Covers server-side offload settlement, trace redaction and lifecycle, ownership fencing, and focused verification.
 tags: [dcode, sessions, cost-tracking, tracing, sqlite, offload]
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-10-25T08:05:05.473Z
 sources:
   - id: openwiki-source-d4716b8ae162796c2c7ad991
     resource: repo://libs/code/deepagents_code/_js_cost.py
@@ -15,6 +12,8 @@ sources:
     resource: repo://libs/code/deepagents_code/_session_stats.py
   - id: openwiki-source-1b65375bb7d7df74863a3f36
     resource: repo://libs/code/deepagents_code/_trace_redaction.py
+  - id: openwiki-source-05106e66a949150d557266a2
+    resource: repo://libs/code/deepagents_code/agent.py
   - id: openwiki-source-fdf5afeb1dd1d11652374e88
     resource: repo://libs/code/deepagents_code/app.py
   - id: openwiki-source-7f6b98925b5f1ba065df3a04
@@ -31,6 +30,8 @@ sources:
     resource: repo://libs/code/deepagents_code/thread_ownership.py
   - id: openwiki-source-29a60a7d68da0bf4ec625403
     resource: repo://libs/code/deepagents_code/tui/textual_adapter.py
+  - id: openwiki-source-84638d6cd0c222d6264dbef8
+    resource: repo://libs/code/tests/unit_tests/test_js_cost_sync.py
   - id: openwiki-source-8574be7f7f29e3e1dd328837
     resource: repo://libs/code/tests/unit_tests/test_js_cost_tracking.py
   - id: openwiki-source-ceb0295160537174ea07a3f2
@@ -39,7 +40,10 @@ sources:
     resource: repo://libs/code/tests/unit_tests/test_sessions.py
   - id: openwiki-source-6d493572634f1b686d52ef11
     resource: repo://libs/code/tests/unit_tests/test_trace_redaction.py
-generated: { by: "openwiki/0.4.2", at: "2026-10-25T08:05:05.473Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-10-28T08:04:17.781Z" }
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-10-28T08:04:17.781Z
 ---
 
 # dcode Costs, Traces, and Session Operations
@@ -52,16 +56,16 @@ The private graph channels `_session_cost_usd` and `_session_cost_breakdown` hol
 
 ```mermaid
 flowchart TD
-    Model["Completed model request"] --> Recorder["Cost recorder"]
-    Recorder --> Middleware["CostTrackingMiddleware"]
-    Middleware --> Durable["Private checkpoint cost channels"]
-    Nested["Nested agent or JS subagent"] --> Transfer["Cost transfer or receipt"]
-    Transfer --> Durable
-    Durable --> Event["Absolute session cost event"]
-    Event --> UI["Transient UI cost display"]
+    Child["JavaScript task child"] --> Local["Local cost delta"]
+    Local --> Receipt["Receipt checkpoint in child namespace"]
+    Receipt --> Aggregate["Outer eval reads latest receipt per namespace"]
+    Aggregate --> Transfer["Parent scope cost transfer"]
+    Transfer --> Ledger["Parent private checkpoint channels"]
+    Ledger --> Event["Absolute session cost event"]
+    Event --> UI["Transient UI display"]
 ```
 
-*Durable checkpoint accounting is the source of truth for a thread; the UI consumes absolute totals and does not own the ledger.*
+*The verified JavaScript path persists local child receipts before the outer `js_eval` call aggregates them into a parent transfer; the parent checkpoint ledger—not the UI—owns the resulting total.*
 
 `SessionStats` is deliberately separate process-local telemetry. It revises an earlier streaming contribution when cumulative usage, a completed response, or a better model identity arrives, preventing one model call from becoming multiple display requests. Its totals and provisional nested `model_usage` events provide live feedback; they do not replace durable checkpoint cost.
 
@@ -79,9 +83,9 @@ An abandoned prepared value loses its claimed spend permanently (and emits a war
 
 ## JavaScript subagent cost transport
 
-When the interpreter is enabled, dcode installs `CostAwareCodeInterpreterMiddleware` in place of the stock code-interpreter middleware. Its asynchronous wrapper proxies only `task` tools. Each dispatch gets an isolated checkpoint namespace and the evaluation gets an accounting owner derived from scope and a hashed tool-call identity, avoiding prompt text in checkpoint names.
+When `enable_interpreter=True`, `create_cli_agent()` installs `CostAwareCodeInterpreterMiddleware` as the `js_eval` interpreter middleware; remote sandboxes are rejected for that option. The cost wrapper is intentionally asynchronous: its synchronous tool wrapper delegates unchanged. In an async evaluation it proxies only structured `task` tools. The evaluation gets an accounting owner derived from the current checkpoint scope and a hash of the tool-call ID. Each dispatch gets a request-isolated child checkpoint namespace derived from a hash of its description, subagent type, response schema, and an occurrence counter; checkpoint names retain hashes rather than prompt text.
 
-A proxied child inherits the owner and uses synchronous durability. Each local node calls `record_cost_receipt()` before returning its graph update, writing its delta and optional breakdown to a receipt checkpoint and forwarding an ownership token when an owned saver is present. A namespace is written once, so replay cannot duplicate a receipt. At the outer evaluation boundary, the middleware reads the latest receipt per namespace, rejects invalid dollars, merges detail, and attaches `_session_cost_transfers` for the parent scope.
+A proxied child inherits the accounting owner, uses synchronous durability, and resets the subgraph counter. While pricing a child node, `CostTrackingMiddleware` calls `record_cost_receipt()` before returning its graph update. The function writes the local delta and optional breakdown to an owner-tagged receipt checkpoint, forwards an owned-saver token when present, and does nothing without both an owner and a checkpoint saver. A receipt namespace is written only once, so replay cannot replace or duplicate it. Once all tracked dispatch tasks have settled, only the outer evaluation reads the latest receipt for each namespace, accepts only finite non-negative dollar values, merges detail, and attaches `_session_cost_transfers` addressed to the parent scope. A nested evaluation sees the inherited owner and does not create a second parent transfer.
 
 ```mermaid
 sequenceDiagram
@@ -154,11 +158,11 @@ Session hooks are separate from checkpoint persistence. The adapter invokes `on_
 ## Focused verification
 
 - Run `tests/unit_tests/test_cost_tracking.py` for middleware drains, pricing/breakdown completeness, and `PreparedOperationCost` settlement.
-- Run `tests/unit_tests/test_js_cost_tracking.py` after interpreter dispatch, receipt namespaces, cancellation, replay, nested transfers, or SQLite resume changes; run `test_js_cost_sync.py` for synchronous-wrapper behavior.
+- Run `tests/unit_tests/test_js_cost_tracking.py` after interpreter dispatch, receipt namespaces, cancellation, replay, nested transfers, or SQLite resume changes; run `test_js_cost_sync.py` for the intentional synchronous pass-through. `test_agent.py` covers interpreter installation and remote-sandbox rejection, while `test_app.py` covers checkpoint-to-display session-cost synchronization.
 - Run `tests/unit_tests/test_thread_ownership.py` after lease, token, writer-guard, cancellation, or owned-saver changes. It covers cross-process exclusion, stale writers after release or takeover, and cancellation that must wait for mutation cleanup.
 - Run `tests/unit_tests/test_sessions.py` and `test_app_thread_ownership.py` after changing names, listing caches, deletion, or checkpoint fencing.
 - Run `tests/unit_tests/test_offload_api.py` when changing validation, trusted model context, write classification, archive behavior, cancellation, or shutdown trace flush; in particular it exercises cancellation while settlement is pending and a cancelled readback probe.
 - Run `tests/unit_tests/test_langsmith_runtime.py` after changing the inline override. It checks that untraced traceable hooks avoid executor hops and preserve errors, while arbitrary calls still hop and traced runs retain nesting.
 - Run `tests/unit_tests/test_trace_redaction.py` after changing redaction rules, cache bounds, or concurrency behavior.
 
-Related material: [Code agent architecture](../architecture/code-agent.md), [Context management](../concepts/context-management.md), [State persistence](../concepts/state-persistence.md), and [Testing guide](../testing/testing-guide.md).
+Related material: [Code agent architecture](../architecture/code-agent.md), [Profiles and models](../concepts/profiles-models.md), [State persistence](../concepts/state-persistence.md), [Subagents and skills](../concepts/subagents-skills.md), [Sandbox partners](../integrations/sandbox-partners.md), and [Testing guide](../testing/testing-guide.md).

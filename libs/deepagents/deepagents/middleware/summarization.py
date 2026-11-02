@@ -87,7 +87,16 @@ from langchain.tools import (
     ToolRuntime,  # noqa: TC002  # runtime import: StructuredTool resolves the compact-tool annotations at schema-inference time
 )
 from langchain_core.exceptions import ContextOverflowError
-from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, SystemMessage, ToolCall, ToolMessage, get_buffer_string
+from langchain_core.messages import (
+    AIMessage,
+    AnyMessage,
+    HumanMessage,
+    SystemMessage,
+    ToolCall,
+    ToolMessage,
+    add_notification_metadata,
+    get_buffer_string,
+)
 from langchain_core.messages.utils import count_tokens_approximately
 from langgraph.types import Command
 from pydantic import BaseModel
@@ -888,12 +897,7 @@ A condensed summary follows:
         else:
             content = f"Here is a summary of the conversation to date:\n\n{summary}"
 
-        return [
-            HumanMessage(
-                content=content,
-                additional_kwargs={"lc_source": "summarization"},
-            )
-        ]
+        return [add_notification_metadata(HumanMessage(content=content), source="summarization")]
 
     def _get_effective_messages(self, request: ModelRequest) -> list[AnyMessage]:
         """Generate effective messages for model call based on summarization event.

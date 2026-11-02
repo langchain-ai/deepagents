@@ -1,3 +1,3 @@
 # Files
 
-- [Testing Guide](testing-guide.md) - Focused dcode test routing for server lifecycle, runtime compatibility patches, workspace ownership, middleware integrity, and virtualized Textual transcripts. Use package Makefile targets as the command authority and prefer deterministic seams over process or model-backed tests.
+- [Testing Guide](testing-guide.md) - Focused, network-free guidance for testing observable Deep Agents middleware contracts, QuickJS prompt and REPL lifecycle behavior, and Talon reasoning-effort selection, persistence, and provider translation.

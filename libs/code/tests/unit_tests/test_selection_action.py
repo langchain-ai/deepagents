@@ -7,11 +7,12 @@ from typing import TYPE_CHECKING
 import pytest
 from textual.containers import Container
 from textual.screen import ModalScreen, Screen
-from textual.widgets import Input, Markdown, Static
+from textual.widgets import Input, Static
 from textual.widgets.text_area import Selection
 
 from deepagents_code import _env_vars
 from deepagents_code.app import DeepAgentsApp
+from deepagents_code.tui.widgets.final_markdown import FinalMarkdown
 from deepagents_code.tui.widgets.messages import (
     AppMessage,
     AssistantMessage,
@@ -433,14 +434,14 @@ async def test_real_message_parts_are_classified(
 
 
 async def test_selection_action_for_assistant_markdown() -> None:
-    """Rendered assistant Markdown blocks count as transcript text."""
+    """A rendered assistant reply counts as transcript text."""
     app = DeepAgentsApp()
     async with app.run_test() as pilot:
         message = AssistantMessage("selected assistant text")
         await app.query_one("#messages", Container).mount(message)
         await message.write_initial_content()
         await pilot.pause()
-        block = message.query_one(Markdown).children[0]
+        block = message.query_one(FinalMarkdown)
         await _drag_select(pilot, block)
         assert app.screen.get_selected_text()
         assert app.query(SelectionAction)

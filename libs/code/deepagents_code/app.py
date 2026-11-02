@@ -342,7 +342,12 @@ _MESSAGE_BOTTOM_SPACER_ID = "message-bottom-spacer"
 """DOM id for the spacer representing source messages below the mounted window."""
 
 _TIMESTAMP_FOOTER_EXCLUDED_TYPES: frozenset[MessageType] = frozenset(
-    {MessageType.APP, MessageType.SUMMARIZATION, MessageType.REASONING}
+    {
+        MessageType.APP,
+        MessageType.SUMMARIZATION,
+        MessageType.REASONING,
+        MessageType.TOOL_GROUP,
+    }
 )
 """Message types that never receive a timestamp footer.
 
@@ -351,7 +356,9 @@ feedback) are not conversation turns, so they do not get timestamp footers.
 `SUMMARIZATION` is an `APP`-style system notice and is excluded for the same
 reason. `REASONING` is part of the assistant turn that follows it rather than a
 turn of its own, so the answer's footer times the whole turn and a second footer
-above it would only add noise.
+above it would only add noise. `TOOL_GROUP` rows keep the footers on their
+detail rows instead: a live `ToolGroupSummary` has no footer, so a footer on the
+lazy row that replaces it at the end of a turn would add a row to the transcript.
 """
 
 _STREAMED_TEXT_WIDGETS = (AssistantMessage, ReasoningMessage)
@@ -363,7 +370,13 @@ builds a fresh `types.UnionType` on every iteration.
 """
 
 _SERVER_OUTPUT_MESSAGE_TYPES: frozenset[MessageType] = frozenset(
-    {MessageType.ASSISTANT, MessageType.REASONING, MessageType.TOOL, MessageType.SKILL}
+    {
+        MessageType.ASSISTANT,
+        MessageType.REASONING,
+        MessageType.TOOL,
+        MessageType.TOOL_GROUP,
+        MessageType.SKILL,
+    }
 )
 """Message types marking a thread the user did conversational work in.
 
@@ -388,6 +401,8 @@ intentionally treated as "nothing happened here" — `/rubric set` with no
 conversation is a config tweak, not work left behind.
 
 `REASONING` covers turns cut off before assistant text or a tool call arrives.
+`TOOL_GROUP` holds finished `TOOL` rows folded into one row, so it counts as
+the tool rows it replaced.
 `SKILL` is the loosest member: `SkillMessage` mounts just *before*
 `_send_to_agent`, which can bail out without reaching the server, so a
 `SKILL` row means a turn was attempted rather than completed. That
@@ -1165,6 +1180,7 @@ if TYPE_CHECKING:
     from deepagents_code.model_config import MissingProviderPackageError
     from deepagents_code.model_metadata import ModelMetadata, ModelPurpose
     from deepagents_code.plugins.models import (
+        BrokenPluginInstall,
         PluginDiscoveryResult,
         PluginInstance,
         PluginManifest,
@@ -3807,6 +3823,9 @@ class DeepAgentsApp(App):
         self._discovered_plugin_ids: frozenset[str] = frozenset()
         """Plugin ids found by the latest background skill discovery."""
 
+        self._discovered_broken_plugins: tuple[BrokenPluginInstall, ...] = ()
+        """Enabled plugins with missing files found by the latest skill discovery."""
+
         self._mcp_optimistic_original_server_info: dict[str, MCPServerInfo] = {}
         """Pre-disable server metadata for optimistic viewer toggles."""
 
@@ -5557,6 +5576,8 @@ class DeepAgentsApp(App):
 
         if self._server_startup_deferred:
             await self._mount_deferred_start_notice()
+            if not self._onboarding_session:
+                await self._show_model_selector()
 
         # Fire-and-forget workers — none of these block the event loop.
 
@@ -6130,7 +6151,15 @@ class DeepAgentsApp(App):
         discovered = await self._discover_skills()
         if discovered:
             self._session_plugin_ids = self._discovered_plugin_ids
+            self._notify_broken_plugins(self._discovered_broken_plugins)
         return discovered
+
+    def _notify_broken_plugins(self, broken: tuple[BrokenPluginInstall, ...]) -> None:
+        """Warn once per process about each enabled plugin with missing files."""
+        from deepagents_code.plugins.discovery import claim_broken_install_notices
+
+        for item in claim_broken_install_notices(broken):
+            self.notify(item.message, severity="warning", timeout=10, markup=False)
 
     def _discover_skills_and_roots(
         self,
@@ -6148,9 +6177,12 @@ class DeepAgentsApp(App):
         from deepagents_code.skills.invocation import discover_skills_and_roots
 
         assistant_id = self._assistant_id or DEFAULT_ASSISTANT_ID
-        plugin_skill_sources, plugin_skill_roots, self._discovered_plugin_ids = (
-            discover_plugin_skill_state()
-        )
+        (
+            plugin_skill_sources,
+            plugin_skill_roots,
+            self._discovered_plugin_ids,
+            self._discovered_broken_plugins,
+        ) = discover_plugin_skill_state()
         return discover_skills_and_roots(
             assistant_id,
             plugin_skill_sources=plugin_skill_sources,
@@ -6796,7 +6828,10 @@ class DeepAgentsApp(App):
 
         # Failure surfaces only in chat — keeps recovery hint adjacent to the
         # input. Banner is set to idle above to drop the connecting spinner.
-        text = f"Server failed to start: {self._server_startup_error}"
+        if isinstance(event.error, MissingCredentialsError):
+            text = f"Model setup required: {event.error}"
+        else:
+            text = f"Server failed to start: {self._server_startup_error}"
         if had_deferred_actions:
             text += (
                 "\n\nQueued changes were not applied. "
@@ -6807,9 +6842,9 @@ class DeepAgentsApp(App):
             and self._server_kwargs is not None
         ):
             text += (
-                "\n\nHint: run `/auth` to add a key for this provider, then "
-                "`/model <provider>:<model>` to retry startup. Or pick a "
-                "different provider directly with `/model`."
+                "\n\nRun `/auth` to configure this "
+                "provider; startup will retry automatically after you save. "
+                "Or use `/model` to choose a different provider."
             )
         elif (
             self._server_startup_missing_provider_package is not None
@@ -11657,6 +11692,9 @@ class DeepAgentsApp(App):
             )
             return False
 
+        if not await self._validate_auto_classifier():
+            return False
+
         if not has_auto_mode_notice():
             pending: asyncio.Future[bool] | None = getattr(
                 self, "_auto_mode_confirmation_future", None
@@ -13822,6 +13860,7 @@ class DeepAgentsApp(App):
         if self._exiting:
             return
 
+        self._last_typed_at = None
         value = event.value
         mode: InputMode = event.mode  # ty: ignore[invalid-assignment]  # Textual event mode is str at type level but InputMode at runtime
 
@@ -14106,12 +14145,9 @@ class DeepAgentsApp(App):
                     )
                 else:
                     msg = AssistantMessage(f"```text\n{output}\n```", local_only=True)
-                    # `write_initial_content` queries the composed Markdown
-                    # child, so it raises `NoMatches` on a widget that never
-                    # reached the screen. `_mount_message` returns `False`
-                    # exactly then (teardown mid-command), so skip the write
-                    # rather than turning an ordinary shutdown race into a
-                    # spurious "Shell command crashed" in the log.
+                    # `_mount_message` returns `False` when the screen was
+                    # torn down mid-command; the row never shows then, so
+                    # log that instead of writing to a detached widget.
                     if await self._mount_message(msg):
                         await msg.write_initial_content()
                     else:
@@ -14448,6 +14484,7 @@ class DeepAgentsApp(App):
             LangSmithApiError,
             LangSmithImportError,
             LangSmithLookupTimeoutError,
+            LangSmithPermissionError,
             LangSmithProjectNotFoundError,
             _assemble_langsmith_thread_url,
             fetch_langsmith_project_url_or_raise,
@@ -14555,6 +14592,26 @@ class DeepAgentsApp(App):
                     f"{project_name!r} yet. The project is created automatically "
                     "the first time a run is traced — try `/trace` again after "
                     "your first message.",
+                ),
+            )
+            return
+        except LangSmithPermissionError as exc:
+            logger.warning(
+                "LangSmith API key cannot read projects; cannot resolve thread "
+                "URL for %s: %s",
+                thread_id,
+                exc,
+            )
+            from deepagents_code._env_vars import LANGSMITH_PROJECT_URL
+
+            await self._mount_message(UserMessage(command))
+            await self._mount_message(
+                AppMessage(
+                    "LangSmith denied the lookup of project "
+                    f"{project_name!r} (HTTP 403), so the thread URL cannot be "
+                    "resolved. The API key may lack project read access, or "
+                    "may not belong to this workspace. Set "
+                    f"`{LANGSMITH_PROJECT_URL}` to skip the lookup.",
                 ),
             )
             return
@@ -14980,7 +15037,8 @@ class DeepAgentsApp(App):
         for group in catalog.groups:
             if not group.tools:
                 continue
-            blocks.append(f"### {_escape_markdown(group.label)}")
+            count = f" ({len(group.tools)})" if group.source == "mcp" else ""
+            blocks.append(f"### {_escape_markdown(group.label)}{count}")
             if group.source == "mcp":
                 has_mcp_tools = True
                 blocks.append(
@@ -18187,8 +18245,7 @@ class DeepAgentsApp(App):
                     msg += f"\n\n{self._format_cost_summary()}"
                 await self._mount_message(AppMessage(msg))
         elif cmd == "/cost":
-            await self._mount_message(UserMessage(command))
-            await self._mount_message(AppMessage(self._format_cost_summary()))
+            self.action_open_cost_breakdown()
         elif cmd == "/tools":
             await self._handle_tools_command(command)
         elif cmd == "/extensions":
@@ -18366,8 +18423,9 @@ class DeepAgentsApp(App):
     async def _request_skill_trust(self, skill_name: str, directory: str) -> bool:
         """Ask whether to trust a skill directory for the agent server.
 
-        The server saves an approval. A denial is remembered for the session so
-        the same directory is not asked about again.
+        The server saves an approval. A denial is remembered until `/reload` so
+        the same directory is not asked about again; later refusals say so
+        instead of failing silently.
 
         Args:
             skill_name: Skill the user invoked, for the prompt.
@@ -18379,6 +18437,17 @@ class DeepAgentsApp(App):
         from deepagents_code.tui.widgets.skill_trust import SkillTrustScreen
 
         if directory in self._skill_trust_denied:
+            await self._mount_message(
+                AppMessage(
+                    Content.from_markup(
+                        "Skill $skill was not loaded: you denied trust for "
+                        "$directory earlier in this session. Run /reload to "
+                        "be asked again.",
+                        skill=skill_name,
+                        directory=directory,
+                    )
+                )
+            )
             return False
         try:
             allowed = await self._push_screen_wait(
@@ -18647,6 +18716,10 @@ class DeepAgentsApp(App):
                 if removed_skills:
                     skill_lines.append(f"  - Removed: {', '.join(removed_skills)}")
                 report += "\nSkills updated:\n" + "\n".join(skill_lines)
+            if self._skill_trust_denied:
+                # Re-prompt for skill directories denied earlier in the session.
+                self._skill_trust_denied.clear()
+                report += "\nSkill trust denials cleared; you'll be asked again."
 
             # Rediscover plugins and restart the owned server so plugin MCP config
             # is picked up without a separate slash command.
@@ -18731,6 +18804,12 @@ class DeepAgentsApp(App):
                     report += (
                         f"\n{len(plugin_result.warnings)} plugin warning(s) "
                         "during load."
+                    )
+                if plugin_result.broken:
+                    count = len(plugin_result.broken)
+                    noun = "plugin needs" if count == 1 else "plugins need"
+                    report += (
+                        f"\n{count} {noun} repair; reinstall or disable via /plugins."
                     )
 
                 if self._server_proc is not None and self._server_kwargs is not None:
@@ -19191,25 +19270,32 @@ class DeepAgentsApp(App):
         )
 
     async def _auto_update_plugins(self) -> None:
-        """Update plugins on disk and notify when `/reload` can apply them."""
-        from deepagents_code.plugins.discovery import auto_update_plugins
+        """Update opted-in plugins and announce updates found for the rest."""
+        from deepagents_code.plugins.discovery import (
+            available_updates_message,
+            check_plugin_updates,
+        )
 
         try:
-            updated = await asyncio.to_thread(auto_update_plugins)
+            result = await asyncio.to_thread(check_plugin_updates)
         except Exception:
-            logger.exception("Plugin auto-update failed")
+            logger.exception("Plugin update check failed")
             return
-        if not updated:
-            return
-
-        names = [plugin_id.rsplit("@", 1)[0] for plugin_id in updated]
-        noun = "Plugin" if len(names) == 1 else "Plugins"
-        display = f"{len(names)} plugins" if names[2:] else " and ".join(names)
-        self.notify(
-            f"{noun} updated: {display}. Run /reload to apply.",
-            timeout=10,
-            markup=False,
-        )
+        if result.updated:
+            names = [update.plugin_id.rsplit("@", 1)[0] for update in result.updated]
+            noun = "Plugin" if len(names) == 1 else "Plugins"
+            display = f"{len(names)} plugins" if names[2:] else " and ".join(names)
+            self.notify(
+                f"{noun} updated: {display}. Run /reload to apply.",
+                timeout=10,
+                markup=False,
+            )
+        if result.newly_available:
+            self.notify(
+                available_updates_message(result.newly_available),
+                timeout=10,
+                markup=False,
+            )
 
     async def _handle_user_message(self, message: str) -> None:
         """Handle a user message to send to the agent.
@@ -20365,13 +20451,15 @@ class DeepAgentsApp(App):
                     title_thread_id, title_model_spec, model_params=title_model_params
                 )
             # Close the final step's group once the turn ends with no trailing
-            # assistant text to trigger the boundary path. Grouping is cosmetic,
-            # so a failure here must not abort the turn — but log it, since
+            # assistant text to trigger the boundary path, then compact the
+            # turn's settled groups into lazy rows. Grouping is cosmetic, so a
+            # failure here must not abort the turn — but log it, since
             # `_mount_tool_group_summary` already handles its own mount errors and
             # anything reaching this point is unexpected.
             try:
                 self._close_active_tool_group()
                 await self._regroup_completed_tools()
+                await self._compact_finished_tool_groups()
             except Exception:
                 logger.exception("Failed to close/regroup tool group at turn end")
             task_succeeded = True
@@ -21952,9 +22040,11 @@ class DeepAgentsApp(App):
         # bottom-anchored transcript on every tool call.
         with self.batch_update():
             if not (is_groupable_tool or is_groupable_diff):
+                closing = self._active_tool_group
                 self._close_active_tool_group()
                 if not isinstance(widget, UserMessage):
                     await self._regroup_completed_tools()
+                    await self._compact_finished_tool_groups_unlocked(skip=closing)
             elif is_groupable_tool and (
                 self._active_tool_group is None
                 or not self._active_tool_group.is_attached
@@ -22339,6 +22429,126 @@ class DeepAgentsApp(App):
             if summary.is_attached:
                 summary.remove()
             summary._release_all_collapsible()
+
+    async def _compact_finished_tool_groups(self) -> None:
+        """Compact settled tool groups while transcript mutation is serialized."""
+        async with self._transcript_mutation_lock:
+            await self._compact_finished_tool_groups_unlocked()
+
+    async def _compact_finished_tool_groups_unlocked(
+        self, *, skip: ToolGroupSummary | None = None
+    ) -> None:
+        """Replace settled tool-group runs with lazy `TOOL_GROUP` rows.
+
+        A `ToolGroupSummary` keeps every folded tool row, its footer, and its
+        output mounted but hidden. A resumed thread stores the same run as one
+        `TOOL_GROUP` row, and its `LazyToolGroupSummary` builds the detail
+        widgets only on expand. This gives a live run that form once it settles.
+
+        Compaction is an optimization: a group that fails a check stays as is.
+
+        Args:
+            skip: The group that this step boundary closed. A diff for one of
+                its tools can still arrive in the same step, so it waits for the
+                next boundary or the end of the turn.
+        """
+        try:
+            messages = self.query_one("#messages", Container)
+        except NoMatches:
+            return
+        generation = self._transcript_generation
+        groups = [
+            group
+            for group in messages.query_children(ToolGroupSummary)
+            if group is not skip
+            and group is not self._active_tool_group
+            and group._finalized
+            and group._tools
+        ]
+        for group in groups:
+            if generation != self._transcript_generation:
+                return
+            try:
+                await self._compact_tool_group(messages, group)
+            except Exception:
+                logger.warning("Failed to compact a tool group", exc_info=True)
+
+    def _compactable_tool_group_members(
+        self, group: ToolGroupSummary
+    ) -> list[tuple[Widget, MessageData]] | None:
+        """Return a group's folded rows when all of them can become stored data.
+
+        Returns:
+            Each folded widget with its store row, in store order, or `None`
+                when a tool is not a settled success or a row is not stored.
+        """
+        live = (
+            list(self._ui_adapter._current_tool_messages.values())
+            if self._ui_adapter is not None
+            else []
+        )
+        tools = [w for w in group._collapsible if isinstance(w, ToolCallMessage)]
+        if not tools or any(
+            not tool.is_success or tool.has_display_caveat or tool in live
+            for tool in tools
+        ):
+            return None
+        members = [
+            (widget, self._message_store.get_message(widget.id or ""))
+            for widget in group._collapsible
+        ]
+        if any(data is None for _widget, data in members):
+            return None
+        return [(widget, data) for widget, data in members if data is not None]
+
+    async def _compact_tool_group(
+        self, messages: Container, group: ToolGroupSummary
+    ) -> None:
+        """Replace one settled tool group with a lazy `TOOL_GROUP` row.
+
+        A run that is partly archived changes in the store only. Its mounted
+        rows leave the DOM, and the new row stays outside the visible window.
+        """
+        members = self._compactable_tool_group_members(group)
+        if members is None:
+            return
+        for widget, _data in members:
+            if isinstance(widget, ToolCallMessage):
+                # Store what the user toggled, such as expanded output.
+                self._sync_tool_message_state(widget)
+        rows = [data for _widget, data in members]
+        row = MessageData(
+            type=MessageType.TOOL_GROUP,
+            content="",
+            timestamp=rows[0].timestamp,
+            tool_group_messages=rows,
+            tool_group_expanded=not group._collapsed,
+        )
+        index = self._message_store.replace_run([data.id for data in rows], row)
+        if index is None:
+            return
+        start, end = self._message_store.get_visible_range()
+        doomed = self._tool_group_widgets(messages, group, rows)
+        with self.batch_update():
+            if start <= index < end:
+                widget, _data, footer = self._build_hydration_entry(row)
+                nodes = (widget,) if footer is None else (widget, footer)
+                await messages.mount(*nodes, before=group)
+            await messages.remove_children(doomed)
+            self._sync_transcript_spacers(messages)
+        self._schedule_message_height_measurements([row.id])
+
+    @staticmethod
+    def _tool_group_widgets(
+        messages: Container, group: ToolGroupSummary, rows: list[MessageData]
+    ) -> list[Widget]:
+        """Return a group's summary plus the mounted rows and footers it folds."""
+        widgets: list[Widget] = [group]
+        for data in rows:
+            for widget_id in (data.id, _message_timestamp_footer_id(data.id)):
+                with suppress(NoMatches):
+                    widgets.append(messages.get_child_by_id(widget_id))
+        return widgets
 
     def _on_user_visible_output_started(self) -> None:
         """Record that the current turn has rendered model text or a tool call.
@@ -24112,7 +24322,15 @@ class DeepAgentsApp(App):
             )
             return
 
-        # Gate the first Auto switch on the education confirmation.
+        if target is ApprovalMode.AUTO and not await self._validate_auto_classifier():
+            target = next_approval_mode(
+                self._approval_mode,
+                auto_eligible=False,
+                yolo_switcher_enabled=yolo_switcher_enabled,
+            )
+            if target is None:
+                return
+
         if target is ApprovalMode.AUTO and not has_auto_mode_notice():
             self._prompt_auto_mode_confirmation()
             return
@@ -24140,6 +24358,9 @@ class DeepAgentsApp(App):
             `True` when local UI state was updated to `target`.
         """
         from deepagents_code.approval_mode import ApprovalMode
+
+        if target is ApprovalMode.AUTO and not await self._validate_auto_classifier():
+            return False
 
         # With no usable agent/session pair there is no running graph to update.
         # Stage the selection locally; `execute_task_textual` persists it before
@@ -24197,6 +24418,32 @@ class DeepAgentsApp(App):
             ApprovalMode.YOLO,
         }:
             await self._auto_accept_pending_goal_rubric()
+        return True
+
+    async def _validate_auto_classifier(self) -> bool:
+        """Return whether Auto's reviewer can be resolved."""
+        spec = self._auto_classifier_review_model_spec()
+        if spec is None:
+            return True
+        try:
+            if self._remote_agent() is not None:
+                await self._resolve_auxiliary_model(spec)
+            else:
+                from deepagents_code.config import create_model
+
+                await asyncio.to_thread(
+                    create_model, spec, bind_preserved_thinking=False
+                )
+        except Exception as exc:
+            logger.warning(
+                "Auto classifier resolution failed for %s", spec, exc_info=True
+            )
+            self._warn_live_approval_mode_unavailable(
+                f"Auto is unavailable: {exc}. Approval mode unchanged. "
+                "Use /auth to configure credentials or /auto model "
+                "to choose a reviewer."
+            )
+            return False
         return True
 
     def _auto_classifier_display_spec(self) -> str | None:
@@ -24601,7 +24848,8 @@ class DeepAgentsApp(App):
 
         # Gate the first Auto switch on the education confirmation.
         if target is ApprovalMode.AUTO and not has_auto_mode_notice():
-            self._prompt_auto_mode_confirmation()
+            if await self._validate_auto_classifier():
+                self._prompt_auto_mode_confirmation()
             return
 
         if target is ApprovalMode.YOLO:
@@ -26151,6 +26399,7 @@ class DeepAgentsApp(App):
                 ModelConfigError,
                 NoAllowedModelCredentialsError,
                 NoCredentialsConfiguredError,
+                NoModelConfiguredError,
             )
 
             try:
@@ -26161,7 +26410,7 @@ class DeepAgentsApp(App):
                 # actionable, and silence after closing `/auth` reads as a hang.
                 await self._mount_message(ErrorMessage(str(exc)))
                 return False
-            except NoCredentialsConfiguredError:
+            except NoCredentialsConfiguredError, NoModelConfiguredError:
                 # No usable default to fall back to — nothing to retry.
                 return False
             except ModelConfigError as exc:
@@ -26993,24 +27242,31 @@ class DeepAgentsApp(App):
         self._open_debug_console()
 
     def action_open_cost_breakdown(self) -> None:
-        """Open the session cost breakdown from the footer."""
+        """Open the session cost breakdown from the footer or `/cost`."""
+        from deepagents_code.tui.modals.cost_breakdown import open_cost_breakdown
+
+        open_cost_breakdown(self, self._format_cost_modal)
+
+    def _format_cost_modal(self) -> str:
+        """Build the modal content.
+
+        Returns:
+            Available token details and the escaped cost explanation.
+        """
         from deepagents_code.tui.modals.cost_breakdown import (
             format_cost_breakdown_table,
-            open_cost_breakdown,
         )
 
-        open_cost_breakdown(
-            self,
-            lambda: format_cost_breakdown_table(
-                self._session_cost_usd, self._session_cost_breakdown
-            ),
+        table = format_cost_breakdown_table(
+            self._session_cost_usd, self._session_cost_breakdown
         )
+        summary = "  \n".join(
+            _escape_markdown(line) for line in self._format_cost_summary().splitlines()
+        )
+        return f"{table}\n\n{summary}" if table else summary
 
     def _open_debug_console(self) -> None:
         """Push the read-only Debug Console modal."""
-        from deepagents_code.tui.modals.cost_breakdown import (
-            format_cost_breakdown_table,
-        )
         from deepagents_code.tui.widgets.debug_console import DebugConsoleScreen
 
         def handle_result(_: None) -> None:
@@ -27027,9 +27283,7 @@ class DeepAgentsApp(App):
                 # counts, tokens, and other in-memory fields stay current while
                 # the modal is open. The builder is intentionally I/O-free.
                 snapshot_provider=self._build_debug_snapshot,
-                cost_breakdown_provider=lambda: format_cost_breakdown_table(
-                    self._session_cost_usd, self._session_cost_breakdown
-                ),
+                cost_breakdown_provider=self._format_cost_modal,
                 mcp_servers_provider=lambda: self._mcp_server_info or [],
                 cleared_upto=self._debug_console_cleared_upto,
                 on_clear=persist_clear,
@@ -32548,11 +32802,18 @@ class DeepAgentsApp(App):
 
             self._last_model_unchanged = None
             params_suffix = _format_model_params(extra_kwargs)
+            classifier_suffix = (
+                ". Auto-mode classifier model also switched."
+                if self._auto_classifier_display_spec() is None
+                else ""
+            )
             if not persist:
                 # Session-only switch (e.g. adopting a resumed thread's model):
                 # announce but never touch the user's persisted recent/default.
                 await self._mount_message(
-                    AppMessage(f"Switched to {display}{params_suffix}"),
+                    AppMessage(
+                        f"Switched to {display}{params_suffix}{classifier_suffix}"
+                    ),
                 )
             elif not await asyncio.to_thread(save_recent_model, resolved_spec):
                 await self._mount_message(
@@ -32564,7 +32825,9 @@ class DeepAgentsApp(App):
                 )
             else:
                 await self._mount_message(
-                    AppMessage(f"Switched to {display}{params_suffix}"),
+                    AppMessage(
+                        f"Switched to {display}{params_suffix}{classifier_suffix}"
+                    ),
                 )
             if persist:
                 # Best-effort MRU update for the `/model` Recent section.
@@ -32704,6 +32967,7 @@ class DeepAgentsApp(App):
             ModelConfigError,
             NoAllowedModelCredentialsError,
             NoCredentialsConfiguredError,
+            NoModelConfiguredError,
         )
 
         try:
@@ -32714,7 +32978,7 @@ class DeepAgentsApp(App):
             # `/auth` look broken, so name the models that would work.
             await self._mount_message(ErrorMessage(str(exc)))
             return False
-        except NoCredentialsConfiguredError:
+        except NoCredentialsConfiguredError, NoModelConfiguredError:
             return False
         except ModelConfigError as exc:
             await self._mount_message(ErrorMessage(str(exc)))

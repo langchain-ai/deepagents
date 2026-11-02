@@ -673,6 +673,7 @@ def main(argv: list[str] | None = None) -> int:
     # queried name matches the logged one. run id/attempt are the workflow run's.
     run_id = os.environ.get("GITHUB_RUN_ID", "")
     run_attempt = os.environ.get("GITHUB_RUN_ATTEMPT", "")
+    reasoning_effort = os.environ.get("UNIFIED_REASONING_EFFORT", "")
     experiments: dict[str, int | None] = {}
     for key in expected_keys:
         name = experiment_name(
@@ -682,6 +683,7 @@ def main(argv: list[str] | None = None) -> int:
             category=key.category,
             run_id=run_id,
             run_attempt=run_attempt,
+            reasoning_effort=reasoning_effort,
         )
         n_tasks = len(tasks_by_cat.get(key.category, []))
         experiments[name] = n_tasks * rollouts if n_tasks else None

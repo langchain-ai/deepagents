@@ -39,6 +39,7 @@ from textual.widgets import Markdown, Static, TextArea
 from deepagents_code.btw import BtwOperation
 from deepagents_code.client.remote_client import RemoteAgent
 from deepagents_code.tui.modals.btw import BtwScreen, BtwTextArea
+from deepagents_code.tui.widgets.final_markdown import FinalMarkdown
 from deepagents_code.tui.widgets.messages import AssistantMessage, UserMessage
 
 if TYPE_CHECKING:
@@ -84,6 +85,13 @@ async def btw_server(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[BtwServer
         transport=ASGITransport(app=offload_api.app), base_url="http://test"
     ) as client:
         yield client, operation, threads
+
+
+def _shown(message: AssistantMessage) -> str:
+    """Return the markdown source an assistant message displays."""
+    content = message.query_one("#assistant-content")
+    assert isinstance(content, Markdown | FinalMarkdown)
+    return content.source
 
 
 async def test_tool_free_snapshot_keeps_state_and_uses_compaction(
@@ -1495,7 +1503,7 @@ async def test_side_cost_survives_main_cancellation(
             await asyncio.wait_for(started.wait(), 2)
             await app._handle_command("/btw why")
             await pilot.pause()
-            assert app.screen.query_one(Markdown)._markdown == "Side answer"
+            assert _shown(app.screen.query_one(AssistantMessage)) == "Side answer"
             assert not main.done()
         finally:
             main.cancel()
@@ -1633,7 +1641,7 @@ async def test_app_follow_ups_preserve_exchanges_and_recover_after_error(
             "Why?",
         ]
         assert [
-            widget.query_one(Markdown)._markdown
+            _shown(widget)
             for widget in app.screen.query(AssistantMessage)
             if widget.display
         ] == [
@@ -1658,10 +1666,10 @@ async def test_app_follow_ups_preserve_exchanges_and_recover_after_error(
             "Which option?",
             "Why?",
         ]
-        assert [
-            widget.query_one(Markdown)._markdown
-            for widget in app.screen.query(AssistantMessage)
-        ] == ["Use a cache.", "It is faster."]
+        assert [_shown(widget) for widget in app.screen.query(AssistantMessage)] == [
+            "Use a cache.",
+            "It is faster.",
+        ]
         assert not app.screen.query(".btw-error")
         assert app.screen.query_one(BtwTextArea).has_focus
         await pilot.press(*"Still?", "enter")
@@ -1775,9 +1783,7 @@ async def test_reopening_after_cancellation_keeps_only_completed_exchanges(
         assert [widget.raw_text for widget in app.screen.query(UserMessage)] == [
             "First"
         ]
-        assert app.screen.query_one(AssistantMessage).query_one(Markdown)._markdown == (
-            "Completed answer"
-        )
+        assert _shown(app.screen.query_one(AssistantMessage)) == ("Completed answer")
         await pilot.press(*"Next", "enter")
         await pilot.pause()
         assert remote.abtw.call_args.kwargs["history"] == (
@@ -1899,9 +1905,7 @@ async def test_clear_cancels_side_answer_and_keeps_main_worker_running(
             await pilot.press(*"Fresh", "enter")
             await pilot.pause()
             assert remote.abtw.call_args.kwargs["history"] == ()
-            assert screen.query_one(AssistantMessage).query_one(Markdown)._markdown == (
-                "Fresh answer"
-            )
+            assert _shown(screen.query_one(AssistantMessage)) == ("Fresh answer")
             assert app._message_store.get_all_messages() == before
         finally:
             release_main.set()
@@ -2009,7 +2013,7 @@ async def test_long_question_keeps_answer_and_dismissal_hint_visible() -> None:
         app.push_screen(BtwScreen(AsyncMock(return_value="A short answer."), question))
         await pilot.pause()
         dialog = app.screen.query_one("#btw-dialog")
-        answer = app.screen.query_one(Markdown)
+        answer = app.screen.query_one(FinalMarkdown)
         hint = app.screen.query_one("#btw-help")
         assert answer.region in dialog.content_region
         assert answer.region in app.screen.region
@@ -2104,7 +2108,7 @@ async def test_modal_renders_streamed_text(
         await pilot.pause()
         message = app.screen.query_one(AssistantMessage)
         assert message.display
-        assert message.query_one(Markdown)._markdown == "First fragment"
+        assert _shown(message) == "First fragment"
         assert app.screen.query_one(TextArea).disabled
         assert not app.screen.query_one("#btw-loading").display
         question = app.screen.query_one(UserMessage)
@@ -2114,12 +2118,9 @@ async def test_modal_renders_streamed_text(
         assert app.screen.query_one(TextArea).has_focus
         assert not app.screen.query_one(TextArea).disabled
         if outcome == "complete":
-            assert (
-                message.query_one(Markdown)._markdown
-                == "First fragment and final fragment."
-            )
+            assert _shown(message) == "First fragment and final fragment."
         else:
-            assert message.query_one(Markdown)._markdown == "First fragment"
+            assert _shown(message) == "First fragment"
             assert app.screen.query_one(".btw-error", Static).content == "Stream failed"
         assert app._message_store.get_all_messages() == before
 

@@ -61,7 +61,7 @@ To iterate locally, run a single category's dataset directly through Harbor with
 make stage-harbor-local-deps          # stage checked-out packages for the sandbox install
 
 uv run harbor run \
-  --agent langgraph \
+  --agent deepagents_harbor.agent:DeepAgentsLangGraph \
   --agent-kwarg project_path=deepagents_harbor/langgraph_project \
   --agent-kwarg config=langgraph.json \
   --agent-kwarg graph=bare \

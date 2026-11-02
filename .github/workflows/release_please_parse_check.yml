@@ -29,6 +29,12 @@
 #     same and fail if ANY sub-message would fail to parse.
 #   - Mirrors GitHub's default squash-merge format: `<title> (#<number>)\n\n<body>`.
 #     Assumes the repo squash-merge default is "Pull request title and description".
+#   - Mirrors GitHub's squash-merge body wrapping. GitHub reflows every body
+#     line longer than 72 characters (greedy word wrap, whitespace collapsed),
+#     except lines inside top-level code fences. Fences indented under a list
+#     item are wrapped too. A one-line call such as `f(a, b)` can be split into
+#     `f(a,` + `b)`, which the parser rejects. Verified against 118 of 120
+#     recent squash merges; the misses were bodies changed at merge time.
 #
 # Limitations:
 #   - Runs under `pull_request` (not `pull_request_target`), so PRs from forks
@@ -219,9 +225,50 @@ jobs:
               return [...conventionalCommits, ...messages.slice(1)];
             }
 
+            // Mirror GitHub's squash-merge body wrapping (see header). The
+            // override is exempt: release-please reads it from the PR body,
+            // not from the commit.
+            const WRAP_WIDTH = 72;
+            function wrapLine(text) {
+              if (text.length <= WRAP_WIDTH) return [text];
+              const lines = [];
+              let current = '';
+              for (const word of text.split(/\s+/).filter(Boolean)) {
+                if (!current) {
+                  current = word;
+                } else if (current.length + 1 + word.length <= WRAP_WIDTH) {
+                  current += ` ${word}`;
+                } else {
+                  lines.push(current);
+                  current = word;
+                }
+              }
+              if (current) lines.push(current);
+              return lines;
+            }
+            function wrapLikeGitHub(text) {
+              const lines = [];
+              let fence = null;
+              for (const line of text.split('\n')) {
+                if (fence) {
+                  lines.push(line);
+                  if (line.trimEnd().startsWith(fence) && /^(`+|~+)$/.test(line.trimEnd())) fence = null;
+                  continue;
+                }
+                const opener = line.match(/^(`{3,}|~{3,})/);
+                if (opener) {
+                  fence = opener[1];
+                  lines.push(line);
+                  continue;
+                }
+                lines.push(...wrapLine(line));
+              }
+              return lines.join('\n');
+            }
+
             const squashMessage = overrideMessage
               ? overrideMessage
-              : `${title} (#${number})\n\n${fullBody}`;
+              : `${title} (#${number})\n\n${wrapLikeGitHub(fullBody)}`;
             const subMessages = splitMessages(squashMessage);
 
             // Try parsing each sub-message; first failure wins.
@@ -295,7 +342,7 @@ jobs:
 
             const overrideAdvice = overrideMessage
               ? 'Your PR already has a `BEGIN_COMMIT_OVERRIDE` block, but the content inside it does not parse. Edit the override content to be a valid conventional commit message.'
-              : `The parser does **not** honor markdown code fences — content inside \` \`\`\` \` blocks is parsed the same as anything else. Bare function calls split across lines (\`name(\` followed by a newline) are a common trigger.\n\n### Fix options\n\n**(a) Reformat the offending content** — collapse multi-line function calls to one line, or trim the example out. Quickest if the rich body is not load-bearing.\n\n**(b) Add a release-please override block** at the end of this PR description. Release-please will use the clean message inside it for changelog generation and ignore the rest. Paste:\n\n\`\`\`\`\n${suggested}\n\`\`\`\`\n\nSave the description; this check will re-run automatically.`;
+              : `The parser does **not** honor markdown code fences — content inside \` \`\`\` \` blocks is parsed the same as anything else. Bare function calls split across lines (\`name(\` followed by a newline) are a common trigger. GitHub also wraps body lines longer than 72 characters when it squash-merges, so a long one-line call can be split too. Only code fences that start at column 0 are kept as-is; a fence indented under a list item is wrapped. The offending region below shows the wrapped text.\n\n### Fix options\n\n**(a) Reformat the offending content** — keep calls on one line of 72 characters or fewer, move the example to a top-level (not indented) code fence, or trim the example out. Quickest if the rich body is not load-bearing.\n\n**(b) Add a release-please override block** at the end of this PR description. Release-please will use the clean message inside it for changelog generation and ignore the rest. Paste:\n\n\`\`\`\`\n${suggested}\n\`\`\`\`\n\nSave the description; this check will re-run automatically.`;
 
             const commentBody = [
               STICKY_MARKER,

@@ -138,6 +138,23 @@ class TestRequestSkillTrust:
         assert await app._request_skill_trust("review", "/outside") is False
         app._push_screen_wait.assert_not_awaited()
 
+    async def test_remembered_deny_explains_refusal(self) -> None:
+        """A repeat refusal says why and how to recover instead of looking hung."""
+        from deepagents_code.tui.widgets.messages import AppMessage
+
+        app = _make_app()
+        await app._request_skill_trust("review", "/outside")
+        assert app._mounted_messages == []
+
+        await app._request_skill_trust("review", "/outside")
+
+        [message] = app._mounted_messages
+        assert isinstance(message, AppMessage)
+        text = str(message._content)
+        assert "review" in text
+        assert "/outside" in text
+        assert "/reload" in text
+
     async def test_prompt_failure_denies(self) -> None:
         app = _make_app()
         app._push_screen_wait = AsyncMock(side_effect=RuntimeError("no screen"))

@@ -846,12 +846,23 @@ def test_reducer_ignores_session_start_block(tmp_path: Path) -> None:
     assert decision.diagnostics[0].code == "unsupported_block"
 
 
-def test_reducer_warns_on_unsupported_updated_input(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("name", "args"),
+    [
+        ("execute", {"command": ""}),
+        ("execute", {"command": 1}),
+        ("execute", {"command": "echo changed", "timeout": 1000}),
+        ("read_file", {"command": "echo changed"}),
+    ],
+)
+def test_reducer_warns_on_unsupported_updated_input(
+    tmp_path: Path, name: str, args: dict[str, object]
+) -> None:
     invocation = _invocation(
         tmp_path,
         PreToolUseEvent(
             event=HookEvent.PRE_TOOL_USE,
-            call=ToolCallData(id="call", name="execute", args={}),
+            call=ToolCallData(id="call", name=name, args={}),
         ),
     )
 
@@ -865,7 +876,7 @@ def test_reducer_warns_on_unsupported_updated_input(tmp_path: Path) -> None:
                         "hookSpecificOutput": {
                             "hookEventName": "PreToolUse",
                             "permissionDecision": "allow",
-                            "updatedInput": {"command": "echo mutated"},
+                            "updatedInput": args,
                         }
                     }
                 ),
@@ -877,6 +888,37 @@ def test_reducer_warns_on_unsupported_updated_input(tmp_path: Path) -> None:
     assert decision.permission.behavior == "none"
     assert decision.diagnostics[0].code == "unsupported_field"
     assert decision.diagnostics[0].field == "updatedInput"
+
+
+def test_reducer_keeps_last_command_rewrite(tmp_path: Path) -> None:
+    invocation = _invocation(
+        tmp_path,
+        PreToolUseEvent(
+            event=HookEvent.PRE_TOOL_USE,
+            call=ToolCallData(
+                id="call", name="execute", args={"command": "git status", "timeout": 5}
+            ),
+        ),
+    )
+    results = [
+        HandlerResult(
+            handler_id=command,
+            output=HookWireOutput.model_validate(
+                {
+                    "hookSpecificOutput": {
+                        "hookEventName": "PreToolUse",
+                        "updatedInput": {"command": command, "timeout": 5000},
+                    }
+                }
+            ),
+        )
+        for command in ("rtk proxy git status", "rtk git status")
+    ]
+    decision = reduce_hook_results(invocation, results)
+    assert isinstance(decision, PreToolUseDecision)
+    assert decision.updated_command == "rtk git status"
+    assert decision.permission.behavior == "none"
+    assert not decision.diagnostics
 
 
 def test_reducer_honors_deny_even_with_updated_input(tmp_path: Path) -> None:
@@ -910,7 +952,8 @@ def test_reducer_honors_deny_even_with_updated_input(tmp_path: Path) -> None:
 
     assert decision.permission.behavior == "deny"
     assert decision.permission.reason == "blocked"
-    assert decision.diagnostics[0].code == "unsupported_field"
+    assert decision.updated_command == "echo mutated"
+    assert not decision.diagnostics
 
 
 def test_reducer_keeps_stop_sticky_and_retains_siblings(tmp_path: Path) -> None:

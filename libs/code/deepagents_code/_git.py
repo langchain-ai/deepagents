@@ -17,6 +17,9 @@ _GIT_DIR_POINTER_PREFIX = "gitdir: "
 _GIT_HEAD_REF_PREFIX = "ref: "
 """Prefix used by `HEAD` when it points at a named ref instead of a commit."""
 
+_REFTABLE_HEAD_PLACEHOLDER = "refs/heads/.invalid"
+"""Ref a reftable repository writes to `HEAD`; the real refs live in `reftable/`."""
+
 _GIT_REF_PREFIXES = ("refs/heads/", "refs/remotes/", "refs/tags/", "refs/")
 """Known git ref prefixes stripped when formatting a branch-like display name."""
 
@@ -411,7 +414,8 @@ def read_git_branch_from_filesystem(path: str | Path) -> str | None:
     Returns:
         The abbreviated branch name, `HEAD` for detached HEAD, an empty string
         when `path` is not inside a git repository, or `None` when metadata
-        exists but cannot be parsed confidently.
+        exists but cannot be parsed confidently (including reftable
+        repositories, whose `HEAD` file only holds a placeholder).
     """
     git_dir = find_git_dir(path)
     if git_dir is None:
@@ -431,7 +435,9 @@ def read_git_branch_from_filesystem(path: str | Path) -> str | None:
         return ""
     if head.startswith(_GIT_HEAD_REF_PREFIX):
         ref = head.removeprefix(_GIT_HEAD_REF_PREFIX).strip()
-        return _abbreviate_git_ref(ref) if ref else None
+        if not ref or ref == _REFTABLE_HEAD_PLACEHOLDER:
+            return None
+        return _abbreviate_git_ref(ref)
     return "HEAD"
 
 

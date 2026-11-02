@@ -286,13 +286,20 @@ EXPERIMENTAL = "DEEPAGENTS_CODE_EXPERIMENTAL"
 Off by default; parsed by `is_env_truthy` (see there for the accepted truthy
 values). Marks experimental runs in UI/trace metadata. Behavior behind this
 flag may change or be removed without notice.
+
+Set only through the launching shell or global `~/.deepagents/.env`; a project
+`.env` cannot set it.
 """
 
 EXTENSIONS = "DEEPAGENTS_CODE_EXTENSIONS"
 """Enable loading installed-plugin and trusted-project Python extensions."""
 
 EXTENSIONS_TRUST = "DEEPAGENTS_CODE_EXTENSIONS_TRUST"
-"""Default project extension trust policy: `ask`, `always`, or `never`."""
+"""Default project extension trust policy: `ask`, `always`, or `never`.
+
+Set only through the launching shell or global `~/.deepagents/.env`; a project
+`.env` cannot set it.
+"""
 
 EXTERNAL_EVENT_SOCKET = "DEEPAGENTS_CODE_EXTERNAL_EVENT_SOCKET"
 """Enable the local Unix-socket external event listener.
@@ -305,7 +312,11 @@ EXTERNAL_EVENT_SOCKET_PATH = "DEEPAGENTS_CODE_EXTERNAL_EVENT_SOCKET_PATH"
 """Override the default Unix-socket path for the external event listener."""
 
 EXTRA_SKILLS_DIRS = "DEEPAGENTS_CODE_EXTRA_SKILLS_DIRS"
-"""Paths added to the skill containment allowlist, split with `os.pathsep`."""
+"""Paths added to the skill containment allowlist, split with `os.pathsep`.
+
+Set only through the launching shell or global `~/.deepagents/.env`; a project
+`.env` cannot set it.
+"""
 
 GOAL_AUTO_ACCEPT_CRITERIA = "DEEPAGENTS_CODE_GOAL_AUTO_ACCEPT_CRITERIA"
 """Apply generated goal criteria automatically in Auto mode.
@@ -368,6 +379,14 @@ KITTY_KEYBOARD = "DEEPAGENTS_CODE_KITTY_KEYBOARD"
 
 LANGSMITH_PROJECT = "DEEPAGENTS_CODE_LANGSMITH_PROJECT"
 """Override LangSmith project name for agent traces."""
+
+LANGSMITH_PROJECT_URL = "DEEPAGENTS_CODE_LANGSMITH_PROJECT_URL"
+"""LangSmith URL of the project named by `DEEPAGENTS_CODE_LANGSMITH_PROJECT`.
+
+When set, thread links and `/trace` use this URL instead of looking the project
+up, so the API key does not need project read access. It is ignored when the
+active project is a different one.
+"""
 
 LANGSMITH_REDACT = "DEEPAGENTS_CODE_LANGSMITH_REDACT"
 """Toggle LangSmith secret redaction for agent traces (defaults to on)."""
@@ -467,6 +486,9 @@ Set to a truthy value to bring the standalone integrations screen back into the
 flow. Parsed by `is_env_truthy`: accepts `1`, `true`, `yes`, `on` as enabled.
 """
 
+PROVIDER_TOOL_SEARCH = "DEEPAGENTS_CODE_PROVIDER_TOOL_SEARCH"
+"""Toggle native MCP tool discovery on verified endpoints (defaults to on)."""
+
 OPENAI_PROMPT_CACHE_KEY = "DEEPAGENTS_CODE_OPENAI_PROMPT_CACHE_KEY"
 """Toggle injecting a per-thread OpenAI `prompt_cache_key` (defaults to on).
 
@@ -494,6 +516,8 @@ PLUGIN_CACHE_DIR = "DEEPAGENTS_CODE_PLUGIN_CACHE_DIR"
 """Override the plugin install/marketplace cache root.
 
 When unset, plugins are stored under `DEFAULT_CONFIG_DIR / "plugins"`.
+Set only through the launching shell or global `~/.deepagents/.env`; a project
+`.env` cannot set it.
 """
 
 PRICES_AUTO_UPDATE = "DEEPAGENTS_CODE_PRICES_AUTO_UPDATE"
@@ -573,7 +597,11 @@ SERVER_ENV_PREFIX = "DEEPAGENTS_CODE_SERVER_"
 """Environment variable prefix used to pass CLI config to the server subprocess."""
 
 SHELL_ALLOW_LIST = "DEEPAGENTS_CODE_SHELL_ALLOW_LIST"
-"""Comma-separated shell commands to allow (or 'recommended'/'all')."""
+"""Comma-separated shell commands to allow (or 'recommended'/'all').
+
+Set only through the launching shell or global `~/.deepagents/.env`; a project
+`.env` cannot set it.
+"""
 
 SHOW_HEADER = "DEEPAGENTS_CODE_SHOW_HEADER"
 """Show Textual's native header bar at the top of the TUI when enabled."""

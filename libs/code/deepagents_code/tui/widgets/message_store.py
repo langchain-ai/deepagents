@@ -19,7 +19,7 @@ from time import time
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Sequence
 
     from textual.widget import Widget
 
@@ -678,8 +678,8 @@ class MessageStore:
     """
 
     INITIAL_WINDOW_SIZE: int = 30
-    WINDOW_SIZE: int = 800
-    HARD_WINDOW_SIZE: int = 900
+    WINDOW_SIZE: int = 350
+    HARD_WINDOW_SIZE: int = 400
     HYDRATE_BUFFER: int = 8
     PREFETCH_VIEWPORTS: int = 8
 
@@ -807,6 +807,78 @@ class MessageStore:
         archived = self._messages[: self._visible_start]
         visible = self._messages[self._visible_start : self._visible_end]
         return archived, visible
+
+    def replace_run(
+        self, message_ids: Sequence[str], replacement: MessageData
+    ) -> int | None:
+        """Replace a contiguous run of rows with one row, in place.
+
+        Folds finished tool rows into one `TOOL_GROUP` row without a reload.
+        The search starts at the tail, where live runs are.
+
+        The visible range keeps the same rows mounted. A run that crosses a
+        window edge puts the replacement outside the window, because the
+        caller cannot mount half of one row. When every row in the run has a
+        measured height, the replacement takes their sum, so the transcript
+        spacers do not move.
+
+        Args:
+            message_ids: IDs of the run, in store order.
+            replacement: Row to store in place of the run.
+
+        Returns:
+            Index of the replacement row, or `None` when the IDs are not one
+                contiguous run of unprotected rows.
+        """
+        if replacement.id in self._index or any(
+            self.is_protected(message_id) for message_id in message_ids
+        ):
+            return None
+        start = self._find_from_tail(message_ids[0]) if message_ids else None
+        if start is None:
+            return None
+        end = start + len(message_ids)
+        run = self._messages[start:end]
+        if [m.id for m in run] != list(message_ids):
+            return None
+        hints = [m.height_hint for m in run]
+        if all(hint is not None for hint in hints):
+            replacement.height_hint = sum(hint or 0 for hint in hints)
+        self._messages[start:end] = [replacement]
+        for message_id in message_ids:
+            del self._index[message_id]
+        self._index[replacement.id] = replacement
+        self._shift_visible_range(start, end)
+        return start
+
+    def _find_from_tail(self, message_id: str) -> int | None:
+        """Return the index of a stored row, scanning from the newest row."""
+        message = self._index.get(message_id)
+        if message is None:
+            return None
+        for index in range(len(self._messages) - 1, -1, -1):
+            if self._messages[index] is message:
+                return index
+        return None
+
+    def _shift_visible_range(self, start: int, end: int) -> None:
+        """Move the visible range after `[start:end]` became one row at `start`."""
+        removed = end - start - 1
+        if end <= self._visible_start:
+            self._visible_start -= removed
+            self._visible_end -= removed
+            return
+        if start >= self._visible_end:
+            return
+        if start < self._visible_start:
+            # The run crossed the top edge: the replacement is archived above.
+            self._visible_start = start + 1
+        if end > self._visible_end:
+            # The run crossed the bottom edge: the replacement is archived below.
+            self._visible_end = start
+        else:
+            self._visible_end -= removed
+        self._visible_end = max(self._visible_end, self._visible_start)
 
     def get_message(self, message_id: str) -> MessageData | None:
         """Get a message by its ID.

@@ -1452,10 +1452,12 @@ class TestStartupSequence:
 
 
 class TestFooterCostBreakdown:
-    """Tests for opening the shared cost modal directly from the footer."""
+    """Tests for opening the shared cost modal from the footer and `/cost`."""
 
-    async def test_footer_cost_opens_live_modal_and_restores_focus(
+    @pytest.mark.parametrize("entrypoint", ["footer", "command"])
+    async def test_cost_opens_live_modal_and_restores_focus(
         self,
+        entrypoint: str,
     ) -> None:
         from textual.widgets import Markdown
 
@@ -1469,12 +1471,18 @@ class TestFooterCostBreakdown:
             breakdown = _empty_cost_breakdown()
             breakdown["input_tokens"] = 123
             app._set_session_cost(1.25, breakdown=breakdown)
-            app._agent_running = True
+            app._thread_stats.record_request(
+                "model[1]", 123, 10, provider="custom", cost_usd=1.25
+            )
+            app._agent_running = entrypoint == "footer"
             await pilot.pause()
-            display = app.query_one("#tokens-display", MetricsLine)
-            offset = display.content_region.x - display.region.x
-            offset += str(display.render()).index("$")
-            await pilot.click(display, offset=(offset, 0))
+            if entrypoint == "command":
+                await pilot.press("/", "c", "o", "s", "t", "enter")
+            else:
+                display = app.query_one("#tokens-display", MetricsLine)
+                offset = display.content_region.x - display.region.x
+                offset += str(display.render()).index("$")
+                await pilot.click(display, offset=(offset, 0))
             await pilot.pause()
 
             modal = app.screen
@@ -1482,6 +1490,9 @@ class TestFooterCostBreakdown:
             body = modal.query_one(".cost-breakdown-body", Markdown)
             assert "123" in body._markdown
             assert "1.25" in body._markdown
+            assert "By type since this thread was loaded:" in body._markdown
+            assert "By model since this thread was loaded:" in body._markdown
+            assert r"custom:model\[1\]" in body._markdown
             stack_size = len(app.screen_stack)
             app.action_open_cost_breakdown()
             await pilot.pause()
@@ -1501,11 +1512,15 @@ class TestFooterCostBreakdown:
             assert app._is_input_focused()
             app._agent_running = False
 
+    @pytest.mark.parametrize("entrypoint", ["footer", "command"])
     @pytest.mark.parametrize("incomplete", [False, True])
-    async def test_missing_breakdown_notifies_without_empty_modal(
-        self, incomplete: bool, monkeypatch: pytest.MonkeyPatch
+    async def test_missing_breakdown_opens_summary_modal(
+        self, incomplete: bool, entrypoint: str
     ) -> None:
+        from textual.widgets import Markdown
+
         from deepagents_code.cost_tracking import _empty_cost_breakdown
+        from deepagents_code.tui.modals.cost_breakdown import CostBreakdownScreen
         from deepagents_code.tui.widgets.status import MetricsLine
 
         app = DeepAgentsApp(agent=MagicMock())
@@ -1519,20 +1534,61 @@ class TestFooterCostBreakdown:
                     else None
                 ),
             )
-            notify = MagicMock()
-            monkeypatch.setattr(app, "notify", notify)
             await pilot.pause()
             display = app.query_one("#tokens-display", MetricsLine)
-            offset = display.content_region.x - display.region.x
-            offset += str(display.render()).index("$")
-            await pilot.click(display, offset=(offset, 0))
+            if entrypoint == "command":
+                await pilot.press("/", "c", "o", "s", "t", "enter")
+            else:
+                offset = display.content_region.x - display.region.x
+                offset += str(display.render()).index("$")
+                await pilot.click(display, offset=(offset, 0))
             await pilot.pause()
 
-            assert not isinstance(app.screen, ModalScreen)
-            assert notify.call_args.args[0] == (
-                "No cost details to show for this session yet."
-            )
-            assert "$1.25" in str(display.render())
+            assert isinstance(app.screen, CostBreakdownScreen)
+            body = app.screen.query_one(".cost-breakdown-body", Markdown)
+            assert "Estimated thread cost: $1.25" in body._markdown
+            assert "| Category |" not in body._markdown
+            await pilot.press("escape")
+            await pilot.pause()
+            assert app._is_input_focused()
+
+    @pytest.mark.parametrize(
+        "usage", ["none", "unreported", "restored", "unpriced", "broken"]
+    )
+    async def test_cost_command_explains_unavailable_estimates(
+        self, usage: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from textual.widgets import Markdown
+
+        from deepagents_code.app import _PRICING_UNAVAILABLE_MESSAGE
+        from deepagents_code.tui.modals.cost_breakdown import CostBreakdownScreen
+
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            expected = "No model usage recorded"
+            if usage == "unreported":
+                app._thread_has_completed_turn = True
+                expected = "provider didn't report token usage"
+            elif usage == "restored":
+                app._thread_has_restored_model_usage = True
+                expected = "This does not mean the usage was free."
+            elif usage in {"unpriced", "broken"}:
+                app._thread_stats.record_request("unknown", 100, 10, provider="custom")
+                monkeypatch.setattr(
+                    app, "_pricing_is_broken", lambda: usage == "broken"
+                )
+                expected = (
+                    _PRICING_UNAVAILABLE_MESSAGE
+                    if usage == "broken"
+                    else "pricing isn't available"
+                )
+            await pilot.press("/", "c", "o", "s", "t", "enter")
+            await pilot.pause()
+            assert isinstance(app.screen, CostBreakdownScreen)
+            body = app.screen.query_one(".cost-breakdown-body", Markdown)
+            assert expected in body._markdown
+            assert "| Category |" not in body._markdown
 
 
 class TestStatusBarPickerActions:
@@ -2746,9 +2802,10 @@ class TestModalScreenShiftTabHandling:
         self, newline_key: str, btw_app: tuple[DeepAgentsApp, MagicMock]
     ) -> None:
         """Side-question shortcuts edit text without changing approval mode."""
-        from textual.widgets import Markdown, TextArea
+        from textual.widgets import TextArea
 
         from deepagents_code.tui.modals.btw import BtwScreen
+        from deepagents_code.tui.widgets.final_markdown import FinalMarkdown
 
         app, remote = btw_app
         answer = remote.abtw
@@ -2781,7 +2838,7 @@ class TestModalScreenShiftTabHandling:
             await pilot.pause()
             assert answer.await_count == 1
             assert answer.await_args.args == ("first!\nsecond",)
-            assert app.screen.query_one(Markdown)._markdown == "Side answer"
+            assert app.screen.query_one(FinalMarkdown).source == "Side answer"
             await pilot.press("shift+tab")
             assert editor.text == ""
             assert app._approval_mode is mode
@@ -5609,6 +5666,39 @@ class TestTraceCommand:
             assert "401 Unauthorized" in rendered
             assert "LANGSMITH_API_KEY" in rendered
             assert "Check your network" not in rendered
+            assert "permission" not in rendered
+
+    async def test_trace_shows_permission_message_when_lookup_forbidden(
+        self,
+    ) -> None:
+        """A 403 says the key lacks project read access, not that it is invalid."""
+        from deepagents_code.config import LangSmithPermissionError
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._session_state = TextualSessionState(thread_id="test-thread-123")
+
+            with (
+                patch(
+                    "deepagents_code.config.get_langsmith_project_name",
+                    return_value="proj",
+                ),
+                patch(
+                    "deepagents_code.config.fetch_langsmith_project_url_or_raise",
+                    side_effect=LangSmithPermissionError("403 Forbidden"),
+                ),
+                patch("deepagents_code.app.webbrowser.open") as mock_open,
+            ):
+                await app._handle_trace_command("/trace")
+                await pilot.pause()
+
+            app_msgs = app.query(AppMessage)
+            rendered = " ".join(str(w._content) for w in app_msgs)
+            assert "denied the lookup of project 'proj' (HTTP 403)" in rendered
+            assert "DEEPAGENTS_CODE_LANGSMITH_PROJECT_URL" in rendered
+            assert "Verify LANGSMITH_API_KEY" not in rendered
+            mock_open.assert_not_called()
 
     async def test_trace_shows_friendly_message_when_project_not_found(self) -> None:
         """A not-found project shows a 'created on first trace' hint, not an error."""
@@ -14373,6 +14463,40 @@ class TestRequestApprovalBranching:
 class TestDeferredShowApproval:
     """_deferred_show_approval should swap placeholder once idle."""
 
+    async def test_enter_submission_ends_typing_deferral(self) -> None:
+        """Submitting a queued prompt reveals approval without the idle delay."""
+        from deepagents_code.tui.widgets.approval import ApprovalMenu
+
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = True
+            with patch("deepagents_code.app._monotonic", return_value=100.0):
+                await pilot.press("h", "i")
+                assert app._is_user_typing()
+
+                future = await app._request_approval(
+                    [
+                        {
+                            "name": "write_file",
+                            "args": {"path": "/tmp/x", "content": "hi"},
+                        }
+                    ],
+                    None,
+                )
+                assert app.query(".approval-placeholder")
+                assert not app.query(ApprovalMenu)
+
+                await pilot.press("enter")
+                await pilot.pause(0.3)
+
+                assert [m.text for m in app._pending_messages] == ["hi"]
+                assert not app._is_user_typing()
+                assert not app.query(".approval-placeholder")
+                assert app.query(ApprovalMenu)
+                assert not future.done()
+                future.cancel()
+
     async def test_bails_if_placeholder_detached_and_cancels_future(self) -> None:
         """If placeholder is detached, worker cancels the future and exits."""
         from deepagents_code.tui.widgets.approval import ApprovalMenu
@@ -14913,6 +15037,39 @@ class TestToolsSlashCommand:
         assert "Unavailable MCP servers" in rendered
         assert "notion" in rendered
         assert "Login required" in rendered
+
+    def test_render_mcp_tool_counts(self) -> None:
+        from deepagents_code.mcp_tools import MCPServerInfo, MCPToolInfo
+        from deepagents_code.tool_catalog import (
+            ToolEntry,
+            build_catalog_from_server_info,
+        )
+
+        catalog = build_catalog_from_server_info(
+            [ToolEntry(name="read_file", description="Read a file")],
+            [
+                MCPServerInfo(
+                    name="docs",
+                    transport="http",
+                    tools=(
+                        MCPToolInfo(name="search_docs", description="Search docs"),
+                        MCPToolInfo(name="fetch_docs", description="Fetch docs"),
+                    ),
+                    status="ok",
+                ),
+                MCPServerInfo(
+                    name="[i]github",
+                    transport="http",
+                    tools=(MCPToolInfo(name="list_issues", description="List issues"),),
+                    status="ok",
+                ),
+            ],
+        )
+        rendered = self._display(DeepAgentsApp._render_tool_catalog(catalog))
+        assert "4 tools available" in rendered
+        assert "docs (2)" in rendered
+        assert "[i]github (1)" in rendered
+        assert "Built-in (1)" not in rendered
 
     def test_render_escapes_markup(self) -> None:
         from deepagents_code.mcp_tools import MCPServerInfo, MCPToolInfo
@@ -17005,6 +17162,53 @@ class TestDispatchModelSwitch:
                     await drain
 
 
+class TestExplicitStartupModel:
+    async def test_first_launch_opens_picker_and_waits_for_selection(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from deepagents_code.tui.widgets.model_selector import ModelSelectorScreen
+
+        app = DeepAgentsApp(server_kwargs={"model_name": None}, defer_server_start=True)
+        start = AsyncMock()
+        monkeypatch.setattr(app, "_start_server_background", start)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert isinstance(app.screen, ModelSelectorScreen)
+            assert app._server_startup_deferred is True
+            start.assert_not_awaited()
+            await pilot.press("escape")
+            await pilot.pause()
+            assert not isinstance(app.screen, ModelSelectorScreen)
+            assert app._server_startup_deferred is True
+            start.assert_not_awaited()
+
+    @pytest.mark.parametrize("saved_model", [None, "openai:chosen"])
+    async def test_auth_does_not_choose_model(
+        self, monkeypatch: pytest.MonkeyPatch, saved_model: str | None
+    ) -> None:
+        from deepagents_code.model_config import ModelConfig
+
+        monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+        monkeypatch.setattr(
+            ModelConfig,
+            "load",
+            classmethod(lambda _cls: ModelConfig(recent_model=saved_model)),
+        )
+        app = DeepAgentsApp(server_kwargs={"model_name": None}, defer_server_start=True)
+        retry = AsyncMock()
+        monkeypatch.setattr(app, "_retry_startup_with_model", retry)
+
+        await app._resume_server_after_auth_change()
+
+        if saved_model:
+            retry.assert_awaited_once_with(saved_model)
+        else:
+            retry.assert_not_awaited()
+            assert app._server_kwargs is not None
+            assert app._server_kwargs["model_name"] is None
+            assert app._server_startup_deferred is True
+
+
 class TestDeferredActions:
     """Test deferred action queueing and draining."""
 
@@ -17446,6 +17650,37 @@ class TestDeferredActions:
             for h in added:
                 h.close()
                 package_logger.removeHandler(h)
+
+    async def test_missing_credentials_explains_in_app_recovery(self) -> None:
+        """Credential failures explain setup and automatic retry, not a crash."""
+        from deepagents_code.model_config import MissingCredentialsError
+        from deepagents_code.tui.widgets.messages import ErrorMessage
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._server_kwargs = {"model_name": "anthropic:fake"}
+            app._connecting = True
+            app.on_deep_agents_app_server_start_failed(
+                DeepAgentsApp.ServerStartFailed(
+                    error=MissingCredentialsError(
+                        "Please set ANTHROPIC_API_KEY.",
+                        provider="anthropic",
+                        env_var="ANTHROPIC_API_KEY",
+                    )
+                )
+            )
+            await pilot.pause()
+
+            widget = app._startup_failure_widget
+            assert isinstance(widget, ErrorMessage)
+            text = str(widget._content)
+            assert "Model setup required: Please set ANTHROPIC_API_KEY." in text
+            assert "Server failed to start" not in text
+            assert "`/auth`" in text
+            assert "retry automatically" in text
+            assert "`/model`" in text
+            assert not app._connecting
 
     async def test_server_failure_missing_package_records_recovery_hint(
         self,
@@ -21892,6 +22127,125 @@ class _FailingApprovalModeWriter:
 class TestLiveApprovalModeWrites:
     """Verify live approval-mode write and toggle failure behavior."""
 
+    @pytest.mark.parametrize("distinct", [False, True])
+    async def test_auto_validates_effective_reviewer_before_activation(
+        self, distinct: bool, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from deepagents_code.approval_mode import ApprovalMode
+        from deepagents_code.model_metadata import ModelMetadata
+
+        app = DeepAgentsApp()
+        app._model_override = "openai:main-model"
+        app._auto_classifier_model = "openai:reviewer" if distinct else None
+        resolver = AsyncMock(return_value=ModelMetadata("reviewer", "openai"))
+        monkeypatch.setattr(app, "_remote_agent", lambda: object())
+        monkeypatch.setattr(app, "_resolve_auxiliary_model", resolver)
+        with (
+            patch.object(app, "_notify_auto_classifier_active"),
+            patch(
+                "deepagents_code.model_config.save_recent_startup_mode",
+                return_value=True,
+            ),
+        ):
+            assert await app._set_approval_mode(ApprovalMode.AUTO)
+
+        assert app._approval_mode is ApprovalMode.AUTO
+        resolver.assert_awaited_once_with(
+            "openai:reviewer" if distinct else "openai:main-model"
+        )
+
+    @pytest.mark.parametrize("entry", ["toggle", "command", "inline", "direct"])
+    @pytest.mark.parametrize("remote", [False, True])
+    async def test_auto_rejects_unresolvable_classifier(
+        self, entry: str, remote: bool, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from deepagents_code.approval_mode import ApprovalMode
+
+        app = DeepAgentsApp()
+        app._auto_classifier_model = "openai:unavailable-reviewer"
+        app._session_state = TextualSessionState(thread_id="thread-1")
+        resolver = AsyncMock(side_effect=ValueError("Missing OPENAI_API_KEY"))
+        monkeypatch.setattr(app, "_remote_agent", lambda: object() if remote else None)
+        monkeypatch.setattr(app, "_resolve_auxiliary_model", resolver)
+        constructor = MagicMock(side_effect=ValueError("Missing OPENAI_API_KEY"))
+        monkeypatch.setattr("deepagents_code.config.create_model", constructor)
+        write = AsyncMock(return_value=True)
+        monkeypatch.setattr(app, "_write_live_approval_mode", write)
+        with (
+            patch.object(app, "_warn_live_approval_mode_unavailable") as warn,
+            patch.object(app, "_prompt_auto_mode_confirmation") as prompt,
+            patch(
+                "deepagents_code.approval_mode.has_auto_mode_notice", return_value=False
+            ),
+            patch("deepagents_code.model_config.save_recent_startup_mode") as save,
+            patch(
+                "deepagents_code.config.is_yolo_switcher_enabled", return_value=False
+            ),
+        ):
+            if entry == "toggle":
+                async with app.run_test() as pilot:
+                    await pilot.press("shift+tab")
+            elif entry == "command":
+                await app._handle_approval_mode_command(ApprovalMode.AUTO)
+            elif entry == "inline":
+                assert not await app._on_auto_approve_enabled()
+            else:
+                assert not await app._set_approval_mode(ApprovalMode.AUTO)
+
+        assert app._approval_mode is ApprovalMode.MANUAL
+        assert app._session_state.approval_mode is ApprovalMode.MANUAL
+        write.assert_not_awaited()
+        save.assert_not_called()
+        prompt.assert_not_called()
+        assert "Missing OPENAI_API_KEY" in warn.call_args.args[0]
+        assert "Approval mode unchanged" in warn.call_args.args[0]
+        if remote:
+            resolver.assert_awaited_once_with("openai:unavailable-reviewer")
+            constructor.assert_not_called()
+        else:
+            constructor.assert_called_once_with(
+                "openai:unavailable-reviewer", bind_preserved_thinking=False
+            )
+
+    @pytest.mark.parametrize("notice_shown", [False, True])
+    @pytest.mark.parametrize("acknowledged", [False, True])
+    async def test_toggle_skips_unavailable_auto_to_yolo(
+        self, notice_shown: bool, acknowledged: bool, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from deepagents_code.approval_mode import ApprovalMode
+        from deepagents_code.tui.widgets.yolo_mode_notice import YoloModeNoticeScreen
+
+        app = DeepAgentsApp()
+        app._auto_classifier_model = "openai:unavailable-reviewer"
+        monkeypatch.setattr(
+            "deepagents_code.config.create_model",
+            MagicMock(side_effect=ValueError("Missing OPENAI_API_KEY")),
+        )
+        monkeypatch.setattr(
+            "deepagents_code.config.is_yolo_switcher_enabled", lambda: True
+        )
+        monkeypatch.setattr(
+            "deepagents_code.approval_mode.has_auto_mode_notice", lambda: notice_shown
+        )
+        monkeypatch.setattr(
+            "deepagents_code.approval_mode.has_yolo_acknowledgement",
+            lambda: acknowledged,
+        )
+        save_ack = MagicMock(return_value=True)
+        monkeypatch.setattr(
+            "deepagents_code.approval_mode.save_yolo_acknowledgement", save_ack
+        )
+        async with app.run_test() as pilot:
+            await pilot.press("shift+tab")
+            if not acknowledged:
+                assert app._approval_mode is ApprovalMode.MANUAL
+                assert isinstance(app.screen, YoloModeNoticeScreen)
+                await pilot.press("enter")
+                save_ack.assert_called_once_with()
+            assert app._approval_mode is ApprovalMode.YOLO
+            await pilot.press("shift+tab")
+            assert app._approval_mode is ApprovalMode.MANUAL
+
     def test_auto_startup_enabled_without_sandbox(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -22241,9 +22595,10 @@ class TestLiveApprovalModeWrites:
         assert notify.call_args.kwargs["severity"] == "warning"
 
     async def test_toggle_auto_first_enable_shows_modal_and_saves_on_dismiss(
-        self,
+        self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """First Auto toggle shows the confirmation modal before switching."""
+        monkeypatch.setattr("deepagents_code.config.create_model", MagicMock())
         from deepagents_code.approval_mode import ApprovalMode
         from deepagents_code.tui.widgets.auto_mode_notice import (
             AutoModeNoticeScreen,
@@ -22769,7 +23124,10 @@ class TestLiveApprovalModeWrites:
                 app._prompt_yolo_switcher_acknowledgement()
                 push.assert_not_called()
 
-    async def test_on_auto_approve_enabled_first_modal_and_save(self) -> None:
+    async def test_on_auto_approve_enabled_first_modal_and_save(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr("deepagents_code.config.create_model", MagicMock())
         from deepagents_code.approval_mode import ApprovalMode
         from deepagents_code.tui.widgets.auto_mode_notice import (
             AutoModeNoticeScreen,
@@ -25940,7 +26298,7 @@ class TestRespawnServer:
             monkeypatch.setattr(
                 app,
                 "_discover_plugins_with_fingerprints",
-                lambda: (SimpleNamespace(plugins=[], warnings=[]), {}),
+                lambda: (SimpleNamespace(plugins=[], warnings=[], broken=()), {}),
             )
             monkeypatch.setattr(app, "_restart_server_manual_result", restart_manual)
             monkeypatch.setattr(
@@ -26115,7 +26473,7 @@ class TestRespawnServer:
             monkeypatch.setattr(
                 app,
                 "_discover_plugins_with_fingerprints",
-                lambda: (SimpleNamespace(plugins=[], warnings=[]), {}),
+                lambda: (SimpleNamespace(plugins=[], warnings=[], broken=()), {}),
             )
             monkeypatch.setattr(app, "_restart_server_manual_result", restart_manual)
             monkeypatch.setattr(
@@ -30360,6 +30718,182 @@ class TestToolGroupCollapse:
             rendered = summaries[0].render()
             assert isinstance(rendered, Content)
             assert "Ran 1 shell command, read 1 file" in rendered.plain
+
+
+class TestLiveToolGroupCompaction:
+    """Settled live tool groups become lazy `TOOL_GROUP` rows."""
+
+    @staticmethod
+    def _app(thread_id: str) -> DeepAgentsApp:
+        app = DeepAgentsApp(agent=MagicMock(), thread_id=thread_id)
+        app._load_thread_history = AsyncMock()  # ty: ignore
+        return app
+
+    @staticmethod
+    async def _run_step(
+        app: DeepAgentsApp, count: int, *, prefix: str = "t"
+    ) -> list[ToolCallMessage]:
+        """Mount `count` tools into one live group and finish each one."""
+        tools: list[ToolCallMessage] = []
+        for i in range(count):
+            tool = ToolCallMessage(
+                "read_file", {"file_path": f"{i}.py"}, id=f"{prefix}{i}"
+            )
+            await app._mount_message(tool)
+            tool.set_success(f"line {i}\n" * 200)
+            app._sync_tool_message_state(tool)
+            tools.append(tool)
+        return tools
+
+    @staticmethod
+    def _state(tool: ToolCallMessage) -> tuple[Any, ...]:
+        return (tool.id, tool.tool_name, tool.args, tool._output, tool._expanded)
+
+    async def test_turn_end_compaction_keeps_tool_details(self) -> None:
+        """A compacted group expands to the same rows the live group held."""
+        from deepagents_code.tui.widgets.messages import ToolGroupSummary
+
+        app = self._app("t-compact-details")
+        app._message_timestamps_visible = True
+        async with app.run_test() as pilot:
+            messages = app.query_one("#messages", Container)
+            await messages.remove_children()
+            await app._mount_message(UserMessage("go", id="prompt"))
+            tools = await self._run_step(app, 3)
+            tools[1].toggle_output()
+            expected = [self._state(tool) for tool in tools]
+            app._close_active_tool_group()
+            await pilot.pause()
+
+            await app._compact_finished_tool_groups()
+            await pilot.pause()
+
+            assert not app.query(ToolGroupSummary)
+            assert not messages.query_children(ToolCallMessage)
+            assert not app.query("#t0-timestamp-footer")
+            store = app._message_store
+            rows = store.get_visible_messages()
+            assert [row.type for row in rows] == [
+                MessageType.USER,
+                MessageType.TOOL_GROUP,
+            ]
+            assert not app.query(f"#{rows[1].id}-timestamp-footer")
+            summary = app.query_one(f"#{rows[1].id}", LazyToolGroupSummary)
+            await summary._set_expanded(True)
+            details = list(summary.query(ToolCallMessage))
+            assert [self._state(tool) for tool in details] == expected
+
+    async def test_compaction_preserves_transcript_height(self) -> None:
+        """The folded row takes the run's measured height, so spacers hold."""
+        app = self._app("t-compact-height")
+        async with app.run_test() as pilot:
+            messages = app.query_one("#messages", Container)
+            await messages.remove_children()
+            await app._mount_message(UserMessage("go", id="prompt"))
+            await self._run_step(app, 4)
+            await app._mount_message(AssistantMessage("done", id="answer"))
+            await pilot.pause()
+            store = app._message_store
+            # The summary line's rows are booked on the run's first tool.
+            store.set_height_hint("t0", 2)
+            before = store.range_height(0, store.total_count)
+
+            await app._compact_finished_tool_groups()
+
+            assert store.total_count == 3
+            assert store.get_visible_range() == (0, 3)
+            assert store.range_height(0, store.total_count) == before
+
+    async def test_step_boundary_compacts_only_older_groups(self) -> None:
+        """The group a boundary closes waits for a later boundary."""
+        from deepagents_code.tui.widgets.messages import ToolGroupSummary
+
+        app = self._app("t-compact-steps")
+        async with app.run_test() as pilot:
+            messages = app.query_one("#messages", Container)
+            await messages.remove_children()
+            await self._run_step(app, 2, prefix="a")
+            await app._mount_message(AssistantMessage("step two"))
+            assert len(app.query(ToolGroupSummary)) == 1
+
+            await self._run_step(app, 2, prefix="b")
+            await app._mount_message(AssistantMessage("step three"))
+            await pilot.pause()
+
+            assert len(app.query(LazyToolGroupSummary)) == 1
+            assert len(app.query(ToolGroupSummary)) == 1
+            assert app.query_one("#b0", ToolCallMessage).has_class("-grouped")
+
+    async def test_unsettled_groups_stay_live(self) -> None:
+        """Open groups and groups with a running tool are not compacted."""
+        from deepagents_code.tui.widgets.messages import ToolGroupSummary
+
+        app = self._app("t-compact-live")
+        async with app.run_test():
+            messages = app.query_one("#messages", Container)
+            await messages.remove_children()
+            running = ToolCallMessage("execute", {"command": "sleep 9"}, id="run")
+            await app._mount_message(running)
+            running.set_running()
+            app._sync_tool_message_state(running)
+            app._close_active_tool_group()
+            await self._run_step(app, 1, prefix="open")
+            assert app._active_tool_group is not None
+
+            await app._compact_finished_tool_groups()
+
+            assert len(app.query(ToolGroupSummary)) == 2
+            assert not app.query(LazyToolGroupSummary)
+            assert app._message_store.get_message("run") is not None
+            assert app._message_store.get_message("open0") is not None
+
+    async def test_ctrl_o_toggles_compacted_group(self) -> None:
+        """Ctrl+O reaches the lazy row that replaced the live group."""
+        app = self._app("t-compact-ctrl-o")
+        async with app.run_test() as pilot:
+            messages = app.query_one("#messages", Container)
+            await messages.remove_children()
+            await self._run_step(app, 2)
+            app._close_active_tool_group()
+            await app._compact_finished_tool_groups()
+            await pilot.pause()
+
+            await pilot.press("ctrl+o")
+            await pilot.pause()
+
+            summary = app.query_one(LazyToolGroupSummary)
+            assert summary._expanded is True
+            assert len(summary.query(ToolCallMessage)) == 2
+
+    async def test_partly_archived_group_compacts_in_store_only(self) -> None:
+        """A run with archived rows folds in the store and leaves the DOM."""
+        from deepagents_code.tui.widgets.messages import ToolGroupSummary
+
+        app = self._app("t-compact-archived")
+        async with app.run_test() as pilot:
+            messages = app.query_one("#messages", Container)
+            await messages.remove_children()
+            await app._mount_message(UserMessage("go", id="prompt"))
+            await self._run_step(app, 3)
+            await app._mount_message(AssistantMessage("done", id="answer"))
+            await pilot.pause()
+            assert await app._prune_messages("above", count=2) == 2
+
+            await app._compact_finished_tool_groups()
+            await pilot.pause()
+
+            assert not app.query(ToolGroupSummary)
+            assert not messages.query_children(ToolCallMessage)
+            store = app._message_store
+            assert [row.id for row in store.get_visible_messages()] == ["answer"]
+            archived = store.get_messages_to_hydrate(5)
+            assert [row.type for row in archived] == [
+                MessageType.USER,
+                MessageType.TOOL_GROUP,
+            ]
+            assert await app._hydrate_messages("above", count=1) == 1
+            await pilot.pause()
+            assert app.query_one(f"#{archived[1].id}", LazyToolGroupSummary)
 
 
 class TestUnsavedGoalContinuation:

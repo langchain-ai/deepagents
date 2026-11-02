@@ -94,7 +94,7 @@ class TestQuickJSLatencyBenchmarks:
             result = loop.run_until_complete(
                 agent.ainvoke(invoke_payload(), config=_config("ptc-bench"))
             )
-            assert "100" in eval_tool_message(result).content
+            assert eval_tool_message(result).content == "<result>100</result>"
 
         benchmark.pedantic(run, setup=setup, rounds=10, warmup_rounds=1)
         benchmark.extra_info["workload"] = "ainvoke_100_serial_ptc_calls"

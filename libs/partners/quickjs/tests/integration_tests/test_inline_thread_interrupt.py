@@ -4,8 +4,10 @@ Durable-execution hosts such as Temporal treat a workflow thread that does not
 yield within a deadline (2s by default) as deadlocked and inject an exception
 into it with `PyThreadState_SetAsyncExc`. With `execution="inline"` that thread
 is running the QuickJS guest, so the exception lands inside a wasmtime host
-callback. The scenario runs in a subprocess because the failure mode is a
-process crash.
+callback and crashes the process. The inline default timeout ends the eval
+before such a deadline, so the interrupt arrives after the eval has finished;
+an explicit timeout past the deadline still crashes. The scenario runs in a
+subprocess because the failure mode is a process crash.
 """
 
 from __future__ import annotations
@@ -47,7 +49,9 @@ _SCENARIO = textwrap.dedent(
     thread = threading.Thread(target=workflow)
     thread.start()
     eval_started.wait(10)
-    time.sleep(2.0)  # the host's deadlock timeout, measured from the busy eval
+    # The host's 2s deadlock timeout, measured from the busy eval. Relies on the
+    # inline default timeout plus teardown staying well under 2s.
+    time.sleep(2.0)
     ctypes.pythonapi.PyThreadState_SetAsyncExc(
         ctypes.c_ulong(thread.ident), ctypes.py_object(HostInterrupt)
     )
@@ -57,7 +61,7 @@ _SCENARIO = textwrap.dedent(
 )
 
 
-def test_default_inline_eval_survives_a_host_thread_interrupt() -> None:
+def test_default_inline_eval_finishes_before_a_2s_host_interrupt() -> None:
     result = subprocess.run(  # noqa: S603 — fixed interpreter and inline script
         [sys.executable, "-c", _SCENARIO],
         capture_output=True,

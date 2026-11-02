@@ -67,6 +67,7 @@ _DEFAULT_TIMEOUT = 5.0
 # after a deadline (durable-execution deadlock detectors often use 2s) crash
 # the process if the interrupt lands mid-eval, so the inline default stays below.
 _INLINE_DEFAULT_TIMEOUT = 1.5
+# Advisory threshold for the inline warning; hosts may use a shorter deadline.
 _HOST_THREAD_DEADLINE = 2.0
 _DEFAULT_MAX_PTC_CALLS = 256
 _DEFAULT_MAX_RESULT_CHARS = 4_000
@@ -120,6 +121,9 @@ def _resolve_mode(
 class _Unset(Enum):
     TOKEN = 0
 
+    def __repr__(self) -> str:
+        return "<default>"
+
 
 _UNSET = _Unset.TOKEN
 
@@ -134,15 +138,25 @@ def _resolve_timeout(
         msg = "`timeout` must be > 0 or None"
         raise ValueError(msg)
     if execution == "inline" and (timeout is None or timeout >= _HOST_THREAD_DEADLINE):
-        logger.warning(
-            'CodeInterpreterMiddleware(execution="inline", timeout=%s): an eval '
-            "blocks the caller's event loop until it ends, and hosts that "
-            "interrupt busy threads after a deadline (for example a 2s deadlock "
-            "detector) can crash the process mid-eval. Keep `timeout` below "
-            "the host's deadline.",
-            timeout,
-        )
+        _warn_inline_timeout(timeout)
     return timeout
+
+
+def _warn_inline_timeout(timeout: float | None) -> None:
+    """Warn that an inline eval can outlast a host's busy-thread deadline."""
+    runaway = (
+        "nothing in-process stops a runaway eval"
+        if timeout is None
+        else f"an eval can run {timeout}s"
+    )
+    logger.warning(
+        'CodeInterpreterMiddleware(execution="inline", timeout=%s): %s, '
+        "blocking the caller's event loop, and hosts that interrupt busy threads "
+        "after a deadline (for example a 2s deadlock detector) can crash the "
+        "process mid-eval. Keep `timeout` below the host's deadline.",
+        timeout,
+        runaway,
+    )
 
 
 def _resolve_execution(*, execution: str) -> ExecutionMode:
@@ -309,9 +323,11 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
             !!! warning
 
                 Some hosts interrupt a thread that stays busy past a deadline,
-                such as a 2s durable-execution deadlock detector. Inline, that interrupt
-                can land inside the QuickJS guest and crash the process, so
-                keep `timeout` below the host's deadline.
+                such as a 2s durable-execution deadlock detector. Inline, that
+                interrupt can land inside the QuickJS guest and crash the
+                process, so keep `timeout` below the host's deadline. The
+                deadline covers all work between yields to the host, so several
+                evals in one step add up.
 
     Example:
         ```python

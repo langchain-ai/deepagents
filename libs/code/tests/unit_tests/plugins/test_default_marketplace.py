@@ -77,9 +77,11 @@ def test_browsing_fetches_only_missing_catalog(monkeypatch: pytest.MonkeyPatch) 
 def test_browsing_does_not_wait_for_another_mutation(cached: bool) -> None:
     if cached:
         assert not _load_manager_state().errors
-    with ThreadPoolExecutor(max_workers=1) as executor, plugin_mutation_lock():
-        future = executor.submit(_load_manager_state)
-        state = future.result(timeout=2)
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        lock = plugin_mutation_lock()
+        with lock:
+            future = executor.submit(_load_manager_state)
+            state = future.result(timeout=2)
     if cached:
         assert not state.errors
         assert state.available_plugins[0].plugin_id == "docs@langchain-plugins"

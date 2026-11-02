@@ -5,6 +5,7 @@ import contextlib
 import logging
 import uuid
 from collections.abc import Awaitable, Callable, Mapping
+from enum import Enum
 from typing import TYPE_CHECKING, Annotated, Any, Literal, NotRequired
 
 from deepagents.middleware._utils import append_to_system_message
@@ -62,6 +63,11 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_MEMORY_LIMIT = 64 * 1024 * 1024
 _DEFAULT_TIMEOUT = 5.0
+# Inline evals run on the caller's thread. Hosts that interrupt a busy thread
+# after a deadline (durable-execution deadlock detectors often use 2s) crash
+# the process if the interrupt lands mid-eval, so the inline default stays below.
+_INLINE_DEFAULT_TIMEOUT = 1.5
+_HOST_THREAD_DEADLINE = 2.0
 _DEFAULT_MAX_PTC_CALLS = 256
 _DEFAULT_MAX_RESULT_CHARS = 4_000
 _DEFAULT_TOOL_NAME = "eval"
@@ -111,6 +117,34 @@ def _resolve_mode(
             raise ValueError(msg)
 
 
+class _Unset(Enum):
+    TOKEN = 0
+
+
+_UNSET = _Unset.TOKEN
+
+
+def _resolve_timeout(
+    timeout: float | None | _Unset, execution: ExecutionMode
+) -> float | None:
+    """Validate `timeout`, defaulting it by execution mode when not passed."""
+    if timeout is _UNSET:
+        return _INLINE_DEFAULT_TIMEOUT if execution == "inline" else _DEFAULT_TIMEOUT
+    if timeout is not None and not timeout > 0:
+        msg = "`timeout` must be > 0 or None"
+        raise ValueError(msg)
+    if execution == "inline" and (timeout is None or timeout >= _HOST_THREAD_DEADLINE):
+        logger.warning(
+            'CodeInterpreterMiddleware(execution="inline", timeout=%s): an eval '
+            "blocks the caller's event loop until it ends, and hosts that "
+            "interrupt busy threads after a deadline (for example a 2s deadlock "
+            "detector) can crash the process mid-eval. Keep `timeout` below "
+            "the host's deadline.",
+            timeout,
+        )
+    return timeout
+
+
 def _resolve_execution(*, execution: str) -> ExecutionMode:
     """Validate where a slot's REPL work runs."""
     match execution:
@@ -154,7 +188,8 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         memory_limit: Bytes the QuickJS heap may use. Shared across all
             contexts under the same Runtime. Default 64 MiB.
         timeout: Per-call timeout in seconds. Applied to every
-            `eval` on every context. `None` disables the deadline. Default 5.
+            `eval` on every context. `None` disables the deadline. Default 5,
+            or 1.5 with `execution="inline"`.
 
             !!! warning
 
@@ -271,6 +306,13 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
                 `eval` blocks all of them. Combined with `timeout=None`, only
                 an external limit can stop it.
 
+            !!! warning
+
+                Some hosts interrupt a thread that stays busy past a deadline,
+                such as a 2s durable-execution deadlock detector. Inline, that interrupt
+                can land inside the QuickJS guest and crash the process, so
+                keep `timeout` below the host's deadline.
+
     Example:
         ```python
         from deepagents import create_deep_agent
@@ -291,7 +333,7 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         self,
         *,
         memory_limit: int = _DEFAULT_MEMORY_LIMIT,
-        timeout: float | None = _DEFAULT_TIMEOUT,
+        timeout: float | None | _Unset = _UNSET,
         max_ptc_calls: int | None = _DEFAULT_MAX_PTC_CALLS,
         tool_name: str = _DEFAULT_TOOL_NAME,
         max_result_chars: int = _DEFAULT_MAX_RESULT_CHARS,
@@ -306,9 +348,8 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
     ) -> None:
         """Initialize REPL middleware state and build the exposed eval tool."""
         super().__init__()
-        if timeout is not None and not timeout > 0:
-            msg = "`timeout` must be > 0 or None"
-            raise ValueError(msg)
+        self._execution = _resolve_execution(execution=execution)
+        timeout = _resolve_timeout(timeout, self._execution)
         if max_ptc_calls is not None and max_ptc_calls < 1:
             msg = "`max_ptc_calls` must be >= 1 or None"
             raise ValueError(msg)
@@ -328,13 +369,6 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         self._max_subagent_concurrency = max_subagent_concurrency
         self._ptc = ptc
         self._mode = _resolve_mode(mode=mode)
-        self._execution = _resolve_execution(execution=execution)
-        if self._execution == "inline" and timeout is None:
-            logger.warning(
-                'CodeInterpreterMiddleware(execution="inline", timeout=None): a '
-                "runaway eval blocks the caller's event loop indefinitely; only "
-                "an external limit such as a process kill can stop it."
-            )
         self._max_snapshot_bytes = (
             memory_limit if max_snapshot_bytes is None else max_snapshot_bytes
         )

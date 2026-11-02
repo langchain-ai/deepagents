@@ -114,9 +114,15 @@ def test_rejects_invalid_execution() -> None:
 
 @pytest.mark.parametrize(
     ("execution", "timeout", "warned"),
-    [("inline", None, True), ("inline", 5.0, False), ("worker", None, False)],
+    [
+        ("inline", None, True),
+        ("inline", 5.0, True),
+        ("inline", 1.0, False),
+        ("worker", None, False),
+        ("worker", 5.0, False),
+    ],
 )
-def test_warns_only_for_inline_without_timeout(
+def test_warns_for_inline_timeouts_past_a_host_deadline(
     caplog: pytest.LogCaptureFixture,
     execution: ExecutionMode,
     timeout: float | None,
@@ -126,6 +132,17 @@ def test_warns_only_for_inline_without_timeout(
     with caplog.at_level("WARNING", logger="langchain_quickjs.middleware"):
         CodeInterpreterMiddleware(execution=execution, timeout=timeout)
     assert ("blocks the caller's event loop" in caplog.text) is warned
+
+
+@pytest.mark.parametrize(("execution", "seconds"), [("inline", 1.5), ("worker", 5.0)])
+def test_default_timeout_depends_on_execution(
+    caplog: pytest.LogCaptureFixture, execution: ExecutionMode, seconds: float
+) -> None:
+    with caplog.at_level("WARNING", logger="langchain_quickjs.middleware"):
+        middleware = CodeInterpreterMiddleware(execution=execution)
+    prompt = middleware._base_prompt(ptc_attached=False)
+    assert f"Timeout: {seconds}s per call." in prompt
+    assert "blocks the caller's event loop" not in caplog.text
 
 
 def test_evict_closes_the_private_loop() -> None:

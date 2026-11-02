@@ -10,7 +10,7 @@ a real compiled graph.
 Also covers HMAC signing of persisted snapshots (advisory AT-5b): the pure
 helpers (``normalize_signing_key``, ``sign_snapshot``, ``verify_snapshot``) and
 the middleware policy that signs the completed materialized snapshot in
-``after_agent`` before it is delta-encoded onto the ``bsdiff`` patch chain, then
+``after_agent`` before it is delta-encoded onto the patch chain, then
 verifies it in ``before_agent`` before restore. A snapshot whose signature is
 missing, wrong, tampered, or bound to a different thread must be rejected
 instead of executed.
@@ -18,6 +18,7 @@ instead of executed.
 
 from __future__ import annotations
 
+import random
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -31,7 +32,9 @@ from pydantic import Field
 
 from langchain_quickjs import CodeInterpreterMiddleware
 from langchain_quickjs._snapshot import (
+    _diff_pages,
     coerce_record,
+    encode_snapshot,
     normalize_signing_key,
     replay_snapshot_chain,
     sign_snapshot,
@@ -39,6 +42,8 @@ from langchain_quickjs._snapshot import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from langchain_core.messages import BaseMessage
     from langchain_core.outputs import ChatResult
 
@@ -252,10 +257,7 @@ def _build_chain(snapshots: list[bytes]) -> list[tuple[str, bytes]]:
     records: list[tuple[str, bytes]] = []
     prior = b""
     for snap in snapshots:
-        if not prior:
-            records.append(("snap", snap))
-        else:
-            records.append(("patch", bsdiff4.diff(prior, snap)))
+        records.append(encode_snapshot(snap, prior))
         prior = snap
     return records
 
@@ -265,6 +267,36 @@ def test_replay_chain_reconstructs_latest_snapshot() -> None:
     snaps = _make_snapshots()
     chain = _build_chain(snaps)
     assert replay_snapshot_chain(b"", chain) == snaps[-1]
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        lambda s: s + b"grown-tail" * 50,
+        lambda s: s[: len(s) // 3],
+        lambda s: s[:5000] + b"!" + s[5000:],
+        lambda s: s[:7],
+        lambda _: b"",
+    ],
+    ids=["grows", "shrinks", "shifts", "under-one-page", "empty"],
+)
+def test_page_record_rebuilds_snapshot_that_changes_size(
+    change: Callable[[bytes], bytes],
+) -> None:
+    """A snapshot that grows, shrinks, or shifts still replays byte for byte."""
+    prior = random.Random(0).randbytes(16_385)  # noqa: S311  # seeded test fixture, not crypto
+    payload = change(prior)
+    record = ("pages", _diff_pages(prior, payload))
+    assert replay_snapshot_chain(prior, [record]) == payload
+
+
+def test_replay_chain_still_applies_bsdiff_records() -> None:
+    """Chains checkpointed with `bsdiff` patches, then page records, replay."""
+    snaps = _make_snapshots()
+    legacy = [("snap", snaps[0]), ("patch", bsdiff4.diff(snaps[0], snaps[1]))]
+    assert replay_snapshot_chain(b"", legacy) == snaps[1]
+    mixed = [*legacy, ("pages", _diff_pages(snaps[1], snaps[2]))]
+    assert replay_snapshot_chain(b"", mixed) == snaps[2]
 
 
 def test_replay_chain_is_associative() -> None:
@@ -357,12 +389,13 @@ def test_snapshot_update_subsequent_write_is_patch() -> None:
     try:
         snaps = _make_snapshots()
         update = mw._snapshot_update(payload=snaps[1], prior=snaps[0], slot_id="t")
-        kind, blob = update["_quickjs_snapshot_payload"]
+        record = update["_quickjs_snapshot_payload"]
+        kind, blob = record
         assert kind == "patch"
         # The patch is dramatically smaller than the full snapshot.
         assert len(blob) < len(snaps[1])
         # And it reconstructs the new snapshot exactly.
-        assert bsdiff4.patch(snaps[0], blob) == snaps[1]
+        assert replay_snapshot_chain(snaps[0], [record]) == snaps[1]
     finally:
         mw._registry.close()
 

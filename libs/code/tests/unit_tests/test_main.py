@@ -572,7 +572,8 @@ class TestStartupAutoUpdate:
         upgrade.assert_not_called()
         mark_failed.assert_not_called()
         printed = " ".join(str(c.args[0]) for c in console.print.call_args_list)
-        assert "requires migrating dcode to Python 3.14" in printed
+        assert "v9.9.9 needs a Python update. Nothing was installed." in printed
+        assert "Quit every dcode session" in printed
         assert "Continuing with v" in printed
         assert "Updating dcode" not in printed
         assert "did not complete" not in printed

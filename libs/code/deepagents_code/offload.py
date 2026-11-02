@@ -392,13 +392,16 @@ def _sweep_offloaded_history(retention_days: int) -> int:
 def sweep_offloaded_history() -> int:
     """Delete conversation-history archives older than the configured retention.
 
+    Skipped entirely under the `retrieve` compaction strategy, where an archive
+    is the agent's only route back to its evicted context.
+
     Returns:
         The number of archive files deleted. Failures return zero or omit the
         affected file from the count rather than raising.
     """
     try:
         retention_days = _history_retention_days()
-        if retention_days == 0:
+        if retention_days == 0 or resolve_compaction_strategy() == "retrieve":
             return 0
         return _sweep_offloaded_history(retention_days)
     except Exception:

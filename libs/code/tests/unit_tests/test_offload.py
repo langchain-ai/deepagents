@@ -924,6 +924,7 @@ class TestSweepOffloadedHistory:
             lambda **_: {},
         )
         monkeypatch.delenv("DEEPAGENTS_CODE_HISTORY_RETENTION_DAYS", raising=False)
+        monkeypatch.delenv("DEEPAGENTS_CODE_COMPACTION_STRATEGY", raising=False)
         return archive_dir
 
     def test_deletes_old_file_and_keeps_fresh_file(
@@ -991,6 +992,21 @@ class TestSweepOffloadedHistory:
         monkeypatch.delenv("DEEPAGENTS_CODE_HISTORY_RETENTION_DAYS", raising=False)
 
         assert sweep_offloaded_history() == 0
+
+    def test_retrieve_strategy_disables_sweep(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Retrieval archives are never swept, however old."""
+        archive_dir = self._setup(
+            tmp_path, monkeypatch, '[history]\ncompaction_strategy = "retrieve"\n'
+        )
+        archive = archive_dir / "old.md"
+        archive.write_text("old")
+        old_time = time.time() - 365 * 86_400
+        os.utime(archive, (old_time, old_time))
+
+        assert sweep_offloaded_history() == 0
+        assert archive.exists()
 
     def test_zero_retention_disables_sweep(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

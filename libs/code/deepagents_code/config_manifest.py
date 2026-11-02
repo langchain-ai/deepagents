@@ -2963,7 +2963,8 @@ _STATIC_OPTIONS: tuple[ConfigOption[object], ...] = (
         summary=(
             "How compaction replaces evicted history: 'summarize' writes a model "
             "summary, 'retrieve' skips the summary and points the agent at the "
-            "saved transcript to search as needed (experimental)."
+            "saved transcript to search as needed and disables the "
+            "history.retention_days sweep (experimental)."
         ),
         kind=OptionKind.STR,
         default="summarize",

@@ -4672,6 +4672,17 @@ class TestCodexProviderMirror:
         if available:
             assert profiles[f"openai_codex:{model}"] == profiles[f"openai:{model}"]
 
+    def test_default_classifier_is_discoverable(self) -> None:
+        """The subscription Auto classifier has a supported model profile."""
+        from deepagents_code.config import default_auto_classifier_model
+
+        clear_caches()
+        classifier = default_auto_classifier_model("openai_codex")
+        assert classifier is not None
+        provider, model = classifier.split(":", 1)
+        assert model in get_available_models()[provider]
+        assert classifier in get_model_profiles()
+
     def test_profiles_mirror_codex_allowlist_under_codex(self) -> None:
         model_config.clear_caches()
         profiles = model_config.get_model_profiles()

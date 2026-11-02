@@ -1053,6 +1053,34 @@ def test_render_ptc_prompt_prefixes_conflicting_type_names() -> None:
     )
 
 
+def test_render_ptc_prompt_renders_json_schema_dict_args() -> None:
+    """A raw JSON Schema `args_schema`, as MCP tools carry, renders its fields."""
+    tool = StructuredTool(
+        name="search_issues",
+        description="Search issues.",
+        args_schema={
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Search text"},
+                "limit": {"type": ["integer", "null"]},
+                "labels": {"type": "array", "items": {"type": "string"}},
+                "extra": True,
+            },
+            "required": ["query"],
+        },
+        func=_stub,
+    )
+    prompt = render_ptc_prompt([tool])
+    assert (
+        "tools.searchIssues(input: {\n"
+        "  /**\n *Search text\n */ query: string;\n"
+        "  limit?: number | null;\n"
+        "  labels?: string[];\n"
+        "  extra?: unknown;\n"
+        "}): Promise<null>"
+    ) in prompt, prompt
+
+
 def _get_status_record() -> _Status:
     """Module-level helper.
 

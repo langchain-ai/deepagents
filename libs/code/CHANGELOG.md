@@ -2,6 +2,20 @@
 
 # Deep Agents Code Changelog
 
+## [0.2.4](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.2.3...deepagents-code==0.2.4) (2026-11-02)
+
+
+### Features
+
+* **code:** mark the interrupt cancellation message with `lc_source` ([#7501](https://github.com/langchain-ai/deepagents/issues/7501)) ([08ef3f6](https://github.com/langchain-ai/deepagents/commit/08ef3f65b45b2f23e5e7a1af197851a28fbe98a9))
+
+
+### Bug Fixes
+
+* **code:** clarify MCP configuration refresh in `/reload` ([#7497](https://github.com/langchain-ai/deepagents/issues/7497)) ([d29e85f](https://github.com/langchain-ai/deepagents/commit/d29e85f5d2f69f39643c78279e931d610b42d3b4))
+* **code:** explain disabled Slack MCP access on login ([#7498](https://github.com/langchain-ai/deepagents/issues/7498)) ([7618f1f](https://github.com/langchain-ai/deepagents/commit/7618f1fedffd1c8f42e0781eb5eb947c08f466fa))
+* **code:** explain workspace conflicts and MCP login failures ([#7499](https://github.com/langchain-ai/deepagents/issues/7499)) ([a783c14](https://github.com/langchain-ai/deepagents/commit/a783c149c7655d45e5e0fcb09a6ff0a3c15ca516))
+
 ## [0.2.3](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.2.2...deepagents-code==0.2.3) (2026-11-02)
 
 ### Features

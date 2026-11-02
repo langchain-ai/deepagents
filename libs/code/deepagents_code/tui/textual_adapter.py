@@ -115,7 +115,10 @@ from deepagents_code._ask_user_types import (
     AskUserRowSummary,
 )
 from deepagents_code._cli_context import CLIContext
-from deepagents_code._constants import SYSTEM_MESSAGE_PREFIX
+from deepagents_code._constants import (
+    SYSTEM_MESSAGE_PREFIX,
+    TASK_INTERRUPTED_MESSAGE_SOURCE,
+)
 from deepagents_code._content_blocks import reasoning_text
 from deepagents_code._tool_stream import (
     UNRENDERABLE_TOOL_OUTPUT,
@@ -4665,7 +4668,8 @@ async def _handle_interrupt_cleanup(
             if recover_interrupted_turn:
                 cancellation_msg = HumanMessage(
                     content=f"{SYSTEM_MESSAGE_PREFIX} Task interrupted by user. "
-                    "Previous operation was cancelled."
+                    "Previous operation was cancelled.",
+                    additional_kwargs={"lc_source": TASK_INTERRUPTED_MESSAGE_SOURCE},
                 )
                 messages = [cancellation_msg]
                 if interrupted_msg:

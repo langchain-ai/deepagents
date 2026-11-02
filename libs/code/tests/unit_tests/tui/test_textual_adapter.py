@@ -629,6 +629,9 @@ class TestInterruptCleanup:
         assert saved["messages"][1].content == (
             "[SYSTEM] Task interrupted by user. Previous operation was cancelled."
         )
+        assert saved["messages"][1].additional_kwargs == {
+            "lc_source": "task_interrupted"
+        }
         assert saved["_context_tokens"] == 15
 
     async def test_disabled_recovery_does_not_save_state(self) -> None:

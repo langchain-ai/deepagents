@@ -15,7 +15,7 @@ from langchain_core.tools import tool
 from deepagents_talon.background import _IN_SUBAGENT
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Generator
 
     from langgraph.runtime import Runtime
 
@@ -59,7 +59,7 @@ _PROGRESS_BUDGET: ContextVar[_ProgressBudget | None] = ContextVar(
 
 
 @contextmanager
-def progress_messages(handler: ProgressMessageHandler | None, verbosity: int) -> Iterator[None]:
+def progress_messages(handler: ProgressMessageHandler | None, verbosity: int) -> Generator[None]:
     """Scope progress delivery and its shared budget to one runtime invocation."""
     limits = {1: 0, 2: 2}
     message_token = MESSAGE_HANDLER.set(handler)

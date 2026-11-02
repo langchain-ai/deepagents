@@ -12,7 +12,7 @@ import json
 import logging
 import os
 import re
-from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Mapping, Sequence
+from collections.abc import AsyncGenerator, Awaitable, Callable, Generator, Mapping, Sequence
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
@@ -626,7 +626,7 @@ class DeepAgentRuntime:
         return True
 
     @contextlib.asynccontextmanager
-    async def _turn_models(self, request: AgentRequest) -> AsyncIterator[None]:
+    async def _turn_models(self, request: AgentRequest) -> AsyncGenerator[None]:
         """Bind the chat's selected model for one turn."""
         model = await self._turn_model(request)
         spec = request.model or self.default_model
@@ -2034,7 +2034,7 @@ def _content_block_text(block: object) -> str:
 
 
 @contextlib.contextmanager
-def _history_context(request: AgentRequest) -> Iterator[None]:
+def _history_context(request: AgentRequest) -> Generator[None]:
     """Expose the host's history scope, archiving into it only on unscheduled turns."""
     scope = _history_scope(request)
     history = _HISTORY_SCOPE.set(scope)

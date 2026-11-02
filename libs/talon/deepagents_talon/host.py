@@ -13,7 +13,7 @@ import os
 import signal
 import tempfile
 from collections import defaultdict
-from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
@@ -329,7 +329,7 @@ class TalonHost:
         self._running = False
 
     @asynccontextmanager
-    async def _conversation_lock(self, conversation_root: str) -> AsyncIterator[None]:
+    async def _conversation_lock(self, conversation_root: str) -> AsyncGenerator[None]:
         """Serialize one conversation's work and forget it once nothing is left.
 
         Args:
@@ -353,7 +353,7 @@ class TalonHost:
                     self._forget_idle_conversation(conversation_id)
 
     @asynccontextmanager
-    async def _history_lock(self, scope: tuple[str, str]) -> AsyncIterator[None]:
+    async def _history_lock(self, scope: tuple[str, str]) -> AsyncGenerator[None]:
         lock = self._history_locks.setdefault(scope, asyncio.Lock())
         async with lock:
             yield

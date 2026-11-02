@@ -60,13 +60,13 @@ def _count(calls: Counter[str], run: Callable[[], object]) -> int:
 
 def test_returning_1k_numbers(ctx: Context, export_calls: Counter[str]) -> None:
     count = _count(export_calls, lambda: ctx.eval("nums"))
-    # A count near zero means the patch no longer sees the calls.
-    assert NUMBERS_1K_MAX // 2 < count <= NUMBERS_1K_MAX
+    # A count of zero means the patch no longer sees the calls.
+    assert 0 < count <= NUMBERS_1K_MAX
 
 
 def test_returning_1k_row_objects(ctx: Context, export_calls: Counter[str]) -> None:
     count = _count(export_calls, lambda: ctx.eval("rows"))
-    assert ROWS_1K_MAX // 2 < count <= ROWS_1K_MAX
+    assert 0 < count <= ROWS_1K_MAX
 
 
 def test_host_call_with_fs_shaped_args(

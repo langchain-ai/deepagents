@@ -4553,7 +4553,7 @@ async def _handle_interrupt_cleanup(
             `thread_id` in `config` (a contract violation rather than a
             transient remote failure).
     """
-    from langchain_core.messages import HumanMessage
+    from langchain_core.messages import HumanMessage, add_notification_metadata
 
     # Clear active message immediately so it won't block pruning.
     # If we don't do this, the store still thinks it's active and protects
@@ -4666,10 +4666,12 @@ async def _handle_interrupt_cleanup(
         # server-side tracing policy can distinguish the recovery write.
         with tracing_context(enabled=False):
             if recover_interrupted_turn:
-                cancellation_msg = HumanMessage(
-                    content=f"{SYSTEM_MESSAGE_PREFIX} Task interrupted by user. "
-                    "Previous operation was cancelled.",
-                    additional_kwargs={"lc_source": TASK_INTERRUPTED_MESSAGE_SOURCE},
+                cancellation_msg = add_notification_metadata(
+                    HumanMessage(
+                        content=f"{SYSTEM_MESSAGE_PREFIX} Task interrupted by user. "
+                        "Previous operation was cancelled."
+                    ),
+                    source=TASK_INTERRUPTED_MESSAGE_SOURCE,
                 )
                 messages = [cancellation_msg]
                 if interrupted_msg:

@@ -8,7 +8,12 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.messages import (
+    AIMessage,
+    HumanMessage,
+    ToolMessage,
+    get_notification_metadata,
+)
 from langgraph.graph.message import add_messages
 from langgraph.types import Command
 from pydantic import ValidationError
@@ -629,8 +634,8 @@ class TestInterruptCleanup:
         assert saved["messages"][1].content == (
             "[SYSTEM] Task interrupted by user. Previous operation was cancelled."
         )
-        assert saved["messages"][1].additional_kwargs == {
-            "lc_source": "task_interrupted"
+        assert get_notification_metadata(saved["messages"][1]) == {
+            "source": "task_interrupted"
         }
         assert saved["_context_tokens"] == 15
 

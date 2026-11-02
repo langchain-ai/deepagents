@@ -214,7 +214,6 @@ def _remote_marketplace_source(record: MarketplaceRecord) -> MarketplaceSource |
             return None
 
 
-@plugin_mutation_lock()
 def load_record_marketplace(
     record: MarketplaceRecord, *, refresh_missing: bool = False
 ) -> PluginMarketplace:
@@ -224,7 +223,7 @@ def load_record_marketplace(
         Parsed marketplace.
 
     Raises:
-        MarketplaceError: If an uncached catalog cannot be fetched offline.
+        MarketplaceError: If fetching is blocked by offline mode or a plugin mutation.
     """
     location = Path(record.install_location)
     refresh_missing = refresh_missing or (
@@ -239,9 +238,21 @@ def load_record_marketplace(
         if is_env_truthy(OFFLINE):
             msg = f"Marketplace {record.name!r} is not cached; connect to browse it"
             raise MarketplaceError(msg)
-        marketplace, location = materialize_marketplace_source(source)
-        save_marketplace_record(replace(record, install_location=str(location)))
-        return marketplace
+        from filelock import Timeout
+
+        try:
+            with plugin_mutation_lock(timeout=0):
+                if location.exists():
+                    return load_marketplace_location(location)
+                marketplace, location = materialize_marketplace_source(source)
+                save_marketplace_record(replace(record, install_location=str(location)))
+                return marketplace
+        except Timeout as exc:
+            msg = (
+                "Another plugin operation is in progress; "
+                "retry browsing when it finishes"
+            )
+            raise MarketplaceError(msg) from exc
     return load_marketplace_location(location)
 
 

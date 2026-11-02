@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING
 from unittest.mock import Mock
 
@@ -18,6 +19,7 @@ from deepagents_code.plugins.store import (
     load_enabled_plugin_ids,
     load_installed_plugins,
     load_marketplace_records,
+    plugin_mutation_lock,
     save_marketplace_record,
 )
 from deepagents_code.tui.modals.plugin_manager.state import _load_manager_state
@@ -69,6 +71,23 @@ def test_browsing_fetches_only_missing_catalog(monkeypatch: pytest.MonkeyPatch) 
     assert materialize.call_count == 1
     assert not load_installed_plugins()
     assert not load_enabled_plugin_ids()
+
+
+@pytest.mark.parametrize("cached", [False, True])
+def test_browsing_does_not_wait_for_another_mutation(cached: bool) -> None:
+    if cached:
+        assert not _load_manager_state().errors
+    with ThreadPoolExecutor(max_workers=1) as executor, plugin_mutation_lock():
+        future = executor.submit(_load_manager_state)
+        state = future.result(timeout=2)
+    if cached:
+        assert not state.errors
+        assert state.available_plugins[0].plugin_id == "docs@langchain-plugins"
+    else:
+        assert any(
+            "Another plugin operation is in progress" in error for error in state.errors
+        )
+        assert not _load_manager_state().errors
 
 
 def test_offline_browsing_does_not_fetch(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -99,6 +99,13 @@ transcript and a thread's initial prompt. Shared here so the single producer
 LOCAL_CONTEXT_MESSAGE_SOURCE: Final[str] = "local_context"
 """Source for model-only local-context refresh messages."""
 
+TASK_INTERRUPTED_MESSAGE_SOURCE: Final[str] = "task_interrupted"
+"""Source for the cancellation notice saved when the user interrupts a turn.
+
+Lets readers outside the CLI tell it apart from user input without matching
+`SYSTEM_MESSAGE_PREFIX` text.
+"""
+
 DEFAULT_PLUGIN_DIRNAME: Final[str] = "plugins"
 """Directory name for plugin storage under the profile root.
 

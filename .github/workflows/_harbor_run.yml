@@ -1168,7 +1168,7 @@ jobs:
                 --agent-env "OPENAI_BASE_URL=$FIREWORKS_BASE_URL/v1"
               )
               if [ "$HARBOR_AGENT_IMPL" = pi ]; then
-                agent_args+=(--agent-kwarg model_api=openai-responses)
+                agent_args+=(--agent-kwarg model_api=openai-responses --agent-kwarg max_output_tokens=65536)
               fi
               ;;
             claude-code:fireworks)
@@ -1177,6 +1177,8 @@ jobs:
                 --agent-env 'ANTHROPIC_API_KEY=${FIREWORKS_API_KEY}'
                 --agent-env "ANTHROPIC_BASE_URL=$FIREWORKS_BASE_URL"
               )
+              # Harbor forwards this from the host env; the CLI default is 32000.
+              export CLAUDE_CODE_MAX_OUTPUT_TOKENS=65536
               ;;
           esac
           uv run harbor run \

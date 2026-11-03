@@ -22,11 +22,12 @@ import os
 import shlex
 from abc import ABC, abstractmethod
 from pathlib import PurePosixPath
-from typing import Any, Final, Literal
+from typing import Any, Final, Literal, cast, get_args
 
 from deepagents.backends.protocol import (
     ASYNC_GLOB_TIMEOUT,
     ASYNC_GREP_TIMEOUT,
+    FILE_NOT_FOUND,
     DeleteResult,
     EditResult,
     ExecuteOffloadResult,
@@ -34,6 +35,7 @@ from deepagents.backends.protocol import (
     FileData,
     FileDownloadResponse,
     FileInfo,
+    FileOperationError,
     FileUploadResponse,
     GlobResult,
     GlobTruncationReason,
@@ -1285,6 +1287,21 @@ def _build_edit_inline_cmd(file_path: str, old_string: str, new_string: str, *, 
     return _EDIT_COMMAND_TEMPLATE.format(payload_b64=payload_b64)
 
 
+_EDIT_ERROR_CODES: Final[dict[str, FileOperationError]] = {
+    "file_not_found": "file_not_found",
+    "permission_denied": "permission_denied",
+}
+"""The edit script's errors that name a `FileOperationError`.
+
+`not_a_file` stays uncoded: the target may be a directory, a FIFO, or a device.
+"""
+
+
+def _upload_error_code(response: FileUploadResponse) -> FileOperationError | None:
+    """Return the upload's error when it is a `FileOperationError` code, else `None`."""
+    return cast("FileOperationError", response.error) if response.error in get_args(FileOperationError) else None
+
+
 def _map_edit_error(error: str, file_path: str, old_string: str) -> EditResult:
     """Map server-side error codes to `EditResult` objects."""
     messages: dict[str, str] = {
@@ -1295,7 +1312,7 @@ def _map_edit_error(error: str, file_path: str, old_string: str) -> EditResult:
         "string_not_found": f"Error: String not found in file: '{old_string}'",
         "multiple_occurrences": (f"Error: String '{old_string}' appears multiple times. Use replace_all=True to replace all occurrences."),
     }
-    return EditResult(error=messages.get(error, f"Error editing file '{file_path}': {error}"))
+    return EditResult(error=messages.get(error, f"Error editing file '{file_path}': {error}"), error_code=_EDIT_ERROR_CODES.get(error))
 
 
 def _parse_edit_output(output: str, file_path: str, old_string: str) -> EditResult:
@@ -1806,7 +1823,7 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
             raise AssertionError(msg)
         response = responses[0]
         if response.error:
-            return WriteResult(error=f"Failed to write file '{file_path}': {response.error}")
+            return WriteResult(error=f"Failed to write file '{file_path}': {response.error}", error_code=_upload_error_code(response))
 
         return WriteResult(path=file_path)
 
@@ -1821,7 +1838,7 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
             raise AssertionError(msg)
         response = responses[0]
         if response.error:
-            return WriteResult(error=f"Failed to write file '{file_path}': {response.error}")
+            return WriteResult(error=f"Failed to write file '{file_path}': {response.error}", error_code=_upload_error_code(response))
         return WriteResult(path=file_path)
 
     def edit(
@@ -2052,7 +2069,7 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
         # through to `rm` on an unknown probe result (matches the `rm` check
         # below and `_parse_grep_output`, which both guard `is not None`).
         if exists.exit_code is not None and exists.exit_code != 0:
-            return DeleteResult(error=f"Error: '{file_path}' not found")
+            return DeleteResult(error=f"Error: '{file_path}' not found", error_code=FILE_NOT_FOUND)
         result = self.execute(f"rm -rf {quoted}")
 
         if result.exit_code == 0:

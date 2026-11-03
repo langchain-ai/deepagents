@@ -281,6 +281,8 @@ class WriteResult:
     Attributes:
         error: Error message on failure, `None` on success.
         path: Absolute path of written file, `None` on failure.
+        error_code: The failure's `FileOperationError` code when the backend
+            knows the cause, else `None`.
 
     Examples:
         >>> WriteResult(path="/f.txt")
@@ -289,6 +291,7 @@ class WriteResult:
 
     error: str | None = None
     path: str | None = None
+    error_code: FileOperationError | None = None
 
 
 @dataclass
@@ -299,15 +302,18 @@ class EditResult:
         error: Error message on failure, `None` on success.
         path: Absolute path of edited file, `None` on failure.
         occurrences: Number of replacements made, `None` on failure.
+        error_code: The failure's `FileOperationError` code when the backend
+            knows the cause, else `None`.
 
     Examples:
         >>> EditResult(path="/f.txt", occurrences=1)
-        >>> EditResult(error="File not found")
+        >>> EditResult(error="File not found", error_code="file_not_found")
     """
 
     error: str | None = None
     path: str | None = None
     occurrences: int | None = None
+    error_code: FileOperationError | None = None
 
 
 @dataclass
@@ -317,14 +323,17 @@ class DeleteResult:
     Attributes:
         error: Error message on failure, None on success.
         path: Absolute path of the deleted file, None on failure.
+        error_code: The failure's `FileOperationError` code when the backend
+            knows the cause, else `None`.
 
     Examples:
         >>> DeleteResult(path="/f.txt")
-        >>> DeleteResult(error="File not found")
+        >>> DeleteResult(error="File not found", error_code="file_not_found")
     """
 
     error: str | None = None
     path: str | None = None
+    error_code: FileOperationError | None = None
 
 
 @dataclass
@@ -854,14 +863,15 @@ class ExecuteArtifact(TypedDict):
 
 
 RAW_FILE_RESULT_CONFIG_KEY: Final = "deepagents_raw_file_result"
-"""`config["configurable"]` key that asks one `read_file`, `ls`, or `glob` call for its raw result.
+"""`config["configurable"]` key that asks one file tool call for its raw result.
 
 Its value is a `RawFileResultRequest`. Code that calls the tools itself sets it
 on the `ToolRuntime.config` it passes; a `wrap_tool_call` middleware can set it
-on `request.runtime.config`. The tool then attaches a `ReadFileArtifact`,
-`LsArtifact`, or `GlobArtifact` to `ToolMessage.artifact`, or a
-`FileToolErrorArtifact` when the call fails. The model cannot set the key,
-because it is not a tool argument.
+on `request.runtime.config`. A `read_file`, `ls`, or `glob` call then attaches a
+`ReadFileArtifact`, `LsArtifact`, or `GlobArtifact` to `ToolMessage.artifact`.
+A failed `read_file`, `ls`, `glob`, `write_file`, `edit_file`, or `delete` call
+attaches a `FileToolErrorArtifact`. The model cannot set the key, because it is
+not a tool argument.
 
 Tracing callbacks receive the artifact, so a raw read puts the file's contents,
 up to `max_bytes`, into traces. When a `wrap_tool_call` middleware sets the
@@ -889,7 +899,7 @@ class RawFileResultRequest(TypedDict):
 
 
 FileToolErrorCode = Literal[FileOperationError, "file_too_large"]
-"""Why a raw `read_file`, `ls`, or `glob` call failed.
+"""Why a file tool call with a raw-result request failed.
 
 The `FileOperationError` codes, plus `"file_too_large"` for a file over the
 request's `max_bytes`.
@@ -919,6 +929,15 @@ class LsArtifactEntry(TypedDict):
     is_dir: bool
     """Whether the entry is a directory; `False` when the backend does not say."""
 
+    size: NotRequired[int]
+    """A file's size in bytes, when the backend reports it.
+
+    Absent for directories, whose size backends report as a placeholder `0`.
+    """
+
+    modified_at: NotRequired[str]
+    """ISO 8601 time of the entry's last modification, when the backend reports it."""
+
 
 class LsArtifact(TypedDict):
     """The raw result of a successful `ls` call, on `ToolMessage.artifact`.
@@ -946,7 +965,7 @@ class GlobArtifact(TypedDict):
 
 
 class FileToolErrorArtifact(TypedDict):
-    """Why a `read_file`, `ls`, or `glob` call failed, on `ToolMessage.artifact`.
+    """Why a file tool call failed, on `ToolMessage.artifact`.
 
     Attached only to the call a `RawFileResultRequest` names.
     `ToolMessage.status` is `"error"` and `ToolMessage.content` holds the message.
@@ -954,6 +973,9 @@ class FileToolErrorArtifact(TypedDict):
 
     code: FileToolErrorCode | None
     """The failure's code, or `None` when the backend reported only a message.
+
+    `write_file`, `edit_file`, and `delete` take it from the backend result's
+    `error_code`, so a backend that sets none reports `None`.
 
     `"permission_denied"` also covers a refusal by the agent's permission rules,
     and `"invalid_path"` a path the tool rejected before calling the backend.

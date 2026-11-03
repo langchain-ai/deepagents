@@ -62,10 +62,10 @@ def test_listings_carry_permitted_entries_and_keep_the_model_text(tools: dict[st
     glob_args = {"pattern": "**/*"}
     ls = _call(tools["ls"], ls_args, run_async=run_async)
     globbed = _call(tools["glob"], glob_args, run_async=run_async)
-    assert sorted(ls.artifact["entries"], key=lambda e: e["path"]) == [
-        {"path": "/data.bin", "is_dir": False},
-        {"path": "/docs/", "is_dir": True},
-        {"path": "/long.txt", "is_dir": False},
+    assert sorted((e["path"], e["is_dir"]) for e in ls.artifact["entries"]) == [
+        ("/data.bin", False),
+        ("/docs/", True),
+        ("/long.txt", False),
     ]
     assert (sorted(globbed.artifact["paths"]), globbed.artifact["truncated"]) == (["/data.bin", "/docs/a.md", "/long.txt"], False)
     for message, name, args in ((ls, "ls", ls_args), (globbed, "glob", glob_args)):

@@ -256,7 +256,7 @@ Enums, `anyOf` unions, nested objects, and arrays are all supported by the schem
 
 - Each PTC-exposed tool gets a QuickJS host-function bridge registered under a generated `__tools_*` global symbol. The bridge is async, so the guest sees `tools.x(...)` as returning a `Promise`.
 - `globalThis.tools` is rebuilt every turn from the currently-exposed name set. So if an upstream middleware filters tools on a per-turn basis, the `tools` namespace follows along.
-- When the bridge invokes a tool, it forwards the `ToolRuntime` and runnable config captured from the outer `eval` call — so the tool sees graph `state`, `store`, `context`, callbacks, and a synthesized child `tool_call_id`. (Subagent dispatch has its own top-level `task(...)` primitive — see [Dispatching subagents](#dispatching-subagents-task) — and is not routed through the `tools` namespace.)
+- When the bridge invokes a tool, the call runs through the agent's tool-call middleware with the `ToolRuntime` and runnable config captured from the outer `eval` call — so the tool sees graph `state`, `store`, `context`, callbacks, and a child `tool_call_id` of the form `<eval call id>.ptc<n>`. (Subagent dispatch has its own top-level `task(...)` primitive — see [Dispatching subagents](#dispatching-subagents-task) — and is not routed through the `tools` namespace.)
 - PTC calls participate in the standard LangGraph tool lifecycle. With v3 event streaming, they appear on `run.tool_calls` just like ordinary tool calls, including output deltas emitted through `ToolRuntime.emit_output_delta`:
 
 ```python

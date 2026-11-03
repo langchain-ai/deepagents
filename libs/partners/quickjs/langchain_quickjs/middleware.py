@@ -380,7 +380,7 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
                     outer_runtime=runtime,
                     snapshot_payload=middleware._snapshot_for_eval(runtime.state),
                     tools=middleware._tools_for_eval(slot_id, runtime),
-                    journal=middleware._journal_for_eval(runtime, None),
+                    journal=middleware._journal_for_eval(runtime),
                 )
             except _SnapshotRestoreError as exc:
                 return _restore_error_output(exc, runtime.tool_call_id)
@@ -395,15 +395,14 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         ) -> ToolMessage | Command:
             slot_id = middleware._slot_id(runtime.state)
             repl = middleware._repl_for_eval(slot_id)
-            loop = asyncio.get_running_loop()
             try:
                 outcome = await repl.eval_async(
                     code,
                     outer_runtime=runtime,
                     snapshot_payload=middleware._snapshot_for_eval(runtime.state),
                     tools=middleware._tools_for_eval(slot_id, runtime),
-                    outer_loop=loop,
-                    journal=middleware._journal_for_eval(runtime, loop),
+                    outer_loop=asyncio.get_running_loop(),
+                    journal=middleware._journal_for_eval(runtime),
                 )
             except _SnapshotRestoreError as exc:
                 return _restore_error_output(exc, runtime.tool_call_id)
@@ -462,9 +461,7 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         )
         return tuple(tool for tool in available if tool.name in bound)
 
-    def _journal_for_eval(
-        self, runtime: ToolRuntime[None, Any], loop: asyncio.AbstractEventLoop | None
-    ) -> EvalJournal | None:
+    def _journal_for_eval(self, runtime: ToolRuntime[None, Any]) -> EvalJournal | None:
         """Return a journal when this eval runs inside the agent's tool chain."""
         chain = _EVAL_CHAIN.get()
         if (
@@ -473,7 +470,7 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
             or chain.request.tool_call.get("id") != runtime.tool_call_id
         ):
             return None
-        return EvalJournal(chain=chain, outer_loop=loop)
+        return EvalJournal(chain=chain)
 
     def wrap_tool_call(
         self,
@@ -483,7 +480,7 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         """Expose the chain below this middleware to `tools.*` calls from an eval."""
         if request.tool_call["name"] != self._tool_name:
             return handler(request)
-        token = _EVAL_CHAIN.set(ToolChain(request, handler, is_async=False))
+        token = _EVAL_CHAIN.set(ToolChain(request, handler, loop=None))
         try:
             return handler(request)
         finally:
@@ -497,7 +494,8 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         """Async variant of `wrap_tool_call`."""
         if request.tool_call["name"] != self._tool_name:
             return await handler(request)
-        token = _EVAL_CHAIN.set(ToolChain(request, handler, is_async=True))
+        chain = ToolChain(request, handler, loop=asyncio.get_running_loop())
+        token = _EVAL_CHAIN.set(chain)
         try:
             return await handler(request)
         finally:

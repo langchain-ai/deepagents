@@ -348,8 +348,7 @@ def test_ptc_calls_surface_in_native_tool_stream() -> None:
     assert ptc_call.completed
     assert ptc_call.error is None
     assert deltas == [{"progress": "working"}]
-    # The nested call runs through the tool node, so it streams a ToolMessage
-    # and carries an id derived from the eval call's id.
+    # Through the tool node: a ToolMessage with an id derived from the eval's.
     assert ptc_call.output.content == "done:working|call_1.ptc0"
 
 

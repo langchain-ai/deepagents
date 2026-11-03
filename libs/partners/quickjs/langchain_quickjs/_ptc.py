@@ -16,8 +16,7 @@ Two pieces live here:
 - prompt rendering — render a short TS-ish API-reference block describing
     each exposed tool, so the model knows the call shape
 
-The host-function bridge that actually invokes each tool lives in
-`_repl.py` next to the rest of the context wiring.
+Each tool's host bridge lives in `_repl.py`, and `_dispatch.py` runs its calls.
 """
 
 from __future__ import annotations
@@ -72,11 +71,6 @@ def filter_tools_for_ptc(
     (by name or instance) — it is always available as the `task()` global,
     so a `tools.task` PTC variant would be a conflicting, degraded duplicate.
     A `"task"` entry raises `ValueError`.
-
-    Warning:
-        PTC tool calls execute through the REPL bridge and currently do
-        not respect `interrupt_on` / HITL approval hooks for each
-        individual tool invocation.
     """
     if isinstance(config, list):
         explicit_tools: list[BaseTool] = []

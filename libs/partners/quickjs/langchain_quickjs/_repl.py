@@ -338,46 +338,29 @@ def _bridge_symbol_name(tool_name: str) -> str:
     return f"__tools_{normalized}_{digest}"
 
 
-# Bridges resolve to `[0, value]` or `[1, errorName, message]`. Host
+# Bridges resolve to `[0, value]` or `[1, code, message, props]`. Host
 # exceptions reach JS as a sanitized `HostError`, so an error result the model
 # should read (a tool error, a reviewer's rejection) travels as data and is
-# thrown here as a JS `Error` with that name and message.
-_PTC_CALL_SOURCE = (
-    "if (!globalThis.__ptcCall) Object.defineProperty(globalThis, '__ptcCall', {"
-    " value: (bridge) => async (input) => {"
-    " const r = await bridge(input);"
-    " if (r[0] === 0) return r[1];"
-    " const e = new Error(r[2]); e.name = r[1]; throw e; },"
-    " writable: false, configurable: false });"
+# thrown here with its `code` and props.
+_SETTLE_SOURCE = (
+    "(r) => { if (r[0] === 0) return r[1]; const [, code, message, props] = r;"
+    " const E = { TypeError }[props?.name] ?? Error;"
+    " throw Object.assign(new E(message), { code, ...props }); }"
 )
 
 
 def _render_tools_namespace_assignment(bridges: dict[str, str]) -> str:
     """Return JS that atomically rebuilds `globalThis.tools` from bridges."""
-    statements = [_PTC_CALL_SOURCE, "globalThis.tools = {};"]
+    statements = [f"(() => {{ const settle = {_SETTLE_SOURCE}; const t = {{}};"]
     for tool_name, bridge_symbol in sorted(bridges.items()):
         quoted_tool_name = json.dumps(tool_name)
         quoted_bridge_symbol = json.dumps(bridge_symbol)
         statements.append(
-            "globalThis.tools"
-            f"[{quoted_tool_name}] = __ptcCall(globalThis[{quoted_bridge_symbol}]);"
+            f"t[{quoted_tool_name}] = ((b) => async (input) =>"
+            f" settle(await b(input)))(globalThis[{quoted_bridge_symbol}]);"
         )
-    statements.append("undefined")
+    statements.append("globalThis.tools = t; })(); undefined")
     return " ".join(statements)
-
-
-def _snapshot_if_quiescent(ctx: Context) -> Snapshot | None:
-    """Snapshot the heap, or return `None` if the context is mid-flight.
-
-    QuickJS refuses a snapshot while another eval runs on the context or a
-    host call from an earlier eval is still pending. The eval itself still
-    runs: an overlapping eval fails with `ConcurrentEval` as before, and an
-    eval that pauses re-runs from the heap as it is.
-    """
-    try:
-        return ctx.create_snapshot()
-    except QuickJSError:
-        return None
 
 
 class _ThreadREPL:
@@ -740,7 +723,8 @@ class _ThreadREPL:
             if state.journal is not None:
                 result = await state.journal.dispatch(tool, payload)
                 if result.status == "error":
-                    return [1, "ToolError", str(result.value)]
+                    code = "EACCES" if result.rejected else "EIO"
+                    return [1, code, str(result.value), {"name": "ToolError"}]
                 return [0, result.value]
             call_id = _synth_tool_call_id(tool.name)
             # Inject runtime/state/store ourselves. The bridge uses `arun`
@@ -868,32 +852,25 @@ class _ThreadREPL:
         outer_loop: asyncio.AbstractEventLoop | None = None,
         journal: EvalJournal | None = None,
     ) -> EvalOutcome:
-        """Run one eval; with a journal, make it safe to pause and re-run.
+        """Run one eval; if a `tools.*` call paused, discard its outcome and re-raise.
 
-        If any `tools.*` call paused for review, the eval's own outcome is
-        discarded, whatever JS did with the rejection: the heap goes back to
-        the snapshot taken before the code ran, so the re-run after the resume
-        starts from the same heap, and the merged interrupt is raised once
-        every in-flight call has settled.
+        Whatever JS did with the rejection, once in-flight calls settle the heap
+        is restored, so the re-run starts from it, and the merged interrupt raised.
         """
+        run = self._aeval_once(
+            code,
+            outer_runtime=outer_runtime,
+            snapshot_payload=snapshot_payload,
+            tools=tools,
+            outer_loop=outer_loop,
+            journal=journal,
+        )
         if journal is None:
-            return await self._aeval_once(
-                code,
-                outer_runtime=outer_runtime,
-                snapshot_payload=snapshot_payload,
-                tools=tools,
-                outer_loop=outer_loop,
-            )
+            return await run
         try:
-            outcome = await self._aeval_once(
-                code,
-                outer_runtime=outer_runtime,
-                snapshot_payload=snapshot_payload,
-                tools=tools,
-                outer_loop=outer_loop,
-                journal=journal,
-            )
+            outcome = await run
         except GraphBubbleUp as e:
+            # Calls record their own bubble-ups; this only catches one that escaped.
             if not journal.suspended:
                 journal.suspend(e)
         except Exception:
@@ -941,7 +918,11 @@ class _ThreadREPL:
         try:
             await self._aprepare_for_eval(snapshot_payload, tools)
             if journal is not None:
-                journal.heap = _snapshot_if_quiescent(ctx)
+                # QuickJS refuses while another eval or an earlier eval's host
+                # call is in flight; a paused re-run then starts from the heap
+                # as it is.
+                with contextlib.suppress(QuickJSError):
+                    journal.heap = ctx.create_snapshot()
             # Drive any final-expression Promise (e.g. a bare async
             # IIFE) to its resolved value before marshaling. Without
             # this the Promise object itself fails to marshal and

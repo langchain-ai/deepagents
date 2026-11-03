@@ -203,9 +203,8 @@ def format_outcome(
         kind_attr = f' kind="{outcome.result_kind}"' if outcome.result_kind else ""
         body_xml = _xml_escape(_truncate(body, max_result_chars))
         parts.append(f"<result{kind_attr}>{body_xml}</result>")
-    notes = getattr(outcome, "notes", None)
-    if notes:
-        joined = _xml_escape(_truncate("\n\n".join(notes), max_result_chars))
+    if outcome.notes:
+        joined = _xml_escape(_truncate("\n\n".join(outcome.notes), max_result_chars))
         parts.append(f"<notes>\n{joined}\n</notes>")
     return "\n".join(parts)
 

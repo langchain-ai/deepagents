@@ -535,7 +535,9 @@ class FilesystemBackend(BackendProtocol):
 
             return WriteResult(path=file_path)
         except (OSError, UnicodeEncodeError) as e:
-            return WriteResult(error=f"Error writing file '{file_path}': {e}", error_code=_error_code(e))
+            # Windows raises `PermissionError`, not `IsADirectoryError`, when opening a directory.
+            code = IS_DIRECTORY if resolved_path.is_dir() else _error_code(e)
+            return WriteResult(error=f"Error writing file '{file_path}': {e}", error_code=code)
 
     def edit(
         self,

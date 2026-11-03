@@ -616,6 +616,7 @@ def _run_startup_auto_update(console: Console) -> None:
     from deepagents_code._version import __version__ as cli_version
     from deepagents_code.config import _is_editable_install
     from deepagents_code.update_check import (
+        _is_windows,
         clear_startup_auto_update_failure,
         create_update_log_file,
         detect_shadowed_dcode_safe,
@@ -764,7 +765,9 @@ def _run_startup_auto_update(console: Console) -> None:
             from deepagents_code._session_lock import is_sole_session
 
             sole_session = is_sole_session()
-            if retrying_deferral and not sole_session:
+            # Windows defers every uv install, not only migrations, so there
+            # `perform_upgrade` picks which deferral guidance to repeat.
+            if retrying_deferral and not sole_session and not _is_windows():
                 # Repeat the deferral without re-fetching the release's Python
                 # requirement or announcing an update that will not happen.
                 console.print(
@@ -797,7 +800,8 @@ def _run_startup_auto_update(console: Console) -> None:
 
             def show_notice(message: str) -> None:
                 notices.append(message)
-                console.print(message, markup=False, highlight=False)
+                # A notice can name a command to paste, so keep it on one line.
+                console.print(message, markup=False, highlight=False, soft_wrap=True)
 
             success, output, _installed = asyncio.run(
                 perform_upgrade(
@@ -866,7 +870,7 @@ def _run_startup_auto_update(console: Console) -> None:
         if unverified:
             _exit_after_unverified_update(console, persisted=persisted)
         if deferred:
-            # Nothing failed: the notice above explains how to migrate.
+            # Nothing failed: the notice above explains how to update.
             note = escape(_session_lock_unavailable_note())
             message = f"{note}Continuing with v{cli_version}."
         elif notices:
@@ -6198,7 +6202,11 @@ def cli_main() -> None:
 
                     def show_notice(message: str) -> None:
                         notices.append(message)
-                        console.print(message, markup=False, highlight=False)
+                        # A notice can name a command to paste, so keep it on
+                        # one line.
+                        console.print(
+                            message, markup=False, highlight=False, soft_wrap=True
+                        )
 
                     success, output, _installed = asyncio.run(
                         perform_upgrade(

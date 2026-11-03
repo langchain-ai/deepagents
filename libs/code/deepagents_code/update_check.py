@@ -1650,6 +1650,25 @@ def _is_windows() -> bool:
     return os.name == "nt"
 
 
+def _shell_quote(arg: str) -> str:
+    """Quote *arg* for a uv command that dcode runs or prints.
+
+    On Windows, `asyncio.create_subprocess_shell` runs commands through
+    cmd.exe, which passes single quotes on to uv as part of the argument, and
+    users paste printed commands into cmd.exe or PowerShell. Double quotes are
+    the only quoting both shells remove. They suit every value quoted here:
+    package names, versions, uv Python requests and Windows paths cannot
+    contain a double quote.
+
+    Returns:
+        *arg* quoted for POSIX `sh`, or for both cmd.exe and PowerShell on
+            Windows.
+    """
+    if not _is_windows():
+        return shlex.quote(arg)
+    return f'"{arg}"'
+
+
 def _upgraded_entry_point(upgraded_bin_dir: Path, name: str) -> Path:
     """Find a console-script shim without searching outside uv's bin directory.
 
@@ -2787,13 +2806,10 @@ def migration_deferral_message(target_version: str) -> str:
         Windows the uv command to run outside dcode.
     """
     if _is_windows():
-        # Windows locks the running interpreter, so uv cannot delete the
-        # environment that `dcode update` itself runs from.
+        command = _windows_upgrade_command(target_version, python="3.14")
         return (
             f"v{target_version} requires migrating dcode to Python 3.14. "
-            "On Windows, dcode cannot rebuild the environment it runs from. "
-            "Nothing was installed. Quit every dcode session, then run from "
-            f"your shell: {_windows_migration_command(target_version)}"
+            f"{_windows_install_deferral(command)}"
         )
     from deepagents_code._invocation import invoked_name
 
@@ -2804,8 +2820,31 @@ def migration_deferral_message(target_version: str) -> str:
     )
 
 
-def _windows_migration_command(target_version: str) -> str:
-    """Return the uv command that migrates dcode from outside its environment.
+def _windows_install_deferral(command: str) -> str:
+    """Return the guidance for a uv install that dcode must not run on Windows.
+
+    After installing, uv replaces the tool's entry points, but Windows keeps
+    the running `dcode.exe` locked. uv then deletes the tool environment it
+    could not finish replacing, and dcode cannot start until it is reinstalled
+    by hand. So on Windows every install is left to the user's shell.
+
+    Returns:
+        A user-facing message that names *command*.
+    """
+    return (
+        "On Windows, dcode cannot rebuild the environment it runs from. "
+        "Nothing was installed. Quit every dcode session, then run from "
+        f"your shell: {command}"
+    )
+
+
+def _windows_upgrade_command(
+    target_version: str,
+    *,
+    python: str | None = None,
+    include_prereleases: bool | None = None,
+) -> str:
+    """Return the uv command that upgrades dcode from outside its environment.
 
     Returns:
         The receipt-preserving command, or a bare one with a reminder when
@@ -2814,16 +2853,22 @@ def _windows_migration_command(target_version: str) -> str:
     from deepagents_code.extras_info import ExtrasIntrospectionError
 
     try:
-        return upgrade_install_command(version=target_version, python="3.14")
+        return upgrade_install_command(
+            include_prereleases=include_prereleases,
+            version=target_version,
+            python=python,
+        )
     except ExtrasIntrospectionError, ToolRequirementIntrospectionError:
         logger.warning(
-            "Could not read the uv receipt for the migration command",
+            "Could not read the uv receipt for the upgrade command",
             exc_info=True,
         )
-        return (
-            f"uv tool install -U --python 3.14 deepagents-code=={target_version} "
-            "(reselect extras and added packages)"
+        command = upgrade_command(
+            include_prereleases=include_prereleases, version=target_version
         )
+        if python is not None:
+            command += f" --python {_shell_quote(python)}"
+        return f"{command} (reselect extras and added packages)"
 
 
 _MIGRATION_RECOVERY = (
@@ -2961,7 +3006,9 @@ async def perform_upgrade(
     """Attempt to upgrade `deepagents-code` using the detected install method.
 
     Only tries the detected method — does not fall back to other package
-    managers to avoid cross-environment contamination.
+    managers to avoid cross-environment contamination. On Windows a uv upgrade
+    is always deferred: the guidance names the command to run once dcode is
+    closed (see `_windows_install_deferral`).
 
     Args:
         progress: Optional callback invoked for each output line.
@@ -2982,12 +3029,11 @@ async def perform_upgrade(
         allow_python_migration: When `False` and the target needs a Python
             migration, install nothing and return failure with deferral
             guidance (also sent to `on_notice`). Disable wherever a rebuilt
-            environment could break a running session. Always treated as
-            `False` on Windows, where uv cannot replace the environment of a
-            running interpreter.
-        on_migration_deferred: Called when the target needs a Python migration
-            that `allow_python_migration` forbids, so callers can report a
-            deferral rather than a failure.
+            environment could break a running session.
+        on_migration_deferred: Called when the upgrade is deferred instead of
+            run (a Python migration that `allow_python_migration` forbids, or
+            any uv upgrade on Windows), so callers can report a deferral
+            rather than a failure.
         on_unverified_install: Called when uv exited successfully but the
             installed version could not be verified. The tool environment has
             changed, so a caller that has not loaded its code yet must not
@@ -3056,7 +3102,8 @@ async def perform_upgrade(
     if (
         python is not None
         and target_version
-        and (not allow_python_migration or _is_windows())
+        and not allow_python_migration
+        and not _is_windows()
     ):
         logger.info("Deferred the Python 3.14 migration for v%s", target_version)
         guidance = migration_deferral_message(target_version)
@@ -3077,6 +3124,26 @@ async def perform_upgrade(
     targeted_pins: list[str] = []
     if not resolved_include_prereleases and include_prereleases is None:
         targeted_pins = release_prerelease_pins(target_version)
+
+    if method == "uv" and target_version and _is_windows():
+        logger.info("Deferred the update to v%s on Windows", target_version)
+        # The printed command cannot reference the temporary constraints
+        # file, so it admits pre-releases the way the manual hints do.
+        command = _windows_upgrade_command(
+            target_version,
+            python=python,
+            include_prereleases=resolved_include_prereleases or bool(targeted_pins),
+        )
+        guidance = _windows_install_deferral(command)
+        if python is not None:
+            guidance = (
+                f"v{target_version} requires migrating dcode to Python 3.14. "
+                + guidance
+            )
+        if on_migration_deferred is not None:
+            on_migration_deferred()
+        await _emit_progress(on_notice, guidance)
+        return False, guidance, None
 
     if resolved_include_prereleases or targeted_pins:
         supported, reason = prerelease_upgrade_supported(method)
@@ -3203,18 +3270,28 @@ async def perform_upgrade(
     return success, output, installed_version
 
 
+class InstallOutcome(NamedTuple):
+    """Result of an install, including guidance when execution was deferred."""
+
+    success: bool
+    output: str
+    deferred: bool = False
+
+
 async def perform_dependency_refresh(
     *,
     progress: UpgradeProgressCallback | None = None,
     log_path: Path | None = None,
     include_prereleases: bool | None = None,
-) -> tuple[bool, str]:
+) -> InstallOutcome:
     """Refresh dependencies while keeping `deepagents-code` on this version.
 
     Runs `uv tool install -U deepagents-code==<current>` instead of
     `uv tool upgrade deepagents-code`, so compatible dependency releases can be
     picked up without crossing to a newer app version. Only uv-managed installs
     are supported; other install methods cannot safely express this operation.
+    On Windows the refresh is deferred to the user's shell instead (see
+    `_windows_install_deferral`).
 
     Args:
         progress: Optional callback invoked for each output line.
@@ -3223,16 +3300,16 @@ async def perform_dependency_refresh(
             `None`, follows the installed version's channel.
 
     Returns:
-        `(success, output)` — *output* is the combined stdout/stderr, or an
+        The install outcome. `output` is the combined stdout/stderr, or an
             explanatory message when the install method is unsupported, `uv` is
-            unavailable, requirement introspection fails, or the subprocess
-            fails or times out.
+            unavailable, requirement introspection fails, the refresh is
+            deferred, or the subprocess fails or times out.
     """
     supported, reason = dependency_refresh_supported()
     if not supported:
-        return False, reason or ""
+        return InstallOutcome(False, reason or "")
     if not shutil.which("uv"):
-        return False, "`uv` not found on PATH."
+        return InstallOutcome(False, "`uv` not found on PATH.")
 
     from deepagents_code.extras_info import ExtrasIntrospectionError
 
@@ -3245,8 +3322,12 @@ async def perform_dependency_refresh(
         ToolRequirementIntrospectionError,
         ValueError,
     ) as exc:
-        return False, f"{type(exc).__name__}: {exc}"
-    return await _run_install_subprocess(cmd, progress=progress, log_path=log_path)
+        return InstallOutcome(False, f"{type(exc).__name__}: {exc}")
+    if _is_windows():
+        return InstallOutcome(False, _windows_install_deferral(cmd), deferred=True)
+    return InstallOutcome(
+        *await _run_install_subprocess(cmd, progress=progress, log_path=log_path)
+    )
 
 
 async def perform_dependency_refresh_dry_run(
@@ -3674,7 +3755,8 @@ def _dcode_extras_requirement(
     extras survive a `uv tool install` reinstall — a bare `deepagents-code`
     request would replace the tool and drop them. Returns plain
     `deepagents-code` when no extras or version are selected; otherwise the
-    shell-quoted requirement form, which keeps zsh from globbing brackets.
+    requirement quoted by `_shell_quote`, which keeps zsh from globbing
+    brackets.
 
     Args:
         extras: Extra names to encode. Each is validated against PEP 508
@@ -3711,7 +3793,7 @@ def _dcode_extras_requirement(
     requirement = f"deepagents-code{extras_part}{version_suffix}"
     if not names and version is None:
         return requirement
-    return shlex.quote(requirement)
+    return _shell_quote(requirement)
 
 
 def _uv_tool_install_command(
@@ -3746,7 +3828,7 @@ def _uv_tool_install_command(
             `--with` packages. Names already present (compared canonically) are
             not duplicated; genuinely new names are appended after the preserved
             ones. Callers must validate these names before passing them — the
-            builder only `shlex.quote`-s them.
+            builder only quotes them with `_shell_quote`.
         python: Interpreter to pass as `--python` (e.g. `'3.14'`), overriding
             the receipt. When `None`, the receipt's interpreter is reused.
         reinstall: When `True`, add `--reinstall` so uv rebuilds the tool
@@ -3807,7 +3889,7 @@ def _uv_tool_install_command(
     cmd = "uv tool install --reinstall -U" if reinstall else "uv tool install -U"
     python = python if python is not None else _uv_tool_python(data=receipt)
     if python is not None:
-        cmd += f" --python {shlex.quote(python)}"
+        cmd += f" --python {_shell_quote(python)}"
     cmd += f" {requirement}"
     with_packages = list(
         _uv_tool_with_packages(distribution_name=distribution_name, data=receipt)
@@ -3818,7 +3900,7 @@ def _uv_tool_install_command(
             with_packages.append(package)
             known.add(canonicalize_name(package))
     for package in with_packages:
-        cmd += f" --with {shlex.quote(package)}"
+        cmd += f" --with {_shell_quote(package)}"
     if constraints_path is not None or prerelease_strategy is not None:
         return _append_uv_prerelease_flags(
             cmd,
@@ -3840,14 +3922,14 @@ def _append_uv_prerelease_flags(
 
     Emits the scoped pre-release form: a constraints file pinning the exact
     pre-release dependency plus a non-`allow` strategy (e.g.
-    `if-necessary-or-explicit`). The constraints path is `shlex.quote`-d;
-    the strategy is a fixed internal literal.
+    `if-necessary-or-explicit`). The constraints path is quoted with
+    `_shell_quote`; the strategy is a fixed internal literal.
 
     Returns:
         `cmd` with any `--constraints`/`--prerelease` flags appended.
     """
     if constraints_path is not None:
-        cmd += f" --constraints {shlex.quote(str(constraints_path))}"
+        cmd += f" --constraints {_shell_quote(str(constraints_path))}"
     if prerelease_strategy is not None:
         cmd += f" --prerelease {prerelease_strategy}"
     return cmd
@@ -4023,11 +4105,11 @@ def dependency_refresh_dry_run_command(
     requirement = _dcode_extras_requirement(extras, version=version)
     cmd = (
         "uv pip install --dry-run --python "
-        f"{shlex.quote(target_python)} -U {requirement}"
+        f"{_shell_quote(target_python)} -U {requirement}"
     )
     with_packages = _uv_tool_with_packages(distribution_name=distribution_name)
     for package in with_packages:
-        cmd += f" {shlex.quote(package)}"
+        cmd += f" {_shell_quote(package)}"
     if _resolve_include_prereleases(include_prereleases):
         cmd += " --prerelease allow"
     return cmd
@@ -4043,7 +4125,7 @@ def install_package_command(
     The result is built for *execution* (via `perform_install_package`), not for
     display — surfacing raw `uv tool` invocations to the user is intentionally
     avoided. `package` is validated here against PEP 508 grammar and then
-    `shlex.quote`-d by the shared builder: the validation already blocks shell
+    quoted by the shared builder: the validation already blocks shell
     metacharacters, so the quoting is defense in depth that keeps the command
     safe even if the pattern is later loosened.
 
@@ -4497,6 +4579,9 @@ class ExtraInstallOutcome(NamedTuple):
     the update lock another process still holds.
     """
 
+    deferred: bool = False
+    """Whether output is guidance for an install that did not run."""
+
 
 async def perform_install_extra(
     extra: str,
@@ -4512,7 +4597,9 @@ async def perform_install_extra(
     concurrent install, removal, or upgrade cannot rebuild from a stale receipt.
     Editable installs are refused — the caller should rerun their
     `uv tool install --editable` command with `--with 'deepagents-code[<extra>]'`
-    added so the extra is resolved against the editable source.
+    added so the extra is resolved against the editable source. On Windows the
+    install is deferred to the user's shell instead (see
+    `_windows_install_deferral`).
 
     Args:
         extra: The extra name to install. Must satisfy `is_valid_extra_name`;
@@ -4582,6 +4669,10 @@ async def perform_install_extra(
             ValueError,
         ) as exc:
             return ExtraInstallOutcome(False, f"{type(exc).__name__}: {exc}")
+        if _is_windows():
+            return ExtraInstallOutcome(
+                False, _windows_install_deferral(cmd), deferred=True
+            )
         return ExtraInstallOutcome(
             *await _run_install_subprocess(cmd, progress=progress, log_path=log_path)
         )
@@ -4614,6 +4705,9 @@ class ExtraRemovalOutcome(NamedTuple):
     interrupted: bool = False
     """Whether cancellation interrupted a rebuild after command generation."""
 
+    deferred: bool = False
+    """Whether output is guidance for an install that did not run."""
+
 
 async def perform_uninstall_extra(
     extra: str,
@@ -4626,7 +4720,9 @@ async def perform_uninstall_extra(
     The install lock covers both receipt inspection and uv execution, so a
     concurrent upgrade, install, or removal cannot rebuild from a receipt this
     call is midway through replacing. It fail-opens when the lock file is unusable
-    (see `update_install_lock`), so exclusion is best-effort.
+    (see `update_install_lock`), so exclusion is best-effort. On Windows the
+    rebuild is deferred to the user's shell instead (see
+    `_windows_install_deferral`).
 
     Args:
         extra: Extra name to remove. Must satisfy `is_valid_extra_name`; invalid
@@ -4678,6 +4774,10 @@ async def perform_uninstall_extra(
             return ExtraRemovalOutcome(
                 False, "`uv` not found on PATH; extras cannot be removed."
             )
+        if _is_windows():
+            return ExtraRemovalOutcome(
+                False, _windows_install_deferral(cmd), deferred=True
+            )
         try:
             success, output = await _run_install_subprocess(
                 cmd, progress=progress, log_path=log_path
@@ -4707,7 +4807,7 @@ async def perform_install_package(
     *,
     progress: UpgradeProgressCallback | None = None,
     log_path: Path | None = None,
-) -> tuple[bool, str]:
+) -> InstallOutcome:
     """Add an arbitrary `package` to the installed dcode tool environment.
 
     Runs `uv tool install --reinstall -U 'deepagents-code[<extras>]==<current>'
@@ -4719,7 +4819,9 @@ async def perform_install_package(
     rebuild from a stale receipt.
     Editable installs are refused
     — the caller should rerun their `uv tool install --editable` command with
-    `--with <package>` added so it resolves against the editable source.
+    `--with <package>` added so it resolves against the editable source. On
+    Windows the install is deferred to the user's shell instead (see
+    `_windows_install_deferral`).
 
     Args:
         package: The package name to install. Must satisfy
@@ -4730,52 +4832,57 @@ async def perform_install_package(
         log_path: Optional path to persist command output.
 
     Returns:
-        `(success, output)` — on success, *output* is the combined
+        The install outcome. On success, `output` is the combined
             stdout/stderr from the install. On failure it is an explanatory
             message: when the install method is unsupported, `package` is
-            malformed, `uv` is unavailable, or the install subprocess fails or
-            times out.
+            malformed, `uv` is unavailable, the install is deferred, or the
+            install subprocess fails or times out.
     """
     if not is_valid_package_name(package):
-        return False, (
-            f"Invalid package name {package!r}: must match {_PACKAGE_NAME_RE.pattern}"
+        return InstallOutcome(
+            False,
+            f"Invalid package name {package!r}: must match {_PACKAGE_NAME_RE.pattern}",
         )
     method = detect_install_method()
     if method == "unknown":
-        return False, (
+        return InstallOutcome(
+            False,
             "Editable install detected — cannot add packages automatically.\n"
-            + editable_package_hint(package)
+            + editable_package_hint(package),
         )
     if method == "brew":
-        return False, (
+        return InstallOutcome(
+            False,
             "Homebrew install detected — packages can't be added to a brew "
             "install. Reinstall dcode as a uv-managed tool (see the "
-            "installation docs) to enable adding packages."
+            "installation docs) to enable adding packages.",
         )
     if method == "other":
-        return False, (
+        return InstallOutcome(
+            False,
             "Unsupported install method detected — cannot add packages without "
             "knowing which environment provides `dcode`. Reinstall dcode "
             "as a uv-managed tool (see the installation docs) to enable "
-            "adding packages."
+            "adding packages.",
         )
 
     if not shutil.which("uv"):
-        return False, (
+        return InstallOutcome(
+            False,
             "Package installs require uv, which was not found. Reinstall "
             "dcode following the installation docs so packages can be "
-            "added."
+            "added.",
         )
 
     with update_install_lock() as holding_update_lock:
         if not holding_update_lock:
-            return False, UPDATE_LOCK_CONTENDED_MESSAGE
+            return InstallOutcome(False, UPDATE_LOCK_CONTENDED_MESSAGE)
         from deepagents_code.extras_info import ExtrasIntrospectionError
 
         try:
             cmd = install_package_command(package)
         except ValueError as exc:
-            return False, f"{type(exc).__name__}: {exc}"
+            return InstallOutcome(False, f"{type(exc).__name__}: {exc}")
         except (ExtrasIntrospectionError, ToolRequirementIntrospectionError) as exc:
             # Distinct from a malformed package name: the running distribution's own
             # metadata, or the uv tool receipt, could not be read or parsed. Leave a
@@ -4787,8 +4894,12 @@ async def perform_install_package(
                 package,
                 exc_info=True,
             )
-            return False, f"{type(exc).__name__}: {exc}"
-        return await _run_install_subprocess(cmd, progress=progress, log_path=log_path)
+            return InstallOutcome(False, f"{type(exc).__name__}: {exc}")
+        if _is_windows():
+            return InstallOutcome(False, _windows_install_deferral(cmd), deferred=True)
+        return InstallOutcome(
+            *await _run_install_subprocess(cmd, progress=progress, log_path=log_path)
+        )
 
 
 # ---------------------------------------------------------------------------

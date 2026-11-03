@@ -78,8 +78,8 @@ build-backend = "setuptools.build_meta"
 
 # TODO: replace with released versions once langchain-ai/langchain#41582 ships.
 [tool.uv.sources]
-langchain-core = { git = "https://github.com/langchain-ai/langchain", subdirectory = "libs/core", rev = "f658d4e3e2dcc3d0c26649cd9cfb93b73af80762" }
-langchain = { git = "https://github.com/langchain-ai/langchain", subdirectory = "libs/langchain_v1", rev = "f658d4e3e2dcc3d0c26649cd9cfb93b73af80762" }
+langchain-core = { git = "https://github.com/langchain-ai/langchain", subdirectory = "libs/core", rev = "ea39d1caa7dd036e92ed7f65882f4e1ceba01811" }
+langchain = { git = "https://github.com/langchain-ai/langchain", subdirectory = "libs/langchain_v1", rev = "ea39d1caa7dd036e92ed7f65882f4e1ceba01811" }
 
 [tool.ruff]
 line-length = 150

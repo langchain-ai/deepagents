@@ -23,7 +23,7 @@ from langchain.tools import BaseTool, ToolRuntime
 from langchain_core._api.beta_decorator import warn_beta
 from langchain_core.exceptions import ModelRefusalError
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AIMessage, AnyMessage, BaseMessage, HumanMessage, ToolMessage, get_refusal
+from langchain_core.messages import AIMessage, AnyMessage, BaseMessage, HumanMessage, RefusalContentBlock, ToolMessage, get_refusal
 from langchain_core.runnables import Runnable, RunnableConfig
 from langchain_core.tools import StructuredTool
 from langgraph.types import Command
@@ -82,27 +82,25 @@ _FORK_RECURSION_REFUSAL = (
 )
 
 
-def _refusal_notice(error: ModelRefusalError) -> str:
+def _refusal_notice(refusal: RefusalContentBlock | None) -> str:
     """Return the task result reported when a model in the subagent refused."""
     notice = "The subagent stopped because a model refused the request."
-    if error.category:
-        notice += f" Category: {error.category}."
-    if error.explanation:
-        notice += f' Explanation: "{error.explanation}"'
+    if refusal and (category := refusal.get("extras", {}).get("category")):
+        notice += f" Category: {category}."
+    if refusal and (text := refusal.get("refusal")):
+        notice += f' Explanation: "{text}"'
     return notice + " Retrying the same request is unlikely to succeed; rephrase it or continue without it."
 
 
-def _final_refusal(messages: Sequence[BaseMessage]) -> ModelRefusalError | None:
+def _final_refusal(messages: Sequence[BaseMessage]) -> RefusalContentBlock | None:
     """Return the refusal in the subagent's last message, if it ended on one."""
-    if messages and (refusal := get_refusal(messages[-1])):
-        return ModelRefusalError.from_refusal(refusal, raw_message=messages[-1])
-    return None
+    return get_refusal(messages[-1]) if messages else None
 
 
 def _refusal_notice_for(error: Exception) -> str | None:
     """Return the task result for an error caused by a refusal, or `None` to re-raise it."""
     if isinstance(error, ModelRefusalError):
-        return _refusal_notice(error)
+        return _refusal_notice(_final_refusal([error.raw_message]) if error.raw_message else None)
     if isinstance(error, StructuredOutputValidationError) and (refusal := _final_refusal([error.ai_message])):
         return _refusal_notice(refusal)
     return None

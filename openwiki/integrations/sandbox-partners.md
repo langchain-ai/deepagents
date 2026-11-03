@@ -3,9 +3,6 @@ type: integration architecture
 title: Sandbox and Partner Integrations
 description: How dcode selects and owns optional remote sandbox providers, and how the separate QuickJS partner supplies request-aware, durable in-process JavaScript REPL middleware.
 tags: [dcode, sandbox, integrations, providers, quickjs, persistence]
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-10-31T08:04:00.426Z
 sources:
   - id: openwiki-source-bcf1f68e7989964d2fcec7aa
     resource: repo://libs/code/deepagents_code/integrations/sandbox_factory.py
@@ -27,6 +24,8 @@ sources:
     resource: repo://libs/partners/quickjs/langchain_quickjs/middleware.py
   - id: openwiki-source-224af38a099019bb2a44f0a7
     resource: repo://libs/partners/quickjs/Makefile
+  - id: openwiki-source-b38d20ec21c25c8c726dc1b6
+    resource: repo://libs/partners/quickjs/pyproject.toml
   - id: openwiki-source-cc563a9d4d128abd95636fe3
     resource: repo://libs/partners/quickjs/tests/unit_tests/smoke_tests/snapshots/quickjs_system_prompt_no_timeout.md
   - id: openwiki-source-c61950428962577991516f6b
@@ -37,7 +36,10 @@ sources:
     resource: repo://libs/partners/quickjs/tests/unit_tests/test_repl_middleware.py
   - id: openwiki-source-7902201033603c756e6af134
     resource: repo://libs/partners/quickjs/tests/unit_tests/test_snapshot.py
-generated: { by: "openwiki/0.4.2", at: "2026-10-31T08:04:00.426Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-11-03T08:04:09.572Z" }
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-11-03T08:04:09.572Z
 ---
 
 # Sandbox and Partner Integrations
@@ -70,7 +72,7 @@ agent = create_deep_agent(
 )
 ```
 
-`CodeInterpreterMiddleware` registers the `eval` tool (customizable with `tool_name`) and appends a system-prompt addendum on model calls. The public tool description advertises JavaScript execution with no filesystem, network, or real clock. It also documents the configured persistence mode. The interpreter uses `quickjs-rs`; the partner distribution depends on Deep Agents, LangChain, LangGraph, `quickjs-rs`, and `bsdiff4`.
+`CodeInterpreterMiddleware` registers the `eval` tool (customizable with `tool_name`) and appends a system-prompt addendum on model calls. The public tool description advertises JavaScript execution with no filesystem, network, or real clock. It also documents the configured persistence mode. At this revision, dcode requires `langchain-quickjs>=0.3.11,<0.4.0`; the independently released partner is `0.3.11` and depends on Deep Agents, LangChain, LangGraph, `quickjs-rs`, and `bsdiff4`.
 
 The absence of ambient host APIs is valuable confinement for pure computation, but not a complete security boundary. `console` is an optional host bridge, and enabling programmatic tool calling (PTC) or subagent dispatch gives JavaScript the authority of the selected agent tools or subagents. A remote sandbox instead moves execution to a provider-managed environment with its own identity, mounts, egress, credentials, quotas, and lifecycle. Choose and secure each boundary independently.
 
@@ -128,7 +130,7 @@ With `snapshot_signing_key`, HMAC-SHA256 covers the materialized bytes and priva
 On every model call, `wrap_model_call` or `awrap_model_call` calls `_prepare_for_call()` with the current `ModelRequest`. The base prompt is cached only by construction-time configuration; the request-sensitive portion is not assumed to be global:
 
 - The current request tool list is read after upstream middleware may have filtered it.
-- With `ptc` configured, `filter_tools_for_ptc()` applies its explicit allowlist and excludes the REPL tool itself. The selected `BaseTool` instances are cached by private slot ID, and the rendered `tools.<camelCase>(input)` API reference is cached only while the same tool identities remain exposed for that slot.
+- With `ptc` configured, `filter_tools_for_ptc()` applies its explicit allowlist and excludes the REPL tool itself. It also reserves `task`: it cannot be exposed as `tools.task`, because subagent dispatch uses the separate top-level bridge. The selected `BaseTool` instances are cached by private slot ID, and the rendered `tools.<camelCase>(input)` API reference is cached only while the same tool identities remain exposed for that slot.
 - At eval time, the slot installs or updates the `globalThis.tools` namespace from those current bindings. The namespace is rebuilt to contain only active names; host bridges already registered in a live context may be reused, but inactive names are removed from `tools`.
 - A `task(...)` guidance section is appended only when `subagents=True` **and** the current request contains a recognized Deep Agents `task` tool. Thus the model is not prompted to dispatch subagents merely because the middleware exists.
 

@@ -1,11 +1,11 @@
 ---
 type: maintainer routing guide
 title: Deep Agents Monorepo Quickstart
-description: Choose the Deep Agents package that owns a change, run its narrowest meaningful validation, and continue to the runtime, evaluation, CI, dependency, or release guide that owns the detailed procedure.
-tags: [deepagents, maintenance, routing, testing, ci]
+description: Route a Deep Agents monorepo change to its owning independently released package, run the relevant focused validation, and continue to the detailed runtime, integration, testing, or release guide.
+tags: [deepagents, maintenance, routing, testing, releases]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-11-02T08:04:35.090Z
+    at: 2026-11-03T08:04:09.572Z
 sources:
   - id: openwiki-source-9a1c436646ef8c4f6dde787a
     resource: repo://.github/RELEASING.md
@@ -43,33 +43,30 @@ sources:
     resource: repo://libs/talon/pyproject.toml
   - id: openwiki-source-482fa4ca84f42b04ba025fc1
     resource: repo://release-please-config.json
-generated: { by: "openwiki/0.4.2", at: "2026-11-02T08:04:35.090Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-11-03T08:04:09.572Z" }
 ---
 
 # Deep Agents Monorepo Quickstart
 
-Start with the package that owns the behavior or published contract—not necessarily the product in which the symptom appeared. `libs/` contains independently versioned packages. Each package owns its manifest, Makefile, source, tests, and README; run `make help` in that directory rather than assuming a target is shared across packages.
+Start with the package that owns the published contract or runtime behavior—not necessarily the product where a symptom appears. This is a monorepo of independently versioned packages under `libs/`; each package owns its `pyproject.toml`, `Makefile`, source, tests, and README. Use `make help` in that package rather than assuming that commands or Python versions are shared.
 
 ## Route the change
 
-| If the change concerns… | Owning package | First focused validation | Continue with |
+| Change concerns… | Owner and boundary | Start validation | Read next |
 | --- | --- | --- | --- |
-| Agent construction, middleware, backends, tools, permissions, subagents, profiles, or graph state | `libs/deepagents/` | `make test TEST_FILE=tests/unit_tests/<nearest test>.py` | [Architecture overview](./architecture/overview.md), [source map](./architecture/source-map.md), [testing guide](./testing/testing-guide.md) |
-| The `dcode` CLI/TUI, headless sessions, workspace, configuration, persistence, plugins, MCP, or terminal behavior | `libs/code/` | `make test TEST_FILE=tests/unit_tests/<nearest test>.py`, then `make lint` | [Development operations](./operations/development.md), [testing guide](./testing/testing-guide.md) |
-| An editor-facing Agent Client Protocol server or protocol behavior | `libs/acp/` | `make test TEST_FILE=tests/<nearest test>.py` | [ACP integration](./integrations/acp.md) and then Code if its ACP specialization changes |
-| Long-running host behavior—channels, schedules, approvals, history, managed MCP, or `/effort` | `libs/talon/` | `make test TEST_FILE=tests/<nearest test>.py` | [Talon integration](./integrations/talon.md) |
-| REPL lifecycle, prompt/tool bindings, snapshots, persistence, or subagent guidance | `libs/partners/quickjs/` | `make test TEST_FILE=tests/unit_tests/<nearest test>.py` | [Sandbox and partner integrations](./integrations/sandbox-partners.md), then the Code or evals consumer seam |
-| A Daytona, Modal, Runloop, Vercel, or other provider/sandbox integration | `libs/partners/<provider>/` | Its `make help`, then its narrowest test target | [Sandbox and partner integrations](./integrations/sandbox-partners.md) |
-| Deterministic eval-harness behavior, real-model behavioral evaluation, Harbor, or result reporting | `libs/evals/` | `make test TEST_FILE=tests/unit_tests/<nearest test>.py` | [Run Evals](./workflows/run-evals.md) |
-| Root composite GitHub Action behavior | Root `action.yml` and `.github/` workflow coverage | The action/workflow contract test named by the integration guide | [GitHub Action integration](./integrations/github-action.md) |
-| CI selection, workflow security, labels, release-note automation, or a CI gate | `.github/workflows/` and its helper/test domain | Workflow contract tests | [CI, labels, and workflow security](./operations/ci-labeling.md) |
-| Published requirements, sibling sources, a package lock, or a release | Affected package `pyproject.toml` and `uv.lock` | Package validation; use the documented lock closure/checker | [Development, dependencies, lockfiles, and releases](./operations/development.md) |
+| Agent assembly, middleware, backends, tools, permissions, subagents, skills, or graph state | `libs/deepagents/`: reusable SDK | `make test TEST_FILE=tests/unit_tests/<nearest test>.py` | [Architecture overview](./architecture/overview.md), [source map](./architecture/source-map.md), [profiles and models](./concepts/profiles-models.md) |
+| The terminal product: CLI/TUI, local server, headless session, workspace, configuration, persistence, plugins, MCP, or dcode ACP specialization | `libs/code/`: `deepagents-code`, with `dcode` as a console entry point | `make test TEST_FILE=tests/unit_tests/<nearest test>.py`, then `make lint` | [Run a dcode session](./workflows/run-dcode-session.md), [MCP](./integrations/mcp.md), [testing guide](./testing/testing-guide.md) |
+| Generic editor-facing Agent Client Protocol graph hosting or protocol translation | `libs/acp/`: ACP adapter | `make test TEST_FILE=tests/<nearest test>.py` | [ACP integration](./integrations/acp.md) |
+| Long-running local hosting: channels, schedules, approvals, history, or managed MCP | `libs/talon/`: experimental host consuming SDK and dcode | `make test TEST_FILE=tests/<nearest test>.py` | [Talon integration](./integrations/talon.md), [testing guide](./testing/testing-guide.md) |
+| Evaluation harnesses, real-model trajectory evaluation, Harbor, or result reporting | `libs/evals/`: evaluation boundary, not a serving runtime | Its `make help`, then the nearest test/evaluation seam | [Architecture overview](./architecture/overview.md), [testing guide](./testing/testing-guide.md) |
+| QuickJS REPL/prompt snapshots or a sandbox/provider implementation | `libs/partners/quickjs/` or `libs/partners/<provider>/` | QuickJS: `make test TEST_FILE=tests/unit_tests/<nearest test>.py`; otherwise use that package's `make help` | [Sandbox and partner integrations](./integrations/sandbox-partners.md) |
+| Dependency metadata, sibling checkout mappings, a lockfile, or a managed release | Affected package manifest and lockfile, plus reverse local consumers | Package validation, then the documented lock closure/check | [Development, dependencies, lockfiles, and releases](./operations/development.md) |
 
-QuickJS is a provider/REPL package even when the visible behavior is in Code or evals. Talon is a host that consumes the SDK and Code. Test the owner first, then validate the consumer seam when a changed dependency crosses it.
+The core relationships explain the usual follow-up work: ACP consumes the SDK; dcode consumes the SDK, ACP, and partner integrations; evals consumes the SDK, dcode, and QuickJS; and Talon consumes the SDK and dcode. Test the owner first, then test the consumer seam when an interface crosses one of those boundaries. QuickJS remains a partner package even when a visible effect appears in dcode or evals.
 
 ## Work package-first
 
-Use `uv` for interpreters, environments, and dependencies, and the owning package's Makefile as the command source of truth. `uv` provisions the applicable interpreter automatically; do not introduce a repository-wide Python pin. Synchronize and validate from the package directory:
+Use `uv` for interpreters, environments, and dependencies. `uv` provisions the applicable interpreter, so do not add a repository-wide Python pin; each package declares its own supported range. Use the owning Makefile as the command source of truth:
 
 ```bash
 cd libs/deepagents
@@ -78,36 +75,31 @@ make test TEST_FILE=tests/unit_tests/<nearest test>.py
 make lint
 ```
 
-Keep deterministic, network-free coverage in `tests/unit_tests/`; reserve `tests/integration_tests/` for networked contracts. Unaccepted pytest warnings fail the suite. The standard SDK, Code, ACP, Talon, and QuickJS test targets disable network sockets while permitting Unix sockets. Talon's target also runs WhatsApp bridge Node tests before its Python tests, so even a narrowed Python target exercises that bridge prerequisite.
+Keep deterministic, network-free coverage in `tests/unit_tests/` and reserve `tests/integration_tests/` for networked contracts. Unaccepted pytest warnings fail the suite. The normal SDK, dcode, ACP, Talon, and QuickJS test targets disable network sockets while allowing Unix sockets. Talon's `make test` runs WhatsApp bridge Node tests before its Python tests.
 
-The focused interface differs by package. SDK and Code accept `TEST_FILE`; Code's `make check` adds its local CI-parity gates, while QuickJS provides `make update_snapshots` for intentional prompt-smoke snapshot updates. Read the package Makefile before choosing a target.
+SDK and dcode accept `TEST_FILE` for focused test selection. dcode's `make check` adds its local CI-parity gates. QuickJS defaults `make test` to unit tests, accepts `TEST_FILE`, and provides `make update_snapshots` for intentional prompt-smoke snapshot changes. Consult [Testing Guide](./testing/testing-guide.md) for the behavioral seams to cover rather than expanding a narrow regression into a broad suite by default.
 
-## Dependencies and lockfiles
+## Dependencies, locks, and compatibility
 
-Treat the three manifest layers as different contracts:
+Keep these layers separate:
 
-- **`[project.dependencies]` and `requires-python`** are the publishable downstream contract.
-- **`[tool.uv.sources]`** maps dependencies to sibling checkouts during monorepo development; it does not alter published metadata.
-- **`uv.lock`** is the owning project's generated resolution, not a repository-wide environment.
+- **Published metadata**—`[project.dependencies]`, extras, and `requires-python`—is the installer-visible contract.
+- **Checkout wiring**—`[tool.uv.sources]`—maps sibling sources for monorepo development and does not change wheel metadata.
+- **Resolution**—the package-local `uv.lock`—is generated for that project; it is not a repository-wide environment.
 
-The main local dependency direction is SDK → ACP, Code, evals, Talon, and QuickJS; Code also consumes ACP and partner integrations, and evals consumes Code and QuickJS. Local editable sources can mask an inadequate published requirement, so validate the installed compatibility boundary when changing a package interface. In particular, raise Code's exact SDK pin in the same PR that first uses newer SDK behavior.
+Local editable sources can hide an inadequate published requirement. In particular, `deepagents-code` requires `deepagents==0.7.32`; raise that exact pin in the same pull request that first relies on newer SDK behavior. After a manifest change, regenerate the owner lock and its reverse local-source consumers, then use `make -C libs lock-check` as additional fan-out validation. The [development guide](./operations/development.md) documents the closure-aware command and release safeguards.
 
-For a manifest change, regenerate the owner lock and its reverse local-source consumers—not merely the file that was edited. The dependency guide documents the closure helper and targeted Python policy. `make -C libs lock-check` is useful additional fan-out validation; it discovers library packages and example projects, but package locks remain project-specific.
+## CI and release orientation
 
-## What CI will validate
+On pull requests, CI selects lint and test jobs from package path filters. SDK changes select dependent package work, and relevant CI workflow or composite-action changes are included in package filters. For an SDK-only pull request that does not change QuickJS, CI additionally runs QuickJS system-prompt smoke tests against the editable SDK; pushes and QuickJS-changing pull requests run the full QuickJS suite.
 
-On pull requests, the main CI workflow selects changed package jobs; an SDK change also selects dependent package tests. A push to `main` runs the package matrix. CI and action changes are included in the relevant package filters, so workflow changes receive package coverage rather than being treated as documentation-only edits. Use the CI guide for the security and exception semantics of the final gate—especially the narrow Talon failure waiver and curated-release-notes inheritance—rather than encoding those exceptions into package changes.
+Release Please manages separate draft release pull requests for the SDK, ACP, dcode, Talon, and listed partner packages. Merging a reviewed managed release PR triggers the release workflow that creates the PyPI and GitHub releases. Adding a partner is therefore repository wiring as well as package work: coordinate CI selection, labels, release configuration, secrets, and integration coverage.
 
-For a QuickJS prompt-snapshot compatibility seam, an SDK-only pull request additionally runs the QuickJS system-prompt smoke test when the QuickJS package itself is unchanged. This protects snapshots against SDK wording drift without running the full QuickJS suite redundantly.
+## Continue in the detailed guide
 
-## Choose the operational guide
-
-- **How the runtime is assembled, executes, and persists state:** [Architecture overview](./architecture/overview.md)
-- **Where a runtime concern is implemented:** [Architecture source map](./architecture/source-map.md)
-- **Focused, integration, regression, and workflow validation:** [Testing guide](./testing/testing-guide.md)
-- **Real-model evals, Harbor, artifacts, and unified evaluation:** [Run Evals](./workflows/run-evals.md)
-- **CI job selection, labels, trusted workflow boundaries, and gates:** [CI, labels, and workflow security](./operations/ci-labeling.md)
-- **Setup, dependency contracts, lock closure, and releases:** [Development, dependencies, lockfiles, and releases](./operations/development.md)
-- **Release Please:** each managed component receives a separate draft release PR; after its reviewed PR is merged, the release workflow publishes the GitHub and PyPI releases. Start with the [development operations guide](./operations/development.md) for the complete release path.
-
-Adding a partner is a repository-wide extension, not just a new `libs/partners/` directory: package CI selection, labels, release configuration, secret inventory, integration coverage, and related workflow wiring must be coordinated. Follow the partner onboarding guidance before opening that work.
+- **Runtime layering, package boundaries, and ownership:** [Repository Architecture Overview](./architecture/overview.md)
+- **Locate the responsible implementation area:** [Architecture Source Map](./architecture/source-map.md)
+- **dcode interactive, headless, and ACP execution:** [Run a dcode Session](./workflows/run-dcode-session.md)
+- **Protocol and provider boundaries:** [ACP](./integrations/acp.md), [MCP](./integrations/mcp.md), and [Sandbox and Partner Integrations](./integrations/sandbox-partners.md)
+- **Focused regression and integration coverage:** [Testing Guide](./testing/testing-guide.md)
+- **Setup, lockfile closure, and managed publication:** [Development, Dependencies, Lockfiles, and Releases](./operations/development.md)

@@ -1,255 +1,135 @@
 ---
 type: testing guide
 title: Testing Guide
-description: Focused, network-free guidance for testing observable Deep Agents middleware contracts, QuickJS prompt and REPL lifecycle behavior, and Talon reasoning-effort selection, persistence, and provider translation.
-tags: [testing, pytest, deepagents, quickjs, talon, middleware, prompts]
+description: Package-scoped guidance for running and extending dcode, QuickJS, and Talon tests around startup, configuration, OAuth, plugins, hooks, tracing, and runtime lifecycle contracts.
+tags: [testing, pytest, dcode, quickjs, talon, mcp, hooks]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-10-31T08:04:00.426Z
+    at: 2026-11-03T08:04:09.572Z
 sources:
-  - id: openwiki-source-164e2da859b5277df81c7d94
-    resource: repo://.github/workflows/ci.yml
   - id: openwiki-source-8037e2358a2c4f9b2c722a11
     resource: repo://AGENTS.md
-  - id: openwiki-source-e51c4102234507d1529a2440
-    resource: repo://libs/deepagents/deepagents/middleware/async_subagents.py
-  - id: openwiki-source-b93c32bc33a8fa17b52b8a0e
-    resource: repo://libs/deepagents/deepagents/middleware/rubric.py
-  - id: openwiki-source-66cf9d0832d3cb55bec2b5ed
-    resource: repo://libs/deepagents/deepagents/middleware/skills.py
-  - id: openwiki-source-0f308f1610986e2f3ed6d53c
-    resource: repo://libs/deepagents/Makefile
-  - id: openwiki-source-a6f0952b514b04c99bc51705
-    resource: repo://libs/deepagents/tests/unit_tests/middleware/test_pinned_skills.py
-  - id: openwiki-source-023a5fe4719690fecce2bbf1
-    resource: repo://libs/deepagents/tests/unit_tests/middleware/test_rubric_middleware.py
-  - id: openwiki-source-8e7076889e81540fe4fcb8c5
-    resource: repo://libs/deepagents/tests/unit_tests/middleware/test_summarization_middleware.py
-  - id: openwiki-source-6ce85b02eabe462f99e0c912
-    resource: repo://libs/deepagents/tests/unit_tests/test_async_subagents.py
-  - id: openwiki-source-10e4084b6aa57e5cc82620b3
-    resource: repo://libs/deepagents/tests/unit_tests/test_end_to_end.py
+  - id: openwiki-source-006b62af9993da1b48c11de8
+    resource: repo://libs/code/Makefile
+  - id: openwiki-source-599fbd14ff0c0636bf987169
+    resource: repo://libs/code/tests/unit_tests/hooks/test_engine.py
+  - id: openwiki-source-3a86b75aef82efb4e1c2e384
+    resource: repo://libs/code/tests/unit_tests/plugins/test_plugin_updates.py
+  - id: openwiki-source-11d6c59d85493653aee76558
+    resource: repo://libs/code/tests/unit_tests/test_app.py
+  - id: openwiki-source-2843d86bbaef4173c77ca3e1
+    resource: repo://libs/code/tests/unit_tests/test_config.py
+  - id: openwiki-source-8d8895b61321bf752c322cd7
+    resource: repo://libs/code/tests/unit_tests/test_git_trace_integration.py
+  - id: openwiki-source-751c5d5cc88fba59d93e7cc1
+    resource: repo://libs/code/tests/unit_tests/test_headless_resume.py
+  - id: openwiki-source-26017a12b2a7ce9851b888a4
+    resource: repo://libs/code/tests/unit_tests/test_mcp_auth.py
+  - id: openwiki-source-d8ac92b7d01d6c8ed92689c6
+    resource: repo://libs/code/tests/unit_tests/test_turn_trace.py
   - id: openwiki-source-fb60ee46c55b974b8341651c
     resource: repo://libs/DEVELOPMENT.md
-  - id: openwiki-source-9015d76fe513ec6a3f55fe3d
-    resource: repo://libs/partners/quickjs/langchain_quickjs/_prompt.py
-  - id: openwiki-source-e93ea9e1f8eb3113683abb76
-    resource: repo://libs/partners/quickjs/langchain_quickjs/middleware.py
   - id: openwiki-source-224af38a099019bb2a44f0a7
     resource: repo://libs/partners/quickjs/Makefile
   - id: openwiki-source-c61950428962577991516f6b
     resource: repo://libs/partners/quickjs/tests/unit_tests/smoke_tests/test_system_prompt.py
-  - id: openwiki-source-06bd07c824730c626bd7efd5
-    resource: repo://libs/partners/quickjs/tests/unit_tests/test_prompt_modes.py
-  - id: openwiki-source-649816c915bd7d9b306918d3
-    resource: repo://libs/partners/quickjs/tests/unit_tests/test_repl_middleware.py
-  - id: openwiki-source-81698d033a5726401d48b135
-    resource: repo://libs/talon/deepagents_talon/config.py
-  - id: openwiki-source-9ee5b3034d091a886c8fdda4
-    resource: repo://libs/talon/deepagents_talon/effort.py
-  - id: openwiki-source-d8846ad7008aa3a1566511a7
-    resource: repo://libs/talon/deepagents_talon/hook_transcripts.py
-  - id: openwiki-source-6801a88de6305bc8cbdd259f
-    resource: repo://libs/talon/deepagents_talon/host.py
-  - id: openwiki-source-f04ce33d1db21a61b1e6e8b3
-    resource: repo://libs/talon/deepagents_talon/model_selection.py
-  - id: openwiki-source-665a21e2fbd09a89d3f13ac0
-    resource: repo://libs/talon/deepagents_talon/runtime.py
   - id: openwiki-source-ba53b2ab73965694b2510a58
     resource: repo://libs/talon/Makefile
-  - id: openwiki-source-022c52172483653e0c3a3eaf
-    resource: repo://libs/talon/tests/unit_tests/test_effort.py
-  - id: openwiki-source-c0f076507fca2b1a9eaae92f
-    resource: repo://libs/talon/tests/unit_tests/test_hook_transcripts.py
-  - id: openwiki-source-7dcd7e37c18e77553a46cce3
-    resource: repo://libs/talon/tests/unit_tests/test_hooks.py
-generated: { by: "openwiki/0.4.2", at: "2026-10-31T08:04:00.426Z" }
+  - id: openwiki-source-4d6726e17c8a0c78539a7d33
+    resource: repo://libs/talon/tests/test_runtime.py
+generated: { by: "openwiki/0.4.2", at: "2026-11-03T08:04:09.572Z" }
 ---
 
 # Testing Guide
 
-Put a network-free regression in the owning package's `tests/unit_tests/` tree and make it prove an observable contract: returned or persisted state, model-visible messages, a safe side effect, emitted notification, or cleanup result. Put a test that genuinely crosses a network boundary in `tests/integration_tests/`. Do not add `@pytest.mark.asyncio`: package configuration enables automatic asyncio handling. Warnings not explicitly accepted by the repository fail the suite. See [Development](../operations/development.md), [runtime behavior](../architecture/runtime-behavior.md), [middleware catalog](../concepts/middleware-catalog.md), and [Talon](../integrations/talon.md).
+Put a network-free regression in the owning package's `tests/unit_tests/` tree; reserve `tests/integration_tests/` for a real network boundary. Test an observable contract—persisted state, visible message, wire payload, filesystem result, or safe failure—not helper ordering. Packages use automatic asyncio handling, so do not add `@pytest.mark.asyncio`; unaccepted pytest warnings fail the suite. See [Development](../operations/development.md), [MCP](../integrations/mcp.md), [Plugins](../concepts/plugins.md), and [trace attribution](../concepts/trace-attribution.md).
 
-## Run the owning package command
+## Run the narrow package target
 
-Use the package Makefile rather than an ad hoc pytest command. It preserves the package's dependency group, coverage settings, socket policy, parallelism, and timeout.
+Use the owning Makefile so the dependency group, coverage, socket policy, timeout, and package hooks match CI.
 
 ```bash
-make -C libs/deepagents test TEST_FILE=tests/unit_tests/middleware/test_rubric_middleware.py
-make -C libs/deepagents test TEST_FILE=tests/unit_tests/middleware/test_pinned_skills.py
-make -C libs/deepagents test TEST_FILE=tests/unit_tests/middleware/test_summarization_middleware.py
-make -C libs/deepagents test TEST_FILE=tests/unit_tests/test_async_subagents.py
-make -C libs/deepagents test TEST_FILE=tests/unit_tests/test_end_to_end.py PYTEST_EXTRA='-k RubricMiddleware'
-make -C libs/partners/quickjs test TEST_FILE=tests/unit_tests/test_prompt_modes.py
-make -C libs/partners/quickjs test TEST_FILE=tests/unit_tests/test_repl_middleware.py
+make -C libs/code test TEST_FILE=tests/unit_tests/test_app.py
+make -C libs/code test TEST_FILE=tests/unit_tests/test_config.py
+make -C libs/code test TEST_FILE=tests/unit_tests/test_headless_resume.py
+make -C libs/code test TEST_FILE=tests/unit_tests/test_mcp_auth.py
+make -C libs/code test TEST_FILE=tests/unit_tests/plugins/test_plugin_updates.py
+make -C libs/code test TEST_FILE=tests/unit_tests/hooks/test_engine.py
+make -C libs/code test TEST_FILE=tests/unit_tests/test_git_trace_integration.py
+make -C libs/code test TEST_FILE=tests/unit_tests/test_turn_trace.py
 make -C libs/partners/quickjs test TEST_FILE=tests/unit_tests/smoke_tests/test_system_prompt.py
 make -C libs/partners/quickjs update_snapshots
 make -C libs/talon test TEST_FILE=tests/test_runtime.py
-make -C libs/talon test TEST_FILE=tests/unit_tests/test_effort.py
-make -C libs/talon test TEST_FILE=tests/unit_tests/test_hooks.py
-make -C libs/talon test TEST_FILE=tests/unit_tests/test_hook_transcripts.py
 ```
 
-`libs/deepagents` defaults `TEST_FILE` to `tests/unit_tests/`, runs pytest with xdist, and disables sockets except Unix sockets; its integration aliases select `tests/integration_tests/` and set a 30-second timeout. QuickJS defaults to `tests/unit_tests/`, runs socket-disabled pytest, and provides `update_snapshots` for only the system-prompt smoke suite. Talon's `test` target first runs its WhatsApp bridge tests, then runs socket-disabled pytest with a 10-second timeout; it accepts the same `TEST_FILE` and `PYTEST_EXTRA` narrowing. Follow a behavior change with the owning package's `make lint`.
+`libs/code` defaults to `tests/unit_tests/`, uses xdist, and disables sockets except Unix sockets; its integration target selects `tests/integration_tests/` with a 30-second timeout. QuickJS also defaults to unit tests with sockets disabled, while Talon's target runs its WhatsApp bridge tests before socket-disabled pytest with a 10-second timeout. Run `make lint` in the changed package after focused tests pass.
 
-## QuickJS prompts and REPL lifecycle
+## Startup, reload, and resume: test ordering at the UI boundary
 
-Test the public model contract at two complementary seams. `test_prompt_modes.py` calls the prompt renderers directly and should assert mode-specific language in all three representations that users and models receive: the system addendum, the eval argument documentation, and the eval tool description. The contract is `thread` state across calls and turns, `turn` state only within one turn, and `call` state never across invocations. Also cover timeout omission as an observable absence: no timeout wording or malformed `None`/`inf` text when timeout is disabled.
-
-At the middleware seam, give `CodeInterpreterMiddleware` a controlled `ModelRequest` and inspect the request handed to the handler. Assert that exactly one rendered snippet extends the system message, that its tool name, memory limit, mode, and timeout are visible, and that subagent guidance appears only when a live `task` tool is available and subagents are enabled. With PTC configured, construct the request with the actual exposed tool set; filtering occurs at model-call time, so test the model-visible prompt/API reference rather than the prompt-cache implementation or helper-call order.
+`DeepAgentsApp` has asynchronous startup, history restoration, model adoption, and queue draining. A regression test should use Textual's local test harness and controlled server/session doubles, then assert what the user can observe: an initial prompt remains queued until `ServerReady`; restored history arrives before a startup command; a resumed model is adopted before the first submission; and failure to adopt it blocks that submission. On reconnect, ensure history is not loaded again and queued work drains only when the session is usable.
 
 ```mermaid
-flowchart TD
-    Start["Agent starts"] --> Before["before_agent assigns slot"]
-    Before --> Restore{"Thread mode and valid snapshot"}
-    Restore -->|yes| Repl["Restore REPL state"]
-    Restore -->|no| Repl
-    Repl --> Calls["Eval calls in active slot"]
-    Calls --> Finish["after_agent clears per-slot prompt bindings"]
-    Finish --> Thread{"Thread mode"}
-    Thread -->|yes| Snapshot["Create and persist snapshot then evict slot"]
-    Thread -->|no| Evict["Evict slot"]
+sequenceDiagram
+    participant App
+    participant Session
+    participant Server
+    App->>Server: begin startup
+    App->>Session: restore resumed history
+    Session-->>App: history and saved model
+    App->>Server: server ready
+    App->>App: adopt model then submit queued input
 ```
 
-*QuickJS allocates a slot lazily; only `thread` mode carries a snapshot through the next agent run.*
+*The startup tests protect user-visible ordering rather than implementation task scheduling.*
 
-Use `test_repl_middleware.py` for this lifecycle and its failure boundaries. Drive JavaScript through the REPL to prove state persistence or isolation, not registry internals: a second evaluation sees a binding in the same REPL, a different thread does not, and a registry reset removes globals. For middleware state, assert the slot/state update and externally visible behavior: `thread` snapshots are restored only when admissible, while `turn` and `call` evict state at the end of the agent run. Include a signed-snapshot negative case when changing snapshot authentication: a missing or tampered tag must prevent restoration and clear stale persisted data. Keep sync and async hook paths aligned.
+Use `test_config.py` for configuration transitions that cross process and environment boundaries. In particular, a project-directory switch must refresh managed `.env` values while retaining shell-supplied values, and reloading must restore the user's LangSmith environment over an in-process agent override. Exercise malformed carrier data as a safe refusal: report it without replacing it with a newly trusted value.
 
-### Prompt snapshots and the SDK-only CI seam
+For `dcode -r`, isolate the session store in `test_headless_resume.py`. A valid target supplies its saved agent and cwd; missing IDs offer similar IDs, policy-blocked threads fail, and a different or missing original cwd reports a conflict. The launch model prefers the checkpoint's valid stored model, then the configured default, and raises when neither exists. This is the focused seam for [running a dcode session](../workflows/run-dcode-session.md), not the TUI.
 
-The smoke suite builds a real `create_deep_agent` with `CodeInterpreterMiddleware`, controlled fake model, and representative no-tool/mixed-tool inputs, then captures the first system message. It covers every persistence mode and a no-timeout configuration. The committed files in `tests/unit_tests/smoke_tests/snapshots/` are a drift detector for wording QuickJS composes with SDK-owned prompt material; they are not behavioral authority. Preserve direct assertions for semantic requirements such as mode lifecycle, resource wording, tool availability, and timeout omission. When an intentional SDK or prompt change changes the rendered text, review the full captured prompt and semantic tests first, then regenerate only with:
+## Plugins: discovery is not installation
+
+Use a temporary marketplace and state/config directories in `test_plugin_updates.py`. A discovered remote version is recorded as available and announced once, but it must not change the installed version. A refresh failure preserves that saved update and does not re-notify it; an opt-in manifest can install the update. Test the command/UI boundary too: `plugin update --check` reports availability, the actual update requests `/reload`, and the manager exposes the update action. These tests make [plugin](../concepts/plugins.md) update checks safe despite intermittently unavailable marketplaces.
+
+## MCP OAuth: test local persistence and hostile input
+
+`FileTokenStorage` is a security boundary. Test tokens and OAuth client metadata together through its async API using a fake home, never a real credential file. The intended invariants are server isolation—including same server names at different URLs—private `0600` files on POSIX, absolute expiry recorded when tokens are accepted, and per-file synchronization that preserves independent concurrent mutations without serializing unrelated servers. Reject path-like or otherwise unsafe server names; a corrupt file must fail with remediation guidance rather than silently becoming empty.
+
+Use local `httpx`/`httpx2` fixtures for challenge, metadata, refresh, and login failures. Preserve the public header resolver's interpolation behavior and input immutability. Do not use a real OAuth endpoint in the unit suite. See [MCP integration](../integrations/mcp.md) for the user-facing configuration boundary.
+
+## Hooks: assert the wire contract and reduction policy
+
+A hook snapshot selects handlers by event and supported matcher. `test_engine.py` projects domain events into the command-hook wire input: it carries a session ID and event-specific fields such as prompts, tool IDs, notification type, failure details, compact trigger, or subagent identity. Add coverage by constructing a `HookInvocation`, serializing with the wire adapter, and asserting the external payload—not a private projection helper sequence.
+
+The command runner and reducer are the decision boundary. Cover exit/error and timeout behavior with local commands, then assert the reduced permission or block result. The reducer applies results in configuration order even when commands finish in another order; permission precedence is deny, then ask, then allow. A captured snapshot must remain the one used for an in-flight invocation. For a graph-level transport or resume change, use the dedicated hook server-lifecycle tests: assert that the stable invocation identity permits the intended response and that malformed or mismatched resumes fail safely.
+
+## Git attribution and turn traces: backfill metadata, not runs
+
+Use real temporary Git repositories, fake models, `InMemorySaver`, and a recording `LangChainTracer` in `test_git_trace_integration.py`. The integration assertion is retrospective attribution: after an approved tool changes repository/branch, the turn's root, model, tool, and nested runs receive observed `ls_git_repo` and `ls_git_branch`; caller-supplied `git_*` metadata and unrelated metadata remain intact. A later turn must not inherit observed attribution. Probe or telemetry failures are optional-observability failures: agent output and tool work still complete.
+
+`test_turn_trace.py` supplies the lower-level regression seam. A captured trace spans interrupted/resumed graph roots and updates completed runs without resending inputs, outputs, errors, events, tags, or attachments; live runs are not ended. Updates preserve trace destination and timing, including replica destinations, and only traces with enabled tracing plus a turn scope are captured.
+
+## QuickJS prompt snapshots
+
+QuickJS smoke tests render a real `create_deep_agent` graph with `CodeInterpreterMiddleware` and a deterministic fake model, then snapshot the first system message. Keep the matrix representative: no tools, mixed PTC tools, each `thread`, `turn`, and `call` persistence mode, no timeout, and nested tool schemas. The no-timeout case also has a semantic assertion that timeout language is absent; retain such assertions because snapshots are drift detectors, not the behavioral specification.
+
+When prompt text intentionally changes, review the captured text and semantic expectations first, then update only this suite:
 
 ```bash
 make -C libs/partners/quickjs update_snapshots
 ```
 
-Do not update snapshots merely to make a diff pass. The Make target invokes the smoke file with `--update-snapshots`; normal execution compares with committed files and creates a missing snapshot only to fail and request a rerun.
+Normal execution compares committed snapshots; a missing one is created only to fail and request a rerun. The suite exists to catch SDK prompt drift even when QuickJS itself is unchanged.
 
-CI runs the full QuickJS test job when QuickJS changes (and on pushes). On a non-push pull request that changes `libs/deepagents/**` but not QuickJS, `test-quickjs-sdk-smoke` installs the QuickJS package against its editable local SDK and runs only `tests/unit_tests/smoke_tests/test_system_prompt.py` with sockets disabled. Its explicit path-existence check makes a renamed smoke file fail rather than silently collecting no tests. Keep this test path and its `ci.yml` guard synchronized when relocating the suite.
+## Talon runtime assembly
 
-## Talon reasoning effort: persistence, turn isolation, and provider payloads
+`DeepAgentRuntime` is the Talon assembly boundary. In `tests/test_runtime.py`, replace `create_deep_agent` with a recording graph and assert assembled inputs and behavior: backend/checkpointer ownership, assistant instructions, skills and memory paths, built-in and custom tools, and local plus declarative async subagents. Refreshing tools affects a subsequent graph; MCP reload is transactional, so a failed replacement leaves the prior graph and tool set in service. Bind an authorization handler only for the active invocation and verify it is cleared afterward.
 
-Treat `/effort` as a model-keyed durable selection, not a chat-local mutable setting. The host loads `effort.json`, captures the selected model's effort into each `AgentRequest` when it starts a turn, and applies changes from the next turn across chats. Test through `TalonHost` with an operator channel and temporary configuration: set different efforts before different turns and assert each recorded request's `effort`; switch models, query `/effort`, restart the host, and verify selections reload by model. Assert the file's JSON contents and owner-only mode, and that `default` removes only the active model override. Unauthorized or unsupported commands must neither create state nor change a request; a write failure must report the failure and retain the prior in-memory selection.
-
-```mermaid
-sequenceDiagram
-    participant Operator
-    participant Host
-    participant StateFile
-    participant Runtime
-    participant Middleware
-    participant Provider
-    Operator->>Host: /effort level
-    Host->>StateFile: persist model keyed selection
-    Operator->>Host: message
-    Host->>Runtime: AgentRequest with captured effort
-    Runtime->>Middleware: set turn scoped effort settings
-    Middleware->>Provider: merged provider payload
-    Runtime->>Middleware: reset turn scoped settings
-```
-
-*The selection is persisted by model, but its provider settings are scoped to one request and reset after that turn.*
-
-Use `test_effort.py` in three layers. First, verify `effort_levels` and `effort_settings` reject unsupported values and map the selected model family to its real invocation shape: DeepSeek toggles `extra_body.thinking` and uses `reasoning_effort` except for `none`; Qwen uses its thinking budget; GLM toggles native thinking; ordinary supported models use `reasoning_effort`. Provider-profile metadata can be absent, so exercise documented fallback levels where relevant.
-
-Second, serialize settings through the provider adapter rather than asserting the translator's private branches. Use the adapter payload builder for native providers and `httpx.MockTransport` for OpenAI-compatible calls. Assert the emitted wire JSON: Baseten reasoning effort is top-level without wrapper fields, Anthropic uses `output_config.effort`, and the OpenAI Responses API emits `reasoning.effort` rather than `reasoning_effort`. This detects translation regressions at the integration boundary without a network call.
-
-Finally, invoke `DeepAgentRuntime` concurrently with a recording fake model. Assert each turn receives its own settings, a later effort-less turn receives none, and `ACTIVE_EFFORT` is reset. When extending middleware behavior, also assert unrelated `model_settings` and nested `extra_body` fields survive the effort merge; do not assert context-variable token operations or middleware helper ordering.
-
-## Choose the seam that exposes the contract
-
-```mermaid
-flowchart TD
-    Change["Changed behavior"] --> Boundary{"Can controlled inputs expose it"}
-    Boundary -->|Middleware state or message| Unit["Focused unit test with fake model or backend"]
-    Boundary -->|Graph wiring| Graph["create_deep_agent with InMemorySaver"]
-    Boundary -->|Remote task client| Transport["httpx MockTransport or mocked SDK client"]
-    Boundary -->|Hook process and file safety| Talon["Real Talon graph with temporary home"]
-    Boundary -->|External service itself| Integration["Focused integration test"]
-    Unit --> Make["Owning Makefile target"]
-    Graph --> Make
-    Transport --> Make
-    Talon --> Make
-    Integration --> Make
-```
-
-*Use controlled local seams until the external boundary is the behavior being changed; assertions should survive an implementation refactor that preserves the contract.*
-
-## Rubric revisions: hook semantics and graph wiring
-
-`RubricMiddleware` does nothing without a rubric. A new rubric, or reuse after a terminal attempt, resets its private attempt bookkeeping. At a natural agent stop, the after-agent hook grades the transcript: a revision verdict injects feedback and returns the graph to `model`; a terminal evaluation is recorded and allowed to finish. `GraphBubbleUp` is control flow, not a grader error, and propagates.
-
-The rubric grader freezes the first nonempty criterion list for an attempt. If a later response under-covers it, the middleware requests one correction. A `satisfied` response that remains under-covered is downgraded so it cannot falsely end the revision loop.
-
-Test at two levels:
-
-- In `tests/unit_tests/middleware/test_rubric_middleware.py`, stub the grading boundary for constructor validation, state reset or stickiness, feedback, cap behavior, callbacks/events, sync/async parity, and exception propagation. Stub the grader invocation—not a sequence of incidental helper calls—when testing the coverage retry.
-- In `tests/unit_tests/test_end_to_end.py`, combine `create_deep_agent`, scripted fake chat models, and `InMemorySaver`. Assert visible revision turns and the persisted rubric state with `get_state`; cover immediate success, loop-and-revise, cap termination, and recovery after a corrected full criterion response.
-
-## Pinned skills: assert the conversation boundary
-
-`SkillsMiddleware` loads skill metadata once per thread; resetting `skills_metadata` to `None` requests a reload. `pinned_skills` is different from metadata discovery: before the next model call, each named readable skill is added as a separate `HumanMessage` marked `lc_source="pinned_skill"`, so the model sees its instructions. Skill tools listed by a pinned skill remain available only while the pin remains in context.
-
-`tests/unit_tests/middleware/test_pinned_skills.py` is the focused graph-level contract suite. Build an agent over a temporary skills directory with `InMemorySaver` and a fake model, then inspect model call history and checkpointed messages. Cover these observables:
-
-- pins follow the user message in supplied order and duplicate names are emitted once;
-- a pin is a stored snapshot, survives later turns, and is omitted from the immediate result payload;
-- unknown, deleted, empty, oversized, or non-UTF-8 skills are skipped without preventing readable pins;
-- parallel tool calls that request pins produce both pinned messages; a subagent result cannot pin a parent; and compaction removes the pin's tool disclosure.
-
-Exercise both `invoke` and `ainvoke` where behavior is shared. Do not assert that a private pinning helper was called; assert the model-visible messages, metadata, bound tools, and persisted transcript.
-
-## Summarization: preserve recoverability and media references
-
-The summarization middleware turns a threshold-crossing message history into a summary plus retained recent messages, offloading evicted history to the backend. The resulting summary is marked `lc_source="summarization"`, refers to the history file only when persistence succeeded, and retains a session identifier in state so later summaries append to the same file. Independent states sharing a backend receive distinct session files.
-
-Inline media is a key safety boundary. Tests use the local `MockBackend` and mock summarizer to verify that data URLs become content-addressed backend files and archive references, identical data is uploaded once, and image URLs survive. A per-item decode or upload failure must be represented by a placeholder and warning rather than silently preserving raw data or losing the fact that media existed. History-write failure still permits a summary, but its event has no nonexistent file path.
-
-Use `tests/unit_tests/middleware/test_summarization_middleware.py` for threshold/no-op, message and notification shape, archive/session identity, media rewrite and failure behavior, token counting, truncation, and sync/async parity. Prefer a fake backend that records writes over assertions about internal formatting calls. The tests use `pytest.mark.anyio` where needed; do not introduce `pytest.mark.asyncio`.
-
-## Async subagent follow-ups: task state is the contract
-
-`AsyncSubAgentMiddleware` supplies tools to start, check, update, cancel, and list remote Agent Protocol tasks. Task identifiers and status live in `async_tasks`, allowing them to survive compaction. An update creates a run on the same remote thread and retains the task ID. The default `interrupt` strategy replaces the current run; `enqueue` leaves the follow-up pending behind it and records the superseded run IDs. Only one follow-up to a task may be sent in a parent turn.
-
-```mermaid
-flowchart TD
-    Existing["Tracked task"] --> Update["update_async_task"]
-    Update --> Strategy{"Update strategy"}
-    Strategy -->|interrupt| NewRun["New remote run and running task"]
-    Strategy -->|enqueue| Queued["Pending follow-up and superseded run IDs"]
-    NewRun --> Poll["Async hooks poll current run"]
-    Queued --> Poll
-    Poll --> Outcome{"Observed outcome"}
-    Outcome -->|success| Notice["Notification with result"]
-    Outcome -->|waiting| Notice
-    Outcome -->|error or cancelled| Notice
-    Notice --> State["Persist refreshed async_tasks state"]
-```
-
-*The tracked task follows the newest run; an older completion must not be treated as completion of an enqueued follow-up.*
-
-In `tests/unit_tests/test_async_subagents.py`, mock the SDK client or use `httpx.MockTransport`; no server is necessary. Assert the outgoing remote payload and resulting `Command` state/message, not client call order. Include both sync and async tool entrypoints for update strategy behavior, status polling, queued task listing, cancellation of queued and earlier active runs, and rejection of parallel follow-ups. Parent-pull tests should show that completion is injected before a model call or causes one additional turn after a final answer, while timeouts and unreadable remote state do not block or fabricate a result.
-
-## Talon runtime, hooks, and transcript erasure
-
-`DeepAgentRuntime` owns the Talon graph wiring: it supplies the backend, checkpointer, tools, skills, memory, subagents, middleware, and per-conversation graph configuration. `tests/test_runtime.py` uses recording graphs and local temporary workspaces to test those observable wiring and lifecycle contracts: replacement tools are transactional, the active graph remains stable while an approval is outstanding, repeated conversation IDs retain the thread, and interrupted work is repaired with a matching tool result before its interruption marker.
-
-For hook behavior, run a real local Talon graph with a fake chat model and a temporary `hooks.json`, as `tests/unit_tests/test_hooks.py` does. Assert wire payloads and effects:
-
-- `PreToolUse` can deny execution before the side effect, but hook allow does not bypass Talon's separate approval decision;
-- post-failure hooks receive failed execution, configuration reloads on later turns, and workspace hook files are not trusted as home configuration;
-- concurrent conversations and subagents keep session IDs, hook snapshots, and transcript paths isolated.
-
-Hook transcripts have an erasure boundary per durable parent conversation. Erasure writes a revocation marker before deleting child projections, legacy projections, and backups; existing writers compare the marker and reject later writes. The transcript store refuses symlinked directories, markers, and paths. `tests/unit_tests/test_hook_transcripts.py` should use actual temporary files and the saver/runtime helpers to verify restart and retry behavior, in-flight materialization serialization, isolation from other owners, removal of backups, and symlink safety. These are security and data-deletion contracts—test filesystem outcomes and rejected writes, not the order of private cleanup calls.
+Use the same seam for lifecycle safety: repeated conversation IDs retain their thread; a recovery repairs a dangling tool call before an interruption marker; and a graph stays stable while approval is outstanding. These tests should exercise runtime-visible state and messages, not the internal construction order. For partner and sandbox changes, also consult [sandbox partners](../integrations/sandbox-partners.md).
 
 ## Completion checklist
 
-1. Identify the observable behavior and route it to the narrowest network-free test under `tests/unit_tests/`.
-2. Use fake models, fake backends, a mock transport, or a temporary Talon home to control inputs and failures.
-3. For QuickJS, assert model-visible prompt text and real REPL persistence/isolation; review semantics before regenerating snapshots with `make -C libs/partners/quickjs update_snapshots`.
-4. For Talon effort, assert the persisted model-keyed selection, captured turn value, reset isolation, and serialized provider payload.
-5. For rubric and pinning, inspect model-visible messages and checkpoint state; use an end-to-end fake-model graph only for graph wiring.
-6. For summarization, prove archive references, session isolation, warnings, and no-data-loss failure behavior.
-7. For async subagents, assert persisted task state, notification content, and remote payload semantics for both update strategies.
-8. For Talon hooks, prove deny/approval precedence, concurrent isolation, and transcript erasure safety with real local side effects.
-9. Avoid `pytest.mark.asyncio`, sleeps, provider calls, and internal-call-order assertions; run the owning `make lint` after the focused tests pass.
+1. Select the package and narrowest test file above; use a fake model, temporary directory, mock transport, or recording tracer.
+2. Assert ordering at the startup/resume boundary, durable state at the plugin/OAuth boundary, and serialization at the hook/trace boundary.
+3. Preserve failure semantics: failed observation does not break an agent turn; failed graph replacement does not replace the working graph; corrupt credential state does not silently reset.
+4. Review QuickJS prompt semantics before regenerating snapshots.
+5. Avoid sleeps, provider calls, real credentials, and internal-call-order assertions; then run the owning `make lint`.

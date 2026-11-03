@@ -52,6 +52,11 @@ if TYPE_CHECKING:
 
 ToolStatus = Literal["success", "error"]
 
+# Block types a direct call would show the model and JS cannot pass along as
+# text: standard image, audio, video, and file blocks, plus OpenAI's legacy
+# `image_url`.
+_MEDIA_BLOCK_TYPES = frozenset({"image", "audio", "video", "file", "image_url"})
+
 
 class EvalSuspendedError(RuntimeError):
     """Raised to JavaScript for calls issued after the eval started pausing."""
@@ -78,6 +83,18 @@ class CallResult:
     value: Any
     note: str | None = None
     """Text middleware addressed to the model, such as a reviewer-edit notice."""
+    media: tuple[dict[str, Any], ...] = ()
+    """Media blocks the model would have seen had it made the call itself."""
+
+
+@dataclass(frozen=True, slots=True)
+class ToolMedia:
+    """Media blocks from one `tools.*` call, for the eval's result."""
+
+    seq: int
+    """The call's issue order within the eval."""
+    tool: str
+    blocks: tuple[dict[str, Any], ...]
 
 
 def call_digest(name: str, args: dict[str, Any]) -> str:
@@ -193,14 +210,16 @@ def _result_of(result: Any, seen: ToolReturn, tool: BaseTool) -> CallResult:
 
     JavaScript gets the data in what the tool itself returned. If middleware
     changed the text the model would have read for it, that text is kept as a
-    note.
+    note. Media blocks in the message are kept for the model too.
     """
     messages = result if isinstance(result, list) else [result]
     message = next((m for m in reversed(messages) if isinstance(m, ToolMessage)), None)
     if message is not None and message.status == "error":
         return CallResult(status="error", value=coerce_tool_output_for_ptc(result))
+    media = _media_of(message)
     if not seen.ran:
-        return CallResult(status="success", value=coerce_tool_output_for_ptc(result))
+        value = coerce_tool_output_for_ptc(result)
+        return CallResult(status="success", value=value, media=media)
     note = None
     model_text = (
         _model_text(seen.value, message, tool.response_format) if message else None
@@ -208,7 +227,18 @@ def _result_of(result: Any, seen: ToolReturn, tool: BaseTool) -> CallResult:
     if message is not None and message.content != model_text:
         note = message.text
     value = coerce_tool_output_for_ptc(seen.value, response_format=tool.response_format)
-    return CallResult(status="success", value=value, note=note)
+    return CallResult(status="success", value=value, note=note, media=media)
+
+
+def _media_of(message: ToolMessage | None) -> tuple[dict[str, Any], ...]:
+    """Return the media blocks in a tool message's content."""
+    if message is None or isinstance(message.content, str):
+        return ()
+    return tuple(
+        block
+        for block in message.content
+        if isinstance(block, dict) and block.get("type") in _MEDIA_BLOCK_TYPES
+    )
 
 
 @dataclass
@@ -229,6 +259,8 @@ class EvalJournal:
     notes: list[str] = field(default_factory=list)
     state_lock: threading.Lock = field(default_factory=threading.Lock)
     """Serializes calls' reads and writes of the eval node's state across threads."""
+    media: list[ToolMedia] = field(default_factory=list)
+    """Media from finished calls, in completion order."""
     heap: Snapshot | None = None
     """The heap before the eval ran, restored if a call pauses.
 
@@ -305,21 +337,36 @@ class EvalJournal:
         name = f"ptc.{tool.name}.{call_digest(tool.name, args)}"
         # The record may not be serialized yet, so it is read, never changed.
         record = await self._journaled(name, run, arun, seq=seq)
-        if not ran and record.get("writes"):
-            # A saved call did not run, so its state writes were not sent.
-            with self.state_lock:
-                self.runtime.config["configurable"][CONFIG_KEY_SEND](
-                    [(channel, value) for channel, value in record["writes"]]
-                )
+        if not ran:
+            self._replay_writes(record)
         if raised := record.get("raised"):
             # The original exception on the run that raised it, so an uncaught
             # one ends the agent run as it would for a model tool call.
             raise failure[0] if failure else RuntimeError(raised)
+        return self._call_result(record, tool.name, seq)
+
+    def _call_result(self, record: dict[str, Any], tool: str, seq: int) -> CallResult:
+        """Read a call's record, keeping its note and media for the eval's output."""
         if record.get("note"):
-            self.notes.append(f"tools.{tool.name} call {seq}: {record['note']}")
+            self.notes.append(f"tools.{tool} call {seq}: {record['note']}")
+        # Records journaled before media was kept have no `media` key.
+        media = tuple(record.get("media", ()))
+        if media:
+            self.media.append(ToolMedia(seq=seq, tool=tool, blocks=media))
         return CallResult(
-            status=record["status"], value=record["value"], note=record.get("note")
+            status=record["status"],
+            value=record["value"],
+            note=record.get("note"),
+            media=media,
         )
+
+    def _replay_writes(self, record: dict[str, Any]) -> None:
+        """Send the state writes of a saved call that did not run this time."""
+        if writes := record.get("writes"):
+            with self.state_lock:
+                self.runtime.config["configurable"][CONFIG_KEY_SEND](
+                    [(channel, value) for channel, value in writes]
+                )
 
     def _request(
         self,
@@ -488,6 +535,7 @@ def _as_record(result: CallResult, writes: list[tuple[str, Any]]) -> dict[str, A
         "status": result.status,
         "value": result.value,
         "note": result.note,
+        "media": list(result.media),
         "writes": writes,
     }
 

@@ -35,7 +35,7 @@ if TYPE_CHECKING:
     from langgraph.runtime import Runtime
 
 from langchain_quickjs._dispatch import EvalJournal, ToolChain
-from langchain_quickjs._format import format_outcome
+from langchain_quickjs._format import format_media, format_outcome
 from langchain_quickjs._prompt import (
     render_eval_tool_code_doc,
     render_eval_tool_description,
@@ -68,6 +68,7 @@ _DEFAULT_MEMORY_LIMIT = 64 * 1024 * 1024
 _DEFAULT_TIMEOUT = 5.0
 _DEFAULT_MAX_PTC_CALLS = 256
 _DEFAULT_MAX_RESULT_CHARS = 4_000
+_DEFAULT_MAX_TOOL_MEDIA_BLOCKS = 8
 _DEFAULT_TOOL_NAME = "eval"
 
 PersistenceMode = Literal["thread", "turn", "call"]
@@ -250,6 +251,14 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
                 where the checkpointer is not fully trusted. Use the same key across
                 all processes that share a thread, and rotate it by starting fresh
                 threads.
+        max_tool_media_blocks: Most image, audio, video, and file blocks from
+            `tools.*` calls to show the model with an eval's result.
+
+            A screenshot that code takes with a tool is shown to the model as
+            if the model had called the tool, after the eval's result and under
+            a label naming the call. JavaScript still gets the tool's data.
+            Over the limit, the last blocks in call order are kept. `None`
+            keeps every block; `0` shows none.
 
     Example:
         ```python
@@ -282,6 +291,7 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         mode: PersistenceMode | None = None,
         max_snapshot_bytes: int | None = None,
         snapshot_signing_key: str | bytes | None = None,
+        max_tool_media_blocks: int | None = _DEFAULT_MAX_TOOL_MEDIA_BLOCKS,
     ) -> None:
         """Initialize REPL middleware state and build the exposed eval tool."""
         super().__init__()
@@ -290,6 +300,9 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
             raise ValueError(msg)
         if max_ptc_calls is not None and max_ptc_calls < 1:
             msg = "`max_ptc_calls` must be >= 1 or None"
+            raise ValueError(msg)
+        if max_tool_media_blocks is not None and max_tool_media_blocks < 0:
+            msg = "`max_tool_media_blocks` must be >= 0 or None"
             raise ValueError(msg)
         if max_snapshot_bytes is not None and max_snapshot_bytes < 1:
             msg = "`max_snapshot_bytes` must be >= 1 or None"
@@ -302,6 +315,7 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         self._max_ptc_calls = max_ptc_calls
         self._tool_name = tool_name
         self._max_result_chars = max_result_chars
+        self._max_tool_media_blocks = max_tool_media_blocks
         self._capture_console = capture_console
         self._subagents = subagents
         self._max_subagent_concurrency = max_subagent_concurrency
@@ -334,6 +348,7 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
     def _build_tool(self) -> BaseTool:
         tool_name = self._tool_name
         max_chars = self._max_result_chars
+        max_media = self._max_tool_media_blocks
         middleware = self
         code_doc = render_eval_tool_code_doc(mode=self._mode)
         tool_description = render_eval_tool_description(mode=self._mode)
@@ -342,8 +357,10 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
             outcome: EvalOutcome,
             tool_call_id: str | None,
         ) -> ToolMessage:
+            text = format_outcome(outcome, max_result_chars=max_chars)
+            media = format_media(outcome.media, limit=max_media)
             return ToolMessage(
-                content=format_outcome(outcome, max_result_chars=max_chars),
+                content=[{"type": "text", "text": text}, *media] if media else text,
                 tool_call_id=tool_call_id,
                 name=tool_name,
             )

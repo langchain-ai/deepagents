@@ -4,20 +4,37 @@ from __future__ import annotations
 
 import contextlib
 import inspect
+import itertools
 import json
 import re
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal, get_args, get_origin, get_type_hints
 
 from langchain_core.messages.tool import ToolOutputMixin
 from pydantic import TypeAdapter
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Iterator, Mapping, Sequence
 
     from langchain_core.tools import BaseTool
 
 _CAMEL_SEP = re.compile(r"[-_]([a-z])")
 _JS_IDENTIFIER = re.compile(r"^[A-Za-z_$][A-Za-z0-9_$]*$")
+_NON_IDENTIFIER_CHAR = re.compile(r"[^A-Za-z0-9_$]")
+_DEFS_REF_PREFIX = "#/$defs/"
+# Names a declared type must not shadow: types the renderer itself emits.
+_RESERVED_TYPE_NAMES = frozenset(
+    {
+        "Promise",
+        "Record",
+        "Uint8Array",
+        "boolean",
+        "null",
+        "number",
+        "string",
+        "unknown",
+    }
+)
 _REPL_SYSTEM_PROMPT_TEMPLATE = (
     "### Interpreter\n\n"
     "{repl_intro_line}\n\n"
@@ -395,17 +412,7 @@ def render_ptc_prompt(tools: Sequence[BaseTool], *, tool_name: str = "eval") -> 
     """Build the `tools` namespace section of the system prompt."""
     if not tools:
         return ""
-    blocks: list[str] = []
-    for tool in tools:
-        camel = to_camel_case(tool.name)
-        schema = _safe_json_schema(tool)
-        return_type = _render_return_type(tool)
-        signature = _render_signature(camel, schema, return_type=return_type)
-        description = (
-            (tool.description or "").strip().splitlines()[0] if tool.description else ""
-        )
-        blocks.append(f"/** {description} */\n{signature}")
-    body = "\n\n".join(blocks)
+    body = _render_api_reference(tools)
     return (
         "\n\n"
         "### API Reference — `tools` namespace\n\n"
@@ -452,6 +459,119 @@ def render_ptc_prompt(tools: Sequence[BaseTool], *, tool_name: str = "eval") -> 
     )
 
 
+def _render_api_reference(tools: Sequence[BaseTool]) -> str:
+    """Render the named type declarations followed by each tool's signature."""
+    declarations = _TypeDeclarations()
+    blocks: list[str] = []
+    for tool in tools:
+        camel = to_camel_case(tool.name)
+        owner = camel[:1].upper() + camel[1:]
+        schema = _safe_json_schema(tool)
+        refs = declarations.declare(schema, owner=owner) if schema else {}
+        return_type = declarations.render(_return_schema(tool), owner=owner)
+        signature = _render_signature(camel, schema, refs, return_type=return_type)
+        description = (
+            (tool.description or "").strip().splitlines()[0] if tool.description else ""
+        )
+        blocks.append(f"/** {description} */\n{signature}")
+    return "\n\n".join([*declarations.blocks, *blocks])
+
+
+@dataclass
+class _TypeDeclarations:
+    """Named TS types shared by every rendered `tools.*` signature.
+
+    Each JSON Schema `$defs` entry becomes a `type` alias and each `$ref`
+    renders as that alias's name, so recursive types terminate. Schemas are
+    generated independently per tool, so a def is identified by its own
+    schema plus every def it reaches: the same model used by two tools gets
+    one declaration, and a different model under a taken name is prefixed
+    with the tool's name.
+    """
+
+    blocks: list[str] = field(default_factory=list)
+    _names: dict[str, str] = field(default_factory=dict)
+    _taken: set[str] = field(default_factory=lambda: set(_RESERVED_TYPE_NAMES))
+
+    def render(self, schema: dict[str, Any] | None, *, owner: str) -> str:
+        """Render `schema` as a TS type, declaring the types it references."""
+        if schema is None:
+            return "unknown"
+        return _json_schema_to_ts(schema, self.declare(schema, owner=owner))
+
+    def declare(self, schema: dict[str, Any], *, owner: str) -> dict[str, str]:
+        """Declare `schema`'s `$defs` and map each `$ref` to its TS name."""
+        defs: dict[str, Any] = schema.get("$defs") or {}
+        refs: dict[str, str] = {}
+        new: list[str] = []
+        for def_name in defs:
+            identity = _def_identity(def_name, defs)
+            if identity not in self._names:
+                self._names[identity] = self._claim(def_name, owner)
+                new.append(def_name)
+            refs[_DEFS_REF_PREFIX + def_name] = self._names[identity]
+        for def_name in new:
+            name = refs[_DEFS_REF_PREFIX + def_name]
+            self.blocks.append(_render_declaration(name, defs[def_name], refs))
+        return refs
+
+    def _claim(self, def_name: str, owner: str) -> str:
+        """Reserve a free TS name for `def_name`, prefixing `owner` on conflict."""
+        base = _NON_IDENTIFIER_CHAR.sub("_", def_name)
+        if not is_valid_js_identifier(base):
+            base = f"_{base}"
+        candidates = itertools.chain(
+            (base, f"{owner}{base}"),
+            (f"{owner}{base}{i}" for i in itertools.count(2)),
+        )
+        name = next(c for c in candidates if c not in self._taken)
+        self._taken.add(name)
+        return name
+
+
+def _def_identity(def_name: str, defs: Mapping[str, Any]) -> str:
+    """Return a key identifying `def_name` together with every def it reaches."""
+    reached: dict[str, Any] = {}
+    pending = [def_name]
+    while pending:
+        name = pending.pop()
+        if name in reached or name not in defs:
+            continue
+        reached[name] = defs[name]
+        pending.extend(
+            ref.removeprefix(_DEFS_REF_PREFIX)
+            for ref in _refs_in(defs[name])
+            if ref.startswith(_DEFS_REF_PREFIX)
+        )
+    return json.dumps([def_name, reached], sort_keys=True, default=str)
+
+
+def _refs_in(node: object) -> Iterator[str]:
+    """Yield every `$ref` string nested anywhere in a JSON Schema node."""
+    if isinstance(node, dict):
+        ref = node.get("$ref")
+        if isinstance(ref, str):
+            yield ref
+        for value in node.values():
+            yield from _refs_in(value)
+    elif isinstance(node, list):
+        for item in node:
+            yield from _refs_in(item)
+
+
+def _render_declaration(
+    name: str, schema: dict[str, Any], refs: Mapping[str, str]
+) -> str:
+    """Render one `$defs` entry as a TS `type` alias."""
+    description = (schema.get("description") or "").strip().splitlines()
+    doc = f"/** {description[0]} */\n" if description else ""
+    if schema.get("type") == "object" and schema.get("properties"):
+        body = "{\n" + "\n".join(_render_fields(schema, refs)) + "\n}"
+    else:
+        body = _json_schema_to_ts(schema, refs)
+    return f"{doc}type {name} = {body};"
+
+
 def _safe_json_schema(tool: BaseTool) -> dict[str, Any] | None:
     try:
         if tool.args_schema is None:
@@ -467,6 +587,7 @@ def _safe_json_schema(tool: BaseTool) -> dict[str, Any] | None:
 def _render_signature(
     fn_name: str,
     schema: dict[str, Any] | None,
+    refs: Mapping[str, str],
     *,
     return_type: str = "unknown",
 ) -> str:
@@ -476,19 +597,23 @@ def _render_signature(
     )
     if not schema or not isinstance(schema.get("properties"), dict):
         return default_signature
-    props: dict[str, Any] = schema["properties"]
-    required = set(schema.get("required", []))
-    fields = []
-    for key, prop in props.items():
-        optional = "" if key in required else "?"
-        type_str = _json_schema_to_ts(prop)
-        desc = prop.get("description")
-        prefix = f"/**\n *{desc}\n */ " if desc else ""
-        fields.append(f"  {prefix}{key}{optional}: {type_str};")
-    body = "\n".join(fields) if fields else ""
+    body = "\n".join(_render_fields(schema, refs))
     if not body:
         return default_signature
     return f"tools.{fn_name}(input: {{\n{body}\n}}): {return_clause}"
+
+
+def _render_fields(schema: dict[str, Any], refs: Mapping[str, str]) -> list[str]:
+    """Render an object schema's properties as one TS field per line."""
+    required = set(schema.get("required", []))
+    fields = []
+    for key, prop in schema["properties"].items():
+        optional = "" if key in required else "?"
+        type_str = _json_schema_to_ts(prop, refs)
+        desc = prop.get("description")
+        prefix = f"/**\n *{desc}\n */ " if desc else ""
+        fields.append(f"  {prefix}{key}{optional}: {type_str};")
+    return fields
 
 
 # Return types come from the tool's underlying function annotation, narrowed
@@ -496,15 +621,11 @@ def _render_signature(
 # `unknown` for `ToolMessage` / `Command` envelopes, whose data is only known
 # at runtime. We feed the annotation through `pydantic.TypeAdapter` in
 # serialization mode, matching how the bridge dumps the value, and render it
-# through the same `_json_schema_to_ts` we use for input args. Compound shapes
-# (TypedDict, BaseModel, recursive types) end up as `$ref` in the schema and
-# currently render as `unknown` — same behaviour as nested-model input args.
-# Until that path resolves `$ref` / `$defs`, the simpler unified renderer is
-# the right trade-off here.
+# through the same `_json_schema_to_ts` we use for input args.
 
 
-def _render_return_type(tool: BaseTool) -> str:
-    """Render the type of the value JS gets from `tool`, defaulting to `unknown`."""
+def _return_schema(tool: BaseTool) -> dict[str, Any] | None:
+    """Return the JSON Schema of the value JS gets from `tool`, if known."""
     annotation = _return_annotation(tool)
     if tool.response_format == "content_and_artifact":
         annotation = _artifact_annotation(annotation)
@@ -513,12 +634,11 @@ def _render_return_type(tool: BaseTool) -> str:
         or annotation is Any
         or _mentions_tool_envelope(annotation)
     ):
-        return "unknown"
+        return None
     try:
-        schema = TypeAdapter(annotation).json_schema(mode="serialization")
+        return TypeAdapter(annotation).json_schema(mode="serialization")
     except Exception:  # noqa: BLE001 — schema generation is best-effort
-        return "unknown"
-    return _json_schema_to_ts(schema)
+        return None
 
 
 def _return_annotation(tool: BaseTool) -> Any:
@@ -558,35 +678,56 @@ def _mentions_tool_envelope(annotation: Any) -> bool:
     return any(_mentions_tool_envelope(arg) for arg in get_args(annotation))
 
 
-def _json_schema_to_ts(prop: dict[str, Any]) -> str:
-    """Shallow JSON-Schema → TS type renderer."""
+def _json_schema_to_ts(prop: dict[str, Any], refs: Mapping[str, str]) -> str:
+    """Render a JSON Schema node as a TS type; `refs` names each `$ref` target."""
+    if "$ref" in prop:
+        return refs.get(prop["$ref"], "unknown")
+    if len(prop.get("allOf", ())) == 1:
+        return _json_schema_to_ts(prop["allOf"][0], refs)
+    if "const" in prop:
+        return json.dumps(prop["const"])
     if "enum" in prop:
         return " | ".join(json.dumps(v) for v in prop["enum"])
-    if "anyOf" in prop:
-        parts = [_json_schema_to_ts(part) for part in prop["anyOf"]]
-        return " | ".join(dict.fromkeys(parts))
+    for union in ("anyOf", "oneOf"):
+        if union in prop:
+            parts = [_json_schema_to_ts(part, refs) for part in prop[union]]
+            return " | ".join(dict.fromkeys(parts))
+    return _typed_schema_to_ts(prop, refs)
+
+
+def _typed_schema_to_ts(prop: dict[str, Any], refs: Mapping[str, str]) -> str:
+    """Render a JSON Schema node by its `type` keyword."""
     t = prop.get("type")
     if t == "string":
         # quickjs_rs marshals `bytes` to and from `Uint8Array`.
         return "Uint8Array" if prop.get("format") == "binary" else "string"
     if t in {"integer", "number"}:
         return "number"
-    if t == "boolean":
-        return "boolean"
-    if t == "null":
-        return "null"
+    if t in {"boolean", "null"}:
+        return t
     if t == "array":
         items = prop.get("items")
-        inner = _json_schema_to_ts(items) if isinstance(items, dict) else "unknown"
-        return f"{inner}[]"
+        inner = (
+            _json_schema_to_ts(items, refs) if isinstance(items, dict) else "unknown"
+        )
+        return f"({inner})[]" if " | " in inner else f"{inner}[]"
     if t == "object":
-        sub_props = prop.get("properties")
-        if isinstance(sub_props, dict) and sub_props:
-            required = set(prop.get("required", []))
-            fields = [
-                f"{k}{'' if k in required else '?'}: {_json_schema_to_ts(v)}"
-                for k, v in sub_props.items()
-            ]
-            return "{ " + "; ".join(fields) + " }"
-        return "Record<string, unknown>"
+        return _object_schema_to_ts(prop, refs)
     return "unknown"
+
+
+def _object_schema_to_ts(prop: dict[str, Any], refs: Mapping[str, str]) -> str:
+    """Render an inline object, or a `Record` when only values are typed."""
+    sub_props = prop.get("properties")
+    if isinstance(sub_props, dict) and sub_props:
+        required = set(prop.get("required", []))
+        fields = [
+            f"{k}{'' if k in required else '?'}: {_json_schema_to_ts(v, refs)}"
+            for k, v in sub_props.items()
+        ]
+        return "{ " + "; ".join(fields) + " }"
+    values = prop.get("additionalProperties")
+    value_type = (
+        _json_schema_to_ts(values, refs) if isinstance(values, dict) else "unknown"
+    )
+    return f"Record<string, {value_type}>"

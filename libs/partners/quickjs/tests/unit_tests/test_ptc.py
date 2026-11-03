@@ -22,7 +22,7 @@ from langchain_core.tools import (
     tool,
 )
 from langgraph.types import Command
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from quickjs_rs import Runtime, ThreadWorker
 from typing_extensions import TypedDict
 
@@ -56,6 +56,21 @@ class _UserLookup(TypedDict):
 
     id: int
     name: str
+
+
+class _TreeNode(BaseModel):
+    """A self-referencing model."""
+
+    label: str
+    children: list[_TreeNode] = []
+
+
+class _Cat(BaseModel):
+    kind: Literal["cat"]
+
+
+class _Dog(BaseModel):
+    kind: Literal["dog"]
 
 
 def _greet_tool(record: list[dict] | None = None) -> BaseTool:
@@ -890,21 +905,50 @@ def _stub() -> None:
         (type(None), "Promise<null>"),
         # Containers of primitives.
         (list[int], "Promise<number[]>"),
-        # `dict[str, V]` uses `additionalProperties` in the schema, which
-        # `_json_schema_to_ts` doesn't currently read — value type collapses
-        # to `unknown`.
-        (dict[str, int], "Promise<Record<string, unknown>>"),
-        # Optional / Literal / unions all flow through `anyOf` or `enum`.
+        (list[int | None], "Promise<(number | null)[]>"),
+        (dict[str, int], "Promise<Record<string, number>>"),
+        (dict[str, Any], "Promise<Record<string, unknown>>"),
+        # Optional / Literal / unions all flow through `anyOf`, `enum`, or
+        # `const`.
         (int | None, "Promise<number | null>"),
         (Literal["active", "resolved"], 'Promise<"active" | "resolved">'),
+        (Literal["only"], 'Promise<"only">'),
         (int | str, "Promise<number | string>"),
         # Top-level TypedDict / BaseModel — Pydantic inlines the schema.
         (_UserLookup, "Promise<{ id: number; name: string }>"),
         (_Status, "Promise<{ status: string; count: number }>"),
-        # Compound types that hit `$ref` (collections of TypedDict /
-        # BaseModel) — we don't resolve refs, so they collapse to `unknown`.
-        (list[_UserLookup], "Promise<unknown[]>"),
-        (list[_Status], "Promise<unknown[]>"),
+        # Nested TypedDict / BaseModel are declared once as named types.
+        (
+            list[_UserLookup],
+            "/** Module-scope TypedDict used as a return annotation in PTC "
+            "tests. */\n"
+            "type _UserLookup = {\n  id: number;\n  name: string;\n};\n\n"
+            "/** Stub tool. */\n"
+            "tools.t(input: Record<string, unknown>): Promise<_UserLookup[]>",
+        ),
+        (list[_Status], "Promise<_Status[]>"),
+        (dict[str, _UserLookup], "Promise<Record<string, _UserLookup>>"),
+        (_UserLookup | None, "Promise<_UserLookup | null>"),
+        # Recursive types refer to their own name instead of expanding.
+        (
+            _TreeNode,
+            "type _TreeNode = {\n  label: string;\n  children?: _TreeNode[];\n};"
+            "\n\n/** Stub tool. */\n"
+            "tools.t(input: Record<string, unknown>): Promise<_TreeNode>",
+        ),
+        # Discriminated unions render as `oneOf` over named types.
+        (
+            Annotated[_Cat | _Dog, Field(discriminator="kind")],
+            'type _Cat = {\n  kind: "cat";\n};',
+        ),
+        (
+            Annotated[_Cat | _Dog, Field(discriminator="kind")],
+            "Promise<_Cat | _Dog>",
+        ),
+        (
+            list[Annotated[_Cat | _Dog, Field(discriminator="kind")]],
+            "Promise<(_Cat | _Dog)[]>",
+        ),
     ],
 )
 def test_render_ptc_prompt_return_types(annotation: Any, expected: str) -> None:
@@ -925,6 +969,88 @@ def test_render_ptc_prompt_return_types(annotation: Any, expected: str) -> None:
     )
     prompt = render_ptc_prompt([tool])
     assert expected in prompt, prompt
+
+
+def _returning(name: str, annotation: Any) -> BaseTool:
+    """Build a no-argument tool whose function returns `annotation`."""
+
+    def _fn() -> None:
+        """Tool stub."""
+        return
+
+    _fn.__annotations__["return"] = annotation
+    return StructuredTool.from_function(name=name, description="Stub.", func=_fn)
+
+
+def test_render_ptc_prompt_resolves_nested_input_types() -> None:
+    """Nested models and maps in input args render as concrete types."""
+
+    class _Filter(BaseModel):
+        tag: str
+
+    class _Query(BaseModel):
+        filters: list[_Filter]
+        weights: dict[str, float]
+
+    tool = StructuredTool.from_function(
+        name="search", description="Search.", func=_stub, args_schema=_Query
+    )
+    prompt = render_ptc_prompt([tool])
+    assert "type _Filter = {\n  tag: string;\n};" in prompt, prompt
+    assert "  filters: _Filter[];\n  weights: Record<string, number>;" in prompt
+
+
+def test_render_ptc_prompt_unwraps_single_item_all_of() -> None:
+    """A `$ref` wrapped in a one-item `allOf` renders as the referenced type.
+
+    Pydantic before 2.9 wraps a `$ref` that carries a description this way.
+    """
+
+    def _wrap_ref(schema: dict[str, Any]) -> None:
+        schema["properties"]["status"] = {
+            "allOf": [schema["properties"]["status"]],
+            "description": "Current status",
+        }
+
+    class _Report(BaseModel):
+        model_config = ConfigDict(json_schema_extra=_wrap_ref)
+        status: _Status
+
+    tool = StructuredTool.from_function(
+        name="report", description="Report.", func=_stub, args_schema=_Report
+    )
+    prompt = render_ptc_prompt([tool])
+    assert "*/ status: _Status;" in prompt, prompt
+
+
+def test_render_ptc_prompt_declares_shared_types_once() -> None:
+    """Tools returning the same nested type share one declaration."""
+    prompt = render_ptc_prompt(
+        [_returning("first", list[_Status]), _returning("second", list[_Status])]
+    )
+    assert prompt.count("type _Status = {") == 1, prompt
+    assert prompt.count("Promise<_Status[]>") == 2, prompt
+
+
+def test_render_ptc_prompt_prefixes_conflicting_type_names() -> None:
+    """Distinct types that share a name get the tool name as a prefix."""
+
+    def _hit_type(field: str) -> type:
+        return TypedDict("Hit", {field: int})
+
+    prompt = render_ptc_prompt(
+        [
+            _returning("find_docs", list[_hit_type("page")]),
+            _returning("find_images", list[_hit_type("width")]),
+        ]
+    )
+    assert "type Hit = {\n  page: number;\n};" in prompt, prompt
+    assert "type FindImagesHit = {\n  width: number;\n};" in prompt, prompt
+    assert "tools.findDocs(input: Record<string, unknown>): Promise<Hit[]>" in prompt
+    assert (
+        "tools.findImages(input: Record<string, unknown>): Promise<FindImagesHit[]>"
+        in prompt
+    )
 
 
 def _get_status_record() -> _Status:

@@ -1,8 +1,8 @@
-// Installs `fs` before every eval, replacing a restored snapshot's copy. It takes
-// its host functions as arguments, so code that reassigns globals cannot intercept.
-((settle, fsSync, fsAsync, admit) => {
+// Installs `fs` before every eval, replacing a restored snapshot's copy. Its host
+// functions are frozen globals, so code cannot replace or shadow what `fs` calls.
+((settle, fsSync, fsAsync, callAsync) => {
 const call = (op, args) => settle(fsSync(op, args));
-const acall = async (op, args) => (admit(), settle(await fsAsync(op, args)));
+const acall = (op, args) => callAsync(() => fsAsync(op, args));
 
 // Node returns a Buffer when no encoding is given, and its toString() decodes
 // UTF-8, which code like `JSON.parse(fs.readFileSync(p))` relies on.

@@ -21,12 +21,11 @@ from langchain.tools import ToolRuntime
 from langchain_core.messages import AIMessage
 from langchain_core.tools import tool
 from langgraph.checkpoint.memory import InMemorySaver
-from langgraph.types import Command
 from pydantic import Field
 
 from langchain_quickjs import CodeInterpreterMiddleware
 from langchain_quickjs._repl import _Registry
-from tests._common import FakeChatModel
+from tests._common import FakeChatModel, answer_pauses
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -255,8 +254,15 @@ async def test_without_the_tool_call_chain_fs_calls_the_tool_directly(
 
 
 def test_a_fresh_process_restores_the_heap_and_fs_still_reads() -> None:
-    first = 'globalThis.cached = fs.readFileSync("/docs/b.txt", "utf8"); fs = 0; 1'
-    second = 'JSON.stringify([cached, fs.readFileSync("/docs/a.md", "utf8").length])'
+    first = """globalThis.cached = fs.readFileSync("/docs/b.txt", "utf8"); fs = 0;
+    globalThis.__lc_fs_sync = () => [0, "fake"];
+    const fake = { value: async () => [0, "fake"] };
+    try { Object.defineProperty(globalThis, "__lc_fs_async", fake) } catch {}"""
+    second = """JSON.stringify([
+      cached,
+      fs.readFileSync("/docs/a.md", "utf8").length,
+      await fs.promises.readFile("/docs/b.txt", "utf8"),
+    ])"""
     saver = InMemorySaver()
     config = {"configurable": {"thread_id": "t"}}
     for code, files in ((first, {"files": _files()}), (second, {})):
@@ -268,25 +274,14 @@ def test_a_fresh_process_restores_the_heap_and_fs_still_reads() -> None:
         state = agent.invoke(
             {"messages": [{"role": "user", "content": "go"}], **files}, config
         )
-    assert _results(state)[-1] == ["plain", len(_FILES["/docs/a.md"])]
+    assert _results(state)[-1] == ["plain", len(_FILES["/docs/a.md"]), "plain"]
 
 
-def test_code_cannot_replace_what_fs_calls() -> None:
-    replace = """globalThis.__lc_fs_sync = () => [0, "fake"];
-    const fake = { value: async () => [0, "fake"] };
-    try { Object.defineProperty(globalThis, "__lc_fs_async", fake) } catch {}"""
-    read = """JSON.stringify([
-      fs.readFileSync("/docs/b.txt", "utf8"),
-      await fs.promises.readFile("/docs/b.txt", "utf8"),
-    ])"""
-    assert _run(replace, read) == ["plain", "plain"]
-
-
-def _evals(*evals: tuple[str, list[Any]]) -> str | None:
+def _evals(*evals: tuple[str, list[Any]], timeout: float = 5) -> str | None:
     """Run evals in one REPL, each with its bound tools; return the last result."""
     registry = _Registry(
         memory_limit=64 * 1024 * 1024,
-        timeout=5,
+        timeout=timeout,
         capture_console=True,
         max_stdout_chars=4000,
     )
@@ -301,6 +296,48 @@ def test_code_that_declares_its_own_fs_keeps_running() -> None:
     listed = [_read_file_as_text]
     mine = "function fs() { return 'mine' }; 1"
     assert _evals((mine, listed), ("fs()", listed)) == "mine"
+
+
+@tool("slow")
+async def _slow() -> str:
+    """Wait longer than the eval's timeout, which time awaiting async calls skips."""
+    await asyncio.sleep(0.4)
+    return "slow"
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "await tools.slow({}); READ",
+        "(async () => { await tools.slow({}); return READ })()",
+    ],
+    ids=["top-level-await", "async-function"],
+)
+def test_time_awaiting_async_calls_does_not_count_against_a_sync_read(
+    code: str,
+) -> None:
+    read = "(() => { try { fs.readFileSync('/a') } catch (e) { return e.code } })()"
+    tools = [_slow, _read_file_as_text]
+    assert _evals((code.replace("READ", read), tools), timeout=0.2) == "ENOSYS"
+
+
+_notes: list[str] = []
+
+
+@tool("note")
+def _note(x: str) -> str:
+    """Record a note."""
+    _notes.append(x)
+    return x
+
+
+def test_a_call_left_queued_by_an_eval_that_returned_does_not_run_in_the_next() -> None:
+    late = "tools.slow({}).then(() => tools.note({ x: 'late' })); 1"
+    own = "await tools.note({ x: 'own' }); 2"
+    tools = [_slow, _note]
+    _notes.clear()
+    assert _evals((late, tools), (own, tools)) == "2"
+    assert _notes == ["own"]
 
 
 _reads: list[str] = []
@@ -343,7 +380,7 @@ class _CountingBackend(StateBackend):
         return super().download_files(paths)
 
 
-def _answer_pauses(
+async def _answer_pauses(
     code: str,
     gated: str,
     decision: dict[str, Any],
@@ -351,10 +388,8 @@ def _answer_pauses(
     durability: Literal["async", "exit"] = "async",
 ) -> tuple[list[Any], list[Any]]:
     """Run `code` where `gated` calls need per-call approval, giving each `decision`."""
-    call = {"name": "eval", "args": {"code": code}, "id": "call_1"}
-    script = [AIMessage(content="", tool_calls=[call]), AIMessage("done")]
     agent = create_agent(
-        model=FakeChatModel(messages=iter(script)),
+        model=_model(code),
         middleware=[
             CodeInterpreterMiddleware(ptc=_FS_TOOLS),
             FilesystemMiddleware(backend=_CountingBackend()),
@@ -364,15 +399,15 @@ def _answer_pauses(
         ],
         checkpointer=InMemorySaver(),
     )
-    config = {"configurable": {"thread_id": "t"}}
-    payload: Any = {"messages": [{"role": "user", "content": "go"}], "files": _files()}
-    out = agent.invoke(payload, config, version="v2", durability=durability)
-    pauses = []
-    while out.interrupts and len(pauses) < 3:
-        pauses.append([(i.value["name"], i.value["args"]) for i in out.interrupts])
-        payload = Command(resume={i.id: decision for i in out.interrupts})
-        out = agent.invoke(payload, config, version="v2", durability=durability)
-    return _results(out.value), pauses
+    out, pauses = await answer_pauses(
+        agent,
+        lambda _: decision,
+        invoke_mode="invoke",
+        durability=durability,
+        max_pauses=3,
+        payload={"messages": [{"role": "user", "content": "go"}], "files": _files()},
+    )
+    return _results(out.value), [[(p["name"], p["args"]) for p in ps] for ps in pauses]
 
 
 @pytest.mark.parametrize(
@@ -383,12 +418,14 @@ def _answer_pauses(
         "await tools.readFile({ file_path: '/docs/b.txt' })",
     ],
 )
-def test_an_interrupt_on_rule_pauses_fs_reads_like_tools_reads(call: str) -> None:
+async def test_an_interrupt_on_rule_pauses_fs_reads_like_tools_reads(call: str) -> None:
     code = f"""let r;
     try {{ r = {call} }} catch (e) {{ r = [e.name, e.code, e.message] }}
     JSON.stringify(r)"""
-    approved = _answer_pauses(code, "read_file", {"type": "approve"})
-    rejected = _answer_pauses(code, "read_file", {"type": "reject", "message": "no"})
+    approved = await _answer_pauses(code, "read_file", {"type": "approve"})
+    rejected = await _answer_pauses(
+        code, "read_file", {"type": "reject", "message": "no"}
+    )
     pause = [[("read_file", {"file_path": "/docs/b.txt"})]]
     assert approved[1] == rejected[1] == pause
     assert "plain" in approved[0][0]
@@ -399,7 +436,7 @@ def test_an_interrupt_on_rule_pauses_fs_reads_like_tools_reads(call: str) -> Non
 
 
 @pytest.mark.parametrize("durability", ["async", "exit"])
-def test_finished_fs_calls_are_not_run_again_after_a_resume(
+async def test_finished_fs_calls_are_not_run_again_after_a_resume(
     durability: Literal["async", "exit"],
 ) -> None:
     code = """const before = String.fromCharCode(...fs.readFileSync("/docs/b.txt"));
@@ -407,7 +444,7 @@ def test_finished_fs_calls_are_not_run_again_after_a_resume(
     const after = await fs.promises.readFile("/docs/a.md", "utf8");
     JSON.stringify([before, listed.includes("a.md"), after.length])"""
     _CountingBackend.downloads.clear()
-    results, pauses = _answer_pauses(
+    results, pauses = await _answer_pauses(
         code, "ls", {"type": "approve"}, durability=durability
     )
     assert pauses == [[("ls", {"path": "/docs"})]]

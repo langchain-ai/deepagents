@@ -19,7 +19,6 @@ import threading
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Literal
 
-from deepagents.backends.protocol import RAW_FILE_RESULT_CONFIG_KEY
 from langchain_core.messages import ToolCall, ToolMessage
 from langchain_core.runnables.config import var_child_runnable_config
 from langchain_core.tools import StructuredTool, Tool
@@ -30,7 +29,7 @@ from langgraph.errors import GraphBubbleUp, GraphInterrupt
 from langgraph.func import task
 
 from langchain_quickjs._format import coerce_tool_output_for_ptc
-from langchain_quickjs._fs import MAX_READ_BYTES
+from langchain_quickjs._fs import request_raw_result
 
 if TYPE_CHECKING:
     import concurrent.futures
@@ -272,9 +271,7 @@ class EvalJournal:
             ran.append(True)
             request, seen, writes = self._request(tool, call, config, raw=raw)
             try:
-                return _record(
-                    await self.chain.handler(request), seen, writes, raw=raw
-                )
+                return _record(await self.chain.handler(request), seen, writes, raw=raw)
             except Exception as exc:  # noqa: BLE001  # journaled, re-raised by dispatch
                 return failed(exc, writes)
 
@@ -435,13 +432,6 @@ def _state_from_eval_node(
         **config,
         "configurable": {**configurable, CONFIG_KEY_SEND: send, CONFIG_KEY_READ: read},
     }
-
-
-def request_raw_result(config: RunnableConfig, tool_call_id: str) -> RunnableConfig:
-    """Copy `config` so the deepagents file tool call `tool_call_id` is raw."""
-    raw = {"tool_call_id": tool_call_id, "max_bytes": MAX_READ_BYTES}
-    configurable = {**config.get("configurable", {}), RAW_FILE_RESULT_CONFIG_KEY: raw}
-    return {**config, "configurable": configurable}
 
 
 def _raised_record(exc: Exception, writes: list[tuple[str, Any]]) -> dict[str, Any]:

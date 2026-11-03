@@ -48,7 +48,7 @@ from quickjs_rs import (
 )
 
 from langchain_quickjs import _fs
-from langchain_quickjs._dispatch import CallResult, request_raw_result
+from langchain_quickjs._dispatch import CallResult
 from langchain_quickjs._format import (
     coerce_tool_output_for_ptc,
     format_handle,
@@ -137,9 +137,8 @@ class _CallTimeoutError(TimeoutError):
 
 @dataclass(slots=True)
 class _Deadline:
-    """One eval's timeout, and why the eval timed out once it has."""
+    """Why one eval timed out, once it has."""
 
-    at: float = math.inf
     missed: str | None = None
 
     def miss(self, reason: str) -> NoReturn:
@@ -153,8 +152,7 @@ class _Deadline:
             self.miss("the eval timed out, so this call was not run")
 
 
-# The running eval's deadline. Each eval runs in its own task, so a host call
-# reads its own eval's even while a concurrent eval has swapped `_ptc_state`.
+# The running eval's deadline, per task, so a concurrent eval can't swap it.
 _EVAL_DEADLINE: ContextVar[_Deadline] = ContextVar("_EVAL_DEADLINE")
 
 
@@ -382,27 +380,30 @@ _SETTLE_SOURCE = (
     " const E = { TypeError }[props?.name] ?? Error;"
     " throw Object.assign(new E(message), { code, ...props }); }"
 )
-# Throws once the eval timed out. Async calls call it first, so a refused call
-# settles without a host task and the eval's code finishes in this eval.
+# Throws once the eval timed out, or while no eval runs. Async calls check it first,
+# so a refused call never becomes a host task, which would leave the eval's code
+# queued to run late, under the next eval.
 _ADMIT_HOST_FUNCTION = "__lc_admit"
+# Admits an async call, `call(() => bridge(input))`, then settles its result.
+_CALL_SOURCE = (
+    "((settle, admit) => async (start) => { admit(); return settle(await start()); })"
+    f"({_SETTLE_SOURCE}, {_ADMIT_HOST_FUNCTION})"
+)
 _FS_INSTALL_SOURCE = (
     f"({_fs.SHIM})({_SETTLE_SOURCE}, {_fs.SYNC_HOST_FUNCTION},"
-    f" {_fs.ASYNC_HOST_FUNCTION}, {_ADMIT_HOST_FUNCTION}); undefined"
+    f" {_fs.ASYNC_HOST_FUNCTION}, {_CALL_SOURCE}); undefined"
 )
 
 
 def _render_tools_namespace_assignment(bridges: dict[str, str]) -> str:
     """Return JS that atomically rebuilds `globalThis.tools` from bridges."""
-    statements = [
-        f"(() => {{ const settle = {_SETTLE_SOURCE};"
-        f" const admit = {_ADMIT_HOST_FUNCTION}; const t = {{}};"
-    ]
+    statements = [f"(() => {{ const call = {_CALL_SOURCE}; const t = {{}};"]
     for tool_name, bridge_symbol in sorted(bridges.items()):
         quoted_tool_name = json.dumps(tool_name)
         quoted_bridge_symbol = json.dumps(bridge_symbol)
         statements.append(
-            f"t[{quoted_tool_name}] = ((b) => async (input) => {{ admit();"
-            f" return settle(await b(input)); }})(globalThis[{quoted_bridge_symbol}]);"
+            f"t[{quoted_tool_name}] = ((b) => (input) =>"
+            f" call(() => b(input)))(globalThis[{quoted_bridge_symbol}]);"
         )
     statements.append("globalThis.tools = t; })(); undefined")
     return " ".join(statements)
@@ -791,7 +792,7 @@ class _ThreadREPL:
         call_id = _synth_tool_call_id(tool.name)
         runtime = state.outer_runtime
         if raw and runtime is not None:
-            config = request_raw_result(runtime.config, call_id)
+            config = _fs.request_raw_result(runtime.config, call_id)
             runtime = replace(runtime, config=config)
         # `arun` skips the tool node, so inject runtime, state, and store here.
         args = _inject_tool_args_for_ptc(tool, args, runtime, call_id)
@@ -813,18 +814,26 @@ class _ThreadREPL:
         def _sync(op: str, args: dict[str, Any]) -> Any:
             name = f"fs.{op}Sync"
             deadline = _EVAL_DEADLINE.get(_Deadline())
-            if time.monotonic() >= deadline.at:
+            # The engine's deadline skips time awaiting async calls; it is `None` with
+            # no timeout or once cancelled. quickjs-rs should make it public.
+            at = self._runtime._deadline  # noqa: SLF001  # no public accessor yet
+            if at is None:
+                at = math.inf if self._per_call_timeout == math.inf else -math.inf
+            if time.monotonic() >= at:
                 deadline.miss(f"{name} was not run: the eval's timeout ran out")
             call = self._fs_call(op, args)
             if isinstance(call, list):
                 return call
-            return self._run_blocking(call, deadline, name)
+            return self._run_blocking(call, deadline, at, name)
 
         async def _async(op: str, args: dict[str, Any]) -> Any:
             call = self._fs_call(op, args)
             return call if isinstance(call, list) else await call
 
         def _admit() -> None:
+            if self._ptc_state is None:
+                msg = "the eval that made this call has ended, so it was not run"
+                raise ConcurrentEvalError(msg)
             _EVAL_DEADLINE.get(_Deadline()).check()
 
         ctx.register(_ADMIT_HOST_FUNCTION, _admit, is_async=False)
@@ -837,12 +846,12 @@ class _ThreadREPL:
         )
 
     def _run_blocking(
-        self, call: Coroutine[Any, Any, Any], deadline: _Deadline, name: str
+        self, call: Coroutine[Any, Any, Any], deadline: _Deadline, at: float, name: str
     ) -> Any:
         if self._blocking is None:
             self._blocking = concurrent.futures.ThreadPoolExecutor(max_workers=1)
         future = self._blocking.submit(asyncio.run, call)
-        remaining = deadline.at - time.monotonic()
+        remaining = at - time.monotonic()
         try:
             return future.result(None if remaining == math.inf else remaining)
         except TimeoutError:
@@ -1042,11 +1051,16 @@ class _ThreadREPL:
         """
         ctx = self._require_ctx()
         outcome = EvalOutcome()
+        if self._ptc_state is None:
+            # Run what earlier evals left queued while no eval is active, so a
+            # call it makes is refused rather than run as this eval's.
+            with contextlib.suppress(QuickJSError):
+                await ctx.eval_async("undefined", timeout=self._per_call_timeout)
         # Save/restore rather than clear-on-exit: a second eval that hits
         # ConcurrentEvalError would otherwise null out the in-flight
         # eval's state and orphan its bridge calls.
         prev_ptc_state = self._ptc_state
-        deadline = _Deadline(time.monotonic() + self._per_call_timeout)
+        deadline = _Deadline()
         token = _EVAL_DEADLINE.set(deadline)
         self._ptc_state = _PTCState(
             remaining_calls=self._max_ptc_calls,

@@ -1,7 +1,4 @@
-"""Node-shaped `fs` for the REPL, over the agent's file tools listed in `ptc`.
-
-Each `_OPERATIONS` row is one call to one file tool, on the same path as `tools.*`.
-"""
+"""Node-shaped `fs` over the `ptc` file tools: one `_OPERATIONS` row per tool call."""
 
 from __future__ import annotations
 
@@ -10,15 +7,24 @@ from dataclasses import dataclass
 from importlib import resources
 from typing import TYPE_CHECKING, Any
 
+from deepagents.backends import protocol as _protocol
+
 if TYPE_CHECKING:
     from collections.abc import Callable, Collection, Mapping
 
+    from langchain_core.runnables import RunnableConfig
     from langchain_core.tools import BaseTool
 
     from langchain_quickjs._dispatch import CallResult
 
 MAX_READ_BYTES = 8 * 1024 * 1024
 """Largest file one read copies into the REPL heap, the journal, and traces."""
+
+# Older deepagents releases lack the constant; the value is the same. Remove the
+# fallback in the chore(deps) PR that raises the `deepagents` floor past them.
+RAW_FILE_RESULT_CONFIG_KEY = getattr(
+    _protocol, "RAW_FILE_RESULT_CONFIG_KEY", "deepagents_raw_file_result"
+)
 
 SYNC_HOST_FUNCTION = "__lc_fs_sync"
 ASYNC_HOST_FUNCTION = "__lc_fs_async"
@@ -71,6 +77,13 @@ _NODE_ERRORS = {
 def docs(tool_names: Collection[str]) -> list[str]:
     """Return the prompt lines for the `fs` functions whose tool is listed."""
     return [op.doc for op in _OPERATIONS.values() if op.tool in tool_names]
+
+
+def request_raw_result(config: RunnableConfig, tool_call_id: str) -> RunnableConfig:
+    """Copy `config` so the deepagents file tool call `tool_call_id` is raw."""
+    raw = {"tool_call_id": tool_call_id, "max_bytes": MAX_READ_BYTES}
+    configurable = {**config.get("configurable", {}), RAW_FILE_RESULT_CONFIG_KEY: raw}
+    return {**config, "configurable": configurable}
 
 
 def request(

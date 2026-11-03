@@ -171,7 +171,7 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
                 then runs forever, and asyncio cancellation cannot stop it.
                 Only use it with an external limit that can, such as a
                 process kill or workflow timeout.
-        max_ptc_calls: Maximum number of `tools.*` bridge calls allowed
+        max_ptc_calls: Maximum number of `tools.*` and `fs` calls allowed
             during one `eval` execution. Exceeding this budget throws
             from the host-function bridge before invoking the tool.
             Uncaught overflows surface as `PTCCallBudgetExceeded`.

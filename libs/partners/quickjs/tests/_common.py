@@ -41,6 +41,7 @@ async def answer_pauses(
     invoke_mode: Literal["invoke", "ainvoke"] = "ainvoke",
     durability: Literal["async", "exit"] = "async",
     max_pauses: int = 5,
+    payload: dict[str, Any] | None = None,
 ) -> tuple[Any, list[list[dict[str, Any]]]]:
     """Run to completion, answering every pause; return the output and pauses."""
     config = {"configurable": {"thread_id": "t"}}
@@ -52,7 +53,7 @@ async def answer_pauses(
             )
         return agent.invoke(payload, config, version="v2", durability=durability)
 
-    out = await step({"messages": [HumanMessage("go")]})
+    out = await step(payload or {"messages": [HumanMessage("go")]})
     pauses = []
     while out.interrupts and len(pauses) < max_pauses:
         pauses.append([i.value for i in out.interrupts])

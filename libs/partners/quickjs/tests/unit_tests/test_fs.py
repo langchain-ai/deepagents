@@ -31,7 +31,11 @@ from tests._common import FakeChatModel, answer_pauses
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from deepagents.backends.protocol import FileDownloadResponse
+    from deepagents.backends.protocol import (
+        DeleteResult,
+        FileDownloadResponse,
+        WriteResult,
+    )
     from langchain_core.messages import BaseMessage
 
 _FILES = {
@@ -40,7 +44,7 @@ _FILES = {
     "/docs/b.txt": "plain",
     "/secret/key.txt": "hunter2",
 }
-_FS_TOOLS = ["read_file", "ls", "glob"]
+_FS_TOOLS = ["read_file", "ls", "glob", "write_file", "delete"]
 _DENY_SECRET = [
     FilesystemPermission(operations=["read"], paths=["/secret/**"], mode="deny")
 ]
@@ -194,6 +198,7 @@ def test_failures_are_node_errors(tmp_path: Path) -> None:
       caught(() => fs.readFileSync("/dir")).slice(1, 3),
       caught(() => fs.readFileSync("/secret/key.txt")).slice(1, 3),
       caught(() => fs.readdirSync("/missing")).slice(1, 3),
+      caught(() => fs.writeFileSync("/dir", "x")).slice(1, 3),
       caught(() => fs.readFileSync("/large.txt")).slice(1, 2),
       caught(() => fs.readFileSync("/dir", "utf32")).slice(0, 2),
       caught(() => fs.readFileSync(42)).slice(0, 2),
@@ -212,6 +217,7 @@ def test_failures_are_node_errors(tmp_path: Path) -> None:
         ["EISDIR", "EISDIR: illegal operation on a directory, open '/dir'"],
         ["EACCES", "EACCES: permission denied, open '/secret/key.txt'"],
         ["ENOENT", "ENOENT: no such file or directory, scandir '/missing'"],
+        ["EISDIR", "EISDIR: illegal operation on a directory, open '/dir'"],
         ["ERR_FS_FILE_TOO_LARGE"],
         ["TypeError", "ERR_INVALID_ARG_VALUE"],
         ["TypeError", "ERR_INVALID_ARG_TYPE"],
@@ -491,13 +497,23 @@ def test_once_a_sync_read_times_out_no_call_from_code_runs(*, run_async: bool) -
 
 
 class _CountingBackend(StateBackend):
-    """State backend that records the file downloads behind raw reads."""
+    """State backend that records raw reads, writes, and deletes."""
 
     downloads: ClassVar[list[str]] = []
+    writes: ClassVar[list[str]] = []
+    deletes: ClassVar[list[str]] = []
 
     def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:
         self.downloads.extend(paths)
         return super().download_files(paths)
+
+    def write(self, file_path: str, content: str) -> WriteResult:
+        self.writes.append(file_path)
+        return super().write(file_path, content)
+
+    def delete(self, file_path: str) -> DeleteResult:
+        self.deletes.append(file_path)
+        return super().delete(file_path)
 
 
 async def _answer_pauses(
@@ -591,7 +607,22 @@ try {
 const { readFile } = await import("node:fs/promises");
 const notes = await readFile(path.join("/docs", "a.md"), "utf8");
 const markdown = fs.globSync("**/*.md");
-JSON.stringify({ rows: data.rows.length, files, exists, missing, notes, markdown });
+fs.writeFileSync("/out/summary.txt", `rows: ${data.rows.length}`);
+const summary = fs.readFileSync("/out/summary.txt", "utf8");
+fs.mkdirSync("/out/reports/2026", { recursive: true });
+fs.writeFileSync(
+  path.join("/out/reports/2026", "report.json"),
+  JSON.stringify({ files }, null, 2),
+);
+const report = JSON.parse(fs.readFileSync("/out/reports/2026/report.json", "utf8"));
+const { writeFile, mkdir } = await import("node:fs/promises");
+await mkdir("/tmp/cache", { recursive: true });
+await writeFile("/tmp/cache/notes.md", "# Notes");
+const cached = await readFile("/tmp/cache/notes.md", "utf8");
+JSON.stringify({
+  rows: data.rows.length, files, exists, missing, notes, markdown,
+  summary, report, cached,
+});
 """
 
 
@@ -604,4 +635,163 @@ def test_the_node_snippets_models_write_run_unchanged(*, run_async: bool) -> Non
         "missing": "ENOENT",
         "notes": _FILES["/docs/a.md"],
         "markdown": ["docs/a.md"],
+        "summary": "rows: 150",
+        "report": {"files": ["a.md", "b.txt"]},
+        "cached": "# Notes",
     }
+
+
+def test_writes_and_deletes() -> None:
+    code = """
+    const caught = (f) => { try { f(); return "ok" } catch (e) { return e.code } };
+    fs.writeFileSync("/new.txt", new Uint8Array([104, 195, 169]));
+    fs.appendFileSync("/new.txt", "!");
+    fs.appendFileSync("/log.txt", "a");
+    await fs.promises.appendFile("/log.txt", "b");
+    const before = fs.existsSync("/docs/b.txt");
+    fs.unlinkSync("/docs/b.txt");
+    JSON.stringify([
+      fs.readFileSync("/new.txt", "utf8"),
+      fs.readFileSync("/log.txt", "utf8"),
+      [before, fs.existsSync("/docs/b.txt")],
+      caught(() => fs.writeFileSync("/b64.txt", "aGk=", "base64")),
+      caught(() => fs.writeFileSync("/bad.txt", new Uint8Array([255]))),
+      caught(() => fs.writeFileSync("/num.txt", 42)),
+      caught(() => fs.writeFileSync("/secret/k.txt", "x")),
+    ])"""
+    rules = [
+        FilesystemPermission(operations=["write"], paths=["/secret/**"], mode="deny")
+    ]
+    assert _run(code, permissions=rules) == [
+        "hé!",
+        "ab",
+        [True, False],
+        "ERR_INVALID_ARG_VALUE",
+        "ERR_INVALID_ARG_VALUE",
+        "ERR_INVALID_ARG_TYPE",
+        "EACCES",
+    ]
+
+
+def test_an_append_of_bytes_that_are_not_utf8_throws_and_writes_nothing() -> None:
+    code = """
+    const caught = async (f) => {
+      try { await f(); return "ok" } catch (e) { return e.code }
+    };
+    const bad = new Uint8Array([255]);
+    JSON.stringify([
+      await caught(() => fs.appendFileSync("/docs/b.txt", bad)),
+      await caught(() => fs.promises.appendFile("/docs/b.txt", bad)),
+      fs.readFileSync("/docs/b.txt", "utf8"),
+    ])"""
+    _CountingBackend.writes.clear()
+    assert _run(code, backend=_CountingBackend()) == [
+        "ERR_INVALID_ARG_VALUE",
+        "ERR_INVALID_ARG_VALUE",
+        "plain",
+    ]
+    assert _CountingBackend.writes == []
+
+
+async def test_writes_pause_for_approval_and_run_once_on_resume() -> None:
+    code = """fs.appendFileSync("/log.txt", "x");
+    fs.writeFileSync("/gated.txt", "y");
+    const read = (p) => fs.readFileSync(p, "utf8");
+    JSON.stringify([read("/log.txt"), read("/gated.txt")])"""
+    _CountingBackend.writes.clear()
+    results, pauses = await _answer_pauses(code, "write_file", {"type": "approve"})
+    assert pauses == [
+        [("write_file", {"file_path": "/log.txt", "content": "x"})],
+        [("write_file", {"file_path": "/gated.txt", "content": "y"})],
+    ]
+    assert results == [["x", "y"]]
+    assert _CountingBackend.writes == ["/log.txt", "/gated.txt"]
+
+
+async def test_a_rejected_write_throws_eacces_and_writes_nothing() -> None:
+    code = """let r;
+    try { fs.writeFileSync("/w.txt", "y") } catch (e) { r = e.code }
+    JSON.stringify([r, fs.existsSync("/w.txt")])"""
+    _CountingBackend.writes.clear()
+    reject = {"type": "reject", "message": "no"}
+    results, _ = await _answer_pauses(code, "write_file", reject)
+    assert results == [["EACCES", False]]
+    assert _CountingBackend.writes == []
+
+
+def test_deletes_refuse_what_node_refuses_and_leave_the_path() -> None:
+    code = """
+    const caught = async (f) => {
+      try { await f(); return "ok" } catch (e) { return e.code }
+    };
+    fs.writeFileSync("/full/x.txt", "x");
+    const refused = [
+      await caught(() => fs.rmSync("/docs")),
+      await caught(() => fs.promises.rm("/docs")),
+      await caught(() => fs.unlinkSync("/docs")),
+      await caught(() => fs.promises.unlink("/docs")),
+      await caught(() => fs.rmdirSync("/full")),
+      await caught(() => fs.promises.rmdir("/full")),
+      await caught(() => fs.rmdirSync("/data.json")),
+      await caught(() => fs.unlinkSync("/nope.txt")),
+    ];
+    const kept = ["/docs/a.md", "/full/x.txt", "/data.json"].map(fs.existsSync);
+    const done = [
+      await caught(() => fs.rmSync("/nope.txt", { force: true })),
+      await caught(() => fs.rmdirSync("/full", { recursive: true })),
+      await caught(() => fs.promises.rm("/docs", { recursive: true })),
+    ];
+    const gone = ["/full/x.txt", "/docs/a.md"].map(fs.existsSync);
+    JSON.stringify([refused, kept, done, gone])"""
+    _CountingBackend.deletes.clear()
+    assert _run(code, backend=_CountingBackend()) == [
+        [
+            "ERR_FS_EISDIR",
+            "ERR_FS_EISDIR",
+            "EISDIR",
+            "EISDIR",
+            "ENOTEMPTY",
+            "ENOTEMPTY",
+            "ENOTDIR",
+            "ENOENT",
+        ],
+        [True, True, True],
+        ["ok", "ok", "ok"],
+        [False, False],
+    ]
+    assert _CountingBackend.deletes == ["/full", "/docs"]
+
+
+def test_a_delete_without_ls_throws_enosys_instead_of_deleting() -> None:
+    code = """let r;
+    try { fs.unlinkSync("/docs/b.txt") } catch (e) { r = [e.code, e.message] }
+    JSON.stringify([r, fs.readFileSync("/docs/b.txt", "utf8")])"""
+    message = "ENOSYS: function not implemented; add 'ls' to `ptc`, stat '/docs/b.txt'"
+    assert _run(code, ptc=["read_file", "delete"]) == [["ENOSYS", message], "plain"]
+
+
+def test_write_flags_append_or_replace_and_refuse_the_rest() -> None:
+    code = """
+    const caught = async (f) => {
+      try { await f(); return "ok" } catch (e) { return e.code }
+    };
+    fs.writeFileSync("/docs/b.txt", " more", { flag: "a" });
+    await fs.promises.writeFile("/docs/b.txt", "!", { flag: "a+", encoding: "utf8" });
+    fs.appendFileSync("/log.txt", "new", { flag: "w" });
+    await fs.promises.appendFile("/log.txt", "er", "utf8");
+    fs.writeFileSync("/w.txt", "w+", { flag: "w+" });
+    let message;
+    try { fs.writeFileSync("/docs/a.md", "x", { flag: "wx" }) }
+    catch (e) { message = e.message }
+    const refused = [
+      await caught(() => fs.promises.writeFile("/docs/a.md", "x", { flag: "r+" })),
+      await caught(() => fs.appendFileSync("/docs/a.md", "x", { flag: "ax" })),
+    ];
+    const read = (p) => fs.readFileSync(p, "utf8");
+    const paths = ["/docs/b.txt", "/log.txt", "/w.txt", "/docs/a.md"];
+    JSON.stringify([paths.map(read), message, refused])"""
+    assert _run(code) == [
+        ["plain more!", "newer", "w+", _FILES["/docs/a.md"]],
+        "The argument 'flag' is invalid. Received 'wx'; fs supports \"w\" and \"a\"",
+        ["ERR_INVALID_ARG_VALUE", "ERR_INVALID_ARG_VALUE"],
+    ]

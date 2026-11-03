@@ -267,6 +267,7 @@ def test_replay_chain_reconstructs_latest_snapshot() -> None:
     """Folding the full record chain yields the final snapshot bytes."""
     snaps = _make_snapshots()
     chain = _build_chain(snaps)
+    assert [kind for kind, _ in chain] == ["snap", "pages", "pages"]
     assert replay_snapshot_chain(b"", chain) == snaps[-1]
 
 
@@ -289,6 +290,16 @@ def test_page_record_rebuilds_snapshot_that_changes_size(
     payload = change(prior)
     record = ("pages", _diff_pages(prior, payload))
     assert replay_snapshot_chain(prior, [record]) == payload
+
+
+def test_page_record_for_small_edit_is_small() -> None:
+    """A few changed bytes in a 1 MiB snapshot cost well under a kilobyte."""
+    prior = bytes(range(256)) * 4096
+    payload = bytearray(prior)
+    payload[123_456:123_460] = b"edit"
+    kind, blob = encode_snapshot(bytes(payload), prior)
+    assert kind == "pages"
+    assert len(blob) < 1024
 
 
 def test_page_record_from_a_newer_format_is_refused() -> None:
@@ -402,7 +413,7 @@ def test_snapshot_update_subsequent_write_is_patch() -> None:
         update = mw._snapshot_update(payload=snaps[1], prior=snaps[0], slot_id="t")
         record = update["_quickjs_snapshot_payload"]
         kind, blob = record
-        assert kind == "patch"
+        assert kind == "pages"
         # The patch is dramatically smaller than the full snapshot.
         assert len(blob) < len(snaps[1])
         # And it reconstructs the new snapshot exactly.
@@ -452,7 +463,7 @@ def test_after_agent_emits_patch_against_prior_state() -> None:
             runtime=MagicMock(),
         )
         kind, _blob = second["_quickjs_snapshot_payload"]
-        assert kind == "patch"
+        assert kind == "pages"
 
         # The full chain reconstructs a snapshot that restores both globals.
         chain = [

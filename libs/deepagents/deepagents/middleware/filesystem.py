@@ -816,6 +816,40 @@ async def _agrep_backend(
     return _apply_grep_max_count(result, max_count)
 
 
+GREP_LINE_CHAR_LIMIT = 500
+"""Characters of a grep line shown to the model.
+
+Longer lines (minified JSON, offloaded tool results) show a window around the
+match instead, so one hit can't return the whole line.
+"""
+
+
+def _clip_grep_line(text: str, pattern: str) -> str:
+    """Clip `text` to a `GREP_LINE_CHAR_LIMIT` window centered on `pattern`.
+
+    Falls back to the head of the line when `pattern` isn't found in it, as for
+    context lines.
+    """
+    if len(text) <= GREP_LINE_CHAR_LIMIT:
+        return text
+    center = max(text.find(pattern), 0) + len(pattern) // 2
+    start = min(max(center - GREP_LINE_CHAR_LIMIT // 2, 0), len(text) - GREP_LINE_CHAR_LIMIT)
+    end = start + GREP_LINE_CHAR_LIMIT
+    before = f"[{start} chars clipped] " if start else ""
+    after = f" [{len(text) - end} chars clipped]" if end < len(text) else ""
+    return f"{before}{text[start:end]}{after}"
+
+
+def _clip_grep_match(match: GrepMatch, pattern: str) -> GrepMatch:
+    """Return `match` with its line and context lines clipped by `_clip_grep_line`."""
+    clipped: GrepMatch = {**match, "text": _clip_grep_line(match["text"], pattern)}
+    if "context_before" in match:
+        clipped["context_before"] = [{**c, "text": _clip_grep_line(c["text"], pattern)} for c in match["context_before"]]
+    if "context_after" in match:
+        clipped["context_after"] = [{**c, "text": _clip_grep_line(c["text"], pattern)} for c in match["context_after"]]
+    return clipped
+
+
 def _format_grep_tool_result(
     result: GrepResult,
     output_mode: Literal["files_with_matches", "content", "count"],
@@ -835,7 +869,7 @@ def _format_grep_tool_result(
     not when matches existed but were all redacted by read permissions (a
     redaction miss has nothing to do with regex syntax).
     """
-    matches = result.matches or []
+    matches = [_clip_grep_match(match, pattern) for match in result.matches or []]
     if result.error and not matches:
         return result.error, "error"
 
@@ -1084,7 +1118,8 @@ READ_FILE_TRUNCATION_MSG = (
     "The file content is very large. "
     "Consider reformatting the file to make it easier to navigate. "
     "For example, if this is JSON, use execute(command='jq . {file_path}') to pretty-print it with line breaks. "
-    "For other formats, you can use appropriate formatting tools to split long lines.]"
+    "For other formats, you can use appropriate formatting tools to split long lines. "
+    "To find a specific value without reading the whole line, grep for it: grep shows a window around each match.]"
 )
 
 # Approximate number of characters per token for truncation calculations.

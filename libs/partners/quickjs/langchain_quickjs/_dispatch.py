@@ -9,6 +9,10 @@ gives it three properties the eval needs when a call pauses for approval:
 - A finished call, including one whose tool raised, is journaled in the
   checkpoint. When the eval re-runs after the human answers, the call returns
   its recorded result instead of running again, so side effects happen once.
+  Graph-state writes are kept only for tools whose function this module can
+  wrap (`StructuredTool` or `Tool` with a `content` response format); the tool
+  node runs any other tool under the eval's config, and a pause drops what
+  such a tool wrote to graph state.
 - An interrupt raised by the call is scoped to the call's own task, so its
   interrupt id, and therefore the human's decision, belongs to that call.
 - The task name carries a digest of the tool name and arguments. A re-run that
@@ -24,6 +28,7 @@ import asyncio
 import functools
 import hashlib
 import json
+import threading
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -214,6 +219,8 @@ class EvalJournal:
     """Bubble-ups from paused calls, with the issue order of the call."""
     inflight: dict[concurrent.futures.Future[Any], int] = field(default_factory=dict)
     notes: list[str] = field(default_factory=list)
+    state_lock: threading.Lock = field(default_factory=threading.Lock)
+    """Serializes calls' reads and writes of the eval node's state across threads."""
     heap: Snapshot | None = None
     """The heap before the eval ran, restored if a call pauses.
 
@@ -257,9 +264,11 @@ class EvalJournal:
             type="tool_call",
         )
 
+        ran: list[bool] = []
         failure: list[Exception] = []
 
         def run(config: RunnableConfig) -> dict[str, Any]:
+            ran.append(True)
             seen, writes = _Returned(), []
             request = self._request(tool, call, config, seen, writes)
             try:
@@ -271,6 +280,7 @@ class EvalJournal:
                 return _raised_record(exc, writes)
 
         async def arun(config: RunnableConfig) -> dict[str, Any]:
+            ran.append(True)
             seen, writes = _Returned(), []
             request = self._request(tool, call, config, seen, writes)
             try:
@@ -283,18 +293,23 @@ class EvalJournal:
             return _as_record(_result_of(result, seen), writes)
 
         name = f"ptc.{tool.name}.{call_digest(tool.name, args)}"
+        # The record may not be serialized yet, so it is read, never changed.
         record = await self._journaled(name, run, arun, seq=seq)
-        if writes := record.pop("writes", None):
-            self.runtime.config["configurable"][CONFIG_KEY_SEND](
-                [(channel, value) for channel, value in writes]
-            )
-        if raised := record.pop("raised", None):
+        if not ran and record.get("writes"):
+            # A saved call did not run, so its state writes were not sent.
+            with self.state_lock:
+                self.runtime.config["configurable"][CONFIG_KEY_SEND](
+                    [(channel, value) for channel, value in record["writes"]]
+                )
+        if raised := record.get("raised"):
             # The original exception on the run that raised it, so an uncaught
             # one ends the agent run as it would for a model tool call.
             raise failure[0] if failure else RuntimeError(raised)
         if record.get("note"):
             self.notes.append(f"tools.{tool.name} call {seq}: {record['note']}")
-        return CallResult(**record)
+        return CallResult(
+            status=record["status"], value=record["value"], note=record.get("note")
+        )
 
     def _request(
         self,
@@ -305,7 +320,9 @@ class EvalJournal:
         writes: list[tuple[str, Any]],
     ) -> ToolCallRequest:
         """Build the nested call's request under its own task's config."""
-        config = _state_from_eval_node(config, self.runtime.config, writes)
+        config = _state_from_eval_node(
+            config, self.runtime.config, writes, self.state_lock
+        )
         runtime = replace(self.runtime, tool_call_id=call["id"], config=config)
         watched = _watched_tool(tool, seen, sync=not self.chain.is_async, config=config)
         return self.chain.request.override(
@@ -406,30 +423,48 @@ class EvalJournal:
 
 
 def _state_from_eval_node(
-    config: RunnableConfig, eval_config: RunnableConfig, writes: list[tuple[str, Any]]
+    config: RunnableConfig,
+    eval_config: RunnableConfig,
+    writes: list[tuple[str, Any]],
+    lock: threading.Lock,
 ) -> RunnableConfig:
     """Return a call's task config that reads and writes graph state as the eval.
 
     A LangGraph task reads the state as of the step's start plus its own
     writes, so a file one call writes through `StateBackend` would be invisible
-    to the next call. The call reads through the `eval` node instead, and its
-    state writes are collected into `writes` for the journal record; `dispatch`
-    hands them to the node on every run, including a re-run that returns the
-    record without running the call. LangGraph's own channels, such as the
-    resume value `interrupt()` writes, all start with `__` and stay with the
-    call's task.
+    to the next call. The call reads and writes through the `eval` node
+    instead, so later calls and the call itself see its writes. Its state
+    writes are also kept in `writes` for the journal record, and `dispatch`
+    sends them again on a re-run that returns the record without running the
+    call; LangGraph drops a node's writes when it pauses, so they land once.
+    LangGraph's own channels, such as the resume value `interrupt()` writes,
+    all start with `__` and stay with the call's task.
+
+    Concurrent calls from one eval run on other threads, and the node's writes
+    are one shared list that a read iterates, so `lock` serializes their reads
+    and sends. It does not cover a model tool call running in parallel in the
+    same step, which writes to that list without it, as it already could.
     """
     configurable = config["configurable"]
     task_send = configurable[CONFIG_KEY_SEND]
+    eval_send = eval_config["configurable"][CONFIG_KEY_SEND]
+    eval_read = eval_config["configurable"][CONFIG_KEY_READ]
 
     def send(items: Iterable[tuple[str, Any]]) -> None:
         items = list(items)
         own = [(c, v) for c, v in items if c.startswith("__")]
-        writes.extend((c, v) for c, v in items if not c.startswith("__"))
+        state = [(c, v) for c, v in items if not c.startswith("__")]
+        if state:
+            writes.extend(state)
+            with lock:
+                eval_send(state)
         if own:
             task_send(own)
 
-    read = eval_config["configurable"][CONFIG_KEY_READ]
+    def read(*args: Any, **kwargs: Any) -> Any:
+        with lock:
+            return eval_read(*args, **kwargs)
+
     return {
         **config,
         "configurable": {**configurable, CONFIG_KEY_SEND: send, CONFIG_KEY_READ: read},

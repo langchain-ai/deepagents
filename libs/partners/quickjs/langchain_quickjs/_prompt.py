@@ -461,7 +461,11 @@ def _safe_json_schema(tool: BaseTool) -> dict[str, Any] | None:
     try:
         if tool.args_schema is None:
             return None
-        model_json_schema = getattr(tool.tool_call_schema, "model_json_schema", None)
+        schema = tool.tool_call_schema
+        # MCP adapters (and other dict-based tools) pass raw JSON Schema.
+        if isinstance(schema, dict):
+            return dereference_refs(schema)
+        model_json_schema = getattr(schema, "model_json_schema", None)
         if callable(model_json_schema):
             return dereference_refs(model_json_schema())
     except Exception:  # noqa: BLE001 — prompt rendering is best-effort

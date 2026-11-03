@@ -28,7 +28,7 @@ from deepagents import create_deep_agent
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.tools import tool
-from pydantic import Field
+from pydantic import BaseModel, Field
 from typing_extensions import TypedDict
 
 from langchain_quickjs import CodeInterpreterMiddleware
@@ -87,6 +87,43 @@ def normalize_name(name: str) -> str:
 async def fetch_weather(city: str) -> str:
     """Fetch the current weather for a city."""
     return f"Weather for {city}"
+
+
+class Address(BaseModel):
+    city: str
+    postal_code: str
+
+
+class Customer(BaseModel):
+    name: str
+    address: Address
+    billing_address: Address | None = None
+    tags: dict[str, str] = Field(default_factory=dict)
+
+
+class OrgUnit(BaseModel):
+    name: str
+    children: list[OrgUnit] = Field(default_factory=list)
+
+
+@tool
+def upsert_customers(customers: list[Customer]) -> list[Customer]:
+    """Create or update customers.
+
+    Args:
+        customers: The customers to write.
+    """
+    return customers
+
+
+@tool
+def get_org_tree(root: str) -> OrgUnit:
+    """Get the org tree under a unit.
+
+    Args:
+        root: Name of the root unit.
+    """
+    return OrgUnit(name=root)
 
 
 class _SmokeChatModel(GenericFakeChatModel):
@@ -247,6 +284,26 @@ def test_system_prompt_snapshot_without_timeout(
     assert "timeout" not in prompt.lower()
     _assert_snapshot(
         snapshots_dir / "quickjs_system_prompt_no_timeout.md",
+        prompt,
+        update_snapshots=update_snapshots,
+    )
+
+
+def test_system_prompt_snapshot_with_nested_models(
+    snapshots_dir: Path, *, update_snapshots: bool
+) -> None:
+    """Nested, optional, mapping and recursive Pydantic models render inline."""
+    nested_tools = [upsert_customers, get_org_tree]
+    model = _smoke_model()
+    agent = create_deep_agent(
+        model=model,
+        middleware=[CodeInterpreterMiddleware(ptc=nested_tools)],
+        tools=nested_tools,
+    )
+    _invoke_for_snapshot(agent, {"messages": [HumanMessage(content="hi")]})
+    prompt = _capture_system_prompt(model)
+    _assert_snapshot(
+        snapshots_dir / "quickjs_system_prompt_nested_models.md",
         prompt,
         update_snapshots=update_snapshots,
     )

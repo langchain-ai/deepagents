@@ -30,13 +30,25 @@ _REPL_SYSTEM_PROMPT_TEMPLATE = (
     "{repl_intro_line}\n\n"
     "{state_persistence_line}\n"
     "- Top-level `await` works; Promises resolve before the call returns.\n"
-    "- Runtime sandbox: no built-in filesystem, network, stdlib, or wall-clock "
-    "APIs (`fetch`, `require`, `fs`, `process`, real `Date.now()` are "
-    "unavailable or stubbed).\n"
+    "{sandbox_line}\n"
     "{side_effects_line}\n"
     "- {timeout_line}Memory: {memory_limit_mb} MB total.\n"
     "- `console.log` output is captured and returned alongside the result."
 )
+_FS_SYSTEM_PROMPT_TEMPLATE = """
+
+### Files: Node.js `fs`
+
+`fs` is a global over this agent's files, the same files your file tools see. \
+It behaves like Node's `fs`, and every call goes through your file tools, so \
+the same rules and approvals apply. Each sync function, such as \
+`fs.readFileSync`, has a promise form, such as `fs.promises.readFile`, to use \
+with `Promise.all`. Paths are absolute; relative paths resolve from `/`.
+
+{functions}
+- Errors are Node errors: check `err.code`, such as `ENOENT`, `EISDIR`, or \
+`EACCES`.
+- There are no writes, streams, or callback-style APIs."""
 _SUBAGENT_SYSTEM_PROMPT_TEMPLATE = """
 
 ### Dispatching Subagents with `task`
@@ -276,6 +288,7 @@ def render_repl_system_prompt(
     memory_limit_mb: int,
     mode: Literal["thread", "turn", "call"],
     ptc_attached: bool = False,
+    files_attached: bool = False,
 ) -> str:
     """Render the base REPL system prompt text for `CodeInterpreterMiddleware`.
 
@@ -283,6 +296,18 @@ def render_repl_system_prompt(
     tools are exposed as the `tools.*` namespace it points the model at the
     API reference; otherwise it states the REPL is pure computation.
     """
+    if files_attached:
+        sandbox_line = (
+            "- Runtime sandbox: no network, stdlib, or wall-clock APIs (`fetch`, "
+            "`require`, `process`, real `Date.now()` are unavailable or stubbed). "
+            "Files are reachable through `fs`, documented below."
+        )
+    else:
+        sandbox_line = (
+            "- Runtime sandbox: no built-in filesystem, network, stdlib, or wall-clock "
+            "APIs (`fetch`, `require`, `fs`, `process`, real `Date.now()` are "
+            "unavailable or stubbed)."
+        )
     if ptc_attached:
         side_effects_line = (
             "- External side effects from inside the REPL are only reachable "
@@ -323,10 +348,18 @@ def render_repl_system_prompt(
     return _REPL_SYSTEM_PROMPT_TEMPLATE.format(
         repl_intro_line=repl_intro_line,
         state_persistence_line=state_persistence_line,
+        sandbox_line=sandbox_line,
         side_effects_line=side_effects_line,
         timeout_line=("" if timeout is None else f"Timeout: {timeout}s per call. "),
         memory_limit_mb=memory_limit_mb,
     )
+
+
+def render_fs_system_prompt(functions: Sequence[str]) -> str:
+    """Render the `fs` section from the lines for the functions code can call."""
+    if not functions:
+        return ""
+    return _FS_SYSTEM_PROMPT_TEMPLATE.format(functions="\n".join(functions))
 
 
 def render_subagent_system_prompt(
@@ -358,7 +391,9 @@ def render_eval_tool_code_doc(*, mode: Literal["thread", "turn", "call"]) -> str
     )
 
 
-def render_eval_tool_description(*, mode: Literal["thread", "turn", "call"]) -> str:
+def render_eval_tool_description(
+    *, mode: Literal["thread", "turn", "call"], files_attached: bool = False
+) -> str:
     """Render the public eval tool description."""
     if mode == "call":
         state_line = (
@@ -375,9 +410,10 @@ def render_eval_tool_description(*, mode: Literal["thread", "turn", "call"]) -> 
             "functions defined in one call are visible to later calls within "
             "the same turn, but reset between turns."
         )
+    reach = "network" if files_attached else "filesystem, network,"
     return (
         "Execute JavaScript in a sandboxed REPL. "
-        f"{state_line} No filesystem, network, or real clock. "
+        f"{state_line} No {reach} or real clock. "
         "Top-level `await` is supported; a final-expression Promise resolves "
         "before the call returns."
     )

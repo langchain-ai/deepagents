@@ -7,6 +7,7 @@ import time
 from typing import TYPE_CHECKING, Any, Literal
 
 import pytest
+from deepagents.backends import StateBackend
 from deepagents.middleware.filesystem import FilesystemMiddleware
 from langchain.agents import create_agent
 from langchain.agents.middleware import HumanInTheLoopMiddleware
@@ -120,6 +121,7 @@ async def _run(
     answer: Callable[[dict[str, Any]], dict[str, Any]],
     *,
     invoke_mode: Literal["invoke", "ainvoke"] = "ainvoke",
+    durability: Literal["async", "exit"] = "async",
     max_pauses: int = 5,
 ) -> tuple[Any, list[list[dict[str, Any]]]]:
     """Run to completion, answering every pause; return the output and pauses."""
@@ -127,8 +129,10 @@ async def _run(
 
     async def step(payload: Any) -> Any:
         if invoke_mode == "ainvoke":
-            return await agent.ainvoke(payload, config, version="v2")
-        return agent.invoke(payload, config, version="v2")
+            return await agent.ainvoke(
+                payload, config, version="v2", durability=durability
+            )
+        return agent.invoke(payload, config, version="v2", durability=durability)
 
     out = await step({"messages": [HumanMessage("go")]})
     pauses = []
@@ -237,7 +241,8 @@ async def test_decision_is_not_applied_to_a_call_with_different_args() -> None:
 @pytest.mark.xfail(
     strict=True,
     reason="LangGraph gives a resume without an interrupt id to whichever "
-    "interrupt asks first on the re-run",
+    "interrupt asks first on the re-run. Model tool calls never hit this because "
+    "their args are fixed in state; a re-run of eval code can issue new args",
 )
 async def test_bare_resume_is_not_applied_to_a_call_with_different_args() -> None:
     config = {"configurable": {"thread_id": "t"}}
@@ -254,9 +259,10 @@ async def test_bare_resume_is_not_applied_to_a_call_with_different_args() -> Non
     assert CALLS == []
 
 
+@pytest.mark.parametrize("durability", ["async", "exit"])
 @pytest.mark.parametrize("invoke_mode", ["invoke", "ainvoke"])
 async def test_call_that_raised_before_a_pause_does_not_run_again(
-    invoke_mode: Literal["invoke", "ainvoke"],
+    invoke_mode: Literal["invoke", "ainvoke"], durability: Literal["async", "exit"]
 ) -> None:
     code = """
     let r;
@@ -264,30 +270,34 @@ async def test_call_that_raised_before_a_pause_does_not_run_again(
     await tools.danger({x: r});
     r
     """
-    out, pauses = await _run(_agent(code), lambda _: APPROVE, invoke_mode=invoke_mode)
+    out, pauses = await _run(
+        _agent(code), lambda _: APPROVE, invoke_mode=invoke_mode, durability=durability
+    )
 
     assert len(pauses) == 1
     assert CALLS == [("flaky", "a"), ("danger", "HostError")]
     assert _eval_result(out) == "<result>HostError</result>"
 
 
-@pytest.mark.parametrize("invoke_mode", ["invoke", "ainvoke"])
-async def test_state_backend_write_is_read_back_in_the_same_eval_across_a_pause(
-    invoke_mode: Literal["invoke", "ainvoke"],
-) -> None:
-    code = """
-    await tools.writeFile({file_path: '/a.txt', content: 'hello'});
-    await tools.danger({x: 'b'});
-    await tools.readFile({file_path: '/a.txt'})
-    """
+@tool
+def write_then_read(path: str) -> str:
+    """Write a file in graph state, then read it back in the same call."""
+    files = StateBackend()
+    files.write(path, "mine")
+    return files.read(path).file_data["content"]
+
+
+def _fs_agent(code: str) -> Any:
     call = {"name": "eval", "args": {"code": code}, "id": "call_1"}
-    agent = create_agent(
+    return create_agent(
         model=FakeChatModel(
             messages=iter([AIMessage(content="", tool_calls=[call]), AIMessage("done")])
         ),
-        tools=[danger],
+        tools=[danger, write_then_read],
         middleware=[
-            CodeInterpreterMiddleware(ptc=["write_file", "read_file", "danger"]),
+            CodeInterpreterMiddleware(
+                ptc=["write_file", "read_file", "danger", "write_then_read"]
+            ),
             FilesystemMiddleware(),
             HumanInTheLoopMiddleware(
                 interrupt_on={"danger": True}, interrupt_mode="per_call"
@@ -295,11 +305,38 @@ async def test_state_backend_write_is_read_back_in_the_same_eval_across_a_pause(
         ],
         checkpointer=InMemorySaver(),
     )
-    out, pauses = await _run(agent, lambda _: APPROVE, invoke_mode=invoke_mode)
+
+
+@pytest.mark.parametrize("durability", ["async", "exit"])
+@pytest.mark.parametrize("invoke_mode", ["invoke", "ainvoke"])
+async def test_state_backend_writes_survive_a_pause_and_are_read_back(
+    invoke_mode: Literal["invoke", "ainvoke"], durability: Literal["async", "exit"]
+) -> None:
+    code = """
+    await tools.writeFile({file_path: '/a.txt', content: 'hello'});
+    await tools.danger({x: 'b'});
+    await tools.writeFile({file_path: '/c.txt', content: 'after'});
+    await tools.readFile({file_path: '/a.txt'})
+    """
+    out, pauses = await _run(
+        _fs_agent(code),
+        lambda _: APPROVE,
+        invoke_mode=invoke_mode,
+        durability=durability,
+    )
 
     assert len(pauses) == 1
     assert "hello" in _eval_result(out)
     assert out.value["files"]["/a.txt"]["content"] == "hello"
+    assert out.value["files"]["/c.txt"]["content"] == "after"
+
+
+async def test_a_call_reads_its_own_state_write() -> None:
+    out, _ = await _run(
+        _fs_agent("await tools.writeThenRead({path: '/own.txt'})"), lambda _: APPROVE
+    )
+
+    assert _eval_result(out) == "<result>mine</result>"
 
 
 async def test_rebuilt_agent_resumes_without_rerunning_finished_calls() -> None:

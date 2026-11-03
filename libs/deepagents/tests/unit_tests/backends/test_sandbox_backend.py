@@ -463,6 +463,7 @@ def test_ls_nonexistent_path_sets_error() -> None:
 
     assert result.entries is None
     assert result.error == "Path '/test/does_not_exist': path_not_found"
+    assert result.error_code == "file_not_found"
 
 
 def test_ls_permission_denied_sets_error() -> None:
@@ -474,6 +475,7 @@ def test_ls_permission_denied_sets_error() -> None:
 
     assert result.entries is None
     assert result.error == "Path '/test/locked': permission_denied"
+    assert result.error_code == "permission_denied"
 
 
 def test_ls_not_a_directory_sets_error() -> None:
@@ -485,6 +487,7 @@ def test_ls_not_a_directory_sets_error() -> None:
 
     assert result.entries is None
     assert result.error == "Path '/test/file.txt': not_a_directory"
+    assert result.error_code is None
 
 
 def test_ls_error_line_amongst_entries_takes_precedence() -> None:

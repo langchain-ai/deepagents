@@ -15,7 +15,7 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from copy import copy
 from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
-from typing import Annotated, Any, Final, Literal, NotRequired, cast, get_args
+from typing import Annotated, Any, Final, Literal, NotRequired, cast
 
 import wcmatch.glob as wcglob
 from langchain.agents.middleware.types import (
@@ -46,6 +46,8 @@ from deepagents._api.deprecation import warn_deprecated
 from deepagents.backends import CompositeBackend, FilesystemBackend, LocalShellBackend, StateBackend
 from deepagents.backends.composite import _route_for_path
 from deepagents.backends.protocol import (
+    INVALID_PATH,
+    PERMISSION_DENIED,
     RAW_FILE_RESULT_CONFIG_KEY,
     BackendProtocol,
     DeleteResult,
@@ -56,7 +58,6 @@ from deepagents.backends.protocol import (
     FileData as FileData,  # Re-export for backwards compatibility
     FileDownloadResponse,
     FileInfo,
-    FileOperationError,
     FileToolErrorArtifact,
     FileToolErrorCode,
     GlobArtifact,
@@ -73,6 +74,7 @@ from deepagents.backends.protocol import (
     SandboxBackendProtocol,
     WriteResult,
     _apply_grep_max_count,
+    _as_file_operation_error,
     _method_accepts_max_count,
     _supports_delete,
     execute_accepts_timeout,
@@ -202,12 +204,9 @@ _MULTIMODAL_BLOCK_TYPES: Final = frozenset(_EXTENSION_TO_FILE_TYPE.values())
 """Content block types `read_file` may emit that require multimodal model support."""
 
 
-def _tool_error(name: str, tool_call_id: str | None, content: str) -> ToolMessage:
+def _tool_error(name: str, tool_call_id: str | None, content: str, artifact: FileToolErrorArtifact | None = None) -> ToolMessage:
     """Build a `ToolMessage` carrying a plain text error."""
-    return ToolMessage(content=content, name=name, tool_call_id=tool_call_id, status="error")
-
-
-_FILE_OPERATION_ERRORS: Final = frozenset(get_args(FileOperationError))
+    return ToolMessage(content=content, name=name, tool_call_id=tool_call_id, status="error", artifact=artifact)
 
 
 def _raw_result_request(runtime: ToolRuntime[Any, Any]) -> RawFileResultRequest | None:
@@ -222,9 +221,10 @@ def _raw_result_request(runtime: ToolRuntime[Any, Any]) -> RawFileResultRequest 
     return request
 
 
-def _error_artifact(code: FileToolErrorCode | None, raw: RawFileResultRequest | None) -> FileToolErrorArtifact | None:
-    """Return the failure's artifact when the call has a raw-result request, else `None`."""
-    return {"code": code} if raw is not None else None
+def _file_tool_error(name: str, runtime: ToolRuntime[Any, Any], content: str, code: FileToolErrorCode | None = None) -> ToolMessage:
+    """Build a file tool's error result, with a `FileToolErrorArtifact` when the call has a raw-result request."""
+    artifact: FileToolErrorArtifact | None = {"code": code} if _raw_result_request(runtime) is not None else None
+    return _tool_error(name, runtime.tool_call_id, content, artifact)
 
 
 def _parallel_file_mutation_error(request: ToolCallRequest) -> ToolMessage | None:
@@ -1013,9 +1013,9 @@ async def _adownload(backend: BackendProtocol, path: str) -> FileDownloadRespons
 def _raw_read_result(response: FileDownloadResponse, path: str, tool_call_id: str | None, raw: RawFileResultRequest) -> ToolMessage:
     """Build a `read_file` result carrying the whole file at `path` as a `ReadFileArtifact`, or why it could not be read."""
     content = response.content if response.error is None else None
-    limit = raw.get("max_bytes")
+    limit = raw["max_bytes"]
     code: FileToolErrorCode | None
-    if content is not None and (limit is None or len(content) <= limit):
+    if content is not None and len(content) <= limit:
         artifact: ReadFileArtifact = {"content": content}
         return ToolMessage(
             content=f"Read {len(content)} bytes from {path}",
@@ -1029,14 +1029,8 @@ def _raw_read_result(response: FileDownloadResponse, path: str, tool_call_id: st
         code = "file_too_large"
     else:
         error = response.error or "no content returned"
-        code = cast("FileOperationError", error) if error in _FILE_OPERATION_ERRORS else None
-    return ToolMessage(
-        content=f"Error: cannot read {path}: {error}",
-        name="read_file",
-        tool_call_id=tool_call_id,
-        status="error",
-        artifact=_error_artifact(code, raw),
-    )
+        code = _as_file_operation_error(error)
+    return _tool_error("read_file", tool_call_id, f"Error: cannot read {path}: {error}", {"code": code})
 
 
 def _window_fields(read_result: ReadResult) -> list[str]:
@@ -1965,21 +1959,9 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
     [`ExecuteArtifact`][deepagents.backends.protocol.ExecuteArtifact] metadata on
     `ToolMessage.artifact`.
 
-    Code that calls `read_file`, `ls`, or `glob` directly can get raw data instead
-    of the text formatted for the model. It sets a
-    [`RawFileResultRequest`][deepagents.backends.protocol.RawFileResultRequest]
-    that names the call's ID under
-    [`RAW_FILE_RESULT_CONFIG_KEY`][deepagents.backends.protocol.RAW_FILE_RESULT_CONFIG_KEY]
-    in the `configurable` of the `ToolRuntime.config` it passes, so the model
-    cannot ask for it. `ToolMessage.artifact` then carries a
-    [`ReadFileArtifact`][deepagents.backends.protocol.ReadFileArtifact] with the
-    whole file's bytes, an [`LsArtifact`][deepagents.backends.protocol.LsArtifact],
-    or a [`GlobArtifact`][deepagents.backends.protocol.GlobArtifact], or a
-    [`FileToolErrorArtifact`][deepagents.backends.protocol.FileToolErrorArtifact]
-    when the call fails. A failed `write_file`, `edit_file`, or `delete` call
-    with a request carries a `FileToolErrorArtifact` too. The calls run the
-    same path validation and permission rules as model calls. Tracing callbacks receive the artifact, so a raw read
-    puts the file's contents, up to the request's `max_bytes`, into traces.
+    Code that calls the file tools directly can get raw results on
+    `ToolMessage.artifact` instead of the text formatted for the model; see
+    [`RAW_FILE_RESULT_CONFIG_KEY`][deepagents.backends.protocol.RAW_FILE_RESULT_CONFIG_KEY].
 
     This middleware also automatically evicts large tool results to the file system when
     they exceed a token threshold, preventing context window saturation.
@@ -2225,30 +2207,12 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             try:
                 validated_path = validate_path(path)
             except ValueError as e:
-                return ToolMessage(
-                    content=f"Error: {e}",
-                    name="ls",
-                    tool_call_id=runtime.tool_call_id,
-                    status="error",
-                    artifact=_error_artifact("invalid_path", raw),
-                )
+                return _file_tool_error("ls", runtime, f"Error: {e}", INVALID_PATH)
             if (error := _permission_error(self._permissions, "read", self.backend, validated_path)) is not None:
-                return ToolMessage(
-                    content=error,
-                    name="ls",
-                    tool_call_id=runtime.tool_call_id,
-                    status="error",
-                    artifact=_error_artifact("permission_denied", raw),
-                )
+                return _file_tool_error("ls", runtime, error, PERMISSION_DENIED)
             ls_result = resolved_backend.ls(validated_path)
             if ls_result.error:
-                return ToolMessage(
-                    content=f"Error: {ls_result.error}",
-                    name="ls",
-                    tool_call_id=runtime.tool_call_id,
-                    status="error",
-                    artifact=_error_artifact(None, raw),
-                )
+                return _file_tool_error("ls", runtime, f"Error: {ls_result.error}", ls_result.error_code)
             return _ls_result(self._permissions, ls_result.entries or [], runtime.tool_call_id, backend=self.backend, raw=raw)
 
         async def async_ls(
@@ -2261,30 +2225,12 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             try:
                 validated_path = validate_path(path)
             except ValueError as e:
-                return ToolMessage(
-                    content=f"Error: {e}",
-                    name="ls",
-                    tool_call_id=runtime.tool_call_id,
-                    status="error",
-                    artifact=_error_artifact("invalid_path", raw),
-                )
+                return _file_tool_error("ls", runtime, f"Error: {e}", INVALID_PATH)
             if (error := _permission_error(self._permissions, "read", self.backend, validated_path)) is not None:
-                return ToolMessage(
-                    content=error,
-                    name="ls",
-                    tool_call_id=runtime.tool_call_id,
-                    status="error",
-                    artifact=_error_artifact("permission_denied", raw),
-                )
+                return _file_tool_error("ls", runtime, error, PERMISSION_DENIED)
             ls_result = await resolved_backend.als(validated_path)
             if ls_result.error:
-                return ToolMessage(
-                    content=f"Error: {ls_result.error}",
-                    name="ls",
-                    tool_call_id=runtime.tool_call_id,
-                    status="error",
-                    artifact=_error_artifact(None, raw),
-                )
+                return _file_tool_error("ls", runtime, f"Error: {ls_result.error}", ls_result.error_code)
             return _ls_result(self._permissions, ls_result.entries or [], runtime.tool_call_id, backend=self.backend, raw=raw)
 
         return StructuredTool.from_function(
@@ -2423,21 +2369,9 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             try:
                 validated_path = validate_path(file_path)
             except ValueError as e:
-                return ToolMessage(
-                    content=f"Error: {e}",
-                    name="read_file",
-                    tool_call_id=runtime.tool_call_id,
-                    status="error",
-                    artifact=_error_artifact("invalid_path", raw),
-                )
+                return _file_tool_error("read_file", runtime, f"Error: {e}", INVALID_PATH)
             if (error := _permission_error(self._permissions, "read", self.backend, validated_path)) is not None:
-                return ToolMessage(
-                    content=error,
-                    name="read_file",
-                    tool_call_id=runtime.tool_call_id,
-                    status="error",
-                    artifact=_error_artifact("permission_denied", raw),
-                )
+                return _file_tool_error("read_file", runtime, error, PERMISSION_DENIED)
             if raw is not None:
                 return _raw_read_result(_download(resolved_backend, validated_path), validated_path, runtime.tool_call_id, raw)
             read_result = resolved_backend.read(validated_path, offset=offset, limit=limit)
@@ -2455,21 +2389,9 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             try:
                 validated_path = validate_path(file_path)
             except ValueError as e:
-                return ToolMessage(
-                    content=f"Error: {e}",
-                    name="read_file",
-                    tool_call_id=runtime.tool_call_id,
-                    status="error",
-                    artifact=_error_artifact("invalid_path", raw),
-                )
+                return _file_tool_error("read_file", runtime, f"Error: {e}", INVALID_PATH)
             if (error := _permission_error(self._permissions, "read", self.backend, validated_path)) is not None:
-                return ToolMessage(
-                    content=error,
-                    name="read_file",
-                    tool_call_id=runtime.tool_call_id,
-                    status="error",
-                    artifact=_error_artifact("permission_denied", raw),
-                )
+                return _file_tool_error("read_file", runtime, error, PERMISSION_DENIED)
             if raw is not None:
                 return _raw_read_result(await _adownload(resolved_backend, validated_path), validated_path, runtime.tool_call_id, raw)
             read_result = await resolved_backend.aread(validated_path, offset=offset, limit=limit)
@@ -2494,36 +2416,17 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             runtime: ToolRuntime[None, FilesystemState],
         ) -> ToolMessage:
             """Synchronous wrapper for write_file tool."""
-            raw = _raw_result_request(runtime)
             resolved_backend = self.backend
             try:
                 validated_path = validate_path(file_path)
             except ValueError as e:
-                return ToolMessage(
-                    content=f"Error: {e}",
-                    name="write_file",
-                    tool_call_id=runtime.tool_call_id,
-                    status="error",
-                    artifact=_error_artifact("invalid_path", raw),
-                )
+                return _file_tool_error("write_file", runtime, f"Error: {e}", INVALID_PATH)
 
             if (error := _permission_error(self._permissions, "write", self.backend, validated_path)) is not None:
-                return ToolMessage(
-                    content=error,
-                    name="write_file",
-                    tool_call_id=runtime.tool_call_id,
-                    status="error",
-                    artifact=_error_artifact("permission_denied", raw),
-                )
+                return _file_tool_error("write_file", runtime, error, PERMISSION_DENIED)
             res: WriteResult = resolved_backend.write(validated_path, content)
             if res.error:
-                return ToolMessage(
-                    content=res.error,
-                    name="write_file",
-                    tool_call_id=runtime.tool_call_id,
-                    status="error",
-                    artifact=_error_artifact(res.error_code, raw),
-                )
+                return _file_tool_error("write_file", runtime, res.error, res.error_code)
             return ToolMessage(
                 content=f"Updated file {res.path}",
                 name="write_file",
@@ -2537,36 +2440,17 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             runtime: ToolRuntime[None, FilesystemState],
         ) -> ToolMessage:
             """Asynchronous wrapper for write_file tool."""
-            raw = _raw_result_request(runtime)
             resolved_backend = self.backend
             try:
                 validated_path = validate_path(file_path)
             except ValueError as e:
-                return ToolMessage(
-                    content=f"Error: {e}",
-                    name="write_file",
-                    tool_call_id=runtime.tool_call_id,
-                    status="error",
-                    artifact=_error_artifact("invalid_path", raw),
-                )
+                return _file_tool_error("write_file", runtime, f"Error: {e}", INVALID_PATH)
 
             if (error := _permission_error(self._permissions, "write", self.backend, validated_path)) is not None:
-                return ToolMessage(
-                    content=error,
-                    name="write_file",
-                    tool_call_id=runtime.tool_call_id,
-                    status="error",
-                    artifact=_error_artifact("permission_denied", raw),
-                )
+                return _file_tool_error("write_file", runtime, error, PERMISSION_DENIED)
             res: WriteResult = await resolved_backend.awrite(validated_path, content)
             if res.error:
-                return ToolMessage(
-                    content=res.error,
-                    name="write_file",
-                    tool_call_id=runtime.tool_call_id,
-                    status="error",
-                    artifact=_error_artifact(res.error_code, raw),
-                )
+                return _file_tool_error("write_file", runtime, res.error, res.error_code)
             return ToolMessage(
                 content=f"Updated file {res.path}",
                 name="write_file",
@@ -2596,36 +2480,17 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             replace_all: bool = False,
         ) -> ToolMessage:
             """Synchronous wrapper for edit_file tool."""
-            raw = _raw_result_request(runtime)
             resolved_backend = self.backend
             try:
                 validated_path = validate_path(file_path)
             except ValueError as e:
-                return ToolMessage(
-                    content=f"Error: {e}",
-                    name="edit_file",
-                    tool_call_id=runtime.tool_call_id,
-                    status="error",
-                    artifact=_error_artifact("invalid_path", raw),
-                )
+                return _file_tool_error("edit_file", runtime, f"Error: {e}", INVALID_PATH)
 
             if (error := _permission_error(self._permissions, "write", self.backend, validated_path)) is not None:
-                return ToolMessage(
-                    content=error,
-                    name="edit_file",
-                    tool_call_id=runtime.tool_call_id,
-                    status="error",
-                    artifact=_error_artifact("permission_denied", raw),
-                )
+                return _file_tool_error("edit_file", runtime, error, PERMISSION_DENIED)
             res: EditResult = resolved_backend.edit(validated_path, old_string, new_string, replace_all=replace_all)
             if res.error:
-                return ToolMessage(
-                    content=res.error,
-                    name="edit_file",
-                    tool_call_id=runtime.tool_call_id,
-                    status="error",
-                    artifact=_error_artifact(res.error_code, raw),
-                )
+                return _file_tool_error("edit_file", runtime, res.error, res.error_code)
             return ToolMessage(
                 content=f"Successfully replaced {res.occurrences} instance(s) of the string in '{res.path}'",
                 name="edit_file",
@@ -2642,36 +2507,17 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             replace_all: bool = False,
         ) -> ToolMessage:
             """Asynchronous wrapper for edit_file tool."""
-            raw = _raw_result_request(runtime)
             resolved_backend = self.backend
             try:
                 validated_path = validate_path(file_path)
             except ValueError as e:
-                return ToolMessage(
-                    content=f"Error: {e}",
-                    name="edit_file",
-                    tool_call_id=runtime.tool_call_id,
-                    status="error",
-                    artifact=_error_artifact("invalid_path", raw),
-                )
+                return _file_tool_error("edit_file", runtime, f"Error: {e}", INVALID_PATH)
 
             if (error := _permission_error(self._permissions, "write", self.backend, validated_path)) is not None:
-                return ToolMessage(
-                    content=error,
-                    name="edit_file",
-                    tool_call_id=runtime.tool_call_id,
-                    status="error",
-                    artifact=_error_artifact("permission_denied", raw),
-                )
+                return _file_tool_error("edit_file", runtime, error, PERMISSION_DENIED)
             res: EditResult = await resolved_backend.aedit(validated_path, old_string, new_string, replace_all=replace_all)
             if res.error:
-                return ToolMessage(
-                    content=res.error,
-                    name="edit_file",
-                    tool_call_id=runtime.tool_call_id,
-                    status="error",
-                    artifact=_error_artifact(res.error_code, raw),
-                )
+                return _file_tool_error("edit_file", runtime, res.error, res.error_code)
             return ToolMessage(
                 content=f"Successfully replaced {res.occurrences} instance(s) of the string in '{res.path}'",
                 name="edit_file",
@@ -2697,37 +2543,18 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             runtime: ToolRuntime[None, FilesystemState],
         ) -> ToolMessage:
             """Synchronous wrapper for delete tool."""
-            raw = _raw_result_request(runtime)
             resolved_backend = self.backend
             try:
                 validated_path = validate_path(file_path)
             except ValueError as e:
-                return ToolMessage(
-                    content=f"Error: {e}",
-                    name="delete",
-                    tool_call_id=runtime.tool_call_id,
-                    status="error",
-                    artifact=_error_artifact("invalid_path", raw),
-                )
+                return _file_tool_error("delete", runtime, f"Error: {e}", INVALID_PATH)
 
             has_descendants = _delete_target_may_have_descendants(resolved_backend, validated_path, permissions_configured=bool(self._permissions))
             if (error := _delete_permission_error(self._permissions, resolved_backend, validated_path, has_descendants=has_descendants)) is not None:
-                return ToolMessage(
-                    content=error,
-                    name="delete",
-                    tool_call_id=runtime.tool_call_id,
-                    status="error",
-                    artifact=_error_artifact("permission_denied", raw),
-                )
+                return _file_tool_error("delete", runtime, error, PERMISSION_DENIED)
             res: DeleteResult = resolved_backend.delete(validated_path)
             if res.error:
-                return ToolMessage(
-                    content=res.error,
-                    name="delete",
-                    tool_call_id=runtime.tool_call_id,
-                    status="error",
-                    artifact=_error_artifact(res.error_code, raw),
-                )
+                return _file_tool_error("delete", runtime, res.error, res.error_code)
             return ToolMessage(
                 content=f"Deleted {res.path}",
                 name="delete",
@@ -2740,39 +2567,20 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             runtime: ToolRuntime[None, FilesystemState],
         ) -> ToolMessage:
             """Asynchronous wrapper for delete tool."""
-            raw = _raw_result_request(runtime)
             resolved_backend = self.backend
             try:
                 validated_path = validate_path(file_path)
             except ValueError as e:
-                return ToolMessage(
-                    content=f"Error: {e}",
-                    name="delete",
-                    tool_call_id=runtime.tool_call_id,
-                    status="error",
-                    artifact=_error_artifact("invalid_path", raw),
-                )
+                return _file_tool_error("delete", runtime, f"Error: {e}", INVALID_PATH)
 
             has_descendants = await _adelete_target_may_have_descendants(
                 resolved_backend, validated_path, permissions_configured=bool(self._permissions)
             )
             if (error := _delete_permission_error(self._permissions, resolved_backend, validated_path, has_descendants=has_descendants)) is not None:
-                return ToolMessage(
-                    content=error,
-                    name="delete",
-                    tool_call_id=runtime.tool_call_id,
-                    status="error",
-                    artifact=_error_artifact("permission_denied", raw),
-                )
+                return _file_tool_error("delete", runtime, error, PERMISSION_DENIED)
             res: DeleteResult = await resolved_backend.adelete(validated_path)
             if res.error:
-                return ToolMessage(
-                    content=res.error,
-                    name="delete",
-                    tool_call_id=runtime.tool_call_id,
-                    status="error",
-                    artifact=_error_artifact(res.error_code, raw),
-                )
+                return _file_tool_error("delete", runtime, res.error, res.error_code)
             return ToolMessage(
                 content=f"Deleted {res.path}",
                 name="delete",
@@ -2804,29 +2612,16 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             try:
                 permission_path = validate_path(path if path is not None else "/")
             except ValueError as e:
-                return ToolMessage(
-                    content=f"Error: {e}",
-                    name="glob",
-                    tool_call_id=runtime.tool_call_id,
-                    status="error",
-                    artifact=_error_artifact("invalid_path", raw),
-                )
+                return _file_tool_error("glob", runtime, f"Error: {e}", INVALID_PATH)
             if _check_fs_permission(self._permissions, "read", permission_path) == "deny":
-                return ToolMessage(
-                    content=f"Error: permission denied for read on {permission_path}{GLOB_PATHLESS_DENIED_HINT if path is None else ''}",
-                    name="glob",
-                    tool_call_id=runtime.tool_call_id,
-                    status="error",
-                    artifact=_error_artifact("permission_denied", raw),
+                return _file_tool_error(
+                    "glob",
+                    runtime,
+                    f"Error: permission denied for read on {permission_path}{GLOB_PATHLESS_DENIED_HINT if path is None else ''}",
+                    PERMISSION_DENIED,
                 )
             if (error := _resolved_permission_error(self._permissions, "read", self.backend, permission_path)) is not None:
-                return ToolMessage(
-                    content=error,
-                    name="glob",
-                    tool_call_id=runtime.tool_call_id,
-                    status="error",
-                    artifact=_error_artifact("permission_denied", raw),
-                )
+                return _file_tool_error("glob", runtime, error, PERMISSION_DENIED)
             backend_path = permission_path if path is not None else None
             ctx = contextvars.copy_context()
             # Submit to the shared executor rather than a per-call
@@ -2834,12 +2629,10 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             # shutdown(wait=True) on timeout and block until the runaway glob
             # finished anyway, defeating the timeout.
             if not self._glob_slots.acquire(blocking=False):
-                return ToolMessage(
-                    content=("Error: too many glob calls are already running. Try again later with a more specific pattern or a narrower path."),
-                    name="glob",
-                    tool_call_id=runtime.tool_call_id,
-                    status="error",
-                    artifact=_error_artifact(None, raw),
+                return _file_tool_error(
+                    "glob",
+                    runtime,
+                    ("Error: too many glob calls are already running. Try again later with a more specific pattern or a narrower path."),
                 )
 
             def run_glob() -> GlobResult:
@@ -2868,33 +2661,15 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 # the task never started, in which case release the slot here.
                 if future.cancel():
                     self._glob_slots.release()
-                return ToolMessage(
-                    content=_glob_timeout_message(),
-                    name="glob",
-                    tool_call_id=runtime.tool_call_id,
-                    status="error",
-                    artifact=_error_artifact(None, raw),
-                )
+                return _file_tool_error("glob", runtime, _glob_timeout_message())
             try:
                 glob_result = future.result()
             except Exception as e:  # noqa: BLE001  # tool boundary: surface backend errors, never let them escape
                 # run_glob's finally already released the slot before the
                 # exception propagated, so do not release again here.
-                return ToolMessage(
-                    content=f"Error: glob failed: {e}",
-                    name="glob",
-                    tool_call_id=runtime.tool_call_id,
-                    status="error",
-                    artifact=_error_artifact(None, raw),
-                )
+                return _file_tool_error("glob", runtime, f"Error: glob failed: {e}")
             if glob_result.error:
-                return ToolMessage(
-                    content=f"Error: {glob_result.error}",
-                    name="glob",
-                    tool_call_id=runtime.tool_call_id,
-                    status="error",
-                    artifact=_error_artifact(None, raw),
-                )
+                return _file_tool_error("glob", runtime, f"Error: {glob_result.error}")
             infos = glob_result.matches or []
             paths = _apply_permissions_to_glob_results(self._permissions, infos, backend=self.backend)
             return ToolMessage(
@@ -2920,29 +2695,16 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             try:
                 permission_path = validate_path(path if path is not None else "/")
             except ValueError as e:
-                return ToolMessage(
-                    content=f"Error: {e}",
-                    name="glob",
-                    tool_call_id=runtime.tool_call_id,
-                    status="error",
-                    artifact=_error_artifact("invalid_path", raw),
-                )
+                return _file_tool_error("glob", runtime, f"Error: {e}", INVALID_PATH)
             if _check_fs_permission(self._permissions, "read", permission_path) == "deny":
-                return ToolMessage(
-                    content=f"Error: permission denied for read on {permission_path}{GLOB_PATHLESS_DENIED_HINT if path is None else ''}",
-                    name="glob",
-                    tool_call_id=runtime.tool_call_id,
-                    status="error",
-                    artifact=_error_artifact("permission_denied", raw),
+                return _file_tool_error(
+                    "glob",
+                    runtime,
+                    f"Error: permission denied for read on {permission_path}{GLOB_PATHLESS_DENIED_HINT if path is None else ''}",
+                    PERMISSION_DENIED,
                 )
             if (error := _resolved_permission_error(self._permissions, "read", self.backend, permission_path)) is not None:
-                return ToolMessage(
-                    content=error,
-                    name="glob",
-                    tool_call_id=runtime.tool_call_id,
-                    status="error",
-                    artifact=_error_artifact("permission_denied", raw),
-                )
+                return _file_tool_error("glob", runtime, error, PERMISSION_DENIED)
             backend_path = permission_path if path is not None else None
             # Run the backend glob as a task and wait on the deadline separately
             # so a `TimeoutError` raised *inside* the backend (rather than by the
@@ -2953,31 +2715,13 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             if not done:
                 task.add_done_callback(_discard_task_result)
                 task.cancel()
-                return ToolMessage(
-                    content=_glob_timeout_message(),
-                    name="glob",
-                    tool_call_id=runtime.tool_call_id,
-                    status="error",
-                    artifact=_error_artifact(None, raw),
-                )
+                return _file_tool_error("glob", runtime, _glob_timeout_message())
             try:
                 glob_result = task.result()
             except Exception as e:  # noqa: BLE001  # tool boundary: surface backend errors, never let them escape
-                return ToolMessage(
-                    content=f"Error: glob failed: {e}",
-                    name="glob",
-                    tool_call_id=runtime.tool_call_id,
-                    status="error",
-                    artifact=_error_artifact(None, raw),
-                )
+                return _file_tool_error("glob", runtime, f"Error: glob failed: {e}")
             if glob_result.error:
-                return ToolMessage(
-                    content=f"Error: {glob_result.error}",
-                    name="glob",
-                    tool_call_id=runtime.tool_call_id,
-                    status="error",
-                    artifact=_error_artifact(None, raw),
-                )
+                return _file_tool_error("glob", runtime, f"Error: {glob_result.error}")
             infos = glob_result.matches or []
             paths = _apply_permissions_to_glob_results(self._permissions, infos, backend=self.backend)
             return ToolMessage(

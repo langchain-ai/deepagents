@@ -11,7 +11,7 @@ import inspect
 import logging
 from dataclasses import dataclass
 from functools import lru_cache, partial
-from typing import Final, Literal, NotRequired
+from typing import Final, Literal, NotRequired, cast, get_args
 
 from typing_extensions import TypedDict
 
@@ -60,6 +60,12 @@ FILE_NOT_FOUND: Final = "file_not_found"
 PERMISSION_DENIED: Final = "permission_denied"
 IS_DIRECTORY: Final = "is_directory"
 INVALID_PATH: Final = "invalid_path"
+_FILE_OPERATION_ERRORS: Final = frozenset(get_args(FileOperationError))
+
+
+def _as_file_operation_error(error: str | None) -> FileOperationError | None:
+    """Return `error` when it is a `FileOperationError` code, else `None`."""
+    return cast("FileOperationError", error) if error in _FILE_OPERATION_ERRORS else None
 
 
 @dataclass
@@ -343,10 +349,13 @@ class LsResult:
     Attributes:
         error: Error message on failure, `None` on success.
         entries: List of file info dicts on success, `None` on failure.
+        error_code: The failure's `FileOperationError` code when the backend
+            knows the cause, else `None`.
     """
 
     error: str | None = None
     entries: list["FileInfo"] | None = None
+    error_code: FileOperationError | None = None
 
 
 @dataclass
@@ -890,8 +899,8 @@ class RawFileResultRequest(TypedDict):
     the config return their usual results.
     """
 
-    max_bytes: int | None
-    """Largest file `read_file` returns, or `None` for no limit.
+    max_bytes: int
+    """Largest file `read_file` returns.
 
     A larger file fails with `"file_too_large"`, and its bytes stay off the
     artifact and out of traces. The backend still loads the whole file first.
@@ -974,8 +983,8 @@ class FileToolErrorArtifact(TypedDict):
     code: FileToolErrorCode | None
     """The failure's code, or `None` when the backend reported only a message.
 
-    `write_file`, `edit_file`, and `delete` take it from the backend result's
-    `error_code`, so a backend that sets none reports `None`.
+    `ls`, `write_file`, `edit_file`, and `delete` take it from the backend
+    result's `error_code`, so a backend that sets none reports `None`.
 
     `"permission_denied"` also covers a refusal by the agent's permission rules,
     and `"invalid_path"` a path the tool rejected before calling the backend.

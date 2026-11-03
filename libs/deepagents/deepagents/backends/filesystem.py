@@ -295,7 +295,9 @@ class FilesystemBackend(BackendProtocol):
                 Directories have a trailing `/` in their path and `is_dir=True`.
 
                 Missing paths set `error` to `Path '<path>': path_not_found`
-                with `entries=None`.
+                and `error_code` to `file_not_found`, with `entries=None`.
+                A path that cannot be resolved sets the `error_code` its
+                exception maps to, such as `permission_denied`.
 
                 File paths set `error` to `Path '<path>': not_a_directory`
                 with `entries=None`.
@@ -305,13 +307,13 @@ class FilesystemBackend(BackendProtocol):
         try:
             dir_path = self._resolve_path(path)
             if not dir_path.exists():
-                return LsResult(error=f"Path '{path}': path_not_found", entries=None)
+                return LsResult(error=f"Path '{path}': path_not_found", entries=None, error_code=FILE_NOT_FOUND)
             if not dir_path.is_dir():
                 return LsResult(error=f"Path '{path}': not_a_directory", entries=None)
         except (OSError, RuntimeError) as e:
             msg = f"Cannot list '{path}': {e}"
             logger.warning("%s", msg)
-            return LsResult(error=msg, entries=None)
+            return LsResult(error=msg, entries=None, error_code=_error_code(e))
 
         results: list[FileInfo] = []
         errors: list[str] = []

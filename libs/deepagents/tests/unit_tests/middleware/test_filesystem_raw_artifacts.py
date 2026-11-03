@@ -1,8 +1,10 @@
-"""`read_file`, `ls`, and `glob` put raw results on `ToolMessage.artifact` for the call a config request names."""
+"""File tools put raw results and failure codes on `ToolMessage.artifact` for the call a config request names."""
 
 import asyncio
-from collections.abc import Awaitable, Callable
+import os
+from collections.abc import Awaitable, Callable, Iterator
 from dataclasses import replace
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -24,21 +26,30 @@ from tests.unit_tests.chat_model import GenericFakeChatModel
 
 _LONG = "".join(f"line {i}\r\n" for i in range(300))
 _BINARY = b"a\r\nb\x00\xff"
-_RAW: RawFileResultRequest = {"tool_call_id": "c1", "max_bytes": None}
+_MAX_BYTES = 1 << 20
+_RAW: RawFileResultRequest = {"tool_call_id": "c1", "max_bytes": _MAX_BYTES}
+_NEEDS_OS_PERMISSIONS = pytest.mark.skipif(not (hasattr(os, "geteuid") and os.geteuid() != 0), reason="needs a non-root POSIX user")
 
 
 @pytest.fixture
-def tools(tmp_path: Path) -> dict[str, BaseTool]:
+def tools(tmp_path: Path) -> Iterator[dict[str, BaseTool]]:
     (tmp_path / "docs").mkdir()
-    (tmp_path / "docs" / "a.md").write_text("a")
+    (tmp_path / "docs" / "a.md").write_text("alpha")
     (tmp_path / "secret").mkdir()
     (tmp_path / "secret" / "key.txt").write_text("k")
     (tmp_path / "link.txt").symlink_to(tmp_path / "secret" / "key.txt")
     (tmp_path / "data.bin").write_bytes(_BINARY)
     (tmp_path / "long.txt").write_bytes(_LONG.encode())
-    rules = [FilesystemPermission(operations=["read"], paths=["/secret", "/secret/**"], mode="deny")]
+    (tmp_path / "readonly").mkdir()
+    (tmp_path / "readonly" / "kept.txt").write_text("k")
+    (tmp_path / "readonly").chmod(0o500)
+    rules = [
+        FilesystemPermission(operations=["read"], paths=["/secret", "/secret/**"], mode="deny"),
+        FilesystemPermission(operations=["write"], paths=["/locked", "/locked/**"], mode="deny"),
+    ]
     middleware = FilesystemMiddleware(backend=FilesystemBackend(root_dir=tmp_path, virtual_mode=True), permissions=rules)
-    return {t.name: t for t in middleware.tools}
+    yield {t.name: t for t in middleware.tools}
+    (tmp_path / "readonly").chmod(0o700)
 
 
 def _call(tool: BaseTool, args: dict[str, Any], *, run_async: bool, request: RawFileResultRequest | None = _RAW) -> ToolMessage:
@@ -57,20 +68,28 @@ def test_read_file_artifact_is_the_whole_file_byte_for_byte(tools: dict[str, Bas
 
 
 @pytest.mark.parametrize("run_async", [False, True], ids=["sync", "async"])
-def test_listings_carry_permitted_entries_and_keep_the_model_text(tools: dict[str, BaseTool], *, run_async: bool) -> None:
-    ls_args = {"path": "/"}
-    glob_args = {"pattern": "**/*"}
-    ls = _call(tools["ls"], ls_args, run_async=run_async)
-    globbed = _call(tools["glob"], glob_args, run_async=run_async)
+def test_listings_carry_permitted_entries(tools: dict[str, BaseTool], *, run_async: bool) -> None:
+    ls = _call(tools["ls"], {"path": "/"}, run_async=run_async)
+    globbed = _call(tools["glob"], {"pattern": "**/*"}, run_async=run_async)
     assert sorted((e["path"], e["is_dir"]) for e in ls.artifact["entries"]) == [
         ("/data.bin", False),
         ("/docs/", True),
         ("/long.txt", False),
+        ("/readonly/", True),
     ]
-    assert (sorted(globbed.artifact["paths"]), globbed.artifact["truncated"]) == (["/data.bin", "/docs/a.md", "/long.txt"], False)
-    for message, name, args in ((ls, "ls", ls_args), (globbed, "glob", glob_args)):
-        model_view = _call(tools[name], args, run_async=run_async, request=None)
-        assert (message.content, model_view.artifact) == (model_view.content, None)
+    paths = ["/data.bin", "/docs/a.md", "/long.txt", "/readonly/kept.txt"]
+    assert (sorted(globbed.artifact["paths"]), globbed.artifact["truncated"]) == (paths, False)
+
+
+@pytest.mark.parametrize("run_async", [False, True], ids=["sync", "async"])
+def test_ls_entries_carry_file_size_and_modified_time(tools: dict[str, BaseTool], *, run_async: bool) -> None:
+    entries = {e["path"]: e for e in _call(tools["ls"], {"path": "/docs"}, run_async=run_async).artifact["entries"]}
+    root = {e["path"]: e for e in _call(tools["ls"], {"path": "/"}, run_async=run_async).artifact["entries"]}
+    assert entries["/docs/a.md"]["size"] == len("alpha")
+    assert root["/data.bin"]["size"] == len(_BINARY)
+    assert "size" not in root["/docs/"]
+    for entry in (entries["/docs/a.md"], root["/docs/"]):
+        datetime.fromisoformat(entry["modified_at"])
 
 
 @pytest.mark.parametrize("run_async", [False, True], ids=["sync", "async"])
@@ -84,7 +103,8 @@ def test_listings_carry_permitted_entries_and_keep_the_model_text(tools: dict[st
         ("read_file", {"file_path": "/../etc/passwd"}, "invalid_path"),
         ("ls", {"path": "/secret"}, "permission_denied"),
         ("ls", {"path": "/../x"}, "invalid_path"),
-        ("ls", {"path": "/missing"}, None),
+        ("ls", {"path": "/missing"}, "file_not_found"),
+        ("ls", {"path": "/docs/a.md"}, None),
         ("glob", {"pattern": "*", "path": "/secret"}, "permission_denied"),
         ("glob", {"pattern": "*", "path": "/../x"}, "invalid_path"),
     ],
@@ -96,8 +116,43 @@ def test_failures_carry_a_code(tools: dict[str, BaseTool], name: str, args: dict
 
 @pytest.mark.parametrize("run_async", [False, True], ids=["sync", "async"])
 @pytest.mark.parametrize(
+    ("name", "args", "code"),
+    [
+        ("write_file", {"file_path": "/../x.txt", "content": "x"}, "invalid_path"),
+        ("write_file", {"file_path": "/locked/a.txt", "content": "x"}, "permission_denied"),
+        ("write_file", {"file_path": "/docs", "content": "x"}, "is_directory"),
+        pytest.param(
+            "write_file",
+            {"file_path": "/readonly/new.txt", "content": "x"},
+            "permission_denied",
+            marks=_NEEDS_OS_PERMISSIONS,
+            id="write_file-os-permission",
+        ),
+        ("edit_file", {"file_path": "/../x.txt", "old_string": "a", "new_string": "b"}, "invalid_path"),
+        ("edit_file", {"file_path": "/locked/a.txt", "old_string": "a", "new_string": "b"}, "permission_denied"),
+        ("edit_file", {"file_path": "/missing.txt", "old_string": "a", "new_string": "b"}, "file_not_found"),
+        ("edit_file", {"file_path": "/docs", "old_string": "a", "new_string": "b"}, "is_directory"),
+        ("edit_file", {"file_path": "/data.bin", "old_string": "a", "new_string": "b"}, None),
+        ("edit_file", {"file_path": "/docs/a.md", "old_string": "zeta", "new_string": "b"}, None),
+        ("delete", {"file_path": "/../x.txt"}, "invalid_path"),
+        ("delete", {"file_path": "/locked/a.txt"}, "permission_denied"),
+        ("delete", {"file_path": "/missing.txt"}, "file_not_found"),
+        pytest.param("delete", {"file_path": "/readonly/kept.txt"}, "permission_denied", marks=_NEEDS_OS_PERMISSIONS, id="delete-os-permission"),
+    ],
+)
+def test_mutation_failures_carry_a_code_and_keep_the_model_text(
+    tools: dict[str, BaseTool], name: str, args: dict[str, Any], code: str | None, *, run_async: bool
+) -> None:
+    message = _call(tools[name], args, run_async=run_async)
+    model_view = _call(tools[name], args, run_async=run_async, request=None)
+    assert (message.status, message.artifact) == ("error", {"code": code})
+    assert (model_view.status, model_view.content, model_view.artifact) == ("error", message.content, None)
+
+
+@pytest.mark.parametrize("run_async", [False, True], ids=["sync", "async"])
+@pytest.mark.parametrize(
     "request_",
-    [{"tool_call_id": "another call", "max_bytes": None}, None],
+    [{"tool_call_id": "another call", "max_bytes": _MAX_BYTES}, None],
     ids=["another-call", "no-request"],
 )
 @pytest.mark.parametrize(
@@ -131,16 +186,20 @@ def test_max_bytes_keeps_a_larger_file_off_the_artifact(tools: dict[str, BaseToo
     assert f"{len(_BINARY)} bytes" in over_limit.content
 
 
-class _RequestRawResultFor(AgentMiddleware):
-    """Puts a raw-result request naming one tool call on every tool call's runtime config, as inherited config would."""
+class _RequestRawResult(AgentMiddleware):
+    """Puts a raw-result request on every tool call's runtime config, as inherited config would.
 
-    def __init__(self, tool_call_id: str) -> None:
+    The request names `tool_call_id`, or each call itself when it is `None`, as code calling the tools one by one would.
+    """
+
+    def __init__(self, tool_call_id: str | None = None) -> None:
         super().__init__()
-        self.request: RawFileResultRequest = {"tool_call_id": tool_call_id, "max_bytes": None}
+        self.tool_call_id = tool_call_id
 
     def _with_request(self, request: ToolCallRequest) -> ToolCallRequest:
         config = request.runtime.config
-        configurable = {**config.get("configurable", {}), RAW_FILE_RESULT_CONFIG_KEY: self.request}
+        raw: RawFileResultRequest = {"tool_call_id": self.tool_call_id or request.tool_call["id"], "max_bytes": _MAX_BYTES}
+        configurable = {**config.get("configurable", {}), RAW_FILE_RESULT_CONFIG_KEY: raw}
         return request.override(runtime=replace(request.runtime, config={**config, "configurable": configurable}))
 
     def wrap_tool_call(self, request: ToolCallRequest, handler: Callable[[ToolCallRequest], ToolMessage | Command]) -> ToolMessage | Command:
@@ -152,19 +211,52 @@ class _RequestRawResultFor(AgentMiddleware):
         return await handler(self._with_request(request))
 
 
+def _run_state_agent(calls: list[dict[str, Any]], *, run_async: bool, middleware: list[AgentMiddleware]) -> dict[str, ToolMessage]:
+    tool_calls = [{**call, "type": "tool_call"} for call in calls]
+    model = GenericFakeChatModel(messages=iter([AIMessage(content="", tool_calls=tool_calls), AIMessage(content="done")]))
+    agent = create_deep_agent(model=model, middleware=middleware)
+    files = {"/notes.txt": create_file_data("hello"), "/docs/a.md": create_file_data("alpha"), "/long.txt": create_file_data(_LONG)}
+    payload = {"messages": [{"role": "user", "content": "go"}], "files": files}
+    state = asyncio.run(agent.ainvoke(payload)) if run_async else agent.invoke(payload)
+    return {m.tool_call_id: m for m in state["messages"] if isinstance(m, ToolMessage)}
+
+
 @pytest.mark.parametrize("run_async", [False, True], ids=["invoke", "ainvoke"])
 def test_tool_node_delivers_the_request_to_the_named_call_and_ignores_model_args(*, run_async: bool) -> None:
-    forged = {"raw_artifact": True, RAW_FILE_RESULT_CONFIG_KEY: {"tool_call_id": "model", "max_bytes": None}}
+    forged = {"raw_artifact": True, RAW_FILE_RESULT_CONFIG_KEY: {"tool_call_id": "model", "max_bytes": _MAX_BYTES}}
     calls = [
-        {"name": "read_file", "args": {"file_path": "/long.txt", **forged}, "id": "model", "type": "tool_call"},
-        {"name": "read_file", "args": {"file_path": "/long.txt"}, "id": "code", "type": "tool_call"},
+        {"name": "read_file", "args": {"file_path": "/long.txt", **forged}, "id": "model"},
+        {"name": "read_file", "args": {"file_path": "/long.txt"}, "id": "code"},
     ]
-    model = GenericFakeChatModel(messages=iter([AIMessage(content="", tool_calls=calls), AIMessage(content="done")]))
-    agent = create_deep_agent(model=model, middleware=[_RequestRawResultFor("code")])
-    payload = {"messages": [{"role": "user", "content": "go"}], "files": {"/long.txt": create_file_data(_LONG)}}
-    state = asyncio.run(agent.ainvoke(payload)) if run_async else agent.invoke(payload)
-    results = {m.tool_call_id: m for m in state["messages"] if isinstance(m, ToolMessage)}
+    results = _run_state_agent(calls, run_async=run_async, middleware=[_RequestRawResult("code")])
     assert results["model"].artifact is None
     assert "line 0" in results["model"].content
     assert "line 299" not in results["model"].content
     assert results["code"].artifact == {"content": _LONG.encode()}
+
+
+_STATE_CALLS: list[dict[str, Any]] = [
+    {"id": "write-invalid", "name": "write_file", "args": {"file_path": "/../x.txt", "content": "x"}},
+    {"id": "edit-missing", "name": "edit_file", "args": {"file_path": "/missing.txt", "old_string": "a", "new_string": "b"}},
+    {"id": "edit-no-match", "name": "edit_file", "args": {"file_path": "/notes.txt", "old_string": "zeta", "new_string": "b"}},
+    {"id": "delete-missing", "name": "delete", "args": {"file_path": "/gone.txt"}},
+    {"id": "ls", "name": "ls", "args": {"path": "/"}},
+]
+
+
+@pytest.mark.parametrize("run_async", [False, True], ids=["invoke", "ainvoke"])
+def test_state_backend_failures_carry_a_code_and_ls_reports_only_known_fields(*, run_async: bool) -> None:
+    raw = _run_state_agent(_STATE_CALLS, run_async=run_async, middleware=[_RequestRawResult()])
+    model_view = _run_state_agent(_STATE_CALLS, run_async=run_async, middleware=[])
+    codes = {call_id: raw[call_id].artifact for call_id in ("write-invalid", "edit-missing", "edit-no-match", "delete-missing")}
+    assert codes == {
+        "write-invalid": {"code": "invalid_path"},
+        "edit-missing": {"code": "file_not_found"},
+        "edit-no-match": {"code": None},
+        "delete-missing": {"code": "file_not_found"},
+    }
+    assert all((raw[k].status, raw[k].content) == (model_view[k].status, model_view[k].content) for k in codes)
+    entries = {e["path"]: e for e in raw["ls"].artifact["entries"]}
+    assert entries["/notes.txt"]["size"] == len("hello")
+    datetime.fromisoformat(entries["/notes.txt"]["modified_at"])
+    assert entries["/docs/"] == {"path": "/docs/", "is_dir": True}

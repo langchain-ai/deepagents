@@ -22,7 +22,7 @@ import os
 import shlex
 from abc import ABC, abstractmethod
 from pathlib import PurePosixPath
-from typing import Any, Final, Literal, cast, get_args
+from typing import Any, Final, Literal
 
 from deepagents.backends.protocol import (
     ASYNC_GLOB_TIMEOUT,
@@ -45,6 +45,7 @@ from deepagents.backends.protocol import (
     ReadResult,
     SandboxBackendProtocol,
     WriteResult,
+    _as_file_operation_error,
     execute_accepts_timeout,
 )
 from deepagents.backends.utils import (
@@ -882,6 +883,13 @@ except PermissionError:
 " 2>/dev/null"""
 
 
+_LS_ERROR_CODES: Final[dict[str, FileOperationError]] = {
+    "path_not_found": "file_not_found",
+    "permission_denied": "permission_denied",
+}
+"""The ls script's errors that name a `FileOperationError`; `not_a_directory` names none."""
+
+
 def _parse_ls_output(output: str, path: str) -> LsResult:
     file_infos: list[FileInfo] = []
     error: str | None = None
@@ -897,7 +905,7 @@ def _parse_ls_output(output: str, path: str) -> LsResult:
             continue
         file_infos.append({"path": data["path"], "is_dir": data["is_dir"]})
     if error is not None:
-        return LsResult(entries=None, error=f"Path '{path}': {error}")
+        return LsResult(entries=None, error=f"Path '{path}': {error}", error_code=_LS_ERROR_CODES.get(error))
     return LsResult(entries=file_infos)
 
 
@@ -1287,21 +1295,6 @@ def _build_edit_inline_cmd(file_path: str, old_string: str, new_string: str, *, 
     return _EDIT_COMMAND_TEMPLATE.format(payload_b64=payload_b64)
 
 
-_EDIT_ERROR_CODES: Final[dict[str, FileOperationError]] = {
-    "file_not_found": "file_not_found",
-    "permission_denied": "permission_denied",
-}
-"""The edit script's errors that name a `FileOperationError`.
-
-`not_a_file` stays uncoded: the target may be a directory, a FIFO, or a device.
-"""
-
-
-def _upload_error_code(response: FileUploadResponse) -> FileOperationError | None:
-    """Return the upload's error when it is a `FileOperationError` code, else `None`."""
-    return cast("FileOperationError", response.error) if response.error in get_args(FileOperationError) else None
-
-
 def _map_edit_error(error: str, file_path: str, old_string: str) -> EditResult:
     """Map server-side error codes to `EditResult` objects."""
     messages: dict[str, str] = {
@@ -1312,7 +1305,7 @@ def _map_edit_error(error: str, file_path: str, old_string: str) -> EditResult:
         "string_not_found": f"Error: String not found in file: '{old_string}'",
         "multiple_occurrences": (f"Error: String '{old_string}' appears multiple times. Use replace_all=True to replace all occurrences."),
     }
-    return EditResult(error=messages.get(error, f"Error editing file '{file_path}': {error}"), error_code=_EDIT_ERROR_CODES.get(error))
+    return EditResult(error=messages.get(error, f"Error editing file '{file_path}': {error}"), error_code=_as_file_operation_error(error))
 
 
 def _parse_edit_output(output: str, file_path: str, old_string: str) -> EditResult:
@@ -1823,7 +1816,7 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
             raise AssertionError(msg)
         response = responses[0]
         if response.error:
-            return WriteResult(error=f"Failed to write file '{file_path}': {response.error}", error_code=_upload_error_code(response))
+            return WriteResult(error=f"Failed to write file '{file_path}': {response.error}", error_code=_as_file_operation_error(response.error))
 
         return WriteResult(path=file_path)
 
@@ -1838,7 +1831,7 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
             raise AssertionError(msg)
         response = responses[0]
         if response.error:
-            return WriteResult(error=f"Failed to write file '{file_path}': {response.error}", error_code=_upload_error_code(response))
+            return WriteResult(error=f"Failed to write file '{file_path}': {response.error}", error_code=_as_file_operation_error(response.error))
         return WriteResult(path=file_path)
 
     def edit(

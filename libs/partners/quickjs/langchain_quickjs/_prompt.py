@@ -573,9 +573,14 @@ def _render_declaration(
 
 
 def _safe_json_schema(tool: BaseTool) -> dict[str, Any] | None:
+    """Return the JSON Schema of `tool`'s input, if it has one.
+
+    MCP tools carry the server's JSON Schema as a dict; other tools carry a
+    Pydantic model.
+    """
+    if isinstance(tool.args_schema, dict):
+        return tool.args_schema
     try:
-        if tool.args_schema is None:
-            return None
         model_json_schema = getattr(tool.args_schema, "model_json_schema", None)
         if callable(model_json_schema):
             return model_json_schema()
@@ -610,7 +615,7 @@ def _render_fields(schema: dict[str, Any], refs: Mapping[str, str]) -> list[str]
     for key, prop in schema["properties"].items():
         optional = "" if key in required else "?"
         type_str = _json_schema_to_ts(prop, refs)
-        desc = prop.get("description")
+        desc = prop.get("description") if isinstance(prop, dict) else None
         prefix = f"/**\n *{desc}\n */ " if desc else ""
         fields.append(f"  {prefix}{key}{optional}: {type_str};")
     return fields
@@ -621,11 +626,16 @@ def _render_fields(schema: dict[str, Any], refs: Mapping[str, str]) -> list[str]
 # `unknown` for `ToolMessage` / `Command` envelopes, whose data is only known
 # at runtime. We feed the annotation through `pydantic.TypeAdapter` in
 # serialization mode, matching how the bridge dumps the value, and render it
-# through the same `_json_schema_to_ts` we use for input args.
+# through the same `_json_schema_to_ts` we use for input args. MCP tools have
+# no useful annotation, so their type comes from the server's declared
+# `outputSchema` instead, when the tool's metadata carries one.
 
 
 def _return_schema(tool: BaseTool) -> dict[str, Any] | None:
     """Return the JSON Schema of the value JS gets from `tool`, if known."""
+    mcp_schema = _mcp_artifact_schema(tool)
+    if mcp_schema is not None:
+        return mcp_schema
     annotation = _return_annotation(tool)
     if tool.response_format == "content_and_artifact":
         annotation = _artifact_annotation(annotation)
@@ -639,6 +649,31 @@ def _return_schema(tool: BaseTool) -> dict[str, Any] | None:
         return TypeAdapter(annotation).json_schema(mode="serialization")
     except Exception:  # noqa: BLE001 — schema generation is best-effort
         return None
+
+
+def _mcp_artifact_schema(tool: BaseTool) -> dict[str, Any] | None:
+    """Return the schema of an MCP tool's artifact when its server declares one.
+
+    The declared schema is read from `metadata["mcp"]["tool"]["output_schema"]`.
+    A server that declares an `outputSchema` must return matching
+    `structuredContent`, which reaches JS as the artifact
+    `{structured_content: ...}`.
+    """
+    if tool.response_format != "content_and_artifact":
+        return None
+    mcp = (tool.metadata or {}).get("mcp")
+    mcp_tool = mcp.get("tool") if isinstance(mcp, dict) else None
+    output = mcp_tool.get("output_schema") if isinstance(mcp_tool, dict) else None
+    if not isinstance(output, dict):
+        return None
+    return {
+        "type": "object",
+        "properties": {
+            "structured_content": {k: v for k, v in output.items() if k != "$defs"}
+        },
+        "required": ["structured_content"],
+        "$defs": output.get("$defs") or {},
+    }
 
 
 def _return_annotation(tool: BaseTool) -> Any:
@@ -678,8 +713,14 @@ def _mentions_tool_envelope(annotation: Any) -> bool:
     return any(_mentions_tool_envelope(arg) for arg in get_args(annotation))
 
 
-def _json_schema_to_ts(prop: dict[str, Any], refs: Mapping[str, str]) -> str:
+def _json_schema_to_ts(
+    prop: dict[str, Any] | bool,  # noqa: FBT001 — a JSON Schema node, not a flag
+    refs: Mapping[str, str],
+) -> str:
     """Render a JSON Schema node as a TS type; `refs` names each `$ref` target."""
+    if not isinstance(prop, dict):
+        # Raw JSON Schema allows `true` / `false` as a subschema.
+        return "unknown"
     if "$ref" in prop:
         return refs.get(prop["$ref"], "unknown")
     if len(prop.get("allOf", ())) == 1:
@@ -698,6 +739,10 @@ def _json_schema_to_ts(prop: dict[str, Any], refs: Mapping[str, str]) -> str:
 def _typed_schema_to_ts(prop: dict[str, Any], refs: Mapping[str, str]) -> str:
     """Render a JSON Schema node by its `type` keyword."""
     t = prop.get("type")
+    if isinstance(t, list):
+        # Raw JSON Schema may list several types, as in `["string", "null"]`.
+        parts = [_typed_schema_to_ts({**prop, "type": member}, refs) for member in t]
+        return " | ".join(dict.fromkeys(parts))
     if t == "string":
         # quickjs_rs marshals `bytes` to and from `Uint8Array`.
         return "Uint8Array" if prop.get("format") == "binary" else "string"

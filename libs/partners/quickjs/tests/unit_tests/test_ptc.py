@@ -1053,6 +1053,89 @@ def test_render_ptc_prompt_prefixes_conflicting_type_names() -> None:
     )
 
 
+def test_render_ptc_prompt_renders_json_schema_dict_args() -> None:
+    """A raw JSON Schema `args_schema`, as MCP tools carry, renders its fields."""
+    tool = StructuredTool(
+        name="search_issues",
+        description="Search issues.",
+        args_schema={
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Search text"},
+                "limit": {"type": ["integer", "null"]},
+                "labels": {"type": "array", "items": {"type": "string"}},
+                "extra": True,
+            },
+            "required": ["query"],
+        },
+        func=_stub,
+    )
+    prompt = render_ptc_prompt([tool])
+    assert (
+        "tools.searchIssues(input: {\n"
+        "  /**\n *Search text\n */ query: string;\n"
+        "  limit?: number | null;\n"
+        "  labels?: string[];\n"
+        "  extra?: unknown;\n"
+        "}): Promise<null>"
+    ) in prompt, prompt
+
+
+def _mcp_weather_tool() -> BaseTool:
+    """Build a tool shaped like a `langchain.mcp` tool with an `outputSchema`."""
+
+    async def call(**arguments: Any) -> tuple[list[Any], dict[str, Any] | None]:
+        temp = {"temp": 21.5, "unit": "C", "city": arguments["city"]}
+        return [{"type": "text", "text": json.dumps(temp)}], {
+            "structured_content": temp
+        }
+
+    output_schema = {
+        "type": "object",
+        "properties": {
+            "temp": {"type": "number"},
+            "unit": {"$ref": "#/$defs/Unit"},
+            "city": {"type": "string"},
+        },
+        "required": ["temp", "city"],
+        "$defs": {"Unit": {"enum": ["C", "F"]}},
+    }
+    return StructuredTool(
+        name="get_weather",
+        description="Get the weather.",
+        args_schema={
+            "type": "object",
+            "properties": {"city": {"type": "string"}},
+            "required": ["city"],
+        },
+        coroutine=call,
+        response_format="content_and_artifact",
+        metadata={"mcp": {"tool": {"output_schema": output_schema}}},
+    )
+
+
+def test_render_ptc_prompt_types_mcp_structured_content() -> None:
+    """An MCP tool's declared `outputSchema` types the artifact JS gets."""
+    prompt = render_ptc_prompt([_mcp_weather_tool()])
+    assert 'type Unit = "C" | "F";' in prompt, prompt
+    assert (
+        "Promise<{ structured_content: { temp: number; unit?: Unit; city: string } }>"
+    ) in prompt, prompt
+
+
+async def test_mcp_structured_content_matches_rendered_type(
+    repl: _ThreadREPL,
+) -> None:
+    repl.install_tools([_mcp_weather_tool()])
+    outcome = await repl.eval_async(
+        "const r = await tools.getWeather({city: 'Oslo'});\n"
+        "`${r.structured_content.temp}${r.structured_content.unit}"
+        " ${r.structured_content.city}`"
+    )
+    assert outcome.error_type is None, outcome.error_message
+    assert outcome.result == "21.5C Oslo"
+
+
 def _get_status_record() -> _Status:
     """Module-level helper.
 

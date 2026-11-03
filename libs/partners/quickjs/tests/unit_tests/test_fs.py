@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal
 import pytest
 from deepagents import FilesystemPermission, create_deep_agent
 from deepagents.backends import FilesystemBackend, StateBackend
+from deepagents.backends.protocol import LsResult
 from deepagents.backends.utils import create_file_data
 from deepagents.middleware.filesystem import FilesystemMiddleware
 from langchain.agents import create_agent
@@ -39,7 +40,7 @@ _FILES = {
     "/docs/b.txt": "plain",
     "/secret/key.txt": "hunter2",
 }
-_FS_TOOLS = ["read_file", "ls"]
+_FS_TOOLS = ["read_file", "ls", "glob"]
 _DENY_SECRET = [
     FilesystemPermission(operations=["read"], paths=["/secret/**"], mode="deny")
 ]
@@ -79,10 +80,15 @@ def _files() -> dict[str, Any]:
     return {path: create_file_data(text) for path, text in _FILES.items()}
 
 
-def _run(*codes: str, run_async: bool = False, **agent_kwargs: Any) -> Any:
+def _run(
+    *codes: str,
+    run_async: bool = False,
+    ptc: list[Any] = _FS_TOOLS,
+    **agent_kwargs: Any,
+) -> Any:
     """Run evals in a deep agent over `_FILES` and return the last result."""
     middleware = CodeInterpreterMiddleware(
-        ptc=_FS_TOOLS, **agent_kwargs.pop("middleware_kwargs", {})
+        ptc=ptc, **agent_kwargs.pop("middleware_kwargs", {})
     )
     agent = create_deep_agent(
         model=_model(*codes), middleware=[middleware], **agent_kwargs
@@ -99,6 +105,53 @@ def test_reads_whole_file_unformatted(*, run_async: bool) -> None:
       JSON.parse(await fs.promises.readFile("data.json", "utf8")).rows.length,
     ])"""
     assert _run(code, run_async=run_async) == [150, 150]
+
+
+def test_import_and_require_reach_the_same_fs_and_path() -> None:
+    code = """
+    const notExported = [];
+    for (const id of ["fs", "fs/promises", "path"]) {
+      const m = await import(id);
+      notExported.push(...Object.keys(require(id)).filter((key) => !(key in m)));
+    }
+    const pm = await import("path");
+    let missing;
+    try { require("child_process") } catch (e) { missing = e.code }
+    JSON.stringify([
+      notExported,
+      [require("fs") === fs, require("node:fs/promises") === fs.promises],
+      [pm.default.sep, pm.posix.sep, pm.posix.resolve("a", undefined, "b")],
+      missing,
+    ])"""
+    assert _run(code) == [[], [True, True], ["/", "/", "/a/b"], "MODULE_NOT_FOUND"]
+
+
+def test_listings_show_what_the_tools_permit() -> None:
+    code = """
+    const globbed = [];
+    for await (const p of fs.promises.glob("**/*")) globbed.push(p);
+    JSON.stringify([
+      fs.readdirSync("/", { withFileTypes: true })
+        .map((d) => [d.name, d.isDirectory(), d.isFile(), d.parentPath])
+        .sort(),
+      (await fs.promises.readdir("docs")).sort(),
+      fs.readdirSync("/secret"),
+      fs.globSync("**/*").sort(),
+      globbed.sort(),
+      fs.globSync("*.md", { cwd: "/docs" }),
+      ["/docs", "docs/a.md", "/nope", "/nope/x", "/", "/secret/key.txt"]
+        .map(fs.existsSync),
+    ])"""
+    visible = ["data.json", "docs/a.md", "docs/b.txt"]
+    assert _run(code, permissions=_DENY_SECRET) == [
+        [["data.json", False, True, "/"], ["docs", True, False, "/"]],
+        ["a.md", "b.txt"],
+        [],
+        visible,
+        visible,
+        ["a.md"],
+        [True, True, False, False, True, False],
+    ]
 
 
 def test_without_an_encoding_reads_bytes_that_decode_as_utf8(tmp_path: Path) -> None:
@@ -140,6 +193,7 @@ def test_failures_are_node_errors(tmp_path: Path) -> None:
       caught(() => fs.readFileSync("/missing.txt")),
       caught(() => fs.readFileSync("/dir")).slice(1, 3),
       caught(() => fs.readFileSync("/secret/key.txt")).slice(1, 3),
+      caught(() => fs.readdirSync("/missing")).slice(1, 3),
       caught(() => fs.readFileSync("/large.txt")).slice(1, 2),
       caught(() => fs.readFileSync("/dir", "utf32")).slice(0, 2),
       caught(() => fs.readFileSync(42)).slice(0, 2),
@@ -157,12 +211,21 @@ def test_failures_are_node_errors(tmp_path: Path) -> None:
         ],
         ["EISDIR", "EISDIR: illegal operation on a directory, open '/dir'"],
         ["EACCES", "EACCES: permission denied, open '/secret/key.txt'"],
+        ["ENOENT", "ENOENT: no such file or directory, scandir '/missing'"],
         ["ERR_FS_FILE_TOO_LARGE"],
         ["TypeError", "ERR_INVALID_ARG_VALUE"],
         ["TypeError", "ERR_INVALID_ARG_TYPE"],
         ["ToolError", "EIO"],
         ["ToolError", "EIO"],
     ]
+
+
+def test_a_function_whose_tool_is_not_in_ptc_throws_enosys() -> None:
+    code = """let r;
+    try { fs.globSync("*") } catch (e) { r = [e.code, e.message] }
+    JSON.stringify([r, fs.existsSync("/docs/b.txt")])"""
+    message = "ENOSYS: function not implemented; add 'glob' to `ptc`, glob '/'"
+    assert _run(code, ptc=["read_file", "ls"]) == [["ENOSYS", message], True]
 
 
 def test_fs_calls_count_toward_the_call_budget() -> None:
@@ -178,10 +241,16 @@ def _read_file_as_text(file_path: str) -> str:
     return f"contents of {file_path}"
 
 
+@tool("read_file", response_format="content_and_artifact")
+def _read_file_raw(file_path: str) -> tuple[str, dict[str, Any]]:
+    """Return the path as the file's bytes, in the raw result `fs` reads."""
+    return file_path, {"content": file_path.encode()}
+
+
 @pytest.mark.parametrize(
     ("ptc", "tools", "on", "prompt_text"),
     [
-        (["read_file"], [_read_file_as_text], True, "fs.readFileSync(path"),
+        (["read_file"], [_read_file_raw], True, "fs.readFileSync(path"),
         (["read_file"], [], False, "no built-in filesystem"),
         (None, [_read_file_as_text], False, "no built-in filesystem"),
     ],
@@ -190,16 +259,17 @@ def _read_file_as_text(file_path: str) -> str:
 def test_globals_prompt_and_schema_follow_ptc(
     ptc: list[str] | None, tools: list[Any], *, on: bool, prompt_text: str
 ) -> None:
-    model = _model("JSON.stringify(typeof fs)")
+    model = _model("JSON.stringify([typeof fs, typeof require])")
     middleware = CodeInterpreterMiddleware(ptc=ptc)
     agent = create_agent(model, tools=tools, middleware=[middleware])
     state = agent.invoke({"messages": [{"role": "user", "content": "go"}]})
-    assert _results(state) == ["object" if on else "undefined"]
+    assert _results(state) == [["object", "function"] if on else ["undefined"] * 2]
     assert prompt_text in model.prompts[0]
     tool = middleware.tools[0]
     schema = tool.tool_call_schema.model_json_schema()["properties"]["code"]
     no_files = ("No filesystem" in tool.description, "No fs" in schema["description"])
     assert no_files == (ptc is None, ptc is None)
+    assert "fs.readdirSync" not in model.prompts[0]
 
 
 @tool("read_file", response_format="content_and_artifact")
@@ -290,6 +360,56 @@ def _evals(*evals: tuple[str, list[Any]], timeout: float = 5) -> str | None:
         return [repl.eval_sync(code, tools=tools) for code, tools in evals][-1].result
     finally:
         registry.close()
+
+
+def test_an_import_calls_the_fs_of_the_tools_bound_when_it_runs() -> None:
+    read = """const { readFileSync } = await import("node:fs");
+    globalThis.seen ??= [];
+    try { seen.push(readFileSync("/a", "utf8")) } catch (e) { seen.push(e.code) }
+    JSON.stringify(seen)"""
+    reads = _evals((read, []), (read, [_read_file_raw]), (read, []))
+    assert reads == '["ENOSYS","/a","ENOSYS"]'
+
+
+class _FailingLs(StateBackend):
+    """State backend whose listings fail without an error code."""
+
+    def ls(self, path: str) -> LsResult:
+        return LsResult(error=f"cannot list {path}: connection reset")
+
+    async def als(self, path: str) -> LsResult:
+        return self.ls(path)
+
+
+def test_stat_describes_a_path_from_its_parents_listing() -> None:
+    code = """
+    const st = fs.statSync("/docs/a.md");
+    const dir = await fs.promises.lstat("/docs");
+    let missing;
+    try { fs.statSync("/nope.txt") } catch (e) { missing = [e.code, e.message] }
+    JSON.stringify([
+      [st.isFile(), st.isDirectory(), st.size, st.mtime instanceof Date],
+      [dir.isFile(), dir.isDirectory(), fs.statSync("/").isDirectory()],
+      missing,
+      [fs.accessSync("/data.json"), await fs.promises.access("/docs")],
+    ])"""
+    assert _run(code) == [
+        [True, False, len(_FILES["/docs/a.md"]), True],
+        [False, True, True],
+        ["ENOENT", "ENOENT: no such file or directory, stat '/nope.txt'"],
+        [None, None],
+    ]
+
+
+def test_exists_sync_is_false_only_for_a_missing_path(tmp_path: Path) -> None:
+    (tmp_path / "a.txt").write_text("x")
+    code = """const t = (p) => {
+      try { return fs.existsSync(p) } catch (e) { return e.code }
+    };
+    JSON.stringify(["/a.txt", "/b.txt", "/missing/b.txt", undefined].map(t))"""
+    backend = FilesystemBackend(root_dir=tmp_path, virtual_mode=True)
+    assert _run(code, backend=backend) == [True, False, False, False]
+    assert _run(code, backend=_FailingLs()) == ["EIO", "EIO", "EIO", False]
 
 
 def test_code_that_declares_its_own_fs_keeps_running() -> None:
@@ -450,3 +570,38 @@ async def test_finished_fs_calls_are_not_run_again_after_a_resume(
     assert pauses == [[("ls", {"path": "/docs"})]]
     assert results == [["plain", True, len(_FILES["/docs/a.md"])]]
     assert _CountingBackend.downloads == ["/docs/b.txt", "/docs/a.md"]
+
+
+_SNIPPETS = """
+const fs = require("fs");
+const path = require("path");
+const data = JSON.parse(fs.readFileSync("/data.json", "utf8"));
+const files = fs.readdirSync("/docs", { withFileTypes: true })
+  .filter((d) => d.isFile())
+  .map((d) => d.name)
+  .sort();
+const exists = [fs.existsSync("/data.json"), fs.existsSync("/missing.json")];
+let missing;
+try {
+  fs.readFileSync("/missing.json", "utf8");
+} catch (err) {
+  if (err.code !== "ENOENT") throw err;
+  missing = err.code;
+}
+const { readFile } = await import("node:fs/promises");
+const notes = await readFile(path.join("/docs", "a.md"), "utf8");
+const markdown = fs.globSync("**/*.md");
+JSON.stringify({ rows: data.rows.length, files, exists, missing, notes, markdown });
+"""
+
+
+@pytest.mark.parametrize("run_async", [False, True], ids=["invoke", "ainvoke"])
+def test_the_node_snippets_models_write_run_unchanged(*, run_async: bool) -> None:
+    assert _run(_SNIPPETS, run_async=run_async) == {
+        "rows": 150,
+        "files": ["a.md", "b.txt"],
+        "exists": [True, False],
+        "missing": "ENOENT",
+        "notes": _FILES["/docs/a.md"],
+        "markdown": ["docs/a.md"],
+    }

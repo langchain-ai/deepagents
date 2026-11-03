@@ -23,7 +23,7 @@ from langchain.tools import BaseTool, ToolRuntime
 from langchain_core._api.beta_decorator import warn_beta
 from langchain_core.exceptions import ModelRefusalError
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AIMessage, AnyMessage, BaseMessage, HumanMessage, RefusalContentBlock, ToolMessage, get_refusal
+from langchain_core.messages import AIMessage, AnyMessage, BaseMessage, HumanMessage, RefusalContentBlock, ToolMessage
 from langchain_core.runnables import Runnable, RunnableConfig
 from langchain_core.tools import StructuredTool
 from langgraph.types import Command
@@ -94,7 +94,12 @@ def _refusal_notice(refusal: RefusalContentBlock | None) -> str:
 
 def _final_refusal(messages: Sequence[BaseMessage]) -> RefusalContentBlock | None:
     """Return the refusal in the subagent's last message, if it ended on one."""
-    return get_refusal(messages[-1]) if messages else None
+    if not messages:
+        return None
+    for block in messages[-1].content_blocks:
+        if block["type"] == "refusal":
+            return block
+    return None
 
 
 def _refusal_notice_for(error: Exception) -> str | None:

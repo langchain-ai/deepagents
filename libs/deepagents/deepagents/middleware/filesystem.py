@@ -65,6 +65,7 @@ from deepagents.backends.protocol import (
     GrepMatch,
     GrepResult,
     LsArtifact,
+    LsArtifactEntry,
     LsResult,
     RawFileResultRequest,
     ReadFileArtifact,
@@ -921,6 +922,19 @@ def _format_grep_tool_result(
     return formatted, "success"
 
 
+def _ls_artifact_entry(info: FileInfo) -> LsArtifactEntry:
+    """Copy a listing entry into an `LsArtifactEntry`, keeping only the size and time the backend reported.
+
+    Backends fill a directory's `size` with `0` and an unknown `modified_at` with `""`, so neither is copied.
+    """
+    entry: LsArtifactEntry = {"path": info.get("path", ""), "is_dir": info.get("is_dir", False)}
+    if not entry["is_dir"] and "size" in info:
+        entry["size"] = info["size"]
+    if modified_at := info.get("modified_at"):
+        entry["modified_at"] = modified_at
+    return entry
+
+
 def _ls_result(
     rules: list[FilesystemPermission],
     entries: list[FileInfo],
@@ -933,7 +947,7 @@ def _ls_result(
     permitted = _filter_file_infos_by_permission(rules, entries, operation="read", backend=backend)
     artifact: LsArtifact | None = None
     if raw is not None:
-        artifact = {"entries": [{"path": fi.get("path", ""), "is_dir": fi.get("is_dir", False)} for fi in permitted]}
+        artifact = {"entries": [_ls_artifact_entry(fi) for fi in permitted]}
     return ToolMessage(
         content=_format_file_paths([fi.get("path", "") for fi in permitted]),
         tool_call_id=tool_call_id,
@@ -1962,8 +1976,9 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
     whole file's bytes, an [`LsArtifact`][deepagents.backends.protocol.LsArtifact],
     or a [`GlobArtifact`][deepagents.backends.protocol.GlobArtifact], or a
     [`FileToolErrorArtifact`][deepagents.backends.protocol.FileToolErrorArtifact]
-    when the call fails. The calls run the same path validation and permission
-    rules as model calls. Tracing callbacks receive the artifact, so a raw read
+    when the call fails. A failed `write_file`, `edit_file`, or `delete` call
+    with a request carries a `FileToolErrorArtifact` too. The calls run the
+    same path validation and permission rules as model calls. Tracing callbacks receive the artifact, so a raw read
     puts the file's contents, up to the request's `max_bytes`, into traces.
 
     This middleware also automatically evicts large tool results to the file system when
@@ -2479,6 +2494,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             runtime: ToolRuntime[None, FilesystemState],
         ) -> ToolMessage:
             """Synchronous wrapper for write_file tool."""
+            raw = _raw_result_request(runtime)
             resolved_backend = self.backend
             try:
                 validated_path = validate_path(file_path)
@@ -2488,6 +2504,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     name="write_file",
                     tool_call_id=runtime.tool_call_id,
                     status="error",
+                    artifact=_error_artifact("invalid_path", raw),
                 )
 
             if (error := _permission_error(self._permissions, "write", self.backend, validated_path)) is not None:
@@ -2496,6 +2513,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     name="write_file",
                     tool_call_id=runtime.tool_call_id,
                     status="error",
+                    artifact=_error_artifact("permission_denied", raw),
                 )
             res: WriteResult = resolved_backend.write(validated_path, content)
             if res.error:
@@ -2504,6 +2522,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     name="write_file",
                     tool_call_id=runtime.tool_call_id,
                     status="error",
+                    artifact=_error_artifact(res.error_code, raw),
                 )
             return ToolMessage(
                 content=f"Updated file {res.path}",
@@ -2518,6 +2537,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             runtime: ToolRuntime[None, FilesystemState],
         ) -> ToolMessage:
             """Asynchronous wrapper for write_file tool."""
+            raw = _raw_result_request(runtime)
             resolved_backend = self.backend
             try:
                 validated_path = validate_path(file_path)
@@ -2527,6 +2547,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     name="write_file",
                     tool_call_id=runtime.tool_call_id,
                     status="error",
+                    artifact=_error_artifact("invalid_path", raw),
                 )
 
             if (error := _permission_error(self._permissions, "write", self.backend, validated_path)) is not None:
@@ -2535,6 +2556,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     name="write_file",
                     tool_call_id=runtime.tool_call_id,
                     status="error",
+                    artifact=_error_artifact("permission_denied", raw),
                 )
             res: WriteResult = await resolved_backend.awrite(validated_path, content)
             if res.error:
@@ -2543,6 +2565,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     name="write_file",
                     tool_call_id=runtime.tool_call_id,
                     status="error",
+                    artifact=_error_artifact(res.error_code, raw),
                 )
             return ToolMessage(
                 content=f"Updated file {res.path}",
@@ -2573,6 +2596,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             replace_all: bool = False,
         ) -> ToolMessage:
             """Synchronous wrapper for edit_file tool."""
+            raw = _raw_result_request(runtime)
             resolved_backend = self.backend
             try:
                 validated_path = validate_path(file_path)
@@ -2582,6 +2606,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     name="edit_file",
                     tool_call_id=runtime.tool_call_id,
                     status="error",
+                    artifact=_error_artifact("invalid_path", raw),
                 )
 
             if (error := _permission_error(self._permissions, "write", self.backend, validated_path)) is not None:
@@ -2590,6 +2615,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     name="edit_file",
                     tool_call_id=runtime.tool_call_id,
                     status="error",
+                    artifact=_error_artifact("permission_denied", raw),
                 )
             res: EditResult = resolved_backend.edit(validated_path, old_string, new_string, replace_all=replace_all)
             if res.error:
@@ -2598,6 +2624,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     name="edit_file",
                     tool_call_id=runtime.tool_call_id,
                     status="error",
+                    artifact=_error_artifact(res.error_code, raw),
                 )
             return ToolMessage(
                 content=f"Successfully replaced {res.occurrences} instance(s) of the string in '{res.path}'",
@@ -2615,6 +2642,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             replace_all: bool = False,
         ) -> ToolMessage:
             """Asynchronous wrapper for edit_file tool."""
+            raw = _raw_result_request(runtime)
             resolved_backend = self.backend
             try:
                 validated_path = validate_path(file_path)
@@ -2624,6 +2652,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     name="edit_file",
                     tool_call_id=runtime.tool_call_id,
                     status="error",
+                    artifact=_error_artifact("invalid_path", raw),
                 )
 
             if (error := _permission_error(self._permissions, "write", self.backend, validated_path)) is not None:
@@ -2632,6 +2661,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     name="edit_file",
                     tool_call_id=runtime.tool_call_id,
                     status="error",
+                    artifact=_error_artifact("permission_denied", raw),
                 )
             res: EditResult = await resolved_backend.aedit(validated_path, old_string, new_string, replace_all=replace_all)
             if res.error:
@@ -2640,6 +2670,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     name="edit_file",
                     tool_call_id=runtime.tool_call_id,
                     status="error",
+                    artifact=_error_artifact(res.error_code, raw),
                 )
             return ToolMessage(
                 content=f"Successfully replaced {res.occurrences} instance(s) of the string in '{res.path}'",
@@ -2666,6 +2697,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             runtime: ToolRuntime[None, FilesystemState],
         ) -> ToolMessage:
             """Synchronous wrapper for delete tool."""
+            raw = _raw_result_request(runtime)
             resolved_backend = self.backend
             try:
                 validated_path = validate_path(file_path)
@@ -2675,6 +2707,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     name="delete",
                     tool_call_id=runtime.tool_call_id,
                     status="error",
+                    artifact=_error_artifact("invalid_path", raw),
                 )
 
             has_descendants = _delete_target_may_have_descendants(resolved_backend, validated_path, permissions_configured=bool(self._permissions))
@@ -2684,6 +2717,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     name="delete",
                     tool_call_id=runtime.tool_call_id,
                     status="error",
+                    artifact=_error_artifact("permission_denied", raw),
                 )
             res: DeleteResult = resolved_backend.delete(validated_path)
             if res.error:
@@ -2692,6 +2726,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     name="delete",
                     tool_call_id=runtime.tool_call_id,
                     status="error",
+                    artifact=_error_artifact(res.error_code, raw),
                 )
             return ToolMessage(
                 content=f"Deleted {res.path}",
@@ -2705,6 +2740,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             runtime: ToolRuntime[None, FilesystemState],
         ) -> ToolMessage:
             """Asynchronous wrapper for delete tool."""
+            raw = _raw_result_request(runtime)
             resolved_backend = self.backend
             try:
                 validated_path = validate_path(file_path)
@@ -2714,6 +2750,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     name="delete",
                     tool_call_id=runtime.tool_call_id,
                     status="error",
+                    artifact=_error_artifact("invalid_path", raw),
                 )
 
             has_descendants = await _adelete_target_may_have_descendants(
@@ -2725,6 +2762,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     name="delete",
                     tool_call_id=runtime.tool_call_id,
                     status="error",
+                    artifact=_error_artifact("permission_denied", raw),
                 )
             res: DeleteResult = await resolved_backend.adelete(validated_path)
             if res.error:
@@ -2733,6 +2771,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     name="delete",
                     tool_call_id=runtime.tool_call_id,
                     status="error",
+                    artifact=_error_artifact(res.error_code, raw),
                 )
             return ToolMessage(
                 content=f"Deleted {res.path}",

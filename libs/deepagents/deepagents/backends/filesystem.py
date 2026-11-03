@@ -517,7 +517,7 @@ class FilesystemBackend(BackendProtocol):
         try:
             resolved_path = self._resolve_path(file_path)
         except (OSError, RuntimeError) as e:
-            return WriteResult(error=f"Error writing file '{file_path}': {e}")
+            return WriteResult(error=f"Error writing file '{file_path}': {e}", error_code=_error_code(e))
 
         try:
             # Create parent directories if needed
@@ -535,7 +535,7 @@ class FilesystemBackend(BackendProtocol):
 
             return WriteResult(path=file_path)
         except (OSError, UnicodeEncodeError) as e:
-            return WriteResult(error=f"Error writing file '{file_path}': {e}")
+            return WriteResult(error=f"Error writing file '{file_path}': {e}", error_code=_error_code(e))
 
     def edit(
         self,
@@ -560,11 +560,12 @@ class FilesystemBackend(BackendProtocol):
         try:
             resolved_path = self._resolve_path(file_path)
         except (OSError, RuntimeError) as e:
-            return EditResult(error=f"Error editing file '{file_path}': {e}")
+            return EditResult(error=f"Error editing file '{file_path}': {e}", error_code=_error_code(e))
 
         try:
             if not resolved_path.exists() or not resolved_path.is_file():
-                return EditResult(error=f"Error: File '{file_path}' not found")
+                code = IS_DIRECTORY if resolved_path.is_dir() else FILE_NOT_FOUND
+                return EditResult(error=f"Error: File '{file_path}' not found", error_code=code)
 
             # Read securely
             fd = os.open(resolved_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
@@ -597,7 +598,7 @@ class FilesystemBackend(BackendProtocol):
 
             return EditResult(path=file_path, occurrences=int(occurrences))
         except (OSError, UnicodeDecodeError, UnicodeEncodeError) as e:
-            return EditResult(error=f"Error editing file '{file_path}': {e}")
+            return EditResult(error=f"Error editing file '{file_path}': {e}", error_code=_error_code(e))
 
     def delete(self, file_path: str) -> DeleteResult:
         """Delete a file or directory from the filesystem.
@@ -618,11 +619,11 @@ class FilesystemBackend(BackendProtocol):
         try:
             resolved_path = self._resolve_path(file_path)
         except (OSError, RuntimeError) as e:
-            return DeleteResult(error=f"Error deleting '{file_path}': {e}")
+            return DeleteResult(error=f"Error deleting '{file_path}': {e}", error_code=_error_code(e))
 
         try:
             if not resolved_path.exists() and not resolved_path.is_symlink():
-                return DeleteResult(error=f"Error: '{file_path}' not found")
+                return DeleteResult(error=f"Error: '{file_path}' not found", error_code=FILE_NOT_FOUND)
             if resolved_path.is_symlink():
                 resolved_path.unlink()
             elif resolved_path.is_dir():
@@ -631,7 +632,7 @@ class FilesystemBackend(BackendProtocol):
                 resolved_path.unlink()
             return DeleteResult(path=file_path)
         except (OSError, RuntimeError) as e:
-            return DeleteResult(error=f"Error deleting '{file_path}': {e}")
+            return DeleteResult(error=f"Error deleting '{file_path}': {e}", error_code=_error_code(e))
 
     def grep(  # noqa: C901 -- path resolution, glob validation, engine selection, and context attach are each guarded early-exits; splitting them would scatter the partial-error bookkeeping
         self,
@@ -1549,6 +1550,14 @@ def _map_exception_to_standard_error(exc: Exception) -> FileOperationError | Non
     elif isinstance(exc, (NotADirectoryError, FileExistsError, ValueError)):
         error = INVALID_PATH
     return error
+
+
+def _error_code(exc: Exception) -> FileOperationError | None:
+    """Classify a failed write, edit, or delete, leaving text-encoding failures without a code.
+
+    `UnicodeError` is a `ValueError`, which `_map_exception_to_standard_error` reads as a bad path.
+    """
+    return None if isinstance(exc, UnicodeError) else _map_exception_to_standard_error(exc)
 
 
 # Win32 `ERROR_CANT_RESOLVE_FILENAME`, surfaced by NTFS for reparse-point

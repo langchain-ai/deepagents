@@ -4,7 +4,7 @@ An `eval` tool is available. It runs JavaScript in a fresh sandboxed REPL for ea
 
 - State (variables, functions) does not persist across tool calls. Each invocation starts from a blank environment.
 - Top-level `await` works; Promises resolve before the call returns.
-- Runtime sandbox: no built-in filesystem, network, stdlib, or wall-clock APIs (`fetch`, `require`, `fs`, `process`, real `Date.now()` are unavailable or stubbed).
+- Runtime sandbox: no built-in filesystem, network, or stdlib APIs (`fetch`, `require`, `fs`, `process` are unavailable). `Date` reads the real clock in UTC.
 - The REPL has no access to host tools, files, or the network: it is pure computation. Return values to communicate results.
 - Timeout: 5.0s per call. Memory: 64 MB total.
 - `console.log` output is captured and returned alongside the result.

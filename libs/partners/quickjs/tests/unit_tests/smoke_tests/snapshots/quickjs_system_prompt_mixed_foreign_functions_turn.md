@@ -4,7 +4,7 @@ An `eval` tool is available. It runs JavaScript in a persistent REPL.
 
 - State (variables, functions) persists across tool calls within a single turn of conversation. They DO NOT persist across multiple turns.
 - Top-level `await` works; Promises resolve before the call returns.
-- Runtime sandbox: no built-in filesystem, network, stdlib, or wall-clock APIs (`fetch`, `require`, `fs`, `process`, real `Date.now()` are unavailable or stubbed).
+- Runtime sandbox: no built-in filesystem, network, or stdlib APIs (`fetch`, `require`, `fs`, `process` are unavailable). `Date` reads the real clock in UTC.
 - External side effects from inside the REPL are only reachable via the `tools.*` namespace documented in the API reference below.
 - Timeout: 5.0s per call. Memory: 64 MB total.
 - `console.log` output is captured and returned alongside the result.

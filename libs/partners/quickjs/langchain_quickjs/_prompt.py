@@ -30,9 +30,9 @@ _REPL_SYSTEM_PROMPT_TEMPLATE = (
     "{repl_intro_line}\n\n"
     "{state_persistence_line}\n"
     "- Top-level `await` works; Promises resolve before the call returns.\n"
-    "- Runtime sandbox: no built-in filesystem, network, stdlib, or wall-clock "
-    "APIs (`fetch`, `require`, `fs`, `process`, real `Date.now()` are "
-    "unavailable or stubbed).\n"
+    "- Runtime sandbox: no built-in filesystem, network, or stdlib APIs "
+    "(`fetch`, `require`, `fs`, `process` are unavailable). `Date` reads the "
+    "real clock in UTC.\n"
     "{side_effects_line}\n"
     "- {timeout_line}Memory: {memory_limit_mb} MB total.\n"
     "- `console.log` output is captured and returned alongside the result."
@@ -377,7 +377,7 @@ def render_eval_tool_description(*, mode: Literal["thread", "turn", "call"]) -> 
         )
     return (
         "Execute JavaScript in a sandboxed REPL. "
-        f"{state_line} No filesystem, network, or real clock. "
+        f"{state_line} No filesystem or network; `Date` reads the real clock in UTC. "
         "Top-level `await` is supported; a final-expression Promise resolves "
         "before the call returns."
     )

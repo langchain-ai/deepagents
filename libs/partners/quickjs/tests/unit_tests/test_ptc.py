@@ -882,7 +882,6 @@ def _stub() -> None:
         (type(None), "Promise<null>"),
         # Containers of primitives.
         (list[int], "Promise<number[]>"),
-        # `dict[str, V]` renders its `additionalProperties` value type.
         (dict[str, int], "Promise<Record<string, number>>"),
         (list[int | None], "Promise<(number | null)[]>"),
         # Optional / Literal / unions all flow through `anyOf` or `enum`.
@@ -892,10 +891,9 @@ def _stub() -> None:
         # Top-level TypedDict / BaseModel — Pydantic inlines the schema.
         (_UserLookup, "Promise<{ id: number; name: string }>"),
         (_Status, "Promise<{ status: string; count: number }>"),
-        # Collections of TypedDict / BaseModel hit `$ref` and render as a
-        # named alias declared once above the signatures.
-        (list[_UserLookup], "Promise<UserLookup[]>"),
-        (list[_Status], "Promise<Status[]>"),
+        # Collections of TypedDict / BaseModel resolve their `$ref` inline.
+        (list[_UserLookup], "Promise<{ id: number; name: string }[]>"),
+        (list[_Status], "Promise<{ status: string; count: number }[]>"),
     ],
 )
 def test_render_ptc_prompt_return_types(annotation: Any, expected: str) -> None:
@@ -951,40 +949,36 @@ async def test_pydantic_return_arrives_as_object_matching_schema(
 
 
 # ---------------------------------------------------------------------------
-# Nested schema (`$defs` / `$ref`) rendering
+# Nested models
 # ---------------------------------------------------------------------------
 
 
 class _Address(BaseModel):
     city: str
-    postal_code: str
 
 
 class _User(BaseModel):
     name: str
     address: _Address
+    home: _Address | None = None
 
 
-class _BatchInput(BaseModel):
+class _UsersInput(BaseModel):
     users: list[_User]
 
 
 class _TreeNode(BaseModel):
     value: int
     children: list[_TreeNode] = []
-    parent: _TreeNode | None = None
-
-
-class _Contact(BaseModel):
-    home: _Address | None = Field(default=None, description="Home address.")
-    others: dict[str, _Address] = {}
 
 
 def _normalize_users(users: list[_User]) -> list[_User]:
+    """Normalize users."""
     return users
 
 
 def _walk(value: int, children: list[_TreeNode] | None = None) -> _TreeNode:
+    """Walk a tree."""
     return _TreeNode(value=value, children=children or [])
 
 
@@ -993,221 +987,19 @@ def _ptc_body(tools: list[BaseTool]) -> str:
     return render_ptc_prompt(tools).rsplit("```typescript\n", 1)[1]
 
 
-def test_nested_models_render_as_named_types() -> None:
-    """Nested input and return models resolve instead of collapsing to `unknown`."""
+def test_nested_models_render_inline() -> None:
+    """Nested, list-of-model and Optional fields render inline, not `unknown`."""
+    user = "{ name: string; address: { city: string }; home?: { city: string } | null }"
     tool = StructuredTool.from_function(
-        name="normalize_users",
-        description="Normalize users.",
-        func=_normalize_users,
-        args_schema=_BatchInput,
+        _normalize_users, name="normalize_users", args_schema=_UsersInput
     )
     body = _ptc_body([tool])
-    assert "unknown" not in body, body
-    assert "type Address = { city: string; postal_code: string };" in body
-    assert "type User = { name: string; address: Address };" in body
-    assert "  users: User[];\n}): Promise<User[]>" in body
+    assert f"  users: {user}[];\n}}): Promise<{user}[]>" in body
 
 
-def test_optional_and_mapping_fields_resolve_refs() -> None:
-    """`Optional[Model]` and `dict[str, Model]` render the referenced alias."""
-    tool = StructuredTool.from_function(
-        name="save_contact",
-        description="Save a contact.",
-        func=lambda **_: None,
-        args_schema=_Contact,
-    )
+def test_recursive_model_back_reference_renders_unknown() -> None:
+    """A model's reference to itself is cut off as `unknown`."""
+    tool = StructuredTool.from_function(_walk, name="walk", args_schema=_TreeNode)
     body = _ptc_body([tool])
-    assert "home?: Address | null;" in body
-    assert "*Home address." in body
-    assert "others?: Record<string, Address>;" in body
-
-
-def test_self_referential_model_renders_by_name() -> None:
-    """A recursive model refers to its own alias rather than expanding forever."""
-    tool = StructuredTool.from_function(
-        name="walk",
-        description="Walk a tree.",
-        func=_walk,
-        args_schema=_TreeNode,
-    )
-    body = _ptc_body([tool])
-    assert (
-        "type TreeNode = { value: number; children?: TreeNode[]; "
-        "parent?: TreeNode | null };"
-    ) in body
-    assert "  children?: TreeNode[];" in body
-    assert "): Promise<TreeNode>" in body
-
-
-def test_shared_models_are_declared_once_across_tools() -> None:
-    """A model used by several tools gets a single declaration."""
-    tools: list[BaseTool] = [
-        StructuredTool.from_function(
-            name="normalize_users",
-            description="Normalize users.",
-            func=_normalize_users,
-            args_schema=_BatchInput,
-        ),
-        StructuredTool.from_function(
-            name="save_contact",
-            description="Save a contact.",
-            func=lambda **_: None,
-            args_schema=_Contact,
-        ),
-    ]
-    body = _ptc_body(tools)
-    assert body.count("type Address = ") == 1, body
-    assert "Address2" not in body
-
-
-def test_conflicting_model_names_get_distinct_aliases() -> None:
-    """Different models that share a name (or shadow a TS helper) are suffixed."""
-
-    class Promise(BaseModel):
-        ok: bool
-
-    class _Address(BaseModel):
-        street: str
-
-    class _Other(BaseModel):
-        address: _Address
-        promise: Promise
-
-    tools: list[BaseTool] = [
-        StructuredTool.from_function(
-            name="normalize_users",
-            description="Normalize users.",
-            func=_normalize_users,
-            args_schema=_BatchInput,
-        ),
-        StructuredTool.from_function(
-            name="other",
-            description="Other.",
-            func=lambda **_: None,
-            args_schema=_Other,
-        ),
-    ]
-    body = _ptc_body(tools)
-    assert "type Address = { city: string; postal_code: string };" in body
-    assert "type Address2 = { street: string };" in body
-    assert "type Promise2 = { ok: boolean };" in body
-    assert "  address: Address2;\n  promise: Promise2;" in body
-
-
-def _dict_schema_tool(name: str, schema: dict[str, Any]) -> BaseTool:
-    """A tool whose `args_schema` is raw JSON Schema, as MCP adapters build."""
-    return StructuredTool(
-        name=name,
-        description=f"{name} tool.",
-        args_schema=schema,
-        func=lambda **_: None,
-    )
-
-
-_MCP_ROLLOUT_SCHEMA: dict[str, Any] = {
-    "type": "object",
-    "properties": {
-        "service": {"type": "string", "description": "Service to check."},
-        "options": {"$ref": "#/$defs/Options"},
-        "regions": {"type": "array", "items": {"$ref": "#/$defs/Region"}},
-    },
-    "required": ["service"],
-    "$defs": {
-        "Options": {
-            "type": "object",
-            "properties": {"dry_run": {"type": "boolean"}},
-        },
-        "Region": {
-            "type": "object",
-            "properties": {
-                "name": {"type": "string"},
-                "options": {"$ref": "#/$defs/Options"},
-            },
-            "required": ["name"],
-        },
-    },
-}
-
-
-def test_dict_schema_renders_fields_with_refs_inline() -> None:
-    """MCP-style dict schemas render their fields, expanding `$defs` in place."""
-    body = _ptc_body([_dict_schema_tool("request_rollout_check", _MCP_ROLLOUT_SCHEMA)])
-    assert "Record<string, unknown>" not in body, body
-    assert "type " not in body.split("/**", 1)[0], body
-    assert "*/ service: string;" in body
-    assert "  options?: { dry_run?: boolean };" in body
-    assert "  regions?: { name: string; options?: { dry_run?: boolean } }[];" in body
-
-
-def test_dict_schemas_are_not_aliased_across_tools() -> None:
-    """Dict schemas stay standalone even when Pydantic tools declare aliases."""
-    tools: list[BaseTool] = [
-        StructuredTool.from_function(
-            name="normalize_users",
-            description="Normalize users.",
-            func=_normalize_users,
-            args_schema=_BatchInput,
-        ),
-        _dict_schema_tool("request_rollout_check", _MCP_ROLLOUT_SCHEMA),
-    ]
-    body = _ptc_body(tools)
-    assert "type User = " in body
-    assert "type Options" not in body
-    assert "type Region" not in body
-    assert "  options?: { dry_run?: boolean };" in body
-
-
-def test_dict_schema_recursive_ref_stops_at_back_edge() -> None:
-    """A recursive `$ref` renders `unknown` where it loops back."""
-    schema: dict[str, Any] = {
-        "type": "object",
-        "properties": {"root": {"$ref": "#/$defs/Node"}},
-        "$defs": {
-            "Node": {
-                "type": "object",
-                "properties": {
-                    "value": {"type": "integer"},
-                    "children": {"type": "array", "items": {"$ref": "#/$defs/Node"}},
-                },
-            },
-        },
-    }
-    body = _ptc_body([_dict_schema_tool("walk", schema)])
-    assert "  root?: { value?: number; children?: unknown[] };" in body, body
-
-
-def test_dict_schema_root_ref_is_a_back_edge() -> None:
-    """A root `$ref` counts as expanding, so a self-reference stops at once."""
-    schema: dict[str, Any] = {
-        "$ref": "#/$defs/Node",
-        "$defs": {
-            "Node": {
-                "type": "object",
-                "properties": {
-                    "value": {"type": "integer"},
-                    "next": {"$ref": "#/$defs/Node"},
-                },
-            },
-        },
-    }
-    body = _ptc_body([_dict_schema_tool("walk", schema)])
-    assert "  value?: number;\n  next?: unknown;" in body, body
-
-
-def test_dict_schema_ref_expansion_is_depth_capped() -> None:
-    """A long non-recursive `$ref` chain stops expanding at the depth cap."""
-    depth = 20
-    defs: dict[str, Any] = {
-        f"L{i}": {"type": "object", "properties": {"n": {"$ref": f"#/$defs/L{i + 1}"}}}
-        for i in range(depth)
-    }
-    defs[f"L{depth}"] = {"type": "string"}
-    schema: dict[str, Any] = {
-        "type": "object",
-        "properties": {"n": {"$ref": "#/$defs/L0"}},
-        "$defs": defs,
-    }
-    body = _ptc_body([_dict_schema_tool("deep", schema)])
-    assert body.count("{ n?:") == 8, body
-    assert "n?: unknown" in body
-    assert "string" not in body
+    assert "  children?: { value: number; children?: unknown[] }[];" in body
+    assert "): Promise<{ value: number; children?: unknown[] }>" in body

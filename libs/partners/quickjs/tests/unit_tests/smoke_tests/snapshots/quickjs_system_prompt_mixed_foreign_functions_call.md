@@ -264,12 +264,10 @@ console.log({ city, normalized });
 ```
 
 ```typescript
-type UserLookup = { id: number; name: string };
-
 /** Find users with the given name. */
 tools.findUsersByName(input: {
   name: string;
-}): Promise<UserLookup[]>
+}): Promise<{ id: number; name: string }[]>
 
 /** Get the location id for a user. */
 tools.getUserLocation(input: {

@@ -88,7 +88,7 @@ class EvalSchema(BaseModel):
     code: str = Field(
         description=(
             "JavaScript expression or statement(s) to evaluate. "
-            "No fs/network/real-clock access."
+            "No fs/network access; `Date` reads the real clock in UTC."
         ),
     )
 

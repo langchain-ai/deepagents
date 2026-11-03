@@ -37,7 +37,9 @@ from deepagents_code.extras_info import ExtrasIntrospectionError, installed_extr
 from deepagents_code.update_check import (
     CACHE_TTL,
     ExtraInstallOutcome,
+    ExtraRemovalOutcome,
     InstallMethod,
+    InstallOutcome,
     ShadowedDcode,
     ToolRequirementIntrospectionError,
     _extract_release_times,
@@ -2516,7 +2518,7 @@ class TestPerformInstallExtra:
             "deepagents_code.update_check.detect_install_method",
             return_value=method,
         ):
-            success, output, _safe = await perform_install_extra("quickjs")
+            success, output, _safe, _deferred = await perform_install_extra("quickjs")
         assert success is False
         assert needle in output
         assert "ToolRequirementIntrospectionError" not in output
@@ -2542,7 +2544,7 @@ class TestPerformInstallExtra:
                 return_value="printf 'ok\\n'",
             ),
         ):
-            success, output, _safe = await perform_install_extra(
+            success, output, _safe, _deferred = await perform_install_extra(
                 "quickjs", log_path=log_path
             )
         assert success is True
@@ -2566,7 +2568,7 @@ class TestPerformInstallExtra:
                 return_value=frozenset(),
             ),
         ):
-            success, output, _safe = await perform_install_extra("quickjs")
+            success, output, _safe, _deferred = await perform_install_extra("quickjs")
         assert success is False
         assert "ToolRequirementIntrospectionError" in output
         assert "non-table requirement" in output
@@ -2640,7 +2642,7 @@ class TestPerformInstallExtra:
             ),
             patch("deepagents_code.update_check._run_install_subprocess", run),
         ):
-            success, output, _safe = await perform_install_extra("quickjs")
+            success, output, _safe, _deferred = await perform_install_extra("quickjs")
 
         assert (success, output) == (True, "installed")
         assert events == ["acquire", "command", "run", "release"]
@@ -2689,7 +2691,7 @@ class TestPerformInstallPackage:
                 return_value="printf 'ok\\n'",
             ),
         ):
-            success, output = await perform_install_package(
+            success, output, _deferred = await perform_install_package(
                 "langchain-custom", log_path=log_path
             )
         assert success is True
@@ -2724,7 +2726,9 @@ class TestPerformInstallPackage:
             ),
             caplog.at_level(logging.WARNING, logger="deepagents_code.update_check"),
         ):
-            success, output = await perform_install_package("langchain-custom")
+            success, output, _deferred = await perform_install_package(
+                "langchain-custom"
+            )
         assert success is False
         assert "ExtrasIntrospectionError" in output
         assert "metadata unreadable" in output
@@ -2758,7 +2762,9 @@ class TestPerformInstallPackage:
             ),
             caplog.at_level(logging.WARNING, logger="deepagents_code.update_check"),
         ):
-            success, output = await perform_install_package("langchain-custom")
+            success, output, _deferred = await perform_install_package(
+                "langchain-custom"
+            )
         assert success is False
         assert "ToolRequirementIntrospectionError" in output
         assert "non-table requirement" in output
@@ -2780,7 +2786,9 @@ class TestPerformInstallPackage:
             ),
             patch("deepagents_code.update_check.__version__", "not-a-version"),
         ):
-            success, output = await perform_install_package("langchain-custom")
+            success, output, _deferred = await perform_install_package(
+                "langchain-custom"
+            )
         assert success is False
         assert "ValueError" in output
         assert "Invalid deepagents-code version" in output
@@ -2805,7 +2813,9 @@ class TestPerformInstallPackage:
             patch("deepagents_code.update_check.install_package_command", command),
             patch("deepagents_code.update_check._run_install_subprocess", run),
         ):
-            success, output = await perform_install_package("langchain-custom")
+            success, output, _deferred = await perform_install_package(
+                "langchain-custom"
+            )
 
         assert success is False
         assert "already running" in output
@@ -2849,7 +2859,9 @@ class TestPerformInstallPackage:
             ),
             patch("deepagents_code.update_check._run_install_subprocess", run),
         ):
-            success, output = await perform_install_package("langchain-custom")
+            success, output, _deferred = await perform_install_package(
+                "langchain-custom"
+            )
 
         assert (success, output) == (True, "installed")
         assert events == ["acquire", "command", "run", "release"]
@@ -2902,17 +2914,18 @@ class TestWindowsInstallDeferral:
     async def test_install_prints_command_instead_of_running_it(
         self,
         windows_uv: AsyncMock,
-        perform: Callable[..., Awaitable[tuple[bool, str, *tuple[object, ...]]]],
+        perform: Callable[
+            ..., Awaitable[InstallOutcome | ExtraInstallOutcome | ExtraRemovalOutcome]
+        ],
         requirement: str,
     ) -> None:
         """Nothing runs; the guidance names the receipt-preserving uv command."""
-        deferred = MagicMock()
-        success, output, *_ = await perform(on_deferred=deferred)
+        outcome = await perform()
 
-        assert success is False
-        deferred.assert_called_once_with()
+        assert outcome.success is False
+        assert outcome.deferred is True
         windows_uv.assert_not_awaited()
-        guidance, command = output.split("your shell: ")
+        guidance, command = outcome.output.split("your shell: ")
         assert "Nothing was installed. Quit every dcode session" in guidance
         args = shlex.split(command)
         assert args[:3] == ["uv", "tool", "install"]

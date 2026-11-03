@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from deepagents_code.client.commands.extras import run_install_request
@@ -11,9 +10,6 @@ from deepagents_code.update_check import (
     UPDATE_LOCK_CONTENDED_MESSAGE,
     ExtraInstallOutcome,
 )
-
-if TYPE_CHECKING:
-    from collections.abc import Callable
 
 
 class TestInstallCommandDispatch:
@@ -61,12 +57,6 @@ class TestInstallCommandDispatch:
             'uv tool install --reinstall -U "deepagents-code[quickjs]==1.0.0"'
         )
 
-        def defer(
-            _extra: str, *, on_deferred: Callable[[], None], **_kwargs: object
-        ) -> ExtraInstallOutcome:
-            on_deferred()
-            return ExtraInstallOutcome(False, guidance)
-
         with (
             patch("deepagents_code.config._is_editable_install", return_value=False),
             patch("deepagents_code.config.console", console, create=True),
@@ -81,7 +71,7 @@ class TestInstallCommandDispatch:
             patch(
                 "deepagents_code.update_check.perform_install_extra",
                 new_callable=AsyncMock,
-                side_effect=defer,
+                return_value=ExtraInstallOutcome(False, guidance, deferred=True),
             ),
         ):
             code = run_install_request(name="quickjs", package=False, yes=True)

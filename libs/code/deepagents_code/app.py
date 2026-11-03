@@ -8094,28 +8094,26 @@ class DeepAgentsApp(App):
                 AppMessage("Skipped dependency refresh (debug mode)."),
             )
             return
-        deferred: list[bool] = []
-        success, output = await perform_dependency_refresh(
+        outcome = await perform_dependency_refresh(
             include_prereleases=include_prereleases,
-            on_deferred=lambda: deferred.append(True),
         )
-        if deferred:
+        if outcome.deferred:
             # Nothing ran; the guidance names the command to run instead.
-            await self._mount_message(AppMessage(output))
+            await self._mount_message(AppMessage(outcome.output))
             return
-        if not success:
+        if not outcome.success:
             # Lead with the start of the output for parity with the upgrade
             # failure path; uv prints the actionable summary (e.g. "No solution
             # found") first. The full output is persisted to the update log.
-            detail = f": {output[:200]}" if output else ""
+            detail = f": {outcome.output[:200]}" if outcome.output else ""
             await self._mount_message(
                 AppMessage(
                     f"Dependency refresh failed{detail}",
                 ),
             )
             return
-        changes = parse_dependency_changes(output)
-        if output.strip() and not changes:
+        changes = parse_dependency_changes(outcome.output)
+        if outcome.output.strip() and not changes:
             # The refresh succeeded but nothing parsed out of uv's diff. Either
             # nothing moved, or uv's output format drifted past our parser. Leave
             # a breadcrumb so the latter doesn't masquerade as "up to date"
@@ -8439,11 +8437,8 @@ class DeepAgentsApp(App):
                 ),
             )
             return False
-        deferred: list[bool] = []
         try:
-            outcome = await perform_install_extra(
-                extra, log_path=log_path, on_deferred=lambda: deferred.append(True)
-            )
+            outcome = await perform_install_extra(extra, log_path=log_path)
         except (OSError, asyncio.CancelledError) as exc:
             logger.warning("/install command failed", exc_info=True)
             # Best-effort upgrade of `manual_cmd` to the install-method-specific
@@ -8463,7 +8458,7 @@ class DeepAgentsApp(App):
             )
             return False
 
-        if deferred:
+        if outcome.deferred:
             # Nothing ran; the guidance names the command to run instead.
             await self._mount_message(AppMessage(outcome.output))
             return False
@@ -8649,11 +8644,8 @@ class DeepAgentsApp(App):
         log_path = create_update_log_file()
         log_line = f"\nLog: {log_path}" if log_path is not None else ""
         await self._mount_message(AppMessage(f"Uninstalling extra '{extra}'..."))
-        deferred: list[bool] = []
         try:
-            outcome = await perform_uninstall_extra(
-                extra, log_path=log_path, on_deferred=lambda: deferred.append(True)
-            )
+            outcome = await perform_uninstall_extra(extra, log_path=log_path)
         except asyncio.CancelledError as exc:
             logger.warning("/uninstall command cancelled", exc_info=True)
             await self._mount_message(
@@ -8679,7 +8671,7 @@ class DeepAgentsApp(App):
                 )
             )
             raise asyncio.CancelledError
-        if outcome.extra_was_absent or deferred:
+        if outcome.extra_was_absent or outcome.deferred:
             await self._mount_message(AppMessage(outcome.output))
             return
         if not outcome.success:
@@ -8838,11 +8830,8 @@ class DeepAgentsApp(App):
         await self._mount_message(
             AppMessage(f"Installing package '{package}'..."),
         )
-        deferred: list[bool] = []
         try:
-            success, output = await perform_install_package(
-                package, log_path=log_path, on_deferred=lambda: deferred.append(True)
-            )
+            outcome = await perform_install_package(package, log_path=log_path)
         except OSError as exc:
             # Let `asyncio.CancelledError` propagate: on the message pump
             # swallowing it would suppress shutdown, and on the detached
@@ -8855,13 +8844,13 @@ class DeepAgentsApp(App):
             )
             return
 
-        if deferred:
+        if outcome.deferred:
             # Nothing ran; the guidance names the command to run instead.
-            await self._mount_message(AppMessage(output))
+            await self._mount_message(AppMessage(outcome.output))
             return
 
-        if not success:
-            detail = f": {output[-200:]}" if output else ""
+        if not outcome.success:
+            detail = f": {outcome.output[-200:]}" if outcome.output else ""
             await self._mount_message(
                 ErrorMessage(
                     f"Install failed{detail}\nLog: {log_path}",

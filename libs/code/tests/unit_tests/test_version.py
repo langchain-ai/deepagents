@@ -6,11 +6,12 @@ import subprocess
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
-from unittest.mock import ANY, AsyncMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from deepagents_code._version import __version__
+from deepagents_code.update_check import InstallOutcome
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Iterator
@@ -732,7 +733,7 @@ async def test_update_deps_decline_app_update_refreshes_current_deps(
             patch(
                 "deepagents_code.update_check.perform_dependency_refresh",
                 new_callable=AsyncMock,
-                return_value=(
+                return_value=InstallOutcome(
                     True,
                     " - langchain-openai==1.3.2\n + langchain-openai==1.5.0\n",
                 ),
@@ -746,7 +747,7 @@ async def test_update_deps_decline_app_update_refreshes_current_deps(
             await drain_modal_commands(app)
             await pilot.pause()
 
-        refresh_mock.assert_awaited_once_with(include_prereleases=None, on_deferred=ANY)
+        refresh_mock.assert_awaited_once_with(include_prereleases=None)
         perform_upgrade_mock.assert_not_awaited()
         app_msgs = [m for m in app.query(AppMessage) if not m._is_markdown]
         content = str(app_msgs[-1]._content)
@@ -788,7 +789,7 @@ async def test_update_deps_decline_app_update_reports_no_new_deps(
             patch(
                 "deepagents_code.update_check.perform_dependency_refresh",
                 new_callable=AsyncMock,
-                return_value=(True, "Resolved 120 packages in 12ms\n"),
+                return_value=InstallOutcome(True, "Resolved 120 packages in 12ms\n"),
             ),
             patch(
                 "deepagents_code.update_check.perform_upgrade",
@@ -847,7 +848,7 @@ async def test_update_already_current_prompts_and_refreshes_on_confirm(
             patch(
                 "deepagents_code.update_check.perform_dependency_refresh",
                 new_callable=AsyncMock,
-                return_value=(
+                return_value=InstallOutcome(
                     True,
                     " - langchain-openai==1.3.2\n + langchain-openai==1.5.0\n",
                 ),
@@ -861,7 +862,7 @@ async def test_update_already_current_prompts_and_refreshes_on_confirm(
         confirm_mock.assert_awaited_once_with(
             planned_changes="  langchain-openai  1.3.2 -> 1.5.0",
         )
-        refresh_mock.assert_awaited_once_with(include_prereleases=None, on_deferred=ANY)
+        refresh_mock.assert_awaited_once_with(include_prereleases=None)
         app_msgs = [m for m in app.query(AppMessage) if not m._is_markdown]
         assert "Refreshed dependencies:" in str(app_msgs[-1]._content)
 
@@ -1039,7 +1040,7 @@ async def test_update_refresh_prompt_responsive_through_message_pump(
             patch(
                 "deepagents_code.update_check.perform_dependency_refresh",
                 new_callable=AsyncMock,
-                return_value=(
+                return_value=InstallOutcome(
                     True,
                     " - langchain-openai==1.3.2\n + langchain-openai==1.5.0\n",
                 ),
@@ -1065,7 +1066,7 @@ async def test_update_refresh_prompt_responsive_through_message_pump(
             )
             await drain_modal_commands(app)
 
-        refresh_mock.assert_awaited_once_with(include_prereleases=None, on_deferred=ANY)
+        refresh_mock.assert_awaited_once_with(include_prereleases=None)
 
 
 async def test_update_deps_prompt_responsive_through_message_pump(
@@ -1115,7 +1116,7 @@ async def test_update_deps_prompt_responsive_through_message_pump(
             patch(
                 "deepagents_code.update_check.perform_dependency_refresh",
                 new_callable=AsyncMock,
-                return_value=(True, ""),
+                return_value=InstallOutcome(True, ""),
             ) as refresh_mock,
         ):
             assert app._chat_input is not None
@@ -1136,7 +1137,7 @@ async def test_update_deps_prompt_responsive_through_message_pump(
             )
             await drain_modal_commands(app)
 
-        refresh_mock.assert_awaited_once_with(include_prereleases=None, on_deferred=ANY)
+        refresh_mock.assert_awaited_once_with(include_prereleases=None)
         upgrade_mock.assert_not_awaited()
 
 

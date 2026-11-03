@@ -17,6 +17,7 @@ from deepagents_code.tui.widgets.messages import AppMessage, ErrorMessage
 from deepagents_code.update_check import (
     UPDATE_LOCK_CONTENDED_MESSAGE,
     ExtraInstallOutcome,
+    InstallOutcome,
 )
 
 if TYPE_CHECKING:
@@ -82,12 +83,6 @@ async def test_install_slash_deferral_shows_guidance_instead_of_failure() -> Non
         'uv tool install --reinstall -U "deepagents-code[quickjs]==1.0.0"'
     )
 
-    def defer(
-        _extra: str, *, on_deferred: Callable[[], None], **_kwargs: object
-    ) -> ExtraInstallOutcome:
-        on_deferred()
-        return ExtraInstallOutcome(False, guidance)
-
     app = DeepAgentsApp()
     async with app.run_test() as pilot:
         await pilot.pause()
@@ -104,7 +99,7 @@ async def test_install_slash_deferral_shows_guidance_instead_of_failure() -> Non
             patch(
                 "deepagents_code.update_check.perform_install_extra",
                 new_callable=AsyncMock,
-                side_effect=defer,
+                return_value=ExtraInstallOutcome(False, guidance, deferred=True),
             ),
         ):
             await app._handle_command("/install quickjs")
@@ -272,7 +267,7 @@ async def test_install_slash_package_confirm_runs(
             patch(
                 "deepagents_code.update_check.perform_install_package",
                 new_callable=AsyncMock,
-                return_value=(True, ""),
+                return_value=InstallOutcome(True, ""),
             ) as perform_mock,
             patch.object(
                 app, "_push_screen_wait", new=AsyncMock(return_value=True)
@@ -418,7 +413,7 @@ async def test_install_package_prompt_responsive_through_message_pump(
             patch(
                 "deepagents_code.update_check.perform_install_package",
                 new_callable=AsyncMock,
-                return_value=(True, ""),
+                return_value=InstallOutcome(True, ""),
             ) as perform_mock,
         ):
             # Submit through the message pump, exactly as the ChatInput widget

@@ -6,14 +6,16 @@ A call made from JavaScript is dispatched the way a model tool call is: as a
 middleware see it. Each call runs inside its own `langgraph.func.task`, which
 gives it three properties the eval needs when a call pauses for approval:
 
-- A finished call is journaled in the checkpoint. When the eval re-runs after
-  the human answers, the call returns its recorded result instead of running
-  again, so side effects happen once.
+- A finished call, including one whose tool raised, is journaled in the
+  checkpoint. When the eval re-runs after the human answers, the call returns
+  its recorded result instead of running again, so side effects happen once.
 - An interrupt raised by the call is scoped to the call's own task, so its
   interrupt id, and therefore the human's decision, belongs to that call.
 - The task name carries a digest of the tool name and arguments. A re-run that
   issues a different call at the same position gets a different task, so a
-  recorded result or decision is never handed to a call it was not made for.
+  recorded result, or a decision keyed by interrupt id, is never handed to a
+  call it was not made for. A resume without an interrupt id goes to whichever
+  call asks first on the re-run.
 """
 
 from __future__ import annotations
@@ -29,6 +31,7 @@ from langchain_core.messages import ToolCall, ToolMessage
 from langchain_core.runnables.config import var_child_runnable_config
 from langchain_core.tools import StructuredTool, Tool
 from langchain_core.tools.base import _format_output
+from langgraph._internal._constants import CONFIG_KEY_READ, CONFIG_KEY_SEND
 from langgraph.config import get_config
 from langgraph.errors import GraphBubbleUp, GraphInterrupt
 from langgraph.func import task
@@ -37,7 +40,7 @@ from langchain_quickjs._format import coerce_tool_output_for_ptc
 
 if TYPE_CHECKING:
     import concurrent.futures
-    from collections.abc import Awaitable, Callable
+    from collections.abc import Awaitable, Callable, Iterable
 
     from langchain_core.runnables import RunnableConfig
     from langchain_core.tools import BaseTool
@@ -254,18 +257,41 @@ class EvalJournal:
             type="tool_call",
         )
 
+        failure: list[Exception] = []
+
         def run(config: RunnableConfig) -> dict[str, Any]:
-            seen = _Returned()
-            request = self._request(tool, call, config, seen)
-            return _as_record(_result_of(self.chain.handler(request), seen))
+            seen, writes = _Returned(), []
+            request = self._request(tool, call, config, seen, writes)
+            try:
+                return _as_record(_result_of(self.chain.handler(request), seen), writes)
+            except GraphBubbleUp:
+                raise
+            except Exception as exc:  # noqa: BLE001  # journaled, re-raised by dispatch
+                failure.append(exc)
+                return _raised_record(exc, writes)
 
         async def arun(config: RunnableConfig) -> dict[str, Any]:
-            seen = _Returned()
-            request = self._request(tool, call, config, seen)
-            return _as_record(_result_of(await self.chain.handler(request), seen))
+            seen, writes = _Returned(), []
+            request = self._request(tool, call, config, seen, writes)
+            try:
+                result = await self.chain.handler(request)
+            except GraphBubbleUp:
+                raise
+            except Exception as exc:  # noqa: BLE001  # journaled, re-raised by dispatch
+                failure.append(exc)
+                return _raised_record(exc, writes)
+            return _as_record(_result_of(result, seen), writes)
 
         name = f"ptc.{tool.name}.{call_digest(tool.name, args)}"
         record = await self._journaled(name, run, arun, seq=seq)
+        if writes := record.pop("writes", None):
+            self.runtime.config["configurable"][CONFIG_KEY_SEND](
+                [(channel, value) for channel, value in writes]
+            )
+        if raised := record.pop("raised", None):
+            # The original exception on the run that raised it, so an uncaught
+            # one ends the agent run as it would for a model tool call.
+            raise failure[0] if failure else RuntimeError(raised)
         if record.get("note"):
             self.notes.append(f"tools.{tool.name} call {seq}: {record['note']}")
         return CallResult(**record)
@@ -276,8 +302,10 @@ class EvalJournal:
         call: ToolCall,
         config: RunnableConfig,
         seen: _Returned,
+        writes: list[tuple[str, Any]],
     ) -> ToolCallRequest:
         """Build the nested call's request under its own task's config."""
+        config = _state_from_eval_node(config, self.runtime.config, writes)
         runtime = replace(self.runtime, tool_call_id=call["id"], config=config)
         watched = _watched_tool(tool, seen, sync=not self.chain.is_async, config=config)
         return self.chain.request.override(
@@ -377,6 +405,51 @@ class EvalJournal:
         return GraphInterrupt(tuple(interrupts))
 
 
-def _as_record(result: CallResult) -> dict[str, Any]:
+def _state_from_eval_node(
+    config: RunnableConfig, eval_config: RunnableConfig, writes: list[tuple[str, Any]]
+) -> RunnableConfig:
+    """Return a call's task config that reads and writes graph state as the eval.
+
+    A LangGraph task reads the state as of the step's start plus its own
+    writes, so a file one call writes through `StateBackend` would be invisible
+    to the next call. The call reads through the `eval` node instead, and its
+    state writes are collected into `writes` for the journal record; `dispatch`
+    hands them to the node on every run, including a re-run that returns the
+    record without running the call. LangGraph's own channels, such as the
+    resume value `interrupt()` writes, all start with `__` and stay with the
+    call's task.
+    """
+    configurable = config["configurable"]
+    task_send = configurable[CONFIG_KEY_SEND]
+
+    def send(items: Iterable[tuple[str, Any]]) -> None:
+        items = list(items)
+        own = [(c, v) for c, v in items if c.startswith("__")]
+        writes.extend((c, v) for c, v in items if not c.startswith("__"))
+        if own:
+            task_send(own)
+
+    read = eval_config["configurable"][CONFIG_KEY_READ]
+    return {
+        **config,
+        "configurable": {**configurable, CONFIG_KEY_SEND: send, CONFIG_KEY_READ: read},
+    }
+
+
+def _as_record(result: CallResult, writes: list[tuple[str, Any]]) -> dict[str, Any]:
     """Plain-dict form that the checkpointer serializes."""
-    return {"status": result.status, "value": result.value, "note": result.note}
+    return {
+        "status": result.status,
+        "value": result.value,
+        "note": result.note,
+        "writes": writes,
+    }
+
+
+def _raised_record(exc: Exception, writes: list[tuple[str, Any]]) -> dict[str, Any]:
+    """Record a tool that raised, so a re-run raises again instead of re-running it.
+
+    LangGraph re-runs a task that raised. Recording the failure keeps the call's
+    side effects to one run and gives JavaScript the same outcome both times.
+    """
+    return {"raised": f"{type(exc).__name__}: {exc}", "writes": writes}

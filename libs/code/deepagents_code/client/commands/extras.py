@@ -94,8 +94,13 @@ def run_uninstall_request(*, name: str) -> int:
             highlight=False,
             markup=False,
         )
+    deferred: list[bool] = []
     try:
-        outcome = asyncio.run(perform_uninstall_extra(name, log_path=log_path))
+        outcome = asyncio.run(
+            perform_uninstall_extra(
+                name, log_path=log_path, on_deferred=lambda: deferred.append(True)
+            )
+        )
     except KeyboardInterrupt:
         console.print(f"\nAborted.{log_line}", highlight=False)
         return 130
@@ -123,6 +128,10 @@ def run_uninstall_request(*, name: str) -> int:
     if outcome.extra_was_absent:
         console.print(escape(outcome.output), highlight=False)
         return 0
+    if deferred:
+        # Nothing ran. `soft_wrap` keeps the command on one line to paste.
+        console.print(outcome.output, markup=False, highlight=False, soft_wrap=True)
+        return 1
     if outcome.success:
         console.print(
             f"[green]Uninstalled extra '{name}'.[/green] Its packages are already "
@@ -260,12 +269,21 @@ def _run_install_package(*, name: str, yes: bool) -> int:
             highlight=False,
             markup=False,
         )
+        deferred: list[bool] = []
         success, output = asyncio.run(
-            perform_install_package(package, log_path=pkg_log_path)
+            perform_install_package(
+                package,
+                log_path=pkg_log_path,
+                on_deferred=lambda: deferred.append(True),
+            )
         )
         if success:
             console.print(f"[green]Installed package '{package}'.[/green]")
             return 0
+        if deferred:
+            # Nothing ran. `soft_wrap` keeps the command on one line to paste.
+            console.print(output, markup=False, highlight=False, soft_wrap=True)
+            return 1
         # Tail the last 200 chars — uv prints the resolved error at the end.
         # The full output is in the log.
         detail = f": {output[-200:]}" if output else ""
@@ -372,10 +390,19 @@ def _run_install_extra(*, name: str, yes: bool) -> int:
             highlight=False,
             markup=False,
         )
-        outcome = asyncio.run(perform_install_extra(extra, log_path=log_path))
+        deferred: list[bool] = []
+        outcome = asyncio.run(
+            perform_install_extra(
+                extra, log_path=log_path, on_deferred=lambda: deferred.append(True)
+            )
+        )
         if outcome.success:
             console.print(f"[green]Installed extra '{extra}'.[/green]")
             return 0
+        if deferred:
+            # Nothing ran. `soft_wrap` keeps the command on one line to paste.
+            console.print(outcome.output, markup=False, highlight=False, soft_wrap=True)
+            return 1
         # Tail the last 200 chars — uv resolver prints the resolved error at
         # the end, not the beginning.
         detail = f": {outcome.output[-200:]}" if outcome.output else ""

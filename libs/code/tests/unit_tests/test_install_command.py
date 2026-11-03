@@ -75,6 +75,45 @@ async def test_install_slash_failure_surfaces_log_path_and_manual_cmd() -> None:
         assert "quickjs" in joined
 
 
+async def test_install_slash_deferral_shows_guidance_instead_of_failure() -> None:
+    """On Windows the guidance names the command; it is not a failed install."""
+    guidance = (
+        "Quit every dcode session, then run from your shell: "
+        'uv tool install --reinstall -U "deepagents-code[quickjs]==1.0.0"'
+    )
+
+    def defer(
+        _extra: str, *, on_deferred: Callable[[], None], **_kwargs: object
+    ) -> ExtraInstallOutcome:
+        on_deferred()
+        return ExtraInstallOutcome(False, guidance)
+
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch(
+                "deepagents_code.update_check.create_update_log_path",
+                return_value="/tmp/deepagents-install.log",
+            ),
+            patch(
+                "deepagents_code.update_check.install_extra_command",
+                return_value=MANUAL_EXTRA_COMMAND,
+            ),
+            patch(
+                "deepagents_code.update_check.perform_install_extra",
+                new_callable=AsyncMock,
+                side_effect=defer,
+            ),
+        ):
+            await app._handle_command("/install quickjs")
+            await pilot.pause()
+        assert not list(app.query(ErrorMessage))
+        app_msgs = [str(m._content) for m in app.query(AppMessage)]
+        assert guidance in app_msgs
+
+
 async def test_install_slash_exception_surfaces_log_path_and_manual_cmd() -> None:
     """When `perform_install_extra` raises, surface log path + manual cmd."""
     app = DeepAgentsApp()

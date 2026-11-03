@@ -6,7 +6,7 @@ import subprocess
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
-from unittest.mock import AsyncMock, patch
+from unittest.mock import ANY, AsyncMock, patch
 
 import pytest
 
@@ -746,7 +746,7 @@ async def test_update_deps_decline_app_update_refreshes_current_deps(
             await drain_modal_commands(app)
             await pilot.pause()
 
-        refresh_mock.assert_awaited_once_with(include_prereleases=None)
+        refresh_mock.assert_awaited_once_with(include_prereleases=None, on_deferred=ANY)
         perform_upgrade_mock.assert_not_awaited()
         app_msgs = [m for m in app.query(AppMessage) if not m._is_markdown]
         content = str(app_msgs[-1]._content)
@@ -861,7 +861,7 @@ async def test_update_already_current_prompts_and_refreshes_on_confirm(
         confirm_mock.assert_awaited_once_with(
             planned_changes="  langchain-openai  1.3.2 -> 1.5.0",
         )
-        refresh_mock.assert_awaited_once_with(include_prereleases=None)
+        refresh_mock.assert_awaited_once_with(include_prereleases=None, on_deferred=ANY)
         app_msgs = [m for m in app.query(AppMessage) if not m._is_markdown]
         assert "Refreshed dependencies:" in str(app_msgs[-1]._content)
 
@@ -1065,7 +1065,7 @@ async def test_update_refresh_prompt_responsive_through_message_pump(
             )
             await drain_modal_commands(app)
 
-        refresh_mock.assert_awaited_once_with(include_prereleases=None)
+        refresh_mock.assert_awaited_once_with(include_prereleases=None, on_deferred=ANY)
 
 
 async def test_update_deps_prompt_responsive_through_message_pump(
@@ -1136,7 +1136,7 @@ async def test_update_deps_prompt_responsive_through_message_pump(
             )
             await drain_modal_commands(app)
 
-        refresh_mock.assert_awaited_once_with(include_prereleases=None)
+        refresh_mock.assert_awaited_once_with(include_prereleases=None, on_deferred=ANY)
         upgrade_mock.assert_not_awaited()
 
 

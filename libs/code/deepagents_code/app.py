@@ -8094,9 +8094,15 @@ class DeepAgentsApp(App):
                 AppMessage("Skipped dependency refresh (debug mode)."),
             )
             return
+        deferred: list[bool] = []
         success, output = await perform_dependency_refresh(
             include_prereleases=include_prereleases,
+            on_deferred=lambda: deferred.append(True),
         )
+        if deferred:
+            # Nothing ran; the guidance names the command to run instead.
+            await self._mount_message(AppMessage(output))
+            return
         if not success:
             # Lead with the start of the output for parity with the upgrade
             # failure path; uv prints the actionable summary (e.g. "No solution
@@ -8433,8 +8439,11 @@ class DeepAgentsApp(App):
                 ),
             )
             return False
+        deferred: list[bool] = []
         try:
-            outcome = await perform_install_extra(extra, log_path=log_path)
+            outcome = await perform_install_extra(
+                extra, log_path=log_path, on_deferred=lambda: deferred.append(True)
+            )
         except (OSError, asyncio.CancelledError) as exc:
             logger.warning("/install command failed", exc_info=True)
             # Best-effort upgrade of `manual_cmd` to the install-method-specific
@@ -8452,6 +8461,11 @@ class DeepAgentsApp(App):
                     f"Run manually: {manual_cmd}",
                 ),
             )
+            return False
+
+        if deferred:
+            # Nothing ran; the guidance names the command to run instead.
+            await self._mount_message(AppMessage(outcome.output))
             return False
 
         if not outcome.success:
@@ -8635,8 +8649,11 @@ class DeepAgentsApp(App):
         log_path = create_update_log_file()
         log_line = f"\nLog: {log_path}" if log_path is not None else ""
         await self._mount_message(AppMessage(f"Uninstalling extra '{extra}'..."))
+        deferred: list[bool] = []
         try:
-            outcome = await perform_uninstall_extra(extra, log_path=log_path)
+            outcome = await perform_uninstall_extra(
+                extra, log_path=log_path, on_deferred=lambda: deferred.append(True)
+            )
         except asyncio.CancelledError as exc:
             logger.warning("/uninstall command cancelled", exc_info=True)
             await self._mount_message(
@@ -8662,7 +8679,7 @@ class DeepAgentsApp(App):
                 )
             )
             raise asyncio.CancelledError
-        if outcome.extra_was_absent:
+        if outcome.extra_was_absent or deferred:
             await self._mount_message(AppMessage(outcome.output))
             return
         if not outcome.success:
@@ -8821,8 +8838,11 @@ class DeepAgentsApp(App):
         await self._mount_message(
             AppMessage(f"Installing package '{package}'..."),
         )
+        deferred: list[bool] = []
         try:
-            success, output = await perform_install_package(package, log_path=log_path)
+            success, output = await perform_install_package(
+                package, log_path=log_path, on_deferred=lambda: deferred.append(True)
+            )
         except OSError as exc:
             # Let `asyncio.CancelledError` propagate: on the message pump
             # swallowing it would suppress shutdown, and on the detached
@@ -8833,6 +8853,11 @@ class DeepAgentsApp(App):
                     f"Install failed: {type(exc).__name__}: {exc}\nLog: {log_path}",
                 ),
             )
+            return
+
+        if deferred:
+            # Nothing ran; the guidance names the command to run instead.
+            await self._mount_message(AppMessage(output))
             return
 
         if not success:
@@ -28061,9 +28086,7 @@ class DeepAgentsApp(App):
                         return
                     self._notice_registry.remove(entry.key)
                     if deferred:
-                        logger.info(
-                            "Deferred the Python migration for v%s", payload.latest
-                        )
+                        logger.info("Deferred the update to v%s", payload.latest)
                         screen.mark_warning("Update deferred. See details.")
                         return
                     logger.warning(

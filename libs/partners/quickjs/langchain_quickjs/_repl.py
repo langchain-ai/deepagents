@@ -60,7 +60,7 @@ if TYPE_CHECKING:
     from langchain_core.tools import BaseTool
     from langgraph.prebuilt import ToolRuntime
 
-    from langchain_quickjs._dispatch import EvalJournal
+    from langchain_quickjs._dispatch import EvalJournal, ToolMedia
 
 logger = logging.getLogger(__name__)
 
@@ -97,6 +97,8 @@ class EvalOutcome:
     error_stack: str | None = None
     notes: list[str] = field(default_factory=list)
     """Model-facing notes from middleware about `tools.*` calls, in call order."""
+    media: list[ToolMedia] = field(default_factory=list)
+    """Media blocks from `tools.*` calls, for the model."""
 
 
 class _SnapshotRestoreError(RuntimeError):
@@ -908,6 +910,7 @@ class _ThreadREPL:
                 raise
         if not journal.suspended:
             outcome.notes = journal.notes
+            outcome.media = journal.media
             return outcome
         bubble = await journal.settle()
         if journal.heap is not None:

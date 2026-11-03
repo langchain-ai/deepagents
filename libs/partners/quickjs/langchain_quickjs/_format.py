@@ -12,9 +12,16 @@ from pydantic_core import PydanticSerializationError, to_jsonable_python
 from quickjs_rs import UNDEFINED
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
+    from langchain_quickjs._dispatch import ToolMedia
     from langchain_quickjs._repl import EvalOutcome
 
 _TRUNCATE_MARKER = "… [truncated {n} chars]"
+_MEDIA_OMITTED = (
+    "[{n} earlier media blocks from `tools.*` calls omitted; "
+    "only the last {limit} are kept.]"
+)
 
 
 def format_handle(handle: Any) -> str:
@@ -195,6 +202,34 @@ def format_outcome(
         joined = _xml_escape(_truncate("\n\n".join(notes), max_result_chars))
         parts.append(f"<notes>\n{joined}\n</notes>")
     return "\n".join(parts)
+
+
+def format_media(
+    media: Sequence[ToolMedia], *, limit: int | None
+) -> list[dict[str, Any]]:
+    """Render calls' media as content blocks for the eval's result.
+
+    Blocks follow call issue order, each call's under a label naming it. Only
+    the last `limit` blocks are kept, after a notice counting the rest; `None`
+    keeps all and `0` none.
+    """
+    if limit == 0:
+        return []
+    calls = sorted(media, key=lambda m: m.seq)
+    flat = [(call, block) for call in calls for block in call.blocks]
+    kept = flat if limit is None else flat[-limit:]
+    blocks: list[dict[str, Any]] = []
+    if len(kept) < len(flat):
+        notice = _MEDIA_OMITTED.format(n=len(flat) - len(kept), limit=limit)
+        blocks.append({"type": "text", "text": notice})
+    labeled: ToolMedia | None = None
+    for call, block in kept:
+        if call is not labeled:
+            label = f"tools.{call.tool} call {call.seq}:"
+            blocks.append({"type": "text", "text": label})
+            labeled = call
+        blocks.append(block)
+    return blocks
 
 
 def _truncate(text: str, limit: int, *, dropped: int | None = None) -> str:

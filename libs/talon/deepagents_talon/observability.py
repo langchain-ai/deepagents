@@ -20,7 +20,7 @@ from langchain_core.callbacks import AsyncCallbackHandler
 from langchain_core.messages import BaseMessage
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Generator
     from uuid import UUID
 
     from langchain_core.outputs import LLMResult
@@ -362,7 +362,7 @@ def langsmith_trace_context(
     assistant_id: str,
     conversation_id: str,
     metadata: Mapping[str, object],
-) -> Iterator[None]:
+) -> Generator[None]:
     """Open a LangSmith tracing context for a single agent run when configured.
 
     Args:

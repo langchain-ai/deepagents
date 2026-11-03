@@ -21,7 +21,7 @@ from langchain_core.tools import tool
 from deepagents_talon.mcp_oauth import MCPOAuthConfigError, parse_oauth_config
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterator, Mapping
+    from collections.abc import Callable, Generator, Mapping
 
     from langchain_core.tools import BaseTool
 
@@ -268,7 +268,7 @@ class MCPConfigStore:
 
 
 @contextmanager
-def locked_path(path: Path, *, timeout: float | None = None) -> Iterator[None]:
+def locked_path(path: Path, *, timeout: float | None = None) -> Generator[None]:
     """Hold an exclusive lock for `path` while the block runs.
 
     The lock is a sidecar `.lock` file beside `path`, so readers that only open

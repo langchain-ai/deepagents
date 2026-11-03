@@ -31,7 +31,7 @@ from deepagents_talon.store_records import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Iterator, Sequence
+    from collections.abc import AsyncGenerator, AsyncIterator, Iterator, Sequence
 
     from langchain_core.messages import BaseMessage
     from langgraph.store.base import BaseStore
@@ -142,7 +142,7 @@ class StoreConversationArchive:
             )
 
     @asynccontextmanager
-    async def open(self) -> AsyncIterator[StoreConversationArchive]:
+    async def open(self) -> AsyncGenerator[StoreConversationArchive]:
         """Initialize and finish workers while leaving caller-owned Stores open."""
         try:
             await self.setup()

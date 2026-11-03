@@ -15,7 +15,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.config import get_config
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command, interrupt
-from langsmith import Client, agent_address, tracing_context
+from langsmith import Client, tracing_context
 from pydantic import BaseModel
 
 from deepagents_code import turn_trace
@@ -24,6 +24,8 @@ from deepagents_code.turn_trace import capture_turn
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
+    from langchain.agents.middleware.types import ModelResponse
+    from langchain_core.runnables import RunnableConfig
     from langsmith.run_trees import RunTree
 
 
@@ -72,7 +74,7 @@ def traced_graph(monkeypatch):
     return builder.compile(checkpointer=InMemorySaver()), tracer, captured, updates
 
 
-def _config(tracer: LangChainTracer, turn: str) -> dict:
+def _config(tracer: LangChainTracer, turn: str) -> RunnableConfig:
     return {
         "callbacks": [tracer],
         "configurable": {"thread_id": "thread"},
@@ -95,161 +97,34 @@ def _runs(roots) -> Iterator[RunTree]:
         yield run
 
 
-def test_backfills_root_llm_tool_and_nested_runs_across_hitl(traced_graph):
-    graph, tracer, captured, updates = traced_graph
-    config = _config(tracer, "turn-one")
-    graph.invoke({"value": 1}, config)
-    first = captured[-1]
-    assert first is not None
-    graph.invoke(Command(resume=True), config)
-    assert captured[-1] is first
-    assert len(first.roots) == 2
-    runs = list(_runs(first.roots.values()))
-    assert {run.run_type for run in runs} == {"chain", "llm", "tool"}
-    assert any(run.name == "RunnableLambda" for run in runs)
-    before = {run.id: (run.end_time, run.outputs, run.error) for run in runs}
-    updates.clear()
-    first.update({"ls_git_repo": "work-repo", "ls_git_branch": "work-branch"})
-    assert len(updates) == len(runs)
-    for args, patch in updates:
-        identity = args[0]
-        assert patch["end_time"] == before[identity][0]
-        assert not {
-            "inputs",
-            "outputs",
-            "error",
-            "events",
-            "tags",
-            "attachments",
-        }.intersection(patch)
-        metadata = patch["extra"]["metadata"]
-        assert metadata["unrelated"] == "keep"
-        assert metadata["git_repo"] == "legacy"
-        assert metadata["turn_id"] == "turn-one"
-        assert metadata["ls_git_repo"] == "work-repo"
-        assert metadata["ls_git_branch"] == "work-branch"
-    assert all((run.end_time, run.outputs, run.error) == before[run.id] for run in runs)
-    graph.invoke({"value": 2}, _config(tracer, "turn-two"))
-    second = captured[-1]
-    assert second is not None
-    assert second is not first
-    second.update({}, remove=("ls_git_repo", "ls_git_branch"))
-    assert all(
-        "ls_git_repo" not in run.metadata for run in _runs(second.roots.values())
-    )
-    assert all(run.metadata["ls_git_repo"] == "work-repo" for run in runs)
-
-
-def test_active_runs_are_not_ended_and_telemetry_failure_is_silent(traced_graph):
+def test_open_root_metadata_removal_preserves_children_and_completed_roots(
+    traced_graph,
+):
     graph, tracer, captured, updates = traced_graph
     graph.invoke({"value": 1}, _config(tracer, "turn-one"))
     trace = captured[-1]
     assert trace is not None
-    root = next(iter(trace.roots.values()))
-    root.end_time = None
+    completed = next(iter(trace.roots.values()))
+    before = {run.id: deepcopy(run.metadata) for run in _runs([completed])}
+    live = completed.create_child(name="next-invocation", run_type="chain")
+    child = live.create_child(name="model", run_type="chain")
+    trace.roots[str(live.id)] = live
     updates.clear()
-    trace.update({"ls_git_repo": "work"})
-    assert root.end_time is None
-    assert all(args[0] != root.id for args, _ in updates)
-    tracer.client.update_run.side_effect = RuntimeError("telemetry unavailable")
-    trace.update({"ls_git_repo": "still-work"})
-    assert all(run.metadata["ls_git_repo"] == "still-work" for run in _runs([root]))
-
-
-def test_replica_backfill_preserves_completed_payload_and_timing(traced_graph):
-    graph, tracer, captured, updates = traced_graph
-    with tracing_context(
-        replicas=[
-            {"project_name": "primary", "primary": True},
-            {"project_name": "mirror"},
-        ]
-    ):
-        graph.invoke({"value": 1}, _config(tracer, "turn-one"))
-    trace = captured[-1]
-    assert trace is not None
-    runs = list(_runs(trace.roots.values()))
-    updates.clear()
-    trace.update({"ls_git_repo": "work"})
-    assert len(updates) == 2 * len(runs)
-    assert {patch["session_name"] for _, patch in updates} == {"primary", "mirror"}
-    assert sorted(patch["end_time"] for _, patch in updates) == sorted(
-        [run.end_time for run in runs] * 2
+    trace.update(
+        {"open_swe_git_targets": [{"repo": "work", "branch": "main"}]},
+        remove=("ls_git_repo",),
     )
-    for _, patch in updates:
-        assert not {
-            "inputs",
-            "outputs",
-            "error",
-            "events",
-            "tags",
-            "attachments",
-        }.intersection(patch)
-        assert patch["extra"]["metadata"]["ls_git_repo"] == "work"
-
-
-@pytest.mark.filterwarnings("ignore:Addressing runs with.*is in beta")
-@pytest.mark.parametrize("destination", ["project", "address", "replicas"])
-def test_real_sdk_payload_preserves_destination_and_timing(monkeypatch, destination):
-    from langsmith.run_trees import RunTree
-
-    transport = MagicMock()
-    monkeypatch.setattr(Client, "_update_run", transport)
-    client = Client(
-        api_url="https://example.invalid", api_key="test", auto_batch_tracing=False
+    assert "ls_git_repo" not in live.metadata
+    assert live.metadata["unrelated"] == "keep"
+    assert live.metadata["open_swe_git_targets"] == [{"repo": "work", "branch": "main"}]
+    assert child.metadata["ls_git_repo"] == "stale"
+    assert all(
+        run.metadata == before[run.id] for run in _runs([completed]) if run.id in before
     )
-    try:
-        completed = RunTree(
-            name="completed",
-            run_type="chain",
-            ls_client=client,
-            inputs={"excluded": "input"},
-            project_name="source" if destination == "project" else None,
-            address=agent_address("dcode", "production")
-            if destination == "address"
-            else None,
-            replicas=[
-                {"project_name": "source", "primary": True},
-                {"address": agent_address("dcode", "production")},
-            ]
-            if destination == "replicas"
-            else None,
-        )
-        completed.events = [{"name": "event"}]
-        completed.tags = ["keep"]
-        completed.attachments = {"artifact": ("text/plain", b"not reuploaded")}
-        completed.end(outputs={"unchanged": True}, error="original error")
-        original_end = completed.end_time
-        assert original_end is not None
-        live = RunTree(name="live", run_type="chain", ls_client=client)
-        turn_trace.TurnTrace(roots={"completed": completed, "live": live}).update(
-            {"ls_git_repo": "example/repo"}
-        )
-        assert transport.call_count == (2 if destination == "replicas" else 1)
-        bodies = [call.args[0] for call in transport.call_args_list]
-        for body in bodies:
-            assert body["end_time"] == original_end.isoformat()
-            assert not {
-                "inputs",
-                "outputs",
-                "error",
-                "events",
-                "attachments",
-            }.intersection(body)
-            assert body.get("tags") is None
-            assert body["extra"]["metadata"]["ls_git_repo"] == "example/repo"
-        assert live.end_time is None
-        assert completed.outputs == {"unchanged": True}
-        if destination == "project":
-            assert bodies[0]["session_name"] == "source"
-        elif destination == "address":
-            assert bodies[0]["address"] == "lrn:agents/dcode/environments/production"
-        else:
-            assert bodies[0]["session_name"] == "source"
-            assert bodies[0]["id"] == completed.id
-            assert bodies[1]["address"] == "lrn:agents/dcode/environments/production"
-            assert bodies[1]["id"] != completed.id
-    finally:
-        client.close()
+    assert live.end_time is None
+    assert not updates
+    graph.invoke({"value": 2}, _config(tracer, "turn-two"))
+    assert captured[-1] is not trace
 
 
 def test_disabled_and_unscoped_traces_are_not_captured(traced_graph):
@@ -264,3 +139,117 @@ def test_disabled_and_unscoped_traces_are_not_captured(traced_graph):
     graph.invoke({"value": 2}, config)
     assert captured
     assert all(trace is None for trace in captured)
+
+
+@pytest.mark.parametrize("ask_user", [False, True])
+async def test_final_model_payloads_survive_git_reconciliation(monkeypatch, ask_user):
+    import json
+    from queue import PriorityQueue
+
+    from langchain.agents import create_agent
+    from langchain.agents.middleware import wrap_model_call
+    from langchain_core.language_models.fake_chat_models import (
+        FakeMessagesListChatModel,
+    )
+    from langchain_core.messages import AIMessage
+    from langsmith._internal._operations import (
+        SerializedRunOperation,
+        combine_serialized_queue_operations,
+    )
+
+    from deepagents_code._fake_models import _ToolBindingFakeModel
+    from deepagents_code.git_trace import GitTraceMiddleware
+
+    monkeypatch.setattr(turn_trace, "_turns", turn_trace.OrderedDict())
+    client = Client(
+        api_url="https://example.invalid", api_key="test", auto_batch_tracing=False
+    )
+    # Keep the real serialized batch queue deterministic without a network worker.
+    client.tracing_queue = PriorityQueue()
+    tracer = LangChainTracer(client=client)
+
+    @tool("ask_user")
+    def question() -> str:
+        """Ask for clarification before answering."""
+        return interrupt("clarify")
+
+    @wrap_model_call
+    async def model_wrapper(request, handler) -> ModelResponse:
+        return await handler(request)
+
+    answer = AIMessage(
+        content="done",
+        usage_metadata={
+            "input_tokens": 240000,
+            "output_tokens": 10,
+            "total_tokens": 240010,
+        },
+    )
+    messages = [answer]
+    if ask_user:
+        messages.insert(
+            0,
+            AIMessage(
+                content="",
+                tool_calls=[{"name": "ask_user", "args": {}, "id": "question"}],
+            ),
+        )
+
+    class Model(FakeMessagesListChatModel):
+        bind_tools = _ToolBindingFakeModel.bind_tools
+
+    middleware = GitTraceMiddleware(MagicMock(), "/unused")
+    agent = create_agent(
+        Model(responses=messages),
+        tools=[question],
+        middleware=[middleware, model_wrapper],
+        checkpointer=InMemorySaver(),
+    )
+    try:
+        config = _config(tracer, "turn-one")
+        result = await agent.ainvoke(
+            {"messages": [{"role": "user", "content": "hello"}]}, config
+        )
+        if ask_user:
+            assert result["__interrupt__"]
+            result = await agent.ainvoke(Command(resume="continue"), config)
+        assert result["messages"][-1].content == "done"
+        queued = []
+        while not client.tracing_queue.empty():
+            queued.append(client.tracing_queue.get_nowait().item)
+            client.tracing_queue.task_done()
+        operations = combine_serialized_queue_operations(queued)
+        runs = []
+        for operation in operations:
+            assert isinstance(operation, SerializedRunOperation)
+            body = operation.deserialize_run_info()
+            if operation.outputs is not None:
+                body["outputs"] = json.loads(operation.outputs)
+            runs.append(body)
+        roots = [run for run in runs if not run.get("parent_run_id")]
+        assert len(roots) == (2 if ask_user else 1)
+        assert "ls_git_repo" not in roots[-1]["extra"]["metadata"]
+        if ask_user:
+            assert roots[0]["extra"]["metadata"]["ls_git_repo"] == "stale"
+        assert all(run.get("end_time") for run in runs)
+        model_runs = [run for run in runs if run["name"] == "model"]
+        wrappers = [run for run in runs if "model_wrapper" in run["name"]]
+        llms = [run for run in runs if run["run_type"] == "llm"]
+        assert model_runs
+        assert wrappers
+        assert llms
+        assert all(run.get("outputs") for run in [*model_runs, *wrappers, *llms])
+        assert (
+            llms[-1]["outputs"]["generations"][0][0]["message"]["kwargs"][
+                "usage_metadata"
+            ]
+            == answer.usage_metadata
+        )
+        children = {run["id"] for run in [*model_runs, *wrappers, *llms]}
+        assert all(
+            operation.outputs is not None
+            for operation in queued
+            if str(operation.id) in children and operation.operation == "patch"
+        )
+    finally:
+        client.close(timeout=0)

@@ -112,7 +112,7 @@ class _Turn:
 
 
 class GitTraceMiddleware(AgentMiddleware[AgentState, ContextT]):
-    """Observe backend work and backfill only the initiating user turn."""
+    """Observe backend work and reconcile the initiating user turn's open roots."""
 
     trace_policy = TracePolicy(process_inputs=omit_payload)
 
@@ -214,13 +214,13 @@ class GitTraceMiddleware(AgentMiddleware[AgentState, ContextT]):
 
     @override
     def after_agent(self, state: AgentState, runtime: Runtime[ContextT]) -> None:
-        """Merge final work attribution into this turn's earlier calls."""
+        """Merge final work attribution into this turn's open invocation roots."""
         if turn := self._turn(get_config()):
             self._update(turn)
 
     @override
     async def aafter_agent(self, state: AgentState, runtime: Runtime[ContextT]) -> None:
-        """Keep optional trace transport off the server event loop."""
+        """Reconcile final attribution off the server event loop."""
         if turn := self._turn(get_config()):
             await asyncio.to_thread(self._update, turn)
 

@@ -1,4 +1,4 @@
-"""Retrospective metadata updates for the current turn's traced runs."""
+"""Retrospective metadata updates for the current turn's invocation roots."""
 
 from __future__ import annotations
 
@@ -29,59 +29,20 @@ class TurnTrace:
     def update(
         self, metadata: Mapping[str, object], *, remove: Sequence[str] = ()
     ) -> None:
-        """Merge metadata without changing run payloads or active run timing."""
-        pending = list(self.roots.values())
-        while pending:
-            run = pending.pop()
-            pending.extend(run.child_runs)
-            if run.extra.get("__disabled") or run.ls_client is None:
+        """Merge metadata into open roots for their own completion patches."""
+        for run in self.roots.values():
+            if (
+                run.end_time is not None
+                or run.extra.get("__disabled")
+                or run.ls_client is None
+            ):
                 continue
             try:
                 merged = {k: v for k, v in run.metadata.items() if k not in remove}
                 merged.update(metadata)
                 run.extra = {**run.extra, "metadata": merged}
-                if run.end_time is not None:
-                    _patch_metadata(run)
             except Exception:
                 logger.debug("Turn trace metadata update failed", exc_info=True)
-
-
-def _patch_metadata(run: RunTree) -> None:
-    if run.replicas:
-        _patch_replica_metadata(run)
-        return
-    run.client.update_run(
-        run.id,
-        extra={**run.extra, "metadata": run.metadata.copy()},
-        end_time=run.end_time,
-        trace_id=run.trace_id,
-        dotted_order=run.dotted_order,
-        session_id=run.session_id,
-        session_name=run.session_name,
-        address=run.address,
-    )
-
-
-def _patch_replica_metadata(run: RunTree) -> None:
-    from langsmith import run_trees
-
-    for group in run._replica_groups():
-        client, project, updates, primary, address = group.key
-        replica = run._remap_for_project(
-            project, updates, primary=primary, address=address
-        )
-        client.update_run(
-            replica["id"],
-            extra=replica["extra"],
-            end_time=replica["end_time"],
-            trace_id=replica["trace_id"],
-            dotted_order=replica["dotted_order"],
-            session_name=replica.get("session_name"),
-            address=replica.get("address"),
-            _replica_auths=[
-                run_trees._extract_replica_auth(member) for member in group.members
-            ],
-        )
 
 
 def _current_root(config: RunnableConfig) -> RunTree | None:

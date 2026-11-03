@@ -1,4 +1,4 @@
-"""Verify observed Git work reaches real agent trace trees retrospectively."""
+"""Verify observed Git work reconciles metadata on active agent roots."""
 
 from __future__ import annotations
 
@@ -120,10 +120,10 @@ def _messages(checkout: Path) -> list[AIMessage]:
 
 
 @pytest.mark.parametrize("asynchronous", [False, True])
-async def test_real_agent_backfills_approval_siblings_and_isolates_next_turn(
+async def test_real_agent_reconciles_active_root_and_isolates_other_invocations(
     checkout, transport, asynchronous
 ) -> None:
-    tracer, saved, initial, patches = transport
+    tracer, saved, initial, _ = transport
     middleware = GitTraceMiddleware(
         lambda: FilesystemBackend(root_dir=checkout, virtual_mode=False), str(checkout)
     )
@@ -142,6 +142,7 @@ async def test_real_agent_backfills_approval_siblings_and_isolates_next_turn(
     )
     assert first["__interrupt__"]
     earlier = set(saved)
+    interrupted = deepcopy(saved)
     assert any(saved[key]["run_type"] == "llm" for key in earlier)
     resume = Command(resume={"decisions": [{"type": "approve"}]})
     result = (
@@ -155,7 +156,7 @@ async def test_real_agent_backfills_approval_siblings_and_isolates_next_turn(
     assert len(roots) == 2
     assert {run["run_type"] for run in saved.values()} == {"chain", "llm", "tool"}
     assert any(run["name"] == "RunnableLambda" for run in saved.values())
-    for run in saved.values():
+    for run in roots[1:]:
         metadata = run["extra"]["metadata"]
         assert metadata["ls_git_repo"] == "example/work"
         assert metadata["ls_git_branch"] == "feature/observed"
@@ -168,12 +169,7 @@ async def test_real_agent_backfills_approval_siblings_and_isolates_next_turn(
         initial[key]["extra"]["metadata"]["ls_git_repo"] == "example/user-start"
         for key in earlier
     )
-    assert any(
-        key in earlier
-        and patch.get("extra", {}).get("metadata", {}).get("ls_git_repo")
-        == "example/work"
-        for key, patch in patches
-    )
+    assert all(saved[key] == interrupted[key] for key in earlier)
     completed = deepcopy(saved)
     next_value = {"messages": [{"role": "user", "content": "explain only"}]}
     result = (
@@ -185,7 +181,11 @@ async def test_real_agent_backfills_approval_siblings_and_isolates_next_turn(
     assert all(saved[key] == run for key, run in completed.items())
     later = [run for key, run in saved.items() if key not in completed]
     assert later
-    assert all("ls_git_repo" not in run["extra"]["metadata"] for run in later)
+    assert all(
+        "ls_git_repo" not in run["extra"]["metadata"]
+        for run in later
+        if not run.get("parent_run_id")
+    )
     assert all(
         run["extra"]["metadata"]["git_repo"] == "example/user-start" for run in later
     )
@@ -243,7 +243,9 @@ async def test_optional_observation_failure_preserves_real_agent_output(
         assert successful_probes
         assert any(snapshot.repository is not None for snapshot in successful_probes)
         assert all(
-            "ls_git_repo" not in run["extra"]["metadata"] for run in saved.values()
+            "ls_git_repo" not in run["extra"]["metadata"]
+            for run in saved.values()
+            if not run.get("parent_run_id")
         )
 
 
@@ -286,6 +288,7 @@ async def test_mismatching_enclosing_trace_is_not_backfilled(
     assert all(
         run["extra"]["metadata"]["ls_git_repo"] == "example/work"
         for run in saved.values()
+        if run["name"] == "LangGraph"
     )
     assert all(
         run["extra"]["metadata"]["turn_id"]

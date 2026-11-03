@@ -1315,7 +1315,7 @@ class MCPViewerScreen(ModalScreen[str | None]):
             placeholder = (
                 "Loading MCP tools..."
                 if self._connecting
-                else ("No MCP servers configured.\nUse `--mcp-config` to load servers.")
+                else "No MCP servers configured."
             )
             scroll.mount(Static(placeholder, classes="mcp-empty"))
             return

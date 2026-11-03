@@ -236,28 +236,16 @@ class ModelNotAllowedError(ModelConfigError):
         self.context = context
 
 
-class NoCredentialsConfiguredError(ModelConfigError):
-    """Raised when no credentials are configured for any default-resolvable provider.
+class NoModelConfiguredError(ModelConfigError):
+    """Raised when neither a permitted default nor a recent model is saved."""
 
-    Distinct from `MissingCredentialsError` (which targets a specific provider
-    the user has selected): this fires from `_get_default_model_spec()` when
-    auto-detection finds no usable credentials at all. Callers (the deferred-
-    start path in the TUI and CLI) `isinstance`-check this type to recover by
-    launching the TUI with model creation deferred, rather than string-matching
-    the formatted message.
-    """
+
+class NoCredentialsConfiguredError(ModelConfigError):
+    """Legacy startup error for missing credentials, retained for compatibility."""
 
 
 class NoAllowedModelCredentialsError(NoCredentialsConfiguredError):
-    """Raised when `models.allowed` is active but none of its models can auth.
-
-    A `NoCredentialsConfiguredError` so existing deferred-start recovery keeps
-    working, but distinguishable because the recovery differs: adding *any*
-    credential fixes the base case, while here only a credential for a provider
-    named in the allowlist helps. Handlers that would otherwise silently retry
-    surface this message instead, so `/auth` never accepts a key and then
-    appears to do nothing.
-    """
+    """Legacy allowed-model credential error, retained for compatibility."""
 
 
 class UnknownProviderError(ModelConfigError):
@@ -1026,17 +1014,14 @@ source, model class, and request endpoint all differ. See
 
 CODEX_MODELS: frozenset[str] = frozenset(
     {
-        "gpt-5.6-luna",
-        "gpt-5.6-sol",
-        "gpt-5.6-terra",
-        "gpt-5.5",
-        "gpt-5.4",
-        "gpt-5.4-mini",
-        "gpt-5.3-codex",
-        "gpt-5.2",
+        "gpt-6-astra",
+        "gpt-6-luna",
+        "gpt-6-sol",
+        "gpt-6.1-sol",
+        "gpt-6.1-terra",
     }
 )
-"""Curated allowlist of models the Codex (ChatGPT OAuth) backend serves.
+"""Curated lineup from https://developers.openai.com/codex/models.
 
 The provider mirrors `openai` profiles, but only models in this set are
 exposed under `openai_codex`. The Codex backend serves a narrower lineup than
@@ -1468,8 +1453,18 @@ def _get_provider_profile_modules() -> list[tuple[str, str]]:
 
 ANTHROPIC_MODEL_PROFILE_FALLBACKS: dict[str, dict[str, Any]] = {
     "claude-haiku-5-5": {
-        "name": "Claude Haiku 5.5",
-        "max_input_tokens": 1_000_000,
+        "tool_choice": True,
+        "reasoning_effort_levels": ["low", "medium", "high", "xhigh", "max"],
+        "reasoning_effort_default": "medium",
+    },
+}
+"""Capability fallbacks from https://platform.claude.com/docs/en/models/haiku-5-5/overview."""
+
+
+OPENAI_MODEL_PROFILE_FALLBACKS: dict[str, dict[str, Any]] = {
+    "gpt-6.1-terra": {
+        "name": "GPT-6.1 Terra",
+        "max_input_tokens": 922_000,
         "max_output_tokens": 128_000,
         "text_inputs": True,
         "image_inputs": True,
@@ -1480,12 +1475,11 @@ ANTHROPIC_MODEL_PROFILE_FALLBACKS: dict[str, dict[str, Any]] = {
         "tool_calling": True,
         "tool_choice": True,
         "structured_output": True,
-        "temperature": False,
-        "reasoning_effort_levels": ["low", "medium", "high", "xhigh", "max"],
+        "reasoning_effort_levels": ["none", "low", "medium", "high", "xhigh", "max"],
         "reasoning_effort_default": "medium",
     },
 }
-"""Capability fallbacks from https://platform.claude.com/docs/en/models/haiku-5-5/overview."""
+"""Capability fallbacks from https://developers.openai.com/api/docs/models/gpt-6.1-terra."""
 
 
 def _load_provider_profiles(module_path: str) -> dict[str, Any]:
@@ -1549,12 +1543,16 @@ def _load_provider_profiles(module_path: str) -> dict[str, Any]:
         module = importlib.util.module_from_spec(file_spec)
         file_spec.loader.exec_module(module)
         profiles = getattr(module, "_PROFILES", {})
-        if module_path == "langchain_anthropic.data._profiles":
+        fallbacks = {
+            "langchain_anthropic.data._profiles": ANTHROPIC_MODEL_PROFILE_FALLBACKS,
+            "langchain_openai.data._profiles": OPENAI_MODEL_PROFILE_FALLBACKS,
+        }.get(module_path, {})
+        if fallbacks:
             profiles = {
-                **ANTHROPIC_MODEL_PROFILE_FALLBACKS,
+                **fallbacks,
                 **{
                     model: {
-                        **ANTHROPIC_MODEL_PROFILE_FALLBACKS.get(model, {}),
+                        **fallbacks.get(model, {}),
                         **profile,
                     }
                     for model, profile in profiles.items()
@@ -3380,11 +3378,10 @@ class ModelConfig:
     - `None` -- no policy is active; every model is allowed.
     - `()` -- a policy is active and permits **nothing**. Model construction
       and default resolution both fail closed.
-    - non-empty -- only these entries are permitted, in preference order
-      (`_get_default_model_spec` walks the tuple in declaration order). An
-      entry is either an exact `provider:model` spec or a `provider:*`
-      wildcard permitting every model from that provider; a wildcard is never
-      selected as a default itself, but models it admits remain candidates.
+    - non-empty -- only these entries are permitted. An entry is either an
+      exact `provider:model` spec or a `provider:*` wildcard permitting every
+      model from that provider. The policy constrains model selection without
+      selecting a default.
 
     Test `is None`, never truthiness: `if not config.allowed_models` conflates
     "unrestricted" with "deny all" and inverts the policy.

@@ -16,7 +16,7 @@ import pytest
 from langchain.agents import create_agent
 from langchain.agents.middleware import HumanInTheLoopMiddleware
 from langchain.tools import ToolRuntime
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage, convert_to_messages, get_notification_metadata
 from langchain_core.tools import tool
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command, interrupt
@@ -1771,12 +1771,12 @@ def _woken_message(server: _FakeServer) -> dict[str, Any]:
     (wake,) = server.wakes()
     assert (wake["assistant_id"], wake["multitask_strategy"]) == ("lead_assistant", "reject")
     message = wake["input"]["messages"][0]
-    assert "NOT USER INPUT" in _text(message)
+    assert "This is not a message from the user" in _text(message)
     return message
 
 
 def _woken_event(server: _FakeServer) -> dict[str, Any]:
-    return _woken_message(server)["deepagents_notification"]
+    return _woken_message(server)["additional_kwargs"]["deepagents_notification"]
 
 
 def _woken_text(server: _FakeServer) -> str:
@@ -2022,7 +2022,7 @@ def _ended(content: str = "remote done") -> _FakeServer:
 
 
 def _pulled_events(update: dict[str, Any]) -> list[dict[str, Any]]:
-    return [message["deepagents_notification"] for message in update.get("messages", [])]
+    return [message["additional_kwargs"]["deepagents_notification"] for message in update.get("messages", [])]
 
 
 class TestParentPull:
@@ -2098,6 +2098,38 @@ class TestParentPull:
 
         assert update["async_tasks"]["thread_abc"]["status"] == "success"
         assert ignored is None
+
+    async def test_notification_carries_notification_metadata(self) -> None:
+        server = _FakeServer()
+
+        await _finish(server)
+
+        [message] = convert_to_messages([_woken_message(server)])
+        metadata = get_notification_metadata(message)
+        assert metadata is not None
+        assert metadata["source"] == "async_subagent"
+        assert metadata.get("data") == message.additional_kwargs["deepagents_notification"]
+
+    def test_notification_run_records_the_outcome_from_lc_data(self) -> None:
+        middleware = AsyncSubAgentMiddleware(async_subagents=[_make_spec("remote", url=None)])
+        event = {"task_id": "thread_abc", "agent_name": "remote", "status": "success", "run_id": "run_xyz"}
+        messages = [HumanMessage(content="note", additional_kwargs={"lc_source": "async_subagent", "lc_data": event})]
+        state = {**_lead_record()["values"], "messages": messages}
+
+        update = middleware.before_agent(state, MagicMock())
+
+        assert update["async_tasks"]["thread_abc"]["status"] == "success"
+
+    def test_lc_data_takes_precedence_over_the_legacy_key(self) -> None:
+        middleware = AsyncSubAgentMiddleware(async_subagents=[_make_spec("remote", url=None)])
+        event = {"task_id": "thread_abc", "agent_name": "remote", "status": "success", "run_id": "run_xyz"}
+        legacy = {**event, "status": "error"}
+        kwargs = {"lc_source": "async_subagent", "lc_data": event, "deepagents_notification": legacy}
+        state = {**_lead_record()["values"], "messages": [HumanMessage(content="note", additional_kwargs=kwargs)]}
+
+        update = middleware.before_agent(state, MagicMock())
+
+        assert update["async_tasks"]["thread_abc"]["status"] == "success"
 
     async def test_failure_is_reported_without_details(self) -> None:
         server = _FakeServer(run={"run_id": "run_xyz", "status": "error", "error": "secret stack trace"})
@@ -2326,7 +2358,7 @@ class TestQueuedUpdates:
         assert "async_tasks" not in update
         replaced = update["messages"][0]
         assert replaced.id == message.id
-        assert replaced.text.startswith("[SYSTEM NOTIFICATION - NOT USER INPUT]")
+        assert replaced.text.startswith("An async subagent task you started has an update.")
         assert "not the result of the follow-up" in replaced.text
         assert replaced.additional_kwargs["deepagents_notification"] == event
         server = _FakeServer(run={"run_id": "run_followup", "status": "pending"})
@@ -2338,7 +2370,7 @@ class TestQueuedUpdates:
         replacement, completion = simultaneous["messages"]
         assert replacement.id == message.id
         assert "not the result of the follow-up" in replacement.text
-        assert completion["deepagents_notification"]["run_id"] == "run_followup"
+        assert completion["additional_kwargs"]["deepagents_notification"]["run_id"] == "run_followup"
         assert simultaneous["async_tasks"]["thread_abc"]["status"] == "success"
         running = await _pull("abefore_model", state, _FakeServer(run={"run_id": "run_followup", "status": "running"}))
         assert "messages" not in running
@@ -2361,6 +2393,7 @@ class TestQueuedUpdates:
         middleware = AsyncSubAgentMiddleware(async_subagents=[_make_spec("remote", url=None, update_strategy="enqueue")])
         replaced = middleware.before_agent(state, MagicMock())["messages"][0]
         assert "FULL REPORT" in replaced.text
+        assert replaced.text.count("This is not a message from the user") == 1
         assert "not the result of the follow-up" in replaced.text
         assert "Use the result to continue" not in replaced.text
         assert replaced.text.count("</task-notification>") == 1

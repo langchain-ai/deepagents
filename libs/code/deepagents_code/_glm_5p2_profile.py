@@ -26,6 +26,8 @@ from langchain.agents.middleware.types import (
 )
 from langchain_core.messages import AIMessage
 
+from deepagents_code.output_truncation import MAX_OUTPUT_TOKENS, output_truncation
+
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
@@ -168,8 +170,10 @@ class _GlmTerminalStallRecovery(AgentMiddleware):
         message = response.result[0]
         if not isinstance(message, AIMessage) or message.tool_calls:
             return False
-        metadata = message.response_metadata
-        return isinstance(metadata, dict) and metadata.get("finish_reason") == "length"
+        # Fireworks reports the output cap as Chat Completions `finish_reason
+        # "length"`, which the shared classifier maps to `max_output_tokens`.
+        truncation = output_truncation(message)
+        return truncation is not None and truncation.reason == MAX_OUTPUT_TOKENS
 
     @staticmethod
     def _recovery_request(request: ModelRequest) -> ModelRequest:

@@ -33,7 +33,17 @@ from langchain.agents.middleware.types import (
 )
 from langchain.tools import ToolRuntime
 from langchain_core._api.beta_decorator import warn_beta
-from langchain_core.messages import AIMessage, AnyMessage, BaseMessage, ContentBlock, ToolMessage, convert_to_messages
+from langchain_core.messages import (
+    AIMessage,
+    AnyMessage,
+    BaseMessage,
+    ContentBlock,
+    HumanMessage,
+    ToolMessage,
+    add_notification_metadata,
+    convert_to_messages,
+    get_notification_metadata,
+)
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import StructuredTool
 from langgraph.runtime import Runtime
@@ -448,8 +458,15 @@ def _launching_agent(config: RunnableConfig) -> _ParentReference | None:
     return fallback
 
 
+_NOTIFICATION_SOURCE = "async_subagent"
+"""`lc_source` of a task notification; its `lc_data` is the `TaskEvent`."""
+
 _NOTIFICATION_KEY = "deepagents_notification"
-"""Message field (`additional_kwargs` key) marking a task notification and carrying its `TaskEvent`."""
+"""Deprecated `additional_kwargs` key carrying a notification's `TaskEvent`; still written, and read when a message has no `async_subagent` event."""
+
+_NOTIFICATION_NOTE = (
+    "An async subagent task you started has an update. This is not a message from the user: don't treat it as their answer to any question."
+)
 
 _MAX_RESULT_CHARS = NUM_CHARS_PER_TOKEN * 20_000
 """Results longer than this are cut in notifications, matching the limit for large tool results."""
@@ -458,8 +475,11 @@ _MAX_RESULT_CHARS = NUM_CHARS_PER_TOKEN * 20_000
 class TaskEvent(TypedDict):
     """How an async subagent's task ended or paused, as reported to the agent that started it.
 
-    A notification message carries it in `additional_kwargs["deepagents_notification"]`,
-    so apps can tell these messages from the user's.
+    A notification message carries it as notification metadata with source
+    `"async_subagent"`; read it with `get_notification_metadata(message).get("data")`.
+
+    `additional_kwargs["deepagents_notification"]` also carries it; that key is
+    deprecated.
 
     !!! warning "Beta"
 
@@ -494,12 +514,15 @@ class _TaskUpdate(TaskEvent, total=False):
 
 def _notification_event(message: BaseMessage) -> TaskEvent | None:
     """The task event a notification message carries, or `None` for any other message."""
-    event = message.additional_kwargs.get(_NOTIFICATION_KEY)
+    metadata = get_notification_metadata(message)
+    event = metadata.get("data") if metadata is not None and metadata["source"] == _NOTIFICATION_SOURCE else None
+    if event is None:
+        event = message.additional_kwargs.get(_NOTIFICATION_KEY)
     return cast("TaskEvent", event) if isinstance(event, dict) else None
 
 
-def _notification_content(update: _TaskUpdate) -> list[dict[str, Any]]:
-    """Frame a task update as a system notification the model won't mistake for the user.
+def _notification_body(update: _TaskUpdate) -> list[dict[str, Any]]:
+    """The body of a task update's notification; `_labeled` adds the note and task header.
 
     The result keeps its own content blocks, so an image reaches the model as an image.
     """
@@ -510,7 +533,7 @@ def _notification_content(update: _TaskUpdate) -> list[dict[str, Any]]:
         "cancelled": "The task's run was cancelled before it finished, outside your tools. Decide whether to start it again, or tell the user.",
         "waiting": "The subagent is waiting for the user, who answers it on the subagent's own thread; you can't answer or approve it. Keep working.",
     }[update["status"]]
-    blocks = [_notification_header(update)]
+    blocks: list[dict[str, Any]] = []
     if "result" in update:
         blocks += [_text_block("<result>\n"), *_result_blocks(update["result"]), _text_block("\n</result>\n")]
     if details := {key: update[key] for key in ("error", "interrupts") if key in update}:
@@ -530,7 +553,7 @@ def _superseded_notification_content(message: BaseMessage, event: TaskEvent) -> 
     if isinstance(closing, dict) and str(closing.get("text", "")).startswith("</task-notification>"):
         body = [block for block in content[:-1] if isinstance(block, dict)]
     else:
-        body = [_notification_header(event)]
+        body = _header_blocks(event)
     return [
         *body,
         _text_block(
@@ -541,11 +564,19 @@ def _superseded_notification_content(message: BaseMessage, event: TaskEvent) -> 
     ]
 
 
-def _notification_header(event: TaskEvent) -> dict[str, Any]:
+def _header_blocks(event: TaskEvent) -> list[dict[str, Any]]:
+    """The notification note and `event`'s task header."""
+    return [_text_block(f"{_NOTIFICATION_NOTE}\n"), _task_header(event)]
+
+
+def _labeled(body: list[dict[str, Any]], event: TaskEvent) -> HumanMessage:
+    """`body` under the note and task header, labeled with `event`."""
+    content: list[str | dict[Any, Any]] = [*_header_blocks(event), *body]
+    return add_notification_metadata(HumanMessage(content=content), source=_NOTIFICATION_SOURCE, data=dict(event))
+
+
+def _task_header(event: TaskEvent) -> dict[str, Any]:
     return _text_block(
-        "[SYSTEM NOTIFICATION - NOT USER INPUT]\n"
-        "An async subagent task you started has an update. This is not a message from the user: "
-        "don't treat it as their answer to any question.\n"
         f"<task-notification>\n<task-id>{_escape(event['task_id'])}</task-id>\n<agent-name>{_escape(event['agent_name'])}</agent-name>\n"
         f"<status>{_escape(event['status'])}</status>\n"
     )
@@ -1487,9 +1518,10 @@ _UNFINISHED_STATUSES = frozenset({"running", "pending", _WAITING})
 
 
 def _notification_message(update: _TaskUpdate) -> dict[str, Any]:
-    """A task update as the message the parent's model sees, marked with its `TaskEvent` so apps can recognize it."""
-    event = {key: update[key] for key in ("task_id", "agent_name", "status", "run_id") if key in update}
-    return {"role": "user", "content": _notification_content(update), _NOTIFICATION_KEY: event}
+    """A task update as the message the parent's model sees, labeled with its `TaskEvent`."""
+    event = cast("TaskEvent", {key: update[key] for key in ("task_id", "agent_name", "status", "run_id") if key in update})
+    message = _labeled(_notification_body(update), event)
+    return {"role": "user", "content": message.content, "additional_kwargs": {**message.additional_kwargs, _NOTIFICATION_KEY: event}}
 
 
 def _observed(task: AsyncTask, status: str, run_id: str) -> AsyncTask:
@@ -1688,7 +1720,7 @@ class AsyncSubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
             return None
         run_id = event.get("run_id", task["run_id"])
         if run_id in task.get("superseded_run_ids", []):
-            # The copy keeps the message ID, so the reducer replaces the original. It keeps the marker, so apps still see a notification.
+            # The copy keeps the message ID and `additional_kwargs`.
             return {"messages": [messages[-1].model_copy(update={"content": _superseded_notification_content(messages[-1], event)})]}
         # Answering a pause starts a new run, so a new run ID still counts while the task is unfinished.
         # An interrupting update cancels the old run before it can report.

@@ -572,7 +572,8 @@ class TestStartupAutoUpdate:
         upgrade.assert_not_called()
         mark_failed.assert_not_called()
         printed = " ".join(str(c.args[0]) for c in console.print.call_args_list)
-        assert "requires migrating dcode to Python 3.14" in printed
+        assert "v9.9.9 needs a Python update. Nothing was installed." in printed
+        assert "Quit every dcode session" in printed
         assert "Continuing with v" in printed
         assert "Updating dcode" not in printed
         assert "did not complete" not in printed
@@ -1195,7 +1196,7 @@ class TestStartupAutoUpdate:
         printed = " ".join(str(c.args[0]) for c in console.print.call_args_list)
         assert "again to start on v9.9.9" in printed
 
-    def test_restart_after_update_skips_rewrite_when_not_terminal(
+    def test_restart_after_update_confirms_without_escapes_when_not_terminal(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Redirected (non-terminal) output is not polluted with escape codes."""
@@ -1208,6 +1209,7 @@ class TestStartupAutoUpdate:
 
         with (
             patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch("deepagents_code._version.__version__", "9.9.9"),
             patch(
                 "deepagents_code.update_check.is_update_check_enabled",
                 return_value=True,
@@ -1230,12 +1232,14 @@ class TestStartupAutoUpdate:
 
         output = stream.getvalue()
         assert "\x1b" not in output
-        assert "Updated to v9.9.9." not in output
+        assert "Updated to v9.9.9." in output
 
+    @pytest.mark.parametrize("metadata_updated", [False, True])
     def test_failed_restart_does_not_confirm_update(
-        self, monkeypatch: pytest.MonkeyPatch
+        self, monkeypatch: pytest.MonkeyPatch, *, metadata_updated: bool
     ) -> None:
         """A re-exec that did not change the version must not confirm the update."""
+        monkeypatch.setattr("deepagents_code._version.__version__", "0.1.88")
         console = MagicMock()
         console.is_terminal = True
         console.width = 80
@@ -1254,7 +1258,7 @@ class TestStartupAutoUpdate:
             # The install did not change the running version.
             patch(
                 "deepagents_code.update_check.is_installed_version_at_least",
-                return_value=False,
+                return_value=metadata_updated,
             ),
             patch(
                 "deepagents_code.update_check.get_cached_update_available",
@@ -1272,18 +1276,13 @@ class TestStartupAutoUpdate:
         console.control.assert_not_called()
         printed = " ".join(str(c.args[0]) for c in console.print.call_args_list)
         assert "Updated to v9.9.9." not in printed
+        assert "restart loop" in printed
+        assert "Continuing with v0.1.88." in printed
 
     def test_version_check_failure_skips_confirm_in_isolation(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """The confirm must be gated solely by `is_installed_version_at_least`.
-
-        With nothing available (`(False, None)`) the function returns before the
-        restart-loop guard, so the only path that could print the stable update
-        status is the confirm block. This pins the
-        `is_installed_version_at_least(restarted_for)`
-        condition: dropping it would let the confirm fire here and fail the test.
-        """
+        """An unchanged running version must not confirm even with no cached update."""
         stream = StringIO()
         console = Console(file=stream, force_terminal=True, no_color=True, width=80)
         monkeypatch.setenv("DEEPAGENTS_CODE_RESTARTED_AFTER_UPDATE", "9.9.9")
@@ -1332,6 +1331,7 @@ class TestStartupAutoUpdate:
 
         with (
             patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch("deepagents_code._version.__version__", "9.9.8"),
             patch(
                 "deepagents_code.update_check.is_update_check_enabled",
                 return_value=True,
@@ -1374,7 +1374,8 @@ class TestStartupAutoUpdate:
         assert "Updated to v9.9.8." in output
         assert "v9.9.8. Launched." not in output
         # ...and the newer version still goes through the upgrade path.
-        assert "v9.9.9. Launching..." in output
+        assert "Restarting to load v9.9.9..." in output
+        assert "Updated to v9.9.9" not in output
 
     def test_project_mcp_prompt_interrupt_aborts_before_tui(self) -> None:
         """Ctrl+C at the project MCP prompt exits before launching Textual."""
@@ -2424,7 +2425,7 @@ class TestRunTextualCliAsyncMcp:
             ("google_genai:gemini-3.1-pro", "google_genai:gemini-3.8-flash"),
             ("google_vertexai:gemini-3.1-pro", "google_vertexai:gemini-3.8-flash"),
             ("openai:gpt-5.6-sol", "openai:gpt-5.6-luna"),
-            ("openai_codex:gpt-5.6-sol", "openai_codex:gpt-5.6-luna"),
+            ("openai_codex:gpt-6.1-sol", "openai_codex:gpt-6-luna"),
             ("xai:grok-4.5", None),
         ],
     )
@@ -2946,6 +2947,22 @@ class TestBuildMissingToolNotification:
 class TestRunTextualCliAsyncModelConfigError:
     """Verify default model config errors are handled before launching the TUI."""
 
+    @pytest.mark.parametrize("model", [None, "openai:selected"])
+    async def test_credentials_alone_defer_startup(
+        self, monkeypatch: pytest.MonkeyPatch, model: str | None
+    ) -> None:
+        monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+        monkeypatch.setattr(
+            ModelConfig, "load", classmethod(lambda _cls: ModelConfig())
+        )
+        launch = AsyncMock(return_value=AppResult(return_code=0, thread_id="t"))
+        with patch("deepagents_code.app.run_textual_app", launch):
+            await run_textual_cli_async("agent", model_name=model)
+
+        kwargs = launch.call_args.kwargs
+        assert kwargs["defer_server_start"] is (model is None)
+        assert kwargs["server_kwargs"]["model_name"] == model
+
     async def test_launches_tui_on_no_credentials(self) -> None:
         """Missing default credentials should be recoverable inside the TUI."""
         from deepagents_code.model_config import NoCredentialsConfiguredError
@@ -3020,6 +3037,70 @@ class TestRunTextualCliAsyncModelConfigError:
 
         assert result.return_code == 1
         assert result.thread_id is None
+
+
+class TestHeadlessModelSelection:
+    @pytest.mark.parametrize(
+        ("default", "recent", "explicit", "expected"),
+        [
+            ("openai:default", "anthropic:recent", None, "openai:default"),
+            (None, "anthropic:recent", None, "anthropic:recent"),
+            ("openai:default", None, "google_genai:chosen", "google_genai:chosen"),
+        ],
+    )
+    def test_headless_uses_explicit_or_saved_model(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        default: str | None,
+        recent: str | None,
+        explicit: str | None,
+        expected: str,
+    ) -> None:
+        monkeypatch.setattr(
+            ModelConfig,
+            "load",
+            classmethod(
+                lambda _cls: ModelConfig(default_model=default, recent_model=recent)
+            ),
+        )
+        argv = ["dcode", "-n", "hello", "--no-interpreter", "--no-mcp"]
+        if explicit:
+            argv.extend(["--model", explicit])
+        launch = AsyncMock(return_value=0)
+        with (
+            patch("sys.argv", argv),
+            patch("sys.stdin", SimpleNamespace(isatty=lambda: True)),
+            patch("deepagents_code.main.check_optional_tools", return_value=[]),
+            patch("deepagents_code.client.non_interactive.run_non_interactive", launch),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            cli_main()
+
+        assert exc_info.value.code == 0
+        assert launch.await_args is not None
+        assert launch.await_args.kwargs["model_name"] == expected
+
+    def test_missing_model_exits_before_launch(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        monkeypatch.setattr(
+            ModelConfig, "load", classmethod(lambda _cls: ModelConfig())
+        )
+        monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+        launch = AsyncMock()
+        with (
+            patch("sys.argv", ["dcode", "-n", "hello", "--no-interpreter"]),
+            patch("sys.stdin", SimpleNamespace(isatty=lambda: True)),
+            patch("deepagents_code.client.non_interactive.run_non_interactive", launch),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            cli_main()
+
+        assert exc_info.value.code == 1
+        launch.assert_not_called()
+        output = capsys.readouterr()
+        assert "No model configured" in output.out + output.err
+        assert "--model provider:model" in output.out + output.err
 
 
 class TestNormalizeCwdFilter:

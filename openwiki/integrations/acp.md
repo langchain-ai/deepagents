@@ -5,8 +5,10 @@ description: How deepagents-acp projects LangGraph agents into editor-facing ACP
 tags: [acp, deepagents, langgraph, dcode, stdio, sessions, streaming]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-10-25T08:05:05.473Z
+    at: 2026-11-03T08:04:09.572Z
 sources:
+  - id: openwiki-source-532ea636a0657c1d2714bd7a
+    resource: repo://libs/acp/CHANGELOG.md
   - id: openwiki-source-ffc41789c892ca61e2829a4c
     resource: repo://libs/acp/deepagents_acp/server.py
   - id: openwiki-source-1ffb4d0f447fcc4e9ca248ef

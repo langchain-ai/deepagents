@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:1038c5f46e96ec9d8d97f3372e4d4081a6a60b005f251eff566d6be906adce19",
+  "pageVersion": "sha256:e9813ea2a60b463671856693fb46432b3ca4e354d715c6b77a8077e51ca61924",
   "claims": [
     {
       "id": "claim_fc8cf92f56fb46c3b4b357c59a592676",
@@ -143,16 +143,20 @@
       "statement": "`CostAwareCodeInterpreterMiddleware` gives each asynchronous JavaScript `task` dispatch an isolated checkpoint namespace and shared accounting owner, persists local cost receipts before graph updates return, and transfers the merged latest receipts to the parent cost channels only at the outer evaluation boundary.",
       "evidence": [
         {
-          "resource": "repo://libs/code/deepagents_code/_js_cost.py#L128-L194",
+          "resource": "repo://libs/code/deepagents_code/_js_cost.py#L150-L216",
           "version": "repo-lines-v1:sha256:7d3e3f10b472b50435635822a078b8e17e910c465cf63542c0250d232b91cb00:eyJzZWxlY3RlZExpbmVDb3VudCI6NjcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ3NmQ3YjdmYWM4ZGJhYjQ5MTlhYTQ3Y2E5YTY4MjVmNWJmZDQ0YWYyN2YwODkwOGIzNjRmM2NkMDZlYzhjZjUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM5MGUzODAzZmQ4ZmZhYTI1ZTkyYWYxODFmMDIzZDRiZmNhMWQ3YzZlMjBlMDFhNzZjMzAwOGIyNDU1YTkwNTkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImIzZGYyYWNmMDZlOGMzZjAzYzcxMzVjNmU4YWM1YTljYTU0MzJhYmUwNmE3NGFjYTBmZGQ5YTUzYTAwOGY5ODciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImM2NGQ5NzZlMjNlYjMwZjFhOWJiZDY4ZjViY2FiOWQzMzZjZjg5MDc4NmYwYzNjYzQ2ZWRmYWM2MjRkYjIzZDUifQ"
         },
         {
-          "resource": "repo://libs/code/deepagents_code/_js_cost.py#L197-L286",
+          "resource": "repo://libs/code/deepagents_code/_js_cost.py#L219-L308",
           "version": "repo-lines-v1:sha256:4fe5903c961f8a784ad785e700bad7e1fa131d17b0cb3c8dfc46ee8f6b75c041:eyJzZWxlY3RlZExpbmVDb3VudCI6OTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjVmNGQyY2RhOTBiYzZjODI1Mjk1NGNhYjRkYjVkMWI0NDA4ZDAwMGM5OTFkNjNhYTRhNmQyNWI0MmJiMmIwZDgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijk3NzMyNGEwMThhZWY5Yzg0MGJhMjA3YmNhYjIzN2QzM2FiZTdjOTJjNmM1OGNkNzJhMjg3OWQ1NzJhYTUwMDUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjY1NzYwZTczY2E5MGNhOWRhM2JkNzAzNjExYjMxYjkwMThmNjY1ZDVhNTJlYWUxNzg2NjU3YTUwMjg2MjQ4OTciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
         },
         {
-          "resource": "repo://libs/code/deepagents_code/_js_cost.py#L57-L125",
-          "version": "repo-lines-v1:sha256:a77aa76a5af3608784b484228370b4aeb8bd75ea9f55e575c97d147b9f75e725:eyJzZWxlY3RlZExpbmVDb3VudCI6NjksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM0YzM3OWJkMGI4ZGY3OWM2NjIyNDQ5OTIzZDE0MDdlOTBiYzEzZTBhYzNkMGFmNTlhMGJiZGNhN2NiYjg3NjgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU5MDlhNTNhNjE4ZDAyOGUxZDMwMDBjMGE3YWJjZWVjYmU1ZmIzN2Y0ZTUxMWVmZTQ2NjQzZmFkNmU2Njg3MmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjljYTM2YzVmZGQzZTQwNTBlMzQxMmYzMTI1MGUzYTRlNmVmNDM3MmI1Y2Q3YjQwMzBhMmVhNWMxZTJlMTdmM2YiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjgwYjgzZDUwNjg4MWU0Y2QwZTNlMWRjNzM5YmNkNjkxYzgyNjM4MTAyY2VmYzUxYjY2MTg5OGFhNDY4NzA2NGEifQ"
+          "resource": "repo://libs/code/deepagents_code/_js_cost.py#L99-L147",
+          "version": "repo-lines-v1:sha256:f9bf30a1edae6b3cc1409fa5180c71a8acffa4ddaf767c1735c956933f97af17:eyJzZWxlY3RlZExpbmVDb3VudCI6NDksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjkzMmNhYzcxY2Y0MWQ0MjIzYzBkZmYxMDU1YjNiYTUyZGFlNTdjOWIwNDJiNDkwMmU2NTAyMTMwMjVmNDVjYjYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU5MDlhNTNhNjE4ZDAyOGUxZDMwMDBjMGE3YWJjZWVjYmU1ZmIzN2Y0ZTUxMWVmZTQ2NjQzZmFkNmU2Njg3MmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjE2OTk4MWY5YjJlNjc0OTQ1OTFkYTU0MDU1MTIyMGMyNDIwNzIwNTQ1MjM3NWZkMjdlNjRhMTUxZDU3NTUyYWEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjgwYjgzZDUwNjg4MWU0Y2QwZTNlMWRjNzM5YmNkNjkxYzgyNjM4MTAyY2VmYzUxYjY2MTg5OGFhNDY4NzA2NGEifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/cost_tracking.py#L3119-L3254",
+          "version": "repo-lines-v1:sha256:e8f72168eaffb72190dc2433795f0286a8a86d3fc68e8eb8def6bf0c1288cd98:eyJzZWxlY3RlZExpbmVDb3VudCI6MTM2LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIyMDQzNTVkYmU4N2EwMzM1NzVhZmJmMTNiYzBkN2NkNTQ3MjVmNzNkYWQwY2VkNzRmMDlhOWVkODI0MWY2MWJkIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI3ZWIwMDE0MWRlOTQ4NTdiODZmYTFhZDFiYmQyMDYxMzQ1ZjU4ZmQzN2MxNDQ4ZDQ2MWQ3NjIyOGYyYTc4MWU4IiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI4ZDdkZGI2MGY4NWJmOWQ1MTIzOGRlMjIzZTk0YmJmZDU4NmQyNTlhYTA2N2RmZjhjMDFmYjBjNjc5ZTk1MGQwIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiJlNjgwNTk2ODIzYTMzMDZhNmQ4ZWZhZjg5ZDFkZWMwOTA1YjBhNWI0NDk2YTYwNGQ0Y2E3ODQyZjRlM2Q1ZGM3In0"
         },
         {
           "resource": "repo://libs/code/tests/unit_tests/test_js_cost_tracking.py#L213-L247",
@@ -283,10 +287,28 @@
           "version": "repo-lines-v1:sha256:66d9439a89e08decd658f49ae3dc8e2206ef72c018ede5d9b4ab20ad3b778cbb:eyJzZWxlY3RlZExpbmVDb3VudCI6NDksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImUxY2U1NDk2ZGM0YjhlNzBlNTdlMTRkYTI2MzFmNTIxMjZkZDliYzIwOWZlOWJlNzA0ZDY1YmUzZWRiZWU0N2EiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM5OWU5N2QxNjhjNDkwZTg5ZDAyMzgzNzUwYWY2YmNkMjhjNTFlN2JmZTlkN2MwNTgxNWNiYmQ3MWE2ZDIzMmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjM0YzQ5YTA3MzM5MTg1OTRiMWMxMjFlMGU5ZmU2ZDk5MTY4NjVkZDk1MjAyODYwOTE2ZDUyYzBkZjJkMTAxZjUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
         }
       ]
+    },
+    {
+      "id": "claim_1f78f7463b99477f99f193e5bc0f1418",
+      "statement": "When `enable_interpreter=True`, `create_cli_agent()` installs `CostAwareCodeInterpreterMiddleware` as `js_eval` and rejects a remote sandbox; synchronous invocation intentionally bypasses the receipt-transport wrapper.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/_js_cost.py#L82-L103",
+          "version": "repo-lines-v1:sha256:6ea7109ed1105c87e1f372ffcb07ceea4ef163824b2d5eee9064389e6593da37:eyJzZWxlY3RlZExpbmVDb3VudCI6MjIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ0ZGE5MzUwMDE5ZGMxZTY2NzQ1MjY0Mzg3MzE2MTk5NzIyNWU5Y2U2MDEwN2FmN2I2NGY4NDBkZGVjZmRhNGYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjYwNTgzNmU5ZDEyZmRjM2RkNDViMjMzYTU4YmM3OGQwNzBiZjhkNDYwNjQyYzgzZjAxMjc3NjliNWQxOTA3M2UiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjNjYjg0OWU1OTg0OWUyOGFmN2Y0NmIyZmEzNTMxYzc1ZTc0NTU1MTExNTU4Nzc2ZTNkYzcwODIzYTMzZWM3NGQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImViZjFmMWZkZWEwODY5NGQ5ZjE0NTZmMDNjOWNkZWMzMjk5OTJlMGQzYmRlZGVlYTk3NzkzM2MzNjNjYjc1MDEifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/agent.py#L3217-L3255",
+          "version": "repo-lines-v1:sha256:19fa5ecbb1e17146d720e4f8785829b87c5e866aa55f756c9cfab554a3bc0069:eyJzZWxlY3RlZExpbmVDb3VudCI6MzksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg3YjQwYWU0YzRhMmUxYTFlZWY2ZjZlMTBmODFmZDg1YzI4NjVkYjYxY2NlMzYxODM0NGQ4YWQ5ZWM4Y2U1MzUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU1MDMyZTk2NGQwOTMyMzUxZTVkMTg1MjY5MjgxYjE3MWEzYTA5YjA4YjI4NmU2NjFlYTQ3MDMyM2M4MmViNGQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImYxMjVkZTBmY2VkYmYyNjA1YmVlNTAwZWU1NGM5OTRmZDNmNDRiNDA5Y2JkNDMyZmIxNzY0YjY4ZjRlNDc5ZWYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijc5OTIyYTA5MTk2ZmM3MWQ4NThiZjMyZTZlY2U1ODZkOGY3ZjUwOTRiMGYyMGYxMTI0MGQ1YTAyZGI5NjM1M2UifQ"
+        },
+        {
+          "resource": "repo://libs/code/tests/unit_tests/test_js_cost_sync.py#L20-L61",
+          "version": "repo-lines-v1:sha256:f300b0a0e0761e1b33691ded7aac2fd287ab5a9ce937c689bd2176e3c060eed4:eyJzZWxlY3RlZExpbmVDb3VudCI6NDIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjUxY2IxODgzYjRhM2NiMjhiNjQ2ZmQ2ZjUwOGM0NjQ1ZThkZDRjNTRjZGVjY2U1ZTQyYjZkM2U0N2FjMzEwOGIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI0MTNiOTEyZGE1MzUyNWUxYmQxMmJjNGRlN2E1YmFkZjAzMTAwYzRiZGNhMDMwMWJmYjdjYmU5MWI4MGZmNDMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjA3ZDUyZTEwN2YyOGU0Mzg5YmJjZTI2YTQxZDQzOWU4NWI4NjA1ODczYzBmODg3NTZlMjMxODQ2MWM2MWQwNzQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-10-25T08:05:05.473Z"
+    "at": "2026-10-28T08:04:17.781Z"
   }
 }

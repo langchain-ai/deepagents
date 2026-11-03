@@ -8,6 +8,7 @@ import json
 import re
 from typing import TYPE_CHECKING, Any, Literal, get_type_hints
 
+from langchain_core.utils.json_schema import dereference_refs
 from pydantic import TypeAdapter
 
 if TYPE_CHECKING:
@@ -17,6 +18,13 @@ if TYPE_CHECKING:
 
 _CAMEL_SEP = re.compile(r"[-_]([a-z])")
 _JS_IDENTIFIER = re.compile(r"^[A-Za-z_$][A-Za-z0-9_$]*$")
+_SCALAR_TYPES = {
+    "string": "string",
+    "integer": "number",
+    "number": "number",
+    "boolean": "boolean",
+    "null": "null",
+}
 _REPL_SYSTEM_PROMPT_TEMPLATE = (
     "### Interpreter\n\n"
     "{repl_intro_line}\n\n"
@@ -26,7 +34,7 @@ _REPL_SYSTEM_PROMPT_TEMPLATE = (
     "APIs (`fetch`, `require`, `fs`, `process`, real `Date.now()` are "
     "unavailable or stubbed).\n"
     "{side_effects_line}\n"
-    "- Timeout: {timeout}s per call. Memory: {memory_limit_mb} MB total.\n"
+    "- {timeout_line}Memory: {memory_limit_mb} MB total.\n"
     "- `console.log` output is captured and returned alongside the result."
 )
 _SUBAGENT_SYSTEM_PROMPT_TEMPLATE = """
@@ -264,7 +272,7 @@ parallel, not to grind through it one tool call at a time.
 def render_repl_system_prompt(
     *,
     tool_name: str,
-    timeout: float,
+    timeout: float | None,
     memory_limit_mb: int,
     mode: Literal["thread", "turn", "call"],
     ptc_attached: bool = False,
@@ -316,7 +324,7 @@ def render_repl_system_prompt(
         repl_intro_line=repl_intro_line,
         state_persistence_line=state_persistence_line,
         side_effects_line=side_effects_line,
-        timeout=timeout,
+        timeout_line=("" if timeout is None else f"Timeout: {timeout}s per call. "),
         memory_limit_mb=memory_limit_mb,
     )
 
@@ -453,9 +461,9 @@ def _safe_json_schema(tool: BaseTool) -> dict[str, Any] | None:
     try:
         if tool.args_schema is None:
             return None
-        model_json_schema = getattr(tool.args_schema, "model_json_schema", None)
+        model_json_schema = getattr(tool.tool_call_schema, "model_json_schema", None)
         if callable(model_json_schema):
-            return model_json_schema()
+            return dereference_refs(model_json_schema())
     except Exception:  # noqa: BLE001 — prompt rendering is best-effort
         return None
     return None
@@ -488,13 +496,10 @@ def _render_signature(
     return f"tools.{fn_name}(input: {{\n{body}\n}}): {return_clause}"
 
 
-# Return types come from the tool's underlying function annotation. We feed
-# the annotation through `pydantic.TypeAdapter` to get a JSON Schema and
-# render it through the same `_json_schema_to_ts` we use for input args.
-# Compound shapes (TypedDict, BaseModel, recursive types) end up as `$ref`
-# in the schema and currently render as `unknown` — same behaviour as
-# nested-model input args. Until that path resolves `$ref` / `$defs`,
-# the simpler unified renderer is the right trade-off here.
+# Return types come from the tool's underlying function annotation (LangChain
+# has no output schema for function tools). We feed the annotation through
+# `pydantic.TypeAdapter` to get a JSON Schema and render it through the same
+# `_json_schema_to_ts` we use for input args.
 
 
 def _render_return_type(tool: BaseTool) -> str:
@@ -513,37 +518,47 @@ def _render_return_type(tool: BaseTool) -> str:
         schema = TypeAdapter(annotation).json_schema()
     except Exception:  # noqa: BLE001 — schema generation is best-effort
         return "unknown"
-    return _json_schema_to_ts(schema)
+    return _json_schema_to_ts(dereference_refs(schema))
 
 
 def _json_schema_to_ts(prop: dict[str, Any]) -> str:
-    """Shallow JSON-Schema → TS type renderer."""
+    """JSON-Schema → TS type renderer for `$ref`-free (dereferenced) schemas."""
+    if "const" in prop:
+        return json.dumps(prop["const"])
     if "enum" in prop:
         return " | ".join(json.dumps(v) for v in prop["enum"])
-    if "anyOf" in prop:
-        parts = [_json_schema_to_ts(part) for part in prop["anyOf"]]
-        return " | ".join(dict.fromkeys(parts))
+    for key, separator in (("anyOf", " | "), ("oneOf", " | "), ("allOf", " & ")):
+        if key in prop:
+            parts = [_json_schema_to_ts(part) for part in prop[key]]
+            return separator.join(dict.fromkeys(parts))
     t = prop.get("type")
-    if t == "string":
-        return "string"
-    if t in {"integer", "number"}:
-        return "number"
-    if t == "boolean":
-        return "boolean"
-    if t == "null":
-        return "null"
+    if t in _SCALAR_TYPES:
+        return _SCALAR_TYPES[t]
     if t == "array":
-        items = prop.get("items")
-        inner = _json_schema_to_ts(items) if isinstance(items, dict) else "unknown"
-        return f"{inner}[]"
+        return _render_array(prop.get("items"))
     if t == "object":
-        sub_props = prop.get("properties")
-        if isinstance(sub_props, dict) and sub_props:
-            required = set(prop.get("required", []))
-            fields = [
-                f"{k}{'' if k in required else '?'}: {_json_schema_to_ts(v)}"
-                for k, v in sub_props.items()
-            ]
-            return "{ " + "; ".join(fields) + " }"
-        return "Record<string, unknown>"
+        return _render_object(prop)
     return "unknown"
+
+
+def _render_array(items: Any) -> str:
+    if not isinstance(items, dict):
+        return "unknown[]"
+    inner = _json_schema_to_ts(items)
+    is_union = any(key in items for key in ("anyOf", "oneOf", "allOf", "enum"))
+    return f"({inner})[]" if is_union else f"{inner}[]"
+
+
+def _render_object(prop: dict[str, Any]) -> str:
+    sub_props = prop.get("properties")
+    if isinstance(sub_props, dict) and sub_props:
+        required = set(prop.get("required", []))
+        fields = [
+            f"{k}{'' if k in required else '?'}: {_json_schema_to_ts(v)}"
+            for k, v in sub_props.items()
+        ]
+        return "{ " + "; ".join(fields) + " }"
+    values = prop.get("additionalProperties")
+    if isinstance(values, dict) and values:
+        return f"Record<string, {_json_schema_to_ts(values)}>"
+    return "Record<string, unknown>"

@@ -231,7 +231,7 @@ def _atomic_write_json(path: Path, data: dict[str, Any]) -> None:
 
 
 def load_marketplace_records(*, strict: bool = False) -> dict[str, MarketplaceRecord]:
-    """Load persisted marketplace records.
+    """Load marketplace records, including defaults not explicitly removed.
 
     Returns:
         Marketplace records keyed by marketplace name.
@@ -242,7 +242,21 @@ def load_marketplace_records(*, strict: bool = False) -> dict[str, MarketplaceRe
         if strict:
             _raise_state_shape(_marketplaces_path(), "has invalid marketplaces data")
         return {}
+    name = "langchain-plugins"
+    source = "langchain-ai/langchain-plugins"
+    location = (
+        plugin_storage_root()
+        / "marketplaces"
+        / (f"repository-{opaque_cache_key(f'marketplace-github-{source}')}")
+    )
     records: dict[str, MarketplaceRecord] = {}
+    if name not in raw_records:
+        records[name] = MarketplaceRecord(
+            name=name,
+            source_type="github",
+            source=source,
+            install_location=str(location),
+        )
     for name, record in raw_records.items():
         if not isinstance(name, str) or not isinstance(record, dict):
             continue
@@ -296,12 +310,14 @@ def remove_marketplace_record(name: str) -> bool:
     data = _load_json(_marketplaces_path(), strict=True)
     marketplaces = data.get("marketplaces")
     if marketplaces is None:
-        return False
+        marketplaces = {}
     if not isinstance(marketplaces, dict):
         _raise_state_shape(_marketplaces_path(), "has invalid marketplaces data")
-    if name not in marketplaces:
+    if name not in load_marketplace_records(strict=True):
         return False
     marketplaces.pop(name, None)
+    if name == "langchain-plugins":
+        marketplaces[name] = None
     _atomic_write_json(
         _marketplaces_path(),
         {"version": _STORAGE_VERSION, "marketplaces": marketplaces},

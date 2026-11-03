@@ -79,9 +79,17 @@ def _as_remote(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
             install_location=str(root),
         )
     )
+    from deepagents_code.plugins import discovery
+
+    materialize = discovery.materialize_marketplace_source
     monkeypatch.setattr(
-        "deepagents_code.plugins.discovery.materialize_marketplace_source",
-        lambda _source: (load_marketplace(root), root),
+        discovery,
+        "materialize_marketplace_source",
+        lambda source: (
+            (load_marketplace(root), root)
+            if source.value == "example/tools"
+            else materialize(source)
+        ),
     )
 
 

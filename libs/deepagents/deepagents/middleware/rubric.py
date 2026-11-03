@@ -41,12 +41,12 @@ from langchain.agents.structured_output import (
     MultipleStructuredOutputsError,
     StructuredOutputValidationError,
 )
-from langchain_core._api import beta
 from langchain_core.messages import (
     AIMessage,
     AnyMessage,
     HumanMessage,
     ToolMessage,
+    add_notification_metadata,
 )
 from langchain_core.runnables import RunnableConfig, ensure_config
 from langgraph.errors import GraphBubbleUp
@@ -488,7 +488,6 @@ def _strategy_from_model(
     return "ToolStrategy"
 
 
-@beta(obj_type="middleware")
 class RubricMiddleware(AgentMiddleware[RubricState, ContextT, ResponseT]):
     """Middleware that drives self-evaluated iteration against a rubric.
 
@@ -1265,10 +1264,9 @@ class RubricMiddleware(AgentMiddleware[RubricState, ContextT, ResponseT]):
         return {
             **update,
             "messages": [
-                HumanMessage(
-                    content=self._revision_prompt(evaluation),
-                    name=RUBRIC_GRADER_MESSAGE_SOURCE,
-                    additional_kwargs={"lc_source": RUBRIC_GRADER_MESSAGE_SOURCE},
+                add_notification_metadata(
+                    HumanMessage(content=self._revision_prompt(evaluation), name=RUBRIC_GRADER_MESSAGE_SOURCE),
+                    source=RUBRIC_GRADER_MESSAGE_SOURCE,
                 )
             ],
             "jump_to": "model",

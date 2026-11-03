@@ -1,170 +1,160 @@
 ---
 type: integration architecture
 title: Sandbox and Partner Integrations
-description: How dcode discovers optional sandbox providers, acquires or attaches sandboxes, runs setup, and assigns cleanup ownership. Covers the independently distributed partner adapters and Daytona's bounded command execution behavior.
-tags: [dcode, sandbox, integrations, providers, lifecycle, partners]
+description: How dcode selects and owns optional remote sandbox providers, and how the separate QuickJS partner supplies request-aware, durable in-process JavaScript REPL middleware.
+tags: [dcode, sandbox, integrations, providers, quickjs, persistence]
 sources:
-  - resource: repo://libs/partners/daytona/langchain_daytona/sandbox.py
-  - resource: repo://libs/partners/daytona/tests/unit_tests/test_import.py
-  - resource: repo://libs/deepagents/deepagents/backends/protocol.py
-  - id: openwiki-source-9f207ab48c42b84dcfd05f43
-    resource: repo://libs/code/deepagents_code/integrations/sandbox_config.py
   - id: openwiki-source-bcf1f68e7989964d2fcec7aa
     resource: repo://libs/code/deepagents_code/integrations/sandbox_factory.py
   - id: openwiki-source-03e3942e51522a3aa485168d
     resource: repo://libs/code/deepagents_code/integrations/sandbox_provider.py
   - id: openwiki-source-668d65d09330d04370b47300
     resource: repo://libs/code/deepagents_code/integrations/sandbox_registry.py
-  - id: openwiki-source-a9eb680bb6bdae179f52a3ac
-    resource: repo://libs/code/deepagents_code/server_graph.py
   - id: openwiki-source-7ba50bd13eb62341a2061ef9
     resource: repo://libs/code/pyproject.toml
-  - id: openwiki-source-ea49272aef6bfc33d634a15c
-    resource: repo://libs/code/tests/integration_tests/test_sandbox_factory.py
-  - id: openwiki-source-ba6aa10dca5a8aea05030887
-    resource: repo://libs/code/tests/integration_tests/test_sandbox_operations.py
-  - id: openwiki-source-b6c121d977850bad8b8c8068
-    resource: repo://libs/code/tests/unit_tests/test_sandbox_factory.py
-  - id: openwiki-source-32820da62949c2fdb3f41188
-    resource: repo://libs/code/tests/unit_tests/test_sandbox_registry.py
   - id: openwiki-source-667fd72e0b93552f91d3888d
     resource: repo://libs/partners/AGENTS.md
-  - id: openwiki-source-da577cbe81ec29338f1388b2
-    resource: repo://libs/partners/daytona/pyproject.toml
-  - id: openwiki-source-936554ac5f0a201f8696be25
-    resource: repo://libs/partners/modal/pyproject.toml
-  - id: openwiki-source-8d2c8381956c1c023bcdb565
-    resource: repo://libs/partners/runloop/pyproject.toml
-  - id: openwiki-source-03a39f44d8ccfde2fd47e57a
-    resource: repo://libs/partners/vercel/pyproject.toml
+  - id: openwiki-source-9015d76fe513ec6a3f55fe3d
+    resource: repo://libs/partners/quickjs/langchain_quickjs/_prompt.py
+  - id: openwiki-source-f774b021a408b0156ed93a4b
+    resource: repo://libs/partners/quickjs/langchain_quickjs/_repl.py
+  - id: openwiki-source-817f587aa5157a14a76483d6
+    resource: repo://libs/partners/quickjs/langchain_quickjs/_snapshot.py
+  - id: openwiki-source-e93ea9e1f8eb3113683abb76
+    resource: repo://libs/partners/quickjs/langchain_quickjs/middleware.py
+  - id: openwiki-source-224af38a099019bb2a44f0a7
+    resource: repo://libs/partners/quickjs/Makefile
+  - id: openwiki-source-b38d20ec21c25c8c726dc1b6
+    resource: repo://libs/partners/quickjs/pyproject.toml
+  - id: openwiki-source-cc563a9d4d128abd95636fe3
+    resource: repo://libs/partners/quickjs/tests/unit_tests/smoke_tests/snapshots/quickjs_system_prompt_no_timeout.md
+  - id: openwiki-source-c61950428962577991516f6b
+    resource: repo://libs/partners/quickjs/tests/unit_tests/smoke_tests/test_system_prompt.py
+  - id: openwiki-source-f1c8a63e75e09ff5b2430433
+    resource: repo://libs/partners/quickjs/tests/unit_tests/test_ptc.py
+  - id: openwiki-source-649816c915bd7d9b306918d3
+    resource: repo://libs/partners/quickjs/tests/unit_tests/test_repl_middleware.py
+  - id: openwiki-source-7902201033603c756e6af134
+    resource: repo://libs/partners/quickjs/tests/unit_tests/test_snapshot.py
+generated: { by: "openwiki/0.4.2", at: "2026-11-03T08:04:09.572Z" }
 verified:
   - by: openwiki/0.4.2
-    at: 2026-10-26T08:11:58.203Z
-generated: { by: "openwiki/0.4.2", at: "2026-10-26T08:11:58.203Z" }
+    at: 2026-11-03T08:04:09.572Z
 ---
 
 # Sandbox and Partner Integrations
 
-A dcode sandbox provider supplies a `SandboxBackendProtocol`: an execution and filesystem backend identified by `id`. The registry and factory are the dcode-facing integration layer; the provider package remains responsible for its provider SDK, credentials, environment semantics, and backend implementation. Selecting a sandbox routes the execution/filesystem backend; it is not, by itself, a general authorization or isolation policy. See [Backends](/openwiki/concepts/backends.md), [Tools and filesystem](/openwiki/concepts/tools-filesystem.md), and [Security](/openwiki/operations/security.md).
+A dcode sandbox provider supplies a `SandboxBackendProtocol`: an execution and filesystem backend identified by `id`. dcode owns provider selection and factory lifecycle; a partner distribution owns its provider SDK, credentials, remote-resource semantics, and backend implementation. Selecting a sandbox changes the execution/filesystem backend. It is not a project-trust, authorization, or general isolation policy.
 
-## Provider contract and discovery
+QuickJS is different: `langchain-quickjs` is middleware that embeds an interpreter in the agent process. It is a restricted in-process capability boundary, **not** a remote sandbox. It has no ambient filesystem, network, standard-library, or real-clock capability, but explicitly bridged tools and subagents add authority. See [SDK Middleware Assembly](/openwiki/architecture/middleware-stack.md), [Permissions and Human Approval](/openwiki/concepts/permissions-hitl.md), [State, Threads, and Persistence](/openwiki/concepts/state-persistence.md), and [Security and Trust Boundaries](/openwiki/operations/security.md).
 
-A `SandboxProvider` implements synchronous `get_or_create(sandbox_id=..., **kwargs)` and `delete(sandbox_id=..., **kwargs)`. Its `aget_or_create()` and `adelete()` convenience methods run those synchronous operations in worker threads. A provider may advertise `SandboxProviderMetadata`: default working directory, installation hint, whether attachment by ID and named snapshots are supported, and an optional backend module for dependency probing.
+## Remote sandbox providers
 
-`SandboxRegistry` combines three sources under one name:
+A `SandboxProvider` implements synchronous `get_or_create(sandbox_id=..., **kwargs)` and `delete(sandbox_id=..., **kwargs)`; async convenience methods send those blocking operations to worker threads. `SandboxProviderMetadata` describes working directory, installation hint, attach and named-snapshot support, and an optional dependency-probe module.
 
-1. Curated built-ins: `agentcore`, `daytona`, `langsmith`, `modal`, `openshell`, `runloop`, and `vercel`.
-2. Installed Python entry points in the `deepagents_code.sandbox_providers` group.
-3. Operator-declared providers in `[sandboxes.providers]`.
+`SandboxRegistry` merges configured providers, installed `deepagents_code.sandbox_providers` entry points, and curated built-ins. A collision resolves as **configuration, then entry point, then built-in**. Entry-point enumeration is best-effort. A configured `class_path` is trusted operator configuration because resolving it imports arbitrary Python; a configured default does not enable sandbox mode unless the caller explicitly opts in.
 
-On a name collision, resolution is **configuration, then entry point, then built-in**. Entry-point enumeration is best-effort, so a discovery error leaves the remaining sources usable. Built-in and configured metadata can be read without constructing a provider. To obtain an entry-point provider's metadata, the registry instantiates it; if that fails, discovery presents a conservative `/workspace` metadata fallback rather than failing the provider list.
+`create_sandbox()` reads metadata before acquisition. It rejects unsupported named snapshots and a snapshot combined with `sandbox_id`, overlays explicit parameters on configured parameters, and runs an optional setup file in the acquired backend after expanding workspace environment variables. The factory deletes only a resource it created—not an attached resource—and logs a cleanup failure without replacing an initiating error. The server holds a successfully opened factory context for its process lifetime and closes it at exit; cancellation after context entry also closes the factory-owned context.
+
+Curated external adapters are optional extras, while LangSmith sandbox support and QuickJS are ordinary dcode dependencies. Partner packages remain independently versioned distributions with their own manifests, environments, and tests. Their backend details are adapter-specific: for example, the dcode Daytona provider creates fresh sandboxes rather than attaching by ID, while Modal creates or attaches sandboxes in its own provider domain. Do not mistake a dcode factory lifecycle adapter or a remote sandbox backend for the QuickJS REPL described below.
+
+## QuickJS middleware entrypoint and capability boundary
+
+Install and attach the middleware to an agent:
+
+```python
+from deepagents import create_deep_agent
+from langchain_quickjs import CodeInterpreterMiddleware
+
+agent = create_deep_agent(
+    model="claude-sonnet-4-6",
+    middleware=[CodeInterpreterMiddleware()],
+)
+```
+
+`CodeInterpreterMiddleware` registers the `eval` tool (customizable with `tool_name`) and appends a system-prompt addendum on model calls. The public tool description advertises JavaScript execution with no filesystem, network, or real clock. It also documents the configured persistence mode. At this revision, dcode requires `langchain-quickjs>=0.3.11,<0.4.0`; the independently released partner is `0.3.11` and depends on Deep Agents, LangChain, LangGraph, `quickjs-rs`, and `bsdiff4`.
+
+The absence of ambient host APIs is valuable confinement for pure computation, but not a complete security boundary. `console` is an optional host bridge, and enabling programmatic tool calling (PTC) or subagent dispatch gives JavaScript the authority of the selected agent tools or subagents. A remote sandbox instead moves execution to a provider-managed environment with its own identity, mounts, egress, credentials, quotas, and lifecycle. Choose and secure each boundary independently.
+
+## Slot identity, lazy allocation, and reset modes
+
+The middleware stores an opaque `qjs_...` slot identifier in **private LangGraph state**. It is generated by `before_agent` when absent. This is not the LangGraph `thread_id`, despite older registry comments that use that name: the registry is keyed by this private slot ID, and snapshots are bound to it.
+
+A slot is deliberately lazy. `before_agent` assigns or authenticates state but does not create a VM. A model-only run therefore allocates no worker, runtime, or context. The first `eval` gets the slot from `_Registry`, which constructs one `ThreadWorker`, one QuickJS `Runtime`, and one `_ThreadREPL` context for that slot. QuickJS objects remain on that worker because they are not safely transferable across threads. Runtime construction enables `SourceTransform.TOP_LEVEL_CONST_TO_VAR`, making top-level `const` and `let` bindings persist as globals in that context. Concurrent evaluation of one context is reported as `ConcurrentEval`; it is intentionally not queued.
+
+| `mode` | State lifetime | Reset action |
+| --- | --- | --- |
+| `"thread"` (default) | Across eval calls and agent runs that retain the private slot state | Snapshot after a run that allocated a REPL, then evict the slot. |
+| `"turn"` | Across eval calls in one agent run only | `after_agent` evicts the slot without writing a snapshot. |
+| `"call"` | One `eval` call | The eval `finally` block replaces its REPL context while retaining that slot's worker and runtime; `after_agent` subsequently evicts the slot. |
+
+The call-mode distinction matters: its immediate reset is **not** a full worker/runtime rebuild. `reset_repl()` closes and replaces only `_ThreadREPL`; final eviction closes context, runtime, and worker. In all modes, `after_agent` removes cached prompt/binding data for the slot. The middleware destructor best-effort closes every remaining registry slot.
 
 ```mermaid
-flowchart TD
-    Request["Provider name"] --> Config{"Configured entry"}
-    Config -->|yes| Import["Import class_path"]
-    Config -->|no| Entry{"Entry point"}
-    Entry -->|yes| Load["Load entry point"]
-    Entry -->|no| Builtin["Create built-in provider"]
-    Import --> Provider["SandboxProvider"]
-    Load --> Provider
-    Builtin --> Provider
-    Provider --> Backend["Create or attach backend"]
+sequenceDiagram
+    participant Run as Agent run
+    participant MW as QuickJS middleware
+    participant Store as LangGraph state
+    participant Reg as Slot registry
+    participant QJS as Worker runtime context
+    Run->>MW: before agent
+    MW->>Store: assign private slot or authenticate snapshot
+    Note over MW,Reg: No VM is allocated yet
+    Run->>MW: eval JavaScript
+    MW->>Reg: get private slot
+    Reg->>QJS: lazily create worker runtime context
+    MW->>QJS: restore snapshot once then evaluate
+    QJS-->>MW: formatted result or error
+    Run->>MW: after agent
+    alt thread mode and a slot exists
+        MW->>QJS: create heap snapshot
+        MW->>Store: write delta update and optional HMAC
+    end
+    MW->>Reg: evict slot and close worker runtime context
 ```
 
-*Provider resolution is configuration over entry point over built-in.*
+*The private slot ID—not the public graph thread ID—keys lazy live resources; thread mode persists data, not a live VM, between agent runs.*
 
-A configuration entry can provide `class_path`, `working_dir`, installation package, capability flags, and provider `params`:
+## Snapshot persistence and recovery
 
-```toml
-[sandboxes]
-default = "acme"
+Only thread mode reads or writes persisted JavaScript state. `before_agent` checks HMAC authenticity when `snapshot_signing_key` is configured, but leaves parsing and restoration lazy until the first eval. A valid payload is restored once before evaluation. If restore fails, the tool returns a recoverable restore error, clears both persisted fields, and does not run the requested JavaScript.
 
-[sandboxes.providers.acme]
-class_path = "my_package:AcmeSandboxProvider"
-working_dir = "/workspace"
-package = "acme-dcode-sandbox"
-supports_snapshot_name = true
+After a thread-mode run that created a REPL, `after_agent` serializes its heap, enforces `max_snapshot_bytes` (defaulting to `memory_limit`), then evicts the live slot. Snapshot failure or an oversized payload clears both payload and HMAC rather than retaining stale state. If no eval allocated a slot, there is nothing to snapshot or evict.
 
-[sandboxes.providers.acme.params]
-region = "us-east-1"
+The snapshot channel is a `DeltaChannel`, not an in-memory cache. A first or non-beneficial update writes a `("snap", payload)` anchor; a smaller `bsdiff4` encoding writes `("patch", patch)`. Replay deterministically applies anchors, patches, and clears to materialize bytes, so checkpoint reconstruction, forks, and time travel do not depend on a process-local registry.
+
+With `snapshot_signing_key`, HMAC-SHA256 covers the materialized bytes and private slot ID. Missing, altered, wrong-key, or copied-to-another-slot tags are rejected and cleared before restoration. Without a key, legacy snapshots remain restorable without integrity verification. Use one high-entropy key across processes that resume the same state, and rotate it by starting fresh threads.
+
+## Request-scoped prompt and tool bindings
+
+On every model call, `wrap_model_call` or `awrap_model_call` calls `_prepare_for_call()` with the current `ModelRequest`. The base prompt is cached only by construction-time configuration; the request-sensitive portion is not assumed to be global:
+
+- The current request tool list is read after upstream middleware may have filtered it.
+- With `ptc` configured, `filter_tools_for_ptc()` applies its explicit allowlist and excludes the REPL tool itself. It also reserves `task`: it cannot be exposed as `tools.task`, because subagent dispatch uses the separate top-level bridge. The selected `BaseTool` instances are cached by private slot ID, and the rendered `tools.<camelCase>(input)` API reference is cached only while the same tool identities remain exposed for that slot.
+- At eval time, the slot installs or updates the `globalThis.tools` namespace from those current bindings. The namespace is rebuilt to contain only active names; host bridges already registered in a live context may be reused, but inactive names are removed from `tools`.
+- A `task(...)` guidance section is appended only when `subagents=True` **and** the current request contains a recognized Deep Agents `task` tool. Thus the model is not prompted to dispatch subagents merely because the middleware exists.
+
+The middleware can expose a top-level `task` bridge when subagents are enabled. It validates `description` and `subagentType`, optionally accepts `label` and `responseSchema`, and locates the current outer runtime's task tool when invoked. It executes the subagent on the caller's event loop where needed. The per-REPL semaphore defaults to 32 simultaneous calls; it is a concurrency limit, not a process-wide admission policy or a total-dispatch budget. The system guidance tells models to use `Promise.all` for independent work and to pass complete, self-contained descriptions and file/symbol locators rather than pasted contents.
+
+## Timeouts, approvals, and bridged authority
+
+`timeout` defaults to five seconds and bounds QuickJS VM execution per eval; `timeout=None` disables the VM deadline. It does **not** bound total wall-clock time: time awaiting Python-hosted `tools.*` calls or `task()` runs is outside the VM budget. Do not claim that the timeout will terminate a slow host tool. Use a workflow, process, or service limit that can stop the work when an end-to-end deadline is required; disabling the VM timeout is appropriate only with such an external control.
+
+PTC is opt-in (`ptc=None` by default). It exposes selected tools as async JavaScript functions and forwards outer runtime state, store, context, callbacks, config, and a synthesized tool-call ID. `max_ptc_calls=256` is a per-eval bridge-call budget; overflow occurs before the extra tool invocation. `None` removes that limit and is unsafe for untrusted prompts because JavaScript can make unbounded bridged calls.
+
+Neither PTC nor `task()` travels through the parent `ToolNode` path. Consequently parent `interrupt_on` / HITL approval does not run separately for each bridged call or subagent dispatch. The `eval` invocation itself is the approval boundary. If per-action review is necessary, gate `eval`, configure approval middleware within the subagent specification, use normal parent tool calls outside JavaScript, or set `subagents=False`. A tool allowlist, a review rule, and the no-ambient-capabilities interpreter are complementary controls—not substitutes for a remote sandbox or backend-level isolation.
+
+## Configuration and focused verification
+
+Important constructor controls are `memory_limit` (64 MiB by default), `timeout`, `max_result_chars`, `capture_console`, `subagents`, `max_subagent_concurrency`, `ptc`, `mode`, `max_snapshot_bytes`, and `snapshot_signing_key`. Result and console blocks are bounded before returning to the model; disabling console capture omits the global console bridge.
+
+Run QuickJS tests through the owning package Makefile:
+
+```bash
+make -C libs/partners/quickjs test TEST_FILE=tests/unit_tests/test_repl_middleware.py
+make -C libs/partners/quickjs test TEST_FILE=tests/unit_tests/test_snapshot.py
+make -C libs/partners/quickjs test TEST_FILE=tests/unit_tests/test_prompt_modes.py
+make -C libs/partners/quickjs test TEST_FILE=tests/unit_tests/smoke_tests/test_system_prompt.py
 ```
 
-`class_path` is trusted operator configuration: resolving it imports Python. On the normal default-path load, a managed configuration that has a `[sandboxes]` section supplies that section instead of the user section. If the user file is malformed or unreadable, dcode retains applicable managed values and exposes the user-file problem through the registry configuration error; malformed provider values that are not TOML tables are ignored. Passing an explicit config path deliberately excludes managed policy. The configured default names the provider selected by a bare `--sandbox`; it never turns on sandbox mode for an invocation that did not opt in. Configuration layering and managed policy are described in [Configuration layering](/openwiki/concepts/config-layering.md).
-
-## Factory lifecycle and ownership
-
-`create_sandbox()` is the common synchronous context-managed lifecycle. It reads provider metadata before acquisition, validates that the provider supports a requested `snapshot_name`, and rejects a snapshot combined with `sandbox_id`: a snapshot applies only when creating a fresh sandbox. It then copies configured provider `params`, overlays explicit `params`, translates `snapshot_name` to the provider's `snapshot` argument, and calls `get_or_create()`.
-
-```mermaid
-flowchart TD
-    Start["create_sandbox"] --> Validate["Read metadata and validate options"]
-    Validate --> Merge["Merge configured then explicit parameters"]
-    Merge --> Acquire["get_or_create"]
-    Acquire --> Setup{"Setup file supplied"}
-    Setup -->|yes| Run["Expand variables and run bash -c"]
-    Setup -->|no| Yield["Yield backend"]
-    Run --> Yield
-    Yield --> Exit["Context exit or failure"]
-    Exit --> Owned{"Created by factory"}
-    Owned -->|yes| Delete["delete backend id"]
-    Owned -->|no| Retain["Leave attached backend"]
-```
-
-*The factory deletes a new resource, but never an attached one.*
-
-A setup file is read on the host after acquisition. `${VAR}` expansion uses dcode's active workspace environment—not the server process environment—and the resulting script executes inside the sandbox as `bash -c`. A missing/unreadable setup file, an execution exception, or a nonzero exit prevents the context body from running. Once a fresh backend has been acquired, the `finally` path attempts deletion after setup failure, caller failure, or normal exit. Cleanup errors are reported but do not mask the original exception. Supplying `sandbox_id` changes this ownership rule: the factory attaches and does not delete the supplied resource, including after setup failure.
-
-For the server runtime, dcode enters this context in a worker thread and stores the context for the process lifetime; it registers an `atexit` close after successful startup. If startup is cancelled after a context has entered, the cancellation path closes that context before re-raising cancellation, avoiding a factory-owned sandbox leak. A configured sandbox creation failure is surfaced as startup failure rather than silently replacing the requested backend.
-
-## Daytona: provisioning and command boundaries
-
-The built-in dcode Daytona provider creates a Daytona client from the API key and optional `DAYTONA_API_URL`, then creates a fresh sandbox. It does **not** currently implement `sandbox_id` attachment, even though generic provider metadata can otherwise advertise that capability. Startup polls `echo ready` every two seconds up to its `timeout`; if readiness never succeeds, it best-effort deletes the new sandbox before raising. For snapshots, `DAYTONA_SANDBOX_SNAPSHOT_ID` wins; otherwise an explicit `snapshot` overrides `DAYTONA_SANDBOX_SNAPSHOT_NAME`, and a missing named snapshot may be built from `snapshot_image` or the provider default image. A named snapshot that already exists but is not active is rejected rather than rebuilt.
-
-`DaytonaSandbox` is the partner backend that wraps the created SDK sandbox. It inherits the common `BaseSandbox` filesystem operations and implements command execution with a temporary Daytona process session. `ExecuteResponse` carries combined output, an optional exit code, and a `truncated` marker; callers should use the exit code to distinguish a completed command failure from success.
-
-For a finite `execute()` timeout, one monotonic deadline covers session creation, asynchronous command start, status polling, and final-log retrieval. The adapter avoids making a request once fewer than one second remains, caps each request by the remaining time, and limits each polling sleep to that remainder. `timeout=0` is deliberately different: it means wait indefinitely and sends unbounded command-phase requests. The execute-start argument is adjusted for the Daytona SDK's extra five-second HTTP buffer so that a finite effective request stays within the caller's deadline.
-
-```mermaid
-flowchart TD
-    Begin["execute command"] --> Deadline{"Finite timeout"}
-    Deadline -->|no timeout 0| Create["Create session"]
-    Deadline -->|yes| Budget{"At least one second remains"}
-    Budget -->|no| TimedOut["Return exit 124"]
-    Budget -->|yes| Create
-    Create --> Start["Start async command"]
-    Start --> Poll["Poll status within remaining deadline"]
-    Poll --> Done{"Exit code available"}
-    Done -->|yes| Logs["Read final logs within deadline"]
-    Done -->|no deadline| TimeoutLogs["Try partial logs within shared grace"]
-    Logs --> Result["Return output and exit code"]
-    TimedOut --> Cleanup["Bounded session deletion"]
-    TimeoutLogs --> Cleanup
-    Result --> Cleanup
-    Cleanup --> Finish["Return result"]
-```
-
-*This is the Daytona adapter's command deadline and cleanup path; it is not a contract for other sandbox adapters.*
-
-A timeout returns exit code `124` and the timeout message, appending partial stdout/stderr if it can be read. Timeout recovery gives log collection and deletion one shared two-second grace period, with at most one second per cleanup request; exhausted grace skips deletion. The adapter always attempts bounded session deletion once session creation was attempted—including when a creation transport timeout leaves remote creation uncertain. Cleanup failures are logged and do not replace a command result. On normal completion, final logs are retrieved before the session is deleted.
-
-Daytona file transfers require absolute paths: invalid relative inputs get the standardized `invalid_path` error without an SDK request. Downloads preserve input order and map missing Daytona content to `file_not_found`; uploads return one response per input. These transfer rules and the command deadline behavior are specific to `langchain-daytona`.
-
-## Installation and optional package boundary
-
-The six curated external adapters—AgentCore, Daytona, Modal, OpenShell, Runloop, and Vercel—are optional `deepagents-code` extras, collectively available through `deepagents-code[all-sandboxes]`. `langsmith[sandbox]` is a regular dcode dependency. The compatibility `deepagents-code[quickjs]` extra intentionally remains empty because QuickJS is already a normal dependency and is middleware rather than a remote sandbox adapter. Missing optional provider imports produce provider-specific installation guidance.
-
-In particular, the `openshell` extra installs `langchain-nvidia-openshell>=0.1.1`. dcode's local development source mappings point at the Daytona, Modal, QuickJS, Runloop, and Vercel partner directories; they do not turn those packages into dcode-owned code or add an OpenShell checkout.
-
-The checked-in Daytona, Modal, Runloop, and Vercel adapters are separate partner distributions. Each depends on Deep Agents and its respective provider SDK and owns its own version, environment, `pyproject.toml`, `Makefile`, and tests. dcode's curated names provide discovery, optional-install packaging, parameter forwarding, and lifecycle policy—not ownership of the adapter implementation. A third-party package can extend the registry by publishing an entry point in `deepagents_code.sandbox_providers`; an operator can instead use a configured `class_path` for an internal or local provider.
-
-## Operating and changing integrations
-
-- Use `--sandbox <provider>` to choose a provider, or bare `--sandbox` only when `[sandboxes].default` is configured. Unknown providers and unsupported snapshot options are rejected before normal startup. ID support is provider-specific: the Daytona provider currently raises `NotImplementedError` if an ID is passed.
-- Treat provider metadata as declarations that drive dcode validation and UX, not proof that the provider enforces a security property. Verify provider-specific identity, credential, network, retention, timeout, cancellation, and isolation behavior separately.
-- Preserve the factory's ownership boundary when adding a provider: only fresh factory-created resources may be deleted. Ensure setup failures take the same cleanup path.
-- Do not generalize Daytona's `124` timeout result, deadline accounting, polling policy, or shared cleanup grace to another adapter without implementing and testing them there.
-- The focused dcode unit tests cover registry precedence, entry-point metadata fallback, malformed configuration and immutable provider mappings, snapshot validation, setup failure, attachment ownership, and cleanup error reporting. Daytona unit tests additionally cover fixed and adaptive polling, finite versus unlimited command requests, deadline-bounded requests, partial-output recovery, cleanup failure, and shared cleanup grace. The optional integration suites exercise real creation, command execution, file transfer, and filesystem operations; they are skipped in the release pipeline and some error-path cases remain explicitly skipped pending provider support.
-- For repository work on an adapter, follow the partner-package guidance: adding a partner also requires its independent release and CI wiring, including sandbox credential/integration-test surfaces where applicable.
-
-See [Development](/openwiki/operations/development.md) for repository workflows and [Run a dcode session](/openwiki/workflows/run-dcode-session.md) for the end-user session path.
+The unit coverage exercises slot laziness, independent worker/runtime allocation, call-mode context replacement, eviction, snapshot caps and failed restores, delta replay, HMAC failures, persistence modes, PTC binding isolation and budgets, subagent concurrency, and timeout behavior. Prompt smoke tests compare a complete agent prompt with committed snapshots, including the no-timeout case: when `timeout=None`, the prompt intentionally mentions memory but contains no timeout wording. Update those snapshots only for an intentional prompt-contract change. See [Testing Guide](/openwiki/testing/testing-guide.md).

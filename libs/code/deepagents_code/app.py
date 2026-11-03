@@ -1080,10 +1080,10 @@ def _format_mcp_server_changes(
     ):
         if stuck:
             return (
-                "MCP server changes: no changes detected "
+                "MCP server changes: no metadata changes detected "
                 f"(still needs attention: {', '.join(stuck)}; use /mcp)."
             )
-        return "MCP server changes: no changes detected."
+        return "MCP server changes: no metadata changes detected."
 
     lines = ["MCP server changes:"]
     if loaded:
@@ -2642,8 +2642,32 @@ def _build_model_switch_error_body(exc: BaseException) -> str | Content:
             ") or see the provider reference: ",
             (exc.docs_url, TStyle(underline=True, link=exc.docs_url)),
         )
-    from deepagents_code.client.remote_client import format_agent_exception
+    from langgraph_sdk.errors import ConflictError
 
+    from deepagents_code.client.remote_client import (
+        format_agent_exception,
+        workspace_conflict_diagnostics,
+    )
+
+    if isinstance(exc, ConflictError):
+        diagnostics = workspace_conflict_diagnostics(exc)
+        if diagnostics is not None and diagnostics.category in {
+            "policy_drift",
+            "config_drift",
+        }:
+            text = (
+                "Model switch blocked: this conversation's workspace settings "
+                "changed. The model was not changed.\n\n"
+                "Restore the original settings and relaunch to continue this "
+                "conversation, or use /clear to start a new conversation with "
+                "the current settings. The existing conversation is preserved."
+            )
+        else:
+            text = (
+                "Model switch blocked by a workspace conflict. "
+                f"The model was not changed.\n\n{format_agent_exception(exc)}"
+            )
+        return _build_agent_error_body(text, exc)
     return f"Failed to switch model: {format_agent_exception(exc)}"
 
 
@@ -5576,6 +5600,8 @@ class DeepAgentsApp(App):
 
         if self._server_startup_deferred:
             await self._mount_deferred_start_notice()
+            if not self._onboarding_session:
+                await self._show_model_selector()
 
         # Fire-and-forget workers — none of these block the event loop.
 
@@ -6826,7 +6852,10 @@ class DeepAgentsApp(App):
 
         # Failure surfaces only in chat — keeps recovery hint adjacent to the
         # input. Banner is set to idle above to drop the connecting spinner.
-        text = f"Server failed to start: {self._server_startup_error}"
+        if isinstance(event.error, MissingCredentialsError):
+            text = f"Model setup required: {event.error}"
+        else:
+            text = f"Server failed to start: {self._server_startup_error}"
         if had_deferred_actions:
             text += (
                 "\n\nQueued changes were not applied. "
@@ -6837,9 +6866,9 @@ class DeepAgentsApp(App):
             and self._server_kwargs is not None
         ):
             text += (
-                "\n\nHint: run `/auth` to add a key for this provider, then "
-                "`/model <provider>:<model>` to retry startup. Or pick a "
-                "different provider directly with `/model`."
+                "\n\nRun `/auth` to configure this "
+                "provider; startup will retry automatically after you save. "
+                "Or use `/model` to choose a different provider."
             )
         elif (
             self._server_startup_missing_provider_package is not None
@@ -11687,6 +11716,9 @@ class DeepAgentsApp(App):
             )
             return False
 
+        if not await self._validate_auto_classifier():
+            return False
+
         if not has_auto_mode_notice():
             pending: asyncio.Future[bool] | None = getattr(
                 self, "_auto_mode_confirmation_future", None
@@ -13852,6 +13884,7 @@ class DeepAgentsApp(App):
         if self._exiting:
             return
 
+        self._last_typed_at = None
         value = event.value
         mode: InputMode = event.mode  # ty: ignore[invalid-assignment]  # Textual event mode is str at type level but InputMode at runtime
 
@@ -14475,6 +14508,7 @@ class DeepAgentsApp(App):
             LangSmithApiError,
             LangSmithImportError,
             LangSmithLookupTimeoutError,
+            LangSmithPermissionError,
             LangSmithProjectNotFoundError,
             _assemble_langsmith_thread_url,
             fetch_langsmith_project_url_or_raise,
@@ -14582,6 +14616,26 @@ class DeepAgentsApp(App):
                     f"{project_name!r} yet. The project is created automatically "
                     "the first time a run is traced — try `/trace` again after "
                     "your first message.",
+                ),
+            )
+            return
+        except LangSmithPermissionError as exc:
+            logger.warning(
+                "LangSmith API key cannot read projects; cannot resolve thread "
+                "URL for %s: %s",
+                thread_id,
+                exc,
+            )
+            from deepagents_code._env_vars import LANGSMITH_PROJECT_URL
+
+            await self._mount_message(UserMessage(command))
+            await self._mount_message(
+                AppMessage(
+                    "LangSmith denied the lookup of project "
+                    f"{project_name!r} (HTTP 403), so the thread URL cannot be "
+                    "resolved. The API key may lack project read access, or "
+                    "may not belong to this workspace. Set "
+                    f"`{LANGSMITH_PROJECT_URL}` to skip the lookup.",
                 ),
             )
             return
@@ -15007,7 +15061,8 @@ class DeepAgentsApp(App):
         for group in catalog.groups:
             if not group.tools:
                 continue
-            blocks.append(f"### {_escape_markdown(group.label)}")
+            count = f" ({len(group.tools)})" if group.source == "mcp" else ""
+            blocks.append(f"### {_escape_markdown(group.label)}{count}")
             if group.source == "mcp":
                 has_mcp_tools = True
                 blocks.append(
@@ -18214,8 +18269,7 @@ class DeepAgentsApp(App):
                     msg += f"\n\n{self._format_cost_summary()}"
                 await self._mount_message(AppMessage(msg))
         elif cmd == "/cost":
-            await self._mount_message(UserMessage(command))
-            await self._mount_message(AppMessage(self._format_cost_summary()))
+            self.action_open_cost_breakdown()
         elif cmd == "/tools":
             await self._handle_tools_command(command)
         elif cmd == "/extensions":
@@ -18813,7 +18867,7 @@ class DeepAgentsApp(App):
                     if restart_result.restarted:
                         server_fresh = True
                         self._session_plugin_ids = discovered_plugin_ids
-                        report += "\nAgent server restarted for plugin MCP."
+                        report += "\nAgent server restarted."
                         if restart_result.mcp_status == "disabled":
                             # `--no-mcp`: there is nothing to refresh, so an
                             # empty diff is the truth rather than an unknown.
@@ -18826,6 +18880,10 @@ class DeepAgentsApp(App):
                                 "no servers were loaded."
                             )
                         else:
+                            if restart_result.mcp_status == "fresh":
+                                report += (
+                                    "\nMCP configuration re-read (including .mcp.json)."
+                                )
                             report += "\n" + _format_mcp_server_changes(
                                 old_mcp_server_info,
                                 restart_result.mcp_server_info,
@@ -24292,7 +24350,15 @@ class DeepAgentsApp(App):
             )
             return
 
-        # Gate the first Auto switch on the education confirmation.
+        if target is ApprovalMode.AUTO and not await self._validate_auto_classifier():
+            target = next_approval_mode(
+                self._approval_mode,
+                auto_eligible=False,
+                yolo_switcher_enabled=yolo_switcher_enabled,
+            )
+            if target is None:
+                return
+
         if target is ApprovalMode.AUTO and not has_auto_mode_notice():
             self._prompt_auto_mode_confirmation()
             return
@@ -24320,6 +24386,9 @@ class DeepAgentsApp(App):
             `True` when local UI state was updated to `target`.
         """
         from deepagents_code.approval_mode import ApprovalMode
+
+        if target is ApprovalMode.AUTO and not await self._validate_auto_classifier():
+            return False
 
         # With no usable agent/session pair there is no running graph to update.
         # Stage the selection locally; `execute_task_textual` persists it before
@@ -24377,6 +24446,32 @@ class DeepAgentsApp(App):
             ApprovalMode.YOLO,
         }:
             await self._auto_accept_pending_goal_rubric()
+        return True
+
+    async def _validate_auto_classifier(self) -> bool:
+        """Return whether Auto's reviewer can be resolved."""
+        spec = self._auto_classifier_review_model_spec()
+        if spec is None:
+            return True
+        try:
+            if self._remote_agent() is not None:
+                await self._resolve_auxiliary_model(spec)
+            else:
+                from deepagents_code.config import create_model
+
+                await asyncio.to_thread(
+                    create_model, spec, bind_preserved_thinking=False
+                )
+        except Exception as exc:
+            logger.warning(
+                "Auto classifier resolution failed for %s", spec, exc_info=True
+            )
+            self._warn_live_approval_mode_unavailable(
+                f"Auto is unavailable: {exc}. Approval mode unchanged. "
+                "Use /auth to configure credentials or /auto model "
+                "to choose a reviewer."
+            )
+            return False
         return True
 
     def _auto_classifier_display_spec(self) -> str | None:
@@ -24781,7 +24876,8 @@ class DeepAgentsApp(App):
 
         # Gate the first Auto switch on the education confirmation.
         if target is ApprovalMode.AUTO and not has_auto_mode_notice():
-            self._prompt_auto_mode_confirmation()
+            if await self._validate_auto_classifier():
+                self._prompt_auto_mode_confirmation()
             return
 
         if target is ApprovalMode.YOLO:
@@ -26331,6 +26427,7 @@ class DeepAgentsApp(App):
                 ModelConfigError,
                 NoAllowedModelCredentialsError,
                 NoCredentialsConfiguredError,
+                NoModelConfiguredError,
             )
 
             try:
@@ -26341,7 +26438,7 @@ class DeepAgentsApp(App):
                 # actionable, and silence after closing `/auth` reads as a hang.
                 await self._mount_message(ErrorMessage(str(exc)))
                 return False
-            except NoCredentialsConfiguredError:
+            except NoCredentialsConfiguredError, NoModelConfiguredError:
                 # No usable default to fall back to — nothing to retry.
                 return False
             except ModelConfigError as exc:
@@ -27173,24 +27270,31 @@ class DeepAgentsApp(App):
         self._open_debug_console()
 
     def action_open_cost_breakdown(self) -> None:
-        """Open the session cost breakdown from the footer."""
+        """Open the session cost breakdown from the footer or `/cost`."""
+        from deepagents_code.tui.modals.cost_breakdown import open_cost_breakdown
+
+        open_cost_breakdown(self, self._format_cost_modal)
+
+    def _format_cost_modal(self) -> str:
+        """Build the modal content.
+
+        Returns:
+            Available token details and the escaped cost explanation.
+        """
         from deepagents_code.tui.modals.cost_breakdown import (
             format_cost_breakdown_table,
-            open_cost_breakdown,
         )
 
-        open_cost_breakdown(
-            self,
-            lambda: format_cost_breakdown_table(
-                self._session_cost_usd, self._session_cost_breakdown
-            ),
+        table = format_cost_breakdown_table(
+            self._session_cost_usd, self._session_cost_breakdown
         )
+        summary = "  \n".join(
+            _escape_markdown(line) for line in self._format_cost_summary().splitlines()
+        )
+        return f"{table}\n\n{summary}" if table else summary
 
     def _open_debug_console(self) -> None:
         """Push the read-only Debug Console modal."""
-        from deepagents_code.tui.modals.cost_breakdown import (
-            format_cost_breakdown_table,
-        )
         from deepagents_code.tui.widgets.debug_console import DebugConsoleScreen
 
         def handle_result(_: None) -> None:
@@ -27207,9 +27311,7 @@ class DeepAgentsApp(App):
                 # counts, tokens, and other in-memory fields stay current while
                 # the modal is open. The builder is intentionally I/O-free.
                 snapshot_provider=self._build_debug_snapshot,
-                cost_breakdown_provider=lambda: format_cost_breakdown_table(
-                    self._session_cost_usd, self._session_cost_breakdown
-                ),
+                cost_breakdown_provider=self._format_cost_modal,
                 mcp_servers_provider=lambda: self._mcp_server_info or [],
                 cleared_upto=self._debug_console_cleared_upto,
                 on_clear=persist_clear,
@@ -29346,7 +29448,7 @@ class DeepAgentsApp(App):
             # exception — its `args`/repr may include an `OAuthToken` from
             # the MCP SDK. `format_login_failure` unwraps `ExceptionGroup`
             # roots and degrades to a class-name chain for unknown types.
-            summary = format_login_failure(login_error)
+            summary = format_login_failure(login_error, include_login_hint=True)
             logger.warning("MCP login for %r failed: %s", server_name, summary)
             screen.finish(success=False, message=f"Login failed: {summary}")
             await asyncio.wait_for(outcome_future, timeout=5.0)
@@ -32728,11 +32830,18 @@ class DeepAgentsApp(App):
 
             self._last_model_unchanged = None
             params_suffix = _format_model_params(extra_kwargs)
+            classifier_suffix = (
+                ". Auto-mode classifier model also switched."
+                if self._auto_classifier_display_spec() is None
+                else ""
+            )
             if not persist:
                 # Session-only switch (e.g. adopting a resumed thread's model):
                 # announce but never touch the user's persisted recent/default.
                 await self._mount_message(
-                    AppMessage(f"Switched to {display}{params_suffix}"),
+                    AppMessage(
+                        f"Switched to {display}{params_suffix}{classifier_suffix}"
+                    ),
                 )
             elif not await asyncio.to_thread(save_recent_model, resolved_spec):
                 await self._mount_message(
@@ -32744,7 +32853,9 @@ class DeepAgentsApp(App):
                 )
             else:
                 await self._mount_message(
-                    AppMessage(f"Switched to {display}{params_suffix}"),
+                    AppMessage(
+                        f"Switched to {display}{params_suffix}{classifier_suffix}"
+                    ),
                 )
             if persist:
                 # Best-effort MRU update for the `/model` Recent section.
@@ -32884,6 +32995,7 @@ class DeepAgentsApp(App):
             ModelConfigError,
             NoAllowedModelCredentialsError,
             NoCredentialsConfiguredError,
+            NoModelConfiguredError,
         )
 
         try:
@@ -32894,7 +33006,7 @@ class DeepAgentsApp(App):
             # `/auth` look broken, so name the models that would work.
             await self._mount_message(ErrorMessage(str(exc)))
             return False
-        except NoCredentialsConfiguredError:
+        except NoCredentialsConfiguredError, NoModelConfiguredError:
             return False
         except ModelConfigError as exc:
             await self._mount_message(ErrorMessage(str(exc)))

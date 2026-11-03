@@ -33,6 +33,7 @@ from deepagents_code.thread_ownership import OWNER_KEY
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
+    from langchain.agents.middleware.types import ModelRequest
     from langchain_core.messages import ToolMessage
     from langchain_core.runnables import RunnableConfig
     from langgraph.prebuilt.tool_node import ToolCallRequest, ToolRuntime
@@ -56,6 +57,27 @@ def _digest(value: str) -> str:
 
 class CostAwareCodeInterpreterMiddleware(CodeInterpreterMiddleware):
     """Transport cost receipts without caching JavaScript or forwarding state."""
+
+    @override
+    def _prepare_for_call(self, request: ModelRequest) -> str:
+        """Return a compact reference while retaining all PTC bindings."""
+        from langchain_core.tools import BaseTool
+        from langchain_quickjs.middleware import render_ptc_prompt
+
+        tools = [tool for tool in request.tools if isinstance(tool, BaseTool)]
+        prompt = super()._prepare_for_call(request.override(tools=list(tools)))
+        slot = self._slot_id(request.state)
+        cached = self._ptc_prompt_by_slot.get(slot)
+        if cached is None:
+            return prompt
+        exposed, reference = cached
+        visible = [
+            tool for tool in exposed if not (tool.extras or {}).get("defer_loading")
+        ]
+        if len(visible) == len(exposed):
+            return prompt
+        replacement = render_ptc_prompt(visible, tool_name=self._tool_name)
+        return prompt.removesuffix(reference) + replacement
 
     @override
     def wrap_tool_call(

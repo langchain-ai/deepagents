@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:35c7e59d58d0d7e834781b27a8b83353b805551d13cb27420c45f3dd05668a9f",
+  "pageVersion": "sha256:3925dba5abeee4b2f8b519663db4d54f723325f6f3018d633f6801870eaa8d26",
   "claims": [
     {
       "id": "claim_66c8cdf2e322499f9163f44abcb9af36",
@@ -89,16 +89,16 @@
       "statement": "In dcode headless mode, a missing shell allow list disables shell access, a restrictive list enables and gates shell commands, and `all` permits unrestricted shell commands and auto-approves tools; project MCP trust defaults to false and governs project stdio MCP loading.",
       "evidence": [
         {
-          "resource": "repo://libs/code/deepagents_code/client/non_interactive.py#L2602-L2613",
-          "version": "repo-lines-v1:sha256:703bf11c24fbb7df2d838a490cb7dec0889d643c7253c84256e0d116ef7071f3:eyJzZWxlY3RlZExpbmVDb3VudCI6MTIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjgwYTY0Yjk0NWNkYWRjOWIwZjI5NDc2ZjhlN2FiM2MyMTIwOTBhMTcxNTA3ZmY2ODY1MjNmZWYxYzE2NGI3MmQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjA1NzkzM2FhZTE1YWRmMTNkYjE1ZWFkZjQxYjA3YTVjOTY5YTU4ZTNmNDM1MWQxODIyNTNhYmM1OTdlNzdlN2IiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjIzMmE5MWM5ZWExZTQ3ZWU5MzIwZTFkMGFjMjBmMzNmOTVjZWJiMDc4NWRkYzI1NTVjZDNhNWY2ZjllNzJjNDUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjU1ODE5MDQ1NGYwMGNiZjRiNzU5MGVjNTgxOGEzZWU2MzE2NTkyNTg1OThjMDZlNjBiZGI0YzA0Y2NjM2YzN2QifQ"
+          "resource": "repo://libs/code/deepagents_code/client/non_interactive.py#L2831-L2842",
+          "version": "repo-lines-v1:sha256:703bf11c24fbb7df2d838a490cb7dec0889d643c7253c84256e0d116ef7071f3:eyJzZWxlY3RlZExpbmVDb3VudCI6MTIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjgwYTY0Yjk0NWNkYWRjOWIwZjI5NDc2ZjhlN2FiM2MyMTIwOTBhMTcxNTA3ZmY2ODY1MjNmZWYxYzE2NGI3MmQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjA1NzkzM2FhZTE1YWRmMTNkYjE1ZWFkZjQxYjA3YTVjOTY5YTU4ZTNmNDM1MWQxODIyNTNhYmM1OTdlNzdlN2IiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijg4ODcwZDRiZTE2ZWE0NjEwYmE4ZTdhOTE5MGQ1OTg1MzdlMTE0ZmRlZmJmNDkwNGFmY2UxN2I5NDQxNjcxMDYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjU1ODE5MDQ1NGYwMGNiZjRiNzU5MGVjNTgxOGEzZWU2MzE2NTkyNTg1OThjMDZlNjBiZGI0YzA0Y2NjM2YzN2QifQ"
         },
         {
-          "resource": "repo://libs/code/deepagents_code/client/non_interactive.py#L2657-L2662",
+          "resource": "repo://libs/code/deepagents_code/client/non_interactive.py#L2886-L2891",
           "version": "repo-lines-v1:sha256:ad6a585197fbf0ce8f75f81d3a39e48b95a2d1fa9ab990b3185fcb60ff0452df:eyJzZWxlY3RlZExpbmVDb3VudCI6NiwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiM2QxY2Y4MzU2MGVmNGI5ZmI0NWIxZjc4MmY5Y2U2NmQxMzdmZjhhZGE3NjIxNWI3MDY1Njk1YjBjMjJlZjhhZCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiYWQ0YmVhYTM5MGM5NGZmMzE3NjYzOGU4OTZjZjM0MmJiZDA5ZjMyMWZmOTU2NjBjZWQwNjliOTUyMmY4M2JhZiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNDkzZDU5M2RmOThiZGU0Y2RkYjlhZTViMTEyNjljNDkyYjgwYmM5N2RkNzZlZGZkYTQ3YWFhZWMwMWIyZmZlYSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiODkyMjBlMWU5ZmMwODNhZTc4YTI5OGFmYjE3N2NkODNmNGUxMGVlZThkMDhjY2I0YzE1ZDcyZDA5MTA0N2QxMyJ9"
         },
         {
-          "resource": "repo://libs/code/deepagents_code/client/non_interactive.py#L2855-L2871",
-          "version": "repo-lines-v1:sha256:ba406178bfd506ac03ddb8d3bc3d17485f61569b56b25092e5aef2a8f19a11f4:eyJzZWxlY3RlZExpbmVDb3VudCI6MTcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjFjZmNiNWVlYzNhYzdiNWVjMzI5NGRlZmUyOTkyMzllNWE5NTRiZmU3NDI1MWVjZjQ1OGIwZjU4ZjE5ZmRkYzUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU5MDlhNTNhNjE4ZDAyOGUxZDMwMDBjMGE3YWJjZWVjYmU1ZmIzN2Y0ZTUxMWVmZTQ2NjQzZmFkNmU2Njg3MmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjY2NjgxM2Y0OTdkZmMwYjdiMDYyY2M5YjFiMDU3YzQ1NjVmZmRmYzExMmNhZTI1MTEwMjY0MjU5NjMxM2ZkYzYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImYzMDlhZjM5MzRmMmM5NTI3OGYyMWFlZWU4NmU5NzYxNjNiNmViMjI5ODVhMTg0NjY1YzZhMWUwZDliYjJlYjQifQ"
+          "resource": "repo://libs/code/deepagents_code/client/non_interactive.py#L3008-L3061",
+          "version": "repo-lines-v1:sha256:ef304d5127101fe4eb80085f131a6217d1d353228e528fe138c8856abdd25da0:eyJzZWxlY3RlZExpbmVDb3VudCI6NTQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBmYTdjMWJmOWFjNzg0MDQ5MTE3Y2Q5YjE4NWUzOGIxYTdhM2U0MWVmZjhkMWZmZjI5MzY1N2Q1YTBiMGM2NGQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjJlNTY1NmMyMjI2OGZhYzdmNzNjMTZlMDk3NmQwYzAzYzMzNjg0YTM4Njk1MzVkNmQ3OWU4YWRjYzY3ZTFlYzEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImU5ZmE4MTViNWJmOWIzYzI0OWEyNmNlY2QwNmQzZGI3ZTFmZDg0MmFhN2Q4MTUwNTczOWM1MDhmYmI5NTZmN2IiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImVkZDE5ZTU2NDI0M2QzZjg1OGFiNjAyNzM3ODBhOTQ0MTZmM2RmNTU1YWUxZjc2NGY3MzE1NWFkMGYzYzY5NjUifQ"
         }
       ]
     },
@@ -181,12 +181,8 @@
       "statement": "dcode treats an explicit MCP config path as a highest-precedence layer over auto-discovered MCP configuration, while `no_mcp` disables MCP tool loading and project stdio MCP remains disabled without trust.",
       "evidence": [
         {
-          "resource": "repo://libs/code/deepagents_code/client/non_interactive.py#L2657-L2662",
+          "resource": "repo://libs/code/deepagents_code/client/non_interactive.py#L2886-L2891",
           "version": "repo-lines-v1:sha256:ad6a585197fbf0ce8f75f81d3a39e48b95a2d1fa9ab990b3185fcb60ff0452df:eyJzZWxlY3RlZExpbmVDb3VudCI6NiwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiM2QxY2Y4MzU2MGVmNGI5ZmI0NWIxZjc4MmY5Y2U2NmQxMzdmZjhhZGE3NjIxNWI3MDY1Njk1YjBjMjJlZjhhZCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiYWQ0YmVhYTM5MGM5NGZmMzE3NjYzOGU4OTZjZjM0MmJiZDA5ZjMyMWZmOTU2NjBjZWQwNjliOTUyMmY4M2JhZiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNDkzZDU5M2RmOThiZGU0Y2RkYjlhZTViMTEyNjljNDkyYjgwYmM5N2RkNzZlZGZkYTQ3YWFhZWMwMWIyZmZlYSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiODkyMjBlMWU5ZmMwODNhZTc4YTI5OGFmYjE3N2NkODNmNGUxMGVlZThkMDhjY2I0YzE1ZDcyZDA5MTA0N2QxMyJ9"
-        },
-        {
-          "resource": "repo://libs/code/deepagents_code/client/non_interactive.py#L2838-L2850",
-          "version": "repo-lines-v1:sha256:610f3a8419dbe4925275a42046a6665239c31adac5e8ddf20c96f7a67eb54f30:eyJzZWxlY3RlZExpbmVDb3VudCI6MTMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImNiZDQ5ZDQ3Nzc0ZTQwYWM4NThiYmU4N2UxNjk3OGNkYjIyN2NmMDA0NzM3YWMzZGVkZTQ2MzM3ZmNjZjhlYzEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU1MDMyZTk2NGQwOTMyMzUxZTVkMTg1MjY5MjgxYjE3MWEzYTA5YjA4YjI4NmU2NjFlYTQ3MDMyM2M4MmViNGQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjJmZGFmYzA4YzlhZWRhZTYzMzkzMzAwNTRjYTQ5ODM2MTEwZTVjZmVkZmVkYzc4ZDJkZmMyNjNmYjBiZWY2YzkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjI5OWUzNmRmZThlOTUwYzBhODUxYTVmZGVmZjAzODJmMGY5MzYyZGMwNTMyY2M0ZWJlZTIyMTQxYzNiYTk3OGIifQ"
         }
       ]
     },
@@ -210,7 +206,7 @@
       "evidence": [
         {
           "resource": "repo://.github/workflows/ci.yml",
-          "version": "repo-file-v1:sha256:e0d03033c9a04ad401b9a77e9186ba6fd6a7fb8d68a88a3e3f1a4fd809316893"
+          "version": "repo-file-v1:sha256:cf0654a8c4f87483861271e48eecbb7eb3aeb0791a2312f6854edf720a1ed88e"
         }
       ]
     },
@@ -273,18 +269,46 @@
       "statement": "CI selects `libs/code` changes for dedicated Code lint and unit-test reusable workflows on Python 3.14.",
       "evidence": [
         {
-          "resource": "repo://.github/workflows/ci.yml#L255-L262",
-          "version": "repo-lines-v1:sha256:974877930aa9b58a43c6258175659acf6138029d310d9e2b39465b4f9dd31bc8:eyJzZWxlY3RlZExpbmVDb3VudCI6OCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiOTY4NmUxMjM4YmM5ODY2Zjc3MWQxZTdiOTIzMWVhMTg4NjE0OTNiMWEzYzE1YjU5YTgwODdlMGIxYjRhYzRjZSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiYWJhODkyNDBmZTI3MWRlZTMwYWZkYjUxM2M3NWRhMjk3YzY5YmQxNzIzNzQwNzBlZjA2M2IzZWE5OTg1M2JkNSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiYmE5NTcxNTRkZmQ5MmY2ZDgzODQ2ZDM2ZGIzM2RkYjZkYWZiYTk1YjZjYTEzZTE2YzQyYThmMzFlYzY2ZDc5YiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNGJiNDZhMzk4M2Y1N2VmZGVmNjVhNmVmN2ZkNDkzNjZmMjNmOWY2OGEzYmIxZDY3MTQ2YWViNGYwZmEzNWI2OSJ9"
+          "resource": "repo://.github/workflows/ci.yml",
+          "version": "repo-file-v1:sha256:cf0654a8c4f87483861271e48eecbb7eb3aeb0791a2312f6854edf720a1ed88e"
+        }
+      ]
+    },
+    {
+      "id": "claim_a6c7c1301cb04e9daca45e5366c8d017",
+      "statement": "The helper-script test job is not gated by the changed-package filters: it runs unless the change detector marks a curated release-notes-only apply, whereas the Code selector covers `libs/code`, `libs/deepagents`, and shared CI workflow/action paths.",
+      "evidence": [
+        {
+          "resource": "repo://.github/workflows/ci.yml",
+          "version": "repo-file-v1:sha256:cf0654a8c4f87483861271e48eecbb7eb3aeb0791a2312f6854edf720a1ed88e"
+        }
+      ]
+    },
+    {
+      "id": "claim_45fe76398d4b415dbfac91b7246888a9",
+      "statement": "Root `action.yml` is not a path in the Code selector, so its direct CI validation is the ungated helper-script suite; the Code reusable test workflow instead uses frozen uv resolution, installs the test group, and runs non-Windows tests through `make test` with sandbox tests enabled.",
+      "evidence": [
+        {
+          "resource": "repo://.github/workflows/_test.yml#L103-L105",
+          "version": "repo-lines-v1:sha256:9c0d0d8e46fae6052b6e806ed1af1b38590102c84970f7b6a8a8a89886c004ad:eyJzZWxlY3RlZExpbmVDb3VudCI6MywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiY2NiZjg5NDk0Y2U4ZmQ5NjE1NjJjNWI4ZmZhM2YxYjdkYmEzNTQ1YzcyMjk3YWJhNjk5ZjhlMjBhNjFhNmY4YSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNWFkNDExMTU5YTY4MzYxYTdiMGNlZDc5NDAyZWZhY2Y3ZWNiOWE3NmYyOWRjM2ViODU0Y2EyYzAzNWY5ZDRkMSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNzgwZGY0NjUxZmExZDhjOWY2MWU5YmE4OGY3NTg0NzExNmUzYzcxNTcwYjExM2E5YmZhMTk4ZjgwMDc0YjVlYyIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMjIyMTMzMDZmMjkzOTVmNmJiY2I2NWJjZjYyNGM5YTYzYzNjZjgyNTNmYzAzMDg2YmFiNjI2Njk3MTM5ZTFlNCJ9"
         },
         {
-          "resource": "repo://.github/workflows/ci.yml#L347-L354",
-          "version": "repo-lines-v1:sha256:1f2a198e870d20b516425c4ee64aa79b38aa8cd5b04eee4f4f0340f1421cd055:eyJzZWxlY3RlZExpbmVDb3VudCI6OCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMjEyOWIwM2I0YjliMGY2YmExNTY3ZjA3NTIwZmEwZDg4MDM4MTNmZDUyMjc2ZjlhOTNlOWFjMDMwNjg0YTU4NiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMmNiYzM3ZDI4MzZhOTkwMzJmYzA1Y2Q2MjhjYWU0ZDU2OTllNTdhNGJiNjYzNjI4Mjk1NmEzMWY2ZDI0ZDMxYyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZDc4ODkyOWI4YTk0ZmE4NzdiOTIwOTE4M2QxNzhmZDMwODc1NjcyYTQ3MmY5OTRhNjFmODBlMTUzZGYzYTNlYiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMTllZDc4NWRmYjUxNDJmN2RiYWM0OGIzMzM1MGYxYmI3OTNiNWZmYWU0Y2UzMzI1ZjA0N2EyMTYxMzY3OWY0MyJ9"
+          "resource": "repo://.github/workflows/_test.yml#L338-L362",
+          "version": "repo-lines-v1:sha256:f3c9aad2fc548d24607906a10beefedee8c25435561c3c9a564252241f1f857a:eyJzZWxlY3RlZExpbmVDb3VudCI6MjUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjYzMDFmNWFhNDEwMTM3MjM4YzcxOGNhNWNiN2M3ODVhNzlkMTMwZGU1ZTdkY2ZmNDY2YzhiODFkMmM3OWE1NmUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjE1Njg4OGJjZDQ1YTY3M2FlYzZmMjA3NTRjOTEwYTZhY2U2NTRiOGFhY2ExYjQ5NjUwNzQ4YmQ2NzcyNWI0NjAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijc2ZjgwNTJiMzkzZDE3NDJhZjA1OTg5YzU2MDcwMTVjNzMxYWRiMGNmN2I4YmUzNTI0MTU1Mzc5MTIzMGE4MzQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImYyNGNlY2QyNTk0NDkxMTM5ZThkMzk4YzgzOGJjMGM5MDI0OGQ0ZDk2OGJjMjdkYzJlZGFiOWY4NzhmZTRiYWEifQ"
+        },
+        {
+          "resource": "repo://.github/workflows/_test.yml#L41-L43",
+          "version": "repo-lines-v1:sha256:53408e903073a70581a45c28036aac9efb6d49c99a78734919bea23ed1eb6520:eyJzZWxlY3RlZExpbmVDb3VudCI6MywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMTBhNTk0ZjM0YjdmMGVhNTczZGE3ODcwM2UyNzQ5MzBkYjcxOGM5NDJjYWYzYzA0MjUxNzU1ZjYyM2M2MGQ1YyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiZjNiYmJlNThlZjA2Y2VmYzcyMWZhODk1Y2RlMTc4MTdkYTg3YTM1MjcxNDA0N2EwYTAxM2FlYTc3MTI2OTI0OSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZjhmMGM3MzFkNzYxMGI3M2M5MjE1YjM3YTAxNDZlNTNlZDhkMDE2NzQxNGM4M2EyMDZmMTIyOGVjMjIwZjVhYyIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiOGQyNzhmMTk3ZmJmOGZkYjYxN2UxN2EzMmE3YjQyZGViN2Y4ZjNkZjM3Njg2NjBmMzhmNWQ4YmU1Mzc0ZmVhMyJ9"
+        },
+        {
+          "resource": "repo://.github/workflows/ci.yml",
+          "version": "repo-file-v1:sha256:cf0654a8c4f87483861271e48eecbb7eb3aeb0791a2312f6854edf720a1ed88e"
         }
       ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-10-23T08:06:06.503Z"
+    "at": "2026-11-02T08:04:35.090Z"
   }
 }

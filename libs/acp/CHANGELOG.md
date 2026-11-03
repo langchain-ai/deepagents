@@ -6,9 +6,9 @@
 
 ### Bug Fixes
 
-- Shell permissions now apply only to the exact commands authorized.
-- Local context prompts are preserved across compaction.
-- The demo now uses valid Claude 5.5 model IDs.
+- Shell permissions now apply only to the exact commands authorized. ([#6881](https://github.com/langchain-ai/deepagents/pull/6881))
+- Local context prompts are preserved across compaction. ([#6840](https://github.com/langchain-ai/deepagents/pull/6840))
+- The demo now uses valid Claude 5.5 model IDs. ([#6684](https://github.com/langchain-ai/deepagents/pull/6684))
 
 ## [0.0.12](https://github.com/langchain-ai/deepagents/compare/deepagents-acp==0.0.11...deepagents-acp==0.0.12) (2026-09-18)
 

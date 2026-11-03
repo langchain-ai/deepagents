@@ -2295,6 +2295,11 @@ _editable_cache: tuple[bool, str | None] | None = None
 _langsmith_url_cache: tuple[str, str] | None = None
 """Module-level cache for successful LangSmith project URL lookups."""
 
+_langsmith_url_error_cache: tuple[tuple[str | None, ...], LangSmithApiError] | None = (
+    None
+)
+"""Cache 401/403 lookups by project, API key, endpoint, and workspace settings."""
+
 _LANGSMITH_URL_LOOKUP_TIMEOUT_SECONDS = 2.0
 """Max seconds to wait for LangSmith project URL lookup.
 
@@ -2745,9 +2750,12 @@ def build_coding_agent_metadata(
         metadata["repository_url"] = repository_url
         metadata["repository_provider"] = repository_provider
         metadata["repository_name"] = repository_name
+        metadata["ls_git_repo"] = repository_name
+        metadata["ls_repo_provider"] = repository_provider
 
     if git_branch:
         metadata["git_branch"] = git_branch
+        metadata["ls_git_branch"] = git_branch
     commit_sha = _get_git_commit_sha()
     if commit_sha:
         metadata["git_commit_sha"] = commit_sha
@@ -2756,6 +2764,7 @@ def build_coding_agent_metadata(
 
     if user_id:
         metadata["user_id"] = user_id
+        metadata["ls_attribution_identifier"] = user_id
     if sandbox_type and sandbox_type != "none":
         metadata["sandbox_type"] = sandbox_type
 
@@ -4803,7 +4812,7 @@ _DEFAULT_AUTO_CLASSIFIER_MODELS = {
     "google_genai": "google_genai:gemini-3.8-flash",
     "google_vertexai": "google_vertexai:gemini-3.8-flash",
     "openai": "openai:gpt-5.6-luna",
-    "openai_codex": "openai_codex:gpt-5.6-luna",
+    "openai_codex": "openai_codex:gpt-6-luna",
 }
 
 
@@ -5411,6 +5420,46 @@ class LangSmithProjectNotFoundError(LangSmithApiError):
     """
 
 
+class LangSmithPermissionError(LangSmithApiError):
+    """The LangSmith API key cannot read projects (lookup returned 403).
+
+    A key can have permission to write traces but not to read projects.
+    The trace URL cannot be resolved with such a key.
+    """
+
+
+_LANGSMITH_REJECTED_STATUSES = frozenset({401, 403})
+"""HTTP statuses that reject the API key itself and are cached per session."""
+
+
+def _langsmith_http_status(exc: BaseException) -> int | None:
+    """Find the HTTP status code behind a LangSmith SDK error.
+
+    The SDK raises its own exception types while it handles the HTTP error
+    from `requests`/`httpx`, so the response is on an exception further down
+    the `__cause__`/`__context__` chain, not on `exc` itself.
+
+    Args:
+        exc: Exception raised by the LangSmith SDK.
+
+    Returns:
+        The HTTP status code, or `None` when no exception in the chain has a
+            response (for example, a connection error).
+    """
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        # Do not test `response` for truthiness: `requests.Response` is falsy
+        # for 4xx/5xx statuses.
+        response = getattr(current, "response", None)
+        status = getattr(response, "status_code", None)
+        if isinstance(status, int):
+            return status
+        current = current.__cause__ or current.__context__
+    return None
+
+
 def _is_langsmith_not_found(exc: Exception) -> bool:
     """Whether a LangSmith SDK error indicates the project does not exist.
 
@@ -5422,6 +5471,104 @@ def _is_langsmith_not_found(exc: Exception) -> bool:
     except ImportError:
         return False
     return isinstance(exc, LangSmithNotFoundError)
+
+
+def _is_langsmith_user_error(exc: Exception) -> bool:
+    """Whether a LangSmith SDK error reports a client configuration problem.
+
+    Returns:
+        `True` for a `LangSmithUserError`, `False` otherwise.
+    """
+    try:
+        from langsmith.utils import LangSmithUserError
+    except ImportError:
+        return False
+    return isinstance(exc, LangSmithUserError)
+
+
+def _rejected_lookup_error(status: int, exc: Exception) -> LangSmithApiError:
+    """Build the typed error for a lookup that the server rejected (401/403).
+
+    Args:
+        status: HTTP status of the rejected request.
+        exc: Exception raised by the LangSmith SDK.
+
+    Returns:
+        `LangSmithPermissionError` for a 403, `LangSmithApiError` otherwise.
+    """
+    msg = str(exc) or repr(exc)
+    # The SDK raises `LangSmithUserError` for a 403 caused by an org-scoped
+    # key without a workspace ID. Its message tells the user what to set, so
+    # do not report it as a missing permission.
+    if status == 403 and not _is_langsmith_user_error(exc):  # noqa: PLR2004  # HTTP Forbidden
+        return LangSmithPermissionError(msg)
+    return LangSmithApiError(msg)
+
+
+def _lookup_failure(project_name: str, exc: Exception) -> LangSmithApiError:
+    """Log a failed project lookup and convert it to a typed error.
+
+    A 401 or 403 is an expected configuration problem, so it gets one log
+    line. Other failures keep the full traceback for diagnosis.
+
+    Args:
+        project_name: LangSmith project name that was looked up.
+        exc: Exception raised by the LangSmith SDK.
+
+    Returns:
+        The typed error to raise from `exc`.
+    """
+    status = _langsmith_http_status(exc)
+    if status in _LANGSMITH_REJECTED_STATUSES:
+        logger.debug(
+            "LangSmith project lookup for '%s' failed with HTTP %d",
+            project_name,
+            status,
+        )
+        return _rejected_lookup_error(status, exc)
+    logger.debug(
+        "Could not fetch LangSmith project URL for '%s'",
+        project_name,
+        exc_info=(type(exc), exc, exc.__traceback__),
+    )
+    msg = str(exc) or repr(exc)
+    if _is_langsmith_not_found(exc):
+        return LangSmithProjectNotFoundError(msg)
+    return LangSmithApiError(msg)
+
+
+def _raise_cached_lookup_error(cache_key: tuple[str | None, ...]) -> None:
+    """Re-raise a fresh copy of a rejection for the same lookup configuration."""
+    if _langsmith_url_error_cache is None:
+        return
+    cached_key, cached_error = _langsmith_url_error_cache
+    if cached_key == cache_key:
+        raise type(cached_error)(*cached_error.args) from cached_error.__cause__
+
+
+def _configured_project_url(project_name: str) -> str | None:
+    """Return the project URL set in the environment for `project_name`.
+
+    The URL applies only to the project named by the same environment, so a
+    user who switches to another project does not get links to the wrong one.
+
+    Args:
+        project_name: LangSmith project name being resolved.
+
+    Returns:
+        The configured URL, or `None` when unset, invalid, or for another
+            project.
+    """
+    from deepagents_code._env_vars import LANGSMITH_PROJECT, LANGSMITH_PROJECT_URL
+
+    environ = active_environment()
+    url = environ.get(LANGSMITH_PROJECT_URL, "").strip()
+    if not url or environ.get(LANGSMITH_PROJECT) != project_name:
+        return None
+    if not is_http_url(url):
+        logger.warning("Ignoring %s: not an http(s) URL", LANGSMITH_PROJECT_URL)
+        return None
+    return url
 
 
 def _assemble_langsmith_thread_url(project_url: str, thread_id: str) -> str:
@@ -5442,7 +5589,13 @@ def fetch_langsmith_project_url_or_raise(project_name: str) -> str:
     """Fetch the LangSmith project URL, raising on any failure.
 
     Successful results are cached at module level so repeated calls do not
-    make additional network requests.
+    make additional network requests. A 401 or 403 is also cached for the
+    same project, API key, endpoint, and workspace settings and is re-raised
+    without a network call. Changing these settings allows a fresh lookup.
+    Timeouts and network errors are not cached.
+
+    When the environment sets the project URL for this project
+    (`DEEPAGENTS_CODE_LANGSMITH_PROJECT_URL`), it is returned without a lookup.
 
     The network call runs in a daemon thread with a hard timeout of
     `_LANGSMITH_URL_LOOKUP_TIMEOUT_SECONDS`, so this function blocks the
@@ -5458,16 +5611,36 @@ def fetch_langsmith_project_url_or_raise(project_name: str) -> str:
         LangSmithImportError: `langsmith` is not installed.
         LangSmithLookupTimeoutError: lookup exceeded the hard timeout.
         LangSmithProjectNotFoundError: the project does not exist yet (404).
+        LangSmithPermissionError: the API key cannot read projects (403).
         LangSmithApiError: the SDK call raised (auth, network, etc.);
             wraps the original exception in `__cause__`.
-    """
-    global _langsmith_url_cache  # noqa: PLW0603  # Module-level cache requires global statement
+    """  # noqa: DOC502 - subclasses are built by `_lookup_failure`
+    global _langsmith_url_cache, _langsmith_url_error_cache  # noqa: PLW0603  # Module-level caches require global statement
 
+    if configured := _configured_project_url(project_name):
+        return configured
     if _langsmith_url_cache is not None:
         cached_name, cached_url = _langsmith_url_cache
         if cached_name == project_name:
             return cached_url
         # Different project name — fall through to fetch.
+
+    from deepagents_code.model_config import resolve_env_var
+
+    # Explicit api_key because Client() reads os.environ directly
+    # and doesn't know about the DEEPAGENTS_CODE_ prefix.
+    api_key = (
+        resolve_env_var("LANGSMITH_API_KEY") or resolve_env_var("LANGCHAIN_API_KEY")
+    ) or ""
+    cache_key = (
+        project_name,
+        api_key,
+        os.environ.get("LANGSMITH_ENDPOINT"),
+        os.environ.get("LANGCHAIN_ENDPOINT"),
+        os.environ.get("LANGSMITH_WORKSPACE_ID"),
+        os.environ.get("LANGCHAIN_WORKSPACE_ID"),
+    )
+    _raise_cached_lookup_error(cache_key)
 
     try:
         from langsmith import Client
@@ -5487,13 +5660,6 @@ def fetch_langsmith_project_url_or_raise(project_name: str) -> str:
     def _lookup_url() -> None:
         nonlocal result, lookup_error
         try:
-            from deepagents_code.model_config import resolve_env_var
-
-            # Explicit api_key because Client() reads os.environ directly
-            # and doesn't know about the DEEPAGENTS_CODE_ prefix.
-            api_key = resolve_env_var("LANGSMITH_API_KEY") or resolve_env_var(
-                "LANGCHAIN_API_KEY"
-            )
             project = Client(api_key=api_key).read_project(project_name=project_name)
             result = project.url or None
         except Exception as exc:  # noqa: BLE001  # LangSmith SDK error types are not stable
@@ -5517,19 +5683,10 @@ def fetch_langsmith_project_url_or_raise(project_name: str) -> str:
         raise LangSmithLookupTimeoutError(msg)
 
     if lookup_error is not None:
-        logger.debug(
-            "Could not fetch LangSmith project URL for '%s'",
-            project_name,
-            exc_info=(
-                type(lookup_error),
-                lookup_error,
-                lookup_error.__traceback__,
-            ),
-        )
-        msg = str(lookup_error) or repr(lookup_error)
-        if _is_langsmith_not_found(lookup_error):
-            raise LangSmithProjectNotFoundError(msg) from lookup_error
-        raise LangSmithApiError(msg) from lookup_error
+        error = _lookup_failure(project_name, lookup_error)
+        if _langsmith_http_status(lookup_error) in _LANGSMITH_REJECTED_STATUSES:
+            _langsmith_url_error_cache = (cache_key, error)
+        raise error from lookup_error
 
     if not result:
         # SDK returned a project with an empty URL — treat as an API anomaly.
@@ -5598,7 +5755,11 @@ def get_cached_langsmith_thread_url(thread_id: str) -> str | None:
         otherwise `None`.
     """
     project_name = get_langsmith_project_name()
-    if not project_name or _langsmith_url_cache is None:
+    if not project_name:
+        return None
+    if configured := _configured_project_url(project_name):
+        return _assemble_langsmith_thread_url(configured, thread_id)
+    if _langsmith_url_cache is None:
         return None
 
     cached_name, cached_url = _langsmith_url_cache
@@ -5608,9 +5769,10 @@ def get_cached_langsmith_thread_url(thread_id: str) -> str | None:
 
 
 def reset_langsmith_url_cache() -> None:
-    """Reset the LangSmith URL cache (for testing)."""
-    global _langsmith_url_cache  # noqa: PLW0603  # Module-level cache requires global statement
+    """Reset the LangSmith URL cache and cached 401/403 rejections (for testing)."""
+    global _langsmith_url_cache, _langsmith_url_error_cache  # noqa: PLW0603  # Module-level caches require global statement
     _langsmith_url_cache = None
+    _langsmith_url_error_cache = None
 
 
 def get_default_coding_instructions() -> str:
@@ -5760,69 +5922,14 @@ def detect_provider(model_name: str) -> str | None:
     return None
 
 
-def _expand_allowed_entry(entry: str) -> list[str]:
-    """Resolve one `models.allowed` entry to the model specs it admits.
-
-    An exact `provider:model` entry yields itself. A `provider:*` wildcard
-    yields the provider's discovered model lineup (registry discovery merged
-    with the config's explicit list), read before allowlist filtering:
-    `get_available_models` applies this policy itself, so calling it here
-    would recurse.
-
-    Args:
-        entry: One entry from `ModelConfig.allowed_models`.
-
-    Returns:
-        Exact specs the entry contributes as default candidates, empty when a
-        wildcarded provider has no discovered or configured models.
-    """
-    if not entry.endswith(":*"):
-        return [entry]
-    provider = entry[:-2]
-    from deepagents_code.model_config import get_discovered_models
-
-    return [f"{provider}:{model}" for model in get_discovered_models(provider)]
-
-
 def _get_default_model_spec() -> str:
-    """Get default model specification based on available credentials.
-
-    Checks in order:
-
-    1. `[models].default` in config file (user's intentional preference).
-    2. `[models].recent` in config file (last `/model` switch).
-    3. When `models.allowed` is active, the first entry in it whose provider
-       does not have a definitively missing credential. A `provider:*` entry
-       expands to the provider's discovered models rather than being a
-       selectable candidate itself. Steps 1 and 2 are skipped with a warning
-       when the stored value is outside the policy, and step 4 is never
-       reached -- a policy declares the whole candidate set.
-    4. Auto-detection based on available API credentials.
-
-    Returns:
-        Model specification in `provider:model` format.
+    """Return the saved default or recent model permitted by model policy.
 
     Raises:
-        NoCredentialsConfiguredError: If no credentials are configured for any
-            of the auto-detectable providers. Callers may catch this to defer
-            startup and prompt for credentials interactively.
-        NoAllowedModelCredentialsError: If `models.allowed` is active and no
-            model in it has usable credentials. A `NoCredentialsConfiguredError`
-            subclass, but callers should report it rather than silently retry:
-            only a credential for an allowlisted provider can resolve it.
-        ModelNotAllowedError: If `models.allowed` is active but empty, so no
-            model can be resolved. Unlike the error above this is **not**
-            recoverable by adding credentials, so the deferred-start path must
-            not treat it as a prompt-for-credentials signal.
+        NoModelConfiguredError: If no permitted model has been selected yet.
+        ModelNotAllowedError: If `models.allowed` permits no models.
     """  # noqa: DOC502 - `ModelNotAllowedError` propagates from `ModelConfig.policy_error`
-    from deepagents_code.model_config import (
-        ModelConfig,
-        ModelSpec,
-        NoAllowedModelCredentialsError,
-        NoCredentialsConfiguredError,
-        ProviderAuthState,
-        get_provider_auth_status,
-    )
+    from deepagents_code.model_config import ModelConfig, NoModelConfiguredError
 
     config = ModelConfig.load()
     for label, candidate in (
@@ -5838,68 +5945,16 @@ def _get_default_model_spec() -> str:
                 candidate,
             )
 
-    if config.allowed_models is not None:
-        if not config.allowed_models:
-            # No spec to name -- the user asked for nothing in particular, so
-            # `policy_error(None)` reports the empty policy rather than
-            # inventing a placeholder spec the user never typed.
-            deny_all = config.policy_error(None)
-            if deny_all is not None:
-                raise deny_all
-        # A `provider:*` wildcard cannot be selected itself -- no model is
-        # named -- but every configured model it admits is a candidate in the
-        # provider's declaration order.
-        candidates = [
-            spec
-            for entry in config.allowed_models
-            for spec in _expand_allowed_entry(entry)
-        ]
-        for candidate in candidates:
-            parsed = ModelSpec.parse(candidate)
-            auth = get_provider_auth_status(parsed.provider)
-            # Only a definitively missing credential disqualifies a candidate.
-            # UNKNOWN covers remote no-auth providers (e.g., a LAN/hosted
-            # Ollama endpoint) that may not require auth at all; rejecting
-            # them here would block startup even though create_model()
-            # deliberately permits that state.
-            if auth.state is not ProviderAuthState.MISSING:
-                return candidate
-        if not candidates:
-            # Every entry is a wildcard for a provider with no discoverable
-            # models, so there is nothing to credential.
-            allowed = ", ".join(config.allowed_models)
-            msg = (
-                "No discoverable models match models.allowed "
-                f"({allowed}). Name an exact provider:model spec or configure "
-                "models for a wildcarded provider."
-            )
-            raise NoAllowedModelCredentialsError(msg)
-        allowed = ", ".join(candidates)
-        msg = (
-            "No credentials are configured for any model in models.allowed. "
-            f"Add credentials for one of: {allowed}."
-        )
-        raise NoAllowedModelCredentialsError(msg)
-
-    # `is True` deliberately excludes `ProviderAuthState.UNKNOWN` (which maps
-    # to `as_legacy_bool() -> None`). For the three explicit-credential
-    # providers below, an UNKNOWN result means we cannot prove auth works, so
-    # we fall through rather than pick an unverifiable default. If an
-    # implicit-auth provider (e.g., Vertex ADC) is added to this fallback
-    # list, switch to checking `state` against the relevant
-    # `ProviderAuthState` members directly.
-    if get_provider_auth_status("openai").as_legacy_bool() is True:
-        return "openai:gpt-5.6-terra"
-    if get_provider_auth_status("anthropic").as_legacy_bool() is True:
-        return "anthropic:claude-opus-5"
-    if get_provider_auth_status("google_genai").as_legacy_bool() is True:
-        return "google_genai:gemini-3.1-pro-preview"
+    if config.allowed_models == ():
+        deny_all = config.policy_error(None)
+        if deny_all is not None:
+            raise deny_all
 
     msg = (
-        "No credentials configured. Please set one of: "
-        "ANTHROPIC_API_KEY, OPENAI_API_KEY, or GOOGLE_API_KEY"
+        "No model configured. Choose one with /model in an interactive session, "
+        "pass --model provider:model, or save one with --default-model provider:model."
     )
-    raise NoCredentialsConfiguredError(msg)
+    raise NoModelConfiguredError(msg)
 
 
 _OPENROUTER_APP_URL = "https://pypi.org/project/deepagents-code/"
@@ -7119,6 +7174,14 @@ def create_model(
     )
     if bind_preserved_thinking:
         _apply_anthropic_thinking_binding(provider, model_name, kwargs)
+    if (
+        provider == "openrouter"
+        and model_name.startswith("anthropic/")
+        and "cache_control" not in kwargs
+    ):
+        model_kwargs = dict(kwargs.get("model_kwargs") or {})
+        model_kwargs.setdefault("cache_control", {"type": "ephemeral"})
+        kwargs["model_kwargs"] = model_kwargs
 
     # dcode's model-node middleware owns the user-visible retry budget. Resolve
     # that budget separately, then force the provider's own retry loop off so
@@ -7200,10 +7263,18 @@ def create_model(
 
     _set_configured_model_metadata(model, model_name, resolved_provider)
 
-    if provider == "anthropic":
-        from deepagents_code.model_config import ANTHROPIC_MODEL_PROFILE_FALLBACKS
+    if provider in {"anthropic", "openai"}:
+        from deepagents_code.model_config import (
+            ANTHROPIC_MODEL_PROFILE_FALLBACKS,
+            OPENAI_MODEL_PROFILE_FALLBACKS,
+        )
 
-        fallback = ANTHROPIC_MODEL_PROFILE_FALLBACKS.get(model_name)
+        fallbacks = (
+            ANTHROPIC_MODEL_PROFILE_FALLBACKS
+            if provider == "anthropic"
+            else OPENAI_MODEL_PROFILE_FALLBACKS
+        )
+        fallback = fallbacks.get(model_name)
         if fallback:
             upstream = getattr(model, "profile", None)
             _apply_profile_overrides(

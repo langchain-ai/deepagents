@@ -380,6 +380,14 @@ KITTY_KEYBOARD = "DEEPAGENTS_CODE_KITTY_KEYBOARD"
 LANGSMITH_PROJECT = "DEEPAGENTS_CODE_LANGSMITH_PROJECT"
 """Override LangSmith project name for agent traces."""
 
+LANGSMITH_PROJECT_URL = "DEEPAGENTS_CODE_LANGSMITH_PROJECT_URL"
+"""LangSmith URL of the project named by `DEEPAGENTS_CODE_LANGSMITH_PROJECT`.
+
+When set, thread links and `/trace` use this URL instead of looking the project
+up, so the API key does not need project read access. It is ignored when the
+active project is a different one.
+"""
+
 LANGSMITH_REDACT = "DEEPAGENTS_CODE_LANGSMITH_REDACT"
 """Toggle LangSmith secret redaction for agent traces (defaults to on)."""
 
@@ -477,6 +485,9 @@ selector, which already surfaces (and installs) uninstalled model providers.
 Set to a truthy value to bring the standalone integrations screen back into the
 flow. Parsed by `is_env_truthy`: accepts `1`, `true`, `yes`, `on` as enabled.
 """
+
+PROVIDER_TOOL_SEARCH = "DEEPAGENTS_CODE_PROVIDER_TOOL_SEARCH"
+"""Toggle native MCP tool discovery on verified endpoints (defaults to on)."""
 
 OPENAI_PROMPT_CACHE_KEY = "DEEPAGENTS_CODE_OPENAI_PROMPT_CACHE_KEY"
 """Toggle injecting a per-thread OpenAI `prompt_cache_key` (defaults to on).

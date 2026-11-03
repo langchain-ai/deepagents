@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from langchain.agents.middleware.types import ExtendedModelResponse, ModelRequest, ModelResponse
 from langchain_core.exceptions import ContextOverflowError
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage, get_notification_metadata
 
 from deepagents.backends.composite import CompositeBackend
 from deepagents.backends.protocol import BackendProtocol, EditResult, FileDownloadResponse, FileUploadResponse, ReadResult, WriteResult
@@ -1212,6 +1212,7 @@ class TestSummaryMessageFormat:
         summary_msg = modified_request.messages[0]
 
         assert summary_msg.additional_kwargs.get("lc_source") == "summarization"
+        assert get_notification_metadata(summary_msg) == {"source": "summarization"}
 
     def test_summarization_aborts_on_backend_failure(self) -> None:
         """Test that summarization warns when backend write fails but still summarizes."""

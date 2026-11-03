@@ -52,6 +52,9 @@ _PAGE_SIZE = 256
 _RUN = struct.Struct("<QQ")
 """Header of one run of changed bytes in a `pages` record: offset, length."""
 
+_PAGES_VERSION = 1
+"""First byte of a `pages` record, so a reader refuses a layout it does not know."""
+
 # Domain-separation prefix folded into every signed message so a snapshot HMAC
 # can never be confused with an HMAC computed over some other blob using the
 # same key. Bump the version suffix if the signed-message layout ever changes.
@@ -174,7 +177,7 @@ def _diff_pages(prior: bytes, payload: bytes) -> bytes:
     changes land in a few pages. Comparing aligned pages finds them in linear
     time, where `bsdiff4.diff` suffix-sorts the whole snapshot.
     """
-    parts = [len(payload).to_bytes(8, "little")]
+    parts = [bytes([_PAGES_VERSION]), len(payload).to_bytes(8, "little")]
     start = None
     for offset in range(0, len(payload), _PAGE_SIZE):
         end = offset + _PAGE_SIZE
@@ -192,9 +195,12 @@ def _diff_pages(prior: bytes, payload: bytes) -> bytes:
 def _apply_pages(base: bytes, blob: bytes) -> bytes:
     """Rebuild a snapshot from `base` and a record made by `_diff_pages`."""
     data = zlib.decompress(blob)
-    size = int.from_bytes(data[:8], "little")
+    if data[:1] != bytes([_PAGES_VERSION]):
+        msg = f"Unsupported `pages` snapshot record version {data[:1].hex() or 'none'}"
+        raise ValueError(msg)
+    size = int.from_bytes(data[1:9], "little")
     out = bytearray(base[:size].ljust(size, b"\0"))
-    pos = 8
+    pos = 9
     while pos < len(data):
         offset, length = _RUN.unpack_from(data, pos)
         pos += _RUN.size

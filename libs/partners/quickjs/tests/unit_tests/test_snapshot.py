@@ -19,6 +19,7 @@ instead of executed.
 from __future__ import annotations
 
 import random
+import zlib
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -288,6 +289,16 @@ def test_page_record_rebuilds_snapshot_that_changes_size(
     payload = change(prior)
     record = ("pages", _diff_pages(prior, payload))
     assert replay_snapshot_chain(prior, [record]) == payload
+
+
+def test_page_record_from_a_newer_format_is_refused() -> None:
+    """A reader rejects a `pages` record whose format version it does not know."""
+    prior = random.Random(1).randbytes(1_024)  # noqa: S311  # seeded test fixture, not crypto
+    payload = prior[:512] + bytes(512)
+    data = bytearray(zlib.decompress(_diff_pages(prior, payload)))
+    data[0] += 1
+    with pytest.raises(ValueError, match="version"):
+        replay_snapshot_chain(prior, [("pages", zlib.compress(bytes(data)))])
 
 
 def test_replay_chain_still_applies_bsdiff_records() -> None:

@@ -784,10 +784,13 @@ async def test_make_bare_graph_attaches_task_mcp_tools(
 
     monkeypatch.setattr(langgraph_agent, "MCPAdapter", adapter)
     monkeypatch.setattr(langgraph_agent, "_build_model", lambda _: "model")
-    monkeypatch.setattr(langgraph_agent, "create_deep_agent", lambda **kwargs: kwargs["tools"])
+    tools: list[BaseTool] = []
+    monkeypatch.setattr(
+        langgraph_agent, "create_deep_agent", lambda **kwargs: tools.extend(kwargs["tools"])
+    )
     monkeypatch.delenv("TAVILY_API_KEY", raising=False)
 
-    tools = await langgraph_agent.make_bare_graph(
+    await langgraph_agent.make_bare_graph(
         {
             "configurable": {
                 "cwd": str(tmp_path),
@@ -798,7 +801,6 @@ async def test_make_bare_graph_attaches_task_mcp_tools(
         }
     )
 
-    assert isinstance(tools, list)
     assert [tool.name for tool in tools] == ["list_files"]
     assert "docs" in str(await tools[0].ainvoke({"path": "docs"}))
 

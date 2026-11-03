@@ -7,6 +7,7 @@ import time
 from typing import TYPE_CHECKING, Any, Literal
 
 import pytest
+from deepagents.middleware.filesystem import FilesystemMiddleware
 from langchain.agents import create_agent
 from langchain.agents.middleware import HumanInTheLoopMiddleware
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
@@ -42,6 +43,14 @@ def note(x: str) -> str:
     """Record something without approval."""
     CALLS.append(("note", x))
     return f"note:{x}"
+
+
+@tool
+def flaky(x: str) -> str:
+    """Fail every time it runs."""
+    CALLS.append(("flaky", x))
+    msg = "flaky failed"
+    raise RuntimeError(msg)
 
 
 @tool
@@ -93,9 +102,11 @@ def _agent(
     script.append(AIMessage("done"))
     return create_agent(
         model=FakeChatModel(messages=iter(script[1:] if resuming else script)),
-        tools=[danger, note, slow, ask, search, task],
+        tools=[danger, note, flaky, slow, ask, search, task],
         middleware=[
-            CodeInterpreterMiddleware(ptc=["danger", "note", "slow", "ask", "search"]),
+            CodeInterpreterMiddleware(
+                ptc=["danger", "note", "flaky", "slow", "ask", "search"]
+            ),
             HumanInTheLoopMiddleware(
                 interrupt_on={"danger": True}, interrupt_mode="per_call"
             ),
@@ -221,6 +232,74 @@ async def test_decision_is_not_applied_to_a_call_with_different_args() -> None:
     assert out.interrupts
     assert len({p[0]["args"]["x"] for p in pauses}) == 3
     assert CALLS == []
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="LangGraph gives a resume without an interrupt id to whichever "
+    "interrupt asks first on the re-run",
+)
+async def test_bare_resume_is_not_applied_to_a_call_with_different_args() -> None:
+    config = {"configurable": {"thread_id": "t"}}
+    agent = _agent("await tools.danger({x: String(Date.now())})")
+    paused = await agent.ainvoke(
+        {"messages": [HumanMessage("go")]}, config, version="v2"
+    )
+    assert paused.interrupts
+    await asyncio.sleep(0.01)
+
+    out = await agent.ainvoke(Command(resume=APPROVE), config, version="v2")
+
+    assert out.interrupts
+    assert CALLS == []
+
+
+@pytest.mark.parametrize("invoke_mode", ["invoke", "ainvoke"])
+async def test_call_that_raised_before_a_pause_does_not_run_again(
+    invoke_mode: Literal["invoke", "ainvoke"],
+) -> None:
+    code = """
+    let r;
+    try { await tools.flaky({x: 'a'}) } catch (e) { r = e.name }
+    await tools.danger({x: r});
+    r
+    """
+    out, pauses = await _run(_agent(code), lambda _: APPROVE, invoke_mode=invoke_mode)
+
+    assert len(pauses) == 1
+    assert CALLS == [("flaky", "a"), ("danger", "HostError")]
+    assert _eval_result(out) == "<result>HostError</result>"
+
+
+@pytest.mark.parametrize("invoke_mode", ["invoke", "ainvoke"])
+async def test_state_backend_write_is_read_back_in_the_same_eval_across_a_pause(
+    invoke_mode: Literal["invoke", "ainvoke"],
+) -> None:
+    code = """
+    await tools.writeFile({file_path: '/a.txt', content: 'hello'});
+    await tools.danger({x: 'b'});
+    await tools.readFile({file_path: '/a.txt'})
+    """
+    call = {"name": "eval", "args": {"code": code}, "id": "call_1"}
+    agent = create_agent(
+        model=FakeChatModel(
+            messages=iter([AIMessage(content="", tool_calls=[call]), AIMessage("done")])
+        ),
+        tools=[danger],
+        middleware=[
+            CodeInterpreterMiddleware(ptc=["write_file", "read_file", "danger"]),
+            FilesystemMiddleware(),
+            HumanInTheLoopMiddleware(
+                interrupt_on={"danger": True}, interrupt_mode="per_call"
+            ),
+        ],
+        checkpointer=InMemorySaver(),
+    )
+    out, pauses = await _run(agent, lambda _: APPROVE, invoke_mode=invoke_mode)
+
+    assert len(pauses) == 1
+    assert "hello" in _eval_result(out)
+    assert out.value["files"]["/a.txt"]["content"] == "hello"
 
 
 async def test_rebuilt_agent_resumes_without_rerunning_finished_calls() -> None:

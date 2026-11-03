@@ -1003,3 +1003,46 @@ def test_recursive_model_back_reference_renders_unknown() -> None:
     body = _ptc_body([tool])
     assert "  children?: { value: number; children?: unknown[] }[];" in body
     assert "): Promise<{ value: number; children?: unknown[] }>" in body
+
+
+def _dict_schema_tool(name: str, schema: dict[str, Any]) -> BaseTool:
+    """A tool whose `args_schema` is raw JSON Schema, as MCP adapters build."""
+    return StructuredTool(
+        name=name, description="MCP tool.", args_schema=schema, func=lambda **_: None
+    )
+
+
+def test_dict_schema_renders_fields_with_refs_inline() -> None:
+    """MCP-style dict schemas render their fields, with `$defs` inlined."""
+    schema: dict[str, Any] = {
+        "type": "object",
+        "properties": {
+            "service": {"type": "string"},
+            "regions": {"type": "array", "items": {"$ref": "#/$defs/Region"}},
+        },
+        "required": ["service"],
+        "$defs": {
+            "Region": {"type": "object", "properties": {"name": {"type": "string"}}}
+        },
+    }
+    body = _ptc_body([_dict_schema_tool("request_rollout_check", schema)])
+    assert "Record<string, unknown>" not in body
+    assert "  service: string;\n  regions?: { name?: string }[];" in body
+
+
+def test_dict_schema_recursive_ref_renders_unknown() -> None:
+    """A recursive `$ref` in a dict schema is cut off as `unknown`."""
+    schema: dict[str, Any] = {
+        "type": "object",
+        "properties": {"root": {"$ref": "#/$defs/Node"}},
+        "$defs": {
+            "Node": {
+                "type": "object",
+                "properties": {
+                    "children": {"type": "array", "items": {"$ref": "#/$defs/Node"}}
+                },
+            }
+        },
+    }
+    body = _ptc_body([_dict_schema_tool("walk", schema)])
+    assert "  root?: { children?: unknown[] };" in body

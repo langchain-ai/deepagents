@@ -5,10 +5,11 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from langchain.agents import create_agent
-from langchain.agents.middleware.types import ToolCallRequest
+from langchain.agents.middleware.types import ModelRequest, ModelResponse, ToolCallRequest
 from langchain.tools import ToolRuntime
 from langchain_core.messages import (
     AIMessage,
+    AnyMessage,
     HumanMessage,
     RemoveMessage,
     SystemMessage,
@@ -65,7 +66,7 @@ from deepagents.middleware.filesystem import (
     _format_glob_tool_result,
     supports_execution,
 )
-from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
+from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware, patch_dangling_tool_calls
 from deepagents.middleware.subagents import GENERAL_PURPOSE_SUBAGENT, SubAgentMiddleware
 
 
@@ -3691,17 +3692,9 @@ class TestBuildEvictedContent:
 
 
 class TestPatchToolCallsMiddleware:
-    def test_first_message(self) -> None:
-        input_messages = [
-            SystemMessage(content="You are a helpful assistant.", id="1"),
-            HumanMessage(content="Hello, how are you?", id="2"),
-        ]
-        middleware = PatchToolCallsMiddleware()
-        state_update = middleware.before_agent({"messages": input_messages}, None)
-        assert state_update is None
-
-    def test_missing_tool_call(self) -> None:
-        input_messages = [
+    @staticmethod
+    def _dangling_conversation() -> list[AnyMessage]:
+        return [
             SystemMessage(content="You are a helpful assistant.", id="1"),
             HumanMessage(content="Hello, how are you?", id="2"),
             AIMessage(
@@ -3711,30 +3704,22 @@ class TestPatchToolCallsMiddleware:
             ),
             HumanMessage(content="What is the weather in Tokyo?", id="4"),
         ]
-        middleware = PatchToolCallsMiddleware()
-        state_update = middleware.before_agent({"messages": input_messages}, None)
-        assert state_update is not None
-        messages = state_update["messages"]
-        assert isinstance(messages, list)
-        assert isinstance(messages[0], RemoveMessage)
-        assert messages[0].id == REMOVE_ALL_MESSAGES
-        patched_messages = messages[1:]
-        assert len(patched_messages) == 5
-        assert patched_messages[0].type == "system"
-        assert patched_messages[0].content == "You are a helpful assistant."
-        assert patched_messages[1].type == "human"
-        assert patched_messages[1].content == "Hello, how are you?"
-        assert patched_messages[2].type == "ai"
-        assert len(patched_messages[2].tool_calls) == 1
-        assert patched_messages[2].tool_calls[0]["id"] == "123"
-        assert patched_messages[2].tool_calls[0]["name"] == "get_events_for_days"
-        assert patched_messages[2].tool_calls[0]["args"] == {"date_str": "2025-01-01"}
-        assert patched_messages[3].type == "tool"
-        assert patched_messages[3].name == "get_events_for_days"
-        assert patched_messages[3].tool_call_id == "123"
-        assert patched_messages[3].status == "error"
-        assert patched_messages[4].type == "human"
-        assert patched_messages[4].content == "What is the weather in Tokyo?"
+
+    def test_first_message(self) -> None:
+        input_messages = [
+            SystemMessage(content="You are a helpful assistant.", id="1"),
+            HumanMessage(content="Hello, how are you?", id="2"),
+        ]
+        assert patch_dangling_tool_calls(input_messages) is None
+
+    def test_missing_tool_call(self) -> None:
+        patched = patch_dangling_tool_calls(self._dangling_conversation())
+        assert patched is not None
+        assert [m.type for m in patched] == ["system", "human", "ai", "tool", "human"]
+        assert patched[3].name == "get_events_for_days"
+        assert patched[3].tool_call_id == "123"
+        assert patched[3].status == "error"
+        assert patched[4].content == "What is the weather in Tokyo?"
 
     def test_no_missing_tool_calls(self) -> None:
         input_messages = [
@@ -3748,20 +3733,11 @@ class TestPatchToolCallsMiddleware:
             ToolMessage(content="I have no events for that date.", tool_call_id="123", id="4"),
             HumanMessage(content="What is the weather in Tokyo?", id="5"),
         ]
-        middleware = PatchToolCallsMiddleware()
-        state_update = middleware.before_agent({"messages": input_messages}, None)
-        assert state_update is None
+        assert patch_dangling_tool_calls(input_messages) is None
 
     def test_two_missing_tool_calls(self) -> None:
         input_messages = [
-            SystemMessage(content="You are a helpful assistant.", id="1"),
-            HumanMessage(content="Hello, how are you?", id="2"),
-            AIMessage(
-                content="I'm doing well, thank you!",
-                tool_calls=[ToolCall(id="123", name="get_events_for_days", args={"date_str": "2025-01-01"})],
-                id="3",
-            ),
-            HumanMessage(content="What is the weather in Tokyo?", id="4"),
+            *self._dangling_conversation(),
             AIMessage(
                 content="I'm doing well, thank you!",
                 tool_calls=[ToolCall(id="456", name="get_events_for_days", args={"date_str": "2025-01-01"})],
@@ -3769,39 +3745,61 @@ class TestPatchToolCallsMiddleware:
             ),
             HumanMessage(content="What is the weather in Tokyo?", id="6"),
         ]
-        middleware = PatchToolCallsMiddleware()
-        state_update = middleware.before_agent({"messages": input_messages}, None)
-        assert state_update is not None
-        messages = state_update["messages"]
-        assert isinstance(messages, list)
-        assert isinstance(messages[0], RemoveMessage)
-        assert messages[0].id == REMOVE_ALL_MESSAGES
-        patched_messages = messages[1:]
-        assert len(patched_messages) == 8
-        assert patched_messages[0].type == "system"
-        assert patched_messages[0].content == "You are a helpful assistant."
-        assert patched_messages[1].type == "human"
-        assert patched_messages[1].content == "Hello, how are you?"
-        assert patched_messages[2].type == "ai"
-        assert len(patched_messages[2].tool_calls) == 1
-        assert patched_messages[2].tool_calls[0]["id"] == "123"
-        assert patched_messages[2].tool_calls[0]["name"] == "get_events_for_days"
-        assert patched_messages[2].tool_calls[0]["args"] == {"date_str": "2025-01-01"}
-        assert patched_messages[3].type == "tool"
-        assert patched_messages[3].name == "get_events_for_days"
-        assert patched_messages[3].tool_call_id == "123"
-        assert patched_messages[4].type == "human"
-        assert patched_messages[4].content == "What is the weather in Tokyo?"
-        assert patched_messages[5].type == "ai"
-        assert len(patched_messages[5].tool_calls) == 1
-        assert patched_messages[5].tool_calls[0]["id"] == "456"
-        assert patched_messages[5].tool_calls[0]["name"] == "get_events_for_days"
-        assert patched_messages[5].tool_calls[0]["args"] == {"date_str": "2025-01-01"}
-        assert patched_messages[6].type == "tool"
-        assert patched_messages[6].name == "get_events_for_days"
-        assert patched_messages[6].tool_call_id == "456"
-        assert patched_messages[7].type == "human"
-        assert patched_messages[7].content == "What is the weather in Tokyo?"
+        patched = patch_dangling_tool_calls(input_messages)
+        assert patched is not None
+        assert [m.type for m in patched] == ["system", "human", "ai", "tool", "human", "ai", "tool", "human"]
+        assert patched[3].tool_call_id == "123"
+        assert patched[6].tool_call_id == "456"
+
+    def test_invalid_tool_call(self) -> None:
+        message = AIMessage(
+            content="",
+            invalid_tool_calls=[{"id": "bad", "name": "search", "args": '{"q": "wea', "error": "truncated", "type": "invalid_tool_call"}],
+            id="1",
+        )
+        patched = patch_dangling_tool_calls([message])
+        assert patched is not None
+        assert patched[1].tool_call_id == "bad"
+        assert "malformed or truncated" in patched[1].content
+
+    def test_wrap_model_call_patches_request_only(self) -> None:
+        messages = self._dangling_conversation()
+        state = {"messages": messages}
+        seen: list[ModelRequest] = []
+
+        def handler(request: ModelRequest) -> ModelResponse:
+            seen.append(request)
+            return ModelResponse(result=[AIMessage(content="ok")])
+
+        PatchToolCallsMiddleware().wrap_model_call(ModelRequest(model=None, messages=messages, tools=[], state=state), handler)
+
+        assert [m.type for m in seen[0].messages] == ["system", "human", "ai", "tool", "human"]
+        assert len(messages) == 4
+        assert state["messages"] is messages
+
+    async def test_awrap_model_call_patches_request(self) -> None:
+        seen: list[ModelRequest] = []
+
+        async def handler(request: ModelRequest) -> ModelResponse:
+            seen.append(request)
+            return ModelResponse(result=[AIMessage(content="ok")])
+
+        request = ModelRequest(model=None, messages=self._dangling_conversation(), tools=[])
+        await PatchToolCallsMiddleware().awrap_model_call(request, handler)
+
+        assert [m.type for m in seen[0].messages] == ["system", "human", "ai", "tool", "human"]
+
+    def test_wrap_model_call_passes_clean_request_through(self) -> None:
+        request = ModelRequest(model=None, messages=[HumanMessage(content="hi", id="1")], tools=[])
+        seen: list[ModelRequest] = []
+
+        def handler(req: ModelRequest) -> ModelResponse:
+            seen.append(req)
+            return ModelResponse(result=[AIMessage(content="ok")])
+
+        PatchToolCallsMiddleware().wrap_model_call(request, handler)
+
+        assert seen[0] is request
 
 
 class TestTruncation:

@@ -4520,8 +4520,30 @@ def test_invalid_tool_call_patched_on_next_turn() -> None:
     assert synthetic.name == "search"
     assert synthetic.status == "error"
 
-    # Final state must also expose the patched ToolMessage.
+    # `create_agent` writes its invalid-tool-call repair back to state.
     assert any(isinstance(m, ToolMessage) and m.tool_call_id == "call_truncated" for m in result["messages"])
+
+
+def test_dangling_tool_call_patched_in_request_not_state() -> None:
+    fake_model = FakeChatModelWithHistory(messages=iter([AIMessage(content="Done.")]))
+    agent = create_deep_agent(model=fake_model, checkpointer=InMemorySaver())
+    config: dict = {"configurable": {"thread_id": "patch-dangling-tool-calls"}}
+    history = [
+        HumanMessage(content="List the files", id="h1"),
+        AIMessage(content="", tool_calls=[{"id": "call_lost", "name": "ls", "args": {"path": "/"}}], id="a1"),
+        HumanMessage(content="Never mind, say done", id="h2"),
+    ]
+
+    result = agent.invoke({"messages": history}, config)
+
+    model_inputs = fake_model.call_history[0]["messages"]
+    position = next(i for i, m in enumerate(model_inputs) if m.id == "a1")
+    synthetic = model_inputs[position + 1]
+    assert isinstance(synthetic, ToolMessage)
+    assert synthetic.tool_call_id == "call_lost"
+    assert synthetic.status == "error"
+    assert [m.id for m in result["messages"][:3]] == ["h1", "a1", "h2"]
+    assert not any(isinstance(m, ToolMessage) for m in result["messages"])
 
 
 _OVERFLOW_INPUT_CHAR_THRESHOLD = 50_000

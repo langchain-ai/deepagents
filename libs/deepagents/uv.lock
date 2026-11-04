@@ -596,10 +596,10 @@ test = [
 [package.metadata]
 requires-dist = [
     { name = "av", marker = "extra == 'video'", specifier = ">=18.0.0" },
-    { name = "langchain", git = "https://github.com/langchain-ai/langchain?subdirectory=libs%2Flangchain_v1&rev=ea39d1caa7dd036e92ed7f65882f4e1ceba01811" },
+    { name = "langchain", specifier = ">=1.4.9,<2.0.0" },
     { name = "langchain-anthropic", specifier = ">=1.7.9,<2.0.0" },
     { name = "langchain-aws", marker = "extra == 'aws'", specifier = ">=1.9.1,<2.0.0" },
-    { name = "langchain-core", git = "https://github.com/langchain-ai/langchain?subdirectory=libs%2Fcore&rev=ea39d1caa7dd036e92ed7f65882f4e1ceba01811" },
+    { name = "langchain-core", specifier = ">=1.7.5,<2.0.0" },
     { name = "langchain-google-genai", specifier = ">=4.4.2,<5.0.0" },
     { name = "langchain-quickjs", marker = "extra == 'quickjs'", specifier = ">=0.3.11" },
     { name = "langsmith", specifier = ">=0.14.17" },
@@ -1041,12 +1041,16 @@ wheels = [
 
 [[package]]
 name = "langchain"
-version = "1.4.8"
-source = { git = "https://github.com/langchain-ai/langchain?subdirectory=libs%2Flangchain_v1&rev=ea39d1caa7dd036e92ed7f65882f4e1ceba01811#ea39d1caa7dd036e92ed7f65882f4e1ceba01811" }
+version = "1.4.9"
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "langchain-core" },
     { name = "langgraph" },
     { name = "pydantic" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/f9/f4/97e0425ce79e67aeaa090be3ac1b5f51244837f48d99ea01e84820775607/langchain-1.4.9.tar.gz", hash = "sha256:449905dd841442562f897267ceaa05f80f42daa2cf019549b2650a9b02e85d8b", size = 771011, upload-time = "2026-11-04T17:07:22.158Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/39/35/d7af5ed4e82f8bb43b36460e72b6d43f4ac16626d79e31d25c49e6bee697/langchain-1.4.9-py3-none-any.whl", hash = "sha256:87cf3c15dfddaebd0e421d253e3b4abf70b70d6e18e56c45b9eb1873cc46f154", size = 171661, upload-time = "2026-11-04T17:07:20.201Z" },
 ]
 
 [[package]]
@@ -1080,8 +1084,8 @@ wheels = [
 
 [[package]]
 name = "langchain-core"
-version = "1.7.4"
-source = { git = "https://github.com/langchain-ai/langchain?subdirectory=libs%2Fcore&rev=ea39d1caa7dd036e92ed7f65882f4e1ceba01811#ea39d1caa7dd036e92ed7f65882f4e1ceba01811" }
+version = "1.7.5"
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "certifi" },
     { name = "httpx" },
@@ -1094,6 +1098,10 @@ dependencies = [
     { name = "tenacity" },
     { name = "typing-extensions" },
     { name = "uuid-utils" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/63/1f/669c00443914aa5b1c73af4d7b64016c9e51b4a4c3f163ba9b42aa5716ac/langchain_core-1.7.5.tar.gz", hash = "sha256:d11d25e8603e0fa08ebb3549068e0bfb57448845d49c28caec053b8b6c815e32", size = 1034442, upload-time = "2026-11-04T15:49:45.486Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/72/e7/336b85cafb3f0d1b9e44cfcd4507b8ae46e2b5db790b33a5e54b08514b63/langchain_core-1.7.5-py3-none-any.whl", hash = "sha256:bd2629e8ef95cae10700b80bf3732a51f04e264b6629723e009a5dd58f45f496", size = 579760, upload-time = "2026-11-04T15:49:43.695Z" },
 ]
 
 [[package]]

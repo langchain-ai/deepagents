@@ -66,17 +66,21 @@ def _read(args: dict[str, Any]) -> dict[str, Any]:
     return {"file_path": args["path"]}
 
 
+def _text(value: str | bytes, what: str) -> str:
+    if isinstance(value, str):
+        return value
+    try:
+        return value.decode("utf-8")
+    except UnicodeDecodeError:
+        msg = f"write_file stores text, and the {what} is not valid UTF-8"
+        raise ValueError(msg) from None
+
+
 def _write(args: dict[str, Any]) -> dict[str, Any]:
-    """`write_file` stores text, so data must be a string or UTF-8 bytes."""
+    """`write_file` stores text, so data and an appended-to file must be UTF-8."""
     _check_encoding(args, (None, "utf8", "utf-8"))
-    data = args["data"]
-    if isinstance(data, bytes):
-        try:
-            data = data.decode("utf-8")
-        except UnicodeDecodeError:
-            msg = "write_file stores text, and the data is not valid UTF-8"
-            raise ValueError(msg) from None
-    return {"file_path": args["path"], "content": args.get("prefix", "") + data}
+    prefix = _text(args.get("prefix", ""), "file")
+    return {"file_path": args["path"], "content": prefix + _text(args["data"], "data")}
 
 
 def _stat(args: dict[str, Any], raw: Any) -> dict[str, Any]:

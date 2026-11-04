@@ -673,24 +673,26 @@ def test_writes_and_deletes() -> None:
     ]
 
 
-def test_an_append_of_bytes_that_are_not_utf8_throws_and_writes_nothing() -> None:
+def test_an_append_that_is_not_all_utf8_throws_and_writes_nothing(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "b.txt").write_bytes(b"plain")
+    (tmp_path / "latin1.txt").write_bytes(b"caf\xe9")
     code = """
     const caught = async (f) => {
       try { await f(); return "ok" } catch (e) { return e.code }
     };
     const bad = new Uint8Array([255]);
     JSON.stringify([
-      await caught(() => fs.appendFileSync("/docs/b.txt", bad)),
-      await caught(() => fs.promises.appendFile("/docs/b.txt", bad)),
-      fs.readFileSync("/docs/b.txt", "utf8"),
+      await caught(() => fs.appendFileSync("/b.txt", bad)),
+      await caught(() => fs.promises.appendFile("/b.txt", bad)),
+      await caught(() => fs.appendFileSync("/latin1.txt", "!")),
+      await caught(() => fs.promises.appendFile("/latin1.txt", "!")),
     ])"""
-    _CountingBackend.writes.clear()
-    assert _run(code, backend=_CountingBackend()) == [
-        "ERR_INVALID_ARG_VALUE",
-        "ERR_INVALID_ARG_VALUE",
-        "plain",
-    ]
-    assert _CountingBackend.writes == []
+    backend = FilesystemBackend(root_dir=tmp_path, virtual_mode=True)
+    assert _run(code, backend=backend) == ["ERR_INVALID_ARG_VALUE"] * 4
+    assert (tmp_path / "b.txt").read_bytes() == b"plain"
+    assert (tmp_path / "latin1.txt").read_bytes() == b"caf\xe9"
 
 
 async def test_writes_pause_for_approval_and_run_once_on_resume() -> None:

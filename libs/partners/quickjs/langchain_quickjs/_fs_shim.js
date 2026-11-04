@@ -165,7 +165,7 @@ promises.lstat = promises.stat;
 const write = async (p, data, opts, fallback) => {
   const args = writeArgs(p, data, opts);
   if (writeMode(opts, fallback) === "w") return void (await acall("writeFile", args));
-  const prev = await promises.readFile(args.path, "utf8").catch(orEmpty);
+  const prev = await promises.readFile(args.path).catch(orEmpty);
   await acall("writeFile", { ...args, prefix: prev });
 };
 const remove = async (syscall, p, opts) => {
@@ -211,7 +211,7 @@ const writeSync = (p, data, opts, fallback) => {
   const args = writeArgs(p, data, opts);
   if (writeMode(opts, fallback) === "w") return void call("writeFile", args);
   let prev;
-  try { prev = fs.readFileSync(args.path, "utf8") } catch (e) { prev = orEmpty(e) }
+  try { prev = fs.readFileSync(args.path) } catch (e) { prev = orEmpty(e) }
   call("writeFile", { ...args, prefix: prev });
 };
 const removeSync = (syscall, p, opts) => {

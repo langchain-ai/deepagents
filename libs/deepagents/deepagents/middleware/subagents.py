@@ -92,9 +92,9 @@ def _refusal_notice(refusal: RefusalContentBlock | None) -> str:
     return notice + " Retrying the same request is unlikely to succeed; rephrase it or continue without it."
 
 
-def _final_refusal(messages: Sequence[BaseMessage]) -> RefusalContentBlock | None:
+def _final_refusal(messages: Sequence[object]) -> RefusalContentBlock | None:
     """Return the refusal in the subagent's last message, if it ended on one."""
-    if not messages:
+    if not messages or not isinstance(messages[-1], BaseMessage):
         return None
     for block in messages[-1].content_blocks:
         if block["type"] == "refusal":

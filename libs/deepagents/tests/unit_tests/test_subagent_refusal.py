@@ -1,10 +1,13 @@
 """Subagent refusals are reported to the parent as task results."""
 
+from typing import TypedDict
+
 import pytest
 from langchain.agents import create_agent
 from langchain.agents.middleware import AgentMiddleware, ModelRefusalMiddleware
 from langchain.agents.structured_output import ProviderStrategy
 from langchain_core.messages import AIMessage, HumanMessage
+from langgraph.graph import START, StateGraph
 from pydantic import BaseModel
 
 from deepagents.graph import create_deep_agent
@@ -95,3 +98,17 @@ async def test_structured_subagent_refusal_becomes_task_result(*, asynchronous: 
 
 def test_async_subagent_result_reports_refusal() -> None:
     assert _final_content({"messages": [ANTHROPIC_REFUSAL]}) == [{"type": "text", "text": ANTHROPIC_NOTICE}]
+
+
+class _PlainMessagesState(TypedDict):
+    messages: list[dict[str, str]]
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_subagent_with_plain_dict_messages_is_not_a_refusal(*, asynchronous: bool) -> None:
+    graph = StateGraph(_PlainMessagesState)
+    graph.add_node("reply", lambda _: {"messages": [{"role": "assistant", "content": "Done."}]})
+    graph.add_edge(START, "reply")
+    results = await _task_results(graph.compile(), asynchronous=asynchronous)
+    assert len(results) == 1
+    assert "refused" not in results[0]

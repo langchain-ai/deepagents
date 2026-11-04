@@ -82,31 +82,28 @@ _FORK_RECURSION_REFUSAL = (
 )
 
 
-def _refusal_notice(refusal: RefusalContentBlock | None) -> str:
+def _refusal_notice(refusal: RefusalContentBlock) -> str:
     """Return the task result reported when a model in the subagent refused."""
     notice = "The subagent stopped because a model refused the request."
-    if refusal and (category := refusal.get("extras", {}).get("category")):
+    if category := refusal.get("extras", {}).get("category"):
         notice += f" Category: {category}."
-    if refusal and (text := refusal.get("refusal")):
+    if text := refusal.get("refusal"):
         notice += f' Explanation: "{text}"'
     return notice + " Retrying the same request is unlikely to succeed; rephrase it or continue without it."
 
 
-def _final_refusal(messages: Sequence[object]) -> RefusalContentBlock | None:
-    """Return the refusal in the subagent's last message, if it ended on one."""
-    if not messages or not isinstance(messages[-1], BaseMessage):
+def _refusal_in(message: object) -> RefusalContentBlock | None:
+    """Return the refusal block in `message`, if it is a message that refused."""
+    if not isinstance(message, BaseMessage):
         return None
-    for block in messages[-1].content_blocks:
-        if block["type"] == "refusal":
-            return block
-    return None
+    return next((block for block in message.content_blocks if block["type"] == "refusal"), None)
 
 
 def _refusal_notice_for(error: Exception) -> str | None:
     """Return the task result for an error caused by a refusal, or `None` to re-raise it."""
     if isinstance(error, ModelRefusalError):
-        return _refusal_notice(_final_refusal([error.raw_message]) if error.raw_message else None)
-    if isinstance(error, StructuredOutputValidationError) and (refusal := _final_refusal([error.ai_message])):
+        return _refusal_notice(_refusal_in(error.raw_message) or {"type": "refusal", "refusal": str(error)})
+    if isinstance(error, StructuredOutputValidationError) and (refusal := _refusal_in(error.ai_message)):
         return _refusal_notice(refusal)
     return None
 
@@ -796,7 +793,7 @@ def _build_task_tool(  # noqa: C901, PLR0915
                 content = json.dumps(dataclasses.asdict(structured))
             else:
                 content = json.dumps(structured)
-        elif refusal := _final_refusal(result["messages"]):
+        elif refusal := _refusal_in(result["messages"][-1] if result["messages"] else None):
             content = _refusal_notice(refusal)
         else:
             # Walk back to the last AIMessage with non-empty text. Anthropic

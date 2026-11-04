@@ -6,6 +6,7 @@ import pytest
 from langchain.agents import create_agent
 from langchain.agents.middleware import AgentMiddleware, ModelRefusalMiddleware
 from langchain.agents.structured_output import ProviderStrategy
+from langchain_core.exceptions import ModelRefusalError
 from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.graph import START, StateGraph
 from pydantic import BaseModel
@@ -112,3 +113,17 @@ async def test_subagent_with_plain_dict_messages_is_not_a_refusal(*, asynchronou
     results = await _task_results(graph.compile(), asynchronous=asynchronous)
     assert len(results) == 1
     assert "refused" not in results[0]
+
+
+def _raise_content_filter(_: _PlainMessagesState) -> None:
+    msg = "Model output was stopped by a content filter"
+    raise ModelRefusalError(msg, raw_message=AIMessage(content=""))
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_refusal_error_without_block_keeps_its_message(*, asynchronous: bool) -> None:
+    graph = StateGraph(_PlainMessagesState)
+    graph.add_node("generate", _raise_content_filter)
+    graph.add_edge(START, "generate")
+    notice = f'The subagent stopped because a model refused the request. Explanation: "Model output was stopped by a content filter"{RETRY_HINT}'
+    assert await _task_results(graph.compile(), asynchronous=asynchronous) == [notice]

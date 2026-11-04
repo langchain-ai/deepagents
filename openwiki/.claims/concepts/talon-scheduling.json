@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:2c3f1fd5c2898acbbf2acc3e2c1e90207bad2961959ff805d10f952021acd8bf",
+  "pageVersion": "sha256:b175be167b3a87f9caf311629786508f9fdfef6fe58938eaca030fd8c95c09ee",
   "claims": [
     {
       "id": "claim_d5f0cd3cc3d64996b26d2e3d6ee0d6a1",
@@ -256,17 +256,31 @@
         },
         {
           "resource": "repo://libs/talon/deepagents_talon/runtime.py#L2037-L2056",
-          "version": "repo-lines-v1:sha256:68e0b4ebaadd322b040e9e6bd2bfb479c44cc6a5123add245293751094a3eb82:eyJzZWxlY3RlZExpbmVDb3VudCI6MjAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZmMGI4ZTAxZjRhZDk2MGE2MDg3NzMxNDYyYTQ3ZTY3MGNmYWY1Mzg4Zjc1Yzk0MDgyMGMyOTk3Y2Q2ODE0NDUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4OTYwMGE3M2QyZTAyZjM1MmI5MGZlZjFkOGQ2MzgxMWJhNGE4ZWUwYzFiZWFhN2FlNDY1OGYzNmFhMmUxOTgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImFmNmYyMzA3OGNiNWEwMjYxNjMxN2Y2ZmQzMTM3MjM2NjBkMWE3N2FhMDMzNjM4N2Q1M2VjMmIyODY1MDQ0NjgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjI4NDA4ZWY4ZjI4MDRlMmIxYTA2MzQyMTY5NmJlN2E1ZGMzYzAyZTk4MGYyZDQyNTQ4OTgyOWUyM2M3NjFhMjgifQ"
+          "version": "repo-lines-v1:sha256:614028c75547cb77357b23429d42128c8ce84a45db4097ab70230775b7730e83:eyJzZWxlY3RlZExpbmVDb3VudCI6MjAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQyOGVhZGJjMmZjNjQyY2QzZjM4MjFjNzcxNDcyN2Y2OTQzYTJjZWYwMDhiYjQ1NWY2NmMwMzBiNzYzNDRiMWYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4OTYwMGE3M2QyZTAyZjM1MmI5MGZlZjFkOGQ2MzgxMWJhNGE4ZWUwYzFiZWFhN2FlNDY1OGYzNmFhMmUxOTgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImFmNmYyMzA3OGNiNWEwMjYxNjMxN2Y2ZmQzMTM3MjM2NjBkMWE3N2FhMDMzNjM4N2Q1M2VjMmIyODY1MDQ0NjgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjI4NDA4ZWY4ZjI4MDRlMmIxYTA2MzQyMTY5NmJlN2E1ZGMzYzAyZTk4MGYyZDQyNTQ4OTgyOWUyM2M3NjFhMjgifQ"
         },
         {
           "resource": "repo://libs/talon/deepagents_talon/runtime.py#L818-L834",
           "version": "repo-lines-v1:sha256:6cffc0ef85ee5490ee58c0c75d39460c1079f7181d516899abb826a23ada8c7c:eyJzZWxlY3RlZExpbmVDb3VudCI6MTcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijk5NzYxMjViYTFhOWNkMDdjZTAyNTgyYzc2MGM3YTJiNTdiMDk3YTllZGE4MmVkZDFmOTZmMGYyYjQ1ZjM3YTYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU1MDMyZTk2NGQwOTMyMzUxZTVkMTg1MjY5MjgxYjE3MWEzYTA5YjA4YjI4NmU2NjFlYTQ3MDMyM2M4MmViNGQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImRhNjVlMzRiYTcyZDM1MzhkOTFmMjI5MjEzNzAzMWY1NTM3OWViY2Y2ZjY5MzQzMjllZDUxOGM5NTM0MjU5OTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQ1ZWUyYzdhYjVkMzQ2NzJmZDYyNzUxNmM4ODVhOWM1MWE4NzAxMjkyMTNiZTM1OGZiNGZmOWQwMWY5MjExODkifQ"
         }
       ]
+    },
+    {
+      "id": "claim_ac9af76a11844f22b3ee71ad76c48752",
+      "statement": "While running, the host polls ready background-subagent results, skips conversations that are locked, active, blocked, superseded, or not ready, and starts an unattended `background_delivery` follow-up only when it can claim a capped exponential-backoff retry slot; that follow-up receives neither approval nor authorization handler.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/deepagents_talon/host.py#L1023-L1111",
+          "version": "repo-lines-v1:sha256:75cdcac293c3acb8125b943b75cb642b9643801ee855f860140b359d69b809a2:eyJzZWxlY3RlZExpbmVDb3VudCI6ODksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjkxMTRhNzAzODI4M2ExZmIwNGQxOTFlY2ZhMjIwMGJiY2QyMjk0OTUxYzlkN2RiMGQ1OGZkM2NhNDNhYjMzNDkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImEzOGM0ZWIyNTM2ODdiMmRlYTQzMDUwNGI4OTA3MTA2NmIxZTJjZThmZjk2N2E1MDk0ZDgwM2IwYWI3MzNmNmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjY0NGVkYjllZTJlODAxOGUzNTM0NDBhMzM5MWE2ZWJiMDVlMGVjYmNmYWY5OGI0OTBhNjQ0NWYxYzY2YjhkYmUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjRlOTM4MDM1YzY5ZDUyMDVmMWMxOTkzNmFkNzliMjZkNjE2Yjk4MjZkZTRlYTE3YzFiNmIwNGY2MzcyMTg2ZWMifQ"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/host.py#L944-L1013",
+          "version": "repo-lines-v1:sha256:6e6f0a6b82395fe12da8f3a9d73d310f567e17e02ec085b8c972ea9aa9923741:eyJzZWxlY3RlZExpbmVDb3VudCI6NzAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMwNTY1YmRlOTlmOTNiNjgzMjg0NzY1YmQ4NjVkMmQyMzk0NDVmNjQzNzgwZmViNzA3YzgwZWE2MDAxZDc5NzciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQxMDQyNGJkZTNhZDkxZmY4ZGFlYTgxYTRhYTUwNGIyZmU5ZDM3OTIzZjU5Mzc5MTUyZDU0M2Q3YjRkZWFmNzEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjBjNjM0OTU2ODAyNzMwOGM3NTJmMGY4ZWJkYmNjOGYyYTZjNDM1YjhmODEwZDNjZWY2ODNlMDlkMWNhZTRiZWIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjJkOTEzZGUzYzIzZDNhNzk3MDJiMzYwN2Q1NTAwZDQzNDZhNmQ3Y2NiMjA5NzQ4MWJkZTUyZWZmNzhkZTQ0MjUifQ"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-10-30T08:04:27.172Z"
+    "at": "2026-11-04T08:04:03.075Z"
   }
 }

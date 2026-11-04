@@ -1,3 +1,3 @@
 # Files
 
-- [Testing Guide](testing-guide.md) - Package-scoped guidance for running and extending dcode, QuickJS, and Talon tests around startup, configuration, OAuth, plugins, hooks, tracing, and runtime lifecycle contracts.
+- [Testing Guide](testing-guide.md) - Package-scoped guidance for testing dcode updates and installs, plus Talon history storage, host lifecycle, observability, runtime, and WhatsApp bridge seams.

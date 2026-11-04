@@ -26,10 +26,10 @@ sources:
     resource: repo://libs/talon/deepagents_talon/subagents.py
   - id: openwiki-source-f2859f71853cf2cbdb40aaa3
     resource: repo://libs/talon/tests/unit_tests/test_scheduled_history.py
+generated: { by: "openwiki/0.4.2", at: "2026-11-04T08:04:03.075Z" }
 verified:
   - by: openwiki/0.4.2
-    at: 2026-10-30T08:04:27.172Z
-generated: { by: "openwiki/0.4.2", at: "2026-10-30T08:04:27.172Z" }
+    at: 2026-11-04T08:04:03.075Z
 ---
 
 # Talon Scheduling and Background Work
@@ -92,14 +92,18 @@ The job table stores at most 128 entries. Running workers share a configurable, 
 flowchart TD
     Start["Attended turn launches task"] --> Worker["In-memory worker"]
     Worker --> Pending["Result pending for owner"]
-    Pending --> Main["Later main turn receives keyed result data"]
+    Pending --> Dispatch["Host background dispatch"]
+    Dispatch --> Main["Follow-up turn receives keyed result data"]
     Main --> Ack["Completed turn acknowledges result IDs"]
     Ack --> Delivery{"Host delivers reply"}
     Delivery -->|"yes"| Done["Keep acknowledged"]
     Delivery -->|"no"| Requeue["Offer only those IDs again"]
+    Requeue --> Dispatch
 ```
 
-*Acknowledgement means that the main agent consumed the result, not that the user received the reply.*
+*The host initiates a follow-up turn for ready results; acknowledgement means that the main agent consumed the result, not that the user received the reply.*
+
+While the host is running, its background loop scans approximately once a second. It will not start a follow-up while the conversation or its history scope is locked, an agent turn is active, the conversation is blocked or superseded, or no result is ready. When it does start one, the host marks it `background_delivery` and removes both approval and authorization handlers: it is an unattended processing turn, not a way to reuse the authority of the original chat message. Failed or still-unconsumed follow-ups are retried with capped exponential backoff, while a successful consumption clears that retry state.
 
 If the main turn fails while processing offered results, the runtime counts the failed delivery attempt and drops a result after three failures. Once a main turn completes, it acknowledges the consumed IDs and returns them with `AgentResult`; if the host later discards, supersedes, or is cancelled before sending that reply, it requeues only those IDs. This prevents silently losing delivered work without resurrecting cancelled, pruned, or unrelated results.
 
@@ -121,6 +125,6 @@ When changing this area, preserve the durable claim-before-run transition, trust
 
 ## Focused tests
 
-`libs/talon/tests/cron/test_scheduler.py` covers claims, outcomes, silent output, delivery failure, ticker recovery, and sequential progress after a bounded stalled job. `libs/talon/tests/unit_tests/test_scheduled_history.py` covers fresh scheduled conversation IDs and read-only origin history. `libs/talon/tests/unit_tests/test_background.py` covers capacity, ownership, cancellation, acknowledgement/requeue, failed deliveries, remote cancellation, inline cron delegation, and shutdown. `libs/talon/tests/unit_tests/test_hooks.py` covers trusted hook loading, approval interaction, per-turn isolation, and child-subagent hook contexts. `libs/talon/tests/test_runtime.py` covers runtime graph wiring, tool refresh/reload, and local/remote subagent assembly.
+`libs/talon/tests/cron/test_scheduler.py` covers claims, outcomes, silent output, delivery failure, ticker recovery, and sequential progress after a bounded stalled job. `libs/talon/tests/test_host.py` covers scheduled-run timeout recovery, per-job serialization, the unattended background-delivery turn, and scheduled delivery. `libs/talon/tests/unit_tests/test_scheduled_history.py` covers fresh scheduled conversation IDs, read-only origin history, and delivery-target choice. `libs/talon/tests/unit_tests/test_background.py` covers capacity, ownership, cancellation, acknowledgement/requeue, failed deliveries, remote cancellation, inline cron delegation, and shutdown. `libs/talon/tests/unit_tests/test_hooks.py` covers trusted hook loading, approval interaction, per-turn isolation, and child-subagent hook contexts. `libs/talon/tests/test_runtime.py` covers runtime graph wiring, origin capture for cron tools, approval rejection for cron, tool refresh/reload, and local/remote subagent assembly.
 
 See also [state persistence](./state-persistence.md), [subagents and skills](./subagents-skills.md), [Talon channel admission](./talon-channel-admission.md), [Talon integration](../integrations/talon.md), and [security operations](../operations/security.md).

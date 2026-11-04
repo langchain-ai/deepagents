@@ -208,7 +208,7 @@ class IMessageChannel:
         try:
             if process.stdout is None:
                 return
-            while line := await process.stdout.readline():
+            while line := await _read_line(process.stdout):
                 message = _parse_message(line)
                 if message is not None and self.config.exposure.allows(message):
                     await dispatch_message(self._handler, message, provider="imessage")
@@ -298,6 +298,24 @@ def _valid_origin(payload: dict[str, object]) -> bool:
         and not payload.get("is_reaction")
         and not payload.get("poll")
     )
+
+
+async def _read_line(stream: asyncio.StreamReader) -> bytes:
+    """Return the next watch line, skipping any longer than the stream limit."""
+    oversized = False
+    while True:
+        try:
+            line = await stream.readuntil(b"\n")
+        except asyncio.IncompleteReadError as error:
+            return b"" if oversized else error.partial
+        except asyncio.LimitOverrunError as error:
+            await stream.readexactly(error.consumed)
+            oversized = True
+            continue
+        if not oversized:
+            return line
+        logger.warning("Skipped an oversized imsg watch event")
+        oversized = False
 
 
 async def _read_output(process: asyncio.subprocess.Process) -> bytes:

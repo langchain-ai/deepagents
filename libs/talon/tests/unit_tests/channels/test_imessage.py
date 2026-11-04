@@ -257,16 +257,24 @@ async def test_stop_reaps_even_immediate_or_uncooperative_watch(tmp_path, monkey
     assert not (await channel.status()).connected
 
 
-async def test_oversized_watch_line_disconnects_and_reaps(tmp_path, monkeypatch):
-    process = FakeProcess(b"x" * (module._MAX_OUTPUT_BYTES + 1) + b"\n", returncode=None)
+async def test_oversized_watch_lines_are_skipped_without_disconnecting(tmp_path, monkeypatch):
+    process = FakeProcess(None, returncode=None)
     _subprocess(monkeypatch, process)
     channel = IMessageChannel(_config(tmp_path))
+    received = asyncio.Event()
+    handler = AsyncMock(side_effect=lambda _: received.set())
+    channel.set_message_handler(handler)
     await channel.start()
-    await channel._watch
-    assert process.terminated
-    assert process.reaped
-    assert not (await channel.status()).connected
+    oversized = b"x" * (module._MAX_OUTPUT_BYTES + 1)
+    process.stdout.feed_data(oversized)
+    for _ in range(5):
+        await asyncio.sleep(0)
+    process.stdout.feed_data(_event(text="smuggled tail") + oversized + b"\n" + _event())
+    await asyncio.wait_for(received.wait(), timeout=5)
+    assert [call.args[0].text for call in handler.call_args_list] == ["hello"]
+    assert (await channel.status()).connected
     await channel.stop()
+    assert process.reaped
 
 
 async def test_send_shell_free_argv_chunks_and_unsupported_actions(tmp_path, monkeypatch):

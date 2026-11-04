@@ -42,6 +42,7 @@ from deepagents_code.agent import (
     _create_rubric_grader_tools,
     _format_delete_description,
     _format_execute_description,
+    _get_harness_general_purpose_description,
     _interrupt_predicate,
     _resolve_retry_owned_model,
     _rubric_grader_system_prompt,
@@ -3511,8 +3512,9 @@ class TestCreateCliAgentShellMiddlewareWiring:
                 f"Expected shell middleware on subagent {name!r}"
             )
 
+    @pytest.mark.parametrize("description", ["Independent assignment", ""])
     def test_forked_general_purpose_subagent_is_default(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, description: str
     ) -> None:
         """The environment flag defaults on and accepts a false opt-out."""
         from deepagents_code._env_vars import FORKED_SUBAGENTS
@@ -3527,6 +3529,10 @@ class TestCreateCliAgentShellMiddlewareWiring:
             patch("deepagents_code.agent.PluginSkillsMiddleware"),
             patch("deepagents_code.agent.MemoryMiddleware"),
             patch("deepagents_code.agent.list_subagents", return_value=[]),
+            patch(
+                "deepagents_code.agent._get_harness_general_purpose_description",
+                return_value=description,
+            ),
             patch(
                 "deepagents_code.agent.create_deep_agent",
                 return_value=mock_agent,
@@ -3550,7 +3556,15 @@ class TestCreateCliAgentShellMiddlewareWiring:
                 for subagent in default_kwargs["subagents"]
                 if subagent["name"] == "general-purpose"
             )
+            assert default_general_purpose["description"] == description
             assert default_general_purpose["mode"] == "fork"
+            assert default_general_purpose["system_prompt"] == ""
+            from deepagents_code._fork_context import ForkAssignmentMiddleware
+
+            assert any(
+                isinstance(item, ForkAssignmentMiddleware)
+                for item in default_kwargs["middleware"]
+            )
 
             monkeypatch.setenv(FORKED_SUBAGENTS, "false")
             create_cli_agent(
@@ -3566,7 +3580,13 @@ class TestCreateCliAgentShellMiddlewareWiring:
                 for subagent in handoff_kwargs["subagents"]
                 if subagent["name"] == "general-purpose"
             )
+            assert handoff_general_purpose["description"] == description
             assert handoff_general_purpose.get("mode") is None
+            assert handoff_general_purpose["system_prompt"]
+            assert not any(
+                isinstance(item, ForkAssignmentMiddleware)
+                for item in handoff_kwargs["middleware"]
+            )
 
     def test_no_duplicate_general_purpose_when_user_defined(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -3618,6 +3638,7 @@ class TestCreateCliAgentShellMiddlewareWiring:
         subagents = kwargs["subagents"]
         gp_subagents = [s for s in subagents if s["name"] == "general-purpose"]
         assert len(gp_subagents) == 1, "Should not duplicate general-purpose subagent"
+        assert gp_subagents[0]["description"] == subagent_meta["description"]
         assert gp_subagents[0].get("mode") is None
         assert any(
             isinstance(mw, ShellAllowListMiddleware)
@@ -6057,3 +6078,38 @@ class TestLoadAsyncSubagents:
 
         assert agent.get("webhook") == expected
         assert ("webhook" in agent) is (expected is not None)
+
+
+@pytest.mark.parametrize("resolved", [False, True])
+@pytest.mark.parametrize("description", [None, "", "Delegate independent work."])
+def test_harness_general_purpose_description_ignores_task_template(
+    resolved: bool, description: str | None
+) -> None:
+    from deepagents.profiles.harness.harness_profiles import (
+        GeneralPurposeSubagentProfile,
+        HarnessProfile,
+    )
+
+    profile = HarnessProfile(
+        general_purpose_subagent=GeneralPurposeSubagentProfile(description=description),
+        tool_description_overrides={"task": "Available agents:\n{available_agents}"},
+    )
+    lookup = "_harness_profile_for_model" if resolved else "_get_harness_profile"
+    model = _make_fake_chat_model() if resolved else "fake-model"
+    with patch(
+        f"deepagents.profiles.harness.harness_profiles.{lookup}", return_value=profile
+    ):
+        result = _get_harness_general_purpose_description(model, "default description")
+
+    assert result == ("default description" if description is None else description)
+    assert "{available_agents}" not in result
+
+
+def test_openai_general_purpose_description_has_no_agent_listing() -> None:
+    result = _get_harness_general_purpose_description(
+        "openai:gpt-5.1-codex", "default description"
+    )
+
+    assert "Prefer direct tools" in result
+    assert "{available_agents}" not in result
+    assert "Available agents:" not in result

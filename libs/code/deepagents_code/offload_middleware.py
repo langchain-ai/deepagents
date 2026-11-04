@@ -8,6 +8,7 @@ import json
 import logging
 from contextlib import asynccontextmanager
 from functools import partial
+from importlib import import_module
 from pathlib import Path
 from threading import Lock
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple, NotRequired, Protocol, cast
@@ -80,6 +81,17 @@ if TYPE_CHECKING:
     from deepagents_code.hooks.server_middleware import ServerHooksMiddleware
 
 logger = logging.getLogger(__name__)
+
+
+class _NativeTokenCounter(Protocol):
+    def count_request_tokens(self, request: ModelRequest) -> int: ...
+
+    async def acount_request_tokens(self, request: ModelRequest) -> int: ...
+
+
+def _is_native_compaction(summarization: object) -> bool:
+    return getattr(summarization, "compaction_strategy", "text") == "openai"
+
 
 _SUMMARY_TRIM_FALLBACK = 4_000
 """Conservative history budget when a summary model exposes no context limit."""
@@ -1114,14 +1126,37 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
                 run.
         """
         messages = summarization._get_effective_messages(request)
-        tokens = summarization._count_tokens(
-            messages, request.system_message, request.tools
+        tokens = (
+            cast("_NativeTokenCounter", summarization).count_request_tokens(request)
+            if _is_native_compaction(summarization)
+            else summarization._count_tokens(
+                messages, request.system_message, request.tools
+            )
         )
         messages, modified = summarization._truncate_args(messages, tokens)
         if modified:
             tokens = summarization._count_tokens(
                 messages, request.system_message, request.tools
             )
+        if (
+            not summarization._should_summarize(messages, tokens)
+            or summarization._determine_cutoff_index(messages) <= 0
+        ):
+            return None
+        return request.override(messages=messages)
+
+    @staticmethod
+    async def _aauto_compaction_request(
+        request: ModelRequest, summarization: SummarizationMiddleware
+    ) -> ModelRequest | None:
+        if not _is_native_compaction(summarization):
+            return CLICompactionMiddleware._auto_compaction_request(
+                request, summarization
+            )
+        messages = summarization._get_effective_messages(request)
+        tokens = await cast("_NativeTokenCounter", summarization).acount_request_tokens(
+            request
+        )
         if (
             not summarization._should_summarize(messages, tokens)
             or summarization._determine_cutoff_index(messages) <= 0
@@ -1223,7 +1258,7 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
         summarization = await asyncio.to_thread(
             self._summarization_for_runtime, request.runtime
         )
-        prepared = self._auto_compaction_request(request, summarization)
+        prepared = await self._aauto_compaction_request(request, summarization)
         if prepared is not None:
             if not self._pre_auto_compact(prepared):
                 return await call_model(prepared)
@@ -1342,6 +1377,9 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
                 track the main model, while summary generation uses the
                 summarization override when one is set -- so the two can be
                 different models.
+
+        Raises:
+            ValueError: If native compaction selects a separate summary model.
         """
         config = _runtime_model_config(runtime)
         summary_model_spec = config.summarization_model_spec
@@ -1349,6 +1387,10 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
             summary_model_spec = None
         elif summary_model_spec is None:
             summary_model_spec = self._summarization_model_spec
+        native = _is_native_compaction(self._summarization)
+        if native and summary_model_spec:
+            msg = "OpenAI compaction cannot use a separate summarization model."
+            raise ValueError(msg)
         if not config.model_spec and not summary_model_spec:
             return self._summarization
 
@@ -1422,9 +1464,16 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
         # composite backend here and only swapped `_backend` for the guard
         # afterwards, so the prefix was correct then too. `_PendingArchive`
         # applies the guard separately when writing.
-        summarization = create_summarization_middleware(
-            model, self._summarization._backend
+        summarization = (
+            create_summarization_middleware(
+                model, self._summarization._backend, compaction_strategy="openai"
+            )
+            if native
+            else create_summarization_middleware(model, self._summarization._backend)
         )
+        if native:
+            self._runtime_summarization = (cache_key, summarization)
+            return summarization
         if summary_model_spec:
             _install_lazy_summary_model(
                 summarization,
@@ -1468,6 +1517,12 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
         summarization = await asyncio.to_thread(
             self._summarization_for_runtime, runtime
         )
+        if handoff and _is_native_compaction(summarization):
+            msg = (
+                "OpenAI opaque context cannot be converted to a text handoff; "
+                "fork the checkpoint instead."
+            )
+            raise ValueError(msg)
         messages = state.get("messages", [])
         event = state.get("_summarization_event")
         if not messages:
@@ -1593,7 +1648,10 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
         summary_message = summarization._build_new_messages_with_path(
             summary, file_path
         )[0]
-        if not isinstance(summary_message, HumanMessage):
+        native_context = _is_native_compaction(summarization) and isinstance(
+            summary_message, AIMessage
+        )
+        if not isinstance(summary_message, HumanMessage) and not native_context:
             # `_build_new_messages_with_path` is annotated `list[AnyMessage]`
             # but documents (and the SDK's own call site assumes, with a type
             # suppression) that element 0 is the summary `HumanMessage`. Check
@@ -1637,9 +1695,35 @@ def _create_cli_compaction_middleware(
 
     Returns:
         CLI compaction middleware with the SDK's model-aware defaults.
+
+    Raises:
+        ValueError: If the selected strategy, adapter, or summary model is incompatible.
     """
-    sdk_middleware = create_summarization_tool_middleware(model, backend)
-    _install_summary_model_retries(sdk_middleware._summarization)
+    from deepagents_code.config_manifest import _resolve_option, get_option
+
+    option = get_option("history.compaction_strategy")
+    strategy = _resolve_option(option).value if option else "text"
+    if strategy == "openai" and summarization_model_spec:
+        msg = "OpenAI compaction cannot use a separate summarization model."
+        raise ValueError(msg)
+    if strategy == "openai":
+        try:
+            import_module("deepagents.middleware.native_compaction")
+        except ImportError as exc:
+            msg = (
+                "OpenAI compaction requires an SDK providing native_compaction; "
+                "the installed SDK is unsupported."
+            )
+            raise ValueError(msg) from exc
+        sdk_middleware = create_summarization_tool_middleware(
+            model, backend, compaction_strategy="openai"
+        )
+    elif strategy == "text":
+        sdk_middleware = create_summarization_tool_middleware(model, backend)
+        _install_summary_model_retries(sdk_middleware._summarization)
+    else:
+        msg = "history.compaction_strategy must be text or openai."
+        raise ValueError(msg)
     return CLICompactionMiddleware(
         sdk_middleware._summarization,
         system_prompt=sdk_middleware.system_prompt,

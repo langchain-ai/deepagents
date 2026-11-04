@@ -2740,6 +2740,28 @@ _STATIC_OPTIONS: tuple[ConfigOption[object], ...] = (
         toml_keys=("memory", "auto_save"),
     ),
     ConfigOption(
+        key="features.apply_patch",
+        group="Tools",
+        summary=(
+            "Enable experimental native apply_patch (requires a compatible model "
+            "adapter; Manual/YOLO without tool-use hooks only)."
+        ),
+        kind=OptionKind.BOOL,
+        default=False,
+        toml_keys=("features", "apply_patch"),
+    ),
+    ConfigOption(
+        key="features.native_shell",
+        group="Tools",
+        summary=(
+            "Enable experimental native shell (requires a compatible model "
+            "adapter; no restrictive shell policy or tool-use hooks)."
+        ),
+        kind=OptionKind.BOOL,
+        default=False,
+        toml_keys=("features", "native_shell"),
+    ),
+    ConfigOption(
         key="features.experimental",
         group="Tools",
         summary="Opt into experimental, unstable dcode behavior.",
@@ -2930,6 +2952,17 @@ _STATIC_OPTIONS: tuple[ConfigOption[object], ...] = (
         merge_strategy=MergeStrategy.DEEP_MERGE,
     ),
     # --- History --------------------------------------------------------
+    ConfigOption(
+        key="history.compaction_strategy",
+        group="History",
+        summary=(
+            "Compaction strategy: 'text' or opt-in 'openai' "
+            "(requires a compatible Responses adapter)."
+        ),
+        kind=OptionKind.STR,
+        default="text",
+        toml_keys=("history", "compaction_strategy"),
+    ),
     ConfigOption(
         key="history.retention_days",
         group="History",

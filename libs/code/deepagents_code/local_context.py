@@ -14,8 +14,6 @@ import html
 import inspect
 import json
 import logging
-import threading
-from collections import OrderedDict
 from typing import (
     TYPE_CHECKING,
     Annotated,
@@ -41,6 +39,11 @@ from deepagents_code._constants import (
     LOCAL_CONTEXT_MESSAGE_SOURCE,
     SYSTEM_MESSAGE_PREFIX,
 )
+from deepagents_code._fork_context import (
+    ForkSnapshot,
+    bind_snapshot,
+    inherited_snapshot,
+)
 from deepagents_code.unicode_security import sanitize_control_chars
 
 if TYPE_CHECKING:
@@ -48,7 +51,10 @@ if TYPE_CHECKING:
 
     from deepagents.backends.protocol import ExecuteResponse
     from deepagents.middleware.summarization import SummarizationEvent
+    from langchain.tools.tool_node import ToolCallRequest
+    from langchain_core.messages import ToolMessage
     from langgraph.runtime import Runtime
+    from langgraph.types import Command
 
     from deepagents_code.mcp_tools import MCPServerInfo
 
@@ -70,9 +76,6 @@ _FORKED_CONTEXT_KEY = "_deepagents_forked_context"
 
 Mirrors `deepagents.middleware.subagents._FORKED_CONTEXT_KEY`.
 """
-
-_SNAPSHOT_CACHE_SIZE = 32
-"""Max threads whose parent snapshot is kept for forked subagents."""
 
 
 def _sanitize_error_detail(error: str | None) -> str:
@@ -727,17 +730,14 @@ class LocalContextState(AgentState):
     provider prompt-cache hits across a conversation.
     """
 
+    _local_context_fork_initialized: NotRequired[Annotated[bool, PrivateStateAttr]]
+    """Whether this child has appended its initial fresh environment facts."""
+
     _local_context_refreshed_at_cutoff: NotRequired[Annotated[int, PrivateStateAttr]]
     """Cutoff index of the summarization event we last refreshed for."""
 
     _latest_local_context_fingerprint: NotRequired[Annotated[str, PrivateStateAttr]]
     """Fingerprint of the latest context used to deduplicate refresh messages."""
-
-
-def _thread_id(runtime: Runtime) -> str | None:
-    """Return the current thread ID, or `None` without a checkpointer."""
-    info = getattr(runtime, "execution_info", None)
-    return getattr(info, "thread_id", None)
 
 
 # ---------------------------------------------------------------------------
@@ -786,41 +786,10 @@ class LocalContextMiddleware(AgentMiddleware):
         self._static_context = "\n\n".join(
             context for context in (tracing_context, mcp_context) if context
         )
-        # Forked subagents reuse this middleware instance but cannot see the
-        # parent's private `_local_context`, so keep the parent's snapshot here.
-        self._snapshots: OrderedDict[str, str] = OrderedDict()
-        self._snapshots_lock = threading.Lock()
 
-    def _remember_snapshot(
-        self, state: LocalContextState, runtime: Runtime, context: str | None
-    ) -> None:
-        """Record the parent agent's snapshot for forks on the same thread."""
-        thread_id = _thread_id(runtime)
-        if not context or thread_id is None or state.get(_FORKED_CONTEXT_KEY):
-            return
-        with self._snapshots_lock:
-            self._snapshots[thread_id] = context
-            self._snapshots.move_to_end(thread_id)
-            while len(self._snapshots) > _SNAPSHOT_CACHE_SIZE:
-                self._snapshots.popitem(last=False)
-
-    def _inherited_snapshot(
-        self, state: LocalContextState, runtime: Runtime
-    ) -> str | None:
-        """Return the parent's snapshot when running as a forked subagent.
-
-        Reusing it skips the detection script and keeps the fork's system
-        prompt byte-identical to the parent's, so the fork can reuse the
-        parent's prompt cache.
-        """
-        thread_id = _thread_id(runtime)
-        if thread_id is None or not state.get(_FORKED_CONTEXT_KEY):
-            return None
-        with self._snapshots_lock:
-            return self._snapshots.get(thread_id)
-
+    @staticmethod
     def _initial_update(
-        self, state: LocalContextState, runtime: Runtime, output: str | None
+        output: str | None,
     ) -> dict[str, Any] | None:
         """Build the state update for a first-time capture.
 
@@ -829,7 +798,6 @@ class LocalContextMiddleware(AgentMiddleware):
         """
         if not output:
             return None
-        self._remember_snapshot(state, runtime, output)
         return {
             "_local_context": output,
             "_latest_local_context_fingerprint": hashlib.sha256(
@@ -952,6 +920,90 @@ class LocalContextMiddleware(AgentMiddleware):
         return update
 
     @staticmethod
+    def _inherit_context(state: LocalContextState) -> dict[str, Any]:
+        """Restore private fields that the subagent input schema omits.
+
+        Returns:
+            Inherited snapshot fields, if available.
+        """
+        if not state.get(_FORKED_CONTEXT_KEY) or "_local_context" in state:
+            return {}
+        snapshot = inherited_snapshot()
+        if snapshot is None:
+            return {}
+        update: dict[str, Any] = {"_local_context": snapshot.context}
+        if snapshot.fingerprint is not None:
+            update["_latest_local_context_fingerprint"] = snapshot.fingerprint
+        return update
+
+    @staticmethod
+    def _snapshot_for_task(request: ToolCallRequest) -> ForkSnapshot | None:
+        """Bind parent facts only while a task handler is running.
+
+        Returns:
+            The parent snapshot, or `None` for other tools.
+        """
+        context = request.state.get("_local_context", "")
+        if request.tool_call["name"] != "task" or not isinstance(context, str):
+            return None
+        return ForkSnapshot(
+            context, request.state.get("_latest_local_context_fingerprint")
+        )
+
+    def wrap_tool_call(
+        self,
+        request: ToolCallRequest,
+        handler: Callable[[ToolCallRequest], ToolMessage | Command],
+    ) -> ToolMessage | Command:
+        """Provide a task-local snapshot without sharing mutable child state.
+
+        Returns:
+            The tool handler result.
+        """
+        with bind_snapshot(self._snapshot_for_task(request)):
+            return handler(request)
+
+    async def awrap_tool_call(
+        self,
+        request: ToolCallRequest,
+        handler: Callable[[ToolCallRequest], Awaitable[ToolMessage | Command]],
+    ) -> ToolMessage | Command:
+        """Provide an async task-local snapshot and always release the binding.
+
+        Returns:
+            The tool handler result.
+        """
+        with bind_snapshot(self._snapshot_for_task(request)):
+            return await handler(request)
+
+    @classmethod
+    def _fork_update(
+        cls, state: LocalContextState, output: str | None
+    ) -> dict[str, Any]:
+        """Append fresh child facts without replacing its inherited snapshot.
+
+        Returns:
+            Child initialization state and changed facts.
+        """
+        update = cls._refresh_update(state, output, len(state.get("messages", [])))
+        update.pop("_local_context_refreshed_at_cutoff")
+        update["_local_context_fork_initialized"] = True
+        return update
+
+    @staticmethod
+    def _needs_fork_refresh(state: LocalContextState) -> bool:
+        """Check the child's checkpointed initialization marker.
+
+        Returns:
+            Whether this child still needs fresh facts.
+        """
+        return bool(
+            state.get(_FORKED_CONTEXT_KEY)
+            and "_local_context" in state
+            and not state.get("_local_context_fork_initialized")
+        )
+
+    @staticmethod
     def _pending_refresh_cutoff(state: LocalContextState) -> int | None:
         """Return the unprocessed summarization cutoff, if valid."""
         raw_event = state.get("_summarization_event")
@@ -980,8 +1032,8 @@ class LocalContextMiddleware(AgentMiddleware):
     ) -> dict[str, Any] | None:
         """Capture initial context or append a changed post-summary snapshot.
 
-        A forked subagent reuses the parent's snapshot instead of running
-        the detection script.
+        A fork keeps the inherited snapshot and appends fresh observations
+        after its assignment without changing the system prompt.
 
         Args:
             state: Current agent state.
@@ -990,16 +1042,17 @@ class LocalContextMiddleware(AgentMiddleware):
         Returns:
             Initial private context, a post-summary refresh update, or `None`.
         """
-        self._remember_snapshot(state, runtime, state.get("_local_context"))
+        del runtime
+        inherited = self._inherit_context(state)
+        state = cast("LocalContextState", {**state, **inherited})
+        if self._needs_fork_refresh(state):
+            return {**inherited, **self._fork_update(state, self._run_detect_script())}
         cutoff = self._pending_refresh_cutoff(state)
         if cutoff is not None:
             return self._refresh_update(state, self._run_detect_script(), cutoff)
-        if state.get("_local_context"):
+        if "_local_context" in state:
             return None
-        output = self._inherited_snapshot(state, runtime)
-        if output is None:
-            output = self._run_detect_script()
-        return self._initial_update(state, runtime, output)
+        return self._initial_update(self._run_detect_script())
 
     async def _arun_detect_script(self) -> str | None:
         """Run the environment detection script asynchronously.
@@ -1048,8 +1101,8 @@ class LocalContextMiddleware(AgentMiddleware):
     ) -> dict[str, Any] | None:
         """Capture initial context or append an async post-summary refresh.
 
-        A forked subagent reuses the parent's snapshot instead of running
-        the detection script.
+        A fork keeps the inherited snapshot and appends fresh observations
+        after its assignment without changing the system prompt.
 
         Args:
             state: Current agent state.
@@ -1058,17 +1111,21 @@ class LocalContextMiddleware(AgentMiddleware):
         Returns:
             Initial private context, a post-summary refresh update, or `None`.
         """
-        self._remember_snapshot(state, runtime, state.get("_local_context"))
+        del runtime
+        inherited = self._inherit_context(state)
+        state = cast("LocalContextState", {**state, **inherited})
+        if self._needs_fork_refresh(state):
+            return {
+                **inherited,
+                **self._fork_update(state, await self._arun_detect_script()),
+            }
         cutoff = self._pending_refresh_cutoff(state)
         if cutoff is not None:
             output = await self._arun_detect_script()
             return self._refresh_update(state, output, cutoff)
-        if state.get("_local_context"):
+        if "_local_context" in state:
             return None
-        output = self._inherited_snapshot(state, runtime)
-        if output is None:
-            output = await self._arun_detect_script()
-        return self._initial_update(state, runtime, output)
+        return self._initial_update(await self._arun_detect_script())
 
     def _get_modified_request(self, request: ModelRequest) -> ModelRequest | None:
         """Append local context and MCP info to the system prompt if available.

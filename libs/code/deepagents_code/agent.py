@@ -24,6 +24,7 @@ from deepagents.middleware import (
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Mapping, Sequence
 
+    from deepagents import HarnessProfile
     from deepagents.backends.protocol import BackendProtocol
     from deepagents.backends.sandbox import SandboxBackendProtocol
     from deepagents.middleware.async_subagents import AsyncSubAgent
@@ -241,6 +242,26 @@ REQUIRE_COMPACT_TOOL_APPROVAL: bool = True
 """When `True`, `compact_conversation` requires HITL approval like other gated tools."""
 
 
+def _get_cli_harness_profile(model: str | BaseChatModel) -> HarnessProfile:
+    """Resolve the model's harness policy without changing its registration.
+
+    Returns:
+        The matching policy, or an empty default profile.
+    """
+    from deepagents import HarnessProfile
+
+    # deepagents-code exactly pins the SDK, and these are the same resolution
+    # helpers used by `create_deep_agent` for its filesystem middleware.
+    from deepagents.profiles.harness.harness_profiles import (
+        _get_harness_profile,  # noqa: PLC2701  # Mirrors SDK profile lookup.
+        _harness_profile_for_model,  # noqa: PLC2701  # Mirrors SDK profile lookup.
+    )
+
+    if isinstance(model, str):
+        return _get_harness_profile(model) or HarnessProfile()
+    return _harness_profile_for_model(model, None)
+
+
 def _get_harness_tool_descriptions(
     model: str | BaseChatModel,
 ) -> dict[str, str]:
@@ -256,17 +277,31 @@ def _get_harness_tool_descriptions(
     Returns:
         Copy of the matching harness profile's tool-description overrides.
     """
-    # deepagents-code exactly pins the SDK, and these are the same resolution
-    # helpers used by `create_deep_agent` for its filesystem middleware.
+    return dict(_get_cli_harness_profile(model).tool_description_overrides)
+
+
+def _get_harness_general_purpose_description(
+    model: str | BaseChatModel, default: str
+) -> str:
+    """Resolve the generated agent's description independently of task templates.
+
+    Returns:
+        The profile description, including an explicit empty string, or `default`.
+    """
     from deepagents.profiles.harness.harness_profiles import (
         _get_harness_profile,  # noqa: PLC2701  # Mirrors SDK profile lookup.
         _harness_profile_for_model,  # noqa: PLC2701  # Mirrors SDK profile lookup.
     )
 
-    if isinstance(model, str):
-        profile = _get_harness_profile(model)
-        return dict(profile.tool_description_overrides) if profile is not None else {}
-    return dict(_harness_profile_for_model(model, None).tool_description_overrides)
+    profile = (
+        _get_harness_profile(model)
+        if isinstance(model, str)
+        else _harness_profile_for_model(model, None)
+    )
+    general_purpose = profile.general_purpose_subagent if profile is not None else None
+    if general_purpose is not None and general_purpose.description is not None:
+        return general_purpose.description
+    return default
 
 
 def _inject_fs_tools_into_subagents(
@@ -2364,6 +2399,16 @@ def _add_interrupt_on(
 
     interrupt_map: dict[str, InterruptOnConfig] = {
         "execute": execute_interrupt_config,
+        "shell": {
+            "allowed_decisions": ["approve", "reject"],
+            "description": "Run a native shell command batch.",
+            "when": when,
+        },
+        "apply_patch": {
+            "allowed_decisions": ["approve", "reject"],
+            "description": "Apply a native filesystem patch.",
+            "when": when,
+        },
         "write_file": write_file_interrupt_config,
         "edit_file": edit_file_interrupt_config,
         "delete": delete_interrupt_config,
@@ -3056,18 +3101,27 @@ def create_cli_agent(
         SubAgent as RuntimeSubAgent,
     )
 
+    fork_assignment_middleware: AgentMiddleware | None = None
     if not any(
         subagent["name"] == GENERAL_PURPOSE_SUBAGENT["name"]
         for subagent in custom_subagents
     ):
         general_purpose_subagent: RuntimeSubAgent = {
             "name": GENERAL_PURPOSE_SUBAGENT["name"],
-            "description": GENERAL_PURPOSE_SUBAGENT["description"],
+            "description": _get_harness_general_purpose_description(
+                model, GENERAL_PURPOSE_SUBAGENT["description"]
+            ),
             "system_prompt": GENERAL_PURPOSE_SUBAGENT["system_prompt"],
             "middleware": _subagent_cli_middleware(has_explicit_model=False),
         }
         if is_env_truthy(FORKED_SUBAGENTS, default=True):
+            from deepagents_code._fork_context import ForkAssignmentMiddleware
+
             general_purpose_subagent["mode"] = "fork"
+            general_purpose_subagent["system_prompt"] = ""
+            fork_assignment_middleware = ForkAssignmentMiddleware(
+                GENERAL_PURPOSE_SUBAGENT["system_prompt"]
+            )
         if resolved_interrupt_on is not None:
             general_purpose_subagent["interrupt_on"] = {}
         custom_subagents.append(general_purpose_subagent)
@@ -3087,6 +3141,8 @@ def create_cli_agent(
         # `BtwOperation`, the side-question capture runs as before.
         EmptyTruncatedReplyMiddleware(),
     ]
+    if fork_assignment_middleware is not None:
+        agent_middleware.append(fork_assignment_middleware)
     if not interactive:
         agent_middleware.append(_GlmTerminalStallRecovery())
 
@@ -3733,6 +3789,23 @@ def create_cli_agent(
         # see BtwOperation for why model selection alone cannot supply it.
         agent_middleware.append(btw)
         setattr(composite_backend, BTW_OPERATION_ATTR, btw)
+    from deepagents_code.native_features import configure_native_features
+
+    configure_native_features(
+        backend=composite_backend,
+        model=model,
+        tools=tools,
+        middleware=agent_middleware,
+        subagents=custom_subagents,
+        fs_tools=fs_tools,
+        shell_allow_list=restrictive_shell_allow_list
+        or shell_allow_list
+        or (
+            resolved_shell_allow_list
+            if not isinstance(resolved_shell_allow_list, _ShellAllowAll)
+            else None
+        ),
+    )
     with warnings.catch_warnings():
         warnings.filterwarnings(
             "ignore",

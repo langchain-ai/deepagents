@@ -816,7 +816,7 @@ async def _agrep_backend(
     return _apply_grep_max_count(result, max_count)
 
 
-GREP_LINE_CHAR_LIMIT = 500
+GREP_LINE_CHAR_LIMIT = 2000
 """Characters of a grep line shown to the model.
 
 Longer lines (minified JSON, offloaded tool results) show a window around the

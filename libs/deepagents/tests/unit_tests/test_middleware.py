@@ -938,7 +938,7 @@ class TestFilesystemMiddleware:
         result = grep_search_tool.invoke({"pattern": "order_id", "output_mode": "content", "runtime": _runtime()})
 
         assert '"order_id": "abc-123"' in result.content
-        assert len(result.content) < 1000
+        assert len(result.content) < 3000
         assert "chars clipped]" in result.content
 
     async def test_async_grep_truncated_renders_as_success_with_note(self):

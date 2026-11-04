@@ -5,7 +5,7 @@ description: Package graph, responsibility boundaries, Python and release contra
 tags: [architecture, monorepo, python, dependencies, releases]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-11-03T08:04:09.572Z
+    at: 2026-11-04T08:04:03.075Z
 sources:
   - id: openwiki-source-9a1c436646ef8c4f6dde787a
     resource: repo://.github/RELEASING.md
@@ -53,7 +53,7 @@ sources:
     resource: repo://README.md
   - id: openwiki-source-482fa4ca84f42b04ba025fc1
     resource: repo://release-please-config.json
-generated: { by: "openwiki/0.4.2", at: "2026-11-03T08:04:09.572Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-11-04T08:04:03.075Z" }
 ---
 
 # Repository Architecture Overview
@@ -108,8 +108,8 @@ flowchart TD
   Dcode -->|"wheel dependency"| ACP
   Dcode -->|"wheel dependency"| QuickJS
   Dcode -->|"optional extras"| Partners
-  Talon -->|"wheel dependencies"| SDK
-  Talon -->|"wheel dependencies"| Dcode
+  Talon -->|"wheel dependency"| SDK
+  Talon -->|"dcode >=0.2.4 and <1.0.0"| Dcode
   Evals -->|"wheel dependencies"| SDK
   Evals -->|"wheel dependencies"| Dcode
   Evals -->|"wheel dependency"| QuickJS
@@ -133,9 +133,11 @@ flowchart TD
 
 ### Published and optional contracts
 
-ACP requires unbounded `deepagents`, `agent-client-protocol>=0.10.1`, and `python-dotenv>=1.2.2`. dcode pins `deepagents==0.7.32`, requires ACP `>=0.0.13,<1.0.0`, and installs QuickJS `>=0.3.11,<0.4.0` normally. Talon requires SDK `>=0.7.32` and dcode `>=0.2.3,<1.0.0`; evals requires SDK `>=0.7.32`, dcode `>=0.2.1`, and QuickJS `>=0.3.3`. QuickJS and the sandbox-partner wheels declare SDK compatibility `>=0.7.32,<0.8.0`.
+ACP requires unbounded `deepagents`, `agent-client-protocol>=0.10.1`, and `python-dotenv>=1.2.2`. dcode pins `deepagents==0.7.32`, requires ACP `>=0.0.13,<1.0.0`, and installs QuickJS `>=0.3.11,<0.4.0` normally. Talon requires SDK `>=0.7.32` and dcode `>=0.2.4,<1.0.0`; evals requires SDK `>=0.7.32`, dcode `>=0.2.1`, and QuickJS `>=0.3.3`. QuickJS and the sandbox-partner wheels declare SDK compatibility `>=0.7.32,<0.8.0`.
 
-The SDK keeps AWS, QuickJS, and video support optional, allowing consumers to choose these integration dependencies. dcode deliberately has a larger normal install surface, including `langsmith[sandbox]` and QuickJS. It offers six external sandbox extras—`agentcore`, `daytona`, `modal`, `openshell`, `runloop`, and `vercel`—and `all-sandboxes` aggregates them. Its compatibility `quickjs` extra is empty because QuickJS is already a normal dependency. Extras make an adapter package available; credentials, remote resource lifecycle, and implementation remain at the provider boundary.
+The SDK keeps AWS, QuickJS, and video support optional, allowing consumers to choose these integration dependencies. dcode deliberately has a larger normal install surface, including `langsmith[sandbox]` and QuickJS. It offers six external sandbox extras—`agentcore`, `daytona`, `modal`, `openshell`, `runloop`, and `vercel`—and `all-sandboxes` aggregates them. Its compatibility `quickjs` extra is empty because QuickJS is already a normal dependency.
+
+Talon keeps history embedding adapters optional: `history-local` installs `sentence-transformers` and `transformers`; `history-voyage` installs the LangChain Voyage adapter and `voyageai`; and `history-openai` installs `langchain-openai`. Its `openshell` extra installs `deepagents-code[openshell]>=0.2.4,<1.0.0`, matching the provider boundary used when `DEEPAGENTS_TALON_SANDBOX=openshell`. `mongodb`, `postgres`, and `media` likewise add their selected storage or media integration dependencies rather than expanding the base host install. Extras make an adapter package available; credentials, remote resource lifecycle, and implementation remain at the provider boundary.
 
 ### Local sources and lockfile fan-out
 

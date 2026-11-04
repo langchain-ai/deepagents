@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+import subprocess
+import sys
 from pathlib import Path
 from unittest.mock import patch
 
@@ -37,6 +39,37 @@ class TestBuildServerCmd:
 
 
 class TestBuildServerEnv:
+    @pytest.mark.parametrize("inherited_color", [None, "true"])
+    def test_server_logs_are_plain_text(self, inherited_color: str | None) -> None:
+        """The file-backed server log must not require terminal color support."""
+        with patch.dict(os.environ, {"LOG_JSON": "false"}):
+            if inherited_color is None:
+                os.environ.pop("LOG_COLOR", None)
+            else:
+                os.environ["LOG_COLOR"] = inherited_color
+            env = _build_server_env()
+            assert os.environ.get("LOG_COLOR") == inherited_color
+
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                (
+                    "import logging; from langgraph_api.logging import Formatter; "
+                    "record = logging.LogRecord('server', logging.INFO, '', 0, "
+                    "'server started', (), None); "
+                    "print(Formatter(None, None, '%').format(record))"
+                ),
+            ],
+            env=env,
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=10,
+        )
+        assert "server started" in result.stdout
+        assert "\x1b[" not in result.stdout
+
     def test_sets_auth_noop(self) -> None:
         env = _build_server_env()
         assert env["LANGGRAPH_AUTH_TYPE"] == "noop"

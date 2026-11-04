@@ -432,6 +432,9 @@ def _build_server_env() -> dict[str, str]:
     # dcode pins `langgraph-api`, so the PyPI upgrade check only costs a network
     # fetch at startup and logs a `pip install -U` hint users cannot act on.
     env["LANGGRAPH_NO_VERSION_CHECK"] = "1"
+    # Server output goes to a file. Color formatting also requires colorama on
+    # Windows, which is not installed with the runtime dependencies.
+    env["LOG_COLOR"] = "false"
     env[INVOKED_AS] = invoked_name()
 
     # Capture a launch-time PYTHONPATH before stripping it. Never trust inherited

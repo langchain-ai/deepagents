@@ -1161,8 +1161,17 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
         Returns:
             The model response.
         """
-        call_model = partial(super().wrap_model_call, handler=handler)
+        original = request
+        call_model = partial(
+            super().wrap_model_call,
+            handler=lambda updated: handler(
+                updated.override(
+                    model=original.model, model_settings=original.model_settings
+                )
+            ),
+        )
         summarization = self._summarization_for_runtime(request.runtime)
+        request = self._summarization_request(request, summarization)
         prepared = self._auto_compaction_request(request, summarization)
         if prepared is not None:
             if not self._pre_auto_compact(prepared):
@@ -1219,10 +1228,19 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
         Returns:
             The model response.
         """
-        call_model = partial(super().awrap_model_call, handler=handler)
+        original = request
+        call_model = partial(
+            super().awrap_model_call,
+            handler=lambda updated: handler(
+                updated.override(
+                    model=original.model, model_settings=original.model_settings
+                )
+            ),
+        )
         summarization = await asyncio.to_thread(
             self._summarization_for_runtime, request.runtime
         )
+        request = self._summarization_request(request, summarization)
         prepared = self._auto_compaction_request(request, summarization)
         if prepared is not None:
             if not self._pre_auto_compact(prepared):
@@ -1325,6 +1343,23 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
             ),
             func=sync_compact,
             coroutine=async_compact,
+        )
+
+    @staticmethod
+    def _summarization_request(
+        request: ModelRequest, summarization: SummarizationMiddleware
+    ) -> ModelRequest:
+        """Prepare selected-model budget checks without changing downstream selection.
+
+        Returns:
+            A request using the cached summarizer's main model and runtime settings.
+        """
+        config = _runtime_model_config(request.runtime)
+        if not config.model_spec:
+            return request
+        return request.override(
+            model=summarization.model,
+            model_settings={**request.model_settings, **config.model_params},
         )
 
     def _summarization_for_runtime(

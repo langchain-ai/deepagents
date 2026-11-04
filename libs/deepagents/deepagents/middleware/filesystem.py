@@ -1580,7 +1580,7 @@ Usage:
 - Quote paths containing spaces (e.g. cd "/path/with spaces").
 - Chain commands with ';' or '&&' (use '&&' when a command depends on the previous); do not use newlines except inside quoted strings.
 - Use absolute paths and avoid `cd` so the working directory stays stable; use the optional timeout to override the default.
-- {search_guidance}Use read_file rather than cat/head/tail.{glob_bad_example}{grep_bad_example}
+- {search_guidance}{glob_bad_example}{grep_bad_example}
 
 Only available on backends implementing SandboxBackendProtocol; otherwise it returns an error."""
 
@@ -1603,7 +1603,7 @@ _EXECUTE_TOOL_DESCRIPTION_WITHOUT_SEARCH = _EXECUTE_TOOL_DESCRIPTION_TEMPLATE.fo
     search_guidance="",
     glob_bad_example="",
     grep_bad_example="",
-)
+).replace("\n- \n", "\n")
 
 FsToolName = Literal["ls", "read_file", "write_file", "edit_file", "delete", "glob", "grep", "execute"]
 """Names of the built-in filesystem tools that can be passed to `FilesystemMiddleware(tools=...)`."""
@@ -1759,7 +1759,7 @@ TOOLS_EXCLUDED_FROM_EVICTION = (
 
 _TOO_LARGE_HUMAN_MSG = """Message content too large and was saved to the filesystem at: {file_path}
 
-You can read the full content using the read_file tool with pagination (offset and limit parameters).
+Read the saved file in parts rather than all at once.
 
 {preview_note}
 
@@ -1966,9 +1966,6 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 package="deepagents",
             )
             permissions = _permissions
-        if isinstance(tools, list) and "read_file" not in tools:
-            msg = "read_file must be included in tools; it is required by FilesystemMiddleware"
-            raise ValueError(msg)
         if max_execute_timeout <= 0:
             msg = f"max_execute_timeout must be positive, got {max_execute_timeout}"
             raise ValueError(msg)

@@ -574,10 +574,12 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         request_tools: list[BaseTool] = list(getattr(request, "tools", []) or [])
 
         subagent_section = ""
-        if self._subagents and find_subagent_task_tool(request_tools) is not None:
+        task_tool = find_subagent_task_tool(request_tools) if self._subagents else None
+        if task_tool is not None:
             subagent_section = render_subagent_system_prompt(
                 tool_name=self._tool_name,
                 max_subagent_concurrency=self._max_subagent_concurrency,
+                available_agents=(task_tool.metadata or {}).get("available_agents", ""),
             )
 
         if self._ptc is None:

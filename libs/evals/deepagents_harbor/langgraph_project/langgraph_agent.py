@@ -14,12 +14,14 @@ from typing import TYPE_CHECKING, Any, cast
 
 from deepagents import create_deep_agent
 from deepagents.backends import LocalShellBackend
+from deepagents.middleware._tool_exclusion import _ToolExclusionMiddleware
 from deepagents_code._glm_5p2_profile import _GLM_5P2_MODEL_SPECS
 from deepagents_code.agent import create_cli_agent
 from deepagents_code.config import detect_provider, runtime_state
 from deepagents_code.model_config import ModelSpec
 from langchain.chat_models import init_chat_model
 from langchain.mcp import MCPAdapter
+from langchain_quickjs import CodeInterpreterMiddleware
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -37,6 +39,11 @@ _INVALID_ASSISTANT_ID_RUN = re.compile(r"[^A-Za-z0-9_-]+")
 # to precisely the same specs. Matching case-insensitively here would re-bump
 # reasoning for a spec dcode does not classify as GLM — the divergence we avoid.
 _GLM_5_2_MODEL_SPECS = frozenset(_GLM_5P2_MODEL_SPECS)
+
+# Filesystem tools reachable only as `tools.*` inside `eval`.
+_PTC_ONLY_FS_TOOLS = frozenset(
+    {"ls", "read_file", "write_file", "edit_file", "delete", "glob", "grep"}
+)
 
 # Bounds on the gated `web_search` tool (see `_web_search_tool`).
 _WEB_SEARCH_MAX_RESULTS = 10
@@ -470,6 +477,14 @@ async def make_bare_graph(config: dict[str, object] | None = None) -> object:
         backend=backend,
         tools=tools or None,
         skills=_skills(configurable),
+        # The model sees only `execute` and `eval`; `task()` and the filesystem
+        # tools stay callable inside `eval`. Calls made inside `eval` skip
+        # large-result offloading (only `max_result_chars` truncation applies).
+        # Subagents keep the full filesystem toolset and get no `eval`.
+        middleware=[
+            CodeInterpreterMiddleware(ptc=["execute", *sorted(_PTC_ONLY_FS_TOOLS)]),
+            _ToolExclusionMiddleware(excluded=_PTC_ONLY_FS_TOOLS | {"task"}),
+        ],
     )
 
 

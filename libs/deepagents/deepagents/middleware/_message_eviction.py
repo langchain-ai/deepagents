@@ -30,9 +30,7 @@ if TYPE_CHECKING:
 
 _TOO_LARGE_TOOL_MSG = """Tool result too large, the result of this tool call {tool_call_id} was saved in the filesystem at this path: {file_path}
 
-You can read the result from the filesystem by using the read_file tool, but make sure to only read part of the result at a time.
-
-You can do this by specifying an offset and limit in the read_file tool call. For example, to read the first 100 lines, you can use the read_file tool with offset=0 and limit=100.
+Read the saved file in parts rather than all at once (for example, the first 100 lines).
 
 {preview_note}
 

@@ -11,11 +11,9 @@ An `eval` tool is available. It runs JavaScript in a fresh sandboxed REPL for ea
 
 ### Dispatching Subagents with `task`
 
-`task` is your primitive for running configured subagents from inside the
-JavaScript REPL. Your job here is to DISTRIBUTE work, not to do it yourself:
-write JavaScript that fans work out to subagents and assembles their results.
-You handle the orchestration - fan-out, filtering, deduplication, multi-stage
-flow, and synthesis - in plain JavaScript.
+`task` runs configured subagents from inside the JavaScript REPL. When you
+use it, handle the orchestration - fan-out, filtering, deduplication,
+multi-stage flow, and synthesis - in plain JavaScript.
 
 #### The primitive
 
@@ -31,7 +29,9 @@ await task({
 `task` runs a full agentic loop for the selected configured subagent. The
 subagent can use whatever tools it was configured with, iterate, inspect
 context, and return one final result. `subagentType` is required; use one of
-the configured subagent names.
+these subagent names:
+
+- general-purpose: General-purpose agent for researching complex questions, searching for files and content, and executing multi-step tasks. When you are searching for a keyword or file and are not confident that you will find the right match in the first few tries use this agent to perform the search for you. This agent has access to all tools as the main agent.
 
 `description` is the only prompt the subagent receives for this dispatch. Make
 it complete: the goal, the constraints, what to inspect, and the exact shape
@@ -54,16 +54,6 @@ JavaScript value matching the schema; do not call `JSON.parse` unless the
 subagent intentionally returned a JSON string. Dynamic schemas work for
 declarative subagents; runnable-backed subagents reject dynamic schemas because
 their runnable is already compiled.
-
-#### Approval model
-
-`task` dispatches from inside the already-running `eval` call. It
-does not route through the parent agent's `ToolNode`-managed `task` tool and
-does not trigger parent-level `interrupt_on` / HITL approval for each dispatch.
-Declarative subagents still honor approval middleware configured inside their
-own spec. If you need approval before launching a subagent from the parent, use
-the normal `task` tool outside JavaScript or ensure the `eval` call
-itself is approval-gated.
 
 #### Mental model
 
@@ -121,13 +111,11 @@ for (let i = 0; i < files.length; i += batchSize) {
 }
 ```
 
-#### Explore with your own tools first, then distribute
+#### Explore with your own tools first
 
-You already have your normal tools for reading, listing, globbing, and
-grepping files. Use them to explore and understand the task BEFORE you write
-the orchestration script. These are ordinary tool calls, separate from the
-`eval` tool: read the data file, list or glob the directory, grep for
-what matters, then decide how to split the work.
+Use `execute` to explore and understand the task BEFORE you write the
+orchestration script: read the data file, list the directory, grep for what
+matters, then decide how to split the work.
 
 Never write `eval` code that spawns a subagent just to read or parse a
 file or list a directory. That is a deterministic step you do yourself with a
@@ -141,10 +129,6 @@ you split it:
   input file per chunk — and dispatch one subagent per chunk.
 - A cheap classification pass first, then deeper dispatches only for the items
   that warrant them.
-
-Then write JavaScript in the `eval` tool that distributes the heavy,
-agentic work to subagents with `task()`: analyzing file contents, exploring a
-codebase, making judgment calls, rewriting code, or synthesizing a report.
 
 Hand each subagent a locator, not a payload. Subagents have their own file
 tools, so for anything that lives in a file — a file to review, rewrite, or
@@ -195,8 +179,7 @@ actual results.
 
 Keep large intermediate sets in JS variables and return only a compact
 summary or a small slice, not the entire dataset. To persist full output,
-have a subagent write it, or write it with your own file tool outside the
-`eval` call.
+have a subagent write it, or write it to a file with `execute`.
 
 #### Reuse what earlier evals left in scope
 
@@ -227,15 +210,6 @@ const verified = await Promise.all(findings.map((f) =>
   }).then((v) => ({ ...f, ...v }))
 ));
 ```
-
-#### When the user asks for a "workflow"
-
-If the user's request mentions running a "workflow" (or otherwise uses the
-word "workflow"), fan the work out to subagents rather than doing it all
-yourself. Explore with your own tools first as needed, then write JavaScript
-in the `eval` tool that dispatches subagents with `task()` and
-assembles their results. The point is to distribute the heavy work in
-parallel, not to grind through it one tool call at a time.
 
 
 ### API Reference — `tools` namespace

@@ -2718,11 +2718,6 @@ class TestFilesystemMiddleware:
         # tool filtering — and with an empty system prompt, no override at all.
         request.override.assert_not_called()
 
-    def test_enabled_tools_raises_when_read_file_excluded(self):
-        """read_file must be in tools when a non-empty allowlist is given."""
-        with pytest.raises(ValueError, match="read_file must be included in tools"):
-            FilesystemMiddleware(backend=StateBackend(), tools=["write_file"])
-
     def test_enabled_tools_filters_multiple_unlisted(self):
         """Only tools in the allowlist are registered; the rest are absent from `self.tools`."""
         middleware = FilesystemMiddleware(
@@ -2976,7 +2971,6 @@ class TestFilesystemMiddleware:
         assert "grep, glob tools to search" not in execute_tool.description
         assert "# Use glob tool instead" not in execute_tool.description
         assert "# Use grep tool instead" not in execute_tool.description
-        assert "Use read_file rather than cat/head/tail." in execute_tool.description
 
     def test_execute_description_references_only_visible_grep_tool(self):
         """Execute docs retain grep guidance when glob is hidden."""
@@ -3058,7 +3052,6 @@ class TestFilesystemMiddleware:
         assert original["description"] == default_description
         assert "# Use glob tool instead" not in rewritten_execute["description"]
         assert "# Use grep tool instead" not in rewritten_execute["description"]
-        assert "Use read_file rather than cat/head/tail." in rewritten_execute["description"]
 
     def test_execute_description_rewrites_when_search_tools_are_filtered_from_request(self):
         """Runtime filtering corrects execute docs without mutating the registered tool."""

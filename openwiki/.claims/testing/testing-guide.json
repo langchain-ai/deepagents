@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:bb4cbfffb0de0e60419c75e1aa97f7bfb16b1d9a1bc05fc09636b8246f5469db",
+  "pageVersion": "sha256:4a2c922dcffec055f469a9bba3aec1316da8082911c75ec3b7caf8d037a324bb",
   "claims": [
     {
       "id": "claim_8c5e74fd855f45cd84f6d6ee3859b112",
@@ -177,10 +177,128 @@
           "version": "repo-lines-v1:sha256:4fd9e23d28d1f3404b65db9de965bcc9929f43a2fa56a33cd9d12f07de3207f1:eyJzZWxlY3RlZExpbmVDb3VudCI6ODYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImUyNTdkMTc2ZDYwYjEwNWNjZjVlYWE0ZjY3MmQ2OGNjN2JiNDA0ZWQ3NWU0MDEzOWI5Njk1ZDYwODI0MjE2OWYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFkZDI0NDU4MmI2ZmIwM2QyM2I4NDE1YWJlY2QzNDZiMGM5ZjQ2NmI2Zjc1MmIwNjgxODljZTdlOWEyZGMzNTAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijk0MjRjODJmMjgxMDRkNjVhMjgyY2M1NzkzN2I0MTgzOTNmYTkwZGJjMGYzYmMxOGVlNmMyMmVkYWNmOTExYWYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImE4MTkzZTkyYjQyODFjYWJlMTNkMTIxMWM1YjBlMDhjMzY2NDAzYjhhZDM4Zjc3YzE5MTg4ZDA4YjM2YzYyN2MifQ"
         }
       ]
+    },
+    {
+      "id": "claim_c4f3b5b19a9f4a8286f27818ce3f9254",
+      "statement": "dcode install and uninstall tests treat the uv receipt as the source of truth for preserving selected extras, interpreter, and additional packages, fail closed on unsafe or unrepresentable selections, and prevent a removed extra from being reintroduced by a later rebuild.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/tests/unit_tests/test_uninstall_command.py#L245-L306",
+          "version": "repo-lines-v1:sha256:6a18716769a009d89908c62dd3bcb678e5746b2a7d50bbbcaed6c361ed29516e:eyJzZWxlY3RlZExpbmVDb3VudCI6NjIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM0YTcyODc2ZjM2NzU5Y2MwODM1MDcyYmE5ZDJmZGIyN2Q1NGM5ZGM4NDRiOGNkMTUwZDljYTQyMGMzYWMyYTUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjgyNThhNWZiNzQ4ZjA4ZWI2ZjQ2ZTRhNmQxYTA3ZTIwYWI4NjYwMWQ0ZTg5YjA2MWVkMjY4ZmIzMDY5MGIwNWMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImU0NDI0MzRhNWE3NmMyNTMwNDliNGFiNjRkOWJlNjFjYWU3OGNlM2ZlNDJmNWE2NmNlNjNiY2Y2ODQyYTEwZTMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjA5MjA3NDEyMGM1ZWY4ZDU5ZWUzYjI0ZjE5ODUzZjc4M2FmNmMzN2QwMWY1NjA5NGViZWFhNjkzZjFkMzllN2YifQ"
+        },
+        {
+          "resource": "repo://libs/code/tests/unit_tests/test_uninstall_command.py#L63-L193",
+          "version": "repo-lines-v1:sha256:0db63e9679b175db2bed40c5a376c5c4f8063d0f40e211bac0b5817240d35a41:eyJzZWxlY3RlZExpbmVDb3VudCI6MTMxLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIwY2FhMjUzMWVmOWU2ODJlMzYzODE0NzJlNzBmYzM1Y2RjOTExZTZjYTE3ZThlYTU1M2M4ZGZlYjBiMWI3ODdjIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI3YmRmNDFiMjNkYjc3Njg3ODQ4Yjk2MWExNDA1OTQ0NmUxMGI5ZDJlMTViODgzMzcxYWY2MTAxZmRmNjFiMWZhIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI4Y2M0YTdkMWNjNzk2YWJhM2U0NjcyMzMyN2Y1MTdlOWY4MTE5ODJkMjUwZjA3MDI5ODZlNGI1NzY0YWQ5NTg5IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI2OGQ0OTdjYTViNjhiOTY4Mjc0MGI3NzI0NmIzZmNkZDI0NmJiY2U4ZjY5OGY4MDcwMTFhMmNiMGQ1NmNmOGYxIn0"
+        }
+      ]
+    },
+    {
+      "id": "claim_b2dff48ce3ec4594a3d53fc33340df21",
+      "statement": "dcode migration tests require an incompatible Python upgrade to reconstruct a receipt-preserving pinned uv command and verify the installed target with the rebuilt interpreter; session and Windows deferrals, unusable receipts, and unverified readback prevent mutation or success reporting and provide recovery guidance.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/tests/unit_tests/test_python_migration_bridge.py#L160-L245",
+          "version": "repo-lines-v1:sha256:62589240e6af94b49dd23c49b6713c59ae6680665594c37e1ba432c8338f2789:eyJzZWxlY3RlZExpbmVDb3VudCI6ODYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFiZjg4YzMzODUwMDczNzQxZTQzY2Q2M2Y1Nzc3ZGZkZGE2NDUzNzBmZWU1M2IwODkzMmZiYmFkZjJkYjRkYWIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg1Mjk0OWZmZTQ5Njc5Yzk2ZTk0YWY4MjNhYTk4MTRjNDJmZDFlZDFkOTUzN2U2YzQ4ZTBmMGZiMmRiNGRmNDQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijk3NGRlNjBlNmIxYzBkNjA1OTlmMWI3NTU5YzA0M2ZiODBlOTFkYTdlZGNlODdjZjM1Y2JmM2U1NzNkY2FlYzQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjU2ODBiMGYyOTI4YWMwZGJmM2RkNGEzMWQ1YzE2ZTkxOThhMjlhNjA4NmQzOWNmYjU3YzIwZjYwYmUzM2E2NWQifQ"
+        },
+        {
+          "resource": "repo://libs/code/tests/unit_tests/test_python_migration_bridge.py#L372-L466",
+          "version": "repo-lines-v1:sha256:1b79dda045b8e6db1a86bd4b7267dbf1ae8d71e22a28fd2cf1d154d5dd14650e:eyJzZWxlY3RlZExpbmVDb3VudCI6OTUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjkzODNlNDAwZjk1ZDVkZjVmMjRlYjAxOTI2YzQ2YzQ0NGYxNjc3ZDdiMWE4NWZjNTIzNjE1N2I3ZTgyNjRmZjQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg1Mjk0OWZmZTQ5Njc5Yzk2ZTk0YWY4MjNhYTk4MTRjNDJmZDFlZDFkOTUzN2U2YzQ4ZTBmMGZiMmRiNGRmNDQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjUwNThiNGZhZjhlZjA0M2MyNzg3OTI3ZjMwMWQ0ODkxNzQwMzZjOWE2ODMwOGNmMzc5OWExMTk4YjE2NTFjNDciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjIzMmNiZDA2MzU5OGIwODc5M2NmODE2MmUxN2E3YzIzMTIzNjMxY2UxNmZhOWQ1ZjRjMzAyNmU5OGI0N2Y2NjIifQ"
+        },
+        {
+          "resource": "repo://libs/code/tests/unit_tests/test_python_migration_bridge.py#L539-L624",
+          "version": "repo-lines-v1:sha256:9c632d15854e25249eece66178e03e1c0b5a8854661733c6deb0be5186a32f53:eyJzZWxlY3RlZExpbmVDb3VudCI6ODYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY4MDUxZjA4MWFmMjk4MTIxOTg0NDc2MmQzZWZkNmQxMmY3ZmUyYmVkMmVmYmU2ZWNhMjhlY2EyNGJkMGUzOWIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjFiYjJiMjQwNGEzMmUzNDAxYmYwZWIxYjEwZjNlNzFmNTYyMzE5OTZmNjJjYTllMzkyZjQ2MmI2MTk4YjdhOWQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjNkYWRjODAyY2M1ZjNlMDI0ODYxNzhiZjAzNzY4ZDMzODFlZTUxOWU2MDcxNzVlMDc1NzhlYmJkNDg0YzAzMjUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_3d91231ea11043a78aebe1d08c3ab161",
+      "statement": "Talon history backend tests require URI validation and error redaction, no silent fallback for unavailable or ambiguous backends, persistence and assistant isolation, and cleanup of backend resources even when startup fails or is cancelled.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/tests/unit_tests/test_history_backends.py#L152-L172",
+          "version": "repo-lines-v1:sha256:1a63feb68cda8f2bbe907176b68a688d03db9ca62c11da30ab738e8f78cf2b44:eyJzZWxlY3RlZExpbmVDb3VudCI6MjEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImM1OTUzZTBhNjZjNmYxOWYxZjYxNzNiMGI3NDY5NmFhMzEwNzdhNDM0Mzg0ZmFjMGIzMTEwYzg2ZTAwYWEwYzMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImRhNzM3YjBlZDM3N2ZkMmMwYTVjMjkyNzEzYTA3ZTMxODVlOTk2MmE5MDQwM2MxMDUwNTRmYmRhNTFkZDdiMmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImYxYTA4NDI1NWQwMjQwYTBkYzE2NDQyMWFiYjk3MGU2ZGVhOGRiYzA1NmYyYWZiMjliNmYxODZlOWJlNTNmZDgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImM2ZDBmZmNhNmRhODEyMGYzN2FjYWU0OGY5MDg3ZmFkMDU1MmQyOWJjZDI4NmNjNzkxMWI0ZmNmNzFhNmZhNzcifQ"
+        },
+        {
+          "resource": "repo://libs/talon/tests/unit_tests/test_history_backends.py#L271-L334",
+          "version": "repo-lines-v1:sha256:f26fcc5f3762219d2d600ad8766eef107985c4f59e2b8c2cc221da53cd2d59fb:eyJzZWxlY3RlZExpbmVDb3VudCI6NjQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBiNjI4MzQ1YzhkYjk0OTk3YWYyOTYyMzBmMzM3MWNjMWRlZjM0ZjJmYWJjNTkxMDZiYTdhOTJkYjk0OTFmM2EiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ0Yjg0MDM1MWEwNDdlMjkzZTc1NmJjNTViMzk2NjY5YWQ0MjkzNjI5OWU1NWE2MjgyZDkyYTAzYWJiZGQ4YWUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImYzMzhhODcyNjJjODVhNmQ2YTcwZDJiMjExY2ZiYzg3NTk5MTNiNjg0NzAxMjIzYTlkYmUxMjE3Zjk4MjZmMWIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImZlMGZmZDc2OTQ5MjY1ZWI5Mjc5ODE3NWQzOTM2Yjc3MDU4MTlkZTRmYWVhNGU0NDAxNjMwZjA4NTJkMzI2MzQifQ"
+        },
+        {
+          "resource": "repo://libs/talon/tests/unit_tests/test_history_backends.py#L33-L120",
+          "version": "repo-lines-v1:sha256:971af50f2d81ea410d586434d7309fdccf124df9bdc32d8b0f78445b4767caf8:eyJzZWxlY3RlZExpbmVDb3VudCI6ODgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjA1Zjk3NDIwMWZkN2JkYTBkNzUwZTEzNThhNzkyNjY0MWU2OTFlYzY0NzA4NDExNDQ1N2M2MGRjNWUzNWYzNGUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjEwYzg2OGU1ODVlZDk2NTE5YTU3NmNlMDEyMmIzZDU0ZjEwZmU1MDUxNzk2NzM5MTA4NTBlMzcxNjg4NDA2ZGEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImQzZDE3MWRlNzU0MzFhMDIxYTBkOTRmYTc2ZmFiZjBkNzEzOWM4OThjMWEwYjQ0YjQzY2E2MDkwM2ZhMWI4NDUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImU1MWNkOTAxOTQ5NDM5MjdhYjdmOGY0ZGRhNGZjMDQ3NjE2MDg1NmMxMjcxZGU0ZWEyY2E2Y2FhZDA4ZmY0YWUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_5ee9eac00d3c4aad9159f888a5d465c6",
+      "statement": "Talon archive tests make interrupted writes and deletions recoverable: a journaled partial append can replay idempotently, cancellation waits for durable completion, failed vector deletion blocks resurrection and completes on reopen, and vector inference does not block durable appends.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/tests/unit_tests/test_store_archive.py#L392-L436",
+          "version": "repo-lines-v1:sha256:34b51bea6f7e07da10d6058814797fd1c40b6a522d0d931e2d6d18209ffc2cce:eyJzZWxlY3RlZExpbmVDb3VudCI6NDUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjJjNzgxYjQ0ZTA1MmYwZDdjYzY4YmE4MjEyOWY5Y2YyZjJhNzc4NmI5Njg1N2JhZTZjMjRkNWVlMjk0YmUxODUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc5YjE0Y2ZlNGYyZGM0MGUxNzQ0OWQ3NTViODJhNmFkZDcyNDE4Y2M2Mjk0NDBhZDZlNDE4MjAzYzkwNGYyZTUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjhkZDFlNTgzOTkxNzZjYzJmMDMyYmVhZTAzY2M0MmJmYjE5NzQ4NGQ3NDU0Y2UwZGY2NmM5ZTIwZDFlNGI5NTEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjY0MjM3Yjk1M2JmZWFkNjg4Y2M1NDRkNWUyMzBlYWMyNjYzOGRlNjE2MmE2MjVmY2Q0ZDMxYTJjMzA5ZjYzOGMifQ"
+        },
+        {
+          "resource": "repo://libs/talon/tests/unit_tests/test_store_archive.py#L454-L540",
+          "version": "repo-lines-v1:sha256:ec372aa90a7b10d51bae844d111d05a62ea0e66518e7d8b39b17753608a6e76e:eyJzZWxlY3RlZExpbmVDb3VudCI6ODcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjlhY2VhZjA4MzJmNzE0YzdhODY4OGMwYWE0M2JjZjE1YTkyMzM4YjJiNjNjOGFlZWI5MjZiOTM3YjhmNjkzYmYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjliZmQ4YjkwNTY0ZTMzMjFjMDk0ZWI1YzI2MTI1ZGQ3MmVlYmZlODkwOWM0NTI0YWMzM2RlOGIwMDU2OTMxNzMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjYxYzIyZmU0MDQ0M2Y5OTM5ZDk5NGYzNTdjZTljZGEyYjlmYTQ3ZmM0MWQ0ZDc5ZjAwODg0NzdlMTM2MmNlM2YifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_a31306f11fb640f19f46d247988add12",
+      "statement": "Talon host tests require cleanup after a partially started channel fails, stable channel-keyed thread identity, retryable history resets that do not advance conversation state on failed persistence or archive clear, and sequential non-overlapping recovery for interrupted channel and scheduled turns.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/tests/test_host.py#L1015-L1059",
+          "version": "repo-lines-v1:sha256:b4ce21d33c5c7c0a7c9b4b83e1fc541b0893dc9edb5766e489d66745b992310f:eyJzZWxlY3RlZExpbmVDb3VudCI6NDUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjczYmRlYWZkZWUwMjE0ZjM4ZGU1NWVlNTJkZTU0MDM5MTMxMzEyYzY4ZjU1ZWFkOGRlMWQ0NGZiNjk2MDBkMDgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY3MjY1NWQ4MDRjODIxN2EyZDNiMmU4Njc1M2NlYjlmMjE5MTNkM2YxMDk0NmU4Mjk3YmQ3YTM4NDNiMDExYWQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjhjYzRhN2QxY2M3OTZhYmEzZTQ2NzIzMzI3ZjUxN2U5ZjgxMTk4MmQyNTBmMDcwMjk4NmU0YjU3NjRhZDk1ODkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImY4MWJlNTk4MWNhOTk2OWRiYjcyZTQ4ZWQ0YzUwM2ViOGJlOTcyMmEwNTZhZDdjN2M2MDYyOTAzMDk5NThiMmIifQ"
+        },
+        {
+          "resource": "repo://libs/talon/tests/test_host.py#L2127-L2239",
+          "version": "repo-lines-v1:sha256:baaa4fffba7be7013a45d76179cf8677247445b812b5c81594d05c1c5bdd959a:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEzLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJmM2E5YTZjM2I4YTk3NTRiNzM3Y2FkODZkOTU1NzM0YzU5MmU3ZmE4NWIxMzhlNzczYzQ2ZGFlMmIzNDE4YzE0IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJmNzI2NTVkODA0YzgyMTdhMmQzYjJlODY3NTNjZWI5ZjIxOTEzZDNmMTA5NDZlODI5N2JkN2EzODQzYjAxMWFkIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJmZDFmN2RkY2M3ODIwMjg1MzFlNWJiNDQyM2I2NzJhNDQxNTk3MDdkYWNjMjQ1ZDdmZWQ1N2MyYjVkZTIwYzRmIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiJmYWMxMzE5YmRlNWViMWNkNWI3MjIwNmMwMDE5ZWZmZGNkZGFlOTJkYWQ4NzA0ZGUyZDBjNGI3ODE5YTA4NTVlIn0"
+        },
+        {
+          "resource": "repo://libs/talon/tests/test_host.py#L686-L700",
+          "version": "repo-lines-v1:sha256:31d6bb2ab8d569d59e6023248b631c47485c519f3cae9053b21b73675f7e7ef2:eyJzZWxlY3RlZExpbmVDb3VudCI6MTUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImVlZjdjYTlhMmE1NGE5MGY4YTNmNzEwMjc4N2JkMzZhZmQ0NzU1NzhkYzM3ZDNjZjYwZTk0YWI2YTFjNDE4OTMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI5OTE4ZGQzOTIyOWE4NWEwY2I4NjgxYjcxYjRiMGVhZGU2MWIzNmY2ZDI5ODE5ZTIxOTBlMTY1ZmIyODA5MTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImM5MWY4NGM1NGExOGI1YmZkZjg0YmJmNjMxZjI1OTQyNTMxZTg1NWE3MTk1ODFlZjg1YTM4N2NjODM2YWUwYjEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImJkZTk1MWFlMjk4ZGI4OGM1NGE4YjYzZGY3N2U1ZTgyZjUwNTNiOWY4MmIxNWY0ZjdlZjJkZDQzZTg5YTE2NDkifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_d520da7aabe041f78adbc545dc2cd306",
+      "statement": "Talon observability tests require LangSmith tracing to have both opt-in and an API key, attach channel and conversation provenance to the host trace, and redact identifiers, secrets, URL credentials, and bounded agent-activity previews from structured logs.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/tests/test_observability.py#L134-L185",
+          "version": "repo-lines-v1:sha256:66e49bd11c3f4e3fed8cb921e9a940b9eed9b15031d30fec15d0bb1b5918036a:eyJzZWxlY3RlZExpbmVDb3VudCI6NTIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI2NWFmMTU1MzAwMGUxYWZhNmYyMzczNzA0NTQ4ZmRiZWNmZmQ2NTI4MmExZGFmOTg4ZjhhYWRlOGYyMDY4OGMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ0MjgyZjQ2ZmM4MDllOTMwYTU2YzRmNDIyNTM0OWE1NmI5NjYwYmI2NGQ4MzM2YTM1MjIzMTgzZmY4NzQ5NGYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjlhODJlYmU5ZWQ0MDdjM2E2YmE0YjAwMzQyOTJiYWE1MmMxMWNlNWFlMjg2MTA3NDAyZGU0NzkyZWVlY2FjZmMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQ3MDIzZWQ5MDE0YjQxNmZjOTIyODNiODdiOTM4NjBlMzViZDdhZTI0NzQxMTQzMzNmZjdlZGI3MDU3ZDMxNjAifQ"
+        },
+        {
+          "resource": "repo://libs/talon/tests/test_observability.py#L188-L256",
+          "version": "repo-lines-v1:sha256:f53785c22ee14349db9bf1eb35cbe31b50dc7b44a53fa953dfa2f3839398ecca:eyJzZWxlY3RlZExpbmVDb3VudCI6NjksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjcyM2FjYzg1NGYyYzc5MzU1OTZjYjBmZDViZDIxNzcxY2U0YzgxODNmMDk2Zjc0ZDQ1OGFmZTY0NTk5MjVhYjgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU0YjU3YWVjZDQyNDc1OWNiMTYyOGNmNTAzNDI4YTEwNzU2N2U4NmEwNzVmN2ZkMGJmMTA5Y2ZlZDM1M2UwNmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijg0NWFlYmQ2NjFlNzZmMDcxMGVjYTdlMzIwYjhlMmQwMjA1MDM2MmMwOTY3M2I2ODU2MjcyOGM0NjlkODlkMzUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjM5OTc1ZTlkNjhiMTQwYjE4YWE5ZDdjZWJkZGVkNWM2NTc2MzQ5YWI2ZmIzNjBkODIyZDQxNDEzOTFiMmRmODIifQ"
+        },
+        {
+          "resource": "repo://libs/talon/tests/test_observability.py#L78-L131",
+          "version": "repo-lines-v1:sha256:845d0b741a1157570a0955830e0539fe1bc03611906e5629340e6e46ab1067ae:eyJzZWxlY3RlZExpbmVDb3VudCI6NTQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjY0OWEyNWU4ZWI0YWNiMGI5YzU0YTBjYjZlYTcwNDMxY2E4ZGZhYWYyMTE5ZjAxOTRiOWQ5YTJhNzE4YTA1NmYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFkZDI0NDU4MmI2ZmIwM2QyM2I4NDE1YWJlY2QzNDZiMGM5ZjQ2NmI2Zjc1MmIwNjgxODljZTdlOWEyZGMzNTAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjQ5NDk4ZjZhNzE0MThjYmFjOTdkODllNjk2MDI2MWU0NTYyZmU2ZjVhMzUxODQ1NGJiZmQyNTZiMzBlNDE0NmIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImJmZWI1MzE4MDliY2QzNTJiOTA5NmVjOTYxZTVlNGU4YjcxZWJhNWQxYmI4NmQ2NDcxNWQwMmQ0ZTBlNDFiNzUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_eae0bdaddd4d406ebad284ecb9806053",
+      "statement": "The Talon Node WhatsApp bridge tests cover compatibility normalization without provider access: paired-account self-chat and reaction identity, redacted rejection diagnostics, acknowledgement races and timeouts, in-flight duplicate-body reservations, and MIME-correct voice media retrieval with safe unavailable-media cases.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/tests/channels/whatsapp_bridge/id_compat.test.js#L23-L91",
+          "version": "repo-lines-v1:sha256:492bbda2a6987b21975c5d5d184b57ce0fec260093e26cffcebc8088f4b9edf9:eyJzZWxlY3RlZExpbmVDb3VudCI6NjksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjNjYjI1ZTJkMDU5ZGJmZGIxYmUwYzA4ZGM1MDYyZGJkZWE2ZTBlNmYyZDUxYjA4ZWVhNTZkMjFhNjBmMTMzOWEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY2ZjViNDBiMTU4NDU3ZDE3ODY0ZjIxNzkwNzg2ZGQ1YTJlY2RiNjRiNjZhNjUxZjc4OGQ0ZTI1Y2QzMzAzZDIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjZhOGE2NGI3OWU5YTgzMzRjZTcwMmU3Yzc5Mjc1OTkzMjA1MmEwZDdkMzQ2ODEyNzc4ZDFjOWFhMDhmMDQ0YmIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjIxM2QzYWRlOTE4NzE4Y2M3NmI4YzZjMjAzNWEzZWRiMmQ2MGQ1MTEzYTI0MDVhNjY1MzM0OTg0ZmU3YmYyYTAifQ"
+        },
+        {
+          "resource": "repo://libs/talon/tests/channels/whatsapp_bridge/id_compat.test.js#L231-L289",
+          "version": "repo-lines-v1:sha256:409163253154d6e04b842fbf83f857f56be542a3c2d46eaddce33c69b91c76f1:eyJzZWxlY3RlZExpbmVDb3VudCI6NTksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjFmNDc2ZDBhZWZjOTAzY2Y4NjE4OTIxNDNhOTMwOTU4YTdhZmU5YzA5M2M2ZThiOWFmM2UyZjUxM2ZhMDExYmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY2ZjViNDBiMTU4NDU3ZDE3ODY0ZjIxNzkwNzg2ZGQ1YTJlY2RiNjRiNjZhNjUxZjc4OGQ0ZTI1Y2QzMzAzZDIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjkyMjUxM2JlMGYwMTYzYzVmNmNiODQ4NTI1NGI3MTEyMDc5OTcxY2E2Y2Y2MTAyYzU0MTM3ZDgxNDEwOGU5MzEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        },
+        {
+          "resource": "repo://libs/talon/tests/channels/whatsapp_bridge/media.test.js#L62-L130",
+          "version": "repo-lines-v1:sha256:c79bb74a8005b79fc262f96dd6cf2ffd7c0f2cac00cb64b7a889449a49ceadd6:eyJzZWxlY3RlZExpbmVDb3VudCI6NjksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjUxYjgwMmZlZWQ5ZGY0NDVhYmEzZTU4NzI2Mjc4M2E3YzBmYzJkNjNhYjFiZTUzOWQxMTU4YzcyN2UzZDlkNmQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY2ZjViNDBiMTU4NDU3ZDE3ODY0ZjIxNzkwNzg2ZGQ1YTJlY2RiNjRiNjZhNjUxZjc4OGQ0ZTI1Y2QzMzAzZDIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImIyMTdjMjBkMmU0MTYxMGI3Y2YyMDBjNWU5YzgyYzA5ZGM1M2JmMjQ0NGYyZTc4YjNiZDc1ZDg5NjZmZWQ4MjMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-11-03T08:04:09.572Z"
+    "at": "2026-11-04T08:04:03.075Z"
   }
 }

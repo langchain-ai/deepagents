@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:02fb37ef6df615411e956a8e87f7142029c7a681ba0d143bf46ba35cf9e9d2f5",
+  "pageVersion": "sha256:818a11ac4ac9a0bab1fa63d959ad4144f98895500c62842eadff842e2ed4e921",
   "claims": [
     {
       "id": "claim_7e77f7ec620944c29e36936e3abea92f",
@@ -36,7 +36,7 @@
         },
         {
           "resource": "repo://libs/talon/pyproject.toml",
-          "version": "repo-file-v1:sha256:2cba4fd6476a47c377ffac749171407635bf373e5063e055da22d26740b84fd8"
+          "version": "repo-file-v1:sha256:08a78d1ef350f3db1333bf3d91861b7dd88abeb804faf1c1a36665525e323af1"
         },
         {
           "resource": "repo://release-please-config.json",
@@ -66,7 +66,7 @@
         },
         {
           "resource": "repo://libs/talon/pyproject.toml",
-          "version": "repo-file-v1:sha256:2cba4fd6476a47c377ffac749171407635bf373e5063e055da22d26740b84fd8"
+          "version": "repo-file-v1:sha256:08a78d1ef350f3db1333bf3d91861b7dd88abeb804faf1c1a36665525e323af1"
         }
       ]
     },
@@ -120,7 +120,7 @@
         },
         {
           "resource": "repo://libs/talon/pyproject.toml",
-          "version": "repo-file-v1:sha256:2cba4fd6476a47c377ffac749171407635bf373e5063e055da22d26740b84fd8"
+          "version": "repo-file-v1:sha256:08a78d1ef350f3db1333bf3d91861b7dd88abeb804faf1c1a36665525e323af1"
         }
       ]
     },
@@ -340,13 +340,39 @@
         },
         {
           "resource": "repo://libs/talon/pyproject.toml",
-          "version": "repo-file-v1:sha256:2cba4fd6476a47c377ffac749171407635bf373e5063e055da22d26740b84fd8"
+          "version": "repo-file-v1:sha256:08a78d1ef350f3db1333bf3d91861b7dd88abeb804faf1c1a36665525e323af1"
+        }
+      ]
+    },
+    {
+      "id": "claim_a050ac3772a846b58ae5c785d691d979",
+      "statement": "Talon publishes `deepagents-code>=0.2.4,<1.0.0` as its direct dcode dependency while its editable sibling dcode source is only checkout wiring; its optional history embedding extras select local, Voyage, or OpenAI-compatible dependencies, and its `openshell` extra installs the matching dcode sandbox-provider extra.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/README.md#L142-L154",
+          "version": "repo-lines-v1:sha256:87696332a475e571311dedd1c8a179ad395e51fd6d4d6a29bb077e3c039dc998:eyJzZWxlY3RlZExpbmVDb3VudCI6MTMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZhNTM2ZDFhMzU1YzdkZTBlODUwYTVhNTJkZGRjMzViYmY4NGQ1OGI2MWRmNWMyNTJjYzk5M2RmOWNkZTcyMjQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg2ZGQ3ZjhlMzE3YWU1MDQxMDlmMTliNWQ2ODEzOGZlZGQxMjBlMGMxZTllNzgxNWRiODdhNzc5YmIzY2Y4YWMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjFjYTE3M2Q5YTdjODhlOTUxY2U1YWM0OGU0ODVkYTJiNzdkNmRiZmI0NTMyYWJjNjRiZGVhOWE3ZjVjNmI2MzgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImVjZGM4NWNmN2EyYWU0MjA0NTRlMDNlNzk1OTFlZmUyOWY4NDc1NDcwMjY0N2I5NDUwODc2YzQxMTVlYzQwMmEifQ"
+        },
+        {
+          "resource": "repo://libs/talon/README.md#L64-L85",
+          "version": "repo-lines-v1:sha256:5e3f523431a58ad807d471278840df81e1815336a3e4368f5758615734981d39:eyJzZWxlY3RlZExpbmVDb3VudCI6MjIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU5OTk3OTgzZjdkMGYyYzY0N2MwNjAwYjJjMjU3ZmJlYzYyYTJkOWQyNDE0ZTE3ZjU3YzcwNjQzODA3Nzk1N2EiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjZiOWNhNjA0MmMyMTEzZGU3ZTc0NDEzNWE2OTNiYjRiZDA3NDNhY2U2MzRiMDJjYzlmN2M1M2U1NjM3ZTg1NWYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImZkZWZmYWM5Zjc2MzA1MWM3ZWNkMWY1NGRlODUyNDYxYTE3NzM3M2IxYjUxOGRjZTJmM2IyNWU0NDA2ZjZlYzMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjEyZGIzYjkzZTg3MWJmM2VhMzQ3N2ZjNDQwNTI4YTIxOTdiYzIwOGMyNDFhZGMxODZhZTk3ZTQ0MjlhNTM5MjYifQ"
+        },
+        {
+          "resource": "repo://libs/talon/pyproject.toml#L125-L127",
+          "version": "repo-lines-v1:sha256:f21f76576d9f14be9a1338cfcfdc77cd757509036b7ac828773f94e2521f8257:eyJzZWxlY3RlZExpbmVDb3VudCI6MywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMTZlZjAyYjBhNGFiNjg1M2FlNmIyYTI1YjNiMzU4ZmU1ODM3OTk3YjM0ZWU0MWY5MjI3Njc5YWExYzkwMWM4NyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiYzczN2U2NzEwNTUzNmQ0YWY0YjBkZjlkYWZkMTc4NzU2MmE2ZDFhNGNlOTdiYWE2YTUzYzRlOWM0Y2NmZTdlZiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZDMxYWFiNDQ2YTRiN2M4YjdkOWUzYWJiMzczNDU2YzNlYzY1MzAxNmE4MzRkZDZlMmYxYjQzZGU4YTlkMTIzMSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNjMyYjkzMmRkMjJhYjNhNzU1YTUxZjBlZTM4M2QxOGIwNmQwMGYyZjU2ZWI4MTE5NzIxNThhNGRiNzc4Y2U5MCJ9"
+        },
+        {
+          "resource": "repo://libs/talon/pyproject.toml#L22-L28",
+          "version": "repo-lines-v1:sha256:c8f71bdffa50ae64f52e7cc1d4825b1ecc56ae3caaeb6f413100e50d28ef656d:eyJzZWxlY3RlZExpbmVDb3VudCI6NywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYWQ5NWY1ZTllZGUwMTgxNjA0M2MwNzk3YWNlOGRhMmFjNGU5OWE4YTZhNjEwZmE5ODU3MGVmMzRiOTM1NjEwOSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiYmRiYzlkYjg2NDE2NTYyMTBhMzk0Mjg5MTEwYzBlOTVlMTc1NjNlNDhkYTI5ZmRhZmMyMTQyZjczMDk0MzFlOSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMDkzZWJmM2FlYTczODE3Y2ZlNDM2ZjhhNWE5YjE0ZWEwMjg2YTYyZWE0NGExZjJlOThmNTE4MGFlNTI4M2JjYyIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiYWYzMzg2Yzg1MGJhYzVlMDkyZmQyNGJkNzI5OGE3YjIxOGM0NDk4MDc1ZDJiNTFiNWM3MDRiYTE0NWMyYTliZCJ9"
+        },
+        {
+          "resource": "repo://libs/talon/pyproject.toml#L52-L87",
+          "version": "repo-lines-v1:sha256:48c6222783d49faf5596c2110085ebdcac835d62c71f524686c1ea248dda70c7:eyJzZWxlY3RlZExpbmVDb3VudCI6MzYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU5MjE4ZGM0Y2U5NzFjYmUzZDM4ZDc3NDMwZTYzOTkxODg4NGRkNzdkNzE4NGM3YjkzZGZkYzJlOTk4NjkxYjQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY5NDE2ZTA5Zjc4YmEzMTZjMDMyNTY4MjEzYjg1NWVlNzU2ZTQxNTY1ZDkxOGYwOTUxOWM4MWZkNjIwZjQwNjAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjJiMDgzNjZhNzNmY2E5ZmU0OTdlMmQyZWJmNDA1M2NmN2E1ZmY0Nzc3MTY0Yjc0ZjgxZjdkNzUyODU2YjQ2YjciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjU1NDViMzhhOWM0YzA0NzA4YTc3YWM5YTMyOWY4YTdkY2I1ODk1MDRhNGNhOGIxMTk5NThmNWM2ZTc1NThkODUifQ"
         }
       ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-11-03T08:04:09.572Z"
+    "at": "2026-11-04T08:04:03.075Z"
   }
 }

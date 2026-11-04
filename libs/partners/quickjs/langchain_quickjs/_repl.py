@@ -44,6 +44,7 @@ from quickjs_rs import (
 from langchain_quickjs._format import (
     coerce_tool_output_for_ptc,
     format_handle,
+    render_result,
     stringify,
 )
 from langchain_quickjs._ptc import is_valid_js_identifier, to_camel_case
@@ -88,6 +89,7 @@ class EvalOutcome:
     stdout_truncated_chars: int = 0
     result: str | None = None
     result_kind: str | None = None  # "handle" when marshaling fell back
+    blocks: list[dict[str, Any]] | None = None  # content blocks for the model
     error_type: str | None = None
     error_message: str = ""
     error_stack: str | None = None
@@ -860,7 +862,7 @@ class _ThreadREPL:
                         outcome.result = format_handle(resolved)
                         _clear_exception_references(me)
                     else:
-                        outcome.result = stringify(value)
+                        outcome.result, outcome.blocks = render_result(value)
                 finally:
                     if resolved is not handle:
                         resolved.dispose()

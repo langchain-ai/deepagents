@@ -927,6 +927,20 @@ class TestFilesystemMiddleware:
         assert TRUNCATION_GUIDANCE in result.content
         assert GREP_TRUNCATION_NOTE in result.content
 
+    def test_grep_clips_long_line_around_match(self):
+        """A match on a huge single line (e.g. offloaded minified JSON) shows a window around the hit, not the line."""
+        line = '{"items": [' + '{"k": "v"}, ' * 8000 + '{"order_id": "abc-123"}, ' + '{"k": "v"}, ' * 8000 + "]}"
+        files = {"/large_tool_results/call_1": FileData(content=line, modified_at="2021-01-01", created_at="2021-01-01")}
+        backend, _ = _make_backend(files)
+        middleware = FilesystemMiddleware(backend=backend)
+        grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
+
+        result = grep_search_tool.invoke({"pattern": "order_id", "output_mode": "content", "runtime": _runtime()})
+
+        assert '"order_id": "abc-123"' in result.content
+        assert len(result.content) < 3000
+        assert "chars clipped]" in result.content
+
     async def test_async_grep_truncated_renders_as_success_with_note(self):
         """The async grep handler renders a truncated result as success with the note (parity with sync)."""
         backend, _ = _make_backend()

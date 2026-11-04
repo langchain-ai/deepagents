@@ -20,8 +20,8 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 dependencies = [
-    "langchain>=1.4.9,<2.0.0",
-    "langchain-core>=1.7.5,<2.0.0",
+    "langchain>=1.4.8,<2.0.0",
+    "langchain-core>=1.7.4,<2.0.0",
     "langchain-anthropic>=1.7.9,<2.0.0",
     "langchain-google-genai>=4.4.2,<5.0.0",
     "langsmith>=0.14.17",

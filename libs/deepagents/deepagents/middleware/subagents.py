@@ -28,6 +28,7 @@ from langchain_core.tools import StructuredTool
 from langgraph.types import Command
 from langsmith.run_helpers import get_tracing_context, tracing_context
 from pydantic import BaseModel, Field, ValidationError, model_validator
+from pydantic_core import to_jsonable_python
 from typing_extensions import TypeIs
 
 from deepagents.backends.protocol import BackendProtocol
@@ -763,9 +764,11 @@ def _build_task_tool(  # noqa: C901, PLR0915
             if hasattr(structured, "model_dump_json"):
                 content: str = structured.model_dump_json()
             elif dataclasses.is_dataclass(structured) and not isinstance(structured, type):
-                content = json.dumps(dataclasses.asdict(structured))
+                content = json.dumps(to_jsonable_python(dataclasses.asdict(structured)))
             else:
-                content = json.dumps(structured)
+                # Validated values such as date and UUID are not JSON-native; pydantic's
+                # encoder converts them the same way model_dump_json does for Pydantic models.
+                content = json.dumps(to_jsonable_python(structured))
         else:
             # Walk back to the last AIMessage with non-empty text. Anthropic
             # occasionally emits a trailing empty `end_turn` AIMessage after a

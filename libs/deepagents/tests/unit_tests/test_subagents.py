@@ -1688,6 +1688,114 @@ class TestSubAgents:
             "sources": 3,
         }
 
+    def test_structured_response_dataclass_with_date_and_uuid_serialized(self) -> None:
+        """Dataclass structured_response with date/UUID fields must not raise TypeError.
+
+        `json.dumps` cannot encode `date` or `UUID` natively, so the middleware
+        must convert them the same way it does for Pydantic models.
+        """
+        import datetime
+
+        @dataclasses.dataclass
+        class Event:
+            when: datetime.date
+            identifier: uuid.UUID
+
+        event_id = uuid.UUID("00000000-0000-0000-0000-000000000001")
+        mock_subagent = RunnableLambda(
+            lambda _: {
+                "messages": [AIMessage(content="Extracted.")],
+                "structured_response": Event(when=datetime.date(2026, 10, 1), identifier=event_id),
+            }
+        )
+
+        parent_chat_model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "task",
+                                "args": {"description": "Extract", "subagent_type": "extractor"},
+                                "id": "call_dt",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Done"),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(
+            model=parent_chat_model,
+            checkpointer=InMemorySaver(),
+            subagents=[CompiledSubAgent(name="extractor", description="Extracts events", runnable=mock_subagent)],
+        )
+
+        result = agent.invoke(
+            {"messages": [HumanMessage(content="Extract")]},
+            config={"configurable": {"thread_id": f"test-dt-structured-{uuid.uuid4().hex}"}},
+        )
+
+        tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
+        assert len(tool_messages) == 1
+        parsed = json.loads(tool_messages[0].content)
+        assert parsed == {"when": "2026-10-01", "identifier": str(event_id)}
+
+    def test_structured_response_typeddict_with_date_and_uuid_serialized(self) -> None:
+        """TypedDict structured_response with date/UUID values must serialize to JSON."""
+        import datetime
+
+        class EventDict(TypedDict):
+            when: datetime.date
+            identifier: uuid.UUID
+
+        event_id = uuid.UUID("00000000-0000-0000-0000-000000000002")
+        structured = {"when": datetime.date(2026, 10, 2), "identifier": event_id}
+        mock_subagent = RunnableLambda(
+            lambda _: {
+                "messages": [AIMessage(content="Extracted.")],
+                "structured_response": structured,
+            }
+        )
+
+        parent_chat_model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "task",
+                                "args": {"description": "Extract", "subagent_type": "extractor"},
+                                "id": "call_td",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Done"),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(
+            model=parent_chat_model,
+            checkpointer=InMemorySaver(),
+            subagents=[CompiledSubAgent(name="extractor", description="Extracts events", runnable=mock_subagent)],
+        )
+
+        result = agent.invoke(
+            {"messages": [HumanMessage(content="Extract")]},
+            config={"configurable": {"thread_id": f"test-td-structured-{uuid.uuid4().hex}"}},
+        )
+
+        tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
+        assert len(tool_messages) == 1
+        parsed = json.loads(tool_messages[0].content)
+        assert parsed == {"when": "2026-10-02", "identifier": str(event_id)}
+
     def test_structured_response_pydantic_serialized_as_tool_message(self) -> None:
         """Test that a Pydantic model structured_response uses model_dump_json."""
 

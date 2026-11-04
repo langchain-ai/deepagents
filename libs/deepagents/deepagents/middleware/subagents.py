@@ -859,8 +859,13 @@ def _build_task_tool(  # noqa: C901, PLR0915
         # the subagent's bound config still wins collisions (e.g. `lc_agent_name`,
         # `recursion_limit`) and parent metadata propagates (deepagents#3634).
         # Forwarding those keys explicitly would double-count under the merge
-        # (e.g. duplicate `tags`), so we only stamp the subagent tracing tag.
-        subagent_config: RunnableConfig = {"configurable": {"ls_agent_type": "subagent"}}
+        # (e.g. duplicate `tags`), so we only stamp the subagent tracing tag and
+        # the `task` call's id. Checkpointers copy config metadata into each
+        # checkpoint, so the subagent's stored namespace names the call that ran it.
+        subagent_config: RunnableConfig = {
+            "configurable": {"ls_agent_type": "subagent"},
+            "metadata": {"lc_subagent_tool_call_id": runtime.tool_call_id},
+        }
         with _subagent_tracing_context():
             result = subagent.invoke(subagent_state, subagent_config)
         return _return_command_with_state_update(result, runtime.tool_call_id, subagent_state)
@@ -889,8 +894,13 @@ def _build_task_tool(  # noqa: C901, PLR0915
         # the subagent's bound config still wins collisions (e.g. `lc_agent_name`,
         # `recursion_limit`) and parent metadata propagates (deepagents#3634).
         # Forwarding those keys explicitly would double-count under the merge
-        # (e.g. duplicate `tags`), so we only stamp the subagent tracing tag.
-        subagent_config: RunnableConfig = {"configurable": {"ls_agent_type": "subagent"}}
+        # (e.g. duplicate `tags`), so we only stamp the subagent tracing tag and
+        # the `task` call's id. Checkpointers copy config metadata into each
+        # checkpoint, so the subagent's stored namespace names the call that ran it.
+        subagent_config: RunnableConfig = {
+            "configurable": {"ls_agent_type": "subagent"},
+            "metadata": {"lc_subagent_tool_call_id": runtime.tool_call_id},
+        }
         with _subagent_tracing_context():
             result = await subagent.ainvoke(subagent_state, subagent_config)
         return _return_command_with_state_update(result, runtime.tool_call_id, subagent_state)

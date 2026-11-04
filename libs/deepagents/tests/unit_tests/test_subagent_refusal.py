@@ -1,10 +1,11 @@
 """Subagent refusals are reported to the parent as task results."""
 
 from typing import TypedDict
+from unittest.mock import patch
 
 import pytest
 from langchain.agents import create_agent
-from langchain.agents.middleware import AgentMiddleware, ModelRefusalMiddleware
+from langchain.agents.middleware import AgentMiddleware, ModelFallbackMiddleware, ModelRefusalMiddleware
 from langchain.agents.structured_output import ProviderStrategy
 from langchain_core.exceptions import ModelRefusalError
 from langchain_core.messages import AIMessage, HumanMessage
@@ -14,6 +15,7 @@ from pydantic import BaseModel
 from deepagents.graph import create_deep_agent
 from deepagents.middleware.async_subagents import _final_content
 from deepagents.middleware.subagents import CompiledSubAgent
+from deepagents.profiles import HarnessProfile
 from tests.unit_tests.chat_model import GenericFakeChatModel
 
 RETRY_HINT = " Retrying the same request is unlikely to succeed; rephrase it or continue without it."
@@ -127,3 +129,47 @@ async def test_refusal_error_without_block_keeps_its_message(*, asynchronous: bo
     graph.add_edge(START, "generate")
     notice = f'The subagent stopped because a model refused the request. Explanation: "Model output was stopped by a content filter"{RETRY_HINT}'
     assert await _task_results(graph.compile(), asynchronous=asynchronous) == [notice]
+
+
+def _ask(agent: object) -> list[object]:
+    return agent.invoke({"messages": [HumanMessage("Scan my code")]})["messages"]  # type: ignore[attr-defined]
+
+
+def test_main_agent_raises_on_refusal_by_default() -> None:
+    agent = create_deep_agent(model=GenericFakeChatModel(messages=iter([ANTHROPIC_REFUSAL])))
+    with pytest.raises(ModelRefusalError):
+        _ask(agent)
+
+
+def test_fallback_middleware_catches_default_refusal() -> None:
+    fallback = GenericFakeChatModel(messages=iter([AIMessage(content="Scan complete.")]))
+    agent = create_deep_agent(
+        model=GenericFakeChatModel(messages=iter([ANTHROPIC_REFUSAL])),
+        middleware=[ModelFallbackMiddleware(fallback)],
+    )
+    assert _ask(agent)[-1].content == "Scan complete."  # type: ignore[attr-defined]
+
+
+def test_refusal_middleware_can_be_excluded() -> None:
+    profile = HarnessProfile(excluded_middleware=frozenset({"ModelRefusalMiddleware"}))
+    with patch("deepagents.graph._harness_profile_for_model", return_value=profile):
+        agent = create_deep_agent(model=GenericFakeChatModel(messages=iter([ANTHROPIC_REFUSAL])))
+    assert _ask(agent)[-1].response_metadata["stop_reason"] == "refusal"  # type: ignore[attr-defined]
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_declarative_subagent_refusal_becomes_task_result(*, asynchronous: bool) -> None:
+    agent = create_deep_agent(
+        model=_parent_model(),
+        subagents=[
+            {
+                "name": "scanner",
+                "description": "Scans code.",
+                "system_prompt": "Scan code.",
+                "model": GenericFakeChatModel(messages=iter([ANTHROPIC_REFUSAL])),
+            }
+        ],
+    )
+    inputs = {"messages": [HumanMessage("Scan my code")]}
+    result = await agent.ainvoke(inputs) if asynchronous else agent.invoke(inputs)
+    assert [m.content for m in result["messages"] if m.type == "tool"] == [ANTHROPIC_NOTICE]

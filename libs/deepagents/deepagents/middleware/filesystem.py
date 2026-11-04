@@ -160,8 +160,8 @@ def __getattr__(name: str) -> str:
     raise AttributeError(msg)
 
 
-_FS_WCMATCH_FLAGS = wcglob.BRACE | wcglob.GLOBSTAR
-"""wcmatch flags enabling brace expansion and `**` globstar recursion."""
+_FS_WCMATCH_FLAGS = wcglob.BRACE | wcglob.GLOBSTAR | wcglob.DOTMATCH
+"""wcmatch flags enabling brace expansion, `**` globstar recursion, and matching of dotfiles/dot-directories (so `deny` rules can't be bypassed via hidden names)."""
 
 _SYNC_GLOB_WORKERS = 4
 """Thread-pool size for synchronous glob operations."""

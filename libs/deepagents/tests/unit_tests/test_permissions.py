@@ -983,6 +983,26 @@ class TestFilesystemMiddlewarePermissions:
         result = _invoke_with_permissions(write_tool, {"file_path": "/workspace/out.txt", "content": "data"}, rules)
         assert "permission denied" in result
 
+    @pytest.mark.parametrize("file_path", ["/reference/.note.md", "/reference/.hidden/note.md"])
+    def test_write_denied_on_dotfile_under_denied_globstar(self, file_path):
+        """A `/reference/**` write-deny must also block dotfiles and dot-directories."""
+        backend = _make_backend()
+        middleware = FilesystemMiddleware(backend=backend)
+        write_tool = next(t for t in middleware.tools if t.name == "write_file")
+        rules = [FilesystemPermission(operations=["write"], paths=["/reference/**"], mode="deny")]
+        result = _invoke_with_permissions(write_tool, {"file_path": file_path, "content": "data"}, rules, backend=backend)
+        assert "permission denied" in result
+        assert backend.read(file_path).error is not None
+
+    def test_read_denied_on_dotfile_under_denied_globstar(self):
+        backend = _make_backend({"/secrets/.env": "API_KEY=random_api_key_for_testing"})
+        middleware = FilesystemMiddleware(backend=backend)
+        read_tool = next(t for t in middleware.tools if t.name == "read_file")
+        rules = [FilesystemPermission(operations=["read"], paths=["/secrets/**"], mode="deny")]
+        result = _invoke_with_permissions(read_tool, {"file_path": "/secrets/.env"}, rules, backend=backend)
+        assert "permission denied" in result
+        assert "random_api_key_for_testing" not in result
+
     def test_edit_denied_on_restricted_path(self):
         backend = _make_backend({"/protected/file.txt": "original"})
         middleware = FilesystemMiddleware(backend=backend)
@@ -1152,6 +1172,26 @@ class TestCheckFsPermissionGlobbing:
         rules = [FilesystemPermission(operations=["read"], paths=["/vault/**"], mode="deny")]
         assert _check_fs_permission(rules, "read", "/vault/a/b/c/deep.txt") == "deny"
         assert _check_fs_permission(rules, "read", "/other/file.txt") == "allow"
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "/reference/.hidden.md",
+            "/reference/.env",
+            "/reference/.hidden/x.md",
+            "/reference/dir/.x",
+            "/reference/dir/.hidden/deep/x.md",
+        ],
+    )
+    def test_globstar_deny_matches_dotfiles_and_dot_directories(self, path):
+        """`/dir/**` must not be bypassable via dotfiles or dot-directories."""
+        rules = [FilesystemPermission(operations=["write"], paths=["/reference/**"], mode="deny")]
+        assert _check_fs_permission(rules, "write", path) == "deny"
+
+    def test_dotfile_deny_does_not_leak_outside_scope(self):
+        rules = [FilesystemPermission(operations=["write"], paths=["/reference/**"], mode="deny")]
+        assert _check_fs_permission(rules, "write", "/.hidden.md") == "allow"
+        assert _check_fs_permission(rules, "write", "/other/.hidden.md") == "allow"
 
 
 class TestFilterPathsByPermission:

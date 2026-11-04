@@ -227,7 +227,10 @@ async def test_auto_compaction_uses_selected_model_budget(
             else middleware.wrap_model_call(request, configure)
         )
 
-    assert isinstance(response, ExtendedModelResponse) is compact
+    compacted = isinstance(response, ExtendedModelResponse) and (
+        "_summarization_event" in response.command.update
+    )
+    assert compacted is compact
     assert len(received) == 1
     resolved = received[0]
     assert resolved.model is selected

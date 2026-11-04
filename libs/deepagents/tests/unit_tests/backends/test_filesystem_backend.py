@@ -865,6 +865,32 @@ def test_grep_on_single_file_path(tmp_path: Path) -> None:
     assert any(m["path"].endswith("single.txt") for m in result.matches)
 
 
+@pytest.mark.usefixtures("_isolate_rg_cache")
+@pytest.mark.parametrize("virtual_mode", [False, True])
+@pytest.mark.parametrize("content", ["needle in requested file\n", "requested content only\n"])
+@pytest.mark.parametrize("glob", [None, "*.txt", "*.py", "/requested.txt"])
+def test_grep_python_fallback_scopes_single_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, virtual_mode: bool, content: str, glob: str | None
+) -> None:
+    """File-scoped fallback searches exclude matching siblings and descendants."""
+    monkeypatch.setattr(fs_module.shutil, "which", lambda _name: None)
+    target = tmp_path / "requested.txt"
+    target.write_text(content, encoding="utf-8")
+    (tmp_path / "sibling.txt").write_text("needle in sibling\n", encoding="utf-8")
+    subdir = tmp_path / "subdir"
+    subdir.mkdir()
+    (subdir / "unrelated.txt").write_text("needle in descendant\n", encoding="utf-8")
+    backend = FilesystemBackend(root_dir=tmp_path, virtual_mode=virtual_mode)
+    path = "/requested.txt" if virtual_mode else str(target)
+
+    result = backend.grep("needle", path=path, glob=glob)
+
+    expected = [{"path": path, "line": 1, "text": content.rstrip("\n")}] if "needle" in content and glob != "*.py" else []
+    assert result.error is None
+    assert result.truncated is False
+    assert result.matches == expected
+
+
 def test_grep_preserves_symlink_path_in_results(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Regression test for #2732: result paths must keep symlink form.
 

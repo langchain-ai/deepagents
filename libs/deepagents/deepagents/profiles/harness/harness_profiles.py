@@ -318,8 +318,19 @@ class HarnessProfileConfig:
     is dropped too. Async subagents are unaffected.
     """
 
+    enable_native_apply_patch: bool | None = field(default=None, kw_only=True)
+    """Opt in to experimental OpenAI Responses native file patching."""
+
+    enable_native_shell: bool | None = field(default=None, kw_only=True)
+    """Opt in to experimental OpenAI Responses shell on stock LocalShellBackend."""
+
     def __post_init__(self) -> None:
         """Freeze mutable mappings and validate grammar of string entries."""
+        for name in ("enable_native_apply_patch", "enable_native_shell"):
+            value = getattr(self, name)
+            if value is not None and not isinstance(value, bool):
+                msg = f"{name} must be bool or None"
+                raise TypeError(msg)
         if not isinstance(self.tool_description_overrides, MappingProxyType):
             object.__setattr__(
                 self,
@@ -350,6 +361,9 @@ class HarnessProfileConfig:
                 key or value.
         """
         out: dict[str, Any] = {}
+        for name in ("enable_native_apply_patch", "enable_native_shell"):
+            if getattr(self, name) is not None:
+                out[name] = getattr(self, name)
         if self.base_system_prompt is not None:
             out["base_system_prompt"] = self.base_system_prompt
         if self.system_prompt_suffix is not None:
@@ -395,6 +409,8 @@ class HarnessProfileConfig:
             msg = f"Unknown keys in HarnessProfileConfig dict: {sorted(unknown)}"
             raise TypeError(msg)
         return cls(
+            enable_native_apply_patch=data.get("enable_native_apply_patch"),
+            enable_native_shell=data.get("enable_native_shell"),
             base_system_prompt=_coerce_str_or_none(data.get("base_system_prompt"), "base_system_prompt"),
             system_prompt_suffix=_coerce_str_or_none(data.get("system_prompt_suffix"), "system_prompt_suffix"),
             tool_description_overrides=_coerce_str_mapping(data.get("tool_description_overrides"), "tool_description_overrides"),
@@ -427,6 +443,8 @@ class HarnessProfileConfig:
             A runtime `HarnessProfile` with equivalent declarative settings.
         """
         return HarnessProfile(
+            enable_native_apply_patch=self.enable_native_apply_patch,
+            enable_native_shell=self.enable_native_shell,
             base_system_prompt=self.base_system_prompt,
             system_prompt_suffix=self.system_prompt_suffix,
             tool_description_overrides=self.tool_description_overrides,
@@ -467,6 +485,8 @@ class HarnessProfileConfig:
             raise ValueError(msg)
 
         return cls(
+            enable_native_apply_patch=profile.enable_native_apply_patch,
+            enable_native_shell=profile.enable_native_shell,
             base_system_prompt=profile.base_system_prompt,
             system_prompt_suffix=profile.system_prompt_suffix,
             tool_description_overrides=_coerce_str_mapping(
@@ -724,6 +744,12 @@ class HarnessProfile:
     subagents are unaffected.
     """
 
+    enable_native_apply_patch: bool | None = field(default=None, kw_only=True)
+    """Opt in to experimental OpenAI Responses native file patching."""
+
+    enable_native_shell: bool | None = field(default=None, kw_only=True)
+    """Opt in to experimental OpenAI Responses shell on stock LocalShellBackend."""
+
     def __post_init__(self) -> None:
         """Freeze mutable container fields to prevent post-construction mutation.
 
@@ -753,6 +779,11 @@ class HarnessProfile:
         after the fact. A callable factory is stored as-is since its output is
         resolved at each lookup.
         """
+        for name in ("enable_native_apply_patch", "enable_native_shell"):
+            value = getattr(self, name)
+            if value is not None and not isinstance(value, bool):
+                msg = f"{name} must be bool or None"
+                raise TypeError(msg)
         if not isinstance(self.tool_description_overrides, MappingProxyType):
             object.__setattr__(
                 self,
@@ -1281,6 +1312,10 @@ def _merge_profiles(base: HarnessProfile, override: HarnessProfile) -> HarnessPr
         A merged `HarnessProfile`.
     """
     return HarnessProfile(
+        enable_native_apply_patch=override.enable_native_apply_patch
+        if override.enable_native_apply_patch is not None
+        else base.enable_native_apply_patch,
+        enable_native_shell=override.enable_native_shell if override.enable_native_shell is not None else base.enable_native_shell,
         base_system_prompt=(override.base_system_prompt if override.base_system_prompt is not None else base.base_system_prompt),
         system_prompt_suffix=(override.system_prompt_suffix if override.system_prompt_suffix is not None else base.system_prompt_suffix),
         tool_description_overrides={

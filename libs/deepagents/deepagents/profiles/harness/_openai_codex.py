@@ -10,8 +10,8 @@ The suffix is appended last to each assembled prompt, so it layers cleanly
 on top of caller and profile content for the main agent and each subagent's
 own authored base prompt.
 
-Per-model keys (not the `"openai"` prefix) keep the default behavior of
-non-Codex OpenAI models unchanged.
+Provider-level task guidance applies to all OpenAI models; the behavioral
+system-prompt suffix remains specific to Codex models.
 """
 
 from typing import Any
@@ -20,6 +20,7 @@ from langchain.agents.middleware import TodoListMiddleware
 from langchain.agents.middleware.types import AgentMiddleware
 
 from deepagents.profiles.harness.harness_profiles import (
+    GeneralPurposeSubagentProfile,
     HarnessProfile,
     _register_harness_profile_impl,
 )
@@ -36,6 +37,13 @@ suffix works across the family. Add or remove specs here only when a
 new Codex variant ships with divergent training expectations that
 warrant a different suffix.
 """
+
+_DELEGATION_GUIDANCE = """Delegate substantial, independent assignments with clear deliverables to a subagent.
+Prefer direct tools for routine searches, small edits, and tightly coupled next steps.
+Include the context the subagent needs and request a self-contained final report;
+the report returns to you, not directly to the user. Parallelize only independent work."""
+_TASK_DESCRIPTION = _DELEGATION_GUIDANCE + "\n\nAvailable agents:\n{available_agents}"
+
 
 _SYSTEM_PROMPT_SUFFIX: str = """\
 ## Codex-Specific Behavior
@@ -80,6 +88,13 @@ def _build_extra_middleware() -> list[AgentMiddleware[Any, Any, Any]]:
 
 def register() -> None:
     """Register the built-in Codex harness profile for each Codex spec."""
+    _register_harness_profile_impl(
+        "openai",
+        HarnessProfile(
+            tool_description_overrides={"task": _TASK_DESCRIPTION},
+            general_purpose_subagent=GeneralPurposeSubagentProfile(description=_DELEGATION_GUIDANCE),
+        ),
+    )
     profile = HarnessProfile(
         system_prompt_suffix=_SYSTEM_PROMPT_SUFFIX,
         extra_middleware=_build_extra_middleware,

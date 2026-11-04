@@ -1747,6 +1747,8 @@ def supports_execution(backend: BackendProtocol) -> bool:
 #    These tools return minimal confirmation messages and are never expected to produce
 #    output large enough to exceed token limits, so checking them would be unnecessary.
 TOOLS_EXCLUDED_FROM_EVICTION = (
+    "apply_patch",
+    "shell",
     "ls",
     "glob",
     "grep",

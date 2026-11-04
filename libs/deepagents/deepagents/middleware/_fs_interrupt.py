@@ -17,6 +17,7 @@ from langchain.tools.tool_node import ToolCallRequest
 
 from deepagents.backends.protocol import BackendProtocol
 from deepagents.backends.utils import _glob_anchor, _paths_overlap, to_posix_path, validate_path
+from deepagents.middleware._native_patch import _normalize_patch_path
 from deepagents.middleware.filesystem import FilesystemOperation, FilesystemPermission, _check_fs_permission, _resolve_real_path
 
 # Scope of a filesystem tool's path argument:
@@ -174,6 +175,8 @@ def _bulk_pattern_fires(raw_pattern: str, interrupt_anchors: list[str]) -> bool:
 def _build_interrupt_on_from_permissions(
     rules: list[FilesystemPermission],
     backend: BackendProtocol | None = None,
+    *,
+    enable_native_apply_patch: bool = False,
 ) -> dict[str, InterruptOnConfig]:
     """Generate `interrupt_on` configs from interrupt-mode permissions.
 
@@ -200,4 +203,21 @@ def _build_interrupt_on_from_permissions(
             allowed_decisions=allowed,
             when=_make_fs_when_predicate(rules, op, arg, scope, pattern_arg, backend),
         )
+    if enable_native_apply_patch and any(rule.mode == "interrupt" for rule in rules):
+        result["apply_patch"] = InterruptOnConfig(allowed_decisions=allowed, when=_make_patch_when_predicate(rules, backend))
     return result
+
+
+def _make_patch_when_predicate(rules: list[FilesystemPermission], backend: BackendProtocol | None) -> Callable[[ToolCallRequest], bool]:
+    def when(request: ToolCallRequest) -> bool:
+        operation = request.tool_call.get("args", {}).get("operation")
+        if not isinstance(operation, dict) or not isinstance(operation.get("path"), str):
+            return False
+        try:
+            path = _normalize_patch_path(backend, operation["path"])
+        except ValueError:
+            return False
+        decisions = {_check_fs_permission(rules, access, candidate) for access in ("read", "write") for candidate in _candidate_paths(backend, path)}
+        return "interrupt" in decisions and "deny" not in decisions
+
+    return when

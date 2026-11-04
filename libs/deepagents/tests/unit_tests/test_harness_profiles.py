@@ -12,7 +12,21 @@ from deepagents import (
     HarnessProfile,
     HarnessProfileConfig,
 )
+from deepagents.middleware.subagents import _build_task_tool
 from deepagents.middleware.summarization import _DeepAgentsSummarizationMiddleware
+from deepagents.profiles.harness.harness_profiles import _get_harness_profile, _merge_profiles
+
+
+@pytest.mark.parametrize("override", ["custom delegation", ""])
+def test_openai_task_description_override(override: str) -> None:
+    profile = _get_harness_profile("openai:gpt-5")
+    assert profile is not None
+    merged = _merge_profiles(profile, HarnessProfile(tool_description_overrides={"task": override}))
+    tool = _build_task_tool(
+        subagents=[],
+        task_description=merged.tool_description_overrides["task"],
+    )
+    assert tool.description == override
 
 
 class TestGeneralPurposeSubagentProfileSerde:

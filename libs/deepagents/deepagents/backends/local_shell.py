@@ -8,9 +8,12 @@ run directly on the host machine with full system access.
 from __future__ import annotations
 
 import os
+import signal
 import subprocess
 import sys
+import time
 import uuid
+from contextlib import suppress
 from typing import TYPE_CHECKING
 
 from deepagents.backends.filesystem import FilesystemBackend
@@ -22,6 +25,55 @@ if TYPE_CHECKING:
 
 DEFAULT_EXECUTE_TIMEOUT = 120
 """Default timeout in seconds for shell command execution."""
+
+
+def _terminate_process_group(process: subprocess.Popen[str], error: subprocess.TimeoutExpired) -> None:
+    """Kill the command group and collect output within one cleanup deadline."""
+    deadline = time.monotonic() + 1
+    with suppress(ProcessLookupError):
+        os.killpg(process.pid, signal.SIGKILL)
+    try:
+        stdout, stderr = process.communicate(timeout=max(0, deadline - time.monotonic()))
+        error.output, error.stderr = stdout, stderr.encode()
+    except subprocess.TimeoutExpired as final_error:
+        error.output, error.stderr = final_error.output, final_error.stderr
+    finally:
+        for stream in (process.stdout, process.stderr):
+            if stream is not None:
+                stream.close()
+        with suppress(subprocess.TimeoutExpired):
+            process.wait(timeout=max(0, deadline - time.monotonic()))
+
+
+def _run_posix_command(command: str, *, timeout: float, env: dict[str, str], cwd: str) -> subprocess.CompletedProcess[str]:
+    """Run a shell in a new session and bound timeout cleanup."""
+    process = subprocess.Popen(  # noqa: S602
+        command,
+        shell=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        stdin=subprocess.DEVNULL,
+        text=True,
+        env=env,
+        cwd=cwd,
+        start_new_session=True,
+    )
+    try:
+        try:
+            stdout, stderr = process.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired as error:
+            _terminate_process_group(process, error)
+            raise
+        return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+    finally:
+        for stream in (process.stdout, process.stderr):
+            if stream is not None:
+                stream.close()
+
+
+def _timeout_text(output: str | bytes | None) -> str:
+    """Normalize partial output returned by subprocess timeout exceptions."""
+    return output.decode(errors="replace") if isinstance(output, bytes) else output or ""
 
 
 class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
@@ -110,7 +162,7 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
         root_dir: str | Path | None = None,
         *,
         virtual_mode: bool = True,
-        timeout: int = DEFAULT_EXECUTE_TIMEOUT,
+        timeout: float = DEFAULT_EXECUTE_TIMEOUT,
         max_output_bytes: int = 100_000,
         env: dict[str, str] | None = None,
         inherit_env: bool = False,
@@ -217,14 +269,14 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
         self,
         command: str,
         *,
-        timeout: int | None = None,
+        timeout: float | None = None,
     ) -> ExecuteResponse:
         r"""Execute a shell command directly on the host system.
 
         !!! danger "Unrestricted Execution"
 
             Commands are executed directly on your host system
-            using `subprocess.run()` with `shell=True`. There is **no sandboxing,
+            using `subprocess` with `shell=True`. There is **no sandboxing,
             isolation, or security restrictions**. The command runs with
             your user's full permissions and can:
 
@@ -300,60 +352,42 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
             msg = f"timeout must be positive, got {effective_timeout}"
             raise ValueError(msg)
 
+        timeout_message = None
         try:
-            result = subprocess.run(  # noqa: S602
-                command,
-                check=False,
-                shell=True,  # Intentional: designed for LLM-controlled shell execution
-                capture_output=True,
-                stdin=subprocess.DEVNULL,  # Prevent hanging on commands that read stdin (e.g. python, cat)
-                text=True,
-                timeout=effective_timeout,
-                env=self._env,
-                cwd=str(self.cwd),  # Use the root_dir from FilesystemBackend
-                start_new_session=(sys.platform != "win32"),
-            )
-
-            # Combine stdout and stderr
-            # Prefix each stderr line with [stderr] for clear attribution.
-            # Example: "hello\n[stderr] error: file not found"  # noqa: ERA001
-            output_parts = []
-            if result.stdout:
-                output_parts.append(result.stdout)
-            if result.stderr:
-                stderr_lines = result.stderr.strip().split("\n")
-                output_parts.extend(f"[stderr] {line}" for line in stderr_lines)
-
-            output = "\n".join(output_parts) if output_parts else "<no output>"
-
-            # Check for truncation
-            truncated = False
-            output_bytes = output.encode("utf-8")
-            if len(output_bytes) > self._max_output_bytes:
-                output = output_bytes[: self._max_output_bytes].decode("utf-8", errors="ignore")
-                output += f"\n\n... Output truncated at {self._max_output_bytes} bytes."
-                truncated = True
-
-            # Add exit code info if non-zero
-            if result.returncode != 0:
-                output = f"{output.rstrip()}\n\nExit code: {result.returncode}"
-
-            return ExecuteResponse(
-                output=output,
-                exit_code=result.returncode,
-                truncated=truncated,
-            )
-
-        except subprocess.TimeoutExpired:
-            if timeout is not None:
-                msg = f"Error: Command timed out after {effective_timeout} seconds (custom timeout). The command may be stuck or require more time."
+            if sys.platform == "win32":
+                result = subprocess.run(  # noqa: S602
+                    command,
+                    check=False,
+                    shell=True,
+                    capture_output=True,
+                    stdin=subprocess.DEVNULL,
+                    text=True,
+                    timeout=effective_timeout,
+                    env=self._env,
+                    cwd=str(self.cwd),
+                    start_new_session=False,
+                )
             else:
-                msg = f"Error: Command timed out after {effective_timeout} seconds. For long-running commands, re-run using the timeout parameter."
-            return ExecuteResponse(
-                output=msg,
-                exit_code=124,  # Standard timeout exit code
-                truncated=False,
-            )
+                result = _run_posix_command(command, timeout=effective_timeout, env=self._env, cwd=str(self.cwd))
+        except subprocess.TimeoutExpired as error:
+            if timeout is not None:
+                timeout_message = (
+                    f"Error: Command timed out after {effective_timeout} seconds (custom timeout). The command may be stuck or require more time."
+                )
+            else:
+                timeout_message = (
+                    f"Error: Command timed out after {effective_timeout} seconds. For long-running commands, re-run using the timeout parameter."
+                )
+            if sys.platform == "win32":
+                return ExecuteResponse(
+                    output=timeout_message,
+                    exit_code=124,
+                    truncated=False,
+                    timed_out=True,
+                    stdout=_timeout_text(error.output),
+                    stderr=_timeout_text(error.stderr),
+                )
+            result = subprocess.CompletedProcess(command, 124, _timeout_text(error.output), _timeout_text(error.stderr))
         except Exception as e:  # noqa: BLE001
             # Broad exception catch is intentional: we want to catch all execution errors
             # and return a consistent ExecuteResponse rather than propagating exceptions
@@ -362,6 +396,45 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
                 exit_code=1,
                 truncated=False,
             )
+
+        return self._execution_response(result, timeout_message)
+
+    def _execution_response(self, result: subprocess.CompletedProcess[str], timeout_message: str | None) -> ExecuteResponse:
+        """Format captured output and append exit or timeout diagnostics."""
+        # Combine stdout and stderr
+        # Prefix each stderr line with [stderr] for clear attribution.
+        # Example: "hello\n[stderr] error: file not found"  # noqa: ERA001
+        output_parts = []
+        if result.stdout:
+            output_parts.append(result.stdout)
+        if result.stderr:
+            stderr_lines = result.stderr.strip().split("\n")
+            output_parts.extend(f"[stderr] {line}" for line in stderr_lines)
+
+        output = "\n".join(output_parts) if output_parts else "<no output>"
+
+        # Check for truncation
+        truncated = False
+        output_bytes = output.encode("utf-8")
+        if len(output_bytes) > self._max_output_bytes:
+            output = output_bytes[: self._max_output_bytes].decode("utf-8", errors="ignore")
+            output += f"\n\n... Output truncated at {self._max_output_bytes} bytes."
+            truncated = True
+
+        # Add exit code info if non-zero
+        if timeout_message is not None:
+            output = f"{output}\n\n{timeout_message}" if result.stdout or result.stderr else timeout_message
+        elif result.returncode != 0:
+            output = f"{output.rstrip()}\n\nExit code: {result.returncode}"
+
+        return ExecuteResponse(
+            output=output,
+            exit_code=result.returncode,
+            truncated=truncated,
+            timed_out=timeout_message is not None,
+            stdout=result.stdout,
+            stderr=result.stderr,
+        )
 
 
 __all__ = ["DEFAULT_EXECUTE_TIMEOUT", "LocalShellBackend"]

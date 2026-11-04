@@ -9,7 +9,7 @@ import abc
 import asyncio
 import inspect
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import lru_cache, partial
 from typing import Final, Literal, NotRequired
 
@@ -825,6 +825,15 @@ class ExecuteResponse:
 
     truncated: bool = False
     """Whether the output was truncated due to backend limitations."""
+
+    timed_out: bool = field(default=False, kw_only=True)
+    """Whether execution exceeded its deadline, independently of the exit code."""
+
+    stdout: str | None = field(default=None, kw_only=True)
+    """Complete standard output when the backend provides separate streams."""
+
+    stderr: str | None = field(default=None, kw_only=True)
+    """Complete standard error when the backend provides separate streams."""
 
 
 class ExecuteArtifact(TypedDict):

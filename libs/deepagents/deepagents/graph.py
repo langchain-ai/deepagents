@@ -50,6 +50,7 @@ from deepagents.middleware._utils import append_to_system_message
 from deepagents.middleware.async_subagents import AsyncSubAgent, AsyncSubAgentMiddleware
 from deepagents.middleware.filesystem import FilesystemMiddleware, FilesystemPermission
 from deepagents.middleware.memory import MemoryMiddleware
+from deepagents.middleware.native_tools import NativeToolsMiddleware, native_tools_middleware
 from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
 from deepagents.middleware.skills import SkillsMiddleware
 from deepagents.middleware.subagents import (
@@ -286,6 +287,16 @@ Derived from `_REQUIRED_MIDDLEWARE` and used for quick membership testing.
 """
 
 
+def _native_compaction_last(stack: list[AgentMiddleware[Any, Any, Any]]) -> list[AgentMiddleware[Any, Any, Any]]:
+    """Count native requests after all prompt and tool transformations."""
+
+    def is_native(item: AgentMiddleware[Any, Any, Any]) -> bool:
+        engine = getattr(item, "_summarization", item)
+        return getattr(engine, "compaction_strategy", "text") == "openai"
+
+    return [item for item in stack if not is_native(item)] + [item for item in stack if is_native(item)]
+
+
 def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly logic with many conditional branches
     model: str | BaseChatModel | None = None,
     tools: Sequence[BaseTool | Callable | dict[str, Any]] | None = None,
@@ -306,6 +317,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     debug: bool = False,
     name: str | None = None,
     cache: BaseCache | None = None,
+    compaction_strategy: str = "text",
 ) -> CompiledStateGraph[AgentState[ResponseT], ContextT, InputAgentState, OutputAgentState[ResponseT]]:  # ty: ignore[invalid-type-arguments]  # ty can't verify generic TypedDicts satisfy StateLike bound
     r"""Create a deep agent.
 
@@ -601,6 +613,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         name: The name of the agent.
 
             Passed through to [`create_agent`][langchain.agents.create_agent].
+        compaction_strategy: Context compaction engine: `text` or opt-in `openai` Responses compaction.
         cache: The cache to use for the agent.
 
             Passed through to [`create_agent`][langchain.agents.create_agent].
@@ -739,7 +752,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
                     custom_tool_descriptions=_subagent_profile.tool_description_overrides,
                     permissions=subagent_permissions,
                 ),
-                create_summarization_middleware(subagent_model, backend),
+                create_summarization_middleware(subagent_model, backend, compaction_strategy=compaction_strategy),
                 PatchToolCallsMiddleware(),
             ]
             # Core names captured before the tail so new spec middleware (and a
@@ -791,12 +804,17 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
                 required_classes=_REQUIRED_MIDDLEWARE_CLASSES,
                 required_names=_REQUIRED_MIDDLEWARE_NAMES,
             )
+            subagent_middleware.extend(native_tools_middleware(_subagent_profile, backend, spec.get("tools", tools), subagent_middleware))
             if _subagent_profile.excluded_tools:
                 subagent_middleware.append(_ToolExclusionMiddleware(excluded=_subagent_profile.excluded_tools))
 
             subagent_interrupt_on = spec.get("interrupt_on", interrupt_on)
             subagent_interrupt_on = _merge_fs_interrupt_on(
-                _build_interrupt_on_from_permissions(subagent_permissions or [], backend),
+                _build_interrupt_on_from_permissions(
+                    subagent_permissions or [],
+                    backend,
+                    enable_native_apply_patch=any(isinstance(m, NativeToolsMiddleware) and m.patch for m in subagent_middleware),
+                ),
                 subagent_interrupt_on,
             )
 
@@ -812,7 +830,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
                 **spec,
                 "model": subagent_model,
                 "tools": subagent_tools or [],
-                "middleware": subagent_middleware,
+                "middleware": _native_compaction_last(subagent_middleware),
             }
             if is_forked:
                 # The parent's prompt is the fork's base; the fork's own is an addendum.
@@ -845,7 +863,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
                 custom_tool_descriptions=_profile.tool_description_overrides,
                 permissions=permissions,
             ),
-            create_summarization_middleware(model, backend),
+            create_summarization_middleware(model, backend, compaction_strategy=compaction_strategy),
             PatchToolCallsMiddleware(),
         ]
 
@@ -874,6 +892,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         )
         # Tool exclusion runs last so excluded tool names are stripped after all
         # tool-injecting middleware has run.
+        gp_middleware.extend(native_tools_middleware(_profile, backend, tools, gp_middleware))
         if _profile.excluded_tools:
             gp_middleware.append(_ToolExclusionMiddleware(excluded=_profile.excluded_tools))
 
@@ -881,7 +900,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             **GENERAL_PURPOSE_SUBAGENT,
             "model": model,
             "tools": _tools or [],
-            "middleware": gp_middleware,
+            "middleware": _native_compaction_last(gp_middleware),
         }
         if gp_profile.description is not None:
             general_purpose_spec["description"] = gp_profile.description
@@ -895,7 +914,11 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         else:
             general_purpose_spec["system_prompt"] = _apply_profile_prompt(_profile, GENERAL_PURPOSE_SUBAGENT["system_prompt"])
         gp_interrupt_on = _merge_fs_interrupt_on(
-            _build_interrupt_on_from_permissions(permissions or [], backend),
+            _build_interrupt_on_from_permissions(
+                permissions or [],
+                backend,
+                enable_native_apply_patch=any(isinstance(m, NativeToolsMiddleware) and m.patch for m in gp_middleware),
+            ),
             interrupt_on,
         )
         if gp_interrupt_on is not None:
@@ -928,7 +951,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     deepagent_middleware.extend(
         [
             _ParentNotifierMiddleware(),
-            create_summarization_middleware(model, backend),
+            create_summarization_middleware(model, backend, compaction_strategy=compaction_strategy),
             PatchToolCallsMiddleware(),
         ]
     )
@@ -963,7 +986,12 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             )
         )
     main_interrupt_on = _merge_fs_interrupt_on(
-        _build_interrupt_on_from_permissions(permissions or [], backend),
+        _build_interrupt_on_from_permissions(
+            permissions or [],
+            backend,
+            enable_native_apply_patch=bool(_profile.enable_native_apply_patch)
+            or any(isinstance(m, NativeToolsMiddleware) and m.patch for m in middleware or []),
+        ),
         interrupt_on,
     )
     if main_interrupt_on is not None:
@@ -984,8 +1012,10 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     )
     # Tool exclusion runs after custom middleware so excluded tool names are
     # stripped last and cannot be restored by a custom wrap_model_call.
+    deepagent_middleware.extend(native_tools_middleware(_profile, backend, tools, deepagent_middleware))
     if _profile.excluded_tools:
         deepagent_middleware.append(_ToolExclusionMiddleware(excluded=_profile.excluded_tools))
+    deepagent_middleware = _native_compaction_last(deepagent_middleware)
     state_schemas = [state_schema] if state_schema is not None else []
     state_schemas.extend(mw.state_schema for mw in deepagent_middleware if getattr(mw, "state_schema", None) is not None)
     private_state_keys = private_state_field_names(*state_schemas)

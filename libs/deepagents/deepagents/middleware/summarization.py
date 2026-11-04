@@ -161,8 +161,8 @@ class SummarizationEvent(TypedDict):
     cutoff_index: int
     """The index in the messages list where summarization occurred."""
 
-    summary_message: HumanMessage
-    """The `HumanMessage` containing the summary."""
+    summary_message: AnyMessage
+    """The text summary or opaque provider-native compaction context."""
 
     file_path: str | None
     """Path where the conversation history was offloaded, or `None` if offload failed."""
@@ -797,11 +797,19 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
 
     def _create_summary(self, messages_to_summarize: list[AnyMessage]) -> str:
         """Generate summary for the given messages."""
+        self._check_text_summary(messages_to_summarize)
         return self._lc_helper._create_summary(messages_to_summarize)
 
     async def _acreate_summary(self, messages_to_summarize: list[AnyMessage]) -> str:
         """Generate summary for the given messages (async)."""
+        self._check_text_summary(messages_to_summarize)
         return await self._lc_helper._acreate_summary(messages_to_summarize)
+
+    @staticmethod
+    def _check_text_summary(messages: list[AnyMessage]) -> None:
+        if any(isinstance(message, AIMessage) and message.response_metadata.get("deepagents_compaction_model") for message in messages):
+            msg = "OpenAI opaque context cannot be summarized as text; use the original native compaction strategy and model."
+            raise ValueError(msg)
 
     def _get_session_id(self, state: Mapping[str, Any]) -> str:
         """Resolve the session id naming the offload history file.
@@ -913,6 +921,14 @@ A condensed summary follows:
             The effective message list to use for the model call.
         """
         event = request.state.get(SUMMARIZATION_EVENT_KEY)
+        summary_message = event.get("summary_message") if isinstance(event, Mapping) else None
+        if (
+            isinstance(summary_message, AIMessage)
+            and summary_message.response_metadata.get("deepagents_compaction_model")
+            and getattr(self, "compaction_strategy", "text") != "openai"
+        ):
+            msg = "This checkpoint contains OpenAI opaque compaction context; resume it with compaction_strategy='openai' and the original model."
+            raise ValueError(msg)
         return self._apply_event_to_messages(request.messages, event)
 
     @staticmethod
@@ -1698,7 +1714,7 @@ A condensed summary follows:
         # Create new summarization event
         new_event: SummarizationEvent = {
             "cutoff_index": state_cutoff_index,
-            "summary_message": new_messages[0],  # The HumanMessage with summary  # ty: ignore[invalid-argument-type]
+            "summary_message": new_messages[0],
             "file_path": file_path,
             "created_at_index": len(request.messages),
         }
@@ -1838,7 +1854,7 @@ A condensed summary follows:
         # Create new summarization event
         new_event: SummarizationEvent = {
             "cutoff_index": state_cutoff_index,
-            "summary_message": new_messages[0],  # The HumanMessage with summary  # ty: ignore[invalid-argument-type]
+            "summary_message": new_messages[0],
             "file_path": file_path,
             "created_at_index": len(request.messages),
         }
@@ -1882,6 +1898,7 @@ def create_summarization_middleware(
     trim_tokens_to_summarize: int | None = None,
     token_counter: TokenCounter = count_tokens_approximately,
     summarizer: Summarizer | None = None,
+    compaction_strategy: str = "text",
 ) -> _DeepAgentsSummarizationMiddleware:
     """Create a Deep Agents `SummarizationMiddleware` with model-aware defaults.
 
@@ -1939,6 +1956,7 @@ def create_summarization_middleware(
         token_counter: Function to count tokens in messages.
         summarizer: Optional replacement for the summarization model call. See
             `SummarizationMiddleware`.
+        compaction_strategy: `text` summaries or opt-in `openai` opaque Responses compaction.
 
     Returns:
         Configured `SummarizationMiddleware` instance.
@@ -1952,6 +1970,16 @@ def create_summarization_middleware(
         msg = "`create_summarization_middleware` expects `model` to be a `BaseChatModel` instance."
         raise TypeError(msg)
 
+    if compaction_strategy == "openai":
+        from deepagents.middleware.native_compaction import OpenAICompactionMiddleware  # noqa: PLC0415
+
+        if summarizer is not None:
+            msg = "OpenAI compaction cannot use a separate summarizer."
+            raise ValueError(msg)
+        return OpenAICompactionMiddleware(model, backend=backend)
+    if compaction_strategy != "text":
+        msg = "compaction_strategy must be 'text' or 'openai'."
+        raise ValueError(msg)
     defaults = compute_summarization_defaults(model)
     return SummarizationMiddleware(
         model=model,
@@ -1971,6 +1999,7 @@ def create_summarization_tool_middleware(
     backend: BackendProtocol,
     *,
     system_prompt: str | None = None,
+    compaction_strategy: str = "text",
 ) -> SummarizationToolMiddleware:
     """Create a `SummarizationToolMiddleware` with model-aware defaults.
 
@@ -2003,6 +2032,7 @@ def create_summarization_tool_middleware(
         backend: Backend instance for persisting conversation history.
         system_prompt: System-prompt fragment nudging the model to call
             `compact_conversation`. Pass `None` to skip appending the nudge.
+        compaction_strategy: `text` summaries or opt-in `openai` opaque Responses compaction.
 
     Returns:
         Configured `SummarizationToolMiddleware` instance.
@@ -2052,7 +2082,7 @@ def create_summarization_tool_middleware(
 
     if isinstance(model, str):
         model = resolve_model(model)
-    summarization = create_summarization_middleware(model, backend)
+    summarization = create_summarization_middleware(model, backend, compaction_strategy=compaction_strategy)
     return SummarizationToolMiddleware(summarization, system_prompt=system_prompt)
 
 
@@ -2191,7 +2221,7 @@ class SummarizationToolMiddleware(AgentMiddleware):
 
         new_event: SummarizationEvent = {
             "cutoff_index": state_cutoff,
-            "summary_message": summary_msg,  # ty: ignore[invalid-argument-type]
+            "summary_message": summary_msg,
             "file_path": file_path,
             "created_at_index": len(runtime.state.get("messages", [])),
         }

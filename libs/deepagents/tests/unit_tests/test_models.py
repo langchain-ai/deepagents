@@ -1283,8 +1283,11 @@ class TestBuiltInProfiles:
         profile = get_provider_profile("nvidia:nvidia/nemotron-3-super-120b-a12b")
         assert profile.init_kwargs_factory is _nvidia_attribution_kwargs
 
-    def test_openai_has_no_built_in_harness_profile(self) -> None:
-        assert _get_harness_profile("openai:gpt-5") is None
+    def test_openai_task_guidance_preserves_non_codex_prompt(self) -> None:
+        profile = _get_harness_profile("openai:gpt-5")
+        assert profile is not None
+        assert profile.system_prompt_suffix is None
+        assert "Prefer direct tools for routine searches" in profile.tool_description_overrides["task"]
 
     def test_anthropic_provider_has_no_built_in_profile(self) -> None:
         """Anthropic registers per-model harness profiles, not a provider-level one."""

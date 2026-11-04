@@ -239,7 +239,10 @@ jobs:
           SKIP_DEPENDENT_LOCKS: ${{ inputs.skip_dependent_locks || false }}
         run: |
           set -euo pipefail
-          title="chore(deps): raise dependency minimums for \`$PACKAGE\`"
+          title="chore(deps): raise dependency minimums"
+          if [ "$PACKAGE" != "all" ]; then
+            title="$title for \`$PACKAGE\`"
+          fi
           lead='Raises the LangChain-ecosystem dependency lower bounds (`langchain*`, `langgraph*`, `langsmith*`, `deepagents*`)'
           locks='every affected `uv.lock`'
           if [ "$SKIP_DEPENDENT_LOCKS" = "true" ]; then

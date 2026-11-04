@@ -1233,7 +1233,8 @@ class FilesystemBackend(BackendProtocol):
             return f"{type(exc).__name__}: {detail}" if detail else type(exc).__name__
 
         try:
-            for fp in root.rglob("*"):
+            files = root.rglob("*") if base_full == root else (base_full,)
+            for fp in files:
                 if time.monotonic() > deadline:
                     _log_timeout()
                     return results, True, None

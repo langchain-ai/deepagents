@@ -7,7 +7,7 @@ subagent, and summarization middleware.
 
 import logging
 from collections.abc import Callable, Sequence
-from typing import TYPE_CHECKING, Annotated, Any, Required, cast
+from typing import TYPE_CHECKING, Annotated, Any, Literal, Required, cast
 
 from langchain.agents import AgentState, create_agent
 from langchain.agents.middleware import HumanInTheLoopMiddleware, InterruptOnConfig
@@ -298,6 +298,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     permissions: list[FilesystemPermission] | None = None,
     backend: BackendProtocol | None = None,
     interrupt_on: dict[str, bool | InterruptOnConfig] | None = None,
+    interrupt_mode: Literal["batched", "per_call"] = "batched",
     response_format: ResponseFormat[ResponseT] | type[ResponseT] | dict[str, Any] | None = None,
     state_schema: type[DeepAgentState] | None = None,
     context_schema: type[ContextT] | None = None,
@@ -544,6 +545,12 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
 
             For example, `interrupt_on={"edit_file": True}` pauses before
             every edit.
+        interrupt_mode: Approval timing, inherited by declarative subagents unless overridden.
+
+            !!! warning "Experimental per-call approvals"
+                `per_call` emits one `tool_approval` interrupt per gated call. Resume
+                with a single decision keyed by interrupt ID, not a `decisions` list.
+                Existing CLI, ACP, and Talon clients require their own migration.
         response_format: A structured output response format to use for the agent.
         state_schema: Custom state schema for the agent graph. Must be a
             `TypedDict` subclass of
@@ -624,6 +631,10 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     # `DeepAgentState` is a `TypedDict`; TypedDicts disallow `issubclass`, so the
     # subclass constraint on `state_schema` is enforced by typing alone and not
     # validated at runtime.
+
+    if interrupt_mode not in ("batched", "per_call"):
+        msg = "interrupt_mode must be 'batched' or 'per_call'"
+        raise ValueError(msg)
 
     _model_spec: str | None = model if isinstance(model, str) else None
 
@@ -813,6 +824,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
                 "model": subagent_model,
                 "tools": subagent_tools or [],
                 "middleware": subagent_middleware,
+                "interrupt_mode": spec.get("interrupt_mode", interrupt_mode),
             }
             if is_forked:
                 # The parent's prompt is the fork's base; the fork's own is an addendum.
@@ -894,6 +906,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             general_purpose_spec["system_prompt"] = gp_prompt
         else:
             general_purpose_spec["system_prompt"] = _apply_profile_prompt(_profile, GENERAL_PURPOSE_SUBAGENT["system_prompt"])
+        general_purpose_spec["interrupt_mode"] = interrupt_mode
         gp_interrupt_on = _merge_fs_interrupt_on(
             _build_interrupt_on_from_permissions(permissions or [], backend),
             interrupt_on,
@@ -967,7 +980,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         interrupt_on,
     )
     if main_interrupt_on is not None:
-        deepagent_middleware.append(HumanInTheLoopMiddleware(interrupt_on=main_interrupt_on))
+        deepagent_middleware.append(HumanInTheLoopMiddleware(interrupt_on=main_interrupt_on, interrupt_mode=interrupt_mode))
     deepagent_middleware.append(UnsupportedContentMiddleware())
     deepagent_middleware = _apply_excluded_middleware(
         deepagent_middleware,

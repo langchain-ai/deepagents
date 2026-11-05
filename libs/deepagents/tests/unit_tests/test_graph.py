@@ -17,8 +17,10 @@ from langchain.agents.middleware.types import AgentMiddleware, ModelRequest, Pri
 from langchain_anthropic import ChatAnthropic
 from langchain_anthropic.middleware import AnthropicPromptCachingMiddleware
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AIMessage, SystemMessage
-from langchain_core.tools import BaseTool, StructuredTool
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.tools import BaseTool, StructuredTool, tool
+from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.types import Command
 
 from deepagents._api.deprecation import LangChainDeprecationWarning
 from deepagents._tools import _apply_tool_description_overrides, _tool_name
@@ -39,7 +41,7 @@ from deepagents.middleware._prompt_caching import (
 )
 from deepagents.middleware._tool_exclusion import _ToolExclusionMiddleware
 from deepagents.middleware.async_subagents import AsyncSubAgentMiddleware
-from deepagents.middleware.filesystem import FilesystemMiddleware
+from deepagents.middleware.filesystem import FilesystemMiddleware, FilesystemPermission
 from deepagents.middleware.skills import SkillsMiddleware
 from deepagents.middleware.subagents import SubAgent, SubAgentMiddleware, create_sub_agent
 from deepagents.middleware.summarization import SummarizationMiddleware, _DeepAgentsSummarizationMiddleware
@@ -3285,3 +3287,134 @@ class TestSkillsMiddlewarePlacement:
             "ModelFallbackMiddleware",
             "AnthropicPromptCachingMiddleware",
         ]
+
+
+@pytest.mark.parametrize("decision", ["approve", "reject", "edit"])
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_per_call_filesystem_approval(decision: str, *, asynchronous: bool) -> None:
+    model = GenericFakeChatModel(
+        messages=iter(
+            [
+                AIMessage(
+                    content="", tool_calls=[{"name": "write_file", "args": {"file_path": "/protected/a.txt", "content": "original"}, "id": "write"}]
+                ),
+                AIMessage(content="done"),
+            ]
+        )
+    )
+    agent = create_deep_agent(
+        model=model,
+        interrupt_mode="per_call",
+        checkpointer=InMemorySaver(),
+        permissions=[FilesystemPermission(operations=["write"], paths=["/protected/**"], mode="interrupt")],
+    )
+    config = {"configurable": {"thread_id": "fs-per-call"}}
+    initial = {"messages": [HumanMessage(content="Write")]}
+    result = await agent.ainvoke(initial, config) if asynchronous else agent.invoke(initial, config)
+    pending = result["__interrupt__"]
+    assert len(pending) == 1
+    assert pending[0].value["type"] == "tool_approval"
+    assert pending[0].value["name"] == "write_file"
+    assert not result.get("files")
+    response = {"type": decision}
+    if decision == "edit":
+        response["edited_action"] = {"name": "write_file", "args": {"file_path": "/protected/a.txt", "content": "edited"}}
+    command = Command(resume={pending[0].id: response})
+    result = await agent.ainvoke(command, config) if asynchronous else agent.invoke(command, config)
+    if decision == "reject":
+        assert not result.get("files")
+    else:
+        assert result["files"]["/protected/a.txt"]["content"] == ("edited" if decision == "edit" else "original")
+
+
+def test_default_approval_stays_batched() -> None:
+    model = GenericFakeChatModel(
+        messages=iter([AIMessage(content="", tool_calls=[{"name": "write_file", "args": {"file_path": "/a", "content": "a"}, "id": "w"}])])
+    )
+    agent = create_deep_agent(model=model, interrupt_on={"write_file": True}, checkpointer=InMemorySaver())
+    result = agent.invoke({"messages": [HumanMessage(content="Write")]}, {"configurable": {"thread_id": "batch"}})
+    assert result["__interrupt__"][0].value["action_requests"][0]["name"] == "write_file"
+
+
+@pytest.mark.parametrize("override_mode", [None, "batched"])
+def test_subagent_inherits_per_call_approval(override_mode: str | None) -> None:
+    effects: list[str] = []
+
+    @tool
+    def record(value: str) -> str:
+        """Record a value."""
+        effects.append(value)
+        return value
+
+    child: SubAgent = {
+        "name": "worker",
+        "description": "Record values",
+        "system_prompt": "Record",
+        "model": GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(content="", tool_calls=[{"name": "record", "args": {"value": "child"}, "id": "child"}]),
+                    AIMessage(content="done"),
+                ]
+            )
+        ),
+        "tools": [record],
+    }
+    if override_mode == "batched":
+        child["interrupt_mode"] = "batched"
+    agent = create_deep_agent(
+        model=GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(content="", tool_calls=[{"name": "task", "args": {"subagent_type": "worker", "description": "Record"}, "id": "task"}]),
+                    AIMessage(content="done"),
+                ]
+            )
+        ),
+        subagents=[child],
+        interrupt_on={"record": True},
+        interrupt_mode="per_call",
+        checkpointer=InMemorySaver(),
+    )
+    config = {"configurable": {"thread_id": "child"}}
+    result = agent.invoke({"messages": [HumanMessage(content="Delegate")]}, config)
+    pending = result["__interrupt__"][0]
+    assert effects == []
+    if override_mode == "batched":
+        assert pending.value["action_requests"][0]["name"] == "record"
+        response = {"decisions": [{"type": "approve"}]}
+    else:
+        assert pending.value["type"] == "tool_approval"
+        assert pending.value["name"] == "record"
+        response = {"type": "approve"}
+    agent.invoke(Command(resume={pending.id: response}), config)
+    assert effects == ["child"]
+
+
+def test_per_call_parallel_approvals_keep_decisions_separate() -> None:
+    agent = create_deep_agent(
+        model=GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {"name": "write_file", "args": {"file_path": "/a", "content": "a"}, "id": "a"},
+                            {"name": "write_file", "args": {"file_path": "/b", "content": "b"}, "id": "b"},
+                        ],
+                    ),
+                    AIMessage(content="done"),
+                ]
+            )
+        ),
+        interrupt_on={"write_file": True},
+        interrupt_mode="per_call",
+        checkpointer=InMemorySaver(),
+    )
+    config = {"configurable": {"thread_id": "parallel"}}
+    result = agent.invoke({"messages": [HumanMessage(content="Write")]}, config)
+    pending = result["__interrupt__"]
+    assert len(pending) == 2
+    decisions = {item.id: {"type": "approve" if item.value["args"]["file_path"] == "/a" else "reject"} for item in pending}
+    result = agent.invoke(Command(resume=decisions), config)
+    assert set(result["files"]) == {"/a"}

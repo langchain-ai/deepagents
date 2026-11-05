@@ -26,6 +26,7 @@ from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.backends.protocol import ExecuteResponse, SandboxBackendProtocol
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from pathlib import Path
 
 
@@ -43,7 +44,10 @@ _ASYNC_CANCELLATION_GRACE_PERIOD = 1
 """Maximum seconds to wait for cooperative cleanup after async cancellation."""
 
 _PROCESS_REAP_TIMEOUT = 5
-"""Maximum seconds to wait for a killed shell process to exit."""
+"""Maximum seconds to wait for a killed Windows shell process to exit."""
+
+_PROCESS_CLEANUP_TIMEOUT = 1
+"""Shared seconds for POSIX termination, output draining, and process reaping."""
 
 _BACKGROUND_WORKERS: set[asyncio.Future[ExecuteResponse]] = set()
 """Workers retained until built-in process cleanup finishes."""
@@ -153,15 +157,15 @@ def _terminate_process(process: subprocess.Popen[str], process_group: int | None
     return True
 
 
-def _reap_process(process: subprocess.Popen[str]) -> bool:
-    """Wait briefly for a terminated shell without blocking indefinitely."""
+def _reap_process(process: subprocess.Popen[str], *, timeout: float) -> bool:
+    """Wait for a terminated shell using only the remaining cleanup budget."""
     try:
-        process.wait(timeout=_PROCESS_REAP_TIMEOUT)
+        process.wait(timeout=timeout)
     except subprocess.TimeoutExpired:
         logger.error(  # noqa: TRY400  # There is no active exception to attach; this is a cleanup outcome.
             "Local shell process %s did not exit within %s seconds after termination; abandoning its handle",
             process.pid,
-            _PROCESS_REAP_TIMEOUT,
+            timeout,
         )
         return False
     except OSError:
@@ -170,17 +174,31 @@ def _reap_process(process: subprocess.Popen[str]) -> bool:
     return True
 
 
-def _kill_and_reap(process: subprocess.Popen[str], process_group: int | None) -> bool:
-    """Terminate a command and release its local resources."""
-    terminated = _terminate_process(process, process_group)
-    reaped = _reap_process(process)
+def _close_process_pipes(process: subprocess.Popen[str]) -> None:
+    """Close both captured streams even when process cleanup fails."""
     for name, pipe in (("stdout", process.stdout), ("stderr", process.stderr)):
         if pipe is not None:
             try:
                 pipe.close()
             except (OSError, ValueError):
                 logger.warning("Failed to close %s for local shell process %s", name, process.pid, exc_info=True)
-    return terminated and reaped and not _IS_WINDOWS
+
+
+def _kill_and_reap(process: subprocess.Popen[str], process_group: int | None, *, drain: Callable[[float], None] | None = None) -> bool:
+    """Terminate, optionally drain, and reap within one POSIX cleanup deadline."""
+    deadline = time.monotonic() + _PROCESS_CLEANUP_TIMEOUT
+    try:
+        terminated = _terminate_process(process, process_group)
+        if not _IS_WINDOWS and drain is not None:
+            try:
+                drain(deadline)
+            except (OSError, ValueError, subprocess.TimeoutExpired):
+                logger.warning("Failed to drain output for local shell process %s", process.pid, exc_info=True)
+        remaining = _PROCESS_REAP_TIMEOUT if _IS_WINDOWS else max(0, deadline - time.monotonic())
+        reaped = _reap_process(process, timeout=remaining)
+        return terminated and reaped and not _IS_WINDOWS
+    finally:
+        _close_process_pipes(process)
 
 
 def _decode_stream(data: bytes | str | None, pipe: IO[str] | None) -> str:

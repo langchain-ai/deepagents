@@ -38,14 +38,15 @@ def _as_posix() -> Iterator[None]:
         yield
 
 
-def _heartbeat_command(directory: Path) -> tuple[str, Path, Path]:
+def _heartbeat_command(directory: Path, *, wait_for_child: bool = True) -> tuple[str, Path, Path]:
     """Build a shell command whose background child updates a heartbeat."""
     heartbeat = directory / "heartbeat"
     pid_file = directory / "child.pid"
     script = (
-        f'i=0; while :; do i=$((i + 1)); printf "%s" "$i" > {shlex.quote(str(heartbeat))}; '
-        f"sleep 0.02; done & echo $! > {shlex.quote(str(pid_file))}; wait"
+        f'i=0; while :; do i=$((i + 1)); printf "%s" "$i" > {shlex.quote(str(heartbeat))}; sleep 0.02; done & echo $! > {shlex.quote(str(pid_file))}'
     )
+    if wait_for_child:
+        script += "; wait"
     return f"sh -c {shlex.quote(script)}", pid_file, heartbeat
 
 
@@ -136,6 +137,63 @@ async def test_local_shell_backend_timeout_stops_descendant(tmp_path: Path, *, a
         _stop_test_descendant(pid_file)
 
 
+@pytest.mark.parametrize(("drain_time", "drain_failure"), [(0.3, None), (0.3, OSError), (0.8, subprocess.TimeoutExpired)])
+def test_local_shell_backend_cleanup_shares_one_deadline(drain_time: float, drain_failure: type[Exception] | None) -> None:
+    process = MagicMock(pid=1234)
+    now = 10.0
+
+    def terminate(_process, _group) -> bool:
+        nonlocal now
+        now += 0.2
+        return True
+
+    def drain(deadline: float) -> None:
+        nonlocal now
+        assert deadline == 11.0
+        now += drain_time
+        if drain_failure is subprocess.TimeoutExpired:
+            raise subprocess.TimeoutExpired(process.args, drain_time)
+        if drain_failure is not None:
+            raise drain_failure
+
+    def wait(*, timeout: float) -> None:
+        nonlocal now
+        assert timeout == pytest.approx(max(0, 0.8 - drain_time))
+        now += timeout
+
+    process.wait.side_effect = wait
+    with (
+        _as_posix(),
+        patch.object(local_shell_module.time, "monotonic", side_effect=lambda: now),
+        patch.object(local_shell_module, "_terminate_process", side_effect=terminate),
+    ):
+        assert local_shell_module._kill_and_reap(process, 1234, drain=drain)
+
+    assert now == pytest.approx(11.0)
+    process.wait.assert_called_once()
+    process.stdout.close.assert_called_once_with()
+    process.stderr.close.assert_called_once_with()
+
+
+@_POSIX_SHELL_ONLY
+@pytest.mark.parametrize("asynchronous", [False, True], ids=["sync", "async"])
+def test_local_shell_backend_timeout_cleans_up_after_shell_exit(tmp_path: Path, *, asynchronous: bool) -> None:
+    command, pid_file, heartbeat = _heartbeat_command(tmp_path, wait_for_child=False)
+    with subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"]) as survivor:
+        try:
+            backend = LocalShellBackend(root_dir=tmp_path, inherit_env=True)
+            result = asyncio.run(backend.aexecute(command, timeout=1)) if asynchronous else backend.execute(command, timeout=1)
+            assert result.exit_code == 124
+            assert _wait_for_file(pid_file)
+            assert _wait_for_file(heartbeat)
+            _assert_heartbeat_stopped(heartbeat)
+            assert survivor.poll() is None
+        finally:
+            _stop_test_descendant(pid_file)
+            survivor.kill()
+            survivor.wait(timeout=5)
+
+
 def test_local_shell_backend_interrupt_cleans_up_posix_process_group() -> None:
     """Test an interrupt kills the command's POSIX process group."""
     process = MagicMock(pid=1234)
@@ -152,7 +210,7 @@ def test_local_shell_backend_interrupt_cleans_up_posix_process_group() -> None:
 
     killpg.assert_called_once_with(1234, sentinel.SIGKILL)
     process.kill.assert_not_called()
-    process.wait.assert_called_once_with(timeout=local_shell_module._PROCESS_REAP_TIMEOUT)
+    process.wait.assert_called_once()
 
 
 @_POSIX_SHELL_ONLY
@@ -176,7 +234,7 @@ def test_local_shell_backend_cleanup_errors_preserve_interrupt(caplog: pytest.Lo
         LocalShellBackend(root_dir=tmpdir).execute("sleep 10")
 
     process.kill.assert_called_once_with()
-    process.wait.assert_called_once_with(timeout=local_shell_module._PROCESS_REAP_TIMEOUT)
+    process.wait.assert_called_once()
     process.stdout.close.assert_called_once_with()
     process.stderr.close.assert_called_once_with()
     assert "Failed to terminate local shell process group 1234" in caplog.text
@@ -206,11 +264,11 @@ def test_local_shell_backend_timeout_reports_incomplete_cleanup(failure: str, ca
         result = LocalShellBackend(root_dir=tmpdir, timeout=1).execute("sleep 10")
 
     assert result.exit_code == 124
-    process.wait.assert_called_once_with(timeout=local_shell_module._PROCESS_REAP_TIMEOUT)
+    process.wait.assert_called_once()
     if failure == "termination":
         assert "Failed to terminate local shell process 1234" in caplog.text
     else:
-        assert "did not exit within 5 seconds after termination" in caplog.text
+        assert "did not exit within" in caplog.text
     # Pipes must close even when the process could not be reaped, or a stuck
     # command leaks two descriptors.
     process.stdout.close.assert_called_once_with()

@@ -456,7 +456,10 @@ async def make_bare_graph(config: dict[str, object] | None = None) -> object:
     # unnecessary here (isolation is the container's job). Pin virtual_mode=False
     # so the bare agent uses paths as-is rather than resolving against a virtual root.
     backend = LocalShellBackend(
-        root_dir=_workdir(configurable), inherit_env=False, virtual_mode=False
+        root_dir=_workdir(configurable),
+        inherit_env=False,
+        env={name: os.environ[name] for name in ("PATH", "HOME") if name in os.environ},
+        virtual_mode=False,
     )
     # No `system_prompt`: keep the bare agent on `create_deep_agent`'s
     # prompt-free default. The sandbox workdir is already enforced by the shell

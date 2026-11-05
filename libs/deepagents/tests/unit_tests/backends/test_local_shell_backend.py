@@ -890,6 +890,24 @@ async def test_local_shell_backend_timeout_reports_output_printed_before_it(tmp_
 
 @_POSIX_SHELL_ONLY
 @pytest.mark.parametrize("asynchronous", [False, True], ids=["sync", "async"])
+async def test_local_shell_backend_timeout_normalizes_newlines_after_pipes_close(tmp_path: Path, *, asynchronous: bool) -> None:
+    script = (
+        "import os, time; os.write(1, b'out\\r\\nnext\\rlast\\r'); os.write(2, b'err\\r\\nmore\\rlast\\r'); os.close(1); os.close(2); time.sleep(30)"
+    )
+    command = f"exec {shlex.join([sys.executable, '-c', script])}"
+    backend = LocalShellBackend(root_dir=tmp_path, inherit_env=True)
+    result = await backend.aexecute(command, timeout=1) if asynchronous else backend.execute(command, timeout=1)
+
+    assert result.exit_code == 124
+    assert not result.truncated
+    assert result.output == (
+        "Error: Command timed out after 1 seconds (custom timeout). The command may be stuck or require more time."
+        "\n\nOutput before the timeout:\nout\nnext\nlast\n\n[stderr] err\n[stderr] more\n[stderr] last"
+    )
+
+
+@_POSIX_SHELL_ONLY
+@pytest.mark.parametrize("asynchronous", [False, True], ids=["sync", "async"])
 @pytest.mark.parametrize("stream", [1, 2], ids=["stdout", "stderr"])
 @pytest.mark.parametrize("data", [b"progress \xe2", b"progress \xff"])
 async def test_local_shell_backend_timeout_replaces_undecodable_output(tmp_path: Path, stream: int, data: bytes, *, asynchronous: bool) -> None:

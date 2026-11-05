@@ -209,7 +209,7 @@ def _decode_stream(data: bytes | str | None, pipe: IO[str] | None) -> str:
         return data
     encoding = getattr(pipe, "encoding", None) or "utf-8"
     # A timeout can split an encoded character; decoding must not hide the timeout.
-    return data.decode(encoding, errors="replace")
+    return data.decode(encoding, errors="replace").replace("\r\n", "\n").replace("\r", "\n")
 
 
 def _communicate(

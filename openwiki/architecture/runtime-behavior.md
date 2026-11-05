@@ -20,6 +20,8 @@ sources:
     resource: repo://libs/deepagents/deepagents/middleware/skills.py
   - id: openwiki-source-f763e99e439a1356866a7aa4
     resource: repo://libs/deepagents/deepagents/middleware/summarization.py
+  - id: openwiki-source-69c260914d2dd18b60ad5900
+    resource: repo://libs/deepagents/tests/unit_tests/middleware/test_compact_tool.py
   - id: openwiki-source-6228ff9cf1d681a771797121
     resource: repo://libs/deepagents/tests/unit_tests/middleware/test_compaction_recovery.py
   - id: openwiki-source-6ce85b02eabe462f99e0c912
@@ -28,10 +30,10 @@ sources:
     resource: repo://libs/deepagents/tests/unit_tests/test_messages_reducer.py
   - id: openwiki-source-665a21e2fbd09a89d3f13ac0
     resource: repo://libs/talon/deepagents_talon/runtime.py
-generated: { by: "openwiki/0.4.2", at: "2026-10-30T08:04:27.172Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-11-05T08:04:42.777Z" }
 verified:
   - by: openwiki/0.4.2
-    at: 2026-10-30T08:04:27.172Z
+    at: 2026-11-05T08:04:42.777Z
 ---
 
 # Runtime Behavior and Failure Boundaries
@@ -44,7 +46,7 @@ This page describes execution-time ownership rather than API shape. A Deep Agent
 
 `DeepAgentState.messages` uses a `DeltaChannel` with snapshot frequency 50. Its reducer coerces message-like writes, deduplicates or replaces by ID, applies removals and the last reset sentinel, and replays an absent base as empty. IDs are assigned before checkpoint serialization, preserving deterministic replay. Before execution, `PatchToolCallsMiddleware` repairs an interrupted history with unmatched AI tool calls by appending error `ToolMessage` records and resetting the repaired sequence; a fully answered history is unchanged.
 
-Summarization shapes the next model request without deleting the raw message log. It records `_summarization_event`, which describes a summary, cutoff, and optional backend-history path; effective history combines that event with the preserved tail. It attempts history offload before summarization, but an offload failure does not stop compaction and leaves no recovery path for those older messages. Claude-bound reasoning blocks are removed only from the preserved messages used to build summarized effective history, not from raw state. Recognized context overflow receives at most one recovery attempt with strictly smaller input; an unchanged or irreducible request raises `ContextOverflowError`, and unrelated bad requests propagate.
+Summarization shapes the next model request without deleting the raw message log. It records `_summarization_event`, which describes a summary, cutoff, and optional backend-history path; later requests build effective history from that event plus the preserved raw-message tail. Automatic compaction attempts history offload before generating a summary. An offload that returns no path does not stop automatic compaction, but leaves no recovery path for those older messages. Claude-bound reasoning blocks are removed only from the preserved messages used to build summarized effective history, not from raw state. Recognized context overflow receives at most one recovery attempt with strictly smaller input; an unchanged or irreducible request raises `ContextOverflowError`, and unrelated bad requests propagate.
 
 ```mermaid
 flowchart TD
@@ -52,14 +54,16 @@ flowchart TD
     Shape --> Budget{"Over trigger or overflow"}
     Budget -- "no" --> Call["Call model"]
     Budget -- "yes" --> Offload["Attempt history offload"]
-    Offload --> Event["Store summarization event"]
-    Event --> Shape
+    Offload --> Summary["Generate summary and preserve tail"]
+    Summary --> CompactCall["Call model with effective history"]
+    CompactCall --> Event["Return summarization event update"]
     Call --> Checkpoint["Checkpoint graph state"]
+    Event --> Checkpoint
 ```
 
-Caption: compaction records an effective-history event while raw messages remain the parent graph's history.
+Caption: automatic compaction retains raw messages; after a successful compacted model call, its state update records the effective-history event for later requests.
 
-`SummarizationToolMiddleware` exposes manual-only `compact_conversation`. It shares `_summarization_event` with automatic summarization and uses an eligibility threshold of roughly half the automatic trigger. If nothing is eligible or summary generation fails, it returns a tool message without changing that event.
+`SummarizationToolMiddleware` exposes manual-only `compact_conversation`; its prompt nudge, if configured, only invites a normal tool call and does not compact in the background. The tool first applies any existing `_summarization_event` to choose its effective input, shares that key with automatic summarization, and is eligible at roughly half the automatic trigger. On success it writes a replacement event, session ID, and confirmation `ToolMessage`; raw historical messages are not reset or removed. A no-op eligibility or cutoff returns only a `ToolMessage`. If summary generation, partitioning, or an offload operation raises, the tool catches the error and returns an error `ToolMessage`; critically, it emits no `_summarization_event` update, so the prior checkpointed event remains in force. Conversely, an offload that merely returns `None` is a successful manual compaction with `file_path=None` in the new event.
 
 ## Skills are cached state with progressive disclosure
 
@@ -157,4 +161,5 @@ When a persistent `ConversationSaver` is configured, host-confirmed final delive
 - Test delivery separately from polling: direct wake-up may be rejected or lost, while a five-second polling error must leave the task eligible for the next observation.
 - Preserve notification boundaries: escaped and clipped child text, allowed media, dropped assistant-only blocks, non-user metadata, and redacted automatic failure details.
 - Test skills as state transitions: source precedence, cache/reload with `skills_metadata=None`, pinned content, load-warning sanitization, and gated tool disclosure/execution.
+- Test automatic and manual compaction as distinct paths: automatic offload precedes summary, while the manual tool summarizes before offload. For manual failure, assert the error `ToolMessage` is appended but `_summarization_event` is absent from the update; for an offload returning `None`, assert a new event with `file_path=None`.
 - Test Talon’s whole-invocation retries separately from model-node retries and test that archive promotion follows confirmed channel delivery rather than merely a graph result.

@@ -5,14 +5,18 @@ description: Package graph, responsibility boundaries, Python and release contra
 tags: [architecture, monorepo, python, dependencies, releases]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-11-04T08:04:03.075Z
+    at: 2026-11-05T08:04:42.777Z
 sources:
   - id: openwiki-source-9a1c436646ef8c4f6dde787a
     resource: repo://.github/RELEASING.md
   - id: openwiki-source-9d81aa681a56a98960013750
     resource: repo://.github/scripts/checks/check_lockfiles_pre_commit.py
+  - id: openwiki-source-594b8b7a84e0fb527fbafd52
+    resource: repo://.github/scripts/checks/raise_langchain_minimums.py
   - id: openwiki-source-3cf9b023d0ac578794148a01
     resource: repo://.github/scripts/checks/refresh_lockfiles.py
+  - id: openwiki-source-bc54cf7ca3addab1b243d7a6
+    resource: repo://.github/workflows/raise_langchain_minimums.yml
   - id: openwiki-source-5e59f90a38f5bdf9ed76984b
     resource: repo://.release-please-manifest.json
   - id: openwiki-source-ffc41789c892ca61e2829a4c
@@ -53,7 +57,7 @@ sources:
     resource: repo://README.md
   - id: openwiki-source-482fa4ca84f42b04ba025fc1
     resource: repo://release-please-config.json
-generated: { by: "openwiki/0.4.2", at: "2026-11-04T08:04:03.075Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-11-05T08:04:42.777Z" }
 ---
 
 # Repository Architecture Overview
@@ -133,7 +137,7 @@ flowchart TD
 
 ### Published and optional contracts
 
-ACP requires unbounded `deepagents`, `agent-client-protocol>=0.10.1`, and `python-dotenv>=1.2.2`. dcode pins `deepagents==0.7.32`, requires ACP `>=0.0.13,<1.0.0`, and installs QuickJS `>=0.3.11,<0.4.0` normally. Talon requires SDK `>=0.7.32` and dcode `>=0.2.4,<1.0.0`; evals requires SDK `>=0.7.32`, dcode `>=0.2.1`, and QuickJS `>=0.3.3`. QuickJS and the sandbox-partner wheels declare SDK compatibility `>=0.7.32,<0.8.0`.
+ACP requires unbounded `deepagents`, `agent-client-protocol>=0.10.1`, and `python-dotenv>=1.2.2`. dcode pins `deepagents==0.7.32`, requires ACP `>=0.0.13,<1.0.0`, and installs QuickJS `>=0.3.11,<0.4.0` normally. Its current LangChain-ecosystem floor set includes `langchain>=1.4.8,<2.0.0`, `langchain-core>=1.7.5,<2.0.0`, and `langgraph-sdk>=0.4.12,<1.0.0`. Talon requires SDK `>=0.7.32`, dcode `>=0.2.4,<1.0.0`, `langchain>=1.4.8,<2.0.0`, and `langchain-core>=1.7.4,<2.0.0`; evals requires SDK `>=0.7.32`, dcode `>=0.2.1`, QuickJS `>=0.3.3`, and `langchain[mcp]>=1.4.1`. QuickJS and the sandbox-partner wheels declare SDK compatibility `>=0.7.32,<0.8.0`.
 
 The SDK keeps AWS, QuickJS, and video support optional, allowing consumers to choose these integration dependencies. dcode deliberately has a larger normal install surface, including `langsmith[sandbox]` and QuickJS. It offers six external sandbox extras—`agentcore`, `daytona`, `modal`, `openshell`, `runloop`, and `vercel`—and `all-sandboxes` aggregates them. Its compatibility `quickjs` extra is empty because QuickJS is already a normal dependency.
 
@@ -150,6 +154,16 @@ python .github/scripts/checks/refresh_lockfiles.py libs/code/pyproject.toml
 ```
 
 A local test can succeed against sibling code while the published constraint is incompatible. For a manifest change, review both the wheel constraint and local source mapping.
+
+### Automated LangChain-ecosystem minimums
+
+`raise_langchain_minimums.yml` is the maintenance entrypoint for published dependency floors. It runs daily at 09:00 UTC for every release-managed package, or can be dispatched for one package (or `all`) and optionally an exact CSV list of distribution names. It considers `langchain*`, `langgraph*`, `langsmith*`, and `deepagents*` requirements in normal dependencies, extras, and dependency groups. A narrowed run fails when a requested name is not a raiseable requirement; this prevents a misspelled filter from reporting success.
+
+For each in-scope requirement with a `>=` or `~=` floor, the helper queries PyPI and raises only to the newest stable, non-yanked release still admitted by the existing requirement. It preserves upper bounds, extras, and environment markers. Exact `==` pins are intentionally not changed—dcode's SDK pin has separate ownership through `bump_code_sdk_pin.yml`—and a prerelease-coordination floor ahead of stable PyPI is never lowered. A local `uv` path source does not exempt a published requirement: its candidate is capped at the sibling manifest's declared version so checkout locking remains resolvable.
+
+The workflow creates or refreshes one `chore(deps):` PR per selected package/dependency-set identity. It regenerates the edited package lockfiles and, by default, their reverse local consumers. `skip_dependent_locks` deliberately limits regeneration to directly edited packages and leaves reverse-dependent locks stale; use it only as an explicit compatibility-repair handoff. Failures to query PyPI or rewrite a manifest fail the run rather than silently skipping a dependency, and the workflow files or refreshes one tracking issue on failure. It uses an app installation token for PR creation so required `pull_request` checks run.
+
+**Safe change sequence:** inspect compatibility comments and published ranges; run or review the minimums PR; validate every reported lockfile with its package's required Python version; then merge only after normal checks. Treat the generated PR as a dependency-contract change, not merely a lockfile update. Keep an exact dcode SDK pin synchronized with the first SDK behavior dcode uses, even though the floor-raising workflow will not alter it.
 
 ## Runtime layering and ownership
 

@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:b4465fcce8bce284b95ee2c305d3802848394cdf24281463ed65e892799449ab",
+  "pageVersion": "sha256:39e4ce9c7f6e18808bc0396e57caf18ac4369c80933ef13903981207b6a95f43",
   "claims": [
     {
       "id": "claim_ab08df80fe1342c5bf538116d7d0046e",
@@ -196,19 +196,23 @@
     },
     {
       "id": "claim_0272cad78cfd44178483f5c5bb9326f0",
-      "statement": "`SummarizationToolMiddleware` provides manual-only `compact_conversation`, shares `_summarization_event` with automatic summarization, gates eligibility at roughly half the automatic trigger, and returns a tool message without changing that event when no cutoff is eligible or summary generation fails.",
+      "statement": "`SummarizationToolMiddleware` provides manual-only `compact_conversation`, applies any existing `_summarization_event` to form effective history, and gates eligibility at roughly half the automatic trigger. Successful compaction updates that event, but an ineligible cutoff or any caught partition, summary, or offload exception returns only a tool message and leaves the event absent from the update.",
       "evidence": [
         {
-          "resource": "repo://libs/deepagents/deepagents/middleware/summarization.py#L2055-L2071",
+          "resource": "repo://libs/deepagents/deepagents/middleware/summarization.py#L2059-L2075",
           "version": "repo-lines-v1:sha256:b1e224ebb183ca6c3c12d6c652928f8810dbeb500d31b272f7473a5665b016cc:eyJzZWxlY3RlZExpbmVDb3VudCI6MTcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjExZGEzMTExNjUxZTQ2YWQwZDJiOWRlYmYxNDRhYzY3ZTBlMzYxYTkzODU5NzNkZmViMTYzNDNkNTg3NzBlYzMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjdlYTIwN2M0Yjk2NDhhY2I5OWM5MjhhNzIyNTZhZDAxZjJjYjc3OGM5NjRiN2JiZmZiYmM4OTMyZmZjZDA0ZmQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImFmYWJhMTZmNjgzODBkNTQ2OTA4YTJlZjcxZTVmNTUwOGU4Y2ZiMzZjZDVhZGJlZjE1NmY5YzlmZjQ2NzA5NjMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjM1ZjU5ZTZkODFjYmRlZTZkODYyZGM0ODg1M2Y2NjM5YTVmNTJlZjhhYjQ1NDJhNzA2NTM0ZjhiZGNiNzAyN2UifQ"
         },
         {
-          "resource": "repo://libs/deepagents/deepagents/middleware/summarization.py#L2188-L2259",
-          "version": "repo-lines-v1:sha256:cd9dc4360a0e62df846376f5625346eab642882b0fa126dc0d956dca97ecf928:eyJzZWxlY3RlZExpbmVDb3VudCI6NzIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjlkYzhlNDczZGJhZTk1NTYyZWU2NTQ1ZWUyMDUzYmRhZjIwNWZkZTQ2MDU5NGNmMWVkODUzOTUwNjVjZGE5NmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjUxZjYwNjMzODNlYTRlYzhiNzJkOTc3N2ZiYmRjZmZhODY5OGFlYzM3MWRkZWIwMGQwMWExNDhjNTdjNDZmYmUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjUxNWU5ZmI4Y2JlZTFiNTE3MWU3YWY3NmQ0MjUzMjc1NjNkMWMzYTExZDk5MjRjYzVlZWJkMGQzNDViYTk4OGQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImQ5MmNjOGI1YWVmZTdlYzQ1NzA1YzM4Y2Y4OTc5MzFiOGMzNTEyNDkyMDk0ZDEzM2VmNGI5YTBjYjQwNWRhNzkifQ"
+          "resource": "repo://libs/deepagents/deepagents/middleware/summarization.py#L2199-L2259",
+          "version": "repo-lines-v1:sha256:02e13d598fe23189d0b225579e6d6741b55a7b6f26a01bd8cb8ffd8ae96daa91:eyJzZWxlY3RlZExpbmVDb3VudCI6NjEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjY1NzFlMTY2ZWI5YzU0NjljZjhlMzc1MWUxNGZjMzMwOTllNjExMzA0ZmNiYzNiYjk4YmRkNzAyOTYyMWFiZTEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU5MDlhNTNhNjE4ZDAyOGUxZDMwMDBjMGE3YWJjZWVjYmU1ZmIzN2Y0ZTUxMWVmZTQ2NjQzZmFkNmU2Njg3MmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjY1ZDg2ODgxN2VjMWE1ZDA1MmVkYzc5MWQ3MmM2YjE5ZmZjMDk1MmVkMzMzNWEyZWI5OWQ1M2NiNzBmMWI5ZDUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImEzMjliYTcxZWNmNzk3MDRmNGQzNmM1OTMwYTU3ZjljZTU4NDY2MzJmZDEwMDc4NTRlZjczMmNmYzRlYTUyM2IifQ"
         },
         {
-          "resource": "repo://libs/deepagents/deepagents/middleware/summarization.py#L2288-L2340",
-          "version": "repo-lines-v1:sha256:5406ea5f58f4f140ada55826069ac9bc901b3b9144f411f3ca0820602bb97ba2:eyJzZWxlY3RlZExpbmVDb3VudCI6NTMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU1NDBlN2U4Mjk3NzM2ZmMzNmM2ZjRmODIwZGQwZGY3MzU5ZjZjY2E2NTRmNmNjNTE0NTQ3OTAzMDRkNTlmZWEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFkOWU4YWU4YzYzYmE1N2Q3NWM4NzgwYmMwYTgzNzNjODFlOGJhZjZiNzUyOTBiZGQ3NjYxZTRjZmQ2ZjdmOTAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijk5M2U4NWNjNjY5MGY5Y2ZkNWY2YzVjYmUxZGVhNzVlMTVlYzdmODE3MzJjMmQ3ODg1ZTAwMDk0OWM5MTk3ZTMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjNjNjMwODk5NTdkMTY3ZDkwMTEwNWEwYzJiNzM2Zjc4YmMwZThhNDIxOGE3Zjk3NmRmNDhkNDg3Zjk1MjBiNDEifQ"
+          "resource": "repo://libs/deepagents/deepagents/middleware/summarization.py#L2293-L2379",
+          "version": "repo-lines-v1:sha256:d3846c3e1012d48791c8d80c756e5881b570c71cbccd6cbe31ffd6c4493b285c:eyJzZWxlY3RlZExpbmVDb3VudCI6ODcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU1NDBlN2U4Mjk3NzM2ZmMzNmM2ZjRmODIwZGQwZGY3MzU5ZjZjY2E2NTRmNmNjNTE0NTQ3OTAzMDRkNTlmZWEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFkOWU4YWU4YzYzYmE1N2Q3NWM4NzgwYmMwYTgzNzNjODFlOGJhZjZiNzUyOTBiZGQ3NjYxZTRjZmQ2ZjdmOTAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijk5M2U4NWNjNjY5MGY5Y2ZkNWY2YzVjYmUxZGVhNzVlMTVlYzdmODE3MzJjMmQ3ODg1ZTAwMDk0OWM5MTk3ZTMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjYyYTk2NjFkOGY1ZjViODU4OTFjNGNkNDg3ZmEyMzhkMGY0YzdmMDk2ZDc2OTAwZTJkZGIzOTY3N2MzNDE3NjgifQ"
+        },
+        {
+          "resource": "repo://libs/deepagents/tests/unit_tests/middleware/test_compact_tool.py#L382-L468",
+          "version": "repo-lines-v1:sha256:e7f59bb07d71ab9718085ea391a0aa94d4ccb7c30eb70a7e70e94e3c81f40b1f:eyJzZWxlY3RlZExpbmVDb3VudCI6ODcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjRkOTA5ODg4NTI0OTE3YmU4ZjFiYTEyOTM4MDhmMTUyNzg3YTVmN2MwN2E4OGVjM2NhMjAyZDYyZTNjNTEzNWIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjY0ODEyYTdmMjE4ZmU4MjIwZDYyYmYyNGE4NjA0MGE5OGYzNWRlMDVkN2I0NTljNGYyYzMzZDdmZDYzOGFkYTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjFmMjhkMWY4MjMyMmVkZTI2ZTE4MjY3NWZhNmFlY2M3YTJjYWM3NDQ3OTQwMTc0OGE4ZWJjMGEwMjY0ODBiZjQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjNlYjBhYzM5OTQ0MTY4NTU2OTc2YmNiMDgwNWYzZjhiMjg0ZTdiMjg4NzA1MzliNzg3YWZkZDg0MGNmNGJmMjcifQ"
         }
       ]
     },
@@ -337,10 +341,24 @@
           "version": "repo-lines-v1:sha256:dd7a84696c316363b53aa4970592202284589c61d0c7891a8cebac004790dec2:eyJzZWxlY3RlZExpbmVDb3VudCI6MjEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU0MTZjM2EyMjI4YmVjZDZiMDBiM2U3NjlhNzA5YzBhNjdlYzY3YjhlNWNmZWE5YmY3ZjM3ZjhjZWNmZWFhNjMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU5MDlhNTNhNjE4ZDAyOGUxZDMwMDBjMGE3YWJjZWVjYmU1ZmIzN2Y0ZTUxMWVmZTQ2NjQzZmFkNmU2Njg3MmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjdlY2E0NzYyZTdlZDY5YWZmYWYwMTUzZjdiYzBlMDMyYTQ3NmMxYWIwMTY4N2JjMjRjNWIzZDM5OTc0ZWRjMDMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImFiMzI4MGFjZmM5NmZmMDk4NGNjNTg5NjU1YjE0ODAyOWVmYTkwMDY1NmVhYzA5MmVhNWQ3MjBkMzFhZDNkMTAifQ"
         }
       ]
+    },
+    {
+      "id": "claim_d32af511827d4235814c4626396c5aba",
+      "statement": "For manual `compact_conversation`, an offload returning `None` is not an exception: the tool still records a successful `_summarization_event` whose `file_path` is `None` and returns its confirmation message.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/summarization.py#L2336-L2345",
+          "version": "repo-lines-v1:sha256:a30d7166b1b7f7288441677831367e4ad05d234efd6a44d5c2625f205f6aa89d:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImVhNzkwMjIzMWJjNjA1ZmQ0MmMwZmUwZmNhYzRkOWJhNjhlNTJjOWVhN2ZiMjZhNDExNGNjZGU1M2QyY2RlNDEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFkOWU4YWU4YzYzYmE1N2Q3NWM4NzgwYmMwYTgzNzNjODFlOGJhZjZiNzUyOTBiZGQ3NjYxZTRjZmQ2ZjdmOTAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjQ2YzRmMDc0NWY3NDVlMzMwYjY2MDI5NDNiMjdlODU3OWU5OTYzOWE5ZTVlZGFkMjA3NjdhMDdlMDk5M2NiYWEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjNjNjMwODk5NTdkMTY3ZDkwMTEwNWEwYzJiNzM2Zjc4YmMwZThhNDIxOGE3Zjk3NmRmNDhkNDg3Zjk1MjBiNDEifQ"
+        },
+        {
+          "resource": "repo://libs/deepagents/tests/unit_tests/middleware/test_compact_tool.py#L354-L379",
+          "version": "repo-lines-v1:sha256:0be746aa233eac3d3c69133b2655ae3f3c1e53d6ffd9e6ecbc6fb04129de18a2:eyJzZWxlY3RlZExpbmVDb3VudCI6MjYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjZiOTc3NGUyNmFhYWI0NmNhMDU2MWU4OTMyZjYxNGFhMTA2YTZiMDIyZTZjNGEyZmY2ZjIwZmNmMDZmYmFmYzIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijk2MDFjMjljZGJjOWQ5OGIwYjdmMmYxZDEwNjY5ZjRjOTUxYzc0ZmMxYTVmMjdkNDM3NjAwYzMxNmRmNjUyODEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjI3ZTQzZTA1ZWM2MDk4MzdkMWM5YjE2YzVlMzliMWI5NDgxM2M5YWQ2ZjU2YWZhNGRiMTg3YmZmNzYxNDA5NTkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImFiZjdiYTMxN2RmNGEzZjQxNjYyNjcwNWVjN2Y5NTg0NjM4ZDY3MzJiNTUwZDk0NWEwNTE0ZDNiZjU0MDM1OTQifQ"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-10-30T08:04:27.172Z"
+    "at": "2026-11-05T08:04:42.777Z"
   }
 }

@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:cdb51775af0596f13390e54431a8c2c74c04a1e489287434400e5dcfbb48826c",
+  "pageVersion": "sha256:88840648dda3ed5489e1e3e3cf7881daf622a72c0cde05df5612fe28ae32ea07",
   "claims": [
     {
       "id": "claim_f69e854889dc465d8c71bec1dd14bbd5",
@@ -172,7 +172,7 @@
       "evidence": [
         {
           "resource": "repo://libs/code/pyproject.toml",
-          "version": "repo-file-v1:sha256:af5cdf583c75f2d929c51edfad91fbd20295594d24623cd47136fe9581744445"
+          "version": "repo-file-v1:sha256:c3c8512802e1b0339b7119eeff1afbcadf37a8f6c388cdd4919cf2fee2b5d1af"
         }
       ]
     },
@@ -232,11 +232,11 @@
       "evidence": [
         {
           "resource": "repo://libs/code/pyproject.toml",
-          "version": "repo-file-v1:sha256:af5cdf583c75f2d929c51edfad91fbd20295594d24623cd47136fe9581744445"
+          "version": "repo-file-v1:sha256:c3c8512802e1b0339b7119eeff1afbcadf37a8f6c388cdd4919cf2fee2b5d1af"
         },
         {
           "resource": "repo://libs/deepagents/pyproject.toml",
-          "version": "repo-file-v1:sha256:cae1a1205c2af5b5bb8aa2c4aa6489aeeca5e3eaf2d9b86813bd0f94c042741d"
+          "version": "repo-file-v1:sha256:a53c3760eda43e182c3b3647c23fd45438abf3c14807a8cd092b5dff0fa80a72"
         }
       ]
     },
@@ -249,10 +249,34 @@
           "version": "repo-file-v1:sha256:4fdf62e83ed6a34ef4580e4a8502a5392d48711b2978615c7fd65184ae95a928"
         }
       ]
+    },
+    {
+      "id": "claim_d0b5d5a5d59e4899bf5152f7af1f9bc7",
+      "statement": "The deepagents 0.7.32 manifest requires LangChain >=1.4.9,<2.0.0, LangChain Core >=1.7.5,<2.0.0, langchain-anthropic >=1.7.9,<2.0.0, and langchain-google-genai >=4.4.2,<5.0.0.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/pyproject.toml#L22-L30",
+          "version": "repo-lines-v1:sha256:a242f11f5d83f7fb581e7bf269e0b07785665d04936c15cf568a92487432a71c:eyJzZWxlY3RlZExpbmVDb3VudCI6OSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYWQ5NWY1ZTllZGUwMTgxNjA0M2MwNzk3YWNlOGRhMmFjNGU5OWE4YTZhNjEwZmE5ODU3MGVmMzRiOTM1NjEwOSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiZjk0MTZlMDlmNzhiYTMxNmMwMzI1NjgyMTNiODU1ZWU3NTZlNDE1NjVkOTE4ZjA5NTE5YzgxZmQ2MjBmNDA2MCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMDkzZWJmM2FlYTczODE3Y2ZlNDM2ZjhhNWE5YjE0ZWEwMjg2YTYyZWE0NGExZjJlOThmNTE4MGFlNTI4M2JjYyIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiYWVhMWZiYmU2NjExMTE2YWJiNDQ1MDcyYTdjOWM1MTU2MDAwNDYwZWU1OWJmMWY0ZGQyNDY5ODlkOWEwMTJiYSJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_3dfa2be2b07b45a39ae79df0e64d4326",
+      "statement": "dcode declares core Anthropic, Google GenAI, and OpenAI integration floors and provides separately installable provider extras with explicit floors for additional model integrations.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/pyproject.toml#L110-L138",
+          "version": "repo-lines-v1:sha256:4b7aa4563a8a645f92941ed68de1a3a0cb8b3a7f307dc5fdbf208a0fa2cc426d:eyJzZWxlY3RlZExpbmVDb3VudCI6MjksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU5MjE4ZGM0Y2U5NzFjYmUzZDM4ZDc3NDMwZTYzOTkxODg4NGRkNzdkNzE4NGM3YjkzZGZkYzJlOTk4NjkxYjQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY5NDE2ZTA5Zjc4YmEzMTZjMDMyNTY4MjEzYjg1NWVlNzU2ZTQxNTY1ZDkxOGYwOTUxOWM4MWZkNjIwZjQwNjAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImViOGRmYTk5ZDY2MDA2MDFhMGZiODVhNWI0YjUyYzI1NmNjMTIxNTE2NTQ1MWEyZDlhNWUyYWEwNGIyZGU3MjgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijk2OWU2MmIwOTAwZjZmZDk3ZGNhMGFiZGQ2ZWRlNmY1OGY5MDY5Y2VjNjQ3YmMzNDg5ZDE0MjA2ZDM0ZjEyMTYifQ"
+        },
+        {
+          "resource": "repo://libs/code/pyproject.toml#L41-L46",
+          "version": "repo-lines-v1:sha256:e4cc323f012bd9ea6dffe3d0a97cfb8220d0e870aa0eb2676e49025a21ec796e:eyJzZWxlY3RlZExpbmVDb3VudCI6NiwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMmJkNDM3YzAwMTc0MWRiMGMzYjVmNTQ5NjU4MjRkNjcxM2IzMjM3MzgwMzdlYWNmNTI2ZjU5ZGRkNTYwMjk3NCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMTMxMWNkZmQzNzBjZTVjMDZhNmZmNDBhODNjNTNlMDBmZTUxNmIyOTM0MWU1Yzg5YmU2M2Y5ZTAwNTQ4MjAxZiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNDJkYmY1NDgxOTEwM2NkYTZiYzRlOTc2OWMwNTM0Y2FiYjU2NTJhM2ExMTJjODQ3ZmFlNWZlM2UxYTJjM2IwNCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiY2Q0MGExZTQ4MDU5MDUzNzVhNzliODQxNzM0MDExZmQ1OTFiNGY3YzUyYjE5OTk0NTAwNmI3NzBmZTU1MDE4OSJ9"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-11-03T08:04:09.572Z"
+    "at": "2026-11-05T08:04:42.777Z"
   }
 }

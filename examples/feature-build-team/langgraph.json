@@ -1,0 +1,18 @@
+{
+  "dependencies": [
+    "."
+  ],
+  "graphs": {
+    "lead": "./agent.py:lead",
+    "api_lead": "./agent.py:api_lead",
+    "web_lead": "./agent.py:web_lead",
+    "qa_lead": "./agent.py:qa_lead",
+    "storage_engineer": "./agent.py:storage_engineer",
+    "routes_engineer": "./agent.py:routes_engineer",
+    "markup_engineer": "./agent.py:markup_engineer",
+    "client_engineer": "./agent.py:client_engineer",
+    "api_tester": "./agent.py:api_tester",
+    "flow_tester": "./agent.py:flow_tester"
+  },
+  "env": ".env"
+}

@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from langchain.agents import create_agent
-from langchain.agents.middleware.types import ToolCallRequest
+from langchain.agents.middleware.types import ModelRequest, ModelResponse, ToolCallRequest
 from langchain.tools import ToolRuntime
 from langchain_core.messages import (
     AIMessage,
@@ -3690,6 +3690,18 @@ class TestBuildEvictedContent:
         assert result[2] == img2
 
 
+def _model_messages(middleware: PatchToolCallsMiddleware, messages: list) -> list:
+    """Return the messages `middleware` sends to the model for a request with `messages`."""
+    seen: list = []
+
+    def handler(request: ModelRequest) -> ModelResponse:
+        seen.extend(request.messages)
+        return ModelResponse(result=[AIMessage(content="ok")])
+
+    middleware.wrap_model_call(ModelRequest(model=MagicMock(), messages=messages), handler)
+    return seen
+
+
 class TestPatchToolCallsMiddleware:
     def test_first_message(self) -> None:
         input_messages = [
@@ -3697,8 +3709,7 @@ class TestPatchToolCallsMiddleware:
             HumanMessage(content="Hello, how are you?", id="2"),
         ]
         middleware = PatchToolCallsMiddleware()
-        state_update = middleware.before_agent({"messages": input_messages}, None)
-        assert state_update is None
+        assert _model_messages(middleware, input_messages) == input_messages
 
     def test_missing_tool_call(self) -> None:
         input_messages = [
@@ -3712,13 +3723,7 @@ class TestPatchToolCallsMiddleware:
             HumanMessage(content="What is the weather in Tokyo?", id="4"),
         ]
         middleware = PatchToolCallsMiddleware()
-        state_update = middleware.before_agent({"messages": input_messages}, None)
-        assert state_update is not None
-        messages = state_update["messages"]
-        assert isinstance(messages, list)
-        assert isinstance(messages[0], RemoveMessage)
-        assert messages[0].id == REMOVE_ALL_MESSAGES
-        patched_messages = messages[1:]
+        patched_messages = _model_messages(middleware, input_messages)
         assert len(patched_messages) == 5
         assert patched_messages[0].type == "system"
         assert patched_messages[0].content == "You are a helpful assistant."
@@ -3749,8 +3754,7 @@ class TestPatchToolCallsMiddleware:
             HumanMessage(content="What is the weather in Tokyo?", id="5"),
         ]
         middleware = PatchToolCallsMiddleware()
-        state_update = middleware.before_agent({"messages": input_messages}, None)
-        assert state_update is None
+        assert _model_messages(middleware, input_messages) == input_messages
 
     def test_two_missing_tool_calls(self) -> None:
         input_messages = [
@@ -3770,13 +3774,7 @@ class TestPatchToolCallsMiddleware:
             HumanMessage(content="What is the weather in Tokyo?", id="6"),
         ]
         middleware = PatchToolCallsMiddleware()
-        state_update = middleware.before_agent({"messages": input_messages}, None)
-        assert state_update is not None
-        messages = state_update["messages"]
-        assert isinstance(messages, list)
-        assert isinstance(messages[0], RemoveMessage)
-        assert messages[0].id == REMOVE_ALL_MESSAGES
-        patched_messages = messages[1:]
+        patched_messages = _model_messages(middleware, input_messages)
         assert len(patched_messages) == 8
         assert patched_messages[0].type == "system"
         assert patched_messages[0].content == "You are a helpful assistant."

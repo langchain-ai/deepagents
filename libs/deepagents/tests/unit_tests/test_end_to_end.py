@@ -18,7 +18,7 @@ from langchain_core.callbacks import CallbackManagerForLLMRun
 from langchain_core.exceptions import ContextOverflowError, ModelInvalidRequestError
 from langchain_core.language_models import BaseChatModel, LanguageModelInput
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage, get_notification_metadata
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, RemoveMessage, SystemMessage, ToolMessage, get_notification_metadata
 from langchain_core.messages.content import ContentBlock
 from langchain_core.outputs import ChatGeneration, ChatResult
 from langchain_core.runnables import Runnable
@@ -5739,3 +5739,25 @@ class TestMultimodalProfileScrubSubagents:
 
         human_message = next(m for m in model.captured_messages[0] if isinstance(m, HumanMessage))
         assert human_message.content_blocks[0]["type"] == "text"
+
+
+def test_dangling_tool_call_patched_without_rewriting_history() -> None:
+    fake_model = FakeChatModelWithHistory(messages=iter([AIMessage(content="Done.")]))
+    agent = create_deep_agent(model=fake_model, checkpointer=InMemorySaver())
+    config: dict = {"configurable": {"thread_id": "patch-dangling-no-rewrite"}}
+    dangling = AIMessage(content="", tool_calls=[{"id": "call_1", "name": "search", "args": {}}], id="a1")
+    history = [HumanMessage(content="Search", id="h1"), dangling, HumanMessage(content="Never mind", id="h2")]
+
+    writes = [
+        message
+        for update in agent.stream({"messages": history}, config, stream_mode="updates")
+        for node_update in update.values()
+        if isinstance(node_update, dict)
+        for message in node_update.get("messages") or []
+    ]
+
+    sent = [m for m in fake_model.call_history[0]["messages"] if not isinstance(m, SystemMessage)]
+    assert [type(m) for m in sent] == [HumanMessage, AIMessage, ToolMessage, HumanMessage]
+    assert sent[2].tool_call_id == "call_1"
+    assert not any(isinstance(m, RemoveMessage) for m in writes)
+    assert [m.id for m in agent.get_state(config).values["messages"][:3]] == ["h1", "a1", "h2"]

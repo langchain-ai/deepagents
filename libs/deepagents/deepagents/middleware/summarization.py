@@ -67,11 +67,9 @@ import hashlib
 import inspect
 import logging
 import mimetypes
-import threading
 import urllib.parse
 import uuid
 import warnings
-from collections import OrderedDict
 from collections.abc import Callable, Mapping
 from contextvars import ContextVar
 from dataclasses import dataclass, field
@@ -83,11 +81,12 @@ from langchain.agents.middleware.summarization import (
     _DEFAULT_TRIM_TOKEN_LIMIT,
     DEFAULT_SUMMARY_PROMPT,
     ContextSize,
+    ModelResolver,
     SummarizationMiddleware as LCSummarizationMiddleware,
     TokenCounter,
+    _CallModels,
 )
 from langchain.agents.middleware.types import AgentMiddleware, AgentState, ExtendedModelResponse, PrivateStateAttr, TracePolicy, omit_payload
-from langchain.chat_models import BaseChatModel, init_chat_model
 from langchain.tools import (
     ToolRuntime,  # noqa: TC002  # runtime import: StructuredTool resolves the compact-tool annotations at schema-inference time
 )
@@ -103,7 +102,6 @@ from langchain_core.messages import (
     get_buffer_string,
 )
 from langchain_core.messages.utils import count_tokens_approximately
-from langchain_core.runnables import RunnableConfig, RunnableLambda
 from langgraph.types import Command
 from pydantic import BaseModel
 from typing_extensions import TypedDict
@@ -136,8 +134,8 @@ if TYPE_CHECKING:
 
     from langchain.agents.middleware.summarization import Summarizer
     from langchain.agents.middleware.types import ModelRequest, ModelResponse
+    from langchain.chat_models import BaseChatModel
     from langchain_core.tools import BaseTool
-    from langgraph.runtime import Runtime
 
     from deepagents.backends.protocol import BackendProtocol, FileUploadResponse
 
@@ -319,7 +317,12 @@ def compute_summarization_defaults(model: BaseChatModel) -> SummarizationDefault
         and isinstance(model.profile["max_input_tokens"], int)
     )
 
-    if has_profile:
+    return _profile_defaults(has_window=has_profile)
+
+
+def _profile_defaults(*, has_window: bool) -> SummarizationDefaults:
+    """Fraction-based defaults for a model with a known window, else conservative fixed counts."""
+    if has_window:
         return {
             "trigger": ("fraction", 0.85),
             "keep": ("fraction", 0.10),
@@ -628,158 +631,36 @@ def _drop_bound_reasoning(message: AnyMessage) -> AnyMessage:
     return message.model_copy(update={"content": content})
 
 
-def _is_model_factory(model: object) -> bool:
-    """Whether `model` is a callable that resolves a model per call rather than a model itself."""
-    return callable(model) and not isinstance(model, BaseChatModel) and not hasattr(model, "invoke")
-
-
-def _profile_input_limit(model: BaseChatModel) -> int | None:
-    """Return the model profile's `max_input_tokens`, or `None` when unknown."""
-    profile = getattr(model, "profile", None)
-    limit = profile.get("max_input_tokens") if isinstance(profile, Mapping) else None
-    if not isinstance(limit, int) or isinstance(limit, bool):
-        return None
-    return limit
-
-
-def _translate_deprecated_kwargs(
-    trigger: ContextSize | TriggerClause | list[ContextSize | TriggerClause] | None,
-    keep: ContextSize,
-    deprecated_kwargs: Mapping[str, Any],
-) -> tuple[ContextSize | TriggerClause | list[ContextSize | TriggerClause] | None, ContextSize]:
-    """Map LangChain's deprecated threshold arguments once, as LangChain does, with its warnings."""
-    tokens = deprecated_kwargs.get("max_tokens_before_summary")
-    if "max_tokens_before_summary" in deprecated_kwargs:
-        warnings.warn("max_tokens_before_summary is deprecated. Use trigger=('tokens', value) instead.", DeprecationWarning, stacklevel=3)
-        if trigger is None and tokens is not None:
-            trigger = ("tokens", tokens)
-    if "messages_to_keep" in deprecated_kwargs:
-        warnings.warn("messages_to_keep is deprecated. Use keep=('messages', value) instead.", DeprecationWarning, stacklevel=3)
-        if keep == ("messages", _DEFAULT_MESSAGES_TO_KEEP):
-            keep = ("messages", deprecated_kwargs["messages_to_keep"])
-    return trigger, keep
-
-
 @dataclass(frozen=True, slots=True)
 class _ModelContext:
-    """Summarization helpers bound to one resolved model.
+    """LangChain's per-call models plus the Deep Agents settings sized for them.
 
     Thresholds, token counting, provider checks, trimming, and the input budget
     all read from the same context, so one call never mixes two models.
     """
 
-    model: BaseChatModel
-    """The model whose context window is managed."""
-
     lc: LCSummarizationMiddleware
-    """LangChain helper built for `model`; it writes summaries unless `summarizer` overrides it."""
+    """LangChain helper whose thresholds apply to this context model."""
 
-    counter_accepts_tools: bool | None
-    """Whether `lc.token_counter` accepts `tools=`; see `_token_counter_accepts_tools`."""
+    models: _CallModels
+    """Context model, summary writer, and token counters LangChain resolved for the call."""
 
     truncate_trigger: ContextSize | None
-    """Argument-truncation trigger for `model`, or `None` when truncation is off."""
+    """Argument-truncation trigger for the context model, or `None` when truncation is off."""
 
     truncate_keep: ContextSize
     """Recent context that argument truncation leaves untouched."""
 
     @property
-    def max_input_tokens(self) -> int | None:
-        """Context window of `model`, if its profile reports one."""
-        return _profile_input_limit(self.model)
-
-
-class _ModelContextCache:
-    """Bounded, thread-safe LRU of `_ModelContext` keyed by model identity.
-
-    Each entry holds its model, so a cached id cannot be reused by another
-    object while the entry lives.
-    """
-
-    def __init__(self, maxsize: int = _MODEL_CONTEXT_CACHE_SIZE) -> None:
-        self._maxsize = maxsize
-        self._entries: OrderedDict[int, _ModelContext] = OrderedDict()
-        self._lock = threading.Lock()
-
-    def get(self, model: BaseChatModel, build: Callable[[BaseChatModel], _ModelContext]) -> _ModelContext:
-        """Return the context for `model`, building it outside the lock on a miss."""
-        key = id(model)
-        with self._lock:
-            context = self._entries.get(key)
-            if context is not None and context.model is model:
-                self._entries.move_to_end(key)
-                return context
-        context = build(model)
-        with self._lock:
-            self._entries[key] = context
-            self._entries.move_to_end(key)
-            while len(self._entries) > self._maxsize:
-                self._entries.popitem(last=False)
-        return context
-
-
-def _without_fractions(
-    trigger: ContextSize | TriggerClause | list[ContextSize | TriggerClause] | None,
-    keep: ContextSize,
-) -> tuple[ContextSize | TriggerClause | list[ContextSize | TriggerClause] | None, ContextSize]:
-    """Drop fractional limits, as LangChain does for a resolved model without a profile."""
-    clauses = trigger if isinstance(trigger, list) else [] if trigger is None else [trigger]
-    kept = [clause for clause in clauses if "fraction" not in (clause if isinstance(clause, Mapping) else clause[:1])]
-    if keep[0] == "fraction":
-        keep = ("messages", _DEFAULT_MESSAGES_TO_KEEP)
-    return kept or None, keep
-
-
-def _model_identifier(model: BaseChatModel) -> str:
-    """Return a `provider:model` identifier for traces, matching LangChain's."""
-    try:
-        params = model._get_ls_params()  # the provider-neutral source of name and provider
-    except Exception:  # noqa: BLE001  # tracing must not fail summarization
-        params = {}
-    provider, name = params.get("ls_provider"), params.get("ls_model_name")
-    if provider and name:
-        return f"{provider}:{name}"
-    return str(name or provider or type(model).__name__)
-
-
-def _summary_run_config(context: _ModelContext, summarizer: Summarizer | None) -> RunnableConfig:
-    """Config for the `summarization` run, recording which model compacted and its window."""
-    metadata: dict[str, Any] = {
-        "lc_source": "summarization",
-        "summarization_context_model": _model_identifier(context.model),
-        "summarization_context_window": context.max_input_tokens,
-    }
-    writer = summarizer if isinstance(summarizer, BaseChatModel) else context.model if summarizer is None else None
-    if writer is not None:
-        metadata["summarization_model"] = _model_identifier(writer)
-    return {"metadata": metadata}
-
-
-@dataclass(frozen=True)
-class ModelResolution:
-    """What a `model` callable receives to choose the context model for one call.
-
-    Mirrors LangChain's `ModelResolution` for `SummarizationMiddleware`, so a
-    resolver written against either works with both.
-    """
-
-    runtime: Runtime[Any]
-    """Runtime of the current agent run, including its `context`."""
-
-    state: Mapping[str, Any]
-    """Agent state at the time of the call."""
-
-    request: ModelRequest | None = None
-    """The model call being made; `request.model` is the model it goes to."""
+    def model(self) -> BaseChatModel:
+        """The model whose context window is managed."""
+        return self.models.context_model
 
     @property
-    def context(self) -> Any:  # noqa: ANN401  # the agent's context schema is user-defined
-        """Shortcut for `runtime.context`."""
-        return self.runtime.context
-
-
-ModelResolver = Callable[[ModelResolution], BaseChatModel]
-"""Chooses the context model for each model call; must return a `BaseChatModel`."""
+    def max_input_tokens(self) -> int | None:
+        """Context window of the context model, if its profile reports one (a bool is not a window)."""
+        limit = self.lc._get_profile_limits(self.models.context_model)
+        return None if isinstance(limit, bool) else limit
 
 
 @dataclass
@@ -957,31 +838,31 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
             msg = "`history_path_prefix` was removed in deepagents 0.7. Configure `CompositeBackend.artifacts_root` instead."
             raise TypeError(msg)
 
-        trigger, keep = _translate_deprecated_kwargs(trigger, keep, deprecated_kwargs)
-        if isinstance(model, str):
-            model = init_chat_model(model)
-        if isinstance(summarizer, str):
-            summarizer = init_chat_model(summarizer)
-
-        # Settings that per-model LangChain helpers are built from.
-        self._model_spec = model
-        self._trigger = trigger
-        self._keep = keep
-        self._token_counter = token_counter
-        self._summary_prompt = summary_prompt
-        self._trim_tokens_to_summarize = trim_tokens_to_summarize
-        self._summarizer = summarizer
+        # LangChain resolves each call's context model and summary writer; its
+        # helpers run the thresholds. See langchain-ai/langchain#41696.
+        self._lc = LCSummarizationMiddleware(
+            model=model,
+            trigger=trigger,
+            keep=keep,
+            token_counter=token_counter,
+            summary_prompt=summary_prompt,
+            trim_tokens_to_summarize=trim_tokens_to_summarize,
+            summarizer=summarizer,
+            **deprecated_kwargs,
+        )
+        self._helper_kwargs: dict[str, Any] = {
+            "token_counter": token_counter,
+            "summary_prompt": summary_prompt,
+            "trim_tokens_to_summarize": trim_tokens_to_summarize,
+            "summarizer": summarizer,
+        }
         self._truncate_args_settings: TruncateArgsSettings = truncate_args_settings or {}
-        # Set by `create_summarization_middleware`: derive thresholds from each
-        # resolved model's profile instead of the fixed settings above.
-        self._profile_defaults = False
-        self._contexts = _ModelContextCache()
-
-        # A fixed model (or the factory's build-time model) gets an eagerly built
-        # context: it validates fractional settings now and stays stable for
-        # callers outside a model call, such as the compact tool.
-        self._default_model: BaseChatModel | None = None if model is None or _is_model_factory(model) else cast("BaseChatModel", model)
-        self._default_context = self._build_context(self._default_model) if self._default_model is not None else None
+        # Set by `create_summarization_middleware`: pick thresholds per call from
+        # whether the context model reports a window.
+        self._lc_without_window: LCSummarizationMiddleware | None = None
+        self._default_model: BaseChatModel | None = self._lc.model
+        # The default counter takes `tools=`; a custom one is inspected once.
+        self._fixed_counter_accepts_tools = True if token_counter is count_tokens_approximately else _token_counter_accepts_tools(token_counter)
 
         # Deep Agents specific attributes
         self._backend = backend
@@ -998,114 +879,67 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
         self._history_view = _SummarizationViewMiddleware(self)
 
     def _adopt_profile_defaults(self, fallback: BaseChatModel) -> None:
-        """Derive thresholds from each call's model profile; use `fallback` outside model calls."""
-        self._profile_defaults = True
+        """Follow each call's model with window-derived thresholds; size work outside a call against `fallback`."""
+        with_window, without_window = _profile_defaults(has_window=True), _profile_defaults(has_window=False)
+        self._lc = LCSummarizationMiddleware(trigger=with_window["trigger"], keep=with_window["keep"], **self._helper_kwargs)
+        self._lc_without_window = LCSummarizationMiddleware(trigger=without_window["trigger"], keep=without_window["keep"], **self._helper_kwargs)
         self._default_model = fallback
-        self._default_context = self._build_context(fallback)
 
-    def _build_context(self, model: BaseChatModel, *, skip_fractions: bool = False) -> _ModelContext:
-        """Build the LangChain helper and settings for `model`.
-
-        Args:
-            model: The resolved context model.
-            skip_fractions: Drop fractional limits, for a followed model whose
-                profile has no `max_input_tokens` to measure them against.
-
-        Returns:
-            The context for `model`.
-        """
-        if self._profile_defaults:
-            defaults = compute_summarization_defaults(model)
-            trigger, keep, truncate = defaults["trigger"], defaults["keep"], defaults["truncate_args_settings"]
-        else:
-            trigger, keep, truncate = self._trigger, self._keep, self._truncate_args_settings
-        if skip_fractions:
-            trigger, keep = _without_fractions(trigger, keep)
-        lc = LCSummarizationMiddleware(
-            model=model,
-            trigger=trigger,
-            keep=keep,
-            token_counter=self._token_counter,
-            summary_prompt=self._summary_prompt,
-            trim_tokens_to_summarize=self._trim_tokens_to_summarize,
-            summarizer=self._summarizer,
-        )
+    def _context_for(self, models: _CallModels) -> _ModelContext:
+        """Pair LangChain's resolved models with the thresholds that fit the context model."""
+        lc, truncate = self._lc, self._truncate_args_settings
+        if self._lc_without_window is not None:
+            has_window = self._lc._get_profile_limits(models.context_model) is not None
+            defaults = _profile_defaults(has_window=has_window)
+            truncate = defaults["truncate_args_settings"]
+            if not has_window:
+                lc = self._lc_without_window
+                models = lc._call_models_for(models.context_model)
         return _ModelContext(
-            model=model,
             lc=lc,
-            counter_accepts_tools=_token_counter_accepts_tools(lc.token_counter),
+            models=models,
             truncate_trigger=truncate.get("trigger"),
             truncate_keep=truncate.get("keep", ("messages", 20)),
         )
 
-    def _build_followed_context(self, model: BaseChatModel) -> _ModelContext:
-        """Build a context for a per-call model, skipping fractional limits its profile cannot size."""
-        try:
-            return self._build_context(model)
-        except ValueError:
-            logger.warning(
-                "Model %s has no `max_input_tokens` profile, so fractional summarization limits are skipped for it.",
-                _model_identifier(model),
-            )
-            return self._build_context(model, skip_fractions=True)
-
-    def _context_for(self, model: BaseChatModel) -> _ModelContext:
-        """Return the summarization context for `model`."""
-        if model is self._default_model and self._default_context is not None:
-            return self._default_context
-        return self._contexts.get(model, self._build_followed_context)
-
-    def _resolve_model(self, request: ModelRequest) -> BaseChatModel:
-        """Resolve the context model for this call: fixed, computed, or the call's own model."""
-        spec = self._model_spec
-        if spec is None:
-            return request.model
-        if not _is_model_factory(spec):
-            return cast("BaseChatModel", spec)
-        model = cast("ModelResolver", spec)(ModelResolution(runtime=request.runtime, state=request.state, request=request))
-        if isinstance(model, str):
-            msg = "A SummarizationMiddleware `model` callable must return a BaseChatModel, not a model name."
-            raise TypeError(msg)
-        return model
-
     def _context_for_request(self, request: ModelRequest) -> _ModelContext:
-        """Resolve this call's model once and return its summarization context."""
-        return self._context_for(self._resolve_model(request))
+        """Resolve this call's context model once (pinned, callable, or `request.model`)."""
+        return self._context_for(self._lc._resolve_call_models(request))
 
     def _require_default_context(self) -> _ModelContext:
-        """Return the context used outside a model call.
+        """Return the context used outside a model call: the pinned or build-time model.
 
         Raises:
-            AttributeError: If the middleware follows each call's model and has no fallback.
+            AttributeError: If the middleware follows each call's model and has neither.
         """
-        if self._default_context is None:
+        if self._default_model is None:
             msg = "This SummarizationMiddleware follows each call's model and has no default model outside a model call."
             raise AttributeError(msg)
-        return self._default_context
+        return self._context_for(self._lc._call_models_for(self._default_model))
 
     # Delegated properties and methods from langchain helper. Without an explicit
-    # context they use the default context (the fixed or build-time model).
+    # context they use the default context (the pinned or build-time model).
     @property
     def _lc_helper(self) -> LCSummarizationMiddleware:
         """LangChain helper for the default model."""
-        return self._require_default_context().lc
+        return self._require_default_context().lc if self._default_model is not None else self._lc
 
     @property
     def model(self) -> BaseChatModel:
-        """The fixed or build-time model, used when no model call is in progress."""
+        """The pinned or build-time model, used when no model call is in progress."""
         return self._require_default_context().model
 
     @property
     def token_counter(self) -> TokenCounter:
         """Function to count tokens in messages for the default model."""
-        if self._default_context is None:
-            return self._token_counter
-        return self._default_context.lc.token_counter
+        if self._default_model is None:
+            return self._lc.token_counter
+        return self._require_default_context().models.token_counter
 
     @property
     def _counter_accepts_tools(self) -> bool | None:
-        """Whether the default model's token counter accepts `tools=`."""
-        return self._require_default_context().counter_accepts_tools
+        """Whether the configured token counter accepts `tools=`."""
+        return self._fixed_counter_accepts_tools
 
     @property
     def _truncate_args_trigger(self) -> ContextSize | None:
@@ -1123,11 +957,13 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
 
     def _should_summarize(self, messages: list[AnyMessage], total_tokens: int, context: _ModelContext | None = None) -> bool:
         """Determine whether summarization should run for the current token usage."""
-        return (context or self._require_default_context()).lc._should_summarize(messages, total_tokens)
+        context = context or self._require_default_context()
+        return context.lc._should_summarize(messages, total_tokens, models=context.models)
 
     def _determine_cutoff_index(self, messages: list[AnyMessage], context: _ModelContext | None = None) -> int:
         """Choose cutoff index respecting retention configuration."""
-        return (context or self._require_default_context()).lc._determine_cutoff_index(messages)
+        context = context or self._require_default_context()
+        return context.lc._determine_cutoff_index(messages, models=context.models)
 
     @staticmethod
     def _partition_messages(
@@ -1138,16 +974,16 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
         return LCSummarizationMiddleware._partition_messages(conversation_messages, cutoff_index)
 
     def _create_summary(self, messages_to_summarize: list[AnyMessage], context: _ModelContext | None = None) -> str:
-        """Generate summary for the given messages."""
+        """Generate summary for the given messages, traced as LangChain's `summarization` run."""
         context = context or self._require_default_context()
-        run = RunnableLambda(context.lc._create_summary, name="summarization")
-        return run.invoke(messages_to_summarize, config=_summary_run_config(context, self._summarizer))
+        run = context.lc._traced_summarizer(context.models)
+        return run.invoke(messages_to_summarize, config=context.lc._summary_run_config(context.models))
 
     async def _acreate_summary(self, messages_to_summarize: list[AnyMessage], context: _ModelContext | None = None) -> str:
         """Generate summary for the given messages (async)."""
         context = context or self._require_default_context()
-        run = RunnableLambda(context.lc._create_summary, afunc=context.lc._acreate_summary, name="summarization")
-        return await run.ainvoke(messages_to_summarize, config=_summary_run_config(context, self._summarizer))
+        run = context.lc._traced_summarizer(context.models)
+        return await run.ainvoke(messages_to_summarize, config=context.lc._summary_run_config(context.models))
 
     def _get_session_id(self, state: Mapping[str, Any]) -> str:
         """Resolve the session id naming the offload history file.
@@ -1447,7 +1283,7 @@ A condensed summary follows:
             # Keep recent messages up to token limit
             tokens_kept = 0
             for i in range(len(messages) - 1, -1, -1):
-                msg_tokens = context.lc._partial_token_counter([messages[i]])
+                msg_tokens = context.models.partial_token_counter([messages[i]])
                 if tokens_kept + msg_tokens > target_token_count:
                     return i + 1
                 tokens_kept += msg_tokens
@@ -1509,13 +1345,13 @@ A condensed summary follows:
                 without `tools`.
         """
         context = context or self._require_default_context()
-        counter = context.lc.token_counter
+        counter = context.models.token_counter
         counted_messages = [system_message, *messages] if system_message is not None else messages
-        if context.counter_accepts_tools is True:
+        if self._fixed_counter_accepts_tools is True:
             # `tools=` is absent from the `TokenCounter` protocol but accepted
             # here: the signature check above confirmed the counter takes it.
             return counter(counted_messages, tools=tools)  # ty: ignore[unknown-argument]
-        if context.counter_accepts_tools is False:
+        if self._fixed_counter_accepts_tools is False:
             return counter(counted_messages)
         # Signature could not be introspected; probe defensively. This is the
         # only path that swallows a `TypeError`, and only for counters whose
@@ -1939,7 +1775,7 @@ A condensed summary follows:
                 self._backend,
                 keep=("tokens", 1),
                 max_input_tokens=context.max_input_tokens,
-                token_counter=context.lc.token_counter,
+                token_counter=context.models.token_counter,
                 large_tool_results_prefix=self._large_tool_results_prefix,
             )
             request = request.override(messages=messages)
@@ -1971,7 +1807,7 @@ A condensed summary follows:
                 self._backend,
                 keep=("tokens", 1),
                 max_input_tokens=context.max_input_tokens,
-                token_counter=context.lc.token_counter,
+                token_counter=context.models.token_counter,
                 large_tool_results_prefix=self._large_tool_results_prefix,
             )
             request = request.override(messages=messages)
@@ -2681,18 +2517,19 @@ class SummarizationToolMiddleware(AgentMiddleware):
 
     def _is_compaction_clause_met(self, clause: Mapping[str, float], messages: list[AnyMessage]) -> bool:
         """Check whether a normalized compact eligibility clause is met."""
-        lc = self._summarization._lc_helper
+        context = self._summarization._require_default_context()
+        lc, models = context.lc, context.models
         for kind, value in clause.items():
             if kind == "messages" and len(messages) < self._compact_threshold(value):
                 return False
-            if kind == "tokens" and not lc._should_summarize_based_on_reported_tokens(messages, self._compact_threshold(value)):
+            if kind == "tokens" and not lc._should_summarize_based_on_reported_tokens(messages, self._compact_threshold(value), models=models):
                 return False
             if kind == "fraction":
-                max_input_tokens = lc._get_profile_limits()
+                max_input_tokens = context.max_input_tokens
                 if max_input_tokens is None:
                     return False
                 threshold = self._compact_threshold(max_input_tokens * value)
-                if not lc._should_summarize_based_on_reported_tokens(messages, threshold):
+                if not lc._should_summarize_based_on_reported_tokens(messages, threshold, models=models):
                     return False
             if kind not in {"messages", "tokens", "fraction"}:
                 return False
@@ -2730,7 +2567,7 @@ class SummarizationToolMiddleware(AgentMiddleware):
         """
         s = self._summarization
         tool_call_id = runtime.tool_call_id or ""
-        if s._default_context is None:
+        if s._default_model is None:
             return self._compact_error(
                 tool_call_id,
                 AttributeError("compact_conversation needs a SummarizationMiddleware given a model or built by create_summarization_middleware."),
@@ -2769,7 +2606,7 @@ class SummarizationToolMiddleware(AgentMiddleware):
         """
         s = self._summarization
         tool_call_id = runtime.tool_call_id or ""
-        if s._default_context is None:
+        if s._default_model is None:
             return self._compact_error(
                 tool_call_id,
                 AttributeError("compact_conversation needs a SummarizationMiddleware given a model or built by create_summarization_middleware."),

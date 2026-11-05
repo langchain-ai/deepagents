@@ -4,11 +4,12 @@ import asyncio
 import uuid
 from collections.abc import Awaitable, Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, cast
+from typing import Any
 
 import pytest
 from langchain.agents.middleware import AgentMiddleware
-from langchain.agents.middleware.types import ExtendedModelResponse, ModelRequest, ModelResponse
+from langchain.agents.middleware.model_selection import MODEL_SELECTION_KEY, model_spec_from_model
+from langchain.agents.middleware.types import ModelRequest, ModelResponse
 from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.exceptions import ContextOverflowError
 from langchain_core.language_models.chat_models import BaseChatModel
@@ -21,14 +22,10 @@ from pydantic import Field, SecretStr
 
 from deepagents import create_deep_agent
 from deepagents.backends import StateBackend
-from deepagents.middleware._model_selection import MODEL_SELECTION_KEY, model_spec_from_model
 from deepagents.middleware.summarization import (
     SUMMARIZATION_EVENT_KEY,
-    ModelResolution,
-    SummarizationMiddleware,
     create_summarization_middleware,
 )
-from tests.unit_tests.middleware.test_summarization_middleware import MockBackend, make_mock_runtime
 
 SMALL_WINDOW = 32_000
 LARGE_WINDOW = 128_000
@@ -255,61 +252,6 @@ async def test_concurrent_runs_on_different_models_stay_separate(mode: str) -> N
     assert len(small.summaries) == 4
     assert large.summaries == []
     assert all(tokens(call) < SMALL_WINDOW for call in small.calls)
-
-
-def test_callable_model_resolves_per_call() -> None:
-    """A callable `model` picks the managed model for each call."""
-    small, large = window_model("small", SMALL_WINDOW), window_model("large", LARGE_WINDOW)
-    resolutions: list[ModelResolution] = []
-
-    def resolve(resolution: ModelResolution) -> BaseChatModel:
-        resolutions.append(resolution)
-        return small
-
-    middleware = SummarizationMiddleware(
-        resolve, backend=MockBackend(), trigger=("fraction", 0.5), keep=("messages", 1), trim_tokens_to_summarize=None
-    )
-    history = long_history(turns=5)
-    request = ModelRequest(model=large, messages=history, state=cast("Any", {"messages": history}), runtime=make_mock_runtime())
-
-    result = middleware.wrap_model_call(request, lambda _: ModelResponse(result=[AIMessage(content="ok")]))
-
-    assert isinstance(result, ExtendedModelResponse)
-    assert SUMMARIZATION_EVENT_KEY in result.command.update
-    assert len(small.summaries) == 1
-    assert large.summaries == []
-    assert resolutions[0].request is request
-    assert resolutions[0].state is request.state
-
-
-def test_callable_model_must_not_return_a_name() -> None:
-    """A resolver that returns a model name is rejected rather than building a client."""
-    middleware = SummarizationMiddleware(lambda _: "openai:gpt-5.5", backend=MockBackend(), trigger=("messages", 100))
-    model = window_model("large", LARGE_WINDOW)
-    request = ModelRequest(model=model, messages=[HumanMessage(content="hi")], state=cast("Any", {"messages": []}), runtime=make_mock_runtime())
-
-    with pytest.raises(TypeError, match="not a model name"):
-        middleware.wrap_model_call(request, lambda _: ModelResponse(result=[AIMessage(content="ok")]))
-
-
-def test_followed_model_without_profile_skips_fractional_limits() -> None:
-    """A followed model without a profile skips fractional limits instead of failing the call."""
-    middleware = SummarizationMiddleware(backend=MockBackend(), trigger=[("fraction", 0.5), ("messages", 4)], keep=("fraction", 0.1))
-    model = ChatWindow(model="no-profile")
-    history = long_history(turns=12, tokens_per_turn=10)
-    request = ModelRequest(model=model, messages=history, state=cast("Any", {"messages": history}), runtime=make_mock_runtime())
-
-    result = middleware.wrap_model_call(request, lambda _: ModelResponse(result=[AIMessage(content="ok")]))
-
-    assert isinstance(result, ExtendedModelResponse)
-    assert SUMMARIZATION_EVENT_KEY in result.command.update
-    assert len(model.summaries) == 1
-
-
-def test_fixed_model_without_profile_still_rejects_fractional_settings() -> None:
-    """A fixed model is validated when the middleware is built, as before."""
-    with pytest.raises(ValueError, match="Model profile information is required"):
-        SummarizationMiddleware(ChatWindow(model="no-profile"), backend=MockBackend(), trigger=("fraction", 0.5))
 
 
 class SummarizationRuns(BaseCallbackHandler):

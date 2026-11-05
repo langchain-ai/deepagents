@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Annotated, Any, Literal, NotRequired, TypedDic
 
 from langchain.agents import create_agent
 from langchain.agents.middleware import HumanInTheLoopMiddleware, InterruptOnConfig
+from langchain.agents.middleware.model_selection import MODEL_SELECTION_KEY
 from langchain.agents.middleware.types import (
     AgentMiddleware,
     ContextT,
@@ -32,7 +33,6 @@ from pydantic import BaseModel, Field, ValidationError, model_validator
 from typing_extensions import TypeIs
 
 from deepagents.backends.protocol import BackendProtocol
-from deepagents.middleware._model_selection import MODEL_SELECTION_KEY
 from deepagents.middleware._skill_tools import _SKILL_TOOLS_DISCLOSED_KEY
 from deepagents.middleware._utils import append_to_system_message
 from deepagents.middleware.filesystem import FilesystemMiddleware, FilesystemPermission

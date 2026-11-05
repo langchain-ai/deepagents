@@ -86,8 +86,9 @@ async def test_oversized_tail_fits_before_send(*, asynchronous: bool, trigger: i
 async def test_unknown_agent_limit_does_not_use_summarizer_budget(
     *, asynchronous: bool, profile: dict[str, int] | None, trigger: int, overflow: bool
 ) -> None:
-    request = _request().override(system_message=SystemMessage(content="s" * 10000))
-    request.model.profile = profile
+    model = GenericFakeChatModel(messages=iter([AIMessage(content="done")] * 2))
+    model.profile = profile
+    request = _request().override(system_message=SystemMessage(content="s" * 10000), model=model)
     summarizer = GenericFakeChatModel(messages=iter([AIMessage(content="summary")] * 2), profile={"max_input_tokens": 10000})
     middleware = SummarizationMiddleware(
         backend=MockBackend(), trigger=("messages", trigger), keep=("messages", 3), token_counter=_count, summarizer=summarizer

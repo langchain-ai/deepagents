@@ -161,6 +161,12 @@ class SummarizationEvent(TypedDict):
     cutoff_index: int
     """The index in the messages list where summarization occurred."""
 
+    cutoff_message_id: NotRequired[str | None]
+    """Id of the message at `cutoff_index`; stays correct when earlier messages are removed.
+
+    `None` if that message has no id. Absent on events created before this field existed.
+    """
+
     summary_message: HumanMessage
     """The `HumanMessage` containing the summary."""
 
@@ -565,6 +571,34 @@ def _bound_reasoning_types(message: AIMessage) -> frozenset[str]:
     return frozenset()
 
 
+def _resolve_cutoff_index(
+    messages: list[AnyMessage],
+    event: SummarizationEvent,
+) -> int:
+    """Return the event's cutoff index, by `cutoff_message_id` when it is still present.
+
+    Args:
+        messages: Full message list from state.
+        event: A `_summarization_event` dict.
+
+    Returns:
+        The cutoff index in `messages`.
+    """
+    cutoff_id = event.get("cutoff_message_id")
+    if cutoff_id:
+        for index, message in enumerate(messages):
+            if message.id == cutoff_id:
+                return index
+    return event["cutoff_index"]
+
+
+def _cutoff_message_id(messages: list[AnyMessage], cutoff_index: int) -> str | None:
+    """Return the id of the message at `cutoff_index`, or `None` if out of range."""
+    if 0 <= cutoff_index < len(messages):
+        return messages[cutoff_index].id
+    return None
+
+
 def _drop_bound_reasoning(message: AnyMessage) -> AnyMessage:
     """Return `message` without reasoning blocks bound to the conversation before it.
 
@@ -939,10 +973,11 @@ A condensed summary follows:
 
         try:
             summary_msg = event["summary_message"]
-            cutoff_idx = event["cutoff_index"]
+            stored_cutoff = event["cutoff_index"]
         except (KeyError, TypeError) as exc:
             logger.warning("Malformed _summarization_event (missing keys): %s", exc)
             return list(messages)
+        cutoff_idx = _resolve_cutoff_index(messages, event)
 
         if cutoff_idx > len(messages):
             logger.warning(
@@ -955,6 +990,8 @@ A condensed summary follows:
         kept_from = event.get("created_at_index")
         if not isinstance(kept_from, int):
             kept_from = cutoff_idx
+        elif isinstance(stored_cutoff, int):
+            kept_from += cutoff_idx - stored_cutoff
         result: list[AnyMessage] = [summary_msg]
         for index, message in enumerate(messages[cutoff_idx:], start=cutoff_idx):
             result.append(_drop_bound_reasoning(message) if index < kept_from else message)
@@ -964,6 +1001,7 @@ A condensed summary follows:
     def _compute_state_cutoff(
         event: SummarizationEvent | None,
         effective_cutoff: int,
+        messages: list[AnyMessage] | None = None,
     ) -> int:
         """Translate an effective-list cutoff index to an absolute state index.
 
@@ -976,6 +1014,7 @@ A condensed summary follows:
         Args:
             event: The prior `_summarization_event`, or `None`.
             effective_cutoff: Cutoff index within the effective message list.
+            messages: Full message list from state, or `None` to use the stored index.
 
         Returns:
             The absolute cutoff index for the state.
@@ -986,6 +1025,8 @@ A condensed summary follows:
         if not isinstance(prior_cutoff, int):
             logger.warning("Malformed _summarization_event: missing cutoff_index")
             return effective_cutoff
+        if messages is not None:
+            prior_cutoff = _resolve_cutoff_index(messages, event)
         return prior_cutoff + effective_cutoff - 1
 
     def _should_truncate_args(self, messages: list[AnyMessage], total_tokens: int) -> bool:
@@ -1693,11 +1734,13 @@ A condensed summary follows:
         new_messages = self._build_new_messages_with_path(summary, file_path)
 
         previous_event = request.state.get(SUMMARIZATION_EVENT_KEY)
-        state_cutoff_index = self._compute_state_cutoff(previous_event, cutoff_index)
+        state_messages = request.state.get("messages", [])
+        state_cutoff_index = self._compute_state_cutoff(previous_event, cutoff_index, state_messages)
 
         # Create new summarization event
         new_event: SummarizationEvent = {
             "cutoff_index": state_cutoff_index,
+            "cutoff_message_id": _cutoff_message_id(state_messages, state_cutoff_index),
             "summary_message": new_messages[0],  # The HumanMessage with summary  # ty: ignore[invalid-argument-type]
             "file_path": file_path,
             "created_at_index": len(request.messages),
@@ -1833,11 +1876,13 @@ A condensed summary follows:
         new_messages = self._build_new_messages_with_path(summary, file_path)
 
         previous_event = request.state.get(SUMMARIZATION_EVENT_KEY)
-        state_cutoff_index = self._compute_state_cutoff(previous_event, cutoff_index)
+        state_messages = request.state.get("messages", [])
+        state_cutoff_index = self._compute_state_cutoff(previous_event, cutoff_index, state_messages)
 
         # Create new summarization event
         new_event: SummarizationEvent = {
             "cutoff_index": state_cutoff_index,
+            "cutoff_message_id": _cutoff_message_id(state_messages, state_cutoff_index),
             "summary_message": new_messages[0],  # The HumanMessage with summary  # ty: ignore[invalid-argument-type]
             "file_path": file_path,
             "created_at_index": len(request.messages),
@@ -2187,13 +2232,15 @@ class SummarizationToolMiddleware(AgentMiddleware):
         """
         s = self._summarization
         summary_msg = s._build_new_messages_with_path(summary, file_path)[0]
-        state_cutoff = s._compute_state_cutoff(event, cutoff)
+        state_messages = runtime.state.get("messages", [])
+        state_cutoff = s._compute_state_cutoff(event, cutoff, state_messages)
 
         new_event: SummarizationEvent = {
             "cutoff_index": state_cutoff,
+            "cutoff_message_id": _cutoff_message_id(state_messages, state_cutoff),
             "summary_message": summary_msg,  # ty: ignore[invalid-argument-type]
             "file_path": file_path,
-            "created_at_index": len(runtime.state.get("messages", [])),
+            "created_at_index": len(state_messages),
         }
 
         return Command(

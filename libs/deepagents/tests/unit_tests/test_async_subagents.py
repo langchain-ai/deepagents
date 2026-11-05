@@ -1132,6 +1132,64 @@ class TestTraceHeaders:
         assert mock_client.runs.create.call_args.kwargs["headers"] == {}
 
     @patch("deepagents.middleware.async_subagents.get_client")
+    async def test_url_subagent_without_flag_gets_no_headers_on_update(self, mock_get_client: MagicMock) -> None:
+        mock_client = MagicMock()
+        mock_client.runs.create = MagicMock(side_effect=_async_return({"run_id": "run_new"}))
+        mock_get_client.return_value = mock_client
+
+        update = _get_tool(_build_async_subagent_tools([_make_spec(url="https://gateway.example")]), "update_async_task")
+        with tracing_context(parent=_parent_run(name="update_async_task"), enabled=True):
+            await update.coroutine(task_id="thread_abc", message="New instructions", runtime=_make_runtime_with_task())
+
+        assert mock_client.runs.create.call_args.kwargs["headers"] == {}
+
+    @patch("deepagents.middleware.async_subagents.get_client")
+    async def test_propagate_trace_nests_url_subagent_on_launch(self, mock_get_client: MagicMock) -> None:
+        mock_client = MagicMock()
+        mock_client.threads.create = MagicMock(side_effect=_async_return({"thread_id": "thread_abc"}))
+        mock_client.runs.create = MagicMock(side_effect=_async_return({"run_id": "run_xyz"}))
+        mock_get_client.return_value = mock_client
+        parent = _parent_run()
+        spec = _make_spec("alpha", url="https://gateway.example", propagate_trace=True)
+
+        launch = _get_tool(_build_async_subagent_tools([spec]), "start_async_task")
+        with tracing_context(parent=parent, enabled=True):
+            await launch.coroutine(description="analyze data", subagent_type="alpha", runtime=_make_runtime())
+
+        headers = mock_client.runs.create.call_args.kwargs["headers"]
+        assert headers["langsmith-trace"] == parent.dotted_order
+        assert _baggage(headers)["langsmith-metadata"] == {"ls_nest_under_parent": True}
+
+    @patch("deepagents.middleware.async_subagents.get_client")
+    async def test_propagate_trace_nests_url_subagent_on_update(self, mock_get_client: MagicMock) -> None:
+        mock_client = MagicMock()
+        mock_client.runs.create = MagicMock(side_effect=_async_return({"run_id": "run_new"}))
+        mock_get_client.return_value = mock_client
+        parent = _parent_run(name="update_async_task")
+        spec = _make_spec(url="https://gateway.example", propagate_trace=True)
+
+        update = _get_tool(_build_async_subagent_tools([spec]), "update_async_task")
+        with tracing_context(parent=parent, enabled=True):
+            await update.coroutine(task_id="thread_abc", message="New instructions", runtime=_make_runtime_with_task())
+
+        headers = mock_client.runs.create.call_args.kwargs["headers"]
+        assert headers["langsmith-trace"] == parent.dotted_order
+        assert _baggage(headers)["langsmith-metadata"] == {"ls_nest_under_parent": True}
+
+    @patch("deepagents.middleware.async_subagents.get_client")
+    async def test_propagate_trace_sends_nothing_without_tracing(self, mock_get_client: MagicMock) -> None:
+        mock_client = MagicMock()
+        mock_client.threads.create = MagicMock(side_effect=_async_return({"thread_id": "thread_abc"}))
+        mock_client.runs.create = MagicMock(side_effect=_async_return({"run_id": "run_xyz"}))
+        mock_get_client.return_value = mock_client
+        spec = _make_spec("alpha", url="https://gateway.example", propagate_trace=True)
+
+        launch = _get_tool(_build_async_subagent_tools([spec]), "start_async_task")
+        await launch.coroutine(description="analyze data", subagent_type="alpha", runtime=_make_runtime())
+
+        assert mock_client.runs.create.call_args.kwargs["headers"] == {}
+
+    @patch("deepagents.middleware.async_subagents.get_client")
     async def test_existing_baggage_is_kept(self, mock_get_client: MagicMock) -> None:
         mock_client = MagicMock()
         mock_client.threads.create = MagicMock(side_effect=_async_return({"thread_id": "thread_abc"}))

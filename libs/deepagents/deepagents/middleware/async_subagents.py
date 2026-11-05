@@ -89,7 +89,8 @@ class AsyncSubAgent(TypedDict):
 
         When tracing is on, launches and updates of subagents on this deployment
         (no `url`) send the parent's LangSmith trace headers, so a receiver can
-        nest the subagent's run under the parent's trace. This may change.
+        nest the subagent's run under the parent's trace. A subagent with a `url`
+        gets them only when `propagate_trace` is set. This may change.
 
         Each task's thread is created with
         `metadata={"subagent_name": ..., "parent_thread_id": ...}`, so apps can
@@ -123,6 +124,15 @@ class AsyncSubAgent(TypedDict):
 
     headers: NotRequired[dict[str, str]]
     """Additional headers to include in requests to the remote server."""
+
+    propagate_trace: NotRequired[bool]
+    """Send the parent's LangSmith trace headers to this subagent's `url`. Off by default.
+
+    When set, launches and updates get the same trace headers as subagents on
+    this deployment (no `url`). The receiving server still has to adopt them for
+    the subagent's run to nest under the parent's trace. Enable it only for a
+    server you control, since the headers carry the parent's trace and project.
+    """
 
     webhook: NotRequired[str]
     """URL the Agent Server calls whenever a run of this subagent finishes."""
@@ -334,14 +344,15 @@ Receivers that adopt the trace check for it (Managed Deep Agents does), so keep 
 def _trace_headers(spec: AsyncSubAgent) -> dict[str, str]:
     """Build LangSmith headers pointing at the current span, or `{}` when tracing is off.
 
-    Only sent to subagents on this deployment (no `url`), so the parent's trace
-    details don't reach another server. The baggage carries the project and the
+    Only sent to subagents on this deployment (no `url`), or to a `url` subagent
+    with `propagate_trace` set, so the parent's trace details don't reach another
+    server by default. The baggage carries the project and the
     `_NEST_UNDER_PARENT` flag, not the caller's run metadata (such as its
     `thread_id`), so a receiver can't copy that onto the subagent's runs. Any
     `baggage` in the spec's headers is kept, since other tools use it too.
     """
     run_tree = get_current_run_tree()
-    if spec.get("url") or run_tree is None or not run_tree.trace_id:
+    if (spec.get("url") and not spec.get("propagate_trace")) or run_tree is None or not run_tree.trace_id:
         return {}
     baggage = [value for key, value in (spec.get("headers") or {}).items() if key.lower() == "baggage" and value]
     baggage.append(f"langsmith-metadata={urllib.parse.quote(json.dumps({_NEST_UNDER_PARENT: True}))}")

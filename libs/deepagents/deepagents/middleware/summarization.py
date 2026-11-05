@@ -1090,8 +1090,15 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
         return self._require_default_context().lc
 
     @property
-    def model(self) -> BaseChatModel | None:
-        """The pinned or build-time model, if any."""
+    def model(self) -> BaseChatModel:
+        """The pinned or build-time model.
+
+        Raises:
+            AttributeError: If the middleware has neither, and only follows `model_selection`.
+        """
+        if self._default_model is None:
+            msg = "This SummarizationMiddleware has no pinned or build-time model; it follows `model_selection`."
+            raise AttributeError(msg)
         return self._default_model
 
     @property

@@ -72,7 +72,13 @@ class PosixProcessReader:
             UnicodeError: If captured output cannot be decoded.
         """
         deadline = time.monotonic() + timeout
-        # Scope the selector to one attempt so cancellation cannot leak its fd.
+        self.drain(deadline)
+        self._process.wait(timeout=max(0, deadline - time.monotonic()))
+        return _decode_output(self._pipes[0], self._chunks[0]), _decode_output(self._pipes[1], self._chunks[1])
+
+    def drain(self, deadline: float) -> None:
+        """Retain remaining pipe bytes within the caller's absolute deadline."""
+        timeout = max(0, deadline - time.monotonic())
         with selectors.DefaultSelector() as selector:
             for index, pipe in enumerate(self._pipes):
                 if pipe is not None and not pipe.closed:
@@ -82,5 +88,3 @@ class PosixProcessReader:
                 if remaining <= 0:
                     raise subprocess.TimeoutExpired(self._process.args, timeout)
                 self._read(selector, remaining)
-        self._process.wait(timeout=max(0, deadline - time.monotonic()))
-        return _decode_output(self._pipes[0], self._chunks[0]), _decode_output(self._pipes[1], self._chunks[1])

@@ -58,7 +58,7 @@ class _CommandCancelled(BaseException):
 
 
 class _CommandTimeout(subprocess.TimeoutExpired):
-    """A command timeout, with the output read before the deadline.
+    """A command timeout, with the output captured before cleanup finished.
 
     `subprocess.TimeoutExpired` alone cannot say whether cleanup managed to stop
     the command, so `terminated` carries that. It is `False` when the process may
@@ -220,19 +220,17 @@ def _communicate(
     process_group: int | None = None,
 ) -> tuple[str, str]:
     """Collect command output, cleaning up if execution is interrupted."""
-    reader = WindowsProcessReader(process) if _IS_WINDOWS else PosixProcessReader(process) if cancellation_event is not None else None
-    collect = reader.communicate if reader is not None else process.communicate
+    posix_reader = None if _IS_WINDOWS else PosixProcessReader(process)
+    reader = posix_reader if posix_reader is not None else WindowsProcessReader(process)
     deadline = time.monotonic() + timeout
-    partial: subprocess.TimeoutExpired | None = None
     try:
         while cancellation_event is None or not cancellation_event.is_set():
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise subprocess.TimeoutExpired(process.args, timeout)  # noqa: TRY301  # Route deadline expiry through shared process cleanup.
             try:
-                output = collect(timeout=remaining if cancellation_event is None else min(remaining, _CANCELLATION_POLL_INTERVAL))
-            except subprocess.TimeoutExpired as error:
-                partial = error
+                output = reader.communicate(timeout=remaining if cancellation_event is None else min(remaining, _CANCELLATION_POLL_INTERVAL))
+            except subprocess.TimeoutExpired:
                 if cancellation_event is None:
                     raise
                 continue
@@ -241,16 +239,15 @@ def _communicate(
             return output
         raise _CommandCancelled  # noqa: TRY301  # Route cancellation through shared process cleanup.
     except BaseException as error:
-        terminated = _kill_and_reap(process, process_group)
+        drain = posix_reader.drain if posix_reader is not None and isinstance(error, subprocess.TimeoutExpired) else None
+        terminated = _kill_and_reap(process, process_group, drain=drain)
         if isinstance(error, subprocess.TimeoutExpired):
-            if reader is not None:
-                stdout, stderr = reader.snapshot()
-                partial = subprocess.TimeoutExpired(process.args, timeout, output=stdout, stderr=stderr)
+            stdout, stderr = reader.snapshot()
             raise _CommandTimeout(
                 str(process.args),
                 timeout,
-                output=_decode_stream(partial.stdout if partial is not None else None, process.stdout),
-                stderr=_decode_stream(partial.stderr if partial is not None else None, process.stderr),
+                output=_decode_stream(stdout, process.stdout),
+                stderr=_decode_stream(stderr, process.stderr),
                 terminated=terminated,
             ) from None
         raise

@@ -1,3 +1,3 @@
 # Files
 
-- [Testing Guide](testing-guide.md) - Package-scoped guidance for testing dcode updates and installs, plus Talon history storage, host lifecycle, observability, runtime, and WhatsApp bridge seams.
+- [Testing Guide](testing-guide.md) - Package-scoped verification routes for compaction and truncation failures, filesystem behavior, subagent isolation, and Talon MCP adapter contracts. Use focused Makefile targets and assert observable outcomes at each integration boundary.

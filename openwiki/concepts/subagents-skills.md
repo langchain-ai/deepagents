@@ -3,9 +3,6 @@ type: delegation and progressive-disclosure concept
 title: Subagents and Skills
 description: Deep Agents Code discovers local subagent definitions and assembles them as SDK child graphs, while remote specifications remain Agent Protocol tasks. This page explains the local task boundary, model and middleware policy, skills discovery, and the result and failure behavior that callers must preserve.
 tags: [deepagents, subagents, delegation, skills, middleware, agent-protocol, code-cli]
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-11-03T08:04:09.572Z
 sources:
   - id: openwiki-source-d4716b8ae162796c2c7ad991
     resource: repo://libs/code/deepagents_code/_js_cost.py
@@ -33,7 +30,12 @@ sources:
     resource: repo://libs/code/tests/unit_tests/test_subagents.py
   - id: openwiki-source-114a1c7a58992fa867a94ef0
     resource: repo://libs/deepagents/deepagents/middleware/subagents.py
-generated: { by: "openwiki/0.4.2", at: "2026-11-03T08:04:09.572Z" }
+  - id: openwiki-source-ca8183c87e6002c442ee2d62
+    resource: repo://libs/deepagents/tests/unit_tests/test_subagents.py
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-11-05T08:04:42.777Z
+generated: { by: "openwiki/0.4.2", at: "2026-11-05T08:04:42.777Z" }
 ---
 
 # Subagents and Skills
@@ -122,15 +124,15 @@ sequenceDiagram
 
 The `task` schema accepts `description` and `subagent_type`; `runtime` is injected by the tool node. Invented arguments are rejected, unknown child names return a tool error, and a task call requires a tool-call ID so the returned `ToolMessage` is correlated with its parent call.
 
-An isolated child gets a fresh `HumanMessage` containing only the delegated description. The SDK strips messages, todos, structured output, skills state, pins, disclosed skill tools, rubric data, and middleware-private fields from ordinary child input and returned updates. Returned values unchanged from input are also discarded, avoiding duplicate additive updates and parallel reducer conflicts. A compiled runnable must return `messages`; otherwise it cannot produce a parent result.
+An isolated child gets a fresh `HumanMessage` containing only the delegated description. The SDK removes messages, todos, structured output, skills state, pins, disclosed skill tools, rubric data, and declared middleware-private fields from ordinary child input and return updates. On return it also drops values unchanged from the supplied child input: this prevents an inherited additive value from being added a second time and prevents reducer conflicts when sibling `task` calls run in parallel. A compiled runnable must return `messages`; otherwise it cannot produce a parent result.
 
 A fork is experimental. The SDK reconstructs effective history after summarization, removes the pending parent tool-call message, and appends a task preamble and description. Declarative forks retain enough state and middleware to rebuild the parent prompt; their own system prompt is an addendum. They cannot declare independent `skills`, and the fork marker rejects nested `task` and `atask` calls. A fork therefore shares the parent conversation at invocation time without enabling recursive delegation.
 
-A completed local child produces exactly one parent-facing `ToolMessage`: a non-null `structured_response` is JSON serialized; otherwise the last nonempty child `AIMessage` text is selected. State updates may accompany that message, but excluded and private state cannot cross the boundary. Child work runs with `ls_agent_type="subagent"` tracing metadata.
+A completed local child produces exactly one parent-facing `ToolMessage`: a non-null `structured_response` is JSON serialized; otherwise the last nonempty child `AIMessage` text is selected. State updates may accompany that message, but excluded, private, and unchanged state cannot cross the boundary. The `task` implementation does not manually copy the parent runnable configuration: LangGraph inherits ambient callbacks, tags, configurable values, and user metadata, merging them with the child's bound configuration so child values such as `lc_agent_name` and `recursion_limit` win collisions. It adds the tool-call ID as checkpoint metadata. Separately, a LangSmith tracing context tags the child `ls_agent_type="subagent"`; that tag reaches LangSmith without leaking into streamed callback metadata.
 
 ## Failure, interruption, and cost behavior
 
-Dcode replaces the generic empty-output guard in child stacks with `SubagentTruncatedReplyMiddleware`. If a provider truncates a child response before it produces visible text or a tool call, the guard raises `ModelOutputTruncatedError`; the parent task boundary turns that into an error-status `ToolMessage`. If text was produced before truncation, dcode retains that partial answer and appends a warning. This distinguishes a usable incomplete report from a silent empty success.
+Dcode replaces the generic empty-output guard in child stacks with `SubagentTruncatedReplyMiddleware`. It normalizes provider metadata from OpenAI Responses and Chat Completions, Anthropic, Google GenAI, and Bedrock into output-limit, content-filter, or context-window truncations. If a provider truncates a child response before it produces visible text or a parsed tool call—including a reasoning-only reply or an incomplete tool call—the guard raises `ModelOutputTruncatedError`; the parent `task` boundary turns that into an error-status `ToolMessage`. A provider refusal carrying an `AIMessage` follows the same path. If text was produced before truncation, dcode retains that partial answer and appends a warning; a truncated reply with a valid tool call is left for the normal tool loop. This distinguishes a usable incomplete report from a silent empty success.
 
 Nested `CostTrackingMiddleware` checkpoints child spend before approval can pause its graph and transfers the completed owner-scoped delta for the parent to add to its durable session total. The dcode JavaScript interpreter applies the same ownership boundary to `task` calls proxied from `js_eval`: it gives each dispatch occurrence a distinct checkpoint namespace, waits for active dispatched children when the interpreter call settles, and returns a single `_session_cost_transfers` receipt only to the outer owner. Receipt namespaces are de-duplicated during aggregation, preventing replay or parallel fan-out from charging a receipt twice.
 
@@ -160,7 +162,8 @@ Focused dcode coverage is split by boundary:
 
 - `test_subagents.py` covers definition parsing, required frontmatter, source precedence, collisions, and discovery diagnostics.
 - `test_agent.py` verifies fallback fork behavior, preservation of a discovered `general-purpose`, implicit versus explicit child models, approval and shell wiring, memory guarding, and filesystem allowlist injection into main and child middleware.
-- `test_output_truncation.py` exercises provider truncation classification and the parent-visible empty versus partial child behavior.
+- `test_output_truncation.py` exercises provider truncation classification, reasoning-only and interrupted-tool-call failures, recovery ordering, and the parent-visible empty versus partial child behavior.
+- SDK `test_subagents.py` covers synchronous result extraction, state filtering and parallel isolation, inherited configuration and metadata precedence, checkpoint correlation, and sync/async LangSmith-only subagent tracing.
 - `test_js_cost_tracking.py` exercises isolated task dispatch namespaces, durable receipts, child failure and cancellation, pauses, replay, and fan-out aggregation.
 - `test_provider_tool_search.py` covers provider and endpoint capability gates, request serialization, eager fallback, approval/resume, model switches, and cross-provider history filtering.
 

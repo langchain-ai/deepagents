@@ -3,10 +3,9 @@ type: context-management concept
 title: Context Management and Offload
 description: How Deep Agents compacts model-visible conversation context while retaining raw checkpoint history, and how dcode adds server-owned offload, archive lifecycle controls, and protected machine-managed memory.
 tags: [context-management, summarization, compaction, offload, persistence, memory-guard]
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-10-25T08:05:05.473Z
 sources:
+  - id: openwiki-source-05106e66a949150d557266a2
+    resource: repo://libs/code/deepagents_code/agent.py
   - id: openwiki-source-fdf5afeb1dd1d11652374e88
     resource: repo://libs/code/deepagents_code/app.py
   - id: openwiki-source-2fb89d2b59c886d0cb3ee3ea
@@ -19,6 +18,8 @@ sources:
     resource: repo://libs/code/deepagents_code/offload_middleware.py
   - id: openwiki-source-9b6cab59e92c8914079f0f53
     resource: repo://libs/code/deepagents_code/offload.py
+  - id: openwiki-source-91cefe99e900fdb6f941b515
+    resource: repo://libs/code/deepagents_code/output_truncation.py
   - id: openwiki-source-d965874b5a639c3205f2eadd
     resource: repo://libs/code/tests/unit_tests/test_memory_guard.py
   - id: openwiki-source-6a586415ef68cbe7c7967a41
@@ -29,7 +30,10 @@ sources:
     resource: repo://libs/deepagents/tests/unit_tests/middleware/test_compact_tool.py
   - id: openwiki-source-6228ff9cf1d681a771797121
     resource: repo://libs/deepagents/tests/unit_tests/middleware/test_compaction_recovery.py
-generated: { by: "openwiki/0.4.2", at: "2026-10-25T08:05:05.473Z" }
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-11-05T08:04:42.777Z
+generated: { by: "openwiki/0.4.2", at: "2026-11-05T08:04:42.777Z" }
 ---
 
 # Context Management and Offload
@@ -45,19 +49,24 @@ See [Middleware Stack](/openwiki/architecture/middleware-stack.md) for placement
 
 ```mermaid
 flowchart TD
-    Raw["Raw checkpoint messages"] --> Event["Summary event"]
-    Event --> Effective["Effective model history"]
+    Raw["Raw checkpoint messages"] --> Effective["Effective model history"]
+    Event["Summary event"] --> Effective
     Effective --> Model["Model call"]
     Model --> Overflow{"Context overflow"}
     Overflow -->|"yes"| Retry["One smaller retry"]
-    SDK["SDK automatic or tool compaction"] --> Event
+    Auto["SDK automatic compaction"] --> Event
+    Manual["compact_conversation"] --> Eligible{"Eligible and cutoff"}
+    Eligible -->|"yes"| Summary["Generate summary"]
+    Summary --> Archive["Attempt archive offload"]
+    Archive -->|"path or None"| Event
+    Summary -->|"summary exception"| Failure["Error ToolMessage no event"]
+    Archive -->|"escaping exception"| Failure
     Server["dcode server offload"] --> Validate["Validate stable checkpoint"]
     Validate --> Commit["Commit allowlisted state"]
     Commit --> Event
-    Archive["Optional archive"] --- Event
 ```
 
-*SDK compaction changes the effective history; server offload additionally protects the checkpoint commit boundary and may link an archive afterward.*
+*Manual compaction commits an event when its archive helper returns either a path or `None`; a summary or escaping helper error instead produces a tool error without an event. Server offload additionally protects the checkpoint commit boundary.*
 
 ## SDK compaction: raw retention and effective history
 
@@ -71,7 +80,9 @@ Automatic compaction partitions older history, attempts archival, and creates th
 
 `SummarizationToolMiddleware` exposes `compact_conversation` for model-initiated compaction and shares the summary-event and session-ID state used by automatic compaction. It does not run itself in the background. Its admission gate opens only when at least one trigger clause is roughly half way to its configured automatic threshold; an ineligible request or zero cutoff returns a correlated “nothing to compact” tool result.
 
-A `None` archive path is still successful, non-recoverable compaction. In contrast, an exception while generating the summary or archive returns a correlated error `ToolMessage` and does not write summary-event state. This distinction avoids treating failed state construction as successful compaction.
+The archive result and an exception are deliberately different outcomes. `_offload_to_backend` and `_aoffload_to_backend` absorb backend read/write exceptions and error results, log them, and return `None`; after a summary has been generated, that return value produces a successful, non-recoverable compaction with an event whose `file_path` is `None`. The confirmation still says the conversation was compacted.
+
+A summary-generation failure, or an offload exception that escapes the helper, is caught by the tool wrapper instead. It returns an error-status `ToolMessage` correlated to the originating call and updates only `messages` with that result—not `_summarization_event` or `_summarization_session_id`. Therefore, callers must distinguish a **successful event with no archive** from an **error tool result with unchanged summarization-event state**; `file_path=None` alone is not evidence that compaction failed.
 
 ## dcode server-owned offload
 
@@ -118,6 +129,12 @@ Local conversation archives normally live in the hardened `conversation_history`
 `history.idle_compaction_tokens` defaults to `0` (disabled). A positive setting enables a dcode UI optimization, not SDK automatic compaction. The UI schedules at most one server offload per thread and prompt-cache expiry window, only in the final 20% of a known cache window and no more than 120 seconds before expiry.
 
 It requires exact context usage at or above the threshold, a remote agent, and a quiescent UI. Active work, queued input, typing, modals, reconciliation, connection work, thread switching, and other competing activity prevent scheduling. This separates the cost trade-off of preserving a warm prompt cache from context-limit safety.
+
+## Truncated model replies
+
+Context pressure can also appear as a provider-truncated reply rather than a request-time overflow. `output_truncation` normalizes supported provider metadata into `max_output_tokens`, `content_filter`, or `context_window_exceeded`. For the last reason, its user-facing hint recommends `/compact` before retrying.
+
+`EmptyTruncatedReplyMiddleware` turns a truncated final AI message with neither visible text nor a parsed tool call into `ModelOutputTruncatedError`. This fails the model node rather than checkpointing a silent empty success. It leaves a partial visible reply alone, and does not retry its own error; the primary agent stack places it outside model selection and recovery so relevant inner recovery can run first while ordinary code-model retry does not repeat the terminal error. For a `task` subagent, the same error is returned to the parent as an error `ToolMessage`; subagent partial replies receive a warning appended to their content.
 
 ## Protected machine-managed memory
 

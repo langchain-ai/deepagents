@@ -36,6 +36,8 @@ sources:
     resource: repo://libs/deepagents/deepagents/backends/protocol.py
   - id: openwiki-source-d4463137befa776cd47750d4
     resource: repo://libs/deepagents/deepagents/backends/sandbox.py
+  - id: openwiki-source-c972622237a22631e36f3625
+    resource: repo://libs/deepagents/deepagents/backends/utils.py
   - id: openwiki-source-0fc0e47059e4d07e23e50be2
     resource: repo://libs/deepagents/deepagents/graph.py
   - id: openwiki-source-303a7196a0e1a36cc078621b
@@ -46,12 +48,14 @@ sources:
     resource: repo://libs/deepagents/deepagents/middleware/_tool_exclusion.py
   - id: openwiki-source-fed4b84a38685f37e58018c5
     resource: repo://libs/deepagents/deepagents/middleware/filesystem.py
+  - id: openwiki-source-7b8607fdda73d9d47ee17387
+    resource: repo://libs/deepagents/tests/unit_tests/backends/test_filesystem_backend.py
   - id: openwiki-source-903e05891b2ddf4f958276fd
     resource: repo://libs/deepagents/tests/unit_tests/test_local_sandbox_operations.py
-generated: { by: "openwiki/0.4.2", at: "2026-10-25T08:05:05.473Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-11-05T08:04:42.777Z" }
 verified:
   - by: openwiki/0.4.2
-    at: 2026-10-25T08:05:05.473Z
+    at: 2026-11-05T08:04:42.777Z
 ---
 
 # Filesystem Tools and Backends
@@ -150,7 +154,15 @@ File operations route individually, but `execute` does not: a composite always d
 
 ## Direct filesystem access and permission policy
 
-`FilesystemBackend` reads and writes the host filesystem directly. Its default `virtual_mode=True` treats `root_dir` (or the process working directory) as a virtual root: `/x` maps below that root, relative inputs are normalized into that virtual namespace, and traversal through `..` or `~` is refused. Resolved paths must remain under the root; agent-visible paths use virtual absolute form and do not reveal the host root. `virtual_mode` provides stable path semantics—especially when `CompositeBackend` strips a route prefix before forwarding a path—but is not a sandbox or process-isolation boundary. With `virtual_mode=False`, absolute paths are used as-is and relative paths can escape `root_dir`.
+`FilesystemBackend` reads and writes the host filesystem directly. Its default `virtual_mode=True` treats `root_dir` (or the process working directory) as a virtual root: `/x` maps below that root, relative inputs are normalized into that virtual namespace, and traversal through `..` or `~` is refused. Resolved paths must remain under the root; agent-visible paths use virtual absolute form and do not reveal the host root. The implementation also detects symlink loops, avoids following a final symlink when the platform supports `O_NOFOLLOW`, and reports batch upload/download failures per input with normalized error codes.
+
+`virtual_mode` provides stable path semantics—especially when `CompositeBackend` strips a route prefix before forwarding a path—but is **not** a sandbox or process-isolation boundary. It does not remove the process's ambient host permissions, prevent a separately available shell/network capability from reading host data, or make direct host access safe for untrusted agents. `FilesystemBackend` remains capability-sensitive direct host filesystem access and should be used only in an appropriately trusted or externally isolated environment. With `virtual_mode=False`, absolute paths are used as-is and relative paths can escape `root_dir`.
+
+### Local search and glob behavior
+
+The backend-level `grep` is a literal substring search, not a regex facility. It first uses `rg` when available with fixed-string mode, streams JSON matches, drains stderr concurrently, and stops only after observing a match beyond a total `max_count` cap; therefore exactly `max_count` matches can still be complete, while a result marked `truncated=True` is incomplete. If `rg` is absent, cannot be executed, or exits with a hard error, the backend reruns the search through its Python fallback. That fallback applies the same total-cap and time-budget rules, skips files over `max_file_size_mb`, and returns previously found matches with an error when a walk or file read fails partway through. Both paths preserve the searched symlink spelling in results where possible but filter results whose resolved target lies outside the requested search root. In virtual mode, agent-visible fallback errors are sanitized so the physical root and embedded host paths do not leak.
+
+`glob` and grep's `glob` filter share one matcher. A pattern without `/` matches a basename at any depth; a pattern with `/` is evaluated relative to the search root; `**` is supported; and a leading `/` anchors to that root. Brace expansion is supported. Dot names require an explicit dot in the matching segment, and `**` does not descend into dot-directories—so `*.yml` can match a nested file beneath `.github`, while `**/*.yml` does not. Traversal segments (`..`) and patterns refused by the matcher return a structured glob error rather than escaping the backend. Local `glob` walks entries under a five-second backend budget, returns sorted regular-file matches collected before expiry with `truncated=True` and reason `budget`, and treats a mid-walk failure as an error rather than benign truncation. The middleware adds a longer outer `GLOB_TIMEOUT`, uses a bounded shared worker pool for synchronous calls so abandoned workers cannot queue without limit, and returns a tool error when that outer deadline expires.
 
 `FilesystemPermission` rules classify operations as `read` or `write` and have `allow`, `deny`, or `interrupt` mode. Patterns must be absolute and may not contain `..` or `~`. For ordinary exact operations, declaration order is significant: the first matching rule decides. Middleware checks both the requested normalized path and, for `FilesystemBackend` including routed composites, its symlink-resolved target; an unresolved target is refused when rules are configured. List and search results filter denied entries, including aliases that resolve to denied targets.
 
@@ -215,7 +227,11 @@ The binary lifecycle stores references in history but restores verified payloads
 
 Keep `read_file` in explicit tool lists, and treat missing `delete` or `execute` as a backend capability issue rather than an allowlist issue. Use a harness profile exclusion to suppress a tool for a particular agent surface, not to authorize storage or isolate execution. Treat composite search truncation as incomplete output and do not assume file-tool route paths are shell paths. Configure binary offload only when the blob route supports upload/download outside checkpoint state. For direct host backends, keep virtual mode enabled unless trusted local workflows explicitly need host paths; do not mistake it for sandboxing.
 
-When changing this area, exercise the focused behavior rather than only tool registration: virtual-root containment and symlink resolution; composite routing and merged search errors/truncation; request-time capability filtering and excluded-call rejection; permission first-match, recursive-delete, and bulk HITL cases; execution timeout/exit-code behavior; and offload upload, digest verification, and state-backed-route disablement. For server-backed dcode sessions, also test the environment round trip and fail-closed `allow_fs_tools` validation, workspace claim contents, cancellation-safe startup cleanup, and context-manager shutdown. Run the `BaseSandbox` local operation suite with `RUN_SANDBOX_TESTS=true` when modifying its portable file-operation behavior, but do not treat its local subprocess fixture as a sandbox security test.
+When changing this area, exercise the focused behavior rather than only tool registration. The filesystem-backend suite is the regression boundary for both modes: it checks virtual paths and host-path mode, direct-child `ls` ordering and errors, text pagination (including negative/zero limits and end-of-file), binary and video handling, byte upload/download with partial batch success, edit newline normalization, and recursive deletion that removes a symlink itself rather than its directory target. It also verifies symlink-loop errors and that virtual display paths do not reveal `root_dir`.
+
+For search, retain literal treatment of regex-looking input; directory-component include globs when the process cwd differs from the search root; file-scoped search; total match caps; ripgrep timeout, executable-race, stderr-draining, and hard-error fallback paths; Python fallback partial-error behavior; and containment filtering for a symlink that points outside a searched root. Preserve the shared glob dialect—hidden-name behavior, brace expansion, traversal refusal, anchoring, and basename-at-any-depth matching—and its failure distinction: a deadline returns partial `truncated` results, while a mid-walk exception is an error. Keep the backend glob budget below the middleware deadline so the useful partial backend result wins before the outer tool timeout.
+
+Also test composite routing and merged search errors/truncation; request-time capability filtering and excluded-call rejection; permission first-match, recursive-delete, and bulk HITL cases; execution timeout/exit-code behavior; and offload upload, digest verification, and state-backed-route disablement. For server-backed dcode sessions, also test the environment round trip and fail-closed `allow_fs_tools` validation, workspace claim contents, cancellation-safe startup cleanup, and context-manager shutdown. Run the `BaseSandbox` local operation suite with `RUN_SANDBOX_TESTS=true` when modifying its portable file-operation behavior, but do not treat its local subprocess fixture as a sandbox security test.
 
 ## Related pages
 

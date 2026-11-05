@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:63d024b19c2e8d5584014ced115b2a9ebd3f49d2b6f360228aad6f7bf2f84cae",
+  "pageVersion": "sha256:11a92e8ed17dcc5b7979acc9cf57ef09f9d1a5e77799b9dfbf96bf4f92c9efad",
   "claims": [
     {
       "id": "claim_84c087f65f2749b8bf613b47f43f37ee",
@@ -27,34 +27,6 @@
         {
           "resource": "repo://.github/scripts/checks/refresh_lockfiles.py",
           "version": "repo-file-v1:sha256:4981d7b3656ace80e7c6a90e8282391dd4902d50dfa810e541386ac3c10d17b6"
-        }
-      ]
-    },
-    {
-      "id": "claim_da59a33e34df4bfd8af0be85603744be",
-      "statement": "Merging a release PR triggers publication only after release-please identifies a release-form commit and package changelog change, while the workflow blocks empty commits because pathless commits would otherwise fan out to every component.",
-      "evidence": [
-        {
-          "resource": "repo://.github/RELEASING.md",
-          "version": "repo-file-v1:sha256:baad5b37ff200f676bf7b4d1eaa960efffd8e7fd706331ffb327dc855f5c7f57"
-        },
-        {
-          "resource": "repo://.github/workflows/release-please.yml",
-          "version": "repo-file-v1:sha256:705972cd06cadc904249cf3b7433320e0ab6b1ba7f00e85409c93f75a3a67970"
-        }
-      ]
-    },
-    {
-      "id": "claim_0baf4384f31c4ba7b34cb9f4b03a5a8d",
-      "statement": "The release process preserves one-version-one-artifact integrity: a manual recovery release selects an exact source SHA whose package metadata declares the requested version, and after PyPI publication operators must not republish the version or move its tag.",
-      "evidence": [
-        {
-          "resource": "repo://.github/RELEASING.md",
-          "version": "repo-file-v1:sha256:baad5b37ff200f676bf7b4d1eaa960efffd8e7fd706331ffb327dc855f5c7f57"
-        },
-        {
-          "resource": "repo://.github/workflows/release.yml",
-          "version": "repo-file-v1:sha256:b89ab2f8d1c096e483ae05566e7e9641eaf3fa1deda2c341ba80d8824ca8de99"
         }
       ]
     },
@@ -203,26 +175,94 @@
       ]
     },
     {
-      "id": "claim_d686acb8b5f4425492a30c70d6c00015",
-      "statement": "The release-notes helper’s package registry is tested for exact parity with `release.yml` package choices and working-directory mapping, and the workflow passes its resolved directory and authoritative prerelease state to the helper.",
+      "id": "claim_e8796dd752f04101b826f29db4079190",
+      "statement": "The minimum-raising script updates only `>=` and `~=` floors for in-scope LangChain-ecosystem requirements, selects the latest stable non-yanked PyPI release still inside the existing range, preserves requirement qualifiers and ceilings, and leaves exact pins unchanged.",
       "evidence": [
         {
-          "resource": "repo://.github/scripts/tests/release/test_build_release_notes.py#L4141-L4245",
-          "version": "repo-lines-v1:sha256:7a8e00a94f8d88e2798065462889f229526ee4e1906a64cb37c9d70c64df9577:eyJzZWxlY3RlZExpbmVDb3VudCI6MTA1LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI5MWE3ZjQ3NDA2NjQ3MWU2MTBhNjNlOTlkODVjYzVlMjJmMjk2ZDlkMmZkYjI2NTI4MTEwMTUwNmU3OTA0Yzk3IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI1OTA5YTUzYTYxOGQwMjhlMWQzMDAwYzBhN2FiY2VlY2JlNWZiMzdmNGU1MTFlZmU0NjY0M2ZhZDZlNjY4NzJmIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI3NmE5ZDdkNTRmODc0ZDY0NjZjZjJkYjE4YWI2ZWI0NjcyNzg1ZTA1NzQ4NmJjNDk1ZTZhNGY0YTc5MDhiMzgzIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MCwiZm9sbG93aW5nQ29udGV4dEhhc2giOiJlM2IwYzQ0Mjk4ZmMxYzE0OWFmYmY0Yzg5OTZmYjkyNDI3YWU0MWU0NjQ5YjkzNGNhNDk1OTkxYjc4NTJiODU1In0"
+          "resource": "repo://.github/scripts/checks/raise_langchain_minimums.py#L1-L30",
+          "version": "repo-lines-v1:sha256:ebed783108f4808a2ee22569fea7fba9d00343685db63a5041de801c8ae8643b:eyJzZWxlY3RlZExpbmVDb3VudCI6MzAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM0MDJmZGY2YzIyMWIyZWNmYjI5NTUyMTM0ZWY0NjFiYjMxYzZiZGM1ZDg4ZTI3ZWY4MzNiOGI0ZDcxZTA5Y2YiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU1ZDRjZDA2MzRkYjM1ODI3ODJiMjE3N2FlMzc4YWEyNzc3NjI2ZmRmNjUxMjA1NTdjNDBmZTRlNGU0NzkwNWMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjFhYWY3NjM3Y2I2ZTdlNWRiODVkNjM0Mjc0NjAxNGRmMDQxY2NkNTU4YTkyMGIyOWViNmFjNzE5ZDdiYWY1YzIifQ"
         },
         {
-          "resource": "repo://.github/workflows/release.yml#L118-L169",
-          "version": "repo-lines-v1:sha256:10df7c3e8a1a87037abdce4ef15f06d232263e431ba6275b3505312cbb60838b:eyJzZWxlY3RlZExpbmVDb3VudCI6NTIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQzODVmM2JhODhlN2RlZDkxY2I3YmFmMzdlNjNkYjdjOWYyODBmZWRhYTVkMzE3NjNmYjc5ZjMyZmVlNjBhMDIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImMyMzA3MzdhMjFmYWIzYjUzMjU2OWUxNGJkYTkyMzc0YjQ4NDc4NGNhZWZhOTgyZDIzYjU0ZjRhNjhjNDc4YTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjEwNDdhMTRjMTUxOTEyNzMwYTZjMWY3MDM2NWM1NTYwMDRmNjg5NmI1OWQ3MjZkNzAwMzU5ZGM1ODI4ZjBiMWIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImJjYWUzZDIzZWIyZDE3ZjZkMWZhYjdhYTNjZTZhOTJmNDEzNGE0OGUzMTQ0MDk5ZmVhODViMDdjYmU1ZGFlMTEifQ"
+          "resource": "repo://.github/scripts/checks/raise_langchain_minimums.py#L209-L306",
+          "version": "repo-lines-v1:sha256:32af36f3b6ef175c56f181526986ed9eec64cf21cd9f0c3ead18015086a47d5d:eyJzZWxlY3RlZExpbmVDb3VudCI6OTgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY1NGNhODUzMDVlYmQxYzllOTcxMjlhZjljNmE2Y2ZiOTdmMTJmN2Y0ZGRjYzc4ZTgyZDQ5OTNhZWI0NmNhYWUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMwYzFmMTg4ZjE0MmVkN2E4MjQ2ODBiMjA3MTcyYzU1MTliYzYxNGE0OGZkYTdjZjE2N2VkYjhkZGY3OTk1NmMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjA4ZjJjMTgxYmZjNmVmYzAxMzU2ZmRlMzk0ZGJlMDRkZDQ5Y2NkYzVmNmMxOGFjMTUxZGQwYmVmNTg5YjhhZjciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijc5NDIxM2Q4MDY3ZjgwNGFiZDhlODFkNGNjODc2OTVkMDliNzExNzc1MDk4NTg5NDMxOWUxMThjY2NmZGY4NDkifQ"
         },
         {
-          "resource": "repo://.github/workflows/release.yml#L542-L592",
-          "version": "repo-lines-v1:sha256:2e0b06630969b4b1bca5b9ceb7a1a6267a0f5782036a6e0d5aa977c8f8b62b9b:eyJzZWxlY3RlZExpbmVDb3VudCI6NTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxOTIyOGMzYTllMGYxZjFhZGNjZTRkNmY4ZDI2YTYxMTVjOWRiN2Y0NWRiYWZjMjM2ODE0NTMwMjMwOTliOTAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImMwNGYzMzEyY2UwZmFiNGUzMmI5ZTE3MTNmZDU1NzNlYTBjZjI5Y2E4YWZmYjcxOWJkNDllNWRkNDI5YzQxMWIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjkwZGRiYzdhNGNhNTIzODVmOWRjODYzMzMxNDU4MDNjNDljMDlhNTdkYTgxZTFkYjUxODRjNGRkMGM0N2QzNmYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjE3MGRkNjE1MTdlMDE4Yjg1ZWZjM2M5YzdhYzRlYzlmNTFhNTY3MzIxZTUyOTgyMTBiNmZmNmU3YWQ1OTNiMWYifQ"
+          "resource": "repo://.github/scripts/tests/checks/test_raise_langchain_minimums.py#L51-L143",
+          "version": "repo-lines-v1:sha256:c3976c915b73ed57214ea1c9163a153adab894d20f92eea79c73986924a79e23:eyJzZWxlY3RlZExpbmVDb3VudCI6OTMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImYyZTg0YzMxNGQ3NmJiOTY3OGFhYjg3MWY0NGNmNDE3ZDk3MzU0ZjBhNmFiOTFmOTYyYWEyNGI5MzM4MThlOTciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI5MjQ2YzFhYjQxOGViMzUzZTA4ZWRkMjg5YjY2ZDRmOTgyMTY5MzQ1YTAyODI3N2YxYjEyOGI5M2RjNjE2ZmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjMyMmY4N2RlMzQ3ZjFmYWVmYTBjOTVjNDRmNTYyNzAxYTk1YWYyMTg2MmQ4ZDNmNzhjZjFmOTAzODc4ZWZkNjciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijg4OWRkMDkxYWM4ZWRjNTA1MTc1M2RjNmQxYzI0NTgxMTg4Njc4YWZkNjc4ZDRlMzk3YTdmZWM0ODJlYTkyYWUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_280da07b6d62471b84211453d2ce4fef",
+      "statement": "For a versioned local uv path source, the minimum-raising script still updates the published floor but caps it at the local checkout's declared version; URL, self, and unreadable local-source requirements are excluded.",
+      "evidence": [
+        {
+          "resource": "repo://.github/scripts/checks/raise_langchain_minimums.py#L315-L389",
+          "version": "repo-lines-v1:sha256:5f4de0db268ac96ab88f36d13bae22134584b8ecf35e9fbef30233fdff614257:eyJzZWxlY3RlZExpbmVDb3VudCI6NzUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE1MWRmZmMzOGY3MDY1ZWI5MGZhMjcxYmJkYjgzNmFkYWE1MDgzZGM2MjhiNWVhMmUwNTJmNjlmZTFiZGIyZWUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjgwZDA1ZDQ0ZGRiZDkxZDNiYzI5OTQyZmU3NzM0ODJmZmY3NGZjNmE1MDY5ZWFiNTc3MzQzMTI3YmZkNDNmZTkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjAxODBkYTVhZDRkMDBlNWRkYzEyYWUyNzg4ODFmNjE2OTY2NzdmNzBmOGU2OWM5NjI1MWMwOGEzMWQyYzU3ZmMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjczNjQzOGIzZmIzMjkxMTI1ZjYwODc4M2JjMzkyODg5ZjVjMWY5MjZiMmFmZDVjY2RjOTUwNmYyOTliZDE4YjAifQ"
+        },
+        {
+          "resource": "repo://.github/scripts/checks/raise_langchain_minimums.py#L408-L445",
+          "version": "repo-lines-v1:sha256:1bb680b60ec79d6fc8356e19c1eb47933f8c05fba1e964511fa3f5bbdaaac5fc:eyJzZWxlY3RlZExpbmVDb3VudCI6MzgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImVlMTQ0YTZjMmRmNmNkZDFmMWI2NjZhYjY3Mjk1YWZmNWRhNDVlNGYxZWJmZTAwNmFhZjM3NDc3Mjc1ZTUwOTYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMwYzFmMTg4ZjE0MmVkN2E4MjQ2ODBiMjA3MTcyYzU1MTliYzYxNGE0OGZkYTdjZjE2N2VkYjhkZGY3OTk1NmMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUwZTg3MTc0MDhjZjA5N2E1MTQ5NDIxZGUzMWQxYjlkZTY2ZjRiYWU1M2ZmZWNhOWM0ZTYzZTc4MDc4OWE5NmYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjIzMTNmNmQyNjFlZjY1NDg0NDE2NGZhMDAxYmY1OWNhMzNkYjI2MjdiOWY1NzY0NzI4ZGQyNWRlZWI1MjljMWYifQ"
+        },
+        {
+          "resource": "repo://.github/scripts/tests/checks/test_raise_langchain_minimums.py#L227-L285",
+          "version": "repo-lines-v1:sha256:3f40482f570b7d11135b2fe98969efaf015ea1b53373af64470d1078e27a2cbd:eyJzZWxlY3RlZExpbmVDb3VudCI6NTksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY2MzBiMmVmY2Y5YmEwNGFmMzQ4MGE0ZjhmODk5YTFjM2VlZmZmNjdhNzlhNmY4MzAxYTU0ZTdhZTQ3ZmM5OGIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjJhZjI3NzFlMzlkMmRhYjQ2MzZmZDRlNGM1OGRkMjA0N2VmZTZkZDJmMzYyZmE5ZmU4NmU1OGFmNTIyMWE4NDEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjZhYWEyNDc2ZTAyZGI2ZjZkZmU4MWFjNjU4MzUxY2RlOGRlZGU3YjU4YjY5ZTZmOTQxMzE1ZmIyMjk0NzNmOTQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImFhNTYzNjU0MzViMjg3YzRjOTkwYmI3MDI4OTU4MzM3ZjVkNTA2YjJmMzQ0ODUxZjFjZWNlNTI1MmE3MTVkMzUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_7e948f0fadbf4670a123b04e76a0f2d4",
+      "statement": "The scheduled minimum-raising workflow runs daily or by package-scoped manual dispatch, regenerates lockfiles from the computed `directory=python` closure, verifies reported manifest edits, and opens or refreshes an App-authored `chore(deps):` PR.",
+      "evidence": [
+        {
+          "resource": "repo://.github/workflows/raise_langchain_minimums.yml#L132-L199",
+          "version": "repo-lines-v1:sha256:c2a8871b7ba97f4be7c78317f55ea2ba993a1e87dbbf6e8a6176057022c57c1c:eyJzZWxlY3RlZExpbmVDb3VudCI6NjgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU0Zjc1ZDcwZjNjYmRiMWIyMjAzMGMwMDY2OGI5NTcxNDkxOGE0ZmYyMzZlZjc3ODk4NTc5ZTNjODRmOWQxOTUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM4MTMzM2RmNjZkNTk1YzYyMjM3NDEyZTdkMTYwN2I1Y2ZiMDExNDdmMGYzYTlkYjdiN2FjNGU3MjljNDNkMjMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImYwMDc1ZWE5ZWNmNzM0NDM4MDczM2ZmYWE2Nzc4MDVkN2EwNzhmNzNmMDNkYzZmOTdmYzFjZmYwYWEwYmNjOWIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjU0ZGYwN2MwMGU1MjRjYzkwMzcwZjQyNDNiNjExY2FkZjY2Y2ExMWRkZWM5OTc0NWQ2YmY1ZGUwYjY1NDhkZDkifQ"
+        },
+        {
+          "resource": "repo://.github/workflows/raise_langchain_minimums.yml#L210-L419",
+          "version": "repo-lines-v1:sha256:c8a5029743a2a0d27d30cab9cabea6d096a91b0b40e8935c9f2af3707c670831:eyJzZWxlY3RlZExpbmVDb3VudCI6MjEwLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI0YjE1MjIxM2JlZDQxNmI2YTQwZDIyZGZmNDgwMzM2N2M3MzFkYWM2YjE5YzE5YzBhMmYwYjBjZDY1YjI3OTQxIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJjNTMyYzhhNzc3YmIwOGY1NmQyNDdjMGFkMzhjZWIyMWE0NzI4NzgwOTM5YzdiMGU3OTgwZDMzMjZhMmQ5YzgzIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJiODRiNWIzZThiMjEyNTZiZDFlMDkyODRkODYyNWNjMjI3NjZjM2IyMjk5OTg5NTJjYzljMjhmMGVkZjc4NjM0IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiIzOTBiZjhlOWJkNWYxYTc5NzY0Zjg3ZDdhMzU5YTY1ZGNmYTFmOTg5MzI5MWUzOTUyZjY0NDM4N2IzNTMwYWY1In0"
+        },
+        {
+          "resource": "repo://.github/workflows/raise_langchain_minimums.yml#L56-L98",
+          "version": "repo-lines-v1:sha256:f7368d53eb243efa452b73a5b93a98eec90157633867ac558838f6874592c1be:eyJzZWxlY3RlZExpbmVDb3VudCI6NDMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU5NmRjNDgxNDlmNWE4M2QxZWQ2ZGJiMzliYmM3ZTJiOTAyYWEzZDM0ZDZiZDVhZTRiMjkxYjY4ZGYwY2E3OWEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjY0YTAxZjI4YjZiMDRkNDVjYWQwZmU2Yjg2MmQxYTgwMmQ3YzFiYzVlNzdlYjg4NTgwMGI4ZDkxY2Y3ZjQ0ODEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImJjNDU3NTM1NDhhNjI4NGVjNzZiOWVkNGUzNzQ2YmYwZTYwM2Q5ZGZkOTk3YjQwMTViMGE5OWQ2Njc5MjljYmUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImRmOWJhZjgzNDE2NGZlNDdjZGNlOTFhZDViMDI5OWQ5ZDE0ZDQzOWY4YjJmZWY3ZThmOGUyNGE1MzRiNzM1NjcifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_698cef3250524421a4222a4ab1479f2f",
+      "statement": "The minimum-raising operation fails rather than claiming a complete no-op when PyPI lookup or rewriting fails, the selected scope is empty, or a requested narrowed dependency is absent, workspace-only, or unraiseable; only already-current requested floors are a successful no-op.",
+      "evidence": [
+        {
+          "resource": "repo://.github/scripts/checks/raise_langchain_minimums.py#L703-L813",
+          "version": "repo-lines-v1:sha256:1a9649a0af24956bbdc6609f057eb00fd45b1900f78c0909e27a5291868d4cf1:eyJzZWxlY3RlZExpbmVDb3VudCI6MTExLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI4M2QzOTdlNGFiODY2ZTdkNjEzZWYzN2VhYzFmMWNlM2VjNmE0OTJmODgzOGU1ZmYwYTAyNzg5NjE3NzgwODI3IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI1YTE2ODA5YzA3NWRiMzA5ZTA5YmJjOWFiN2VmZWU2OWVmYjVmNDE5YmQ0ZDg5MzBkMDM4MDY2MDJkZDAyZmQ0IiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiIwZDFhNmQwMThlODNkOTc2ZGY1OWNlNDlkMWM1N2ZiYzQ1MDhjYTM2YzIxZGU4MWRjMmQxZjQ5YTI3OTk5YTQxIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI2ZTBiMDg2NDRhNTRmNDM2ODk5MWY3NTkyZjUyNDk5YTljZWJmNmZkMmY5ODcxODA4ZWNmMWMzYThhZjYyYzE0In0"
+        },
+        {
+          "resource": "repo://.github/scripts/tests/checks/test_raise_langchain_minimums.py#L582-L675",
+          "version": "repo-lines-v1:sha256:a04b79ffcd93291319f95c55d893e796ff70d55d58dc57a5f73c2f8304c73007:eyJzZWxlY3RlZExpbmVDb3VudCI6OTQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjhjOThmZDhkMDcxZjA3MDFhMzMxMTFmYWM1ZjM3MzM0Yzc1ZWNjNWNiNmEzNmNhNjRmZGFmMTFkY2E4NGI1ODYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImYyMmI2YmM5MjA2MTVkODNjNDk3YmZjZTZmMjUzMzM1ZWEyZTY2Y2U1Y2FjOWNjZmVhOGFlYzdkNWJiODRmNzYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImVhZjY5NzQ5ZDVhOTllOTYxYWFmMWE1MDM2Y2RlN2RkZmQwZDI5ZWI0ZThlMmU0NzVkNDg0YWE0OGNiMTdjZjEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQyNGEzYWNkM2QwYzRjNjA2OTY4NTM5OTZmZWFhMTgyYjkyOGE2M2QyMGQzNDA3YTFmMjAzMzRjYzAwZWE2MmEifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_41b899995e174e0ea92aebac82ef217e",
+      "statement": "After an SDK release is published, the Code SDK-pin workflow creates or refreshes its marked automation PR only when Code's exact pin is behind the workspace SDK, preserves an ahead pin, and regenerates Code's Python 3.14 lockfile with the pin edit.",
+      "evidence": [
+        {
+          "resource": "repo://.github/workflows/bump_code_sdk_pin.yml#L1-L43",
+          "version": "repo-lines-v1:sha256:3c2dbb8a12ca470e06327def466d1234c3c28101c7836d6c4f8972e6497d1996:eyJzZWxlY3RlZExpbmVDb3VudCI6NDMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjFjYTIwOTk0MTBmYWU1ODU2YTNjOTY2MWE2ZmE1NDk2YWZiNWY4ZDE5MmNlNmJjOTkwZDQ2YzM1Y2VhMWM4YWYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjcyZGFmNDkyZGM0OWY3NjZjMDU2ODZhN2RkZDdmMWQ0OTIzNGM0Nzg0YzljYTcwNDYxNjgzNWI4YjdhYWYwZTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImJhODY1YzdmNTQ1YmNmMWYwZjE1MDc2MjY3YzgzZmM0ODJiOWNkYTVhYWY0MzE4ZjdlYzhiYWVkMDM0NDlkNTcifQ"
+        },
+        {
+          "resource": "repo://.github/workflows/bump_code_sdk_pin.yml#L100-L154",
+          "version": "repo-lines-v1:sha256:247643bdb30ab5491c1a1708f636c0dc146674390603696a761db60b0429e1d5:eyJzZWxlY3RlZExpbmVDb3VudCI6NTUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjUzMTVmZTMzNGVlOTFkNDU0OTA0Y2M0YmNiNDVlMzVlNmFlOGRiNDhiMjVhN2Q1YzliMWI0YTQyMGJhYWU0NjgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjNiOWVmODBiZmQ4MzlkM2ZjMzRlNjQ3YWRmMTlkMjNlZDJjOTAzNDIxYTkyNjFhMDMxZTkxYWIzNjFlM2Q5MTgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImYwMDc1ZWE5ZWNmNzM0NDM4MDczM2ZmYWE2Nzc4MDVkN2EwNzhmNzNmMDNkYzZmOTdmYzFjZmYwYWEwYmNjOWIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjBlZTI4OWJkNGIwYjQwNTc1OWFlY2IzNzNmMTdlYWQxNjhiZGNlMDFmMDdmZjUxNzY1MWZmMjMyYjNjNzM3NjMifQ"
+        },
+        {
+          "resource": "repo://.github/workflows/bump_code_sdk_pin.yml#L304-L416",
+          "version": "repo-lines-v1:sha256:a46f7897d43991a68f699c101a10c7169c80960be85276b371ad0bdd68e1e8dc:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEzLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIzZTBlZTJmY2E1YmVkZjVjYjliOWU5ZTRlZjUwZjc4MTk1MjQ2NDE0YzIzYWI1NmMyZTIzMDk2NTE3MWZkMmFlIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJiZjU1OTc5Y2U3MzAyMDMzZTZiMmZkN2Q4OGY1MzdhM2I4ZTA5MWVhMzA1YzgxMWZmYTEyNzRiZjU3NjRlYTVlIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI3ZjZmYmYzYzdjYmRmMTQ0MDhlYmNhNjEwNGFmMWJmNGE0NDVlZGQ4ZTI4ZTMzYTUzYjQ4M2FkNjdlNjc0YmMyIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiIyYzE0YTdkZTM5NjBiOGVjOGZkNWE3MTUwOTMzYmQzOWM0ZmQxOWUxNDU5Zjc2OWJiZGY2ODNhY2I0NzRlNDFjIn0"
         }
       ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-11-03T08:04:09.572Z"
+    "at": "2026-11-05T08:04:42.777Z"
   }
 }

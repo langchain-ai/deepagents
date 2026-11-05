@@ -18,11 +18,12 @@ from langchain.agents.middleware.types import (
     TracePolicy,
     omit_payload,
 )
-from langchain.agents.structured_output import ResponseFormat
+from langchain.agents.structured_output import ResponseFormat, StructuredOutputValidationError
 from langchain.tools import BaseTool, ToolRuntime
 from langchain_core._api.beta_decorator import warn_beta
+from langchain_core.exceptions import ModelRefusalError
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, AnyMessage, BaseMessage, HumanMessage, RefusalContentBlock, ToolMessage
 from langchain_core.runnables import Runnable, RunnableConfig
 from langchain_core.tools import StructuredTool
 from langgraph.types import Command
@@ -79,6 +80,32 @@ omitting the tool -- see `_ForkTaskToolMiddleware` for why.
 _FORK_RECURSION_REFUSAL = (
     "You are a subagent and cannot delegate to another subagent. Complete this task yourself instead of calling this tool again."
 )
+
+
+def _refusal_notice(refusal: RefusalContentBlock) -> str:
+    """Return the task result reported when a model in the subagent refused."""
+    notice = "The subagent stopped because a model refused the request."
+    if category := refusal.get("extras", {}).get("category"):
+        notice += f" Category: {category}."
+    if text := refusal.get("refusal"):
+        notice += f' Explanation: "{text}"'
+    return notice + " Retrying the same request is unlikely to succeed; rephrase it or continue without it."
+
+
+def _refusal_in(message: object) -> RefusalContentBlock | None:
+    """Return the refusal block in `message`, if it is a message that refused."""
+    if not isinstance(message, BaseMessage):
+        return None
+    return next((block for block in message.content_blocks if block["type"] == "refusal"), None)
+
+
+def _refusal_notice_for(error: Exception) -> str | None:
+    """Return the task result for an error caused by a refusal, or `None` to re-raise it."""
+    if isinstance(error, ModelRefusalError):
+        return _refusal_notice(_refusal_in(error.raw_message) or {"type": "refusal", "refusal": str(error)})
+    if isinstance(error, StructuredOutputValidationError) and (refusal := _refusal_in(error.ai_message)):
+        return _refusal_notice(refusal)
+    return None
 
 
 class SubAgent(TypedDict):
@@ -766,6 +793,8 @@ def _build_task_tool(  # noqa: C901, PLR0915
                 content = json.dumps(dataclasses.asdict(structured))
             else:
                 content = json.dumps(structured)
+        elif refusal := _refusal_in(result["messages"][-1] if result["messages"] else None):
+            content = _refusal_notice(refusal)
         else:
             # Walk back to the last AIMessage with non-empty text. Anthropic
             # occasionally emits a trailing empty `end_turn` AIMessage after a
@@ -866,8 +895,13 @@ def _build_task_tool(  # noqa: C901, PLR0915
             "configurable": {"ls_agent_type": "subagent"},
             "metadata": {"lc_subagent_tool_call_id": runtime.tool_call_id},
         }
-        with _subagent_tracing_context():
-            result = subagent.invoke(subagent_state, subagent_config)
+        try:
+            with _subagent_tracing_context():
+                result = subagent.invoke(subagent_state, subagent_config)
+        except (ModelRefusalError, StructuredOutputValidationError) as error:
+            if (notice := _refusal_notice_for(error)) is None:
+                raise
+            return notice
         return _return_command_with_state_update(result, runtime.tool_call_id, subagent_state)
 
     async def atask(
@@ -901,8 +935,13 @@ def _build_task_tool(  # noqa: C901, PLR0915
             "configurable": {"ls_agent_type": "subagent"},
             "metadata": {"lc_subagent_tool_call_id": runtime.tool_call_id},
         }
-        with _subagent_tracing_context():
-            result = await subagent.ainvoke(subagent_state, subagent_config)
+        try:
+            with _subagent_tracing_context():
+                result = await subagent.ainvoke(subagent_state, subagent_config)
+        except (ModelRefusalError, StructuredOutputValidationError) as error:
+            if (notice := _refusal_notice_for(error)) is None:
+                raise
+            return notice
         return _return_command_with_state_update(result, runtime.tool_call_id, subagent_state)
 
     compiled_subagents = [_compile_spec(spec) for spec in subagents]

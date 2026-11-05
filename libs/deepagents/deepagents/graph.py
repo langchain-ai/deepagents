@@ -10,7 +10,7 @@ from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, Annotated, Any, Required, cast
 
 from langchain.agents import AgentState, create_agent
-from langchain.agents.middleware import HumanInTheLoopMiddleware, InterruptOnConfig
+from langchain.agents.middleware import HumanInTheLoopMiddleware, InterruptOnConfig, ModelRefusalMiddleware
 from langchain.agents.middleware.types import (
     AgentMiddleware,
     InputAgentState,
@@ -413,6 +413,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             - [`MemoryMiddleware`][deepagents.middleware.memory.MemoryMiddleware] (if `memory` is provided)
             - [`HumanInTheLoopMiddleware`][langchain.agents.middleware.HumanInTheLoopMiddleware] (if `interrupt_on` is provided)
             - [`UnsupportedContentMiddleware`][deepagents.middleware.unsupported_content.UnsupportedContentMiddleware]
+            - [`ModelRefusalMiddleware`][langchain.agents.middleware.ModelRefusalMiddleware]
             - `_ToolExclusionMiddleware` (if profile has `excluded_tools`)
 
             `SkillsMiddleware` sits after user and profile middleware so that
@@ -754,6 +755,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             append_prompt_caching_middleware(subagent_middleware)
             if is_forked and memory is not None:
                 subagent_middleware.append(MemoryMiddleware(backend=backend, sources=memory, add_cache_control=True))
+            subagent_middleware.append(ModelRefusalMiddleware())
 
             _subagent_matched_classes: set[type[AgentMiddleware[Any, Any, Any]]] = set()
             _subagent_matched_names: set[str] = set()
@@ -855,6 +857,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             gp_middleware.append(SkillsMiddleware(backend=backend, sources=skills))
 
         append_prompt_caching_middleware(gp_middleware)
+        gp_middleware.append(ModelRefusalMiddleware())
         _gp_original_name_to_index = {m.name: i for i, m in enumerate(gp_middleware)}
         gp_middleware = _apply_excluded_middleware(
             gp_middleware,
@@ -969,6 +972,8 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     if main_interrupt_on is not None:
         deepagent_middleware.append(HumanInTheLoopMiddleware(interrupt_on=main_interrupt_on))
     deepagent_middleware.append(UnsupportedContentMiddleware())
+    # In the tail, so a caller's `ModelFallbackMiddleware` catches refusals first.
+    deepagent_middleware.append(ModelRefusalMiddleware())
     deepagent_middleware = _apply_excluded_middleware(
         deepagent_middleware,
         _profile,

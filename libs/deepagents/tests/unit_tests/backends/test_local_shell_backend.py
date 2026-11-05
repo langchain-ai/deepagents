@@ -202,6 +202,7 @@ def test_local_shell_backend_interrupt_cleans_up_posix_process_group() -> None:
         tempfile.TemporaryDirectory() as tmpdir,
         _as_posix(),
         patch.object(local_shell_module, "WindowsProcessReader", return_value=process),
+        patch.object(local_shell_module, "PosixProcessReader", return_value=process),
         patch("subprocess.Popen", return_value=process),
         patch.object(local_shell_module.os, "killpg", create=True) as killpg,
         pytest.raises(KeyboardInterrupt),
@@ -226,6 +227,7 @@ def test_local_shell_backend_cleanup_errors_preserve_interrupt(caplog: pytest.Lo
         tempfile.TemporaryDirectory() as tmpdir,
         _as_posix(),
         patch.object(local_shell_module, "WindowsProcessReader", return_value=process),
+        patch.object(local_shell_module, "PosixProcessReader", return_value=process),
         patch("subprocess.Popen", return_value=process),
         patch("os.killpg", side_effect=PermissionError),
         caplog.at_level("WARNING", logger="deepagents.backends.local_shell"),
@@ -257,6 +259,7 @@ def test_local_shell_backend_timeout_reports_incomplete_cleanup(failure: str, ca
     with (
         tempfile.TemporaryDirectory() as tmpdir,
         patch.object(local_shell_module, "WindowsProcessReader", return_value=process),
+        patch.object(local_shell_module, "PosixProcessReader", return_value=process),
         patch("subprocess.Popen", return_value=process),
         patch.object(local_shell_module.os, "killpg", create=True, side_effect=PermissionError if failure == "termination" else None),
         caplog.at_level("WARNING", logger="deepagents.backends.local_shell"),
@@ -813,6 +816,55 @@ class TestLocalShellVirtualModeDefault:
 
         deprecations = [w for w in captured if issubclass(w.category, DeprecationWarning) and "virtual_mode" in str(w.message)]
         assert deprecations == []
+
+
+@_POSIX_SHELL_ONLY
+@pytest.mark.parametrize("asynchronous", [False, True], ids=["sync", "async"])
+def test_local_shell_backend_timeout_drains_output_buffered_during_termination(*, asynchronous: bool) -> None:
+    stdout, stdout_writer = os.pipe()
+    stderr, stderr_writer = os.pipe()
+    process = MagicMock(
+        args="command",
+        pid=1234,
+        stdout=os.fdopen(stdout, "r", encoding="utf-8", errors="replace"),
+        stderr=os.fdopen(stderr, "r", encoding="utf-8", errors="replace"),
+    )
+    os.write(stdout_writer, b"early out\n\xe2")
+    os.write(stderr_writer, b"early err\n")
+
+    def terminate(_process, _group) -> bool:
+        os.write(stdout_writer, b"\x82\xac late out\n")
+        os.write(stderr_writer, b"late err \xff\n")
+        os.close(stdout_writer)
+        os.close(stderr_writer)
+        return True
+
+    snapshot_output = local_shell_module.PosixProcessReader.snapshot
+    try:
+        with (
+            patch.object(local_shell_module.subprocess, "Popen", return_value=process),
+            patch.object(local_shell_module, "_terminate_process", side_effect=terminate),
+            patch.object(local_shell_module.PosixProcessReader, "snapshot", autospec=True, side_effect=snapshot_output) as snapshot,
+        ):
+            backend = LocalShellBackend(timeout=1)
+            result = asyncio.run(backend.aexecute("command")) if asynchronous else backend.execute("command")
+
+        assert result.exit_code == 124
+        assert not result.truncated
+        assert result.output == (
+            "Error: Command timed out after 1 seconds. For long-running commands, re-run using the timeout parameter."
+            "\n\nOutput before the timeout:\nearly out\n€ late out\n\n[stderr] early err\n[stderr] late err �"
+        )
+        snapshot.assert_called_once()
+        process.wait.assert_called_once()
+        assert process.stdout.closed
+        assert process.stderr.closed
+    finally:
+        process.stdout.close()
+        process.stderr.close()
+        for writer in (stdout_writer, stderr_writer):
+            with suppress(OSError):
+                os.close(writer)
 
 
 @_POSIX_SHELL_ONLY

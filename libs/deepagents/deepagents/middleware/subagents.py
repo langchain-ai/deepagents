@@ -34,6 +34,7 @@ from deepagents.backends.protocol import BackendProtocol
 from deepagents.middleware._skill_tools import _SKILL_TOOLS_DISCLOSED_KEY
 from deepagents.middleware._utils import append_to_system_message
 from deepagents.middleware.filesystem import FilesystemMiddleware, FilesystemPermission
+from deepagents.middleware.patch_tool_calls import patch_dangling_tool_calls
 from deepagents.middleware.rubric import _RUBRIC_KEY
 from deepagents.middleware.summarization import (
     SUMMARIZATION_EVENT_KEY,
@@ -393,6 +394,8 @@ def _fork_messages(
     if history and isinstance(history[-1], AIMessage) and history[-1].tool_calls:
         history.pop()
     effective = _DeepAgentsSummarizationMiddleware._apply_event_to_messages(history, event)
+    # A compiled or remote fork may not run `PatchToolCallsMiddleware`.
+    effective = patch_dangling_tool_calls(effective) or effective
     return [*effective, HumanMessage(content=preamble + description)]
 
 

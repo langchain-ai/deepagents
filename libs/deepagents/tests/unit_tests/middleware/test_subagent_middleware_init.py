@@ -31,6 +31,7 @@ from deepagents.middleware.subagents import (
     SUBAGENT_RESPONSE_FORMAT_CONFIG_KEY,
     SubAgentMiddleware,
     _build_task_tool,
+    _fork_messages,
     _is_forked_compiled_subagent,
     _is_forked_subagent,
     create_sub_agent,
@@ -310,6 +311,28 @@ class TestSubagentMiddlewareInit:
         assert not any(isinstance(m, AIMessage) and any(c["name"] == "task" for c in m.tool_calls) for m in inherited)
         assert not any(isinstance(m, ToolMessage) and "did not complete" in str(m.content) for m in inherited)
         assert inherited[-1].text.startswith(_FORK_TASK_PREAMBLE)
+
+    def test_fork_messages_answer_earlier_dangling_tool_calls(self) -> None:
+        interrupted = AIMessage(content="", id="a1", tool_calls=[{"name": "ls", "args": {}, "id": "call_ls", "type": "tool_call"}])
+        task_call = AIMessage(
+            content="",
+            id="a2",
+            tool_calls=[{"name": "task", "args": {"description": "go", "subagent_type": "worker"}, "id": "call_task", "type": "tool_call"}],
+        )
+        history = [
+            HumanMessage(content="old", id="h0"),
+            HumanMessage(content="start", id="h1"),
+            interrupted,
+            HumanMessage(content="next", id="h2"),
+            task_call,
+        ]
+        forked = _fork_messages(history, {"cutoff_index": 1, "summary_message": HumanMessage(content="summary", id="s"), "file_path": None}, "go")
+
+        assert [m.id for m in forked[:5]] == ["s", "h1", "a1", None, "h2"]
+        assert isinstance(forked[3], ToolMessage)
+        assert forked[3].tool_call_id == "call_ls"
+        assert forked[3].status == "error"
+        assert forked[-1].text.startswith(_FORK_TASK_PREAMBLE)
 
     def test_forked_subagent_tool_order_matches_parent(self) -> None:
         """A fork's tools block must serialize identically to the parent's to reuse its cache."""

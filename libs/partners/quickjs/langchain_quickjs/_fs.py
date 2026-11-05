@@ -70,6 +70,7 @@ _NODE_ERRORS = {
     "is_directory": ("EISDIR", "illegal operation on a directory"),
     "permission_denied": ("EACCES", "permission denied"),
     "invalid_path": ("EINVAL", "invalid argument"),
+    "file_too_large": ("ERR_FS_FILE_TOO_LARGE", "file is over the 8 MiB read limit"),
 }
 """Node's code and message for each code a file tool reports; others are `EIO`."""
 

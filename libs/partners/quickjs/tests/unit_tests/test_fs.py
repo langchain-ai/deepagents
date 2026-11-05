@@ -157,7 +157,7 @@ def test_failures_are_node_errors(tmp_path: Path) -> None:
         ],
         ["EISDIR", "EISDIR: illegal operation on a directory, open '/dir'"],
         ["EACCES", "EACCES: permission denied, open '/secret/key.txt'"],
-        ["EIO"],
+        ["ERR_FS_FILE_TOO_LARGE"],
         ["TypeError", "ERR_INVALID_ARG_VALUE"],
         ["TypeError", "ERR_INVALID_ARG_TYPE"],
         ["ToolError", "EIO"],

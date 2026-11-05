@@ -229,6 +229,37 @@ def test_lockfile_workflow_checks_every_package() -> None:
     assert step["run"] == "python3 .github/scripts/checks/check_lockfiles_pre_commit.py"
 
 
+@pytest.mark.parametrize("lockfiles,hygiene", [(0, 0), (1, 0), (0, 1)])
+def test_shared_validation_propagates_failures(
+    tmp_path: Path, lockfiles: int, hygiene: int
+) -> None:
+    """Either validation failure fails the existing shared job."""
+    workflow = _load_workflow(WORKFLOWS / "check_lockfiles.yml")
+    steps = workflow["jobs"]["check-lockfiles"]["steps"]
+    hygiene_step = _find_step(
+        workflow, job="check-lockfiles", name="📝 Run hygiene hooks on changed files"
+    )
+    assert hygiene_step["if"] == "github.event_name != 'push'"
+    marker = tmp_path / "hygiene-ran"
+    for name, body in {
+        "python3": f"exit {lockfiles}",
+        "make": f'touch "{marker}"; exit {hygiene}',
+    }.items():
+        executable = tmp_path / name
+        executable.write_text(f"#!/bin/sh\n{body}\n")
+        executable.chmod(0o755)
+    completed = subprocess.run(
+        ["bash", "-e", "-c", "\n".join(step["run"] for step in steps if "run" in step)],
+        env={**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}"},
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=10,
+    )
+    assert completed.returncode == (1 if lockfiles or hygiene else 0)
+    assert marker.exists() == (lockfiles == 0)
+
+
 def test_ci_success_builds_named_results_from_needs_object() -> None:
     """The gate needs job names; the wildcard `needs.*.result` drops them.
 

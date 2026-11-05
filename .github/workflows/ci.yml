@@ -860,7 +860,7 @@ jobs:
         run: |
           set -euo pipefail
           if [ "$LOCKFILES_RESULT" != success ]; then
-            echo "Lockfile validation did not pass: $LOCKFILES_RESULT"
+            echo "Lockfile or text hygiene validation did not pass: $LOCKFILES_RESULT"
             exit 1
           fi
           if [ "$CURATED_APPLY_ONLY" = true ]; then

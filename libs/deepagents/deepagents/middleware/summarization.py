@@ -67,10 +67,13 @@ import hashlib
 import inspect
 import logging
 import mimetypes
+import threading
 import urllib.parse
 import uuid
 import warnings
-from collections.abc import Mapping
+from collections import OrderedDict
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Annotated, Any, ClassVar, Never, NotRequired, cast
 
@@ -83,6 +86,7 @@ from langchain.agents.middleware.summarization import (
     TokenCounter,
 )
 from langchain.agents.middleware.types import AgentMiddleware, AgentState, ExtendedModelResponse, PrivateStateAttr, TracePolicy, omit_payload
+from langchain.chat_models import BaseChatModel, init_chat_model
 from langchain.tools import (
     ToolRuntime,  # noqa: TC002  # runtime import: StructuredTool resolves the compact-tool annotations at schema-inference time
 )
@@ -98,6 +102,7 @@ from langchain_core.messages import (
     get_buffer_string,
 )
 from langchain_core.messages.utils import count_tokens_approximately
+from langchain_core.runnables import RunnableConfig, RunnableLambda
 from langgraph.types import Command
 from pydantic import BaseModel
 from typing_extensions import TypedDict
@@ -126,12 +131,12 @@ DEEPAGENTS_DEFAULT_SUMMARY_PROMPT = DEFAULT_SUMMARY_PROMPT.replace(
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
+    from collections.abc import Awaitable
 
     from langchain.agents.middleware.summarization import Summarizer
     from langchain.agents.middleware.types import ModelRequest, ModelResponse
-    from langchain.chat_models import BaseChatModel
     from langchain_core.tools import BaseTool
+    from langgraph.runtime import Runtime
 
     from deepagents.backends.protocol import BackendProtocol, FileUploadResponse
 
@@ -147,6 +152,15 @@ SUMMARIZATION_EVENT_KEY = "_summarization_event"
 
 SUMMARIZATION_SESSION_ID_KEY = "_summarization_session_id"
 """State key holding the id that names the offload history file."""
+
+LAST_CALL_MODEL_KEY = "_last_call_model"
+"""State key holding the `ModelCallRecord` of the most recent model call."""
+
+_MODEL_CONTEXT_CACHE_SIZE = 16
+"""Most models whose summarization helpers one middleware instance keeps built."""
+
+_RECORDED_MODEL_PARAMS = ("temperature", "max_tokens", "stop")
+"""Tracing params copied into `ModelCallRecord.params`; none of them can carry secrets."""
 
 _BEDROCK_PROVIDERS = frozenset({"bedrock", "bedrock_converse"})
 """`model_provider` values for Amazon Bedrock, which serves Claude among other models."""
@@ -227,6 +241,26 @@ class TruncateArgsSettings(TypedDict, total=False):
     """Replacement suffix appended after the first 20 characters of a truncated argument."""
 
 
+class ModelCallRecord(TypedDict):
+    """Non-secret description of the model a call went to.
+
+    Built from the model's tracing params, so it never holds API keys, headers,
+    or clients.
+    """
+
+    provider: str | None
+    """Provider reported by the model, e.g. `'anthropic'`."""
+
+    model: str | None
+    """Model name reported by the model."""
+
+    params: dict[str, str | int | float | bool | list[str]]
+    """Non-secret call parameters such as `temperature` and `max_tokens`."""
+
+    max_input_tokens: int | None
+    """Context window from the model profile, if known."""
+
+
 class SummarizationState(AgentState):
     """State for the summarization middleware.
 
@@ -240,6 +274,12 @@ class SummarizationState(AgentState):
     """Private, internally generated id naming the offload history file.
 
     Scoped per graph invocation so parallel sub-agents do not share one history file.
+    """
+
+    _last_call_model: Annotated[NotRequired[ModelCallRecord | None], PrivateStateAttr]
+    """Private record of the model the most recent model call went to.
+
+    Private so the `task` tool keeps a subagent's model out of its parent's state.
     """
 
 
@@ -618,6 +658,177 @@ def _drop_bound_reasoning(message: AnyMessage) -> AnyMessage:
     return message.model_copy(update={"content": content})
 
 
+def _is_model_factory(model: object) -> bool:
+    """Whether `model` is a callable that resolves a model per call rather than a model itself."""
+    return callable(model) and not isinstance(model, BaseChatModel) and not hasattr(model, "invoke")
+
+
+def _profile_input_limit(model: BaseChatModel) -> int | None:
+    """Return the model profile's `max_input_tokens`, or `None` when unknown."""
+    profile = getattr(model, "profile", None)
+    limit = profile.get("max_input_tokens") if isinstance(profile, Mapping) else None
+    if not isinstance(limit, int) or isinstance(limit, bool):
+        return None
+    return limit
+
+
+def _model_call_record(model: BaseChatModel) -> ModelCallRecord:
+    """Describe `model` with its tracing params only, which exclude credentials and clients."""
+    try:
+        ls_params = model._get_ls_params()  # the only provider-neutral source of name and params
+    except Exception:  # noqa: BLE001  # a broken integration must not fail the model call
+        ls_params = {}
+    params: dict[str, str | int | float | bool | list[str]] = {}
+    for key in _RECORDED_MODEL_PARAMS:
+        value = ls_params.get(f"ls_{key}")
+        if isinstance(value, (str, int, float, bool)) or (isinstance(value, list) and all(isinstance(v, str) for v in value)):
+            params[key] = value
+    provider = ls_params.get("ls_provider")
+    name = ls_params.get("ls_model_name")
+    return {
+        "provider": provider if isinstance(provider, str) else None,
+        "model": name if isinstance(name, str) else None,
+        "params": params,
+        "max_input_tokens": _profile_input_limit(model),
+    }
+
+
+def _translate_deprecated_kwargs(
+    trigger: ContextSize | TriggerClause | list[ContextSize | TriggerClause] | None,
+    keep: ContextSize,
+    deprecated_kwargs: Mapping[str, Any],
+) -> tuple[ContextSize | TriggerClause | list[ContextSize | TriggerClause] | None, ContextSize]:
+    """Map LangChain's deprecated threshold arguments once, as LangChain does, with its warnings."""
+    tokens = deprecated_kwargs.get("max_tokens_before_summary")
+    if "max_tokens_before_summary" in deprecated_kwargs:
+        warnings.warn("max_tokens_before_summary is deprecated. Use trigger=('tokens', value) instead.", DeprecationWarning, stacklevel=3)
+        if trigger is None and tokens is not None:
+            trigger = ("tokens", tokens)
+    if "messages_to_keep" in deprecated_kwargs:
+        warnings.warn("messages_to_keep is deprecated. Use keep=('messages', value) instead.", DeprecationWarning, stacklevel=3)
+        if keep == ("messages", _DEFAULT_MESSAGES_TO_KEEP):
+            keep = ("messages", deprecated_kwargs["messages_to_keep"])
+    return trigger, keep
+
+
+@dataclass(frozen=True, slots=True)
+class _ModelContext:
+    """Summarization helpers bound to one resolved model.
+
+    Thresholds, token counting, provider checks, trimming, and the input budget
+    all read from the same context, so one call never mixes two models.
+    """
+
+    model: BaseChatModel
+    """The model whose context window is managed."""
+
+    lc: LCSummarizationMiddleware
+    """LangChain helper built for `model`; it writes summaries unless `summarizer` overrides it."""
+
+    counter_accepts_tools: bool | None
+    """Whether `lc.token_counter` accepts `tools=`; see `_token_counter_accepts_tools`."""
+
+    truncate_trigger: ContextSize | None
+    """Argument-truncation trigger for `model`, or `None` when truncation is off."""
+
+    truncate_keep: ContextSize
+    """Recent context that argument truncation leaves untouched."""
+
+    @property
+    def max_input_tokens(self) -> int | None:
+        """Context window of `model`, if its profile reports one."""
+        return _profile_input_limit(self.model)
+
+
+class _ModelContextCache:
+    """Bounded, thread-safe LRU of `_ModelContext` keyed by model identity.
+
+    Each entry holds its model, so a cached id cannot be reused by another
+    object while the entry lives.
+    """
+
+    def __init__(self, maxsize: int = _MODEL_CONTEXT_CACHE_SIZE) -> None:
+        self._maxsize = maxsize
+        self._entries: OrderedDict[int, _ModelContext] = OrderedDict()
+        self._lock = threading.Lock()
+
+    def get(self, model: BaseChatModel, build: Callable[[BaseChatModel], _ModelContext]) -> _ModelContext:
+        """Return the context for `model`, building it outside the lock on a miss."""
+        key = id(model)
+        with self._lock:
+            context = self._entries.get(key)
+            if context is not None and context.model is model:
+                self._entries.move_to_end(key)
+                return context
+        context = build(model)
+        with self._lock:
+            self._entries[key] = context
+            self._entries.move_to_end(key)
+            while len(self._entries) > self._maxsize:
+                self._entries.popitem(last=False)
+        return context
+
+
+def _without_fractions(
+    trigger: ContextSize | TriggerClause | list[ContextSize | TriggerClause] | None,
+    keep: ContextSize,
+) -> tuple[ContextSize | TriggerClause | list[ContextSize | TriggerClause] | None, ContextSize]:
+    """Drop fractional limits, as LangChain does for a resolved model without a profile."""
+    clauses = trigger if isinstance(trigger, list) else [] if trigger is None else [trigger]
+    kept = [clause for clause in clauses if "fraction" not in (clause if isinstance(clause, Mapping) else clause[:1])]
+    if keep[0] == "fraction":
+        keep = ("messages", _DEFAULT_MESSAGES_TO_KEEP)
+    return kept or None, keep
+
+
+def _model_identifier(model: BaseChatModel) -> str:
+    """Return a `provider:model` identifier for traces, matching LangChain's."""
+    record = _model_call_record(model)
+    if record["provider"] and record["model"]:
+        return f"{record['provider']}:{record['model']}"
+    return str(record["model"] or record["provider"] or type(model).__name__)
+
+
+def _summary_run_config(context: _ModelContext, summarizer: Summarizer | None) -> RunnableConfig:
+    """Config for the `summarization` run, recording which model compacted and its window."""
+    metadata: dict[str, Any] = {
+        "lc_source": "summarization",
+        "summarization_context_model": _model_identifier(context.model),
+        "summarization_context_window": context.max_input_tokens,
+    }
+    writer = summarizer if isinstance(summarizer, BaseChatModel) else context.model if summarizer is None else None
+    if writer is not None:
+        metadata["summarization_model"] = _model_identifier(writer)
+    return {"metadata": metadata}
+
+
+@dataclass(frozen=True)
+class ModelResolution:
+    """What a `model` callable receives to choose the context model for one call.
+
+    Mirrors LangChain's `ModelResolution` for `SummarizationMiddleware`, so a
+    resolver written against either works with both.
+    """
+
+    runtime: Runtime[Any]
+    """Runtime of the current agent run, including its `context`."""
+
+    state: Mapping[str, Any]
+    """Agent state at the time of the call."""
+
+    request: ModelRequest | None = None
+    """The model call being made; `request.model` is the model it goes to."""
+
+    @property
+    def context(self) -> Any:  # noqa: ANN401  # the agent's context schema is user-defined
+        """Shortcut for `runtime.context`."""
+        return self.runtime.context
+
+
+ModelResolver = Callable[[ModelResolution], BaseChatModel]
+"""Chooses the context model for each model call; must return a `BaseChatModel`."""
+
+
 class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
     """Summarization middleware with backend for conversation history offloading."""
 
@@ -644,7 +855,7 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
 
     def __init__(
         self,
-        model: str | BaseChatModel,
+        model: str | BaseChatModel | ModelResolver | None = None,
         *,
         backend: BackendProtocol,
         trigger: ContextSize | TriggerClause | list[ContextSize | TriggerClause] | None = None,
@@ -659,7 +870,21 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
         """Initialize summarization middleware with backend support.
 
         Args:
-            model: The language model to use for generating summaries.
+            model: The model whose context window is managed.
+
+                Each call resolves it once, and that model sizes the thresholds,
+                counts tokens, checks the input budget, and writes the summary
+                unless `summarizer` is set.
+
+                - `None`: follow the model each call goes to (`request.model`),
+                    including one swapped in by middleware that runs before this
+                    one. `create_deep_agent` runs summarization after custom
+                    middleware, so swaps made there are followed.
+                - A model name or `BaseChatModel`: always manage that model.
+                - A callable: receives a `ModelResolution` and returns the
+                    `BaseChatModel` to manage for that call. Returning a model
+                    name raises `TypeError`, so compaction never builds a
+                    client that may lack credentials.
             backend: Backend instance for persisting conversation history.
             trigger: Threshold(s) that trigger summarization. A tuple is a single threshold,
                 a dict combines thresholds with AND semantics, and a list combines items
@@ -705,8 +930,8 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
             summarizer: Optional replacement for the summarization model call.
 
                 Used for both automatic summarization and the
-                `compact_conversation` tool. `model` is still used for its profile
-                and token counting, but is not called to write summaries.
+                `compact_conversation` tool. The resolved `model` still sizes
+                thresholds and counts tokens, but is not called to write summaries.
 
                 Pass a model name or a `BaseChatModel` instance to summarize with
                 a different chat model; it is prompted with `summary_prompt`. Pass
@@ -758,23 +983,31 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
             msg = "`history_path_prefix` was removed in deepagents 0.7. Configure `CompositeBackend.artifacts_root` instead."
             raise TypeError(msg)
 
-        # Initialize langchain helper for core summarization logic
-        self._lc_helper = LCSummarizationMiddleware(
-            model=model,
-            trigger=trigger,
-            keep=keep,
-            token_counter=token_counter,
-            summary_prompt=summary_prompt,
-            trim_tokens_to_summarize=trim_tokens_to_summarize,
-            summarizer=summarizer,
-            **deprecated_kwargs,
-        )
+        trigger, keep = _translate_deprecated_kwargs(trigger, keep, deprecated_kwargs)
+        if isinstance(model, str):
+            model = init_chat_model(model)
+        if isinstance(summarizer, str):
+            summarizer = init_chat_model(summarizer)
 
-        # Whether the configured token counter accepts a `tools` kwarg. Resolved
-        # once here (the counter is fixed after construction) so the per-call
-        # token count never pays signature-introspection cost. `None` means the
-        # signature could not be introspected, so `_count_tokens` probes instead.
-        self._counter_accepts_tools = _token_counter_accepts_tools(self.token_counter)
+        # Settings that per-model LangChain helpers are built from.
+        self._model_spec = model
+        self._trigger = trigger
+        self._keep = keep
+        self._token_counter = token_counter
+        self._summary_prompt = summary_prompt
+        self._trim_tokens_to_summarize = trim_tokens_to_summarize
+        self._summarizer = summarizer
+        self._truncate_args_settings: TruncateArgsSettings = truncate_args_settings or {}
+        # Set by `create_summarization_middleware`: derive thresholds from each
+        # resolved model's profile instead of the fixed settings above.
+        self._profile_defaults = False
+        self._contexts = _ModelContextCache()
+
+        # A fixed model (or the factory's build-time model) gets an eagerly built
+        # context: it validates fractional settings now and stays stable for
+        # callers outside a model call, such as the compact tool.
+        self._default_model: BaseChatModel | None = None if model is None or _is_model_factory(model) else cast("BaseChatModel", model)
+        self._default_context = self._build_context(self._default_model) if self._default_model is not None else None
 
         # Deep Agents specific attributes
         self._backend = backend
@@ -786,56 +1019,161 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
 
         self._media_prefix = f"{self._history_path_prefix}/media"
 
-        # Parse truncate_args_settings
-        if truncate_args_settings is None:
-            self._truncate_args_trigger = None
-            self._truncate_args_keep: ContextSize = ("messages", 20)
-            self._max_arg_length = 2000
-            self._truncation_text = "...(argument truncated)"
-        else:
-            self._truncate_args_trigger = truncate_args_settings.get("trigger")
-            self._truncate_args_keep = truncate_args_settings.get("keep", ("messages", 20))
-            self._max_arg_length = truncate_args_settings.get("max_length", 2000)
-            self._truncation_text = truncate_args_settings.get("truncation_text", "...(argument truncated)")
+        self._max_arg_length = self._truncate_args_settings.get("max_length", 2000)
+        self._truncation_text = self._truncate_args_settings.get("truncation_text", "...(argument truncated)")
+        self._history_view = _SummarizationViewMiddleware(self)
 
-    # Delegated properties and methods from langchain helper
+    def _adopt_profile_defaults(self, fallback: BaseChatModel) -> None:
+        """Derive thresholds from each call's model profile; use `fallback` outside model calls."""
+        self._profile_defaults = True
+        self._default_model = fallback
+        self._default_context = self._build_context(fallback)
+
+    def _build_context(self, model: BaseChatModel, *, skip_fractions: bool = False) -> _ModelContext:
+        """Build the LangChain helper and settings for `model`.
+
+        Args:
+            model: The resolved context model.
+            skip_fractions: Drop fractional limits, for a followed model whose
+                profile has no `max_input_tokens` to measure them against.
+
+        Returns:
+            The context for `model`.
+        """
+        if self._profile_defaults:
+            defaults = compute_summarization_defaults(model)
+            trigger, keep, truncate = defaults["trigger"], defaults["keep"], defaults["truncate_args_settings"]
+        else:
+            trigger, keep, truncate = self._trigger, self._keep, self._truncate_args_settings
+        if skip_fractions:
+            trigger, keep = _without_fractions(trigger, keep)
+        lc = LCSummarizationMiddleware(
+            model=model,
+            trigger=trigger,
+            keep=keep,
+            token_counter=self._token_counter,
+            summary_prompt=self._summary_prompt,
+            trim_tokens_to_summarize=self._trim_tokens_to_summarize,
+            summarizer=self._summarizer,
+        )
+        return _ModelContext(
+            model=model,
+            lc=lc,
+            counter_accepts_tools=_token_counter_accepts_tools(lc.token_counter),
+            truncate_trigger=truncate.get("trigger"),
+            truncate_keep=truncate.get("keep", ("messages", 20)),
+        )
+
+    def _build_followed_context(self, model: BaseChatModel) -> _ModelContext:
+        """Build a context for a per-call model, skipping fractional limits its profile cannot size."""
+        try:
+            return self._build_context(model)
+        except ValueError:
+            logger.warning(
+                "Model %s has no `max_input_tokens` profile, so fractional summarization limits are skipped for it.",
+                _model_identifier(model),
+            )
+            return self._build_context(model, skip_fractions=True)
+
+    def _context_for(self, model: BaseChatModel) -> _ModelContext:
+        """Return the summarization context for `model`."""
+        if model is self._default_model and self._default_context is not None:
+            return self._default_context
+        return self._contexts.get(model, self._build_followed_context)
+
+    def _resolve_model(self, request: ModelRequest) -> BaseChatModel:
+        """Resolve the context model for this call: fixed, computed, or the call's own model."""
+        spec = self._model_spec
+        if spec is None:
+            return request.model
+        if not _is_model_factory(spec):
+            return cast("BaseChatModel", spec)
+        model = cast("ModelResolver", spec)(ModelResolution(runtime=request.runtime, state=request.state, request=request))
+        if isinstance(model, str):
+            msg = "A SummarizationMiddleware `model` callable must return a BaseChatModel, not a model name."
+            raise TypeError(msg)
+        return model
+
+    def _context_for_request(self, request: ModelRequest) -> _ModelContext:
+        """Resolve this call's model once and return its summarization context."""
+        return self._context_for(self._resolve_model(request))
+
+    def _require_default_context(self) -> _ModelContext:
+        """Return the context used outside a model call.
+
+        Raises:
+            AttributeError: If the middleware follows each call's model and has no fallback.
+        """
+        if self._default_context is None:
+            msg = "This SummarizationMiddleware follows each call's model and has no default model outside a model call."
+            raise AttributeError(msg)
+        return self._default_context
+
+    # Delegated properties and methods from langchain helper. Without an explicit
+    # context they use the default context (the fixed or build-time model).
+    @property
+    def _lc_helper(self) -> LCSummarizationMiddleware:
+        """LangChain helper for the default model."""
+        return self._require_default_context().lc
+
     @property
     def model(self) -> BaseChatModel:
-        """The language model used for generating summaries."""
-        return self._lc_helper.model
+        """The fixed or build-time model, used when no model call is in progress."""
+        return self._require_default_context().model
 
     @property
     def token_counter(self) -> TokenCounter:
-        """Function to count tokens in messages."""
-        return self._lc_helper.token_counter
+        """Function to count tokens in messages for the default model."""
+        if self._default_context is None:
+            return self._token_counter
+        return self._default_context.lc.token_counter
 
-    def _get_profile_limits(self) -> int | None:
-        """Retrieve max input token limit from the model profile."""
-        return self._lc_helper._get_profile_limits()
+    @property
+    def _counter_accepts_tools(self) -> bool | None:
+        """Whether the default model's token counter accepts `tools=`."""
+        return self._require_default_context().counter_accepts_tools
 
-    def _should_summarize(self, messages: list[AnyMessage], total_tokens: int) -> bool:
+    @property
+    def _truncate_args_trigger(self) -> ContextSize | None:
+        """Argument-truncation trigger for the default model."""
+        return self._require_default_context().truncate_trigger
+
+    @property
+    def _truncate_args_keep(self) -> ContextSize:
+        """Argument-truncation keep policy for the default model."""
+        return self._require_default_context().truncate_keep
+
+    def _get_profile_limits(self, context: _ModelContext | None = None) -> int | None:
+        """Retrieve max input token limit from the context model's profile."""
+        return (context or self._require_default_context()).max_input_tokens
+
+    def _should_summarize(self, messages: list[AnyMessage], total_tokens: int, context: _ModelContext | None = None) -> bool:
         """Determine whether summarization should run for the current token usage."""
-        return self._lc_helper._should_summarize(messages, total_tokens)
+        return (context or self._require_default_context()).lc._should_summarize(messages, total_tokens)
 
-    def _determine_cutoff_index(self, messages: list[AnyMessage]) -> int:
+    def _determine_cutoff_index(self, messages: list[AnyMessage], context: _ModelContext | None = None) -> int:
         """Choose cutoff index respecting retention configuration."""
-        return self._lc_helper._determine_cutoff_index(messages)
+        return (context or self._require_default_context()).lc._determine_cutoff_index(messages)
 
+    @staticmethod
     def _partition_messages(
-        self,
         conversation_messages: list[AnyMessage],
         cutoff_index: int,
     ) -> tuple[list[AnyMessage], list[AnyMessage]]:
         """Partition messages into those to summarize and those to preserve."""
-        return self._lc_helper._partition_messages(conversation_messages, cutoff_index)
+        return LCSummarizationMiddleware._partition_messages(conversation_messages, cutoff_index)
 
-    def _create_summary(self, messages_to_summarize: list[AnyMessage]) -> str:
+    def _create_summary(self, messages_to_summarize: list[AnyMessage], context: _ModelContext | None = None) -> str:
         """Generate summary for the given messages."""
-        return self._lc_helper._create_summary(messages_to_summarize)
+        context = context or self._require_default_context()
+        run = RunnableLambda(context.lc._create_summary, name="summarization")
+        return run.invoke(messages_to_summarize, config=_summary_run_config(context, self._summarizer))
 
-    async def _acreate_summary(self, messages_to_summarize: list[AnyMessage]) -> str:
+    async def _acreate_summary(self, messages_to_summarize: list[AnyMessage], context: _ModelContext | None = None) -> str:
         """Generate summary for the given messages (async)."""
-        return await self._lc_helper._acreate_summary(messages_to_summarize)
+        context = context or self._require_default_context()
+        run = RunnableLambda(context.lc._create_summary, afunc=context.lc._acreate_summary, name="summarization")
+        return await run.ainvoke(messages_to_summarize, config=_summary_run_config(context, self._summarizer))
 
     def _get_session_id(self, state: Mapping[str, Any]) -> str:
         """Resolve the session id naming the offload history file.
@@ -947,7 +1285,48 @@ A condensed summary follows:
             The effective message list to use for the model call.
         """
         event = request.state.get(SUMMARIZATION_EVENT_KEY)
+        if self._event_already_applied(request.messages, event):
+            return list(request.messages)
         return self._apply_event_to_messages(request.messages, event)
+
+    @staticmethod
+    def _event_already_applied(messages: list[AnyMessage], event: SummarizationEvent | None) -> bool:
+        """Whether `messages` already start with `event`'s summary, as `_SummarizationViewMiddleware` passes them."""
+        if not messages or not isinstance(event, Mapping):
+            return False
+        summary = event.get("summary_message")
+        first = messages[0]
+        if first is summary:
+            return True
+        return (
+            isinstance(summary, HumanMessage)
+            and isinstance(first, HumanMessage)
+            and first.additional_kwargs.get("lc_source") == "summarization"
+            and first.content == summary.content
+        )
+
+    @staticmethod
+    def _state_message_count(request: ModelRequest) -> int:
+        """Number of messages in state, which differs from `request.messages` once an event is applied."""
+        state_messages = request.state.get("messages")
+        return len(state_messages) if isinstance(state_messages, list) else len(request.messages)
+
+    def _state_cutoff(self, request: ModelRequest, messages: list[AnyMessage], cutoff: int) -> int:
+        """Map a cutoff in the effective list to an absolute state index.
+
+        Locates the first preserved message in state by id, so middleware that
+        inserted or removed messages before this one cannot shift the cutoff.
+        Falls back to index arithmetic when no preserved message is found.
+        """
+        state_messages = request.state.get("messages")
+        if isinstance(state_messages, list):
+            positions = {message.id: index for index, message in enumerate(state_messages) if message.id is not None}
+            for message in messages[cutoff:]:
+                if message.id is not None and message.id in positions:
+                    return positions[message.id]
+        return self._compute_state_cutoff(
+            request.state.get(SUMMARIZATION_EVENT_KEY), cutoff, state_messages if isinstance(state_messages, list) else None
+        )
 
     @staticmethod
     def _apply_event_to_messages(
@@ -1029,27 +1408,29 @@ A condensed summary follows:
             prior_cutoff = _resolve_cutoff_index(messages, event)
         return prior_cutoff + effective_cutoff - 1
 
-    def _should_truncate_args(self, messages: list[AnyMessage], total_tokens: int) -> bool:
+    def _should_truncate_args(self, messages: list[AnyMessage], total_tokens: int, context: _ModelContext | None = None) -> bool:
         """Check if argument truncation should be triggered.
 
         Args:
             messages: Current message history.
             total_tokens: Total token count of messages.
+            context: The call's model context; defaults to the default model's.
 
         Returns:
             True if truncation should occur, False otherwise.
         """
-        if self._truncate_args_trigger is None:
+        context = context or self._require_default_context()
+        if context.truncate_trigger is None:
             return False
 
-        trigger_type, trigger_value = self._truncate_args_trigger
+        trigger_type, trigger_value = context.truncate_trigger
 
         if trigger_type == "messages":
             return len(messages) >= trigger_value
         if trigger_type == "tokens":
             return total_tokens >= trigger_value
         if trigger_type == "fraction":
-            max_input_tokens = self._get_profile_limits()
+            max_input_tokens = context.max_input_tokens
             if max_input_tokens is None:
                 return False
             threshold = int(max_input_tokens * trigger_value)
@@ -1059,7 +1440,7 @@ A condensed summary follows:
 
         return False
 
-    def _determine_truncate_cutoff_index(self, messages: list[AnyMessage]) -> int:  # noqa: PLR0911
+    def _determine_truncate_cutoff_index(self, messages: list[AnyMessage], context: _ModelContext | None = None) -> int:  # noqa: PLR0911
         """Determine the cutoff index for argument truncation based on keep policy.
 
         Messages at index >= cutoff should be preserved without truncation.
@@ -1067,12 +1448,14 @@ A condensed summary follows:
 
         Args:
             messages: Current message history.
+            context: The call's model context; defaults to the default model's.
 
         Returns:
             Index where truncation cutoff occurs. Messages before this index
             should have args truncated, messages at/after should be preserved.
         """
-        keep_type, keep_value = self._truncate_args_keep
+        context = context or self._require_default_context()
+        keep_type, keep_value = context.truncate_keep
 
         if keep_type == "messages":
             # Keep the most recent N messages
@@ -1083,7 +1466,7 @@ A condensed summary follows:
         if keep_type in {"tokens", "fraction"}:
             # Calculate target token count
             if keep_type == "fraction":
-                max_input_tokens = self._get_profile_limits()
+                max_input_tokens = context.max_input_tokens
                 if max_input_tokens is None:
                     # Fallback to message count if profile not available
                     messages_to_keep = 20
@@ -1100,7 +1483,7 @@ A condensed summary follows:
             # Keep recent messages up to token limit
             tokens_kept = 0
             for i in range(len(messages) - 1, -1, -1):
-                msg_tokens = self._lc_helper._partial_token_counter([messages[i]])
+                msg_tokens = context.lc._partial_token_counter([messages[i]])
                 if tokens_kept + msg_tokens > target_token_count:
                     return i + 1
                 tokens_kept += msg_tokens
@@ -1141,6 +1524,7 @@ A condensed summary follows:
         messages: list[AnyMessage],
         system_message: SystemMessage | None,
         tools: list[BaseTool | dict[str, Any]] | None,
+        context: _ModelContext | None = None,
     ) -> int:
         """Count tokens for messages plus optional system message and tools.
 
@@ -1148,6 +1532,7 @@ A condensed summary follows:
             messages: Messages to count.
             system_message: Optional system message prepended before counting.
             tools: Optional tools whose schemas contribute to the count.
+            context: The call's model context; defaults to the default model's.
 
         Returns:
             Total token count. Counts without `tools` when the configured
@@ -1159,27 +1544,30 @@ A condensed summary follows:
                 instead, and only there does a `TypeError` fall back to counting
                 without `tools`.
         """
+        context = context or self._require_default_context()
+        counter = context.lc.token_counter
         counted_messages = [system_message, *messages] if system_message is not None else messages
-        if self._counter_accepts_tools is True:
+        if context.counter_accepts_tools is True:
             # `tools=` is absent from the `TokenCounter` protocol but accepted
             # here: the signature check above confirmed the counter takes it.
-            return self.token_counter(counted_messages, tools=tools)  # ty: ignore[unknown-argument]
-        if self._counter_accepts_tools is False:
-            return self.token_counter(counted_messages)
+            return counter(counted_messages, tools=tools)  # ty: ignore[unknown-argument]
+        if context.counter_accepts_tools is False:
+            return counter(counted_messages)
         # Signature could not be introspected; probe defensively. This is the
         # only path that swallows a `TypeError`, and only for counters whose
         # signature is opaque (some C-level callables expose no signature).
         try:
             # `tools=` is outside the `TokenCounter` protocol; the probe verifies
             # acceptance at runtime, falling back below if it is rejected.
-            return self.token_counter(counted_messages, tools=tools)  # ty: ignore[unknown-argument]
+            return counter(counted_messages, tools=tools)  # ty: ignore[unknown-argument]
         except TypeError:
-            return self.token_counter(counted_messages)
+            return counter(counted_messages)
 
     def _truncate_args(
         self,
         messages: list[AnyMessage],
         total_tokens: int,
+        context: _ModelContext | None = None,
     ) -> tuple[list[AnyMessage], bool]:
         """Truncate large tool call arguments in old messages.
 
@@ -1189,15 +1577,16 @@ A condensed summary follows:
                 message and tools). Counting tools is expensive (schema
                 conversion per tool), so the caller counts once and shares the
                 result across the truncation and summarization checks.
+            context: The call's model context; defaults to the default model's.
 
         Returns:
             Tuple of (truncated_messages, modified). If modified is False,
             truncated_messages is the same as input messages.
         """
-        if not self._should_truncate_args(messages, total_tokens):
+        if not self._should_truncate_args(messages, total_tokens, context):
             return messages, False
 
-        cutoff_index = self._determine_truncate_cutoff_index(messages)
+        cutoff_index = self._determine_truncate_cutoff_index(messages, context)
         if cutoff_index >= len(messages):
             return messages, False
 
@@ -1536,32 +1925,34 @@ A condensed summary follows:
         msg = "Model input still does not fit after recovery; reduce input, tools, or configured output tokens."
         raise ContextOverflowError(msg) from error
 
-    def _input_budget(self, request: ModelRequest) -> int | None:
-        """Reserve configured output and 5% headroom from the advertised input limit."""
-        profile = request.model.profile
-        limit = profile.get("max_input_tokens") if isinstance(profile, dict) else None
-        if not isinstance(limit, int) or isinstance(limit, bool):
+    def _input_budget(self, request: ModelRequest, context: _ModelContext | None = None) -> int | None:
+        """Reserve configured output and 5% headroom from the context model's input limit."""
+        context = context or self._context_for_request(request)
+        limit = context.max_input_tokens
+        if limit is None:
             return None
         output = 0
         for key in ("max_tokens", "max_completion_tokens", "max_output_tokens"):
-            value = request.model_settings.get(key, getattr(request.model, key, None))
+            value = request.model_settings.get(key, getattr(context.model, key, None))
             if isinstance(value, int) and not isinstance(value, bool):
                 output = max(output, value)
         return max(0, int(limit * 0.95) - output)
 
-    def _over_budget(self, request: ModelRequest, total_tokens: int | None = None) -> bool:
-        budget = self._input_budget(request)
+    def _over_budget(self, request: ModelRequest, total_tokens: int | None = None, context: _ModelContext | None = None) -> bool:
+        context = context or self._context_for_request(request)
+        budget = self._input_budget(request, context)
         if budget is None:
             return False
-        count = total_tokens if total_tokens is not None else self._count_tokens(request.messages, request.system_message, request.tools)
+        count = total_tokens if total_tokens is not None else self._count_tokens(request.messages, request.system_message, request.tools, context)
         return count > budget
 
-    def _check_reduction(self, original: ModelRequest, reduced: ModelRequest, error: Exception | None) -> None:
+    def _check_reduction(self, original: ModelRequest, reduced: ModelRequest, error: Exception | None, context: _ModelContext | None = None) -> None:
         """Never resend an unchanged rejected request or a known oversized request."""
-        count = self._count_tokens(reduced.messages, reduced.system_message, reduced.tools)
-        if error is not None and count >= self._count_tokens(original.messages, original.system_message, original.tools):
+        context = context or self._context_for_request(reduced)
+        count = self._count_tokens(reduced.messages, reduced.system_message, reduced.tools, context)
+        if error is not None and count >= self._count_tokens(original.messages, original.system_message, original.tools, context):
             self._raise_recovery_exhausted(error)
-        budget = self._input_budget(reduced)
+        budget = self._input_budget(reduced, context)
         if budget is not None and count > budget:
             msg = "Context remains above the input budget after compaction; reduce input, tools, or configured output tokens."
             raise ContextOverflowError(msg)
@@ -1570,6 +1961,7 @@ A condensed summary follows:
         self,
         request: ModelRequest,
         handler: Callable[[ModelRequest], ModelResponse],
+        context: _ModelContext,
         *,
         error: Exception | None = None,
         rejected: ModelRequest | None = None,
@@ -1577,17 +1969,17 @@ A condensed summary follows:
         """Check the complete request and allow one strictly smaller tail recovery."""
         original = rejected if rejected is not None else request
         replacements: list[AnyMessage] = []
-        if error is not None or self._over_budget(request):
+        if error is not None or self._over_budget(request, context=context):
             messages, replacements = _clip_overflow_tail(
                 request.messages,
                 self._backend,
                 keep=("tokens", 1),
-                max_input_tokens=self._get_profile_limits(),
-                token_counter=self.token_counter,
+                max_input_tokens=context.max_input_tokens,
+                token_counter=context.lc.token_counter,
                 large_tool_results_prefix=self._large_tool_results_prefix,
             )
             request = request.override(messages=messages)
-            self._check_reduction(original, request, error)
+            self._check_reduction(original, request, error, context)
         try:
             return handler(request), replacements
         except Exception as exc:
@@ -1595,12 +1987,13 @@ A condensed summary follows:
                 raise
             if error is not None or replacements:
                 self._raise_recovery_exhausted(exc)
-            return self._call_with_budget(request, handler, error=exc)
+            return self._call_with_budget(request, handler, context, error=exc)
 
     async def _acall_with_budget(
         self,
         request: ModelRequest,
         handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
+        context: _ModelContext,
         *,
         error: Exception | None = None,
         rejected: ModelRequest | None = None,
@@ -1608,17 +2001,17 @@ A condensed summary follows:
         """Check the complete request and allow one strictly smaller tail recovery."""
         original = rejected if rejected is not None else request
         replacements: list[AnyMessage] = []
-        if error is not None or self._over_budget(request):
+        if error is not None or self._over_budget(request, context=context):
             messages, replacements = await _aclip_overflow_tail(
                 request.messages,
                 self._backend,
                 keep=("tokens", 1),
-                max_input_tokens=self._get_profile_limits(),
-                token_counter=self.token_counter,
+                max_input_tokens=context.max_input_tokens,
+                token_counter=context.lc.token_counter,
                 large_tool_results_prefix=self._large_tool_results_prefix,
             )
             request = request.override(messages=messages)
-            self._check_reduction(original, request, error)
+            self._check_reduction(original, request, error, context)
         try:
             return await handler(request), replacements
         except Exception as exc:
@@ -1626,7 +2019,80 @@ A condensed summary follows:
                 raise
             if error is not None or replacements:
                 self._raise_recovery_exhausted(exc)
-            return await self._acall_with_budget(request, handler, error=exc)
+            return await self._acall_with_budget(request, handler, context, error=exc)
+
+    @staticmethod
+    def _with_model_record(request: ModelRequest, result: ModelResponse | ExtendedModelResponse) -> ModelResponse | ExtendedModelResponse:
+        """Record the model this call went to in private state when it changed."""
+        record = _model_call_record(request.model)
+        if request.state.get(LAST_CALL_MODEL_KEY) == record:
+            return result
+        if isinstance(result, ExtendedModelResponse):
+            previous = result.command.update if result.command is not None else None
+            update = {**(previous if isinstance(previous, dict) else {}), LAST_CALL_MODEL_KEY: record}
+            return ExtendedModelResponse(model_response=result.model_response, command=Command(update=update))
+        return ExtendedModelResponse(model_response=result, command=Command(update={LAST_CALL_MODEL_KEY: record}))
+
+    def _prepare(self, request: ModelRequest, context: _ModelContext) -> tuple[list[AnyMessage], bool]:
+        """Return the effective, argument-truncated messages and whether to summarize them."""
+        effective_messages = self._get_effective_messages(request)
+        # Count once; tool-schema conversion makes each count expensive, so the
+        # count is shared between the truncation check and the summarize check.
+        total_tokens = self._count_tokens(effective_messages, request.system_message, request.tools, context)
+        truncated_messages, truncate_modified = self._truncate_args(effective_messages, total_tokens, context)
+        if truncate_modified:
+            total_tokens = self._count_tokens(truncated_messages, request.system_message, request.tools, context)
+        should_summarize = self._should_summarize(truncated_messages, total_tokens, context) or self._over_budget(request, total_tokens, context)
+        return truncated_messages, should_summarize
+
+    def _warn_offload_outcome(self, file_path: str | None, failed_media: int) -> None:
+        """Warn when the history offload failed or lost media."""
+        if file_path is None:
+            msg = "Offloading conversation history to backend failed during summarization. Older messages will not be recoverable."
+            logger.error(msg)
+            warnings.warn(msg, stacklevel=3)
+        elif failed_media:
+            # History was saved, but some media became failed-offload placeholders.
+            # Tie the warning to the saved file so the recovery pointer is honest.
+            msg = (
+                f"Conversation history was offloaded to {file_path}, but {failed_media} media "
+                "block(s) could not be offloaded and appear as failed placeholders in the saved "
+                "history; the original media is not recoverable."
+            )
+            logger.warning(msg)
+            warnings.warn(msg, stacklevel=3)
+
+    def _summarized_request(
+        self,
+        request: ModelRequest,
+        messages: list[AnyMessage],
+        cutoff_index: int,
+        summary: str,
+        file_path: str | None,
+    ) -> tuple[ModelRequest, SummarizationEvent]:
+        """Build the request carrying the new summary and the event that records it."""
+        new_messages = self._build_new_messages_with_path(summary, file_path)
+        _, preserved_messages = self._partition_messages(messages, cutoff_index)
+        state_cutoff = self._state_cutoff(request, messages, cutoff_index)
+        new_event: SummarizationEvent = {
+            "cutoff_index": state_cutoff,
+            "cutoff_message_id": _cutoff_message_id(request.state.get("messages", []), state_cutoff),
+            "summary_message": new_messages[0],  # The HumanMessage with summary  # ty: ignore[invalid-argument-type]
+            "file_path": file_path,
+            "created_at_index": self._state_message_count(request),
+        }
+        modified_messages = [*new_messages, *map(_drop_bound_reasoning, preserved_messages)]
+        return request.override(messages=modified_messages), new_event
+
+    @staticmethod
+    def _summary_update(new_event: SummarizationEvent, session_id: str, new_state_tail: list[AnyMessage]) -> Command:
+        update: dict[str, Any] = {
+            SUMMARIZATION_EVENT_KEY: new_event,
+            SUMMARIZATION_SESSION_ID_KEY: session_id,
+        }
+        if new_state_tail:
+            update["messages"] = list(new_state_tail)
+        return Command(update=update)
 
     def wrap_model_call(
         self,
@@ -1635,9 +2101,11 @@ A condensed summary follows:
     ) -> ModelResponse | ExtendedModelResponse:
         """Process messages before model invocation, with history offloading and arg truncation.
 
-        First applies any previous summarization events to reconstruct the effective message list.
-        Then truncates large tool arguments in old messages if configured.
-        Finally offloads messages to backend before summarization if thresholds are met.
+        Resolves this call's context model once (see `model`), then applies any
+        previous summarization event, truncates large tool arguments in old
+        messages if configured, and offloads and summarizes messages when
+        thresholds are met. Every threshold, token count, and budget check
+        reads from that one model.
 
         Control flow details:
 
@@ -1650,7 +2118,8 @@ A condensed summary follows:
             summarization. Irreducible input raises `ContextOverflowError`.
 
         History is condensed through a summary event rather than removing raw
-        messages. Offloaded tail results are persisted by message ID.
+        messages. Offloaded tail results are persisted by message ID. The
+        model the call went to is recorded in private state.
 
         Args:
             request: The model request to process.
@@ -1658,116 +2127,55 @@ A condensed summary follows:
 
         Returns:
             A plain `ModelResponse` when no state updates are needed, or an
-                `ExtendedModelResponse` with the summary event and/or offloaded
-                tool result replacements.
+                `ExtendedModelResponse` with the summary event, offloaded
+                tool result replacements, and/or the model record.
 
                 If `cutoff_index <= 0`, no compaction occurs and no
                 `_summarization_event` update is emitted.
         """
-        # Get effective messages based on previous summarization events
-        effective_messages = self._get_effective_messages(request)
-
-        # Count once; tool-schema conversion makes each count expensive, so the
-        # count is shared between the truncation check and the summarize check.
-        total_tokens = self._count_tokens(effective_messages, request.system_message, request.tools)
-
-        # Step 1: Truncate args if configured
-        truncated_messages, truncate_modified = self._truncate_args(
-            effective_messages,
-            total_tokens,
-        )
-
-        # Step 2: Check if summarization should happen
-        if truncate_modified:
-            total_tokens = self._count_tokens(truncated_messages, request.system_message, request.tools)
-        should_summarize = self._should_summarize(truncated_messages, total_tokens) or self._over_budget(request, total_tokens)
+        context = self._context_for_request(request)
+        truncated_messages, should_summarize = self._prepare(request, context)
 
         # If no summarization needed, return with truncated messages
         overflow_error: Exception | None = None
         if not should_summarize:
             try:
-                return handler(request.override(messages=truncated_messages))
+                response = handler(request.override(messages=truncated_messages))
             except Exception as exc:
                 if not _is_context_overflow(exc):
                     raise
                 overflow_error = exc
                 # Fallback to summarization on context overflow
+            else:
+                return self._with_model_record(request, response)
 
-        # Step 3: Perform summarization
-        cutoff_index = self._determine_cutoff_index(truncated_messages)
+        cutoff_index = self._determine_cutoff_index(truncated_messages, context)
         if cutoff_index <= 0:
-            response, replacements = self._call_with_budget(request.override(messages=truncated_messages), handler, error=overflow_error)
-            return self._with_replacements(response, replacements)
+            response, replacements = self._call_with_budget(request.override(messages=truncated_messages), handler, context, error=overflow_error)
+            return self._with_model_record(request, self._with_replacements(response, replacements))
 
-        messages_to_summarize, preserved_messages = self._partition_messages(truncated_messages, cutoff_index)
-
-        backend = self._backend
+        messages_to_summarize, _ = self._partition_messages(truncated_messages, cutoff_index)
         # Upload inline media once so both offload and summary see path references.
-        offloaded_media_messages, failed_media = self._offload_inline_media(backend, messages_to_summarize)
-
+        offloaded_media_messages, failed_media = self._offload_inline_media(self._backend, messages_to_summarize)
         # Resolve the internal history-file id and persist it below so later turns
         # append to the same file.
         session_id = self._get_session_id(request.state)
+        # Offload first so history is preserved before summarization. If offload
+        # fails, summarization still proceeds (with file_path=None).
+        file_path = self._offload_to_backend(self._backend, offloaded_media_messages, session_id)
+        self._warn_offload_outcome(file_path, failed_media)
+        summary = self._create_summary(offloaded_media_messages, context)
 
-        # Offload to backend first so history is preserved before summarization.
-        # If offload fails, summarization still proceeds (with file_path=None).
-        file_path = self._offload_to_backend(backend, offloaded_media_messages, session_id)
-        if file_path is None:
-            msg = "Offloading conversation history to backend failed during summarization. Older messages will not be recoverable."
-            logger.error(msg)
-            warnings.warn(msg, stacklevel=2)
-        elif failed_media:
-            # History was saved, but some media became failed-offload placeholders.
-            # Tie the warning to the saved file so the recovery pointer is honest.
-            msg = (
-                f"Conversation history was offloaded to {file_path}, but {failed_media} media "
-                "block(s) could not be offloaded and appear as failed placeholders in the saved "
-                "history; the original media is not recoverable."
-            )
-            logger.warning(msg)
-            warnings.warn(msg, stacklevel=2)
-
-        # Generate summary
-        summary = self._create_summary(offloaded_media_messages)
-
-        # Build summary message with file path reference
-        new_messages = self._build_new_messages_with_path(summary, file_path)
-
-        previous_event = request.state.get(SUMMARIZATION_EVENT_KEY)
-        state_messages = request.state.get("messages", [])
-        state_cutoff_index = self._compute_state_cutoff(previous_event, cutoff_index, state_messages)
-
-        # Create new summarization event
-        new_event: SummarizationEvent = {
-            "cutoff_index": state_cutoff_index,
-            "cutoff_message_id": _cutoff_message_id(state_messages, state_cutoff_index),
-            "summary_message": new_messages[0],  # The HumanMessage with summary  # ty: ignore[invalid-argument-type]
-            "file_path": file_path,
-            "created_at_index": len(request.messages),
-        }
-
-        # Modify request to use summarized messages
-        modified_messages = [*new_messages, *map(_drop_bound_reasoning, preserved_messages)]
-        modified_request = request.override(messages=modified_messages)
+        modified_request, new_event = self._summarized_request(request, truncated_messages, cutoff_index, summary, file_path)
         response, new_state_tail = self._call_with_budget(
             modified_request,
             handler,
+            context,
             error=overflow_error,
             rejected=request.override(messages=truncated_messages),
         )
-
-        update: dict[str, Any] = {
-            SUMMARIZATION_EVENT_KEY: new_event,
-            SUMMARIZATION_SESSION_ID_KEY: session_id,
-        }
-        if new_state_tail:
-            update["messages"] = list(new_state_tail)
-
-        # Return ExtendedModelResponse with state update
-        return ExtendedModelResponse(
-            model_response=response,
-            command=Command(update=update),
-        )
+        result = ExtendedModelResponse(model_response=response, command=self._summary_update(new_event, session_id, new_state_tail))
+        return self._with_model_record(request, result)
 
     async def awrap_model_call(
         self,
@@ -1776,22 +2184,7 @@ A condensed summary follows:
     ) -> ModelResponse | ExtendedModelResponse:
         """Process messages before model invocation, with history offloading and arg truncation (async).
 
-        First applies any previous summarization events to reconstruct the effective message list.
-        Then truncates large tool arguments in old messages if configured.
-        Finally offloads messages to backend before summarization if thresholds are met.
-
-        Control flow details:
-
-        - If thresholds say "do not summarize", we still attempt one normal
-            model call with the current effective/truncated messages.
-        - Recognized provider context errors fall back to summarization and
-            offloading large trailing tool results. At most one smaller retry
-            is sent, including when the first request was already summarized.
-        - The complete request is checked against the input budget after
-            summarization. Irreducible input raises `ContextOverflowError`.
-
-        History is condensed through a summary event rather than removing raw
-        messages. Offloaded tail results are persisted by message ID.
+        See `wrap_model_call`. The offload and the summary run concurrently.
 
         Args:
             request: The model request to process.
@@ -1799,117 +2192,96 @@ A condensed summary follows:
 
         Returns:
             A plain `ModelResponse` when no state updates are needed, or an
-                `ExtendedModelResponse` with the summary event and/or offloaded
-                tool result replacements.
-
-                If `cutoff_index <= 0`, no compaction occurs and no
-                `_summarization_event` update is emitted.
+                `ExtendedModelResponse` with the summary event, offloaded
+                tool result replacements, and/or the model record.
         """
-        # Get effective messages based on previous summarization events
-        effective_messages = self._get_effective_messages(request)
+        context = self._context_for_request(request)
+        truncated_messages, should_summarize = self._prepare(request, context)
 
-        # Count once; tool-schema conversion makes each count expensive, so the
-        # count is shared between the truncation check and the summarize check.
-        total_tokens = self._count_tokens(effective_messages, request.system_message, request.tools)
-
-        # Step 1: Truncate args if configured
-        truncated_messages, truncate_modified = self._truncate_args(
-            effective_messages,
-            total_tokens,
-        )
-
-        # Step 2: Check if summarization should happen
-        if truncate_modified:
-            total_tokens = self._count_tokens(truncated_messages, request.system_message, request.tools)
-        should_summarize = self._should_summarize(truncated_messages, total_tokens) or self._over_budget(request, total_tokens)
-
-        # If no summarization needed, return with truncated messages
         overflow_error: Exception | None = None
         if not should_summarize:
             try:
-                return await handler(request.override(messages=truncated_messages))
+                response = await handler(request.override(messages=truncated_messages))
             except Exception as exc:
                 if not _is_context_overflow(exc):
                     raise
                 overflow_error = exc
-                # Fallback to summarization on context overflow
+            else:
+                return self._with_model_record(request, response)
 
-        # Step 3: Perform summarization
-        cutoff_index = self._determine_cutoff_index(truncated_messages)
+        cutoff_index = self._determine_cutoff_index(truncated_messages, context)
         if cutoff_index <= 0:
-            response, replacements = await self._acall_with_budget(request.override(messages=truncated_messages), handler, error=overflow_error)
-            return self._with_replacements(response, replacements)
-
-        messages_to_summarize, preserved_messages = self._partition_messages(truncated_messages, cutoff_index)
-
-        backend = self._backend
-        # Upload inline media once so both offload and summary see path references.
-        # This must complete before the gather since both methods consume the result.
-        offloaded_media_messages, failed_media = await self._aoffload_inline_media(backend, messages_to_summarize)
-
-        # Resolve the internal history-file id and persist it below so later turns
-        # append to the same file.
-        session_id = self._get_session_id(request.state)
-
-        # Offload to backend and generate summary concurrently -- they are independent.
-        # If offload fails, summarization still proceeds (with file_path=None).
-        file_path, summary = await asyncio.gather(
-            self._aoffload_to_backend(backend, offloaded_media_messages, session_id),
-            self._acreate_summary(offloaded_media_messages),
-        )
-        if file_path is None:
-            msg = "Offloading conversation history to backend failed during summarization. Older messages will not be recoverable."
-            logger.error(msg)
-            warnings.warn(msg, stacklevel=2)
-        elif failed_media:
-            # History was saved, but some media became failed-offload placeholders.
-            # Tie the warning to the saved file so the recovery pointer is honest.
-            msg = (
-                f"Conversation history was offloaded to {file_path}, but {failed_media} media "
-                "block(s) could not be offloaded and appear as failed placeholders in the saved "
-                "history; the original media is not recoverable."
+            response, replacements = await self._acall_with_budget(
+                request.override(messages=truncated_messages), handler, context, error=overflow_error
             )
-            logger.warning(msg)
-            warnings.warn(msg, stacklevel=2)
+            return self._with_model_record(request, self._with_replacements(response, replacements))
 
-        # Build summary message with file path reference
-        new_messages = self._build_new_messages_with_path(summary, file_path)
+        messages_to_summarize, _ = self._partition_messages(truncated_messages, cutoff_index)
+        # This must complete before the gather since both methods consume the result.
+        offloaded_media_messages, failed_media = await self._aoffload_inline_media(self._backend, messages_to_summarize)
+        session_id = self._get_session_id(request.state)
+        # Offload to backend and generate summary concurrently -- they are independent.
+        file_path, summary = await asyncio.gather(
+            self._aoffload_to_backend(self._backend, offloaded_media_messages, session_id),
+            self._acreate_summary(offloaded_media_messages, context),
+        )
+        self._warn_offload_outcome(file_path, failed_media)
 
-        previous_event = request.state.get(SUMMARIZATION_EVENT_KEY)
-        state_messages = request.state.get("messages", [])
-        state_cutoff_index = self._compute_state_cutoff(previous_event, cutoff_index, state_messages)
-
-        # Create new summarization event
-        new_event: SummarizationEvent = {
-            "cutoff_index": state_cutoff_index,
-            "cutoff_message_id": _cutoff_message_id(state_messages, state_cutoff_index),
-            "summary_message": new_messages[0],  # The HumanMessage with summary  # ty: ignore[invalid-argument-type]
-            "file_path": file_path,
-            "created_at_index": len(request.messages),
-        }
-
-        # Modify request to use summarized messages
-        modified_messages = [*new_messages, *map(_drop_bound_reasoning, preserved_messages)]
-        modified_request = request.override(messages=modified_messages)
+        modified_request, new_event = self._summarized_request(request, truncated_messages, cutoff_index, summary, file_path)
         response, new_state_tail = await self._acall_with_budget(
             modified_request,
             handler,
+            context,
             error=overflow_error,
             rejected=request.override(messages=truncated_messages),
         )
+        result = ExtendedModelResponse(model_response=response, command=self._summary_update(new_event, session_id, new_state_tail))
+        return self._with_model_record(request, result)
 
-        update: dict[str, Any] = {
-            SUMMARIZATION_EVENT_KEY: new_event,
-            SUMMARIZATION_SESSION_ID_KEY: session_id,
-        }
-        if new_state_tail:
-            update["messages"] = list(new_state_tail)
 
-        # Return ExtendedModelResponse with state update
-        return ExtendedModelResponse(
-            model_response=response,
-            command=Command(update=update),
-        )
+class _SummarizationViewMiddleware(AgentMiddleware):
+    """Shows middleware that runs before summarization the already-summarized conversation.
+
+    `create_deep_agent` moves summarization after custom middleware so it sees
+    the model each call actually goes to. This view keeps the summarizer's old
+    slot, so that custom middleware still receives the summary in place of the
+    history it replaced. The summarizer recognizes the applied summary and does
+    not apply it twice.
+    """
+
+    trace_policy = TracePolicy(process_inputs=omit_payload)
+    """Omit hook inputs from traces by default; set a `TracePolicy` to override."""
+
+    def __init__(self, summarization: _DeepAgentsSummarizationMiddleware) -> None:
+        """Bind the view to the summarizer whose events it applies."""
+        self._summarization = summarization
+
+    @property
+    def name(self) -> str:
+        """Name the view after its summarizer so each stack holds one."""
+        return f"{self._summarization.name}View"
+
+    def _view(self, request: ModelRequest) -> ModelRequest:
+        event = request.state.get(SUMMARIZATION_EVENT_KEY)
+        if event is None:
+            return request
+        return request.override(messages=self._summarization._get_effective_messages(request))
+
+    def wrap_model_call(
+        self,
+        request: ModelRequest,
+        handler: Callable[[ModelRequest], ModelResponse],
+    ) -> ModelResponse:
+        """Pass the summarized conversation on to later middleware."""
+        return handler(self._view(request))
+
+    async def awrap_model_call(
+        self,
+        request: ModelRequest,
+        handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
+    ) -> ModelResponse:
+        """Pass the summarized conversation on to later middleware (async)."""
+        return await handler(self._view(request))
 
 
 SummarizationMiddleware = _DeepAgentsSummarizationMiddleware
@@ -1962,10 +2334,16 @@ def create_summarization_middleware(
         defaults from the model's profile when `max_input_tokens` is
         exposed, falling back to fixed counts otherwise — see
         [`compute_summarization_defaults`][deepagents.middleware.summarization.compute_summarization_defaults].
+    - **Follows each call's model.** The middleware manages the context
+        window of the model each call goes to, including one swapped in by
+        middleware such as a model router or fallback. Thresholds come
+        from that model's profile on every call.
 
     Args:
-        model: Resolved `BaseChatModel` instance.
+        model: Resolved `BaseChatModel` instance, typically the agent's model.
 
+            Calls are sized against their own model; this one sizes the
+            `compact_conversation` tool and other work outside a model call.
             Use `resolve_model()` first if needed for model strings.
         backend: Backend instance for persisting conversation history.
         summary_prompt: Prompt template for generating summaries.
@@ -1997,18 +2375,15 @@ def create_summarization_middleware(
         msg = "`create_summarization_middleware` expects `model` to be a `BaseChatModel` instance."
         raise TypeError(msg)
 
-    defaults = compute_summarization_defaults(model)
-    return SummarizationMiddleware(
-        model=model,
+    middleware = SummarizationMiddleware(
         backend=backend,
-        trigger=defaults["trigger"],
-        keep=defaults["keep"],
         token_counter=token_counter,
         summary_prompt=summary_prompt,
         trim_tokens_to_summarize=trim_tokens_to_summarize,
-        truncate_args_settings=defaults["truncate_args_settings"],
         summarizer=summarizer,
     )
+    middleware._adopt_profile_defaults(model)
+    return middleware
 
 
 def create_summarization_tool_middleware(
@@ -2106,7 +2481,8 @@ class SummarizationToolMiddleware(AgentMiddleware):
 
     This middleware composes with a `SummarizationMiddleware` instance, reusing
     its summarization engine (model, backend, trigger thresholds) to let the
-    agent compact its own context window.
+    agent compact its own context window. The tool runs outside a model call,
+    so it sizes against that instance's fixed or build-time model.
 
     This middleware never compacts automatically. Compaction only occurs when
     `compact_conversation` is called as a normal tool call (by the model or by
@@ -2369,6 +2745,11 @@ class SummarizationToolMiddleware(AgentMiddleware):
         """
         s = self._summarization
         tool_call_id = runtime.tool_call_id or ""
+        if s._default_context is None:
+            return self._compact_error(
+                tool_call_id,
+                AttributeError("compact_conversation needs a SummarizationMiddleware given a model or built by create_summarization_middleware."),
+            )
         messages = runtime.state.get("messages", [])
         event = runtime.state.get(SUMMARIZATION_EVENT_KEY)
         effective = s._apply_event_to_messages(messages, event)
@@ -2403,6 +2784,11 @@ class SummarizationToolMiddleware(AgentMiddleware):
         """
         s = self._summarization
         tool_call_id = runtime.tool_call_id or ""
+        if s._default_context is None:
+            return self._compact_error(
+                tool_call_id,
+                AttributeError("compact_conversation needs a SummarizationMiddleware given a model or built by create_summarization_middleware."),
+            )
         messages = runtime.state.get("messages", [])
         event = runtime.state.get(SUMMARIZATION_EVENT_KEY)
         effective = s._apply_event_to_messages(messages, event)

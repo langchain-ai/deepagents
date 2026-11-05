@@ -3218,7 +3218,13 @@ class TestSkillsMiddlewarePlacement:
 
         stack = subagents["helper"]
         assert stack[self._skills_slot(stack)] is own
-        assert self._tail(stack) == ["PatchToolCallsMiddleware", "ModelFallbackMiddleware", "SkillsMiddleware", "AnthropicPromptCachingMiddleware"]
+        assert self._tail(stack) == [
+            "PatchToolCallsMiddleware",
+            "ModelFallbackMiddleware",
+            "SummarizationMiddleware",
+            "SkillsMiddleware",
+            "AnthropicPromptCachingMiddleware",
+        ]
         assert not any(isinstance(m, SkillsMiddleware) for m in [*main, *subagents["general-purpose"]])
 
     def test_fork_skills_middleware_takes_its_slot_without_main_skills(self) -> None:
@@ -3229,7 +3235,13 @@ class TestSkillsMiddlewarePlacement:
 
         stack = subagents["worker"]
         assert stack[self._skills_slot(stack)] is own
-        assert self._tail(stack) == ["PatchToolCallsMiddleware", "ModelFallbackMiddleware", "SkillsMiddleware", "AnthropicPromptCachingMiddleware"]
+        assert self._tail(stack) == [
+            "PatchToolCallsMiddleware",
+            "ModelFallbackMiddleware",
+            "SummarizationMiddleware",
+            "SkillsMiddleware",
+            "AnthropicPromptCachingMiddleware",
+        ]
         assert not any(isinstance(m, SkillsMiddleware) for m in [*main, *subagents["general-purpose"]])
 
     def test_declarative_subagent_keeps_its_last_skills_middleware(self) -> None:
@@ -3265,7 +3277,13 @@ class TestSkillsMiddlewarePlacement:
 
         stack = subagents["worker"]
         assert stack[self._skills_slot(stack)] is own
-        assert self._tail(stack) == ["PatchToolCallsMiddleware", "ModelFallbackMiddleware", "SkillsMiddleware", "AnthropicPromptCachingMiddleware"]
+        assert self._tail(stack) == [
+            "PatchToolCallsMiddleware",
+            "ModelFallbackMiddleware",
+            "SummarizationMiddleware",
+            "SkillsMiddleware",
+            "AnthropicPromptCachingMiddleware",
+        ]
         assert main[self._skills_slot(main)] is not own
 
     def test_differently_named_skills_middleware_subclass_stays_novel_in_a_subagent(self) -> None:
@@ -3283,5 +3301,6 @@ class TestSkillsMiddlewarePlacement:
             "PatchToolCallsMiddleware",
             "PluginSkillsMiddleware",
             "ModelFallbackMiddleware",
+            "SummarizationMiddleware",
             "AnthropicPromptCachingMiddleware",
         ]

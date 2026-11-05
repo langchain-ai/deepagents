@@ -9,6 +9,7 @@ from langchain_core.exceptions import ContextOverflowError
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, SystemMessage, ToolMessage
 
 from deepagents.middleware.summarization import SummarizationMiddleware
+from tests.unit_tests.chat_model import GenericFakeChatModel
 from tests.unit_tests.middleware.test_summarization_middleware import MockBackend, make_mock_model, make_mock_runtime
 
 
@@ -87,10 +88,9 @@ async def test_unknown_agent_limit_does_not_use_summarizer_budget(
 ) -> None:
     request = _request().override(system_message=SystemMessage(content="s" * 10000))
     request.model.profile = profile
-    summarizer = make_mock_model("summary")
-    summarizer.profile = {"max_input_tokens": 10000}
+    summarizer = GenericFakeChatModel(messages=iter([AIMessage(content="summary")] * 2), profile={"max_input_tokens": 10000})
     middleware = SummarizationMiddleware(
-        model=summarizer, backend=MockBackend(), trigger=("messages", trigger), keep=("messages", 3), token_counter=_count
+        backend=MockBackend(), trigger=("messages", trigger), keep=("messages", 3), token_counter=_count, summarizer=summarizer
     )
     sent: list[int] = []
 

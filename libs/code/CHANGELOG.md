@@ -2,6 +2,14 @@
 
 # Deep Agents Code Changelog
 
+## [0.2.5](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.2.4...deepagents-code==0.2.5) (2026-11-05)
+
+### Bug Fixes
+
+- Size the compaction input budget to match the selected model. ([#7545](https://github.com/langchain-ai/deepagents/pull/7545))
+- Preserve cut-off reply handling when `ModelRefusalMiddleware` raises an error. ([#7548](https://github.com/langchain-ai/deepagents/pull/7548))
+- Defer in-app `uv` installations on Windows. ([#7518](https://github.com/langchain-ai/deepagents/pull/7518))
+
 ## [0.2.4](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.2.3...deepagents-code==0.2.4) (2026-11-02)
 
 ### Features

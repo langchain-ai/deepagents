@@ -1,4 +1,4 @@
-# Check that all uv.lock files are up-to-date
+# Check lockfile freshness and changed-file text hygiene
 #
 # Prevents PRs from being merged when lockfiles are out of sync with pyproject.toml
 
@@ -20,6 +20,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: "🐍 Set up Python and uv"
         uses: "./.github/actions/uv_setup"
@@ -33,3 +34,17 @@ jobs:
 
       - name: "🔍 Check all lockfiles"
         run: python3 .github/scripts/checks/check_lockfiles_pre_commit.py
+
+      - name: "📝 Run hygiene hooks on changed files"
+        if: github.event_name != 'push'
+        env:
+          HYGIENE_FROM: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+          HYGIENE_TO: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
+          PRE_COMMIT_COLOR: always
+        run: |
+          # The hook list lives in libs/Makefile so `make -C libs hygiene` runs
+          # the same check locally.
+          if ! make -C libs hygiene; then
+            echo "::error::Changed files fail text hygiene hooks. Run \`make -C libs hygiene\` locally and commit the fixes."
+            exit 1
+          fi

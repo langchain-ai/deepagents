@@ -1169,16 +1169,34 @@ jobs:
               )
               if [ "$HARBOR_AGENT_IMPL" = pi ]; then
                 agent_args+=(--agent-kwarg model_api=openai-responses --agent-kwarg max_output_tokens=65536)
+              else
+                # Codex defaults the `openai` provider to remote compaction, which
+                # Fireworks lacks; a custom provider compacts locally instead.
+                codex_config=$(jq -cn --arg url "$FIREWORKS_BASE_URL/v1" '{
+                  model_provider: "fireworks",
+                  model_providers: {fireworks: {
+                    name: "Fireworks", base_url: $url, env_key: "OPENAI_API_KEY",
+                    wire_api: "responses", capabilities: {remote_compaction: "unsupported"}
+                  }}
+                }')
+                agent_args+=(--agent-kwarg "config=$codex_config")
               fi
               ;;
             claude-code:fireworks)
               agent_model="anthropic/${HARBOR_MODEL#*:}"
+              # Claude Code omits effort for model IDs it doesn't recognize.
               agent_env_args+=(
                 --agent-env 'ANTHROPIC_API_KEY=${FIREWORKS_API_KEY}'
                 --agent-env "ANTHROPIC_BASE_URL=$FIREWORKS_BASE_URL"
+                --agent-env CLAUDE_CODE_ALWAYS_ENABLE_EFFORT=1
               )
               # Harbor forwards this from the host env; the CLI default is 32000.
               export CLAUDE_CODE_MAX_OUTPUT_TOKENS=65536
+              # Unrecognized model IDs otherwise get an assumed 200K window.
+              if [ "$HARBOR_MODEL" = fireworks:accounts/fireworks/models/glm-5p3 ]; then
+                agent_env_args+=(--agent-env CLAUDE_CODE_MAX_CONTEXT_TOKENS=1048573)
+                export CLAUDE_CODE_MAX_OUTPUT_TOKENS=128000
+              fi
               ;;
           esac
           uv run harbor run \

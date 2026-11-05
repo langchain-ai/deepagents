@@ -42,6 +42,7 @@ from deepagents._version import _lc_version
 from deepagents.backends import StateBackend
 from deepagents.backends.protocol import BackendProtocol
 from deepagents.middleware._fs_interrupt import _build_interrupt_on_from_permissions
+from deepagents.middleware._model_selection import model_selection_middleware
 from deepagents.middleware._parent_notifier import _ParentNotifierMiddleware
 from deepagents.middleware._prompt_caching import append_prompt_caching_middleware
 from deepagents.middleware._state import private_state_field_names
@@ -60,7 +61,7 @@ from deepagents.middleware.subagents import (
     _is_compiled_subagent,
     _is_forked_subagent,
 )
-from deepagents.middleware.summarization import _DeepAgentsSummarizationMiddleware, create_summarization_middleware
+from deepagents.middleware.summarization import create_summarization_middleware
 from deepagents.middleware.unsupported_content import UnsupportedContentMiddleware
 from deepagents.profiles.harness.harness_profiles import (
     GeneralPurposeSubagentProfile,
@@ -211,29 +212,6 @@ def _merge_fs_interrupt_on(
 def _passed_skills_sources(middleware: Sequence[AgentMiddleware[Any, Any, Any]]) -> list[str] | None:
     """Sources of a `SkillsMiddleware` passed to take the skills slot by name, if any."""
     return next((m.sources for m in middleware if isinstance(m, SkillsMiddleware) and m.name == "SkillsMiddleware"), None)
-
-
-def _summarize_after_model_swaps(
-    stack: list[AgentMiddleware[Any, Any, Any]],
-    tail: Sequence[AgentMiddleware[Any, Any, Any]],
-) -> list[AgentMiddleware[Any, Any, Any]]:
-    """Run summarization after custom middleware, so it sizes against the model each call goes to.
-
-    Middleware such as a model router or fallback swaps the model after the
-    summarizer's slot. The summarizer moves to just before `tail` (skills,
-    prompt caching, memory), which still sees the compacted conversation, and
-    a view keeps its old slot so middleware in between does too.
-    """
-    index = next((i for i, m in enumerate(stack) if isinstance(m, _DeepAgentsSummarizationMiddleware)), None)
-    if index is None:
-        return stack
-    summarization = cast("_DeepAgentsSummarizationMiddleware", stack[index])
-    result = [*stack[:index], summarization._history_view, *stack[index + 1 :]]
-    # By name, so caller middleware that replaced a tail entry keeps its place behind the summarizer.
-    tail_names = {m.name for m in tail}
-    position = next((i for i in range(index + 1, len(result)) if result[i].name in tail_names), len(result))
-    result.insert(position, summarization)
-    return result
 
 
 def _apply_custom_middleware(
@@ -772,7 +750,6 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             _subagent_core_names = {m.name for m in subagent_middleware}
             # Harness-profile middleware for this subagent's model
             subagent_middleware.extend(_subagent_profile.materialize_extra_middleware())
-            _subagent_tail_start = len(subagent_middleware)
             if subagent_skills is not None:
                 subagent_middleware.append(SkillsMiddleware(backend=backend, sources=subagent_skills))
 
@@ -780,7 +757,6 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             if is_forked and memory is not None:
                 subagent_middleware.append(MemoryMiddleware(backend=backend, sources=memory, add_cache_control=True))
             subagent_middleware.append(ModelRefusalMiddleware())
-            _subagent_tail = subagent_middleware[_subagent_tail_start:]
 
             _subagent_matched_classes: set[type[AgentMiddleware[Any, Any, Any]]] = set()
             _subagent_matched_names: set[str] = set()
@@ -820,7 +796,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             )
             if _subagent_profile.excluded_tools:
                 subagent_middleware.append(_ToolExclusionMiddleware(excluded=_subagent_profile.excluded_tools))
-            subagent_middleware = _summarize_after_model_swaps(subagent_middleware, _subagent_tail)
+            subagent_middleware.extend(model_selection_middleware())
 
             subagent_interrupt_on = spec.get("interrupt_on", interrupt_on)
             subagent_interrupt_on = _merge_fs_interrupt_on(
@@ -879,13 +855,11 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
 
         # Add harness-profile middleware, if any
         gp_middleware.extend(_profile.materialize_extra_middleware())
-        _gp_tail_start = len(gp_middleware)
         if skills is not None:
             gp_middleware.append(SkillsMiddleware(backend=backend, sources=skills))
 
         append_prompt_caching_middleware(gp_middleware)
         gp_middleware.append(ModelRefusalMiddleware())
-        _gp_tail = gp_middleware[_gp_tail_start:]
         _gp_original_name_to_index = {m.name: i for i, m in enumerate(gp_middleware)}
         gp_middleware = _apply_excluded_middleware(
             gp_middleware,
@@ -907,7 +881,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         # tool-injecting middleware has run.
         if _profile.excluded_tools:
             gp_middleware.append(_ToolExclusionMiddleware(excluded=_profile.excluded_tools))
-        gp_middleware = _summarize_after_model_swaps(gp_middleware, _gp_tail)
+        gp_middleware.extend(model_selection_middleware())
 
         general_purpose_spec: SubAgent = {
             **GENERAL_PURPOSE_SUBAGENT,
@@ -977,7 +951,6 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     # that memory updates (which change the system prompt) don't invalidate the
     # Anthropic prompt cache prefix.
     deepagent_middleware.extend(_profile.materialize_extra_middleware())
-    _main_tail_start = len(deepagent_middleware)
     if skills is not None:
         # Innermost before caching, so skill tool disclosure sees the compacted
         # conversation and the model actually called (after user fallback or
@@ -1004,7 +977,6 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     deepagent_middleware.append(UnsupportedContentMiddleware())
     # In the tail, so a caller's `ModelFallbackMiddleware` catches refusals first.
     deepagent_middleware.append(ModelRefusalMiddleware())
-    _main_tail = deepagent_middleware[_main_tail_start:]
     deepagent_middleware = _apply_excluded_middleware(
         deepagent_middleware,
         _profile,
@@ -1022,7 +994,8 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     # stripped last and cannot be restored by a custom wrap_model_call.
     if _profile.excluded_tools:
         deepagent_middleware.append(_ToolExclusionMiddleware(excluded=_profile.excluded_tools))
-    deepagent_middleware = _summarize_after_model_swaps(deepagent_middleware, _main_tail)
+    # Innermost, so it records the model each call actually went to.
+    deepagent_middleware.extend(model_selection_middleware())
     state_schemas = [state_schema] if state_schema is not None else []
     state_schemas.extend(mw.state_schema for mw in deepagent_middleware if getattr(mw, "state_schema", None) is not None)
     private_state_keys = private_state_field_names(*state_schemas)

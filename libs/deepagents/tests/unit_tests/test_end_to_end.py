@@ -1582,6 +1582,9 @@ class TestBinaryContentOffload:
         other = b"\x89PNG\r\n\x1a\n another image"
         (tmp_path / "a.png").write_bytes(_OFFLOAD_PNG)
         (tmp_path / "b.png").write_bytes(other)
+        # Pre-create `blobs/` so the concurrent uploads don't race on creating it. On Windows,
+        # `realpath` can keep the `\\?\` prefix when the parent appears mid-resolution (#6756).
+        (tmp_path / "blobs").mkdir()
         checkpointer = InMemorySaver()
         config: dict[str, Any] = {"configurable": {"thread_id": "t"}}
         reads = [{"name": "read_file", "args": {"file_path": f"/{name}"}, "id": f"call_{name}", "type": "tool_call"} for name in ("a.png", "b.png")]

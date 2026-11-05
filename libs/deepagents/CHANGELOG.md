@@ -4,10 +4,9 @@
 
 ## [0.7.34](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.33...deepagents==0.7.34) (2026-11-05)
 
-
 ### Bug Fixes
 
-* **sdk:** anchor summarization cutoff by message id ([#7567](https://github.com/langchain-ai/deepagents/issues/7567)) ([de0bef7](https://github.com/langchain-ai/deepagents/commit/de0bef7770a3e30a3a7fea2f333ef68a2e85ef28))
+- Fixed summarization cutoff handling by anchoring it to the message ID ([#7567](https://github.com/langchain-ai/deepagents/pull/7567)).
 
 ## [0.7.33](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.32...deepagents==0.7.33) (2026-11-05)
 

@@ -1956,9 +1956,8 @@ def create_summarization_middleware(
         `RemoveMessage(id=REMOVE_ALL_MESSAGES)` from `before_model`.
         Preserving the raw log enables replay, evals, and shared state
         with `SummarizationToolMiddleware`'s `compact_conversation` tool.
-        For context management, transform model requests instead of persisted
-        history. Reserve history changes for explicit edits, such as a user
-        editing or deleting a message.
+        Custom middleware should likewise change model requests, not persisted
+        message history, when reducing context.
     - **Auto-selected trigger/keep thresholds.** LangChain accepts
         fraction-based thresholds but defaults to `trigger=None` and
         `keep=("messages", 20)`. This factory picks fraction-based

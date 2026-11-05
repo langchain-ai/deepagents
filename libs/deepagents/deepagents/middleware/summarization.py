@@ -571,6 +571,34 @@ def _bound_reasoning_types(message: AIMessage) -> frozenset[str]:
     return frozenset()
 
 
+def _resolve_cutoff_index(
+    messages: list[AnyMessage],
+    event: SummarizationEvent,
+) -> int:
+    """Return the event's cutoff index, by `cutoff_message_id` when it is still present.
+
+    Args:
+        messages: Full message list from state.
+        event: A `_summarization_event` dict.
+
+    Returns:
+        The cutoff index in `messages`.
+    """
+    cutoff_id = event.get("cutoff_message_id")
+    if cutoff_id:
+        for index, message in enumerate(messages):
+            if message.id == cutoff_id:
+                return index
+    return event["cutoff_index"]
+
+
+def _cutoff_message_id(messages: list[AnyMessage], cutoff_index: int) -> str | None:
+    """Return the id of the message at `cutoff_index`, or `None` if out of range."""
+    if 0 <= cutoff_index < len(messages):
+        return messages[cutoff_index].id
+    return None
+
+
 def _drop_bound_reasoning(message: AnyMessage) -> AnyMessage:
     """Return `message` without reasoning blocks bound to the conversation before it.
 
@@ -949,7 +977,7 @@ A condensed summary follows:
         except (KeyError, TypeError) as exc:
             logger.warning("Malformed _summarization_event (missing keys): %s", exc)
             return list(messages)
-        cutoff_idx = _DeepAgentsSummarizationMiddleware._resolve_cutoff_index(messages, event)
+        cutoff_idx = _resolve_cutoff_index(messages, event)
 
         if cutoff_idx > len(messages):
             logger.warning(
@@ -968,34 +996,6 @@ A condensed summary follows:
         for index, message in enumerate(messages[cutoff_idx:], start=cutoff_idx):
             result.append(_drop_bound_reasoning(message) if index < kept_from else message)
         return result
-
-    @staticmethod
-    def _resolve_cutoff_index(
-        messages: list[AnyMessage],
-        event: SummarizationEvent,
-    ) -> int:
-        """Return the event's cutoff index, by `cutoff_message_id` when it is still present.
-
-        Args:
-            messages: Full message list from state.
-            event: A `_summarization_event` dict.
-
-        Returns:
-            The cutoff index in `messages`.
-        """
-        cutoff_id = event.get("cutoff_message_id")
-        if cutoff_id:
-            for index, message in enumerate(messages):
-                if message.id == cutoff_id:
-                    return index
-        return event["cutoff_index"]
-
-    @staticmethod
-    def _cutoff_message_id(messages: list[AnyMessage], cutoff_index: int) -> str | None:
-        """Return the id of the message at `cutoff_index`, or `None` if out of range."""
-        if 0 <= cutoff_index < len(messages):
-            return messages[cutoff_index].id
-        return None
 
     @staticmethod
     def _compute_state_cutoff(
@@ -1026,7 +1026,7 @@ A condensed summary follows:
             logger.warning("Malformed _summarization_event: missing cutoff_index")
             return effective_cutoff
         if messages is not None:
-            prior_cutoff = _DeepAgentsSummarizationMiddleware._resolve_cutoff_index(messages, event)
+            prior_cutoff = _resolve_cutoff_index(messages, event)
         return prior_cutoff + effective_cutoff - 1
 
     def _should_truncate_args(self, messages: list[AnyMessage], total_tokens: int) -> bool:
@@ -1740,7 +1740,7 @@ A condensed summary follows:
         # Create new summarization event
         new_event: SummarizationEvent = {
             "cutoff_index": state_cutoff_index,
-            "cutoff_message_id": self._cutoff_message_id(state_messages, state_cutoff_index),
+            "cutoff_message_id": _cutoff_message_id(state_messages, state_cutoff_index),
             "summary_message": new_messages[0],  # The HumanMessage with summary  # ty: ignore[invalid-argument-type]
             "file_path": file_path,
             "created_at_index": len(request.messages),
@@ -1882,7 +1882,7 @@ A condensed summary follows:
         # Create new summarization event
         new_event: SummarizationEvent = {
             "cutoff_index": state_cutoff_index,
-            "cutoff_message_id": self._cutoff_message_id(state_messages, state_cutoff_index),
+            "cutoff_message_id": _cutoff_message_id(state_messages, state_cutoff_index),
             "summary_message": new_messages[0],  # The HumanMessage with summary  # ty: ignore[invalid-argument-type]
             "file_path": file_path,
             "created_at_index": len(request.messages),
@@ -2237,7 +2237,7 @@ class SummarizationToolMiddleware(AgentMiddleware):
 
         new_event: SummarizationEvent = {
             "cutoff_index": state_cutoff,
-            "cutoff_message_id": s._cutoff_message_id(state_messages, state_cutoff),
+            "cutoff_message_id": _cutoff_message_id(state_messages, state_cutoff),
             "summary_message": summary_msg,  # ty: ignore[invalid-argument-type]
             "file_path": file_path,
             "created_at_index": len(state_messages),

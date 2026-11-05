@@ -3,21 +3,20 @@
 LangChain is adding this key to `AgentState` (langchain-ai/langchain#41696):
 the model node records a serializable `ModelSpec` of the model each call went to,
 and anything that chooses a model may write `current` ahead of the next call.
-When the installed LangChain provides it, everything here is LangChain's. Until
-then this module mirrors that API, and `create_deep_agent` adds
-`_ModelSelectionMiddleware` to record the spec itself. Delete the fallback once
-the LangChain minimum includes it.
+It is a record only: nothing chooses a model from it. When the installed
+LangChain provides it, everything here is LangChain's. Until then this module
+mirrors that API, and `create_deep_agent` adds `_ModelSelectionMiddleware` to
+record the spec itself. Delete the fallback once the LangChain minimum includes
+it.
 """
 
 from __future__ import annotations
 
-import json
 from collections.abc import Mapping
-from functools import lru_cache
 from typing import TYPE_CHECKING, Annotated, Any, NotRequired, Required, cast
 
 from langchain.agents.middleware.types import AgentMiddleware, AgentState, ExtendedModelResponse, PrivateStateAttr, TracePolicy, omit_payload
-from langchain.chat_models.base import _BUILTIN_PROVIDERS, init_chat_model
+from langchain.chat_models.base import _BUILTIN_PROVIDERS
 from langgraph.types import Command
 from typing_extensions import TypedDict
 
@@ -31,7 +30,6 @@ try:
     from langchain.agents.middleware.model_selection import (  # ty: ignore[unresolved-import]
         MODEL_SELECTION_KEY,
         current_model_spec,
-        init_model_from_spec,
         model_spec_from_model,
     )
     from langchain.agents.middleware.types import ModelSelection, ModelSpec  # ty: ignore[unresolved-import]
@@ -50,8 +48,6 @@ except ImportError:
     SAFE_INIT_KWARGS = ("temperature", "top_p", "top_k", "max_tokens", "reasoning_effort")
     """Model attributes copied into `ModelSpec.init_kwargs`; credentials, headers and endpoints never are."""
 
-    _REBUILT_MODEL_CACHE_SIZE = 32
-
     class ModelSpec(TypedDict, total=False):
         """Serializable description of a chat model, safe to store in agent state."""
 
@@ -65,7 +61,7 @@ except ImportError:
         """Context window from the model's profile, when known."""
 
         init_kwargs: dict[str, str | int | float | bool]
-        """Safe init args (sampling settings and output limits) used to rebuild the model."""
+        """Safe init args (sampling settings and output limits)."""
 
     class ModelSelection(TypedDict, total=False):
         """The model currently selected for the agent; a replaced `current` moves to `previous`."""
@@ -135,31 +131,6 @@ except ImportError:
         """Return `state["model_selection"]["current"]`, or `None` when nothing is recorded."""
         selection: ModelSelection | None = state.get(MODEL_SELECTION_KEY)
         return selection.get("current") if selection else None
-
-    def init_model_from_spec(spec: ModelSpec) -> BaseChatModel:
-        """Build (or reuse) a chat model for `spec`, for `init_chat_model`'s built-in providers only.
-
-        Raises:
-            ValueError: If the spec's provider is not a built-in provider.
-        """
-        provider = spec.get("provider")
-        if provider not in _BUILTIN_PROVIDERS:
-            msg = (
-                f"Cannot rebuild a chat model for provider {provider!r}: only `init_chat_model`'s built-in providers can be rebuilt from agent state."
-            )
-            raise ValueError(msg)
-        key = {"provider": provider, "model": spec["model"], "init_kwargs": _safe_init_kwargs(spec.get("init_kwargs") or {})}
-        return _init_cached(json.dumps(key, sort_keys=True))
-
-    @lru_cache(maxsize=_REBUILT_MODEL_CACHE_SIZE)
-    def _init_cached(key: str) -> BaseChatModel:
-        spec = json.loads(key)
-        return init_chat_model(str(spec["model"]), model_provider=str(spec["provider"]), **spec["init_kwargs"])
-
-
-def same_model(first: ModelSpec | None, second: ModelSpec | None) -> bool:
-    """Whether two specs name the same provider and model."""
-    return first is not None and second is not None and first["provider"] == second["provider"] and first["model"] == second["model"]
 
 
 class _ModelSelectionMiddleware(AgentMiddleware):

@@ -32,6 +32,7 @@ from pydantic import BaseModel, Field, ValidationError, model_validator
 from typing_extensions import TypeIs
 
 from deepagents.backends.protocol import BackendProtocol
+from deepagents.middleware._model_selection import MODEL_SELECTION_KEY
 from deepagents.middleware._skill_tools import _SKILL_TOOLS_DISCLOSED_KEY
 from deepagents.middleware._utils import append_to_system_message
 from deepagents.middleware.filesystem import FilesystemMiddleware, FilesystemPermission
@@ -58,6 +59,7 @@ _FORK_EXCLUDED_STATE_KEYS = frozenset(
         SUMMARIZATION_EVENT_KEY,
         SUMMARIZATION_SESSION_ID_KEY,
         _SKILL_TOOLS_DISCLOSED_KEY,
+        MODEL_SELECTION_KEY,
     }
 )
 """State a fork must not resume.
@@ -65,7 +67,8 @@ _FORK_EXCLUDED_STATE_KEYS = frozenset(
 The summarization event is folded into the fork's messages instead. Dropping the
 session ID lets the subagent generate its own, and dropping a prior structured response
 ensures it cannot be mistaken for the fork's result. The disclosed skill tools
-describe the parent's last model call; the fork records its own. Skills the parent
+describe the parent's last model call, as does `model_selection`; the fork records
+its own. Skills the parent
 has yet to pin are the parent's own. The rubric grades the parent's whole goal,
 not the fork's task.
 """
@@ -437,6 +440,7 @@ _EXCLUDED_STATE_KEYS = {
     _SKILL_TOOLS_DISCLOSED_KEY,
     _FORKED_CONTEXT_KEY,
     _RUBRIC_KEY,
+    MODEL_SELECTION_KEY,
 }
 """State keys that are excluded when passing state to subagents and when
 returning updates from subagents.

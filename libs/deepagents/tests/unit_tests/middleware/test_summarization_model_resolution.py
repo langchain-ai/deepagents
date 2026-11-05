@@ -1,4 +1,4 @@
-"""The summarizer sizes, compacts, and writes against the agent's current model from `model_selection`."""
+"""The summarizer sizes, compacts, and writes against the model each call actually goes to."""
 
 import asyncio
 import uuid
@@ -8,7 +8,7 @@ from typing import Any, cast
 
 import pytest
 from langchain.agents.middleware import AgentMiddleware
-from langchain.agents.middleware.types import ModelRequest, ModelResponse
+from langchain.agents.middleware.types import ExtendedModelResponse, ModelRequest, ModelResponse
 from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.exceptions import ContextOverflowError
 from langchain_core.language_models.chat_models import BaseChatModel
@@ -21,9 +21,13 @@ from pydantic import Field, SecretStr
 
 from deepagents import create_deep_agent
 from deepagents.backends import StateBackend
-from deepagents.middleware import summarization as summarization_module
 from deepagents.middleware._model_selection import MODEL_SELECTION_KEY, model_spec_from_model
-from deepagents.middleware.summarization import SUMMARIZATION_EVENT_KEY, SummarizationMiddleware, create_summarization_middleware
+from deepagents.middleware.summarization import (
+    SUMMARIZATION_EVENT_KEY,
+    ModelResolution,
+    SummarizationMiddleware,
+    create_summarization_middleware,
+)
 from tests.unit_tests.middleware.test_summarization_middleware import MockBackend, make_mock_runtime
 
 SMALL_WINDOW = 32_000
@@ -37,6 +41,7 @@ class ChatWindow(BaseChatModel):
     temperature: float | None = None
     api_key: SecretStr = SecretStr("sk-never-recorded")
     script: list[AIMessage] = Field(default_factory=list)
+    fail_first_answer: bool = False
     calls: list[list[BaseMessage]] = Field(default_factory=list)
     summaries: list[str] = Field(default_factory=list)
 
@@ -53,32 +58,35 @@ class ChatWindow(BaseChatModel):
             self.summaries.append(text)
             reply = AIMessage(content=f"summary by {self.model}")
         else:
+            if self.fail_first_answer:
+                self.fail_first_answer = False
+                msg = "transient"
+                raise RuntimeError(msg)
             self.calls.append(list(messages))
             reply = self.script.pop(0) if self.script else AIMessage(content=f"answer from {self.model}")
         return ChatResult(generations=[ChatGeneration(message=reply)])
 
 
-def window_model(name: str, window: int | None, **kwargs: Any) -> ChatWindow:
-    return ChatWindow(model=name, profile={"max_input_tokens": window} if window else None, **kwargs)
+def window_model(name: str, window: int, **kwargs: Any) -> ChatWindow:
+    return ChatWindow(model=name, profile={"max_input_tokens": window}, **kwargs)
 
 
-class ChooseModel(AgentMiddleware):
-    """Chooses each call's model: records it in `model_selection` and routes the call to it."""
+class SwapModel(AgentMiddleware):
+    """Custom middleware that routes each call to a model of its choosing."""
 
-    def __init__(self, pick: Callable[[dict[str, Any]], BaseChatModel], *, record: bool = True) -> None:
+    def __init__(self, pick: Callable[[ModelRequest], BaseChatModel], name: str = "SwapModel") -> None:
         self._pick = pick
-        self._record = record
+        self._name = name
 
-    def before_model(self, state: dict[str, Any], runtime: Any) -> dict[str, Any] | None:  # noqa: ANN401
-        if not self._record:
-            return None
-        return {MODEL_SELECTION_KEY: {"current": model_spec_from_model(self._pick(state))}}
+    @property
+    def name(self) -> str:
+        return self._name
 
     def wrap_model_call(self, request: ModelRequest, handler: Callable[[ModelRequest], ModelResponse]) -> ModelResponse:
-        return handler(request.override(model=self._pick(request.state)))
+        return handler(request.override(model=self._pick(request)))
 
     async def awrap_model_call(self, request: ModelRequest, handler: Callable[[ModelRequest], Awaitable[ModelResponse]]) -> ModelResponse:
-        return await handler(request.override(model=self._pick(request.state)))
+        return await handler(request.override(model=self._pick(request)))
 
 
 def long_history(turns: int = 10, tokens_per_turn: int = 4_000, *, prefix: str = "") -> list[AnyMessage]:
@@ -96,7 +104,7 @@ def tokens(messages: list[BaseMessage]) -> int:
 
 
 async def run(agent: Any, state: dict[str, Any], mode: str, thread_id: str | None = None) -> dict[str, Any]:  # noqa: ANN401
-    """Invoke `agent` on a thread and return its full state, private keys included."""
+    """Invoke `agent` on a thread (fresh by default) and return its full state, private keys included."""
     config = {"configurable": {"thread_id": thread_id or str(uuid.uuid4())}}
     if mode == "async":
         await agent.ainvoke(state, config)
@@ -110,76 +118,54 @@ def mode(request: pytest.FixtureRequest) -> str:
     return request.param
 
 
-@pytest.fixture
-def rebuild(monkeypatch: pytest.MonkeyPatch) -> dict[str, BaseChatModel]:
-    """Rebuild recorded fake models by name, as `init_chat_model` does for real providers."""
-    models: dict[str, BaseChatModel] = {}
-    monkeypatch.setattr(summarization_module, "init_model_from_spec", lambda spec: models[spec["model"]])
-    return models
-
-
-async def test_choosing_a_larger_window_accepts_input_that_fits(mode: str) -> None:
-    """A 32K build model switched to a 128K one no longer rejects input that fits the 128K window."""
+async def test_swap_to_larger_window_accepts_input_that_fits(mode: str) -> None:
+    """A 32K build model swapped for a 128K one no longer rejects input that fits the 128K window."""
     small, large = window_model("small", SMALL_WINDOW), window_model("large", LARGE_WINDOW)
-    agent = create_deep_agent(model=small, middleware=[ChooseModel(lambda _: large)], checkpointer=InMemorySaver())
+    agent = create_deep_agent(model=small, middleware=[SwapModel(lambda _: large)], checkpointer=InMemorySaver())
     question = HumanMessage(content="y" * 50_000 * 4, id="big")
 
     result = await run(agent, {"messages": [question]}, mode)
 
     assert result["messages"][-1].content == "answer from large"
     assert small.calls == []
+    assert large.calls[-1][-1].content == question.content
     assert result.get(SUMMARIZATION_EVENT_KEY) is None
 
 
-async def test_choosing_a_smaller_window_compacts_and_writes_with_it(mode: str, rebuild: dict[str, BaseChatModel]) -> None:
-    """A 128K build model switched to a 32K one compacts for the 32K window, and the 32K model writes the summary."""
+async def test_swap_to_smaller_window_compacts_for_it(mode: str) -> None:
+    """A 128K build model swapped for a 32K one compacts with the 32K model before the call."""
     small, large = window_model("small", SMALL_WINDOW), window_model("large", LARGE_WINDOW)
-    rebuild["small"] = small
-    agent = create_deep_agent(model=large, middleware=[ChooseModel(lambda _: small)], checkpointer=InMemorySaver())
+    agent = create_deep_agent(model=large, middleware=[SwapModel(lambda _: small)], checkpointer=InMemorySaver())
 
     result = await run(agent, {"messages": long_history()}, mode)
 
-    assert result[SUMMARIZATION_EVENT_KEY] is not None
+    assert result[SUMMARIZATION_EVENT_KEY]["summary_message"].text.endswith("summary by small\n</summary>")
     assert len(small.summaries) == 1
-    assert large.summaries == []
     assert large.calls == []
+    assert large.summaries == []
     assert tokens(small.calls[-1]) < SMALL_WINDOW
+    assert small.calls[-1][-1].content == "latest question"
 
 
-async def test_unrebuildable_model_falls_back_to_the_calls_model_for_writing(mode: str) -> None:
-    """When the recorded model cannot be rebuilt, the call's own model writes; thresholds still follow the recorded one."""
+async def test_same_history_is_left_alone_for_a_larger_window(mode: str) -> None:
+    """The history that compacts for a 32K model is sent whole to a 128K model."""
     small, large = window_model("small", SMALL_WINDOW), window_model("large", LARGE_WINDOW)
-    agent = create_deep_agent(model=large, middleware=[ChooseModel(lambda _: small)], checkpointer=InMemorySaver())
+    agent = create_deep_agent(model=small, middleware=[SwapModel(lambda _: large)], checkpointer=InMemorySaver())
+    history = long_history()
 
-    result = await run(agent, {"messages": long_history()}, mode)
+    result = await run(agent, {"messages": history}, mode)
 
-    assert result[SUMMARIZATION_EVENT_KEY] is not None
-    assert len(large.summaries) == 1
-    assert tokens(small.calls[-1]) < SMALL_WINDOW
-
-
-async def test_recorded_model_is_followed_on_the_next_call(mode: str, rebuild: dict[str, BaseChatModel]) -> None:
-    """A swap that only routes the call is recorded after it, and the next call compacts for that model."""
-    small, large = window_model("small", SMALL_WINDOW), window_model("large", LARGE_WINDOW)
-    rebuild["small"] = small
-    agent = create_deep_agent(model=large, middleware=[ChooseModel(lambda _: small, record=False)], checkpointer=InMemorySaver())
-    thread = str(uuid.uuid4())
-
-    first = await run(agent, {"messages": [HumanMessage(content="hi", id="hi")]}, mode, thread)
-    second = await run(agent, {"messages": long_history()}, mode, thread)
-
-    assert first[MODEL_SELECTION_KEY]["current"] == model_spec_from_model(small)
-    assert first.get(SUMMARIZATION_EVENT_KEY) is None
-    assert second[SUMMARIZATION_EVENT_KEY] is not None
-    assert len(small.summaries) == 1
+    assert result.get(SUMMARIZATION_EVENT_KEY) is None
+    assert small.summaries == []
+    assert [m.content for m in large.calls[-1][-len(history) :]] == [m.content for m in history]
 
 
-async def test_summarizer_override_writes_while_thresholds_follow_the_selection(mode: str) -> None:
-    """`summarizer=` still writes the summary; the selected model still sizes the thresholds."""
+async def test_summarizer_override_writes_while_thresholds_follow_the_call(mode: str) -> None:
+    """`summarizer=` still writes the summary; the swapped-in model still sizes the thresholds."""
     small, large = window_model("small", SMALL_WINDOW), window_model("large", LARGE_WINDOW)
     writer = window_model("writer", LARGE_WINDOW)
     summarization = create_summarization_middleware(large, StateBackend(), summarizer=writer)
-    agent = create_deep_agent(model=large, middleware=[ChooseModel(lambda _: small), summarization], checkpointer=InMemorySaver())
+    agent = create_deep_agent(model=large, middleware=[SwapModel(lambda _: small), summarization], checkpointer=InMemorySaver())
 
     result = await run(agent, {"messages": long_history()}, mode)
 
@@ -187,22 +173,11 @@ async def test_summarizer_override_writes_while_thresholds_follow_the_selection(
     assert len(writer.summaries) == 1
     assert small.summaries == []
     assert large.summaries == []
+    assert tokens(small.calls[-1]) < SMALL_WINDOW
 
 
-async def test_pinned_model_ignores_the_selection(mode: str) -> None:
-    """A pinned `model=` keeps sizing against itself whatever the agent selects."""
-    small, large = window_model("small", SMALL_WINDOW), window_model("large", LARGE_WINDOW)
-    pinned = SummarizationMiddleware(large, backend=StateBackend(), trigger=("fraction", 0.85), keep=("fraction", 0.1))
-    agent = create_deep_agent(model=large, middleware=[ChooseModel(lambda _: small), pinned], checkpointer=InMemorySaver())
-
-    result = await run(agent, {"messages": long_history(turns=6)}, mode)
-
-    assert result.get(SUMMARIZATION_EVENT_KEY) is None
-    assert small.summaries == []
-
-
-async def test_subagent_follows_its_own_selection(mode: str) -> None:
-    """A subagent sizes against the model its own middleware selects, not the parent's or its build model."""
+async def test_subagent_follows_its_own_calls_model(mode: str) -> None:
+    """A subagent sizes against the model its own middleware routes to, not the parent's or its build model."""
     description = "z" * 50_000 * 4
     task_call: ToolCall = {"name": "task", "args": {"description": description, "subagent_type": "worker"}, "id": "t1"}
     parent = window_model("parent", 200_000, script=[AIMessage(content="", tool_calls=[task_call])])
@@ -212,7 +187,7 @@ async def test_subagent_follows_its_own_selection(mode: str) -> None:
         "description": "Does work.",
         "system_prompt": "Work.",
         "model": worker_small,
-        "middleware": [ChooseModel(lambda _: worker_large)],
+        "middleware": [SwapModel(lambda _: worker_large)],
     }
     agent = create_deep_agent(model=parent, subagents=[worker], checkpointer=InMemorySaver())
 
@@ -224,7 +199,7 @@ async def test_subagent_follows_its_own_selection(mode: str) -> None:
 
 
 async def test_subagent_selection_stays_out_of_parent(mode: str) -> None:
-    """The #6644 shape: the parent stays on "strong" and its selection survives `task`."""
+    """The #6644 shape: the parent stays on "strong" and its `model_selection` record survives `task`."""
     task_call: ToolCall = {"name": "task", "args": {"description": "Summarize the page", "subagent_type": "summarizer"}, "id": "t1"}
     strong = window_model("strong", LARGE_WINDOW, temperature=0.2, script=[AIMessage(content="", tool_calls=[task_call])])
     cheap = window_model("cheap", SMALL_WINDOW)
@@ -256,15 +231,14 @@ def test_selection_round_trips_through_strict_serializer() -> None:
     assert "sk-never-recorded" not in repr(spec)
 
 
-async def test_concurrent_runs_on_different_models_stay_separate(mode: str, rebuild: dict[str, BaseChatModel]) -> None:
-    """Runs on different models at once each compact (or not) for their own model only."""
+async def test_concurrent_runs_on_different_models_stay_separate(mode: str) -> None:
+    """Runs routed to different models at once each compact (or not) for their own model only."""
     small, large = window_model("small", SMALL_WINDOW), window_model("large", LARGE_WINDOW)
-    rebuild["small"] = small
 
-    def pick(state: dict[str, Any]) -> BaseChatModel:
-        return small if state["messages"][0].text.startswith("[small]") else large
+    def pick(request: ModelRequest) -> BaseChatModel:
+        return small if request.state["messages"][0].text.startswith("[small]") else large
 
-    agent = create_deep_agent(model=large, middleware=[ChooseModel(pick)], checkpointer=InMemorySaver())
+    agent = create_deep_agent(model=large, middleware=[SwapModel(pick)], checkpointer=InMemorySaver())
     inputs = [{"messages": long_history(prefix=f"[{size}]")} for size in ["small", "large"] * 4]
 
     if mode == "async":
@@ -277,29 +251,65 @@ async def test_concurrent_runs_on_different_models_stay_separate(mode: str, rebu
         is_small = state["messages"][0].text.startswith("[small]")
         assert result["messages"][-1].content == f"answer from {'small' if is_small else 'large'}"
         assert (result.get(SUMMARIZATION_EVENT_KEY) is not None) is is_small
+        assert result[MODEL_SELECTION_KEY]["current"]["max_input_tokens"] == (SMALL_WINDOW if is_small else LARGE_WINDOW)
     assert len(small.summaries) == 4
     assert large.summaries == []
     assert all(tokens(call) < SMALL_WINDOW for call in small.calls)
 
 
-def test_recorded_model_without_window_skips_fractional_limits() -> None:
-    """A recorded model with no context window skips fractional limits instead of failing the call."""
-    middleware = SummarizationMiddleware(backend=MockBackend(), trigger=[("fraction", 0.5), ("messages", 4)], keep=("fraction", 0.1))
-    model = window_model("no-window", None)
-    history = long_history(turns=12, tokens_per_turn=10)
-    state = {"messages": history, MODEL_SELECTION_KEY: {"current": model_spec_from_model(model)}}
-    request = ModelRequest(model=model, messages=history, state=cast("Any", state), runtime=make_mock_runtime())
+def test_callable_model_resolves_per_call() -> None:
+    """A callable `model` picks the managed model for each call."""
+    small, large = window_model("small", SMALL_WINDOW), window_model("large", LARGE_WINDOW)
+    resolutions: list[ModelResolution] = []
+
+    def resolve(resolution: ModelResolution) -> BaseChatModel:
+        resolutions.append(resolution)
+        return small
+
+    middleware = SummarizationMiddleware(
+        resolve, backend=MockBackend(), trigger=("fraction", 0.5), keep=("messages", 1), trim_tokens_to_summarize=None
+    )
+    history = long_history(turns=5)
+    request = ModelRequest(model=large, messages=history, state=cast("Any", {"messages": history}), runtime=make_mock_runtime())
 
     result = middleware.wrap_model_call(request, lambda _: ModelResponse(result=[AIMessage(content="ok")]))
 
-    assert SUMMARIZATION_EVENT_KEY in result.command.update  # ty: ignore[unresolved-attribute]
+    assert isinstance(result, ExtendedModelResponse)
+    assert SUMMARIZATION_EVENT_KEY in result.command.update
+    assert len(small.summaries) == 1
+    assert large.summaries == []
+    assert resolutions[0].request is request
+    assert resolutions[0].state is request.state
+
+
+def test_callable_model_must_not_return_a_name() -> None:
+    """A resolver that returns a model name is rejected rather than building a client."""
+    middleware = SummarizationMiddleware(lambda _: "openai:gpt-5.5", backend=MockBackend(), trigger=("messages", 100))
+    model = window_model("large", LARGE_WINDOW)
+    request = ModelRequest(model=model, messages=[HumanMessage(content="hi")], state=cast("Any", {"messages": []}), runtime=make_mock_runtime())
+
+    with pytest.raises(TypeError, match="not a model name"):
+        middleware.wrap_model_call(request, lambda _: ModelResponse(result=[AIMessage(content="ok")]))
+
+
+def test_followed_model_without_profile_skips_fractional_limits() -> None:
+    """A followed model without a profile skips fractional limits instead of failing the call."""
+    middleware = SummarizationMiddleware(backend=MockBackend(), trigger=[("fraction", 0.5), ("messages", 4)], keep=("fraction", 0.1))
+    model = ChatWindow(model="no-profile")
+    history = long_history(turns=12, tokens_per_turn=10)
+    request = ModelRequest(model=model, messages=history, state=cast("Any", {"messages": history}), runtime=make_mock_runtime())
+
+    result = middleware.wrap_model_call(request, lambda _: ModelResponse(result=[AIMessage(content="ok")]))
+
+    assert isinstance(result, ExtendedModelResponse)
+    assert SUMMARIZATION_EVENT_KEY in result.command.update
     assert len(model.summaries) == 1
 
 
-def test_pinned_model_without_profile_still_rejects_fractional_settings() -> None:
-    """A pinned model is validated when the middleware is built, as before."""
+def test_fixed_model_without_profile_still_rejects_fractional_settings() -> None:
+    """A fixed model is validated when the middleware is built, as before."""
     with pytest.raises(ValueError, match="Model profile information is required"):
-        SummarizationMiddleware(window_model("no-window", None), backend=MockBackend(), trigger=("fraction", 0.5))
+        SummarizationMiddleware(ChatWindow(model="no-profile"), backend=MockBackend(), trigger=("fraction", 0.5))
 
 
 class SummarizationRuns(BaseCallbackHandler):
@@ -314,12 +324,11 @@ class SummarizationRuns(BaseCallbackHandler):
 
 
 @pytest.mark.parametrize("override", [False, True])
-async def test_summary_trace_records_compaction_model_and_window(mode: str, override: bool, rebuild: dict[str, BaseChatModel]) -> None:  # noqa: FBT001
+async def test_summary_trace_records_compaction_model_and_window(mode: str, override: bool) -> None:  # noqa: FBT001
     """The `summarization` run names the model whose window was compacted, that window, and the writer."""
     small, large = window_model("small", SMALL_WINDOW), window_model("large", LARGE_WINDOW)
-    rebuild["small"] = small
     writer = window_model("writer", LARGE_WINDOW)
-    middleware: list[AgentMiddleware] = [ChooseModel(lambda _: small)]
+    middleware: list[AgentMiddleware] = [SwapModel(lambda _: small)]
     if override:
         middleware.append(create_summarization_middleware(large, StateBackend(), summarizer=writer))
     agent = create_deep_agent(model=large, middleware=middleware)
@@ -337,9 +346,67 @@ async def test_summary_trace_records_compaction_model_and_window(mode: str, over
     assert metadata["summarization_model"] == ("window:writer" if override else "window:small")
 
 
-def test_build_model_still_rejects_input_it_cannot_hold() -> None:
-    """Without a switch, the 32K model still rejects input it cannot hold."""
-    agent = create_deep_agent(model=window_model("small", SMALL_WINDOW))
+def test_build_model_overflow_error_is_gone_only_because_of_the_swap() -> None:
+    """Without a swap, the 32K model still rejects input it cannot hold."""
+    small = window_model("small", SMALL_WINDOW)
+    agent = create_deep_agent(model=small)
 
     with pytest.raises(ContextOverflowError):
         agent.invoke({"messages": [HumanMessage(content="y" * 50_000 * 4)]})
+
+
+class PrependReminder(AgentMiddleware):
+    """Custom middleware that puts a message ahead of the conversation."""
+
+    def wrap_model_call(self, request: ModelRequest, handler: Callable[[ModelRequest], ModelResponse]) -> ModelResponse:
+        return handler(request.override(messages=[HumanMessage(content="reminder"), *request.messages]))
+
+    async def awrap_model_call(self, request: ModelRequest, handler: Callable[[ModelRequest], Awaitable[ModelResponse]]) -> ModelResponse:
+        return await handler(request.override(messages=[HumanMessage(content="reminder"), *request.messages]))
+
+
+async def test_stored_summary_is_applied_once_when_middleware_prepends(mode: str) -> None:
+    """A message prepended by custom middleware does not make the stored summary apply a second time."""
+    small = window_model("small", SMALL_WINDOW)
+    agent = create_deep_agent(model=small, middleware=[PrependReminder()], checkpointer=InMemorySaver())
+    thread = str(uuid.uuid4())
+    await run(agent, {"messages": long_history()}, mode, thread)
+    small.calls.clear()
+
+    await run(agent, {"messages": [HumanMessage(content="follow-up", id="f1")]}, mode, thread)
+
+    sent = small.calls[-1]
+    summaries = [m for m in sent if isinstance(m, HumanMessage) and m.additional_kwargs.get("lc_source") == "summarization"]
+    assert len(summaries) == 1
+    assert [m.text for m in sent if isinstance(m, HumanMessage)][-2:] == ["latest question", "follow-up"]
+    assert sum(m.text == "latest question" for m in sent) == 1
+
+
+class RetryOnce(AgentMiddleware):
+    """Custom retry middleware: calls again once when the model call fails."""
+
+    def wrap_model_call(self, request: ModelRequest, handler: Callable[[ModelRequest], ModelResponse]) -> ModelResponse:
+        try:
+            return handler(request)
+        except RuntimeError:
+            return handler(request)
+
+    async def awrap_model_call(self, request: ModelRequest, handler: Callable[[ModelRequest], Awaitable[ModelResponse]]) -> ModelResponse:
+        try:
+            return await handler(request)
+        except RuntimeError:
+            return await handler(request)
+
+
+async def test_retry_around_summarizer_reuses_summary_and_offload(mode: str) -> None:
+    """Retry middleware around the summarizer neither writes a second summary nor offloads history twice."""
+    small = window_model("small", SMALL_WINDOW, fail_first_answer=True)
+    agent = create_deep_agent(model=small, middleware=[RetryOnce()], checkpointer=InMemorySaver())
+
+    result = await run(agent, {"messages": long_history()}, mode)
+
+    assert result["messages"][-1].content == "answer from small"
+    assert len(small.summaries) == 1
+    [history] = [f for path, f in result["files"].items() if path.startswith("/conversation_history/")]
+    content = history["content"] if isinstance(history["content"], str) else "\n".join(history["content"])
+    assert content.count("## Summarized at") == 1

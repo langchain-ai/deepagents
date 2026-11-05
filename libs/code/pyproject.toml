@@ -213,6 +213,14 @@ include = [
 "deepagents_code/default_agent_prompt.md" = "deepagents_code/default_agent_prompt.md"
 "deepagents_code/*.tcss" = "deepagents_code/"
 
+[tool.uv]
+override-dependencies = [
+    # Security fix in filelock 4.2.1. Every stable `litellm` caps `filelock<4.0`
+    # (lifted in 1.109.0rc1), so an override is the only way to lock a patched
+    # release without pulling a prerelease. Drop once a stable `litellm` allows 4.x.
+    "filelock>=4.2.1,<4.3",
+]
+
 [tool.uv.sources]
 deepagents = { path = "../deepagents", editable = true }
 deepagents-acp = { path = "../acp", editable = true }

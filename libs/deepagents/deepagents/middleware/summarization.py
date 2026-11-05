@@ -1957,7 +1957,8 @@ def create_summarization_middleware(
         Preserving the raw log enables replay, evals, and shared state
         with `SummarizationToolMiddleware`'s `compact_conversation` tool.
         For context management, transform model requests instead of persisted
-        history. Reserve history edits for intentional application behavior.
+        history. Reserve history changes for explicit edits, such as a user
+        editing or deleting a message.
     - **Auto-selected trigger/keep thresholds.** LangChain accepts
         fraction-based thresholds but defaults to `trigger=None` and
         `keep=("messages", 20)`. This factory picks fraction-based

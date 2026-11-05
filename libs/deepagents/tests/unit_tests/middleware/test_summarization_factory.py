@@ -6,7 +6,7 @@ from typing import Any, cast
 from unittest.mock import MagicMock
 
 import pytest
-from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, MessageLikeRepresentation
+from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, MessageLikeRepresentation, ToolMessage
 
 from deepagents.middleware.summarization import create_summarization_middleware
 from tests.unit_tests.chat_model import GenericFakeChatModel
@@ -122,6 +122,24 @@ async def test_factory_passes_summarizer_through_async() -> None:
     middleware = create_summarization_middleware(model, cast("Any", MagicMock()), summarizer=summarizer)
 
     assert await middleware._acreate_summary([HumanMessage(content="hi")]) == "1 messages"
+
+
+async def test_summarizer_gets_dangling_tool_calls_answered() -> None:
+    model = _make_model(with_profile_limit=120_000)
+    received: list[list[AnyMessage]] = []
+
+    async def summarizer(messages: list[AnyMessage]) -> str:
+        received.append(messages)
+        return "summary"
+
+    middleware = create_summarization_middleware(model, cast("Any", MagicMock()), summarizer=summarizer)
+    dangling = AIMessage(content="", tool_calls=[{"name": "ls", "args": {}, "id": "call_ls", "type": "tool_call"}])
+
+    await middleware._acreate_summary([HumanMessage(content="hi"), dangling, HumanMessage(content="next")])
+
+    patched = received[0]
+    assert [type(m) for m in patched] == [HumanMessage, AIMessage, ToolMessage, HumanMessage]
+    assert cast("ToolMessage", patched[2]).tool_call_id == "call_ls"
 
 
 def test_factory_chat_model_summarizer_uses_deepagents_prompt() -> None:

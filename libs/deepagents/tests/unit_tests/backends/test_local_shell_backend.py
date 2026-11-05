@@ -366,8 +366,12 @@ async def test_local_shell_backend_execute_utf8_byte_limit(
 ) -> None:
     """Enforce the UTF-8 byte budget without returning partial characters."""
     backend = LocalShellBackend(root_dir=tmp_path, max_output_bytes=limit)
-    command = f"printf '%s' '{text}'"
-    result = await backend.aexecute(command) if use_async else backend.execute(command)
+    script = tmp_path / "output.py"
+    script.write_text(f"import os\nos.write(1, {text.encode('utf-8')!r})\n")
+    args = [sys.executable, str(script)]
+    command = subprocess.list2cmdline(args) if sys.platform == "win32" else shlex.join(args)
+    with patch("subprocess._text_encoding", return_value="utf-8"):
+        result = await backend.aexecute(command) if use_async else backend.execute(command)
     notice = f"\n\n... Output truncated at {limit} bytes." if truncated else ""
 
     assert result.exit_code == 0

@@ -162,9 +162,9 @@ class SummarizationEvent(TypedDict):
     """The index in the messages list where summarization occurred."""
 
     cutoff_message_id: NotRequired[str | None]
-    """Id of the first state message kept after the summary.
+    """Id of the message at `cutoff_index`; stays correct when earlier messages are removed.
 
-    Survives removals before the cutoff, which shift `cutoff_index`.
+    `None` if that message has no id. Absent on events created before this field existed.
     """
 
     summary_message: HumanMessage
@@ -2240,7 +2240,7 @@ class SummarizationToolMiddleware(AgentMiddleware):
             "cutoff_message_id": s._cutoff_message_id(state_messages, state_cutoff),
             "summary_message": summary_msg,  # ty: ignore[invalid-argument-type]
             "file_path": file_path,
-            "created_at_index": len(runtime.state.get("messages", [])),
+            "created_at_index": len(state_messages),
         }
 
         return Command(

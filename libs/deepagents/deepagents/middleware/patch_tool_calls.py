@@ -4,7 +4,6 @@ from typing import Any
 
 from langchain.agents.middleware import AgentMiddleware, AgentState, TracePolicy, omit_payload
 from langchain_core.messages import AIMessage, AnyMessage, RemoveMessage, ToolMessage
-from langgraph.graph.message import REMOVE_ALL_MESSAGES
 from langgraph.runtime import Runtime
 
 
@@ -30,8 +29,16 @@ class PatchToolCallsMiddleware(AgentMiddleware):
         ):
             return None
 
+        # Rewrite only the messages after the first dangling call: remove them,
+        # then re-add them (same ids) behind the synthetic `ToolMessage`s.
+        first = next(
+            i
+            for i, msg in enumerate(messages)
+            if isinstance(msg, AIMessage)
+            and any(tc["id"] is not None and tc["id"] not in answered_ids for tc in (*msg.tool_calls, *msg.invalid_tool_calls))
+        )
         patched_messages: list[AnyMessage] = []
-        for msg in messages:
+        for msg in messages[first:]:
             patched_messages.append(msg)
             if not isinstance(msg, AIMessage):
                 continue
@@ -49,4 +56,4 @@ class PatchToolCallsMiddleware(AgentMiddleware):
                     )
                 patched_messages.append(ToolMessage(content=content, name=name, tool_call_id=tool_call_id, status="error"))
 
-        return {"messages": [RemoveMessage(id=REMOVE_ALL_MESSAGES), *patched_messages]}
+        return {"messages": [*(RemoveMessage(id=msg.id) for msg in messages[first + 1 :]), *patched_messages[1:]]}

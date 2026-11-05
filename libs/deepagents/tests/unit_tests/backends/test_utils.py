@@ -1,6 +1,6 @@
 """Tests for backends/utils.py utility functions."""
 
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from langchain_core.messages.content import ContentBlock
@@ -11,6 +11,7 @@ from deepagents.backends.utils import (
     _EXTENSION_TO_FILE_TYPE,
     InvalidGlobPatternError,
     _get_backend_read_file_type,
+    _get_file_data_size,
     _get_file_type,
     _glob_search_files,
     _looks_like_regex,
@@ -22,6 +23,24 @@ from deepagents.backends.utils import (
     to_posix_path,
     validate_path,
 )
+
+
+@pytest.mark.parametrize(
+    ("content", "encoding", "expected"),
+    [
+        ("é", None, b"\xc3\xa9"),
+        (["hello", "你好", ""], None, "hello\n你好\n".encode()),
+        (["/w=="], "base64", b"\xff"),
+        (["/", "w=="], "base64", b"\xff"),
+        ("", "base64", b""),
+    ],
+)
+def test_file_data_size_handles_legacy_content(content: str | list[str], encoding: str | None, expected: bytes) -> None:
+    data: dict[str, str | list[str]] = {"content": content}
+    if encoding is not None:
+        data["encoding"] = encoding
+    # Persisted legacy lists are supported at runtime but absent from FileData's current schema.
+    assert _get_file_data_size(cast("FileData", data)) == len(expected)
 
 
 class TestLooksLikeRegex:

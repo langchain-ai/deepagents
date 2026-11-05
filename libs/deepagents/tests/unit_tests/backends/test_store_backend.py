@@ -185,6 +185,20 @@ def test_store_backend_reports_utf8_byte_sizes() -> None:
     assert matches[0]["size"] == expected_size
 
 
+@pytest.mark.parametrize("content", [b"\xff", b"\xff\xff", b"\xff\xff\xff", b"\xff\xff\xff\xff", b"", "hello 😀 €".encode()])
+def test_store_backend_lists_uploaded_byte_sizes(content: bytes) -> None:
+    backend = StoreBackend(store=InMemoryStore(), namespace=lambda _rt: ("filesystem",))
+    [uploaded] = backend.upload_files([("/file.bin", content)])
+    assert uploaded.error is None
+    [downloaded] = backend.download_files(["/file.bin"])
+    assert downloaded.content == content
+
+    listing = backend.ls("/").entries
+    assert listing is not None
+    assert listing[0]["size"] == len(content)
+    assert backend.glob("*").matches[0]["size"] == len(content)
+
+
 def test_store_backend_rejects_legacy_lists_with_non_string_items() -> None:
     mem_store = InMemoryStore()
     be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))

@@ -3,8 +3,10 @@
 from typing import Any
 
 import pytest
+from langgraph.graph import END, START, StateGraph
 
 from deepagents.backends.state import StateBackend
+from deepagents.middleware.filesystem import FilesystemState
 
 
 def test_state_backend_raises_outside_graph_context():
@@ -12,6 +14,27 @@ def test_state_backend_raises_outside_graph_context():
     be = StateBackend()
     with pytest.raises(RuntimeError, match="inside a LangGraph graph execution"):
         be.read("/anything.txt")
+
+
+@pytest.mark.parametrize("content", [b"\xff", b"\xff\xff", b"\xff\xff\xff", b"\xff\xff\xff\xff", b"", "hello 😀 €".encode()])
+def test_state_backend_lists_uploaded_byte_sizes(content: bytes) -> None:
+    def check_sizes(_state: FilesystemState) -> None:
+        backend = StateBackend()
+        [uploaded] = backend.upload_files([("/file.bin", content)])
+        assert uploaded.error is None
+        [downloaded] = backend.download_files(["/file.bin"])
+        assert downloaded.content == content
+
+        listing = backend.ls("/").entries
+        assert listing is not None
+        assert listing[0]["size"] == len(content)
+        assert backend.glob("*").matches[0]["size"] == len(content)
+
+    graph = StateGraph(FilesystemState)
+    graph.add_node("check_sizes", check_sizes)
+    graph.add_edge(START, "check_sizes")
+    graph.add_edge("check_sizes", END)
+    graph.compile().invoke({"messages": [], "files": {}})
 
 
 def test_upload_files_raises_outside_graph_context():

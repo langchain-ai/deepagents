@@ -26,6 +26,7 @@ from deepagents.backends.protocol import (
 from deepagents.backends.utils import (
     InvalidGlobPatternError,
     _get_backend_read_file_type,
+    _get_file_data_size,
     _glob_search_files,
     create_file_data,
     file_data_to_string,
@@ -347,7 +348,7 @@ class StoreBackend(BackendProtocol):
                 fd = self._convert_store_item_to_file_data(item)
             except ValueError:
                 continue
-            size = len(file_data_to_string(fd).encode("utf-8"))
+            size = _get_file_data_size(fd)
             infos.append(
                 {
                     "path": item.key,
@@ -649,7 +650,7 @@ class StoreBackend(BackendProtocol):
         infos: list[FileInfo] = []
         for p in paths:
             fd = files.get(p)
-            size = len(file_data_to_string(fd).encode("utf-8")) if fd else 0
+            size = _get_file_data_size(fd) if fd else 0
             infos.append(
                 {
                     "path": p,

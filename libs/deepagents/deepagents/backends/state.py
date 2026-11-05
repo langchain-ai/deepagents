@@ -25,6 +25,7 @@ from deepagents.backends.utils import (
     InvalidGlobPatternError,
     _copy_file_data_with_content,
     _get_backend_read_file_type,
+    _get_file_data_size,
     _glob_search_files,
     create_file_data,
     file_data_to_string,
@@ -156,7 +157,7 @@ class StateBackend(BackendProtocol):
                 continue
 
             # This is a file directly in the current directory
-            size = len(file_data_to_string(fd).encode("utf-8"))
+            size = _get_file_data_size(fd)
             infos.append(
                 {
                     "path": k,
@@ -312,7 +313,7 @@ class StateBackend(BackendProtocol):
         infos: list[FileInfo] = []
         for p in paths:
             fd = files.get(p)
-            size = len(file_data_to_string(fd).encode("utf-8")) if fd else 0
+            size = _get_file_data_size(fd) if fd else 0
             infos.append(
                 {
                     "path": p,

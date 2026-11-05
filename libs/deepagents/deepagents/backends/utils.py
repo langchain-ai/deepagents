@@ -5,6 +5,7 @@ helpers used by backends and the composite router. Structured helpers
 enable composition without fragile string parsing.
 """
 
+import base64
 import functools
 import logging
 import os
@@ -508,6 +509,14 @@ def file_data_to_string(file_data: FileData) -> str:
         TypeError: If content is neither a string nor a legacy list of strings.
     """
     return _normalize_content(file_data)
+
+
+def _get_file_data_size(file_data: FileData) -> int:
+    """Return the file's byte size, excluding its storage encoding."""
+    content = file_data_to_string(file_data)
+    if file_data.get("encoding") == "base64":
+        return len(base64.standard_b64decode(content))
+    return len(content.encode("utf-8"))
 
 
 def create_file_data(

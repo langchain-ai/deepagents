@@ -478,11 +478,13 @@ async def make_bare_graph(config: dict[str, object] | None = None) -> object:
         tools=tools or None,
         skills=_skills(configurable),
         # The model sees only `execute` and `eval`; `task()` and the filesystem
-        # tools stay callable inside `eval`. Calls made inside `eval` skip
-        # large-result offloading (only `max_result_chars` truncation applies).
-        # Subagents keep the full filesystem toolset and get no `eval`.
+        # tools stay callable inside `eval`. Subagents keep the full filesystem
+        # toolset and get no `eval`.
         middleware=[
-            CodeInterpreterMiddleware(ptc=["execute", *sorted(_PTC_ONLY_FS_TOOLS)]),
+            CodeInterpreterMiddleware(
+                ptc=["execute", *sorted(_PTC_ONLY_FS_TOOLS)],
+                max_result_chars=20_000,
+            ),
             _ToolExclusionMiddleware(excluded=_PTC_ONLY_FS_TOOLS | {"task"}),
         ],
     )

@@ -105,6 +105,7 @@ from typing_extensions import TypedDict
 from deepagents.backends import CompositeBackend
 from deepagents.middleware._overflow_clip import _aclip_overflow_tail, _clip_overflow_tail
 from deepagents.middleware._utils import append_to_system_message
+from deepagents.middleware.patch_tool_calls import patch_dangling_tool_calls
 
 _MEDIA_REFERENCE_SUMMARY_PROMPT = """<media_reference_information>
 Conversation history may include XML media reference tags, for example:
@@ -153,6 +154,11 @@ _BEDROCK_PROVIDERS = frozenset({"bedrock", "bedrock_converse"})
 
 _NATIVE_REASONING_BLOCK_TYPES = frozenset({"thinking", "redacted_thinking", "reasoning_content"})
 """Reasoning block types in the Anthropic and Bedrock Converse native formats."""
+
+
+def _answer_dangling_tool_calls(messages: list[AnyMessage]) -> list[AnyMessage]:
+    # A custom `summarizer` gets raw state, which keeps dangling tool calls.
+    return patch_dangling_tool_calls(messages) or messages
 
 
 class SummarizationEvent(TypedDict):
@@ -797,11 +803,11 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
 
     def _create_summary(self, messages_to_summarize: list[AnyMessage]) -> str:
         """Generate summary for the given messages."""
-        return self._lc_helper._create_summary(messages_to_summarize)
+        return self._lc_helper._create_summary(_answer_dangling_tool_calls(messages_to_summarize))
 
     async def _acreate_summary(self, messages_to_summarize: list[AnyMessage]) -> str:
         """Generate summary for the given messages (async)."""
-        return await self._lc_helper._acreate_summary(messages_to_summarize)
+        return await self._lc_helper._acreate_summary(_answer_dangling_tool_calls(messages_to_summarize))
 
     def _get_session_id(self, state: Mapping[str, Any]) -> str:
         """Resolve the session id naming the offload history file.

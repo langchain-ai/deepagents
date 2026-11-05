@@ -2,6 +2,20 @@
 
 # Deep Agents Changelog
 
+## [0.7.33](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.32...deepagents==0.7.33) (2026-11-05)
+
+### Features
+
+- Raise errors on model refusals by default and report subagent refusals to the parent agent ([#7512](https://github.com/langchain-ai/deepagents/pull/7512)).
+- Add notification metadata to async subagent notifications ([#7334](https://github.com/langchain-ai/deepagents/pull/7334)).
+- Record the `task` call ID on subagent checkpoints ([#7509](https://github.com/langchain-ai/deepagents/pull/7509)).
+
+### Bug Fixes
+
+- Restrict the Python `grep` fallback to the requested file and clip long result lines to a window around the match ([#7539](https://github.com/langchain-ai/deepagents/pull/7539), [#7526](https://github.com/langchain-ai/deepagents/pull/7526)).
+- Report failed compaction with an error status ([#7538](https://github.com/langchain-ai/deepagents/pull/7538)).
+- Promote rubric middleware out of beta ([#7368](https://github.com/langchain-ai/deepagents/pull/7368)).
+
 ## [0.7.32](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.31...deepagents==0.7.32) (2026-10-23)
 
 ### Performance Improvements

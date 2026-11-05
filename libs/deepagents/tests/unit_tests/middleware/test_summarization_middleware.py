@@ -4,18 +4,23 @@ import asyncio
 import base64 as _base64
 import hashlib
 import inspect
+import itertools
 import re
 import time
 from collections.abc import Callable
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from langchain.agents import create_agent
 from langchain.agents.middleware.types import ExtendedModelResponse, ModelRequest, ModelResponse
 from langchain_core.exceptions import ContextOverflowError
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage, get_notification_metadata
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, RemoveMessage, SystemMessage, ToolMessage, get_notification_metadata
+from langgraph.checkpoint.memory import InMemorySaver
 
 from deepagents.backends.composite import CompositeBackend
+from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.backends.protocol import BackendProtocol, EditResult, FileDownloadResponse, FileUploadResponse, ReadResult, WriteResult
 from deepagents.middleware.summarization import (
     SummarizationEvent,
@@ -23,6 +28,7 @@ from deepagents.middleware.summarization import (
     _token_counter_accepts_tools,
     _upload_response_error,
 )
+from tests.unit_tests.chat_model import GenericFakeChatModel
 
 if TYPE_CHECKING:
     from langchain.agents.middleware.types import AgentState
@@ -3741,3 +3747,35 @@ def test_upload_response_error_classifies_batch_result() -> None:
     assert _upload_response_error([FileUploadResponse(path="/m.png", error="permission_denied")]) == "permission_denied"
     # Success (error is None) returns None.
     assert _upload_response_error([FileUploadResponse(path="/m.png", error=None)]) is None
+
+
+def test_cutoff_message_id_survives_checkpoint_and_removal(tmp_path: Path) -> None:
+    def replies(prefix: str) -> GenericFakeChatModel:
+        return GenericFakeChatModel(messages=(AIMessage(content=f"{prefix} {i}") for i in itertools.count()))
+
+    middleware = SummarizationMiddleware(
+        model=replies("summary"),
+        backend=FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True),
+        trigger=("messages", 8),
+        keep=("messages", 2),
+    )
+    agent = create_agent(replies("reply"), middleware=[middleware], checkpointer=InMemorySaver())
+    config = {"configurable": {"thread_id": "t"}}
+
+    event = None
+    for i in range(10):
+        agent.invoke({"messages": [HumanMessage(content=f"user {i}")]}, config)
+        event = agent.get_state(config).values.get("_summarization_event")
+        if event:
+            break
+    assert event is not None
+
+    messages = agent.get_state(config).values["messages"]
+    cutoff_message = messages[event["cutoff_index"]]
+    assert event["cutoff_message_id"] == cutoff_message.id
+
+    agent.update_state(config, {"messages": [RemoveMessage(id=messages[1].id)]})
+    messages = agent.get_state(config).values["messages"]
+
+    assert messages[event["cutoff_index"]].id != cutoff_message.id
+    assert SummarizationMiddleware._apply_event_to_messages(messages, event)[1].id == cutoff_message.id

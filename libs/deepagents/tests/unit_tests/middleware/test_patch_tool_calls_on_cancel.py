@@ -5,10 +5,16 @@ import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolCall, ToolMessage
 from langchain_core.tools import tool
 from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.graph import StateGraph
 
 from deepagents import create_deep_agent
 from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
 from tests.unit_tests.test_end_to_end import FixedGenericFakeChatModel
+
+needs_cancel_handler = pytest.mark.skipif(
+    not hasattr(StateGraph, "set_cancel_handler"),
+    reason="installed langgraph has no `StateGraph.set_cancel_handler`",
+)
 
 if TYPE_CHECKING:
     from langchain_core.runnables import RunnableConfig
@@ -53,6 +59,7 @@ async def slow() -> str:
     return "done"
 
 
+@needs_cancel_handler
 async def test_cancelled_tool_call_is_answered_at_cancel_time() -> None:
     model = FixedGenericFakeChatModel(
         messages=iter(

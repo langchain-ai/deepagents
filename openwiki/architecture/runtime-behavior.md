@@ -1,39 +1,25 @@
 ---
 type: runtime architecture
 title: Runtime Behavior and Failure Boundaries
-description: Execution-time state, prompt shaping, asynchronous subagent lifecycle, notification delivery, and Talon request retry boundaries. Distinguishes checkpointed parent state and remote task records from best-effort observation and delivery.
-tags: [deepagents, runtime, middleware, state, persistence, async-subagents, skills, retries, notifications, talon]
-sources:
-  - id: openwiki-source-c101168dc0286ff6c29ed37f
-    resource: repo://libs/code/deepagents_code/model_retry.py
-  - id: openwiki-source-822ae989625ba99d4c7cc08b
-    resource: repo://libs/deepagents/deepagents/_messages_reducer.py
-  - id: openwiki-source-0fc0e47059e4d07e23e50be2
-    resource: repo://libs/deepagents/deepagents/graph.py
-  - id: openwiki-source-41c16d89908bf285e252530e
-    resource: repo://libs/deepagents/deepagents/middleware/_parent_notifier.py
-  - id: openwiki-source-e51c4102234507d1529a2440
-    resource: repo://libs/deepagents/deepagents/middleware/async_subagents.py
-  - id: openwiki-source-13b8cea81b8a29f0950cc836
-    resource: repo://libs/deepagents/deepagents/middleware/patch_tool_calls.py
-  - id: openwiki-source-66cf9d0832d3cb55bec2b5ed
-    resource: repo://libs/deepagents/deepagents/middleware/skills.py
-  - id: openwiki-source-f763e99e439a1356866a7aa4
-    resource: repo://libs/deepagents/deepagents/middleware/summarization.py
-  - id: openwiki-source-69c260914d2dd18b60ad5900
-    resource: repo://libs/deepagents/tests/unit_tests/middleware/test_compact_tool.py
-  - id: openwiki-source-6228ff9cf1d681a771797121
-    resource: repo://libs/deepagents/tests/unit_tests/middleware/test_compaction_recovery.py
-  - id: openwiki-source-6ce85b02eabe462f99e0c912
-    resource: repo://libs/deepagents/tests/unit_tests/test_async_subagents.py
-  - id: openwiki-source-dc64f28a66d10932b86fcd61
-    resource: repo://libs/deepagents/tests/unit_tests/test_messages_reducer.py
-  - id: openwiki-source-665a21e2fbd09a89d3f13ac0
-    resource: repo://libs/talon/deepagents_talon/runtime.py
-generated: { by: "openwiki/0.4.2", at: "2026-11-05T08:04:42.777Z" }
+description: Execution-time contracts for stateful summarization and overflow recovery, model refusals, synchronous and asynchronous subagent outcomes, and delivery boundaries. Distinguishes durable graph state and remote task authority from best-effort observation and notification.
+tags: [deepagents, runtime, middleware, state, persistence, summarization, subagents, async-subagents, refusals, retries, notifications, talon]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-11-05T08:04:42.777Z
+    at: 2026-11-06T08:04:19.814Z
+sources:
+  - id: openwiki-source-0fc0e47059e4d07e23e50be2
+    resource: repo://libs/deepagents/deepagents/graph.py
+  - id: openwiki-source-e51c4102234507d1529a2440
+    resource: repo://libs/deepagents/deepagents/middleware/async_subagents.py
+  - id: openwiki-source-114a1c7a58992fa867a94ef0
+    resource: repo://libs/deepagents/deepagents/middleware/subagents.py
+  - id: openwiki-source-f763e99e439a1356866a7aa4
+    resource: repo://libs/deepagents/deepagents/middleware/summarization.py
+  - id: openwiki-source-8e7076889e81540fe4fcb8c5
+    resource: repo://libs/deepagents/tests/unit_tests/middleware/test_summarization_middleware.py
+  - id: openwiki-source-917b61d56e652536ba962f3a
+    resource: repo://libs/deepagents/tests/unit_tests/test_subagent_refusal.py
+generated: { by: "openwiki/0.4.2", at: "2026-11-06T08:04:19.814Z" }
 ---
 
 # Runtime Behavior and Failure Boundaries
@@ -46,7 +32,7 @@ This page describes execution-time ownership rather than API shape. A Deep Agent
 
 `DeepAgentState.messages` uses a `DeltaChannel` with snapshot frequency 50. Its reducer coerces message-like writes, deduplicates or replaces by ID, applies removals and the last reset sentinel, and replays an absent base as empty. IDs are assigned before checkpoint serialization, preserving deterministic replay. Before execution, `PatchToolCallsMiddleware` repairs an interrupted history with unmatched AI tool calls by appending error `ToolMessage` records and resetting the repaired sequence; a fully answered history is unchanged.
 
-Summarization shapes the next model request without deleting the raw message log. It records `_summarization_event`, which describes a summary, cutoff, and optional backend-history path; later requests build effective history from that event plus the preserved raw-message tail. Automatic compaction attempts history offload before generating a summary. An offload that returns no path does not stop automatic compaction, but leaves no recovery path for those older messages. Claude-bound reasoning blocks are removed only from the preserved messages used to build summarized effective history, not from raw state. Recognized context overflow receives at most one recovery attempt with strictly smaller input; an unchanged or irreducible request raises `ContextOverflowError`, and unrelated bad requests propagate.
+Summarization shapes the next model request without deleting the raw message log. It records `_summarization_event`, containing a summary, cutoff, cutoff message ID, and optional backend-history path; later requests rebuild effective history by locating that message ID in the current raw state and falling back to the stored index only when the ID is absent. This makes reconstruction survive appended or removed messages that would shift an index. Automatic compaction uploads inline media before both consumers; the synchronous path offloads old history before summary generation, while the asynchronous path performs the independent history offload and summary concurrently. An offload that returns no path does not stop compaction, but leaves no recovery path for those older messages. Claude-bound reasoning blocks are removed only from the preserved messages used to build summarized effective history, not from raw state. Recognized context overflow receives at most one recovery attempt with strictly smaller input; an unchanged or irreducible request raises `ContextOverflowError`, and unrelated bad requests propagate.
 
 ```mermaid
 flowchart TD
@@ -61,7 +47,7 @@ flowchart TD
     Event --> Checkpoint
 ```
 
-Caption: automatic compaction retains raw messages; after a successful compacted model call, its state update records the effective-history event for later requests.
+Caption: synchronous automatic compaction retains raw messages; after a successful compacted model call, its state update records the effective-history event for later requests. The asynchronous implementation may offload and summarize concurrently.
 
 `SummarizationToolMiddleware` exposes manual-only `compact_conversation`; its prompt nudge, if configured, only invites a normal tool call and does not compact in the background. The tool first applies any existing `_summarization_event` to choose its effective input, shares that key with automatic summarization, and is eligible at roughly half the automatic trigger. On success it writes a replacement event, session ID, and confirmation `ToolMessage`; raw historical messages are not reset or removed. A no-op eligibility or cutoff returns only a `ToolMessage`. If summary generation, partitioning, or an offload operation raises, the tool catches the error and returns an error `ToolMessage`; critically, it emits no `_summarization_event` update, so the prior checkpointed event remains in force. Conversely, an offload that merely returns `None` is a successful manual compaction with `file_path=None` in the new event.
 
@@ -74,6 +60,14 @@ The model initially receives locations and metadata, not every skill body. It ca
 A skill may declare `metadata.include_tools`. Such a tool is not registered as generally callable: reading or pinning the declaring skill causes the next model request to disclose it, records that disclosure in state, and the tool-call wrapper resolves it again before execution. An undisclosed name reaches the normal invalid-tool path. A dynamic `SkillToolResolver` therefore needs stable, cheap results within a thread; it runs on model calls after a relevant read and on a gated execution.
 
 Talon fingerprints host-readable `<source>/<skill>/SKILL.md` entries for each conversation. When the fingerprint changes, it sends `skills_metadata=None` in the next graph payload so middleware reloads it. This detects additions, edits, and removals visible to the host, but it is not a content transaction and the scan is capped; failure during an invocation forgets the process-local fingerprint so a later turn retries detection.
+
+## Model refusals and synchronous delegation
+
+`create_deep_agent` appends `ModelRefusalMiddleware` at the tail of its main and generated declarative-subagent stacks. Consequently, a refusal is an exception by default rather than a normal final AI message. A caller can place `ModelFallbackMiddleware` earlier in the stack to handle that exception; a harness profile can exclude `ModelRefusalMiddleware` where returning the provider refusal is the desired contract.
+
+The synchronous `task` tool and its `atask` counterpart preserve a different parent-facing boundary. They invoke a selected subagent, return its structured response when present or its final non-empty AI text otherwise, and turn a refusal into a `ToolMessage` result rather than failing the parent turn. This covers a refusal returned as a message, a `ModelRefusalError`, and a structured-output validation failure that contains a refusal. The notice identifies the refusal and available category/explanation, and tells the parent that retrying the same request is unlikely to help. Other exceptions still propagate. This lets the parent model decide whether to reframe, fall back, or report the blocked work in both synchronous and asynchronous parent invocation modes.
+
+The remote async path uses the same refusal rendering for a child's final content before it becomes a successful task result or notification. Its parent-facing notification is still redacted for automatically reported failures; inspect a task explicitly for detailed status.
 
 ## Async tasks: two authorities and a stable task identity
 
@@ -102,13 +96,13 @@ sequenceDiagram
 
 Caption: remote task state executes the work, parent graph state tracks observations, and notifications are user-visible inputs rather than a remote delivery guarantee.
 
-A local no-`url` specification uses ASGI transport and requires an async parent entrypoint such as `ainvoke`; synchronous invocation requires a reachable URL. Child threads carry subagent and parent-thread metadata. Local tasks may additionally receive the parent assistant ID, enabling direct wake-up. URL targets and `notify_parent=False` omit that assistant ID while retaining parent-thread association; webhooks, when configured, are passed to run creation. `mode="isolated"` sends only delegated work; experimental `mode="fork"` sends a serialized, portable snapshot of the parent’s effective conversation, which is a one-way launch-time handoff rather than shared state.
+A local no-`url` specification uses ASGI transport and requires an async parent entrypoint such as `ainvoke`; synchronous invocation requires a reachable URL. Child threads carry subagent and parent-thread metadata. Local tasks may additionally receive the parent assistant ID, enabling direct wake-up. URL targets and `notify_parent=False` omit that assistant ID while retaining parent-thread association; webhooks, when configured, are passed to run creation. `mode="isolated"` sends only delegated work; experimental `mode="fork"` sends a serialized, portable snapshot of the parent's effective conversation, which is a one-way launch-time handoff rather than shared state.
 
 ### Updates, supersession, waiting, and cancellation
 
 A task keeps its thread-based `task_id` while its tracked run changes. The default `update_strategy="interrupt"` creates replacement work on the same thread. `update_strategy="enqueue"` creates a follow-up without interrupting active work, records the new run as `pending`, and retains earlier run IDs as `superseded_run_ids`. Only one enqueued follow-up per task per model turn is accepted, preventing simultaneous calls that saw the same old state from corrupting tracking.
 
-An earlier run may report after a queued follow-up exists. At parent-run entry, middleware rewrites that notification to say it is an earlier-run update, preserving its result but preventing the model from treating it as the current follow-up’s outcome. Cancellation marks the parent record `cancelled`; queued cancellation also attempts the pending or running superseded runs newest-first.
+An earlier run may report after a queued follow-up exists. At parent-run entry, middleware rewrites that notification to say it is an earlier-run update, preserving its result but preventing the model from treating it as the current follow-up's outcome. Cancellation marks the parent record `cancelled`; queued cancellation also attempts the pending or running superseded runs newest-first.
 
 A successful run paired with an interrupted child thread represents nonterminal `waiting`, including the child-thread interrupt details; the user must answer on that child thread. A server run whose status is `interrupted` instead maps to `cancelled`. Observation follows externally replaced work where appropriate, but never revives a task the parent already cancelled. A waiting task needs no remote cancellation request, and later checks preserve the parent's cancellation.
 
@@ -124,7 +118,7 @@ Notifications are marked as non-user input and wrapped in a task header. Child t
 
 ## Talon request lifecycle and retry boundary
 
-`DeepAgentRuntime.start()` resolves subagents and approvals, then creates the graph. For each request, `invoke()` refreshes runtime tools, rebuilds the graph if the approval snapshot changed, binds request-scoped authorization, hooks, scheduling, history, progress, and model-selection context, and protects the conversation session when using `ConversationSaver`. It invokes the graph with the request’s conversation ID as LangGraph `thread_id`. On a successful turn it acknowledges background results to the runtime; later host delivery remains a separate concern.
+`DeepAgentRuntime.start()` resolves subagents and approvals, then creates the graph. For each request, `invoke()` refreshes runtime tools, rebuilds the graph if the approval snapshot changed, binds request-scoped authorization, hooks, scheduling, history, progress, and model-selection context, and protects the conversation session when using `ConversationSaver`. It invokes the graph with the request's conversation ID as LangGraph `thread_id`. On a successful turn it acknowledges background results to the runtime; later host delivery remains a separate concern.
 
 ```mermaid
 sequenceDiagram
@@ -161,5 +155,6 @@ When a persistent `ConversationSaver` is configured, host-confirmed final delive
 - Test delivery separately from polling: direct wake-up may be rejected or lost, while a five-second polling error must leave the task eligible for the next observation.
 - Preserve notification boundaries: escaped and clipped child text, allowed media, dropped assistant-only blocks, non-user metadata, and redacted automatic failure details.
 - Test skills as state transitions: source precedence, cache/reload with `skills_metadata=None`, pinned content, load-warning sanitization, and gated tool disclosure/execution.
-- Test automatic and manual compaction as distinct paths: automatic offload precedes summary, while the manual tool summarizes before offload. For manual failure, assert the error `ToolMessage` is appended but `_summarization_event` is absent from the update; for an offload returning `None`, assert a new event with `file_path=None`.
-- Test Talon’s whole-invocation retries separately from model-node retries and test that archive promotion follows confirmed channel delivery rather than merely a graph result.
+- Test automatic and manual compaction as distinct paths. Assert that automatic events carry a cutoff message ID and rebuild from it after checkpoint replay or message removal; sync automatic compaction offloads before summary, while its async implementation can run those independent operations concurrently. The manual tool summarizes before offload. For manual failure, assert the error `ToolMessage` is appended but `_summarization_event` is absent from the update; for an offload returning `None`, assert a new event with `file_path=None`.
+- Test refusal contracts separately: the main agent raises `ModelRefusalError` by default, an earlier fallback can handle it, and excluding the middleware returns the refusal. For both `task` and `atask`, test returned, raised, and structured-output refusals become a parent-visible tool result, while non-refusal exceptions still escape.
+- Test Talon's whole-invocation retries separately from model-node retries and test that archive promotion follows confirmed channel delivery rather than merely a graph result.

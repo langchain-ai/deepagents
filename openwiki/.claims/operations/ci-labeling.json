@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:110b264e2a0aef1143ef659904a2d53435d2b2ba6189dfed9bc3d0192921e8df",
+  "pageVersion": "sha256:07f715318d8bd5fb70c5108ea20f481f1aa0c9115dde1bca4a59dce92afd86a4",
   "claims": [
     {
       "id": "claim_10c098882c8a4f6ca2ae373df529e738",
@@ -113,16 +113,24 @@
       "statement": "The `✅ CI Success` gate runs trusted base-ref gate logic, always requires lockfile validation, keeps push and merge-group evaluation strict, and permits only failed Talon jobs on qualifying non-Talon-source pull requests to be waived with advisory reporting.",
       "evidence": [
         {
-          "resource": "repo://.github/scripts/tests/workflows/test_ci_workflow.py#L232-L335",
-          "version": "repo-lines-v1:sha256:b430a0454933bff9780fd3c1bea13352bdc0c90586518b6723aa9cbda5647d44:eyJzZWxlY3RlZExpbmVDb3VudCI6MTA0LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI1OWQwMmRkYTFhNWQzYjg0N2UzNWE4NzgyOWZlYWJkODBlNDAwNzk4MGY3Njc1YjhiNGQ3MjJiNGQzZGFhYzAxIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiIwYmYzNmRkNzRlZWZhZWVmZTlhNjczOTc5ZWNjNmExZmQxYWZlNTE4MGM0OTBmMTk1ZWFhNjlkNGNkNjA3NmQyIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI2NzA4NjY5ZjE4MjM2MzgyMTJiOGYzY2ZkOTBkNmQ1MTBiNTY4MDcwZTczODhlOWNmNGM2NGJjNDViZjFhMWZlIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI1NjgwYjBmMjkyOGFjMGRiZjNkZDRhMzFkNWMxNmU5MTk4YTI5YTYwODZkMzljZmI1N2MyMGY2MGJlMzNhNjVkIn0"
+          "resource": "repo://.github/scripts/checks/ci_gate.py#L43-L87",
+          "version": "repo-lines-v1:sha256:f0d2f19221662d80a5e3e1c38d08debc66f83d571610bf9de77bcdde15e976a3:eyJzZWxlY3RlZExpbmVDb3VudCI6NDUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImMxNDA0ZTJmMWM4NDU4YzljZjM4MDJlZDYxODcyZWFhMzNjNjcxOTAzYTczMjAxOWNhNDkwNWYxNDI1NmVhZGYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMwYzFmMTg4ZjE0MmVkN2E4MjQ2ODBiMjA3MTcyYzU1MTliYzYxNGE0OGZkYTdjZjE2N2VkYjhkZGY3OTk1NmMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjFiMjE4YjBkMDgyZGE0NmZmNDM0NjY5MmJlNzI5MjUxYzNlOTU4ZGIyZjEzMWI0ZGUzODA1ZjE5NTk1NzA0NjUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImM0MTU3NzZhOTlmMTQxNTY1OWRlMjZlYjRkYjI2MTg2M2ZhMTIxOTY2NjBjOTU3ODUzYTYzMTMxOWJmZDliODYifQ"
+        },
+        {
+          "resource": "repo://.github/scripts/tests/workflows/test_ci_workflow.py#L193-L222",
+          "version": "repo-lines-v1:sha256:1bfe3da211e11c8960ec2ccaf2a4702fe3410ff752840bdef7abb5c0c9cdc624:eyJzZWxlY3RlZExpbmVDb3VudCI6MzAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImVjYWI4ZDczNmRkOGM1MTc4ZmQ3YjM0MWQ1ZDM0NWFiNmEzMWQxOGRhMDY2NmVjNGVjOTQyOTJkMzc2ZTU2M2EiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjY0ZWE2OGE2MTk1ZTUyMzEyNGU0MzFiMzgzNTIzMTAzYmM0ZWEzNWZhZGRhMTI1OTdlMTVkZjA0NWM3NWQxMTgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImNiZWYzMzIwM2ZiNjE5MTA2MDZmYTUwMzgyMGM5OWQ2MWE5ZTVkMWM3NzgxOWEzMmJjMmFjNjg2Y2RjYzAzOTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImFiZjhjMWM1ZGVhNTAwNmVlNDg3Y2VkNjNlMmU1YmJhNmQwN2MyMjRhYTBlNGMwMTM2YzFhYWMyNWZjNjg4NWIifQ"
+        },
+        {
+          "resource": "repo://.github/scripts/tests/workflows/test_ci_workflow.py#L339-L366",
+          "version": "repo-lines-v1:sha256:9d318a079a7bce7e39b5861a9d89d61f25f2bfdbf2ce0b6f4dceaca4d3ad73e4:eyJzZWxlY3RlZExpbmVDb3VudCI6MjgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ4ODFjODIyN2Y1MjFhNTFlNTNkMTY4MThjZDE2NGEzZTVhMmQ4YjAzOWI1MzUzYzNiNDI5YzRkYTZmNjM2ZWIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBiZjM2ZGQ3NGVlZmFlZWZlOWE2NzM5NzllY2M2YTFmZDFhZmU1MTgwYzQ5MGYxOTVlYWE2OWQ0Y2Q2MDc2ZDIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImZkZDNiY2UxMmEzM2ZiMDVkZmVhZDg5Y2IwOWYzZWRhNGE2ZDFlNGFiY2RjNzc3MjRmOTNmN2JmM2JlY2VkNTciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjU2ODBiMGYyOTI4YWMwZGJmM2RkNGEzMWQ1YzE2ZTkxOThhMjlhNjA4NmQzOWNmYjU3YzIwZjYwYmUzM2E2NWQifQ"
         },
         {
           "resource": "repo://.github/workflows/ci.yml#L699-L780",
           "version": "repo-lines-v1:sha256:c9f9e3394d0719bd6100e447b7b7bcc70f8c665aa56e1a53abe7481f31ecf202:eyJzZWxlY3RlZExpbmVDb3VudCI6ODIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU2OWQwOWE2MDcxZjFmYzEwMDJhNWI3YzE2YjY0MTdiYzcxOGJjNDIyMTM4M2MzNGIzZWM4MmVkNTUyZWM5MDUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjA4MmMwOGVjOGZlM2Y4NjFkZTY1MjY0MTMxNmY5MjFmZmE4NzZhNGUzYTQ5MjRlZGI2YzA4Nzg4NjZmYjAxYmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjUxZDUxZDFkNTc2YmEwMzMyODUwN2RiMWNlMThmNDEwZGJhNzQzYTUyODdhZTQ3MzRjMGQ2NTJiNzU5ZDNjYWUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjdhYjQ2MTQzMjJjOTU0NTk1ZDA3ODhmNTI4ZDAyNzBhY2E1YjIyMDQ1YTBiOTY1N2JlYTAzZmMzMDVlMWVhMTEifQ"
         },
         {
-          "resource": "repo://.github/workflows/ci.yml#L848-L880",
-          "version": "repo-lines-v1:sha256:d9be1864b6b2dd1ec3b84d905c420671c530ff5102a780a3cd809b7f9ad9dbef:eyJzZWxlY3RlZExpbmVDb3VudCI6MzMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjlhYzQ3OGEyMjE0NTJiNzAyZWRiOTZjNjRlNmEwMjQ3YTljZmZjYThhMzU4ZDdlNWM4ZWQyZjBhODBkODI4MWMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjE2ODJkMzQzZWFjMmI2OTA4ZDVkNDIyN2U3MTU2ODUxZDdjYjc5MmExZDAzYjMyMjYwMjgzOTE3YWEyMzVhMDEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjAxZTNiNTgwYTljMTlkZjA0YTMwNzQxYmY4OGI2ZmVkZTgzYzYxOWI2NDA1NmEzMWFjNmNiNzExOGYzNmRhZjEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImI3MTY3NWZhMmJkOTJmYjc2YWJkYmJjMmNhZWI0MzFjNDhkNmM4NTExYWZlOWE5MWViZjA0MmRkMTZkZjU2YWIifQ"
+          "resource": "repo://.github/workflows/ci.yml#L848-L930",
+          "version": "repo-lines-v1:sha256:8c7dc30e9c2bfc34afa641f53a563d5cc1f71d909c32fb7101d1e07634382f80:eyJzZWxlY3RlZExpbmVDb3VudCI6ODMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjlhYzQ3OGEyMjE0NTJiNzAyZWRiOTZjNjRlNmEwMjQ3YTljZmZjYThhMzU4ZDdlNWM4ZWQyZjBhODBkODI4MWMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjY4MzljZWI2YTE5Y2NkN2E3NzczNGMwYjk2ZTJmOTUxMDE2OWQ4YTZiNGVlNjk5YTk1MmMwNzgyZDVjZmVlNGUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjAxZTNiNTgwYTljMTlkZjA0YTMwNzQxYmY4OGI2ZmVkZTgzYzYxOWI2NDA1NmEzMWFjNmNiNzExOGYzNmRhZjEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjoxLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQ2OGFiYWI0ZGQ0ODJjMzQwNWY5NWI5YTA3MzU5OWY0Y2U2MmEwYjYzZDExODU0MDU0ZjY4MWU1Njc3NDRiNGYifQ"
         }
       ]
     },
@@ -219,10 +227,98 @@
           "version": "repo-lines-v1:sha256:7ba86572826e4ae966410185b035644751c956882257c9805d2b99d6b5de1d20:eyJzZWxlY3RlZExpbmVDb3VudCI6OTYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjY2YzJlYWMwNmM2ZmRiMjdmMzI3MDZhOTU1NTNkNDlhZmYzYzhkMWVjZjA1ZmE3NDU1YTNhNTI0MzkyNTY1OTMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU0Mzk5NDc4OWM4MWE2ZGFlY2IyMWQzOWU2NGZmYTliODA2ZjczYWFiNjQzMTQ4MGFmZmY4MzE3MTExNTA5ZTkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjYxMTE4OGU0ZjU0MGYwMzQ2YzAxZjNhOTQ2NjdjOGZiYzEyNjU2ZjU3NzNlNWQ4ODIzMDM0NWJhZTMxZDA4YzIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijg4NGViMGIxYzA0MmY4ZmVlMjM0MTIwZjcwODhmZjQ2ZjhjZTQ2YTIxZGEyYTA2OGM2N2E4OTc0ODVkMzBiM2QifQ"
         }
       ]
+    },
+    {
+      "id": "claim_96292e8aaf134f9ab3662a14e70929c6",
+      "statement": "CI unconditionally calls the reusable lockfile workflow, which performs a credential-less checkout, checks every discovered package lockfile when invoked without paths, and runs changed-file hygiene on non-push PR and merge-group events; either validation failure blocks the shared job.",
+      "evidence": [
+        {
+          "resource": "repo://.github/scripts/checks/check_lockfiles_pre_commit.py#L17-L33",
+          "version": "repo-lines-v1:sha256:72058a554ccbcc038aaeeeeb6ac6ce1574fd0f4932af1325fa5e7ddf2ef01bb1:eyJzZWxlY3RlZExpbmVDb3VudCI6MTcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjJmZWE1YjFiZmFjY2EyYjYyZGRjOTJmZTczODdmNWMzZDBjMjgyMTQ0MWNjZWU2MDgwZmJkODY1YjcxYmY2N2EiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjZmMWZjMWM1OTE4NTA2YmEzMjdkMTFjNzdiZDE1MzQyODUzMTg0MzY3NzdiZTE3Mjk4YzhiNzA2MGJhNjY4YTIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijc5OTkzMzQyYTgzODdkMjJkMzFkNjYyOGU4ODhkZWRkYTllZjU3MThiZWM2OTY3NTZmY2ZhNmQyOTVhN2FmZjIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjZmOTIwNTdhYzZhZGI1YzM3MWE2MmVlMzQ2NzU3MDJlYjIwMDBlNDc3NTc4MjQzOTMwYjQ2ZmNmNmQ1N2QxNDEifQ"
+        },
+        {
+          "resource": "repo://.github/scripts/checks/check_lockfiles_pre_commit.py#L94-L145",
+          "version": "repo-lines-v1:sha256:8cf5190a669ddec91e7ff262e46b2f6a41402b1c1c6f9b7030cba1ecd8e4fc3d:eyJzZWxlY3RlZExpbmVDb3VudCI6NTIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImViNDQyOGQ5NzhhNDJlOWI5YmY4MWFhMDkyYjhhNDhhZWUxNTU4MTcxNDg2ZjU2OGMwMmZhOGFhNjJkNjJlODAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjlmMjc5OTRiZDE0NWMzMmY5MjYxOTg4YjYwMjMwYWE3YmQxYzIxMWRlMmEzM2NmZTNlOGU0MTY4ZDEwZGQ3ZjYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjYzOWE5YTVjM2QxOGMxMDdlNjcxZjc4ZjBiY2Q0OTYzOTQ1MDM2MThmZjQ5MDFmZDdmMzVlNDY4NjMwZWNhNmMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjA1NzIyYjhjNGYyODMxYTA4YTZmZjE2OGQxNjUxMTRiNmZkYmFjZjk4NDIxNTM2NjI3NzY5M2JkY2IzYmQwMjAifQ"
+        },
+        {
+          "resource": "repo://.github/scripts/tests/workflows/test_ci_workflow.py#L225-L260",
+          "version": "repo-lines-v1:sha256:29dd50458a309da009405705e5489b059c076e1c254efa0a274460b3b0941f0d:eyJzZWxlY3RlZExpbmVDb3VudCI6MzYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ4MDhiYjhjZTE1MjEzODI0ZGY0NWQ2Y2NlYjRiMzljZWE5ODY3NTUxODVmMDNmMTg5MDc0ZTcwMmM3Njc3NjUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAwYjUzYTE4ZDMzODkwNTUyMjg1MmUxZGRlYzA1ZTcwYzdiNGU4NzM4ZjQ1YzNiMmM4ZWNiNDZjNGM3MGNjMWQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImNiYTUxMzhiYTYyNjA1OWNmZDBlYTA1ZjE2NjM2YmNkNGZkNzgxYTIxNzZiZTE0OGE1ZGRiMzI3ODFlNGZjN2QiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQwNWU0ZTc4ZTc1OTAyNDBiNjJkYjI1ZmZmMjQ2MmM5Yzk5MjUzMDBhYzIwZTJmM2VjNzgxYjljZDZlZWQ5MTIifQ"
+        },
+        {
+          "resource": "repo://.github/workflows/check_lockfiles.yml#L10-L50",
+          "version": "repo-lines-v1:sha256:ecac9775c11bbaac4d4902a12eaf4e8cf116f8c85d2e4ba9d7288a6941e58c02:eyJzZWxlY3RlZExpbmVDb3VudCI6NDEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM1MjYyNDdlZGUwMDZlOWJkYWI5YzY4NTA3Mjg0MjVkMWI0MTY2Y2FmNWNhYzUwY2YwOTU1YzQ0ZDI0YzFhOGQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImJmNTU5NzljZTczMDIwMzNlNmIyZmQ3ZDg4ZjUzN2EzYjhlMDkxZWEzMDVjODExZmZhMTI3NGJmNTc2NGVhNWUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjRmNDE2NmJjMzk5N2NhMTMyN2Y4N2U1MzExNGQ0ZjgyNGE3ODc4NTMxNjAxNGZkZDM3NzIyMDE5ZmRkOGFhZmYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        },
+        {
+          "resource": "repo://.github/workflows/ci.yml#L43-L46",
+          "version": "repo-lines-v1:sha256:58711779a4843d1859c2d7ebce8a0661a12fcdd2da6d233f13e31def5b97b4ed:eyJzZWxlY3RlZExpbmVDb3VudCI6NCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiZTlkODAxNTRlZDQyZmM1Yzc3OWIxMzMxNTc4YjU4Yjg5YzgwMWVhY2U3NGYyNGNkNDhlYjRhMjM1Nzk0MGE5NSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiYWMxMjEzMDFjY2MxOTU2MDcxYTUyZDg3MjlkNGMwY2YyY2NiMjI1MzVkNTQ5MDYyM2JiNWJmZDliYjNiNTVkNiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNGI2NTM1OTU5NzBkOGJhZWQ2YjMxMDEyZjE5N2FjN2QzYzYzYTY1ZGU2NjVlZjM2M2ZmOTE1M2JmYjNiMzZmMiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZGE3OWFmZDc2Njk3YTc4MTExYTVlNjA5MzJiNThiYjNiNTU2ZTIyMDcwODJjYzhlYmRhYzQzNzQ1NTExMGViMyJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_a244f13284d64b1c890774f5b659d3ad",
+      "statement": "The lockfile checker limits explicit-path validation to owning package directories, expands changed manifests through transitive local `[tool.uv.sources]` consumers, and reports a package-specific relock command when `uv lock --check` fails.",
+      "evidence": [
+        {
+          "resource": "repo://.github/scripts/checks/check_lockfiles_pre_commit.py#L36-L80",
+          "version": "repo-lines-v1:sha256:946b729897bc724f29ec767e77edcd98a9369b746f38c5a70086ad903c34982d:eyJzZWxlY3RlZExpbmVDb3VudCI6NDUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFjNmJlYTJiYWM1YzMxNTQ0ZGQzNGIyNjc4ZTUwMWZlMjg1ZmFiNTZkNGUzY2ZhNWVmNzk5ZmUyYzgyZGRlZWMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjRjY2I0NjQ4NzI1YmNlOTVhZGYwNWJhM2ZmNzA1MzJmZGE1MzgyZDk1MWU0YjliMTc5Njg2OTM4N2Q1OTBlOWMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjYyZDM3ZDk0MjJmOWFkNTQ0YjhlYzU2NzQ0N2FhYmU1ZDk5ODdmY2Q1Zjk1ZmUxOGU4N2UyOTg2OWQyZDYwYTIifQ"
+        },
+        {
+          "resource": "repo://.github/scripts/checks/check_lockfiles_pre_commit.py#L89-L126",
+          "version": "repo-lines-v1:sha256:73b775137c4bca7d617667750cd49377ebffb7fb7887b4ede1ffd7d1a3c94fb0:eyJzZWxlY3RlZExpbmVDb3VudCI6MzgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImUxNmY2MGQxM2NmOWZjZGNiNmQ1YWNkYWVmNDExN2M2Y2VmZWM1NGI4ZTY1ZmU2NWQwMTI0OGRlMWY4NWZhOGYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMwYzFmMTg4ZjE0MmVkN2E4MjQ2ODBiMjA3MTcyYzU1MTliYzYxNGE0OGZkYTdjZjE2N2VkYjhkZGY3OTk1NmMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjMwNDE4ODcxNzFmNTI1NGI4MTcxYTAxNTk3MTkyOWVlODhhNTViNDNhMjQ2NDc4ZWNkZThhNTlmMDAwYmNjMjMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjUwYzEyMTk1ZWY0MGM1MDZkYzBiOWZmZjE1NmJiNTEyMGNjMTdkNTYyMGYzMGUyNjRlY2Y2MTI5NDFlOWRjN2EifQ"
+        },
+        {
+          "resource": "repo://.github/scripts/tests/checks/test_check_lockfiles_pre_commit.py#L21-L103",
+          "version": "repo-lines-v1:sha256:a50f6174b3e954723496c452835e14449032ce1817e2c45742835d23b35b1c91:eyJzZWxlY3RlZExpbmVDb3VudCI6ODMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjIzZWM3NjAzM2ViMWM5Y2MwYjcxOWUzMzM1NDMxN2U4M2E4N2UwNWEzY2EwNzBmZGNkM2QxODIyZjBiMTg2Y2QiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMwYzFmMTg4ZjE0MmVkN2E4MjQ2ODBiMjA3MTcyYzU1MTliYzYxNGE0OGZkYTdjZjE2N2VkYjhkZGY3OTk1NmMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjY2MGVjZDc4YjIyMWI3ZjZlODU5ZTg3MWI4NTUyMzM0MDUxNTRlZjA3NDJhMjdhNDA4YjczZGMyOTU3N2Q5ZDMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImQ5ODExNGMzYzA1NTdlNjM2NWFlODVhYWRjMDljZjQ2MjE3NWE1YTM1OWFlMGI0YTJlNmIyY2U0ZWY0OTMyMDAifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_1438cc14b6dc4b81aca9dd28b4a576d4",
+      "statement": "For a trusted release-bot changelog-only curated-notes apply, CI skips normal package work only after finding a conclusive parent CI result, then passes its gate only for an inherited successful parent and preserves a failed parent as a failed gate.",
+      "evidence": [
+        {
+          "resource": "repo://.github/scripts/tests/workflows/test_ci_workflow.py#L285-L336",
+          "version": "repo-lines-v1:sha256:7639830e7ef45f52369894f02e213f6cc2a9e9b58f7189f5cc74afabf523ad9a:eyJzZWxlY3RlZExpbmVDb3VudCI6NTIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImUzODNkZjNmNDAyN2YzNDM3Yzg3ODM4MTc3NGNjZjIzY2Q1OGRjYjY3ZDZkYTM3NDNkNzY3NTZiNGQ2ZWQ1YWIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjE3OTNkMTYwZWIzZjRmNmQwN2U1MGJhMGJkNjNiZDM1YTRkZGFlYjAwOTZmNmY4Mzg3ZWYzNWQ2MjkzYjEyNzAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImZmNDIyMGE5MTdlYTFhMWM0OWMyZmExNDE1OWQ4ODY0MWM5NmY2ZjE5NjcxMjAwNDgyM2Q4MDlkYWYzMDZhMGIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjRhNTc5ZTg2MDU5ODc3ZDMzMjY1NDFiMGZkYTA4ZGYwODY5YzU1OTI4NWMwMTU1NmVlOTM2MzU1MWYxODMxNjYifQ"
+        },
+        {
+          "resource": "repo://.github/workflows/ci.yml#L52-L141",
+          "version": "repo-lines-v1:sha256:cec7f29bb05796d6baaf524467712563f97a70b9518a8e6a4a5e4dbc309ca035:eyJzZWxlY3RlZExpbmVDb3VudCI6OTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZjNGQ5YjgyNGJmMzI1MTNjMTMxN2E3MDY0ZWUzYmQ4NWFjMzU2MjJlM2QxMDFkODVmOWM0ZTUzN2YzNzJhZTAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU3ZWUzMjI4NDA0YWU0MTY0NTIyMzhiYzIwYTRkNmEwMzk4ZTMxOTBmYmY4MWJlYWU1MGMxMGQxOWZkMDkwZGQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImZkYmIzYjhkYTI3OWQ5MDM0Yjg5OGZmYzg1NzViNjE4ZDhlMmZkZjc4MzZhM2JlNjc2YzlhM2MzYzNjYzdhOWMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImZmYjUwY2U5ZDVlZTE4Njg3YmQzMjBmYTJjNjU1OTQ4NzcyZTM0Y2RjYjA0YmZjZDRkMzkzNTVjMWUzOGZiZGMifQ"
+        },
+        {
+          "resource": "repo://.github/workflows/ci.yml#L566-L588",
+          "version": "repo-lines-v1:sha256:40743d651a55c4f5e1d9f96acbaf205a84fc2623e17ce406c93a933fca5ac743:eyJzZWxlY3RlZExpbmVDb3VudCI6MjMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImRlODc2YTJhNWYwY2E3M2I2YWY2YmE4N2IyYzU0MjM2YzQyZDNlZGNjOTBlNWE5YWVhMjFkNWE1OTVkMTBkYWMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjFiYzEyZTI1M2NkZWFmODJmYzViOWEyMWE5ODhhYzEzZTAwYTk4NzZiY2MyNzQ2OGI3NmIwYTBhNWRmZTQ5YTIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImJkNWQxNTcxZTU1MTZjMThmNjVjNmMzMTFkNmMyNzNiMWY4NGQ2YTc4NTA3ZDAxYjU5YTg0ODYwYjhiNGZlZmMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjcyMDRlZWRmYTlkOTgzY2UyY2JkNWNlODc0NWI4NmRkMDE5Zjc5YTRhYzk4NDRjZGU4YWQwZGUzZWQ3MzU1ZTEifQ"
+        },
+        {
+          "resource": "repo://.github/workflows/ci.yml#L848-L873",
+          "version": "repo-lines-v1:sha256:f3e1d533963e03c915657c3968ded328e19629ead9cfa9ebb786cc6fa0f23802:eyJzZWxlY3RlZExpbmVDb3VudCI6MjYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjlhYzQ3OGEyMjE0NTJiNzAyZWRiOTZjNjRlNmEwMjQ3YTljZmZjYThhMzU4ZDdlNWM4ZWQyZjBhODBkODI4MWMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImJmNTU5NzljZTczMDIwMzNlNmIyZmQ3ZDg4ZjUzN2EzYjhlMDkxZWEzMDVjODExZmZhMTI3NGJmNTc2NGVhNWUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjAxZTNiNTgwYTljMTlkZjA0YTMwNzQxYmY4OGI2ZmVkZTgzYzYxOWI2NDA1NmEzMWFjNmNiNzExOGYzNmRhZjEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImU2NzYwODEzNzRkNTU0MmVkM2Q1NDZjOWE3YzYxNmY0YjY5ZTM3OTEyMGFlOGZhMDdlODdhODhkYzA3YmU5YWIifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_8b1142005e01467f84d4f8e4f327cf09",
+      "statement": "The release-please fan-out detector derives managed components and bump-worthy title types from the trusted configuration, and reports both lockfile-only managed components and multi-component real-file edits; the workflow makes those results blocking unless the exact acknowledgement label is present.",
+      "evidence": [
+        {
+          "resource": "repo://.github/scripts/release/check_lockfile_release_scope.py#L162-L250",
+          "version": "repo-lines-v1:sha256:d5955c222243f8c5ecccec0e39643f2483311ce101410838e7c043cc18f07a0f:eyJzZWxlY3RlZExpbmVDb3VudCI6ODksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImMzZjU5NjUyNzQ5MjUzOWMyOWY1MjM0N2I2ODM2ZGU4NTA0YjBkZWZkMzVjMDJmOTU5MWQyZWEyYmE1N2RhNGQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjE2MjMzYjNmZmVhMzJhMjNkZjUzMDY1MzQzNDhmMmRlZTc3NmE1YTZmNzRmYjUzMzE3NWRkYzUzOWE4ZmU0NjQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjJmODIxMDkzMzkwZmFmMTQ0NTNhMTcwMzI1ZDM2OWFkNGY2NWZmMDkxMTdlY2JlZTE5NjU5NWE3N2FmNjMyMWYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjNkNDEzNDBjYzIzOWExNTljZTliNjAyMmU5ZjYzMjI4MzJlMmVhZDc2Y2FlOWU0NzU0ZDIxMGViOGZiNmQ1ZTgifQ"
+        },
+        {
+          "resource": "repo://.github/scripts/release/check_lockfile_release_scope.py#L70-L116",
+          "version": "repo-lines-v1:sha256:6da66d4174f57922adb872eef3f2193212eb56bccd3c036c77bc088f32f1c970:eyJzZWxlY3RlZExpbmVDb3VudCI6NDcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImEzNGIxYzEwMzVlOGNjNjdjY2JlZDgwYTYxODVmMjRjNDU4YzBmZTBjODA1MTAyMTk4NWU2YjYwMWZlYjc3YmUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijk1YzkyZjBkMWNmOTUwNGQzZmIzYjA1OTE2NjcxZDVjM2VjZWRmNjI4MzkzMjFhOTQ0NDA4MTAzNjA0YjhmNzUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImQzN2UzMjIwYzA3Nzc2MzI0NWZlOWM3ZGQ1OTZlNTk5YmRhMmMyODM5NjI1NDk0Y2VjNjYxZDZmMTM1ZDllNmUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImY0OTgwYjU5YTBhNDY0MTdlZTdmOTdiYmM4NjY2NzU2NzE3NTQ3Mzk4Y2U4NzkzZWU5MGIxZDE5N2JiNTQxZTEifQ"
+        },
+        {
+          "resource": "repo://.github/scripts/tests/release/test_check_lockfile_release_scope.py#L38-L143",
+          "version": "repo-lines-v1:sha256:e4ce46ad19f4529bc3268123975b279960779faaff86c317c1a6869d70665e8b:eyJzZWxlY3RlZExpbmVDb3VudCI6MTA2LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI2ZmEzYmY3NGQ2YWVlOGM5ZjU3MGM5N2RhNmNkYjMwMWEwMTRiZmExZDZmYmM0ZWRiZWVjOTgwYjA0MTU2YzE4IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI0ODkzZjQwZTM3ODFlYjg5NmM4MmQwNDZhMDgwNjdhMTFlMzVjZGYyZjFkZmFmMjZmZWE5MGI4ZGI2Njc2NDEzIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiIwOWY5MzA4M2MxOTcxMjFiOTgyNzAwYmE4YWZhYmQxNzIyY2YxZDNlNzQwNDUwOWU4MGVmYTI3MjQ3ZjYyZjA3IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiIxOTIwMGJmYjdkNDQ5NWJiNzc0YzQ3MDI4NjVhMTIyZDIyYmFjMzZlZDNiMzhlYTNmMGZhMmIzNjYyYjZjNmUzIn0"
+        },
+        {
+          "resource": "repo://.github/workflows/release_please_scope_check.yml#L288-L387",
+          "version": "repo-lines-v1:sha256:8bd20b7615009fbe406c0c0feb3108c18fff054e6dab522059c6f0145530682a:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAwLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI0OTg1ODE1MWVlYWU2ZmIzNTMyZjAwMmQzZDJmYWVlOWU0YmFjYmFhZGNmMDMzOTVhNzYzZTNmN2Q5ZjgwMDE0IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI1NTIyYzQyY2QxOWM2ZDAzZDgwOGM0NTI3MjA1NTI4MjViN2VhMWM1YjQ5MWIyMTg1MTFjYWM3NDE1Y2Y5ZDliIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI2ZTM1N2QzMjgwYzY0Y2ZlM2UzYmIxMGM3ZGYxNzcyZGUyMDQwNDJkMjY4MjU4MGQ1MzIwOWI3MDc4NjUyNGRhIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MCwiZm9sbG93aW5nQ29udGV4dEhhc2giOiJlM2IwYzQ0Mjk4ZmMxYzE0OWFmYmY0Yzg5OTZmYjkyNDI3YWU0MWU0NjQ5YjkzNGNhNDk1OTkxYjc4NTJiODU1In0"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-11-02T08:04:35.090Z"
+    "at": "2026-11-06T08:04:19.814Z"
   }
 }

@@ -1,16 +1,20 @@
 ---
 type: composite-action integration
 title: GitHub Action Integration
-description: Run one bounded, non-interactive dcode task from a GitHub Actions job. Documents the root action compatibility contract, dcode execution boundary, memory cache lifecycle, release alignment, and CI coverage.
+description: Run one bounded, non-interactive dcode task from a GitHub Actions job. Documents the root action compatibility contract, dcode execution boundary, memory cache lifecycle, versioned CLI assumptions, and CI coverage.
 tags: [github-actions, dcode, deepagents-code, ci, automation, memory, mcp, sandbox]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-11-02T08:04:35.090Z
+    at: 2026-11-06T08:04:19.814Z
 sources:
+  - id: openwiki-source-75ab344a500d6a7392581a42
+    resource: repo://.github/scripts/tests/workflows/test_ci_workflow.py
   - id: openwiki-source-b1423dca16677f7643488f74
     resource: repo://.github/scripts/tests/workflows/test_github_action.py
   - id: openwiki-source-4d9cccca7700db7220ec055e
     resource: repo://.github/workflows/_test.yml
+  - id: openwiki-source-fa3e3af42f9e8d6ed58a473e
+    resource: repo://.github/workflows/check_lockfiles.yml
   - id: openwiki-source-164e2da859b5277df81c7d94
     resource: repo://.github/workflows/ci.yml
   - id: openwiki-source-46fa34397e41ebf7491c7359
@@ -19,15 +23,19 @@ sources:
     resource: repo://.github/workflows/release.yml
   - id: openwiki-source-96d0addee4aedab20d360121
     resource: repo://action.yml
+  - id: openwiki-source-6c2e9cfaa20096e021221d47
+    resource: repo://libs/code/CHANGELOG.md
   - id: openwiki-source-ecf20e7a2684ba0d2ae7d701
     resource: repo://libs/code/deepagents_code/client/non_interactive.py
   - id: openwiki-source-16a7ceeef9313200258d31eb
     resource: repo://libs/code/hatch_build.py
+  - id: openwiki-source-7ba50bd13eb62341a2061ef9
+    resource: repo://libs/code/pyproject.toml
   - id: openwiki-source-0fc0e47059e4d07e23e50be2
     resource: repo://libs/deepagents/deepagents/graph.py
   - id: openwiki-source-482fa4ca84f42b04ba025fc1
     resource: repo://release-please-config.json
-generated: { by: "openwiki/0.4.2", at: "2026-11-02T08:04:35.090Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-11-06T08:04:19.814Z" }
 ---
 
 # GitHub Action Integration
@@ -53,7 +61,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-      - uses: langchain-ai/deepagents@main
+      # Pin this to a reviewed commit SHA in production.
+      - uses: langchain-ai/deepagents@<reviewed-commit-sha>
         with:
           prompt: "Review this repository and summarize the highest-risk issues."
           model: "openai:gpt-6-astra"
@@ -169,6 +178,10 @@ The composite action and dcode have separate version selectors. A workflow's `us
 
 `deepagents-code` is the release-please component rooted at `libs/code`: its configuration updates the package manifest, version module, and changelog. When a release commit changes `libs/code/CHANGELOG.md` and is named `release(deepagents-code):`, `release-please.yml` identifies a Code release and dispatches the separate `release.yml` publisher for `deepagents-code`; that publisher maps it back to `libs/code`. The package build can stamp the exact release commit into the wheel for `dcode doctor`. Thus publishing a new CLI changes what an unpinned action can resolve, while changing root `action.yml` changes the action behavior at whatever repository ref a workflow selected; neither boundary substitutes for testing their compatibility.
 
+### Python compatibility is part of a CLI pin
+
+The published `deepagents-code` package is currently `0.2.5` and declares Python `>=3.14,<3.15`; the `0.2.0` changelog records the move to Python 3.14 as a breaking change. The composite action sets up `uv` but does not declare a Python version itself, then asks `uvx` to resolve the selected package. Consequently, treat `cli_version` as a package-runtime selection as well as a dcode-feature selection: confirm that the runner and `uv` can satisfy the chosen release's Python metadata. The action's `0.1.0` floor prevents only a known-incompatible old CLI, not a Python-version or optional-flag compatibility failure.
+
 ## Change and regression focus
 
 `action.yml` is the compatibility surface to review when changing this integration. Keep its declared input list, run-script flag mapping, defaults, validation, outputs, and cache paths aligned. The focused action tests parse `action.yml` and dcode's root argument parser to detect flag drift and prevent reintroducing `--auto-approve`. They also execute the real run-script body with stubbed `uvx` and `timeout`, covering validation, stdin/skill exclusion, CLI-version command construction, timeout arithmetic including leading zeros, exit propagation, and the stdin SIGPIPE case.
@@ -179,6 +192,6 @@ Run the focused check from the repository root:
 python -m pytest .github/scripts/tests/workflows/test_github_action.py -v
 ```
 
-Repository CI runs this file as part of `python -m pytest .github/scripts/tests -v` in the `Validate Release Options` job. That job uses Python 3.14, installs `packaging`, `pyyaml`, and `pytest`, and also pins Node 24 because the helper-test suite includes Node-based checks. It runs on the CI workflow's pull-request, merge-group, and `main`-push events unless the change detector identifies a curated release-notes-only apply.
+Repository CI runs this file as part of `python -m pytest .github/scripts/tests -v` in the `Validate Release Options` job. That job uses Python 3.14, installs `packaging`, `pyyaml`, and `pytest`, and also pins Node 24 because the helper-test suite includes Node-based checks. It runs on the CI workflow's pull-request, merge-group, and `main`-push events unless the change detector identifies a curated release-notes-only apply. Separately, CI always calls `check_lockfiles.yml`; its shared job checks all lockfiles and, outside pushes, runs changed-file hygiene. Those repository-wide checks do not replace the action wrapper's behavioral tests.
 
-This is the direct CI coverage for root `action.yml`: the dedicated `code` selector **does not include root `action.yml`**. It selects Code lint and sharded Python-3.14 unit tests for changes under `libs/code` or `libs/deepagents`, or for the shared `ci.yml`, `_lint.yml`, `_test.yml`, and `.github/actions/**` infrastructure paths; those jobs also run on pushes to `main`. Thus an action-wrapper change should be validated by the helper-script job and focused test above, while a CLI or shared-workflow change may additionally select the Code reusable workflows. The reusable test workflow installs the package test group with frozen uv resolution and runs `make test` on non-Windows legs with `RUN_SANDBOX_TESTS=true`. For local development and repository CI practices, see [Development, CI, and Releases](/openwiki/operations/development.md).
+This helper-suite job is the direct CI coverage for root `action.yml`: the dedicated `code` selector **does not include root `action.yml`**. It selects Code lint and sharded Python-3.14 unit tests for changes under `libs/code` or `libs/deepagents`, or for the shared `ci.yml`, `_lint.yml`, `_test.yml`, and `.github/actions/**` infrastructure paths; those jobs also run on pushes to `main`. Thus an action-wrapper change should be validated by the helper-script job and focused test above, while a CLI or shared-workflow change may additionally select the Code reusable workflows. The reusable test workflow installs the package test group with frozen uv resolution and runs `make test` on non-Windows legs with `RUN_SANDBOX_TESTS=true`. For local development and repository CI practices, see [Development, CI, and Releases](/openwiki/operations/development.md).

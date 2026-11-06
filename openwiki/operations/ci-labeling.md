@@ -1,13 +1,23 @@
 ---
 type: operations guide
-title: CI, Labels, and Workflow Security
-description: Operational contracts for package-selected CI, reusable test workers, PR labeling, release mutation boundaries, and Harbor-based unified evaluations. Use this page when changing a workflow that interprets untrusted PR data or carries a credential.
-tags: [ci, github-actions, labels, releases, evaluations, security]
+title: CI Selection and Labeling
+description: How CI selects package work, enforces lockfile and hygiene validation, makes the required CI Success decision, and prevents release-please fan-out. Covers trusted workflow boundaries and maintainer label exceptions.
+tags: [ci, github-actions, labels, lockfiles, releases, security]
 sources:
   - id: openwiki-source-3638ff2c170b760df159d81b
     resource: repo://.github/actions/uv_setup/action.yml
+  - id: openwiki-source-9d81aa681a56a98960013750
+    resource: repo://.github/scripts/checks/check_lockfiles_pre_commit.py
+  - id: openwiki-source-c0c09f6fe83cf1ab6089bb24
+    resource: repo://.github/scripts/checks/ci_gate.py
+  - id: openwiki-source-d0bc66880aeeb0817674e1c3
+    resource: repo://.github/scripts/release/check_lockfile_release_scope.py
+  - id: openwiki-source-92f0f267bd28e544f8eba170
+    resource: repo://.github/scripts/tests/checks/test_check_lockfiles_pre_commit.py
   - id: openwiki-source-c0a8cdd7847afa481defa30b
     resource: repo://.github/scripts/tests/evals/test_unified_workflow.py
+  - id: openwiki-source-a3e73f18ddc0439259e73c17
+    resource: repo://.github/scripts/tests/release/test_check_lockfile_release_scope.py
   - id: openwiki-source-1496fd17117e4ab18f9b8ca7
     resource: repo://.github/scripts/tests/release/test_release_notes.py
   - id: openwiki-source-75ab344a500d6a7392581a42
@@ -16,6 +26,8 @@ sources:
     resource: repo://.github/workflows/_harbor_run.yml
   - id: openwiki-source-4d9cccca7700db7220ec055e
     resource: repo://.github/workflows/_test.yml
+  - id: openwiki-source-fa3e3af42f9e8d6ed58a473e
+    resource: repo://.github/workflows/check_lockfiles.yml
   - id: openwiki-source-164e2da859b5277df81c7d94
     resource: repo://.github/workflows/ci.yml
   - id: openwiki-source-f8781d847f6481a966a44a68
@@ -30,52 +42,96 @@ sources:
     resource: repo://.github/workflows/unified_evals.yml
 verified:
   - by: openwiki/0.4.2
-    at: 2026-11-02T08:04:35.090Z
-generated: { by: "openwiki/0.4.2", at: "2026-11-02T08:04:35.090Z" }
+    at: 2026-11-06T08:04:19.814Z
+generated: { by: "openwiki/0.4.2", at: "2026-11-06T08:04:19.814Z" }
 ---
 
-# CI, Labels, and Workflow Security
+# CI Selection and Labeling
 
-This is the operational source of truth for CI and workflow trust boundaries. In `.github`, event-facing files are entry workflows and `_*.yml` files are `workflow_call` components; add shared setup to a reusable workflow or a composite action rather than duplicating it. See [Development](development.md), the [Testing Guide](../testing/testing-guide.md), [Run Evals](../workflows/run-evals.md), and the [source map](../architecture/source-map.md).
+This page describes the operational contracts around the `🔧 CI` workflow: what it runs, which result controls mergeability, and where labels are narrowly allowed to affect behavior. Event-facing files in `.github` are entry workflows and `_*.yml` files are `workflow_call` components; keep shared setup in a reusable workflow or composite action rather than duplicating it. See [Development](development.md), the [Testing Guide](../testing/testing-guide.md), and [GitHub Action integration](../integrations/github-action.md).
 
-## CI selection and the reusable test worker
+## CI selection and the required gate
 
-`ci.yml` runs on pull requests, `main` pushes, and merge-group events. Its change detector maps paths to package jobs: PR and merge-group runs call lint and `_test.yml` only for affected packages, whereas a push runs every package job. Filters deliberately include CI/action paths, and packages that editable-install `libs/deepagents` also select on SDK changes. `libs/code` is sharded three ways; the deepagents matrix also has a Windows leg. A dedicated quickjs smoke job covers vendored prompt snapshots when the SDK changes but quickjs itself does not.
+`ci.yml` runs on pull requests, pushes to `main`, and merge-group events. The `changes` job feeds `dorny/paths-filter` outputs to each lint and test job: pull-request and merge-group runs execute selected package work, while `main` pushes run every package job. Every package filter includes the CI workflow, reusable lint/test workflows, and composite actions, so an infrastructure edit receives package coverage. Filters also include `libs/deepagents/**` for packages that editable-install the SDK; Talon additionally follows `libs/code/**`. `talon-src` is deliberately narrower—only `libs/talon/**`—because it controls the Talon waiver rather than whether Talon work runs.
+
+The workflow has specialized coverage alongside the ordinary package pairings: `libs/code` tests are split into three stable shards, Deepagents has a Windows matrix leg, and an SDK-only change triggers the QuickJS prompt smoke test when the full QuickJS suite is not already selected. Evals changes also select dataset generation, which builds twice and compares the results before building the in-place dataset.
 
 ```mermaid
 flowchart TD
-    Trigger["PR merge group or main push"] --> Detect["Detect package changes"]
-    Detect --> Selected{"Push to main"}
-    Selected -->|"Yes"| All["Run every package lint and test"]
-    Selected -->|"No"| Affected["Run selected package jobs"]
+    Trigger["PR merge group or main push"] --> Lock["Run lockfile validation"]
+    Trigger --> Detect["Detect paths and curated apply state"]
+    Detect --> Select{"Push to main"}
+    Select -->|"Yes"| All["Run every package lint and test"]
+    Select -->|"No"| Affected["Run selected package lint and test"]
     All --> Gate["CI Success gate"]
     Affected --> Gate
-    Gate --> Lock["Require lockfile validation"]
+    Lock --> Gate
+    Gate --> Result["Required CI result"]
 ```
 
-*Package selection reduces PR work, while the final gate preserves a single branch-protection result.*
+*Lockfile validation and selected package work run before the single aggregate gate; selection changes work performed, not the required result name.*
 
-`_test.yml` accepts a working directory, a JSON array of quoted Python versions, optional OS configurations, and optional shard strings. Each matrix leg validates the input JSON before checkout; the non-fail-fast matrix then uses the local `uv_setup` action, runs `uv sync --group test`, executes `make test` off Windows or direct pytest on Windows, and asserts that the worktree is clean. The reusable workflow has only `contents: read` and `pull-requests: read`; a caller may narrow this token but cannot use the callee to widen it.
+### Curated release-bot applies
 
-`uv_setup` pins `astral-sh/setup-uv` and uv `0.13.6`, sets the requested Python version, enables cache by default, prunes that cache, and scopes dependency invalidation to project manifests, locks, and requirements files under its working-directory input. Release preflight jobs intentionally turn this cache off so a stale environment cannot mask an undeclared dependency.
+A trusted release-bot PR on a `release-please--branches--main--components--` branch can be recognized as a changelog-only curated-notes apply. The detector and its release configuration are sparse-checked out from the base ref without persisted credentials. It accepts the optimization only when the parent `✅ CI Success` check is conclusively `success` or `failure`; an unavailable or inconclusive parent causes the ordinary package jobs to run. For a recognized apply, package jobs and the helper-test job are skipped, but the final gate passes only when that parent conclusion was `success`; a failed parent is reported as inherited failure. The special concurrency exception prevents a later trusted bot update from cancelling the earlier run while it is still reading that parent result.
 
-### Maintainer label exceptions
+## Lockfiles and changed-file hygiene
+
+`check-lockfiles.yml` is a reusable, read-only job that CI invokes unconditionally. It checks out history without credentials, configures Python 3.14 and `uv` with caching disabled, then calls `check_lockfiles_pre_commit.py` without path arguments. That intentionally validates every discovered package lockfile, not merely the packages selected for lint and tests. A lock or hygiene failure fails this shared job and `ci_success` refuses to pass regardless of an inherited curated-apply result.
+
+The checker discovers library, partner, and example package directories from their `Makefile` or `pyproject.toml`. With no paths it runs `uv lock --check` for all of them; when used with explicit paths it limits checks to owning packages. It also propagates invalidation through local `[tool.uv.sources]` path dependencies, so a changed package manifest selects its local consumers. On a stale lock it emits an annotation containing the package-specific `uv lock --directory ... --python ...` repair command.
+
+For non-push CI events the same job also invokes `make -C libs hygiene` against the PR or merge-group base/head range. The `hygiene` target is the local source of truth for the explicit pre-commit hook list, runs only on changed files, and returns failure if any hook fails. Run the matching local commands before pushing:
+
+```bash
+make -C libs hygiene
+make -C libs lock-check
+```
+
+Do not make the reusable lockfile job conditional on a path filter or add it to a bypassable advisory path: it is an explicit dependency of `✅ CI Success`.
+
+## The CI Success decision boundary
+
+`✅ CI Success` uses `if: always()` and consumes the full named `needs` object, excluding `changes` and skipped jobs. It first requires `check-lockfiles` to be `success`; it then handles the curated-apply inheritance case; otherwise it asks `.github/scripts/checks/ci_gate.py` to classify job results. The script returns JSON with `waived`, `failed`, and `cancelled` lists rather than determining the shell step's exit code itself. This keeps the waiver matrix independently unit-testable and makes caller-side enforcement explicit.
+
+The gate script is sparse-checked out from `github.base_ref || github.sha` with persisted credentials disabled. On PRs, this ensures the program judging PR results comes from the trusted base rather than the PR merge checkout. A PR copy is available only as a bootstrap fallback when the base does not yet contain the script; once present on base, that fallback cannot alter the decision.
+
+Only one waiver exists: on a `pull_request` where `talon-src` is not `true`, failures—not cancellations—of `lint-talon` or `test-talon` are advisory. All other failures block. Talon failures block on a Talon-source PR, a merge-group run, and a push; cancellations also block on PR and merge-group runs. Push cancellations are tolerated because concurrency preemption means a newer push will validate the latest `main` state. The separate advisory job is intentionally absent from the gate's `needs`: it maintains a sticky PR comment for waived Talon failures but must never make the required check red or green.
+
+## Reusable test worker and maintainer exceptions
+
+The reusable `_test.yml` workflow validates required JSON matrix inputs before expanding a non-fail-fast build matrix, then checks out code, uses the local uv setup action, synchronizes the test group, runs platform-specific unit-test commands, and verifies a clean working tree. The local `uv_setup` composite action pins setup-uv and uv, supports cache control and working-directory-scoped dependency globs, and enables cache pruning.
 
 Warnings are errors unless `_test.yml` sees the exact `ci:allow-warnings` label. On a pull-request run it reads the live labels endpoint once with `per_page=100`, rather than trusting the replayed event payload. API failure writes an empty flag and emits an error, so the exception fails closed; only the exact label supplies `-W default` to both POSIX and Windows commands. Push and merge-group runs have no PR label context and retain warnings-as-errors.
 
 The Deepagents Linux ripgrep path has a similarly narrow distinction: ordinary PRs soften only a two-minute timeout when no usable `rg` remains, while release-sensitive PRs, pushes, and merge-group runs are strict. A release PR may use live `ci:skip-ripgrep` only after a successful label lookup; a bypassed failure records a marker artifact and does not assert coverage. The release preflight follows the same principle: only exact `dangerous-skip-ripgrep-check=true` can continue after an install failure, and it records the resulting loss of artifact-test coverage.
 
-## The CI Success decision boundary
-
-`✅ CI Success` always evaluates its dependencies and always requires lockfile validation. Its decision code is sparse-checked out from the trusted base ref with credentials disabled, rather than executed from the PR merge checkout; this prevents a PR from changing the program that judges its own results. The bootstrap fallback to a PR copy exists only until the base branch contains the gate script.
-
-On a pull request that did not change `libs/talon`, failed (not cancelled) Talon lint/test jobs may be waived; push and merge-group runs remain strict. The non-gating advisory job documents a waiver with a sticky PR comment. For a release-bot changelog-only curated-notes commit, CI can inherit a *conclusive successful* parent CI result; a failure or indeterminate parent keeps the gate failing. Do not add advisory jobs to the gate's `needs` list or move trusted gate logic to PR-controlled code.
-
-## PR labeling and release-scope labels
+## PR labeling and release-please scope
 
 `pr_labeler.yml` is a `pull_request_target` workflow and therefore must never check out PR head code. It checks out the base workflow code, serializes per-PR mutations, and applies size, file/branch/title-derived type, package, integration, and contributor labels through shared labeling helpers. On opened PRs it obtains a short-lived GitHub App token to determine private organization membership and apply external contributor/tier labels; this also permits downstream label-triggered automation. The job-level write scopes are limited to PR and issue labels, and classifier/provider secrets are injected only into the label-application step.
 
-`release_please_scope_check.yml` is a separate PR gate for bump-worthy fan-out. It runs the detector and release configuration from the trusted base SHA, gets the changed-file list through the API, and fails closed if that list is incomplete or detector output is absent or malformed. The exact `ci:allow-lockfile-release` label acknowledges an intentional multi-component or lockfile-only fan-out; it does not prevent release-please from creating the corresponding release PRs. Branch protection and review of workflow edits remain necessary because `pull_request` workflow definitions originate from the PR head.
+`release_please_scope_check.yml` is the pre-merge guard against release-please attributing a bump-worthy PR to each managed path it touches. It runs on PR updates and label changes so the exact `ci:allow-lockfile-release` acknowledgment can re-evaluate the PR. Its trusted-base detector reads the release-please package map and visible changelog sections, receives the PR title and API-collected changed-file list, and reports two cases: real non-lockfile edits in two or more managed components, or a managed component whose only edits are `uv.lock`. The detector deliberately treats visible changelog types and conventional-title `!` as bump-worthy; it reports rather than exits nonzero, leaving the workflow to make the blocking decision.
+
+The workflow validates that the API file list count equals GitHub's reported `changed_files` count before detecting fan-out, because GitHub caps `listFiles` results. A missing count, truncated list, malformed detector output, or unreadable/invalid trusted configuration fails closed. Fork PRs do not receive secrets; if their read-only token cannot maintain the sticky explanatory comment, the job summary still surfaces the finding. A fan-out blocks unless the exact structured label `ci:allow-lockfile-release` is present. That label acknowledges—not prevents—the resulting per-component release PRs, and the workflow leaves a sticky explanation of the consequence.
+
+```mermaid
+flowchart TD
+    Event["PR update or label change"] --> Base["Checkout trusted base detector and config"]
+    Event --> Files["Collect complete changed-file list by API"]
+    Files --> Complete{"Count is complete"}
+    Complete -->|"No"| Fail["Fail closed"]
+    Complete -->|"Yes"| Detect["Classify release fan-out"]
+    Base --> Detect
+    Detect --> Fanout{"Fan-out found"}
+    Fanout -->|"No"| Pass["Clear stale comment and pass"]
+    Fanout -->|"Yes"| Label{"Exact acknowledgment label"}
+    Label -->|"No"| Block["Sticky comment and fail"]
+    Label -->|"Yes"| Warn["Sticky acknowledgment and pass"]
+```
+
+*The scope workflow distinguishes an intentional acknowledgment from changing release-please's path-based release behavior.*
+
+Because this workflow uses `pull_request`, its YAML still originates from the PR head. The base checkout protects the detector and configuration from self-bypass, but branch protection must make the job required and workflow edits must be reviewed.
 
 ## Release and curated-note mutation boundaries
 
@@ -108,11 +164,13 @@ Credential validation happens before a Harbor leaf executes: it selects a provid
 
 ## Verification when changing these controls
 
-Run the workflow contract tests when editing this area:
+Run focused executable contracts when editing the gate, lockfile, or release-scope controls:
 
 ```bash
+python -m pytest .github/scripts/tests/checks/test_ci_gate.py
+python -m pytest .github/scripts/tests/checks/test_check_lockfiles_pre_commit.py
+python -m pytest .github/scripts/tests/release/test_check_lockfile_release_scope.py
 python -m pytest .github/scripts/tests/workflows/test_ci_workflow.py
-python -m pytest .github/scripts/tests/release/test_release_notes.py
 ```
 
-The CI tests execute ripgrep and label-resolution shell paths against stubs, check package and gate topology, and lock down trusted-base behavior. The release-note tests run the Node helper tests and statically assert trigger restrictions, trusted checkout, token scope, child-process environment, and required-check refresh behavior. Treat a failing contract test as a security-control regression, not merely a YAML formatting issue.
+The workflow contract test executes the gate shell path and checks its topology, unconditional lockfile dependency, trusted-base checkout, curated-apply inheritance, and ripgrep-label controls. The smaller tests exercise the Talon waiver matrix, lockfile selection/repair diagnostics, and release fan-out classification. Treat a failing contract test as a CI or security-control regression, not merely a YAML formatting issue.

@@ -2,44 +2,28 @@
 type: workflow
 title: Build a Deep Agent
 description: Assemble and safely customize a Deep Agents graph with skills, context compaction, rubric completion, synchronous delegation, and durable remote async task follow-ups.
-tags: [deepagents, langgraph, middleware, subagents, async-tasks, rubric, testing]
+tags: [deepagents, langgraph, middleware, subagents, permissions, testing]
 sources:
-  - id: openwiki-source-68ae2141dbec1e0915410ac3
-    resource: repo://libs/ARCHITECTURE.md
-  - id: openwiki-source-fd64c1b88759a3b897a5452c
-    resource: repo://libs/deepagents/deepagents/__init__.py
   - id: openwiki-source-b93533cac55718d75277d1cf
     resource: repo://libs/deepagents/deepagents/_excluded_middleware.py
-  - id: openwiki-source-07f9eac13e71bcbdb4e6994b
-    resource: repo://libs/deepagents/deepagents/backends/state.py
   - id: openwiki-source-0fc0e47059e4d07e23e50be2
     resource: repo://libs/deepagents/deepagents/graph.py
-  - id: openwiki-source-5c9c6a877b43f30407158658
-    resource: repo://libs/deepagents/deepagents/middleware/_skill_tools.py
-  - id: openwiki-source-e51c4102234507d1529a2440
-    resource: repo://libs/deepagents/deepagents/middleware/async_subagents.py
   - id: openwiki-source-fed4b84a38685f37e58018c5
     resource: repo://libs/deepagents/deepagents/middleware/filesystem.py
-  - id: openwiki-source-b93c32bc33a8fa17b52b8a0e
-    resource: repo://libs/deepagents/deepagents/middleware/rubric.py
-  - id: openwiki-source-66cf9d0832d3cb55bec2b5ed
-    resource: repo://libs/deepagents/deepagents/middleware/skills.py
+  - id: openwiki-source-114a1c7a58992fa867a94ef0
+    resource: repo://libs/deepagents/deepagents/middleware/subagents.py
   - id: openwiki-source-f763e99e439a1356866a7aa4
     resource: repo://libs/deepagents/deepagents/middleware/summarization.py
   - id: openwiki-source-69c260914d2dd18b60ad5900
     resource: repo://libs/deepagents/tests/unit_tests/middleware/test_compact_tool.py
-  - id: openwiki-source-c71ac20477155a66b7a8c60a
-    resource: repo://libs/deepagents/tests/unit_tests/middleware/test_skill_tools.py
-  - id: openwiki-source-6ce85b02eabe462f99e0c912
-    resource: repo://libs/deepagents/tests/unit_tests/test_async_subagents.py
-  - id: openwiki-source-6d183faf1a4bc5a5ba451aba
-    resource: repo://libs/deepagents/tests/unit_tests/test_graph.py
   - id: openwiki-source-851e3a9c96663d8db5ca3dec
     resource: repo://libs/deepagents/tests/unit_tests/test_permissions.py
-generated: { by: "openwiki/0.4.2", at: "2026-11-05T08:04:42.777Z" }
+  - id: openwiki-source-917b61d56e652536ba962f3a
+    resource: repo://libs/deepagents/tests/unit_tests/test_subagent_refusal.py
+generated: { by: "openwiki/0.4.2", at: "2026-11-06T08:04:19.814Z" }
 verified:
   - by: openwiki/0.4.2
-    at: 2026-11-05T08:04:42.777Z
+    at: 2026-11-06T08:04:19.814Z
 ---
 
 # Build a Deep Agent
@@ -92,11 +76,17 @@ flowchart TD
 
 Caption: Construction routes synchronous `task` delegation and durable remote async-task control into different middleware before applying the shared customization pipeline.
 
-The core is `FilesystemMiddleware`; `SubAgentMiddleware` only when synchronous subagents exist; `_ParentNotifierMiddleware`; summarization; `PatchToolCallsMiddleware`; and `AsyncSubAgentMiddleware` when remote/background specs exist. The tail is profile extra middleware, optional `SkillsMiddleware`, provider prompt-caching middleware, optional memory, auto-derived HITL, and `UnsupportedContentMiddleware`.
+The core is `FilesystemMiddleware`; `SubAgentMiddleware` only when synchronous subagents exist; `_ParentNotifierMiddleware`; summarization; `PatchToolCallsMiddleware`; and `AsyncSubAgentMiddleware` when remote/background specs exist. The tail is profile extra middleware, optional `SkillsMiddleware`, provider prompt-caching middleware, optional memory, auto-derived HITL, `UnsupportedContentMiddleware`, and `ModelRefusalMiddleware`. The refusal handler is deliberately in the tail, so caller middleware such as `ModelFallbackMiddleware` gets the first chance to recover from a model refusal.
 
 Custom middleware whose `.name` matches an assembled entry replaces it in place. New middleware is spliced after the last core member—including `_ParentNotifierMiddleware`—and before the profile/skills/caching/memory/HITL tail. Profile exclusions run once on the assembled stack before the custom merge and once after it, so they also remove a matching custom replacement or addition. Class exclusions use exact type (a subclass is retained); string exclusions use an exact `.name`. An exclusion that matches nothing across the applicable main/general-purpose stacks, a private-name exclusion, or one name matching multiple concrete classes fails rather than silently producing a degraded graph. Profile tool exclusion is appended last, so custom middleware cannot restore an excluded name. `FilesystemMiddleware` and `SubAgentMiddleware` are protected scaffolding: a profile cannot exclude them. The compiled graph has a `recursion_limit` of 9,999 for long-horizon tool loops.
 
 A consequence of this placement is that ordinary user middleware runs before skills. It cannot see freshly loaded `skills_metadata` in `before_agent` or `before_model`, nor edit the skills prompt section in `wrap_model_call`. A custom middleware named `SkillsMiddleware` takes that slot instead.
+
+### Model refusal is a graph-level failure; delegation reports it as data
+
+The main graph installs `ModelRefusalMiddleware` by default. Thus a model refusal raises `ModelRefusalError` from the parent invocation rather than being treated as an ordinary final answer. Place `ModelFallbackMiddleware` in `middleware=` when a fallback should handle that condition; it runs before the default refusal handler. A harness profile may exclude `ModelRefusalMiddleware` if the application instead needs the provider refusal message as the final response.
+
+A synchronous `task` call has a different boundary: a declarative or compiled child refusal becomes a `ToolMessage` to the parent. Its notice includes any refusal category and explanation when available and explicitly advises against retrying the same request. This also covers a `ModelRefusalError` raised by a child and structured-output validation that contains a refusal. The parent model can therefore rephrase, choose another worker, or finish with a partial result. Do not mistake a plain dictionary in a compiled graph's `messages` field for a refusal: refusal detection requires an actual message with a refusal content block.
 
 ## 3. Configure delegation and preserve state boundaries
 
@@ -108,7 +98,7 @@ A consequence of this placement is that ordinary user middleware runs before ski
 
 Unless the caller supplies a synchronous `general-purpose` subagent, the profile adds a default one. Disable it with `GeneralPurposeSubagentProfile(enabled=False)` and supply no synchronous subagents to omit `task`; async subagents do not change that decision. Declarative subagents inherit parent tools when their `tools` key is absent, and inherit permissions and `interrupt_on` unless they provide replacements. Compiled and remote agents are independently configured runnables/graphs, so they do not inherit parent HITL or a custom state schema.
 
-A declarative subagent normally receives only its delegated description. Experimental `mode="fork"` continues the parent’s effective conversation, rebuilds inherited prompt-producing middleware, and appends its own `system_prompt` as an addendum. A fork cannot declare separate `skills`, inherits the parent configuration, and rejects recursive `task` delegation. Use an isolated worker for a deliberately smaller context; use a fork only when the worker needs the parent conversation.
+A declarative subagent normally receives only its delegated description. Experimental `mode="fork"` continues the parent's effective conversation, rebuilds inherited prompt-producing middleware, and appends its own `system_prompt` as an addendum. A fork cannot declare separate `skills`, inherits the parent configuration, and rejects recursive `task` delegation. Use an isolated worker for a deliberately smaller context; use a fork only when the worker needs the parent conversation.
 
 Prefer a middleware `state_schema` for new state. A graph-wide schema must be a `TypedDict` subclass of `DeepAgentState`, retaining its `messages` `DeltaChannel` reducer. The builder merges middleware schemas and passes private field names to the task boundary so ordinary subagents neither receive nor return private state. `checkpointer`, `store`, `context_schema`, `response_format`, `cache`, `name`, and `debug` pass through to `create_agent`; use a checkpointer if an interrupted run must resume.
 
@@ -227,6 +217,8 @@ Recursive deletion is stricter than ordinary first-match resolution: it is all-o
 
 For builder, profile, ordering, exclusion, state-schema, or inheritance changes, begin with `tests/unit_tests/test_graph.py`. Its focused cases inspect the middleware passed to `create_agent` and the compiled tool node: default delegation, prompt assembly, provider-caching and skills placement, same-name replacement, state-schema propagation, and fork behavior. Treat these as construction-invariant regressions, not broad behavioral smoke tests. Cover both sides of the changed branch: default general-purpose enabled/disabled; matching-name replacement versus novel insertion; and exclusions before and after custom middleware. In particular, cover class versus name exclusion, protected scaffolding rejection, no-match failure, and collision failure when changing profile filtering.
 
+For refusal semantics, run `tests/unit_tests/test_subagent_refusal.py`. It distinguishes the parent graph's default `ModelRefusalError`, caller fallback recovery, and profile exclusion from child behavior: declarative and compiled workers return a task-result notice in both sync and async invocation, preserving available category/explanation. It also covers structured-output refusals, a raised refusal without a refusal block, and the guard against classifying plain dictionary messages as refusals. This is the focused regression suite whenever changing tail order, failure normalization, or `task` result extraction.
+
 For async-subagent changes, run `tests/unit_tests/test_async_subagents.py` for middleware-level state, local/remote-client behavior, fork snapshots, child-owned waiting/approval behavior, notification delivery, and webhooks. Its queued-update cases verify `pending` state, accumulated `superseded_run_ids`, rejection of parallel same-turn follow-ups, non-terminal earlier notifications, and cancellation of queued and earlier active runs. Then run the `TestAsyncSubagentEndToEnd` cases in `tests/unit_tests/test_end_to_end.py`; they use mocked LangGraph SDK clients to exercise the complete graph loop from a model tool call through remote launch or control and the resulting `async_tasks` state, including coexistence of synchronous `task` and all five asynchronous controls.
 
 For compaction changes, run `tests/unit_tests/middleware/test_compact_tool.py` for manual-tool registration, half-trigger eligibility, success event/archive updates, successful `file_path=None` offload results, cumulative cutoffs, corrupt-event fallback, and error/no-event handling when summary or archive operations raise. Pair it with `tests/unit_tests/middleware/test_summarization_middleware.py` when changing automatic summaries, offload/media handling, overflow recovery, or reasoning-boundary behavior. For rubric completion, run `tests/unit_tests/middleware/test_rubric_middleware.py` for state resets, transcript isolation, structured grading, under-coverage handling, terminal outcomes, and callback/stream behavior; pair it with `TestRubricMiddlewareEndToEnd` in `tests/unit_tests/test_end_to_end.py` to check real graph looping and checkpointed state. For permission changes, run `tests/unit_tests/test_permissions.py`. It covers rule validation and first-match behavior, deny enforcement, recursive-delete containment, sandbox-backend rejection, path-aware interrupt predicates including pathless/current-directory and absolute-glob bypass cases, and symlink-resolved enforcement. For skill tools, run the semantic suite and the provider-payload suite; the latter validates actual Anthropic and OpenAI request placement, not just in-memory model history.
@@ -235,6 +227,7 @@ For compaction changes, run `tests/unit_tests/middleware/test_compact_tool.py` f
 cd libs/deepagents
 uv sync --all-groups
 make test TEST_FILE=tests/unit_tests/test_graph.py
+make test TEST_FILE=tests/unit_tests/test_subagent_refusal.py
 make test TEST_FILE=tests/unit_tests/test_async_subagents.py
 make test TEST_FILE=tests/unit_tests/middleware/test_compact_tool.py
 make test TEST_FILE=tests/unit_tests/middleware/test_summarization_middleware.py
@@ -250,8 +243,8 @@ make lint
 ## Safe-change checklist
 
 1. Use an explicit model and backend; document provider settings, backend persistence, and shell capability.
-2. Inspect the selected profile and final middleware order. `tools=` is not the final model-visible surface.
-3. Keep protected filesystem/task scaffolding intact, preserve `DeepAgentState` reduction, and prefer middleware-private state.
+2. Inspect the selected profile and final middleware order. `tools=` is not the final model-visible surface; preserve `ModelRefusalMiddleware` after caller fallback/routing middleware unless an application deliberately consumes raw refusal responses.
+3. Keep protected filesystem/task scaffolding intact, preserve `DeepAgentState` reduction, and prefer middleware-private state. Test parent refusal raising separately from task-result refusal notices.
 4. Choose isolated versus forked subagents deliberately; configure compiled and remote workers independently.
 5. For remote workers, use `ainvoke` if no `url` is supplied; retain `async_tasks`; configure the child graph's state, resources, and approvals independently; and test launch, waiting, webhook/notification, control, enqueue, superseded outcomes, and cancellation.
 6. For compaction, test automatic and manual paths, half-trigger eligibility, zero-cutoff no-ops, archive success with and without a recovery path, thrown archive/summary errors with no event update, malformed events, reasoning boundaries, and fork snapshots after compaction.

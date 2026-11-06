@@ -50,12 +50,14 @@ sources:
     resource: repo://libs/deepagents/deepagents/middleware/filesystem.py
   - id: openwiki-source-7b8607fdda73d9d47ee17387
     resource: repo://libs/deepagents/tests/unit_tests/backends/test_filesystem_backend.py
+  - id: openwiki-source-6d183faf1a4bc5a5ba451aba
+    resource: repo://libs/deepagents/tests/unit_tests/test_graph.py
   - id: openwiki-source-903e05891b2ddf4f958276fd
     resource: repo://libs/deepagents/tests/unit_tests/test_local_sandbox_operations.py
-generated: { by: "openwiki/0.4.2", at: "2026-11-05T08:04:42.777Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-11-06T08:04:19.814Z" }
 verified:
   - by: openwiki/0.4.2
-    at: 2026-11-05T08:04:42.777Z
+    at: 2026-11-06T08:04:19.814Z
 ---
 
 # Filesystem Tools and Backends
@@ -66,7 +68,13 @@ verified:
 
 The built-in vocabulary is `ls`, `read_file`, `write_file`, `edit_file`, `delete`, `glob`, `grep`, and `execute`. `tools=None` and `tools="all"` build all of them; an explicit list must include `read_file`, and tools absent from that list are not registered with the dispatchable tool node. At model-request time, filesystem middleware removes `delete` when the backend does not implement the optional operation and removes `execute` unless the backend is execution capable. It also adjusts the `grep` and `execute` descriptions to the remaining visible tools.
 
-A harness profile's `excluded_tools` is a later, independent model-surface control. Graph construction appends `_ToolExclusionMiddleware` after profile and caller middleware so it removes named tools after all injection has happened; it also rejects a model call that still names an excluded tool. This makes the advertised and executable surfaces agree for that agent/profile, but it is explicitly not a security control. It is distinct from an absent construction-time tool, capability filtering, a filesystem permission denial, and a HITL interruption.
+A harness profile's `excluded_tools` is a later, independent model-surface control. Graph construction appends `_ToolExclusionMiddleware` after profile processing and caller middleware placement so it removes named tools after all injection has happened; it also rejects a tool call that still names an excluded tool. This makes the advertised and executable surfaces agree for that agent/profile, but it is explicitly not a security control. It is distinct from an absent construction-time tool, capability filtering, a filesystem permission denial, and a HITL interruption.
+
+### Assembly order matters
+
+For the main agent, `create_deep_agent` starts with `FilesystemMiddleware`, then adds the subagent task layer when applicable, parent notification, summarization, and tool-call patching (plus optional async subagents). Its tail then materializes profile middleware, optionally adds skills and prompt caching, adds memory when configured, compiles filesystem `interrupt` permissions into `HumanInTheLoopMiddleware`, then adds `UnsupportedContentMiddleware` and `ModelRefusalMiddleware`. Profile middleware exclusions are applied before and after caller middleware is placed, so exclusions cannot be restored by that placement. Finally, `_ToolExclusionMiddleware` is appended last when the profile names excluded tools. Thus it sees the final request tool set and wraps the final tool-call path; a custom `wrap_model_call` cannot re-advertise an excluded name.
+
+The same final tool-exclusion rule is applied to configured and generated subagents, including the general-purpose subagent. Their middleware stacks differ from the main-agent tail, so do not infer that a main-agent memory, HITL, or unsupported-content wrapper automatically exists in every subagent solely from a profile setting. See [Middleware catalog](middleware-catalog.md) for the broader assembly model.
 
 ```mermaid
 flowchart TD
@@ -200,7 +208,7 @@ When execution is active, middleware adds route-to-host mapping guidance only fo
 
 For text, `read_file` produces a paginated line-numbered result. For backend-declared base64, it emits a multimodal block selected from the extension (`image`, `audio`, `video`, or generic `file`) rather than line-numbered text, retaining the validated source path and MIME type in metadata. Video decoding, when optional dependencies are available, samples frames into a synthetic `HumanMessage`; middleware moves that message after the entire preceding `ToolMessage` batch to satisfy provider ordering.
 
-`UnsupportedContentMiddleware`, placed after the core, memory, and HITL stack before later profile/caller stack shaping, copies model-request messages and replaces only blocks the active model explicitly cannot accept with a `read_file` path placeholder. Persisted message history remains unchanged. As a fallback, filesystem middleware retries once after a `ModelInvalidRequestError` only when the latest tool turn contains multimodal `read_file` material; it replaces that material with an unsupported-content notice and re-raises unrelated request errors.
+In the main-agent assembly, `UnsupportedContentMiddleware` follows the core, memory, and HITL layers and precedes `ModelRefusalMiddleware` and the final tool-exclusion tail. It copies model-request messages and replaces only blocks the active model explicitly cannot accept with a `read_file` path placeholder. Persisted message history remains unchanged. As a fallback, filesystem middleware retries once after a `ModelInvalidRequestError` only when the latest tool turn contains multimodal `read_file` material; it replaces that material with an unsupported-content notice and re-raises unrelated request errors.
 
 Large text and binary payloads have separate lifecycles:
 

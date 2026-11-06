@@ -53,6 +53,7 @@ from deepagents.backends.sandbox import (
     _parse_capture_execute_output,
     _parse_glob_output,
     _parse_grep_output,
+    _parse_ls_output,
     _parse_read_output,
 )
 from deepagents.backends.utils import TRUNCATION_MARKER_TEMPLATE
@@ -69,7 +70,7 @@ class MockSandbox(BaseSandbox):
         self._uploaded: list[tuple[str, bytes]] = []
         self._file_store: dict[str, bytes] = {}
         # exit_code is int | None (a backend may report an unknown status).
-        self._responses: list[tuple[str, int | None]] = []
+        self._responses: list[tuple[str, int | None, bool]] = []
 
     @property
     def id(self) -> str:
@@ -84,13 +85,19 @@ class MockSandbox(BaseSandbox):
         if "old_path = base64.b64decode(" in command and has_tmp:
             return self._simulate_edit_tmpfile(command)
         if self._responses:
-            output, exit_code = self._responses.pop(0)
+            popped = self._responses.pop(0)
+            if len(popped) == 2:
+                output, exit_code = popped
+                truncated = False
+            else:
+                output, exit_code, truncated = popped
         else:
             output = self._next_output
             exit_code = self._next_exit_code
             self._next_output = "1"
             self._next_exit_code = 0
-        return ExecuteResponse(output=output, exit_code=exit_code, truncated=False)
+            truncated = False
+        return ExecuteResponse(output=output, exit_code=exit_code, truncated=truncated)
 
     def _simulate_edit_tmpfile(self, command: str) -> ExecuteResponse:
         """Simulate the server-side temp-file edit script.
@@ -690,6 +697,7 @@ def test_parse_grep_output_caps_and_flags_truncation() -> None:
     resp = ExecuteResponse(output="\n".join(lines), exit_code=0)
     result = _parse_grep_output(resp, "/test", 3)
     assert result.truncated is True
+    assert result.truncation_reason is None
     assert result.matches is not None
     assert len(result.matches) == 3
 
@@ -700,6 +708,7 @@ def test_parse_grep_output_below_cap_not_truncated() -> None:
     resp = ExecuteResponse(output="\n".join(lines), exit_code=0)
     result = _parse_grep_output(resp, "/test", 3)
     assert result.truncated is False
+    assert result.truncation_reason is None
     assert result.matches is not None
     assert len(result.matches) == 3
 
@@ -2077,6 +2086,83 @@ def test_glob_propagates_transport_truncation() -> None:
 
     assert result.truncated is True
     assert result.matches == [{"path": "/w/a.py", "is_dir": False}]
+
+
+def test_ls_propagates_transport_truncation() -> None:
+    """`ExecuteResponse.truncated` must reach `LsResult` for directory listings."""
+    resp = ExecuteResponse(
+        output=json.dumps({"path": "/w/a.txt", "is_dir": False}),
+        exit_code=0,
+        truncated=True,
+    )
+
+    result = _parse_ls_output(resp, "/w")
+
+    assert result.error is None
+    assert result.entries == [{"path": "/w/a.txt", "is_dir": False}]
+    assert result.truncated is True
+    assert result.truncation_reason == "transport"
+
+
+def test_ls_transport_truncation_excuses_a_clipped_final_line() -> None:
+    """A clipped final JSONL record must not discard its complete predecessors."""
+    lines = [
+        json.dumps({"path": "/w/a.txt", "is_dir": False}),
+        '{"path": "/w/b.txt", "is_d',
+    ]
+    resp = ExecuteResponse(output="\n".join(lines), exit_code=0, truncated=True)
+
+    result = _parse_ls_output(resp, "/w")
+
+    assert result.error is None
+    assert result.entries == [{"path": "/w/a.txt", "is_dir": False}]
+    assert result.truncated is True
+    assert result.truncation_reason == "transport"
+
+
+def test_grep_propagates_transport_truncation() -> None:
+    """`ExecuteResponse.truncated` must reach `GrepResult` for match lists."""
+    resp = ExecuteResponse(
+        output="/w/a.py\0001:needle",
+        exit_code=0,
+        truncated=True,
+    )
+
+    result = _parse_grep_output(resp, "/w")
+
+    assert result.error is None
+    assert result.matches == [{"path": "/w/a.py", "line": 1, "text": "needle"}]
+    assert result.truncated is True
+    assert result.truncation_reason == "transport"
+
+
+def test_grep_non_truncated_unchanged() -> None:
+    """Non-truncated grep keeps `truncated=False` and no truncation reason."""
+    resp = ExecuteResponse(output="/w/a.py\0001:needle", exit_code=0, truncated=False)
+
+    result = _parse_grep_output(resp, "/w")
+
+    assert result.truncated is False
+    assert result.truncation_reason is None
+
+
+def test_ls_non_truncated_unchanged() -> None:
+    """Non-truncated ls keeps `truncated=False` and no truncation reason."""
+    lines = [
+        json.dumps({"path": "/w/a.txt", "is_dir": False}),
+        json.dumps({"path": "/w/b.txt", "is_dir": False}),
+    ]
+    resp = ExecuteResponse(output="\n".join(lines), exit_code=0, truncated=False)
+
+    result = _parse_ls_output(resp, "/w")
+
+    assert result.error is None
+    assert result.entries == [
+        {"path": "/w/a.txt", "is_dir": False},
+        {"path": "/w/b.txt", "is_dir": False},
+    ]
+    assert result.truncated is False
+    assert result.truncation_reason is None
 
 
 def test_glob_keeps_complete_matches_before_transport_clipped_line() -> None:

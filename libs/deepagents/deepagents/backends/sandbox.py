@@ -880,10 +880,10 @@ except PermissionError:
 " 2>/dev/null"""
 
 
-def _parse_ls_output(output: str, path: str) -> LsResult:
+def _parse_ls_output(result: ExecuteResponse, path: str) -> LsResult:
     file_infos: list[FileInfo] = []
     error: str | None = None
-    for line in output.strip().split("\n"):
+    for line in result.output.strip().split("\n"):
         if not line:
             continue
         try:
@@ -896,7 +896,8 @@ def _parse_ls_output(output: str, path: str) -> LsResult:
         file_infos.append({"path": data["path"], "is_dir": data["is_dir"]})
     if error is not None:
         return LsResult(entries=None, error=f"Path '{path}': {error}")
-    return LsResult(entries=file_infos)
+    reason: GlobTruncationReason | None = "transport" if result.truncated else None
+    return LsResult(entries=file_infos, truncated=result.truncated, truncation_reason=reason)
 
 
 def _build_read_cmd(file_path: str, offset: int, limit: int) -> str:
@@ -1056,24 +1057,39 @@ def _parse_grep_output(result: ExecuteResponse, path: str | None, max_count: int
         detail = output.strip() if output else f"exit code {result.exit_code}"
         return GrepResult(error=f"Path '{path or '.'}': {detail}")
     if not output:
-        return GrepResult(matches=[])
+        return GrepResult(
+            matches=[],
+            truncated=result.truncated,
+            truncation_reason="transport" if result.truncated else None,
+        )
     matches: list[GrepMatch] = []
     parse_error: str | None = None
-    for line in output.split("\n"):
+    lines = output.split("\n")
+    for index, line in enumerate(lines):
         # Format is: path\0line_number:text
         try:
             file_path, rest = line.split("\0", 1)
             line_num_str, text = rest.split(":", 1)
             matches.append({"path": file_path, "line": int(line_num_str), "text": text})
         except ValueError:
+            if result.truncated and index == len(lines) - 1:
+                logger.debug(
+                    "Sandbox grep dropped a clipped final line for path %r: %s",
+                    path or ".",
+                    line[:200],
+                )
+                continue
             parse_error = line
     if parse_error is not None and not matches:
         return GrepResult(error=f"Path '{path or '.'}': {parse_error}")
+    truncated = result.truncated
+    reason: GlobTruncationReason | None = "transport" if result.truncated else None
     if max_count is not None and len(matches) > max_count:
         # More matches existed than the caller asked for; return the cap and
         # flag the result as incomplete.
-        return GrepResult(matches=matches[:max_count], truncated=True)
-    return GrepResult(matches=matches)
+        matches = matches[:max_count]
+        truncated = True
+    return GrepResult(matches=matches, truncated=truncated, truncation_reason=reason)
 
 
 def _build_glob_cmd(pattern: str, search_path: str) -> str:
@@ -1703,12 +1719,12 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
     def ls(self, path: str) -> LsResult:
         """Structured listing with file metadata using os.scandir."""
         result = self.execute(_build_ls_cmd(path))
-        return _parse_ls_output(result.output, path)
+        return _parse_ls_output(result, path)
 
     async def als(self, path: str) -> LsResult:
         """Async version of `ls`, delegating to `aexecute`."""
         result = await self.aexecute(_build_ls_cmd(path))
-        return _parse_ls_output(result.output, path)
+        return _parse_ls_output(result, path)
 
     def read(
         self,

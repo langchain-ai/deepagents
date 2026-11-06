@@ -43,7 +43,7 @@ from deepagents.backends import StateBackend
 from deepagents.backends.protocol import BackendProtocol
 from deepagents.middleware._fs_interrupt import _build_interrupt_on_from_permissions
 from deepagents.middleware._parent_notifier import _ParentNotifierMiddleware
-from deepagents.middleware._prompt_caching import append_prompt_caching_middleware
+from deepagents.middleware._prompt_caching import _CachingMiddleware, append_prompt_caching_middleware
 from deepagents.middleware._state import private_state_field_names
 from deepagents.middleware._tool_exclusion import _ToolExclusionMiddleware
 from deepagents.middleware._utils import append_to_system_message
@@ -229,6 +229,8 @@ def _apply_custom_middleware(
     """
     if not custom:
         return list(base)
+    for caching in (m for m in base if isinstance(m, _CachingMiddleware)):
+        caching.exclude({m.name for m in custom})
     current_names = {m.name for m in base}
     replacements: dict[str, AgentMiddleware[Any, Any, Any]] = {}
     to_append: list[AgentMiddleware[Any, Any, Any]] = []
@@ -404,12 +406,8 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
 
             - Harness profile `extra_middleware` (if any)
             - [`SkillsMiddleware`][deepagents.middleware.skills.SkillsMiddleware] (if `skills` is provided)
-            - [`AnthropicPromptCachingMiddleware`][langchain_anthropic.middleware.AnthropicPromptCachingMiddleware] (unconditional; no-ops for
-                non-Anthropic models)
-            - [`BedrockPromptCachingMiddleware`](https://reference.langchain.com/python/langchain-aws/middleware/prompt_caching/BedrockPromptCachingMiddleware)
-                when `langchain-aws` is installed (no-ops for non-Bedrock models)
-            - [`FireworksPromptCachingMiddleware`](https://reference.langchain.com/python/integrations/langchain_fireworks/middleware/prompt_caching/FireworksPromptCachingMiddleware)
-                when `langchain-fireworks` is installed (no-ops for non-Fireworks models)
+            - `CachingMiddleware` (lazily delegates to Anthropic, Bedrock, or Fireworks
+                prompt caching for the actual request model; no-ops for other models)
             - [`MemoryMiddleware`][deepagents.middleware.memory.MemoryMiddleware] (if `memory` is provided)
             - [`HumanInTheLoopMiddleware`][langchain.agents.middleware.HumanInTheLoopMiddleware] (if `interrupt_on` is provided)
             - [`UnsupportedContentMiddleware`][deepagents.middleware.unsupported_content.UnsupportedContentMiddleware]
@@ -867,7 +865,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         )
         # Inherit only middleware that overrides a default GP slot (including excluded
         # ones) without carrying over middleware that's specific to the main agent.
-        _gp_inheritable = [m for m in (middleware or []) if m.name in _gp_original_name_to_index]
+        _gp_inheritable = [m for m in (middleware or []) if m.name in _gp_original_name_to_index or m.name in _CachingMiddleware.provider_names]
         gp_middleware = _apply_custom_middleware(gp_middleware, _gp_inheritable)
         gp_middleware = _apply_excluded_middleware(
             gp_middleware,

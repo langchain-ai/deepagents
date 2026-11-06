@@ -2110,6 +2110,57 @@ class TestSubAgents:
         subagent_messages = subagent_checkpoint.checkpoint["channel_values"]["messages"]
         assert [message.content for message in subagent_messages] == ["Do task", subagent_content]
 
+    def test_nested_task_tool_message_records_full_checkpoint_namespace(self) -> None:
+        """A `task` call inside a subagent records its namespace with the parent's segments.
+
+        The inner `task` result lives in the nested deep agent's own history. It is read
+        from `stream(subgraphs=True)` because a deep agent's raw checkpoints store
+        `messages` as deltas, so `get_tuple` doesn't show them.
+        """
+
+        def task_call(call_id: str, subagent_type: str) -> AIMessage:
+            return AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "task",
+                        "args": {"description": f"Run {subagent_type}", "subagent_type": subagent_type},
+                        "id": call_id,
+                        "type": "tool_call",
+                    }
+                ],
+            )
+
+        worker = create_agent(model=_ScriptedChatModel(responses=[AIMessage(content="WORKER_DONE")]), name="worker")
+        inner = create_deep_agent(
+            model=_ScriptedChatModel(responses=[task_call("call_worker", "worker"), AIMessage(content="INNER_DONE")]),
+            subagents=[CompiledSubAgent(name="worker", description="Does work.", runnable=worker)],
+        )
+        checkpointer = InMemorySaver()
+        agent = create_deep_agent(
+            model=_ScriptedChatModel(responses=[task_call("call_inner", "inner"), AIMessage(content="Done.")]),
+            checkpointer=checkpointer,
+            subagents=[CompiledSubAgent(name="inner", description="Delegates to the worker.", runnable=inner)],
+        )
+        thread_id = "nested-subagent-checkpoint-namespace"
+        inputs = {"messages": [HumanMessage(content="Do something")]}
+
+        task_messages = {
+            message.tool_call_id: message
+            for _namespace, update in agent.stream(inputs, {"configurable": {"thread_id": thread_id}}, stream_mode="updates", subgraphs=True)
+            for message in update.get("tools", {}).get("messages", [])
+        }
+
+        outer_namespace = task_messages["call_inner"].artifact["checkpoint_ns"]
+        inner_namespace = task_messages["call_worker"].artifact["checkpoint_ns"]
+        assert outer_namespace.startswith("tools:")
+        assert inner_namespace.startswith(f"{outer_namespace}|tools:")
+
+        worker_checkpoint = checkpointer.get_tuple({"configurable": {"thread_id": thread_id, "checkpoint_ns": inner_namespace}})
+        assert worker_checkpoint is not None
+        worker_messages = worker_checkpoint.checkpoint["channel_values"]["messages"]
+        assert [message.content for message in worker_messages] == ["Run worker", "WORKER_DONE"]
+
     @pytest.mark.parametrize("use_async", [False, True], ids=["sync", "async"])
     async def test_subagent_checkpoints_record_subagent_tool_call_id(self, *, use_async: bool) -> None:
         parent_model = _ScriptedChatModel(

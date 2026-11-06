@@ -33,7 +33,7 @@ from langchain.agents.middleware.types import (
 from langchain.tools import ToolRuntime
 from langchain.tools.tool_node import ToolCallRequest
 from langchain_core.exceptions import ModelInvalidRequestError
-from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, RemoveMessage, ToolMessage
+from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, RemoveMessage, ToolMessage, add_notification_metadata
 from langchain_core.messages.content import ContentBlock
 from langchain_core.tools import BaseTool, StructuredTool
 from langgraph.channels.delta import DeltaChannel
@@ -185,6 +185,9 @@ _FILE_MUTATION_TOOLS: Final = frozenset({"write_file", "edit_file", "delete"})
 _READ_FILE_MEDIA_RESULT: Final = "read_file_media_result"
 """`additional_kwargs` key marking synthetic `HumanMessage` media from `read_file`."""
 
+_READ_FILE_MEDIA_SOURCE: Final = "read_file_media"
+"""`lc_source` of the synthetic `HumanMessage` carrying `read_file` media."""
+
 _VIDEO_SAMPLING_RATE: Final = 0.5
 """Seconds between sampled frames when extracting stills from a video."""
 
@@ -330,13 +333,17 @@ def _handle_video_read(
         additional_kwargs={"read_file_path": validated_path, "read_file_frame_count": frame_count},
         status="success",
     )
-    media_message = HumanMessage(
-        content_blocks=blocks,
-        additional_kwargs={
-            _READ_FILE_MEDIA_RESULT: True,
-            "read_file_path": validated_path,
-            "read_file_tool_call_id": tool_call_id,
-        },
+    media_message = add_notification_metadata(
+        HumanMessage(
+            content_blocks=blocks,
+            additional_kwargs={
+                _READ_FILE_MEDIA_RESULT: True,
+                "read_file_path": validated_path,
+                "read_file_tool_call_id": tool_call_id,
+            },
+        ),
+        source=_READ_FILE_MEDIA_SOURCE,
+        data={"path": validated_path, "tool_call_id": tool_call_id},
     )
     return Command(
         update={

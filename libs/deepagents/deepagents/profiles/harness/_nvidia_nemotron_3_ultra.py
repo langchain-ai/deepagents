@@ -23,7 +23,7 @@ from langchain.agents.middleware.types import (
     PrivateStateAttr,
     hook_config,
 )
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage, add_notification_metadata
 from langchain_core.messages.utils import _convert_to_openai_tool_calls
 
 from deepagents.profiles.harness.harness_profiles import (
@@ -827,7 +827,7 @@ def _is_final_answer(message: AIMessage) -> bool:
 
 
 def _nudge_update(content: str, source: str, **updates: Any) -> dict[str, Any]:
-    return {"messages": [HumanMessage(content=content, name=source)], **updates}
+    return {"messages": [add_notification_metadata(HumanMessage(content=content, name=source), source=source)], **updates}
 
 
 def _iter_tool_calls(messages: list[Any]) -> list[ToolCall]:

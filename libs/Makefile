@@ -61,11 +61,12 @@ HYGIENE_HOOKS := check-yaml check-toml end-of-file-fixer trailing-whitespace fix
 HYGIENE_FROM ?= origin/main
 HYGIENE_TO ?= HEAD
 PRE_COMMIT ?= uvx pre-commit@4.6.0
+HYGIENE_ARGS ?= --from-ref '$(HYGIENE_FROM)' --to-ref '$(HYGIENE_TO)'
 
 hygiene: ## Fix text hygiene in files changed since HYGIENE_FROM (default origin/main)
 	@cd '$(MAKEFILE_DIR)..' && status=0; \
 	for hook in $(HYGIENE_HOOKS); do \
-		$(PRE_COMMIT) run "$$hook" --from-ref '$(HYGIENE_FROM)' --to-ref '$(HYGIENE_TO)' --show-diff-on-failure || status=1; \
+		$(PRE_COMMIT) run "$$hook" $(HYGIENE_ARGS) --show-diff-on-failure || status=1; \
 	done; \
 	exit $$status
 

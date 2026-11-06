@@ -808,9 +808,8 @@ def _build_task_tool(  # noqa: C901, PLR0915
                         content = text
                         break
 
-        # A subagent on the parent's checkpointer saves under the `task` call's own
-        # namespace. Recording it lets a client load the subagent's history from
-        # the parent thread's messages. `artifact` is not sent to the model.
+        # The subagent saves its checkpoints under `checkpoint_ns`, so a client can
+        # load its history from it. The model never sees `artifact`.
         artifact = {"checkpoint_ns": checkpoint_ns} if checkpoint_ns else None
         return Command(
             update={

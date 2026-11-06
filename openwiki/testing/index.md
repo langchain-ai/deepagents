@@ -1,3 +1,3 @@
 # Files
 
-- [Testing Guide](testing-guide.md) - Package-scoped verification routes for compaction and truncation failures, filesystem behavior, subagent isolation, and Talon MCP adapter contracts. Use focused Makefile targets and assert observable outcomes at each integration boundary.
+- [Testing Guide](testing-guide.md) - Focused, package-owned regression routes for Deep Agents context recovery, subagent refusal handling, filesystem and adapter boundaries, and CI workflow contracts. Use fake models and local fixtures to assert observable state, result, and failure behavior.

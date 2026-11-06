@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:436d16c47a849089f1f9dab11ee9fac6872bcaa1316fdfa3359f3894066608d8",
+  "pageVersion": "sha256:54d30d738a7a0e0b6fee708b75ac51923fc7a9b48dae3d2a57c43453b9f9d52d",
   "claims": [
     {
       "id": "claim_8c5e74fd855f45cd84f6d6ee3859b112",
@@ -209,10 +209,118 @@
           "version": "repo-lines-v1:sha256:cd78bc1f59e076fbe22399caad4b4bf6a2356729ec4fc90167a0008a803b5823:eyJzZWxlY3RlZExpbmVDb3VudCI6MTI3LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJhZTQ0N2QzYTExNmFiZmU0M2I4MzExMGI3ZDllMTBlNzQwMDI3MjM3ZWUzNWNhMjE3ODQyZTUwMWU5YTU1MjliIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJmNDUxOGFiZDVhMzIwZDA3MDc3ZTY4MmI0NmM4YjI3Yjc0NTVjM2UyNjQ3MGQ1YjdlMWFiYWFmZWRmYWQwYzBiIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJmMDZiMTVmYWM2NjZlM2RhN2U0MWYzN2NmMzBhNWQ2YWZkZDJlNzM1NmZkODVmZWIyM2M3ZDI5NjI2Yjg0YmQ0IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MCwiZm9sbG93aW5nQ29udGV4dEhhc2giOiJlM2IwYzQ0Mjk4ZmMxYzE0OWFmYmY0Yzg5OTZmYjkyNDI3YWU0MWU0NjQ5YjkzNGNhNDk1OTkxYjc4NTJiODU1In0"
         }
       ]
+    },
+    {
+      "id": "claim_096182d6ee7344278b59875ea975a258",
+      "statement": "Summarization regression tests require chained events to keep their cutoff in raw-state coordinates, resolve a surviving cutoff message by ID after earlier removals, and fall back to the stored index for legacy or stale IDs.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/tests/unit_tests/middleware/test_summarization_middleware.py#L2711-L2796",
+          "version": "repo-lines-v1:sha256:6ff4e1d6967971ecd7699205f329c03efc3b9084ec863a7ba0ce89d5eae82507:eyJzZWxlY3RlZExpbmVDb3VudCI6ODYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQwYTVlZTI1ZTBjYjg2N2YyNjk3MGIwYmEwYjgwZGYzZDRkYTM4Njg0NDIyYjY5ZTY1ODg3NWY5Y2MzNmQ2YjgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjA0ZTRhYWI2OGE2NzAyMWQ2ZDM3MjdjNzQzYmQwMWIzMWVhY2QzZTBjOWUyZTNmNDNhYWJkYzJlNTA5MjdmODYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjM3NmIwNjkwNmZlNzJmNTA4ZTg2ZDZkMmM3N2I5MzhkYzFiYjhjNWU0NjBmOWZlMjI4OGY0Yzc5Zjg2ZDk1MGQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImZiMjg3NDY2ZTQ2MTg4YzJkNjU5MmJhMWFjNjk3OTI5Njg4MTY0ODczYWM5YmEzY2U1NmJiYThmMzI4OWRmNmYifQ"
+        },
+        {
+          "resource": "repo://libs/deepagents/tests/unit_tests/middleware/test_summarization_middleware.py#L2916-L2969",
+          "version": "repo-lines-v1:sha256:d5c07b898895dbca36c6c44dfad31dbd69ffdf2efd7249c966b5bb4afa4d0a5d:eyJzZWxlY3RlZExpbmVDb3VudCI6NTQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImIyNTdhOWI3OTYyZDEyMTJmNzhlNGM1MDUzMGZlNTU0NDQxNjU2ZDY0MDg0ZjEzYzljYjQ5ZDJkZWZkODI2NWUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM4YTNhMjU4NDg4ZTg1ODg1MzlhZDVlNWU5Nzg4ZGNjZDNhNzc2MTc5YTcwZmVjNDUzMTMxNWIyODhmMDI3YjQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjJkY2E4M2JiNTQ3YTBmNDc4ODQ3ZjhiYjNlMjRlNjI4M2VjNzAyMWY3M2M5ZjQ4NjI4ZDY3YjQxMDQyZTk3MWUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjI2NmE0NDMwYzdlYjhmNDhiNWRmMmE2ZDA2MGEzNGMyYjk2MDU3YWZmZTg0NjVhYmM1MTQ1Mzc0N2U5ZDFhOGQifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_b36599a25459402d8fe0f24094f454f0",
+      "statement": "Context-recovery tests require pre-send reduction to account for system text, tool schemas, and reserved output tokens; they make irreducible requests fail before provider invocation and do not use a summarizer model's limit when the agent limit is unknown.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/tests/unit_tests/middleware/test_compaction_recovery.py#L166-L183",
+          "version": "repo-lines-v1:sha256:7a3dd6564cd85aefe9bbc25e7631e5615267707afee02155d3d286b9ec9ec82b:eyJzZWxlY3RlZExpbmVDb3VudCI6MTgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQxOTZkNGVkZDdjNzJkYTQxMTJiM2IzZjhiZGZjYzMxYzVhNTljMWUyODRlZTMzYWRmZjZlZmUwMGY1MWE3ODAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc1MmI1M2E1YWMyNzAwOTZjOTlhMTM0MmQ1YjBlOTI1YmFjOGFkNDEzOTFlYzM3ZWUzNjE1Zjc1NjIyMmFiNjkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImVmMmZjZjU3ZWUwZDg2NzM2YzE2YTRkMDdiNDc3OTM1MTgwMDNlOWM4ZWJhZjY2MTkzM2RkMTlmM2FjZGQ3ODkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjIxYjdlMzhhZWQyODU0N2VkNzg3NTJmYTNkNWYxNTllZjVjZDkwMmY2ZmE5NTliZjgyNTE5NWZjMGE2ODk2NDIifQ"
+        },
+        {
+          "resource": "repo://libs/deepagents/tests/unit_tests/middleware/test_compaction_recovery.py#L241-L252",
+          "version": "repo-lines-v1:sha256:56b830f0a23754fb01a5ad2efc4507da8c252949a1491747accefc9a54accc8f:eyJzZWxlY3RlZExpbmVDb3VudCI6MTIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjdiMTc2MjlmMmIwYzVlYTg3N2Q0NjBiMjJlOWQxOTQzYjhiMTdjNDI0MTI2MTRmMWM1YzIwNDY0OWRmZWZkNWEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImI1ODY0YmEzNTkxMTNiM2JjNTM3ZmQzMDJiMjY3NWRlMjZlYmY1YzdiOTUxYmQ2NTJjZGVkYWIyZDk4ZTY4ZDQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjIxYjdlMzhhZWQyODU0N2VkNzg3NTJmYTNkNWYxNTllZjVjZDkwMmY2ZmE5NTliZjgyNTE5NWZjMGE2ODk2NDIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        },
+        {
+          "resource": "repo://libs/deepagents/tests/unit_tests/middleware/test_compaction_recovery.py#L61-L109",
+          "version": "repo-lines-v1:sha256:d1c77ea6fd2cc0c1b315a48451e75aefc22c96022fdf86d379da44ff9d56415a:eyJzZWxlY3RlZExpbmVDb3VudCI6NDksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjkxZTYxNzY1ZTUyMzc1YzllMzI1MTY0NDBiM2JlZjUxY2UyMjU3N2UzNTJhYmY3NzY3NDEwNmFiZDFkZDA5NWIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjllNzliODYxNDJiMGViNWM1ZTM3MmU1OTFiYmI1Mzk1ODYwYzAzMDM5MzVmODJmMzMzNzRlMmMxNjg2NTA0N2YiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImI1MzRhNDFkN2JlNGUyMjRjNmEyODMzNDZjYWNlN2M2ZTcyNmMyMjU4YWI4NjBjMGYwMzhjYWEyYWZiNjlmMDUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjIxYjdlMzhhZWQyODU0N2VkNzg3NTJmYTNkNWYxNTllZjVjZDkwMmY2ZmE5NTliZjgyNTE5NWZjMGE2ODk2NDIifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_eee22fa66ff64bdb809d21f40e575393",
+      "statement": "Context-overflow recovery tests require one smaller retry for classified provider or `ContextOverflowError` failures, no retry for unrelated bad requests, no unchanged resend when no cutoff can reduce the request, and a terminal context-overflow error after an exhausted recovery retry.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/tests/unit_tests/middleware/test_compaction_recovery.py#L112-L163",
+          "version": "repo-lines-v1:sha256:2b39798fe5761d60183c9c0824ff6f5bb24a4e9f7293ae30ba59287bb9831f48:eyJzZWxlY3RlZExpbmVDb3VudCI6NTIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQxOTZkNGVkZDdjNzJkYTQxMTJiM2IzZjhiZGZjYzMxYzVhNTljMWUyODRlZTMzYWRmZjZlZmUwMGY1MWE3ODAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZlOWVjZTUxMDBiMmVjYTgwYjJkNmI5NGJmYjBjNDg1NzMzMzNiNzBhZGE2NDRiYTRjMjM2ZTJiOGQ4ZTIzMmMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjUwN2Y2YjA2ZTkyOTcxMGFmZWZmNjgzNjBlN2VhZjkzMzZhNzUxYTc5NjM4NzdiYjk3YTg5MzRkYjg2MzhkNzkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjIxYjdlMzhhZWQyODU0N2VkNzg3NTJmYTNkNWYxNTllZjVjZDkwMmY2ZmE5NTliZjgyNTE5NWZjMGE2ODk2NDIifQ"
+        },
+        {
+          "resource": "repo://libs/deepagents/tests/unit_tests/middleware/test_compaction_recovery.py#L186-L237",
+          "version": "repo-lines-v1:sha256:2efa84159b3afb58d9dfe7292199fe5b7caa4243412b44a441d8268942212e6d:eyJzZWxlY3RlZExpbmVDb3VudCI6NTIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQxOTZkNGVkZDdjNzJkYTQxMTJiM2IzZjhiZGZjYzMxYzVhNTljMWUyODRlZTMzYWRmZjZlZmUwMGY1MWE3ODAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc4ZDQ3YmRiNmU3YTJjMTFiYjZiYmZjYWIwZDk1YzU2Y2YxMzMyNTg1YzlmZDhkZDk5ZTdjZmIwOGJhOWUwODIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImJhNmY1YzY3NzA0YmIwMGIxZjE4MmIwOTQ1Y2FhN2MwNzlhMDE4OWI4OWJlZDBhNDBiMGM2NmMyMjJiMjQ1ODkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjIxYjdlMzhhZWQyODU0N2VkNzg3NTJmYTNkNWYxNTllZjVjZDkwMmY2ZmE5NTliZjgyNTE5NWZjMGE2ODk2NDIifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_20a6b0f577a5427d98a0286a730229cd",
+      "statement": "End-to-end overflow tests require oversized `read_file` tool results to be replaced by smaller offset-guided content while preserving source files, whereas oversized `ls` and arbitrary-tool results are offloaded under `/large_tool_results/` and replaced with pointers.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/tests/unit_tests/test_end_to_end.py#L4578-L4701",
+          "version": "repo-lines-v1:sha256:776fc26f8cb4af8c0b48c616e47790b09831f0ee4d276d8c9b56e66a9a12bd33:eyJzZWxlY3RlZExpbmVDb3VudCI6MTI0LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI1Y2M3MmQ0YmJkNDdmYjdjZWQzNDI4ZmUyMjgxM2VjOGVkOGU2YTgzMjA2MjA1NzZlZTEzM2UxMmVhMGViOWU3IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiIzYzM2OTk2ODJiMDEzOTAxMTNhNDg1YmY0NjAwZTY4ZjcxYWYyMDliMWViNGJhZmM5Y2EzZTZiYzg5MjlkMjYzIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJmODNkNjA4MTI1NDRlYzA1M2Y0ZjU4YjE5ZWZmM2EzYjUxYzJmMzg5Y2M3YTg1YjE0MGFlNjM4MWI0ZDQxM2QyIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI2NzQ2OGRlYTAwMjg3NWI1YzI4ZjEzM2RmYzFlYzk5N2I0ZjJjZDMwYTQ4OTY1NzFjYmNmZmY5OTU0YjlmYTRkIn0"
+        }
+      ]
+    },
+    {
+      "id": "claim_e90d9400a0aa4c07a4f28a62fc7105e0",
+      "statement": "Deep Agents installs `ModelRefusalMiddleware` at the end of the main middleware stack so caller fallback middleware can handle a refusal first, while the subagent task boundary converts refusal and refusal-caused structured-output errors into a parent-visible notice instead of re-raising them.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/graph.py#L968-L989",
+          "version": "repo-lines-v1:sha256:7244507ab34e7aeb6ae26180640dc77e8c0abe4defd5303a80ac97cb6bd55984:eyJzZWxlY3RlZExpbmVDb3VudCI6MjIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE1MmQyMmZiOWVhYTNmYjQ0MTJmYzBlNTQ3OGI4ZWIxYzUxZjllZDkzZjJlOTI0YzhhOTQ3OTJkZDQ4MmMwMzEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMwYzFmMTg4ZjE0MmVkN2E4MjQ2ODBiMjA3MTcyYzU1MTliYzYxNGE0OGZkYTdjZjE2N2VkYjhkZGY3OTk1NmMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjZiZjBjYWEzNDVjMmUxMjA4ZDA5OTFjZDkwMDRiODUzNzdkOGYzOGRmMjM0MTU1MjM3YTllMTE1Y2I4Y2ExNGUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjYwY2E3NTQ4ZWI3MmI4MDJkYjJiZTM1ZGMzNWQ2ZTMxMjdkM2Y0YzY3MTRmOTZjNmI4NWZlYzZkMjAzNThlNDgifQ"
+        },
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/subagents.py#L85-L108",
+          "version": "repo-lines-v1:sha256:b19793c00257b714f71eaea1eeb47bcc950cd2f01c0550ab0dc80b8ac53c1911:eyJzZWxlY3RlZExpbmVDb3VudCI6MjQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc5ZmIzODI4NDg2MzQwMjJlNmZlOTE2MDk2NjQwZmUzNmE0ZWQwM2RjNjNlZWYzODIwOWQ5MzVjMGMwOWYzMTUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4OTYwMGE3M2QyZTAyZjM1MmI5MGZlZjFkOGQ2MzgxMWJhNGE4ZWUwYzFiZWFhN2FlNDY1OGYzNmFhMmUxOTgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImE5OGIwNjNkOWI0N2U2NTM3OTYyNTU3MmNjZTE5NzY2OWQ1NzY3ZTEyYzE4YmUwNzU2NTJiOGNkOTgxY2U4ZDUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjM0MDRlMWY2NTY5NzUzZTI1YjQzNjdjYzNjOTM4ZTYzMDFlMDAyZTE2YjA5OTFmYzlhNWE0MjBjNzg1NTc1MzMifQ"
+        },
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/subagents.py#L871-L945",
+          "version": "repo-lines-v1:sha256:2e701f58c640dd1ecd1aba2947385306e4624b8d1ada0a835a3c813e84d83436:eyJzZWxlY3RlZExpbmVDb3VudCI6NzUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ4Y2I0ZmY4MmMzYmZiZWJhMjVjYjAyZGRhOGJmMmEwZDZlYjA4NDU2ODMxMzVmYmY5NDlmNzMwNmYwODc2YmUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjEyYWNiNzdkOWM5ODJhMzkwOWU0MDlkNjI0MWQ1MmYzNWVjMWVhMWVhYmM0NGY0NTZiM2JhZDZjZDJlZjFlNzAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImM3NGI0MGYxZDFlYjdlY2FmMjdjMGQyZWM2Y2IxMzFmMmRjNTUwN2NlZjU3N2RmYjQ4OWExNzYxOTZmYmNkMTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjYxZGJkZTYzN2MzOTAxZWY3NmM3NjM5NzI1ZWNiOTgzZGRjMmZiNTQyMmI3NzU0YjMzNTg2NDJlODM1YzQ2ZWQifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_1bc9a8a846a24b1cadf102e711e7b95d",
+      "statement": "Subagent refusal tests cover provider-shaped and raised refusals, structured-output and declarative children, sync and async execution, and verify that the parent receives the refusal notice as a task result and completes its own response; the main agent raises by default, can fall back, or can exclude refusal middleware through its profile.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/tests/unit_tests/test_subagent_refusal.py#L69-L175",
+          "version": "repo-lines-v1:sha256:0633f6ac760ae39de720f00e8eaf22886c72b2899414fe359ae4af1cf5972d01:eyJzZWxlY3RlZExpbmVDb3VudCI6MTA3LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJmNzRiOWE1NjFiMjY0ODE3YWY3YmZmZDdmM2Y1NjViMTdiZDVmY2UxOTdjMDY3ZDg0ZjRkMzc3MTY5ZDdiNDA5IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI2MDBmZWM3NzlhNzA0ZWU1MmQyMTJlYjA5NjFhYTJjZmRlYjk2ODVjMzI3MGU3YmU2Y2Y0MmNkZjQ4MjgyMmY5IiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI4Y2M0YTdkMWNjNzk2YWJhM2U0NjcyMzMyN2Y1MTdlOWY4MTE5ODJkMjUwZjA3MDI5ODZlNGI1NzY0YWQ5NTg5IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MCwiZm9sbG93aW5nQ29udGV4dEhhc2giOiJlM2IwYzQ0Mjk4ZmMxYzE0OWFmYmY0Yzg5OTZmYjkyNDI3YWU0MWU0NjQ5YjkzNGNhNDk1OTkxYjc4NTJiODU1In0"
+        }
+      ]
+    },
+    {
+      "id": "claim_02f51f38b29543e9bbef17dc54aa93e9",
+      "statement": "The reusable lockfile workflow runs with read-only contents permission, a five-minute Ubuntu job, credential-less checkout, cache-disabled uv setup, all-package lockfile checking, and non-push changed-file hygiene through `make -C libs hygiene`.",
+      "evidence": [
+        {
+          "resource": "repo://.github/workflows/check_lockfiles.yml#L5-L50",
+          "version": "repo-lines-v1:sha256:12b291476cd9db3a0d81082cf2fc2830c290d9865d8d4390b96628a3755983a9:eyJzZWxlY3RlZExpbmVDb3VudCI6NDYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjE0NTMzOGE1MGQxYTY1ZThkYzFkOTc2OTc3ZDg2OWVkNjBjMWRmNTkwZTEyZGY2NDk4M2E5MTA1N2RlODU2Y2IiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImJmNTU5NzljZTczMDIwMzNlNmIyZmQ3ZDg4ZjUzN2EzYjhlMDkxZWEzMDVjODExZmZhMTI3NGJmNTc2NGVhNWUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjE5MmUxNjQ1MzM4Y2UwZTMxYTg0M2ZlNWMwZmVjN2YwYmViYzE0Y2IxOWI0MTYyYTFmNTBkYmU2MTcxMmVlZDQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        },
+        {
+          "resource": "repo://libs/Makefile#L55-L70",
+          "version": "repo-lines-v1:sha256:bfcf134d78991c52e76d59a8760553c73e56f200be4c7897d9022cdce7865640:eyJzZWxlY3RlZExpbmVDb3VudCI6MTYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImMzYWJhN2JmOTBhNTZkMjE4MGJiMzE2ZDNiNTRjMmExMDhiYTYwMTMyNzlmMjA0MTFmMzFhZDJjZjY0ZjEzY2IiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxZDVjMWI2MTgxZTFmOTI2MWMwMjk2NzRiZDU3MjExYzMyMzdkOGMxNzAyOGY0MjI5NjEzNmE5NzEwZjBlZTYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjQ1ZmM1YTY1NDg4YjI1OGUzZTBkMWFlYzBjZTllNzAxZGJiY2M3ZmUwZmE1M2Q3OTFiZDA5NWE5OTY5OTdhMDgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjA5YmY4MjgwMGMxOTVhZTEwZGM5ZDBlYmQ3OGRhOTM0ZDMyOGFmZWZkY2M4Mzg2ZWRhY2IxMDk2NTJhNjlkMGYifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_5d515b9847344161b5b913f151c4fc78",
+      "statement": "CI workflow contract tests verify that the lockfile job is unconditionally reused and included in the final CI gate, and execute stubbed lockfile and hygiene commands to prove either failure fails the shared job while a lockfile failure prevents hygiene from running.",
+      "evidence": [
+        {
+          "resource": "repo://.github/scripts/tests/workflows/test_ci_workflow.py#L191-L259",
+          "version": "repo-lines-v1:sha256:6d6994385b5ef23cb1a0fecc44731662aa730b089eb08a2cd4668ed7b9803cb2:eyJzZWxlY3RlZExpbmVDb3VudCI6NjksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQzMDYxYzk4NDdkMzJlMDY0YWYxNGRiNDhkZjJiODc2MTc3ZjFiNmFmZTEwY2NmYjA3YTBmMGVjMjQ2OGE0YzUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijk4Yzc0NzE1N2RmMjhjYjM3NDExZmU1YjUxZGQzZTgwZWYyYTQ0ZTFiZTMyNGJmN2M4MDhmZmE1OThhOTUxNWYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImQzZDE3MWRlNzU0MzFhMDIxYTBkOTRmYTc2ZmFiZjBkNzEzOWM4OThjMWEwYjQ0YjQzY2E2MDkwM2ZhMWI4NDUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImM4MjYyZGE2ZDIyNjE4NThmMDgwNmFkN2ZmMTgyMDE2NjdkNDAxYzYyYzViNTgyNDkwNTI1NmNkMzg4M2NmMDcifQ"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-11-05T08:04:42.777Z"
+    "at": "2026-11-06T08:04:19.814Z"
   }
 }

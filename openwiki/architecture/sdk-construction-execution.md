@@ -1,11 +1,11 @@
 ---
 type: architecture
 title: SDK Construction and Execution
-description: How create_deep_agent assembles and compiles the Deep Agents graph, and how opt-in rubric review turns a natural completion into a bounded, auditable revision loop.
+description: How create_deep_agent assembles and compiles the Deep Agents graph, including middleware ordering, model-refusal handling, profiles, and child-graph boundaries.
 tags: [deepagents, sdk-construction, middleware, subagents, langgraph, rubric-evaluation]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-10-30T08:04:27.172Z
+    at: 2026-11-06T08:04:19.814Z
 sources:
   - id: openwiki-source-fd64c1b88759a3b897a5452c
     resource: repo://libs/deepagents/deepagents/__init__.py
@@ -19,16 +19,20 @@ sources:
     resource: repo://libs/deepagents/deepagents/middleware/rubric.py
   - id: openwiki-source-66cf9d0832d3cb55bec2b5ed
     resource: repo://libs/deepagents/deepagents/middleware/skills.py
+  - id: openwiki-source-114a1c7a58992fa867a94ef0
+    resource: repo://libs/deepagents/deepagents/middleware/subagents.py
   - id: openwiki-source-a6f0952b514b04c99bc51705
     resource: repo://libs/deepagents/tests/unit_tests/middleware/test_pinned_skills.py
   - id: openwiki-source-10e4084b6aa57e5cc82620b3
     resource: repo://libs/deepagents/tests/unit_tests/test_end_to_end.py
-generated: { by: "openwiki/0.4.2", at: "2026-10-30T08:04:27.172Z" }
+  - id: openwiki-source-917b61d56e652536ba962f3a
+    resource: repo://libs/deepagents/tests/unit_tests/test_subagent_refusal.py
+generated: { by: "openwiki/0.4.2", at: "2026-11-06T08:04:19.814Z" }
 ---
 
 # SDK Construction and Execution
 
-`create_deep_agent()` is the SDK assembly boundary. It resolves the model and harness profile, chooses a backend, separates inline from remote subagent specifications, assembles middleware, and calls LangChain `create_agent()`. The result is a configured compiled LangGraph, not a separate Deep Agents event loop.
+`create_deep_agent()` is the SDK assembly boundary. It resolves the model and harness profile, chooses a backend, separates inline from remote subagent specifications, assembles the main and SDK-built child middleware stacks, and calls LangChain `create_agent()`. The result is a configured compiled LangGraph, not a separate Deep Agents event loop.
 
 The normal LangChain agent finishes when the model has no more tool calls. `RubricMiddleware` is a separately installed, public middleware that can review that natural completion when an invocation supplies a `rubric`; it is not in the default SDK stack. It uses a nested grader agent and, only when appropriate, sends the main graph back to its model node with revision feedback.
 
@@ -46,11 +50,19 @@ Thus remote specifications do not themselves add the blocking `task` tool, and d
 
 ### Middleware assembly
 
-The main core is built as `FilesystemMiddleware`, optional `SubAgentMiddleware`, `_ParentNotifierMiddleware`, summarization middleware, `PatchToolCallsMiddleware`, and optional `AsyncSubAgentMiddleware`. The SDK then appends profile middleware, optional `SkillsMiddleware`, provider prompt-caching middleware, optional `MemoryMiddleware`, generated human-approval middleware, and `UnsupportedContentMiddleware`.
+The main core is built as `FilesystemMiddleware`, optional `SubAgentMiddleware`, `_ParentNotifierMiddleware`, summarization middleware, `PatchToolCallsMiddleware`, and optional `AsyncSubAgentMiddleware`. The SDK then appends profile middleware, optional `SkillsMiddleware`, provider prompt-caching middleware, optional `MemoryMiddleware`, generated human-approval middleware, `UnsupportedContentMiddleware`, and finally `ModelRefusalMiddleware`.
 
-Caller middleware is not simply appended. Profile exclusions run over the assembled stack, caller middleware replaces a surviving same-name entry in place or is spliced after the core and before the tail, then exclusions run again. If the profile excludes model-visible tools, `_ToolExclusionMiddleware` is appended last so a later middleware cannot restore them. Filesystem and inline-subagent scaffolding are protected from profile exclusion; unmatched, ambiguous, or protected exclusions fail construction rather than silently producing a partial harness. A replacement filesystem middleware inherits configured agent permissions when it has none of its own, but conflicting nonempty policies are rejected.
+Caller middleware is not simply appended. Profile exclusions run over the assembled stack, caller middleware replaces a surviving same-name entry in place or is spliced after the core and before the tail, then exclusions run again. Consequently, a newly supplied `ModelFallbackMiddleware` is inside the final SDK `ModelRefusalMiddleware` and can catch its `ModelRefusalError` before it reaches the caller. If the profile excludes model-visible tools, `_ToolExclusionMiddleware` is appended last so a later middleware cannot restore them. Filesystem and inline-subagent scaffolding are protected from profile exclusion; unmatched, ambiguous, or protected exclusions fail construction rather than silently producing a partial harness. A replacement filesystem middleware inherits configured agent permissions when it has none of its own, but conflicting nonempty policies are rejected.
 
-The automatically generated `general-purpose` child has its own narrower stack—filesystem, summarization, patching, profile middleware, optional skills, and caching. Caller middleware reaches it only when it replaces an original slot in that child stack. This prevents main-agent-only middleware from accidentally becoming child behavior.
+The automatically generated `general-purpose` child has its own narrower stack—filesystem, summarization, patching, profile middleware, optional skills, caching, and a final `ModelRefusalMiddleware`. Caller middleware reaches it only when it replaces an original slot in that child stack. This prevents main-agent-only middleware, including a new main `ModelFallbackMiddleware`, from accidentally becoming child behavior.
+
+### Refusals, fallback, and graph boundaries
+
+`ModelRefusalMiddleware` is deliberately the last non-tool-exclusion SDK middleware in each graph the SDK itself constructs: the main graph, the generated `general-purpose` graph, and each declarative `SubAgent` graph. By default, a main-model refusal is therefore raised to the caller. A harness profile may exclude `ModelRefusalMiddleware` by its class or exact name, in which case the raw refusal response remains available instead; it is not protected scaffolding. Exclusions are applied to each applicable SDK-built stack, with exact-type class matching and exact-name string matching.
+
+A caller-provided `ModelFallbackMiddleware` takes the main stack's custom-middleware insertion point ahead of that final refusal middleware, so it catches the default refusal and can invoke its fallback model. Do not infer that the fallback is inherited everywhere: a declarative isolated subagent uses its own `middleware`; a `mode="fork"` subagent merges parent caller middleware with its own, allowing its own or inherited fallback to occupy the child stack; and the generated general-purpose child receives only caller middleware that replaces an existing generated-child slot. Its final refusal middleware remains present unless its profile removes it.
+
+A `CompiledSubAgent` is already compiled and is used as-is, so `create_deep_agent()` cannot install refusal or fallback middleware inside it. The enclosing `task` tool instead catches `ModelRefusalError` and a structured-output validation error carrying a refusal, returning a retry-warning tool result to the parent; unrelated structured-output errors still propagate. This behavior applies on both `invoke` and `ainvoke`. A remote `AsyncSubAgent` likewise owns its remote graph and returns background task IDs rather than receiving the local child stack.
 
 ### State and compilation
 
@@ -130,7 +142,7 @@ Use a dedicated grader model and supply only the verification tools and extra st
 
 ## Focused verification
 
-End-to-end fake-model tests construct an agent through `create_deep_agent()` and verify the first-pass satisfied path, a revision jump and subsequent satisfaction, capped revision, no-rubric no-op, frozen-criterion coverage recovery, tagged feedback, and interrupt propagation. Pinned-skill tests cover requested ordering, snapshot persistence, duplicate and unknown names, unreadable files, parallel pins, tool disclosure lifetime, and isolation from child results.
+End-to-end fake-model tests construct an agent through `create_deep_agent()` and verify the first-pass satisfied path, a revision jump and subsequent satisfaction, capped revision, no-rubric no-op, frozen-criterion coverage recovery, tagged feedback, and interrupt propagation. Refusal-focused tests verify that the default main graph raises, that a caller `ModelFallbackMiddleware` catches that default refusal, that profile exclusion leaves the raw refusal response, and that declarative or opaque compiled child refusals become `task` results in both synchronous and asynchronous invocation. Pinned-skill tests cover requested ordering, snapshot persistence, duplicate and unknown names, unreadable files, parallel pins, tool disclosure lifetime, and isolation from child results.
 
 ## Related pages
 

@@ -1,7 +1,7 @@
 ---
 type: access-control concept
-title: Permissions and Human Approval
-description: Explains filesystem permission enforcement and path-sensitive human review in Deep Agents, including subagent boundaries and dcode interactive and headless approval controls. Distinguishes durable denial, per-call review, shell allow-lists, and independent remote graphs.
+title: Permissions and Human-in-the-Loop
+description: Explains filesystem permission enforcement and path-sensitive human review in Deep Agents, including graph assembly, middleware exclusions, subagent boundaries, and dcode approval controls. Distinguishes durable denial, per-call review, shell allow-lists, and independent remote graphs.
 tags: [permissions, human-in-the-loop, filesystem, subagents, deepagents-code, security]
 sources:
   - id: openwiki-source-1728494bdd59604ce9b5f65b
@@ -22,6 +22,8 @@ sources:
     resource: repo://libs/code/tests/unit_tests/test_agent.py
   - id: openwiki-source-d86dd82872da8545a6c8d896
     resource: repo://libs/code/tests/unit_tests/test_non_interactive.py
+  - id: openwiki-source-b93533cac55718d75277d1cf
+    resource: repo://libs/deepagents/deepagents/_excluded_middleware.py
   - id: openwiki-source-0fc0e47059e4d07e23e50be2
     resource: repo://libs/deepagents/deepagents/graph.py
   - id: openwiki-source-0fb4155c19dd248acd3ffe4f
@@ -32,6 +34,8 @@ sources:
     resource: repo://libs/deepagents/deepagents/middleware/filesystem.py
   - id: openwiki-source-114a1c7a58992fa867a94ef0
     resource: repo://libs/deepagents/deepagents/middleware/subagents.py
+  - id: openwiki-source-6d183faf1a4bc5a5ba451aba
+    resource: repo://libs/deepagents/tests/unit_tests/test_graph.py
   - id: openwiki-source-851e3a9c96663d8db5ca3dec
     resource: repo://libs/deepagents/tests/unit_tests/test_permissions.py
   - id: openwiki-source-665a21e2fbd09a89d3f13ac0
@@ -40,11 +44,11 @@ sources:
     resource: repo://libs/talon/deepagents_talon/tool_approvals.py
 verified:
   - by: openwiki/0.4.2
-    at: 2026-11-03T08:04:09.572Z
-generated: { by: "openwiki/0.4.2", at: "2026-11-03T08:04:09.572Z" }
+    at: 2026-11-06T08:04:19.814Z
+generated: { by: "openwiki/0.4.2", at: "2026-11-06T08:04:19.814Z" }
 ---
 
-# Permissions and Human Approval
+# Permissions and Human-in-the-Loop
 
 Deep Agents deliberately separates filesystem policy, graph-level human review, and the configuration of each graph that executes tools. A filesystem `interrupt` requests review; it is not a denial. A remote `AsyncSubAgent` is another Agent Protocol graph and thread, rather than a privileged continuation of its parent, so it owns its tools, permissions, and approval exchange.
 
@@ -78,6 +82,10 @@ flowchart TD
 For exact-path tools, the predicate reviews only a matching requested path, plus its resolved target where a backend is available. A deny on either candidate wins over interrupt, returning a permission error rather than an approvable request. Bulk tools—listing, search, glob, and delete—conservatively pause when their reachable subtree can overlap an interrupt-rule anchor. Missing bulk paths and `.` mean the accessible root. `glob` also examines an absolute `pattern`, which can redirect the search independently of `path`; a relative pattern containing `..` is conservatively reviewed. Prefer literal leading anchors such as `/secrets/**`; `/**/secrets` has root anchor `/` and can review every bulk operation.
 
 Caller-provided `interrupt_on` wins over a generated entry of the same name. That is an extension point, not a filesystem-denial bypass: approved and edited calls still enter filesystem middleware for pre-execution enforcement.
+
+### Middleware exclusion can remove the review layer
+
+After assembly, a harness profile filters the final middleware stack. `FilesystemMiddleware` and `SubAgentMiddleware` are protected scaffolding and cannot be excluded, but `HumanInTheLoopMiddleware` is not in that protected set. Consequently, excluding `HumanInTheLoopMiddleware`—by its exact class or matching `.name`—removes both generated filesystem interrupts and caller-supplied `interrupt_on` review for that graph. It does **not** remove filesystem tools or `deny` enforcement, because the filesystem middleware remains. Exclusions must match at least one assembled middleware across the applicable main and general-purpose stacks; unmatched entries, protected-scaffolding entries, and ambiguous string-name matches fail assembly. Treat removal of HITL as an explicit policy change, not as a way to tune a single path rule.
 
 ## Inheritance stops at graph boundaries
 

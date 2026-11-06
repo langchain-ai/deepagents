@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:3925dba5abeee4b2f8b519663db4d54f723325f6f3018d633f6801870eaa8d26",
+  "pageVersion": "sha256:c8ffdd751299cdfa3cc4097debd72e98087eb938e120d653809cee7f682210b2",
   "claims": [
     {
       "id": "claim_66c8cdf2e322499f9163f44abcb9af36",
@@ -206,7 +206,7 @@
       "evidence": [
         {
           "resource": "repo://.github/workflows/ci.yml",
-          "version": "repo-file-v1:sha256:cf0654a8c4f87483861271e48eecbb7eb3aeb0791a2312f6854edf720a1ed88e"
+          "version": "repo-file-v1:sha256:eb926bfed19c9cf856e913f5c1850532c0fd80baa2bd80522e78be4dea5def74"
         }
       ]
     },
@@ -270,7 +270,7 @@
       "evidence": [
         {
           "resource": "repo://.github/workflows/ci.yml",
-          "version": "repo-file-v1:sha256:cf0654a8c4f87483861271e48eecbb7eb3aeb0791a2312f6854edf720a1ed88e"
+          "version": "repo-file-v1:sha256:eb926bfed19c9cf856e913f5c1850532c0fd80baa2bd80522e78be4dea5def74"
         }
       ]
     },
@@ -280,7 +280,7 @@
       "evidence": [
         {
           "resource": "repo://.github/workflows/ci.yml",
-          "version": "repo-file-v1:sha256:cf0654a8c4f87483861271e48eecbb7eb3aeb0791a2312f6854edf720a1ed88e"
+          "version": "repo-file-v1:sha256:eb926bfed19c9cf856e913f5c1850532c0fd80baa2bd80522e78be4dea5def74"
         }
       ]
     },
@@ -302,13 +302,45 @@
         },
         {
           "resource": "repo://.github/workflows/ci.yml",
-          "version": "repo-file-v1:sha256:cf0654a8c4f87483861271e48eecbb7eb3aeb0791a2312f6854edf720a1ed88e"
+          "version": "repo-file-v1:sha256:eb926bfed19c9cf856e913f5c1850532c0fd80baa2bd80522e78be4dea5def74"
+        }
+      ]
+    },
+    {
+      "id": "claim_ca5f242df6d4427390736f3401c30e57",
+      "statement": "The current `deepagents-code` package is version `0.2.5` and requires Python `>=3.14,<3.15`; the changelog identifies the Python 3.14 requirement introduced in 0.2.0 as a breaking change.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/CHANGELOG.md#L113-L117",
+          "version": "repo-lines-v1:sha256:a9bad2712640d1aceb1366b1e7bcaa2f65cb3fc7118eae878370fff92673c169:eyJzZWxlY3RlZExpbmVDb3VudCI6NSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYWZiMjE3NzdkOGU3ZjZmNmQ1MzBiNDQ0N2YwNWRhZDcwMTczZmFiNjZjYTk0ZDBkMmU0MTFmNmVhOTVkMjEzNCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMTU2OGEyYTVmODk2MDNhZDVkNTNhYzg4ZTVlYjRjZWIyYWQ1NTMyNzNlYWQ1M2I0ODZhYjg3OWJkMDY1MGNlMiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMDU2YmZiMjI3NjcwYmU3OGIwMTcwZGQ4OTQwNmQwMWE3MjQ2NDYyOTU5ZDY0MjA5MDA5MTVhMmI3YWU0NjYwNCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMDI1N2JjYmMzMThkNjQ0YzYyZDhjYzlkZjVmNmFmMjFiMzdmYWM5ZmUxYWJlYmY0NDU4YjZkMGFjZDI1OGE3MSJ9"
+        },
+        {
+          "resource": "repo://libs/code/pyproject.toml#L5-L14",
+          "version": "repo-lines-v1:sha256:f061b75e1d84c3ba38bfe048b441d95f0f7f19e91573c2dd79f40e121d692045:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjcwMmE4MWMzODM2ZWRlZjJkMGJhMTFkMjM1M2ZiNmRhYmM3NzcxNTBhN2NhODNlYTBkOWU5YTcwMzEzZmVhYmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZhMjczYzUzYjJjMGIyMWZhMGYyZmU2YTUyZmZlZDQ3OGU5MjI3YWQyYjVmMTUzZWYwMDNhNzI2NTdiNzQyMDEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImYxMzdhYWFhYzhhZjRmMGNiYjA4YTcxZjZlNTRjMjhmYjBhNDgxYjdlYWRlZWExMjEzNGM0NzM4NzUzNGU3ZjgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImE0YzZmNDE2ZTEzZWYxOTEwMDJkYmNhZmRhOTNiMTU2ZmI3Y2EwMGIyYmU4MWQ4ZGNlMWE4NWRiMzgxNDY3NmEifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_9042ee12f98d45b9ab297d9695318b06",
+      "statement": "CI always invokes the reusable lockfile workflow; it checks lockfile freshness and runs changed-file hygiene outside push events, which is separate from the helper-suite tests that directly validate the root action.",
+      "evidence": [
+        {
+          "resource": "repo://.github/scripts/tests/workflows/test_ci_workflow.py#L191-L259",
+          "version": "repo-lines-v1:sha256:6d6994385b5ef23cb1a0fecc44731662aa730b089eb08a2cd4668ed7b9803cb2:eyJzZWxlY3RlZExpbmVDb3VudCI6NjksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQzMDYxYzk4NDdkMzJlMDY0YWYxNGRiNDhkZjJiODc2MTc3ZjFiNmFmZTEwY2NmYjA3YTBmMGVjMjQ2OGE0YzUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijk4Yzc0NzE1N2RmMjhjYjM3NDExZmU1YjUxZGQzZTgwZWYyYTQ0ZTFiZTMyNGJmN2M4MDhmZmE1OThhOTUxNWYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImQzZDE3MWRlNzU0MzFhMDIxYTBkOTRmYTc2ZmFiZjBkNzEzOWM4OThjMWEwYjQ0YjQzY2E2MDkwM2ZhMWI4NDUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImM4MjYyZGE2ZDIyNjE4NThmMDgwNmFkN2ZmMTgyMDE2NjdkNDAxYzYyYzViNTgyNDkwNTI1NmNkMzg4M2NmMDcifQ"
+        },
+        {
+          "resource": "repo://.github/workflows/check_lockfiles.yml#L13-L50",
+          "version": "repo-lines-v1:sha256:b4b156076239d12a2e76861dc7d2df6b2c4398a73e7ad973077bd0c44feb16f4:eyJzZWxlY3RlZExpbmVDb3VudCI6MzgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU5ZDgwMTU0ZWQ0MmZjNWM3NzliMTMzMTU3OGI1OGI4OWM4MDFlYWNlNzRmMjRjZDQ4ZWI0YTIzNTc5NDBhOTUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImJmNTU5NzljZTczMDIwMzNlNmIyZmQ3ZDg4ZjUzN2EzYjhlMDkxZWEzMDVjODExZmZhMTI3NGJmNTc2NGVhNWUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjZmMWQ3MGQ3MmJhZDIzMWQ0M2M1NzVhY2VmNjk0NjU4MGU0MzljODc5Nzk0ZWQyZWExZjRhNDAzNDAyNDUxNzIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        },
+        {
+          "resource": "repo://.github/workflows/ci.yml#L43-L46",
+          "version": "repo-lines-v1:sha256:58711779a4843d1859c2d7ebce8a0661a12fcdd2da6d233f13e31def5b97b4ed:eyJzZWxlY3RlZExpbmVDb3VudCI6NCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiZTlkODAxNTRlZDQyZmM1Yzc3OWIxMzMxNTc4YjU4Yjg5YzgwMWVhY2U3NGYyNGNkNDhlYjRhMjM1Nzk0MGE5NSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiYWMxMjEzMDFjY2MxOTU2MDcxYTUyZDg3MjlkNGMwY2YyY2NiMjI1MzVkNTQ5MDYyM2JiNWJmZDliYjNiNTVkNiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNGI2NTM1OTU5NzBkOGJhZWQ2YjMxMDEyZjE5N2FjN2QzYzYzYTY1ZGU2NjVlZjM2M2ZmOTE1M2JmYjNiMzZmMiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZGE3OWFmZDc2Njk3YTc4MTExYTVlNjA5MzJiNThiYjNiNTU2ZTIyMDcwODJjYzhlYmRhYzQzNzQ1NTExMGViMyJ9"
         }
       ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-11-02T08:04:35.090Z"
+    "at": "2026-11-06T08:04:19.814Z"
   }
 }

@@ -3,10 +3,9 @@ type: model and profile configuration
 title: Profiles and Models
 description: Explains how Deep Agents SDK profiles construct models and assemble harnesses, and how dcode discovers, admits, configures, and switches models safely.
 tags: [models, sdk-profiles, dcode, provider-configuration, model-catalog, reasoning]
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-11-05T08:04:42.777Z
 sources:
+  - id: openwiki-source-6c2e9cfaa20096e021221d47
+    resource: repo://libs/code/CHANGELOG.md
   - id: openwiki-source-7f6b98925b5f1ba065df3a04
     resource: repo://libs/code/deepagents_code/config.py
   - id: openwiki-source-55d5c39401ac52584ce1f973
@@ -35,7 +34,10 @@ sources:
     resource: repo://libs/deepagents/deepagents/profiles/provider/provider_profiles.py
   - id: openwiki-source-478a579b56d29c6928ec2320
     resource: repo://libs/deepagents/pyproject.toml
-generated: { by: "openwiki/0.4.2", at: "2026-11-05T08:04:42.777Z" }
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-11-06T08:04:19.814Z
+generated: { by: "openwiki/0.4.2", at: "2026-11-06T08:04:19.814Z" }
 ---
 
 # Profiles and Models
@@ -118,9 +120,11 @@ The model-node middleware owns the visible retry budget: `--max-retries`, provid
 
 ## Compatibility and provider dependency floors
 
-dcode `0.2.4` requires Python `>=3.14,<3.15` and pins `deepagents==0.7.32`. The SDK manifest is also `0.7.32`, supports Python `>=3.11,<4.0`, and requires LangChain `>=1.4.9,<2.0.0`, LangChain Core `>=1.7.5,<2.0.0`, Anthropic `>=1.7.9,<2.0.0`, and Google GenAI `>=4.4.2,<5.0.0`. The SDK range does not widen dcode's released Python contract; dcode's editable sibling SDK source is a development override.
+dcode `0.2.5` requires Python `>=3.14,<3.15` and pins `deepagents==0.7.34`. The SDK manifest is `0.7.34`, supports Python `>=3.11,<4.0`, and requires LangChain `>=1.4.9,<2.0.0`, LangChain Core `>=1.7.6,<2.0.0`, Anthropic `>=1.7.10,<2.0.0`, and Google GenAI `>=4.4.3,<5.0.0`. The SDK range does not widen dcode's released Python contract; dcode's editable sibling SDK source is a development override.
 
-The dcode core installs Anthropic `>=1.7.9,<2.0.0`, Google GenAI `>=4.4.2,<5.0.0`, and OpenAI `>=1.7.3,<2.0.0`. Other integrations are extras: Baseten `>=0.2.5`, Bedrock `>=1.9.1`, Cohere `>=0.6.0`, DeepSeek `>=1.1.1`, Fireworks `>=1.7.1`, Groq `>=1.1.3`, Hugging Face `>=1.2.3`, IBM `>=1.1.2`, LiteLLM `>=0.11.2`, Meta `>=0.5.0`, Mistral `>=1.1.6`, NVIDIA endpoints `>=1.5.0` (plus `aiohttp>=3.14.3`), Ollama `>=1.1.0`, OpenRouter `>=0.2.9`, Perplexity `>=1.4.2`, Together `>=0.4.0`, Vertex AI `>=3.2.5,<4.0.0`, and xAI `>=1.3.0`; each has the package's stated upper bound where shown in the manifest. Install the matching dcode extra before selecting its provider.
+The dcode core installs Anthropic `>=1.7.10,<2.0.0`, Google GenAI `>=4.4.3,<5.0.0`, and OpenAI `>=1.7.4,<2.0.0`. Other integrations are extras: Baseten `>=0.2.5,<1.0.0`, Bedrock `>=1.9.1,<2.0.0`, Cohere `>=0.6.0,<1.0.0`, DeepSeek `>=1.1.1,<2.0.0`, Fireworks `>=1.7.2,<2.0.0`, Groq `>=1.1.3,<2.0.0`, Hugging Face `>=1.2.3,<2.0.0`, IBM `>=1.1.2,<2.0.0`, LiteLLM `>=0.11.2,<2.0.0`, Meta `>=0.5.0,<2.0.0`, Mistral `>=1.1.6,<2.0.0`, NVIDIA endpoints `>=1.5.0,<2.0.0` (plus `aiohttp>=3.14.3`), Ollama `>=1.1.0,<2.0.0`, OpenRouter `>=0.2.9,<2.0.0`, Perplexity `>=1.4.2,<2.0.0`, Together `>=0.4.0,<2.0.0`, Vertex AI `>=3.2.5,<4.0.0`, and xAI `>=1.3.0,<2.0.0`. Install the matching dcode extra before selecting its provider.
+
+The `0.2.5` changelog records that compaction input budgeting now follows the selected model. This is release context, not a promise that every runtime switch changes an already compiled graph; model switching remains the responsibility of the runtime middleware described above.
 
 When changing this area, preserve the ordering of canonicalization, admission, credential bridging, profile application, and imports. Test malformed, empty, exact, wildcard, and Bedrock allowlists; prove denied construction has no credential, profile, or import side effects; exercise prefixed environment shadowing and stored credential bridging; and cover profile failure translation, model-switch denial and fallback, and per-switch retry budgets. Relevant focused suites include `libs/code/tests/unit_tests/test_config.py`, `test_model_config.py`, `test_model_switch.py`, `tui/widgets/test_model_selector.py`, and `libs/deepagents/tests/unit_tests/test_harness_profiles.py`.
 

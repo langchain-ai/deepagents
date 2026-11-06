@@ -1,8 +1,11 @@
 ---
 type: context-management concept
 title: Context Management and Offload
-description: How Deep Agents compacts model-visible conversation context while retaining raw checkpoint history, and how dcode adds server-owned offload, archive lifecycle controls, and protected machine-managed memory.
+description: How Deep Agents derives a compact model-visible conversation from retained state, archives recoverable history, and handles context overflow and dcode server-owned offload safely.
 tags: [context-management, summarization, compaction, offload, persistence, memory-guard]
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-11-06T08:04:19.814Z
 sources:
   - id: openwiki-source-05106e66a949150d557266a2
     resource: repo://libs/code/deepagents_code/agent.py
@@ -30,127 +33,137 @@ sources:
     resource: repo://libs/deepagents/tests/unit_tests/middleware/test_compact_tool.py
   - id: openwiki-source-6228ff9cf1d681a771797121
     resource: repo://libs/deepagents/tests/unit_tests/middleware/test_compaction_recovery.py
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-11-05T08:04:42.777Z
-generated: { by: "openwiki/0.4.2", at: "2026-11-05T08:04:42.777Z" }
+  - id: openwiki-source-8e7076889e81540fe4fcb8c5
+    resource: repo://libs/deepagents/tests/unit_tests/middleware/test_summarization_middleware.py
+generated: { by: "openwiki/0.4.2", at: "2026-11-06T08:04:19.814Z" }
 ---
 
 # Context Management and Offload
 
-Context reduction is not one destructive operation. Deep Agents SDK compaction changes the **model-visible view** of a conversation; dcode server-owned offload adds a guarded checkpoint commit; archives are a separate recovery-retention layer; and managed-memory protection preserves machine-owned text in memory files. These boundaries matter when operating or extending a long-running session.
+Context reduction is not a destructive rewrite of one conversation transcript. The SDK records a **summary event** over retained state, derives a shorter history for each model call, and can archive the covered portion. dcode adds a server-owned commit protocol around that operation. These are separate persistence and safety boundaries:
 
-- **SDK compaction** automatically summarizes according to its triggers and request budget, or is invoked by the model through `compact_conversation`.
-- **dcode `/offload`** is a server operation against a stable thread checkpoint. `/compact` is a UI alias, not a client-side state mutation.
-- **Archives** may preserve compacted history, but a successful summary can intentionally have no archive path.
-- **Managed memory** is not conversation history: it protects a marker-delimited onboarding block in configured memory files.
+- **Raw state** is the checkpoint's `messages` list. A summary event does not replace it.
+- **Effective history** is the message view sent to the model: a synthetic summary plus the retained suffix.
+- **An archive** is optional recovery storage. An event can be valid when `file_path` is `None`.
+- **Server offload** is an operation on a stable dcode thread checkpoint, not a client-side messages update.
 
-See [Middleware Stack](/openwiki/architecture/middleware-stack.md) for placement, [State, Checkpoints, and Sessions](/openwiki/concepts/state-persistence.md) for checkpoint ownership, [Tools and Filesystem](/openwiki/concepts/tools-filesystem.md) for filesystem tool behavior, and [Cost and Sessions](/openwiki/operations/cost-and-sessions.md) for summary-cost accounting.
+See [Runtime Behavior](/openwiki/architecture/runtime-behavior.md), [Middleware Catalog](/openwiki/concepts/middleware-catalog.md), and [State, Checkpoints, and Sessions](/openwiki/concepts/state-persistence.md) for middleware placement and checkpoint ownership.
 
 ```mermaid
 flowchart TD
-    Raw["Raw checkpoint messages"] --> Effective["Effective model history"]
-    Event["Summary event"] --> Effective
-    Effective --> Model["Model call"]
-    Model --> Overflow{"Context overflow"}
-    Overflow -->|"yes"| Retry["One smaller retry"]
-    Auto["SDK automatic compaction"] --> Event
-    Manual["compact_conversation"] --> Eligible{"Eligible and cutoff"}
-    Eligible -->|"yes"| Summary["Generate summary"]
-    Summary --> Archive["Attempt archive offload"]
-    Archive -->|"path or None"| Event
-    Summary -->|"summary exception"| Failure["Error ToolMessage no event"]
-    Archive -->|"escaping exception"| Failure
-    Server["dcode server offload"] --> Validate["Validate stable checkpoint"]
-    Validate --> Commit["Commit allowlisted state"]
-    Commit --> Event
+    Raw["Raw state messages"] --> Apply["Apply summary event"]
+    Event["Summary event"] --> Apply
+    Apply --> Effective["Summary plus retained suffix"]
+    Effective --> Call["Model call"]
+    Call --> Overflow{"Context overflow"}
+    Overflow -->|"first recognized error"| Compact["Summarize or clip tail"]
+    Compact --> Retry["One smaller request"]
+    Overflow -->|"repeated or irreducible"| Terminal["ContextOverflowError"]
+    Compact --> Event
+    Compact --> Archive["Append archive when available"]
 ```
 
-*Manual compaction commits an event when its archive helper returns either a path or `None`; a summary or escaping helper error instead produces a tool error without an event. Server offload additionally protects the checkpoint commit boundary.*
+*The event changes the request view, while the archive is a separate best-effort recovery artifact.*
 
-## SDK compaction: raw retention and effective history
+## Summary events and effective-history reconstruction
 
-`SummarizationMiddleware` retains raw `messages` in state. A `SummarizationEvent` records the raw cutoff, generated summary, optional archive path, and creation index; it reconstructs the next model input as the summary followed by the retained raw suffix. Thus an event is an interpretation layer over checkpoint history, rather than replacement of that history.
+`SummarizationMiddleware` stores its current event at `_summarization_event` and the archive session identifier at `_summarization_session_id`. An event contains a raw `cutoff_index`, the `summary_message`, an optional `file_path`, and two compatibility/reconciliation fields:
 
-Chained events translate a new effective-history cutoff back to raw-state coordinates and retain a session ID so successive operations can address the same archive. For messages that predate an event, `created_at_index` identifies retained provider-bound reasoning that must be omitted from effective history after summarization, while raw state remains unchanged.
+- `cutoff_message_id` identifies the first raw message retained after the cutoff. On reconstruction, the middleware resolves that ID in the current state first. This keeps the cutoff correct if earlier checkpoint messages were removed after the event was created. Events created before that field, or whose ID no longer exists, fall back to the stored numeric index.
+- `created_at_index` records how many state messages existed when the event was made. For the part of the retained suffix that was already present then, provider-bound reasoning is stripped from the effective request. The raw messages themselves remain intact; messages created later retain their reasoning. Older events without this field preserve the old behavior.
 
-Automatic compaction partitions older history, attempts archival, and creates the summary event. Archive failure is nonfatal in this path: a useful in-context summary may commit with `file_path=None`, which means the removed portion is not recoverable through that archive. Context-overflow recovery is bounded: it retries at most once with a strictly smaller, locally budget-valid request, otherwise raises terminal `ContextOverflowError`.
+The effective list is therefore `summary_message + messages[resolved_cutoff:]`, with the reasoning adjustment above. A malformed event falls back to the raw message list; an out-of-range cutoff produces the summary alone. This is intentionally a request-time interpretation layer, not transcript deletion.
 
-## Manual SDK compaction
+### Chained compaction and cutoffs
 
-`SummarizationToolMiddleware` exposes `compact_conversation` for model-initiated compaction and shares the summary-event and session-ID state used by automatic compaction. It does not run itself in the background. Its admission gate opens only when at least one trigger clause is roughly half way to its configured automatic threshold; an ineligible request or zero cutoff returns a correlated “nothing to compact” tool result.
+A new cutoff is initially calculated in **effective-list** coordinates. If a prior event exists, the synthetic summary at effective index zero has no raw-state counterpart, so the middleware translates the new cutoff back to state coordinates. New events also save the matching message ID. Consequently, extensions that prune or otherwise transform old checkpoint messages must preserve the cutoff message if they want ID-based reconciliation; otherwise the system deliberately uses the legacy numeric fallback.
 
-The archive result and an exception are deliberately different outcomes. `_offload_to_backend` and `_aoffload_to_backend` absorb backend read/write exceptions and error results, log them, and return `None`; after a summary has been generated, that return value produces a successful, non-recoverable compaction with an event whose `file_path` is `None`. The confirmation still says the conversation was compacted.
+Automatic compaction first derives effective messages, optionally truncates older large tool-call arguments, decides whether its trigger or the input budget requires compaction, and partitions the older prefix from the kept suffix. It archives the prefix before generating a summary, then returns a state update containing the event and session ID. Apart from overflow-tail replacements, it does not write a replacement `messages` list merely because it summarized.
 
-A summary-generation failure, or an offload exception that escapes the helper, is caught by the tool wrapper instead. It returns an error-status `ToolMessage` correlated to the originating call and updates only `messages` with that result—not `_summarization_event` or `_summarization_session_id`. Therefore, callers must distinguish a **successful event with no archive** from an **error tool result with unchanged summarization-event state**; `file_path=None` alone is not evidence that compaction failed.
+## Archives, media, and failure meaning
+
+The SDK appends each archive section to `/conversation_history/{session_id}.md` on its configured backend and filters earlier synthetic summary messages to avoid archiving a summary of history already saved. A successful archive path is included in the summary message so an agent with filesystem access can reopen the detailed history.
+
+Archive persistence is best effort. The synchronous and asynchronous archive helpers treat backend read, write, response-error, and ordinary backend exceptions as a `None` path. Automatic compaction logs and warns that the older history is unrecoverable, but still creates an in-context summary event. Thus `file_path=None` means **successful compaction without a recoverable archive**, not necessarily a failed compaction.
+
+Inline `data:` media needs a second preservation path because the archive renderer cannot retain inline payloads. Before the archive is rendered, the middleware uploads decoded media under its conversation-history media location and rewrites archive content to path references. Identical payloads are deduplicated by a short SHA-256 key. A decode or upload failure becomes a visible `failed_to_offload` placeholder and is reported as an unrecoverable media warning; it does not silently disappear or prevent the textual history from being archived.
+
+## Explicit `compact_conversation`
+
+`SummarizationToolMiddleware` registers the `compact_conversation` tool but is not an automatic middleware by itself. It delegates to a configured `SummarizationMiddleware`; when both layers are registered, automatic and manual compaction share the same event and archive-session state. `create_summarization_tool_middleware(...)` constructs this tool layer and its engine, while `create_deep_agent` supplies the normal automatic summarization layer by default.
+
+The tool is an admission-gated, model-initiated operation rather than a background trigger. It accepts a call only if at least one configured trigger clause reaches approximately half of its automatic threshold; compound dictionary clauses require all of their fields. It then applies any prior event, requires a nonzero cutoff, summarizes the selected prefix, attempts the archive, and returns a correlated confirmation `ToolMessage` with the new event and session ID.
+
+Failure handling has an important distinction:
+
+| Outcome | Tool state update | Meaning |
+|---|---|---|
+| Archive helper returns a path | Event, session ID, confirmation message | Compacted and recoverable through that path. |
+| Archive helper returns `None` | Event, session ID, confirmation message | Compacted, but the summarized source is not recoverable from an archive. |
+| Summary generation, partitioning, or an escaping offload error fails | Error `ToolMessage` only | No new event or session ID is written; the conversation was not compacted. |
+| Ineligible request or zero cutoff | “Nothing to compact” `ToolMessage` only | No compaction is performed. |
+
+The sync and async paths have the same state contract. Tests cover successful first and chained events, no-path success, correlated error messages, malformed-event fallback, and the half-trigger eligibility gate.
+
+## Overflow recovery and budgets
+
+Compaction is also a recovery mechanism for recognized provider context overflows. The middleware recognizes `ContextOverflowError` and specific context-limit HTTP errors, but does not retry unrelated bad requests. It reserves configured output tokens and five percent headroom from a model profile's advertised input limit when checking a request budget.
+
+When an over-budget request cannot be summarized further, or a provider rejects a request, the middleware may clip/offload large trailing tool results and send **at most one** smaller retry. Before that retry reaches the provider, it verifies both that it is strictly smaller than the rejected request and that the complete request—including system prompt, tools, and output reservation—is within the local budget. A repeated overflow, unchanged reduction, or irreducible overhead becomes terminal `ContextOverflowError`, rather than an unbounded retry loop.
 
 ## dcode server-owned offload
 
-`CLICompactionMiddleware` keeps the SDK tool behavior while adding hook-aware automatic compaction and a state-only planning entry point for forced dcode offload. A `PreCompact` hook can veto automatic compaction, including overflow recovery; asynchronous automatic and model-initiated paths serialize archive append cycles by session ID.
+The dcode `/offload` route makes compaction a checkpoint-guarded server operation. It locks the target thread, allows only an idle or errored thread with no pending graph work, hydrates the checkpoint, and runs the offload plan. It then rechecks that the checkpoint has not advanced. If it has, the completed summary is discarded rather than committed to changed state.
 
-The HTTP `/offload` boundary owns the concurrency protocol. It locks the thread, permits only idle or errored threads without pending graph work, hydrates the checkpoint, runs summarization, then rechecks checkpoint identity before committing. A checkpoint that advanced during summarization produces a conflict and no commit. The endpoint trusts model settings recorded in the checkpoint rather than request-supplied model settings, preventing a transport client from substituting a summary model.
+The HTTP boundary removes request-provided model settings and restores the model spec and parameters saved in the target checkpoint. A thread that predates model checkpointing instead uses the startup summarizer. This prevents a request client from changing the provider or endpoint that receives archived conversation history.
 
-Only `OffloadStateUpdate` channels may cross this boundary: the summary event, summary session ID, and cost channels. In particular, an offload never writes `messages`; the runtime allowlist rejects any other channel as well. This prevents an operation that commits against the latest checkpoint from clobbering messages attributed to a concurrent graph run. Cost records drained for the operation are committed when a write might have landed, but rolled back when the unchanged checkpoint proves it did not.
+Only the allowlisted `OffloadStateUpdate` channels may be committed: the summary event, summary session ID, and cost channels. In particular, server offload cannot write `messages`; this prevents a delayed operation from overwriting messages attributed to another run.
 
 ```mermaid
 sequenceDiagram
-    participant UI as dcode client
+    participant Client as dcode client
     participant API as offload API
     participant Thread as thread checkpoint
     participant Engine as offload engine
     participant Store as archive backend
-    UI->>API: POST offload with operation id
+    Client->>API: request offload
     API->>Thread: require idle and read checkpoint
-    API->>Engine: plan and summarize hydrated state
-    Engine-->>API: state update and deferred archive
-    API->>Thread: recheck checkpoint identity
-    API->>Thread: reserve summary event and costs
+    API->>Engine: summarize hydrated state
+    Engine-->>API: typed state update and pending archive
+    API->>Thread: verify checkpoint unchanged
+    API->>Thread: reserve event and costs
     API->>Store: append archive
     API->>Thread: link archive path
-    API-->>UI: complete result
+    API-->>Client: complete result
 ```
 
-*The server reserves compacted state before the deferred archive append, then links the archive only after it is written.*
+*The server reserves the summary state before it writes and links a deferred archive, while prohibiting conversation-message writes.*
 
-A forced plan rejects a degenerate chained compaction that cannot advance the raw cutoff, avoiding a paid summary-of-a-summary that would not offload history. Its staged archive append saves the previous content. If the archive append cannot be completed, it is rolled back; if the later checkpoint link is confirmed absent, that completed append is also rolled back. A summary event without an archive path can still be committed and reported as such. Commit settlement defers request cancellation until the in-progress write reaches a terminal state.
+Forced dcode offload stages the archive append with the prior content so a failed append can be rolled back. If the subsequent archive-link checkpoint write is confirmed absent, it also rolls back the completed append. A successful compaction may still commit an in-context event without an archive path. If a state write fails, cost records are rolled back only when the original checkpoint is confirmed unchanged; an advanced or unreadable checkpoint leaves them claimed to avoid double charging and reports an indeterminate outcome.
 
-### Handoff is different from compaction
+### Handoff is not source compaction
 
-The handoff route summarizes a source thread for a new thread but does **not** compact source context: the source receives only summary cost channels. Its recovery transcript is written under a source-owned archive name, so cleanup can remove it with the source thread even if child creation fails. Do not interpret a handoff summary as proof that the source checkpoint has been compacted.
+A handoff summarizes a source thread to seed another thread but does not install a summary event on the source. The source receives only summary-cost channels. Its recovery transcript is named with source-thread ownership so cleanup can delete it with the source, including after a failed child creation.
 
-## Archive persistence and lifecycle
+## Local archive lifecycle and idle maintenance
 
-Local conversation archives normally live in the hardened `conversation_history` directory beneath `DEEPAGENTS_HOME` (by default `~/.deepagents`). The archive subdirectory, rather than the shared configuration root, is restricted to the current user and probed for writability. If persistent storage is unavailable, dcode uses hardened temporary storage and marks it ephemeral; it may not survive restart. Server and sandbox archives belong to their backend rather than this local directory.
+For local dcode operation, archives normally live in a hardened `conversation_history` directory below `DEEPAGENTS_HOME` (normally `~/.deepagents`). If that persistent location cannot be created or written, dcode uses hardened temporary storage and marks it ephemeral. `history.retention_days` controls best-effort cleanup; `0` disables sweeping. Cleanup only considers expired regular `.md` children and swallows failures, while thread deletion also best-effort removes its archive and source-owned handoff snapshots.
 
-`history.retention_days` is resolved through normal configuration precedence; `0` disables sweeping. Cleanup considers only expired regular `.md` children immediately in the archive directory, rechecks mtime on an open descriptor before unlinking, and swallows cleanup failures. Thread deletion is best effort: it deletes that thread's local archive and source-owned handoff snapshots, while rejecting an empty or path-escaping thread ID.
+`history.idle_compaction_tokens` is separate from SDK automatic compaction and defaults to disabled. When enabled, dcode schedules no more than one server offload per thread and prompt-cache window, only in the final 20 percent of that window and no more than 120 seconds before expiry. It additionally requires exact context usage at the threshold, a remote agent, and a quiescent UI. This is a prompt-cache optimization, not a context-limit safety trigger.
 
-## Idle cache maintenance is not a compaction trigger
+## Related context safeguards
 
-`history.idle_compaction_tokens` defaults to `0` (disabled). A positive setting enables a dcode UI optimization, not SDK automatic compaction. The UI schedules at most one server offload per thread and prompt-cache expiry window, only in the final 20% of a known cache window and no more than 120 seconds before expiry.
+Provider output truncation is distinct from input overflow. dcode normalizes truncation metadata and turns an empty truncated final reply into `ModelOutputTruncatedError`, so a model node does not checkpoint a silent empty success. Task-subagent failures become error `ToolMessage` values; partial subagent responses retain their content with a warning.
 
-It requires exact context usage at or above the threshold, a remote agent, and a quiescent UI. Active work, queued input, typing, modals, reconciliation, connection work, thread switching, and other competing activity prevent scheduling. This separates the cost trade-off of preserving a warm prompt cache from context-limit safety.
+Managed memory is also distinct from conversation history. `ManagedMemoryGuardMiddleware` protects configured marker-delimited blocks in memory files: it intercepts writes, edits, and deletion, restores a changed managed block where possible, and fails the operation even after restoration. It rejects deletion of a protected or unreadable existing file before the underlying tool runs. Its reads and restoration writes use no-follow operations, so a symlink replacement produces a visible restoration failure rather than overwriting the link target.
 
-## Truncated model replies
+## Operational checklist and focused tests
 
-Context pressure can also appear as a provider-truncated reply rather than a request-time overflow. `output_truncation` normalizes supported provider metadata into `max_output_tokens`, `content_filter`, or `context_window_exceeded`. For the last reason, its user-facing hint recommends `/compact` before retrying.
+1. Treat raw messages, summary events, and archive files as separate layers. Do not replace `messages` just because effective history is shorter.
+2. Preserve both `cutoff_index` and `cutoff_message_id` when constructing or migrating events; the ID is what makes the cutoff robust to earlier-message removal.
+3. Treat `file_path=None` as a recoverability warning, not proof that compaction failed. Inspect the event and tool-message status.
+4. Keep the one-retry and budget checks intact when changing overflow behavior; system prompt, tool schemas, and output reservation count toward the input budget.
+5. Do not widen dcode's offload write allowlist to include `messages` without redesigning the checkpoint concurrency protocol.
+6. Configure archive retention for sensitivity and lifetime, and treat temporary fallback storage as nonpersistent.
 
-`EmptyTruncatedReplyMiddleware` turns a truncated final AI message with neither visible text nor a parsed tool call into `ModelOutputTruncatedError`. This fails the model node rather than checkpointing a silent empty success. It leaves a partial visible reply alone, and does not retry its own error; the primary agent stack places it outside model selection and recovery so relevant inner recovery can run first while ordinary code-model retry does not repeat the terminal error. For a `task` subagent, the same error is returned to the parent as an error `ToolMessage`; subagent partial replies receive a warning appended to their content.
-
-## Protected machine-managed memory
-
-Onboarding writes a normalized preferred name into the user agent `AGENTS.md` as a block delimited by `deepagents:onboarding-name` HTML-comment markers. Memory injection strips those comments, so the model cannot reliably infer that this region is machine-owned. `ManagedMemoryGuardMiddleware` therefore intercepts `write_file`, `edit_file`, and `delete` for configured, resolved memory paths.
-
-For a write or edit that changes the block, the guard restores the exact prior block and preserves unrelated edits where it can. If the block was removed or partially malformed, it removes lines derived from the old block before re-inserting a valid one; formatting around the region can be normalized. It returns an error even after successful restoration, and also returns an error if restoration fails, so the model never treats a managed-block mutation as successful. Reads and restoration writes use no-follow filesystem operations to resist symlink substitution.
-
-Deletion is checked before the tool executes. Deleting the guarded file or a parent directory is rejected when the file contains the managed block. A missing guarded file may be deleted, and a readable file without the block may be deleted; however, an existing unreadable file is rejected **fail closed** because the guard cannot safely conclude that it has no protected block.
-
-## Operations and focused verification
-
-1. Treat raw checkpoint messages, summary events, and archive files as distinct persistence layers. Never replace `messages` merely because effective history is shorter.
-2. Preserve the meaning of `file_path=None`: it can indicate successful in-context compaction without durable recovery, not necessarily a failed summary.
-3. Do not widen the server offload state allowlist to include `messages` without redesigning the checkpoint concurrency protocol.
-4. Configure `history.retention_days` for archive sensitivity and lifetime. Treat temporary fallback storage as nonpersistent.
-5. Enable idle compaction only when its summarization cost is justified by prompt-cache retention; it is independent of SDK thresholds.
-6. Keep onboarding marker generation and guard configuration aligned. A guard with no resolvable configured paths logs an error because protection would otherwise silently disappear.
-
-Focused tests in `test_memory_guard.py` cover restoration, preservation of unrelated edits, marker damage, symlink resistance, parent-directory deletion, and unreadable-file fail-closed behavior. `test_offload_api.py` covers state allowlisting, checkpoint-change conflicts, deferred archive rollback/linking, cancellation settlement, cost handling, and checkpoint-owned model configuration. `test_idle_compaction.py` covers the final-window boundary, exact-token threshold, UI blockers, single reservation, and cancellation release.
+`test_summarization_middleware.py` covers event reconstruction, message-ID cutoff reconciliation, chained compaction, provider-bound reasoning removal, media archival, and automatic overflow fallback. `test_compact_tool.py` covers tool registration, success with and without an archive path, event state, ineligible calls, and error results. `test_compaction_recovery.py` verifies the strictly smaller single retry, budget rejection before provider calls, and terminal recovery errors. dcode tests cover the checkpoint, allowlist, archive, and cost-settlement protocol described above.

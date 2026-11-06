@@ -3,6 +3,9 @@ type: delegation and progressive-disclosure concept
 title: Subagents and Skills
 description: Deep Agents Code discovers local subagent definitions and assembles them as SDK child graphs, while remote specifications remain Agent Protocol tasks. This page explains the local task boundary, model and middleware policy, skills discovery, and the result and failure behavior that callers must preserve.
 tags: [deepagents, subagents, delegation, skills, middleware, agent-protocol, code-cli]
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-11-06T08:04:19.814Z
 sources:
   - id: openwiki-source-d4716b8ae162796c2c7ad991
     resource: repo://libs/code/deepagents_code/_js_cost.py
@@ -28,14 +31,19 @@ sources:
     resource: repo://libs/code/tests/unit_tests/test_provider_tool_search.py
   - id: openwiki-source-1965598f31611da8b172dc0f
     resource: repo://libs/code/tests/unit_tests/test_subagents.py
+  - id: openwiki-source-0fc0e47059e4d07e23e50be2
+    resource: repo://libs/deepagents/deepagents/graph.py
+  - id: openwiki-source-e51c4102234507d1529a2440
+    resource: repo://libs/deepagents/deepagents/middleware/async_subagents.py
+  - id: openwiki-source-66cf9d0832d3cb55bec2b5ed
+    resource: repo://libs/deepagents/deepagents/middleware/skills.py
   - id: openwiki-source-114a1c7a58992fa867a94ef0
     resource: repo://libs/deepagents/deepagents/middleware/subagents.py
+  - id: openwiki-source-917b61d56e652536ba962f3a
+    resource: repo://libs/deepagents/tests/unit_tests/test_subagent_refusal.py
   - id: openwiki-source-ca8183c87e6002c442ee2d62
     resource: repo://libs/deepagents/tests/unit_tests/test_subagents.py
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-11-05T08:04:42.777Z
-generated: { by: "openwiki/0.4.2", at: "2026-11-05T08:04:42.777Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-11-06T08:04:19.814Z" }
 ---
 
 # Subagents and Skills
@@ -128,11 +136,17 @@ An isolated child gets a fresh `HumanMessage` containing only the delegated desc
 
 A fork is experimental. The SDK reconstructs effective history after summarization, removes the pending parent tool-call message, and appends a task preamble and description. Declarative forks retain enough state and middleware to rebuild the parent prompt; their own system prompt is an addendum. They cannot declare independent `skills`, and the fork marker rejects nested `task` and `atask` calls. A fork therefore shares the parent conversation at invocation time without enabling recursive delegation.
 
-A completed local child produces exactly one parent-facing `ToolMessage`: a non-null `structured_response` is JSON serialized; otherwise the last nonempty child `AIMessage` text is selected. State updates may accompany that message, but excluded, private, and unchanged state cannot cross the boundary. The `task` implementation does not manually copy the parent runnable configuration: LangGraph inherits ambient callbacks, tags, configurable values, and user metadata, merging them with the child's bound configuration so child values such as `lc_agent_name` and `recursion_limit` win collisions. It adds the tool-call ID as checkpoint metadata. Separately, a LangSmith tracing context tags the child `ls_agent_type="subagent"`; that tag reaches LangSmith without leaking into streamed callback metadata.
+A completed local child produces exactly one parent-facing result correlated to the tool-call ID. A non-null `structured_response` is JSON serialized. Otherwise, if the child's final message has a refusal content block, the result is a safe refusal notice; if not, the boundary selects the last nonempty `AIMessage` text. State updates may accompany that result, but excluded, private, and unchanged state cannot cross the boundary. The `task` implementation does not manually copy the parent runnable configuration: LangGraph inherits ambient callbacks, tags, configurable values, and user metadata, merging them with the child's bound configuration so child values such as `lc_agent_name` and `recursion_limit` win collisions. It adds the tool-call ID as checkpoint metadata. Separately, a LangSmith tracing context tags the child `ls_agent_type="subagent"`; that tag reaches LangSmith without leaking into streamed callback metadata.
+
+### Model refusals are task results, not parent failures
+
+Deep Agents installs `ModelRefusalMiddleware` in its assembled declarative child stacks. At the local boundary, both `task` and `atask` catch a `ModelRefusalError`, as well as a `StructuredOutputValidationError` only when its AI message contains a refusal. They return a parent-readable task result stating that the subagent stopped because the model refused. The notice preserves a supplied refusal category and explanation when available and advises against retrying the same request; unrelated structured-output validation errors still propagate.
+
+The result shaper also recognizes a refusal block on the returned final `AIMessage`. This covers compiled children or child configurations where the refusal was returned rather than raised. Ordinary dict-shaped messages are not mistaken for a refusal. The parent agent's own refusal behavior is deliberately separate: its default middleware raises `ModelRefusalError`, so a caller can instead install fallback middleware or exclude the refusal middleware when that is the desired policy. Remote task result extraction applies the same refusal-notice conversion before emitting a completion result.
 
 ## Failure, interruption, and cost behavior
 
-Dcode replaces the generic empty-output guard in child stacks with `SubagentTruncatedReplyMiddleware`. It normalizes provider metadata from OpenAI Responses and Chat Completions, Anthropic, Google GenAI, and Bedrock into output-limit, content-filter, or context-window truncations. If a provider truncates a child response before it produces visible text or a parsed tool call—including a reasoning-only reply or an incomplete tool call—the guard raises `ModelOutputTruncatedError`; the parent `task` boundary turns that into an error-status `ToolMessage`. A provider refusal carrying an `AIMessage` follows the same path. If text was produced before truncation, dcode retains that partial answer and appends a warning; a truncated reply with a valid tool call is left for the normal tool loop. This distinguishes a usable incomplete report from a silent empty success.
+Dcode replaces the generic empty-output guard in child stacks with `SubagentTruncatedReplyMiddleware`. It normalizes provider metadata from OpenAI Responses and Chat Completions, Anthropic, Google GenAI, and Bedrock into output-limit, content-filter, or context-window truncations. If a provider truncates a child response before it produces visible text or a parsed tool call—including a reasoning-only reply or an incomplete tool call—the guard raises `ModelOutputTruncatedError`; the parent `task` boundary turns that into an error-status `ToolMessage`. This is distinct from a model refusal, which is reported as the task result described above. If text was produced before truncation, dcode retains that partial answer and appends a warning; a truncated reply with a valid tool call is left for the normal tool loop. This distinguishes a usable incomplete report from a silent empty success.
 
 Nested `CostTrackingMiddleware` checkpoints child spend before approval can pause its graph and transfers the completed owner-scoped delta for the parent to add to its durable session total. The dcode JavaScript interpreter applies the same ownership boundary to `task` calls proxied from `js_eval`: it gives each dispatch occurrence a distinct checkpoint namespace, waits for active dispatched children when the interpreter call settles, and returns a single `_session_cost_transfers` receipt only to the outer owner. Receipt namespaces are de-duplicated during aggregation, preventing replay or parallel fan-out from charging a receipt twice.
 
@@ -145,6 +159,14 @@ Use the async task tools—not the synchronous `task` tool—to check, update, c
 A remote task that has completed its run while its remote thread waits for a human is `waiting`, not successful. The parent can observe the child-thread interrupts but cannot answer them. For an `enqueue` update, the newest run can be `pending` while the prior run still executes; prior IDs are retained as superseded so their notifications cannot complete the newer task. `interrupt` is the default update strategy.
 
 ## Skills and dcode plugin sources
+
+### SDK progressive disclosure and delegation boundary
+
+`SkillsMiddleware` scans configured backend sources before an agent run and retains a checkpointed skill index; a list, including an empty one, avoids a reload until state is reset to `None`. Sources are read in order and later same-named metadata wins. The model sees names, descriptions, optional annotations, and paths in the system prompt, then reads `SKILL.md` to obtain full instructions. Pinning appends the requested skill bodies without frontmatter as one-time human messages before the next model call; unknown or unreadable names are skipped.
+
+Skill-provided tools are not registered as ordinary middleware tools. A tool listed in a read skill's `metadata.include_tools` is resolved and disclosed for that model call, and the recorded disclosure gates later tool execution. Consequently, loading or listing a skill does not grant tools; the model must have read the skill that exposes them, and a stale disclosure is cleared on every model request.
+
+This state is intentionally local at the synchronous delegation boundary. Isolated declarative children can configure their own `skills`; they do not receive the parent's skill metadata, pinned skills, or prior disclosed-tool record, and their corresponding output cannot overwrite the parent. A fork cannot declare an independent skill source: graph construction instead uses the parent's configured sources so the child can rebuild the inherited context without a competing skill policy. Compiled children retain responsibility for their own skill middleware.
 
 Dcode's `get_skill_sources` orders sources from lower to higher precedence: built-in skills, discovered plugin skills, user `.deepagents`, user `.agents`, project `.deepagents`, project `.agents`, then experimental user and project Claude directories. Later same-named skills replace earlier ones. Plugin discovery failure is logged and does not prevent later local sources from being added.
 
@@ -163,7 +185,8 @@ Focused dcode coverage is split by boundary:
 - `test_subagents.py` covers definition parsing, required frontmatter, source precedence, collisions, and discovery diagnostics.
 - `test_agent.py` verifies fallback fork behavior, preservation of a discovered `general-purpose`, implicit versus explicit child models, approval and shell wiring, memory guarding, and filesystem allowlist injection into main and child middleware.
 - `test_output_truncation.py` exercises provider truncation classification, reasoning-only and interrupted-tool-call failures, recovery ordering, and the parent-visible empty versus partial child behavior.
-- SDK `test_subagents.py` covers synchronous result extraction, state filtering and parallel isolation, inherited configuration and metadata precedence, checkpoint correlation, and sync/async LangSmith-only subagent tracing.
+- SDK `test_subagents.py` covers synchronous result extraction, structured-result serialization, state filtering and parallel isolation, forked history, inherited configuration and metadata precedence, checkpoint correlation, and sync/async LangSmith-only subagent tracing.
+- `test_subagent_refusal.py` verifies sync and async local task calls turn returned and raised provider refusals—including structured-output refusals—into parent task results; it also verifies the main-agent policy remains independently configurable and remote result extraction uses the same notice.
 - `test_js_cost_tracking.py` exercises isolated task dispatch namespaces, durable receipts, child failure and cancellation, pauses, replay, and fan-out aggregation.
 - `test_provider_tool_search.py` covers provider and endpoint capability gates, request serialization, eager fallback, approval/resume, model switches, and cross-provider history filtering.
 
@@ -171,10 +194,11 @@ When changing this area, preserve the boundary distinctions: filesystem discover
 
 ## Related
 
-- [SDK construction and execution](/openwiki/architecture/sdk-construction-execution.md)
+- [Middleware stack](/openwiki/architecture/middleware-stack.md)
+- [Runtime behavior](/openwiki/architecture/runtime-behavior.md)
 - [Context management](/openwiki/concepts/context-management.md)
+- [Middleware catalog](/openwiki/concepts/middleware-catalog.md)
+- [Testing guide](/openwiki/testing/testing-guide.md)
 - [Permissions and HITL](/openwiki/concepts/permissions-hitl.md)
 - [Plugins](/openwiki/concepts/plugins.md)
 - [MCP](/openwiki/integrations/mcp.md)
-- [Testing guide](/openwiki/testing/testing-guide.md)
-- [Run a dcode session](/openwiki/workflows/run-dcode-session.md)

@@ -4,6 +4,8 @@ title: Sandbox and Partner Integrations
 description: How dcode selects and owns optional remote sandbox providers, and how the separate QuickJS partner supplies request-aware, durable in-process JavaScript REPL middleware.
 tags: [dcode, sandbox, integrations, providers, quickjs, persistence]
 sources:
+  - id: openwiki-source-5e59f90a38f5bdf9ed76984b
+    resource: repo://.release-please-manifest.json
   - id: openwiki-source-bcf1f68e7989964d2fcec7aa
     resource: repo://libs/code/deepagents_code/integrations/sandbox_factory.py
   - id: openwiki-source-03e3942e51522a3aa485168d
@@ -14,6 +16,10 @@ sources:
     resource: repo://libs/code/pyproject.toml
   - id: openwiki-source-667fd72e0b93552f91d3888d
     resource: repo://libs/partners/AGENTS.md
+  - id: openwiki-source-da577cbe81ec29338f1388b2
+    resource: repo://libs/partners/daytona/pyproject.toml
+  - id: openwiki-source-936554ac5f0a201f8696be25
+    resource: repo://libs/partners/modal/pyproject.toml
   - id: openwiki-source-9015d76fe513ec6a3f55fe3d
     resource: repo://libs/partners/quickjs/langchain_quickjs/_prompt.py
   - id: openwiki-source-f774b021a408b0156ed93a4b
@@ -36,10 +42,14 @@ sources:
     resource: repo://libs/partners/quickjs/tests/unit_tests/test_repl_middleware.py
   - id: openwiki-source-7902201033603c756e6af134
     resource: repo://libs/partners/quickjs/tests/unit_tests/test_snapshot.py
-generated: { by: "openwiki/0.4.2", at: "2026-11-03T08:04:09.572Z" }
+  - id: openwiki-source-8d2c8381956c1c023bcdb565
+    resource: repo://libs/partners/runloop/pyproject.toml
+  - id: openwiki-source-03a39f44d8ccfde2fd47e57a
+    resource: repo://libs/partners/vercel/pyproject.toml
+generated: { by: "openwiki/0.4.2", at: "2026-11-06T08:04:19.814Z" }
 verified:
   - by: openwiki/0.4.2
-    at: 2026-11-03T08:04:09.572Z
+    at: 2026-11-06T08:04:19.814Z
 ---
 
 # Sandbox and Partner Integrations
@@ -56,7 +66,35 @@ A `SandboxProvider` implements synchronous `get_or_create(sandbox_id=..., **kwar
 
 `create_sandbox()` reads metadata before acquisition. It rejects unsupported named snapshots and a snapshot combined with `sandbox_id`, overlays explicit parameters on configured parameters, and runs an optional setup file in the acquired backend after expanding workspace environment variables. The factory deletes only a resource it created—not an attached resource—and logs a cleanup failure without replacing an initiating error. The server holds a successfully opened factory context for its process lifetime and closes it at exit; cancellation after context entry also closes the factory-owned context.
 
-Curated external adapters are optional extras, while LangSmith sandbox support and QuickJS are ordinary dcode dependencies. Partner packages remain independently versioned distributions with their own manifests, environments, and tests. Their backend details are adapter-specific: for example, the dcode Daytona provider creates fresh sandboxes rather than attaching by ID, while Modal creates or attaches sandboxes in its own provider domain. Do not mistake a dcode factory lifecycle adapter or a remote sandbox backend for the QuickJS REPL described below.
+Curated external adapters are optional extras, while LangSmith sandbox support and QuickJS are ordinary dcode dependencies. Partner packages remain independently versioned distributions with their own manifests, environments, and tests. Do not mistake a dcode factory lifecycle adapter or a remote sandbox backend for the QuickJS REPL described below.
+
+### Curated provider capability matrix
+
+This is the compatibility surface dcode validates **before** provider acquisition. `sandbox_id` means that an existing provider resource may be attached; `snapshot_name` means the factory accepts a named source for a new resource. The working directory is the backend default exposed to dcode—not a portability guarantee for arbitrary provider images.
+
+| Provider | dcode install / delivery | Default working directory | `sandbox_id` | `snapshot_name` |
+| --- | --- | --- | --- | --- |
+| `agentcore` | `agentcore` extra | `/tmp` | No | No |
+| `daytona` | `daytona` extra | `/home/daytona` | Yes | Yes |
+| `langsmith` | bundled `langsmith[sandbox]` dependency | `/root` | Yes | Yes |
+| `modal` | `modal` extra | `/workspace` | Yes | No |
+| `openshell` | `openshell` extra | `/sandbox` | Yes | No |
+| `runloop` | `runloop` extra | `/home/user` | Yes | Yes |
+| `vercel` | `vercel` extra | `/vercel/sandbox` | Yes | No |
+
+A configured provider can override metadata and parameters, and an entry-point provider can advertise its own metadata. Therefore use this table for the curated names above, then inspect the selected provider's metadata for a configured or third-party replacement.
+
+### Coordinated package contracts
+
+The release manifest records the coordinated versions below. The optional sandbox extras in `deepagents-code` set the install floors for the four partner distributions; each partner independently constrains Deep Agents to `>=0.7.32,<0.8.0` and declares its provider SDK dependency. A dcode installation itself pins `deepagents==0.7.34`.
+
+| Integration | Release version | `deepagents-code` installation contract | Partner runtime contract |
+| --- | --- | --- | --- |
+| dcode (`deepagents-code`) | `0.2.5` | `daytona>=0.0.9`, `modal>=0.0.7`, `runloop>=0.0.7`, `vercel>=0.0.2` extras | `deepagents==0.7.34` |
+| Daytona | `langchain-daytona` `0.0.9` | `daytona` extra | `daytona>=0.197.0` |
+| Modal | `langchain-modal` `0.0.7` | `modal` extra | `modal` |
+| Runloop | `langchain-runloop` `0.0.7` | `runloop` extra | `runloop-api-client` |
+| Vercel | `langchain-vercel-sandbox` `0.0.2` | `vercel` extra | `vercel>=0.5.9` |
 
 ## QuickJS middleware entrypoint and capability boundary
 
@@ -72,7 +110,11 @@ agent = create_deep_agent(
 )
 ```
 
-`CodeInterpreterMiddleware` registers the `eval` tool (customizable with `tool_name`) and appends a system-prompt addendum on model calls. The public tool description advertises JavaScript execution with no filesystem, network, or real clock. It also documents the configured persistence mode. At this revision, dcode requires `langchain-quickjs>=0.3.11,<0.4.0`; the independently released partner is `0.3.11` and depends on Deep Agents, LangChain, LangGraph, `quickjs-rs`, and `bsdiff4`.
+`CodeInterpreterMiddleware` registers the `eval` tool (customizable with `tool_name`) and appends a system-prompt addendum on model calls. The public tool description advertises JavaScript execution with no filesystem, network, or real clock. It also documents the configured persistence mode.
+
+### QuickJS package contract
+
+The release manifest and both package manifests align on `langchain-quickjs` `0.3.11`: dcode requires `langchain-quickjs>=0.3.11,<0.4.0`, while the partner declares `deepagents>=0.7.32,<0.8.0`, `langchain>=1.4.9,<2.0.0`, `langchain-core>=1.7.6,<2.0.0`, `langgraph>=1.2.20,<2.0.0`, `quickjs-rs>=0.2.6,<0.3.0`, and `bsdiff4>=1.3.0`. Thus QuickJS is installed with dcode as a normal runtime dependency; the empty `quickjs` extra is retained only for backwards-compatible install commands. Treat the package's beta middleware API and its Python `>=3.11,<4.0` contract as independent of dcode's Python `>=3.14,<3.15` application contract.
 
 The absence of ambient host APIs is valuable confinement for pure computation, but not a complete security boundary. `console` is an optional host bridge, and enabling programmatic tool calling (PTC) or subagent dispatch gives JavaScript the authority of the selected agent tools or subagents. A remote sandbox instead moves execution to a provider-managed environment with its own identity, mounts, egress, credentials, quotas, and lifecycle. Choose and secure each boundary independently.
 

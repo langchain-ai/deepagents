@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:df6049fd1c089d8b50e6e6993e754afa26860ebfeee59b5bde844de0451c8618",
+  "pageVersion": "sha256:2a08040186b2ab585ee83ba7c0cd59a58afdf06fdf06bedc33b0ba41c9dc6a39",
   "claims": [
     {
       "id": "claim_89e6e182643149d8bef67924fe4743df",
@@ -230,7 +230,7 @@
         },
         {
           "resource": "repo://libs/partners/quickjs/pyproject.toml#L21-L32",
-          "version": "repo-lines-v1:sha256:6031a817a2bddafd5a55f11e3a564fa7ec50e6b1cc0a9bc96314bf6f223a36d6:eyJzZWxlY3RlZExpbmVDb3VudCI6MTIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjVlMWI3NWRlZTQwYmU1NTllNmMyNWJmYTgxYjQzZjBhYmRlNjk0NjQxYjQ4YzA5YjVhY2VjYTM1MWE1MDc1YjAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY5NDE2ZTA5Zjc4YmEzMTZjMDMyNTY4MjEzYjg1NWVlNzU2ZTQxNTY1ZDkxOGYwOTUxOWM4MWZkNjIwZjQwNjAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjBmNWM2NDFjM2UzMTdkYzEyYzg4NzdjZmUxNTEzODdkYTk5NWU3ZmY3NjRmNDRkMjkxYjY3MWJmMWZlNjIyNDAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjNlOTA4ZjgxMjcxYzVhNmU1MTg1MDVkODhmZGM2ZTllM2Y4ZDlkOGNjNzc4MjEzN2FlNzM4MmFiYTIxZGIyZDcifQ"
+          "version": "repo-lines-v1:sha256:9ae5c1fb14901fc67f3e146571afa293a289dc840c784e5268d7bdfc237a0aba:eyJzZWxlY3RlZExpbmVDb3VudCI6MTIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjVlMWI3NWRlZTQwYmU1NTllNmMyNWJmYTgxYjQzZjBhYmRlNjk0NjQxYjQ4YzA5YjVhY2VjYTM1MWE1MDc1YjAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY5NDE2ZTA5Zjc4YmEzMTZjMDMyNTY4MjEzYjg1NWVlNzU2ZTQxNTY1ZDkxOGYwOTUxOWM4MWZkNjIwZjQwNjAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjBmNWM2NDFjM2UzMTdkYzEyYzg4NzdjZmUxNTEzODdkYTk5NWU3ZmY3NjRmNDRkMjkxYjY3MWJmMWZlNjIyNDAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjNlOTA4ZjgxMjcxYzVhNmU1MTg1MDVkODhmZGM2ZTllM2Y4ZDlkOGNjNzc4MjEzN2FlNzM4MmFiYTIxZGIyZDcifQ"
         }
       ]
     },
@@ -247,10 +247,68 @@
           "version": "repo-lines-v1:sha256:8d0d984e6864d9002c08b3e92ad19e68d4bd9a97e13fa9a4236036274fa09c90:eyJzZWxlY3RlZExpbmVDb3VudCI6MjQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImNiN2EwNmIxODNiYzE5MDU3ZTdhZTU2MTVhZjc4YWI5MzM2YTA3ZDViYjc5NmU0NjUyOThiMTUyNzlhNmQ2MWIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImIzNmQwNWEzNWIxNGViMWZjYWZkZTFhMWMwNGU4YzA1YjI0ZDcyMWQ5YmFjM2RmYjFmODI1Y2I2ZTM0ZGU5MGEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjkxMWZiMTViNGYwYzM2NzVjYzQ2ZWE2NzExZDUzM2UyMTExMzAxMzZmZWFlMjI2ZGJjMmIyNDdmNzE2ZTQzMTIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjkwYTkxMjc2MDEzZGZjNzBjM2YwNzU5YTBkMGM3NzI2ZmZhYjg3ZDgxYmYwNmQxNWU4Mzk2ODVlYzM1MDE2YWQifQ"
         }
       ]
+    },
+    {
+      "id": "claim_80dcbc92eefe4b029d77e81787ceb916",
+      "statement": "dcode's curated sandbox metadata defines provider-specific default working directories and whether attaching by `sandbox_id` or creating from `snapshot_name` is supported; AgentCore lacks both capabilities, Daytona, LangSmith, and Runloop support named snapshots, and Vercel explicitly does not.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/integrations/sandbox_factory.py#L100-L136",
+          "version": "repo-lines-v1:sha256:6f3441864c6f76ab6518c67bb1623568b688cb7b679e0b99f6e6b546a2f5f029:eyJzZWxlY3RlZExpbmVDb3VudCI6MzcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjhkODBlMjQ5NGI5OGFlY2UyNjlkYjE5M2NlYjRjYTdjNzhkZTA3NTM5ZjM3MWZiNTY5MzMxY2MwMTk1MWQ3ODQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI2MWUzYmZlZjJjZDZhZjhhZTUyYmYxYzNiYjllM2NiYTViYmYwZDI4ZDg1MTBlM2YzYWFjZGI2MWM4ZGJhNWQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjdmOWUwNjAwNjM3NGJjN2IwOTQzYWY4OTkxM2E2OWVmMjhlMWNiYjlmOGFjMWMzZmYxZGIxOTJiM2JmOGNhMGYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjVhNGFlYzhlODcxMjI2ZmM4OGU1ZWEwZGNmMzMyNTcwM2FhMzE3NjNmZWE5Yjg4MmFiYjQ4NzE4OTZiYWZlYmIifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/integrations/sandbox_registry.py#L38-L87",
+          "version": "repo-lines-v1:sha256:946515bb430593228e9c3526e4642e4d0ac52bec0b23198c95f78d01f9931f64:eyJzZWxlY3RlZExpbmVDb3VudCI6NTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU3OTBmMDMwZjZhZTQ3MzQ3NmZiY2ZkMjg4YWVhNmQ1NmU1M2YzNjk1YTdjYmFjODAxODE2NDY0NTE0OTkwODkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBjYjk3ODFmOWU5MWRhZWQxOWIwMWY4YWRhNTY2YjAxZTUyYWQyZTZjZTczYjc4N2EyMDc5Nzk1NzBmNDM1ZjIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImVhMTExNGJjZTliY2JlYzhhYTk3ZWY1OWQ4OWZmOWZmODBmNzliNjg4MjUxNWQyMDhlYWUyMmE5NTMzNzEzY2IiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjVkMGViOTM1OTY3OGU5ZGIwZjgzNjdkZGMwNzQ0NWNjZTNhYTA1ZjhjNmRjY2RjMjFiYjU3MWQ0ZWNlZmJkNTAifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_53e6a23decf24cafacaf9a2a181745fb",
+      "statement": "The coordinated release manifest lists `deepagents-code` 0.2.5 alongside `langchain-daytona` 0.0.9, `langchain-modal` 0.0.7, `langchain-runloop` 0.0.7, `langchain-vercel-sandbox` 0.0.2, and `langchain-quickjs` 0.3.11; each sandbox partner independently bounds Deep Agents to `>=0.7.32,<0.8.0` and declares its provider SDK dependency.",
+      "evidence": [
+        {
+          "resource": "repo://.release-please-manifest.json#L2-L10",
+          "version": "repo-lines-v1:sha256:193a76b9b27a9fb71f81dcb373c0d66e1a5aeaf5d3014e5c051115bf6c5b2d76:eyJzZWxlY3RlZExpbmVDb3VudCI6OSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYjdmZTMzYmMwZWVlOTM2NjA4YThkZjMyYzZjNWZjZmNjNjkxMmEzMTFiZTA2OTRiMTIxYWU1YjhiNmJiYmFlYiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNDQzNzBjZDFjZTA3ZDIxMTkwYzJiNjQ5ZGUzZWQwZjYxOTRmZmFjYTYzYjJlYjEyMGRiNDIwMmZiNTRmY2VhNyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjEsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiYTZmYjA4ZmRhMWFjYjk1N2I2MTE2YmQzNzgxMWExZmU0MWEwMTYxMWMwNjMxZWRiZjc4NmQ2ODg5YTI3YTU1YyIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjEsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNDEyY2EzNDVjY2Y3NWJmOWMwODA2YmNlNjk1YmU4ZGU4MDhiNzk5ODQyNTFhN2E1NGQyMDJjZjYxMDFkZDQ1MSJ9"
+        },
+        {
+          "resource": "repo://libs/partners/daytona/pyproject.toml#L22-L27",
+          "version": "repo-lines-v1:sha256:05c9497ec8524dfa25f1a02c9ec17dfb3db72a5771a03bb797e246f6f33e82bd:eyJzZWxlY3RlZExpbmVDb3VudCI6NiwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYWMwYjc1OThjMmJmMzg1NzgyMmIwZDMwODZmZmVmYTQ3ZDBkZTA5MTUwODRmNjdkY2YzNGRmMmNkZGI4OGNjNyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiZjk0MTZlMDlmNzhiYTMxNmMwMzI1NjgyMTNiODU1ZWU3NTZlNDE1NjVkOTE4ZjA5NTE5YzgxZmQ2MjBmNDA2MCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMzBlM2JkZDc0YWJkOGViYjVjMDMyNTNkNGZmNTA2ZmNhZmNjYWExZDkyMDVlMWQxZmMzMzUzOGY2MTViMTI1OCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMmI5ZjUwN2E5Y2FiMjFhN2UyNWUzN2JkY2Y5MDQ4Mzc4YmRhNzVhZGY2M2Q4OWZjOGY5ZjQzMjgzY2E2MWFlYyJ9"
+        },
+        {
+          "resource": "repo://libs/partners/modal/pyproject.toml#L22-L27",
+          "version": "repo-lines-v1:sha256:0a040856eb3cc8bd4ea577ff2b93b6e4aa79d1473d7aec7ebce561faf59b0688:eyJzZWxlY3RlZExpbmVDb3VudCI6NiwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYjIwMWIwZTE2ZDEwMjZjNTUyOTRjNzA5ZmVjNjAyMWEzMjU4M2JmMjIzOTNmMTdlM2Q2YTY5ZWE3MDMwN2Y5ZSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiZjk0MTZlMDlmNzhiYTMxNmMwMzI1NjgyMTNiODU1ZWU3NTZlNDE1NjVkOTE4ZjA5NTE5YzgxZmQ2MjBmNDA2MCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMzBlM2JkZDc0YWJkOGViYjVjMDMyNTNkNGZmNTA2ZmNhZmNjYWExZDkyMDVlMWQxZmMzMzUzOGY2MTViMTI1OCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNjUxYTcwZGZhM2EyNWZjZWNmZjhjZWFiZDEzZjA2YTVhZTg1YTdhZDYwOTUzZTQxOTYxYTQ3NzBkYzJmNmY5NiJ9"
+        },
+        {
+          "resource": "repo://libs/partners/runloop/pyproject.toml#L22-L27",
+          "version": "repo-lines-v1:sha256:1d8883aa83509622e2bdc0523ff18af800a12e9e2e0ac395bb18e9e0a68de396:eyJzZWxlY3RlZExpbmVDb3VudCI6NiwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYjIwMWIwZTE2ZDEwMjZjNTUyOTRjNzA5ZmVjNjAyMWEzMjU4M2JmMjIzOTNmMTdlM2Q2YTY5ZWE3MDMwN2Y5ZSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiZjk0MTZlMDlmNzhiYTMxNmMwMzI1NjgyMTNiODU1ZWU3NTZlNDE1NjVkOTE4ZjA5NTE5YzgxZmQ2MjBmNDA2MCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMzBlM2JkZDc0YWJkOGViYjVjMDMyNTNkNGZmNTA2ZmNhZmNjYWExZDkyMDVlMWQxZmMzMzUzOGY2MTViMTI1OCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiYzcwNTM1Yjk0NGZjYWRiZWZjMjk1MTk5MzQ1NDcwMDc1MTIzMGE2NTNkYjQyOTY1YzJkZjM0ZTlmZDkwOTM0YSJ9"
+        },
+        {
+          "resource": "repo://libs/partners/vercel/pyproject.toml#L22-L27",
+          "version": "repo-lines-v1:sha256:2a4267c2af175cdc493f6e4e4afa2862259dc12231846d23c3a147ed1a235d7c:eyJzZWxlY3RlZExpbmVDb3VudCI6NiwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiY2Q2NTQ3N2Y3MGVhMjEyZWFjNjFlZWZjZDAzNTM3ZjI1OTkzMWZmMTE3NDE0NzAxMmI3ZGE3M2FjMDRlZWRhYSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiZjk0MTZlMDlmNzhiYTMxNmMwMzI1NjgyMTNiODU1ZWU3NTZlNDE1NjVkOTE4ZjA5NTE5YzgxZmQ2MjBmNDA2MCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMzBlM2JkZDc0YWJkOGViYjVjMDMyNTNkNGZmNTA2ZmNhZmNjYWExZDkyMDVlMWQxZmMzMzUzOGY2MTViMTI1OCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNmQ3MWM3MWM3MGFiYjEwMjY0OWI3YTNkOTI5MTlhZjM1OTFmZTQ5MTVmYjc2MDZhYjdkM2JkZDMwMWI5NjQ4OSJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_94ff211d00294ff89e8d155940444dea",
+      "statement": "`deepagents-code` supports Python `>=3.14,<3.15`, while `langchain-quickjs` supports Python `>=3.11,<4.0`; dcode retains an empty `quickjs` extra only for backwards-compatible install commands because QuickJS is already a normal dependency.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/pyproject.toml#L151-L154",
+          "version": "repo-lines-v1:sha256:d732f5f4ecee09a1b6a4337a94c7b8083807cee3b864f4317c915672d8d8c53f:eyJzZWxlY3RlZExpbmVDb3VudCI6NCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiY2MwZTRiOTFjMDZmOGIyNjNlMTM4N2MzMzczMWIwNDM3NmM0ODk1ZGU1ODUxZTQ0MzVkZjMxZGY0ZWNhODg4MSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNzY5MjFhNzFjMGQ0NTcwYzM4OGQ2Mjk3YjNiNDk5MmRmM2MwZmRhYjMyNmNhZmFjYTRiNDg3MTg4YTFkNmIwMyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMjAwNjg5M2MzMmRlZjBmODZkODM0MDZjNTdjZjk4MDdkYjZhZjI4YWFkNjI4ZDhjMGU0YTY1MmMzYzNkOTlmNCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZTBmYTM2MmNiNDk0YTUxYTlhNDc1MDRiOTk5MWFiNmY0ZWZlZTE4NzFlZGJhNjQ0MWZiOTUwMDc5NzQ5MmMwOCJ9"
+        },
+        {
+          "resource": "repo://libs/code/pyproject.toml#L5-L14",
+          "version": "repo-lines-v1:sha256:f061b75e1d84c3ba38bfe048b441d95f0f7f19e91573c2dd79f40e121d692045:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjcwMmE4MWMzODM2ZWRlZjJkMGJhMTFkMjM1M2ZiNmRhYmM3NzcxNTBhN2NhODNlYTBkOWU5YTcwMzEzZmVhYmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZhMjczYzUzYjJjMGIyMWZhMGYyZmU2YTUyZmZlZDQ3OGU5MjI3YWQyYjVmMTUzZWYwMDNhNzI2NTdiNzQyMDEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImYxMzdhYWFhYzhhZjRmMGNiYjA4YTcxZjZlNTRjMjhmYjBhNDgxYjdlYWRlZWExMjEzNGM0NzM4NzUzNGU3ZjgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImE0YzZmNDE2ZTEzZWYxOTEwMDJkYmNhZmRhOTNiMTU2ZmI3Y2EwMGIyYmU4MWQ4ZGNlMWE4NWRiMzgxNDY3NmEifQ"
+        },
+        {
+          "resource": "repo://libs/partners/quickjs/pyproject.toml#L21-L31",
+          "version": "repo-lines-v1:sha256:5c3d66dcb94c9a740f3b2d2e8cf0af6def62d03adfdeb91dd1b9efaee816e27e:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjVlMWI3NWRlZTQwYmU1NTllNmMyNWJmYTgxYjQzZjBhYmRlNjk0NjQxYjQ4YzA5YjVhY2VjYTM1MWE1MDc1YjAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU3NzQwZmI5YTRkMjJjOTg3Mzg0NTRlYTlkMTcwMzE3MjE3MzJiOGEzMzRmMjEyNDA0MWIyZWYxMTUwYWQ0MzciLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjBmNWM2NDFjM2UzMTdkYzEyYzg4NzdjZmUxNTEzODdkYTk5NWU3ZmY3NjRmNDRkMjkxYjY3MWJmMWZlNjIyNDAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjNiNTg2MWJlYzAwZTYxNTcyYzY2ZGU5NDc1ZWQ3Nzc5ZWE2YzkxMDIyNWI4NjI2ODgzMjE4ODBkZWE5MWY5ZmIifQ"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-11-03T08:04:09.572Z"
+    "at": "2026-11-06T08:04:19.814Z"
   }
 }

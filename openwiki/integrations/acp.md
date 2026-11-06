@@ -1,11 +1,11 @@
 ---
 type: protocol integration
 title: Agent Client Protocol Integration
-description: How deepagents-acp projects LangGraph agents into editor-facing ACP sessions, including durable recovery, permission handling, and hidden local context. It also explains why dcode ACP is an in-process stdio server rather than dcode's normal RemoteAgent path.
+description: How deepagents-acp projects LangGraph agents into editor-facing ACP sessions, including durable recovery, permission handling, and hidden local context. It also explains the versioned dcode ACP surface and its in-process stdio boundary.
 tags: [acp, deepagents, langgraph, dcode, stdio, sessions, streaming]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-11-03T08:04:09.572Z
+    at: 2026-11-06T08:04:19.814Z
 sources:
   - id: openwiki-source-532ea636a0657c1d2714bd7a
     resource: repo://libs/acp/CHANGELOG.md
@@ -15,6 +15,8 @@ sources:
     resource: repo://libs/acp/deepagents_acp/utils.py
   - id: openwiki-source-bb78950c8b36b7b9f6746e96
     resource: repo://libs/acp/pyproject.toml
+  - id: openwiki-source-8134f31fb22085cb0e6b4054
+    resource: repo://libs/acp/README.md
   - id: openwiki-source-f188d13aef04b643ced86520
     resource: repo://libs/acp/tests/unit_tests/test_execute_permissions.py
   - id: openwiki-source-986e87e057d803bd0fa17738
@@ -35,7 +37,7 @@ sources:
     resource: repo://libs/code/tests/unit_tests/test_main_acp_mode.py
   - id: openwiki-source-a5e918d96b1dae3f7adec3f5
     resource: repo://libs/code/tests/unit_tests/test_thread_ownership.py
-generated: { by: "openwiki/0.4.2", at: "2026-10-25T08:05:05.473Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-11-06T08:04:19.814Z" }
 ---
 
 # Agent Client Protocol Integration
@@ -47,7 +49,13 @@ There are two host choices:
 - A custom host can wrap a compatible compiled LangGraph graph, or supply a graph factory.
 - `dcode --acp` runs the prebuilt dcode agent as an ACP stdio server. It builds graphs, opens the checkpointer, and handles ACP **inside the dcode process**.
 
-`deepagents-acp` 0.0.13 supports Python 3.11 or later and requires `agent-client-protocol>=0.10.1`. dcode requires Python 3.14 and depends on `deepagents-acp>=0.0.13,<1.0.0`, so a dcode ACP deployment follows dcode's stricter Python floor. The 0.0.13 release restricts reusable shell authorization to exact commands and preserves local-context prompts across compaction.
+## Package contract and compatibility
+
+`deepagents-acp` 0.0.13 is an alpha MIT package for Python 3.11 through Python 3.x below 4. It depends on `deepagents`, `agent-client-protocol>=0.10.1`, and `python-dotenv>=1.2.2`. The standalone package is therefore the reusable editor-to-graph adapter, not a distribution of dcode's coding-agent policy or tool set.
+
+`deepagents-code` 0.2.5 requires Python 3.14 through below 3.15 and declares `deepagents-acp>=0.0.13,<1.0.0`. A dcode ACP deployment consequently follows dcode's stricter Python requirement. Version 0.0.13 fixed reusable shell authorization to apply only to exact commands and preserved local-context prompts across compaction.
+
+For a custom graph, install `deepagents-acp`, construct the graph (including a checkpointer if it must be recoverable), pass it to `AgentServerACP`, and run it with `acp.run_agent`. The README's demo uses `MemorySaver`, which is appropriate for a process-local example but not restart recovery. A factory is the extension point when the graph must vary by ACP session cwd, selected mode, or model.
 
 ## Transport boundary: ACP versus normal dcode
 
@@ -71,7 +79,7 @@ flowchart TD
 
 ## Generic adapter lifecycle
 
-`AgentServerACP` accepts either a compiled `CompiledStateGraph` or a factory receiving `AgentSessionContext(cwd, mode, model)`. Modes and model selectors are valid only for a factory; passing either with a compiled graph raises `ValueError`. The adapter retains one active graph: a compiled graph is reused, while a factory graph is rebuilt when the session changes or is reset. The ACP `session_id` is also the LangGraph `thread_id`.
+`AgentServerACP` accepts either a compiled `CompiledStateGraph` or a factory receiving `AgentSessionContext(cwd, mode, model)`. Modes and model selectors are valid only for a factory; passing either with a compiled graph raises `ValueError`. The ACP `session_id` is also the LangGraph `thread_id`.
 
 At `initialize`, the server advertises image input and advertises `session/load` only when `load_sessions=True`. `new_session` creates an ID, retains its cwd and supplied ACP MCP descriptors, initializes selectors, and—when loading is enabled—writes ACP session metadata to the checkpoint before returning. Mode and model option values must be strings and must be recognized; a valid change resets the graph and persists the selection when durable loading is enabled.
 
@@ -153,10 +161,10 @@ For example, configure an ACP-capable editor with:
 }
 ```
 
-For an end-to-end operating flow, see [Run a dcode session](/openwiki/workflows/run-dcode-session.md).
+Provider API keys, such as `ANTHROPIC_API_KEY`, are read from the environment just as they are for the terminal client. Use `dcode --help` for the supported ACP flags, including `--mcp-config` and `--no-mcp`. For an end-to-end operating flow, see [Run a dcode session](/openwiki/workflows/run-dcode-session.md).
 
 ## Focused verification
 
 The dcode ACP smoke test launches `deepagents --acp --no-mcp`, connects an ACP pipe client, initializes, creates a session, and checks that it receives a session ID. ACP launcher tests verify that one ownership-aware server blocks another from loading an open thread and that writes using the old configuration fail after ownership changes. Thread-ownership tests additionally cover cross-process exclusion, client crash fencing, serialized writers, cancellation-safe deletion, and fenced checkpoint writes.
 
-The generic adapter tests exercise streamed content and reasoning, cancellation and recovery, selector changes, permissions, local-context suppression, replay after compacted history, and exact-command approvals. Local-context tests verify stable initial system prompts, escaping, changed and unchanged compaction refreshes, and failure behavior.
+The generic adapter tests exercise exact-command approvals and local-context compaction behavior. In particular, permission tests cover changed command text, arguments, session context, invalid reusable grants, cancellation, and forgetting a session; local-context tests cover stable initial system prompts, escaping, changed and unchanged refreshes, and failed-refresh behavior.

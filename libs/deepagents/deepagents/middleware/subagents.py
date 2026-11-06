@@ -771,7 +771,7 @@ def _build_task_tool(  # noqa: C901, PLR0915
     # mirror tool (above) can reference these directly -- everything they
     # call is only looked up when actually invoked, long after this
     # function returns, so those don't need to exist yet.
-    def _return_command_with_state_update(result: dict, tool_call_id: str, inputs: dict) -> Command:
+    def _return_command_with_state_update(result: dict, tool_call_id: str, inputs: dict, *, checkpoint_ns: str | None) -> Command:
         # Validate that the result contains a 'messages' key
         if "messages" not in result:
             error_msg = (
@@ -808,10 +808,14 @@ def _build_task_tool(  # noqa: C901, PLR0915
                         content = text
                         break
 
+        # A subagent on the parent's checkpointer saves under the `task` call's own
+        # namespace. Recording it lets a client load the subagent's history from
+        # the parent thread's messages. `artifact` is not sent to the model.
+        artifact = {"checkpoint_ns": checkpoint_ns} if checkpoint_ns else None
         return Command(
             update={
                 **state_update,
-                "messages": [ToolMessage(content, tool_call_id=tool_call_id)],
+                "messages": [ToolMessage(content, tool_call_id=tool_call_id, artifact=artifact)],
             }
         )
 
@@ -902,7 +906,8 @@ def _build_task_tool(  # noqa: C901, PLR0915
             if (notice := _refusal_notice_for(error)) is None:
                 raise
             return notice
-        return _return_command_with_state_update(result, runtime.tool_call_id, subagent_state)
+        checkpoint_ns = (runtime.config.get("configurable") or {}).get("checkpoint_ns")
+        return _return_command_with_state_update(result, runtime.tool_call_id, subagent_state, checkpoint_ns=checkpoint_ns)
 
     async def atask(
         description: str,
@@ -942,7 +947,8 @@ def _build_task_tool(  # noqa: C901, PLR0915
             if (notice := _refusal_notice_for(error)) is None:
                 raise
             return notice
-        return _return_command_with_state_update(result, runtime.tool_call_id, subagent_state)
+        checkpoint_ns = (runtime.config.get("configurable") or {}).get("checkpoint_ns")
+        return _return_command_with_state_update(result, runtime.tool_call_id, subagent_state, checkpoint_ns=checkpoint_ns)
 
     compiled_subagents = [_compile_spec(spec) for spec in subagents]
     subagents_by_name = {spec["name"]: spec for spec in subagents}

@@ -2055,8 +2055,9 @@ class TestSubAgents:
         assert any("FORK" in chunk or "PRIVATE" in chunk for chunk in fork_chunks)
         assert not any(history in chunk for history in (history_one, history_two) for chunk in fork_chunks)
 
-    def test_subagent_checkpoint_history_is_readable(self) -> None:
-        """A task subagent's transcript is recoverable from the parent's checkpointer.
+    @pytest.mark.parametrize("use_async", [False, True], ids=["sync", "async"])
+    async def test_task_tool_message_records_subagent_checkpoint_namespace(self, *, use_async: bool) -> None:
+        """The `task` ToolMessage names the namespace holding the subagent's checkpoints.
 
         Read through the checkpointer rather than `agent.get_state_history`, which
         resolves a `checkpoint_ns` by walking registered subgraphs: `task` invokes
@@ -2093,22 +2094,21 @@ class TestSubAgents:
                 )
             ],
         )
-        config = {"configurable": {"thread_id": "subagent-history"}}
+        thread_id = f"subagent-checkpoint-namespace-{use_async}"
+        config = {"configurable": {"thread_id": thread_id}}
+        inputs = {"messages": [HumanMessage(content="Do something")]}
 
-        agent.invoke({"messages": [HumanMessage(content="Do something")]}, config)
+        result = await agent.ainvoke(inputs, config) if use_async else agent.invoke(inputs, config)
 
-        subagent_namespace = next(
-            checkpoint.config["configurable"]["checkpoint_ns"]
-            for checkpoint in checkpointer.list(config)
-            if checkpoint.config["configurable"]["checkpoint_ns"].startswith("tools:")
-        )
-        history = [checkpoint for checkpoint in checkpointer.list(config) if checkpoint.config["configurable"]["checkpoint_ns"] == subagent_namespace]
+        tool_message = next(message for message in result["messages"] if isinstance(message, ToolMessage))
+        assert tool_message.content == subagent_content
+        subagent_namespace = tool_message.artifact["checkpoint_ns"]
+        assert subagent_namespace.startswith("tools:")
 
-        assert history
-        assert any(
-            any(message.content == subagent_content for message in checkpoint.checkpoint["channel_values"].get("messages", []))
-            for checkpoint in history
-        )
+        subagent_checkpoint = checkpointer.get_tuple({"configurable": {"thread_id": thread_id, "checkpoint_ns": subagent_namespace}})
+        assert subagent_checkpoint is not None
+        subagent_messages = subagent_checkpoint.checkpoint["channel_values"]["messages"]
+        assert [message.content for message in subagent_messages] == ["Do task", subagent_content]
 
     @pytest.mark.parametrize("use_async", [False, True], ids=["sync", "async"])
     async def test_subagent_checkpoints_record_subagent_tool_call_id(self, *, use_async: bool) -> None:

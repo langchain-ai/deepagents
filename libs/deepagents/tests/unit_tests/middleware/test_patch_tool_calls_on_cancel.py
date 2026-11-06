@@ -1,6 +1,7 @@
 import asyncio
 from typing import TYPE_CHECKING
 
+import langgraph.errors
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolCall, ToolMessage
 from langchain_core.tools import tool
@@ -10,6 +11,8 @@ from langgraph.graph import StateGraph
 from deepagents import create_deep_agent
 from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
 from tests.unit_tests.test_end_to_end import FixedGenericFakeChatModel
+
+RunCancelled = getattr(langgraph.errors, "RunCancelled", None)
 
 needs_cancel_handler = pytest.mark.skipif(
     not hasattr(StateGraph, "set_cancel_handler"),
@@ -74,7 +77,7 @@ async def test_cancelled_tool_call_is_answered_at_cancel_time() -> None:
 
     run = asyncio.create_task(agent.ainvoke({"messages": [HumanMessage(content="h1")]}, config))
     await asyncio.sleep(0.3)
-    run.cancel()
+    run.cancel(RunCancelled("user stop") if RunCancelled else None)
     with pytest.raises(asyncio.CancelledError):
         await run
 

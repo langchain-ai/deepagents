@@ -180,6 +180,9 @@ class SubAgent(TypedDict):
     interrupt_on: NotRequired[dict[str, bool | InterruptOnConfig]]
     """Configure human-in-the-loop for specific tools. Requires a checkpointer."""
 
+    interrupt_mode: NotRequired[Literal["batched", "per_call"]]
+    """Approval timing; inherits the parent's mode when built by `create_deep_agent`."""
+
     skills: NotRequired[list[str]]
     """Skill source paths for `SkillsMiddleware`. Forbidden under `mode="fork"`.
 
@@ -636,9 +639,13 @@ def create_sub_agent(
     model = resolve_model(spec["model"])
     middleware: list[AgentMiddleware] = list(spec.get("middleware", []))
 
+    interrupt_mode = spec.get("interrupt_mode", "batched")
+    if interrupt_mode not in ("batched", "per_call"):
+        msg = "interrupt_mode must be 'batched' or 'per_call'"
+        raise ValueError(msg)
     interrupt_on = spec.get("interrupt_on")
     if interrupt_on:
-        middleware.append(HumanInTheLoopMiddleware(interrupt_on=interrupt_on))
+        middleware.append(HumanInTheLoopMiddleware(interrupt_on=interrupt_on, interrupt_mode=interrupt_mode))
 
     if not any(m.name == UnsupportedContentMiddleware.__name__ for m in middleware):
         middleware.append(UnsupportedContentMiddleware())

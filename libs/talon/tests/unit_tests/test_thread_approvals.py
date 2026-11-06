@@ -16,6 +16,7 @@ from deepagents_talon.interfaces import (
     ChannelMessage,
     ToolApprovalRequest,
 )
+from deepagents_talon.tool_approvals import ToolApprovalStore
 from tests.conftest import RecordingChannel
 from tests.test_host import ApprovalAgent, RoutedAgent, _config, _cron_job, _wait_for_sent_count
 
@@ -118,14 +119,20 @@ async def test_sudo_is_revoked(tmp_path: Path, reset: str) -> None:
         await host.stop()
 
 
-class HelpAgent(ApprovalAgent):
+class ExplicitApprovalAgent(ApprovalAgent):
+    def __init__(self, tool_name: str, *, mixed: bool) -> None:
+        super().__init__()
+        self.tool_name = tool_name
+        self.mixed = mixed
+
     async def invoke(self, request: AgentRequest) -> AgentResult:
         assert request.approval_handler is not None
         decision = await request.approval_handler(
             ToolApprovalRequest(
                 conversation_id=request.conversation_id,
                 interrupt_id="help",
-                action_requests=({"name": "ask_for_help", "args": {"question": "private"}},),
+                action_requests=({"name": self.tool_name, "args": {}},)
+                + (({"name": "send_message", "args": {}},) if self.mixed else ()),
             )
         )
         return AgentResult(text=f"decision:{decision}")
@@ -151,18 +158,76 @@ async def test_sudo_does_not_authorize_unattended_work(tmp_path: Path, *, schedu
         assert agent.requests[-1].metadata["tool_approval_operator"] is False
 
 
-async def test_sudo_keeps_external_help_approval_explicit(tmp_path: Path) -> None:
+@pytest.mark.parametrize("tool_name", ["ask_for_help", "update_tool_approvals"])
+@pytest.mark.parametrize("mixed", [False, True])
+@pytest.mark.parametrize("enable_first", [False, True])
+async def test_sudo_keeps_protected_tools_approval_explicit(
+    tmp_path: Path, tool_name: str, *, mixed: bool, enable_first: bool
+) -> None:
     channel = OperatorChannel()
-    host = TalonHost(config=_config(tmp_path), agent=HelpAgent(), channels=[channel])
+    agent = ExplicitApprovalAgent(tool_name, mixed=mixed)
+    host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
+    await host.start()
+    try:
+        if enable_first:
+            await host.receive_message(channel, message("/sudo on"))
+        await host.receive_message(channel, message("run"))
+        await _wait_for_sent_count(channel, 2 if enable_first else 1)
+        assert "Tool approval required" in channel.sent[-1][1]
+        await host.receive_message(channel, message("/sudo on"))
+        await host.receive_message(channel, message("deny"))
+        await _wait_for_sent_count(channel, 4 if enable_first else 3)
+        assert channel.sent[-1][1] == "decision:reject"
+    finally:
+        await host.stop()
+
+
+class PolicyEditAgent(ApprovalAgent):
+    def __init__(self, store: ToolApprovalStore) -> None:
+        super().__init__()
+        self.store = store
+
+    async def invoke(self, request: AgentRequest) -> AgentResult:
+        assert request.approval_handler is not None
+        snapshot = self.store.read()
+        decision = await request.approval_handler(
+            ToolApprovalRequest(
+                conversation_id=request.conversation_id,
+                interrupt_id="policy-edit",
+                action_requests=(
+                    {
+                        "name": "update_tool_approvals",
+                        "args": {
+                            "updates": {"send_message": False},
+                            "expected_revision": snapshot.revision,
+                        },
+                    },
+                ),
+            )
+        )
+        if decision == "approve":
+            self.store.update({"send_message": False}, snapshot.revision)
+        return AgentResult(text=f"decision:{decision}")
+
+
+async def test_sudo_cannot_silently_change_persistent_policy(tmp_path: Path) -> None:
+    store = ToolApprovalStore(tmp_path / "tools.json")
+    before = store.ensure()
+    channel = OperatorChannel()
+    host = TalonHost(config=_config(tmp_path), agent=PolicyEditAgent(store), channels=[channel])
     await host.start()
     try:
         await host.receive_message(channel, message("/sudo on"))
-        await host.receive_message(channel, message("help"))
+        await host.receive_message(channel, message("disable send_message approvals"))
         await _wait_for_sent_count(channel, 2)
         assert "Tool approval required" in channel.sent[-1][1]
         await host.receive_message(channel, message("/sudo on"))
         await host.receive_message(channel, message("deny"))
         await _wait_for_sent_count(channel, 4)
         assert channel.sent[-1][1] == "decision:reject"
+        await host.receive_message(channel, message("/sudo off"))
+        persisted = ToolApprovalStore(tmp_path / "tools.json").read()
+        assert persisted.revision == before.revision
+        assert persisted.interrupt_on["send_message"]
     finally:
         await host.stop()

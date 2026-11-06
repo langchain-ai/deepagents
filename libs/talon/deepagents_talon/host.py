@@ -145,6 +145,7 @@ _SMART_MODEL_ROLLBACK_FAILURE_MESSAGE = (
 _SMART_MODEL_HELP_MESSAGE = (
     "Send /smart-model <provider:model>, /smart-model off, or /smart-model default."
 )
+_EXPLICIT_APPROVAL_TOOLS = frozenset({"ask_for_help", "update_tool_approvals"})
 _APPROVE_REPLIES = frozenset({"approve", "approved", "yes", "y"})
 _DENY_REPLIES = frozenset({"deny", "denied", "reject", "rejected", "no", "n"})
 _RESET_THREAD_SEPARATOR = ":talon-reset:"
@@ -650,7 +651,7 @@ class TalonHost:
         return (
             "Thread auto-approval is on for your turns in this conversation, including any "
             "pending tool request. All configured tool approvals are automatic except "
-            "ask_for_help, which still needs explicit approval. "
+            "ask_for_help and update_tool_approvals, which still need explicit approval. "
             "Send /sudo off to revoke; /new, history reset, or restarting Talon also clears it. "
             "Other senders, conversations, and unattended work are not approved."
         )
@@ -2027,7 +2028,10 @@ class TalonHost:
             operator
             and sender_id
             and (approval.conversation_id, sender_id) in self._thread_approvals
-            and all(action.get("name") != "ask_for_help" for action in approval.action_requests)
+            and all(
+                action.get("name") not in _EXPLICIT_APPROVAL_TOOLS
+                for action in approval.action_requests
+            )
         )
 
     async def _request_tool_approval(
@@ -2040,7 +2044,8 @@ class TalonHost:
         sender_id: str | None,
     ) -> ToolApprovalDecision:
         thread_approvable = all(
-            action.get("name") != "ask_for_help" for action in approval.action_requests
+            action.get("name") not in _EXPLICIT_APPROVAL_TOOLS
+            for action in approval.action_requests
         )
         loop = asyncio.get_running_loop()
         future: asyncio.Future[ToolApprovalDecision] = loop.create_future()

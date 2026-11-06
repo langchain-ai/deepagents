@@ -31,8 +31,9 @@ _HELP_PREAMBLE = (
 )
 _HELP_TRAILER = (
     "Approvals: Send /sudo on to auto-approve tools for your turns in this conversation, "
-    "/sudo off to revoke, or /sudo status to inspect. Operators only; ask_for_help still "
-    "needs approval. Resets on /new, history reset, or restart. "
+    "/sudo off to revoke, or /sudo status to inspect. Operators only; ask_for_help and "
+    "update_tool_approvals still need explicit approval. "
+    "Resets on /new, history reset, or restart. "
     "In Slack channel threads, mention the bot followed by /sudo on or /sudo off.\n"
     "MCP: Ask to view, add, update, or remove a server (Linux/macOS), "
     "then approve the change when prompted. Updated tools are available next turn.\n"
@@ -103,7 +104,7 @@ CHAT_COMMANDS: tuple[ChatCommand, ...] = (
     ChatCommand(
         "sudo",
         "Operator only: auto-approve tools in this conversation until revoked, /new, or restart.",
-        argument="on to enable, off to revoke, or status; ask_for_help still requires approval.",
+        argument="on/off/status; ask_for_help and update_tool_approvals need explicit approval.",
     ),
     ChatCommand(
         "effort",

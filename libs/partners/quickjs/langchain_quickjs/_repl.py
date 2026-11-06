@@ -414,6 +414,15 @@ class _ThreadREPL:
             self._task_calls = asyncio.Semaphore(self._max_subagent_concurrency)
             self._register_task_bridge()
 
+    @property
+    def is_closed(self) -> bool:
+        """Whether the REPL's context or its engine has been closed."""
+        return (
+            self._ctx is None
+            or self._ctx._closed  # noqa: SLF001 — quickjs-rs exposes no public closed-state API
+            or self._ctx._engine_ctx.is_closed()  # noqa: SLF001 — detect externally closed engines
+        )
+
     def _require_ctx(self) -> Context:
         """Return the live QuickJS context or raise if this REPL is closed."""
         if self._ctx is None:
@@ -747,15 +756,38 @@ class _ThreadREPL:
         tools: Sequence[BaseTool] | None = None,
         outer_loop: asyncio.AbstractEventLoop | None = None,
     ) -> EvalOutcome:
-        return await self._worker.run_async(
-            self._aeval_async(
-                code,
-                outer_runtime=outer_runtime,
-                snapshot_payload=snapshot_payload,
-                tools=tools,
-                outer_loop=outer_loop,
-            )
-        )
+        caller_loop = asyncio.get_running_loop()
+        unwound = asyncio.Event()
+        claim = threading.Lock()
+        started = False
+        abandoned = False
+
+        async def evaluate() -> EvalOutcome:
+            nonlocal started
+            with claim:
+                if abandoned:
+                    raise asyncio.CancelledError
+                started = True
+            try:
+                return await self._aeval_async(
+                    code,
+                    outer_runtime=outer_runtime,
+                    snapshot_payload=snapshot_payload,
+                    tools=tools,
+                    outer_loop=outer_loop,
+                )
+            finally:
+                caller_loop.call_soon_threadsafe(unwound.set)
+
+        try:
+            return await self._worker.run_async(evaluate())
+        except asyncio.CancelledError:
+            with claim:
+                abandoned = True
+                running = started
+            if running:
+                await unwound.wait()
+            raise
 
     def create_snapshot(self) -> bytes:
         """Capture the current context snapshot as bytes."""

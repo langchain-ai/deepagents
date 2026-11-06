@@ -865,6 +865,58 @@ async def test_eval_without_middleware_initialized_slot_fails_fast() -> None:
 # ---------------------------------------------------------------------------
 
 
+def test_repl_detects_closed_context(repl: _ThreadREPL) -> None:
+    assert not repl.is_closed
+    repl.close()
+    assert repl.is_closed
+
+
+async def test_cancelled_eval_waits_for_worker_unwinding(repl: _ThreadREPL) -> None:
+    started = threading.Event()
+    unwound = threading.Event()
+
+    async def evaluate(*args: object, **kwargs: object) -> None:
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            await asyncio.sleep(0.05)
+            unwound.set()
+
+    with patch.object(repl, "_aeval_async", side_effect=evaluate):
+        task = asyncio.create_task(repl.eval_async("1"))
+        assert await asyncio.to_thread(started.wait, 2)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, 2)
+        assert unwound.is_set()
+    assert (await repl.eval_async("1 + 1")).result == "2"
+
+
+async def test_cancelled_eval_does_not_wait_for_busy_worker(
+    repl: _ThreadREPL, worker: ThreadWorker
+) -> None:
+    busy = threading.Event()
+    release = threading.Event()
+
+    async def block() -> None:
+        busy.set()
+        release.wait(5)
+
+    blocker = worker.run_async(block())
+    try:
+        assert await asyncio.to_thread(busy.wait, 2)
+        task = asyncio.create_task(repl.eval_async("globalThis.abandoned = true"))
+        await asyncio.sleep(0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, 1)
+    finally:
+        release.set()
+        await blocker
+    assert (await repl.eval_async("typeof abandoned")).result == "undefined"
+
+
 async def test_async_eval_basic(repl: _ThreadREPL) -> None:
     outcome = await repl.eval_async("1 + 1")
     assert outcome.error_type is None

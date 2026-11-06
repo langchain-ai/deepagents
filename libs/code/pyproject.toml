@@ -33,8 +33,8 @@ dependencies = [
     "langgraph-checkpoint-sqlite>=3.1.3,<4.0.0",
 
     # Client-server architecture
-    "langgraph-sdk>=0.4.13,<1.0.0",
-    "langgraph-cli[inmem]>=0.4.41,<1.0.0",
+    "langgraph-sdk>=0.4.14,<1.0.0",
+    "langgraph-cli[inmem]>=0.4.42,<1.0.0",
     "langgraph-runtime-inmem>=0.37.1,<1.0.0",
     "httpx>=0.28.1",
 
@@ -111,7 +111,7 @@ dependencies = [
 # Model providers
 anthropic = ["langchain-anthropic>=1.7.10,<2.0.0"]
 baseten = ["langchain-baseten>=0.2.5,<1.0.0"]
-bedrock = ["langchain-aws>=1.9.1,<2.0.0"]
+bedrock = ["langchain-aws>=1.9.2,<2.0.0"]
 cohere = ["langchain-cohere>=0.6.0,<1.0.0"]
 deepseek = ["langchain-deepseek>=1.1.1,<2.0.0"]
 fireworks = ["langchain-fireworks>=1.7.2,<2.0.0"]

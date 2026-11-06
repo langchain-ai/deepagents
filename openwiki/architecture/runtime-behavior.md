@@ -67,7 +67,7 @@ Talon fingerprints host-readable `<source>/<skill>/SKILL.md` entries for each co
 
 The synchronous `task` tool and its `atask` counterpart preserve a different parent-facing boundary. They invoke a selected subagent, return its structured response when present or its final non-empty AI text otherwise, and turn a refusal into a `ToolMessage` result rather than failing the parent turn. This covers a refusal returned as a message, a `ModelRefusalError`, and a structured-output validation failure that contains a refusal. The notice identifies the refusal and available category/explanation, and tells the parent that retrying the same request is unlikely to help. Other exceptions still propagate. This lets the parent model decide whether to reframe, fall back, or report the blocked work in both synchronous and asynchronous parent invocation modes.
 
-The remote async path uses the same refusal rendering for a child’s final content before it becomes a successful task result or notification. Its parent-facing notification is still redacted for automatically reported failures; inspect a task explicitly for detailed status.
+The remote async path uses the same refusal rendering for a child's final content before it becomes a successful task result or notification. Its parent-facing notification is still redacted for automatically reported failures; inspect a task explicitly for detailed status.
 
 ## Async tasks: two authorities and a stable task identity
 
@@ -96,13 +96,13 @@ sequenceDiagram
 
 Caption: remote task state executes the work, parent graph state tracks observations, and notifications are user-visible inputs rather than a remote delivery guarantee.
 
-A local no-`url` specification uses ASGI transport and requires an async parent entrypoint such as `ainvoke`; synchronous invocation requires a reachable URL. Child threads carry subagent and parent-thread metadata. Local tasks may additionally receive the parent assistant ID, enabling direct wake-up. URL targets and `notify_parent=False` omit that assistant ID while retaining parent-thread association; webhooks, when configured, are passed to run creation. `mode="isolated"` sends only delegated work; experimental `mode="fork"` sends a serialized, portable snapshot of the parent’s effective conversation, which is a one-way launch-time handoff rather than shared state.
+A local no-`url` specification uses ASGI transport and requires an async parent entrypoint such as `ainvoke`; synchronous invocation requires a reachable URL. Child threads carry subagent and parent-thread metadata. Local tasks may additionally receive the parent assistant ID, enabling direct wake-up. URL targets and `notify_parent=False` omit that assistant ID while retaining parent-thread association; webhooks, when configured, are passed to run creation. `mode="isolated"` sends only delegated work; experimental `mode="fork"` sends a serialized, portable snapshot of the parent's effective conversation, which is a one-way launch-time handoff rather than shared state.
 
 ### Updates, supersession, waiting, and cancellation
 
 A task keeps its thread-based `task_id` while its tracked run changes. The default `update_strategy="interrupt"` creates replacement work on the same thread. `update_strategy="enqueue"` creates a follow-up without interrupting active work, records the new run as `pending`, and retains earlier run IDs as `superseded_run_ids`. Only one enqueued follow-up per task per model turn is accepted, preventing simultaneous calls that saw the same old state from corrupting tracking.
 
-An earlier run may report after a queued follow-up exists. At parent-run entry, middleware rewrites that notification to say it is an earlier-run update, preserving its result but preventing the model from treating it as the current follow-up’s outcome. Cancellation marks the parent record `cancelled`; queued cancellation also attempts the pending or running superseded runs newest-first.
+An earlier run may report after a queued follow-up exists. At parent-run entry, middleware rewrites that notification to say it is an earlier-run update, preserving its result but preventing the model from treating it as the current follow-up's outcome. Cancellation marks the parent record `cancelled`; queued cancellation also attempts the pending or running superseded runs newest-first.
 
 A successful run paired with an interrupted child thread represents nonterminal `waiting`, including the child-thread interrupt details; the user must answer on that child thread. A server run whose status is `interrupted` instead maps to `cancelled`. Observation follows externally replaced work where appropriate, but never revives a task the parent already cancelled. A waiting task needs no remote cancellation request, and later checks preserve the parent's cancellation.
 
@@ -118,7 +118,7 @@ Notifications are marked as non-user input and wrapped in a task header. Child t
 
 ## Talon request lifecycle and retry boundary
 
-`DeepAgentRuntime.start()` resolves subagents and approvals, then creates the graph. For each request, `invoke()` refreshes runtime tools, rebuilds the graph if the approval snapshot changed, binds request-scoped authorization, hooks, scheduling, history, progress, and model-selection context, and protects the conversation session when using `ConversationSaver`. It invokes the graph with the request’s conversation ID as LangGraph `thread_id`. On a successful turn it acknowledges background results to the runtime; later host delivery remains a separate concern.
+`DeepAgentRuntime.start()` resolves subagents and approvals, then creates the graph. For each request, `invoke()` refreshes runtime tools, rebuilds the graph if the approval snapshot changed, binds request-scoped authorization, hooks, scheduling, history, progress, and model-selection context, and protects the conversation session when using `ConversationSaver`. It invokes the graph with the request's conversation ID as LangGraph `thread_id`. On a successful turn it acknowledges background results to the runtime; later host delivery remains a separate concern.
 
 ```mermaid
 sequenceDiagram
@@ -157,4 +157,4 @@ When a persistent `ConversationSaver` is configured, host-confirmed final delive
 - Test skills as state transitions: source precedence, cache/reload with `skills_metadata=None`, pinned content, load-warning sanitization, and gated tool disclosure/execution.
 - Test automatic and manual compaction as distinct paths. Assert that automatic events carry a cutoff message ID and rebuild from it after checkpoint replay or message removal; sync automatic compaction offloads before summary, while its async implementation can run those independent operations concurrently. The manual tool summarizes before offload. For manual failure, assert the error `ToolMessage` is appended but `_summarization_event` is absent from the update; for an offload returning `None`, assert a new event with `file_path=None`.
 - Test refusal contracts separately: the main agent raises `ModelRefusalError` by default, an earlier fallback can handle it, and excluding the middleware returns the refusal. For both `task` and `atask`, test returned, raised, and structured-output refusals become a parent-visible tool result, while non-refusal exceptions still escape.
-- Test Talon’s whole-invocation retries separately from model-node retries and test that archive promotion follows confirmed channel delivery rather than merely a graph result.
+- Test Talon's whole-invocation retries separately from model-node retries and test that archive promotion follows confirmed channel delivery rather than merely a graph result.

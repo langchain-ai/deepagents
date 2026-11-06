@@ -18,7 +18,7 @@
     },
     {
       "id": "claim_be5cd56c3eeb4c2fa830fe65afeb7bca",
-      "statement": "The lockfile refresh helper computes changed manifest owners plus their reverse transitive local-source consumers and runs `uv lock` with each package’s selected Python version; the ordinary checker instead checks directly touched packages, or every discovered package when invoked without paths, and reports a concrete repair command for an out-of-date lock.",
+      "statement": "The lockfile refresh helper computes changed manifest owners plus their reverse transitive local-source consumers and runs `uv lock` with each package's selected Python version; the ordinary checker instead checks directly touched packages, or every discovered package when invoked without paths, and reports a concrete repair command for an out-of-date lock.",
       "evidence": [
         {
           "resource": "repo://.github/scripts/checks/check_lockfiles_pre_commit.py",
@@ -32,7 +32,7 @@
     },
     {
       "id": "claim_ff8a04e832a641b0a6e5ac76300787c8",
-      "statement": "The targeted lock checker resolves ACP, Code, Evals, and Talon with Python 3.14 and all other discovered packages with 3.12, whereas the aggregate `libs/Makefile` maps only ACP to 3.14; targeted refresh commands therefore preserve the checker’s package-specific lock policy.",
+      "statement": "The targeted lock checker resolves ACP, Code, Evals, and Talon with Python 3.14 and all other discovered packages with 3.12, whereas the aggregate `libs/Makefile` maps only ACP to 3.14; targeted refresh commands therefore preserve the checker's package-specific lock policy.",
       "evidence": [
         {
           "resource": "repo://.github/scripts/checks/check_lockfiles_pre_commit.py",
@@ -74,7 +74,7 @@
     },
     {
       "id": "claim_f78ca0f47f03414eaba0cff23dafc24f",
-      "statement": "The release-please scope guard runs its detector and configuration from the trusted PR base revision, fails closed if GitHub’s changed-file list is incomplete, and requires an explicit `ci:allow-lockfile-release` label to acknowledge detected bump-worthy lockfile-only or multi-component fan-out.",
+      "statement": "The release-please scope guard runs its detector and configuration from the trusted PR base revision, fails closed if GitHub's changed-file list is incomplete, and requires an explicit `ci:allow-lockfile-release` label to acknowledge detected bump-worthy lockfile-only or multi-component fan-out.",
       "evidence": [
         {
           "resource": "repo://.github/workflows/release_please_scope_check.yml",

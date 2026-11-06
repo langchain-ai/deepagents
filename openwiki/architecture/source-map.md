@@ -46,7 +46,7 @@ generated: { by: "openwiki/0.4.2", at: "2026-11-06T08:04:19.814Z" }
 
 # System Source Map
 
-Route a change to the component that owns its state and lifetime, not merely the API that exposes it. This map centers on the SDK graph-construction seam, delegation result boundaries, and Talon’s host adaptations. For surrounding design, see [Architecture Overview](./overview.md), [Runtime behavior](./runtime-behavior.md), [Middleware stack](./middleware-stack.md), [Subagents and skills](../concepts/subagents-skills.md), [Quickstart](../quickstart.md), and the [testing guide](../testing/testing-guide.md).
+Route a change to the component that owns its state and lifetime, not merely the API that exposes it. This map centers on the SDK graph-construction seam, delegation result boundaries, and Talon's host adaptations. For surrounding design, see [Architecture Overview](./overview.md), [Runtime behavior](./runtime-behavior.md), [Middleware stack](./middleware-stack.md), [Subagents and skills](../concepts/subagents-skills.md), [Quickstart](../quickstart.md), and the [testing guide](../testing/testing-guide.md).
 
 ## Change routing
 
@@ -63,7 +63,7 @@ Route a change to the component that owns its state and lifetime, not merely the
 
 ## SDK graph construction and ordering
 
-`create_deep_agent` is the SDK construction seam. It accepts caller-provided backend, tools, middleware, subagents, state/context schemas, checkpointer, store, cache, and response format, then delegates the completed stack to LangChain’s graph compiler. Its built-in tools are additive by default. `DeepAgentState.messages` uses a `DeltaChannel` reducer, limiting checkpoint growth from repeated full-message snapshots.
+`create_deep_agent` is the SDK construction seam. It accepts caller-provided backend, tools, middleware, subagents, state/context schemas, checkpointer, store, cache, and response format, then delegates the completed stack to LangChain's graph compiler. Its built-in tools are additive by default. `DeepAgentState.messages` uses a `DeltaChannel` reducer, limiting checkpoint growth from repeated full-message snapshots.
 
 The main stack begins with filesystem support and, when inline agents exist, `SubAgentMiddleware`; it then adds parent notification, summarization, tool-call patching, and optional remote async delegation. Profile material then precedes skills, prompt caching, memory, approval interrupts, unsupported-content handling, and refusal handling. Caller middleware is spliced against the captured core names, and profile exclusions are checked for coverage. Middleware naming and placement are therefore graph contracts: a replacement by name, an exclusion, or an ordering change can alter which component sees a call or exception.
 
@@ -84,7 +84,7 @@ flowchart TD
 
 ## Delegation: task state, result seams, and refusals
 
-`SubAgentMiddleware` exposes the parent’s `task` tool. An isolated declarative or compiled child receives only a `HumanMessage` containing the delegated description; a fork receives selected parent state and reconstructed conversation messages. Forks deliberately omit parent-only values such as structured output, pinned skills, rubric state, and summarization session state. A fork is marked in its own initial state so a nested `task` call returns a recursion refusal instead of delegating again.
+`SubAgentMiddleware` exposes the parent's `task` tool. An isolated declarative or compiled child receives only a `HumanMessage` containing the delegated description; a fork receives selected parent state and reconstructed conversation messages. Forks deliberately omit parent-only values such as structured output, pinned skills, rubric state, and summarization session state. A fork is marked in its own initial state so a nested `task` call returns a recursion refusal instead of delegating again.
 
 The task-result boundary is in `_return_command_with_state_update`. A compiled child must return a state with `messages`; compatible non-private, changed state fields are projected back to the parent alongside a `ToolMessage` for the original tool-call ID. Result precedence is:
 
@@ -92,9 +92,9 @@ The task-result boundary is in `_return_command_with_state_update`. A compiled c
 2. a normalized refusal notice when the final child message has a refusal content block; or
 3. the last non-empty `AIMessage` text.
 
-Both synchronous and asynchronous task invocation also catch a `ModelRefusalError`, and structured-output validation errors only when the associated AI message contains a refusal block. They turn those cases into a tool result that includes provider category and explanation when available and advises against retrying unchanged input. Non-refusal validation errors still propagate. This containment is intentional: a refused child informs the parent model so it can continue or rephrase, whereas a refused top-level agent follows the main graph’s refusal policy.
+Both synchronous and asynchronous task invocation also catch a `ModelRefusalError`, and structured-output validation errors only when the associated AI message contains a refusal block. They turn those cases into a tool result that includes provider category and explanation when available and advises against retrying unchanged input. Non-refusal validation errors still propagate. This containment is intentional: a refused child informs the parent model so it can continue or rephrase, whereas a refused top-level agent follows the main graph's refusal policy.
 
-Remote async results use the same refusal normalization. `_final_content` returns the terminal message’s content blocks, but reports no output messages explicitly and falls back to string content for a remote message that LangChain cannot convert. Thus a successful remote run can still deliver a refusal result rather than masquerading as ordinary empty output.
+Remote async results use the same refusal normalization. `_final_content` returns the terminal message's content blocks, but reports no output messages explicitly and falls back to string content for a remote message that LangChain cannot convert. Thus a successful remote run can still deliver a refusal result rather than masquerading as ordinary empty output.
 
 ```mermaid
 sequenceDiagram
@@ -128,7 +128,7 @@ The grader validates pass/fail criterion shapes and requires an actionable gap f
 
 ## Talon runtime lifecycle
 
-`DeepAgentRuntime.start()` resolves subagents, snapshots approval policy, and compiles the first graph. `_create_graph()` is Talon’s composition seam: it builds runtime and approval tools, resolves local tool names against the current catalog, adds Talon filesystem, model selection, progress, approval, server-hook, task, background, summarization, skills, and supplied middleware, then calls `create_deep_agent`. After compilation it derives a credential-free attachment inventory from the actual tool node.
+`DeepAgentRuntime.start()` resolves subagents, snapshots approval policy, and compiles the first graph. `_create_graph()` is Talon's composition seam: it builds runtime and approval tools, resolves local tool names against the current catalog, adds Talon filesystem, model selection, progress, approval, server-hook, task, background, summarization, skills, and supplied middleware, then calls `create_deep_agent`. After compilation it derives a credential-free attachment inventory from the actual tool node.
 
 Each `invoke()` refreshes dynamic tools before acquiring a stable graph and approval snapshot under the tool lock. It binds turn-specific graph, approval state, authorization handler, pending background results, cron origin, breakout handler, and hooks through context variables. The turn loads hooks in a worker thread, scopes host history, protects an archived session from deletion, and invokes with the conversation ID as thread ID. Configuration changed by reload is for later turns; in-flight work retains its captured graph and context.
 

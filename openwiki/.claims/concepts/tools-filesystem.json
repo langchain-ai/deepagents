@@ -176,7 +176,7 @@
     },
     {
       "id": "claim_7e247a7e484c46d0aa5e2814d1cbf3be",
-      "statement": "dcode’s tools catalog compiles the real agent with an offline placeholder model, forwards the filesystem allowlist, groups MCP tools by server, and exposes unavailable servers or generic discovery failure rather than silently omitting them.",
+      "statement": "dcode's tools catalog compiles the real agent with an offline placeholder model, forwards the filesystem allowlist, groups MCP tools by server, and exposes unavailable servers or generic discovery failure rather than silently omitting them.",
       "evidence": [
         {
           "resource": "repo://libs/code/deepagents_code/tool_catalog.py#L195-L284",
@@ -234,7 +234,7 @@
     },
     {
       "id": "claim_fb4f23076a03464cbdd4212d6c449b51",
-      "statement": "dcode’s file-operation tracker records backend-aware pre/post images for filesystem presentation, marks unavailable images as untrustworthy rather than fabricating diffs, preserves known write metrics after read-back failure, and redacts known sensitive filename patterns from display.",
+      "statement": "dcode's file-operation tracker records backend-aware pre/post images for filesystem presentation, marks unavailable images as untrustworthy rather than fabricating diffs, preserves known write metrics after read-back failure, and redacts known sensitive filename patterns from display.",
       "evidence": [
         {
           "resource": "repo://libs/code/deepagents_code/file_ops.py#L23-L46",

@@ -101,7 +101,7 @@ Failure handling has an important distinction:
 | Archive helper returns a path | Event, session ID, confirmation message | Compacted and recoverable through that path. |
 | Archive helper returns `None` | Event, session ID, confirmation message | Compacted, but the summarized source is not recoverable from an archive. |
 | Summary generation, partitioning, or an escaping offload error fails | Error `ToolMessage` only | No new event or session ID is written; the conversation was not compacted. |
-| Ineligible request or zero cutoff | “Nothing to compact” `ToolMessage` only | No compaction is performed. |
+| Ineligible request or zero cutoff | "Nothing to compact" `ToolMessage` only | No compaction is performed. |
 
 The sync and async paths have the same state contract. Tests cover successful first and chained events, no-path success, correlated error messages, malformed-event fallback, and the half-trigger eligibility gate.
 

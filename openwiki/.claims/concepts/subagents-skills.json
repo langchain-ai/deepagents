@@ -186,7 +186,7 @@
     },
     {
       "id": "claim_cfd9ff63290849359715394edf223256",
-      "statement": "Synchronous local subagent invocation relies on LangGraph ambient configuration propagation rather than manually forwarding parent configuration: callbacks, tags, configurable values, and user metadata merge with the child’s bound configuration, whose collisions such as `lc_agent_name` and `recursion_limit` win; the task call ID is stored as checkpoint metadata.",
+      "statement": "Synchronous local subagent invocation relies on LangGraph ambient configuration propagation rather than manually forwarding parent configuration: callbacks, tags, configurable values, and user metadata merge with the child's bound configuration, whose collisions such as `lc_agent_name` and `recursion_limit` win; the task call ID is stored as checkpoint metadata.",
       "evidence": [
         {
           "resource": "repo://libs/deepagents/deepagents/middleware/subagents.py#L710-L741",
@@ -222,7 +222,7 @@
     },
     {
       "id": "claim_9cdb29d1865147a687c83ce048669e5f",
-      "statement": "Dcode classifies truncated replies from OpenAI Responses and Chat Completions, Anthropic, Google GenAI, and Bedrock; a child’s empty, reasoning-only, or invalid-tool-call truncation becomes a parent task error, while a text-bearing partial reply receives a warning and a valid parsed tool call continues normally.",
+      "statement": "Dcode classifies truncated replies from OpenAI Responses and Chat Completions, Anthropic, Google GenAI, and Bedrock; a child's empty, reasoning-only, or invalid-tool-call truncation becomes a parent task error, while a text-bearing partial reply receives a warning and a valid parsed tool call continues normally.",
       "evidence": [
         {
           "resource": "repo://libs/code/deepagents_code/output_truncation.py#L287-L448",

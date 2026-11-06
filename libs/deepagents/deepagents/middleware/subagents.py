@@ -24,9 +24,10 @@ from langchain_core._api.beta_decorator import warn_beta
 from langchain_core.exceptions import ModelRefusalError
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, AnyMessage, BaseMessage, HumanMessage, RefusalContentBlock, ToolMessage
-from langchain_core.runnables import Runnable, RunnableConfig
+from langchain_core.runnables import Runnable, RunnableBinding, RunnableConfig
 from langchain_core.tools import StructuredTool
-from langgraph.types import Command
+from langgraph.pregel import Pregel
+from langgraph.types import Command, StreamMode
 from langsmith.run_helpers import get_tracing_context, tracing_context
 from pydantic import BaseModel, Field, ValidationError, model_validator
 from typing_extensions import TypeIs
@@ -671,6 +672,48 @@ def _get_subagent_response_format(
     return value
 
 
+def _compiled_graph(runnable: Runnable) -> Pregel | None:
+    """Return the compiled graph behind a subagent runnable, or `None` for any other runnable."""
+    graph = runnable.bound if isinstance(runnable, RunnableBinding) else runnable
+    return graph if isinstance(graph, Pregel) else None
+
+
+# A compiled subagent is streamed rather than invoked so its checkpoint events
+# report the namespace it saved under. LangGraph changes that namespace from the
+# `task` call's own for a second run in the same step (`<namespace>|1`) and for
+# `checkpointer=True` (task ids removed). No checkpoint event means nothing was
+# saved. Any other runnable is invoked and assumed to save under `fallback_ns`.
+_SUBAGENT_STREAM_MODES: list[StreamMode] = ["values", "checkpoints"]
+
+
+def _run_subagent(runnable: Runnable, state: dict[str, Any], config: RunnableConfig, *, fallback_ns: str | None) -> tuple[Any, str | None]:
+    """Invoke a subagent, returning its final state and the namespace it checkpointed under."""
+    graph = _compiled_graph(runnable)
+    if graph is None:
+        return runnable.invoke(state, config), fallback_ns
+    result, checkpoint_ns = None, None
+    for mode, chunk in runnable.stream(state, config, stream_mode=_SUBAGENT_STREAM_MODES, output_keys=graph.output_channels):
+        if mode == "values":
+            result = chunk
+        elif checkpoint_ns is None:
+            checkpoint_ns = chunk["config"]["configurable"]["checkpoint_ns"]
+    return result, checkpoint_ns
+
+
+async def _arun_subagent(runnable: Runnable, state: dict[str, Any], config: RunnableConfig, *, fallback_ns: str | None) -> tuple[Any, str | None]:
+    """Async version of `_run_subagent`."""
+    graph = _compiled_graph(runnable)
+    if graph is None:
+        return await runnable.ainvoke(state, config), fallback_ns
+    result, checkpoint_ns = None, None
+    async for mode, chunk in runnable.astream(state, config, stream_mode=_SUBAGENT_STREAM_MODES, output_keys=graph.output_channels):
+        if mode == "values":
+            result = chunk
+        elif checkpoint_ns is None:
+            checkpoint_ns = chunk["config"]["configurable"]["checkpoint_ns"]
+    return result, checkpoint_ns
+
+
 def _build_task_tool(  # noqa: C901, PLR0915
     subagents: Sequence[_SubAgentSpec],
     task_description: str | None = None,
@@ -898,14 +941,14 @@ def _build_task_tool(  # noqa: C901, PLR0915
             "configurable": {"ls_agent_type": "subagent"},
             "metadata": {"lc_subagent_tool_call_id": runtime.tool_call_id},
         }
+        fallback_ns = (runtime.config.get("configurable") or {}).get("checkpoint_ns")
         try:
             with _subagent_tracing_context():
-                result = subagent.invoke(subagent_state, subagent_config)
+                result, checkpoint_ns = _run_subagent(subagent, subagent_state, subagent_config, fallback_ns=fallback_ns)
         except (ModelRefusalError, StructuredOutputValidationError) as error:
             if (notice := _refusal_notice_for(error)) is None:
                 raise
             return notice
-        checkpoint_ns = (runtime.config.get("configurable") or {}).get("checkpoint_ns")
         return _return_command_with_state_update(result, runtime.tool_call_id, subagent_state, checkpoint_ns=checkpoint_ns)
 
     async def atask(
@@ -939,14 +982,14 @@ def _build_task_tool(  # noqa: C901, PLR0915
             "configurable": {"ls_agent_type": "subagent"},
             "metadata": {"lc_subagent_tool_call_id": runtime.tool_call_id},
         }
+        fallback_ns = (runtime.config.get("configurable") or {}).get("checkpoint_ns")
         try:
             with _subagent_tracing_context():
-                result = await subagent.ainvoke(subagent_state, subagent_config)
+                result, checkpoint_ns = await _arun_subagent(subagent, subagent_state, subagent_config, fallback_ns=fallback_ns)
         except (ModelRefusalError, StructuredOutputValidationError) as error:
             if (notice := _refusal_notice_for(error)) is None:
                 raise
             return notice
-        checkpoint_ns = (runtime.config.get("configurable") or {}).get("checkpoint_ns")
         return _return_command_with_state_update(result, runtime.tool_call_id, subagent_state, checkpoint_ns=checkpoint_ns)
 
     compiled_subagents = [_compile_spec(spec) for spec in subagents]

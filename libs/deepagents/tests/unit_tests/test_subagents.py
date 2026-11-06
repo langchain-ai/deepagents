@@ -16,7 +16,7 @@ from unittest.mock import MagicMock
 
 import pytest
 from langchain.agents import create_agent
-from langchain.agents.middleware import TodoListMiddleware
+from langchain.agents.middleware import TodoListMiddleware, ToolRetryMiddleware
 from langchain.agents.middleware.types import AgentMiddleware, AgentState, PrivateStateAttr
 from langchain.agents.structured_output import ToolStrategy
 from langchain.tools import ToolRuntime
@@ -90,6 +90,21 @@ class _ScriptedChatModel(BaseChatModel):
     ) -> Runnable[LanguageModelInput, AIMessage]:
         self.tools = tools
         return self
+
+
+def _delegate_once(subagent_type: str = "worker") -> _ScriptedChatModel:
+    """A parent model that hands "Do task" to `subagent_type` once, then finishes."""
+    task_call = AIMessage(
+        content="",
+        tool_calls=[{"name": "task", "args": {"description": "Do task", "subagent_type": subagent_type}, "id": "call_task", "type": "tool_call"}],
+    )
+    return _ScriptedChatModel(responses=[task_call, AIMessage(content="Done.")])
+
+
+def _messages_saved_under(checkpointer: InMemorySaver, thread_id: str, checkpoint_ns: str) -> list[Any] | None:
+    """The message contents in the latest checkpoint under `checkpoint_ns`, or `None` if there is none."""
+    saved = checkpointer.get_tuple({"configurable": {"thread_id": thread_id, "checkpoint_ns": checkpoint_ns}})
+    return None if saved is None else [message.content for message in saved.checkpoint["channel_values"]["messages"]]
 
 
 class TestSubAgents:
@@ -2160,6 +2175,85 @@ class TestSubAgents:
         assert worker_checkpoint is not None
         worker_messages = worker_checkpoint.checkpoint["channel_values"]["messages"]
         assert [message.content for message in worker_messages] == ["Run worker", "WORKER_DONE"]
+
+    def test_retried_task_tool_message_records_namespace_of_the_run_that_finished(self) -> None:
+        """A retried `task` call names the subagent run that produced its result.
+
+        LangGraph saves a second subagent run in the same step under `<namespace>|1`.
+        """
+        runs = 0
+
+        def work(_state: MessagesState) -> dict[str, Any]:
+            nonlocal runs
+            runs += 1
+            if runs == 1:
+                msg = "first run fails"
+                raise RuntimeError(msg)
+            return {"messages": [AIMessage(content="SUBAGENT_RESPONSE")]}
+
+        flaky = StateGraph(MessagesState).add_node("work", work).add_edge(START, "work").add_edge("work", END).compile()
+        checkpointer = InMemorySaver()
+        agent = create_deep_agent(
+            model=_delegate_once(),
+            checkpointer=checkpointer,
+            middleware=[ToolRetryMiddleware(max_retries=1, initial_delay=0, jitter=False)],
+            subagents=[CompiledSubAgent(name="worker", description="Fails once.", runnable=flaky)],
+        )
+        thread_id = "retried-subagent-checkpoint-namespace"
+
+        result = agent.invoke({"messages": [HumanMessage(content="Do something")]}, {"configurable": {"thread_id": thread_id}})
+
+        tool_message = next(message for message in result["messages"] if isinstance(message, ToolMessage))
+        assert tool_message.content == "SUBAGENT_RESPONSE"
+        saved = _messages_saved_under(checkpointer, thread_id, tool_message.artifact["checkpoint_ns"])
+        assert saved == ["Do task", "SUBAGENT_RESPONSE"]
+
+    def test_task_tool_message_records_namespace_of_subagent_compiled_with_checkpointer_true(self) -> None:
+        """A `checkpointer=True` subagent saves under the namespace without task ids, and that is recorded."""
+        subagent = create_agent(model=_ScriptedChatModel(responses=[AIMessage(content="SUBAGENT_RESPONSE")]), name="worker", checkpointer=True)
+        checkpointer = InMemorySaver()
+        agent = create_deep_agent(
+            model=_delegate_once(),
+            checkpointer=checkpointer,
+            subagents=[CompiledSubAgent(name="worker", description="Remembers its calls.", runnable=subagent)],
+        )
+        thread_id = "per-thread-subagent-checkpoint-namespace"
+
+        result = agent.invoke({"messages": [HumanMessage(content="Do something")]}, {"configurable": {"thread_id": thread_id}})
+
+        tool_message = next(message for message in result["messages"] if isinstance(message, ToolMessage))
+        saved = _messages_saved_under(checkpointer, thread_id, tool_message.artifact["checkpoint_ns"])
+        assert saved == ["Do task", "SUBAGENT_RESPONSE"]
+
+    def test_task_tool_message_records_no_namespace_for_subagent_compiled_with_checkpointer_false(self) -> None:
+        """A `checkpointer=False` subagent saves nothing, so its `ToolMessage` names no namespace."""
+        subagent = create_agent(model=_ScriptedChatModel(responses=[AIMessage(content="SUBAGENT_RESPONSE")]), name="worker", checkpointer=False)
+        agent = create_deep_agent(
+            model=_delegate_once(),
+            checkpointer=InMemorySaver(),
+            subagents=[CompiledSubAgent(name="worker", description="Keeps no history.", runnable=subagent)],
+        )
+
+        result = agent.invoke({"messages": [HumanMessage(content="Do something")]}, {"configurable": {"thread_id": "stateless-subagent"}})
+
+        tool_message = next(message for message in result["messages"] if isinstance(message, ToolMessage))
+        assert tool_message.content == "SUBAGENT_RESPONSE"
+        assert tool_message.artifact is None
+
+    def test_task_tool_message_records_task_call_namespace_for_subagent_that_is_not_a_graph(self) -> None:
+        """A subagent that isn't a compiled graph reports no namespace, so the `task` call's own is recorded."""
+        subagent = RunnableLambda(lambda _state: {"messages": [AIMessage(content="SUBAGENT_RESPONSE")]})
+        agent = create_deep_agent(
+            model=_delegate_once(),
+            checkpointer=InMemorySaver(),
+            subagents=[CompiledSubAgent(name="worker", description="A plain runnable.", runnable=subagent)],
+        )
+
+        result = agent.invoke({"messages": [HumanMessage(content="Do something")]}, {"configurable": {"thread_id": "runnable-subagent"}})
+
+        tool_message = next(message for message in result["messages"] if isinstance(message, ToolMessage))
+        assert tool_message.content == "SUBAGENT_RESPONSE"
+        assert tool_message.artifact["checkpoint_ns"].startswith("tools:")
 
     @pytest.mark.parametrize("use_async", [False, True], ids=["sync", "async"])
     async def test_subagent_checkpoints_record_subagent_tool_call_id(self, *, use_async: bool) -> None:

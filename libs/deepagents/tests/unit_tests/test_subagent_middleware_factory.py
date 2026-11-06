@@ -155,3 +155,35 @@ def test_factory_leaves_compiled_and_async_children_opaque() -> None:
         subagent_middleware=factory,
     )
     assert calls == ["general-purpose"]
+
+
+def test_factory_replaces_child_middleware_by_name() -> None:
+    observed: list[str] = []
+
+    class Label(AgentMiddleware):
+        def __init__(self, label: str) -> None:
+            self.label = label
+
+        def before_agent(self, state: object, runtime: object) -> None:
+            observed.append(self.label)
+
+    def factory(_spec: SubAgent) -> Sequence[AgentMiddleware]:
+        return [Label("factory")]
+
+    child = GenericFakeChatModel(messages=iter([AIMessage(content="child done")]))
+    lead = GenericFakeChatModel(
+        messages=iter(
+            [
+                AIMessage(content="", tool_calls=[{"id": "task", "name": "task", "args": {"description": "probe", "subagent_type": "researcher"}}]),
+                AIMessage(content="done"),
+            ]
+        )
+    )
+    agent = create_deep_agent(
+        model=lead,
+        subagents=[{"name": "researcher", "description": "Research.", "model": child, "middleware": [Label("authored")]}],
+        subagent_middleware=factory,
+    )
+    result = agent.invoke({"messages": [{"role": "user", "content": "go"}]})
+    assert result["messages"][-1].content == "done"
+    assert observed == ["factory"]

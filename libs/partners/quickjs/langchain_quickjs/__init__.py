@@ -1,6 +1,6 @@
 """langchain-quickjs: persistent JS REPL middleware for agents."""
 
-from langchain_quickjs._ptc import PTCOption
+from langchain_quickjs._ptc import PTCOption, ToolResolver, UnresolvedToolError
 from langchain_quickjs._subagent import (
     SUBAGENT_STREAM_EVENT_TYPE,
     SubagentCompleteEvent,
@@ -18,4 +18,6 @@ __all__ = [
     "SubagentErrorEvent",
     "SubagentStartEvent",
     "SubagentStreamEvent",
+    "ToolResolver",
+    "UnresolvedToolError",
 ]

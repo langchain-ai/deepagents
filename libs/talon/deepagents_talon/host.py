@@ -111,6 +111,7 @@ _CONTEXT_DOCTOR_COMMAND = chat_commands.CONTEXT_DOCTOR
 _MODEL_COMMAND = chat_commands.MODEL
 _SMART_MODEL_COMMAND = chat_commands.SMART_MODEL
 _EFFORT_COMMAND = chat_commands.EFFORT
+_SUDO_COMMAND = chat_commands.SUDO
 _RESET_ALL_HISTORY_COMMAND = chat_commands.RESET_ALL_HISTORY
 _PAIR_COMMAND = chat_commands.PAIR
 _PAIR_OPERATOR_ONLY_MESSAGE = "Only an operator can manage sender pairing."
@@ -246,6 +247,7 @@ class _PendingToolApproval:
     prompt_message_id: str | None
     sender_id: str | None
     action_count: int = 1
+    thread_approvable: bool = True
 
 
 @dataclass(slots=True)
@@ -313,6 +315,7 @@ class TalonHost:
         self._smart_model_override = _load_smart_model_override(config.smart_model_state_path)
         self._smart_model_lock = asyncio.Lock()
         self._pending_tool_approvals: dict[str, _PendingToolApproval] = {}
+        self._thread_approvals: set[tuple[str, str]] = set()
         self._pending_authorizations: dict[str, _PendingAuthorization] = {}
         self._authorization_flows: dict[str, _AuthorizationFlow] = {}
         self._terminal_authorizations: set[str] = set()
@@ -435,6 +438,7 @@ class TalonHost:
         Every component is stopped even when an earlier one fails, so shutdown
         always completes and always releases the host.
         """
+        self._thread_approvals.clear()
         if not self._running:
             self._stopped.set()
             return
@@ -533,6 +537,13 @@ class TalonHost:
                 ):
                     return
 
+                if command == _SUDO_COMMAND:
+                    reply = self._sudo_command(channel, message, conversation_root)
+                    await send_with_retry(
+                        lambda: channel.send_message(channel_conversation_id, reply)
+                    )
+                    return
+
                 pending = self._pending_tool_approvals.get(agent_conversation_id)
                 if pending is not None:
                     await self._handle_tool_approval_reply(channel, message, pending)
@@ -605,6 +616,44 @@ class TalonHost:
         else:
             return False
         return True
+
+    def _revoke_thread_approvals(self, conversation_id: str) -> None:
+        self._thread_approvals = {
+            grant for grant in self._thread_approvals if grant[0] != conversation_id
+        }
+
+    def _sudo_command(
+        self, channel: ChannelAdapter, message: ChannelMessage, conversation_root: str
+    ) -> str:
+        if not _is_operator(channel, message) or not message.sender_id:
+            return "Only an operator can change thread approvals."
+        conversation_id = self._agent_conversation_id(conversation_root)
+        grant = (conversation_id, message.sender_id)
+        argument = _command_argument(message.text).lower()
+        if argument in ("", "status"):
+            state = "on" if grant in self._thread_approvals else "off"
+            return f"Thread auto-approval is {state} for you. Send /sudo on or /sudo off."
+        if argument == "off":
+            self._thread_approvals.discard(grant)
+            return "Thread auto-approval is off for you. Future tools require normal approval."
+        if argument != "on":
+            return "Send /sudo on, /sudo off, or /sudo status."
+        return self._enable_thread_approval(conversation_id, message.sender_id)
+
+    def _enable_thread_approval(self, conversation_id: str, sender_id: str) -> str:
+        pending = self._pending_tool_approvals.get(conversation_id)
+        if pending is not None and pending.sender_id != sender_id:
+            return "Only the operator who started this run can approve it."
+        self._thread_approvals.add((conversation_id, sender_id))
+        if pending is not None and pending.thread_approvable and not pending.future.done():
+            pending.future.set_result("approve")
+        return (
+            "Thread auto-approval is on for your turns in this conversation, including any "
+            "pending tool request. All configured tool approvals are automatic except "
+            "ask_for_help, which still needs explicit approval. "
+            "Send /sudo off to revoke; /new, history reset, or restarting Talon also clears it. "
+            "Other senders, conversations, and unattended work are not approved."
+        )
 
     async def _pair_command(
         self,
@@ -1074,6 +1123,9 @@ class TalonHost:
         async def message_handler(text: str) -> SendResult:
             return await send_with_retry(lambda: send_progress(text))
 
+        async def approval_handler(approval: ToolApprovalRequest) -> ToolApprovalDecision:
+            return await self._approve_turn_tools(approval, route, operator=operator)
+
         breakout_handler = self._breakout_handler(route, turn, lambda: active and not unattended)
 
         try:
@@ -1085,17 +1137,7 @@ class TalonHost:
                 # upstream for `trigger: cron`, and an authorization prompt raises on
                 # the absent sender rather than reaching anyone, so both are withheld
                 # exactly as `run_scheduled_job` withholds them.
-                approval_handler=None
-                if unattended
-                else (
-                    lambda approval: self._request_tool_approval(
-                        channel,
-                        approval,
-                        provider=_channel_key(channel, turn.provider),
-                        reply_conversation_id=message.conversation_id,
-                        sender_id=message.sender_id,
-                    )
-                ),
+                approval_handler=None if unattended else approval_handler,
                 authorization_handler=None
                 if unattended
                 else (
@@ -1469,6 +1511,7 @@ class TalonHost:
         roots.add(conversation_root)
         for root in roots:
             current = self._agent_conversation_id(root)
+            self._revoke_thread_approvals(current)
             if await self._cancel_conversation_tasks(current) is _CancelOutcome.TIMEOUT:
                 await send_with_retry(lambda: channel.send_message(chat, _CANCEL_TIMEOUT_MESSAGE))
                 return
@@ -1539,6 +1582,7 @@ class TalonHost:
         }
         _save_conversation_resets(self.config.conversation_state_path, next_resets)
         self._conversation_resets = next_resets
+        self._revoke_thread_approvals(current_conversation_id)
         await send_with_retry(
             lambda: channel.send_message(conversation_id, _NEW_CONVERSATION_MESSAGE)
         )
@@ -1957,6 +2001,35 @@ class TalonHost:
         self._authorization_flows.pop(agent_conversation_id, None)
         self._terminal_authorizations.discard(agent_conversation_id)
 
+    async def _approve_turn_tools(
+        self, approval: ToolApprovalRequest, route: _BackgroundRoute, *, operator: bool
+    ) -> ToolApprovalDecision:
+        if self._thread_approval_allowed(approval, route.message.sender_id, operator=operator):
+            log_event(
+                logger,
+                "tool_approval.thread_auto_approve",
+                conversation_ref=stable_log_ref(approval.conversation_id),
+                action_count=len(approval.action_requests),
+            )
+            return "approve"
+        return await self._request_tool_approval(
+            route.channel,
+            approval,
+            provider=_channel_key(route.channel, route.provider),
+            reply_conversation_id=route.message.conversation_id,
+            sender_id=route.message.sender_id,
+        )
+
+    def _thread_approval_allowed(
+        self, approval: ToolApprovalRequest, sender_id: str | None, *, operator: bool
+    ) -> bool:
+        return bool(
+            operator
+            and sender_id
+            and (approval.conversation_id, sender_id) in self._thread_approvals
+            and all(action.get("name") != "ask_for_help" for action in approval.action_requests)
+        )
+
     async def _request_tool_approval(
         self,
         channel: ChannelAdapter,
@@ -1966,6 +2039,9 @@ class TalonHost:
         reply_conversation_id: str,
         sender_id: str | None,
     ) -> ToolApprovalDecision:
+        thread_approvable = all(
+            action.get("name") != "ask_for_help" for action in approval.action_requests
+        )
         loop = asyncio.get_running_loop()
         future: asyncio.Future[ToolApprovalDecision] = loop.create_future()
         pending = _PendingToolApproval(
@@ -1975,6 +2051,7 @@ class TalonHost:
             agent_conversation_id=approval.conversation_id,
             prompt_text=_format_tool_approval_prompt(approval),
             action_count=len(approval.action_requests),
+            thread_approvable=thread_approvable,
             prompt_message_id=None,
             sender_id=sender_id,
         )

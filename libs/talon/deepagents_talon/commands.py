@@ -30,6 +30,10 @@ _HELP_PREAMBLE = (
     "Each conversation keeps its context."
 )
 _HELP_TRAILER = (
+    "Approvals: Send /sudo on to auto-approve tools for your turns in this conversation, "
+    "/sudo off to revoke, or /sudo status to inspect. Operators only; ask_for_help still "
+    "needs approval. Resets on /new, history reset, or restart. "
+    "In Slack channel threads, mention the bot followed by /sudo on or /sudo off.\n"
     "MCP: Ask to view, add, update, or remove a server (Linux/macOS), "
     "then approve the change when prompted. Updated tools are available next turn.\n"
     "OAuth: Ask to authenticate a configured MCP server. Open the sign-in link, "
@@ -97,6 +101,11 @@ CHAT_COMMANDS: tuple[ChatCommand, ...] = (
         argument="A provider:model, off, or default to restore the configured model.",
     ),
     ChatCommand(
+        "sudo",
+        "Operator only: auto-approve tools in this conversation until revoked, /new, or restart.",
+        argument="on to enable, off to revoke, or status; ask_for_help still requires approval.",
+    ),
+    ChatCommand(
         "effort",
         "Show or set reasoning effort for the current model across chats.",
         argument="A supported effort level, or default to restore provider defaults.",
@@ -113,7 +122,8 @@ CONTEXT_DOCTOR = CHAT_COMMANDS[5].text
 PAIR = CHAT_COMMANDS[6].text
 MODEL = CHAT_COMMANDS[7].text
 SMART_MODEL = CHAT_COMMANDS[8].text
-EFFORT = CHAT_COMMANDS[9].text
+SUDO = CHAT_COMMANDS[9].text
+EFFORT = CHAT_COMMANDS[10].text
 
 COMMANDS_BY_NAME: Mapping[str, ChatCommand] = MappingProxyType(
     {command.name: command for command in CHAT_COMMANDS},

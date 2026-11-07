@@ -1,8 +1,11 @@
 ---
 type: architecture concept
 title: Filesystem Tools and Backends
-description: Deep Agents and dcode expose filesystem and execution tools through capability-aware middleware backed by pluggable storage and sandbox implementations. This page explains tool allowlists, routing, permission and approval controls, content lifecycle, and the containment boundaries verified by focused tests.
+description: Deep Agents and dcode expose filesystem and execution tools through capability-aware middleware backed by pluggable storage and sandbox implementations. This page explains tool allowlists, routing, permission and approval controls, content lifecycle, media reads, and containment boundaries.
 tags: [tools, filesystem, execution, middleware, backends, persistence, multimodal, permissions]
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-11-07T08:03:46.171Z
 sources:
   - id: openwiki-source-1728494bdd59604ce9b5f65b
     resource: repo://libs/code/deepagents_code/_server_config.py
@@ -46,18 +49,19 @@ sources:
     resource: repo://libs/deepagents/deepagents/middleware/_fs_interrupt.py
   - id: openwiki-source-8b1aaf77fc0430fd00711a73
     resource: repo://libs/deepagents/deepagents/middleware/_tool_exclusion.py
+  - id: openwiki-source-454ab6b822ad87c53f679f58
+    resource: repo://libs/deepagents/deepagents/middleware/_video.py
   - id: openwiki-source-fed4b84a38685f37e58018c5
     resource: repo://libs/deepagents/deepagents/middleware/filesystem.py
   - id: openwiki-source-7b8607fdda73d9d47ee17387
     resource: repo://libs/deepagents/tests/unit_tests/backends/test_filesystem_backend.py
+  - id: openwiki-source-270e58b08372692cc14c869c
+    resource: repo://libs/deepagents/tests/unit_tests/middleware/test_filesystem_video.py
   - id: openwiki-source-6d183faf1a4bc5a5ba451aba
     resource: repo://libs/deepagents/tests/unit_tests/test_graph.py
   - id: openwiki-source-903e05891b2ddf4f958276fd
     resource: repo://libs/deepagents/tests/unit_tests/test_local_sandbox_operations.py
-generated: { by: "openwiki/0.4.2", at: "2026-11-06T08:04:19.814Z" }
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-11-06T08:04:19.814Z
+generated: { by: "openwiki/0.4.2", at: "2026-11-07T08:03:46.171Z" }
 ---
 
 # Filesystem Tools and Backends
@@ -206,7 +210,35 @@ When execution is active, middleware adds route-to-host mapping guidance only fo
 
 ## Read media and content lifecycle
 
-For text, `read_file` produces a paginated line-numbered result. For backend-declared base64, it emits a multimodal block selected from the extension (`image`, `audio`, `video`, or generic `file`) rather than line-numbered text, retaining the validated source path and MIME type in metadata. Video decoding, when optional dependencies are available, samples frames into a synthetic `HumanMessage`; middleware moves that message after the entire preceding `ToolMessage` batch to satisfy provider ordering.
+For text, `read_file` produces a paginated line-numbered result. For backend-declared base64, it normally emits a multimodal block selected from the extension (`image`, `audio`, `video`, or generic `file`) rather than line-numbered text, retaining the validated source path and MIME type in metadata.
+
+### Optional video frame extraction
+
+The optional `deepagents[video]` extra changes the `read_file` path for supported videos; it does **not** supply a sandbox. `FilesystemMiddleware` probes the optional PyAV and Pillow dependencies when it creates the read tool, and advertises a schema whose `offset` and `limit` describe video semantics only when they are available. A binary video result is base64-decoded, subject to an input-size cap, and passed to the extractor. For video reads, `offset` is seconds from the source start and `limit` is seconds of source duration, not text-line pagination. The extractor samples JPEG frames at the middleware's fixed 0.5 fps and emits timestamp text/image blocks; it also bounds decode time, output frames, dimensions, and encoded bytes. Extraction errors—including corrupt payloads, missing streams, no frame in the requested window, and a broken optional installation—become a `read_file` tool error so the turn can recover rather than receiving raw video bytes.
+
+A successful extraction returns a normal `ToolMessage` describing the sampled-frame count plus a marked synthetic `HumanMessage` containing the window header and frame blocks. Before either sync or async model call, middleware relocates marked media messages behind **all** `ToolMessage`s belonging to the preceding assistant tool-call batch; this preserves provider-required tool-result ordering when a video read and other tools ran in parallel. Without the optional dependencies, extraction is not attempted: established video extensions retain the generic inline `video` block behavior, while `.mkv` remains a generic `file` block (although backends still read it as binary). Thus media decoding support and backend/sandbox isolation are separate concerns.
+
+```mermaid
+sequenceDiagram
+    participant Agent as Agent tool turn
+    participant Middleware as FilesystemMiddleware
+    participant Backend as Backend
+    participant Extractor as Optional video extractor
+    participant Model as Model request
+    Agent->>Middleware: read_file video with offset and limit
+    Middleware->>Backend: read binary video
+    alt video extra available
+        Middleware->>Extractor: bytes and seconds window
+        Extractor-->>Middleware: timestamped JPEG frame blocks
+        Middleware-->>Agent: ToolMessage plus synthetic HumanMessage
+        Middleware->>Model: ToolMessages then media message
+    else video extra unavailable
+        Middleware-->>Agent: generic video or file ToolMessage
+        Middleware->>Model: generic media block
+    end
+```
+
+This sequence shows the optional media transformation and ordering repair; it makes no claim about execution or filesystem isolation.
 
 In the main-agent assembly, `UnsupportedContentMiddleware` follows the core, memory, and HITL layers and precedes `ModelRefusalMiddleware` and the final tool-exclusion tail. It copies model-request messages and replaces only blocks the active model explicitly cannot accept with a `read_file` path placeholder. Persisted message history remains unchanged. As a fallback, filesystem middleware retries once after a `ModelInvalidRequestError` only when the latest tool turn contains multimodal `read_file` material; it replaces that material with an unsupported-content notice and re-raises unrelated request errors.
 
@@ -233,9 +265,9 @@ The binary lifecycle stores references in history but restores verified payloads
 
 ## Operational guidance
 
-Keep `read_file` in explicit tool lists, and treat missing `delete` or `execute` as a backend capability issue rather than an allowlist issue. Use a harness profile exclusion to suppress a tool for a particular agent surface, not to authorize storage or isolate execution. Treat composite search truncation as incomplete output and do not assume file-tool route paths are shell paths. Configure binary offload only when the blob route supports upload/download outside checkpoint state. For direct host backends, keep virtual mode enabled unless trusted local workflows explicitly need host paths; do not mistake it for sandboxing.
+Keep `read_file` in explicit tool lists, and treat missing `delete` or `execute` as a backend capability issue rather than an allowlist issue. Use a harness profile exclusion to suppress a tool for a particular agent surface, not to authorize storage or isolate execution. Treat composite search truncation as incomplete output and do not assume file-tool route paths are shell paths. Configure binary offload only when the blob route supports upload/download outside checkpoint state. Install `deepagents[video]` only to enable frame extraction; choose and operate a sandbox separately. For direct host backends, keep virtual mode enabled unless trusted local workflows explicitly need host paths; do not mistake it for sandboxing.
 
-When changing this area, exercise the focused behavior rather than only tool registration. The filesystem-backend suite is the regression boundary for both modes: it checks virtual paths and host-path mode, direct-child `ls` ordering and errors, text pagination (including negative/zero limits and end-of-file), binary and video handling, byte upload/download with partial batch success, edit newline normalization, and recursive deletion that removes a symlink itself rather than its directory target. It also verifies symlink-loop errors and that virtual display paths do not reveal `root_dir`.
+When changing this area, exercise the focused behavior rather than only tool registration. The filesystem-backend suite is the regression boundary for both modes: it checks virtual paths and host-path mode, direct-child `ls` ordering and errors, text pagination (including negative/zero limits and end-of-file), binary/video classification and size guards, byte upload/download with partial batch success, edit newline normalization, and recursive deletion that removes a symlink itself rather than its directory target. It also verifies symlink-loop errors and that virtual display paths do not reveal `root_dir`. The video middleware suite separately verifies sync and async extraction routing, seconds-window forwarding, error conversion, generic fallback without the optional extra, and reordering synthetic media after a parallel tool-result batch.
 
 For search, retain literal treatment of regex-looking input; directory-component include globs when the process cwd differs from the search root; file-scoped search; total match caps; ripgrep timeout, executable-race, stderr-draining, and hard-error fallback paths; Python fallback partial-error behavior; and containment filtering for a symlink that points outside a searched root. Preserve the shared glob dialect—hidden-name behavior, brace expansion, traversal refusal, anchoring, and basename-at-any-depth matching—and its failure distinction: a deadline returns partial `truncated` results, while a mid-walk exception is an error. Keep the backend glob budget below the middleware deadline so the useful partial backend result wins before the outer tool timeout.
 

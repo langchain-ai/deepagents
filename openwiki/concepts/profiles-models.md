@@ -3,6 +3,9 @@ type: model and profile configuration
 title: Profiles and Models
 description: Explains how Deep Agents SDK profiles construct models and assemble harnesses, and how dcode discovers, admits, configures, and switches models safely.
 tags: [models, sdk-profiles, dcode, provider-configuration, model-catalog, reasoning]
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-11-07T08:03:46.171Z
 sources:
   - id: openwiki-source-6c2e9cfaa20096e021221d47
     resource: repo://libs/code/CHANGELOG.md
@@ -28,16 +31,17 @@ sources:
     resource: repo://libs/deepagents/deepagents/profiles/__init__.py
   - id: openwiki-source-f94d6bc3bb6ebd1565c1732f
     resource: repo://libs/deepagents/deepagents/profiles/_builtin_profiles.py
+  - id: openwiki-source-287b22c48770e0721bf11a26
+    resource: repo://libs/deepagents/deepagents/profiles/harness/_nvidia_nemotron_3_ultra.py
   - id: openwiki-source-59612eea63cbfafbd628feda
     resource: repo://libs/deepagents/deepagents/profiles/harness/harness_profiles.py
   - id: openwiki-source-1098130d42873f13aba9f5c2
     resource: repo://libs/deepagents/deepagents/profiles/provider/provider_profiles.py
   - id: openwiki-source-478a579b56d29c6928ec2320
     resource: repo://libs/deepagents/pyproject.toml
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-11-06T08:04:19.814Z
-generated: { by: "openwiki/0.4.2", at: "2026-11-06T08:04:19.814Z" }
+  - id: openwiki-source-9266f2d667b5c64eaec15821
+    resource: repo://libs/deepagents/tests/unit_tests/test_nemotron_ultra_profile.py
+generated: { by: "openwiki/0.4.2", at: "2026-11-07T08:03:46.171Z" }
 ---
 
 # Profiles and Models
@@ -68,11 +72,42 @@ flowchart TD
 
 Diagram: construction profiles apply only to string specifications; harness profiles shape the graph after a model is available.
 
-Harness lookup also prefers an exact model and then a provider fallback. `create_deep_agent()` resolves it for the main model and each declarative synchronous subagent before it applies prompt, tool-description, and middleware changes. The authored prompt order is caller `USER`, profile `BASE`, then profile `SUFFIX`.
+Harness lookup selects an exact specification before a provider fallback; when both are registered, the model-level fields merge over provider-level fields. `create_deep_agent()` resolves it for the main model and each declarative synchronous subagent before it applies prompt, tool-description, and middleware changes. The authored prompt order is caller `USER`, profile `BASE`, then profile `SUFFIX`.
 
 A runtime `HarnessProfile` may supply static or factory `extra_middleware` for the main, general-purpose, and declarative synchronous subagent stacks. It cannot alter a precompiled subagent or a remote asynchronous subagent; `HarnessProfileConfig` intentionally excludes this runtime-only feature so it remains file-friendly. Middleware exclusions cannot remove required filesystem or subagent scaffolding, and an exclusion that matches nothing fails graph assembly. Use tool exclusions—not middleware removal—to hide injected tools from the model.
 
 Profile bootstrap is lazy, thread-coordinated, and one-time. Built-ins load through direct imports; an exception rolls the registry back and fails bootstrap. Provider and harness entry-point plugins load afterward and layer onto built-ins; a broken third-party plugin is warned about and skipped. Register custom profiles before construction so the registry is complete when models and graphs are assembled.
+
+### NVIDIA Nemotron 3 Ultra adaptation
+
+The built-in Nemotron 3 Ultra profile is a **model-specific HarnessProfile**, not an NVIDIA- or reseller-provider-wide behavior change. It is registered only for these client-reported specifications:
+
+- `NVIDIA:nvidia/nemotron-3-ultra-550b-a55b` and `nvidia:nvidia/nemotron-3-ultra-550b-a55b`
+- `baseten:nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B`
+- `fireworks:accounts/fireworks/models/nemotron-3-ultra-nvfp4` and `fireworks:accounts/fireworks/models/nemotron-3-ultra-bf16`
+- `openrouter:nvidia/nemotron-3-ultra-550b-a55b`
+- `nebius:nvidia/Nemotron-3-Ultra-550b-a55b`
+- `together:nvidia/nemotron-3-ultra-550b-a55b`
+
+The profile supplies model guidance, a `read_file` description override, and fresh extra middleware for every SDK-assembled applicable stack. Its filesystem shim remaps `path` to `file_path` for `read_file`, `write_file`, `edit_file`, and `delete` when necessary; a `read_file` call with no `limit` receives the 500-line default. It changes an empty `ToolMessage` result to `(empty tool result)` rather than inventing content. A separate pagination middleware appends a continuation instruction only when a non-error `read_file` result contains the full requested number of source lines; the instruction carries the next `offset` and deliberately avoids treating wrapped continuation rows or header-shaped file content as proof of another page.
+
+```mermaid
+flowchart TD
+    Spec["Resolved model specification"] --> Exact{"Exact Nemotron Ultra key"}
+    Exact -->|No| Default["Use ordinary provider or model profile"]
+    Exact -->|Yes| Profile["Nemotron Ultra HarnessProfile"]
+    Profile --> Shim["Normalize filesystem calls and results"]
+    Shim --> Page["Add read continuation notice when page is full"]
+    Page --> Call["Invoke model"]
+    Call --> Limited{"Transient rate limit"}
+    Limited -->|Yes| Retry["Retry after 4 then 12 seconds"]
+    Limited -->|No| Result["Return or raise result"]
+    Retry --> Call
+```
+
+Diagram: the Nemotron safeguards attach only after an exact model-profile match; they do not change other models on the same providers.
+
+Its model-call retry middleware retries identifiable rate-limit failures, including status `429`, with delays of 4 then 12 seconds; it re-raises other errors and an exhausted rate limit. The focused Nemotron suite pins the identifiers, filesystem argument repair, empty-result handling, default paging and continuation detection, and the transient-429 retry path. These safeguards are distinct from dcode's model-node retry policy.
 
 ## dcode configuration, discovery, and catalog
 
@@ -122,16 +157,18 @@ The model-node middleware owns the visible retry budget: `--max-retries`, provid
 
 dcode `0.2.5` requires Python `>=3.14,<3.15` and pins `deepagents==0.7.34`. The SDK manifest is `0.7.34`, supports Python `>=3.11,<4.0`, and requires LangChain `>=1.4.9,<2.0.0`, LangChain Core `>=1.7.6,<2.0.0`, Anthropic `>=1.7.10,<2.0.0`, and Google GenAI `>=4.4.3,<5.0.0`. The SDK range does not widen dcode's released Python contract; dcode's editable sibling SDK source is a development override.
 
-The dcode core installs Anthropic `>=1.7.10,<2.0.0`, Google GenAI `>=4.4.3,<5.0.0`, and OpenAI `>=1.7.4,<2.0.0`. Other integrations are extras: Baseten `>=0.2.5,<1.0.0`, Bedrock `>=1.9.1,<2.0.0`, Cohere `>=0.6.0,<1.0.0`, DeepSeek `>=1.1.1,<2.0.0`, Fireworks `>=1.7.2,<2.0.0`, Groq `>=1.1.3,<2.0.0`, Hugging Face `>=1.2.3,<2.0.0`, IBM `>=1.1.2,<2.0.0`, LiteLLM `>=0.11.2,<2.0.0`, Meta `>=0.5.0,<2.0.0`, Mistral `>=1.1.6,<2.0.0`, NVIDIA endpoints `>=1.5.0,<2.0.0` (plus `aiohttp>=3.14.3`), Ollama `>=1.1.0,<2.0.0`, OpenRouter `>=0.2.9,<2.0.0`, Perplexity `>=1.4.2,<2.0.0`, Together `>=0.4.0,<2.0.0`, Vertex AI `>=3.2.5,<4.0.0`, and xAI `>=1.3.0,<2.0.0`. Install the matching dcode extra before selecting its provider.
+The dcode core installs Anthropic `>=1.7.10,<2.0.0`, Google GenAI `>=4.4.3,<5.0.0`, and OpenAI `>=1.7.4,<2.0.0`. Other integrations are extras: Baseten `>=0.2.5,<1.0.0`, Bedrock `>=1.9.2,<2.0.0`, Cohere `>=0.6.0,<1.0.0`, DeepSeek `>=1.1.1,<2.0.0`, Fireworks `>=1.7.2,<2.0.0`, Groq `>=1.1.3,<2.0.0`, Hugging Face `>=1.2.3,<2.0.0`, IBM `>=1.1.2,<2.0.0`, LiteLLM `>=0.11.2,<2.0.0`, Meta `>=0.5.0,<2.0.0`, Mistral `>=1.1.6,<2.0.0`, NVIDIA endpoints `>=1.5.0,<2.0.0` (plus `aiohttp>=3.14.3`), Ollama `>=1.1.0,<2.0.0`, OpenRouter `>=0.2.9,<2.0.0`, Perplexity `>=1.4.2,<2.0.0`, Together `>=0.4.0,<2.0.0`, Vertex AI `>=3.2.5,<4.0.0`, and xAI `>=1.3.0,<2.0.0`. Install the matching dcode extra before selecting its provider.
 
 The `0.2.5` changelog records that compaction input budgeting now follows the selected model. This is release context, not a promise that every runtime switch changes an already compiled graph; model switching remains the responsibility of the runtime middleware described above.
 
-When changing this area, preserve the ordering of canonicalization, admission, credential bridging, profile application, and imports. Test malformed, empty, exact, wildcard, and Bedrock allowlists; prove denied construction has no credential, profile, or import side effects; exercise prefixed environment shadowing and stored credential bridging; and cover profile failure translation, model-switch denial and fallback, and per-switch retry budgets. Relevant focused suites include `libs/code/tests/unit_tests/test_config.py`, `test_model_config.py`, `test_model_switch.py`, `tui/widgets/test_model_selector.py`, and `libs/deepagents/tests/unit_tests/test_harness_profiles.py`.
+When changing this area, preserve the ordering of canonicalization, admission, credential bridging, profile application, and imports. Test malformed, empty, exact, wildcard, and Bedrock allowlists; prove denied construction has no credential, profile, or import side effects; exercise prefixed environment shadowing and stored credential bridging; and cover profile failure translation, model-switch denial and fallback, and per-switch retry budgets. For the Nemotron adaptation, test exact-key registration and its narrow safeguards rather than assuming they apply provider-wide. Relevant focused suites include `libs/code/tests/unit_tests/test_config.py`, `test_model_config.py`, `test_model_switch.py`, `tui/widgets/test_model_selector.py`, `libs/deepagents/tests/unit_tests/test_harness_profiles.py`, and `libs/deepagents/tests/unit_tests/test_nemotron_ultra_profile.py`.
 
 ## Related pages
 
 - [Middleware stack](/openwiki/architecture/middleware-stack.md)
 - [Architecture overview](/openwiki/architecture/overview.md)
-- [Subagents and skills](/openwiki/concepts/subagents-skills.md)
+- [Middleware catalog](/openwiki/concepts/middleware-catalog.md)
+- [Tools and filesystem](/openwiki/concepts/tools-filesystem.md)
 - [Quickstart](/openwiki/quickstart.md)
+- [Build a Deep Agent](/openwiki/workflows/build-a-deep-agent.md)
 - [Testing guide](/openwiki/testing/testing-guide.md)

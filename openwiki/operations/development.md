@@ -5,7 +5,7 @@ description: Develop Python packages from their owning directory, maintain packa
 tags: [development, dependencies, uv, lockfiles, releases, automation]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-11-06T08:04:19.814Z
+    at: 2026-11-07T08:03:46.171Z
 sources:
   - id: openwiki-source-3638ff2c170b760df159d81b
     resource: repo://.github/actions/uv_setup/action.yml
@@ -27,6 +27,8 @@ sources:
     resource: repo://.github/workflows/bump_code_sdk_pin.yml
   - id: openwiki-source-fa3e3af42f9e8d6ed58a473e
     resource: repo://.github/workflows/check_lockfiles.yml
+  - id: openwiki-source-6d4b4e707b8d60b6ccfa3425
+    resource: repo://.github/workflows/openwiki-update.yml
   - id: openwiki-source-bc54cf7ca3addab1b243d7a6
     resource: repo://.github/workflows/raise_langchain_minimums.yml
   - id: openwiki-source-7f3822065cb7dc086752e9d5
@@ -51,7 +53,7 @@ sources:
     resource: repo://libs/talon/pyproject.toml
   - id: openwiki-source-482fa4ca84f42b04ba025fc1
     resource: repo://release-please-config.json
-generated: { by: "openwiki/0.4.2", at: "2026-11-06T08:04:19.814Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-11-07T08:03:46.171Z" }
 ---
 
 # Development, Dependencies, Lockfiles, and Releases
@@ -159,13 +161,17 @@ The lower-bound workflow writes `lock_specs` as `directory=python` pairs for cha
 
 ## Release boundaries
 
-Release Please manages nine independently released components. `.release-please-manifest.json` records their current released baselines: Deep Agents `0.7.34`, ACP `0.0.13`, Code `0.2.5`, Talon `0.1.0`, Daytona `0.0.9`, Modal `0.0.7`, Runloop `0.0.7`, Vercel `0.0.2`, and QuickJS `0.3.11`. Its configuration makes separate draft Python release PRs, applies pre-1.0 bump behavior, and delegates publication and GitHub release creation to `release.yml`.
+Release Please manages nine independently released components. `.release-please-manifest.json` records their current released baselines: Deep Agents `0.7.34`, ACP `0.0.13`, Code `0.2.5`, Talon `0.1.0`, Daytona `0.0.9`, Modal `0.0.7`, Runloop `0.0.7`, Vercel `0.0.2`, and QuickJS `0.3.12`. Its configuration makes separate draft Python release PRs, applies pre-1.0 bump behavior, and delegates publication and GitHub release creation to `release.yml`.
 
 Release Please uses changed paths as well as Conventional Commit semantics. Keep user-facing `feat` or `fix` work contained to one managed component, and isolate cross-package dependency and lockfile maintenance in a `chore(deps):` change. The scope guard evaluates its detector and configuration from the trusted PR base revision, fails closed if GitHub's changed-file list is incomplete, and requires `ci:allow-lockfile-release` to acknowledge detected bump-worthy lockfile-only or multi-component fan-out.
 
 After a release PR merge, publication runs only when the commit is recognized as a release-form commit and changes that component's changelog; ordinary empty commits are blocked because no changed path could fan out to every component. The publisher builds the selected source SHA, validates normal releases are reachable from `main` and package metadata matches the requested version, refuses an already published PyPI version, and carries SHA-256 sums across artifact boundaries before TestPyPI and PyPI publication. Manual recovery uses an exact 40-character source SHA whose metadata declares the requested version. Once published, a version must not be republished and its tag must not move.
 
 Release Please serializes release-branch maintenance against pending publication across all packages: unreadable state blocks maintenance, a pending publish can defer a refresh, and recomputation waits because it covers all components.
+
+## Documentation maintenance automation
+
+`openwiki-update.yml` is documentation-maintenance automation, not a package release or dependency-update mechanism. It runs daily at 08:00 UTC or by manual dispatch, invokes `openwiki code --update --print`, and creates or refreshes the `openwiki/update` PR. Before staging, it restores its own workflow file; it then stages only `openwiki` and `AGENTS.md`, runs the shared hygiene target on precisely those generated files, and merges the checked head SHA. Consequently, generated documentation changes must stay within that permitted `openwiki`/`AGENTS.md` boundary.
 
 ## Release notes and focused validation
 

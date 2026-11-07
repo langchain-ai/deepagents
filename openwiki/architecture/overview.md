@@ -3,6 +3,9 @@ type: architecture overview
 title: Repository Architecture Overview
 description: Package graph, release and Python contracts, published dependency boundaries, and runtime ownership across the Deep Agents monorepo.
 tags: [architecture, monorepo, python, dependencies, releases]
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-11-07T08:03:46.171Z
 sources:
   - id: openwiki-source-9a1c436646ef8c4f6dde787a
     resource: repo://.github/RELEASING.md
@@ -50,17 +53,14 @@ sources:
     resource: repo://README.md
   - id: openwiki-source-482fa4ca84f42b04ba025fc1
     resource: repo://release-please-config.json
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-11-06T08:04:19.814Z
-generated: { by: "openwiki/0.4.2", at: "2026-11-06T08:04:19.814Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-11-07T08:03:46.171Z" }
 ---
 
 # Repository Architecture Overview
 
 This is an independently versioned Python monorepo, not one deployable service. The `deepagents` SDK is the reusable harness. ACP translates an ACP client session into a graph invocation; dcode packages the SDK as a terminal coding product; Talon is a local long-running host; evals measures behavior; and partner packages add optional provider or middleware capabilities. Installing a dependency makes a distribution available—it does not make its provider, user interface, or runtime policy an SDK responsibility.
 
-Related: [middleware stack](./middleware-stack.md), [SDK construction and execution](./sdk-construction-execution.md), [source map](./source-map.md), [ACP](../integrations/acp.md), [Talon](../integrations/talon.md), [development](../operations/development.md), and [quickstart](../quickstart.md).
+Related: [SDK construction and execution](./sdk-construction-execution.md), [source map](./source-map.md), [profiles and models](../concepts/profiles-models.md), [ACP](../integrations/acp.md), [sandbox partners](../integrations/sandbox-partners.md), [Talon](../integrations/talon.md), [development](../operations/development.md), and [quickstart](../quickstart.md).
 
 ## Package, Python, and release contracts
 
@@ -72,7 +72,7 @@ Related: [middleware stack](./middleware-stack.md), [SDK construction and execut
 | `deepagents-talon` | `0.1.0` | `>=3.14,<3.15` | Experimental local host for channels and schedules. |
 | `deepagents-evals` | `0.0.1` | `>=3.14,<3.15` | Behavioral evaluation and Harbor benchmark suite. |
 | `langchain-daytona`, `langchain-modal`, `langchain-runloop` | `0.0.9`, `0.0.7`, `0.0.7` | `>=3.11,<4.0` | Sandbox integrations. |
-| `langchain-vercel-sandbox`, `langchain-quickjs` | `0.0.2`, `0.3.11` | `>=3.11,<4.0` | Vercel sandbox and JavaScript-REPL middleware integrations. |
+| `langchain-vercel-sandbox`, `langchain-quickjs` | `0.0.2`, `0.3.12` | `>=3.11,<4.0` | Vercel sandbox and JavaScript-REPL middleware integrations. |
 
 Release Please manages separate release lines for the SDK, ACP, dcode, Talon, and all five partner distributions; evals is deliberately outside that configuration. It creates a separate draft release PR per managed package. Once that PR is reviewed and merged, the release workflow performs checks and creates the PyPI and GitHub releases; `skip-github-release` means Release Please itself does not publish the GitHub release.
 
@@ -122,9 +122,9 @@ flowchart TD
 
 *Solid edges are published package relationships; dotted edges are development-only `uv` substitutions.*
 
-ACP declares `deepagents` without a version bound and maps it to the editable SDK checkout. dcode publishes `deepagents==0.7.34`, ACP `>=0.0.13,<1.0.0`, and QuickJS `>=0.3.11,<0.4.0`; in its checkout it maps the SDK, ACP, and Daytona, Modal, QuickJS, Runloop, and Vercel partners editable. Talon publishes `deepagents>=0.7.32` and `deepagents-code>=0.2.4,<1.0.0`, then maps both sibling packages editable. Evals maps dcode by a **non-editable** path but maps the SDK and QuickJS editable. The five partner packages publish `deepagents>=0.7.32,<0.8.0` and map the SDK editable.
+ACP declares `deepagents` without a version bound and maps it to the editable SDK checkout. dcode publishes `deepagents==0.7.34`, ACP `>=0.0.13,<1.0.0`, and QuickJS `>=0.3.11,<0.4.0`; in its checkout it maps the SDK, ACP, and Daytona, Modal, QuickJS, Runloop, and Vercel partners editable. Talon publishes `deepagents>=0.7.34` and `deepagents-code>=0.2.5,<1.0.0`, then maps both sibling packages editable. Evals maps dcode by a **non-editable** path but maps the SDK and QuickJS editable; its published floors are `deepagents>=0.7.32`, `deepagents-code>=0.2.1`, and `langchain-quickjs>=0.3.3`. Each of the five partner packages publishes `deepagents>=0.7.34,<0.8.0` and maps the SDK editable.
 
-The SDK base distribution keeps AWS, QuickJS, and video capabilities in extras. Conversely, dcode installs QuickJS and `langsmith[sandbox]` normally, then offers optional sandbox extras for AgentCore, Daytona, Modal, OpenShell, Runloop, and Vercel; `all-sandboxes` aggregates them. Its retained `quickjs` extra is empty because QuickJS is already normal dependency. Talon's history embedding, PostgreSQL, MongoDB, media, and OpenShell integrations are likewise optional packages. Extras select an implementation dependency; they do not transfer credentials, remote-resource lifecycle, or security responsibility into the SDK.
+The SDK base distribution keeps AWS, QuickJS, and video capabilities in extras. Conversely, dcode installs QuickJS and `langsmith[sandbox]` normally, then offers optional sandbox extras for AgentCore, Daytona, Modal, OpenShell, Runloop, and Vercel; `all-sandboxes` aggregates them. Its retained `quickjs` extra is empty because QuickJS is already a normal dependency. Talon's history embedding, PostgreSQL, MongoDB, media, and OpenShell integrations are likewise optional packages. Extras select an implementation dependency; they do not transfer credentials, remote-resource lifecycle, or security responsibility into the SDK.
 
 ### Lockfile consequence
 

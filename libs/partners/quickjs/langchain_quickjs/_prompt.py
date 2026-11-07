@@ -50,7 +50,7 @@ not. Paths are absolute; relative paths resolve from `/`.
 {functions}
 - Errors are Node errors: check `err.code`, such as `ENOENT`, `EISDIR`, or \
 `EACCES`.
-- There are no writes, streams, or callback-style APIs."""
+- There are no streams, file descriptors, or callback-style APIs."""
 _SUBAGENT_SYSTEM_PROMPT_TEMPLATE = """
 
 ### Dispatching Subagents with `task`

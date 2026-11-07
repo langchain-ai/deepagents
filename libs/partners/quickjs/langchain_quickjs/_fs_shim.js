@@ -70,10 +70,51 @@ const stringArg = (value, name) => {
   throw err;
 };
 const pathArg = (p, name = "path") => resolve(stringArg(p, name));
-const readArgs = (p, opts) => {
+const encodingOf = (opts) => {
   const enc = typeof opts === "string" ? opts : opts?.encoding;
-  return { path: pathArg(p), encoding: enc == null ? null : String(enc).toLowerCase() };
+  return enc == null ? null : String(enc).toLowerCase();
 };
+const readArgs = (p, opts) => ({ path: pathArg(p), encoding: encodingOf(opts) });
+const writeArgs = (p, data, opts) => {
+  if (typeof data !== "string" && !(data instanceof Uint8Array)) {
+    const err = new TypeError('The "data" argument must be of type string or an instance of Uint8Array');
+    err.code = "ERR_INVALID_ARG_TYPE";
+    throw err;
+  }
+  return { path: pathArg(p), data, encoding: encodingOf(opts) };
+};
+const orEmpty = (e) => {
+  if (e?.code === "ENOENT") return "";
+  throw e;
+};
+// `"a"` appends by reading, then rewriting the whole file, so it is not atomic.
+// Any flag that could not be honored, such as `"wx"`, is refused, never ignored.
+const writeMode = (opts, fallback) => {
+  const flag = opts?.flag ?? fallback;
+  if (flag === "w" || flag === "w+") return "w";
+  if (flag === "a" || flag === "a+") return "a";
+  const err = new TypeError(`The argument 'flag' is invalid. Received '${flag}'; fs supports "w" and "a"`);
+  err.code = "ERR_INVALID_ARG_VALUE";
+  throw err;
+};
+const sysError = (code, detail, syscall, path) =>
+  Object.assign(new Error(`${code}: ${detail}, ${syscall} '${path}'`), { code, syscall, path });
+// A delete of a missing path throws `ENOENT`, unless `rm` has `force`.
+const onMissing = (syscall, abs, opts) => (e) => {
+  if (e?.code !== "ENOENT") throw e;
+  if (syscall !== "rm" || !opts?.force) throw sysError("ENOENT", "no such file or directory", syscall, abs);
+};
+// The delete tool removes a directory with everything in it, so each delete
+// first stats the path, which needs `ls`, and refuses what Node refuses.
+const checkDelete = (syscall, abs, st, opts) => {
+  const dir = st.isDirectory();
+  if (syscall === "unlink" && dir) throw sysError("EISDIR", "illegal operation on a directory", syscall, abs);
+  if (syscall === "rmdir" && !dir) throw sysError("ENOTDIR", "not a directory", syscall, abs);
+  if (syscall !== "rm" || !dir || opts?.recursive) return;
+  const message = `Path is a directory: rm returned EISDIR (is a directory) ${abs}`;
+  throw Object.assign(new Error(message), { name: "SystemError", code: "ERR_FS_EISDIR", syscall, path: abs });
+};
+const notEmpty = (abs) => sysError("ENOTEMPTY", "directory not empty", "rmdir", abs);
 // Size and mtime come from the parent's listing, so they are best-effort.
 const stats = (e) => {
   const mtime = e.mtime ? new Date(e.mtime) : undefined;
@@ -112,8 +153,29 @@ const promises = {
     return stats(abs === "/" ? ROOT : await acall("stat", { path: abs }));
   },
   access: async (p) => void (await promises.stat(p)),
+  writeFile: (p, data, opts) => write(p, data, opts, "w"),
+  appendFile: (p, data, opts) => write(p, data, opts, "a"),
+  // Every backend creates parent directories on write.
+  mkdir: async (p) => void pathArg(p),
+  rm: (p, opts) => remove("rm", p, opts),
+  unlink: (p) => remove("unlink", p),
+  rmdir: (p, opts) => remove("rmdir", p, opts),
 };
 promises.lstat = promises.stat;
+const write = async (p, data, opts, fallback) => {
+  const args = writeArgs(p, data, opts);
+  if (writeMode(opts, fallback) === "w") return void (await acall("writeFile", args));
+  const prev = await promises.readFile(args.path).catch(orEmpty);
+  await acall("writeFile", { ...args, prefix: prev });
+};
+const remove = async (syscall, p, opts) => {
+  const abs = pathArg(p);
+  const st = await promises.stat(abs).catch(onMissing(syscall, abs, opts));
+  if (st === undefined) return;
+  checkDelete(syscall, abs, st, opts);
+  if (syscall === "rmdir" && !opts?.recursive && (await promises.readdir(abs)).length) throw notEmpty(abs);
+  await acall("rm", { path: abs });
+};
 const fs = {
   readFileSync: (p, opts) => bufferLike(call("readFile", readArgs(p, opts))),
   readdirSync: (p, opts) => {
@@ -136,9 +198,30 @@ const fs = {
     return stats(abs === "/" ? ROOT : call("stat", { path: abs }));
   },
   accessSync: (p) => void fs.statSync(p),
+  writeFileSync: (p, data, opts) => writeSync(p, data, opts, "w"),
+  appendFileSync: (p, data, opts) => writeSync(p, data, opts, "a"),
+  mkdirSync: (p) => void pathArg(p),
+  rmSync: (p, opts) => removeSync("rm", p, opts),
+  unlinkSync: (p) => removeSync("unlink", p),
+  rmdirSync: (p, opts) => removeSync("rmdir", p, opts),
   promises,
 };
 fs.lstatSync = fs.statSync;
+const writeSync = (p, data, opts, fallback) => {
+  const args = writeArgs(p, data, opts);
+  if (writeMode(opts, fallback) === "w") return void call("writeFile", args);
+  let prev;
+  try { prev = fs.readFileSync(args.path) } catch (e) { prev = orEmpty(e) }
+  call("writeFile", { ...args, prefix: prev });
+};
+const removeSync = (syscall, p, opts) => {
+  const abs = pathArg(p);
+  let st;
+  try { st = fs.statSync(abs) } catch (e) { return onMissing(syscall, abs, opts)(e) }
+  checkDelete(syscall, abs, st, opts);
+  if (syscall === "rmdir" && !opts?.recursive && fs.readdirSync(abs).length) throw notEmpty(abs);
+  call("rm", { path: abs });
+};
 const modules = { "node:fs": fs, "node:fs/promises": promises, "node:path": path };
 // A top-level `function fs() {}` in code makes the global non-configurable;
 // keep the code's own binding then rather than fail every later eval.

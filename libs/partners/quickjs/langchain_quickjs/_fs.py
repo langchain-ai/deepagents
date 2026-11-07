@@ -66,6 +66,23 @@ def _read(args: dict[str, Any]) -> dict[str, Any]:
     return {"file_path": args["path"]}
 
 
+def _text(value: str | bytes, what: str) -> str:
+    if isinstance(value, str):
+        return value
+    try:
+        return value.decode("utf-8")
+    except UnicodeDecodeError:
+        msg = f"write_file stores text, and the {what} is not valid UTF-8"
+        raise ValueError(msg) from None
+
+
+def _write(args: dict[str, Any]) -> dict[str, Any]:
+    """`write_file` stores text, so data and an appended-to file must be UTF-8."""
+    _check_encoding(args, (None, "utf8", "utf-8"))
+    prefix = _text(args.get("prefix", ""), "file")
+    return {"file_path": args["path"], "content": prefix + _text(args["data"], "data")}
+
+
 def _stat(args: dict[str, Any], raw: Any) -> dict[str, Any]:
     """Find the path among its parent's entries; size and mtime are best-effort."""
     name = posixpath.basename(args["path"])
@@ -127,6 +144,30 @@ _OPERATIONS = {
             "- `fs.statSync(path)` gives `isFile()`, `isDirectory()`, and `size` and "
             "`mtime` when known; `fs.accessSync(path)` throws `ENOENT` if it is "
             "missing."
+        ),
+    ),
+    "writeFile": _Operation(
+        tool="write_file",
+        syscall="open",
+        arguments=_write,
+        value=lambda _, __: None,
+        doc=(
+            "- `fs.writeFileSync(path, text)` creates or replaces a file with UTF-8 "
+            "text, and `fs.appendFileSync` reads, then rewrites it with text "
+            "added, so it needs `read_file` listed too. The `flag` option takes "
+            '`"w"` or `"a"`. Writes create parent directories, so `fs.mkdirSync` '
+            "does nothing and succeeds."
+        ),
+    ),
+    "rm": _Operation(
+        tool="delete",
+        syscall="rm",
+        arguments=lambda a: {"file_path": a["path"]},
+        value=lambda _, __: None,
+        doc=(
+            "- `fs.rmSync(path, { recursive, force })`, `fs.unlinkSync`, and "
+            "`fs.rmdirSync` delete as Node's do. Each checks the path with `ls` "
+            "first, so it needs `ls` listed too."
         ),
     ),
 }
@@ -211,9 +252,28 @@ _MODULE_EXPORTS = {
         "statSync",
         "lstatSync",
         "accessSync",
+        "writeFileSync",
+        "appendFileSync",
+        "mkdirSync",
+        "rmSync",
+        "unlinkSync",
+        "rmdirSync",
         "promises",
     ),
-    "node:fs/promises": ("readFile", "readdir", "glob", "stat", "lstat", "access"),
+    "node:fs/promises": (
+        "readFile",
+        "readdir",
+        "glob",
+        "stat",
+        "lstat",
+        "access",
+        "writeFile",
+        "appendFile",
+        "mkdir",
+        "rm",
+        "unlink",
+        "rmdir",
+    ),
     "node:path": (
         "isAbsolute",
         "normalize",

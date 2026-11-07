@@ -237,10 +237,10 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
             The REPL's own tool is always excluded; a model asking for
             `tools.eval("...")` would recurse pointlessly.
 
-            Listing `read_file`, `ls`, or `glob` also gives code a Node-style
-            `fs`, such as `fs.readFileSync(path, "utf8")`. Each `fs` call is one
-            call to one of those tools through the same middleware and approval
-            as `tools.*`.
+            Listing `read_file`, `ls`, `glob`, `write_file`, or `delete` also
+            gives code a Node-style `fs`, such as `fs.readFileSync(path, "utf8")`.
+            Each `fs` function calls those tools, usually once, through the same
+            middleware and approval as `tools.*`.
         mode: REPL state persistence mode.
             - `"thread"`: state persists across calls and across turns.
             - `"turn"`: state persists across calls within a turn only.

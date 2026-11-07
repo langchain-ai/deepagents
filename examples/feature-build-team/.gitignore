@@ -1,0 +1,4 @@
+.env
+workspace/*
+!workspace/.gitkeep
+recordings/

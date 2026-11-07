@@ -137,7 +137,7 @@ from langchain.agents.middleware.types import (
 from langgraph.types import Command, Overwrite
 
 from deepagents.backends.protocol import FILE_NOT_FOUND, FileDownloadResponse, LsResult
-from deepagents.backends.utils import to_posix_path
+from deepagents.backends.utils import to_posix_path, validate_path
 from deepagents.middleware._skill_tools import (
     _INCLUDE_TOOLS_KEY,
     _SKILL_TOOLS_DISCLOSED_KEY,
@@ -155,6 +155,7 @@ from deepagents.middleware._skill_tools import (
     _unclaimed_include_names,
 )
 from deepagents.middleware._utils import append_to_system_message
+from deepagents.middleware.filesystem import FilesystemPermission, _check_fs_permission, _resolve_real_path
 
 logger = logging.getLogger(__name__)
 
@@ -829,8 +830,34 @@ def _skills_to_pin(names: Sequence[str], skills: Sequence[SkillMetadata]) -> lis
     return resolved
 
 
+def _may_pin(skill: SkillMetadata, backend: BackendProtocol, rules: list[FilesystemPermission]) -> bool:
+    """Return whether `skill`'s path is a `SKILL.md` that `rules` allow reading, at its own path and its resolved target.
+
+    `skills_metadata` can come from the run's input, so its paths aren't trusted.
+    A path whose read would need approval (`interrupt`) is not pinned either.
+    """
+    if PurePosixPath(skill["path"]).name != "SKILL.md":
+        logger.debug("Not pinning skill '%s': %s is not a SKILL.md", skill["name"], skill["path"])
+        return False
+    if not rules:
+        return True
+    try:
+        path = validate_path(skill["path"])
+        real = _resolve_real_path(backend, path)
+    except (ValueError, OSError, RuntimeError):
+        logger.debug("Not pinning skill '%s': invalid path %s", skill["name"], skill["path"])
+        return False
+    if any(_check_fs_permission(rules, "read", p) != "allow" for p in {path, real}):
+        logger.debug("Not pinning skill '%s': read of %s is not allowed", skill["name"], skill["path"])
+        return False
+    return True
+
+
 def _pinned_skill_body(skill: SkillMetadata, response: FileDownloadResponse) -> str | None:
-    """Return the text to pin `skill` with, or `None` if `response` can't be pinned."""
+    """Return the text to pin `skill` with, or `None` if `response` can't be pinned.
+
+    The file must parse as a `SKILL.md` with the skill's own `name`.
+    """
     if response.error or not response.content:
         logger.debug("Not pinning skill '%s': unreadable %s (%s)", skill["name"], skill["path"], response.error or "empty")
         return None
@@ -841,6 +868,10 @@ def _pinned_skill_body(skill: SkillMetadata, response: FileDownloadResponse) -> 
         content = response.content.decode("utf-8")
     except UnicodeDecodeError:
         logger.debug("Not pinning skill '%s': unreadable %s (not UTF-8)", skill["name"], skill["path"])
+        return None
+    parsed = _parse_skill_metadata(content, skill["path"], PurePosixPath(skill["path"]).parent.name)
+    if parsed is None or parsed["name"] != skill["name"]:
+        logger.debug("Not pinning skill '%s': %s is not a valid SKILL.md for it", skill["name"], skill["path"])
         return None
     match = _FRONTMATTER_PATTERN.match(content)
     return (content[match.end() :] if match else content).rstrip()
@@ -1030,6 +1061,7 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
         sources: Sequence[SkillSource],
         system_prompt: str | None = SKILLS_SYSTEM_PROMPT,
         tools: Sequence[BaseTool | Callable[..., Any]] | SkillToolResolver | None = None,
+        permissions: list[FilesystemPermission] | None = None,
     ) -> None:
         """Initialize the skills middleware.
 
@@ -1053,6 +1085,10 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
                 A list of tools, or a `SkillToolResolver` that returns the tools
                 for a name. Plain functions in a list are converted to tools, as
                 `create_agent` does.
+            permissions: Filesystem permission rules a pinned skill's
+                `SKILL.md` must be allowed to read under, the same rules
+                `FilesystemMiddleware` enforces. `create_deep_agent` passes
+                the agent's (or subagent's) `permissions`.
 
         Raises:
             TypeError: If a tuple entry in `sources` is not exactly a
@@ -1072,6 +1108,7 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
                 msg = f"system_prompt missing required format slot(s): {', '.join(missing)}"
                 raise ValueError(msg)
         self._backend = backend
+        self._permissions = list(permissions or [])
         # `self.sources` remains paths-only (`list[str]`) to preserve
         # backwards-compat for callers that inspect it directly; label
         # information is mirrored on `self.source_labels` at the same index.
@@ -1274,6 +1311,7 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
         if not names:
             return None
         skills = _skills_to_pin(names, state.get("skills_metadata") or [])
+        skills = [skill for skill in skills if _may_pin(skill, self._backend, self._permissions)]
         responses = self._backend.download_files([skill["path"] for skill in skills]) if skills else []
         return _pin_update(skills, responses)
 
@@ -1296,6 +1334,7 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
         if not names:
             return None
         skills = _skills_to_pin(names, state.get("skills_metadata") or [])
+        skills = [skill for skill in skills if _may_pin(skill, self._backend, self._permissions)]
         responses = await self._backend.adownload_files([skill["path"] for skill in skills]) if skills else []
         return _pin_update(skills, responses)
 

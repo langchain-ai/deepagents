@@ -1,0 +1,14 @@
+schema_version = "1.3"
+
+[task]
+name = "webvoyager/apple-tv-processor"
+
+[metadata]
+category = "browsing"
+difficulty_explanation = "Single-site lookup on a live page; the agent must read the spec rather than recall it."
+
+[agent]
+timeout_sec = 900.0
+
+[verifier]
+timeout_sec = 120.0

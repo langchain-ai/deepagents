@@ -1,0 +1,11 @@
+[project]
+name = "browser-mda-tools"
+version = "0.0.0"
+description = "Browsing Managed Deep Agent that drives the sandbox browser through typed tools."
+requires-python = ">=3.11"
+dependencies = [
+    "managed-deepagents>=0.9.0,<0.10",
+]
+
+[tool.mda]
+python-version = "3.14"

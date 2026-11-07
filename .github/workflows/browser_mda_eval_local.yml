@@ -1,0 +1,199 @@
+name: "🌐 Browser MDA eval — local surfaces"
+
+# Sibling of browser_mda_eval.yml for browser surfaces that run on the runner
+# rather than on a deployment: Playwright's and WebdriverIO's and browser-use's
+# stdio MCP servers, and Vercel's agent-browser CLI. Same dataset, same Jev
+# judge, same experiment shape -- so these rows sit alongside the deployment
+# arms in one comparison.
+#
+# One job per arm, which is the real reason to run here: four arms on four
+# runners finish in the time one takes on a laptop, and none of them contend
+# for the same CPU.
+on:
+  workflow_dispatch:
+    inputs:
+      arms:
+        description: 'JSON list, e.g. ["playwright","browser-use","wdio","agent-browser"]'
+        type: string
+        default: '["playwright","browser-use","agent-browser"]'
+      dataset:
+        description: "LangSmith dataset name"
+        type: string
+        default: webvoyager-100
+      concurrency:
+        description: "Parallel tasks per arm"
+        type: string
+        default: "4"
+      limit:
+        description: "Only the first N tasks (0 = all)"
+        type: string
+        default: "0"
+  push:
+    branches: [evals/browser-local-run]
+
+jobs:
+  # Seeded once, before any arm runs, so the matrix cannot race to create the
+  # same dataset. Mirrors the prep job in browser_mda_eval.yml.
+  prep:
+    runs-on: ubuntu-latest
+    environment: oss
+    outputs:
+      dataset_id: ${{ steps.seed.outputs.dataset_id }}
+    steps:
+      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: true
+      - name: Ensure the dataset exists
+        id: seed
+        working-directory: browser-mda/benchmarks/webvoyager
+        env:
+          LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
+          DATASET: ${{ github.event.inputs.dataset || 'webvoyager-100' }}
+        run: |
+          set -euo pipefail
+          uv run --with "langsmith>=0.14.7" python ensure_dataset.py \
+            --dataset "$DATASET" --file webvoyager_100.jsonl
+
+  eval:
+    needs: prep
+    strategy:
+      fail-fast: false
+      matrix:
+        arm: ${{ fromJSON(github.event.inputs.arms || '["playwright","browser-use","agent-browser"]') }}
+    name: "local (${{ matrix.arm }})"
+    runs-on: ubuntu-latest
+    environment: oss
+    # 100 tasks at concurrency 4 with a 600s per-task cap. Two arms hit the
+    # old 240 and were SIGTERMed at ~90 rows, losing their feedback batch --
+    # recoverable only because backfill_local.py can grade from the answers
+    # already in LangSmith.
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: true
+
+      # Installed from the .deb rather than apt's `chromium`, which on Ubuntu
+      # is a snap shim that cannot run in CI. Every arm drives a real Chrome.
+      - name: Install Google Chrome
+        run: |
+          set -euo pipefail
+          if ! command -v google-chrome >/dev/null; then
+            wget -q https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq ./google-chrome-stable_current_amd64.deb
+          fi
+          google-chrome --version
+
+      # Chrome will not start on a CI runner without --no-sandbox, and dies
+      # part way through a page without --disable-dev-shm-usage because /dev/shm
+      # is 64 MB here. Playwright passes both itself; browser-use and
+      # WebdriverIO launch Chrome through their own code and expose no hook for
+      # it, so the flags go on a shim ahead of the real binary on PATH.
+      #
+      # Worth the trouble because the failure is silent: a browser that never
+      # starts produces an agent that politely explains it could not browse,
+      # which the judge scores INCORRECT. A broken arm looks like a bad arm.
+      - name: Make Chrome runnable headless in CI
+        run: |
+          set -euo pipefail
+          real=$(command -v google-chrome)
+          sudo mv "$real" "${real}-real"
+          printf '%s\n' '#!/bin/sh' \
+            'exec '"${real}"'-real --no-sandbox --disable-dev-shm-usage --disable-gpu "$@"' \
+            | sudo tee "$real" >/dev/null
+          sudo chmod +x "$real"
+          google-chrome --version
+          google-chrome --headless --dump-dom about:blank >/dev/null && echo "headless launch OK"
+
+      # Each arm brings its own browser and its own way of configuring it, so
+      # the PATH shim above only reaches the ones that shell out to
+      # `google-chrome` -- which is none of these. The per-arm work lives in a
+      # script so it can be run before it is pushed; the first version of it
+      # was inline YAML with an indented heredoc terminator and killed every
+      # job.
+      - name: Provision the arm's browser
+        working-directory: browser-mda/benchmarks/webvoyager
+        env:
+          BROWSER_USE_CONFIG_PATH: /home/runner/.config/browseruse/config.json
+        run: ./provision_browser.sh "${{ matrix.arm }}"
+
+      - name: Run the suite
+        working-directory: browser-mda/benchmarks/webvoyager
+        env:
+          # Two different keys, which is the whole reason this uses `oss`
+          # rather than `evals`. LANGSMITH_API_KEY owns the dataset and the
+          # experiments, so results land in a workspace you can actually open;
+          # ANTHROPIC_API_KEY is the gateway service key the model and the Jev
+          # judge authenticate with.
+          #
+          # BASE_URL is not optional. The deployment arms never needed it
+          # because the deployment talks to the gateway itself; these arms run
+          # the model in the job, so without it langchain-anthropic calls
+          # api.anthropic.com with a key it does not recognise and every task
+          # dies 401.
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ANTHROPIC_BASE_URL: https://gateway.smith.langchain.com/anthropic
+          LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
+          # Belt and braces: the arms set their own headless switch, but a
+          # runner has no display, so anything that ignored it would fail loudly
+          # rather than silently opening a window.
+          BROWSER_USE_HEADLESS: "true"
+          # browser-use drives a Browserbase session per task rather than a
+          # local Chrome, which is how the hosted-MCP arm sidestepped every
+          # browser-on-a-runner problem these arms hit. Sessions are minted
+          # with keepAlive and released explicitly after each task, so live
+          # sessions track concurrency instead of accumulating toward the
+          # project cap.
+          BROWSERBASE_API_KEY: ${{ secrets.BROWSERBASE_API_KEY }}
+          BROWSERBASE_PROJECT_ID: ${{ secrets.BROWSERBASE_PROJECT_ID }}
+          BROWSER_USE_CONFIG_PATH: /home/runner/.config/browseruse/config.json
+          ARM: ${{ matrix.arm }}
+          DATASET: ${{ github.event.inputs.dataset || 'webvoyager-100' }}
+          DATASET_ID: ${{ needs.prep.outputs.dataset_id }}
+          CONCURRENCY: ${{ github.event.inputs.concurrency || '4' }}
+          LIMIT: ${{ github.event.inputs.limit || '0' }}
+        run: |
+          set -euo pipefail
+          LIMIT_ARG=()
+          if [ "$LIMIT" != "0" ]; then
+            LIMIT_ARG=(--limit "$LIMIT")
+          fi
+          uv run --with "langsmith>=0.14.7" --with langchain-mcp-adapters \
+            --with "langchain>=1" --with langchain-anthropic --with httpx \
+            --with deepagents \
+            python -u bench_local.py \
+              --arm "$ARM" \
+              --dataset "$DATASET" \
+              --dataset-id "$DATASET_ID" \
+              --concurrency "$CONCURRENCY" \
+              "${LIMIT_ARG[@]}" \
+            | tee eval.log
+
+      - name: Summarise
+        if: always()
+        working-directory: browser-mda/benchmarks/webvoyager
+        env:
+          ARM: ${{ matrix.arm }}
+        run: |
+          {
+            echo "## $ARM — WebVoyager (local browser)"
+            echo
+            grep -E "^experiment project" eval.log || true
+            echo
+            echo '| outcome | n |'
+            echo '| --- | --- |'
+            grep -oE "^\[[A-Z]+ *\]" eval.log | sort | uniq -c \
+              | awk '{gsub(/[\[\]]/,"",$2); print "| " $2 " | " $1 " |"}'
+            echo
+            grep -E "^SUCCESS|^feedback posted|^project:" eval.log || true
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: always()
+        with:
+          name: eval-local-${{ matrix.arm }}-log
+          path: browser-mda/benchmarks/webvoyager/eval.log

@@ -1,0 +1,11 @@
+[project]
+name = "browser-mda"
+version = "0.0.0"
+description = "A Managed Deep Agent that browses the web with a local Chromium in its LangSmith sandbox."
+requires-python = ">=3.11"
+dependencies = [
+    "managed-deepagents>=0.9.0,<0.10",
+]
+
+[tool.mda]
+python-version = "3.14"

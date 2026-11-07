@@ -29,6 +29,7 @@ from langgraph.errors import GraphBubbleUp, GraphInterrupt
 from langgraph.func import task
 
 from langchain_quickjs._format import coerce_tool_output_for_ptc
+from langchain_quickjs._fs import request_raw_result
 
 if TYPE_CHECKING:
     import concurrent.futures
@@ -61,6 +62,8 @@ class CallResult:
 
     status: Literal["success", "error"]
     value: Any
+    artifact: Any = None
+    """The tool's raw result, kept only for a call that asked for one."""
     rejected: bool = False
     """Middleware refused the call before the tool ran, as a reviewer does."""
 
@@ -171,7 +174,7 @@ def _model_text(value: Any, message: ToolMessage) -> Any:
 
 
 def _record(
-    result: Any, seen: _Returned, writes: list[tuple[str, Any]]
+    result: Any, seen: _Returned, writes: list[tuple[str, Any]], *, raw: bool
 ) -> dict[str, Any]:
     """Journal record of the tool's own return value; changed model text is a note."""
     messages = result if isinstance(result, list) else [result]
@@ -187,6 +190,7 @@ def _record(
         "status": status,
         "value": coerce_tool_output_for_ptc(value),
         "note": note,
+        "artifact": message.artifact if raw and message is not None else None,
         "rejected": status == "error" and not seen.called,
         "writes": writes,
     }
@@ -229,8 +233,10 @@ class EvalJournal:
             msg = "eval is pausing for human review; this call was not run"
             raise EvalSuspendedError(msg)
 
-    async def dispatch(self, tool: BaseTool, args: dict[str, Any]) -> CallResult:
-        """Run one `tools.*` call through the chain inside its own task.
+    async def dispatch(
+        self, tool: BaseTool, args: dict[str, Any], *, raw: bool = False
+    ) -> CallResult:
+        """Run one `tools.*` or `fs` call through the chain inside its own task.
 
         Raises:
             EvalSuspendedError: If an earlier call in this eval paused, so this
@@ -255,21 +261,23 @@ class EvalJournal:
 
         def run(config: RunnableConfig) -> dict[str, Any]:
             ran.append(True)
-            request, seen, writes = self._request(tool, call, config)
+            request, seen, writes = self._request(tool, call, config, raw=raw)
             try:
-                return _record(self.chain.handler(request), seen, writes)
+                return _record(self.chain.handler(request), seen, writes, raw=raw)
             except Exception as exc:  # noqa: BLE001  # journaled, re-raised by dispatch
                 return failed(exc, writes)
 
         async def arun(config: RunnableConfig) -> dict[str, Any]:
             ran.append(True)
-            request, seen, writes = self._request(tool, call, config)
+            request, seen, writes = self._request(tool, call, config, raw=raw)
             try:
-                return _record(await self.chain.handler(request), seen, writes)
+                return _record(await self.chain.handler(request), seen, writes, raw=raw)
             except Exception as exc:  # noqa: BLE001  # journaled, re-raised by dispatch
                 return failed(exc, writes)
 
-        blob = json.dumps([tool.name, args], sort_keys=True, default=str)
+        # A raw-result call, as from `fs`, never shares a record with `tools.*`.
+        key = [tool.name, args, "raw"] if raw else [tool.name, args]
+        blob = json.dumps(key, sort_keys=True, default=str)
         digest = hashlib.sha256(blob.encode()).hexdigest()[:16]
         # The record may not be serialized yet, so it is read, never changed.
         body = run if self.chain.loop is None else arun
@@ -286,18 +294,24 @@ class EvalJournal:
             raise failure[0] if failure else RuntimeError(raised)
         if record.get("note"):
             self.notes.append(f"tools.{tool.name} call {seq}: {record['note']}")
+        # A record saved before fs has no `artifact`.
         return CallResult(
-            status=record["status"], value=record["value"], rejected=record["rejected"]
+            status=record["status"],
+            value=record["value"],
+            artifact=record.get("artifact"),
+            rejected=record["rejected"],
         )
 
     def _request(
-        self, tool: BaseTool, call: ToolCall, config: RunnableConfig
+        self, tool: BaseTool, call: ToolCall, config: RunnableConfig, *, raw: bool
     ) -> tuple[ToolCallRequest, _Returned, list[tuple[str, Any]]]:
         """Build the nested call's request under its own task's config."""
         seen, writes = _Returned(), []
         config = _state_from_eval_node(
             config, self.runtime.config, writes, self.state_lock
         )
+        if raw:
+            config = request_raw_result(config, call["id"] or "")
         runtime = replace(self.runtime, tool_call_id=call["id"], config=config)
         watched = _watched_tool(tool, seen, sync=self.chain.loop is None, config=config)
         request = self.chain.request.override(

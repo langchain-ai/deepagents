@@ -29,17 +29,19 @@ from langchain_core.messages import SystemMessage, ToolMessage
 from langchain_core.tools import StructuredTool
 from langgraph.channels import DeltaChannel
 from langgraph.types import Command
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, create_model
 
 if TYPE_CHECKING:
     from langgraph.prebuilt.tool_node import ToolCallRequest
     from langgraph.runtime import Runtime
 
+from langchain_quickjs import _fs
 from langchain_quickjs._dispatch import EvalJournal, ToolChain
 from langchain_quickjs._format import format_outcome
 from langchain_quickjs._prompt import (
     render_eval_tool_code_doc,
     render_eval_tool_description,
+    render_fs_system_prompt,
     render_repl_system_prompt,
     render_subagent_system_prompt,
 )
@@ -104,6 +106,15 @@ class EvalSchema(BaseModel):
     )
 
 
+# `EvalSchema` for when `ptc` lists a file tool, so code has `fs`.
+_FILES_CODE_DOC = (
+    "JavaScript expression or statement(s) to evaluate. No network/real-clock access."
+)
+_FilesEvalSchema = create_model(
+    "EvalSchema", __base__=EvalSchema, code=(str, Field(description=_FILES_CODE_DOC))
+)
+
+
 def _resolve_mode(
     *,
     mode: str | None,
@@ -161,7 +172,7 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
                 then runs forever, and asyncio cancellation cannot stop it.
                 Only use it with an external limit that can, such as a
                 process kill or workflow timeout.
-        max_ptc_calls: Maximum number of `tools.*` bridge calls allowed
+        max_ptc_calls: Maximum number of `tools.*` and `fs` calls allowed
             during one `eval` execution. Exceeding this budget throws
             from the host-function bridge before invoking the tool.
             Uncaught overflows surface as `PTCCallBudgetExceeded`.
@@ -225,6 +236,10 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
 
             The REPL's own tool is always excluded; a model asking for
             `tools.eval("...")` would recurse pointlessly.
+
+            Listing `read_file` also gives code a Node-style `fs`, such as
+            `fs.readFileSync(path, "utf8")`. Each `fs` call is one call to that
+            tool through the same middleware and approval as `tools.*`.
         mode: REPL state persistence mode.
             - `"thread"`: state persists across calls and across turns.
             - `"turn"`: state persists across calls within a turn only.
@@ -323,7 +338,7 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
             max_subagent_concurrency=max_subagent_concurrency,
         )
         self._memory_limit_mb = memory_limit // (1024 * 1024)
-        self._base_prompt_cache: dict[bool, str] = {}
+        self._base_prompt_cache: dict[tuple[bool, bool], str] = {}
         self._ptc_tools_by_slot: dict[str, tuple[BaseTool, ...]] = {}
         # Rendered `tools` namespace per slot, with the tools it was rendered from.
         self._ptc_prompt_by_slot: dict[str, tuple[tuple[BaseTool, ...], str]] = {}
@@ -334,7 +349,10 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         max_chars = self._max_result_chars
         middleware = self
         code_doc = render_eval_tool_code_doc(mode=self._mode)
-        tool_description = render_eval_tool_description(mode=self._mode)
+        files = isinstance(self._ptc, list) and bool(_fs.docs(self._ptc_tool_names()))
+        tool_description = render_eval_tool_description(
+            mode=self._mode, files_attached=files
+        )
 
         def _make_tool_output(
             outcome: EvalOutcome,
@@ -418,7 +436,7 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
             func=sync_eval,
             coroutine=async_eval,
             infer_schema=False,
-            args_schema=EvalSchema,
+            args_schema=_FilesEvalSchema if files else EvalSchema,
             metadata={"ls_code_input_language": "javascript"},
         )
 
@@ -642,14 +660,14 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
             command=Command(update={"_quickjs_ptc_tools": names}),
         )
 
-    def _base_prompt(self, *, ptc_attached: bool) -> str:
+    def _base_prompt(self, *, ptc_attached: bool, files_attached: bool = False) -> str:
         """Return the base REPL system prompt, rendered lazily and memoized.
 
-        The text depends only on construction-time config and `ptc_attached`,
+        The text depends only on construction-time config and the two flags,
         so it's computed on first use per boolean and cached. Avoids rendering
         the `tools.*` variant at all when PTC is disabled.
         """
-        cached = self._base_prompt_cache.get(ptc_attached)
+        cached = self._base_prompt_cache.get((ptc_attached, files_attached))
         if cached is None:
             cached = render_repl_system_prompt(
                 tool_name=self._tool_name,
@@ -657,8 +675,9 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
                 memory_limit_mb=self._memory_limit_mb,
                 mode=self._mode,
                 ptc_attached=ptc_attached,
+                files_attached=files_attached,
             )
-            self._base_prompt_cache[ptc_attached] = cached
+            self._base_prompt_cache[ptc_attached, files_attached] = cached
         return cached
 
     def _prepare_for_call(
@@ -687,7 +706,10 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
             self._ptc,
             self_tool_name=self._tool_name,
         )
-        prompt = self._base_prompt(ptc_attached=bool(exposed)) + subagent_section
+        fs_lines = _fs.docs({tool.name for tool in exposed})
+        files = bool(fs_lines)
+        prompt = self._base_prompt(ptc_attached=bool(exposed), files_attached=files)
+        prompt += subagent_section
         slot_id = self._slot_id(getattr(request, "state", {}))
         exposed_tools = tuple(exposed)
         self._ptc_tools_by_slot[slot_id] = exposed_tools
@@ -699,7 +721,8 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         if cached is None or not _same_tools(cached[0], exposed_tools):
             cached = (
                 exposed_tools,
-                render_ptc_prompt(exposed_tools, tool_name=self._tool_name),
+                render_ptc_prompt(exposed_tools, tool_name=self._tool_name)
+                + render_fs_system_prompt(fs_lines),
             )
             self._ptc_prompt_by_slot[slot_id] = cached
         return prompt + cached[1], sorted(tool.name for tool in exposed_tools)

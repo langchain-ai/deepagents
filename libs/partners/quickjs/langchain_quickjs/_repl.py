@@ -7,15 +7,20 @@ without constructing an agent or wiring up LangGraph state.
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import contextlib
 import hashlib
 import json
 import logging
+import math
 import threading
+import time
 import uuid
+from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
-from typing import TYPE_CHECKING, Any, get_type_hints
+from typing import TYPE_CHECKING, Any, NoReturn, get_type_hints
 
+from langchain_core.messages import ToolMessage
 from langchain_core.tools.base import (
     InjectedToolCallId,
     _is_injected_arg_type,
@@ -42,6 +47,8 @@ from quickjs_rs import (
     TimeoutError as QJSTimeoutError,
 )
 
+from langchain_quickjs import _fs
+from langchain_quickjs._dispatch import CallResult
 from langchain_quickjs._format import (
     coerce_tool_output_for_ptc,
     format_handle,
@@ -54,7 +61,7 @@ from langchain_quickjs._subagent import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Coroutine, Sequence
 
     from langchain_core.tools import BaseTool
     from langgraph.prebuilt import ToolRuntime
@@ -124,6 +131,31 @@ class _PTCCallBudgetExceededError(RuntimeError):
         )
 
 
+class _CallTimeoutError(TimeoutError):
+    """Thrown to code for a call that the eval's timeout cut off or refused."""
+
+
+@dataclass(slots=True)
+class _Deadline:
+    """Why one eval timed out, once it has."""
+
+    missed: str | None = None
+
+    def miss(self, reason: str) -> NoReturn:
+        """End the eval with `Timeout`, keeping the first reason, and throw."""
+        self.missed = self.missed or reason
+        raise _CallTimeoutError(reason)
+
+    def check(self) -> None:
+        """Refuse a call from code once the eval has timed out."""
+        if self.missed is not None:
+            self.miss("the eval timed out, so this call was not run")
+
+
+# The running eval's deadline, per task, so a concurrent eval can't swap it.
+_EVAL_DEADLINE: ContextVar[_Deadline] = ContextVar("_EVAL_DEADLINE")
+
+
 class _TaskBridgeError(RuntimeError):
     """Wrap errors from the top-level `task()` host function."""
 
@@ -141,7 +173,7 @@ class _PTCState:
     outer_runtime: ToolRuntime | None = None
     outer_loop: asyncio.AbstractEventLoop | None = None
     journal: EvalJournal | None = None
-    """Dispatches `tools.*` through the agent's tool-call chain when set."""
+    """Dispatches `tools.*` and `fs` through the agent's tool-call chain when set."""
     task_dispatch_count: int = 0
     """Ordinal for the next `task()` dispatch in this eval.
 
@@ -154,6 +186,7 @@ class _PTCState:
         self, *, function_name: str, max_ptc_calls: int | None
     ) -> _PTCState:
         """Count one PTC bridge call and enforce the per-eval limit."""
+        _EVAL_DEADLINE.get(_Deadline()).check()
         if self.remaining_calls is None:
             return self
         if self.remaining_calls > 0:
@@ -347,17 +380,30 @@ _SETTLE_SOURCE = (
     " const E = { TypeError }[props?.name] ?? Error;"
     " throw Object.assign(new E(message), { code, ...props }); }"
 )
+# Throws once the eval timed out, or while no eval runs. Async calls check it first,
+# so a refused call never becomes a host task, which would leave the eval's code
+# queued to run late, under the next eval.
+_ADMIT_HOST_FUNCTION = "__lc_admit"
+# Admits an async call, `call(() => bridge(input))`, then settles its result.
+_CALL_SOURCE = (
+    "((settle, admit) => async (start) => { admit(); return settle(await start()); })"
+    f"({_SETTLE_SOURCE}, {_ADMIT_HOST_FUNCTION})"
+)
+_FS_INSTALL_SOURCE = (
+    f"({_fs.SHIM})({_SETTLE_SOURCE}, {_fs.SYNC_HOST_FUNCTION},"
+    f" {_fs.ASYNC_HOST_FUNCTION}, {_CALL_SOURCE}); undefined"
+)
 
 
 def _render_tools_namespace_assignment(bridges: dict[str, str]) -> str:
     """Return JS that atomically rebuilds `globalThis.tools` from bridges."""
-    statements = [f"(() => {{ const settle = {_SETTLE_SOURCE}; const t = {{}};"]
+    statements = [f"(() => {{ const call = {_CALL_SOURCE}; const t = {{}};"]
     for tool_name, bridge_symbol in sorted(bridges.items()):
         quoted_tool_name = json.dumps(tool_name)
         quoted_bridge_symbol = json.dumps(bridge_symbol)
         statements.append(
-            f"t[{quoted_tool_name}] = ((b) => async (input) =>"
-            f" settle(await b(input)))(globalThis[{quoted_bridge_symbol}]);"
+            f"t[{quoted_tool_name}] = ((b) => (input) =>"
+            f" call(() => b(input)))(globalThis[{quoted_bridge_symbol}]);"
         )
     statements.append("globalThis.tools = t; })(); undefined")
     return " ".join(statements)
@@ -418,6 +464,8 @@ class _ThreadREPL:
         # at eval start and cleared in finally so bridge calls can't run
         # outside the current eval.
         self._ptc_state: _PTCState | None = None
+        # Runs sync `fs` calls in issue order; the worker's loop runs the eval.
+        self._blocking: concurrent.futures.ThreadPoolExecutor | None = None
         self._task_calls: asyncio.Semaphore | None = None
         # Context creation + console install must happen on the worker
         # thread. Block caller here so the REPL is ready to use when
@@ -431,6 +479,7 @@ class _ThreadREPL:
         if self._subagents_enabled:
             self._task_calls = asyncio.Semaphore(self._max_subagent_concurrency)
             self._register_task_bridge()
+        self._register_fs_bridges()
 
     def _require_ctx(self) -> Context:
         """Return the live QuickJS context or raise if this REPL is closed."""
@@ -659,10 +708,12 @@ class _ThreadREPL:
         *,
         outer_runtime: ToolRuntime | None,
         outer_loop: asyncio.AbstractEventLoop | None,
+        wrap_result: bool = False,
     ) -> Any:
         """Run the tool with the outer runtime's loop and config when available."""
         args = tool_call["args"]
         tool_call_id = tool_call.get("id")
+        wrap = wrap_result or _tool_uses_injected_tool_call_id(tool)
 
         async def _call() -> Any:
             return await tool.arun(
@@ -674,9 +725,7 @@ class _ThreadREPL:
                 ),
                 run_id=uuid.uuid4(),
                 config=outer_runtime.config if outer_runtime is not None else None,
-                tool_call_id=(
-                    tool_call_id if _tool_uses_injected_tool_call_id(tool) else None
-                ),
+                tool_call_id=tool_call_id if wrap else None,
             )
 
         if outer_loop is None:
@@ -719,32 +768,127 @@ class _ThreadREPL:
                 max_ptc_calls=self._max_ptc_calls,
             )
             self._ptc_state = state
-            payload = _normalize_tool_input(raw_input)
-            if state.journal is not None:
-                result = await state.journal.dispatch(tool, payload)
-                if result.status == "error":
-                    code = "EACCES" if result.rejected else "EIO"
-                    return [1, code, str(result.value), {"name": "ToolError"}]
-                return [0, result.value]
-            call_id = _synth_tool_call_id(tool.name)
-            # Inject runtime/state/store ourselves. The bridge uses `arun`
-            # rather than the tool-call envelope path so the result can be
-            # unwrapped back to native JS-visible values after the standard
-            # tool lifecycle callbacks have fired.
-            args = _inject_tool_args_for_ptc(
-                tool, payload, state.outer_runtime, call_id
-            )
-            result = await self._ainvoke_tool_on_outer_loop(
-                tool,
-                {"name": tool.name, "args": args, "id": call_id, "type": "tool_call"},
-                outer_runtime=state.outer_runtime,
-                outer_loop=state.outer_loop,
-            )
-            return [0, coerce_tool_output_for_ptc(result)]
+            result = await self._acall(state, tool, _normalize_tool_input(raw_input))
+            if result.status == "error":
+                code = "EACCES" if result.rejected else "EIO"
+                return [1, code, str(result.value), {"name": "ToolError"}]
+            return [0, result.value]
 
         bridge_symbol = _bridge_symbol_name(camel)
         ctx.register(bridge_symbol, _bridge, is_async=True)
         return bridge_symbol
+
+    async def _acall(
+        self,
+        state: _PTCState,
+        tool: BaseTool,
+        args: dict[str, Any],
+        *,
+        raw: bool = False,
+    ) -> CallResult:
+        """Run one call from code through the journal, or else straight to the tool."""
+        if state.journal is not None:
+            return await state.journal.dispatch(tool, args, raw=raw)
+        call_id = _synth_tool_call_id(tool.name)
+        runtime = state.outer_runtime
+        if raw and runtime is not None:
+            config = _fs.request_raw_result(runtime.config, call_id)
+            runtime = replace(runtime, config=config)
+        # `arun` skips the tool node, so inject runtime, state, and store here.
+        args = _inject_tool_args_for_ptc(tool, args, runtime, call_id)
+        result = await self._ainvoke_tool_on_outer_loop(
+            tool,
+            {"name": tool.name, "args": args, "id": call_id, "type": "tool_call"},
+            outer_runtime=runtime,
+            outer_loop=state.outer_loop,
+            wrap_result=raw,
+        )
+        value = coerce_tool_output_for_ptc(result)
+        if not raw or not isinstance(result, ToolMessage):
+            return CallResult(status="success", value=value)
+        return CallResult(status=result.status, value=value, artifact=result.artifact)
+
+    def _register_fs_bridges(self) -> None:
+        ctx = self._require_ctx()
+
+        def _sync(op: str, args: dict[str, Any]) -> Any:
+            name = f"fs.{op}Sync"
+            deadline = _EVAL_DEADLINE.get(_Deadline())
+            # The engine's deadline skips time awaiting async calls; it is `None` with
+            # no timeout or once cancelled. quickjs-rs should make it public.
+            at = self._runtime._deadline  # noqa: SLF001  # no public accessor yet
+            if at is None:
+                at = math.inf if self._per_call_timeout == math.inf else -math.inf
+            if time.monotonic() >= at:
+                deadline.miss(f"{name} was not run: the eval's timeout ran out")
+            call = self._fs_call(op, args)
+            if isinstance(call, list):
+                return call
+            return self._run_blocking(call, deadline, at, name)
+
+        async def _async(op: str, args: dict[str, Any]) -> Any:
+            call = self._fs_call(op, args)
+            return call if isinstance(call, list) else await call
+
+        def _admit() -> None:
+            if self._ptc_state is None:
+                msg = "the eval that made this call has ended, so it was not run"
+                raise ConcurrentEvalError(msg)
+            _EVAL_DEADLINE.get(_Deadline()).check()
+
+        ctx.register(_ADMIT_HOST_FUNCTION, _admit, is_async=False)
+        ctx.register(_fs.SYNC_HOST_FUNCTION, _sync, is_async=False)
+        ctx.register(_fs.ASYNC_HOST_FUNCTION, _async, is_async=True)
+        ctx.eval(
+            f"for (const n of ['{_ADMIT_HOST_FUNCTION}', '{_fs.SYNC_HOST_FUNCTION}',"
+            f" '{_fs.ASYNC_HOST_FUNCTION}']) Object.defineProperty(globalThis, n,"
+            " { writable: false, configurable: false }); undefined"
+        )
+
+    def _run_blocking(
+        self, call: Coroutine[Any, Any, Any], deadline: _Deadline, at: float, name: str
+    ) -> Any:
+        if self._blocking is None:
+            self._blocking = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        future = self._blocking.submit(asyncio.run, call)
+        remaining = at - time.monotonic()
+        try:
+            return future.result(None if remaining == math.inf else remaining)
+        except TimeoutError:
+            if future.cancel():
+                call.close()
+                deadline.miss(f"{name} waited past the timeout and was not run")
+            reason = f"{name} did not finish in time; the call may still have completed"
+            deadline.miss(reason)
+
+    def _fs_call(
+        self, op: str, args: dict[str, Any]
+    ) -> Coroutine[Any, Any, list[Any]] | list[Any]:
+        """Return one `fs` call, counted against the budget, or its error."""
+        if self._ptc_state is None:
+            msg = "fs called outside active eval"
+            raise ConcurrentEvalError(msg)
+        planned = _fs.request(op, args, self._bound_tools())
+        if isinstance(planned, list):
+            return planned
+        state = self._ptc_state.consume_call_budget(
+            function_name=f"fs.{op}", max_ptc_calls=self._max_ptc_calls
+        )
+        self._ptc_state = state
+
+        async def call() -> list[Any]:
+            result = await self._acall(state, *planned, raw=True)
+            return _fs.response(op, args, result)
+
+        return call()
+
+    def _bound_tools(self) -> dict[str, BaseTool]:
+        """The tools on `globalThis.tools`, by tool name."""
+        return {
+            tool.name: tool
+            for camel, tool in self._registered_tools.items()
+            if camel in self._active_tool_names
+        }
 
     def eval_sync(
         self,
@@ -841,6 +985,8 @@ class _ThreadREPL:
                     raise _SnapshotRestoreError(msg) from exc
         if tools is not None:
             await self._ainstall_tools(tools)
+            if _fs.docs(self._bound_tools()):
+                self._require_ctx().eval(_FS_INSTALL_SOURCE)
 
     async def _aeval_async(
         self,
@@ -905,10 +1051,17 @@ class _ThreadREPL:
         """
         ctx = self._require_ctx()
         outcome = EvalOutcome()
+        if self._ptc_state is None:
+            # Run what earlier evals left queued while no eval is active, so a
+            # call it makes is refused rather than run as this eval's.
+            with contextlib.suppress(QuickJSError):
+                await ctx.eval_async("undefined", timeout=self._per_call_timeout)
         # Save/restore rather than clear-on-exit: a second eval that hits
         # ConcurrentEvalError would otherwise null out the in-flight
         # eval's state and orphan its bridge calls.
         prev_ptc_state = self._ptc_state
+        deadline = _Deadline()
+        token = _EVAL_DEADLINE.set(deadline)
         self._ptc_state = _PTCState(
             remaining_calls=self._max_ptc_calls,
             outer_runtime=outer_runtime,
@@ -991,9 +1144,16 @@ class _ThreadREPL:
             outcome.error_type = e.error_type
             outcome.error_message = e.error_message
             _clear_exception_references(e)
+        except _CallTimeoutError as e:
+            _clear_exception_references(e)
         finally:
             self._ptc_state = prev_ptc_state
+            _EVAL_DEADLINE.reset(token)
             outcome.stdout, outcome.stdout_truncated_chars = self._console.drain()
+        if deadline.missed is not None:
+            # Even if code caught the error, the eval timed out.
+            outcome.result, outcome.result_kind = None, None
+            outcome.error_type, outcome.error_message = "Timeout", deadline.missed
         return outcome
 
     def _record_js_error(self, outcome: EvalOutcome, e: JSError) -> None:
@@ -1008,6 +1168,8 @@ class _ThreadREPL:
         await self._worker.run_async(self._aclose())
 
     async def _aclose(self) -> None:
+        if self._blocking is not None:
+            self._blocking.shutdown(wait=False)
         if self._ctx is not None:
             self._ctx.close()
             self._ctx = None

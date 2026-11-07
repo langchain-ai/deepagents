@@ -92,7 +92,7 @@ fib(10)  // 55
 
 The REPL runs in a QuickJS context with **no ambient capabilities**. There is no filesystem, no network, no `fetch`, no `require`, no real clock (`Date.now()` is whatever QuickJS provides, not wall-clock for security-sensitive uses), no `process`, no `import` of anything you didn't explicitly install.
 
-Capabilities can be explicitly added using **PTC** to call into the agent's own tools (see below).
+Capabilities can be explicitly added using **PTC** to call into the agent's own tools (see below). Listing a file tool such as `read_file` in `ptc` also gives code a Node-style `fs`, whose every call is a call to that tool.
 
 ### Console capture
 
@@ -132,7 +132,7 @@ The runtime has a shared memory limit across every context under it (default 64 
 ```
 
 PTC host-function calls are also budgeted per eval call (default 256 `tools.*`
-invocations). Exceeding the budget surfaces as:
+and `fs` calls). Exceeding the budget surfaces as:
 
 ```xml
 <error type="PTCCallBudgetExceeded">...</error>
@@ -281,7 +281,7 @@ PTC calls run through the tool-call middleware listed after `CodeInterpreterMidd
 CodeInterpreterMiddleware(
     memory_limit=64 * 1024 * 1024,  # bytes, shared across contexts
     timeout=5.0,                     # per-call VM seconds; None disables the deadline
-    max_ptc_calls=256,     # per-eval `tools.*` bridge calls, None disables (DoS risk)
+    max_ptc_calls=256,     # per-eval `tools.*` and `fs` calls, None disables (DoS risk)
     tool_name="eval",                # what the model calls it
     max_result_chars=4000,           # result/stdout truncation, each
     capture_console=True,            # install console.log/warn/error bridge
@@ -299,7 +299,7 @@ CodeInterpreterMiddleware(
 | `SyntaxError`, `TypeError`, `ReferenceError`, ... | User-code error. Re-surfaces the JS error name verbatim. |
 | `Timeout` | Call exceeded `timeout=` (only when a deadline is set). |
 | `OutOfMemory` | Runtime hit `memory_limit=`. |
-| `PTCCallBudgetExceeded` | Uncaught `tools.*` call-budget overflow in one eval (`max_ptc_calls=`). |
+| `PTCCallBudgetExceeded` | Uncaught `tools.*` or `fs` call-budget overflow in one eval (`max_ptc_calls=`). |
 | `Deadlock` | Top-level promise never resolved with no async host work in flight. |
 | `ConcurrentEval` | Shouldn't happen under locks; defensive mapping for QuickJS `ConcurrentEvalError`. |
 

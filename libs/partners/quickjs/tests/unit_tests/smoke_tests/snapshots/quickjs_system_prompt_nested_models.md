@@ -242,6 +242,8 @@ parallel, not to grind through it one tool call at a time.
 
 The agent tools listed below are exposed on the global object at `globalThis.tools` (also reachable as `tools`). Each takes a single object argument and returns a Promise that resolves to the tool's native value: strings as strings, numbers as numbers, lists as arrays, dicts as objects, and `None` as `null`. You do NOT need to `JSON.parse` results — they are already typed.
 
+If the final value is a media content block, or an array of content blocks and strings (e.g. `await tools.readFile({file_path: "/a.png"})`), you see the media itself; wrap it in `JSON.stringify` to see the raw object instead.
+
 Invocation pattern: `await tools.<name>({ ... })`.
 
 - Use `await` to get tool results; combine with `Promise.all` for independent calls so they run concurrently.

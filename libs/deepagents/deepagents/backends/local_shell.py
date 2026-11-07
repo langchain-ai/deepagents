@@ -18,7 +18,7 @@ import threading
 import time
 import uuid
 from contextvars import copy_context
-from typing import TYPE_CHECKING
+from typing import IO, TYPE_CHECKING
 
 from deepagents.backends._posix_process import PosixProcessReader
 from deepagents.backends._windows_process import WindowsProcessReader
@@ -58,11 +58,30 @@ class _CommandCancelled(BaseException):
 
 
 class _CommandTimeout(subprocess.TimeoutExpired):
-    """A command timeout recording whether cleanup stopped the command."""
+    """A command timeout, with the output captured before cleanup finished.
 
-    def __init__(self, cmd: str, timeout: float, *, terminated: bool) -> None:
-        """Record whether the command may still be running after cleanup."""
-        super().__init__(cmd, timeout)
+    `subprocess.TimeoutExpired` alone cannot say whether cleanup managed to stop
+    the command, so `terminated` carries that. It is `False` when the process may
+    still be running, which changes the advice given to the caller.
+
+    `subprocess` types its captured output as bytes, but this class is only
+    raised for a text-mode process, so the two streams are narrowed to `str`.
+    """
+
+    output: str
+    stderr: str
+
+    def __init__(
+        self,
+        cmd: str,
+        timeout: float,
+        *,
+        output: str = "",
+        stderr: str = "",
+        terminated: bool = True,
+    ) -> None:
+        """Record the partial output and whether the command was stopped."""
+        super().__init__(cmd, timeout, output=output, stderr=stderr)
         self.terminated = terminated
 
 
@@ -182,6 +201,17 @@ def _kill_and_reap(process: subprocess.Popen[str], process_group: int | None, *,
         _close_process_pipes(process)
 
 
+def _decode_stream(data: bytes | str | None, pipe: IO[str] | None) -> str:
+    """Decode partial output without letting incomplete characters hide the timeout."""
+    if not data:
+        return ""
+    if isinstance(data, str):
+        return data
+    encoding = getattr(pipe, "encoding", None) or "utf-8"
+    # A timeout can split an encoded character; decoding must not hide the timeout.
+    return data.decode(encoding, errors="replace").replace("\r\n", "\n").replace("\r", "\n")
+
+
 def _communicate(
     process: subprocess.Popen[str],
     timeout: int,
@@ -190,12 +220,8 @@ def _communicate(
     process_group: int | None = None,
 ) -> tuple[str, str]:
     """Collect command output, cleaning up if execution is interrupted."""
-    if _IS_WINDOWS:
-        collect = WindowsProcessReader(process).communicate
-    elif cancellation_event is not None:
-        collect = PosixProcessReader(process).communicate
-    else:
-        collect = process.communicate
+    posix_reader = None if _IS_WINDOWS else PosixProcessReader(process)
+    reader = posix_reader if posix_reader is not None else WindowsProcessReader(process)
     deadline = time.monotonic() + timeout
     try:
         while cancellation_event is None or not cancellation_event.is_set():
@@ -203,7 +229,7 @@ def _communicate(
             if remaining <= 0:
                 raise subprocess.TimeoutExpired(process.args, timeout)  # noqa: TRY301  # Route deadline expiry through shared process cleanup.
             try:
-                output = collect(timeout=remaining if cancellation_event is None else min(remaining, _CANCELLATION_POLL_INTERVAL))
+                output = reader.communicate(timeout=remaining if cancellation_event is None else min(remaining, _CANCELLATION_POLL_INTERVAL))
             except subprocess.TimeoutExpired:
                 if cancellation_event is None:
                     raise
@@ -213,9 +239,17 @@ def _communicate(
             return output
         raise _CommandCancelled  # noqa: TRY301  # Route cancellation through shared process cleanup.
     except BaseException as error:
-        terminated = _kill_and_reap(process, process_group)
+        drain = posix_reader.drain if posix_reader is not None and isinstance(error, subprocess.TimeoutExpired) else None
+        terminated = _kill_and_reap(process, process_group, drain=drain)
         if isinstance(error, subprocess.TimeoutExpired):
-            raise _CommandTimeout(str(process.args), timeout, terminated=terminated) from None
+            stdout, stderr = reader.snapshot()
+            raise _CommandTimeout(
+                str(process.args),
+                timeout,
+                output=_decode_stream(stdout, process.stdout),
+                stderr=_decode_stream(stderr, process.stderr),
+                terminated=terminated,
+            ) from None
         raise
 
 
@@ -662,12 +696,18 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
                 msg = f"Error: Command timed out after {effective_timeout} seconds (custom timeout). The command may be stuck or require more time."
             else:
                 msg = f"Error: Command timed out after {effective_timeout} seconds. For long-running commands, re-run using the timeout parameter."
+            # What the command printed before it stopped responding is usually the
+            # only clue about where it stopped, so keep it.
+            truncated = False
+            if error.output or error.stderr:
+                partial, truncated = self._combine_output(error.output, error.stderr)
+                msg = f"{msg}\n\nOutput before the timeout:\n{partial}"
             if not error.terminated:
                 msg = f"{msg}\n\nWarning: the command could not be stopped and may still be running. Re-running it may start a second copy."
             return ExecuteResponse(
                 output=msg,
                 exit_code=124,  # Standard timeout exit code
-                truncated=False,
+                truncated=truncated,
             )
         except Exception as e:  # noqa: BLE001  # Preserve error responses without logging sensitive exception details.
             # Broad exception catch is intentional: we want to catch all execution errors

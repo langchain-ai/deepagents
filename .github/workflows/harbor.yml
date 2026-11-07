@@ -9,7 +9,8 @@
 #   Ollama Cloud inference; it is not read from secrets.
 #
 # Required secrets (vary by sandbox + model provider):
-#   LANGSMITH_API_KEY          — experiment tracking + LangSmith sandbox (always required)
+#   LANGSMITH_API_KEY          — experiment tracking (always required)
+#   LANGSMITH_SANDBOX_API_KEY  — LangSmith sandboxes, which run on AWS US
 #   ANTHROPIC_API_KEY          — needed for Anthropic models
 #   OPENAI_API_KEY             — needed for OpenAI models and tau3 verifier/user simulator
 #   GOOGLE_API_KEY             — needed for Google models
@@ -117,7 +118,7 @@ on:
           - docker
           - langsmith
       agent_impl:
-        description: "Deep Agents implementation run through Harbor's LangGraph agent."
+        description: "Harness: a Deep Agents graph run through Harbor's LangGraph agent (dcode, bare, tau3), or Harbor's built-in codex, claude-code, or pi."
         required: true
         default: "dcode"
         type: choice
@@ -125,6 +126,9 @@ on:
           - dcode
           - bare
           - tau3
+          - codex
+          - claude-code
+          - pi
       n_tasks:
         description: "Maximum number of tasks to run (0 = all)."
         required: true
@@ -141,7 +145,7 @@ on:
         default: "3"
         type: string
       n_retries:
-        description: "Max retries per trial on transient failure (e.g. a LangSmith snapshot build error). 0 = no retries."
+        description: "Max retries per trial on setup failure (e.g. a LangSmith snapshot build or compose error). Agent exits, timeouts and missing rewards are never retried. 0 = no retries."
         required: true
         default: "0"
         type: string
@@ -167,6 +171,14 @@ on:
           - medium
           - high
           - xhigh
+      openai_endpoint:
+        description: "Endpoint serving `openai:` models to Deep Agents graphs and Codex, over the Responses API. Empty = OpenAI. Verifiers stay on OpenAI."
+        required: false
+        type: choice
+        default: ""
+        options:
+          - ""
+          - fireworks
       env_build_timeout_multiplier:
         description: "Multiplier for each task's environment build timeout (harbor's client-side wait). Note: does not extend the LangSmith build service's own limit."
         required: false
@@ -186,6 +198,11 @@ on:
         description: "Force a rebuild of each task's environment image/snapshot, bypassing any cached or stale record. Required the first time a local dataset runs on the LangSmith sandbox (the snapshot must be built), and to recover from a broken snapshot record."
         required: false
         default: false
+        type: boolean
+      prewarm_snapshots:
+        description: "LangSmith sandbox only: build each selected task's snapshots once before the shards start, so parallel trials reuse them instead of building the same snapshot at once. Needs a Harbor build with `prepare_snapshot` (via harbor_package_override); otherwise the step skips."
+        required: false
+        default: true
         type: boolean
       n_shards:
         description: "Split the dataset's tasks across N shard jobs per model (each on its own runner at the per-job concurrency). Composes with include_tasks/n_tasks: those select the task set first, then it's partitioned across shards (total tasks run is unchanged). May be set as high as the task count (one task per shard) for dynamic dispatch — shards drain through a derived pool (shard_parallel), not all at once. Capped at 200 (shard_matrix.MAX_SHARDS); the pool is bounded so shard_parallel * concurrency <= 40 concurrent sandboxes."
@@ -353,9 +370,11 @@ jobs:
       include_tasks: ${{ inputs.include_tasks }}
       agent_timeout_multiplier: ${{ inputs.agent_timeout_multiplier }}
       reasoning_effort: ${{ inputs.reasoning_effort }}
+      openai_endpoint: ${{ inputs.openai_endpoint }}
       env_build_timeout_multiplier: ${{ inputs.env_build_timeout_multiplier }}
       override_storage_mb: ${{ inputs.override_storage_mb }}
       disable_verification: ${{ inputs.disable_verification }}
       force_build: ${{ inputs.force_build }}
+      prewarm_snapshots: ${{ inputs.prewarm_snapshots }}
       harbor_package_override: ${{ inputs.harbor_package_override }}
       judge_models: ${{ inputs.judge_models }}

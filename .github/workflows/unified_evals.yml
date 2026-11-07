@@ -12,7 +12,7 @@ on:
         type: string
         default: "autonomous,conversation,research"
       agent_impls:
-        description: "Comma-separated deep-agents harnesses for the autonomous and context categories (conversation always uses tau3). Each must be bare (SDK create_deep_agent) or dcode (deep-agents-code product agent). Every listed config runs as its own (model, config) row."
+        description: "Comma-separated harnesses: bare, dcode, codex, claude-code, pi. Native agents require supported provider models and no branch comparison; conversation retains tau3 and also runs native agents. Each config runs as its own (model, config) row."
         type: string
         default: "bare"
       branches_to_compare:
@@ -34,7 +34,7 @@ on:
         type: string
         default: "3"
       n_retries:
-        description: "Maximum additional attempts per trial after a Harbor-retryable exception (harbor's standard --max-retries). AgentTimeoutError remains excluded."
+        description: "Maximum additional attempts per trial after a setup failure (e.g. sandbox creation, compose or agent install errors). Agent exits, timeouts and missing rewards are never retried."
         type: string
         default: "0"
       agent_timeout_multiplier:
@@ -42,7 +42,7 @@ on:
         type: string
         default: "1.0"
       reasoning_effort:
-        description: "Reasoning effort passed to the chat model constructor as `reasoning_effort`. Empty = provider default."
+        description: "Reasoning effort: the chat model constructor's `reasoning_effort` for Deep Agents graphs; Codex/Claude Code `reasoning_effort` and Pi `thinking` for native agents (Claude Code rejects minimal). Empty = each harness's default (Codex defaults to high)."
         type: choice
         default: ""
         options:
@@ -85,7 +85,9 @@ permissions:
   actions: write
 
 concurrency:
-  group: unified-evals-${{ github.ref }}
+  # Keyed by the eval's configuration so different setups queue separately;
+  # a group holds only one pending run, so a shared key cancels queued dispatches.
+  group: unified-evals-${{ github.ref }}-${{ inputs.models }}-${{ inputs.agent_impls }}-${{ inputs.categories }}-${{ inputs.reasoning_effort }}
   cancel-in-progress: false
 
 jobs:

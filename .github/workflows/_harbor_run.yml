@@ -79,6 +79,10 @@ on:
         # Passed to the chat model constructor as `reasoning_effort`. Empty = provider default.
         type: string
         default: ""
+      openai_endpoint:
+        # Endpoint serving `openai:` models to the agent (e.g. fireworks); verifiers stay on OpenAI. Empty = OpenAI.
+        type: string
+        default: ""
       env_build_timeout_multiplier:
         # Scales each task's environment.build_timeout_sec (harbor's client-side
         # wait). Note: it does NOT extend the LangSmith build service's own limit.
@@ -96,6 +100,15 @@ on:
       force_build:
         type: boolean
         default: false
+      prewarm_snapshots:
+        # Build each task's LangSmith snapshots once before the shards start, so
+        # parallel trials reuse them instead of building the same snapshot at once.
+        type: boolean
+        default: true
+      prewarm_concurrency:
+        # Snapshot builds in flight during prewarm.
+        type: string
+        default: "4"
       harbor_package_override:
         description: "Optional Harbor package spec(s) to install over the locked versions. Provide one spec per line; all specs are resolved together. Leave empty to keep the locked Harbor packages."
         type: string
@@ -255,9 +268,76 @@ jobs:
               print(line)
           PY
 
+  prewarm:
+    name: "🔥 Prewarm snapshots"
+    needs: prep
+    # Single registry dataset only: flat matrices, local and synthetic datasets
+    # resolve tasks differently, and force_build names snapshots per trial.
+    if: >-
+      ${{ inputs.prewarm_snapshots && inputs.sandbox_env == 'langsmith'
+      && inputs.flat_matrix == '' && inputs.dataset_path == ''
+      && inputs.dataset != 'tau3-subset' && !inputs.force_build }}
+    runs-on: ubuntu-latest
+    environment: evals
+    timeout-minutes: 240
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: libs/evals
+    env:
+      UV_NO_SYNC: "true"
+    steps:
+      - name: "📋 Checkout Code"
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: "🐍 Set up Python + UV"
+        uses: "./.github/actions/uv_setup"
+        with:
+          python-version: "3.14"
+          cache-suffix: harbor
+          working-directory: libs/evals
+
+      - name: "📦 Install Dependencies"
+        run: uv sync --group test --locked
+
+      - name: "⚓ Install Harbor override"
+        if: ${{ inputs.harbor_package_override != '' }}
+        env:
+          HARBOR_PACKAGE_OVERRIDE: ${{ inputs.harbor_package_override }}
+        # Same newline-split install as the harbor job's override step.
+        run: |
+          specs=()
+          while IFS= read -r line; do
+            line="${line#"${line%%[![:space:]]*}"}"
+            line="${line%"${line##*[![:space:]]}"}"
+            [ -n "$line" ] && specs+=("$line")
+          done <<< "$HARBOR_PACKAGE_OVERRIDE"
+          uv pip install --reinstall --refresh "${specs[@]}"
+
+      - name: "🔥 Build missing snapshots"
+        # Shards still build any snapshot missing here, so never block them.
+        continue-on-error: true
+        env:
+          HARBOR_DATASET: ${{ inputs.dataset || 'terminal-bench/terminal-bench-2' }}
+          HARBOR_INCLUDE_TASKS: ${{ inputs.include_tasks }}
+          HARBOR_N_TASKS: ${{ inputs.n_tasks || '0' }}
+          PREWARM_CONCURRENCY: ${{ inputs.prewarm_concurrency }}
+          LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
+          LANGSMITH_SANDBOX_API_KEY: ${{ secrets.LANGSMITH_SANDBOX_API_KEY }}
+          LANGSMITH_SANDBOX_API_URL: "https://aws.api.smith.langchain.com/v2/sandboxes"
+        run: |
+          uv run python -u "$GITHUB_WORKSPACE/.github/scripts/evals/prewarm_harbor_snapshots.py" \
+            --dataset "$HARBOR_DATASET" \
+            --include-tasks "$HARBOR_INCLUDE_TASKS" \
+            --n-tasks "$HARBOR_N_TASKS" \
+            --concurrency "$PREWARM_CONCURRENCY"
+
   harbor:
     name: "📊 Evals - Harbor (${{ matrix.model }} / ${{ inputs.sandbox_env }} / ${{ inputs.agent_impl }})"
-    needs: prep
+    needs: [prep, prewarm]
+    # Runs whether prewarm succeeded, failed or was skipped.
+    if: ${{ !cancelled() && needs.prep.result == 'success' }}
     # Only this job runs task containers, so it is the only one whose architecture
     # matters; prep and aggregate stay on the default runner.
     # Per-leaf so one dispatch can mix runners: `research` pins arm64 while every
@@ -288,6 +368,7 @@ jobs:
       HARBOR_N_RETRIES: ${{ inputs.n_retries || '0' }}
       HARBOR_AGENT_TIMEOUT_MULTIPLIER: ${{ inputs.agent_timeout_multiplier || '1.0' }}
       HARBOR_REASONING_EFFORT: ${{ inputs.reasoning_effort }}
+      HARBOR_OPENAI_ENDPOINT: ${{ inputs.openai_endpoint }}
       HARBOR_ENV_BUILD_TIMEOUT_MULTIPLIER: ${{ inputs.env_build_timeout_multiplier || '1.0' }}
       HARBOR_OVERRIDE_STORAGE_MB: ${{ inputs.override_storage_mb || '0' }}
       HARBOR_DISABLE_VERIFICATION: ${{ inputs.disable_verification || 'false' }}
@@ -312,6 +393,7 @@ jobs:
       HARBOR_DRBENCH_JUDGE: ${{ inputs.judge_models || 'gpt-5.6-luna' }}
       LANGSMITH_TRACING: "true"
       OPENAI_BASE_URL: "https://api.openai.com/v1"
+      FIREWORKS_BASE_URL: "https://api.fireworks.ai/inference"
       OLLAMA_HOST: "https://ollama.com"
     steps:
       - name: "🔑 Verify sandbox credentials"
@@ -319,7 +401,7 @@ jobs:
         env:
           ANTHROPIC_API_KEY: ${{ startsWith(matrix.model, 'anthropic:') && secrets.ANTHROPIC_API_KEY || '' }}
           BASETEN_API_KEY: ${{ startsWith(matrix.model, 'baseten:') && secrets.BASETEN_API_KEY || '' }}
-          FIREWORKS_API_KEY: ${{ startsWith(matrix.model, 'fireworks:') && secrets.FIREWORKS_API_KEY || '' }}
+          FIREWORKS_API_KEY: ${{ (startsWith(matrix.model, 'fireworks:') || inputs.openai_endpoint == 'fireworks') && secrets.FIREWORKS_API_KEY || '' }}
           GOOGLE_API_KEY: ${{ startsWith(matrix.model, 'google_genai:') && secrets.GOOGLE_API_KEY || '' }}
           GROQ_API_KEY: ${{ startsWith(matrix.model, 'groq:') && secrets.GROQ_API_KEY || '' }}
           LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
@@ -336,6 +418,7 @@ jobs:
           # silently when this is absent, while the prompts still tell them to search.
           TAVILY_API_KEY: ${{ (matrix.category || inputs.category) == 'research' && secrets.TAVILY_API_KEY || '' }}
           XAI_API_KEY: ${{ startsWith(matrix.model, 'xai:') && secrets.XAI_API_KEY || '' }}
+          LANGSMITH_SANDBOX_API_KEY: ${{ secrets.LANGSMITH_SANDBOX_API_KEY }}
         run: |
           missing=()
 
@@ -347,7 +430,8 @@ jobs:
             docker)
               ;; # No additional credentials needed
             langsmith)
-              ;; # Uses LANGSMITH_API_KEY (already required above)
+              [ -z "$LANGSMITH_SANDBOX_API_KEY" ] && missing+=("LANGSMITH_SANDBOX_API_KEY")
+              ;;
             *)
               echo "::error::Unknown sandbox environment: $HARBOR_SANDBOX_ENV"
               exit 1
@@ -372,6 +456,36 @@ jobs:
               exit 1
               ;;
           esac
+
+          # Agent endpoint for `openai:` models, read by the Run Harbor step.
+          agent_openai_url="$OPENAI_BASE_URL"
+          agent_openai_key=OPENAI_API_KEY
+          agent_openai_store=""
+          case "$HARBOR_OPENAI_ENDPOINT" in
+            "") ;;
+            fireworks)
+              agent_openai_url="$FIREWORKS_BASE_URL/v1"
+              agent_openai_key=FIREWORKS_API_KEY
+              # Rejects stored Responses under zero data retention.
+              agent_openai_store=false
+              ;;
+            *)
+              echo "::error::Unsupported openai_endpoint: $HARBOR_OPENAI_ENDPOINT"
+              exit 1
+              ;;
+          esac
+          if [ -n "$HARBOR_OPENAI_ENDPOINT" ]; then
+            if [ "$model_provider" != "openai" ]; then
+              echo "::error::openai_endpoint applies only to openai: models ($HARBOR_MODEL)"
+              exit 1
+            fi
+            [ -z "${!agent_openai_key}" ] && missing+=("$agent_openai_key")
+          fi
+          {
+            echo "HARBOR_AGENT_OPENAI_URL=$agent_openai_url"
+            echo "HARBOR_AGENT_OPENAI_KEY=$agent_openai_key"
+            echo "HARBOR_AGENT_OPENAI_STORE=$agent_openai_store"
+          } >> "$GITHUB_ENV"
 
           if [[ "$HARBOR_DATASET" == *tau3* ]] && [ "$model_provider" != "openai" ] && [ -z "$OPENAI_API_KEY" ]; then
             missing+=("OPENAI_API_KEY")
@@ -525,6 +639,7 @@ jobs:
         run: echo "HARBOR_LANGSMITH_DATASET_NAME=drbench-app" >> "$GITHUB_ENV"
 
       - name: "✂️ Prune agent provider deps to selected model"
+        if: ${{ matrix.agent_impl != 'codex' && matrix.agent_impl != 'claude-code' && matrix.agent_impl != 'pi' && inputs.agent_impl != 'codex' && inputs.agent_impl != 'claude-code' && inputs.agent_impl != 'pi' }}
         # The agent loads its model via init_chat_model, which lazily imports
         # only the provider matching HARBOR_MODEL. langgraph.json ships every
         # provider (for local `langgraph dev`); a single job needs just one, so
@@ -613,9 +728,10 @@ jobs:
 
       - name: "⚓ Run Harbor"
         env:
-          ANTHROPIC_API_KEY: ${{ startsWith(matrix.model, 'anthropic:') && secrets.ANTHROPIC_API_KEY || '' }}
+          # Harvey LAB verifiers judge with Claude regardless of the model under test.
+          ANTHROPIC_API_KEY: ${{ (startsWith(matrix.model, 'anthropic:') || startsWith(matrix.dataset || inputs.dataset, 'harveyai/')) && secrets.ANTHROPIC_API_KEY || '' }}
           BASETEN_API_KEY: ${{ startsWith(matrix.model, 'baseten:') && secrets.BASETEN_API_KEY || '' }}
-          FIREWORKS_API_KEY: ${{ startsWith(matrix.model, 'fireworks:') && secrets.FIREWORKS_API_KEY || '' }}
+          FIREWORKS_API_KEY: ${{ (startsWith(matrix.model, 'fireworks:') || inputs.openai_endpoint == 'fireworks') && secrets.FIREWORKS_API_KEY || '' }}
           GOOGLE_API_KEY: ${{ startsWith(matrix.model, 'google_genai:') && secrets.GOOGLE_API_KEY || '' }}
           GROQ_API_KEY: ${{ startsWith(matrix.model, 'groq:') && secrets.GROQ_API_KEY || '' }}
           LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
@@ -632,6 +748,9 @@ jobs:
           # is what keeps the agent's `web_search` tool absent for every other category.
           TAVILY_API_KEY: ${{ (matrix.category || inputs.category) == 'research' && secrets.TAVILY_API_KEY || '' }}
           XAI_API_KEY: ${{ startsWith(matrix.model, 'xai:') && secrets.XAI_API_KEY || '' }}
+          # LangSmith sandboxes run on AWS US; tracing and experiments use LANGSMITH_API_KEY.
+          LANGSMITH_SANDBOX_API_KEY: ${{ secrets.LANGSMITH_SANDBOX_API_KEY }}
+          LANGSMITH_SANDBOX_API_URL: "https://aws.api.smith.langchain.com/v2/sandboxes"
         run: |
           # Stage current checkout packages for LangGraph's sandbox install.
           local_deps_dir="deepagents_harbor/langgraph_project/.local_deps"
@@ -735,13 +854,20 @@ jobs:
           esac
 
           # Allowlist the effort; Harbor splats model_kwargs into init_chat_model.
-          reasoning_args=()
+          model_kwargs=()
           case "$HARBOR_REASONING_EFFORT" in
             "") ;;
             minimal|low|medium|high|xhigh)
-              reasoning_args=(--agent-kwarg "model_kwargs={\"reasoning_effort\": \"$HARBOR_REASONING_EFFORT\"}") ;;
+              model_kwargs+=("\"reasoning_effort\": \"$HARBOR_REASONING_EFFORT\"") ;;
             *) echo "::error::Invalid reasoning_effort (minimal|low|medium|high|xhigh): $HARBOR_REASONING_EFFORT"; exit 1 ;;
           esac
+          if [ "$HARBOR_AGENT_OPENAI_STORE" = "false" ]; then
+            model_kwargs+=('"store": false')
+          fi
+          reasoning_args=()
+          if [ ${#model_kwargs[@]} -gt 0 ]; then
+            reasoning_args=(--agent-kwarg "model_kwargs={$(IFS=,; echo "${model_kwargs[*]}")}")
+          fi
 
           dataset_args=(--dataset "$HARBOR_DATASET")
           HARBOR_LANGSMITH_DATASET="$HARBOR_DATASET"
@@ -889,14 +1015,40 @@ jobs:
           fi
 
           env_flag="--env $HARBOR_SANDBOX_ENV"
-          # agent_impl IS the graph key in langgraph.json (the single registry).
-          # Validate membership before it reaches `harbor run --agent-kwarg
-          # graph=...`. Callers already validate, so this is defense-in-depth;
-          # AGENT_IMPL is passed via env, never interpolated into the validator.
-          AGENT_IMPL="$HARBOR_AGENT_IMPL" python3 \
-            "$GITHUB_WORKSPACE/.github/scripts/evals/validate_agent_graph.py" \
-            "$GITHUB_WORKSPACE/libs/evals/deepagents_harbor/langgraph_project/langgraph.json"
           HARBOR_AGENT_GRAPH="$HARBOR_AGENT_IMPL"
+          agent_args=()
+          case "$HARBOR_AGENT_IMPL" in
+            codex|claude-code|pi)
+              if [ "$HARBOR_BRANCH" != current ]; then
+                echo "::error::$HARBOR_AGENT_IMPL does not support branch overlays"; exit 1
+              fi
+              model_provider="${HARBOR_MODEL%%:*}"
+              case "$HARBOR_AGENT_IMPL:$model_provider" in
+                codex:openai|claude-code:anthropic|pi:openai|pi:anthropic) ;;
+                codex:fireworks|claude-code:fireworks|pi:fireworks) ;;
+                *) echo "::error::$HARBOR_AGENT_IMPL does not support $model_provider models"; exit 1 ;;
+              esac
+              agent_args=(--agent "$HARBOR_AGENT_IMPL")
+              # Each CLI names its effort knob differently; values are allowlisted above.
+              reasoning_args=()
+              case "$HARBOR_AGENT_IMPL:$HARBOR_REASONING_EFFORT" in
+                *:) ;;
+                claude-code:minimal) echo "::error::claude-code does not support reasoning_effort=minimal"; exit 1 ;;
+                pi:*) reasoning_args=(--agent-kwarg "thinking=$HARBOR_REASONING_EFFORT") ;;
+                *) reasoning_args=(--agent-kwarg "reasoning_effort=$HARBOR_REASONING_EFFORT") ;;
+              esac
+              ;;
+            *)
+              AGENT_IMPL="$HARBOR_AGENT_IMPL" python3 \
+                "$GITHUB_WORKSPACE/.github/scripts/evals/validate_agent_graph.py" \
+                "$GITHUB_WORKSPACE/libs/evals/deepagents_harbor/langgraph_project/langgraph.json"
+              agent_args=(--agent langgraph
+                --agent-kwarg python_version=3.14
+                --agent-kwarg project_path=deepagents_harbor/langgraph_project
+                --agent-kwarg config=langgraph.json
+                --agent-kwarg graph="$HARBOR_AGENT_GRAPH")
+              ;;
+          esac
           # Precedence: explicit override > tau3-subset name hook > the value
           # resolved above (local-path-aware `local/...` or the registry ref).
           # The override uses a dedicated var the tau3 step never writes, so it
@@ -918,7 +1070,6 @@ jobs:
             --agent-env 'LANGSMITH_API_KEY=${LANGSMITH_API_KEY}'
             --agent-env 'LANGSMITH_TRACING=true'
             --agent-env "LANGSMITH_PROJECT=${HARBOR_LANGSMITH_EXPERIMENT}"
-            --agent-env 'OPENAI_BASE_URL=${OPENAI_BASE_URL}'
           )
           # Open-web search, forwarded only to the deep-research category: its ground
           # truth includes external facts that exist nowhere in the task corpus, so the
@@ -930,10 +1081,9 @@ jobs:
             agent_env_args+=(--agent-env 'TAVILY_API_KEY=${TAVILY_API_KEY}')
           fi
           verifier_env_args=(
-            --verifier-env 'OPENAI_BASE_URL=${OPENAI_BASE_URL}'
             # harbor-index (and other) verifiers are OpenAI LLM judges: they need
             # the key, not just the base URL, or they exit without writing a
-            # reward file. Mirrors the always-on base URL above; forwards empty
+            # reward file. Mirrors the base URL below; forwards empty
             # when the job wasn't granted a key (harmless for non-judge verifiers).
             --verifier-env 'OPENAI_API_KEY=${OPENAI_API_KEY}'
             # Non-empty only for an `openrouter/...` judge, which upstream DRBench reads
@@ -950,10 +1100,24 @@ jobs:
             --verifier-env 'JUDGE_REPEATS=1'
             --verifier-env 'JUDGE_CONCURRENCY=1'
           )
+          # Harbor applies OPENAI_BASE_URL (forwarded or in its own env) to every
+          # provider, and pi treats it as a custom endpoint, so only OpenAI models on
+          # non-pi agents get it. Verifiers get it as a literal before the unset.
+          # A non-default URL (e.g. a gateway) fails pi here rather than being bypassed.
           model_provider="${HARBOR_MODEL%%:*}"
+          verifier_env_args+=(--verifier-env "OPENAI_BASE_URL=$OPENAI_BASE_URL")
+          if [ "$HARBOR_AGENT_IMPL" = "pi" ] && [ "$HARBOR_AGENT_OPENAI_URL" != "https://api.openai.com/v1" ]; then
+            echo "::error::pi needs a model_api agent arg to use a custom OPENAI_BASE_URL ($HARBOR_AGENT_OPENAI_URL)"
+            exit 1
+          fi
+          if [ "$HARBOR_AGENT_IMPL" = "pi" ] || [ "$model_provider" != "openai" ]; then
+            unset OPENAI_BASE_URL
+          else
+            agent_env_args+=(--agent-env "OPENAI_BASE_URL=$HARBOR_AGENT_OPENAI_URL")
+          fi
           case "$model_provider" in
             anthropic)    agent_env_args+=(--agent-env 'ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}') ;;
-            openai)       agent_env_args+=(--agent-env 'OPENAI_API_KEY=${OPENAI_API_KEY}') ;;
+            openai)       agent_env_args+=(--agent-env "OPENAI_API_KEY=\${$HARBOR_AGENT_OPENAI_KEY}") ;;
             google_genai) agent_env_args+=(--agent-env 'GOOGLE_API_KEY=${GOOGLE_API_KEY}') ;;
             openrouter)   agent_env_args+=(--agent-env 'OPENROUTER_API_KEY=${OPENROUTER_API_KEY}') ;;
             baseten)      agent_env_args+=(--agent-env 'BASETEN_API_KEY=${BASETEN_API_KEY}') ;;
@@ -973,18 +1137,77 @@ jobs:
           echo "Agent implementation: $HARBOR_AGENT_GRAPH"
           echo ""
 
+          # Retry setup failures only; retrying agent or verifier failures biases scores.
+          # Harbor matches exact class names, so subclasses must be listed.
+          # RuntimeError also covers post-agent file transfers, which are infra failures too.
+          retry_args=(
+            --retry-include RuntimeError
+            --retry-include EnvironmentStartTimeoutError
+            --retry-include AgentSetupTimeoutError
+            --retry-include ResourceCreationError
+            --retry-include SandboxAPIError
+            --retry-include SandboxConnectionError
+            --retry-include ResourceTimeoutError
+            --retry-include ReadError
+            --retry-include ReadTimeout
+            --retry-include ConnectError
+            --retry-include RemoteProtocolError
+          )
+
+          agent_model="$HARBOR_MODEL"
+          case "$HARBOR_AGENT_IMPL" in
+            codex|claude-code|pi) agent_model="${HARBOR_MODEL%%:*}/${HARBOR_MODEL#*:}" ;;
+          esac
+          # Fireworks serves OpenAI Responses and Anthropic Messages, so each CLI
+          # reaches it through its native protocol as a custom endpoint.
+          case "$HARBOR_AGENT_IMPL:$model_provider" in
+            codex:fireworks|pi:fireworks)
+              agent_model="openai/${HARBOR_MODEL#*:}"
+              agent_env_args+=(
+                --agent-env 'OPENAI_API_KEY=${FIREWORKS_API_KEY}'
+                --agent-env "OPENAI_BASE_URL=$FIREWORKS_BASE_URL/v1"
+              )
+              if [ "$HARBOR_AGENT_IMPL" = pi ]; then
+                agent_args+=(--agent-kwarg model_api=openai-responses --agent-kwarg max_output_tokens=65536)
+              else
+                # Codex defaults the `openai` provider to remote compaction, which
+                # Fireworks lacks; a custom provider compacts locally instead.
+                codex_config=$(jq -cn --arg url "$FIREWORKS_BASE_URL/v1" '{
+                  model_provider: "fireworks",
+                  model_providers: {fireworks: {
+                    name: "Fireworks", base_url: $url, env_key: "OPENAI_API_KEY",
+                    wire_api: "responses", capabilities: {remote_compaction: "unsupported"}
+                  }}
+                }')
+                agent_args+=(--agent-kwarg "config=$codex_config")
+              fi
+              ;;
+            claude-code:fireworks)
+              agent_model="anthropic/${HARBOR_MODEL#*:}"
+              # Claude Code omits effort for model IDs it doesn't recognize.
+              agent_env_args+=(
+                --agent-env 'ANTHROPIC_API_KEY=${FIREWORKS_API_KEY}'
+                --agent-env "ANTHROPIC_BASE_URL=$FIREWORKS_BASE_URL"
+                --agent-env CLAUDE_CODE_ALWAYS_ENABLE_EFFORT=1
+              )
+              # Harbor forwards this from the host env; the CLI default is 32000.
+              export CLAUDE_CODE_MAX_OUTPUT_TOKENS=65536
+              # Unrecognized model IDs otherwise get an assumed 200K window.
+              if [ "$HARBOR_MODEL" = fireworks:accounts/fireworks/models/glm-5p3 ]; then
+                agent_env_args+=(--agent-env CLAUDE_CODE_MAX_CONTEXT_TOKENS=1048573)
+                export CLAUDE_CODE_MAX_OUTPUT_TOKENS=128000
+              fi
+              ;;
+          esac
           uv run harbor run \
             --yes \
-            --agent deepagents_harbor.agent:DeepAgentsLangGraph \
-            --agent-kwarg python_version=3.14 \
-            --agent-kwarg project_path=deepagents_harbor/langgraph_project \
-            --agent-kwarg config=langgraph.json \
-            --agent-kwarg graph="$HARBOR_AGENT_GRAPH" \
+            "${agent_args[@]}" \
             "${reasoning_args[@]}" \
             "${dataset_args[@]}" \
             -n "$HARBOR_CONCURRENCY" \
             --n-attempts "$HARBOR_ROLLOUTS_PER_TASK" \
             --max-retries "$HARBOR_N_RETRIES" \
+            "${retry_args[@]}" \
             --agent-timeout-multiplier "$HARBOR_AGENT_TIMEOUT_MULTIPLIER" \
             --environment-build-timeout-multiplier "$HARBOR_ENV_BUILD_TIMEOUT_MULTIPLIER" \
             "${verification_flag[@]}" \
@@ -996,7 +1219,7 @@ jobs:
             "${verifier_env_args[@]}" \
             --jobs-dir "$HARBOR_JOBS_DIR" \
             $env_flag \
-            --model "$HARBOR_MODEL" \
+            --model "$agent_model" \
             --plugin langsmith \
             --plugin-kwarg dataset_name="$HARBOR_LANGSMITH_DATASET" \
             --plugin-kwarg experiment_name="$HARBOR_LANGSMITH_EXPERIMENT"
@@ -1065,7 +1288,7 @@ jobs:
               echo "- Included tasks: all"
             fi
             echo "- Rollouts per task: ${HARBOR_ROLLOUTS_PER_TASK}"
-            echo "- Configured retries per failed trial (--max-retries): ${HARBOR_N_RETRIES}"
+            echo "- Configured retries per setup-failed trial (--max-retries): ${HARBOR_N_RETRIES}"
             echo "- Agent timeout multiplier: ${HARBOR_AGENT_TIMEOUT_MULTIPLIER}"
             if [ "$SHARD_EMPTY" = "true" ]; then
               echo "- Actual retries: 0"

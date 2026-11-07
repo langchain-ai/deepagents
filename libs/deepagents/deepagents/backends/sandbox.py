@@ -27,6 +27,7 @@ from typing import Any, Final, Literal
 from deepagents.backends.protocol import (
     ASYNC_GLOB_TIMEOUT,
     ASYNC_GREP_TIMEOUT,
+    FILE_NOT_FOUND,
     DeleteResult,
     EditResult,
     ExecuteOffloadResult,
@@ -34,6 +35,7 @@ from deepagents.backends.protocol import (
     FileData,
     FileDownloadResponse,
     FileInfo,
+    FileOperationError,
     FileUploadResponse,
     GlobResult,
     GlobTruncationReason,
@@ -43,6 +45,7 @@ from deepagents.backends.protocol import (
     ReadResult,
     SandboxBackendProtocol,
     WriteResult,
+    _as_file_operation_error,
     execute_accepts_timeout,
 )
 from deepagents.backends.utils import (
@@ -880,6 +883,13 @@ except PermissionError:
 " 2>/dev/null"""
 
 
+_LS_ERROR_CODES: Final[dict[str, FileOperationError]] = {
+    "path_not_found": "file_not_found",
+    "permission_denied": "permission_denied",
+}
+"""The ls script's errors that name a `FileOperationError`; `not_a_directory` names none."""
+
+
 def _parse_ls_output(output: str, path: str) -> LsResult:
     file_infos: list[FileInfo] = []
     error: str | None = None
@@ -895,7 +905,7 @@ def _parse_ls_output(output: str, path: str) -> LsResult:
             continue
         file_infos.append({"path": data["path"], "is_dir": data["is_dir"]})
     if error is not None:
-        return LsResult(entries=None, error=f"Path '{path}': {error}")
+        return LsResult(entries=None, error=f"Path '{path}': {error}", error_code=_LS_ERROR_CODES.get(error))
     return LsResult(entries=file_infos)
 
 
@@ -1295,7 +1305,7 @@ def _map_edit_error(error: str, file_path: str, old_string: str) -> EditResult:
         "string_not_found": f"Error: String not found in file: '{old_string}'",
         "multiple_occurrences": (f"Error: String '{old_string}' appears multiple times. Use replace_all=True to replace all occurrences."),
     }
-    return EditResult(error=messages.get(error, f"Error editing file '{file_path}': {error}"))
+    return EditResult(error=messages.get(error, f"Error editing file '{file_path}': {error}"), error_code=_as_file_operation_error(error))
 
 
 def _parse_edit_output(output: str, file_path: str, old_string: str) -> EditResult:
@@ -1806,7 +1816,7 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
             raise AssertionError(msg)
         response = responses[0]
         if response.error:
-            return WriteResult(error=f"Failed to write file '{file_path}': {response.error}")
+            return WriteResult(error=f"Failed to write file '{file_path}': {response.error}", error_code=_as_file_operation_error(response.error))
 
         return WriteResult(path=file_path)
 
@@ -1821,7 +1831,7 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
             raise AssertionError(msg)
         response = responses[0]
         if response.error:
-            return WriteResult(error=f"Failed to write file '{file_path}': {response.error}")
+            return WriteResult(error=f"Failed to write file '{file_path}': {response.error}", error_code=_as_file_operation_error(response.error))
         return WriteResult(path=file_path)
 
     def edit(
@@ -2052,7 +2062,7 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
         # through to `rm` on an unknown probe result (matches the `rm` check
         # below and `_parse_grep_output`, which both guard `is not None`).
         if exists.exit_code is not None and exists.exit_code != 0:
-            return DeleteResult(error=f"Error: '{file_path}' not found")
+            return DeleteResult(error=f"Error: '{file_path}' not found", error_code=FILE_NOT_FOUND)
         result = self.execute(f"rm -rf {quoted}")
 
         if result.exit_code == 0:

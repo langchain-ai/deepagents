@@ -463,6 +463,7 @@ def test_ls_nonexistent_path_sets_error() -> None:
 
     assert result.entries is None
     assert result.error == "Path '/test/does_not_exist': path_not_found"
+    assert result.error_code == "file_not_found"
 
 
 def test_ls_permission_denied_sets_error() -> None:
@@ -474,6 +475,7 @@ def test_ls_permission_denied_sets_error() -> None:
 
     assert result.entries is None
     assert result.error == "Path '/test/locked': permission_denied"
+    assert result.error_code == "permission_denied"
 
 
 def test_ls_not_a_directory_sets_error() -> None:
@@ -485,6 +487,7 @@ def test_ls_not_a_directory_sets_error() -> None:
 
     assert result.entries is None
     assert result.error == "Path '/test/file.txt': not_a_directory"
+    assert result.error_code is None
 
 
 def test_ls_error_line_amongst_entries_takes_precedence() -> None:
@@ -2430,6 +2433,42 @@ async def test_aedit_via_upload_calls_aexecute_and_aupload_files() -> None:
 
 
 # -- direct unit tests for module-level helper functions ----------------------
+
+
+@pytest.mark.parametrize(
+    ("server_error", "code"),
+    [
+        ("file_not_found", "file_not_found"),
+        ("permission_denied", "permission_denied"),
+        ("not_a_file", None),
+        ("not_a_text_file", None),
+        ("string_not_found", None),
+        ("multiple_occurrences", None),
+        ("temp_read_failed", None),
+    ],
+)
+def test_edit_failures_carry_the_code_the_script_names(server_error: str, code: str | None) -> None:
+    sandbox = MockSandbox()
+    sandbox._next_output = json.dumps({"error": server_error})
+    assert sandbox.edit("/a/b.txt", "old", "new").error_code == code
+
+
+@pytest.mark.parametrize(("upload_error", "code"), [("permission_denied", "permission_denied"), ("disk quota exceeded", None)])
+def test_write_failure_carries_the_upload_code(upload_error: str, code: str | None) -> None:
+    class _FailingUpload(MockSandbox):
+        def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
+            return [FileUploadResponse(path=path, error=upload_error) for path, _ in files]
+
+    result = _FailingUpload().write("/a/b.txt", "x")
+    assert (result.error is not None, result.error_code) == (True, code)
+
+
+def test_delete_failures_carry_a_code_only_for_a_missing_path() -> None:
+    missing = MockSandbox()
+    missing._next_exit_code = 1
+    failed = MockSandbox()
+    failed._responses = [("", 0), ("rm: cannot remove '/a': Permission denied", 1)]
+    assert (missing.delete("/a").error_code, failed.delete("/a").error_code) == ("file_not_found", None)
 
 
 def test_map_edit_error_file_not_found() -> None:

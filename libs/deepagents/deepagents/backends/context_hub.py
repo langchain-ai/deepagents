@@ -506,7 +506,7 @@ class ContextHubBackend(BackendProtocol):
             with self._mutations.condition:
                 current = self._visible_cache_locked().get(hub_path)
                 if current is None:
-                    return EditResult(error=f"Error: File '{file_path}' not found")
+                    return EditResult(error=f"Error: File '{file_path}' not found", error_code=FILE_NOT_FOUND)
 
                 result = perform_string_replacement(current, old_string, new_string, replace_all)
                 if isinstance(result, str):
@@ -550,7 +550,7 @@ class ContextHubBackend(BackendProtocol):
                 prefix = base + "/"
                 to_delete = [key for key in cache if key == base or key.startswith(prefix)]
                 if not to_delete:
-                    return DeleteResult(error=f"Error: File '{file_path}' not found")
+                    return DeleteResult(error=f"Error: File '{file_path}' not found", error_code=FILE_NOT_FOUND)
                 mutation = self._queue_changes_locked(
                     dict.fromkeys(to_delete, None),
                     intent=_DeleteIntent(path=base),

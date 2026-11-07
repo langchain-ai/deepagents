@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:292dee4651df7646c1d922ea01fbdda6fd21175f8f37fc5b71a1e32499d34405",
+  "pageVersion": "sha256:a9b9be93606680447e3d3308adde524e7d4a9a0bd4bfa773bce8618b44a5e002",
   "claims": [
     {
       "id": "claim_7da573d3acfd4e42a24d96f63c118dc3",
@@ -64,7 +64,7 @@
         },
         {
           "resource": "repo://libs/code/pyproject.toml",
-          "version": "repo-file-v1:sha256:691aa60e136422e94774dd41938d22e60bf083abaa9a178de80d367f4cd5fb0a"
+          "version": "repo-file-v1:sha256:0c06aa5f84a71ef73786c5aca6d3874f53bf081c6030cef8992c416e90021318"
         },
         {
           "resource": "repo://libs/code/pyproject.toml#L102-L105",
@@ -84,7 +84,7 @@
         },
         {
           "resource": "repo://libs/talon/pyproject.toml",
-          "version": "repo-file-v1:sha256:b19db2939921fd9c2285f1bf753e0433c40a9a53f77d6901e408b01531725a2a"
+          "version": "repo-file-v1:sha256:7c2528b2610670e4631bf04379eef2b606a87935d3271789d342d6f5dc8384d6"
         },
         {
           "resource": "repo://libs/talon/pyproject.toml#L125-L130",
@@ -246,15 +246,11 @@
     },
     {
       "id": "claim_877ddb2adf2b4013aa3baed0790b81d2",
-      "statement": "Talon publishes direct requirements on `deepagents>=0.7.32` and `deepagents-code>=0.2.4,<1.0.0`, while history embedding adapters and MongoDB/PostgreSQL support are optional extras rather than base-host dependencies.",
+      "statement": "Talon publishes direct requirements on `deepagents>=0.7.34` and `deepagents-code>=0.2.5,<1.0.0`, while history embedding adapters and MongoDB/PostgreSQL support are optional extras rather than base-host dependencies.",
       "evidence": [
         {
-          "resource": "repo://libs/talon/pyproject.toml#L22-L28",
-          "version": "repo-lines-v1:sha256:c8f71bdffa50ae64f52e7cc1d4825b1ecc56ae3caaeb6f413100e50d28ef656d:eyJzZWxlY3RlZExpbmVDb3VudCI6NywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYWQ5NWY1ZTllZGUwMTgxNjA0M2MwNzk3YWNlOGRhMmFjNGU5OWE4YTZhNjEwZmE5ODU3MGVmMzRiOTM1NjEwOSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiYmRiYzlkYjg2NDE2NTYyMTBhMzk0Mjg5MTEwYzBlOTVlMTc1NjNlNDhkYTI5ZmRhZmMyMTQyZjczMDk0MzFlOSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMDkzZWJmM2FlYTczODE3Y2ZlNDM2ZjhhNWE5YjE0ZWEwMjg2YTYyZWE0NGExZjJlOThmNTE4MGFlNTI4M2JjYyIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiYWYzMzg2Yzg1MGJhYzVlMDkyZmQyNGJkNzI5OGE3YjIxOGM0NDk4MDc1ZDJiNTFiNWM3MDRiYTE0NWMyYTliZCJ9"
-        },
-        {
-          "resource": "repo://libs/talon/pyproject.toml#L52-L78",
-          "version": "repo-lines-v1:sha256:60b7f48e7ce01752d039fb6930e7bd075687c8873c6de06a3fde68ff28b3e0c8:eyJzZWxlY3RlZExpbmVDb3VudCI6MjcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU5MjE4ZGM0Y2U5NzFjYmUzZDM4ZDc3NDMwZTYzOTkxODg4NGRkNzdkNzE4NGM3YjkzZGZkYzJlOTk4NjkxYjQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY5NDE2ZTA5Zjc4YmEzMTZjMDMyNTY4MjEzYjg1NWVlNzU2ZTQxNTY1ZDkxOGYwOTUxOWM4MWZkNjIwZjQwNjAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjJiMDgzNjZhNzNmY2E5ZmU0OTdlMmQyZWJmNDA1M2NmN2E1ZmY0Nzc3MTY0Yjc0ZjgxZjdkNzUyODU2YjQ2YjciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImM0NmMxZDdhMTcwZDBhYjNkMDNlN2ZkNTZiNmEwZGZiYWYxYWViMDk3NTMxYTgwMzNjNzAxMDc3MmRmZDJmZWMifQ"
+          "resource": "repo://libs/talon/pyproject.toml",
+          "version": "repo-file-v1:sha256:7c2528b2610670e4631bf04379eef2b606a87935d3271789d342d6f5dc8384d6"
         }
       ]
     },
@@ -318,11 +314,11 @@
     },
     {
       "id": "claim_69cc3000f7c84d1b95e710c67eaa8b74",
-      "statement": "The Release Please manifest records current release versions of deepagents 0.7.34, deepagents-acp 0.0.13, deepagents-code 0.2.5, deepagents-talon 0.1.0, and managed partner packages including QuickJS 0.3.11.",
+      "statement": "The Release Please manifest records current release versions of deepagents 0.7.34, deepagents-acp 0.0.13, deepagents-code 0.2.5, deepagents-talon 0.1.0, and managed partner packages including QuickJS 0.3.12.",
       "evidence": [
         {
           "resource": "repo://.release-please-manifest.json#L1-L10",
-          "version": "repo-lines-v1:sha256:261fbb64a3f0b09ec21d1b63577fc6a4b70dfc1e8e9c655a41f85e6b861e9b23:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE2ZmIwOGZkYTFhY2I5NTdiNjExNmJkMzc4MTFhMWZlNDFhMDE2MTFjMDYzMWVkYmY3ODZkNjg4OWEyN2E1NWMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ0MzcwY2QxY2UwN2QyMTE5MGMyYjY0OWRlM2VkMGY2MTk0ZmZhY2E2M2IyZWIxMjBkYjQyMDJmYjU0ZmNlYTciLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjoxLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEifQ"
+          "version": "repo-lines-v1:sha256:79178d308b0c809cc5d8eb29357b706c7b70557313389e98e3353d2a2bb3389d:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE2ZmIwOGZkYTFhY2I5NTdiNjExNmJkMzc4MTFhMWZlNDFhMDE2MTFjMDYzMWVkYmY3ODZkNjg4OWEyN2E1NWMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjgxMDhkNTE2Y2IxZGFmN2Q2NTcxMWZkY2Q2ZTc2ZWQ5ZWI0OWQ5MzE0NmUzNWY2ZjczMDM2NTc3Njg0MDg0ZjQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjoxLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEifQ"
         }
       ]
     },
@@ -339,10 +335,20 @@
           "version": "repo-lines-v1:sha256:6914386ca9c95330ea5c58d1bc7c0ffd3039a190b3bce252b68e27f54f46151f:eyJzZWxlY3RlZExpbmVDb3VudCI6NDgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijk2OTRjOWFlOTY5NTA2ZWVjZmEyZDdkY2U1MTA5MTk3YjA3ZDE1NWRkNWY1ODNkMmI5NzEyMDE4YzBmNzE0NmUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM5Y2EzMzZhMTQ2OGI2MTNkY2I4ZTVhZTc5YWM3ZWU1ODhjYmM5YTgxNjM3NDFmYjA3Y2Q1ZjE3YmM1NzU4OTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjRiMzNlOGQ0MTY0ZmE5NDVlM2QwYjJmODU3YTM2ZDZhODg4YmJkMDFhZGQyYzFiOWZmNDY0YTE3YjdjODViZmQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjFmOTkwNzJiNmFiYzE4MjdjZjI1NDFjNDJkODgwY2ZjMjU4ODZkMjc4ZDM2MWM3MDQxMGIyZTU0MDk1MjEzMzcifQ"
         }
       ]
+    },
+    {
+      "id": "claim_9008dadee8f04784a75ad2f4e05838b7",
+      "statement": "`langchain-quickjs` is version 0.3.12, supports Python `>=3.11,<4.0`, and publishes a dependency on `deepagents>=0.7.34,<0.8.0`.",
+      "evidence": [
+        {
+          "resource": "repo://libs/partners/quickjs/pyproject.toml#L21-L31",
+          "version": "repo-lines-v1:sha256:98e16ddee0e1f62418517a4fd712a865ebaeea6f5ea50284cc85c0052b133e8a:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjIzOWJlNDk3OGJlOGQyMTNlNjQxZDczYjI0MTM4ZWMyZDc3ODlmNmZjZTVjY2U4OWQ2MDRmNzhjYWIyZTdhMzEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU3NzQwZmI5YTRkMjJjOTg3Mzg0NTRlYTlkMTcwMzE3MjE3MzJiOGEzMzRmMjEyNDA0MWIyZWYxMTUwYWQ0MzciLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjBmNWM2NDFjM2UzMTdkYzEyYzg4NzdjZmUxNTEzODdkYTk5NWU3ZmY3NjRmNDRkMjkxYjY3MWJmMWZlNjIyNDAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjNiNTg2MWJlYzAwZTYxNTcyYzY2ZGU5NDc1ZWQ3Nzc5ZWE2YzkxMDIyNWI4NjI2ODgzMjE4ODBkZWE5MWY5ZmIifQ"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-11-06T08:04:19.814Z"
+    "at": "2026-11-07T08:03:46.171Z"
   }
 }

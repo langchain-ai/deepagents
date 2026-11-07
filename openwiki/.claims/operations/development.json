@@ -1,14 +1,14 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:b1ea366e213bff2a972067017323959402b08eaa5d7b595b2d8891c295e3299a",
+  "pageVersion": "sha256:81c57939d14fa3b72b2eb3d71001352a86e48dbe41cb193060a847036a3e3717",
   "claims": [
     {
       "id": "claim_84c087f65f2749b8bf613b47f43f37ee",
-      "statement": "The release-please manifest has nine independently released package baselines—Deep Agents 0.7.34, ACP 0.0.13, Code 0.2.5, Talon 0.1.0, Daytona 0.0.9, Modal 0.0.7, Runloop 0.0.7, Vercel 0.0.2, and QuickJS 0.3.11—and configuration creates separate draft Python release PRs with pre-1.0 bump behavior while delegating publication to release.yml.",
+      "statement": "The release-please manifest has nine independently released package baselines—Deep Agents 0.7.34, ACP 0.0.13, Code 0.2.5, Talon 0.1.0, Daytona 0.0.9, Modal 0.0.7, Runloop 0.0.7, Vercel 0.0.2, and QuickJS 0.3.12—and configuration creates separate draft Python release PRs with pre-1.0 bump behavior while delegating publication to release.yml.",
       "evidence": [
         {
           "resource": "repo://.release-please-manifest.json",
-          "version": "repo-file-v1:sha256:2b5bbfc11bd7bf0a6d88cb39ea3ab219490fd2a9b718990b66471395c1a56802"
+          "version": "repo-file-v1:sha256:f050c4b42002f14e4ecbb03b48a60a5524e8035574c0293afb6c5cf217b17a70"
         },
         {
           "resource": "repo://release-please-config.json",
@@ -40,7 +40,7 @@
         },
         {
           "resource": "repo://libs/Makefile",
-          "version": "repo-file-v1:sha256:62761c20104f223ecb091679876763c7edb30e417da686846b898fc4aa6f9a81"
+          "version": "repo-file-v1:sha256:36697d55a6d69e6b31926bafe780350bcd85c769e047efc213dd2e34c80dda1a"
         }
       ]
     },
@@ -332,13 +332,31 @@
         },
         {
           "resource": "repo://libs/Makefile#L55-L70",
-          "version": "repo-lines-v1:sha256:bfcf134d78991c52e76d59a8760553c73e56f200be4c7897d9022cdce7865640:eyJzZWxlY3RlZExpbmVDb3VudCI6MTYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImMzYWJhN2JmOTBhNTZkMjE4MGJiMzE2ZDNiNTRjMmExMDhiYTYwMTMyNzlmMjA0MTFmMzFhZDJjZjY0ZjEzY2IiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxZDVjMWI2MTgxZTFmOTI2MWMwMjk2NzRiZDU3MjExYzMyMzdkOGMxNzAyOGY0MjI5NjEzNmE5NzEwZjBlZTYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjQ1ZmM1YTY1NDg4YjI1OGUzZTBkMWFlYzBjZTllNzAxZGJiY2M3ZmUwZmE1M2Q3OTFiZDA5NWE5OTY5OTdhMDgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjA5YmY4MjgwMGMxOTVhZTEwZGM5ZDBlYmQ3OGRhOTM0ZDMyOGFmZWZkY2M4Mzg2ZWRhY2IxMDk2NTJhNjlkMGYifQ"
+          "version": "repo-lines-v1:sha256:46c4e5a6a4953fc1035dcef1c7de8980f1f55a0635607e2bf19a0e2673814002:eyJzZWxlY3RlZExpbmVDb3VudCI6MTcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImMzYWJhN2JmOTBhNTZkMjE4MGJiMzE2ZDNiNTRjMmExMDhiYTYwMTMyNzlmMjA0MTFmMzFhZDJjZjY0ZjEzY2IiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxZDVjMWI2MTgxZTFmOTI2MWMwMjk2NzRiZDU3MjExYzMyMzdkOGMxNzAyOGY0MjI5NjEzNmE5NzEwZjBlZTYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjQ1ZmM1YTY1NDg4YjI1OGUzZTBkMWFlYzBjZTllNzAxZGJiY2M3ZmUwZmE1M2Q3OTFiZDA5NWE5OTY5OTdhMDgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjA5YmY4MjgwMGMxOTVhZTEwZGM5ZDBlYmQ3OGRhOTM0ZDMyOGFmZWZkY2M4Mzg2ZWRhY2IxMDk2NTJhNjlkMGYifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_8c7a6fdd6d534e4082455fd0bab4394d",
+      "statement": "The scheduled OpenWiki workflow is documentation-maintenance automation: it restores its own workflow, stages only `openwiki` and `AGENTS.md`, applies hygiene to those generated files, and creates or refreshes the `openwiki/update` pull request before merging its checked head SHA.",
+      "evidence": [
+        {
+          "resource": "repo://.github/workflows/openwiki-update.yml#L1-L6",
+          "version": "repo-lines-v1:sha256:16ba04e9202569837ade828e4d9db95a857b406498fe322c003dec93962ae7ec:eyJzZWxlY3RlZExpbmVDb3VudCI6NiwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMDYwMjc4N2FmNmRjYzA4MzRkZTEyMWNiYjFjYjk1Zjk0NTliNzIxZWFiMDM0OWYxMDUwMWI5OTZjMWM3N2ZmZiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiZTNhZWQ1MDJhNWFkZWU3YmIwY2FkZDQ2Y2Q3NDYzYjUzMjBjNmNjZWU0NDgwZDY2ODU0ODg0MzEwNjM3NjExOCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjAsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZTNiMGM0NDI5OGZjMWMxNDlhZmJmNGM4OTk2ZmI5MjQyN2FlNDFlNDY0OWI5MzRjYTQ5NTk5MWI3ODUyYjg1NSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiN2UyNzQyMjRlOTgyODgxZDk4MWI4YWRkZmRkYzk4ODBiMmYxZDA3ODAzMTVkNzBkNWQ1MTkxYzc1Zjk1YTViMiJ9"
+        },
+        {
+          "resource": "repo://.github/workflows/openwiki-update.yml#L130-L176",
+          "version": "repo-lines-v1:sha256:dae05a5739870a7d1c5ab83f6b6b313dab0306e95e2bdbe4d5ae626ef114c96e:eyJzZWxlY3RlZExpbmVDb3VudCI6NDcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImVmZDA0MDBkOThjMjAxYjk3ZDU5Mzc1ODk5NmU1ZDU1ZGQ3MzcxYWEyNDdkNTVhZmYwNjVhMmM2NDg3MjdiYzAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjNlMjZmNDYzMTgwMGQ1ZmE5OTY5YTIwYWQ1Mzg5MWQ5YzdmZjgzYzNkNDA0NDVhZDc3NmVhMTc1YmQyNWE2MDkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjBkYjg3ZmRhZDY1MTFiYzM2MDIyMGE2Mzk5YWUwNWQzMWY4MzVmMTY0Y2VlN2I2NWFmN2IzMGUwZmIxZTUzNzEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjoxLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjIxODdjZTRmMDJhYjRmY2Y3Y2Q4MTc2ODMxNTgzNDVjN2ZjNTI0OTc5MzEwMWMxYWVkNWM4NGMxNGViMjg3ZmIifQ"
+        },
+        {
+          "resource": "repo://.github/workflows/openwiki-update.yml#L77-L128",
+          "version": "repo-lines-v1:sha256:b5d95eb93550b14b28558f5f65fec7bb59253ed98eddd44f10b8afb070b7c142:eyJzZWxlY3RlZExpbmVDb3VudCI6NTIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZmZTc4NDRhMTE0MzM4NDdjOTE2Y2E3MDJmYTZlM2Q3MWRmZGEyZDkxYmZmYmYwMDE4MzkzOTNkN2YwYWJkODAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU3MDRiMzFhNTI5YzM0ZmRhOTBjZGE1Mjk0YTk4MDRlZWJjOWU3MTM1MzcyY2U0NWE1MzRkMmJlOTI5MWUzZDciLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjY1MTllM2IyZWUyYTM2ZDZiMmQ3YTRkZGVkOWUzMGFhZjdmMzM2Mjc1NjUxM2U4ODk4MTNiYTIzYWEyZGRmNGIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQ2ODAwNTNjZDE3ZjU2MDljMGFhMmIyMDQwMmFkOGNkYWY0MDBlODE2MTU2ZmNiY2UxNTFmNTFlNDcwOTc2OWMifQ"
         }
       ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-11-06T08:04:19.814Z"
+    "at": "2026-11-07T08:03:46.171Z"
   }
 }

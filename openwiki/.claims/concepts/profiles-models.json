@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:47ddbaa690ff248719774581cb0a8b2cd1eb56ece346df3688a0ff4be99f0d12",
+  "pageVersion": "sha256:5c04cfa55345ac31557e9992f80f461538349092cb5e054ea069dee5b415113e",
   "claims": [
     {
       "id": "claim_f69e854889dc465d8c71bec1dd14bbd5",
@@ -172,7 +172,7 @@
       "evidence": [
         {
           "resource": "repo://libs/code/pyproject.toml",
-          "version": "repo-file-v1:sha256:691aa60e136422e94774dd41938d22e60bf083abaa9a178de80d367f4cd5fb0a"
+          "version": "repo-file-v1:sha256:0c06aa5f84a71ef73786c5aca6d3874f53bf081c6030cef8992c416e90021318"
         }
       ]
     },
@@ -232,11 +232,11 @@
       "evidence": [
         {
           "resource": "repo://libs/code/pyproject.toml",
-          "version": "repo-file-v1:sha256:691aa60e136422e94774dd41938d22e60bf083abaa9a178de80d367f4cd5fb0a"
+          "version": "repo-file-v1:sha256:0c06aa5f84a71ef73786c5aca6d3874f53bf081c6030cef8992c416e90021318"
         },
         {
           "resource": "repo://libs/deepagents/pyproject.toml",
-          "version": "repo-file-v1:sha256:4da54d3e930badf3337ded27a7c6ac691ca776083260afdddc96eeb9bffd7dab"
+          "version": "repo-file-v1:sha256:52d80e9086d5efaceaf71dddaa369cbdd775a00741dbfca815387d0c35eca0b5"
         }
       ]
     },
@@ -266,7 +266,7 @@
       "evidence": [
         {
           "resource": "repo://libs/code/pyproject.toml#L110-L138",
-          "version": "repo-lines-v1:sha256:282cf706b5cc5e08079f5f9b5523536b108641714bf947e019bad339abfe5fe6:eyJzZWxlY3RlZExpbmVDb3VudCI6MjksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU5MjE4ZGM0Y2U5NzFjYmUzZDM4ZDc3NDMwZTYzOTkxODg4NGRkNzdkNzE4NGM3YjkzZGZkYzJlOTk4NjkxYjQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY5NDE2ZTA5Zjc4YmEzMTZjMDMyNTY4MjEzYjg1NWVlNzU2ZTQxNTY1ZDkxOGYwOTUxOWM4MWZkNjIwZjQwNjAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImViOGRmYTk5ZDY2MDA2MDFhMGZiODVhNWI0YjUyYzI1NmNjMTIxNTE2NTQ1MWEyZDlhNWUyYWEwNGIyZGU3MjgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijk2OWU2MmIwOTAwZjZmZDk3ZGNhMGFiZGQ2ZWRlNmY1OGY5MDY5Y2VjNjQ3YmMzNDg5ZDE0MjA2ZDM0ZjEyMTYifQ"
+          "version": "repo-lines-v1:sha256:2dedeb8c417f7a9c8de19a9f99307000be8f76f785e45c865c93044dde854175:eyJzZWxlY3RlZExpbmVDb3VudCI6MjksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU5MjE4ZGM0Y2U5NzFjYmUzZDM4ZDc3NDMwZTYzOTkxODg4NGRkNzdkNzE4NGM3YjkzZGZkYzJlOTk4NjkxYjQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY5NDE2ZTA5Zjc4YmEzMTZjMDMyNTY4MjEzYjg1NWVlNzU2ZTQxNTY1ZDkxOGYwOTUxOWM4MWZkNjIwZjQwNjAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImViOGRmYTk5ZDY2MDA2MDFhMGZiODVhNWI0YjUyYzI1NmNjMTIxNTE2NTQ1MWEyZDlhNWUyYWEwNGIyZGU3MjgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijk2OWU2MmIwOTAwZjZmZDk3ZGNhMGFiZGQ2ZWRlNmY1OGY5MDY5Y2VjNjQ3YmMzNDg5ZDE0MjA2ZDM0ZjEyMTYifQ"
         },
         {
           "resource": "repo://libs/code/pyproject.toml#L41-L46",
@@ -283,10 +283,50 @@
           "version": "repo-lines-v1:sha256:f590e8b1b7a5be7c8e215dfd93e8610928a562bfcc30dbad24780fa26e3dac07:eyJzZWxlY3RlZExpbmVDb3VudCI6NywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiODBkN2MyYzgyOWI2NjEzYjNiNzgwMjY1NzY4YTkyZGUxZDE2YmE4MTczNDM3ZjdiYWI2OTQ3NjE0ZmI1ZDBkZCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMDM4MWQ4NTVhY2YwMjQ2YzA1ZjdjNjM4NTUxYmIwMDJlYTIxNzc0OWJiNDllMzY0M2FmYzY0Y2IxNDE0ZTgwNSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiOTYxMTAxNzM2NDViYTFkNmQ3OTdhMWFhNTI0ZjZlN2Y2YTM2MGIzYmZkNTNmZGI5ODA4MmExOGRiM2ZlOGU3NSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNmQ4NWRlMmE4ODZkOTU4Mzk1NzhkMzhhOWNmYWQ2MWM1MDkwMzhmNmRkYjFmYzk3NTMzMDFmYTY4YjQ1NDk2ZSJ9"
         }
       ]
+    },
+    {
+      "id": "claim_9660c36f01ba4b2abfe37cc73b312bc8",
+      "statement": "The built-in NVIDIA Nemotron 3 Ultra harness profile is registered under eight exact NVIDIA and reseller model specifications rather than provider-wide, and applies filesystem-call repair, a 500-line default for read_file, empty-result and full-page continuation normalization, and bounded 429 model-call retries only to those matches.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/profiles/harness/_nvidia_nemotron_3_ultra.py#L149-L281",
+          "version": "repo-lines-v1:sha256:35145c7a833445ce2fb366dae6c1de03cd6ec4067b3487a46b04316013c6b3f3:eyJzZWxlY3RlZExpbmVDb3VudCI6MTMzLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI3ODdiZDI0MzYzYzkyNzMxNGUwYjM2NGIwNGU5NWY4ZTdkZjc3ZGZjOTNjZGQ2ZTdiMGI1OWIwNWM4OGFjOGMyIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI2ZGJiZTNlNDFhNmE3MDliZjE2OGFmMzcyMTE4NDFiMjJhMTI1YzRkNjY3MzAwZjRjZjc4MjlmY2FhODE0OWJjIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiIzOGFlNjBhMDlhNzg0YjQ3ZWEwODUzMTZiZmY5MmM2ODAxMWRkNjcwZDg5ZjI4ZGFmNWRhOWJiNmFlNDFiYzQyIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiIzNzk5ZmViN2RlMDdiNjdmNTI1NTZjZWU3MTVlODE0YWRkOWJmOWFmYzdjMDk5YTg0ZDA1NGYzNGJhMTVlYTk1In0"
+        },
+        {
+          "resource": "repo://libs/deepagents/deepagents/profiles/harness/_nvidia_nemotron_3_ultra.py#L1824-L1857",
+          "version": "repo-lines-v1:sha256:d9b9e5b3eb200c406b3f6cf66044fb498829c3d5f9b1d5b2e4e10103761c657d:eyJzZWxlY3RlZExpbmVDb3VudCI6MzQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFkMWJhYzQ3MDUxNGQ5OGFlMmY3YTdkNzNmMDU4YmFmMzdkZjU0NTBjMWI0OTkwY2ExMWFiNWNkZTUxNTdhN2IiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI4MDNhYjVlNDc2NmIwMzA0OGM4ZmE4ZjViN2ZjMjVhNWRjMGExOTJlYmFiOWUwYmY1ZGU1NzlkYjIzYTBiZGMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUxMjE3MjBlNDM3OWIwZTk1MDgxY2E3NDVhYTE5OGQyY2Q3OGVjNTk4YzlmM2VlYjc3MTkyYmQzZGQ2MWYzMGYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        },
+        {
+          "resource": "repo://libs/deepagents/deepagents/profiles/harness/_nvidia_nemotron_3_ultra.py#L42-L67",
+          "version": "repo-lines-v1:sha256:75871191f99c0294e4ec80bede5d85915566bce372a3dfbd9c23c3ac11191594:eyJzZWxlY3RlZExpbmVDb3VudCI6MjYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjUyNjEwZDZlZjE5NDE0ODk2ODQ2ODBkOTJmYjhiNGY4ZmRmYTU2NzkwY2JjZWU5NmJkOTcxMDYzMjE1NjM0MGEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjYwNDlmNTRkNDBkZTk4N2I5NjliZWVkZDU4NDkwZDEzOTYxMWY3MTE3MTc0NDQxODdlNGQ2M2Q1ZTBjMzFhMmQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjZhMzRlNTI5MWIwZmQwMzQwM2Y3MDJhZTNmOWJjYTkzN2JiZDBlNDg4NjBjMjMzOGM0NWMxY2E2MmNlMTQzOTgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjFmZDFlOGZlYzUwZTViYjY3ODM3NWQ0OTA0NDNkYWU5MDJjZjYyNmFkY2RmYTU1MzA4MjFjNmY4OTAyMTBlNzIifQ"
+        },
+        {
+          "resource": "repo://libs/deepagents/deepagents/profiles/harness/_nvidia_nemotron_3_ultra.py#L85-L131",
+          "version": "repo-lines-v1:sha256:e48f2e022c425d263018e304046adf92f7cd635483e3eec4e2d24830bf98ca1d:eyJzZWxlY3RlZExpbmVDb3VudCI6NDcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjFlN2ZkNjM0ODcxMDE2YWZhNjk1ZTFkNjNjZWI5NWJhNjM2MjU3ZjcyNzg2ZmJiMGM0MDNiYzY0NTRjNzJmZDYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjUwMzcyZmFiYTg2MWMyMGVmZGUyOTJlNjBjNzRkMjNmYTEyMGQzNzIzNjNiMzgyNmI1YTFjNzE0MjgwZjJiNTIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUwYjIxYmY4OTVmYWUyZDczOTIwZDkzMTc4Y2ZkNTg0MWNkZjhmOTUyNDUxNmM4YTU2NTg0MzZhNGFjNDhmM2IiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImQ0ODRhZjQxZmE4YmE4MzA2NzEyNTgyOGM3N2NkMzNhYWRhOTQ2MTFhZGQxNjM0MzZjODQ1ZGVhMThiYWJmMWQifQ"
+        },
+        {
+          "resource": "repo://libs/deepagents/tests/unit_tests/test_nemotron_ultra_profile.py#L40-L351",
+          "version": "repo-lines-v1:sha256:0fcb3515e054ff819fab0c9d3243d8898e7710cd88a8d482e09f9d773faf358b:eyJzZWxlY3RlZExpbmVDb3VudCI6MzEyLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJiNWZmZDViNGViYTA3MzRjYTgwNDdiYWQ1ZjZmNTBkYzg1NjA1YWRjNDc3MTRkY2JjY2UwMThhYTAyODk3YjUyIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiIyMjg0ZDQ1NjYxMWJhNjk4MGQ3YjRmYjNlMjk5OTFkNjAwZmE0YWU4Nzg1ZWZmMTgxMWU4MjAxNWZjMjI1YjZhIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiIwNTUwOTk4NjgwMmRjNzg0NTgzZDczNWY5MDBmOTA1MzQzZGJhZjk2ZDEzYzIyMzBjNTYyY2E0MTZkYTFlMjE3IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI5ZDc3ZWM4OTM4NzQ5NjUyZjM4ZGE2OWUyYjdlZGNmYmRhODU5MDFlMmJmNmZkYTU2NjlkODk4YjE4Yjg3N2ZlIn0"
+        }
+      ]
+    },
+    {
+      "id": "claim_c4dadb1d2349425cb029635bc34b78fa",
+      "statement": "A dcode provider class_path is a trusted configuration boundary because construction imports and instantiates the configured BaseChatModel class rather than using normal init_chat_model resolution.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/config.py#L6945-L6948",
+          "version": "repo-lines-v1:sha256:19a94cd020e0f26ece77e896af0dc7b56cbbd0daec21a5a952e38e6e67fac619:eyJzZWxlY3RlZExpbmVDb3VudCI6NCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiZWI2ZWUyZDlmMjcwODdiYTdiZDg2NWM5NmFjZDdjN2FiYTM3MGU3Y2VmN2MzN2I1ZWJmZTYxNDVlZTEzOGY1YyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiY2ZjODIwZmU3MjZkOTVlMjkxN2IxNzViNTNlN2VjOGM3ZGJiM2VhYjBlZjRlODdkMWNlN2IwMGQ3MzVmNDgwMiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiOWE2MzAzNDFiZjBlOTFkNGE0NGIzM2VjZGI1MmUwZDY5NWM4NWI4YTgyZjkwOWVmMzAxODdiNTQ5ZDBkNGFmMyIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNDIwOGI5MzRjZDE3YTQzNjNhMzI4MjU5OGIzOTMzYjJlODcyYTAzZDBhYzRiMzUwMWRhNGUyNjgyYTYxNDMwYyJ9"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/config.py#L7209-L7210",
+          "version": "repo-lines-v1:sha256:48a937654632762ab70e90e03fd875efa9cb755d739cafcfa664396cc94644f4:eyJzZWxlY3RlZExpbmVDb3VudCI6MiwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMGE5NjQzM2IxNjYwZDMxOWY2ODk1YTg1ZmUzODBlNzk1ZjA2ZjMyZjkxYjk1YjU5YjFkNzYxMTMxOTQ5ZGUxNyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiOWVkNDMwMTgyYzg4ZWNlODIyYzFiMjA1Y2I1ZjU0OWIyZWVlMzQ3MmRkYzE5OTBlYzg1OGY3ZGY3NTBjYWQzMiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNjM0ZjMwMDRhNzE1ZGIxN2Y5NzI0MjNhM2M5NDZjZDU1ZjdlMWIyZTVjNDRhZTIyODgyYTAzZDM3N2Q0NmVmMSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiOTY5ZGYwN2E3MWE5YjAwMDIyNWVhMTVjNGZiNWJhMGNjZjhiZWI2OWU1NzcxMDAyNTVmYjg5YjgyNWEwYTllMyJ9"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-11-06T08:04:19.814Z"
+    "at": "2026-11-07T08:03:46.171Z"
   }
 }

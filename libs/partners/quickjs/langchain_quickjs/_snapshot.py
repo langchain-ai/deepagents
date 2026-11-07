@@ -19,6 +19,7 @@ custom/unregistered type:
 
     ("snap",  full_snapshot_bytes)  -- anchor; ignores the running base
     ("patch", bsdiff4_patch_bytes)  -- delta applied to the running base
+    ("pages", changed_pages_bytes)  -- delta applied to the running base
     ("clear", b"")                  -- reset the running base to empty
 """
 
@@ -26,6 +27,8 @@ from __future__ import annotations
 
 import hmac
 import logging
+import struct
+import zlib
 from hashlib import sha256
 from typing import TYPE_CHECKING
 
@@ -38,9 +41,19 @@ logger = logging.getLogger(__name__)
 
 SNAP = "snap"
 PATCH = "patch"
+PAGES = "pages"
 CLEAR = "clear"
 
 SnapshotRecord = tuple[str, bytes]
+
+_PAGE_SIZE = 256
+"""Diff granularity: a one-field edit changes about a dozen pages of this size."""
+
+_RUN = struct.Struct("<QQ")
+"""Header of one run of changed bytes in a `pages` record: offset, length."""
+
+_PAGES_VERSION = 1
+"""First byte of a `pages` record, so a reader refuses a layout it does not know."""
 
 # Domain-separation prefix folded into every signed message so a snapshot HMAC
 # can never be confused with an HMAC computed over some other blob using the
@@ -130,6 +143,7 @@ def replay_snapshot_chain(
     Folding is left-to-right and deterministic:
       * ``("snap", blob)``  -> base becomes ``blob`` (anchor; prior base ignored)
       * ``("patch", blob)`` -> base becomes ``bsdiff4.patch(base, blob)``
+      * ``("pages", blob)`` -> base with the changed pages in `blob` written over it
       * ``("clear", _)``    -> base becomes ``b""``
 
     This is associative as ``DeltaChannel`` requires — re-batching the writes
@@ -149,9 +163,50 @@ def replay_snapshot_chain(
             base = blob
         elif kind == PATCH:
             base = bsdiff4.patch(base, blob)
+        elif kind == PAGES:
+            base = _apply_pages(base, blob)
         elif kind == CLEAR:
             base = b""
     return base
+
+
+def _diff_pages(prior: bytes, payload: bytes) -> bytes:
+    """Encode the pages of `payload` that differ from `prior`.
+
+    QuickJS allocates in place and never moves live objects, so a turn's
+    changes land in a few pages. Comparing aligned pages finds them in linear
+    time, where `bsdiff4.diff` suffix-sorts the whole snapshot.
+    """
+    parts = [bytes([_PAGES_VERSION]), len(payload).to_bytes(8, "little")]
+    start = None
+    for offset in range(0, len(payload), _PAGE_SIZE):
+        end = offset + _PAGE_SIZE
+        if prior[offset:end] != payload[offset:end]:
+            if start is None:
+                start = offset
+        elif start is not None:
+            parts += (_RUN.pack(start, offset - start), payload[start:offset])
+            start = None
+    if start is not None:
+        parts += (_RUN.pack(start, len(payload) - start), payload[start:])
+    return zlib.compress(b"".join(parts), 1)
+
+
+def _apply_pages(base: bytes, blob: bytes) -> bytes:
+    """Rebuild a snapshot from `base` and a record made by `_diff_pages`."""
+    data = zlib.decompress(blob)
+    if data[:1] != bytes([_PAGES_VERSION]):
+        msg = f"Unsupported `pages` snapshot record version {data[:1].hex() or 'none'}"
+        raise ValueError(msg)
+    size = int.from_bytes(data[1:9], "little")
+    out = bytearray(base[:size].ljust(size, b"\0"))
+    pos = 9
+    while pos < len(data):
+        offset, length = _RUN.unpack_from(data, pos)
+        pos += _RUN.size
+        out[offset : offset + length] = data[pos : pos + length]
+        pos += length
+    return bytes(out)
 
 
 def encode_snapshot(payload: bytes, prior: bytes) -> SnapshotRecord:

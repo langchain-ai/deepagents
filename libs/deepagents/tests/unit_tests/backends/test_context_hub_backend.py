@@ -10,6 +10,9 @@ from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock, patch
 
 import pytest
+from langchain_core.tools import tool
+from langchain_core.tracers.langchain import LangChainTracer
+from langsmith.run_helpers import trace, tracing_context
 from langsmith.schemas import AgentEntry, FileEntry, SkillEntry
 from langsmith.utils import LangSmithAPIError, LangSmithConflictError, LangSmithNotFoundError
 
@@ -17,6 +20,8 @@ from deepagents.backends import CompositeBackend, ContextHubBackend, FilesystemB
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+    from langchain_core.runnables import RunnableConfig
 
 _COMMIT_HASH = "abcd1234" * 8  # 64-char hex
 _COMMIT_URL = "https://host/context/test-agent/ef567890?organizationId=org-id"
@@ -806,6 +811,110 @@ def test_server_expanded_linked_files_are_readable() -> None:
     assert result.error is None
     assert result.file_data is not None
     assert result.file_data["content"] == "expanded"
+
+
+def _traced_reads(ls_client: MagicMock) -> list[dict[str, Any]]:
+    """Return the completed `context_hub_read` spans sent to a mocked LangSmith client."""
+    return [call.kwargs for call in ls_client.update_run.call_args_list if call.kwargs["name"] == "context_hub_read"]
+
+
+def _read_metadata(ls_client: MagicMock) -> list[dict[str, Any]]:
+    return [span["extra"]["metadata"] for span in _traced_reads(ls_client)]
+
+
+@pytest.mark.parametrize("use_async", [False, True])
+async def test_read_in_tool_trace_tags_linked_skill_provenance(tmp_path: Path, *, use_async: bool) -> None:
+    """A tool's read emits a child span naming the linked skill repo, not the mount path."""
+    hub, _ = _make_backend(
+        reviewer=SkillEntry(type="skill", repo_handle="reviewer", owner="acme", commit_hash="feedbeef"),
+        **{"reviewer/SKILL.md": FileEntry(type="file", content="secret skill body")},
+    )
+    backend = CompositeBackend(default=FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True), routes={"/skills/": hub})
+
+    @tool
+    def read_skill(path: str) -> str:
+        """Read a file."""
+        return str(backend.read(path).error)
+
+    @tool
+    async def aread_skill(path: str) -> str:
+        """Read a file."""
+        return str((await backend.aread(path)).error)
+
+    ls_client = MagicMock()
+    config: RunnableConfig = {"callbacks": [LangChainTracer(client=ls_client)]}
+    if use_async:
+        await aread_skill.ainvoke({"path": "/skills/reviewer/SKILL.md"}, config=config)
+    else:
+        read_skill.invoke({"path": "/skills/reviewer/SKILL.md"}, config=config)
+
+    tool_run = next(call.kwargs for call in ls_client.create_run.call_args_list if call.kwargs["run_type"] == "tool")
+    [span] = _traced_reads(ls_client)
+    assert span["parent_run_id"] == tool_run["id"]
+    assert span["error"] is None
+    provenance = {key: value for key, value in span["extra"]["metadata"].items() if key.startswith("context_hub_")}
+    assert provenance == {
+        "context_hub_repo": "-/test-agent",
+        "context_hub_commit_hash": _COMMIT_HASH,
+        "context_hub_path": "reviewer/SKILL.md",
+        "context_hub_link_path": "reviewer",
+        "context_hub_link_type": "skill",
+        "context_hub_source_repo": "acme/reviewer",
+        "context_hub_source_commit_hash": "feedbeef",
+        "context_hub_skill_name": "reviewer",
+        "context_hub_skill_path": "reviewer",
+        "context_hub_skill_file": True,
+        "context_hub_cached": False,
+        "context_hub_status": "success",
+    }
+    assert "secret skill body" not in repr(ls_client.mock_calls)
+
+
+def test_read_trace_tags_in_repo_skill_files_and_cache_hits() -> None:
+    backend, _ = _make_backend(
+        **{
+            "skills/local/SKILL.md": FileEntry(type="file", content="body"),
+            "skills/local/references/guide.md": FileEntry(type="file", content="guide"),
+            "notes.md": FileEntry(type="file", content="notes"),
+        }
+    )
+    ls_client = MagicMock()
+    with tracing_context(enabled=True), trace("agent", client=ls_client):
+        backend.read("/skills/local/references/guide.md")
+        backend.read("/skills/local/SKILL.md")
+        backend.read("/notes.md")
+
+    guide, skill, notes = _read_metadata(ls_client)
+    assert guide["context_hub_skill_path"] == "skills/local"
+    assert guide["context_hub_skill_file"] is False
+    assert guide["context_hub_source_repo"] == "-/test-agent"
+    assert guide["context_hub_source_commit_hash"] == _COMMIT_HASH
+    assert guide["context_hub_cached"] is False
+    assert skill["context_hub_skill_name"] == "local"
+    assert skill["context_hub_skill_file"] is True
+    assert skill["context_hub_cached"] is True
+    assert "context_hub_skill_path" not in notes
+    assert "context_hub_link_path" not in notes
+
+
+def test_read_trace_records_failed_loads() -> None:
+    backend, _ = _make_backend()
+    ls_client = MagicMock()
+    with tracing_context(enabled=True), trace("agent", client=ls_client):
+        backend.read("/skills/gone/SKILL.md")
+
+    [span] = _traced_reads(ls_client)
+    assert span["error"] == "File '/skills/gone/SKILL.md' not found"
+    assert span["extra"]["metadata"]["context_hub_status"] == "not_found"
+    assert span["extra"]["metadata"]["context_hub_skill_file"] is True
+
+    mock_client = MagicMock()
+    mock_client.pull_agent.side_effect = LangSmithAPIError("hub 5xx")
+    unavailable = ContextHubBackend("-/test-agent", client=mock_client)
+    with tracing_context(enabled=True), trace("agent", client=ls_client):
+        unavailable.read("/skills/x/SKILL.md")
+
+    assert _read_metadata(ls_client)[-1]["context_hub_status"] == "error"
 
 
 def test_default_client_constructed_when_not_provided() -> None:

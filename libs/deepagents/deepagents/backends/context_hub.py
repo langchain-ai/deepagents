@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 from urllib.parse import urlsplit
 
 from langsmith import Client
+from langsmith.run_helpers import get_current_run_tree, trace
 from langsmith.schemas import AgentEntry, FileEntry, SkillEntry
 from langsmith.utils import (
     LangSmithConflictError,
@@ -56,7 +57,37 @@ logger = logging.getLogger(__name__)
 _COMMIT_HASH_RE = re.compile(r"[0-9a-f]{8}")
 _BATCH_WINDOW_SECONDS = 0.05
 _MAX_CONFLICT_RETRIES = 3
-_TreeSnapshot = tuple[dict[str, str], dict[str, str], str | None]
+_SKILL_FILE = "SKILL.md"
+_READ_SPAN_NAME = "context_hub_read"
+_LinkedEntry = AgentEntry | SkillEntry
+_TreeSnapshot = tuple[dict[str, str], dict[str, _LinkedEntry], str | None]
+_Provenance = dict[str, str | bool]
+
+
+def _skill_dir(hub_path: str, files: dict[str, str], link: tuple[str, _LinkedEntry] | None) -> str | None:
+    """Return the skill directory owning `hub_path`, judged by the hub tree rather than mount paths."""
+    if link is not None and link[1].type == "skill":
+        return link[0].rstrip("/")
+    parent, _, name = hub_path.rpartition("/")
+    if name == _SKILL_FILE:
+        return parent or None
+    floor = link[0].rstrip("/") if link is not None else ""
+    while parent and parent != floor:
+        if f"{parent}/{_SKILL_FILE}" in files:
+            return parent
+        parent = parent.rpartition("/")[0]
+    return None
+
+
+def _skill_provenance(hub_path: str, files: dict[str, str], link: tuple[str, _LinkedEntry] | None) -> _Provenance:
+    skill_dir = _skill_dir(hub_path, files, link)
+    if skill_dir is None:
+        return {}
+    return {
+        "context_hub_skill_name": skill_dir.rpartition("/")[2],
+        "context_hub_skill_path": skill_dir,
+        "context_hub_skill_file": hub_path == f"{skill_dir}/{_SKILL_FILE}",
+    }
 
 
 @dataclass(frozen=True)
@@ -116,7 +147,7 @@ class ContextHubBackend(BackendProtocol):
         self._identifier = identifier
         self._client = client if client is not None else Client()
         self._cache: dict[str, str] | None = None
-        self._linked_entries: dict[str, str] = {}
+        self._linked_entries: dict[str, _LinkedEntry] = {}
         self._commit_hash: str | None = None
         self._mutations = _MutationQueue()
         self._worker: threading.Thread | None = None
@@ -129,13 +160,13 @@ class ContextHubBackend(BackendProtocol):
             return {}, {}, None
 
         cache: dict[str, str] = {}
-        linked_entries: dict[str, str] = {}
+        linked_entries: dict[str, _LinkedEntry] = {}
 
         for path, entry in context.files.items():
             if isinstance(entry, FileEntry):
                 cache[path] = entry.content
             else:
-                linked_entries[path] = entry.repo_handle
+                linked_entries[path] = entry
         return cache, linked_entries, context.commit_hash
 
     def _load_tree_locked(self) -> None:
@@ -177,7 +208,7 @@ class ContextHubBackend(BackendProtocol):
         """Return linked-entry paths mapped to their repo handles."""
         with self._mutations.condition:
             self._ensure_cache_locked()
-            return dict(self._linked_entries)
+            return {path: entry.repo_handle for path, entry in self._linked_entries.items()}
 
     def has_prior_commits(self) -> bool:
         """Return `True` if the hub repo already exists with at least one commit."""
@@ -462,6 +493,10 @@ class ContextHubBackend(BackendProtocol):
     def read(self, file_path: str, offset: int = 0, limit: int = 2000) -> ReadResult:
         """Read file content for the requested line range.
 
+        Inside a LangSmith trace, each read also records a `context_hub_read`
+        child span whose metadata carries the file's Context Hub provenance
+        (repo, linked source, commit, skill, and status) but never its content.
+
         Args:
             file_path: Absolute file path.
             offset: 0-indexed starting line.
@@ -470,18 +505,72 @@ class ContextHubBackend(BackendProtocol):
         Returns:
             `ReadResult` with raw (unformatted) content.
         """
+        parent = get_current_run_tree()
+        if parent is None:
+            return self._read(file_path, offset, limit)[0]
+        inputs = {"file_path": file_path, "offset": offset, "limit": limit}
+        with trace(_READ_SPAN_NAME, inputs=inputs, parent=parent) as run:
+            result, provenance = self._read(file_path, offset, limit)
+            run.add_metadata(provenance)
+            run.end(outputs={"status": provenance["context_hub_status"]}, error=result.error)
+        return result
+
+    def _read(self, file_path: str, offset: int, limit: int) -> tuple[ReadResult, _Provenance]:
         hub_path = self._strip_prefix(file_path)
         try:
-            cache = self._ensure_cache()
+            content, provenance = self._read_snapshot(hub_path)
         except LangSmithError as exc:
             logger.exception("Hub pull failed for %r", self._identifier)
-            return ReadResult(error=f"Hub unavailable: {exc}")
-        content = cache.get(hub_path)
+            provenance = {"context_hub_repo": self._identifier, "context_hub_path": hub_path, "context_hub_status": "error"}
+            return ReadResult(error=f"Hub unavailable: {exc}"), provenance
         if content is None:
-            return ReadResult(error=f"File '{file_path}' not found")
+            provenance["context_hub_status"] = "not_found"
+            return ReadResult(error=f"File '{file_path}' not found"), provenance
 
-        file_data = create_file_data(content)
-        return slice_read_response(file_data, offset, limit)
+        result = slice_read_response(create_file_data(content), offset, limit)
+        provenance["context_hub_status"] = "success" if result.error is None else "error"
+        return result, provenance
+
+    def _read_snapshot(self, hub_path: str) -> tuple[str | None, _Provenance]:
+        """Return the visible content and provenance of `hub_path` from one locked snapshot."""
+        with self._mutations.condition:
+            cached = self._cache is not None
+            files = self._visible_cache_locked()
+            provenance = self._provenance_locked(hub_path, files)
+        provenance["context_hub_cached"] = cached
+        return files.get(hub_path), provenance
+
+    def _provenance_locked(self, hub_path: str, files: dict[str, str]) -> _Provenance:
+        link = self._innermost_link_locked(hub_path)
+        provenance: _Provenance = {"context_hub_repo": self._identifier, "context_hub_path": hub_path}
+        if self._commit_hash is not None:
+            provenance["context_hub_commit_hash"] = self._commit_hash
+        provenance["context_hub_source_repo"] = self._identifier
+        source_commit = self._commit_hash
+        if link is not None:
+            link_path, entry = link
+            provenance["context_hub_link_path"] = link_path
+            provenance["context_hub_link_type"] = entry.type
+            provenance["context_hub_source_repo"] = f"{entry.owner}/{entry.repo_handle}" if entry.owner else entry.repo_handle
+            source_commit = entry.commit_hash
+        if self._has_local_change_locked(hub_path):
+            provenance["context_hub_unsynced"] = True
+        elif source_commit is not None:
+            provenance["context_hub_source_commit_hash"] = source_commit
+        provenance.update(_skill_provenance(hub_path, files, link))
+        return provenance
+
+    def _innermost_link_locked(self, hub_path: str) -> tuple[str, _LinkedEntry] | None:
+        """Return the deepest linked entry containing `hub_path`; linked trees nest by path."""
+        paths = [path for path in self._linked_entries if hub_path.startswith(path.rstrip("/") + "/")]
+        if not paths:
+            return None
+        path = max(paths, key=len)
+        return path, self._linked_entries[path]
+
+    def _has_local_change_locked(self, hub_path: str) -> bool:
+        queue = self._mutations
+        return any(hub_path in mutation.changes for mutation in (*queue.in_flight, *queue.pending))
 
     def write(self, file_path: str, content: str) -> WriteResult:
         """Commit `content` to `file_path`."""

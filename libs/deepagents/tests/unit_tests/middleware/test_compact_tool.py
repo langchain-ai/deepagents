@@ -243,7 +243,7 @@ class TestCompactSuccess:
             patch.object(summ, "_determine_cutoff_index", return_value=4),
             patch.object(summ, "_partition_messages", side_effect=lambda msgs, idx: (msgs[:idx], msgs[idx:])),
             patch.object(summ, "_offload_to_backend", return_value="/conversation_history/session_abc123.md"),
-            patch.object(summ._lc_helper, "_trim_messages_for_summary", side_effect=lambda msgs: msgs),
+            patch.object(summ._lc_helper, "_trim_messages_for_summary", side_effect=lambda msgs, **_: msgs),
         ):
             result = mw._run_compact(runtime)
 

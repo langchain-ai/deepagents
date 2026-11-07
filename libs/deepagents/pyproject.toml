@@ -73,6 +73,11 @@ test = [
 requires = ["setuptools>=83.0.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
+[tool.uv.sources]
+# Temporary: langchain-ai/langchain#41696 (summarize with each call's model) is unreleased.
+# Replace with a `langchain` minimum bump once it ships.
+langchain = { git = "https://github.com/langchain-ai/langchain", subdirectory = "libs/langchain_v1", branch = "mdrxy/langchain/summarize-with-call-model" }
+
 [tool.setuptools.package-data]
 "*" = ["py.typed", "*.md"]
 
@@ -152,6 +157,9 @@ filterwarnings = [
     # at import time, which Python 3.14 deprecates. Nothing here can act on it --
     # it fires before any of our code runs and is fixed by upgrading the SDK.
     "ignore:'_UnionGenericAlias' is deprecated:DeprecationWarning:google\\.genai\\.types",
+    # LangChain warns when a pinned summarization `model=` differs from the call's
+    # model. Test fakes report no model name, so the same model reads as different.
+    "ignore:`SummarizationMiddleware` is pinned to:UserWarning",
     # pytest-benchmark warns during pytest configuration when xdist is active.
     "ignore:Benchmarks are automatically disabled:pytest_benchmark.logger.PytestBenchmarkWarning",
 ]

@@ -3276,9 +3276,10 @@ async def test_async_offload_and_summary_run_concurrently() -> None:
 
     async def slow_summary(
         msgs: Any,  # noqa: ANN401
+        context: Any = None,  # noqa: ANN401
     ) -> str:
         await asyncio.sleep(delay)
-        return await original_summary(msgs)
+        return await original_summary(msgs, context)
 
     middleware._aoffload_to_backend = slow_offload  # type: ignore[assignment]
     middleware._acreate_summary = slow_summary  # type: ignore[assignment]

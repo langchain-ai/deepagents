@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Annotated, Any, Literal, NotRequired, TypedDic
 
 from langchain.agents import create_agent
 from langchain.agents.middleware import HumanInTheLoopMiddleware, InterruptOnConfig
+from langchain.agents.middleware.model_selection import MODEL_SELECTION_KEY
 from langchain.agents.middleware.types import (
     AgentMiddleware,
     ContextT,
@@ -58,6 +59,7 @@ _FORK_EXCLUDED_STATE_KEYS = frozenset(
         SUMMARIZATION_EVENT_KEY,
         SUMMARIZATION_SESSION_ID_KEY,
         _SKILL_TOOLS_DISCLOSED_KEY,
+        MODEL_SELECTION_KEY,
     }
 )
 """State a fork must not resume.
@@ -65,7 +67,8 @@ _FORK_EXCLUDED_STATE_KEYS = frozenset(
 The summarization event is folded into the fork's messages instead. Dropping the
 session ID lets the subagent generate its own, and dropping a prior structured response
 ensures it cannot be mistaken for the fork's result. The disclosed skill tools
-describe the parent's last model call; the fork records its own. Skills the parent
+describe the parent's last model call, as does `model_selection`; the fork records
+its own. Skills the parent
 has yet to pin are the parent's own. The rubric grades the parent's whole goal,
 not the fork's task.
 """
@@ -437,6 +440,7 @@ _EXCLUDED_STATE_KEYS = {
     _SKILL_TOOLS_DISCLOSED_KEY,
     _FORKED_CONTEXT_KEY,
     _RUBRIC_KEY,
+    MODEL_SELECTION_KEY,
 }
 """State keys that are excluded when passing state to subagents and when
 returning updates from subagents.

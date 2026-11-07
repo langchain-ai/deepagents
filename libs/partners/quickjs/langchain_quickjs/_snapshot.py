@@ -5,12 +5,13 @@ entirety on every turn. Persisting it through a plain ``LastValue`` channel
 copies the whole payload (~1.4 MB in practice) into every checkpoint, so
 checkpoint storage grows linearly with thread length.
 
-Empirically the heap is ~98-100% byte-stable between consecutive turns, so a
-binary diff (``bsdiff4``) between successive snapshots is tiny (~200 B-1 KB vs
-1.4 MB, a ~1000x reduction). We therefore store a *patch chain* on a
-``DeltaChannel``: each turn writes one record describing the delta from the
-previous snapshot, and the channel's bulk reducer (:func:`replay_snapshot_chain`)
-replays the chain back into the full snapshot bytes on reconstruction.
+Empirically the heap is ~98-100% byte-stable between consecutive turns, so the
+256-byte pages that changed between successive snapshots compress to a few KB
+vs 1.4 MB. We therefore store a *patch chain* on a `DeltaChannel`: each turn
+writes one record describing the delta from the previous snapshot, and the
+channel's bulk reducer (:func:`replay_snapshot_chain`) replays the chain back
+into the full snapshot bytes on reconstruction. The channel stores a full value
+every `snapshot_frequency` updates, which bounds the chain a replay walks.
 
 A write is one of these records, a plain ``(kind, blob)`` 2-tuple of primitives
 (the serializer round-trips it as a list, so the reducer accepts either). The
@@ -18,7 +19,7 @@ kind is a bare string so the record serializes through msgpack with no
 custom/unregistered type:
 
     ("snap",  full_snapshot_bytes)  -- anchor; ignores the running base
-    ("patch", bsdiff4_patch_bytes)  -- delta applied to the running base
+    ("patch", bsdiff4_patch_bytes)  -- older delta format, still replayed
     ("pages", changed_pages_bytes)  -- delta applied to the running base
     ("clear", b"")                  -- reset the running base to empty
 """
@@ -26,7 +27,6 @@ custom/unregistered type:
 from __future__ import annotations
 
 import hmac
-import logging
 import struct
 import zlib
 from hashlib import sha256
@@ -36,8 +36,6 @@ import bsdiff4
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
-
-logger = logging.getLogger(__name__)
 
 SNAP = "snap"
 PATCH = "patch"
@@ -81,7 +79,7 @@ def sign_snapshot(key: bytes, payload: bytes, thread_id: str) -> bytes:
     full heap serialization) bound to ``thread_id``, so a valid snapshot for one
     thread cannot be replayed into another by a state-store adversary. This is
     signed before the payload is delta-encoded (``encode_snapshot``) and flushed
-    onto the ``bsdiff`` patch chain; verification recomputes the tag over the
+    onto the patch chain; verification recomputes the tag over the
     materialized bytes the chain replays back to.
     """
     return hmac.new(key, _signed_message(payload, thread_id), sha256).digest()
@@ -219,22 +217,15 @@ def encode_snapshot(payload: bytes, prior: bytes) -> SnapshotRecord:
     and time travel.
 
     Returns:
-      * ``("snap", payload)`` when there is no usable prior, or when the bsdiff
-        patch would not be smaller than a fresh anchor;
-      * ``("patch", diff)`` otherwise.
+      * ``("snap", payload)`` when there is no usable prior, or when the page
+        diff would not be smaller than a fresh anchor;
+      * ``("pages", diff)`` otherwise.
     """
     if not prior:
         return (SNAP, payload)
-    try:
-        patch = bsdiff4.diff(prior, payload)
-    except Exception:  # noqa: BLE001  # never let diffing break the turn
-        logger.warning(
-            "Failed to diff QuickJS snapshot; storing full anchor",
-            exc_info=True,
-        )
-        return (SNAP, payload)
+    patch = _diff_pages(prior, payload)
     # A patch only pays off when it is smaller than re-anchoring; otherwise
     # store the full snapshot so the chain stays compact and self-healing.
     if len(patch) >= len(payload):
         return (SNAP, payload)
-    return (PATCH, patch)
+    return (PAGES, patch)

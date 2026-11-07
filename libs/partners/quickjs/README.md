@@ -92,7 +92,7 @@ fib(10)  // 55
 
 The REPL runs in a QuickJS context with **no ambient capabilities**. There is no filesystem, no network, no `fetch`, no `require`, no real clock (`Date.now()` is whatever QuickJS provides, not wall-clock for security-sensitive uses), no `process`, no `import` of anything you didn't explicitly install.
 
-Capabilities can be explicitly added using **PTC** to call into the agent's own tools (see below). Listing a file tool such as `read_file` in `ptc` also gives code a Node-style `fs`, whose every call is a call to that tool.
+Capabilities can be explicitly added using **PTC** to call into the agent's own tools (see below). Listing a file tool such as `read_file` in `ptc` also gives code a Node-style `fs`, whose every call is a call to that tool, along with `require("fs")`, `require("path")`, and `import("node:fs/promises")`.
 
 ### Console capture
 

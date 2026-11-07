@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import base64
+import json
+import posixpath
 from dataclasses import dataclass
 from importlib import resources
 from typing import TYPE_CHECKING, Any
@@ -49,11 +51,41 @@ _DECODERS: dict[str | None, Callable[[bytes], str | bytes]] = {
 }
 
 
+def _name(entry: dict[str, Any]) -> str:
+    return posixpath.basename(entry["path"].rstrip("/"))
+
+
+def _check_encoding(args: dict[str, Any], allowed: Collection[str | None]) -> None:
+    if args["encoding"] not in allowed:
+        msg = f"The argument 'encoding' is invalid. Received {args['encoding']!r}"
+        raise ValueError(msg)
+
+
+def _read(args: dict[str, Any]) -> dict[str, Any]:
+    _check_encoding(args, _DECODERS)
+    return {"file_path": args["path"]}
+
+
+def _stat(args: dict[str, Any], raw: Any) -> dict[str, Any]:
+    """Find the path among its parent's entries; size and mtime are best-effort."""
+    name = posixpath.basename(args["path"])
+    for entry in raw["entries"]:
+        if _name(entry) == name:
+            size, mtime = entry.get("size"), entry.get("modified_at")
+            return {"isDir": entry["is_dir"], "size": size, "mtime": mtime}
+    raise FileNotFoundError
+
+
+def _globbed(args: dict[str, Any], raw: Any) -> dict[str, Any]:
+    paths = [posixpath.relpath(p, args["path"]) for p in raw["paths"]]
+    return {"paths": paths, "truncated": raw["truncated"]}
+
+
 _OPERATIONS = {
     "readFile": _Operation(
         tool="read_file",
         syscall="open",
-        arguments=lambda a: {"file_path": a["path"]},
+        arguments=_read,
         value=lambda a, raw: _DECODERS[a["encoding"]](raw["content"]),
         doc=(
             '- `fs.readFileSync(path, "utf8")` returns the whole file as a string, '
@@ -61,6 +93,40 @@ _OPERATIONS = {
             '`JSON.parse(fs.readFileSync("/config.json", "utf8"))`. Without an '
             "encoding it returns a `Uint8Array` whose `toString()` decodes UTF-8; "
             '`"base64"` also works.'
+        ),
+    ),
+    "readdir": _Operation(
+        tool="ls",
+        syscall="scandir",
+        arguments=lambda a: {"path": a["path"]},
+        value=lambda _, raw: [
+            {"name": _name(e), "isDir": e["is_dir"]} for e in raw["entries"]
+        ],
+        doc=(
+            "- `fs.readdirSync(dir)` lists entry names; with `{ withFileTypes: true }` "
+            "it returns entries with `name`, `isFile()`, and `isDirectory()`. "
+            "`fs.existsSync(path)` checks a path."
+        ),
+    ),
+    "glob": _Operation(
+        tool="glob",
+        syscall="glob",
+        arguments=lambda a: {"pattern": a["pattern"], "path": a["path"]},
+        value=_globbed,
+        doc=(
+            "- `fs.globSync(pattern, { cwd })`, or `for await` over "
+            "`fs.promises.glob`, finds files the way your glob tool does."
+        ),
+    ),
+    "stat": _Operation(
+        tool="ls",
+        syscall="stat",
+        arguments=lambda a: {"path": posixpath.dirname(a["path"])},
+        value=_stat,
+        doc=(
+            "- `fs.statSync(path)` gives `isFile()`, `isDirectory()`, and `size` and "
+            "`mtime` when known; `fs.accessSync(path)` throws `ENOENT` if it is "
+            "missing."
         ),
     ),
 }
@@ -92,14 +158,15 @@ def request(
 ) -> tuple[BaseTool, dict[str, Any]] | list[Any]:
     """Return the tool and arguments for one `fs` call, or the error to throw."""
     operation = _OPERATIONS[op]
-    if args.get("encoding") not in _DECODERS:
-        msg = f"The argument 'encoding' is invalid. Received {args['encoding']!r}"
-        return [1, "ERR_INVALID_ARG_VALUE", msg, {"name": "TypeError"}]
+    try:
+        arguments = operation.arguments(args)
+    except ValueError as e:
+        return [1, "ERR_INVALID_ARG_VALUE", str(e), {"name": "TypeError"}]
     tool = tools.get(operation.tool)
     if tool is None:
         detail = f"function not implemented; add {operation.tool!r} to `ptc`"
         return _error("ENOSYS", detail, op, args)
-    return tool, operation.arguments(args)
+    return tool, arguments
 
 
 def response(op: str, args: dict[str, Any], result: CallResult) -> list[Any]:
@@ -109,6 +176,8 @@ def response(op: str, args: dict[str, Any], result: CallResult) -> list[Any]:
         return _error(*_failure(result), op, args)
     try:
         return [0, operation.value(args, result.artifact)]
+    except FileNotFoundError:
+        return _error(*_NODE_ERRORS["file_not_found"], op, args)
     except (KeyError, TypeError):
         if result.artifact is None:
             detail = f"the {operation.tool} tool returned no raw result for fs"
@@ -131,6 +200,69 @@ def _error(code: str, detail: str, op: str, args: dict[str, Any]) -> list[Any]:
     path = args.get("path", "/")
     message = f"{code}: {detail}, {syscall} '{path}'"
     return [1, code, message, {"syscall": syscall, "path": path}]
+
+
+_MODULE_EXPORTS = {
+    "node:fs": (
+        "readFileSync",
+        "readdirSync",
+        "existsSync",
+        "globSync",
+        "statSync",
+        "lstatSync",
+        "accessSync",
+        "promises",
+    ),
+    "node:fs/promises": ("readFile", "readdir", "glob", "stat", "lstat", "access"),
+    "node:path": (
+        "isAbsolute",
+        "normalize",
+        "join",
+        "resolve",
+        "dirname",
+        "basename",
+        "extname",
+        "sep",
+        "posix",
+    ),
+}
+"""The names each module exports, which an ES module must list statically."""
+
+# QuickJS caches each module per context, while the shim installs a new `fs` every
+# eval, so each export looks up the running eval's module when it is called.
+_MODULE_SOURCE = """const names = %s;
+const values = {
+  "node:fs": () => ({ promises: forward("node:fs/promises") }),
+  "node:path": (m) => ({ sep: "/", posix: m }),
+};
+const forward = (id) => {
+  const m = Object.fromEntries(names[id].map((key) => [key, (...a) => {
+    const live = globalThis.__lc_fs?.[id];
+    if (live !== undefined) return live[key](...a);
+    const msg = "ENOSYS: function not implemented; list a file tool in `ptc`, ";
+    throw Object.assign(new Error(msg + key), { code: "ENOSYS" });
+  }]));
+  return Object.assign(m, values[id]?.(m));
+};
+const m = forward(%s);
+export default m;
+export const { %s } = m;
+"""
+
+
+def normalize_module(base: str, specifier: str) -> str | None:
+    """Resolve an `import()` specifier, such as `fs` or `node:fs`, or return `None`."""
+    del base
+    name = specifier if specifier.startswith("node:") else f"node:{specifier}"
+    return name if name in _MODULE_EXPORTS else None
+
+
+def load_module(name: str) -> str | None:
+    """Return the source of the ES module `normalize_module` named."""
+    if name not in _MODULE_EXPORTS:
+        return None
+    exports = ", ".join(_MODULE_EXPORTS[name])
+    return _MODULE_SOURCE % (json.dumps(_MODULE_EXPORTS), json.dumps(name), exports)
 
 
 SHIM = resources.files("langchain_quickjs").joinpath("_fs_shim.js").read_text("utf-8")

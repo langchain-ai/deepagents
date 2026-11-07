@@ -2,6 +2,13 @@
 
 # Deep Agents Changelog
 
+## [0.7.35](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.34...deepagents==0.7.35) (2026-11-07)
+
+
+### Bug Fixes
+
+* **sdk:** mark read_file media and Nemotron nudges as harness notifications ([#7589](https://github.com/langchain-ai/deepagents/issues/7589)) ([eb81f68](https://github.com/langchain-ai/deepagents/commit/eb81f68ca932217c9e3430b48dc047732e800d29))
+
 ## [0.7.34](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.33...deepagents==0.7.34) (2026-11-05)
 
 ### Bug Fixes

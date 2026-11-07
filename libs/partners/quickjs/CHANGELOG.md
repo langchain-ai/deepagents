@@ -4,16 +4,14 @@
 
 ## [0.3.12](https://github.com/langchain-ai/deepagents/compare/langchain-quickjs==0.3.11...langchain-quickjs==0.3.12) (2026-11-07)
 
-
 ### Features
 
-* **quickjs:** allow disabling the per-call `timeout` ([#6958](https://github.com/langchain-ai/deepagents/issues/6958)) ([3b992d2](https://github.com/langchain-ai/deepagents/commit/3b992d2d8dfa3bade91e612b2d6ef2dfb57603b6))
-
+- Added support for disabling the per-call `timeout` ([#6958](https://github.com/langchain-ai/deepagents/pull/6958)).
 
 ### Bug Fixes
 
-* **quickjs:** don't block interpreter shutdown in CodeInterpreterMiddleware.__del__ ([#7460](https://github.com/langchain-ai/deepagents/issues/7460)) ([6578cc1](https://github.com/langchain-ai/deepagents/commit/6578cc10b3fe5f81d423921b0ff8c82f63bb609f))
-* **quickjs:** resolve nested schema `$ref`s in PTC signatures ([#7441](https://github.com/langchain-ai/deepagents/issues/7441)) ([5829691](https://github.com/langchain-ai/deepagents/commit/5829691de8f43d201f9534fb731643223c0bbccc))
+- Fixed interpreter shutdown blocking in `CodeInterpreterMiddleware.__del__` ([#7460](https://github.com/langchain-ai/deepagents/pull/7460)).
+- Fixed resolution of nested schema `$ref`s in PTC signatures ([#7441](https://github.com/langchain-ai/deepagents/pull/7441)).
 
 ## [0.3.11](https://github.com/langchain-ai/deepagents/compare/langchain-quickjs==0.3.10...langchain-quickjs==0.3.11) (2026-10-27)
 

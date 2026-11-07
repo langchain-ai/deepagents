@@ -5,6 +5,7 @@ point for constructing a fully configured deep agent with planning, filesystem,
 subagent, and summarization middleware.
 """
 
+import os
 import logging
 from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, Annotated, Any, Required, cast
@@ -74,10 +75,22 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _messages_channel() -> object:
+    # PROTOTYPE: DEEPAGENTS_MESSAGES_CHANNEL=transcript selects TranscriptChannel.
+    if os.environ.get("DEEPAGENTS_MESSAGES_CHANNEL") == "transcript":
+        from langgraph.channels.transcript import TranscriptChannel  # noqa: PLC0415
+
+        return TranscriptChannel()
+    return DeltaChannel(_messages_delta_reducer, snapshot_frequency=50)
+
+
+_MESSAGES_CHANNEL = _messages_channel()
+
+
 class DeepAgentState(AgentState):
     """AgentState with `DeltaChannel` on messages to reduce checkpoint growth from O(N²) to O(N)."""
 
-    messages: Required[Annotated[list[AnyMessage], DeltaChannel(_messages_delta_reducer, snapshot_frequency=50)]]  # ty: ignore[invalid-argument-type]
+    messages: Required[Annotated[list[AnyMessage], _MESSAGES_CHANNEL]]  # ty: ignore[invalid-argument-type]
 
 
 _LEGACY_BASE_AGENT_PROMPT = """You are a deep agent, an AI assistant that helps users accomplish tasks using tools. You respond with text and tool calls. The user can see your responses and tool outputs in real time.

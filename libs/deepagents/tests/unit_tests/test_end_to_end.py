@@ -4527,6 +4527,35 @@ def test_invalid_tool_call_patched_on_next_turn() -> None:
     assert any(isinstance(m, ToolMessage) and m.tool_call_id == "call_truncated" for m in result["messages"])
 
 
+def test_dangling_tool_call_appended_to_state_and_paired_in_request() -> None:
+    fake_model = FakeChatModelWithHistory(messages=iter([AIMessage(content="Done.", id="a2"), AIMessage(content="Still done.", id="a3")]))
+    agent = create_deep_agent(model=fake_model, checkpointer=InMemorySaver())
+    config: dict = {"configurable": {"thread_id": "patch-dangling-tool-calls"}}
+    history = [
+        HumanMessage(content="List the files", id="h1"),
+        AIMessage(content="", tool_calls=[{"id": "call_lost", "name": "ls", "args": {"path": "/"}}], id="a1"),
+        HumanMessage(content="Never mind, say done", id="h2"),
+    ]
+
+    result = agent.invoke({"messages": history}, config)
+
+    stored = result["messages"]
+    assert [m.id for m in stored[:3]] == ["h1", "a1", "h2"]
+    recorded = stored[3]
+    assert isinstance(recorded, ToolMessage)
+    assert recorded.tool_call_id == "call_lost"
+    assert recorded.status == "error"
+    assert stored[4].id == "a2"
+
+    model_inputs = [m for m in fake_model.call_history[0]["messages"] if m.type != "system"]
+    assert [m.id for m in model_inputs] == ["h1", "a1", recorded.id, "h2"]
+
+    second = agent.invoke({"messages": [HumanMessage(content="again", id="h3")]}, config)
+    assert sum(isinstance(m, ToolMessage) for m in second["messages"]) == 1
+    model_inputs = [m for m in fake_model.call_history[1]["messages"] if m.type != "system"]
+    assert [m.id for m in model_inputs] == ["h1", "a1", recorded.id, "h2", "a2", "h3"]
+
+
 _OVERFLOW_INPUT_CHAR_THRESHOLD = 50_000
 
 

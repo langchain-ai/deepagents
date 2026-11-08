@@ -2,18 +2,26 @@
 
 from __future__ import annotations
 
+import json
+import os
+import stat
 from contextvars import ContextVar
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, TypedDict
 from uuid import UUID, uuid4
 
 from langchain_core.messages import BaseMessage
 
+from deepagents_code.hooks.client import HookFulfillmentLedger
+from deepagents_code.hooks.engine import HookEngine
 from deepagents_code.hooks.interrupt import build_hook_resume_value, parse_hook_interrupt_payload
+from deepagents_code.hooks.loading import FileHooksSource, load_hooks_config
 from deepagents_code.hooks.models.domain import AgentIdentity
 from deepagents_code.hooks.models.transport import HookInvocationResponse
+from deepagents_code.hooks.presenter import HookPresenter
 from deepagents_code.hooks.runtime import HooksRuntime
 from deepagents_code.hooks.server_middleware import hook_permission_behavior
+from deepagents_code.hooks.snapshot import HooksSnapshot
 from deepagents_talon.hook_transcripts import TRANSCRIPT_LOCK, ConversationTranscripts
 
 if TYPE_CHECKING:
@@ -26,6 +34,31 @@ if TYPE_CHECKING:
 
 _SUPPORTED_EVENTS = {"PreToolUse", "PostToolUse", "PostToolUseFailure", "Stop"}
 ACTIVE_HOOKS: ContextVar[TalonHooks | None] = ContextVar("talon_hooks", default=None)
+
+
+def _load_snapshot(home: Path, cwd: Path) -> HooksSnapshot | None:
+    path = home.resolve() / "hooks.json"
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except FileNotFoundError:
+        return None
+    with os.fdopen(descriptor, "rb") as stream:
+        if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+            msg = "Hooks configuration must be a regular file"
+            raise ValueError(msg)
+        document = json.load(stream)
+    loaded = load_hooks_config(
+        project_root=cwd,
+        workspace_trusted=False,
+        paths=(),
+        documents=((FileHooksSource(location=str(path)), document),),
+    )
+    return HooksSnapshot.from_config(
+        loaded.config,
+        groups=loaded.groups,
+        diagnostics=loaded.diagnostics,
+        snapshot_id=loaded.snapshot_id,
+    )
 
 
 def hook_approval_required(request: ToolCallRequest) -> bool:
@@ -71,17 +104,22 @@ class TalonHooks:
     @classmethod
     def load(cls, home: Path, cwd: Path, thread_id: str) -> TalonHooks | None:
         """Load trusted assistant hooks once per turn, excluding workspace hooks."""
-        if not (home / "hooks.json").is_file():
+        snapshot = _load_snapshot(home, cwd)
+        if snapshot is None:
             return None
         with TRANSCRIPT_LOCK:
             transcripts = ConversationTranscripts(home, thread_id, reopen=True)
-            runtime = HooksRuntime.create(
-                cwd=cwd,
-                config_dir=home,
-                transcript_root=transcripts.root,
+            runtime = HooksRuntime(
+                snapshot=snapshot,
+                transcripts=transcripts,
+                engine=HookEngine(snapshot),
+                cwd=cwd.resolve(),
                 workspace_trusted=False,
+                project_hooks_loaded=False,
+                project_hooks_fingerprint=None,
+                presenter=HookPresenter(),
+                fulfillments=HookFulfillmentLedger(),
             )
-            runtime = replace(runtime, transcripts=transcripts)
         runtime.presenter.present_diagnostics(runtime.snapshot.diagnostics)
         return cls(
             runtime=runtime,

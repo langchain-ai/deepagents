@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import shlex
 import sys
 from pathlib import Path
@@ -251,6 +252,77 @@ async def test_workspace_hooks_are_not_loaded(
 
     assert not log.exists()
     assert "original" in (await tool_results(runtime))[0].content
+
+
+@pytest.mark.parametrize("target_dir", ["workspace/.deepagents", "outside"])
+async def test_symlinked_home_hooks_are_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, target_dir: str
+) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    source = tmp_path / target_dir
+    log = configure_hooks(source, ["PreToolUse"])
+    (home / "hooks.json").symlink_to(source / "hooks.json")
+    runtime = make_runtime(home, monkeypatch)
+    runtime.env["DEEPAGENTS_TALON_WORKSPACE"] = str(tmp_path / "workspace")
+    (tmp_path / "workspace").mkdir(exist_ok=True)
+    await runtime.start()
+
+    with pytest.raises(OSError, match="Too many levels of symbolic links"):
+        await runtime.invoke(AgentRequest(conversation_id="chat", text="run"))
+
+    assert not log.exists()
+
+
+@pytest.mark.parametrize("swap_before_open", [True, False])
+def test_hooks_path_substitution_does_not_load_workspace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, swap_before_open: bool
+) -> None:
+    home = tmp_path / "home"
+    configure_hooks(home, [])
+    workspace = tmp_path / "workspace"
+    configure_hooks(workspace / ".deepagents", ["PreToolUse"])
+    path = home / "hooks.json"
+    original_open = os.open
+
+    def substitute(candidate, flags, mode=0o777, *, dir_fd=None):
+        if candidate != path:
+            return original_open(candidate, flags, mode, dir_fd=dir_fd)
+        if swap_before_open:
+            path.unlink()
+            path.symlink_to(workspace / ".deepagents" / "hooks.json")
+            return original_open(candidate, flags, mode, dir_fd=dir_fd)
+        descriptor = original_open(candidate, flags, mode, dir_fd=dir_fd)
+        path.unlink()
+        path.symlink_to(workspace / ".deepagents" / "hooks.json")
+        return descriptor
+
+    monkeypatch.setattr(os, "open", substitute)
+    if swap_before_open:
+        with pytest.raises(OSError, match="Too many levels of symbolic links"):
+            TalonHooks.load(home, workspace, "chat")
+    else:
+        hooks = TalonHooks.load(home, workspace, "chat")
+        assert hooks is not None
+        assert hooks.runtime.configured_server_events() == ()
+        assert not hooks.runtime.project_hooks_loaded
+
+
+@pytest.mark.parametrize("kind", ["directory", "fifo", "dangling"])
+def test_nonregular_hooks_are_rejected(tmp_path: Path, kind: str) -> None:
+    path = tmp_path / "hooks.json"
+    if kind == "directory":
+        path.mkdir()
+    elif kind == "fifo":
+        os.mkfifo(path)
+    else:
+        path.symlink_to(tmp_path / "missing")
+    with pytest.raises((OSError, ValueError)):
+        TalonHooks.load(tmp_path, tmp_path, "chat")
+
+
+def test_missing_hooks_are_optional(tmp_path: Path) -> None:
+    assert TalonHooks.load(tmp_path, tmp_path, "chat") is None
 
 
 async def test_concurrent_turns_keep_hook_contexts_separate(

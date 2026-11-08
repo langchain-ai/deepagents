@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import stat
+from collections.abc import Mapping
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, TypedDict
@@ -15,7 +16,8 @@ from langchain_core.messages import BaseMessage
 from deepagents_code.hooks.client import HookFulfillmentLedger
 from deepagents_code.hooks.engine import HookEngine
 from deepagents_code.hooks.interrupt import build_hook_resume_value, parse_hook_interrupt_payload
-from deepagents_code.hooks.loading import FileHooksSource, parse_hooks_document
+from deepagents_code.hooks.loading import FileHooksSource, load_hooks_config
+from deepagents_code.hooks.migration import is_legacy_hooks_document, migrate_legacy_hooks
 from deepagents_code.hooks.models.config import HooksConfig
 from deepagents_code.hooks.models.domain import AgentIdentity, HookDiagnostic
 from deepagents_code.hooks.models.transport import HookInvocationResponse
@@ -32,6 +34,7 @@ if TYPE_CHECKING:
     from langchain.tools.tool_node import ToolCallRequest
 
     from deepagents_code.hooks.models.transport import HookInvocationRequest
+    from deepagents_code.json_types import JsonValue
 
 _SUPPORTED_EVENTS = {"PreToolUse", "PostToolUse", "PostToolUseFailure", "Stop"}
 ACTIVE_HOOKS: ContextVar[TalonHooks | None] = ContextVar("talon_hooks", default=None)
@@ -61,7 +64,7 @@ def _load_snapshot(home: Path) -> HooksSnapshot | None:
                     ),
                 ),
             )
-    config, diagnostics = parse_hooks_document(document, path)
+    config, diagnostics = _parse_hooks_document(document, path)
     config = config if config is not None else HooksConfig(hooks={})
     source = FileHooksSource(location=str(path))
     return HooksSnapshot.from_config(
@@ -72,6 +75,72 @@ def _load_snapshot(home: Path) -> HooksSnapshot | None:
         },
         diagnostics=diagnostics,
     )
+
+
+def _parse_hooks_document(
+    data: JsonValue, path: Path
+) -> tuple[HooksConfig | None, tuple[HookDiagnostic, ...]]:
+    """Validate decoded file configuration, including legacy migration.
+
+    Args:
+        data: Decoded file document.
+        path: Source location for diagnostics.
+
+    Returns:
+        Validated configuration and diagnostics.
+    """
+    if is_legacy_hooks_document(data):
+        hooks = data.get("hooks", []) if isinstance(data, dict) else []
+        if not isinstance(hooks, list):
+            diagnostics = (
+                HookDiagnostic(
+                    code="invalid_config",
+                    severity="warning",
+                    message=f"Legacy hooks list missing at {path}",
+                    field=str(path),
+                ),
+            )
+            return None, diagnostics
+        legacy_entries: list[dict[str, object]] = [
+            {str(key): value for key, value in item.items()}
+            for item in hooks
+            if isinstance(item, Mapping)
+        ]
+        migrated = migrate_legacy_hooks(legacy_entries)
+        migration_message = (
+            f"Migrated semantically equivalent legacy hooks from {path}; "
+            "unsupported legacy events remain unmapped"
+            if migrated.hooks
+            else (
+                f"Legacy hooks at {path} contained no events that are safe to migrate to Hooks v2"
+            )
+        )
+        diagnostics = (
+            HookDiagnostic(
+                code="legacy_deprecated",
+                severity="warning",
+                message=(
+                    f"Legacy hooks configuration at {path} is deprecated and will "
+                    f"stop being supported on September 1, 2026"
+                ),
+                field=str(path),
+            ),
+            HookDiagnostic(
+                code="legacy_migrated" if migrated.hooks else "legacy_unmapped",
+                severity="warning",
+                message=migration_message,
+                field=str(path),
+            ),
+        )
+        return migrated, diagnostics
+
+    loaded = load_hooks_config(
+        project_root=path.parent,
+        workspace_trusted=False,
+        paths=(),
+        documents=((FileHooksSource(location=str(path)), data),),
+    )
+    return loaded.config, loaded.diagnostics
 
 
 def hook_approval_required(request: ToolCallRequest) -> bool:

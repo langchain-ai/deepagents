@@ -85,6 +85,20 @@ media = [
     "torchaudio>=2.11.1",
     "transformers>=5.22.1",
 ]
+# Same as `media`, but on Linux torch/torchaudio come from the PyTorch CPU index
+# instead of PyPI's CUDA build (several GB of nvidia-*/triton wheels). Use
+# `media-cpu` on GPU-less Linux hosts such as small VMs; use `media` when you
+# want CUDA. The two extras conflict, so install one or the other. On macOS
+# both resolve to the same PyPI wheels.
+media-cpu = [
+    "deepagents-code[media]>=0.2.5,<1.0.0",
+    "librosa>=1.0.0",
+    "numpy>=2.5.4",
+    "phonemizer>=3.5.0",
+    "torch>=2.15.0",
+    "torchaudio>=2.11.1",
+    "transformers>=5.22.1",
+]
 
 [project.scripts]
 deepagents-talon = "deepagents_talon.__main__:main"
@@ -111,6 +125,12 @@ test = [
 
 [tool.uv]
 package = true
+conflicts = [[{ extra = "media" }, { extra = "media-cpu" }]]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
 
 [tool.hatch.build.targets.wheel]
 packages = ["deepagents_talon"]
@@ -125,6 +145,8 @@ artifacts = [
 [tool.uv.sources]
 deepagents = { path = "../deepagents", editable = true }
 deepagents-code = { path = "../code", editable = true }
+torch = [{ index = "pytorch-cpu", extra = "media-cpu", marker = "sys_platform == 'linux'" }]
+torchaudio = [{ index = "pytorch-cpu", extra = "media-cpu", marker = "sys_platform == 'linux'" }]
 
 [tool.ty.environment]
 extra-paths = ["../deepagents", "../code"]

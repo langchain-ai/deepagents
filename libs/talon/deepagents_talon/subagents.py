@@ -322,6 +322,12 @@ def prepare_subagents(
             }
         )
         if "runnable" in original:
+            if any((interrupt_on or {}).values()):
+                msg = (
+                    f"Talon precompiled subagent {spec['name']!r} cannot enforce tool approval "
+                    "policy; supply a fresh subagent with explicit tools instead"
+                )
+                raise ValueError(msg)
             compiled = cast("CompiledSubAgent", original.copy())
             compiled.pop("mode", None)
             compiled["runnable"] = RunnableLambda(_task_only) | compiled["runnable"]

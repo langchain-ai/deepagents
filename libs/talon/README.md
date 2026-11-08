@@ -322,9 +322,13 @@ persist its parent directory rather than bind-mounting a single `tools.json`:
 updates use atomic file replacement. These controls are not a sandbox boundary.
 A shell running as the same UID can bypass the tool API and edit the file directly;
 filesystem isolation must be enforced separately. Talon-built local subagents inherit
-this policy for their attached tools. Local tool gates do not enforce policy inside
-opaque remote or precompiled graphs: `start_async_task` gates delegation, not the
-remote graph's internal calls.
+this policy for their attached tools. Embedding-supplied precompiled subagents are
+rejected whenever any tool approval is enabled, including the default policy: Talon
+cannot verify their internal tool calls or retrofit approval middleware. Supply a
+fresh subagent definition with explicit tools instead. Precompiled subagents remain
+supported when no approvals are enabled. Local tool gates do not enforce policy
+inside opaque remote graphs: `start_async_task` gates delegation, not the remote
+graph's internal calls.
 
 ## WhatsApp
 

@@ -85,6 +85,7 @@ from deepagents_talon.observability import (
     log_event,
     stable_log_ref,
 )
+from deepagents_talon.questions import ask_user, question_scope
 from deepagents_talon.subagents import (
     Attachment,
     LocalSubAgent,
@@ -107,6 +108,8 @@ if TYPE_CHECKING:
     from langchain.agents.middleware.types import AgentMiddleware
     from langchain_core.language_models import BaseChatModel
     from langgraph.types import Checkpointer
+
+    from deepagents_talon.questions import QuestionHandler
 
 logger = logging.getLogger(__name__)
 
@@ -777,6 +780,7 @@ class DeepAgentRuntime:
             )
             with (
                 progress_messages(request.message_handler, self.verbosity),
+                question_scope(_question_handler_from_request(request)),
                 _history_context(request),
             ):
                 async with (
@@ -1023,7 +1027,7 @@ class DeepAgentRuntime:
         self,
         runtime_tools: Sequence[BaseTool | Callable[..., object]] | None = None,
     ) -> list[BaseTool | Callable[..., object]]:
-        tools: list[BaseTool | Callable[..., object]] = [current_time, breakout]
+        tools: list[BaseTool | Callable[..., object]] = [current_time, breakout, ask_user]
         if self.verbosity > 1:
             guidance = {
                 2: " Use extremely sparingly: only for significant updates while working, "
@@ -1536,6 +1540,12 @@ def _approval_action_names(
 
 def _approval_handler_from_request(request: AgentRequest) -> ToolApprovalHandler | None:
     return request.approval_handler
+
+
+def _question_handler_from_request(request: AgentRequest) -> QuestionHandler | None:
+    if request.metadata.get("trigger") == "cron" or request.metadata.get("background_delivery"):
+        return None
+    return request.question_handler
 
 
 def _decision_payload(

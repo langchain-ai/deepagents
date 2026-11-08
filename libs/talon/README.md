@@ -27,7 +27,7 @@ AGENT_ASSISTANT_ID=local AGENT_MODEL=<provider>:<model-id> uv run deepagents-tal
 
 If `AGENT_MODEL` is unset, Talon starts with the echo runtime. This is useful for checking host lifecycle and channel wiring without provider credentials.
 
-Assistant state lives under `~/.deepagents/<assistant_id>/` by default. The host creates restrictive state directories for the materialized agent manifest, channel sessions, and cron jobs, and persists conversation checkpoints in `checkpoints.sqlite` so chat history survives restarts. Offloaded conversation history and large tool results live in the assistant home’s `artifacts/` directory. The default local execution workspace is the current working directory; set `DEEPAGENTS_TALON_WORKSPACE` to use a different directory. The per-invocation graph recursion limit defaults to `500`; set `DEEPAGENTS_TALON_RECURSION_LIMIT` to tune it.
+Assistant state lives under `~/.deepagents/<assistant_id>/` by default. The host creates restrictive state directories for the materialized agent manifest, channel sessions, and cron jobs, and persists conversation checkpoints in `checkpoints.sqlite` so chat history survives restarts. Offloaded conversation history and large tool results live in the assistant home's `artifacts/` directory. The default local execution workspace is the current working directory; set `DEEPAGENTS_TALON_WORKSPACE` to use a different directory. The per-invocation graph recursion limit defaults to `500`; set `DEEPAGENTS_TALON_RECURSION_LIMIT` to tune it.
 
 ## Checkpoint backends
 
@@ -253,7 +253,7 @@ A new message in a conversation cancels the active turn, records an interruption
 
 ## Local Agent Activity Logs
 
-Set `DEEPAGENTS_TALON_AGENT_ACTIVITY_LOGGING=true` to emit agent run, model activity, and tool call events to the local process logs at `INFO`. Tool inputs and outputs are redacted and truncated to 1,000 characters, but may still contain sensitive application data; enable these logs only where local log access is appropriately restricted. “Thinking” events report model-call lifecycle activity and do not expose hidden chain-of-thought.
+Set `DEEPAGENTS_TALON_AGENT_ACTIVITY_LOGGING=true` to emit agent run, model activity, and tool call events to the local process logs at `INFO`. Tool inputs and outputs are redacted and truncated to 1,000 characters, but may still contain sensitive application data; enable these logs only where local log access is appropriately restricted. "Thinking" events report model-call lifecycle activity and do not expose hidden chain-of-thought.
 
 ## Tool Approvals
 
@@ -322,9 +322,14 @@ persist its parent directory rather than bind-mounting a single `tools.json`:
 updates use atomic file replacement. These controls are not a sandbox boundary.
 A shell running as the same UID can bypass the tool API and edit the file directly;
 filesystem isolation must be enforced separately. Talon-built local subagents inherit
-this policy for their attached tools. Local tool gates do not enforce policy inside
-opaque remote or precompiled graphs: `start_async_task` gates delegation, not the
-remote graph's internal calls.
+this policy for their attached tools. Delegation to embedding-supplied precompiled
+subagents is refused whenever any tool approval is enabled, including the default
+policy: Talon cannot verify their internal tool calls or retrofit approval middleware.
+The parent conversation and policy-management tools remain available. Supply a fresh
+subagent definition with explicit tools instead. Precompiled subagents can run when
+no approvals are enabled. Local tool gates do not enforce policy
+inside opaque remote graphs: `start_async_task` gates delegation, not the remote
+graph's internal calls.
 
 ## WhatsApp
 

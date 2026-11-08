@@ -9,12 +9,21 @@ import shlex
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
+from uuid import uuid4
 
 import pytest
 from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.tools import tool
 
+from deepagents_code.hooks.loading import load_hooks_config
+from deepagents_code.hooks.models.domain import (
+    ApprovalMode,
+    HookContext,
+    HookEvent,
+    HookInvocation,
+    UserPromptSubmitEvent,
+)
 from deepagents_talon.hooks import ACTIVE_HOOKS, TalonHooks
 from deepagents_talon.interfaces import AgentRequest, ToolApprovalRequest
 from deepagents_talon.runtime import DeepAgentRuntime
@@ -319,6 +328,65 @@ def test_nonregular_hooks_are_rejected(tmp_path: Path, kind: str) -> None:
         path.symlink_to(tmp_path / "missing")
     with pytest.raises((OSError, ValueError)):
         TalonHooks.load(tmp_path, tmp_path, "chat")
+
+
+@pytest.mark.parametrize("content", [b"{broken", b"\xff", b'{"hooks": 1}'])
+async def test_invalid_hooks_preserve_diagnostics_and_allow_turns(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, content: bytes
+) -> None:
+    (tmp_path / "hooks.json").write_bytes(content)
+    expected = load_hooks_config(
+        project_root=tmp_path, config_dir=tmp_path, workspace_trusted=False
+    )
+    hooks = TalonHooks.load(tmp_path, tmp_path, "chat")
+    assert hooks is not None
+    assert hooks.runtime.snapshot.diagnostics == expected.diagnostics
+    assert hooks.runtime.snapshot_id == expected.snapshot_id
+    runtime = make_runtime(tmp_path, monkeypatch)
+    await runtime.start()
+
+    result = await runtime.invoke(AgentRequest(conversation_id="chat", text="run"))
+
+    assert result.text == "done"
+    assert "original" in (await tool_results(runtime))[0].content
+
+
+async def test_legacy_home_hooks_preserve_migration_and_execution(tmp_path: Path) -> None:
+    marker = tmp_path / "legacy.json"
+    command = [
+        sys.executable,
+        "-c",
+        "import pathlib,sys; pathlib.Path(sys.argv[1]).write_text(sys.stdin.read())",
+        str(marker),
+    ]
+    (tmp_path / "hooks.json").write_text(
+        json.dumps({"hooks": [{"events": ["session.start"], "command": command}]})
+    )
+    expected = load_hooks_config(
+        project_root=tmp_path, config_dir=tmp_path, workspace_trusted=False
+    )
+    hooks = TalonHooks.load(tmp_path, tmp_path, "chat")
+    assert hooks is not None
+    assert hooks.runtime.snapshot_id == expected.snapshot_id
+    assert hooks.runtime.snapshot.diagnostics == expected.diagnostics
+    assert {diagnostic.code for diagnostic in expected.diagnostics} == {
+        "legacy_deprecated",
+        "legacy_migrated",
+    }
+
+    await hooks.runtime.invoke(
+        HookInvocation(
+            context=HookContext(
+                thread_id="chat",
+                cwd=tmp_path,
+                prompt_id=uuid4(),
+                approval_mode=ApprovalMode.MANUAL,
+            ),
+            event=UserPromptSubmitEvent(event=HookEvent.USER_PROMPT_SUBMIT, prompt="run"),
+        )
+    )
+
+    assert json.loads(marker.read_text()) == {"event": "session.start", "thread_id": "chat"}
 
 
 def test_missing_hooks_are_optional(tmp_path: Path) -> None:

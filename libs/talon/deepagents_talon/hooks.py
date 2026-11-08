@@ -15,8 +15,9 @@ from langchain_core.messages import BaseMessage
 from deepagents_code.hooks.client import HookFulfillmentLedger
 from deepagents_code.hooks.engine import HookEngine
 from deepagents_code.hooks.interrupt import build_hook_resume_value, parse_hook_interrupt_payload
-from deepagents_code.hooks.loading import FileHooksSource, load_hooks_config
-from deepagents_code.hooks.models.domain import AgentIdentity
+from deepagents_code.hooks.loading import FileHooksSource, parse_hooks_document
+from deepagents_code.hooks.models.config import HooksConfig
+from deepagents_code.hooks.models.domain import AgentIdentity, HookDiagnostic
 from deepagents_code.hooks.models.transport import HookInvocationResponse
 from deepagents_code.hooks.presenter import HookPresenter
 from deepagents_code.hooks.runtime import HooksRuntime
@@ -36,7 +37,7 @@ _SUPPORTED_EVENTS = {"PreToolUse", "PostToolUse", "PostToolUseFailure", "Stop"}
 ACTIVE_HOOKS: ContextVar[TalonHooks | None] = ContextVar("talon_hooks", default=None)
 
 
-def _load_snapshot(home: Path, cwd: Path) -> HooksSnapshot | None:
+def _load_snapshot(home: Path) -> HooksSnapshot | None:
     path = home.resolve() / "hooks.json"
     try:
         descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
@@ -46,18 +47,30 @@ def _load_snapshot(home: Path, cwd: Path) -> HooksSnapshot | None:
         if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
             msg = "Hooks configuration must be a regular file"
             raise ValueError(msg)
-        document = json.load(stream)
-    loaded = load_hooks_config(
-        project_root=cwd,
-        workspace_trusted=False,
-        paths=(),
-        documents=((FileHooksSource(location=str(path)), document),),
-    )
+        try:
+            document = json.loads(stream.read().decode("utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            return HooksSnapshot.from_config(
+                HooksConfig(hooks={}),
+                diagnostics=(
+                    HookDiagnostic(
+                        code="config_read_failed",
+                        severity="warning",
+                        message=f"Failed to read hooks config at {path}: {exc}",
+                        field=str(path),
+                    ),
+                ),
+            )
+    config, diagnostics = parse_hooks_document(document, path)
+    config = config if config is not None else HooksConfig(hooks={})
+    source = FileHooksSource(location=str(path))
     return HooksSnapshot.from_config(
-        loaded.config,
-        groups=loaded.groups,
-        diagnostics=loaded.diagnostics,
-        snapshot_id=loaded.snapshot_id,
+        config,
+        groups={
+            event: tuple((source, group) for group in groups)
+            for event, groups in config.hooks.items()
+        },
+        diagnostics=diagnostics,
     )
 
 
@@ -104,7 +117,7 @@ class TalonHooks:
     @classmethod
     def load(cls, home: Path, cwd: Path, thread_id: str) -> TalonHooks | None:
         """Load trusted assistant hooks once per turn, excluding workspace hooks."""
-        snapshot = _load_snapshot(home, cwd)
+        snapshot = _load_snapshot(home)
         if snapshot is None:
             return None
         with TRANSCRIPT_LOCK:

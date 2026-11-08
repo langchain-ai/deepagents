@@ -5,7 +5,7 @@ description: Package graph, release and Python contracts, published dependency b
 tags: [architecture, monorepo, python, dependencies, releases]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-11-07T08:03:46.171Z
+    at: 2026-11-08T08:03:51.027Z
 sources:
   - id: openwiki-source-9a1c436646ef8c4f6dde787a
     resource: repo://.github/RELEASING.md
@@ -49,11 +49,13 @@ sources:
     resource: repo://libs/talon/pyproject.toml
   - id: openwiki-source-fdd0c2c3830b8e9a88502a57
     resource: repo://libs/talon/README.md
+  - id: openwiki-source-966f1489233b6fc6ee5f2e4c
+    resource: repo://libs/talon/uv.lock
   - id: openwiki-source-23775c3de52f3ab95a13cb8b
     resource: repo://README.md
   - id: openwiki-source-482fa4ca84f42b04ba025fc1
     resource: repo://release-please-config.json
-generated: { by: "openwiki/0.4.2", at: "2026-11-07T08:03:46.171Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-11-08T08:03:51.027Z" }
 ---
 
 # Repository Architecture Overview
@@ -122,9 +124,34 @@ flowchart TD
 
 *Solid edges are published package relationships; dotted edges are development-only `uv` substitutions.*
 
-ACP declares `deepagents` without a version bound and maps it to the editable SDK checkout. dcode publishes `deepagents==0.7.34`, ACP `>=0.0.13,<1.0.0`, and QuickJS `>=0.3.11,<0.4.0`; in its checkout it maps the SDK, ACP, and Daytona, Modal, QuickJS, Runloop, and Vercel partners editable. Talon publishes `deepagents>=0.7.34` and `deepagents-code>=0.2.5,<1.0.0`, then maps both sibling packages editable. Evals maps dcode by a **non-editable** path but maps the SDK and QuickJS editable; its published floors are `deepagents>=0.7.32`, `deepagents-code>=0.2.1`, and `langchain-quickjs>=0.3.3`. Each of the five partner packages publishes `deepagents>=0.7.34,<0.8.0` and maps the SDK editable.
+ACP declares `deepagents` without a version bound and maps it to the editable SDK checkout. dcode publishes `deepagents==0.7.34`, ACP `>=0.0.13,<1.0.0`, and QuickJS `>=0.3.11,<0.4.0`; in its checkout it maps the SDK, ACP, and Daytona, Modal, QuickJS, Runloop, and Vercel partners editable. Evals maps dcode by a **non-editable** path but maps the SDK and QuickJS editable; its published floors are `deepagents>=0.7.32`, `deepagents-code>=0.2.1`, and `langchain-quickjs>=0.3.3`. Each of the five partner packages publishes `deepagents>=0.7.34,<0.8.0` and maps the SDK editable.
 
-The SDK base distribution keeps AWS, QuickJS, and video capabilities in extras. Conversely, dcode installs QuickJS and `langsmith[sandbox]` normally, then offers optional sandbox extras for AgentCore, Daytona, Modal, OpenShell, Runloop, and Vercel; `all-sandboxes` aggregates them. Its retained `quickjs` extra is empty because QuickJS is already a normal dependency. Talon's history embedding, PostgreSQL, MongoDB, media, and OpenShell integrations are likewise optional packages. Extras select an implementation dependency; they do not transfer credentials, remote-resource lifecycle, or security responsibility into the SDK.
+### Talon's published host contract
+
+`deepagents-talon` `0.1.0` is a Python `>=3.14,<3.15` distribution. Its wheel requires both the SDK (`deepagents>=0.7.34`) and the terminal product (`deepagents-code>=0.2.5,<1.0.0`), plus the host-facing libraries it imports: `aiohttp`, `aiosqlite`, Discord and Slack clients, FastMCP/MCP, HTTP clients, YAML, LangChain/LangGraph and SQLite checkpoint packages. These are ordinary published requirements—not an instruction to install a monorepo checkout—and they make the package's channel, MCP, graph, and default SQLite functionality available to an installed Talon host.
+
+Talon keeps opt-in capability weight and credentials out of that base contract:
+
+| Capability | Talon extra | Installed dependency boundary |
+| --- | --- | --- |
+| Local semantic history | `history-local` | `sentence-transformers` and `transformers`. |
+| Remote semantic history | `history-voyage`, `history-openai` | Voyage integration/client, or the OpenAI-compatible LangChain integration. |
+| Remote persistence | `mongodb`, `postgres` | Matching LangGraph checkpoint/store implementation; PostgreSQL also installs `psycopg[binary]`. |
+| Sandbox provider | `openshell` | `deepagents-code[openshell]`, rather than a host implementation. |
+| Channel-media/transcription stack | `media` or `media-cpu` | dcode media support, audio/ML packages, and either ordinary PyPI wheels or the Linux CPU PyTorch index. |
+
+`media` and `media-cpu` are mutually exclusive `uv` extras. The latter selects the explicit `pytorch-cpu` index for `torch` and `torchaudio` only on Linux; it does not change what Talon's wheel publishes. The SDK base distribution similarly keeps AWS, QuickJS, and video support optional. Dcode instead installs QuickJS and `langsmith[sandbox]` normally, then offers optional sandbox extras for AgentCore, Daytona, Modal, OpenShell, Runloop, and Vercel; `all-sandboxes` aggregates them. Its retained `quickjs` extra is empty because QuickJS is already a normal dependency. Extras select implementation dependencies; they do not supply credentials, create remote resources, or make an integration a security boundary.
+
+### Talon checkout resolution and lock
+
+Talon's `[tool.uv.sources]` has exactly two sibling mappings: `deepagents = { path = "../deepagents", editable = true }` and `deepagents-code = { path = "../code", editable = true }`. Consequently, package-local `uv sync` resolves those two direct requirements to editable working trees. It does **not** publish those paths. Other dcode dependencies (such as ACP and QuickJS) can appear in Talon's generated closure because dcode itself has local source mappings; they are not Talon source mappings and must not be represented as Talon's direct wheel requirements.
+
+`libs/talon/uv.lock` is the generated, concrete development/CI resolution for `==3.14.*`, including the two editable local packages and extra-specific resolution markers. It records the `media`/`media-cpu` conflict; it is not a second dependency manifest and must not be hand-edited. From the repository root, use the package-local workflow described in [development](../operations/development.md):
+
+```bash
+uv sync --directory libs/talon --group test
+uv run --directory libs/talon pytest
+```
 
 ### Lockfile consequence
 
@@ -134,7 +161,7 @@ The lockfile tooling computes the transitive reverse-consumer closure of **all**
 python .github/scripts/checks/refresh_lockfiles.py libs/code/pyproject.toml
 ```
 
-A local checkout can test successfully even when the published range would not resolve for a downstream user. Review both the wheel requirement and source mapping when changing a manifest.
+A local checkout can test successfully even when the published range would not resolve for a downstream user. Review the wheel requirement, optional extra, source mapping, and generated package-local lock when changing a manifest.
 
 ## SDK construction and runtime ownership
 

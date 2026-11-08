@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:b9bd2d4022ea59e7e8ae0fda9945db2aa3158bc9dd5f8dc3c1916ecd9651181c",
+  "pageVersion": "sha256:cd31e643b74b52cf953056bf294ea98a49b2e981f4fdc0f61e869cb017d3e8dd",
   "claims": [
     {
       "id": "claim_7e77f7ec620944c29e36936e3abea92f",
@@ -36,7 +36,7 @@
         },
         {
           "resource": "repo://libs/talon/pyproject.toml",
-          "version": "repo-file-v1:sha256:7c2528b2610670e4631bf04379eef2b606a87935d3271789d342d6f5dc8384d6"
+          "version": "repo-file-v1:sha256:b59dc97a1fa7b36ae3e8b3644c66002714d6b118f5ab00eb9cf6248372a61e79"
         },
         {
           "resource": "repo://release-please-config.json",
@@ -66,7 +66,7 @@
         },
         {
           "resource": "repo://libs/talon/pyproject.toml",
-          "version": "repo-file-v1:sha256:7c2528b2610670e4631bf04379eef2b606a87935d3271789d342d6f5dc8384d6"
+          "version": "repo-file-v1:sha256:b59dc97a1fa7b36ae3e8b3644c66002714d6b118f5ab00eb9cf6248372a61e79"
         }
       ]
     },
@@ -120,7 +120,7 @@
         },
         {
           "resource": "repo://libs/talon/pyproject.toml",
-          "version": "repo-file-v1:sha256:7c2528b2610670e4631bf04379eef2b606a87935d3271789d342d6f5dc8384d6"
+          "version": "repo-file-v1:sha256:b59dc97a1fa7b36ae3e8b3644c66002714d6b118f5ab00eb9cf6248372a61e79"
         }
       ]
     },
@@ -340,7 +340,7 @@
         },
         {
           "resource": "repo://libs/talon/pyproject.toml",
-          "version": "repo-file-v1:sha256:7c2528b2610670e4631bf04379eef2b606a87935d3271789d342d6f5dc8384d6"
+          "version": "repo-file-v1:sha256:b59dc97a1fa7b36ae3e8b3644c66002714d6b118f5ab00eb9cf6248372a61e79"
         }
       ]
     },
@@ -369,10 +369,50 @@
           "version": "repo-lines-v1:sha256:59753dd7c72de680ab6677832087d119d3f17707663f9b1696cccaef208d5f7d:eyJzZWxlY3RlZExpbmVDb3VudCI6MzYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU5MjE4ZGM0Y2U5NzFjYmUzZDM4ZDc3NDMwZTYzOTkxODg4NGRkNzdkNzE4NGM3YjkzZGZkYzJlOTk4NjkxYjQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY5NDE2ZTA5Zjc4YmEzMTZjMDMyNTY4MjEzYjg1NWVlNzU2ZTQxNTY1ZDkxOGYwOTUxOWM4MWZkNjIwZjQwNjAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjJiMDgzNjZhNzNmY2E5ZmU0OTdlMmQyZWJmNDA1M2NmN2E1ZmY0Nzc3MTY0Yjc0ZjgxZjdkNzUyODU2YjQ2YjciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjU1NDViMzhhOWM0YzA0NzA4YTc3YWM5YTMyOWY4YTdkY2I1ODk1MDRhNGNhOGIxMTk5NThmNWM2ZTc1NThkODUifQ"
         }
       ]
+    },
+    {
+      "id": "claim_d6977a2da5db4b6a88a8f6e3c2d8c914",
+      "statement": "Talon publishes its channel, MCP, LangChain/LangGraph, and SQLite-host runtime requirements in the wheel base contract, while MongoDB, PostgreSQL, history embedding, OpenShell, and media capabilities remain optional extras; `media` and `media-cpu` are mutually exclusive.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/pyproject.toml#L126-L149",
+          "version": "repo-lines-v1:sha256:d759111c4a1fc5bca4f451d5b7bcd78b5f4018351ced4ddecf40c07134f08ff0:eyJzZWxlY3RlZExpbmVDb3VudCI6MjQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjgzYTAwOWYwY2E1NjM0Yjc3MDIwMjA5NDJmZDE4OWNkY2Q4NGIxNjdhYjgwMTUwMTI4ZTZmNWI1ZGJmMjQwMzEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjhhMGVjMzA2MTVhODZlNmE5NTAyYTY2MWMzMGVkMjk3NGQxYzAxYjY3ZTM0YjQ4MjhmNjhlZWRlM2U1NDllMTUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImIwZWI2ZjJjMjBlY2Q4NmY2YTM3ZjUxZGVkYWZjMjQzZWM1MWRkNGRlZGU1Y2M0ZDMxYTM1NzE4OTdlZTYzODIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjYzMmI5MzJkZDIyYWIzYTc1NWE1MWYwZWUzODNkMThiMDZkMDBmMmY1NmViODExOTcyMTU4YTRkYjc3OGNlOTAifQ"
+        },
+        {
+          "resource": "repo://libs/talon/pyproject.toml#L22-L101",
+          "version": "repo-lines-v1:sha256:3c1c058e530d1b8c067e0257eab63f5b4b7fb57c11a8dfd74224becc4010bc5f:eyJzZWxlY3RlZExpbmVDb3VudCI6ODAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFkOTVmNWU5ZWRlMDE4MTYwNDNjMDc5N2FjZThkYTJhYzRlOTlhOGE2YTYxMGZhOTg1NzBlZjM0YjkzNTYxMDkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY5NDE2ZTA5Zjc4YmEzMTZjMDMyNTY4MjEzYjg1NWVlNzU2ZTQxNTY1ZDkxOGYwOTUxOWM4MWZkNjIwZjQwNjAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjA5M2ViZjNhZWE3MzgxN2NmZTQzNmY4YTVhOWIxNGVhMDI4NmE2MmVhNDRhMWYyZTk4ZjUxODBhZTUyODNiY2MiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjU1NDViMzhhOWM0YzA0NzA4YTc3YWM5YTMyOWY4YTdkY2I1ODk1MDRhNGNhOGIxMTk5NThmNWM2ZTc1NThkODUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_96ca0ba1073440778457638ab41ead15",
+      "statement": "Talon's package-local lock targets Python 3.14, records its two editable sibling resolutions and the media-extra conflict, and is generated resolution data rather than published dependency metadata.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/pyproject.toml#L145-L149",
+          "version": "repo-lines-v1:sha256:fd2d560e1c3654ae1ef69c3c379c5afd8bf596bae7381004de09bd8722e459d1:eyJzZWxlY3RlZExpbmVDb3VudCI6NSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMTZlZjAyYjBhNGFiNjg1M2FlNmIyYTI1YjNiMzU4ZmU1ODM3OTk3YjM0ZWU0MWY5MjI3Njc5YWExYzkwMWM4NyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiOGEwZWMzMDYxNWE4NmU2YTk1MDJhNjYxYzMwZWQyOTc0ZDFjMDFiNjdlMzRiNDgyOGY2OGVlZGUzZTU0OWUxNSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZDMxYWFiNDQ2YTRiN2M4YjdkOWUzYWJiMzczNDU2YzNlYzY1MzAxNmE4MzRkZDZlMmYxYjQzZGU4YTlkMTIzMSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNjMyYjkzMmRkMjJhYjNhNzU1YTUxZjBlZTM4M2QxOGIwNmQwMGYyZjU2ZWI4MTE5NzIxNThhNGRiNzc4Y2U5MCJ9"
+        },
+        {
+          "resource": "repo://libs/talon/uv.lock#L1-L13",
+          "version": "repo-lines-v1:sha256:76d03bdd04a9b417af43db4ca279317216394e7f4d57f1d25c116ebbf4ca10d0:eyJzZWxlY3RlZExpbmVDb3VudCI6MTMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImRiYWIxMjY2NWQ5OGFlZjAyMWJhNjQ5NTNjNjFiMGVkOGE5MDhjZmI1NmExYzAxZTJmY2I0YjA1MmI3MWEyYTEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjllZTE2MDNhNzViOTViMjFlYmZkZTI3ZGE3ZjM1ZTYwZGNlNWYxNmJmMzMxNDU2NTFmNjVlZmVjYWFmMDI2ZGQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjI3YmU5NjBjMWI1ZTAzZjY5MjRjNDU1YjAyNjhiN2E5ZDdlYzU5YzBiMjVmNjRhMTU0ZGYwN2JkMjMzNGI5ZjAifQ"
+        },
+        {
+          "resource": "repo://libs/talon/uv.lock#L674-L676",
+          "version": "repo-lines-v1:sha256:1d9949141a4a96689db29bc0fad3dc6955eeec75bbace3b975e3aa57120d1baf:eyJzZWxlY3RlZExpbmVDb3VudCI6MywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMTM0ZGVlNTM2YjI1Y2VkODU3NDc5OGQ3ZTYxZGU2MDJhYWUxNjlkYThjYjk3MGFjZTFiYjhmZGE1Yzk0ZGJmNyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiZTdjZjJhNDRhODFhMTMyMzNhMDUwM2Y4M2MyZDI5OWZhNzAxY2EyZTZlNDhmODI4ZTA1MzI5Y2E5ODgzODYwZCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMjY1OTIwYmEyZTNjMDBiNWQwZTU3NTNiMTJjYTNhNjEwNGM2YTcwMzFiMzBkOTc0YTdhMTdjZTI5MTQ1YzIzZSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiODliZWYyYzEzMGYxNmRkNDY1OWVhYzZkOTY1YTQ4YTlmODUwMWNlNjNjNjQ3ZmMzZmE0OGE0NTRmZTNhZjk3YyJ9"
+        },
+        {
+          "resource": "repo://libs/talon/uv.lock#L760-L762",
+          "version": "repo-lines-v1:sha256:c50d1e767f5eb4f18e935ee428898caac8fc28859ff2988adcdfe40bf6f3f732:eyJzZWxlY3RlZExpbmVDb3VudCI6MywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMWVlN2I1ZDk1MzkxYzE2YjE1YTZhNmQzNzk3ODQ2YzYzOTdkYzZkN2VhZThmMTJkMDhiYzE2NjY5OGY5YzYyYyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMTE5YWUxM2NlN2JmZmU2ZjI4NzUzNTViNTYxODllZTgxYmJiMTg0YTI1ODE1MTI4ZGE3ZmU1Y2VmYWJmNzcwOCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMjY1OTIwYmEyZTNjMDBiNWQwZTU3NTNiMTJjYTNhNjEwNGM2YTcwMzFiMzBkOTc0YTdhMTdjZTI5MTQ1YzIzZSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiYzc0NGJmNTAxZDExYjVlNzgxZWNjYTBkMjQ1ZWFlN2RlM2Y2ZGIwNjdkYjYyYjMzZGQxNTJiYjdmMjZkZmIxNiJ9"
+        },
+        {
+          "resource": "repo://libs/talon/uv.lock#L907-L1000",
+          "version": "repo-lines-v1:sha256:de506e33ad5cf35859ee841e3b6e14bb228b25607f8fb015696941908354236d:eyJzZWxlY3RlZExpbmVDb3VudCI6OTQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI2ZjEwNjQ1YmI5NjkyNjNjMTEzOWI2ZDg2MDNlNDg4M2QyNmVhZmQ1ZTA3YzU1NDk5NmI1NWUzMGE5MDJmYzkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImUwNzA2Njc4YjA0M2JjMDI2ZTZhNmNmNmVmNzMzYmQ3MTg5Mjg2OTI1ODA5ZGNmNGEwYjc1MDIzMDcxN2RlNjMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjI2NTkyMGJhMmUzYzAwYjVkMGU1NzUzYjEyY2EzYTYxMDRjNmE3MDMxYjMwZDk3NGE3YTE3Y2UyOTE0NWMyM2UiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImRkZDQxMTQ4MTM1NDdhNTFkMmIxYmI4NjFlMjBmY2ViY2Y3YTY2ODg1NDEzZmE2MThkODZjYmE1OWQ4NmQyZWQifQ"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-11-07T08:03:46.171Z"
+    "at": "2026-11-08T08:03:51.027Z"
   }
 }

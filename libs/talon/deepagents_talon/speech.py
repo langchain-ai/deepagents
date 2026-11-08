@@ -24,6 +24,10 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_LOCAL_VOICE_TRANSCRIPTION_MODEL = "nvidia/parakeet-tdt-0.6b-v3"
 _DEFAULT_LOCAL_VOICE_DEVICE = "cpu"
+# Transformers reads only config/processor/tokenizer JSON and safetensors weights
+# (including sharded indexes). Parakeet repos also ship `.nemo` and `.gguf` copies
+# of the same weights, which would triple the download.
+_LOCAL_VOICE_MODEL_FILES = ("*.json", "*.safetensors")
 _local_pipelines: dict[tuple[str, str, Path], _LocalSpeechPipeline] = {}
 _local_model_lock = threading.Lock()
 
@@ -260,7 +264,12 @@ def _load_local_pipeline(model: str, device: str, config: TalonConfig) -> _Local
         raise ImportError(msg) from exc
 
     logger.info("Loading local voice transcription model %s on device=%s", model, device)
-    snapshot = hub.snapshot_download(repo_id=model, cache_dir=str(cache), token=False)
+    snapshot = hub.snapshot_download(
+        repo_id=model,
+        cache_dir=str(cache),
+        token=False,
+        allow_patterns=list(_LOCAL_VOICE_MODEL_FILES),
+    )
     local_model = module.AutoModel.from_pretrained(
         snapshot, local_files_only=True, trust_remote_code=False
     )

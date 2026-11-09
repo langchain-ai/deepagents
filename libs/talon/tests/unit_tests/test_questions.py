@@ -339,6 +339,9 @@ async def test_voice_question_reply_leaves_threads_responsive_and_discards_stale
 
         release.set()
         await asyncio.wait_for(voice, 2)
+        assert any("That question closed" in text for _, text in channel.sent) == (
+            action != "answer"
+        )
         if action == "replace":
             assert agent.answers == [(Answer(("Postgres",)),)]
             await host.receive_message(channel, message("2"))

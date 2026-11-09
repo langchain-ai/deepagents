@@ -549,6 +549,13 @@ class TalonHost:
                     self._pending_questions.get(agent_conversation_id) is not questions
                     or questions.future.done()
                 ):
+                    await send_with_retry(
+                        lambda: channel.send_message(
+                            channel_conversation_id,
+                            "That question closed while your voice reply was being transcribed. "
+                            "Please send your reply again if it still applies.",
+                        )
+                    )
                     return
 
                 if await self._handle_conversation_command(

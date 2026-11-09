@@ -2221,15 +2221,16 @@ _BARE_ACTION_GROUPS = frozenset({"config"})
 
 
 def _show_bare_command_group_help(args: argparse.Namespace) -> bool:
-    """Render help for `help` and bare command groups before the heavy bootstrap.
+    """Render help for `help`, bare command groups, and bare `completion`.
 
     Short-circuits before `console`/`settings` are imported so help-only
     invocations stay snappy. Command groups in `_BARE_ACTION_GROUPS` bypass
     this path because their bare invocation has useful behavior.
 
     Args:
-        args: Namespace from `parse_args()`. Only `command` and the per-group
-            `<group>_command` attributes are read; both may be absent.
+        args: Namespace from `parse_args()`. Only `command` and each spec's
+            `subcommand_dest` attribute (see `_HELP_SPECS`) are read; both
+            may be absent.
 
     Returns:
         `True` when help was rendered and the caller should exit; `False`
@@ -5603,7 +5604,7 @@ def cli_main() -> None:
         # may run while that policy is unenforceable. `config`, `doctor`, and
         # `auth path` returned above because they are the tools for diagnosing
         # a broken managed file. Gating them would leave an administrator no way
-        # to see what is wrong. `help` reads no policy.
+        # to see what is wrong. `help` and `completion` read no policy.
         if command != "help":
             _require_managed_config_or_exit()
 

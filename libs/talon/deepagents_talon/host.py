@@ -89,7 +89,8 @@ from deepagents_talon.pairing import (
     run_pair_command,
     sender_jobs,
 )
-from deepagents_talon.speech import transcribe_voice_message
+from deepagents_talon.questions import Answer, QuestionSession
+from deepagents_talon.speech import _is_voice_message, transcribe_voice_message
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -97,6 +98,7 @@ if TYPE_CHECKING:
     from deepagents_talon.breakout import BreakoutHandler
     from deepagents_talon.config import TalonConfig
     from deepagents_talon.cron.jobs import CronJob, CronOrigin
+    from deepagents_talon.questions import Question, QuestionHandler
     from deepagents_talon.speech import VoiceTranscriber
 
 SignalHandler = Callable[[int, FrameType | None], object] | int | None
@@ -249,6 +251,13 @@ class _PendingToolApproval:
 
 
 @dataclass(slots=True)
+class _PendingQuestions:
+    future: asyncio.Future[tuple[Answer, ...] | None]
+    session: QuestionSession
+    sender_id: str
+
+
+@dataclass(slots=True)
 class _PendingAuthorization:
     future: asyncio.Future[str]
     binding: AuthorizationBinding
@@ -313,6 +322,7 @@ class TalonHost:
         self._smart_model_override = _load_smart_model_override(config.smart_model_state_path)
         self._smart_model_lock = asyncio.Lock()
         self._pending_tool_approvals: dict[str, _PendingToolApproval] = {}
+        self._pending_questions: dict[str, _PendingQuestions] = {}
         self._pending_authorizations: dict[str, _PendingAuthorization] = {}
         self._authorization_flows: dict[str, _AuthorizationFlow] = {}
         self._terminal_authorizations: set[str] = set()
@@ -371,6 +381,7 @@ class TalonHost:
             or conversation_id in self._blocked
             or conversation_id in self._background_routes
             or conversation_id in self._pending_tool_approvals
+            or conversation_id in self._pending_questions
             or conversation_id in self._pending_authorizations
             or conversation_id in self._authorization_flows
             or conversation_id in self._terminal_authorizations
@@ -519,11 +530,33 @@ class TalonHost:
             provider or type(channel).__name__,
             channel_conversation_id,
         )
+        questions = self._pending_questions.get(self._agent_conversation_id(conversation_root))
+        if (
+            questions is not None
+            and message.sender_id == questions.sender_id
+            and command is None
+            and _is_voice_message(message)
+        ):
+            message = await transcribe_voice_message(self.voice_transcriber, message)
+        else:
+            questions = None
         scope = (_channel_key(channel, provider), _history_chat(message, provider))
         async with self._history_lock(scope):
             self._history_roots[conversation_root] = scope
             async with self._conversation_lock(conversation_root):
                 agent_conversation_id = self._agent_conversation_id(conversation_root)
+                if questions is not None and (
+                    self._pending_questions.get(agent_conversation_id) is not questions
+                    or questions.future.done()
+                ):
+                    await send_with_retry(
+                        lambda: channel.send_message(
+                            channel_conversation_id,
+                            "That question closed while your voice reply was being transcribed. "
+                            "Please send your reply again if it still applies.",
+                        )
+                    )
+                    return
 
                 if await self._handle_conversation_command(
                     channel,
@@ -544,6 +577,11 @@ class TalonHost:
                     provider=_channel_key(channel, provider),
                     agent_conversation_id=agent_conversation_id,
                 ):
+                    return
+
+                questions = self._pending_questions.get(agent_conversation_id)
+                if questions is not None and not questions.future.done():
+                    await self._handle_question_reply(channel, message, questions)
                     return
 
                 await self._replace_agent_turn(
@@ -1075,6 +1113,9 @@ class TalonHost:
             return await send_with_retry(lambda: send_progress(text))
 
         breakout_handler = self._breakout_handler(route, turn, lambda: active and not unattended)
+        question_handler = self._question_handler(
+            channel, message, turn, (lambda: active) if not unattended else None
+        )
 
         try:
             result = await self._invoke_agent(
@@ -1111,6 +1152,7 @@ class TalonHost:
                 tool_approval_operator=operator,
                 message_handler=message_handler,
                 breakout_handler=breakout_handler,
+                question_handler=question_handler,
                 model=turn.model,
                 effort=turn.effort,
             )
@@ -1411,6 +1453,7 @@ class TalonHost:
         message_handler: ProgressMessageHandler | None = None,
         model: str | None = None,
         breakout_handler: BreakoutHandler | None = None,
+        question_handler: QuestionHandler | None = None,
         effort: str | None = None,
     ) -> AgentResult:
         metadata = {
@@ -1435,6 +1478,7 @@ class TalonHost:
                         authorization_handler=authorization_handler,
                         message_handler=message_handler,
                         breakout_handler=breakout_handler,
+                        question_handler=question_handler,
                         model=model,
                         effort=effort,
                     ),
@@ -1680,6 +1724,10 @@ class TalonHost:
             if not pending.future.done():
                 pending.future.cancel()
         self._pending_tool_approvals.clear()
+        for questions in self._pending_questions.values():
+            if not questions.future.done():
+                questions.future.cancel()
+        self._pending_questions.clear()
         for pending in self._pending_authorizations.values():
             if not pending.future.done():
                 pending.future.cancel()
@@ -2025,6 +2073,66 @@ class TalonHost:
 
         if not pending.future.done():
             pending.future.set_result(decision)
+
+    def _question_handler(
+        self,
+        channel: ChannelAdapter,
+        message: ChannelMessage,
+        turn: _Turn,
+        is_active: Callable[[], bool] | None,
+    ) -> QuestionHandler | None:
+        if is_active is None or message.sender_id is None:
+            return None
+
+        async def handle(questions: Sequence[Question]) -> tuple[Answer, ...] | None:
+            if not is_active() or self._generations[turn.conversation_id] != turn.generation:
+                return None
+            return await self._ask_questions(
+                channel, questions, conversation_id=turn.conversation_id, message=message
+            )
+
+        return handle
+
+    async def _ask_questions(
+        self,
+        channel: ChannelAdapter,
+        questions: Sequence[Question],
+        *,
+        conversation_id: str,
+        message: ChannelMessage,
+    ) -> tuple[Answer, ...] | None:
+        if message.sender_id is None:
+            return None
+        pending = _PendingQuestions(
+            future=asyncio.get_running_loop().create_future(),
+            session=QuestionSession(questions),
+            sender_id=message.sender_id,
+        )
+        self._pending_questions[conversation_id] = pending
+        try:
+            result = await _send_question_message(channel, message, pending.session.prompt())
+            if not result.success:
+                return None
+            return await pending.future
+        finally:
+            if self._pending_questions.get(conversation_id) is pending:
+                del self._pending_questions[conversation_id]
+
+    async def _handle_question_reply(
+        self,
+        channel: ChannelAdapter,
+        message: ChannelMessage,
+        pending: _PendingQuestions,
+    ) -> None:
+        if message.sender_id != pending.sender_id:
+            text = "Only the person who started this run can answer these questions."
+            await send_with_retry(lambda: channel.send_message(message.conversation_id, text))
+            return
+        step = pending.session.reply(message.text)
+        result = await _send_question_message(channel, message, step.message)
+        if (step.status != "asking" or not result.success) and not pending.future.done():
+            answered = step.status == "submitted"
+            pending.future.set_result(pending.session.result if answered else None)
 
     def _handle_tool_approval_reaction(
         self,
@@ -2392,6 +2500,14 @@ async def _typing_refresh_loop(channel: ChannelAdapter, conversation_id: str) ->
     while True:
         await _send_typing(channel, conversation_id)
         await asyncio.sleep(_TYPING_REFRESH_SECONDS)
+
+
+async def _send_question_message(
+    channel: ChannelAdapter, message: ChannelMessage, text: str
+) -> SendResult:
+    if not is_direct_message(message) and await _channel_provider(channel) in {"slack", "discord"}:
+        text += "\n\nMention the bot in every reply, including `back` and `cancel`."
+    return await send_with_retry(lambda: channel.send_message(message.conversation_id, text))
 
 
 async def _channel_provider(channel: ChannelAdapter) -> str | None:

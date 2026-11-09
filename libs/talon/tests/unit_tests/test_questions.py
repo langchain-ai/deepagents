@@ -9,7 +9,7 @@ from pydantic import ValidationError
 
 from deepagents_talon.background import _IN_SUBAGENT
 from deepagents_talon.host import TalonHost
-from deepagents_talon.interfaces import AgentRequest, ChannelMessage, SendResult
+from deepagents_talon.interfaces import AgentRequest, AgentResult, ChannelMessage, SendResult
 from deepagents_talon.questions import (
     Answer,
     Question,
@@ -268,4 +268,82 @@ async def test_host_offers_no_questions_without_a_sender(tmp_path: Path) -> None
         assert agent.requests[0].question_handler is None
     finally:
         agent.released.set()
+        await host.stop()
+
+
+class QuestionAgent(BlockingAgent):
+    def __init__(self) -> None:
+        super().__init__()
+        self.answers: list[tuple[Answer, ...] | None] = []
+        self.finished = asyncio.Event()
+
+    async def invoke(self, request: AgentRequest) -> AgentResult:
+        self.requests.append(request)
+        assert request.question_handler is not None
+        try:
+            self.answers.append(await request.question_handler(_questions(DATABASE)))
+        finally:
+            self.finished.set()
+        return AgentResult(text="done")
+
+
+@pytest.mark.parametrize("action", ["answer", "/stop", "/new", "replace"])
+async def test_voice_question_reply_leaves_threads_responsive_and_discards_stale_answers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, action: str
+) -> None:
+    started, release = asyncio.Event(), asyncio.Event()
+
+    async def transcribe(_message: ChannelMessage) -> str:
+        started.set()
+        await release.wait()
+        return "2"
+
+    transcriber = VoiceTranscriber()
+    monkeypatch.setattr(transcriber, "transcribe", transcribe)
+    channel, agent = RecordingChannel("slack"), QuestionAgent()
+    host = TalonHost(
+        config=_config(tmp_path), agent=agent, channels=[channel], voice_transcriber=transcriber
+    )
+
+    def message(text: str, chat: str = "C123:thread", *, voice: bool = False) -> ChannelMessage:
+        metadata: dict[str, object] = {"is_dm": False}
+        if voice:
+            metadata["voice_path"] = "voice.ogg"
+        return ChannelMessage(chat, text, sender_id="alice", metadata=metadata)
+
+    await host.start()
+    voice = None
+    try:
+        await host.receive_message(channel, message("ask"))
+        await asyncio.sleep(0)
+        voice = asyncio.create_task(host.receive_message(channel, message("", voice=True)))
+        await asyncio.wait_for(started.wait(), 2)
+        await asyncio.wait_for(host.receive_message(channel, message("/stop", "C123:other")), 2)
+        assert channel.sent[-1] == ("C123:other", "No in-flight run to stop.")
+
+        if action == "replace":
+            await host.receive_message(channel, message("1"))
+            await asyncio.wait_for(agent.finished.wait(), 2)
+            agent.finished.clear()
+            await host.receive_message(channel, message("ask again"))
+            await asyncio.sleep(0)
+        elif action != "answer":
+            await asyncio.wait_for(host.receive_message(channel, message(action)), 2)
+
+        release.set()
+        await asyncio.wait_for(voice, 2)
+        if action == "replace":
+            assert agent.answers == [(Answer(("Postgres",)),)]
+            await host.receive_message(channel, message("2"))
+        await asyncio.wait_for(agent.finished.wait(), 2)
+        assert len(agent.requests) == (2 if action == "replace" else 1)
+        expected = [(Answer(("SQLite",)),)] if action in {"answer", "replace"} else []
+        if action == "replace":
+            expected.insert(0, (Answer(("Postgres",)),))
+        assert agent.answers == expected
+    finally:
+        release.set()
+        if voice is not None:
+            voice.cancel()
+            await asyncio.gather(voice, return_exceptions=True)
         await host.stop()

@@ -530,11 +530,21 @@ class TalonHost:
             provider or type(channel).__name__,
             channel_conversation_id,
         )
+        questions = self._pending_questions.get(self._agent_conversation_id(conversation_root))
+        if questions is not None and message.sender_id == questions.sender_id and command is None:
+            message = await transcribe_voice_message(self.voice_transcriber, message)
+        else:
+            questions = None
         scope = (_channel_key(channel, provider), _history_chat(message, provider))
         async with self._history_lock(scope):
             self._history_roots[conversation_root] = scope
             async with self._conversation_lock(conversation_root):
                 agent_conversation_id = self._agent_conversation_id(conversation_root)
+                if questions is not None and (
+                    self._pending_questions.get(agent_conversation_id) is not questions
+                    or questions.future.done()
+                ):
+                    return
 
                 if await self._handle_conversation_command(
                     channel,
@@ -550,8 +560,6 @@ class TalonHost:
                     return
 
                 questions = self._pending_questions.get(agent_conversation_id)
-                if questions is not None and message.sender_id == questions.sender_id:
-                    message = await transcribe_voice_message(self.voice_transcriber, message)
 
                 if await self._intercept_authorization_message(
                     channel,

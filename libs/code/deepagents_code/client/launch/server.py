@@ -163,27 +163,6 @@ def _port_in_use(host: str, port: int) -> bool:
             return False
 
 
-_LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
-"""Hosts that must never be reached through an HTTP proxy."""
-
-
-def _bypass_proxy_for_loopback() -> None:
-    """Bypass loopback traffic while preserving effective proxy settings."""
-    from urllib.request import getproxies
-
-    proxies = getproxies()
-    for scheme in ("http", "https", "all"):
-        if proxy := proxies.get(scheme):
-            os.environ[f"{scheme}_proxy"] = proxy
-    for var in ("NO_PROXY", "no_proxy"):
-        entries = [
-            e.strip() for e in (os.environ.get(var) or proxies.get("no", "")).split(",")
-        ]
-        entries = [e for e in entries if e]
-        missing = [h for h in _LOOPBACK_HOSTS if h not in entries]
-        os.environ[var] = ",".join(entries + missing)
-
-
 def _find_free_port(host: str) -> int:
     """Find a free port on the given host.
 
@@ -350,7 +329,7 @@ async def wait_for_server_healthy(
             we fail fast instead of waiting for the timeout.
         read_log: Optional callable returning log file contents (for
             error messages on early exit).
-        local: Use a shorter poll interval for local servers.
+        local: Connect directly and use a shorter poll interval for local servers.
 
     Raises:
         ModelConfigError: If startup reports missing credentials or a provider package.
@@ -366,7 +345,7 @@ async def wait_for_server_healthy(
     last_status: int | None = None
     last_exc: Exception | None = None
 
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(trust_env=not local) as client:
         while time.monotonic() < deadline:
             if process and process.poll() is not None:
                 output = read_log() if read_log else ""
@@ -1050,7 +1029,6 @@ class ServerProcess:
                 logger.info("Requested port in use, using port %d instead", self.port)
 
             cmd = _build_server_cmd(config_path, host=self.host, port=self.port)
-            _bypass_proxy_for_loopback()
             env = _server_env_with_overrides(
                 self._persistent_env_overrides, self._env_overrides
             )
@@ -1148,7 +1126,7 @@ class ServerProcess:
         graph_url = f"{self.url}/assistants/{quote(graph_name, safe='')}/graph"
         deadline = time.monotonic() + timeout
 
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(trust_env=False) as client:
             while time.monotonic() < deadline:
                 if self._process.poll() is not None:
                     msg = f"Server process exited with code {self._process.returncode}"

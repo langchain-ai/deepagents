@@ -2028,154 +2028,96 @@ class TestTerminateServerProcess:
 
 
 class TestLoopbackProxyBypass:
-    """Local server traffic must never be routed through an HTTP proxy."""
+    """Local probes stay direct without changing other clients' routing."""
 
-    @pytest.fixture(autouse=True)
-    def _clear_proxy_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        import urllib.request
-
-        for name in tuple(os.environ):
-            if name.lower().endswith("_proxy"):
-                monkeypatch.delenv(name)
-        monkeypatch.setattr(
-            urllib.request, "getproxies", urllib.request.getproxies_environment
-        )
-
-    @pytest.mark.parametrize("empty_bypass", [False, True])
-    def test_preserves_system_proxy_routing(
-        self, monkeypatch: pytest.MonkeyPatch, *, empty_bypass: bool
+    @pytest.mark.parametrize("host", ["127.0.0.1", "localhost"])
+    @pytest.mark.parametrize("proxy_source", ["environment", "system"])
+    async def test_start_preserves_proxy_policy(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        host: str,
+        proxy_source: str,
     ) -> None:
-        """Local requests bypass proxies without losing system-configured routes."""
+        """Startup preserves separate OS exceptions and the child's environment."""
         import urllib.request
 
         import httpx
         import httpx._utils
+        import requests.utils
 
-        if empty_bypass:
-            monkeypatch.setenv("NO_PROXY", "")
-            monkeypatch.setenv("no_proxy", "")
-        system_proxies = {
+        for name in tuple(os.environ):
+            if name.lower().endswith("_proxy"):
+                monkeypatch.delenv(name)
+        proxies = {
             "http": "http://company-gateway:8080",
             "https": "http://company-gateway:8443",
-            "all": "http://company-gateway:8888",
-            "no": "corp.internal,127.0.0.1,localhost,::1",
         }
+        if proxy_source == "environment":
+            monkeypatch.setenv("HTTP_PROXY", proxies["http"])
+            monkeypatch.setenv("HTTPS_PROXY", proxies["https"])
+            monkeypatch.setenv("NO_PROXY", "corp.internal")
 
         def get_proxies() -> dict[str, str]:
-            return urllib.request.getproxies_environment() or system_proxies
+            return urllib.request.getproxies_environment() or proxies
 
-        monkeypatch.setattr(urllib.request, "getproxies", get_proxies)
+        def bypass_proxy(hostname: str) -> bool:
+            env = urllib.request.getproxies_environment()
+            if env:
+                return any(
+                    hostname == host or hostname.endswith(f".{host}")
+                    for host in env.get("no", "").split(",")
+                    if host
+                )
+            return hostname.endswith(".corp.internal")
+
         monkeypatch.setattr(httpx._utils, "getproxies", get_proxies)
-
-        server_module._bypass_proxy_for_loopback()
-
-        effective = urllib.request.getproxies_environment()
-        child_env = server_module._build_server_env()
-        for scheme in ("http", "https", "all"):
-            assert effective[scheme] == system_proxies[scheme]
-            assert child_env[f"{scheme}_proxy"] == system_proxies[scheme]
-        assert child_env["no_proxy"] == effective["no"]
-        with httpx.Client() as client:
-            for host in ("127.0.0.1", "localhost", "[::1]", "corp.internal"):
-                assert (
-                    client._transport_for_url(httpx.URL(f"http://{host}/"))
-                    is client._transport
-                )
-            for scheme in ("http", "https"):
-                transport = client._transport_for_url(
-                    httpx.URL(f"{scheme}://api.example.com/")
-                )
-                assert transport is not client._transport
-
-    @pytest.mark.parametrize("proxy", ["http://lower-gateway:8080", ""])
-    def test_preserves_explicit_proxy_precedence(
-        self, monkeypatch: pytest.MonkeyPatch, proxy: str
-    ) -> None:
-        """Lowercase proxy and bypass settings keep precedence over uppercase."""
-        import urllib.request
-
-        monkeypatch.setenv("HTTPS_PROXY", "http://upper-gateway:8080")
-        monkeypatch.setenv("https_proxy", proxy)
-        monkeypatch.setenv("NO_PROXY", "upper.internal")
-        monkeypatch.setenv("no_proxy", "lower.internal")
-
-        server_module._bypass_proxy_for_loopback()
-
-        proxies = urllib.request.getproxies_environment()
-        assert proxies.get("https", "") == proxy
-        assert proxies["no"].split(",") == [
-            "lower.internal",
-            "127.0.0.1",
-            "localhost",
-            "::1",
-        ]
-
-    def test_adds_loopback_hosts_when_unset(self) -> None:
-        """Both spellings gain every loopback host."""
-        server_module._bypass_proxy_for_loopback()
-
-        for var in ("NO_PROXY", "no_proxy"):
-            assert os.environ[var].split(",") == ["127.0.0.1", "localhost", "::1"]
-
-    def test_preserves_user_entries(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Existing entries are kept ahead of the appended loopback hosts."""
-        monkeypatch.setenv("NO_PROXY", "corp.internal, localhost")
-
-        server_module._bypass_proxy_for_loopback()
-
-        assert os.environ["NO_PROXY"].split(",") == [
-            "corp.internal",
-            "localhost",
-            "127.0.0.1",
-            "::1",
-        ]
-
-    def test_is_idempotent(self) -> None:
-        """Repeated server restarts do not grow the variable."""
-        server_module._bypass_proxy_for_loopback()
-        first = os.environ["NO_PROXY"]
-
-        server_module._bypass_proxy_for_loopback()
-
-        assert os.environ["NO_PROXY"] == first
-
-    async def test_start_bypasses_proxy_for_client_and_server(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """`start()` applies the bypass before spawning and probing the server."""
-        monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:9")
-        monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:9")
-        config_dir = tmp_path / "runtime"
-        config_dir.mkdir()
-        (config_dir / "langgraph.json").write_text("{}")
-        server = ServerProcess(config_dir=config_dir, port=0)
-        log_file = MagicMock()
-        log_file.name = str(tmp_path / "server.log")
+        monkeypatch.setattr(urllib.request, "getproxies", get_proxies)
+        monkeypatch.setattr(requests.utils, "getproxies", get_proxies)
+        monkeypatch.setattr(requests.utils, "proxy_bypass", bypass_proxy)
+        before = dict(os.environ)
+        direct = MagicMock(return_value=httpx.Response(200))
+        proxy = MagicMock(return_value=httpx.Response(200))
+        monkeypatch.setattr(
+            httpx.AsyncClient,
+            "_init_transport",
+            MagicMock(return_value=httpx.MockTransport(direct)),
+        )
+        monkeypatch.setattr(
+            httpx.AsyncClient,
+            "_init_proxy_transport",
+            MagicMock(return_value=httpx.MockTransport(proxy)),
+        )
+        (tmp_path / "langgraph.json").write_text("{}")
+        server = ServerProcess(config_dir=tmp_path, host=host, port=43210)
         process = MagicMock(pid=1234)
         process.poll.return_value = None
-
-        with (
-            patch(
-                "deepagents_code.client.launch.server.tempfile.NamedTemporaryFile",
-                return_value=log_file,
-            ),
-            patch(
-                "deepagents_code.client.launch.server.subprocess.Popen",
-                return_value=process,
-            ) as popen,
-            patch(
-                "deepagents_code.client.launch.server.wait_for_server_healthy",
-                new=AsyncMock(),
-            ),
-            patch(
-                "deepagents_code.client.launch.server._find_free_port",
-                return_value=43210,
-            ),
-        ):
-            await server.start()
-
-        assert "127.0.0.1" in os.environ["NO_PROXY"].split(",")
-        child_env = popen.call_args.kwargs["env"]
-        assert "127.0.0.1" in child_env["NO_PROXY"].split(",")
-        assert child_env["http_proxy"] == "http://127.0.0.1:9"
-        assert child_env["https_proxy"] == "http://127.0.0.1:9"
+        try:
+            with (
+                patch.object(server_module, "_port_in_use", return_value=False),
+                patch.object(server, "_launch_process", return_value=process) as launch,
+            ):
+                await server.start()
+                await server.wait_for_graph_ready()
+            assert [call.args[0].url.path for call in direct.call_args_list] == [
+                "/ok",
+                "/assistants/agent/graph",
+            ]
+            proxy.assert_not_called()
+            assert dict(os.environ) == before
+            child_env = launch.call_args.args[2]
+            assert {
+                k: v for k, v in child_env.items() if k.lower().endswith("_proxy")
+            } == {k: v for k, v in before.items() if k.lower().endswith("_proxy")}
+            assert (
+                requests.utils.get_environ_proxies("https://smith.corp.internal") == {}
+            )
+            assert (
+                requests.utils.get_environ_proxies("https://api.example.com")["https"]
+                == proxies["https"]
+            )
+            await wait_for_server_healthy("https://remote.example.com")
+            assert proxy.call_count == 1
+        finally:
+            server._process = None
+            server._stop_process()

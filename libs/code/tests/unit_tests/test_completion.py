@@ -219,12 +219,14 @@ class TestBashCompletion:
         assert candidates == ["created", "updated"]
 
     def test_required_value_is_not_treated_as_subcommand(self, bash_script) -> None:
+        # The value is a command name, so the scan must skip it to stay at root.
         candidates = self._complete(
             bash_script,
-            ["dcode", "--model", "some-model", "threads", ""],
-            4,
+            ["dcode", "--model", "threads", ""],
+            3,
         )
-        assert "list" in candidates
+        assert "completion" in candidates
+        assert "list" not in candidates
 
     def test_positional_choices(self, bash_script) -> None:
         candidates = self._complete(bash_script, ["dcode", "completion", ""], 2)

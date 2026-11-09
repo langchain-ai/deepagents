@@ -1966,6 +1966,8 @@ class TalonHost:
         reply_conversation_id: str,
         sender_id: str | None,
     ) -> ToolApprovalDecision:
+        if not sender_id:
+            return "reject"
         loop = asyncio.get_running_loop()
         future: asyncio.Future[ToolApprovalDecision] = loop.create_future()
         pending = _PendingToolApproval(

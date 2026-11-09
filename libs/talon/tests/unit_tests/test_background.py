@@ -59,7 +59,7 @@ def _delegate(name="researcher"):
 def _runtime(monkeypatch, child, responses):
     model = ToolModel(responses=responses)
     monkeypatch.setattr("deepagents_talon.runtime._resolve_model_from_env", lambda *_a, **_k: model)
-    return DeepAgentRuntime(
+    runtime = DeepAgentRuntime(
         model="test:parent",
         include_web_tools=False,
         skills=(),
@@ -68,6 +68,9 @@ def _runtime(monkeypatch, child, responses):
             {"name": "researcher", "description": "Research", "runnable": RunnableLambda(child)}
         ],
     )
+    snapshot = runtime.approval_store.ensure()
+    runtime.approval_store.update(dict.fromkeys(snapshot.approvals, False), snapshot.revision)
+    return runtime
 
 
 async def test_chat_continues_then_main_processes_background_result(tmp_path, monkeypatch):

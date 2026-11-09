@@ -9,7 +9,7 @@ from deepagents.middleware.subagents import SubAgent, SubAgentMiddleware
 from langchain.agents import create_agent
 from langchain.agents.middleware import AgentMiddleware, HumanInTheLoopMiddleware
 from langchain.tools import ToolRuntime  # noqa: TC002  # tool schemas inspect injected annotations
-from langchain_core.messages import HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.runnables import RunnableLambda
 from langchain_core.tools import BaseTool, tool
 from langgraph.checkpoint.memory import InMemorySaver
@@ -220,6 +220,18 @@ class TaskTools(AgentMiddleware):
         return await handler(request)
 
 
+def _deny_precompiled(_state: dict[str, object]) -> dict[str, object]:
+    return {
+        "messages": [
+            AIMessage(
+                content="Delegation refused: Talon cannot enforce tool approval policy inside "
+                "precompiled subagents. Supply a fresh subagent with explicit tools instead. "
+                "The precompiled subagent has not run."
+            )
+        ]
+    }
+
+
 def _task_only(state: dict[str, object]) -> dict[str, object]:
     return {"messages": state["messages"]}
 
@@ -324,7 +336,11 @@ def prepare_subagents(
         if "runnable" in original:
             compiled = cast("CompiledSubAgent", original.copy())
             compiled.pop("mode", None)
-            compiled["runnable"] = RunnableLambda(_task_only) | compiled["runnable"]
+            compiled["runnable"] = (
+                RunnableLambda(_deny_precompiled)
+                if any((interrupt_on or {}).values())
+                else RunnableLambda(_task_only) | compiled["runnable"]
+            )
             prepared.append(compiled)
         else:
             prepared.append(original if opaque else _compile_fresh(spec, model, interrupt_on))

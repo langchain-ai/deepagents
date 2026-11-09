@@ -391,6 +391,22 @@ def _read_hooks_document(
     if not decoded:
         return None, read_diagnostics, None
 
+    document, diagnostics = parse_hooks_document(data, path)
+    return document, diagnostics, fingerprint
+
+
+def parse_hooks_document(
+    data: object, path: Path
+) -> tuple[HooksConfig | None, tuple[HookDiagnostic, ...]]:
+    """Validate decoded file configuration, including legacy migration.
+
+    Args:
+        data: Decoded file document.
+        path: Source location for diagnostics.
+
+    Returns:
+        Validated configuration and diagnostics.
+    """
     if is_legacy_hooks_document(data):
         hooks = data.get("hooks", []) if isinstance(data, dict) else []
         if not isinstance(hooks, list):
@@ -402,7 +418,7 @@ def _read_hooks_document(
                     field=str(path),
                 ),
             )
-            return None, diagnostics, fingerprint
+            return None, diagnostics
         legacy_entries: list[dict[str, object]] = [
             {str(key): value for key, value in item.items()}
             for item in hooks
@@ -435,10 +451,9 @@ def _read_hooks_document(
                 field=str(path),
             ),
         )
-        return migrated, diagnostics, fingerprint
+        return migrated, diagnostics
 
-    document, diagnostics = _validate_hooks_document(data, path)
-    return document, diagnostics, fingerprint
+    return _validate_hooks_document(data, path)
 
 
 def _validate_hooks_document(

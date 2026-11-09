@@ -242,7 +242,7 @@ class FilesystemBackend(BackendProtocol):
         return "/" if posix == "." else f"/{posix}"
 
     def _to_virtual_path(self, path: Path) -> str:
-        """Convert a filesystem path to a virtual path relative to cwd.
+        """Validate resolved-target containment, then format the original path relative to cwd.
 
         Args:
             path: Filesystem path to convert.
@@ -257,7 +257,7 @@ class FilesystemBackend(BackendProtocol):
             RuntimeError: If `Path.resolve()` detects a symlink loop on
                 Python <=3.12 (wraps the underlying `OSError(ELOOP)`).
         """
-        path.resolve().relative_to(self.cwd)
+        _ = path.resolve().relative_to(self.cwd)
         return "/" + path.relative_to(self.cwd).as_posix()
 
     def _display_path(self, path: Path) -> str:

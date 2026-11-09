@@ -1595,6 +1595,7 @@ class TestServerOffload:
         assert first["context"] == {
             "model": "test:model",
             "workspace": {"workspace_id": "test-workspace"},
+            "offload_trigger": "manual",
         }
         assert "messages" not in first
         assert first["operation_id"] == second["operation_id"]

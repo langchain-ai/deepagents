@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import logging
-from contextlib import aclosing
+from contextlib import aclosing, contextmanager
 from copy import copy
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, cast
@@ -23,7 +23,7 @@ from deepagents_talon.subagent_control import _MAX_EVENTS, ACTIVE_CONTROL, Subag
 from deepagents_talon.tool_approvals import APPROVAL_OPERATOR
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator, Awaitable, Callable, Iterable, Sequence
+    from collections.abc import AsyncGenerator, Awaitable, Callable, Generator, Iterable, Sequence
 
     from deepagents import CompiledSubAgent, SubAgent
     from deepagents.middleware.async_subagents import AsyncSubAgent
@@ -36,6 +36,9 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _IN_SUBAGENT: contextvars.ContextVar[bool] = contextvars.ContextVar("talon_subagent", default=False)
+_CONSUMED_RESULTS: contextvars.ContextVar[tuple[str, dict[str, str]] | None] = (
+    contextvars.ContextVar("talon_consumed_subagent_results", default=None)
+)
 # Set by the runtime for a scheduled run, which has no user to keep talking to and no later
 # turn to deliver into: its delegations finish inside the turn that made them.
 _SCHEDULED_TURN: contextvars.ContextVar[bool] = contextvars.ContextVar(
@@ -79,12 +82,15 @@ _UNDELIVERED_RESULT = (
 )
 _INSTRUCTIONS = (
     "The task and start_async_task tools launch background subagents and return a task ID. "
-    "Keep talking to the user while they work. Use list_subagents to inspect progress and "
+    "Delegate distinct work; do not repeat delegated searches or reads unless a specific "
+    "gap or contradiction requires verification. Continue with independent work while they run. "
+    "Use list_subagents to inspect progress and "
     "inspect_subagent for recent activity and message receipts, message_subagent to queue "
     "local-worker guidance for its next model step, and cancel_subagent to stop work. "
     "Queued messages do not interrupt running model or tool calls. Activity is metadata only, "
     "not reasoning or tool output. Completed results will arrive as subagent data for you to "
-    "process; do not repeatedly poll or wait for them."
+    "process; do not repeatedly poll or wait for them. Report only material new findings; "
+    "do not repeat an earlier answer just to say a subagent validated it."
 )
 # Every clause of _INSTRUCTIONS is false on a scheduled run, and believing it loses work: a
 # model told the result arrives later ends its turn without one, and a scheduled turn that
@@ -94,6 +100,16 @@ _SCHEDULED_INSTRUCTIONS = (
     "start_async_task tools run a subagent to completion and return its result to you "
     "directly, so act on that result in this same turn -- no later turn will."
 )
+
+
+@contextmanager
+def _track_consumed_results(owner: str, results: dict[str, str]) -> Generator[None]:
+    """Collect results exposed to this turn without acknowledging them until success."""
+    token = _CONSUMED_RESULTS.set((owner, results))
+    try:
+        yield
+    finally:
+        _CONSUMED_RESULTS.reset(token)
 
 
 @dataclass
@@ -144,6 +160,9 @@ class BackgroundSubagents(AgentMiddleware):
         async def list_subagents(runtime: ToolRuntime) -> list[dict[str, str | list[str] | None]]:
             """Inspect this thread's subagents, including their status and final results."""
             owner = runtime.config.get("configurable", {}).get("thread_id")
+            consumed = _CONSUMED_RESULTS.get()
+            if consumed is not None and consumed[0] == owner and not _IN_SUBAGENT.get():
+                consumed[1].update(self.results(owner))
             return [
                 {
                     "task_id": key,
@@ -363,6 +382,7 @@ class BackgroundSubagents(AgentMiddleware):
 
     async def _run(self, job: _Job, request: ToolCallRequest, task_id: str) -> None:
         _IN_SUBAGENT.set(True)
+        _CONSUMED_RESULTS.set(None)
         ACTIVE_CONTROL.set(job.control)
         APPROVAL_OPERATOR.set(False)
         # The copied context carries the host's history scope and cron origin, which the

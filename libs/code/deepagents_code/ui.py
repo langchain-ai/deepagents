@@ -684,7 +684,13 @@ def show_completion_help() -> None:
     console.print("    # in ~/.zshrc, add `fpath=(~/.zfunc $fpath)` before `compinit`")
     console.print()
     console.print("  Fish:")
-    console.print("    dcode completion fish > ~/.config/fish/completions/dcode.fish")
+    console.print("    # fish loads one file per command name")
+    console.print("    mkdir -p ~/.config/fish/completions")
+    console.print("    cd ~/.config/fish/completions")
+    console.print("    dcode completion fish --prog dcode > dcode.fish")
+    console.print(
+        "    dcode completion fish --prog deepagents-code > deepagents-code.fish"
+    )
     console.print()
 
 

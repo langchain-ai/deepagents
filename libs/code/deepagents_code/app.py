@@ -6864,8 +6864,6 @@ class DeepAgentsApp(App):
                 recovery = "Use `/model` to select a model and retry startup."
             text = (
                 f"Server startup timed out. {recovery} "
-                "If this started after adding an integration, check its setup "
-                "and credentials before retrying. "
                 "Press Ctrl+\\ to inspect the startup error in the Debug Console."
             )
         else:

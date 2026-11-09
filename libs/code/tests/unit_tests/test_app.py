@@ -17457,7 +17457,6 @@ class TestDeferredActions:
             assert widget is not None
             text = str(widget._content)
             assert "Server startup timed out" in text
-            assert "integration" in text
             assert "Debug Console" in text
             assert hint in text
             assert ("/restart" in text) is spawned

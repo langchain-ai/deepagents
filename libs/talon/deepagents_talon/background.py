@@ -7,7 +7,7 @@ import contextvars
 import logging
 from contextlib import aclosing
 from copy import copy
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, cast
 from uuid import uuid4
 
@@ -19,6 +19,7 @@ from langgraph.types import Command
 from langgraph_sdk import get_client
 
 from deepagents_talon.authorization import set_authorization_handler
+from deepagents_talon.subagent_control import _MAX_EVENTS, ACTIVE_CONTROL, SubagentControl
 from deepagents_talon.tool_approvals import APPROVAL_OPERATOR
 
 if TYPE_CHECKING:
@@ -29,6 +30,7 @@ if TYPE_CHECKING:
     from langchain.agents.middleware.types import ModelRequest, ModelResponse
     from langchain.tools.tool_node import ToolCallRequest
     from langchain_core.runnables import RunnableConfig
+    from langchain_core.tools import BaseTool
     from langgraph_sdk.schema import StreamPart
 
 logger = logging.getLogger(__name__)
@@ -68,7 +70,9 @@ HIDDEN_ASYNC_TOOLS = frozenset(
 # A scheduled run's delegations finish inside its own tool call, so it never owns a job:
 # these two could only ever report nothing and cancel nothing. Hidden per turn at the model
 # call, not unregistered, because chat turns on the same process still need them.
-_SCHEDULED_HIDDEN_TOOLS = frozenset({"list_subagents", "cancel_subagent"})
+_SCHEDULED_HIDDEN_TOOLS = frozenset(
+    {"list_subagents", "cancel_subagent", "inspect_subagent", "message_subagent"}
+)
 _UNDELIVERED_RESULT = (
     f"The conversation failed to process this result {_MAX_DELIVERIES} times, "
     "so it was dropped and never reached the user."
@@ -76,7 +80,10 @@ _UNDELIVERED_RESULT = (
 _INSTRUCTIONS = (
     "The task and start_async_task tools launch background subagents and return a task ID. "
     "Keep talking to the user while they work. Use list_subagents to inspect progress and "
-    "cancel_subagent to stop work. Completed results will arrive as subagent data for you to "
+    "inspect_subagent for recent activity and message receipts, message_subagent to queue "
+    "local-worker guidance for its next model step, and cancel_subagent to stop work. "
+    "Queued messages do not interrupt running model or tool calls. Activity is metadata only, "
+    "not reasoning or tool output. Completed results will arrive as subagent data for you to "
     "process; do not repeatedly poll or wait for them."
 )
 # Every clause of _INSTRUCTIONS is false on a scheduled run, and believing it loses work: a
@@ -99,6 +106,7 @@ class _Job:
     notified: bool = False
     deliveries: int = 0
     tools: list[str] | None = None
+    control: SubagentControl = field(default_factory=SubagentControl)
 
     @property
     def status(self) -> str:
@@ -130,6 +138,7 @@ class BackgroundSubagents(AgentMiddleware):
         self._inline_slots = asyncio.Semaphore(_MAX_INLINE_RUNNING)
         self._inline_timeout = inline_timeout
         self._remote: dict[str, AsyncSubAgent] = {}
+        self.messageable: frozenset[str] = frozenset()
 
         @tool
         async def list_subagents(runtime: ToolRuntime) -> list[dict[str, str | list[str] | None]]:
@@ -157,13 +166,60 @@ class BackgroundSubagents(AgentMiddleware):
             await self._cancel_jobs([job])
             return job.status
 
-        self.tools = [list_subagents, cancel_subagent]
+        self.tools = [list_subagents, cancel_subagent, *self._control_tools()]
+
+    def _control_tools(self) -> list[BaseTool]:
+        @tool
+        async def inspect_subagent(
+            task_id: str, runtime: ToolRuntime, limit: int = 10
+        ) -> dict[str, object]:
+            """Inspect recent metadata-only activity and queued/consumed message receipts."""
+            owner = runtime.config.get("configurable", {}).get("thread_id")
+            job = self._jobs.get(task_id)
+            if not owner or job is None or job.owner != owner:
+                return {"error": "Unknown subagent for this conversation."}
+            if not 1 <= limit <= _MAX_EVENTS:
+                return {"error": "Limit must be between 1 and 50."}
+            return {
+                "task_id": task_id,
+                "status": job.status,
+                "messaging_supported": job.control.supported,
+                "activity": "local model/tool metadata"
+                if job.control.supported
+                else "lifecycle only",
+                "events": list(job.control.events)[-limit:],
+                "messages": [
+                    {key: receipt[key] for key in ("message_id", "status")}
+                    for receipt in job.control.messages
+                ],
+            }
+
+        @tool
+        async def message_subagent(
+            task_id: str, message: str, runtime: ToolRuntime
+        ) -> dict[str, str]:
+            """Queue local-worker guidance for its next model step, not an immediate interrupt."""
+            owner = runtime.config.get("configurable", {}).get("thread_id")
+            job = self._jobs.get(task_id)
+            if not owner or job is None or job.owner != owner:
+                return {"error": "Unknown subagent for this conversation."}
+            if job.status != "running":
+                return {"error": "Subagent is no longer accepting messages."}
+            if not job.control.supported:
+                return {"error": "Messaging is supported only for Talon-built local subagents."}
+            return job.control.enqueue(message)
+
+        return [inspect_subagent, message_subagent]
 
     def configured(
-        self, subagents: Sequence[SubAgent | CompiledSubAgent | AsyncSubAgent]
+        self,
+        subagents: Sequence[SubAgent | CompiledSubAgent | AsyncSubAgent],
     ) -> BackgroundSubagents:
         """Bind remote targets to this graph while sharing the in-memory workers."""
         middleware = copy(self)
+        middleware.messageable = frozenset(
+            spec["name"] for spec in subagents if "runnable" not in spec and "graph_id" not in spec
+        )
         middleware._remote = {  # noqa: SLF001  # configure a copy of this middleware
             spec["name"]: cast("AsyncSubAgent", spec) for spec in subagents if "graph_id" in spec
         }
@@ -241,6 +297,10 @@ class BackgroundSubagents(AgentMiddleware):
             task_id = f"subagent-{uuid4().hex}"
             job = _Job(owner, str(request.tool_call["args"].get("subagent_type", "")))
             job.tools = request.tool_call["args"].get("tools")
+            job.control.supported = (
+                request.tool_call["name"] == "task" and job.name in self.messageable
+            )
+            job.control.record("started")
             self._jobs[task_id] = job
             job.worker = asyncio.create_task(
                 self._run(job, request, task_id), name=task_id, context=contextvars.copy_context()
@@ -303,6 +363,7 @@ class BackgroundSubagents(AgentMiddleware):
 
     async def _run(self, job: _Job, request: ToolCallRequest, task_id: str) -> None:
         _IN_SUBAGENT.set(True)
+        ACTIVE_CONTROL.set(job.control)
         APPROVAL_OPERATOR.set(False)
         # The copied context carries the host's history scope and cron origin, which the
         # tools a subagent may hold require. It must not carry the authorization handler:
@@ -336,10 +397,14 @@ class BackgroundSubagents(AgentMiddleware):
             job.result = job.result[:_MAX_RESULT_CHARACTERS]
         except asyncio.CancelledError:
             job.cancelled = True
+            job.control.record("cancelled")
         except Exception:
             logger.exception("Background subagent %s failed", task_id)
             # This result reaches the model and the user: no arguments, no credentials.
             job.result = _TIMED_OUT_RESULT if timeout.expired() else _FAILED_RESULT
+            job.control.record("timed_out" if timeout.expired() else "error")
+        finally:
+            job.control.record("finished")
 
     async def _run_remote(self, request: ToolCallRequest) -> str:
         spec = self._remote[request.tool_call["args"]["subagent_type"]]

@@ -198,7 +198,7 @@ async def test_inspect_cancel_ownership_and_capacity():
     try:
         await background.awrap_tool_call(_request("one", task), _unused_handler)
         await asyncio.sleep(0)
-        listing, cancel = background.tools
+        listing, cancel, *_ = background.tools
         jobs = await listing.ainvoke({"runtime": _request("one", task).runtime})
         assert jobs[0]["status"] == "running"
         task_id = jobs[0]["task_id"]
@@ -267,7 +267,7 @@ async def test_cancel_finished_subagent_preserves_result():
     background = BackgroundSubagents()
     await background.awrap_tool_call(_request("one", task), _unused_handler)
     await asyncio.gather(*(job.worker for job in background._jobs.values()))
-    listing, cancel = background.tools
+    listing, cancel, *_ = background.tools
     runtime = _request("one", task).runtime
     jobs = await listing.ainvoke({"runtime": runtime})
     task_id = jobs[0]["task_id"]
@@ -961,21 +961,16 @@ async def test_scheduled_prompt_replaces_the_background_instructions():
         return "response"
 
     @tool
-    async def list_subagents() -> str:
-        """Inspect."""
-        return "none"
-
-    @tool
     async def researcher_tool() -> str:
         """Work."""
         return "done"
 
+    background = BackgroundSubagents()
     request = SimpleNamespace(
         system_message=None,
-        tools=[list_subagents, researcher_tool],
+        tools=[*background.tools, researcher_tool],
         override=_override,
     )
-    background = BackgroundSubagents()
     token = _scheduled()
     try:
         await background.awrap_model_call(request, handler)

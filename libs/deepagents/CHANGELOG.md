@@ -4,12 +4,11 @@
 
 ## [0.7.35](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.34...deepagents==0.7.35) (2026-11-09)
 
-
 ### Bug Fixes
 
-* **sdk:** keep forked subagents on the parent's prompt-cache prefix ([#7628](https://github.com/langchain-ai/deepagents/issues/7628)) ([e3cb6bb](https://github.com/langchain-ai/deepagents/commit/e3cb6bb097c1b5e2654e23a236c83ca0c17edea8))
-* **sdk:** mark read_file media and Nemotron nudges as harness notifications ([#7589](https://github.com/langchain-ai/deepagents/issues/7589)) ([eb81f68](https://github.com/langchain-ai/deepagents/commit/eb81f68ca932217c9e3430b48dc047732e800d29))
-* **sdk:** preserve symlink names in virtual filesystem results ([#7618](https://github.com/langchain-ai/deepagents/issues/7618)) ([2a4c5fa](https://github.com/langchain-ai/deepagents/commit/2a4c5faeb580ce6db1e560017846545b144a7e26))
+- Keep forked subagents on their parent's prompt-cache prefix ([#7628](https://github.com/langchain-ai/deepagents/pull/7628)).
+- Preserve symlink names in virtual filesystem results ([#7618](https://github.com/langchain-ai/deepagents/pull/7618)).
+- Correctly mark `read_file` media and Nemotron nudges as harness notifications ([#7589](https://github.com/langchain-ai/deepagents/pull/7589)).
 
 ## [0.7.34](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.33...deepagents==0.7.34) (2026-11-05)
 

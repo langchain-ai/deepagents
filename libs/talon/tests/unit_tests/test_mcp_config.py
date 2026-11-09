@@ -102,6 +102,9 @@ def test_add_remove_and_stale_revision(config_tools):
         {"url": "https://example.test", "unknown": "value"},
         {"transport": []},
         {"command": "${INVALID"},
+        {"command": "server", "enabled": "false"},
+        {"command": "server", "enabled": 0},
+        {"command": "server", "enabled": None},
     ],
 )
 def test_invalid_update_leaves_file_unchanged(config_tools, server):

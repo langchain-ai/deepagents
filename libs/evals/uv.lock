@@ -684,7 +684,7 @@ requires-dist = [
     { name = "langchain-core", specifier = ">=1.7.6,<2.0.0" },
     { name = "langchain-daytona", marker = "extra == 'daytona'", editable = "../partners/daytona" },
     { name = "langchain-deepseek", marker = "extra == 'deepseek'", specifier = ">=1.1.1,<2.0.0" },
-    { name = "langchain-fireworks", marker = "extra == 'fireworks'", specifier = ">=1.7.2,<2.0.0" },
+    { name = "langchain-fireworks", marker = "extra == 'fireworks'", specifier = ">=1.7.3,<2.0.0" },
     { name = "langchain-google-genai", specifier = ">=4.4.3,<5.0.0" },
     { name = "langchain-google-genai", marker = "extra == 'google-genai'", specifier = ">=4.4.3,<5.0.0" },
     { name = "langchain-google-vertexai", marker = "extra == 'vertex'", specifier = ">=3.2.5,<4.0.0" },

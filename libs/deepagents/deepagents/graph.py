@@ -47,6 +47,7 @@ from deepagents.middleware._prompt_caching import append_prompt_caching_middlewa
 from deepagents.middleware._state import private_state_field_names
 from deepagents.middleware._tool_exclusion import _ToolExclusionMiddleware
 from deepagents.middleware.async_subagents import AsyncSubAgent, AsyncSubAgentMiddleware
+from deepagents.middleware.code_call_guard import _guard_calls_from_code
 from deepagents.middleware.filesystem import FilesystemMiddleware, FilesystemPermission
 from deepagents.middleware.memory import MemoryMiddleware
 from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
@@ -1011,7 +1012,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         model,
         system_prompt=final_system_prompt,
         tools=_tools,
-        middleware=deepagent_middleware,
+        middleware=_guard_calls_from_code(deepagent_middleware),
         response_format=response_format,
         context_schema=context_schema,
         checkpointer=checkpointer,

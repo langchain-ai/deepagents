@@ -34,6 +34,7 @@ from typing_extensions import TypeIs
 from deepagents.backends.protocol import BackendProtocol
 from deepagents.middleware._skill_tools import _SKILL_TOOLS_DISCLOSED_KEY
 from deepagents.middleware._utils import append_to_system_message
+from deepagents.middleware.code_call_guard import _guard_calls_from_code
 from deepagents.middleware.filesystem import FilesystemMiddleware, FilesystemPermission
 from deepagents.middleware.rubric import _RUBRIC_KEY
 from deepagents.middleware.summarization import (
@@ -662,7 +663,7 @@ def create_sub_agent(
     create_agent_kwargs: dict[str, Any] = {
         "system_prompt": spec.get("system_prompt", ""),
         "tools": spec["tools"],
-        "middleware": middleware,
+        "middleware": _guard_calls_from_code(middleware),
         "name": spec["name"],
         "response_format": selected_response_format,
     }

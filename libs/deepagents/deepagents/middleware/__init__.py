@@ -52,6 +52,7 @@ from deepagents.middleware.async_subagents import (
     AsyncSubAgentMiddleware,
     TaskEvent,
 )
+from deepagents.middleware.code_call_guard import CodeCallGuardMiddleware
 from deepagents.middleware.filesystem import FilesystemMiddleware, FilesystemPermission
 from deepagents.middleware.memory import MemoryMiddleware
 from deepagents.middleware.rubric import (
@@ -87,6 +88,7 @@ __all__ = [
     "RUBRIC_GRADER_MESSAGE_SOURCE",
     "AsyncSubAgent",
     "AsyncSubAgentMiddleware",
+    "CodeCallGuardMiddleware",
     "CompiledSubAgent",
     "CriterionEval",
     "CriterionFail",

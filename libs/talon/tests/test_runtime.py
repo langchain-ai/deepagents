@@ -6,13 +6,17 @@ import logging
 import time
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Protocol, cast
+from unittest.mock import Mock
 
 import httpx
 import pytest
 from deepagents.backends import CompositeBackend
 from langchain.agents.middleware.types import AgentMiddleware
 from langchain_core.messages import AIMessage, RemoveMessage, ToolMessage
+from langchain_core.tracers.langchain import wait_for_all_tracers
 from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.graph import END, START, MessagesState, StateGraph
+from langsmith import tracing_context
 
 from deepagents_talon.authorization import AuthorizationEvent, current_authorization_handler
 from deepagents_talon.cron import CronJobStore
@@ -770,6 +774,8 @@ async def test_runtime_rejects_invalid_recursion_limit_env() -> None:
 
 async def test_runtime_recovers_with_exact_human_message_after_latest_checkpoint() -> None:
     graph = RecoverableGraph()
+    graph.config["tags"] = ["existing"]
+    graph.config["metadata"] = {"existing": "value"}
     runtime = DeepAgentRuntime(
         model="test:model",
         include_web_tools=False,
@@ -782,7 +788,15 @@ async def test_runtime_recovers_with_exact_human_message_after_latest_checkpoint
 
     assert graph.update is not None
     config, values = graph.update
-    assert config is graph.config
+    assert config["configurable"] == graph.config["configurable"]
+    assert "existing" in config["tags"]
+    assert config["metadata"]["existing"] == "value"
+    assert "run_name" not in graph.config
+    assert config["run_name"] == "talon_interrupt_recovery"
+    assert "deepagents-talon" in config["tags"]
+    assert any(tag.startswith("assistant:") for tag in config["tags"])
+    assert "talon:interrupt-recovery" in config["tags"]
+    assert config["metadata"]["conversation_id"] == "chat"
     messages = values["messages"]
     assert len(messages) == 1
     assert messages[0].type == "human"
@@ -1325,3 +1339,45 @@ async def test_agent_tools_inspection_does_not_block_the_event_loop(
         await runtime.stop()
 
     assert ticks > 1
+
+
+async def test_recovery_trace_has_named_root_and_conversation_metadata(monkeypatch) -> None:
+    builder = StateGraph(MessagesState)
+    builder.add_node("agent", lambda _state: {"messages": []})
+    builder.add_edge(START, "agent")
+    builder.add_edge("agent", END)
+    graph = builder.compile(checkpointer=InMemorySaver())
+    with tracing_context(enabled=False):
+        await graph.ainvoke(
+            {"messages": [("user", "hello")]}, {"configurable": {"thread_id": "chat"}}
+        )
+    runtime = DeepAgentRuntime(
+        model="test:model",
+        include_web_tools=False,
+        skills=(),
+        memory=(),
+        env={
+            "AGENT_ASSISTANT_ID": "assistant",
+            "LANGSMITH_TRACING": "true",
+            "LANGSMITH_API_KEY": "key",
+        },
+    )
+    runtime._graph = graph
+    client = Mock()
+    monkeypatch.setattr("langsmith.run_trees.get_cached_client", lambda: client)
+    with tracing_context(enabled=True, client=client):
+        await runtime.recover_interrupted("chat")
+
+    await asyncio.to_thread(wait_for_all_tracers)
+    runs = [call.kwargs for call in client.create_run.call_args_list]
+    roots = [run for run in runs if not run.get("parent_run_id")]
+    assert len(roots) == 1
+    assert roots[0]["name"] == "talon_interrupt_recovery"
+    assert set(roots[0]["tags"]) >= {
+        "deepagents-talon",
+        "assistant:assistant",
+        "talon:interrupt-recovery",
+    }
+    assert roots[0]["extra"]["metadata"]["conversation_id"] == "chat"
+    state = await graph.aget_state({"configurable": {"thread_id": "chat"}})
+    assert state.values["messages"][-1].content.startswith("[SYSTEM] Task interrupted")

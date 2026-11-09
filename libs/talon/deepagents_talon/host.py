@@ -79,7 +79,12 @@ from deepagents_talon.media import (
     extract_markdown_media,
     outbound_channel_media,
 )
-from deepagents_talon.observability import langsmith_trace_context, log_event, stable_log_ref
+from deepagents_talon.observability import (
+    USER_INTERRUPTED,
+    langsmith_trace_context,
+    log_event,
+    stable_log_ref,
+)
 from deepagents_talon.pairing import (
     APPROVED_NOTICE,
     PairedSender,
@@ -592,6 +597,7 @@ class TalonHost:
                         conversation_id=agent_conversation_id,
                         provider=provider,
                     ),
+                    user_interrupted=True,
                 )
 
     async def _handle_conversation_command(
@@ -684,7 +690,7 @@ class TalonHost:
     ) -> str:
         """Stop a revoked sender's work in every chat and pause the jobs they created."""
         outcomes = [
-            await self._cancel_conversation_tasks(conversation_id)
+            await self._cancel_conversation_tasks(conversation_id, user_interrupted=False)
             for conversation_id in self._conversations_of(channel_key, revoked)
         ]
         stopped = sum(outcome is not _CancelOutcome.NONE for outcome in outcomes)
@@ -932,7 +938,9 @@ class TalonHost:
             env=self.config.env,
         )
 
-    async def _replace_agent_turn(self, route: _BackgroundRoute) -> None:
+    async def _replace_agent_turn(
+        self, route: _BackgroundRoute, *, user_interrupted: bool = False
+    ) -> None:
         conversation_id = route.conversation_id
         channel = route.channel
         message = route.message
@@ -944,7 +952,9 @@ class TalonHost:
         active = self._tasks.get(conversation_id)
         recovery_degraded = False
         if active is not None and not active.done():
-            outcome = await self._cancel_active(conversation_id, active, recover=True)
+            outcome = await self._cancel_active(
+                conversation_id, active, recover=True, user_interrupted=user_interrupted
+            )
             if outcome is _CancelOutcome.TIMEOUT:
                 await send_with_retry(
                     lambda: channel.send_message(message.conversation_id, _CANCEL_TIMEOUT_MESSAGE)
@@ -1606,11 +1616,15 @@ class TalonHost:
             message = "Stopped current run."
         await send_with_retry(lambda: channel.send_message(target_conversation_id, message))
 
-    async def _cancel_conversation_tasks(self, conversation_id: str) -> _CancelOutcome:
+    async def _cancel_conversation_tasks(
+        self, conversation_id: str, *, user_interrupted: bool = True
+    ) -> _CancelOutcome:
         task = self._tasks.get(conversation_id)
         outcome = _CancelOutcome.NONE
         if task is not None and not task.done():
-            outcome = await self._cancel_active(conversation_id, task, recover=True)
+            outcome = await self._cancel_active(
+                conversation_id, task, recover=True, user_interrupted=user_interrupted
+            )
         if isinstance(self.agent, BackgroundRuntime):
             had_workers = conversation_id in self.agent.background.owners()
             if not await self.agent.background.cancel(conversation_id):
@@ -1626,9 +1640,10 @@ class TalonHost:
         task: asyncio.Task[None],
         *,
         recover: bool,
+        user_interrupted: bool = False,
     ) -> _CancelOutcome:
         self._generations[conversation_id] += 1
-        task.cancel()
+        task.cancel(USER_INTERRUPTED if user_interrupted else None)
         deadline = asyncio.get_running_loop().time() + _CANCEL_TIMEOUT_SECONDS
         try:
             done, _ = await asyncio.wait({task}, timeout=_CANCEL_TIMEOUT_SECONDS)

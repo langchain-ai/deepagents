@@ -136,18 +136,11 @@ launching dcode.
 
 Set `idle_compaction_tokens = 0` to disable it again. File edits take effect after
 `/reload`. This setting is independent of cold-cache warning preferences.
-
 Compaction skips busy sessions, queued input, active typing, modals, lifecycle
 transitions, and approximate token counts. It attempts at most once per thread
 and cache window, announces the operation, and supports Escape cancellation.
 Input arriving before the worker starts skips compaction; input arriving after
 it starts uses the normal offload queue and runs once compaction finishes.
-
-In LangSmith, filter trace metadata by `dcode_idle_compaction = true` to find
-runs with idle compaction configured. `dcode_idle_compaction_tokens` records the
-resolved token threshold (0 when disabled). These fields describe the setting
-for that run, not whether automatic compaction actually occurred; older traces
-without these fields cannot be filtered this way.
 
 ## Debugging
 

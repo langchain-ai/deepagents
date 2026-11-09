@@ -550,9 +550,8 @@ class TalonHost:
                     return
 
                 questions = self._pending_questions.get(agent_conversation_id)
-                if questions is not None:
-                    await self._handle_question_reply(channel, message, questions)
-                    return
+                if questions is not None and message.sender_id == questions.sender_id:
+                    message = await transcribe_voice_message(self.voice_transcriber, message)
 
                 if await self._intercept_authorization_message(
                     channel,
@@ -560,6 +559,10 @@ class TalonHost:
                     provider=_channel_key(channel, provider),
                     agent_conversation_id=agent_conversation_id,
                 ):
+                    return
+
+                if questions is not None:
+                    await self._handle_question_reply(channel, message, questions)
                     return
 
                 await self._replace_agent_turn(
@@ -2086,9 +2089,9 @@ class TalonHost:
         )
         self._pending_questions[conversation_id] = pending
         try:
-            await send_with_retry(
-                lambda: channel.send_message(message.conversation_id, pending.session.prompt())
-            )
+            result = await _send_question_message(channel, message, pending.session.prompt())
+            if not result.success:
+                return None
             return await pending.future
         finally:
             if self._pending_questions.get(conversation_id) is pending:
@@ -2102,13 +2105,13 @@ class TalonHost:
     ) -> None:
         if message.sender_id != pending.sender_id:
             text = "Only the person who started this run can answer these questions."
-        else:
-            step = pending.session.reply(message.text)
-            text = step.message
-            if step.status != "asking" and not pending.future.done():
-                answered = step.status == "submitted"
-                pending.future.set_result(pending.session.result if answered else None)
-        await send_with_retry(lambda: channel.send_message(message.conversation_id, text))
+            await send_with_retry(lambda: channel.send_message(message.conversation_id, text))
+            return
+        step = pending.session.reply(message.text)
+        result = await _send_question_message(channel, message, step.message)
+        if (step.status != "asking" or not result.success) and not pending.future.done():
+            answered = step.status == "submitted"
+            pending.future.set_result(pending.session.result if answered else None)
 
     def _handle_tool_approval_reaction(
         self,
@@ -2476,6 +2479,14 @@ async def _typing_refresh_loop(channel: ChannelAdapter, conversation_id: str) ->
     while True:
         await _send_typing(channel, conversation_id)
         await asyncio.sleep(_TYPING_REFRESH_SECONDS)
+
+
+async def _send_question_message(
+    channel: ChannelAdapter, message: ChannelMessage, text: str
+) -> SendResult:
+    if not is_direct_message(message) and await _channel_provider(channel) in {"slack", "discord"}:
+        text += "\n\nMention the bot in every reply, including `submit`, `back`, and `cancel`."
+    return await send_with_retry(lambda: channel.send_message(message.conversation_id, text))
 
 
 async def _channel_provider(channel: ChannelAdapter) -> str | None:

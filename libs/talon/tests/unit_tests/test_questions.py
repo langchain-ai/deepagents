@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import asyncio
 from typing import TYPE_CHECKING
+from unittest.mock import AsyncMock
 
 import pytest
 from pydantic import ValidationError
 
 from deepagents_talon.background import _IN_SUBAGENT
 from deepagents_talon.host import TalonHost
-from deepagents_talon.interfaces import AgentRequest, ChannelMessage
+from deepagents_talon.interfaces import AgentRequest, ChannelMessage, SendResult
 from deepagents_talon.questions import (
     Answer,
     Question,
@@ -19,7 +20,7 @@ from deepagents_talon.questions import (
 )
 from deepagents_talon.runtime import _question_handler_from_request
 from tests.conftest import RecordingChannel
-from tests.test_host import BlockingAgent, _config
+from tests.test_host import BlockingAgent, VoiceTranscriber, _config
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -176,31 +177,84 @@ def test_unattended_runs_get_no_question_handler(metadata: dict[str, object]) ->
     assert _question_handler_from_request(request) is None
 
 
-async def test_host_waits_for_the_starting_sender_without_starting_a_turn(tmp_path: Path) -> None:
-    channel = RecordingChannel()
+@pytest.mark.parametrize(
+    ("provider", "is_dm"),
+    [("test", False), ("slack", False), ("discord", False), ("slack", True), ("discord", True)],
+)
+async def test_host_waits_for_the_starting_sender_without_starting_a_turn(
+    tmp_path: Path, provider: str, *, is_dm: bool
+) -> None:
+    channel = RecordingChannel(provider)
     agent = BlockingAgent()
-    host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
+    host = TalonHost(
+        config=_config(tmp_path),
+        agent=agent,
+        channels=[channel],
+        voice_transcriber=VoiceTranscriber(),
+    )
     await host.start()
     try:
-        await host.receive_message(channel, ChannelMessage("chat", "block", sender_id="alice"))
+        await host.receive_message(
+            channel, ChannelMessage("chat", "block", sender_id="alice", metadata={"is_dm": is_dm})
+        )
         await asyncio.sleep(0)
         handler = agent.requests[0].question_handler
         assert handler is not None
         asked = asyncio.create_task(handler(_questions(DATABASE, FEATURES)))
         await asyncio.sleep(0)
         assert channel.sent[-1][1].startswith("Question 1 of 2")
+        assert ("Mention the bot" in channel.sent[-1][1]) == (provider != "test" and not is_dm)
 
         await host.receive_message(channel, ChannelMessage("chat", "1", sender_id="mallory"))
         assert "Only the person who started" in channel.sent[-1][1]
-        for reply in ("1 note", "2", "submit"):
-            await host.receive_message(channel, ChannelMessage("chat", reply, sender_id="alice"))
+        callback = "http://127.0.0.1:6359/callback?code=synthetic&state=synthetic"
+        await host.receive_message(channel, ChannelMessage("chat", callback, sender_id="alice"))
+        assert "No matching MCP authorization" in channel.sent[-1][1]
+        for reply in (
+            ChannelMessage("chat", "1 note", sender_id="alice"),
+            ChannelMessage("chat", "", sender_id="alice", metadata={"voice_path": "voice.ogg"}),
+            ChannelMessage("chat", "submit", sender_id="alice"),
+        ):
+            await host.receive_message(channel, reply)
 
         answers = await asyncio.wait_for(asked, 2)
-        assert answers == (Answer(("Postgres",), note="note"), Answer(("Billing",)))
+        assert answers == (Answer(("Postgres",), note="note"), Answer(other="transcribed voice"))
         assert len(agent.requests) == 1
     finally:
         agent.released.set()
         await host.stop()
+
+
+@pytest.mark.parametrize("successful_sends", [0, 1, 2])
+async def test_failed_question_delivery_unblocks_the_tool(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, successful_sends: int
+) -> None:
+    channel = RecordingChannel()
+    monkeypatch.setattr(
+        channel,
+        "send_message",
+        AsyncMock(
+            side_effect=[SendResult(success=True)] * successful_sends + [SendResult(success=False)]
+        ),
+    )
+    host = TalonHost(config=_config(tmp_path), agent=BlockingAgent(), channels=[channel])
+    asked = asyncio.create_task(
+        host._ask_questions(
+            channel,
+            _questions(DATABASE, FEATURES),
+            conversation_id="test:chat",
+            message=ChannelMessage("chat", "choose", sender_id="alice"),
+        )
+    )
+    try:
+        await asyncio.sleep(0)
+        for _ in range(successful_sends):
+            await host.receive_message(channel, ChannelMessage("chat", "1", sender_id="alice"))
+        assert await asyncio.wait_for(asked, 2) is None
+        assert not host._pending_questions
+    finally:
+        asked.cancel()
+        await asyncio.gather(asked, return_exceptions=True)
 
 
 async def test_host_offers_no_questions_without_a_sender(tmp_path: Path) -> None:

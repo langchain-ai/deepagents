@@ -1366,6 +1366,9 @@ class DeepAgentRuntime:
         for path in _split_path_env(
             self.env.get("DEEPAGENTS_TALON_SKILLS_DIRS") or self.env.get("SKILLS_DIRS"),
         ):
+            if not Path(path).is_dir():
+                logger.warning("Ignoring Talon skills directory %s: not a directory", path)
+                continue
             if path not in sources:
                 sources.append(path)
         return sources or None
@@ -1814,8 +1817,8 @@ def _is_model_content(value: object) -> TypeGuard[list[dict[str, object]]]:
 def _split_path_env(raw: str | None) -> list[str]:
     if not raw:
         return []
-    separator = ";" if ";" in raw else os.pathsep
-    return [str(Path(part).expanduser()) for part in raw.split(separator) if part.strip()]
+    separator = ";" if ";" in raw else "," if "," in raw else os.pathsep
+    return [str(Path(part.strip()).expanduser()) for part in raw.split(separator) if part.strip()]
 
 
 def _manifest_memory_paths(assistant_dir: Path) -> list[str]:

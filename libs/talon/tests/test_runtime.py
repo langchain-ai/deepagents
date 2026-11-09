@@ -3,7 +3,9 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import time
+from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Protocol, cast
 from unittest.mock import Mock
@@ -29,12 +31,12 @@ from deepagents_talon.runtime import (
     _SAFE_BACKEND_PATH,
     DeepAgentRuntime,
     _is_retryable,
+    _split_path_env,
     _status_code,
 )
 
 if TYPE_CHECKING:
     from collections.abc import Callable
-    from pathlib import Path
 
     from langgraph.types import Command
 
@@ -1339,6 +1341,71 @@ async def test_agent_tools_inspection_does_not_block_the_event_loop(
         await runtime.stop()
 
     assert ticks > 1
+
+
+@pytest.mark.parametrize("separator", [",", ";", os.pathsep])
+def test_split_path_env_trims_and_expands_entries(separator: str) -> None:
+    raw = f"  ~/skills {separator} {separator} Users/john/skills/ {separator} "
+
+    assert _split_path_env(raw) == [str(Path.home() / "skills"), "Users/john/skills"]
+
+
+@pytest.mark.parametrize("raw", [None, "", "  ", ", ,", "; ;"])
+def test_split_path_env_empty_entries(raw: str | None) -> None:
+    assert _split_path_env(raw) == []
+
+
+def test_split_path_env_separator_precedence() -> None:
+    assert _split_path_env("first,second;third") == ["first,second", "third"]
+    assert _split_path_env("first:second,third") == ["first:second", "third"]
+
+
+def test_runtime_resolves_comma_separated_skills(tmp_path, monkeypatch, caplog) -> None:
+    monkeypatch.chdir(tmp_path)
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    relative = Path("Users/john/.deepagents/talon-local/skills")
+    relative.mkdir(parents=True)
+    missing = tmp_path / "missing"
+    file = tmp_path / "file"
+    file.touch()
+    runtime = DeepAgentRuntime(
+        model="test:model",
+        assistant_dir=tmp_path / "assistant",
+        env={
+            "DEEPAGENTS_TALON_SKILLS_DIRS": f" {shared}, {relative}/, {missing}, {file}, {shared}"
+        },
+    )
+
+    with caplog.at_level(logging.WARNING, logger="deepagents_talon.runtime"):
+        sources = runtime._resolve_skills()
+
+    assert sources == [str(tmp_path / "assistant" / "skills"), str(shared), str(relative)]
+    assert len(caplog.records) == 2
+    assert str(missing) in caplog.text
+    assert str(file) in caplog.text
+
+
+def test_runtime_resolves_comma_separated_memory_files(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    existing = tmp_path / "existing.md"
+    existing.write_text("remember this", encoding="utf-8")
+    new = Path("memory/new.md")
+    runtime = DeepAgentRuntime(
+        model="test:model",
+        env={"DEEPAGENTS_TALON_MEMORY_PATHS": f" {existing}, {new}, "},
+    )
+
+    assert runtime._resolve_memory() == [str(existing), str(new)]
+    assert existing.read_text(encoding="utf-8") == "remember this"
+    assert new.is_file()
+    assert new.read_text(encoding="utf-8") == ""
+
+
+def test_split_path_env_preserves_absolute_and_relative_skills_paths() -> None:
+    assert _split_path_env(
+        "/Users/john/.agents/skills/,Users/john/.deepagents/talon-local/skills/"
+    ) == ["/Users/john/.agents/skills", "Users/john/.deepagents/talon-local/skills"]
 
 
 async def test_recovery_trace_has_named_root_and_conversation_metadata(monkeypatch) -> None:

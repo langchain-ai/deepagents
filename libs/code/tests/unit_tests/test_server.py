@@ -2025,3 +2025,80 @@ class TestTerminateServerProcess:
 
         assert "Dropping handle to server pid=4321 that is still running" in caplog.text
         assert server._process is None
+
+
+class TestLoopbackProxyBypass:
+    """Local server traffic must never be routed through an HTTP proxy."""
+
+    @pytest.fixture(autouse=True)
+    def _clear_no_proxy(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("NO_PROXY", raising=False)
+        monkeypatch.delenv("no_proxy", raising=False)
+
+    def test_adds_loopback_hosts_when_unset(self) -> None:
+        """Both spellings gain every loopback host."""
+        server_module._bypass_proxy_for_loopback()
+
+        for var in ("NO_PROXY", "no_proxy"):
+            assert os.environ[var].split(",") == ["127.0.0.1", "localhost", "::1"]
+
+    def test_preserves_user_entries(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Existing entries are kept ahead of the appended loopback hosts."""
+        monkeypatch.setenv("NO_PROXY", "corp.internal, localhost")
+
+        server_module._bypass_proxy_for_loopback()
+
+        assert os.environ["NO_PROXY"].split(",") == [
+            "corp.internal",
+            "localhost",
+            "127.0.0.1",
+            "::1",
+        ]
+
+    def test_is_idempotent(self) -> None:
+        """Repeated server restarts do not grow the variable."""
+        server_module._bypass_proxy_for_loopback()
+        first = os.environ["NO_PROXY"]
+
+        server_module._bypass_proxy_for_loopback()
+
+        assert os.environ["NO_PROXY"] == first
+
+    async def test_start_bypasses_proxy_for_client_and_server(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`start()` applies the bypass before spawning and probing the server."""
+        monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:9")
+        monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:9")
+        config_dir = tmp_path / "runtime"
+        config_dir.mkdir()
+        (config_dir / "langgraph.json").write_text("{}")
+        server = ServerProcess(config_dir=config_dir, port=0)
+        log_file = MagicMock()
+        log_file.name = str(tmp_path / "server.log")
+        process = MagicMock(pid=1234)
+        process.poll.return_value = None
+
+        with (
+            patch(
+                "deepagents_code.client.launch.server.tempfile.NamedTemporaryFile",
+                return_value=log_file,
+            ),
+            patch(
+                "deepagents_code.client.launch.server.subprocess.Popen",
+                return_value=process,
+            ) as popen,
+            patch(
+                "deepagents_code.client.launch.server.wait_for_server_healthy",
+                new=AsyncMock(),
+            ),
+            patch(
+                "deepagents_code.client.launch.server._find_free_port",
+                return_value=43210,
+            ),
+        ):
+            await server.start()
+
+        assert "127.0.0.1" in os.environ["NO_PROXY"].split(",")
+        child_env = popen.call_args.kwargs["env"]
+        assert "127.0.0.1" in child_env["NO_PROXY"].split(",")

@@ -163,6 +163,27 @@ def _port_in_use(host: str, port: int) -> bool:
             return False
 
 
+_LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
+"""Hosts that must never be reached through an HTTP proxy."""
+
+
+def _bypass_proxy_for_loopback() -> None:
+    """Add loopback hosts to `NO_PROXY` so local server traffic skips proxies.
+
+    httpx (and therefore `langgraph_sdk`) routes every request through the proxy
+    it finds in the environment or, on macOS, in the system settings. It does
+    not honor the OS proxy exception list, so a proxy that cannot reach the
+    loopback server makes health checks and agent calls fail. Existing entries
+    are kept; only missing loopback hosts are appended.
+    """
+    for var in ("NO_PROXY", "no_proxy"):
+        entries = [e.strip() for e in os.environ.get(var, "").split(",")]
+        entries = [e for e in entries if e]
+        missing = [h for h in _LOOPBACK_HOSTS if h not in entries]
+        if missing:
+            os.environ[var] = ",".join(entries + missing)
+
+
 def _find_free_port(host: str) -> int:
     """Find a free port on the given host.
 
@@ -1029,6 +1050,7 @@ class ServerProcess:
                 logger.info("Requested port in use, using port %d instead", self.port)
 
             cmd = _build_server_cmd(config_path, host=self.host, port=self.port)
+            _bypass_proxy_for_loopback()
             env = _server_env_with_overrides(
                 self._persistent_env_overrides, self._env_overrides
             )

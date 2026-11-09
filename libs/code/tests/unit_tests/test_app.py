@@ -17425,14 +17425,24 @@ class TestDeferredActions:
 
             assert len(app._deferred_actions) == 0
 
-    @pytest.mark.parametrize("owned", [True, False])
-    async def test_startup_timeout_offers_recovery(self, owned: bool) -> None:
+    @pytest.mark.parametrize(
+        ("owned", "spawned", "hint"),
+        [
+            (True, False, "/model"),
+            (True, True, "/restart"),
+            (False, False, "remote server"),
+        ],
+    )
+    async def test_startup_timeout_offers_recovery(
+        self, owned: bool, spawned: bool, hint: str
+    ) -> None:
         from deepagents_code.client.launch.server import ServerStartupTimeoutError
 
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
             await pilot.pause()
             app._server_kwargs = {} if owned else None
+            app._server_proc = MagicMock() if spawned else None
             app.on_deep_agents_app_server_start_failed(
                 DeepAgentsApp.ServerStartFailed(
                     error=ServerStartupTimeoutError(
@@ -17449,7 +17459,8 @@ class TestDeferredActions:
             assert "Server startup timed out" in text
             assert "integration" in text
             assert "Debug Console" in text
-            assert ("/restart" in text) is owned
+            assert hint in text
+            assert ("/restart" in text) is spawned
             assert ("remote server" in text) is not owned
             assert "RuntimeError" not in text
             assert "Server disconnected" not in text

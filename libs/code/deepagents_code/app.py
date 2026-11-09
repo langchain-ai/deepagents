@@ -6856,11 +6856,12 @@ class DeepAgentsApp(App):
         if isinstance(event.error, MissingCredentialsError):
             text = f"Model setup required: {event.error}"
         elif isinstance(event.error, ServerStartupTimeoutError):
-            recovery = (
-                "Run `/restart` to try again."
-                if self._server_kwargs is not None
-                else "Check that the remote server is reachable, then reconnect."
-            )
+            if self._server_kwargs is None:
+                recovery = "Check that the remote server is reachable, then reconnect."
+            elif self._server_proc is not None:
+                recovery = "Run `/restart` to try again."
+            else:
+                recovery = "Use `/model` to select a model and retry startup."
             text = (
                 f"Server startup timed out. {recovery} "
                 "If this started after adding an integration, check its setup "

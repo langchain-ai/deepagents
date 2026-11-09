@@ -257,7 +257,8 @@ class FilesystemBackend(BackendProtocol):
             RuntimeError: If `Path.resolve()` detects a symlink loop on
                 Python <=3.12 (wraps the underlying `OSError(ELOOP)`).
         """
-        return "/" + path.resolve().relative_to(self.cwd).as_posix()
+        path.resolve().relative_to(self.cwd)
+        return "/" + path.relative_to(self.cwd).as_posix()
 
     def _display_path(self, path: Path) -> str:
         """Render a path for agent-visible messages without leaking the real root.

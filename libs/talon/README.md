@@ -730,7 +730,21 @@ edits; `list_subagents` shows launch-time additions.
 `task` launches local subagents and `start_async_task` launches remote subagents.
 In a chat conversation both return immediately. The user can continue chatting while
 the main agent uses `list_subagents` to inspect work and `cancel_subagent` to cancel
-it. When work finishes, its result is passed to the main agent for processing on the
+it. `inspect_subagent(task_id, limit=10)` returns recent timestamped model/tool lifecycle
+metadata and message receipts, without tool payloads or model reasoning. It retains
+50 events and 20 message receipts per worker. Remote and precompiled workers expose
+lifecycle events only.
+
+`message_subagent(task_id, message)` queues guidance for a Talon-built local worker's
+next model step, preserving its task context and approval restrictions. Messages are
+limited to 2,000 characters; a full inbox rejects new messages rather than dropping
+queued ones. The returned receipt starts as `queued`; inspection reports `consumed`
+once the instruction is added to the worker's conversation, not an acknowledgment
+that it was followed. Messages do not interrupt an in-flight model request or tool;
+use `cancel_subagent` for a hard stop. Remote and precompiled workers do not support
+messaging. All management tools are scoped to the owning conversation.
+
+When work finishes, its result is passed to the main agent for processing on the
 next idle turn, then the main agent replies to the channel.
 
 Workers and pending results live only in memory and are discarded on restart.
@@ -747,7 +761,8 @@ and limits each run to one hour. Completed results are capped at 64,000 characte
 A scheduled run is already unattended, so it does not delegate in the background.
 Both tools run the subagent to completion and return its result, and the run acts on
 that result in the turn that asked for it; there is no follow-up turn and no separate
-delivery. `list_subagents` and `cancel_subagent` are hidden from a scheduled run,
+delivery. Background management tools (`list_subagents`, `inspect_subagent`,
+`message_subagent`, and `cancel_subagent`) are hidden from a scheduled run,
 which owns no background work to inspect. Subagents launched in one assistant message
 still run concurrently, and a scheduled run no longer competes with chat for the four
 worker slots.

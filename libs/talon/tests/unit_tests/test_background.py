@@ -21,6 +21,7 @@ from deepagents_talon.authorization import (
     set_authorization_handler,
 )
 from deepagents_talon.background import (
+    _CONSUMED_RESULTS,
     _FAILED_RESULT,
     _IN_SUBAGENT,
     _INSTRUCTIONS,
@@ -321,6 +322,90 @@ async def test_invoke_reports_the_results_it_acknowledged(monkeypatch):
         assert set(runtime.background.results("chat")) == pending
     finally:
         await runtime.stop()
+
+
+@pytest.mark.parametrize("outcome", ["success", "failed", "cancelled", "unread"])
+async def test_results_read_during_turn_are_consumed_only_on_success(monkeypatch, outcome):
+    async def child(_state):
+        return {"messages": [AIMessage(content="research result")]}
+
+    listing = AIMessage(
+        content="",
+        tool_calls=[{"name": "list_subagents", "id": "list", "args": {}}],
+    )
+    runtime = _runtime(
+        monkeypatch,
+        child,
+        [_delegate(), *([listing] if outcome != "unread" else []), AIMessage(content="Done")],
+    )
+    wrap_model = runtime.background.awrap_model_call
+
+    async def finish_before_next_model(request, handler):
+        messages = request.state["messages"]
+        if isinstance(messages[-1], ToolMessage) and messages[-1].name == "task":
+            await asyncio.gather(*(job.worker for job in runtime.background._jobs.values()))
+        return await wrap_model(request, handler)
+
+    monkeypatch.setattr(runtime.background, "awrap_model_call", finish_before_next_model)
+    await runtime.start()
+    invoke = runtime._invoke_until_text
+
+    async def finish_turn(request, activity):
+        text = await invoke(request, activity)
+        if outcome == "failed":
+            msg = "turn failed"
+            raise RuntimeError(msg)
+        if outcome == "cancelled":
+            raise asyncio.CancelledError
+        return text
+
+    monkeypatch.setattr(runtime, "_invoke_until_text", finish_turn)
+    try:
+        request = AgentRequest("chat", "research")
+        if outcome in {"failed", "cancelled"}:
+            error = RuntimeError if outcome == "failed" else asyncio.CancelledError
+            with pytest.raises(error):
+                await runtime.invoke(request)
+            assert runtime.background.results("chat")
+        else:
+            result = await runtime.invoke(request)
+            assert result.text == "Done"
+            if outcome == "success":
+                assert result.background_results
+                assert not runtime.background.results("chat")
+                runtime.background.requeue(result.background_results)
+                assert set(runtime.background.results("chat")) == set(result.background_results)
+            else:
+                assert result.background_results == ()
+                assert runtime.background.results("chat")
+        assert _CONSUMED_RESULTS.get() is None
+    finally:
+        await runtime.stop()
+
+
+@pytest.mark.parametrize(("owner", "worker"), [("other", False), ("chat", True)])
+async def test_listing_cannot_consume_results_for_another_turn(owner, worker):
+    @tool
+    async def task() -> str:
+        """Return research."""
+        return "research result"
+
+    background = BackgroundSubagents()
+    await background.awrap_tool_call(_request("chat", task), _unused_handler)
+    await asyncio.gather(*(job.worker for job in background._jobs.values()))
+    consumed = {}
+    consumed_token = _CONSUMED_RESULTS.set((owner, consumed))
+    worker_token = _IN_SUBAGENT.set(worker)
+    try:
+        listing = background.tools[0]
+        result = await listing.ainvoke({"runtime": _request("chat", task).runtime})
+        assert result[0]["result"] == "research result"
+        assert consumed == {}
+        assert background.results("chat")
+    finally:
+        _CONSUMED_RESULTS.reset(consumed_token)
+        _IN_SUBAGENT.reset(worker_token)
+        await background.cancel()
 
 
 async def test_requeue_returns_only_the_results_it_is_given():

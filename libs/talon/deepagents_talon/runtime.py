@@ -52,6 +52,7 @@ from deepagents_talon.background import (
     _MAX_RUNNING,
     _SCHEDULED_TURN,
     BackgroundSubagents,
+    _track_consumed_results,
 )
 from deepagents_talon.breakout import BREAKOUT_HANDLER, breakout
 from deepagents_talon.clock import current_time
@@ -758,7 +759,7 @@ class DeepAgentRuntime:
             and request.metadata.get("background_delivery") is not True
         )
         pending = self.background.results(request.conversation_id)
-        pending_token = self._pending_results.set(pending)
+        pending_token = self._pending_results.set(pending.copy())
         activity = self._activity_callback(request)
         if activity is not None:
             activity.run_started(request.metadata.get("trigger"))
@@ -780,6 +781,7 @@ class DeepAgentRuntime:
                 )
             )
             with (
+                _track_consumed_results(request.conversation_id, pending),
                 progress_messages(request.message_handler, self.verbosity),
                 question_scope(_question_handler_from_request(request)),
                 _history_context(request),

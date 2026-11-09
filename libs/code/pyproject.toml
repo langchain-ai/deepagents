@@ -25,7 +25,7 @@ classifiers = [
 ]
 dependencies = [
     # Framework
-    "deepagents==0.7.34",
+    "deepagents==0.7.35",
     "langchain>=1.4.9,<2.0.0",
     # TODO: Remove this temporary floor once the pinned deepagents release
     # requires langchain-core>=1.7.2 for add_notification_metadata.

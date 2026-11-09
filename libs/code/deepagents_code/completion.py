@@ -330,25 +330,6 @@ def _pattern(names: Sequence[str]) -> str:
     return "|".join(names)
 
 
-def _walk_levels(
-    level: CommandSpec,
-    chain: tuple[tuple[str, ...], ...] = (),
-) -> Iterator[tuple[CommandSpec, tuple[tuple[str, ...], ...]]]:
-    """Yield each level with the name sets of its non-root ancestors.
-
-    Args:
-        level: Level to visit.
-        chain: Name sets of the ancestors visited so far, excluding the root.
-
-    Yields:
-        Each level and the name sets of its non-root ancestors.
-    """
-    yield level, chain
-    next_chain = chain if not level.path else (*chain, level.names)
-    for child in level.subcommands:
-        yield from _walk_levels(child, next_chain)
-
-
 def _iter_levels(root: CommandSpec) -> Iterator[CommandSpec]:
     """Yield the root and every nested command level.
 
@@ -358,8 +339,9 @@ def _iter_levels(root: CommandSpec) -> Iterator[CommandSpec]:
     Yields:
         Every level in pre-order.
     """
-    for level, _chain in _walk_levels(root):
-        yield level
+    yield root
+    for child in root.subcommands:
+        yield from _iter_levels(child)
 
 
 def _iter_options(root: CommandSpec) -> Iterator[OptionSpec]:
@@ -714,35 +696,101 @@ def _fish_script(root: CommandSpec, programs: Sequence[str]) -> str:
         "end",
         "",
     ]
+    lines += _fish_path_function(root)
     for program in programs:
-        for level, chain in _walk_levels(root):
-            lines += _fish_level_lines(level, chain, program)
+        for level in _iter_levels(root):
+            lines += _fish_level_lines(level, program)
     return "\n".join(lines) + "\n"
 
 
-def _fish_level_lines(
-    level: CommandSpec,
-    chain: tuple[tuple[str, ...], ...],
-    program: str,
-) -> list[str]:
+def _fish_path_function(root: CommandSpec) -> list[str]:
+    """Emit `__dcode_at`, which tests the command path typed so far.
+
+    Fish's `__fish_seen_subcommand_from` matches a name anywhere on the line,
+    so `mcp config` would also select top-level `config`. Walking the words
+    the way the bash scan does tracks the full path instead.
+
+    Args:
+        root: Root command spec.
+
+    Returns:
+        Fish function lines.
+    """
+    required = _required_value_flags(root)
+    lines = [
+        "# Succeed when the command path before the cursor equals $argv[1].",
+        "function __dcode_at",
+        "    set -l tokens (commandline -opc)",
+        "    set -e tokens[1]",
+        "    set -l cmd ''",
+        "    set -l skip 0",
+        "    for w in $tokens",
+        "        if test $skip -eq 1",
+        "            set skip 0",
+        "            continue",
+        "        end",
+        "        switch $w",
+        "            case '--'",
+        "                break",
+    ]
+    if required:
+        lines += [
+            f"            case {' '.join(_fish_quote(flag) for flag in required)}",
+            "                set skip 1",
+            "                continue",
+        ]
+    lines += ["            case '-*'", "                continue", "        end"]
+    lines += _fish_transitions(root)
+    lines += ["    end", '    test "$cmd" = "$argv[1]"', "end", ""]
+    return lines
+
+
+def _fish_transitions(root: CommandSpec) -> list[str]:
+    """Emit a fish `switch $cmd` block that advances on each subcommand name.
+
+    Args:
+        root: Root command spec.
+
+    Returns:
+        Fish lines for the transition block.
+    """
+    lines = ["        switch $cmd"]
+    for level in _iter_levels(root):
+        if not level.subcommands:
+            continue
+        lines += [
+            f"            case {_fish_quote(level.path)}",
+            "                switch $w",
+        ]
+        for child in level.subcommands:
+            names = " ".join(_fish_quote(name) for name in child.names)
+            lines += [
+                f"                    case {names}",
+                f"                        set cmd {_fish_quote(child.path)}",
+            ]
+        lines.append("                end")
+    lines.append("        end")
+    return lines
+
+
+def _fish_level_lines(level: CommandSpec, program: str) -> list[str]:
     """Emit fish completions for one command level.
 
     Args:
         level: Command level to describe.
-        chain: Name sets of the level's non-root ancestors.
         program: Command name to register completions for.
 
     Returns:
         Fish completion lines.
     """
-    condition = _fish_condition(level, chain)
+    condition = _fish_quote(f"__dcode_at {_fish_quote(level.path)}")
     lines: list[str] = []
     for option in level.options:
         for flag in option.flags:
             spec = _fish_flag(flag, option.takes_value and not option.optional_value)
             if spec is not None:
                 lines.append(
-                    f"complete -c {program} -n {_fish_quote(condition)} "
+                    f"complete -c {program} -n {condition} "
                     f"{spec} -d {_fish_quote(option.help)}"
                 )
         if option.takes_value and option.choices:
@@ -751,7 +799,7 @@ def _fish_level_lines(
                 prev = _fish_quote(f"__dcode_prev_option {flag}")
                 lines.append(f"complete -c {program} -f -n {prev} -a {values}")
     lines.extend(
-        f"complete -c {program} -f -n {_fish_quote(condition)} "
+        f"complete -c {program} -f -n {condition} "
         f"-a {_fish_quote(name)} -d {_fish_quote(child.help)}"
         for child in level.subcommands
         for name in child.names
@@ -759,50 +807,8 @@ def _fish_level_lines(
     for positional in level.positionals:
         if positional.choices:
             values = _fish_quote(" ".join(positional.choices))
-            lines.append(
-                f"complete -c {program} -f -n {_fish_quote(condition)} -a {values}"
-            )
+            lines.append(f"complete -c {program} -f -n {condition} -a {values}")
     return lines
-
-
-def _fish_condition(
-    level: CommandSpec,
-    chain: tuple[tuple[str, ...], ...],
-) -> str:
-    """Build the fish condition selecting one command level.
-
-    Args:
-        level: Command level to describe.
-        chain: Name sets of the level's non-root ancestors.
-
-    Returns:
-        A fish condition expression.
-    """
-    if not level.path:
-        names = _child_names(level)
-        if not names:
-            return "true"
-        return f"not __fish_seen_subcommand_from {names}"
-    parts = [f"__fish_seen_subcommand_from {' '.join(names)}" for names in chain]
-    parts.append(f"__fish_seen_subcommand_from {' '.join(level.names)}")
-    child_names = _child_names(level)
-    if child_names:
-        parts.append(f"not __fish_seen_subcommand_from {child_names}")
-    return "; and ".join(parts)
-
-
-def _child_names(level: CommandSpec) -> str:
-    """Return every child name at a level, aliases included.
-
-    Args:
-        level: Command level to describe.
-
-    Returns:
-        Space-separated child names, without duplicates.
-    """
-    return " ".join(
-        dict.fromkeys(name for child in level.subcommands for name in child.names)
-    )
 
 
 def _fish_flag(flag: str, takes_value: bool) -> str | None:

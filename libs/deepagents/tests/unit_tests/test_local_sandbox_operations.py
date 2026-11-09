@@ -1075,7 +1075,7 @@ class TestLocalSandboxOperations:
         result = sandbox.ls(nonexistent_dir)
 
         assert result.entries is None
-        assert result.error == f"Path '{nonexistent_dir}': path_not_found"
+        assert result.error == "file_not_found"
 
     def test_ls_info_permission_denied(self, sandbox: LocalSubprocessSandbox) -> None:
         """Ls on an unreadable directory must surface the failure on .error."""
@@ -1084,7 +1084,7 @@ class TestLocalSandboxOperations:
         try:
             result = sandbox.ls(base_dir)
             assert result.entries is None
-            assert result.error == f"Path '{base_dir}': permission_denied"
+            assert result.error == "permission_denied"
         finally:
             sandbox.execute(f"chmod {stat.S_IRWXU:o} {base_dir}")
 
@@ -1185,8 +1185,7 @@ class TestLocalSandboxOperations:
         malicious_path = "'; import os; os.system('echo INJECTED'); #"
         result = sandbox.ls(malicious_path)
         assert result.entries is None
-        assert result.error is not None
-        assert "path_not_found" in result.error
+        assert result.error == "file_not_found"
 
     def test_read_path_is_sanitized(self, sandbox: LocalSubprocessSandbox) -> None:
         """Test that read does not execute injected code in the path.

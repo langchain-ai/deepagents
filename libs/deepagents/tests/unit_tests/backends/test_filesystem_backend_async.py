@@ -144,7 +144,7 @@ async def test_filesystem_backend_als_nested_directories(tmp_path: Path):
 
     empty_listing = await be.als("/nonexistent/")
     assert empty_listing.entries is None
-    assert empty_listing.error == "Path '/nonexistent/': path_not_found"
+    assert empty_listing.error == "file_not_found"
 
 
 async def test_filesystem_backend_als_normal_mode_nested(tmp_path: Path):
@@ -210,7 +210,7 @@ async def test_filesystem_backend_als_trailing_slash(tmp_path: Path):
 
     empty = await be.als("/nonexistent/")
     assert empty.entries is None
-    assert empty.error == "Path '/nonexistent/': path_not_found"
+    assert empty.error == "file_not_found"
 
 
 async def test_filesystem_backend_intercept_large_tool_result_async(tmp_path: Path):
@@ -567,7 +567,7 @@ async def test_als_nonexistent_path_sets_error(tmp_path: Path) -> None:
     result = await be.als("/missing/")
 
     assert result.entries is None
-    assert result.error == "Path '/missing/': path_not_found"
+    assert result.error == "file_not_found"
 
 
 async def test_als_file_path_sets_not_a_directory_error(tmp_path: Path) -> None:
@@ -578,7 +578,7 @@ async def test_als_file_path_sets_not_a_directory_error(tmp_path: Path) -> None:
     result = await be.als("/file.txt")
 
     assert result.entries is None
-    assert result.error == "Path '/file.txt': not_a_directory"
+    assert result.error == "not_a_directory"
 
 
 async def test_als_empty_directory_returns_empty_entries(tmp_path: Path) -> None:

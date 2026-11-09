@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import shutil
+import stat
 import subprocess
 import threading
 import time
@@ -21,6 +22,7 @@ from deepagents.backends.protocol import (
     FILE_NOT_FOUND,
     INVALID_PATH,
     IS_DIRECTORY,
+    NOT_A_DIRECTORY,
     PERMISSION_DENIED,
     BackendProtocol,
     ContextLine,
@@ -295,24 +297,23 @@ class FilesystemBackend(BackendProtocol):
 
                 Directories have a trailing `/` in their path and `is_dir=True`.
 
-                Missing paths set `error` to `Path '<path>': path_not_found`
-                with `entries=None`.
-
-                File paths set `error` to `Path '<path>': not_a_directory`
-                with `entries=None`.
+                Missing paths set `error` to `file_not_found`, and file paths
+                to `not_a_directory`, with `entries=None`. A path that cannot
+                be resolved sets the code its exception maps to, such as
+                `permission_denied`, or else a message.
 
                 Empty directories return `error=None` and `entries=[]`.
         """
         try:
             dir_path = self._resolve_path(path)
             if not dir_path.exists():
-                return LsResult(error=f"Path '{path}': path_not_found", entries=None)
+                return LsResult(error=FILE_NOT_FOUND, entries=None)
             if not dir_path.is_dir():
-                return LsResult(error=f"Path '{path}': not_a_directory", entries=None)
+                return LsResult(error=NOT_A_DIRECTORY, entries=None)
         except (OSError, RuntimeError) as e:
             msg = f"Cannot list '{path}': {e}"
             logger.warning("%s", msg)
-            return LsResult(error=msg, entries=None)
+            return LsResult(error=_map_exception_to_standard_error(e) or msg, entries=None)
 
         results: list[FileInfo] = []
         errors: list[str] = []
@@ -518,7 +519,7 @@ class FilesystemBackend(BackendProtocol):
         try:
             resolved_path = self._resolve_path(file_path)
         except (OSError, RuntimeError) as e:
-            return WriteResult(error=f"Error writing file '{file_path}': {e}")
+            return WriteResult(error=_map_exception_to_standard_error(e) or f"Error writing file '{file_path}': {e}")
 
         try:
             # Create parent directories if needed
@@ -535,8 +536,12 @@ class FilesystemBackend(BackendProtocol):
                 f.write(content)
 
             return WriteResult(path=file_path)
-        except (OSError, UnicodeEncodeError) as e:
+        except UnicodeEncodeError as e:
             return WriteResult(error=f"Error writing file '{file_path}': {e}")
+        except OSError as e:
+            # Windows raises `PermissionError`, not `IsADirectoryError`, when opening a directory.
+            code = IS_DIRECTORY if resolved_path.is_dir() else _map_exception_to_standard_error(e)
+            return WriteResult(error=code or f"Error writing file '{file_path}': {e}")
 
     def edit(
         self,
@@ -619,7 +624,7 @@ class FilesystemBackend(BackendProtocol):
         try:
             resolved_path = self._resolve_path(file_path)
         except (OSError, RuntimeError) as e:
-            return DeleteResult(error=f"Error deleting '{file_path}': {e}")
+            return DeleteResult(error=_map_exception_to_standard_error(e) or f"Error deleting '{file_path}': {e}")
 
         try:
             if not resolved_path.exists() and not resolved_path.is_symlink():
@@ -632,7 +637,7 @@ class FilesystemBackend(BackendProtocol):
                 resolved_path.unlink()
             return DeleteResult(path=file_path)
         except (OSError, RuntimeError) as e:
-            return DeleteResult(error=f"Error deleting '{file_path}': {e}")
+            return DeleteResult(error=_map_exception_to_standard_error(e) or f"Error deleting '{file_path}': {e}")
 
     def grep(  # noqa: C901 -- path resolution, glob validation, engine selection, and context attach are each guarded early-exits; splitting them would scatter the partial-error bookkeeping
         self,
@@ -1498,6 +1503,9 @@ class FilesystemBackend(BackendProtocol):
     def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:
         """Download multiple files from the filesystem.
 
+        A path that is not a regular file, such as a FIFO or a device, fails
+        with `file_not_found`, as `read` reports it.
+
         Args:
             paths: List of file paths to download.
 
@@ -1511,10 +1519,12 @@ class FilesystemBackend(BackendProtocol):
                 if resolved_path.is_dir():
                     responses.append(FileDownloadResponse(path=path, content=None, error=IS_DIRECTORY))
                     continue
-                # Use flags to optionally prevent symlink following if
-                # supported by the OS
-                fd = os.open(resolved_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+                # `O_NONBLOCK` keeps opening a FIFO from waiting for a writer.
+                fd = os.open(resolved_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
                 with os.fdopen(fd, "rb") as f:
+                    if not stat.S_ISREG(os.fstat(fd).st_mode):
+                        responses.append(FileDownloadResponse(path=path, content=None, error=FILE_NOT_FOUND))
+                        continue
                     content = f.read()
                 responses.append(FileDownloadResponse(path=path, content=content, error=None))
             except Exception as exc:

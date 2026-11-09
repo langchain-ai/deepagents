@@ -451,18 +451,14 @@ def test_ls_empty_directory_returns_empty_entries_no_error() -> None:
 
 
 def test_ls_nonexistent_path_sets_error() -> None:
-    """When the inline script reports a missing path, ls() surfaces it on .error.
-
-    Mirrors read()/edit(): the sandbox emits a short snake_case code; the host
-    wraps it with the path prefix.
-    """
+    """When the inline script reports a missing path, ls() surfaces `file_not_found` on .error."""
     sandbox = MockSandbox()
     sandbox._next_output = json.dumps({"error": "path_not_found"})
 
     result = sandbox.ls("/test/does_not_exist")
 
     assert result.entries is None
-    assert result.error == "Path '/test/does_not_exist': path_not_found"
+    assert result.error == "file_not_found"
 
 
 def test_ls_permission_denied_sets_error() -> None:
@@ -473,7 +469,7 @@ def test_ls_permission_denied_sets_error() -> None:
     result = sandbox.ls("/test/locked")
 
     assert result.entries is None
-    assert result.error == "Path '/test/locked': permission_denied"
+    assert result.error == "permission_denied"
 
 
 def test_ls_not_a_directory_sets_error() -> None:
@@ -484,7 +480,7 @@ def test_ls_not_a_directory_sets_error() -> None:
     result = sandbox.ls("/test/file.txt")
 
     assert result.entries is None
-    assert result.error == "Path '/test/file.txt': not_a_directory"
+    assert result.error == "not_a_directory"
 
 
 def test_ls_error_line_amongst_entries_takes_precedence() -> None:
@@ -502,7 +498,7 @@ def test_ls_error_line_amongst_entries_takes_precedence() -> None:
     result = sandbox.ls("/test")
 
     assert result.entries is None
-    assert result.error == "Path '/test': permission_denied"
+    assert result.error == "permission_denied"
 
 
 def test_ls_command_base64_encodes_path() -> None:
@@ -882,7 +878,7 @@ def test_sandbox_write_returns_error_on_preflight_failure() -> None:
 
     result = sandbox.write("/test/protected.txt", "content")
     assert result.error is not None
-    assert "Error:" in result.error
+    assert result.error == "permission_denied"
     assert len(sandbox._uploaded) == 0  # upload should not have been called
 
 
@@ -1303,7 +1299,7 @@ def test_sandbox_write_returns_error_on_upload_failure() -> None:
     result = sandbox.write("/test/file.txt", "content")
 
     assert result.error is not None
-    assert "Failed to write" in result.error
+    assert result.error == "permission_denied"
     assert result.path is None
 
 
@@ -2427,6 +2423,33 @@ async def test_aedit_via_upload_calls_aexecute_and_aupload_files() -> None:
     assert len(sandbox._aupload_calls) == 1, "expected one aupload_files call for temp files"
     assert len(sandbox._aexecute_calls) == 1, "expected one aexecute call for server-side replace"
     assert result.error is None
+
+
+def test_write_failure_without_an_upload_code_keeps_the_message() -> None:
+    class _FailingUpload(MockSandbox):
+        def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
+            return [FileUploadResponse(path=path, error="disk quota exceeded") for path, _ in files]
+
+    assert _FailingUpload().write("/a/b.txt", "x").error == "Failed to write file '/a/b.txt': disk quota exceeded"
+
+
+@pytest.mark.parametrize(
+    ("rm_output", "error"),
+    [
+        ("rm: cannot remove '/a': Permission denied", "permission_denied"),
+        ("rm: cannot remove '/a': Device or resource busy", "Error deleting file '/a': rm: cannot remove '/a': Device or resource busy"),
+    ],
+)
+def test_delete_failure_carries_the_code_of_the_rm_error(rm_output: str, error: str) -> None:
+    sandbox = MockSandbox()
+    sandbox._responses = [("", 0), (rm_output, 1)]
+    assert sandbox.delete("/a").error == error
+
+
+def test_write_preflight_failure_under_a_file_is_an_invalid_path() -> None:
+    sandbox = MockSandbox()
+    sandbox._responses = [("FileExistsError: [Errno 17] File exists: '/a'", 1)]
+    assert sandbox.write("/a/b.txt", "x").error == "invalid_path"
 
 
 # -- direct unit tests for module-level helper functions ----------------------

@@ -11,7 +11,7 @@ import inspect
 import logging
 from dataclasses import dataclass
 from functools import lru_cache, partial
-from typing import Final, Literal, NotRequired
+from typing import Final, Literal, NotRequired, cast, get_args
 
 from typing_extensions import TypedDict
 
@@ -41,8 +41,12 @@ FileOperationError = Literal[
     "permission_denied",
     "is_directory",
     "invalid_path",
+    "not_a_directory",
 ]
-"""Standardized error codes for file upload/download operations.
+"""Standardized error codes for file operations.
+
+Upload, download, `ls`, `write`, and `delete` results carry them in `error`
+when the backend knows the cause, and free text otherwise.
 
 These represent common, recoverable errors that an LLM can understand and
 potentially fix:
@@ -51,6 +55,7 @@ potentially fix:
 - `permission_denied`: Access denied for the operation
 - `is_directory`: Attempted to download a directory as a file
 - `invalid_path`: Path syntax is malformed or contains invalid characters
+- `not_a_directory`: Attempted to list a file as a directory
 """
 
 # Named constants for each `FileOperationError` literal. Use these instead of
@@ -60,6 +65,25 @@ FILE_NOT_FOUND: Final = "file_not_found"
 PERMISSION_DENIED: Final = "permission_denied"
 IS_DIRECTORY: Final = "is_directory"
 INVALID_PATH: Final = "invalid_path"
+NOT_A_DIRECTORY: Final = "not_a_directory"
+_FILE_OPERATION_ERRORS: Final = frozenset(get_args(FileOperationError))
+
+
+def _as_file_operation_error(error: str | None) -> FileOperationError | None:
+    """Return `error` when it is a `FileOperationError` code, else `None`.
+
+    A result's `error` holds either a code or a backend's free text.
+    """
+    return cast("FileOperationError", error) if error in _FILE_OPERATION_ERRORS else None
+
+
+_ERROR_REASONS: Final[dict[FileOperationError, str]] = {
+    "file_not_found": "not found",
+    "permission_denied": "permission denied",
+    "is_directory": "is a directory",
+    "invalid_path": "invalid path",
+    "not_a_directory": "not a directory",
+}
 
 
 @dataclass
@@ -279,15 +303,17 @@ class WriteResult:
     """Result from backend `write` operations.
 
     Attributes:
-        error: Error message on failure, `None` on success.
+        error: A `FileOperationError` code when the backend knows the cause,
+            else an error message; `None` on success.
         path: Absolute path of written file, `None` on failure.
 
     Examples:
         >>> WriteResult(path="/f.txt")
+        >>> WriteResult(error="is_directory")
         >>> WriteResult(error="File exists")
     """
 
-    error: str | None = None
+    error: FileOperationError | str | None = None
     path: str | None = None
 
 
@@ -315,15 +341,16 @@ class DeleteResult:
     """Result from backend delete operations.
 
     Attributes:
-        error: Error message on failure, None on success.
+        error: A `FileOperationError` code when the backend knows the cause,
+            else an error message; `None` on success.
         path: Absolute path of the deleted file, None on failure.
 
     Examples:
         >>> DeleteResult(path="/f.txt")
-        >>> DeleteResult(error="File not found")
+        >>> DeleteResult(error="file_not_found")
     """
 
-    error: str | None = None
+    error: FileOperationError | str | None = None
     path: str | None = None
 
 
@@ -332,11 +359,12 @@ class LsResult:
     """Result from backend `ls` operations.
 
     Attributes:
-        error: Error message on failure, `None` on success.
+        error: A `FileOperationError` code when the backend knows the cause,
+            else an error message; `None` on success.
         entries: List of file info dicts on success, `None` on failure.
     """
 
-    error: str | None = None
+    error: FileOperationError | str | None = None
     entries: list["FileInfo"] | None = None
 
 
@@ -851,6 +879,61 @@ class ExecuteArtifact(TypedDict):
 
     output_file: NotRequired[str]
     """Backend path to captured output, which may be incomplete when truncated."""
+
+
+RAW_FILE_RESULT_CONFIG_KEY: Final = "deepagents_raw_file_result"
+"""`config["configurable"]` key that asks one file tool call for its raw result.
+
+Its value is a `RawFileResultRequest` naming the call by `tool_call_id` and
+`tool_name`; the result lands on `ToolMessage.artifact`. Every error that
+`read_file`, `ls`, `write_file`, or `delete` returns for that call carries a
+`FileToolErrorArtifact`.
+"""
+
+
+class RawFileResultRequest(TypedDict):
+    """The value of `RAW_FILE_RESULT_CONFIG_KEY`."""
+
+    tool_call_id: str
+    """The ID of the one tool call to answer raw; nested calls ignore the request."""
+
+    tool_name: str
+    """That call's tool name."""
+
+
+class ReadFileArtifact(TypedDict):
+    """The raw result of a successful `read_file` call."""
+
+    content: bytes
+    """The whole file from `download_files`; `offset` and `limit` do not apply."""
+
+
+class LsArtifactEntry(TypedDict):
+    """One entry of an `LsArtifact`."""
+
+    path: str
+    """The entry's path as the backend reports it; a directory's may end in `/`."""
+
+    is_dir: bool
+    """Whether the entry is a directory; `False` when the backend does not say."""
+
+
+class LsArtifact(TypedDict):
+    """The raw result of a successful `ls` call."""
+
+    entries: list[LsArtifactEntry]
+    """The directory's entries, without those the permission rules deny."""
+
+
+class FileToolErrorArtifact(TypedDict):
+    """Why a raw-requested file tool call failed; `ToolMessage.content` holds the message."""
+
+    code: FileOperationError | None
+    """The failure's code, or `None` when the backend reported only free text.
+
+    `"permission_denied"` also covers the agent's permission rules, and
+    `"invalid_path"` a path the tool rejected before calling the backend.
+    """
 
 
 @dataclass(frozen=True, slots=True)

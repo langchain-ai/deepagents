@@ -136,7 +136,7 @@ from langchain.agents.middleware.types import (
 )
 from langgraph.types import Command, Overwrite
 
-from deepagents.backends.protocol import FILE_NOT_FOUND, FileDownloadResponse, LsResult
+from deepagents.backends.protocol import _ERROR_REASONS, FILE_NOT_FOUND, FileDownloadResponse, LsResult, _as_file_operation_error
 from deepagents.backends.utils import to_posix_path
 from deepagents.middleware._skill_tools import (
     _INCLUDE_TOOLS_KEY,
@@ -681,7 +681,8 @@ def _skill_metadata_from_response(
 
 def _format_skills_source_error(source_path: str, error: str) -> str:
     """Format a recoverable skill source loading error."""
-    return f"Cannot load skills from '{source_path}': {error}"
+    code = _as_file_operation_error(error)
+    return f"Cannot load skills from '{source_path}': {_ERROR_REASONS[code] if code else error}"
 
 
 def _list_skills_with_errors(backend: BackendProtocol, source_path: str) -> tuple[list[SkillMetadata], str | None]:

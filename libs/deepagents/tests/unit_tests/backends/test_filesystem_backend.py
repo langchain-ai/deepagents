@@ -282,7 +282,7 @@ def test_filesystem_backend_ls_nested_directories(tmp_path: Path):
 
     empty_listing = be.ls("/nonexistent/")
     assert empty_listing.entries is None
-    assert empty_listing.error == "Path '/nonexistent/': path_not_found"
+    assert empty_listing.error == "file_not_found"
 
 
 def test_filesystem_backend_ls_normal_mode_nested(tmp_path: Path):
@@ -348,7 +348,23 @@ def test_filesystem_backend_ls_trailing_slash(tmp_path: Path):
 
     empty = be.ls("/nonexistent/")
     assert empty.entries is None
-    assert empty.error == "Path '/nonexistent/': path_not_found"
+    assert empty.error == "file_not_found"
+
+
+def test_write_to_a_directory_reports_is_directory_when_opening_it_is_denied(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    real_open = os.open
+
+    def windows_open(path: Path, flags: int, mode: int = 0o777) -> int:
+        if Path(path).is_dir():
+            raise PermissionError(13, "Permission denied", str(path))
+        return real_open(path, flags, mode)
+
+    (tmp_path / "docs").mkdir()
+    monkeypatch.setattr(fs_module.os, "open", windows_open)
+
+    result = FilesystemBackend(root_dir=tmp_path, virtual_mode=True).write("/docs", "x")
+
+    assert result.error == "is_directory"
 
 
 def test_filesystem_backend_read_non_utf8_file(tmp_path: Path):
@@ -2511,7 +2527,7 @@ def test_ls_nonexistent_path_sets_error(tmp_path: Path) -> None:
     result = be.ls("/missing/")
 
     assert result.entries is None
-    assert result.error == "Path '/missing/': path_not_found"
+    assert result.error == "file_not_found"
 
 
 def test_ls_file_path_sets_not_a_directory_error(tmp_path: Path) -> None:
@@ -2522,7 +2538,7 @@ def test_ls_file_path_sets_not_a_directory_error(tmp_path: Path) -> None:
     result = be.ls("/file.txt")
 
     assert result.entries is None
-    assert result.error == "Path '/file.txt': not_a_directory"
+    assert result.error == "not_a_directory"
 
 
 def test_ls_empty_directory_returns_empty_entries(tmp_path: Path) -> None:
@@ -2545,7 +2561,7 @@ def test_ls_symlink_loop_path_returns_structured_error(tmp_path: Path) -> None:
 
     assert result.entries is None
     assert result.error is not None
-    assert "Cannot list 'loop'" in result.error
+    assert result.error == "invalid_path"
 
 
 def test_ls_virtual_mode_reports_child_symlink_loop(tmp_path: Path) -> None:
@@ -2579,7 +2595,7 @@ def test_file_operations_return_errors_for_symlink_loop_paths(tmp_path: Path) ->
 
     write_error = be.write("loop", "content").error
     assert write_error is not None
-    assert "Error writing file 'loop'" in write_error
+    assert write_error == "invalid_path"
 
     edit_error = be.edit("loop", "old", "new").error
     assert edit_error is not None

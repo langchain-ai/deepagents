@@ -124,6 +124,7 @@ from deepagents_code.goal_state_limits import (
 )
 from deepagents_code.goal_state_notice import (
     GOAL_CONTROL_MESSAGE_SOURCE,
+    anchor_summarization_event as _anchor_summarization_event,
     build_goal_continuation,
     build_goal_state_notice,
     goal_notice_size_error,
@@ -760,6 +761,7 @@ def _effective_conversation(messages: list[Any], event: Any) -> list[Any]:  # no
     if not isinstance(event, dict):
         _log_malformed_summarization_event(event, len(messages))
         return list(messages)
+    event = _anchor_summarization_event(event, messages)
     summary = event.get("summary_message")
     cutoff = _validated_summarization_cutoff(
         event,
@@ -15294,7 +15296,9 @@ class DeepAgentsApp(App):
             latest = latest_goal_state_notice(messages)
             latest_candidate = latest_goal_state_message_index(messages)
             fingerprint = goal_state_fingerprint(desired_state)
-            event = state_values.get("_summarization_event")
+            event = _anchor_summarization_event(
+                state_values.get("_summarization_event"), messages
+            )
             validated_cutoff = _validated_summarization_cutoff(
                 event,
                 message_count=len(messages),

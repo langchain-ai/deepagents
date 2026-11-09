@@ -1,14 +1,16 @@
 ---
 type: runtime integration
 title: Talon Runtime Integration
-description: Talon's MCP adapter boundary preserves MCP schemas for OpenAI Responses model binding, normalizes tool arguments, scopes OAuth authorization to a tool call, and turns MCP protocol failures into correlated tool results.
-tags: [talon, mcp, middleware, openai-responses, oauth, tools]
+description: Talon loads configured MCP tools into replaceable runtime graphs and adapts marked calls at the model and invocation boundary. It also provides redacted, compare-and-swap MCP configuration management whose activation is deferred to a successful reload.
+tags: [talon, mcp, middleware, configuration, oauth, tool-approvals]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-11-05T08:04:42.777Z
+    at: 2026-11-09T08:04:29.143Z
 sources:
   - id: openwiki-source-6a038e6e1a11f450bcafce54
     resource: repo://libs/talon/deepagents_talon/__main__.py
+  - id: openwiki-source-111101dcd1462ff54277b1fc
+    resource: repo://libs/talon/deepagents_talon/mcp_config.py
   - id: openwiki-source-d98b6d615a63b95a7c893810
     resource: repo://libs/talon/deepagents_talon/mcp_middleware.py
   - id: openwiki-source-82cac27adeecff8a900a40fa
@@ -23,93 +25,101 @@ sources:
     resource: repo://libs/talon/tests/test_mcp_middleware.py
   - id: openwiki-source-fed7e97e2aca85ebfae626d9
     resource: repo://libs/talon/tests/unit_tests/test_mcp_adapter.py
+  - id: openwiki-source-e2be45e59936bfba43c18816
+    resource: repo://libs/talon/tests/unit_tests/test_mcp_config.py
+  - id: openwiki-source-1215414599473e1c77733a10
+    resource: repo://libs/talon/tests/unit_tests/test_mcp_enabled.py
   - id: openwiki-source-5dbe50a53795f3db46509bac
     resource: repo://libs/talon/tests/unit_tests/test_skill_mcp.py
-generated: { by: "openwiki/0.4.2", at: "2026-11-05T08:04:42.777Z" }
+  - id: openwiki-source-96c9dfdb1811c0047d23fa47
+    resource: repo://libs/talon/tests/unit_tests/test_telegram_approvals.py
+generated: { by: "openwiki/0.4.2", at: "2026-11-09T08:04:29.143Z" }
 ---
 
 # Talon Runtime Integration
 
-Talon is an experimental runtime. Its MCP integration has two deliberately separate responsibilities: `MCPToolProvider` loads and labels configured MCP tools, while `talon_mcp_middleware()` adapts only those labeled tools at the agent model-binding and invocation boundary. The middleware is not an MCP server implementation or a general error handler; ordinary tools and non-protocol failures retain their normal LangChain behavior.
+Talon separates MCP discovery and configuration from the per-call adapter. `MCPToolProvider` owns loading, status, configuration-management tools, and refresh revisions; `talon_mcp_middleware()` changes behavior only for tools that the provider marked as MCP tools. Thus ordinary tools keep normal LangChain binding, execution, and failure behavior.
 
-This page documents that adapter boundary. For MCP server configuration, transport, OAuth login, and reload operations, see [MCP integration](mcp.md). For the wider request lifecycle, see [runtime behavior](../architecture/runtime-behavior.md), and for approvals see [permissions and HITL](../concepts/permissions-hitl.md).
+This page covers the boundary and lifecycle. See [permissions and HITL](../concepts/permissions-hitl.md) for the general approval model, [Talon channel admission](../concepts/talon-channel-admission.md) for trusted request origins, and [security](../operations/security.md) for deployment controls.
 
-## Entry points and ownership
+## Construction, provenance, and exposure
 
-At runtime construction, Talon creates an `MCPToolProvider`, loads the configured tools, and supplies them to `DeepAgentRuntime` along with refresh and explicit-reload callbacks. It also installs one `talon_mcp_middleware()` instance in the main runtime's middleware list. Fresh local subagents install the same middleware, so MCP calls made after delegation receive the same schema, argument, authorization, and protocol-error treatment.
+The runtime bootstrap creates an `MCPToolProvider`, loads its tools, logs each server outcome, and passes provider refresh/reload callbacks plus one `talon_mcp_middleware()` into `DeepAgentRuntime`. Discovery opens each enabled configured server through `MCPAdapter`, prefixes a discovered name with the server name, and attaches `_deepagents_talon_mcp`. A `skillOnly` server also gets `_deepagents_talon_skill_only`; later exposure logic can keep it out of the ordinary catalog until its skill is disclosed. Middleware selection is by this metadata marker, not a name convention or transport.
 
-`load_mcp_tools()` is the provenance boundary. For each configured server, it opens a FastMCP transport, discovers tools through `MCPAdapter`, prefixes every discovered tool name with `<server>_`, and marks its metadata with `_deepagents_talon_mcp`. A `skillOnly` server receives an additional metadata marker, allowing the runtime to keep its tools out of the ordinary main-agent catalog until a skill discloses them. The middleware uses the MCP marker—not tool name or transport—to decide which behavior applies.
+`MCPToolProvider.load()` also supplies management capabilities: server status when servers are configured, channel-mediated OAuth authentication when an OAuth server exists, a scheduled reload tool, and the configuration store's read/update tools. It refuses the resulting set if any MCP tool name conflicts with a Talon management tool.
+
+Fresh local subagents are deliberately compiled rather than inheriting the parent graph. Their compilation adds `talon_mcp_middleware()` and `SubagentControlMiddleware`; it carries forward only approval rules whose tool names are actually available, then installs `HumanInTheLoopMiddleware` when any apply. Talon refuses precompiled subagents because it cannot enforce that policy inside them. A senderless Telegram channel post, in turn, cannot create an approval request, even on an otherwise admitted channel.
 
 ```mermaid
 sequenceDiagram
     participant Builder as Runtime builder
-    participant Provider as MCPToolProvider
+    participant Provider as MCP tool provider
     participant Runtime as DeepAgentRuntime
     participant Middleware as Talon MCP middleware
-    participant Model as OpenAI Responses model
+    participant Model as Responses model
     participant Server as MCP server
 
-    Builder->>Provider: load configured MCP tools
-    Provider->>Server: discover tools
-    Provider-->>Runtime: marked and prefixed tools
-    Runtime->>Middleware: model request with tools
-    Middleware->>Model: bind MCP schemas unchanged
-    Model-->>Middleware: tool call ID and arguments
-    Middleware->>Middleware: normalize and bind authorization
-    Middleware->>Server: invoke marked MCP tool
+    Builder->>Provider: load configured servers
+    Provider->>Server: discover enabled server tools
+    Provider-->>Runtime: prefixed marked tool snapshot
+    Runtime->>Middleware: model request with tool list
+    Middleware->>Model: convert marked tools for Responses
+    Model-->>Middleware: call ID and arguments
+    Middleware->>Middleware: normalize args and set auth correlation
+    Middleware->>Server: invoke marked tool
     Server-->>Middleware: result or MCP protocol error
-    Middleware-->>Runtime: correlated ToolMessage
+    Middleware-->>Runtime: ToolMessage with original call ID
 ```
 
-*The focused boundary begins after server discovery: only tools marked by Talon receive MCP-specific model binding and invocation handling.*
+*Only provenance-marked tools follow this MCP-specific model-binding and invocation sequence.*
 
-## Preserve schemas for OpenAI Responses
+## Model binding and call adaptation
 
-LangChain's ordinary tool conversion can alter an MCP tool schema when binding tools to an OpenAI Responses API model. Before either synchronous or asynchronous model invocation, `_TalonMCPMiddleware` checks for `BaseChatOpenAI` with `use_responses_api` enabled. It replaces only marked MCP `BaseTool` values with `convert_to_openai_tool(tool, strict=False)` and passes all other tools through unchanged.
+For a `BaseChatOpenAI` request using the Responses API, the middleware applies `convert_to_openai_tool(tool, strict=False)` only to marked MCP `BaseTool` values. It leaves all other request tools untouched; models outside that condition receive the original request. The conversion is a derived request, so the loaded MCP tool and its recorded schema are not mutated. Tests cover optional nested object/null schemas and open object parameters, including forwarding structured values unchanged to the server.
 
-This conversion preserves the MCP tool's OpenAI function definition instead of mutating the loaded tool or its stored schema. In particular, open object parameters and optional nested object/null schemas remain available to the model and are forwarded during invocation. The `strict=False` setting belongs to the generated MCP definition; it is not applied to unrelated local tools. For non-Responses models, the request is passed through without this override.
+At invocation the middleware derives a tool call with normalized arguments, then runs the normal handler under `_run_authorized()` with the exact tool-call ID. That context is the correlation key for a channel OAuth flow, not a new permission grant. `_run_authorized()` resets both the invocation and authorization-attempt context in `finally`; notification delivery failures are swallowed so they cannot reveal errors or undo already-persisted OAuth state.
 
-## Invocation semantics
+Normalization is intentionally narrow:
 
-For a marked MCP tool call, the middleware makes a derived request with normalized `args` and then calls the standard tool handler inside `_run_authorized()` using the tool-call ID as the authorization invocation ID. The ID is therefore available to the active OAuth flow to bind browser/device/callback events to the exact model invocation. `_run_authorized()` always restores its authorization context variables; `DeepAgentRuntime.invoke()` separately installs the host's request-specific authorization handler and resets it when the turn exits.
+- It removes an empty string only for an optional property that is string-like or has no usable property schema.
+- It preserves empty strings for required fields and explicitly non-string fields.
+- It preserves non-empty values, nulls, empty objects, and nested values.
+- With a non-dictionary input schema it simply copies the supplied arguments.
 
-Argument normalization is intentionally narrow:
+This avoids generated optional empty strings overriding server defaults without treating meaningful structured input as absent.
 
-- An optional argument whose value is `""` is omitted only when its property is string-like or unspecified.
-- A required argument with `""` is retained.
-- An explicitly non-string property retains `""`, as do non-empty values, `null`, empty objects, and nested values.
-- If the input schema is not a dictionary, arguments are copied unchanged.
+### Protocol errors and elicitation
 
-This prevents optional generated empty strings from overriding server defaults without changing meaningful empty strings or structured values.
+A marked call that raises `MCPError` returns an error `ToolMessage` correlated to the original tool name and call ID. Its model-visible content contains the MCP code and message, but not `MCPError.data`. Other exceptions propagate on the normal runtime path.
 
-### Protocol failures are model-visible and correlated
+Talon has no elicitation UI. When the graph emits a valid MCP elicitation interrupt, the runtime resumes every unique request key with `action: "cancel"`; malformed or duplicate keys raise validation errors rather than becoming approval prompts. This handling is distinct from the approval interrupt path.
 
-If the delegated call raises `mcp.shared.exceptions.MCPError`, the middleware returns an error `ToolMessage` rather than raising it through the agent graph. The message contains only `MCP protocol error <code>: <message>`, has `status="error"`, and carries the original tool name and `tool_call_id`. It does not attach `MCPError.data`, avoiding disclosure of protocol error payloads to the model. Errors that are not `MCPError` are deliberately re-raised for the normal graph/runtime failure path.
+## Operator configuration: mediated, redacted, and deferred
 
-The same adapter does not auto-answer MCP elicitation. When the graph emits an MCP elicitation interrupt, Talon's runtime validates the request keys and resumes each request with an `action: "cancel"` response because Talon currently has no elicitation UI. Malformed elicitation payloads fail validation rather than being treated as tool approval requests.
+The selected configuration path is `DEEPAGENTS_TALON_MCP_CONFIG`, if present in Talon's configured or process environment, otherwise `~/.deepagents/.mcp.json`. The loader validates names and types, expands supported `${NAME}` and `${NAME:-default}` references for enabled servers, supports stdio, SSE, and streamable HTTP, and records an individual server's load failure as `error` or `unauthenticated` while siblings continue. Disabled entries are neither expanded nor connected and report `disabled`.
 
-## Authorization and lifecycle limits
+`get_mcp_configuration` is a deliberately narrow read capability, not a direct file view. It returns a keyed revision and managed server fields: stored strings are `<redacted>` except transport/auth enum values and exact `${ENV_VAR}` references. It does not expand references. Unknown hand-authored fields are hidden from the model but retained across an update. Read, parse, and write failures return generic messages so file contents are not surfaced through tool errors.
 
-The authorization scope is a correlation mechanism, not a permission grant. The host owns the `authorization_handler`; the runtime puts it in a turn-local context, and the MCP middleware puts the currently executing call ID and authorization attempt in nested context. A handler failure while delivering a completion/failure status does not undo OAuth state or expose status-delivery errors.
+`update_mcp_server(server_name, server, expected_revision)` adds, replaces, or removes one server. It takes the revision from the read result, locks a sidecar file, rereads under the lock, compares an HMAC revision, validates the replacement without starting a session, and atomically replaces the JSON file. A stale revision or a bounded lock wait becomes a conflict; validation or I/O failure does not schedule reload. Successful writes call the provider's refresh scheduler and return `available: after_successful_reload`.
 
-MCP tool availability is likewise snapshot-based. `MCPToolProvider.request_refresh()` records a revision for a later turn; reload work is serialized. `DeepAgentRuntime` rebuilds its graph only after it obtains replacement tools. If refresh fails, it logs that saved changes are inactive and leaves the preceding graph usable; a running turn or task continues with the graph and capabilities it started with. This is an availability and consistency property, not revocation of already-running work.
+A client may repeat `<redacted>` at the same nested position to preserve a stored string. This is useful but security-sensitive: if the update is auto-approved (including no active approval snapshot), reuse of a redacted value is rejected whenever any managed routing/execution field changes. Only `allowedTools` and `disabledTools` may differ, because they cannot redirect a restored credential. With a required human approval, the normal interrupt allows an operator to review such an execution change. Literal secrets should not be supplied to the tool; use environment references.
 
-## Configuration and operations
+Redaction is **not filesystem isolation**. The store warns if the selected configuration is inside the agent workspace, but the default execution-capable shell can still access paths, including absolute paths. The store's no-follow regular-file read, POSIX lock, revision CAS, and atomic write protect the supported management operation, not against a process that can bypass it with shell/file tools. Real secrecy requires references whose values are unavailable to the agent process, an OS keyring, separate identity, or a sandboxed backend.
 
-Talon reads its MCP configuration from `DEEPAGENTS_TALON_MCP_CONFIG` when set, otherwise from `~/.deepagents/.mcp.json`. The loader validates server names, expands `${NAME}` and `${NAME:-default}` references in supported configuration strings, and supports `stdio`, `sse`, and streamable HTTP transports. Stdio server environment values reject known loader/path-injection variables. A server failure produces a per-server status (`error` or `unauthenticated`) so other servers can still load.
+## Reload lifecycle and OAuth
 
-Remote OAuth servers without usable credentials are reported as unauthenticated during normal loading rather than prompting. Operators can use `deepagents-talon mcp config` to print the selected path and `deepagents-talon mcp login <server>` for interactive remote login. At runtime, the management tools can report status, schedule configuration reload, and, for configured OAuth servers, begin channel-mediated authentication. Reloaded tools are available only after a successful reload and only to subsequent turns.
+`request_refresh()` only increments a revision. At a later runtime refresh, provider reload is serialized by its lock and skipped if no unapplied revision exists. On replacement, `DeepAgentRuntime` creates a new graph before assigning the new tool tuple and graph. A load or graph-refresh failure leaves the preceding graph usable and marks saved changes inactive. Running turns and tasks retain the graph snapshot with which they began; operators should use `get_agent_tools` to see whether changes activated rather than claiming immediate revocation.
 
-Treat every MCP definition as authority-bearing configuration: a stdio entry starts a process, and remote URLs, headers, and environment expansion can access network or credentials. Tool filtering and Talon's metadata markers control exposure in the graph; they do not make an MCP server safe or isolate it from the Talon process.
+The explicit `reload_mcp_configuration` tool likewise schedules rather than performs an inline rebuild, while the runtime API can force a reload under the same tools lock. OAuth server authentication is scoped to the management tool's injected call ID; normal load reports missing remote OAuth credentials as unauthenticated instead of prompting. The CLI exposes `deepagents-talon mcp config` for the chosen path and `deepagents-talon mcp login <server>` for interactive remote login.
 
 ## Focused verification
 
-The narrow middleware tests assert that marked calls omit only optional empty string arguments, bind and later clear the exact tool-call authorization ID, return a correlated redacted `ToolMessage` for `MCPError`, and re-raise non-protocol errors. Adapter integration tests use an in-process FastMCP server without network access to verify prefixed tool invocation, preserved Responses schema definitions, structured/open argument forwarding, reload safety for an in-flight tool, elicitation cancellation, and stdio process lifecycle. Skill-MCP tests verify that disclosed MCP tools still preserve approval and authorization behavior.
+The middleware tests verify marking, optional-empty-string handling, context cleanup, protocol-error redaction, and propagation of non-protocol exceptions. Adapter tests exercise real FastMCP discovery and prefixed invocation, Responses schema preservation, structured argument forwarding, elicitation cancellation, in-flight reload safety, and stdio process cleanup. Skill-MCP tests cover skill-scoped disclosure together with approval and authorization behavior. Configuration tests cover redacted round trips, stale and concurrent CAS updates, lock contention, symlink rejection, atomic-write failure, reload scheduling, enable/disable tool unloading, and approval-policy protection against secret redirection. The Telegram test confirms a senderless channel post cannot create an approval.
 
-From `libs/talon`, run the focused suites through the package target:
+From `libs/talon`, run a focused selection with:
 
 ```bash
-make test TEST_FILE="tests/test_mcp.py tests/test_mcp_middleware.py tests/unit_tests/test_mcp_adapter.py tests/unit_tests/test_skill_mcp.py"
+make test TEST_FILE="tests/test_mcp_middleware.py tests/unit_tests/test_mcp_adapter.py tests/unit_tests/test_mcp_config.py tests/unit_tests/test_mcp_enabled.py tests/unit_tests/test_telegram_approvals.py"
 ```
 
-The Makefile runs the bridge prerequisite and then pytest with sockets disabled except Unix sockets, a 10-second timeout, and coverage settings. See the [testing guide](../testing/testing-guide.md) for package-wide test conventions.
+The package target runs the bridge prerequisite, then pytest with sockets disabled except Unix sockets, a ten-second timeout, and coverage options. See the [testing guide](../testing/testing-guide.md) for broader conventions.

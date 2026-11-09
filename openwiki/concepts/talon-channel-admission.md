@@ -1,11 +1,11 @@
 ---
 type: channel admission and turn routing
 title: Talon Channel Admission and Pairing
-description: How Talon admits provider events, grants and revokes paired-sender access, constructs trusted conversation identities, and delivers or cancels channel turns.
-tags: [talon, channels, admission-control, pairing, discord, slack, telegram, media, security]
+description: How Talon admits provider events, grants and revokes paired-sender access, preprocesses admitted voice and media, constructs trusted conversation identities, and delivers or cancels channel turns.
+tags: [talon, channels, admission-control, pairing, discord, slack, telegram, media, voice-transcription, security]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-10-23T08:06:06.503Z
+    at: 2026-11-09T08:04:29.143Z
 sources:
   - id: openwiki-source-0ad7ce4799b63dc215741642
     resource: repo://libs/talon/deepagents_talon/channels/base.py
@@ -23,16 +23,24 @@ sources:
     resource: repo://libs/talon/deepagents_talon/interfaces.py
   - id: openwiki-source-26b7e102f81f5c7bcfdc2424
     resource: repo://libs/talon/deepagents_talon/pairing.py
+  - id: openwiki-source-d41d7ef7f9d2f53eb0bd40e8
+    resource: repo://libs/talon/deepagents_talon/speech.py
   - id: openwiki-source-94758cb9b3302b8f80f516f9
     resource: repo://libs/talon/tests/channels/test_discord.py
-generated: { by: "openwiki/0.4.2", at: "2026-10-23T08:06:06.503Z" }
+  - id: openwiki-source-a69daa62c9a3eb9a49f09bf9
+    resource: repo://libs/talon/tests/test_host.py
+  - id: openwiki-source-1dcbe1149c3884ccb5b7db9b
+    resource: repo://libs/talon/tests/test_speech.py
+  - id: openwiki-source-24a3ab902230428c874f14d8
+    resource: repo://libs/talon/tests/unit_tests/test_speech.py
+generated: { by: "openwiki/0.4.2", at: "2026-11-09T08:04:29.143Z" }
 ---
 
-Talon channel adapters are the policy boundary between provider events and an agent turn. They normalize provider-local identifiers into `ChannelMessage` or `ChannelReaction`, apply their provider's exposure and pairing rules, and dispatch only admitted events to the callback installed by `TalonHost`. The host then owns commands, the trusted agent conversation key, authorization/approval binding, turn replacement, and delivery.
+Talon channel adapters are the policy boundary between provider events and an agent turn. They normalize provider-local identifiers into `ChannelMessage` or `ChannelReaction`, apply their provider's exposure and pairing rules, and dispatch only admitted events to the callback installed by `TalonHost`. The host then owns commands, the trusted agent conversation key, authorization/approval binding, turn replacement, preprocessing of an already-admitted turn, and delivery.
 
-> **Security boundary:** admission controls who may invoke a configured personal agent; it is not tenant isolation or execution containment. In particular, `open` means arbitrary external senders can invoke an agent with the host's configured credentials and local access. Pairing grants invocation access, not operator authority.
+> **Security boundary:** admission controls who may invoke a configured personal agent; it is not tenant isolation or execution containment. In particular, `open` means arbitrary external senders can invoke an agent with the host's configured credentials and local access. Pairing grants invocation access, not operator authority. Voice transcription is content preprocessing after admission, not an authorization check.
 
-See [permissions and HITL](/openwiki/concepts/permissions-hitl.md), [Talon scheduling](/openwiki/concepts/talon-scheduling.md), [the Talon integration](/openwiki/integrations/talon.md), and [security operations](/openwiki/operations/security.md).
+See [permissions and HITL](/openwiki/concepts/permissions-hitl.md), [Talon history storage](/openwiki/concepts/talon-history-storage.md), [Talon scheduling](/openwiki/concepts/talon-scheduling.md), [the Talon integration](/openwiki/integrations/talon.md), and [security operations](/openwiki/operations/security.md).
 
 ## Adapter contract and lifecycle
 
@@ -46,24 +54,28 @@ sequenceDiagram
     participant Adapter
     participant Policy
     participant Host
+    participant Voice as Voice transcriber
     participant Runtime
 
     Sender->>Adapter: provider event
-    Adapter->>Policy: address and exposure check
+    Adapter->>Policy: addressing and exposure check
     alt rejected
         Policy-->>Adapter: reject
         Adapter->>Adapter: optional pairing offer
     else admitted
         Policy-->>Adapter: admit
+        Adapter->>Adapter: download inbound media
         Adapter->>Host: ChannelMessage or ChannelReaction
-        Host->>Host: command, approval, or turn replacement
-        Host->>Runtime: trusted agent request
+        Host->>Host: command approval or turn replacement
+        Host->>Voice: transcribe eligible media
+        Voice-->>Host: original or augmented message
+        Host->>Runtime: prepare media and invoke request
         Runtime-->>Host: result
         Host-->>Adapter: send to origin conversation
     end
 ```
 
-*Provider adapters decide whether an event enters Talon; the host owns the resulting work and state.*
+*Admission precedes attachment handling and host-side transcription; transcription augments an admitted message rather than granting access.*
 
 ## Exposure, addressing, and identity
 
@@ -115,9 +127,13 @@ Each conversation root is serialized. A new ordinary input replaces an active tu
 
 Approval is not implied by reaction admission. The host only acts on a pending provider-qualified request that matches conversation, prompt message ID, initiating sender, and decision emoji; text approval replies are likewise sender-bound. This prevents an admitted participant from deciding another sender's pending action.
 
-## Media and outbound delivery
+## Media, voice transcription, and outbound delivery
 
-Adapters prepare inbound media only after admission. Shared metadata uses `has_media`, `media_paths`, `media_path`, aligned `media_mime_types`, and `voice_path` for voice files; a failed or oversized download preserves delivery of the message while setting `has_media` false and `media_error`. Discord downloads the first non-document attachment (and carries document references); Slack can download multiple files; Telegram downloads the identified media file. The host may then make prepared media available to a media-capable runtime.
+Adapters prepare inbound media only after admission. Shared metadata uses `has_media`, `media_paths`, `media_path`, aligned `media_mime_types`, and `voice_path` for voice files; a failed or oversized download preserves delivery of the message while setting `has_media` false and `media_error`. Discord downloads the first non-document attachment (and carries document references); Slack can download multiple files; Telegram downloads the identified media file.
+
+For an ordinary admitted turn, the host next calls `transcribe_voice_message` before an `InboundMediaRuntime` stages downloaded content and before it builds model content. Background-result follow-up turns deliberately skip transcription. A transcriber is attempted only when metadata has `voice_path` or declares `voice`, `audio`, or `video`; on a successful result, its text replaces an empty message body or is appended after the existing caption and metadata gains `voice_transcribed: True`. Missing files, unavailable dependencies, empty transcripts, and transcription exceptions leave the original message usable. Thus neither a transcription failure nor the absence of a transcriber rejects an already-admitted message.
+
+The CLI constructs this optional transcriber from configuration. It is disabled unless `DEEPAGENTS_TALON_VOICE_TRANSCRIPTION_ENABLED` (or legacy `SPEECH_ENABLED`) is `1`, `true`, or `yes`. With no model or an `nvidia/parakeet` model, Talon uses local Parakeet—by default `nvidia/parakeet-tdt-0.6b-v3` on CPU, with `DEEPAGENTS_TALON_VOICE_TRANSCRIPTION_DEVICE` (or `SPEECH_DEVICE`) selecting the device. Another configured model selects the optional OpenAI transcription client. Local transcription converts the downloaded local file to mono 16 kHz WAV with `ffmpeg`, caches the Transformers pipeline by model, device, and Talon Hugging Face cache directory, and downloads only JSON and safetensor model artifacts; install the `media` extra and make `ffmpeg` available when using that path.
 
 For outbound media, the shared validator resolves paths beneath the trusted root selected from `DEEPAGENTS_TALON_OUTBOUND_MEDIA_DIR`, then `DEEPAGENTS_TALON_WORKSPACE`, then the current directory. It requires a regular file, a compatible inferred media type, and the configured maximum byte size. This protects the attachment transport boundary; it does not authorize a sender or sandbox the runtime.
 
@@ -130,5 +146,6 @@ The host sends result text and extracted Markdown media references to the origin
 3. Keep Discord mentions required unless a deliberately chosen channel is listed in `DEEPAGENTS_TALON_DISCORD_MENTION_OPTIONAL_CHATS`; this is an addressing setting, not access control.
 4. Enable pairing only for people who should be able to invoke the agent wherever the provider can see them. Use host `/pair revoke` to stop live work as well as future admission.
 5. Set an intentional outbound-media root and byte cap separately from inbound-media storage.
+6. Enable voice transcription only where sending downloaded voice, audio, or video to the configured local model or OpenAI client is acceptable. Provision `ffmpeg` and the local `media` dependencies for Parakeet, and expect failures to fall back to the original admitted message rather than deny it.
 
-`libs/talon/tests/channels/test_base.py` exercises exposure, media validation, dispatch, and retry behavior. Provider suites in `test_discord.py`, `test_slack.py`, and `test_telegram.py` cover admission, pairing offers, reactions, commands, thread/context routing, and media failure paths. `test_host.py` covers command precedence, conversation identity, generation-based suppression, cancellation/recovery, approvals, and delivery; pairing behavior is covered by the pairing test suites.
+`libs/talon/tests/channels/test_base.py` exercises exposure, media validation, dispatch, and retry behavior. Provider suites in `test_discord.py`, `test_slack.py`, and `test_telegram.py` cover admission, pairing offers, reactions, commands, thread/context routing, and media failure paths. `test_host.py` covers command precedence, conversation identity, generation-based suppression, cancellation/recovery, approvals, delivery, and that host transcription reaches the agent before invocation. `test_speech.py` covers transcriber selection, eligible audio/video inputs, caption appending, plain-document exclusion, and the restricted local-model load; `unit_tests/test_speech.py` exercises a local-only Parakeet pipeline without downloading duplicate `.nemo` weights. `unit_tests/test_telegram_approvals.py` verifies a senderless admitted channel post cannot create a tool approval.

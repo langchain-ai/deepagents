@@ -1,135 +1,155 @@
 ---
 type: testing guide
 title: Testing Guide
-description: Focused, package-owned regression routes for Deep Agents runtime, filesystem, model-profile, integration, workflow, and QuickJS lifecycle behavior. Use deterministic local fixtures to preserve observable state, ordering, and failure contracts.
-tags: [testing, deepagents, quickjs, filesystem, model-profiles, ci, lockfiles, mcp]
-sources:
-  - id: openwiki-source-6d4b4e707b8d60b6ccfa3425
-    resource: repo://.github/workflows/openwiki-update.yml
-  - id: openwiki-source-fed4b84a38685f37e58018c5
-    resource: repo://libs/deepagents/deepagents/middleware/filesystem.py
-  - id: openwiki-source-287b22c48770e0721bf11a26
-    resource: repo://libs/deepagents/deepagents/profiles/harness/_nvidia_nemotron_3_ultra.py
-  - id: openwiki-source-270e58b08372692cc14c869c
-    resource: repo://libs/deepagents/tests/unit_tests/middleware/test_filesystem_video.py
-  - id: openwiki-source-9266f2d667b5c64eaec15821
-    resource: repo://libs/deepagents/tests/unit_tests/test_nemotron_ultra_profile.py
-  - id: openwiki-source-49fbcc45434b619b68220bf9
-    resource: repo://libs/Makefile
-  - id: openwiki-source-f774b021a408b0156ed93a4b
-    resource: repo://libs/partners/quickjs/langchain_quickjs/_repl.py
-  - id: openwiki-source-e93ea9e1f8eb3113683abb76
-    resource: repo://libs/partners/quickjs/langchain_quickjs/middleware.py
-  - id: openwiki-source-6b29adb9360fecabb8435bc3
-    resource: repo://libs/partners/quickjs/tests/unit_tests/test_shutdown.py
+description: Focused, package-owned regression routes for dcode server and Textual behavior and Talon speech, MCP, subagent, worker, and channel-approval controls. Use deterministic fakes and package Make targets to verify lifecycle, isolation, and safety contracts.
+tags: [testing, dcode, talon, mcp, subagents, textual]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-11-07T08:03:46.171Z
-generated: { by: "openwiki/0.4.2", at: "2026-11-07T08:03:46.171Z" }
+    at: 2026-11-09T08:04:29.143Z
+sources:
+  - id: openwiki-source-006b62af9993da1b48c11de8
+    resource: repo://libs/code/Makefile
+  - id: openwiki-source-11d6c59d85493653aee76558
+    resource: repo://libs/code/tests/unit_tests/test_app.py
+  - id: openwiki-source-669a6d1361755f2deb4515d2
+    resource: repo://libs/code/tests/unit_tests/test_model_metadata.py
+  - id: openwiki-source-26a4c6ebab346c13697072eb
+    resource: repo://libs/code/tests/unit_tests/test_server.py
+  - id: openwiki-source-a792fe22a007a50c07cc0c34
+    resource: repo://libs/code/tests/unit_tests/tui/widgets/test_messages.py
+  - id: openwiki-source-ba53b2ab73965694b2510a58
+    resource: repo://libs/talon/Makefile
+  - id: openwiki-source-1dcbe1149c3884ccb5b7db9b
+    resource: repo://libs/talon/tests/test_speech.py
+  - id: openwiki-source-82dab853903c3a574614fd1e
+    resource: repo://libs/talon/tests/unit_tests/test_background.py
+  - id: openwiki-source-e2be45e59936bfba43c18816
+    resource: repo://libs/talon/tests/unit_tests/test_mcp_config.py
+  - id: openwiki-source-1215414599473e1c77733a10
+    resource: repo://libs/talon/tests/unit_tests/test_mcp_enabled.py
+  - id: openwiki-source-a4cc4beb110c42a169caf195
+    resource: repo://libs/talon/tests/unit_tests/test_research_subagents.py
+  - id: openwiki-source-24a3ab902230428c874f14d8
+    resource: repo://libs/talon/tests/unit_tests/test_speech.py
+  - id: openwiki-source-cf14bb91e6251d6d6d4a9413
+    resource: repo://libs/talon/tests/unit_tests/test_subagent_control.py
+  - id: openwiki-source-96c9dfdb1811c0047d23fa47
+    resource: repo://libs/talon/tests/unit_tests/test_telegram_approvals.py
+generated: { by: "openwiki/0.4.2", at: "2026-11-09T08:04:29.143Z" }
 ---
 
 # Testing Guide
 
-Start at the package and boundary that own the changed behavior, then widen only when the change crosses that boundary. Put network-free tests in `tests/unit_tests/` and networked tests in `tests/integration_tests/`; assert deterministic, observable behavior rather than helper calls or incidental implementation details. Unaccepted pytest warnings fail the suite. See [Profiles and Models](../concepts/profiles-models.md), [Filesystem Tools](../concepts/tools-filesystem.md), [Sandbox Partners](../integrations/sandbox-partners.md), and [Development](../operations/development.md) for the corresponding runtime and contributor contracts.
+Start with the package that owns the changed boundary and run its focused file through that package's Makefile. These routes deliberately use fake models, in-process transports, temporary files, and Textual's test pilot so a regression expresses an observable contract without requiring a provider, a real server, or a live channel. See [Code Agent](../architecture/code-agent.md), [Talon](../integrations/talon.md), [Talon Scheduling](../concepts/talon-scheduling.md), and [Development](../operations/development.md) for the runtime and contributor context.
 
 ## Run the owning target
 
-Use a package Makefile target so its dependency group, coverage, parallelism, socket policy, and timeout stay aligned with CI.
-
 ```bash
-make -C libs/deepagents test TEST_FILE=tests/unit_tests/middleware/test_filesystem_video.py
-make -C libs/deepagents test TEST_FILE=tests/unit_tests/test_nemotron_ultra_profile.py
-make -C libs/partners/quickjs test TEST_FILE=tests/unit_tests/test_shutdown.py
-make -C libs/deepagents test TEST_FILE=tests/unit_tests/middleware/test_compaction_recovery.py
-make -C libs/deepagents test TEST_FILE=tests/unit_tests/middleware/test_summarization_middleware.py
-make -C libs/deepagents test TEST_FILE=tests/unit_tests/test_subagent_refusal.py
-python -m pytest .github/scripts/tests/workflows/test_ci_workflow.py
-make -C libs hygiene
+make -C libs/code test TEST_FILE=tests/unit_tests/test_server.py
+make -C libs/code test TEST_FILE=tests/unit_tests/test_model_metadata.py
+make -C libs/code test TEST_FILE=tests/unit_tests/tui/widgets/test_messages.py
+make -C libs/talon test TEST_FILE=tests/test_speech.py
+make -C libs/talon test TEST_FILE=tests/unit_tests/test_mcp_config.py
+make -C libs/talon test TEST_FILE=tests/unit_tests/test_background.py
+make -C libs/talon lint
 ```
 
-`libs/deepagents` defaults to `tests/unit_tests/`, uses xdist, and disables sockets except Unix sockets; its integration target selects `tests/integration_tests/` with a 30-second timeout. QuickJS likewise disables sockets for its unit target and has a separate 30-second integration target. `libs/code` shares the Deep Agents unit/integration policy, while Talon runs its Node bridge tests before socket-disabled pytest with a 10-second timeout. Run the focused route first, then its package lint target before widening to the package suite.
+`libs/code` runs unit tests with xdist, coverage, and sockets disabled except Unix sockets; `TEST_FILE` defaults to `tests/unit_tests/`. Its integration target changes the selection to `tests/integration_tests/` and applies a 30-second timeout. `libs/talon` first runs the WhatsApp bridge's Node tests, then runs pytest with sockets disabled, a 10-second timeout, and coverage; its default `TEST_FILE` is `tests/`. Do not replace these invocations with an ad-hoc pytest command when checking a package-owned change: the targets encode the intended test group and execution constraints. Run the appropriate package `lint` target after the focused regression route.
 
-`libs/Makefile` owns shared changed-file hygiene: by default it compares `origin/main` with `HEAD` and runs the explicit `check-yaml`, `check-toml`, `end-of-file-fixer`, `trailing-whitespace`, `fix-smartquotes`, and `fix-spaces` hooks. Supply `HYGIENE_FROM`, `HYGIENE_TO`, or `HYGIENE_ARGS` when the caller has an explicit range or file list; do not reproduce the hook list in a workflow. The scheduled OpenWiki workflow stages only generated documentation paths and invokes this target with its staged file list, retrying once so hook fixes can be staged.
+## dcode server lifecycle and model metadata
 
-## Video `read_file`: frames and message ordering
+### Server process lifecycle
 
-Use `test_filesystem_video.py` when changing video classification, frame extraction, synthetic media messages, or model-request preparation. The tests replace the extractor and backend locally, so they exercise routing and message contracts without PyAV, a provider, or network access.
+Use `libs/code/tests/unit_tests/test_server.py` for launch, readiness, restart, and shutdown changes. The suite substitutes process, socket, and HTTP objects, allowing it to assert the state machine without binding a network port or spawning `langgraph dev`.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Stopped
+    Stopped --> Starting: start
+    Starting --> Running: after_spawn then health check
+    Starting --> Stopped: startup failure or cancellation cleanup
+    Running --> Restarting: restart
+    Restarting --> Starting: stop completes
+    Running --> Stopped: stop
+```
+
+*This is the tested `ServerProcess` lifecycle: startup hooks precede readiness, and an unsuccessful start returns to a cleaned-up stopped state.*
+
+Keep these cases focused and deterministic:
+
+- Port `0` selects an ephemeral local port. A requested free port is retained, while a busy requested port falls back to an available one.
+- Readiness targets the assistant graph endpoint, and startup markers in the child log must survive health, transport, timeout, and early-exit failures so credential or missing-package recovery guidance reaches the caller. Invalid structured details instead fall back to the original startup error.
+- Startup cancellation and cancellation inside `after_spawn` must terminate the spawned process and clear process, log, and owned-config state. Cleanup failure is logged but must not mask the original startup failure.
+- The `after_spawn` callback runs after process creation and before the health check. Missing runtime configuration can invoke the scaffold hook, but a hook that does not restore `langgraph.json` fails clearly. Restart must also recover a configuration purged after a successful boot.
+- A restart shields and awaits process teardown when cancelled, serializes with terminal stop, and prevents competing restarts from overlapping. Add a direct test for the interleaving that motivated any concurrency change.
+
+### Metadata is server-resolved and switch-safe
+
+Use `test_model_metadata.py` when changing `/dcode/model`, thread model resolution, the remote client, or Textual model commands. The test client connects `RemoteAgent` to real ASGI handlers in-process, while workspace and model construction are mocked only at the external boundary.
+
+The startup metadata endpoint is intentionally independent of a thread workspace: it can return the server runtime's metadata even if the workspace is conflicted, whereas a requested thread switch reports the conflict and must not create a model. A missing or failed server runtime produces `503`. For a valid metadata request, no explicit spec returns existing runtime metadata; an explicit spec is created using the bound workspace profile overrides, retry policy, and runtime environment rather than the terminal process environment. Malformed payloads are rejected before model creation, configuration errors are contained as client errors, and unexpected resolution exits are service failures.
+
+On the client side, failed main-model or auxiliary-model resolution is transactional: active selections, metadata, persisted choices, and main-model state remain unchanged, and the UI receives an error. A successful bare model selection adopts the server-resolved provider. Auxiliary `/offload model`, `/auto model`, and rubric selections use server metadata without retargeting the main model; the catalog exposes only public profile fields and applies main-purpose overrides without leaking server-private profile extensions. Test both the HTTP status/payload and the retained client state.
+
+## Textual startup and expansion behavior
+
+`libs/code/tests/unit_tests/test_app.py` is the focused route for app startup, reconnect, queue ordering, model adoption, and modal command work. Treat `ServerReady` as repeatable: initial startup hydrates resumed history once, while later ready events drain queued input without duplicating history. A resumed thread loads history before hooks and the startup command, clears its resuming indication when restoration ends (including failures), and adopts its saved model before an initial prompt. If that adoption cannot be verified, the initial prompt must not run.
+
+The test suite also protects a message-pump invariant: interactive modal continuations, such as the Auto-mode `/goal` criteria preference, must be scheduled off the pump. Drive this through `ChatInput.Submitted` and a real `Textual` pilot, then prove Escape resolves the modal. While the modal continuation is pending, a second goal command does not stack a screen and queued work cannot begin an overlapping agent turn.
+
+Use `libs/code/tests/unit_tests/tui/widgets/test_messages.py` for chat rendering and expansion changes. A lazy tool group builds a large detail set in batches so UI work can run between batches; cancellation or builder failure clears partial widgets and transition state, while a completed group can collapse and rebuild in source order. For streamed assistant text, the first fragment is rendered immediately, later fragments are coalesced, and stopping a stream drains pending text and swaps to a final selectable markdown widget. A failed write retains its buffered text for retry rather than escaping through a Textual timer. Retain real-pilot tests for hover boundaries, markdown links, and rendering rather than asserting only handler internals.
+
+## Talon speech transcription
+
+Use both `libs/talon/tests/test_speech.py` and `libs/talon/tests/unit_tests/test_speech.py`. The lightweight route verifies configuration selection and message handling: transcription enabled without an explicit model chooses local Parakeet on CPU; legacy speech environment variables remain accepted; an explicit Parakeet model/device remains local, while an OpenAI model override chooses the OpenAI transcriber. Audio, voice, and video media are transcribed and appended to existing captions with `voice_transcribed` metadata; ordinary documents are left untouched.
+
+The local-loader route is an optional-dependency integration regression. It builds a tiny local Parakeet repository and replaces Hub download, then proves the loader's JSON/safetensors allowlist is sufficient, duplicate `.nemo` weights are excluded, and the local pipeline can generate text. The cache-location assertion belongs in the lightweight suite: downloads use Talon's `cache/models/huggingface` directory and subsequent Transformers loading is local-only with remote code disabled.
+
+## Talon MCP configuration and enablement
+
+Use `test_mcp_config.py` for persistent configuration changes and `test_mcp_enabled.py` for provider loading and refresh. MCP configuration is a secret-preserving, revisioned editing boundary:
+
+- Views redact secret values while preserving environment references. Updates merge only permitted fields, preserve unmanaged fields and real secrets by path, write atomically with mode `0600`, and request reload only after success.
+- The caller supplies the observed revision. Stale revisions, lock contention, invalid input, malformed existing JSON, symlinks, and failed replacement report a safe error or conflict without changing the original file or revealing private content. Concurrent updates allow one winner rather than silently overwriting.
+- In auto-approve mode, an execution-target change such as command, arguments, transport, or URL cannot reuse a restored secret, because that could redirect it. Tool-filter-only changes remain allowed; approval-required mode can make the reviewed change.
+- Approval policy gates actual writes. Channel-triggered writes requiring approval only occur after approval, rejection or no handler blocks them, and cron does not request an interactive approval. Unprotected updates can proceed.
 
 ```mermaid
 flowchart TD
-    Read["read_file video call"] --> Extract["extract sampled frames"]
-    Extract --> Result["success ToolMessage"]
-    Result --> Media["synthetic media HumanMessage"]
-    Media --> Batch["move media after ToolMessage batch"]
-    Batch --> Model["provider request"]
+    View["get MCP configuration"] --> Redact["redact secrets and return revision"]
+    Redact --> Edit["edit managed server settings"]
+    Edit --> Check["validate revision lock and secret safety"]
+    Check -->|valid| Replace["atomic mode 0600 replacement"]
+    Replace --> Reload["mark tools for reload"]
+    Check -->|invalid or conflict| Keep["keep existing configuration"]
 ```
 
-*Video frames are attached after every tool result from the same assistant tool-call batch.*
+*The MCP tests verify that only a validated, current edit reaches the atomic write and reload boundary.*
 
-Preserve these observable invariants:
+A server with `enabled: false` is not merely hidden: Talon skips environment expansion, connection, and OAuth authentication, publishes no remote or authenticate tools, reports it as disabled, and refuses CLI login. Toggling the persisted boolean through the configuration tools makes `refresh_if_needed()` unload and later restore its prefixed tools; a second refresh with no configuration change is a no-op. Include invalid non-boolean values in parser coverage.
 
-- With video dependencies enabled, a video read decodes the backend payload and calls the frame extractor with `offset` and `limit` interpreted as seconds at the fixed sampling rate. A successful result is a `Command` containing a success `ToolMessage` followed by a marked `HumanMessage` carrying the frame blocks, path, and tool-call notification metadata. The model-facing OpenAI conversion must not contain a raw video block.
-- The sync and async read paths have the same frame-extraction contract. Invalid base64, an input payload beyond the cap, a non-positive `limit`, and expected `VideoExtractionError` failures are returned as error tool messages without calling or leaking an unexpected extractor; unexpected programming errors remain visible.
-- Without the optional video dependencies, preserve generic multimedia behavior and hide video-specific tool guidance. In particular, the enabled-only `.mkv` treatment must not silently alter the fallback file block.
-- A video attachment is non-tool content. When `read_file` and another tool are parallel calls, every `ToolMessage` must precede the attachment in both `wrap_model_call` and `awrap_model_call`; otherwise providers that require a complete tool-result batch reject the request. Assert this provider-visible order, not merely the helper invocation.
+## Background subagents, local boundaries, and controls
 
-## Nemotron 3 Ultra profile adaptation
+`test_background.py` covers delivery, ownership, capacity, cancellation, and scheduled behavior. A chat delegation gets an isolated child thread and does not block later main turns. On completion, the host dispatches its result into the owning conversation; acknowledge only after the model consumes it, and requeue only the IDs associated with an undelivered reply. `/stop` and `/new` cancel only the requesting conversation's children, and cancellation discards that conversation's pending completed results.
 
-Use `test_nemotron_ultra_profile.py` for changes to the Nemotron profile, rather than a provider integration test. The profile is registered for specific NVIDIA, Baseten, Fireworks, OpenRouter, Nebius, and Together model specifications—not provider-wide—and supplies a prompt suffix, a `read_file` description override, and ordered adaptation middleware.
+The global background limit comes from `DEEPAGENTS_TALON_MAX_BACKGROUND_TASKS` (default four) and rejects zero, negative, fractional, and non-numeric values. Capacity is shared across conversations; inspection and cancellation are owner-scoped. Workers preserve caller context needed for history and cron origin but clear the authorization handler, report generic failure or timeout text without tool arguments, and retain a finished result when cancellation arrives too late.
 
-The focused fixtures protect the compatibility seam: the tool-call shim maps a filesystem `path` argument to `file_path`, supplies the profile read default, and replaces empty tool content with a placeholder without deleting an existing file after a failed write. They also test text-form and JSON shell tool-call repairs only when the corresponding tool is exposed, ChatNVIDIA tool metadata compatibility, reasoning-tag cleanup, rate-limit retry, progress budgets, and policy/final-answer guards. Keep these tests local fake requests and messages: their purpose is deterministic adaptation, not provider availability.
+Scheduled turns use a different contract. They execute delegated work inline rather than creating background jobs or consuming chat capacity, may fan out concurrently behind a separate inline ceiling, and return tool errors for timeout/failure rather than letting an exception restart the graph. Scheduled remote `start_async_task` streams the remote result inline because its task ID cannot be resolved by that turn.
 
-### Read-page continuation
+Use `test_research_subagents.py` for least-privilege subagent topology. A local child receives only its task description and selected tools, not parent history or memory. It cannot invoke execution, delegation, configuration reload, or conversation-search tools unless explicitly made available; web access follows an explicit `web: true` capability rather than an agent name. There is no implicit `general-purpose` child, fork mode is rejected because each local task needs fresh context, and per-task tool selection must be valid, unique, and free of delegation tools. Reloading valid attachment changes replaces the effective graph; invalid edits leave the active graph in place and report saved changes as inactive.
 
-`ReadFileContinuationNoticeMiddleware` tells the model to page only when a successful `read_file` response contains exactly at least the requested number of source lines. It derives the count from the bounded status-header area when present, or from real numbered source rows; wrapped continuation rows and header-shaped file content must not inflate the count. A size-truncated window must not receive a continuation offset that skips dropped content.
+`test_subagent_control.py` covers interactive control of local Talon-built workers. `inspect_subagent` exposes bounded lifecycle events and never exposes private tool output or messages; only the owning conversation can inspect or message its job. `message_subagent` accepts bounded nonblank text, queues it while a local worker is active, reports it consumed after the worker receives it, and rejects stale, opaque, foreign, or over-capacity requests. Retention may evict consumed messages but never queued messages.
 
-When changing producer formatting or this middleware, assert all of the following:
+## Channel approval behavior
 
-- An exact-limit page states the original offset and recommends `offset + limit`; the shim's default limit and the continuation message must agree.
-- A partial page, error result, or truncated output has no continuation hint.
-- Status-header recognition is anchored to valid header rows. A matching string in file body content is data, not metadata.
-- Gutter parsing counts primary source rows using the current two-space separator or legacy tab, but not wrapped `N.M` fragments. Include a round-trip from `format_content_with_line_numbers` so producer and consumer cannot drift.
-
-## QuickJS interpreter lifecycle
-
-Use `libs/partners/quickjs/tests/unit_tests/test_shutdown.py` for cleanup changes. `CodeInterpreterMiddleware` gives each LangGraph thread a private registry slot containing a worker, runtime, and REPL. At normal `after_agent` completion it snapshots thread-mode state when applicable and evicts the slot; non-thread modes evict without a snapshot. The registry closes and removes the slot, while call mode resets a REPL after each evaluation.
-
-The shutdown regression suite builds a local Deep Agent with a fake model, opens an interpreter through `eval`, then tests normal completion, `interrupt()`, and a failing tool in a subprocess. Each process must exit cleanly, proving cleanup still works when `after_agent` is skipped or execution unwinds through interruption/error. Its garbage-collection case deletes the agent and middleware, forces `gc.collect()`, and requires QuickJS worker threads opened by that case to disappear. Preserve all five lifecycle exits—completion, interruption, error, GC, and process exit—rather than relying on a remote interpreter or a timing-only assertion.
-
-## Context compaction and overflow recovery
-
-`SummarizationMiddleware` reduces the model-facing request while retaining raw conversation state and records a `_summarization_event` only when it has actually summarized history. `test_summarization_middleware.py` is the focused route for normal and chained event semantics; `test_compaction_recovery.py` protects limit calculation and retry behavior. Use its deterministic counter, fake model, and mock backend rather than a provider.
-
-When modifying cutoff, budgets, clipping, or recovery, preserve these regression cases in synchronous and asynchronous invocation:
-
-- Chained summaries use raw-state coordinates: each event records a cutoff index and cutoff message ID. The next compaction resolves the prior boundary by ID when earlier messages disappeared, but falls back to the stored index for legacy or stale IDs.
-- A request must fit the effective input budget before reaching the model. Include system text, tool schemas, and reserved output tokens; an irreducible request raises `ContextOverflowError` without a provider call, and an unknown agent limit must not borrow the summarizer's limit.
-- A classified provider context-limit failure or `ContextOverflowError` gets one smaller retry. A second overflow is terminal; an unrelated bad request propagates untouched. Recovery must not resend identical input when no cutoff can reduce it.
-- Large-result regressions belong in `test_end_to_end.py`: oversized `read_file` results become smaller offset-guided content while source files remain intact; oversized `ls` and arbitrary-tool results are offloaded under `/large_tool_results/` and replaced with pointers.
-
-The manual `compact_conversation` seam has separate state rules. An ineligible or zero-cutoff request is a correlated no-op tool result. Successful compaction records raw-state cutoff arithmetic, summary content, and an optional archive path. Summary or escaping-offload errors return an error `ToolMessage` without changing the event. dcode tests additionally protect selected-model budget calculation, deferred archive mutation, and fail-closed archive reads.
-
-## Delegation, filesystem, and adapter boundaries
-
-Keep these package-owned routes when work touches their contracts:
-
-- `libs/deepagents/tests/unit_tests/backends/test_filesystem_backend.py` uses `tmp_path` for virtual-root traversal rejection, root-scoped globbing and dotfile behavior, deterministic listing, paginated text reads, literal grep in ripgrep and Python fallback paths, and symlink containment. If CI promised ripgrep, absence fails rather than skips.
-- `libs/deepagents/tests/unit_tests/test_subagents.py` verifies that remote async specifications expose `start_async_task` and `check_async_task` with `task`, while synchronous children expose `task`; final child output and parallel results are correlated by task-call ID. Private state stays isolated while intentionally public state can propagate. Test parallel results by ID, not completion order.
-- `libs/deepagents/tests/unit_tests/test_subagent_refusal.py` distinguishes the main-agent refusal exception/fallback policy from the delegated-task boundary, where refusal becomes a parent-visible notice and the parent continues. Cover provider-shaped and raised refusals, structured-output and declarative children, and sync and async paths.
-- `libs/talon/tests/unit_tests/test_mcp_adapter.py` uses an in-process FastMCP server and local stdio process to validate prefixed calls, argument normalization, schema preservation, result/error correlation, authorization cleanup, elicitation/approval, reload during invocation, and child-process cleanup without a remote service.
-- `libs/code/tests/unit_tests/test_output_truncation.py` separates stop-reason classification from graph behavior: an empty truncation is a serialized model error without an assistant checkpoint, while subagent partial and empty truncations are correlated parent tool results that allow the parent to continue in fork and isolated modes.
-
-## CI and shared hygiene contracts
-
-`.github/scripts/tests/workflows/test_ci_workflow.py` loads workflow YAML, normalizes the YAML 1.1 `on` key, evaluates the GitHub Actions conditions used by the tested workflow, and executes high-risk shell bodies against stub binaries. Use it when editing CI, reusable workflows, or their gate scripts.
-
-The reusable `check_lockfiles.yml` workflow has read-only contents permission, a five-minute Ubuntu job, credential-less checkout, and cache-disabled uv setup. It runs the all-package lockfile checker, then—except on push—delegates changed-file hygiene to `make -C libs hygiene`. Its tests use stubbed `python3` and `make`: a lockfile failure prevents hygiene from running, while either validation failure fails the job. The final CI gate must unconditionally consume the reusable lockfile job and fail for every result other than success.
+Use `test_telegram_approvals.py` for identity and approval routing changes. A Telegram channel post without a sender may still reach the agent with `sender_id` set to `None`, but it must not create a pending tool approval in either allowlist or open exposure modes. The host returns the rejection decision instead. This is an authorization invariant, not a formatting case: add coverage for every new channel event shape that lacks a verified approving identity.
 
 ## Completion checklist
 
-1. Run the smallest owning route with fake models, mock backends, `tmp_path`, stub binaries, or a subprocess; avoid network services when the unit suite demonstrates the contract.
-2. For filesystem media, assert tool-result correlation, attachment metadata, fallback/error behavior, and provider-visible batch order in sync and async paths.
-3. For profile changes, assert repaired inputs and output semantics against fake messages, especially pagination offsets and producer/consumer formatting boundaries.
-4. For interpreter changes, exercise completion, interruption, tool error, GC, and process exit; assert released workers or clean subprocess exit rather than implementation calls.
-5. For context and delegation changes, assert request reduction, retry count, persisted state, parent-visible results, and terminal failure semantics.
-6. For workflow changes, execute shell and gate behavior under controlled failures; preserve the Makefile-owned local command and run the relevant lint target.
+1. Run the focused package Make target, then the package lint target.
+2. For server work, assert port selection, readiness ordering, diagnostic preservation, and cleanup under cancellation—not just successful spawn.
+3. For model work, cover server response classification and transactionality of the caller's active state.
+4. For Textual work, use a real pilot for message-pump, rendering, timer, and cancellation behavior.
+5. For MCP work, test redaction, revision/lock failure, atomic persistence, policy gating, and tool reload together.
+6. For Talon subagents, cover ownership, cancellation, delivery acknowledgement, capacity, scheduled inline execution, and secret-safe failure output.
+7. For channel approvals, prove that unauthenticated or senderless events cannot become approvable actions.

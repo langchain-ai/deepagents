@@ -5,7 +5,7 @@ description: Package graph, release and Python contracts, published dependency b
 tags: [architecture, monorepo, python, dependencies, releases]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-11-08T08:03:51.027Z
+    at: 2026-11-09T08:04:29.143Z
 sources:
   - id: openwiki-source-9a1c436646ef8c4f6dde787a
     resource: repo://.github/RELEASING.md
@@ -21,8 +21,6 @@ sources:
     resource: repo://libs/acp/pyproject.toml
   - id: openwiki-source-68ae2141dbec1e0915410ac3
     resource: repo://libs/ARCHITECTURE.md
-  - id: openwiki-source-6f5b1b7a043ee1d414708793
-    resource: repo://libs/code/ARCHITECTURE.md
   - id: openwiki-source-4d4186e9d62fb4abe495cdd0
     resource: repo://libs/code/deepagents_code/acp.py
   - id: openwiki-source-7ba50bd13eb62341a2061ef9
@@ -33,8 +31,6 @@ sources:
     resource: repo://libs/deepagents/pyproject.toml
   - id: openwiki-source-f2bb883b9cbec377de535c00
     resource: repo://libs/evals/pyproject.toml
-  - id: openwiki-source-8565b7f246ed6e34051d8dfe
-    resource: repo://libs/evals/README.md
   - id: openwiki-source-da577cbe81ec29338f1388b2
     resource: repo://libs/partners/daytona/pyproject.toml
   - id: openwiki-source-936554ac5f0a201f8696be25
@@ -49,10 +45,6 @@ sources:
     resource: repo://libs/talon/pyproject.toml
   - id: openwiki-source-fdd0c2c3830b8e9a88502a57
     resource: repo://libs/talon/README.md
-  - id: openwiki-source-966f1489233b6fc6ee5f2e4c
-    resource: repo://libs/talon/uv.lock
-  - id: openwiki-source-23775c3de52f3ab95a13cb8b
-    resource: repo://README.md
   - id: openwiki-source-482fa4ca84f42b04ba025fc1
     resource: repo://release-please-config.json
 generated: { by: "openwiki/0.4.2", at: "2026-11-08T08:03:51.027Z" }

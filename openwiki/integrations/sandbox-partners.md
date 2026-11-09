@@ -3,9 +3,6 @@ type: integration architecture
 title: Sandbox and Partner Integrations
 description: How dcode resolves and owns remote sandbox providers, and how the separate QuickJS partner provides durable but in-process JavaScript REPL middleware.
 tags: [dcode, sandbox, integrations, providers, quickjs, persistence]
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-11-07T08:03:46.171Z
 sources:
   - id: openwiki-source-5e59f90a38f5bdf9ed76984b
     resource: repo://.release-please-manifest.json
@@ -45,7 +42,12 @@ sources:
     resource: repo://libs/partners/runloop/pyproject.toml
   - id: openwiki-source-03a39f44d8ccfde2fd47e57a
     resource: repo://libs/partners/vercel/pyproject.toml
-generated: { by: "openwiki/0.4.2", at: "2026-11-07T08:03:46.171Z" }
+  - id: openwiki-source-fdd0c2c3830b8e9a88502a57
+    resource: repo://libs/talon/README.md
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-11-09T08:04:29.143Z
+generated: { by: "openwiki/0.4.2", at: "2026-11-09T08:04:29.143Z" }
 ---
 
 # Sandbox and Partner Integrations
@@ -53,6 +55,8 @@ generated: { by: "openwiki/0.4.2", at: "2026-11-07T08:03:46.171Z" }
 A dcode sandbox provider supplies a `SandboxBackendProtocol`: an execution and filesystem backend identified by `id`. dcode owns provider selection and the factory context; the provider package owns its SDK, credentials, remote-resource behavior, and backend implementation. Selecting a sandbox changes the execution/filesystem backend. It is not, by itself, a project-trust, authorization, or general isolation policy.
 
 QuickJS is deliberately different. `langchain-quickjs` embeds an interpreter in the **agent process** as middleware; it is not registered in dcode's remote sandbox-provider registry. The interpreter advertises no ambient filesystem, network, or real-clock access, but explicitly bridged tools and subagents confer authority. A remote sandbox instead executes in a provider-managed environment with its own identity, mounts, egress, credentials, quotas, and lifecycle. Treat those as separate boundaries. See [Permissions and Human Approval](/openwiki/concepts/permissions-hitl.md), [State, Threads, and Persistence](/openwiki/concepts/state-persistence.md), [Tools and Filesystem](/openwiki/concepts/tools-filesystem.md), and [Security and Trust Boundaries](/openwiki/operations/security.md).
+
+[Talon](/openwiki/integrations/talon.md) is a concrete consumer of the remote-provider path: host shell and file tools are the default, while `DEEPAGENTS_TALON_SANDBOX` selects a dcode provider for them. Its sandboxing is opt-in and does not cover MCP tools, web tools, channel media handling, or the host-held skills and memory directories; it therefore is not a multi-tenant or whole-agent security boundary. Talon deletes a sandbox it creates on shutdown, but never deletes one selected by `DEEPAGENTS_TALON_SANDBOX_ID`.
 
 ## Remote sandbox providers
 
@@ -96,7 +100,7 @@ agent = create_deep_agent(
 )
 ```
 
-`CodeInterpreterMiddleware` contributes an `eval` tool (customizable with `tool_name`) and a system-prompt addendum on model calls. `REPLState` keeps an opaque private slot ID plus, in thread mode, an optional DeltaChannel snapshot and HMAC—not a public LangGraph `thread_id`. dcode requires `langchain-quickjs>=0.3.11,<0.4.0`; the current partner release is `0.3.12`, requiring `deepagents>=0.7.34,<0.8.0`, `langchain>=1.4.9,<2.0.0`, `langchain-core>=1.7.6,<2.0.0`, `langgraph>=1.2.20,<2.0.0`, `quickjs-rs>=0.2.6,<0.3.0`, and `bsdiff4>=1.3.0`. The dcode `quickjs` extra remains empty only for backwards-compatible install commands because QuickJS is already a normal dependency.
+`CodeInterpreterMiddleware` contributes an `eval` tool (customizable with `tool_name`) and a system-prompt addendum on model calls. `REPLState` keeps an opaque private slot ID plus, in thread mode, an optional DeltaChannel snapshot and HMAC—not a public LangGraph `thread_id`. dcode requires `langchain-quickjs>=0.3.12,<0.4.0`; the current partner release is `0.3.12`, requiring `deepagents>=0.7.34,<0.8.0`, `langchain>=1.4.9,<2.0.0`, `langchain-core>=1.7.6,<2.0.0`, `langgraph>=1.2.20,<2.0.0`, `quickjs-rs>=0.2.6,<0.3.0`, and `bsdiff4>=1.3.0`. The dcode `quickjs` extra remains empty only for backwards-compatible install commands because QuickJS is already a normal dependency.
 
 The lack of ambient host APIs confines pure JavaScript computation but is not complete isolation. `console` is an optional host bridge; PTC and `task()` expose selected agent tools or subagents. Use a remote sandbox when the desired boundary is provider-managed execution isolation, and separately secure every host capability that QuickJS is allowed to invoke.
 

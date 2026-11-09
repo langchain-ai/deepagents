@@ -4,21 +4,19 @@
 
 ## [0.2.6](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.2.5...deepagents-code==0.2.6) (2026-11-09)
 
-
 ### Features
 
-* **code:** make idle compaction settings filterable in traces ([#7624](https://github.com/langchain-ai/deepagents/issues/7624)) ([316aee2](https://github.com/langchain-ai/deepagents/commit/316aee267240de92c5b030265d5b85c92f8760c8))
-* **code:** tag offload traces with what triggered them ([#7630](https://github.com/langchain-ai/deepagents/issues/7630)) ([91b17f4](https://github.com/langchain-ai/deepagents/commit/91b17f4476a90a8d29d7a758cadf2e82f462bbf0))
-
+- Make idle compaction settings filterable in traces ([#7624](https://github.com/langchain-ai/deepagents/pull/7624)).
+- Tag offload traces with their triggers ([#7630](https://github.com/langchain-ai/deepagents/pull/7630)).
 
 ### Bug Fixes
 
-* **code:** bypass proxies for local server traffic ([#7613](https://github.com/langchain-ai/deepagents/issues/7613)) ([46b040a](https://github.com/langchain-ai/deepagents/commit/46b040ade4183d6e19221cefd9908b8e1e4a2295))
-* **code:** keep queued prompts beside long message text ([#7611](https://github.com/langchain-ai/deepagents/issues/7611)) ([cdbcaff](https://github.com/langchain-ai/deepagents/commit/cdbcaffcb309e983a9e2dc0dba9fa0b819e118f9))
-* **code:** leave piped stdin to subcommands ([#7601](https://github.com/langchain-ai/deepagents/issues/7601)) ([ea91574](https://github.com/langchain-ai/deepagents/commit/ea91574b2240b06ce785bb49fa48ad9f2f153da7))
-* **code:** offer recovery for server startup timeouts ([#7610](https://github.com/langchain-ai/deepagents/issues/7610)) ([e3a7898](https://github.com/langchain-ai/deepagents/commit/e3a789816e2a38932360cae05ec53c133e79465e))
-* **code:** resolve summarization cutoff by message id ([#7570](https://github.com/langchain-ai/deepagents/issues/7570)) ([93e10b3](https://github.com/langchain-ai/deepagents/commit/93e10b3c5f44ff5a5c4ca93ca3ff90c588670b38))
-* **code:** turn off server log colors so dcode starts on Windows ([#7591](https://github.com/langchain-ai/deepagents/issues/7591)) ([f59b391](https://github.com/langchain-ai/deepagents/commit/f59b39119418cdbc9cdcd4e4e3b80937bf671f63))
+- Fix dcode startup on Windows by disabling server log colors ([#7591](https://github.com/langchain-ai/deepagents/pull/7591)).
+- Bypass proxies for local server traffic ([#7613](https://github.com/langchain-ai/deepagents/pull/7613)).
+- Offer recovery options when server startup times out ([#7610](https://github.com/langchain-ai/deepagents/pull/7610)).
+- Leave piped standard input available to subcommands ([#7601](https://github.com/langchain-ai/deepagents/pull/7601)).
+- Resolve the summarization cutoff by message ID ([#7570](https://github.com/langchain-ai/deepagents/pull/7570)).
+- Keep queued prompts beside long message text ([#7611](https://github.com/langchain-ai/deepagents/pull/7611)).
 
 ## [0.2.5](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.2.4...deepagents-code==0.2.5) (2026-11-05)
 

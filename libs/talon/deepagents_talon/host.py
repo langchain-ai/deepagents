@@ -2506,7 +2506,7 @@ async def _send_question_message(
     channel: ChannelAdapter, message: ChannelMessage, text: str
 ) -> SendResult:
     if not is_direct_message(message) and await _channel_provider(channel) in {"slack", "discord"}:
-        text += "\n\nMention the bot in every reply, including `submit`, `back`, and `cancel`."
+        text += "\n\nMention the bot in every reply, including `back` and `cancel`."
     return await send_with_retry(lambda: channel.send_message(message.conversation_id, text))
 
 

@@ -21,7 +21,7 @@ from deepagents_talon.background import _IN_SUBAGENT
 
 MAX_QUESTIONS = 4
 MAX_ANSWER_CHARS = 2000
-_COMMANDS = frozenset({"back", "next", "submit", "cancel"})
+_COMMANDS = frozenset({"back", "next", "cancel"})
 _SEPARATORS = " \t\n-\u2013\u2014:;,.)"
 _NUMBERS = re.compile(r"\d+(?:(?:\s*,\s*|\s+)\d+)*")
 _NOT_APPROVAL = (
@@ -126,15 +126,18 @@ def question_scope(handler: QuestionHandler | None) -> Generator[None]:
 async def ask_user(
     questions: Annotated[list[Question], Field(min_length=1, max_length=MAX_QUESTIONS)],
 ) -> str:
-    """Ask the user 1-4 related multiple-choice questions and wait for their answers.
+    """Ask the user a multiple-choice question and wait for the answer.
 
     Use only for a decision that materially changes the outcome and that you cannot
-    resolve from context. Give 2-4 distinct options, each with a one-line trade-off,
-    and mark your recommendation. The user can always give their own answer and add
-    a note. Answers are not approval: gated tools still ask for approval separately.
+    resolve from context. Prefer exactly one question: ask the decision that matters
+    most, and add up to 3 more only when they are tightly related and cannot wait.
+    Give 2-4 distinct options, each with a one-line trade-off, and mark your
+    recommendation. The user can always give their own answer and add a note.
+    Answers are not approval: gated tools still ask for approval separately.
 
     Args:
-        questions: Related questions, asked in order and submitted together.
+        questions: Usually one question; related extras are asked in order, and the
+            answers return as soon as every question is answered.
     """
     if _IN_SUBAGENT.get():
         return "Questions are unavailable to subagents; report the open decision instead."
@@ -173,14 +176,13 @@ class Step:
 
 
 class QuestionSession:
-    """Chat state for one batch: one question per message, then an explicit submit."""
+    """Chat state for one batch: one question per message, finished by the last answer."""
 
     def __init__(self, questions: Sequence[Question]) -> None:
         """Start at the first question with nothing answered."""
         self.questions = tuple(questions)
         self.answers: list[Answer | None] = [None] * len(self.questions)
         self.index = 0
-        self.reviewing = False
 
     @property
     def result(self) -> tuple[Answer, ...]:
@@ -191,8 +193,8 @@ class QuestionSession:
         return tuple(answer for answer in self.answers if answer is not None)
 
     def prompt(self) -> str:
-        """Render the current question, or the review screen."""
-        return self._review() if self.reviewing else self._question()
+        """Render the current question."""
+        return self._question()
 
     def reply(self, text: str) -> Step:
         """Apply one chat reply from the person answering."""
@@ -203,27 +205,20 @@ class QuestionSession:
         command = text.casefold()
         if command == "cancel":
             return Step("cancelled", "Questions cancelled; the agent will continue without them.")
-        if self.reviewing:
-            return self._review_reply(command)
         if command in _COMMANDS:
             return self._navigate(command)
         answer = parse_answer(self.questions[self.index], text)
         if isinstance(answer, str):
             return Step("asking", f"{answer}\n\n{self._question()}")
         self.answers[self.index] = answer
-        return (
-            Step("submitted", f"Answer sent: {answer.describe()}")
-            if len(self.questions) == 1
-            else self._advance()
-        )
+        return self._advance()
 
     def _advance(self) -> Step:
         pending = [i for i, answer in enumerate(self.answers) if answer is None]
         later = [i for i in pending if i > self.index]
         if not pending:
-            self.reviewing = True
-        else:
-            self.index = (later or pending)[0]
+            return Step("submitted", self._summary())
+        self.index = (later or pending)[0]
         return Step("asking", self.prompt())
 
     def _navigate(self, command: str) -> Step:
@@ -234,22 +229,7 @@ class QuestionSession:
         elif command in {"back", "next"}:
             hint = "There is no earlier question." if command == "back" else "Answer this first."
             return Step("asking", f"{hint}\n\n{self._question()}")
-        else:
-            return Step("asking", f"Answer every question first.\n\n{self._question()}")
         return Step("asking", self._question())
-
-    def _review_reply(self, command: str) -> Step:
-        if command == "submit":
-            return Step("submitted", "Answers sent; the agent is continuing.")
-        number = command.removeprefix("edit").strip()
-        target = len(self.questions) if command == "back" else 0
-        if command.startswith("edit") and number.isdecimal():
-            target = int(number)
-        if 0 < target <= len(self.questions):
-            self.index = target - 1
-            self.reviewing = False
-            return Step("asking", self._question())
-        return Step("asking", f"Reply `submit`, `edit <number>`, or `cancel`.\n\n{self._review()}")
 
     def _question(self) -> str:
         question = self.questions[self.index]
@@ -276,15 +256,12 @@ class QuestionSession:
         ]
         return "Also: " + ", ".join(commands) + "."
 
-    def _review(self) -> str:
-        lines = ["Review your answers"]
-        for index, (question, answer) in enumerate(
-            zip(self.questions, self.answers, strict=True), start=1
-        ):
-            lines.append(f"{index}. {question.header}: {answer.describe() if answer else '-'}")
-        lines.extend(
-            ["", "Reply `submit` to send them, `edit <number>` to change one, or `cancel`."]
-        )
+    def _summary(self) -> str:
+        lines = [
+            f"{question.header}: {answer.describe()}"
+            for question, answer in zip(self.questions, self.result, strict=True)
+        ]
+        lines.append("Sent; the agent is continuing. Send another message to correct it.")
         return "\n".join(lines)
 
 

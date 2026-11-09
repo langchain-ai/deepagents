@@ -89,7 +89,7 @@ def test_single_question_submits_on_answer_and_can_be_cancelled() -> None:
     assert QuestionSession(_questions(DATABASE)).reply("CANCEL").status == "cancelled"
 
 
-def test_batch_shows_progress_preserves_answers_and_requires_submit() -> None:
+def test_batch_shows_progress_preserves_answers_and_finishes_on_last_answer() -> None:
     session = QuestionSession(_questions(DATABASE, FEATURES))
     assert session.prompt().startswith("Question 1 of 2 · Database")
 
@@ -97,18 +97,12 @@ def test_batch_shows_progress_preserves_answers_and_requires_submit() -> None:
     assert step.message.startswith("Question 2 of 2 · Features")
     step = session.reply("back")
     assert "Current answer: SQLite" in step.message
-    session.reply("next")
+    assert session.reply("next").message.startswith("Question 2 of 2")
     step = session.reply("1 2")
-    assert step.status == "asking"
-    assert "Review your answers" in step.message
-    assert "submit" in step.message
-
-    session.reply("edit 1")
-    step = session.reply("1")
-    assert step.status == "asking"
-    assert "1. Database: Postgres" in step.message
-    assert session.reply("submit").status == "submitted"
-    assert session.result == (Answer(("Postgres",)), Answer(("Auth", "Billing")))
+    assert step.status == "submitted"
+    assert "Features: Auth, Billing" in step.message
+    assert "Send another message to correct it" in step.message
+    assert session.result == (Answer(("SQLite",)), Answer(("Auth", "Billing")))
 
 
 @pytest.mark.parametrize(
@@ -214,7 +208,6 @@ async def test_host_waits_for_the_starting_sender_without_starting_a_turn(
         for reply in (
             ChannelMessage("chat", "1 note", sender_id="alice"),
             ChannelMessage("chat", "", sender_id="alice", metadata={"voice_path": "voice.ogg"}),
-            ChannelMessage("chat", "submit", sender_id="alice"),
         ):
             await host.receive_message(channel, reply)
 
@@ -226,7 +219,7 @@ async def test_host_waits_for_the_starting_sender_without_starting_a_turn(
         await host.stop()
 
 
-@pytest.mark.parametrize("successful_sends", [0, 1, 2])
+@pytest.mark.parametrize("successful_sends", [0, 1])
 async def test_failed_question_delivery_unblocks_the_tool(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, successful_sends: int
 ) -> None:
@@ -359,16 +352,19 @@ async def test_voice_question_reply_leaves_threads_responsive_and_discards_stale
         await host.stop()
 
 
-@pytest.mark.parametrize(("reply", "rounds"), [("1", 1), ("submit", 1), ("cancel", 1), ("1", 2)])
+@pytest.mark.parametrize(
+    ("reply", "rounds", "batch"),
+    [("1", 1, False), ("1", 1, True), ("cancel", 1, False), ("1", 2, False)],
+)
 async def test_follow_up_queued_behind_question_completion_reaches_current_recipient(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, reply: str, rounds: int
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, reply: str, rounds: int, *, batch: bool
 ) -> None:
     acknowledging, release = asyncio.Event(), asyncio.Event()
-    channel, agent = RecordingChannel(), QuestionAgent(batch=reply == "submit", rounds=rounds)
+    channel, agent = RecordingChannel(), QuestionAgent(batch=batch, rounds=rounds)
     send = channel.send_message
 
     async def send_message(chat: str, text: str) -> SendResult:
-        if text.startswith(("Answer sent:", "Answers sent;", "Questions cancelled;")):
+        if "Sent; the agent is continuing" in text or text.startswith("Questions cancelled;"):
             acknowledging.set()
             await release.wait()
         return await send(chat, text)
@@ -384,8 +380,7 @@ async def test_follow_up_queued_behind_question_completion_reaches_current_recip
     try:
         await receive("ask")
         await asyncio.sleep(0)
-        if reply == "submit":
-            await receive("1")
+        if batch:
             await receive("1")
         tasks.append(asyncio.create_task(receive(reply)))
         await asyncio.wait_for(acknowledging.wait(), 2)
@@ -422,6 +417,5 @@ def test_oversized_answer_is_rejected_without_advancing_the_batch() -> None:
     step = session.reply("x" * (MAX_ANSWER_CHARS + 1))
     assert step.status == "asking"
     assert f"{MAX_ANSWER_CHARS} characters" in step.message
-    session.reply("1")
-    assert session.reply("submit").status == "submitted"
+    assert session.reply("1").status == "submitted"
     assert session.result == (Answer(("SQLite",)), Answer(("Auth",)))

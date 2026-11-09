@@ -6870,8 +6870,8 @@ class DeepAgentsApp(App):
             text = f"Server failed to start: {self._server_startup_error}"
         if had_deferred_actions:
             text += (
-                "\n\nQueued changes were not applied. "
-                "Reissue those commands to try again."
+                "\n\nCommands you ran while the server was starting were "
+                "not applied. Run them again once it is up."
             )
         if (
             self._server_startup_missing_credentials_provider is not None

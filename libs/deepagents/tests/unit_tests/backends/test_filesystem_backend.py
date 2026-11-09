@@ -351,6 +351,22 @@ def test_filesystem_backend_ls_trailing_slash(tmp_path: Path):
     assert empty.error == "Path '/nonexistent/': path_not_found"
 
 
+def test_write_to_a_directory_reports_is_directory_when_opening_it_is_denied(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    real_open = os.open
+
+    def windows_open(path: Path, flags: int, mode: int = 0o777) -> int:
+        if Path(path).is_dir():
+            raise PermissionError(13, "Permission denied", str(path))
+        return real_open(path, flags, mode)
+
+    (tmp_path / "docs").mkdir()
+    monkeypatch.setattr(fs_module.os, "open", windows_open)
+
+    result = FilesystemBackend(root_dir=tmp_path, virtual_mode=True).write("/docs", "x")
+
+    assert (result.error is not None, result.error_code) == (True, "is_directory")
+
+
 def test_filesystem_backend_read_non_utf8_file(tmp_path: Path):
     """FilesystemBackend.read should return an error result, not raise, for non-UTF-8 text files."""
     root = tmp_path

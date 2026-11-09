@@ -10,6 +10,7 @@ from langgraph.runtime import get_runtime
 from langgraph.store.base import BaseStore, Item, PutOp
 
 from deepagents.backends.protocol import (
+    FILE_NOT_FOUND,
     BackendProtocol,
     DeleteResult,
     EditResult,
@@ -576,7 +577,7 @@ class StoreBackend(BackendProtocol):
         prefix = base + "/"
         to_delete = [key for item in items if (key := str(item.key)) == base or key.startswith(prefix)]
         if not to_delete:
-            return DeleteResult(error=f"Error: File '{file_path}' not found")
+            return DeleteResult(error=f"Error: File '{file_path}' not found", error_code=FILE_NOT_FOUND)
 
         store.batch([PutOp(namespace, key, None) for key in to_delete])
         return DeleteResult(path=file_path)
@@ -591,7 +592,7 @@ class StoreBackend(BackendProtocol):
         prefix = base + "/"
         to_delete = [key for item in items if (key := str(item.key)) == base or key.startswith(prefix)]
         if not to_delete:
-            return DeleteResult(error=f"Error: File '{file_path}' not found")
+            return DeleteResult(error=f"Error: File '{file_path}' not found", error_code=FILE_NOT_FOUND)
 
         await store.abatch([PutOp(namespace, key, None) for key in to_delete])
         return DeleteResult(path=file_path)

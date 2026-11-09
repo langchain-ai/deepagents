@@ -8,6 +8,7 @@ from langgraph._internal._constants import CONFIG_KEY_READ, CONFIG_KEY_SEND
 from langgraph.config import get_config
 
 from deepagents.backends.protocol import (
+    FILE_NOT_FOUND,
     BackendProtocol,
     DeleteResult,
     EditResult,
@@ -272,7 +273,7 @@ class StateBackend(BackendProtocol):
         prefix = base + "/"
         to_delete = [key for key in files if key == base or key.startswith(prefix)]
         if not to_delete:
-            return DeleteResult(error=f"Error: File '{file_path}' not found")
+            return DeleteResult(error=f"Error: File '{file_path}' not found", error_code=FILE_NOT_FOUND)
 
         self._send_files_update(dict.fromkeys(to_delete, None))
         return DeleteResult(path=file_path)

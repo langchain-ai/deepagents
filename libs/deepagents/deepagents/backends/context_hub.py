@@ -550,7 +550,7 @@ class ContextHubBackend(BackendProtocol):
                 prefix = base + "/"
                 to_delete = [key for key in cache if key == base or key.startswith(prefix)]
                 if not to_delete:
-                    return DeleteResult(error=f"Error: File '{file_path}' not found")
+                    return DeleteResult(error=f"Error: File '{file_path}' not found", error_code=FILE_NOT_FOUND)
                 mutation = self._queue_changes_locked(
                     dict.fromkeys(to_delete, None),
                     intent=_DeleteIntent(path=base),

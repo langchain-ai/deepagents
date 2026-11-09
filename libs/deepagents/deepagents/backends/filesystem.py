@@ -21,6 +21,7 @@ from deepagents.backends.protocol import (
     FILE_NOT_FOUND,
     INVALID_PATH,
     IS_DIRECTORY,
+    NOT_A_DIRECTORY,
     PERMISSION_DENIED,
     BackendProtocol,
     ContextLine,
@@ -296,23 +297,25 @@ class FilesystemBackend(BackendProtocol):
                 Directories have a trailing `/` in their path and `is_dir=True`.
 
                 Missing paths set `error` to `Path '<path>': path_not_found`
-                with `entries=None`.
+                and `error_code` to `file_not_found`, with `entries=None`.
+                A path that cannot be resolved sets the `error_code` its
+                exception maps to, such as `permission_denied`.
 
                 File paths set `error` to `Path '<path>': not_a_directory`
-                with `entries=None`.
+                and `error_code` to `not_a_directory`, with `entries=None`.
 
                 Empty directories return `error=None` and `entries=[]`.
         """
         try:
             dir_path = self._resolve_path(path)
             if not dir_path.exists():
-                return LsResult(error=f"Path '{path}': path_not_found", entries=None)
+                return LsResult(error=f"Path '{path}': path_not_found", entries=None, error_code=FILE_NOT_FOUND)
             if not dir_path.is_dir():
-                return LsResult(error=f"Path '{path}': not_a_directory", entries=None)
+                return LsResult(error=f"Path '{path}': not_a_directory", entries=None, error_code=NOT_A_DIRECTORY)
         except (OSError, RuntimeError) as e:
             msg = f"Cannot list '{path}': {e}"
             logger.warning("%s", msg)
-            return LsResult(error=msg, entries=None)
+            return LsResult(error=msg, entries=None, error_code=_map_exception_to_standard_error(e))
 
         results: list[FileInfo] = []
         errors: list[str] = []
@@ -518,7 +521,7 @@ class FilesystemBackend(BackendProtocol):
         try:
             resolved_path = self._resolve_path(file_path)
         except (OSError, RuntimeError) as e:
-            return WriteResult(error=f"Error writing file '{file_path}': {e}")
+            return WriteResult(error=f"Error writing file '{file_path}': {e}", error_code=_map_exception_to_standard_error(e))
 
         try:
             # Create parent directories if needed
@@ -535,8 +538,12 @@ class FilesystemBackend(BackendProtocol):
                 f.write(content)
 
             return WriteResult(path=file_path)
-        except (OSError, UnicodeEncodeError) as e:
+        except UnicodeEncodeError as e:
             return WriteResult(error=f"Error writing file '{file_path}': {e}")
+        except OSError as e:
+            # Windows raises `PermissionError`, not `IsADirectoryError`, when opening a directory.
+            code = IS_DIRECTORY if resolved_path.is_dir() else _map_exception_to_standard_error(e)
+            return WriteResult(error=f"Error writing file '{file_path}': {e}", error_code=code)
 
     def edit(
         self,
@@ -619,11 +626,11 @@ class FilesystemBackend(BackendProtocol):
         try:
             resolved_path = self._resolve_path(file_path)
         except (OSError, RuntimeError) as e:
-            return DeleteResult(error=f"Error deleting '{file_path}': {e}")
+            return DeleteResult(error=f"Error deleting '{file_path}': {e}", error_code=_map_exception_to_standard_error(e))
 
         try:
             if not resolved_path.exists() and not resolved_path.is_symlink():
-                return DeleteResult(error=f"Error: '{file_path}' not found")
+                return DeleteResult(error=f"Error: '{file_path}' not found", error_code=FILE_NOT_FOUND)
             if resolved_path.is_symlink():
                 resolved_path.unlink()
             elif resolved_path.is_dir():
@@ -632,7 +639,7 @@ class FilesystemBackend(BackendProtocol):
                 resolved_path.unlink()
             return DeleteResult(path=file_path)
         except (OSError, RuntimeError) as e:
-            return DeleteResult(error=f"Error deleting '{file_path}': {e}")
+            return DeleteResult(error=f"Error deleting '{file_path}': {e}", error_code=_map_exception_to_standard_error(e))
 
     def grep(  # noqa: C901 -- path resolution, glob validation, engine selection, and context attach are each guarded early-exits; splitting them would scatter the partial-error bookkeeping
         self,

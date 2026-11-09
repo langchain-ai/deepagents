@@ -46,6 +46,9 @@ from deepagents._api.deprecation import warn_deprecated
 from deepagents.backends import CompositeBackend, FilesystemBackend, LocalShellBackend, StateBackend
 from deepagents.backends.composite import _route_for_path
 from deepagents.backends.protocol import (
+    INVALID_PATH,
+    PERMISSION_DENIED,
+    RAW_FILE_RESULT_CONFIG_KEY,
     BackendProtocol,
     DeleteResult,
     EditResult,
@@ -53,16 +56,23 @@ from deepagents.backends.protocol import (
     ExecuteOffloadResult,
     ExecuteResponse,
     FileData as FileData,  # Re-export for backwards compatibility
+    FileDownloadResponse,
     FileInfo,
+    FileToolErrorArtifact,
+    FileToolErrorCode,
     GlobResult,
     GlobTruncationReason,
     GrepMatch,
     GrepResult,
+    LsArtifact,
     LsResult,
+    RawFileResultRequest,
+    ReadFileArtifact,
     ReadResult,
     SandboxBackendProtocol,
     WriteResult,
     _apply_grep_max_count,
+    _as_file_operation_error,
     _method_accepts_max_count,
     _supports_delete,
     execute_accepts_timeout,
@@ -198,6 +208,22 @@ _MULTIMODAL_BLOCK_TYPES: Final = frozenset(_EXTENSION_TO_FILE_TYPE.values())
 def _tool_error(name: str, tool_call_id: str | None, content: str) -> ToolMessage:
     """Build a `ToolMessage` carrying a plain text error."""
     return ToolMessage(content=content, name=name, tool_call_id=tool_call_id, status="error")
+
+
+def _raw_result_request(runtime: ToolRuntime[Any, Any]) -> RawFileResultRequest | None:
+    """Return the config's `RawFileResultRequest` when it names this tool call, else `None`.
+
+    Callers that run a tool's function directly may pass a runtime with no config.
+    """
+    config = getattr(runtime, "config", None) or {}
+    request = (config.get("configurable") or {}).get(RAW_FILE_RESULT_CONFIG_KEY)
+    if request is None or runtime.tool_call_id is None or request.get("tool_call_id") != runtime.tool_call_id:
+        return None
+    return request
+
+
+def _error_artifact(raw: RawFileResultRequest | None, code: FileToolErrorCode | None) -> FileToolErrorArtifact | None:
+    return None if raw is None else {"code": code}
 
 
 def _parallel_file_mutation_error(request: ToolCallRequest) -> ToolMessage | None:
@@ -901,15 +927,25 @@ def _format_grep_tool_result(
     return formatted, "success"
 
 
-def _apply_permissions_to_ls_results(
+def _ls_result(
     rules: list[FilesystemPermission],
     entries: list[FileInfo],
+    tool_call_id: str | None,
     *,
-    backend: BackendProtocol | None = None,
-) -> list[str]:
-    """Filter ls entries by permission and return their paths."""
-    filtered_entries = _filter_file_infos_by_permission(rules, entries, operation="read", backend=backend)
-    return [fi.get("path", "") for fi in filtered_entries]
+    backend: BackendProtocol,
+    raw: RawFileResultRequest | None,
+) -> ToolMessage:
+    permitted = _filter_file_infos_by_permission(rules, entries, operation="read", backend=backend)
+    artifact: LsArtifact | None = None
+    if raw is not None:
+        artifact = {"entries": [{"path": fi.get("path", ""), "is_dir": fi.get("is_dir", False)} for fi in permitted]}
+    return ToolMessage(
+        content=_format_file_paths([fi.get("path", "") for fi in permitted]),
+        tool_call_id=tool_call_id,
+        name="ls",
+        status="success",
+        artifact=artifact,
+    )
 
 
 def _apply_permissions_to_glob_results(
@@ -947,6 +983,53 @@ def _format_glob_tool_result(
         note = GLOB_UNREADABLE_NOTE if truncation_reason == "unreadable" else GLOB_TRUNCATION_NOTE
         return f"{content}\n\n{note}"
     return content
+
+
+def _download(backend: BackendProtocol, path: str) -> FileDownloadResponse:
+    """Download one file for a raw read.
+
+    `read` returns a window of lines formatted for the model, so only `download_files`
+    returns the file's exact bytes.
+    """
+    try:
+        return backend.download_files([path])[0]
+    except NotImplementedError:
+        return FileDownloadResponse(path=path, error="this backend cannot download files")
+
+
+async def _adownload(backend: BackendProtocol, path: str) -> FileDownloadResponse:
+    try:
+        return (await backend.adownload_files([path]))[0]
+    except NotImplementedError:
+        return FileDownloadResponse(path=path, error="this backend cannot download files")
+
+
+def _raw_read_result(response: FileDownloadResponse, path: str, tool_call_id: str | None, raw: RawFileResultRequest) -> ToolMessage:
+    content = response.content if response.error is None else None
+    limit = raw["max_bytes"]
+    code: FileToolErrorCode | None
+    if content is not None and len(content) <= limit:
+        artifact: ReadFileArtifact = {"content": content}
+        return ToolMessage(
+            content=f"Read {len(content)} bytes from {path}",
+            name="read_file",
+            tool_call_id=tool_call_id,
+            status="success",
+            artifact=artifact,
+        )
+    if content is not None:
+        error = f"file is {len(content)} bytes, over the {limit}-byte limit"
+        code = "file_too_large"
+    else:
+        error = response.error or "no content returned"
+        code = _as_file_operation_error(error)
+    return ToolMessage(
+        content=f"Error: cannot read {path}: {error}",
+        name="read_file",
+        tool_call_id=tool_call_id,
+        status="error",
+        artifact=_error_artifact(raw, code),
+    )
 
 
 def _window_fields(read_result: ReadResult) -> list[str]:
@@ -1875,6 +1958,10 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
     [`ExecuteArtifact`][deepagents.backends.protocol.ExecuteArtifact] metadata on
     `ToolMessage.artifact`.
 
+    Code that calls the file tools directly can get raw results on
+    `ToolMessage.artifact` instead of the text formatted for the model; see
+    [`RAW_FILE_RESULT_CONFIG_KEY`][deepagents.backends.protocol.RAW_FILE_RESULT_CONFIG_KEY].
+
     This middleware also automatically evicts large tool results to the file system when
     they exceed a token threshold, preventing context window saturation.
 
@@ -2114,6 +2201,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             path: str,
         ) -> ToolMessage:
             """Synchronous wrapper for ls tool."""
+            raw = _raw_result_request(runtime)
             resolved_backend = self.backend
             try:
                 validated_path = validate_path(path)
@@ -2123,6 +2211,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     name="ls",
                     tool_call_id=runtime.tool_call_id,
                     status="error",
+                    artifact=_error_artifact(raw, INVALID_PATH),
                 )
             if (error := _permission_error(self._permissions, "read", self.backend, validated_path)) is not None:
                 return ToolMessage(
@@ -2130,6 +2219,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     name="ls",
                     tool_call_id=runtime.tool_call_id,
                     status="error",
+                    artifact=_error_artifact(raw, PERMISSION_DENIED),
                 )
             ls_result = resolved_backend.ls(validated_path)
             if ls_result.error:
@@ -2138,21 +2228,16 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     name="ls",
                     tool_call_id=runtime.tool_call_id,
                     status="error",
+                    artifact=_error_artifact(raw, ls_result.error_code),
                 )
-            infos = ls_result.entries or []
-            paths = _apply_permissions_to_ls_results(self._permissions, infos, backend=self.backend)
-            return ToolMessage(
-                content=_format_file_paths(paths),
-                tool_call_id=runtime.tool_call_id,
-                name="ls",
-                status="success",
-            )
+            return _ls_result(self._permissions, ls_result.entries or [], runtime.tool_call_id, backend=self.backend, raw=raw)
 
         async def async_ls(
             runtime: ToolRuntime[None, FilesystemState],
             path: str,
         ) -> ToolMessage:
             """Asynchronous wrapper for ls tool."""
+            raw = _raw_result_request(runtime)
             resolved_backend = self.backend
             try:
                 validated_path = validate_path(path)
@@ -2162,6 +2247,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     name="ls",
                     tool_call_id=runtime.tool_call_id,
                     status="error",
+                    artifact=_error_artifact(raw, INVALID_PATH),
                 )
             if (error := _permission_error(self._permissions, "read", self.backend, validated_path)) is not None:
                 return ToolMessage(
@@ -2169,6 +2255,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     name="ls",
                     tool_call_id=runtime.tool_call_id,
                     status="error",
+                    artifact=_error_artifact(raw, PERMISSION_DENIED),
                 )
             ls_result = await resolved_backend.als(validated_path)
             if ls_result.error:
@@ -2177,15 +2264,9 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     name="ls",
                     tool_call_id=runtime.tool_call_id,
                     status="error",
+                    artifact=_error_artifact(raw, ls_result.error_code),
                 )
-            infos = ls_result.entries or []
-            paths = _apply_permissions_to_ls_results(self._permissions, infos, backend=self.backend)
-            return ToolMessage(
-                content=_format_file_paths(paths),
-                tool_call_id=runtime.tool_call_id,
-                name="ls",
-                status="success",
-            )
+            return _ls_result(self._permissions, ls_result.entries or [], runtime.tool_call_id, backend=self.backend, raw=raw)
 
         return StructuredTool.from_function(
             name="ls",
@@ -2196,7 +2277,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             args_schema=LsSchema,
         )
 
-    def _create_read_file_tool(self) -> BaseTool:  # noqa: C901
+    def _create_read_file_tool(self) -> BaseTool:  # noqa: C901, PLR0915  # Tool wiring + raw-result and multimodal handling
         """Create the read_file tool."""
         video_enabled = video_dependencies_available()
         default_description = READ_FILE_VIDEO_TOOL_DESCRIPTION if video_enabled else READ_FILE_TOOL_DESCRIPTION
@@ -2318,6 +2399,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             limit: int = DEFAULT_READ_LIMIT,
         ) -> ToolMessage | Command:
             """Synchronous wrapper for read_file tool."""
+            raw = _raw_result_request(runtime)
             resolved_backend = self.backend
             try:
                 validated_path = validate_path(file_path)
@@ -2327,6 +2409,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     name="read_file",
                     tool_call_id=runtime.tool_call_id,
                     status="error",
+                    artifact=_error_artifact(raw, INVALID_PATH),
                 )
             if (error := _permission_error(self._permissions, "read", self.backend, validated_path)) is not None:
                 return ToolMessage(
@@ -2334,7 +2417,10 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     name="read_file",
                     tool_call_id=runtime.tool_call_id,
                     status="error",
+                    artifact=_error_artifact(raw, PERMISSION_DENIED),
                 )
+            if raw is not None:
+                return _raw_read_result(_download(resolved_backend, validated_path), validated_path, runtime.tool_call_id, raw)
             read_result = resolved_backend.read(validated_path, offset=offset, limit=limit)
             return _handle_read_result(read_result, validated_path, runtime.tool_call_id, offset, limit)
 
@@ -2345,6 +2431,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             limit: int = DEFAULT_READ_LIMIT,
         ) -> ToolMessage | Command:
             """Asynchronous wrapper for read_file tool."""
+            raw = _raw_result_request(runtime)
             resolved_backend = self.backend
             try:
                 validated_path = validate_path(file_path)
@@ -2354,6 +2441,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     name="read_file",
                     tool_call_id=runtime.tool_call_id,
                     status="error",
+                    artifact=_error_artifact(raw, INVALID_PATH),
                 )
             if (error := _permission_error(self._permissions, "read", self.backend, validated_path)) is not None:
                 return ToolMessage(
@@ -2361,7 +2449,10 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     name="read_file",
                     tool_call_id=runtime.tool_call_id,
                     status="error",
+                    artifact=_error_artifact(raw, PERMISSION_DENIED),
                 )
+            if raw is not None:
+                return _raw_read_result(await _adownload(resolved_backend, validated_path), validated_path, runtime.tool_call_id, raw)
             read_result = await resolved_backend.aread(validated_path, offset=offset, limit=limit)
             return _handle_read_result(read_result, validated_path, runtime.tool_call_id, offset, limit)
 
@@ -2384,6 +2475,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             runtime: ToolRuntime[None, FilesystemState],
         ) -> ToolMessage:
             """Synchronous wrapper for write_file tool."""
+            raw = _raw_result_request(runtime)
             resolved_backend = self.backend
             try:
                 validated_path = validate_path(file_path)
@@ -2393,6 +2485,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     name="write_file",
                     tool_call_id=runtime.tool_call_id,
                     status="error",
+                    artifact=_error_artifact(raw, INVALID_PATH),
                 )
 
             if (error := _permission_error(self._permissions, "write", self.backend, validated_path)) is not None:
@@ -2401,6 +2494,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     name="write_file",
                     tool_call_id=runtime.tool_call_id,
                     status="error",
+                    artifact=_error_artifact(raw, PERMISSION_DENIED),
                 )
             res: WriteResult = resolved_backend.write(validated_path, content)
             if res.error:
@@ -2409,6 +2503,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     name="write_file",
                     tool_call_id=runtime.tool_call_id,
                     status="error",
+                    artifact=_error_artifact(raw, res.error_code),
                 )
             return ToolMessage(
                 content=f"Updated file {res.path}",
@@ -2423,6 +2518,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             runtime: ToolRuntime[None, FilesystemState],
         ) -> ToolMessage:
             """Asynchronous wrapper for write_file tool."""
+            raw = _raw_result_request(runtime)
             resolved_backend = self.backend
             try:
                 validated_path = validate_path(file_path)
@@ -2432,6 +2528,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     name="write_file",
                     tool_call_id=runtime.tool_call_id,
                     status="error",
+                    artifact=_error_artifact(raw, INVALID_PATH),
                 )
 
             if (error := _permission_error(self._permissions, "write", self.backend, validated_path)) is not None:
@@ -2440,6 +2537,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     name="write_file",
                     tool_call_id=runtime.tool_call_id,
                     status="error",
+                    artifact=_error_artifact(raw, PERMISSION_DENIED),
                 )
             res: WriteResult = await resolved_backend.awrite(validated_path, content)
             if res.error:
@@ -2448,6 +2546,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     name="write_file",
                     tool_call_id=runtime.tool_call_id,
                     status="error",
+                    artifact=_error_artifact(raw, res.error_code),
                 )
             return ToolMessage(
                 content=f"Updated file {res.path}",
@@ -2571,6 +2670,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             runtime: ToolRuntime[None, FilesystemState],
         ) -> ToolMessage:
             """Synchronous wrapper for delete tool."""
+            raw = _raw_result_request(runtime)
             resolved_backend = self.backend
             try:
                 validated_path = validate_path(file_path)
@@ -2580,6 +2680,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     name="delete",
                     tool_call_id=runtime.tool_call_id,
                     status="error",
+                    artifact=_error_artifact(raw, INVALID_PATH),
                 )
 
             has_descendants = _delete_target_may_have_descendants(resolved_backend, validated_path, permissions_configured=bool(self._permissions))
@@ -2589,6 +2690,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     name="delete",
                     tool_call_id=runtime.tool_call_id,
                     status="error",
+                    artifact=_error_artifact(raw, PERMISSION_DENIED),
                 )
             res: DeleteResult = resolved_backend.delete(validated_path)
             if res.error:
@@ -2597,6 +2699,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     name="delete",
                     tool_call_id=runtime.tool_call_id,
                     status="error",
+                    artifact=_error_artifact(raw, res.error_code),
                 )
             return ToolMessage(
                 content=f"Deleted {res.path}",
@@ -2610,6 +2713,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             runtime: ToolRuntime[None, FilesystemState],
         ) -> ToolMessage:
             """Asynchronous wrapper for delete tool."""
+            raw = _raw_result_request(runtime)
             resolved_backend = self.backend
             try:
                 validated_path = validate_path(file_path)
@@ -2619,6 +2723,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     name="delete",
                     tool_call_id=runtime.tool_call_id,
                     status="error",
+                    artifact=_error_artifact(raw, INVALID_PATH),
                 )
 
             has_descendants = await _adelete_target_may_have_descendants(
@@ -2630,6 +2735,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     name="delete",
                     tool_call_id=runtime.tool_call_id,
                     status="error",
+                    artifact=_error_artifact(raw, PERMISSION_DENIED),
                 )
             res: DeleteResult = await resolved_backend.adelete(validated_path)
             if res.error:
@@ -2638,6 +2744,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     name="delete",
                     tool_call_id=runtime.tool_call_id,
                     status="error",
+                    artifact=_error_artifact(raw, res.error_code),
                 )
             return ToolMessage(
                 content=f"Deleted {res.path}",

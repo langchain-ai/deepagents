@@ -19079,6 +19079,7 @@ class DeepAgentsApp(App):
                 config=config,
                 context=self._offload_context(self._lc_thread_id),
                 fulfill_hook=self._hooks.fulfill_interrupt,
+                offload_trigger="idle" if automatic else "manual",
             )
             await self._sync_session_cost_from_checkpoint()
 

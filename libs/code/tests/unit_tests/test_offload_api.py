@@ -1447,6 +1447,51 @@ class TestExecuteOffload:
         threads.update_state.assert_not_awaited()
         prepared.rollback.assert_called_once()
 
+    @pytest.mark.parametrize(
+        ("context", "expected"),
+        [
+            ({"offload_trigger": "idle"}, "idle"),
+            ({"offload_trigger": "manual"}, "manual"),
+            ({}, "manual"),
+            ({"offload_trigger": "bogus"}, "manual"),
+        ],
+        ids=["idle", "manual", "absent", "unrecognized"],
+    )
+    async def test_trace_metadata_records_offload_trigger(
+        self, context: dict[str, object], expected: str
+    ) -> None:
+        """The summarizer's traces say whether idle compaction or `/offload` ran."""
+        from langchain_core.runnables.config import var_child_runnable_config
+
+        from deepagents_code import offload_api
+
+        before = _thread_state()
+        noop_result = {**_result(), "status": "noop"}
+        seen: list[dict[str, object]] = []
+
+        async def execute(*_args: object, **_kwargs: object) -> OffloadExecution:  # noqa: RUF029  # AsyncMock side effect contract
+            config = var_child_runnable_config.get() or {}
+            seen.append(dict(config.get("metadata") or {}))
+            return OffloadExecution({}, noop_result)  # ty: ignore[invalid-argument-type]
+
+        threads = SimpleNamespace(
+            get=AsyncMock(return_value={"status": "idle"}),
+            get_state=AsyncMock(side_effect=[before, before]),
+            update_state=AsyncMock(),
+        )
+        operation = SimpleNamespace(execute=AsyncMock(side_effect=execute))
+        prepared = SimpleNamespace(update={}, rollback=MagicMock(), commit=MagicMock())
+
+        with self._patched(offload_api, threads, operation, prepared):
+            await offload_api._execute_offload(
+                "thread-1",
+                operation_id="operation-1",
+                context=context,
+                hook_responses={},
+            )
+
+        assert seen == [{"dcode_offload_trigger": expected}]
+
     async def test_write_failure_without_advance_restores_cost(self) -> None:
         """A write that provably did not land returns its records to the recorder."""
         from deepagents_code import offload_api

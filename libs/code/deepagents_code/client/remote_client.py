@@ -12,7 +12,7 @@ import asyncio
 import logging
 from collections.abc import Mapping
 from contextlib import aclosing
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from deepagents_code.client.session_cost import SessionCostTracker
 
@@ -705,6 +705,7 @@ class RemoteAgent:
         context: Mapping[str, Any],
         fulfill_hook: Callable[[object], Awaitable[dict[str, object]]],
         handoff: bool = False,
+        offload_trigger: Literal["manual", "idle"] = "manual",
     ) -> OffloadResult:
         """Request server-owned offload and fulfill its hook callbacks.
 
@@ -714,6 +715,8 @@ class RemoteAgent:
             fulfill_hook: Client hook executor for server requests.
             handoff: Summarize every message for a new thread without
                 compacting the source thread.
+            offload_trigger: Why this offload runs, recorded in the
+                summarizer's trace metadata as `dcode_offload_trigger`.
 
         Returns:
             Typed offload result from the server operation.
@@ -742,6 +745,7 @@ class RemoteAgent:
             self._ownership_headers(self._prepare_mutation(config))
         )
         operation_context["workspace"] = workspace
+        operation_context["offload_trigger"] = offload_trigger
         # The operation reads and writes thread state over HTTP, so the thread's
         # live row must exist first. Checkpoint persistence and registration are
         # separate on the dev server (see `aensure_thread`), so a resumed thread

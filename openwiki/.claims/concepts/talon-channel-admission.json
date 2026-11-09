@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:1b7197ad954475d279a1c1acb4fc27a186f37b470e8fa00752073a3f8c4e5c49",
+  "pageVersion": "sha256:844b8dbac7506c4ff869beb4cc6d3a934889df4f07bb455e30911d750d53d44d",
   "claims": [
     {
       "id": "claim_0c5d862f533545f9aadcc99ac6555b7d",
@@ -235,10 +235,58 @@
           "version": "repo-lines-v1:sha256:9388fd0620a6a58255c607141f63b2689cfed2730948b8fbe91a2f6237872311:eyJzZWxlY3RlZExpbmVDb3VudCI6MzAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE5MTcwODQyM2YxNjc2OTY5OWI4ZjhiZThlNWNiNWExMmY1YzYxYjMxN2U3ODg2NDEwNmE0NWE1ZjQ3YjFmNDUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU5MDlhNTNhNjE4ZDAyOGUxZDMwMDBjMGE3YWJjZWVjYmU1ZmIzN2Y0ZTUxMWVmZTQ2NjQzZmFkNmU2Njg3MmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjA2ODE5ZmUwZDc4YWVkZjk2NDgyZjJlMjZjYjQ1NTFhZGVlY2RhZWFhYzgzNjY3NDJkMGExYjA0OTcwZmE1ZjkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImU5MTdiNjllYjI1ODZiYWFiMDVjMzZkZTQwZTJmMDMzMDQ1ZjdlZmViYTg5MWZlMzZiYjM5ZWI3NTM1ODEzYjkifQ"
         }
       ]
+    },
+    {
+      "id": "claim_ff76359a635f4a328d9dac4ced922f86",
+      "statement": "For an ordinary channel turn, TalonHost transcribes eligible downloaded voice, audio, or video before optional runtime media preparation and model-content construction; transcription appends or supplies text on success, marks voice_transcribed, and returns the original message on missing, empty, or failed transcription. Background-delivery turns skip this preprocessing.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/deepagents_talon/host.py#L1015-L1053",
+          "version": "repo-lines-v1:sha256:b6eca2a72d87c2371758d57de0d3ff582c33e39a3e86fb4e57e29cdeeddef610:eyJzZWxlY3RlZExpbmVDb3VudCI6MzksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjlhYjA5ZDkxMjBmN2IxNmRkNjhjMTFiODZhM2ZkODczY2ViMzMwZTQwNWVjYzU3NDVkYjRlMzI0NGExMmI4YTIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImJiZTg1ZDgwY2IyZWY2YmYzY2Q1ZDFhOTQzODk0NjNmODAwOGRjODhlYjVjZGFiOTQyMjhiZWJjMzM0Y2EzODkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjRmY2Q2YzEyM2MyNjQ2M2RjZGU2ZThjZDE0NTU4YjU0NjZiY2U4MmZkYWNkN2Y1MDgxZmVhOTJhYWNmZjU1ZWQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImVjMTg1YzQ5MTQzZjIwNDVhYjNmMjMwZTUyOWE3MDcxOWEzNGYyYmZlYmYwZjk2MjliMTNmY2IzMTQ5NWVlMWMifQ"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/speech.py#L162-L209",
+          "version": "repo-lines-v1:sha256:10f32c774eeaf25df27d0d045e6f18d1c7a10d2994daf1307c3aa4ddf1f29740:eyJzZWxlY3RlZExpbmVDb3VudCI6NDgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjY5YzY4OTc4ZWNlNTE1ZGRjZTk1NjM0MTI3Y2Q5N2FhODI3NTJlMGE0YmU0OTdjZDY1YWIyM2RkNGY5NDU3MGQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4OTYwMGE3M2QyZTAyZjM1MmI5MGZlZjFkOGQ2MzgxMWJhNGE4ZWUwYzFiZWFhN2FlNDY1OGYzNmFhMmUxOTgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImU5ODlkZDFiZmRkYzBlODhjMDJjYzU0MDJlZDA2ZjRlZGU5ZWY3MWJlYTcxOWIzYzEzOGM3M2ZiZDFkNDU1NzAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjA0OTBjZWI2MGQwOGVmNGYxYzVlNGIwY2Y1YWMxY2EyNDM4MDQ3N2JlMzY1NGY2MjMxOGYxOTgwMjZhZDU1MzMifQ"
+        },
+        {
+          "resource": "repo://libs/talon/tests/test_host.py#L1890-L1913",
+          "version": "repo-lines-v1:sha256:d79b72c79828f144c817b9b769cd6e658730898bfaa430002f64a605babf82d3:eyJzZWxlY3RlZExpbmVDb3VudCI6MjQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjdjNzFiZjc4ZTUxNWQ5MWI4YzJmOGM1NThiOTIyOTYwODRmMzUwZTljODVjNDJlN2MyZjdlMTk5YTc3MzE2NzAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImM2NWEyNTc5MjRkMTJkOWFiMTJlYjNkM2I4ZGU1YTYyYTgxZDFjYzhkNmU4MzdiMDk5MTdiMDU0M2E4ZTEyOGMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImM5MWY4NGM1NGExOGI1YmZkZjg0YmJmNjMxZjI1OTQyNTMxZTg1NWE3MTk1ODFlZjg1YTM4N2NjODM2YWUwYjEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijg5ZjA5NjNkMDFmYjlhZDI2ZjI0N2VkNjQ0YThlOTVmYjM5NmQ5OTYwNDMzNjExYzFjOWYwMTcwZmE2MGYwYmYifQ"
+        },
+        {
+          "resource": "repo://libs/talon/tests/test_speech.py#L78-L150",
+          "version": "repo-lines-v1:sha256:c5a769a13bfa93abe19adaefb40ea0bd482b9b56c32b6349b8661d095bbc6a76:eyJzZWxlY3RlZExpbmVDb3VudCI6NzMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijk1OTUyMzFjYjg0ODE0NWZmYWE2YmMwYzMxMTc0YjAwMGE2ZWZkYmQyNmI0ZDYxM2MwNjUzMjNiMWYyZTVjMTQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjEyMTJkMTRiYjkzZTIwMjkzOTAzYTU4NmJhMmVkMGQzOThjNmNmMDgzMzYwMjYxYzg1M2NmZTEwYzAwZmQ3MDQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjI5MTIwM2EwMDQ3YWQ1OTk4MzMxZjA5MzAyMmZmZDlhNWE5YTNjZTlmNDQ5NWQxMjExM2ViOTdlOGEzZThhY2MiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQ2ZTM1NDc5OWNlMjFmNGE1NjFjMTE5OGMwNDExNmU5ZmM4ZjJkMGJjZTM3MDlkZGQwZTIxZDJlYTBhOTUzNTIifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_eec498cb06904b86b4fc4bc44b8d27e5",
+      "statement": "Voice transcription is disabled unless its enable flag is truthy; Talon selects local Parakeet by default or for nvidia/parakeet models and selects the OpenAI transcriber for another configured model. The local path converts input with ffmpeg and loads a cached Transformers pipeline from restricted JSON and safetensor artifacts.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/deepagents_talon/speech.py#L129-L159",
+          "version": "repo-lines-v1:sha256:ad5a88b625988570cc4c5b2b8e4bf05a51f5718398863fe95f8c9e356b8ff06e:eyJzZWxlY3RlZExpbmVDb3VudCI6MzEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImI5MzA2YjU4OWExYWE0NzgxZjQ2YWViNjExNWQ1NTZiNmI4NzgwMzFhYzU5OTk4OTI4Y2EzNzc0MzdjMWEyOTUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQzZmJiNWE2ODg1ZTM4OTg3YTdhNGFlOWMyZmY0YWUxODcwMjQ5NWMyYzhkZWFjZjViNmU4ZmQwNTY1ZTNmYTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjI3MGRiMTU0MjVkNTVmMWM1YjRhMjkxN2MxNDc0Y2M4M2E5YWJjMGM1ZTY0NmI0NGUxMjkyMzA2ZTlmZGFjNWQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImZlMzRlZjIzNWE5MDRmZDMxODliMDg1NTdhMDQzYzNjOTE5ZDI5NjEwNjYyOGQxODBhMjVlMmNjN2Q3NjhkZjQifQ"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/speech.py#L224-L288",
+          "version": "repo-lines-v1:sha256:183a8ec1cd342092a6744b537f5da418c41689a7c7c62589e3ceef73ea1f616b:eyJzZWxlY3RlZExpbmVDb3VudCI6NjUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFkODcwNTY0YTUyZDY5MmNkMjkzMWRlYWFjMTNhYWQxMDk3YmJiN2Q5MmNjOTEwNDRkMWE0ZjBjODU2MzhlZTQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjA4M2IwY2Y2ZWRlZmQxNDdlNjg5YTFkYmQ3MTVlZDFjN2IzN2RjOTlkZDMwODExNzg2NzI5OTYzMDQ2NGJhOTIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjA0Njk2ODk1MzU0NjFjYWVjYThmNjEwMDljYTBkNDZmZDg3ZDNiZmUyNGI0M2E4MzcyMGEyNWVlZWQ5YjcwYjYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjE2NDkzYjk3NmQxYjZmNWM5MzVlODAwYWJjNGE0OWZmMDRlYTBlODViMDc5MDY2NjMyNmRmNzUwOWJmMjc5NGMifQ"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/speech.py#L25-L32",
+          "version": "repo-lines-v1:sha256:245bb524db328b48e8036b232c8b338b5214f782d86907c4d813508492da51a7:eyJzZWxlY3RlZExpbmVDb3VudCI6OCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMWRmODNiOGMxZmE5MzczNGU3NDM1NzQxM2JhYzNlNTkzMzNkZjEzNDA4NmU5YjMzNGZkYjdmM2NjNTAyZTQzNiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiOThmZGNhNTk3MDU4MmJiNmJhYTJjMzc2ZGQ3YjM0NDA0MWU4YmEzODJlZWViOTkwMjgyNDczMzA2OTMyMDNjYiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZTVjMWM0NjJlMmEzOWQ3NDc1OWY1ZTFiMTI2Zjc2ODNhMmI3MzAxMThlMThmNTEyMmIwOGNlZGVlYjY1MGUyMyIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiOTUwOTljYzZlZGU1MGU4NmMwMTFjOGQxOGIxMTgyYTczMWJmYTI5YjBkYzYwZmI1MWIyZjZkYjhkOGMzMzQ1OSJ9"
+        },
+        {
+          "resource": "repo://libs/talon/tests/test_speech.py#L26-L75",
+          "version": "repo-lines-v1:sha256:5e214e1ee1e41b5a29e956bb15df30f192232540288d87c99b7e159b14d6f8af:eyJzZWxlY3RlZExpbmVDb3VudCI6NTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImVhZDc0YzAyYTUzNWRiODFiYjI0NjhhN2EzZTZmNTRiMGEyOWY3NzY4OGQ4ZTNkOGQ4N2Q5YWU5Mjg5N2UwM2IiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI3YmIwNDcxZDIzMzUwZWEwZWRmOTU3ODZlMGEyYThhOTA4NjhhMzRmYTEwYWFjOTAzZjc0ZjM2NzcwMjBjYTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjZkMTg5ZDBhYjJmNjVkZWVkYTljZjVhMDI4NGMzMTQyYjkwNGQ4MWM4ZDM3YzRiMjQ5MTk0ZTdmZDU2ZmQ1YTQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjAyOGE4YTc0OTNlNGRmMDM1OWE0NzIyYTk3M2ExYmQ1NzkwNDc5MTllZDIxZGJhZGFjZTE4YmE3Y2I2ZjI4ODIifQ"
+        },
+        {
+          "resource": "repo://libs/talon/tests/unit_tests/test_speech.py#L15-L77",
+          "version": "repo-lines-v1:sha256:7b3b9580118d348c33d874544a4074bc1b001df8ec08fea195a142500bf8a46b:eyJzZWxlY3RlZExpbmVDb3VudCI6NjMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImM5NzU3MmQyNTc5NTY5YjhjZjQwNmY3ZGRhOWI5MWQzNGVhZGZjM2UzZWYwYzVmNTdiY2M1MTUwZWEzYjUyNWEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjE2OWI1NmY1YTIzN2U5MWM1ZTQ2ZTVjMDhkYmNmODkxNTE3MzlhM2EwYzlhYjdiM2ZjYjMzNDYyZjNjNzVhYTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjVlMDhlNDBmYjE3ZjRjM2RlYTU3Mjk2ZTIzNjA2YWI5MmU3ZmE1Yjk2MGQ2YjYwM2ZiNTVhMGJkN2I4NWQwNjIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-10-23T08:06:06.503Z"
+    "at": "2026-11-09T08:04:29.143Z"
   }
 }

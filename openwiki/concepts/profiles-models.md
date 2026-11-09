@@ -1,28 +1,37 @@
 ---
 type: model and profile configuration
 title: Profiles and Models
-description: Explains how Deep Agents SDK profiles construct models and assemble harnesses, and how dcode discovers, admits, configures, and switches models safely.
+description: Explains how Deep Agents SDK profiles construct models and assemble harnesses, and how dcode discovers, admits, resolves, and safely publishes model capabilities across its server-client boundary.
 tags: [models, sdk-profiles, dcode, provider-configuration, model-catalog, reasoning]
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-11-07T08:03:46.171Z
 sources:
   - id: openwiki-source-6c2e9cfaa20096e021221d47
     resource: repo://libs/code/CHANGELOG.md
+  - id: openwiki-source-fdf5afeb1dd1d11652374e88
+    resource: repo://libs/code/deepagents_code/app.py
+  - id: openwiki-source-b7d66cbdbe9dae9f133a7c5e
+    resource: repo://libs/code/deepagents_code/client/remote_client.py
   - id: openwiki-source-7f6b98925b5f1ba065df3a04
     resource: repo://libs/code/deepagents_code/config.py
   - id: openwiki-source-55d5c39401ac52584ce1f973
     resource: repo://libs/code/deepagents_code/configurable_model.py
+  - id: openwiki-source-7e241f30f5c7753642ea34d5
+    resource: repo://libs/code/deepagents_code/model_api.py
   - id: openwiki-source-5afb93f98c34330c27609db2
     resource: repo://libs/code/deepagents_code/model_catalog.py
   - id: openwiki-source-4a7b6def251b42596a410ebc
     resource: repo://libs/code/deepagents_code/model_config.py
+  - id: openwiki-source-ece74ecc87a2bc395b3ce368
+    resource: repo://libs/code/deepagents_code/model_metadata.py
   - id: openwiki-source-c101168dc0286ff6c29ed37f
     resource: repo://libs/code/deepagents_code/model_retry.py
   - id: openwiki-source-bdf7871023d068e30942c1ba
     resource: repo://libs/code/deepagents_code/reasoning_effort.py
+  - id: openwiki-source-a9eb680bb6bdae179f52a3ac
+    resource: repo://libs/code/deepagents_code/server_graph.py
   - id: openwiki-source-7ba50bd13eb62341a2061ef9
     resource: repo://libs/code/pyproject.toml
+  - id: openwiki-source-669a6d1361755f2deb4515d2
+    resource: repo://libs/code/tests/unit_tests/test_model_metadata.py
   - id: openwiki-source-50173942904153d619b9ae0d
     resource: repo://libs/deepagents/deepagents/_models.py
   - id: openwiki-source-0fc0e47059e4d07e23e50be2
@@ -41,7 +50,10 @@ sources:
     resource: repo://libs/deepagents/pyproject.toml
   - id: openwiki-source-9266f2d667b5c64eaec15821
     resource: repo://libs/deepagents/tests/unit_tests/test_nemotron_ultra_profile.py
-generated: { by: "openwiki/0.4.2", at: "2026-11-07T08:03:46.171Z" }
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-11-09T08:04:29.143Z
+generated: { by: "openwiki/0.4.2", at: "2026-11-09T08:04:29.143Z" }
 ---
 
 # Profiles and Models
@@ -119,7 +131,32 @@ Capability-profile resolution is separate from construction. `get_model_profiles
 
 Discovery is presentation, not permission. dcode discovers enabled providers whose capability profiles advertise tool calling and usable text input/output, merges explicitly configured models, and then filters through `models.allowed`. Recommended and current models are retained only when their provider is enabled and policy permits them. Provider readiness is independent of discovered model rows, allowing setup guidance even when no model row exists.
 
-The host sends a `ModelCatalog` to remote pickers. It is a strict presentation snapshot: model specs, provider readiness, policy metadata, override provenance, and a scalar allowlist of capability fields cross the boundary; constructor kwargs and arbitrary profile extensions do not. A remote picker must use its supplied catalog rather than local provider data, and apply catalog policy before installation or authentication prompts.
+The host sends a `ModelCatalog` to remote pickers. It is a strict presentation snapshot: model specs, provider readiness, policy metadata, override provenance, and a scalar allowlist of capability fields—including `structured_output`—cross the boundary; constructor kwargs and arbitrary profile extensions do not. A remote picker must use its supplied catalog rather than local provider data, and apply catalog policy before installation or authentication prompts.
+
+### Server-resolved metadata and structured-output contract
+
+`ModelCatalog` answers *what can be displayed*. `ModelMetadata` answers *what the server resolved* for the launch model or a proposed selection. Its JSON-safe contract is deliberately small: `model_name`, `provider`, optional positive `context_limit`, a sorted `unsupported_modalities` list, and tri-state `structured_output`. `structured_output=true` or `false` is the resolved model profile's advertised capability; `null` means unknown or unavailable, not a negative capability. No model object, constructor parameter, credential, or arbitrary profile key is serialized.
+
+```mermaid
+sequenceDiagram
+    participant Client
+    participant Server
+    participant Resolver as Server model resolver
+    Client->>Server: POST thread model with spec and main or auxiliary purpose
+    Server->>Server: Bind workspace and select environment
+    Server->>Resolver: Resolve allowed model in worker thread
+    Resolver-->>Server: Model result and capability profile
+    Server-->>Client: JSON ModelMetadata only
+    Client->>Client: Validate payload before committing state
+```
+
+Diagram: capability discovery and model construction stay on the inference host; the client receives only validated, provider-independent metadata.
+
+The startup `GET /dcode/model` reads the server's cached launch metadata without binding a thread. A thread-scoped `POST /dcode/threads/{thread_id}/model` first binds the workspace, resolves in that workspace's captured model environment, and does not run inference or commit a switch. For a proposed **main** model it passes workspace profile overrides and optional `extra_kwargs`; an **auxiliary** resolution requires a specification, rejects parameters, and intentionally omits main-model profile overrides. The response derives `structured_output` from the resolved model's profile. The cached startup metadata currently has no profile-derived structured-output value, so it serializes that field as `null`.
+
+The client parses every response before it can replace active state: it rejects a non-object payload; an empty/non-string model name; a non-string provider; a non-positive or boolean context limit; a non-list or non-string modality; and a non-boolean, non-null structured-output value. Only then does `apply_to_runtime_state()` replace the model name, provider, context limit, and unsupported modalities. It intentionally does not write structured-output into global runtime state; that value is selection metadata. Resolution and transport failures leave the prior app selection and runtime state intact rather than confirming a model the server did not validate. Workspace conflicts surface as `409`, request/configuration validation as `422`, and unavailable server/environment or unexpected resolution failure as `503`.
+
+Structured-output metadata is advisory where profiles are incomplete. When an auto-classifier selection explicitly advertises `structured_output=false`, dcode warns that structured verdict requests may fail; it does not block the selection. The classifier itself remains fail-closed for review actions and falls back to user approval after repeated failures.
 
 `models.allowed` is the construction admission policy. An omitted policy is unrestricted; `[]` denies every model; nonempty entries are exact `provider:model` values or `provider:*` wildcards. A malformed declaration fails closed as deny-all. Bare Bedrock IDs are rejected in the allowlist because a version colon could be mistaken for the provider separator; use `bedrock:<id>`.
 
@@ -134,7 +171,7 @@ flowchart TD
     Credentials --> Profile["Apply config and ProviderProfile"]
     Profile --> Retry["Resolve retry budget"]
     Retry --> Construct["Codex custom class or init_chat_model"]
-    Construct --> Metadata["Attach capability and retry metadata"]
+    Construct --> Result["Return model and resolved properties"]
 ```
 
 Diagram: admission happens before all provider-facing construction side effects.
@@ -161,14 +198,12 @@ The dcode core installs Anthropic `>=1.7.10,<2.0.0`, Google GenAI `>=4.4.3,<5.0.
 
 The `0.2.5` changelog records that compaction input budgeting now follows the selected model. This is release context, not a promise that every runtime switch changes an already compiled graph; model switching remains the responsibility of the runtime middleware described above.
 
-When changing this area, preserve the ordering of canonicalization, admission, credential bridging, profile application, and imports. Test malformed, empty, exact, wildcard, and Bedrock allowlists; prove denied construction has no credential, profile, or import side effects; exercise prefixed environment shadowing and stored credential bridging; and cover profile failure translation, model-switch denial and fallback, and per-switch retry budgets. For the Nemotron adaptation, test exact-key registration and its narrow safeguards rather than assuming they apply provider-wide. Relevant focused suites include `libs/code/tests/unit_tests/test_config.py`, `test_model_config.py`, `test_model_switch.py`, `tui/widgets/test_model_selector.py`, `libs/deepagents/tests/unit_tests/test_harness_profiles.py`, and `libs/deepagents/tests/unit_tests/test_nemotron_ultra_profile.py`.
+When changing this area, preserve the ordering of canonicalization, admission, credential bridging, profile application, and imports. Test malformed, empty, exact, wildcard, and Bedrock allowlists; prove denied construction has no credential, profile, or import side effects; exercise prefixed environment shadowing and stored credential bridging; and cover profile failure translation, model-switch denial and fallback, and per-switch retry budgets. For the server metadata boundary, test malformed request rejection before construction, workspace-environment isolation, the main-versus-auxiliary override split, response validation, and preservation of active client state on resolution failure. For the Nemotron adaptation, test exact-key registration and its narrow safeguards rather than assuming they apply provider-wide. Relevant focused suites include `libs/code/tests/unit_tests/test_config.py`, `test_model_config.py`, `test_model_switch.py`, `test_model_metadata.py`, `tui/widgets/test_model_selector.py`, `libs/deepagents/tests/unit_tests/test_harness_profiles.py`, and `libs/deepagents/tests/unit_tests/test_nemotron_ultra_profile.py`.
 
 ## Related pages
 
-- [Middleware stack](/openwiki/architecture/middleware-stack.md)
+- [Code agent architecture](/openwiki/architecture/code-agent.md)
 - [Architecture overview](/openwiki/architecture/overview.md)
-- [Middleware catalog](/openwiki/concepts/middleware-catalog.md)
-- [Tools and filesystem](/openwiki/concepts/tools-filesystem.md)
-- [Quickstart](/openwiki/quickstart.md)
-- [Build a Deep Agent](/openwiki/workflows/build-a-deep-agent.md)
+- [Configuration layering](/openwiki/concepts/config-layering.md)
 - [Testing guide](/openwiki/testing/testing-guide.md)
+- [Run a dcode session](/openwiki/workflows/run-dcode-session.md)

@@ -167,8 +167,12 @@ class TestSubagentMiddlewareInit:
         assert not _is_forked_subagent(spec)
         assert not _is_forked_compiled_subagent(spec)
 
-    def test_forked_subagent_appends_its_own_system_prompt(self) -> None:
-        """A fork's `system_prompt` is appended to the inherited one, not a replacement."""
+    def test_forked_subagent_sends_its_own_system_prompt_with_the_task(self) -> None:
+        """A fork keeps the parent's system prompt and history as its prefix.
+
+        Its own `system_prompt` arrives in the task message, so the request
+        before that message matches the parent's and can reuse its prompt cache.
+        """
         parent_model = GenericFakeChatModel(
             messages=iter(
                 [
@@ -199,7 +203,11 @@ class TestSubagentMiddlewareInit:
 
         agent.invoke({"messages": [HumanMessage(content="start")]}, {"recursion_limit": 25})
 
-        assert worker_model.call_history[0]["messages"][0].text == "PARENT_PROMPT\n\nFORK_EXTRA"
+        parent_request = parent_model.call_history[0]["messages"]
+        *fork_prefix, fork_task = worker_model.call_history[0]["messages"]
+        assert fork_prefix == parent_request
+        assert "FORK_EXTRA" in fork_task.text
+        assert fork_task.text.endswith("continue")
 
     def test_rejects_skills_on_forked_subagent(self) -> None:
         invalid_spec: Any = {

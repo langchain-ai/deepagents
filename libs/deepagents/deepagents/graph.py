@@ -46,13 +46,13 @@ from deepagents.middleware._parent_notifier import _ParentNotifierMiddleware
 from deepagents.middleware._prompt_caching import append_prompt_caching_middleware
 from deepagents.middleware._state import private_state_field_names
 from deepagents.middleware._tool_exclusion import _ToolExclusionMiddleware
-from deepagents.middleware._utils import append_to_system_message
 from deepagents.middleware.async_subagents import AsyncSubAgent, AsyncSubAgentMiddleware
 from deepagents.middleware.filesystem import FilesystemMiddleware, FilesystemPermission
 from deepagents.middleware.memory import MemoryMiddleware
 from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
 from deepagents.middleware.skills import SkillsMiddleware
 from deepagents.middleware.subagents import (
+    _FORK_INSTRUCTIONS_KEY,
     GENERAL_PURPOSE_SUBAGENT,
     CompiledSubAgent,
     SubAgent,
@@ -817,14 +817,11 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
                 "middleware": subagent_middleware,
             }
             if is_forked:
-                # The parent's prompt is the fork's base; the fork's own is an addendum.
-                fork_addendum = spec.get("system_prompt")
-                if not fork_addendum:
-                    processed["system_prompt"] = final_system_prompt
-                elif isinstance(final_system_prompt, SystemMessage):
-                    processed["system_prompt"] = append_to_system_message(final_system_prompt, fork_addendum)
-                else:
-                    processed["system_prompt"] = f"{final_system_prompt}\n\n{fork_addendum}" if final_system_prompt else fork_addendum
+                # Keep the parent's system prompt byte-identical so the fork reuses
+                # the parent's cached prefix; its own prompt rides with the task.
+                processed["system_prompt"] = final_system_prompt
+                if fork_instructions := spec.get("system_prompt"):
+                    processed[_FORK_INSTRUCTIONS_KEY] = fork_instructions
             else:
                 processed["system_prompt"] = _apply_profile_prompt(_subagent_profile, spec.get("system_prompt", ""))
             if subagent_interrupt_on is not None:

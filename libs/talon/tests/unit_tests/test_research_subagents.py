@@ -25,6 +25,7 @@ from deepagents_talon.interfaces import AgentRequest
 from deepagents_talon.mcp_auth import _channel_handlers
 from deepagents_talon.mcp_middleware import MCP_TOOL_METADATA_KEY
 from deepagents_talon.runtime import DeepAgentRuntime
+from deepagents_talon.subagents import prepare_subagents
 from deepagents_talon.tool_approvals import ToolApprovalStore
 
 if TYPE_CHECKING:
@@ -350,6 +351,149 @@ async def test_no_implicit_general_purpose_agent(tmp_path, monkeypatch, configur
             path.unlink()
             await runtime.reload_subagent_configuration()
             assert "task" not in runtime._graph.nodes["tools"].bound.tools_by_name
+    finally:
+        await runtime.stop()
+
+
+@pytest.mark.parametrize("compiled", [False, True])
+@pytest.mark.parametrize("protected", [False, True])
+@pytest.mark.parametrize("background", [False, True])
+async def test_subagent_approval_boundary(tmp_path, monkeypatch, compiled, protected, background):
+    effects, approvals = [], []
+
+    @tool
+    def protected_effect() -> str:
+        """Record a local effect."""
+        effects.append("executed")
+        return "recorded"
+
+    child = ToolModel(
+        responses=[
+            AIMessage(content="", tool_calls=[_call("protected_effect")]),
+            AIMessage(content="Child done"),
+        ]
+    )
+    parent = ToolModel(
+        responses=[
+            AIMessage(
+                content="",
+                tool_calls=[_call("task", subagent_type="child", description="Work")],
+            ),
+            AIMessage(content="Done"),
+        ]
+    )
+    spec = {"name": "child", "description": "Research"}
+    if compiled:
+        spec["runnable"] = create_agent(model=child, tools=[protected_effect])
+    else:
+        spec["tools"] = [protected_effect]
+    store = ToolApprovalStore(tmp_path / "tools.json")
+    (tmp_path / "tools.json").write_text(json.dumps({"protected_effect": protected}))
+    runtime = _runtime(tmp_path, monkeypatch, parent, child, subagents=[spec], approval_store=store)
+    if not background:
+        monkeypatch.setattr(runtime.background, "configured", lambda _: AgentMiddleware())
+
+    async def reject(request):
+        approvals.extend(action["name"] for action in request.action_requests)
+        return [{"type": "reject"} for _ in request.action_requests]
+
+    try:
+        await runtime.start()
+        await runtime.invoke(AgentRequest("chat", "Work", approval_handler=reject))
+        await asyncio.gather(*(job.worker for job in runtime.background._jobs.values()))
+        assert approvals == (
+            ["protected_effect"] if protected and not compiled and not background else []
+        )
+        if compiled and protected:
+            assert not child._seen
+            if background:
+                assert "Delegation refused" in str(runtime.background.results("chat"))
+            else:
+                state = await runtime._graph.aget_state({"configurable": {"thread_id": "chat"}})
+                assert "Delegation refused" in str(state.values["messages"])
+        elif protected and background:
+            assert "needs tool approval" in str(runtime.background.results("chat"))
+        assert effects == ([] if protected else ["executed"])
+    finally:
+        await runtime.stop()
+
+
+@pytest.mark.parametrize(
+    "policy", [{"other_tool": True}, {"other_tool": {"allowed_decisions": ["reject"]}}]
+)
+async def test_opaque_subagent_cannot_claim_policy_does_not_apply(policy):
+    spec = {
+        "name": "opaque",
+        "description": "Unknown tool inventory",
+        "tools": [],
+        "runnable": RunnableLambda(lambda state: state),
+    }
+    prepared, _ = prepare_subagents([spec], "test:model", policy)
+    result = await prepared[0]["runnable"].ainvoke({"messages": []})
+    assert "Delegation refused" in result["messages"][-1].content
+
+
+@pytest.mark.parametrize("background", [False, True])
+@pytest.mark.parametrize("via_tool", [False, True])
+async def test_compiled_subagent_policy_changes_keep_parent_usable(
+    tmp_path, monkeypatch, background, via_tool
+):
+    effects = []
+
+    async def child(_state):
+        effects.append("ran")
+        return {"messages": [AIMessage(content="Child done")]}
+
+    parent = ToolModel(responses=[AIMessage(content="Ready")])
+    store = ToolApprovalStore(tmp_path / "tools.json")
+    (tmp_path / "tools.json").write_text("{}")
+    runtime = _runtime(
+        tmp_path,
+        monkeypatch,
+        parent,
+        parent,
+        subagents=[{"name": "child", "description": "Research", "runnable": RunnableLambda(child)}],
+        approval_store=store,
+    )
+    if not background:
+        monkeypatch.setattr(runtime.background, "configured", lambda _: AgentMiddleware())
+    await runtime.start()
+    try:
+        for enabled in (True, False):
+            snapshot = store.read()
+            if via_tool:
+                parent.responses = [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            _call(
+                                "update_tool_approvals",
+                                updates={"execute": enabled},
+                                expected_revision=snapshot.revision,
+                            )
+                        ],
+                    ),
+                    AIMessage(content="Policy saved"),
+                ]
+                parent.i = 0
+                await runtime.invoke(
+                    AgentRequest("chat", "Update policy", metadata={"tool_approval_operator": True})
+                )
+            else:
+                store.update({"execute": enabled}, snapshot.revision)
+            assert store.read().approvals["execute"] is enabled
+            parent.responses = [
+                AIMessage(
+                    content="",
+                    tool_calls=[_call("task", subagent_type="child", description="Work")],
+                ),
+                AIMessage(content="Parent still works"),
+            ]
+            parent.i = 0
+            await runtime.invoke(AgentRequest("chat", "Delegate"))
+            await asyncio.gather(*(job.worker for job in runtime.background._jobs.values()))
+            assert runtime._active_approvals == store.read()
+            assert effects == ([] if enabled else ["ran"])
     finally:
         await runtime.stop()
 

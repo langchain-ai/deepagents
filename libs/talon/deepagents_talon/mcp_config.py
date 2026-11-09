@@ -48,6 +48,7 @@ _FIELDS = frozenset(
         "allowedTools",
         "disabledTools",
         "skillOnly",
+        "enabled",
     }
 )
 _ENUMS = {
@@ -185,6 +186,8 @@ class MCPConfigStore:
                     Omitted fields are removed, except settings Talon does not
                     manage, which are preserved and never shown. Use ${ENV_VAR}
                     references for credentials; never include literal secrets.
+                    Set enabled=false to unload its tools without deleting settings;
+                    set enabled=true to restore them (enabled defaults to true).
                 expected_revision: Revision returned by get_mcp_configuration.
 
             Changes can execute commands or send credentials to configured URLs.
@@ -462,9 +465,10 @@ def _validate_server(server: dict[str, object]) -> None:
 
 
 def _validate_fields(server: dict[str, object]) -> None:
-    if "skillOnly" in server and not isinstance(server["skillOnly"], bool):
-        msg = "MCP skillOnly must be a boolean"
-        raise TypeError(msg)
+    for field in ("skillOnly", "enabled"):
+        if field in server and not isinstance(server[field], bool):
+            msg = f"MCP {field} must be a boolean"
+            raise TypeError(msg)
     for field in ("command", "url", "auth"):
         if field in server and not isinstance(server[field], str):
             msg = "MCP settings must contain strings"

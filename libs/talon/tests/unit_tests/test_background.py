@@ -59,7 +59,7 @@ def _delegate(name="researcher"):
 def _runtime(monkeypatch, child, responses):
     model = ToolModel(responses=responses)
     monkeypatch.setattr("deepagents_talon.runtime._resolve_model_from_env", lambda *_a, **_k: model)
-    return DeepAgentRuntime(
+    runtime = DeepAgentRuntime(
         model="test:parent",
         include_web_tools=False,
         skills=(),
@@ -68,6 +68,9 @@ def _runtime(monkeypatch, child, responses):
             {"name": "researcher", "description": "Research", "runnable": RunnableLambda(child)}
         ],
     )
+    snapshot = runtime.approval_store.ensure()
+    runtime.approval_store.update(dict.fromkeys(snapshot.approvals, False), snapshot.revision)
+    return runtime
 
 
 async def test_chat_continues_then_main_processes_background_result(tmp_path, monkeypatch):
@@ -195,7 +198,7 @@ async def test_inspect_cancel_ownership_and_capacity():
     try:
         await background.awrap_tool_call(_request("one", task), _unused_handler)
         await asyncio.sleep(0)
-        listing, cancel = background.tools
+        listing, cancel, *_ = background.tools
         jobs = await listing.ainvoke({"runtime": _request("one", task).runtime})
         assert jobs[0]["status"] == "running"
         task_id = jobs[0]["task_id"]
@@ -264,7 +267,7 @@ async def test_cancel_finished_subagent_preserves_result():
     background = BackgroundSubagents()
     await background.awrap_tool_call(_request("one", task), _unused_handler)
     await asyncio.gather(*(job.worker for job in background._jobs.values()))
-    listing, cancel = background.tools
+    listing, cancel, *_ = background.tools
     runtime = _request("one", task).runtime
     jobs = await listing.ainvoke({"runtime": runtime})
     task_id = jobs[0]["task_id"]
@@ -958,21 +961,16 @@ async def test_scheduled_prompt_replaces_the_background_instructions():
         return "response"
 
     @tool
-    async def list_subagents() -> str:
-        """Inspect."""
-        return "none"
-
-    @tool
     async def researcher_tool() -> str:
         """Work."""
         return "done"
 
+    background = BackgroundSubagents()
     request = SimpleNamespace(
         system_message=None,
-        tools=[list_subagents, researcher_tool],
+        tools=[*background.tools, researcher_tool],
         override=_override,
     )
-    background = BackgroundSubagents()
     token = _scheduled()
     try:
         await background.awrap_model_call(request, handler)

@@ -9,7 +9,7 @@ from deepagents.middleware.subagents import SubAgent, SubAgentMiddleware
 from langchain.agents import create_agent
 from langchain.agents.middleware import AgentMiddleware, HumanInTheLoopMiddleware
 from langchain.tools import ToolRuntime  # noqa: TC002  # tool schemas inspect injected annotations
-from langchain_core.messages import HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.runnables import RunnableLambda
 from langchain_core.tools import BaseTool, tool
 from langgraph.checkpoint.memory import InMemorySaver
@@ -19,6 +19,7 @@ from deepagents_code.hooks.server_middleware import ServerHooksMiddleware
 from deepagents_talon.background import _IN_SUBAGENT
 from deepagents_talon.hooks import ACTIVE_HOOKS
 from deepagents_talon.mcp_middleware import talon_mcp_middleware
+from deepagents_talon.subagent_control import SubagentControlMiddleware
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Mapping, Sequence
@@ -86,6 +87,8 @@ _DELEGATION_TOOLS = frozenset(
         "list_async_tasks",
         "list_subagents",
         "cancel_subagent",
+        "inspect_subagent",
+        "message_subagent",
         "ask_for_help",
     }
 )
@@ -220,6 +223,18 @@ class TaskTools(AgentMiddleware):
         return await handler(request)
 
 
+def _deny_precompiled(_state: dict[str, object]) -> dict[str, object]:
+    return {
+        "messages": [
+            AIMessage(
+                content="Delegation refused: Talon cannot enforce tool approval policy inside "
+                "precompiled subagents. Supply a fresh subagent with explicit tools instead. "
+                "The precompiled subagent has not run."
+            )
+        ]
+    }
+
+
 def _task_only(state: dict[str, object]) -> dict[str, object]:
     return {"messages": state["messages"]}
 
@@ -233,7 +248,10 @@ def _compile_fresh(
     approvals = {
         key: value for key, value in (interrupt_on or {}).items() if value and key in available
     }
-    middleware: list[AgentMiddleware[Any, Any, Any]] = [talon_mcp_middleware()]
+    middleware: list[AgentMiddleware[Any, Any, Any]] = [
+        talon_mcp_middleware(),
+        SubagentControlMiddleware(),
+    ]
     if approvals:
         middleware.append(HumanInTheLoopMiddleware(interrupt_on=approvals))
 
@@ -324,7 +342,11 @@ def prepare_subagents(
         if "runnable" in original:
             compiled = cast("CompiledSubAgent", original.copy())
             compiled.pop("mode", None)
-            compiled["runnable"] = RunnableLambda(_task_only) | compiled["runnable"]
+            compiled["runnable"] = (
+                RunnableLambda(_deny_precompiled)
+                if any((interrupt_on or {}).values())
+                else RunnableLambda(_task_only) | compiled["runnable"]
+            )
             prepared.append(compiled)
         else:
             prepared.append(original if opaque else _compile_fresh(spec, model, interrupt_on))

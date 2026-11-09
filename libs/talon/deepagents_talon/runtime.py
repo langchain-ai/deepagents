@@ -490,6 +490,7 @@ class DeepAgentRuntime:
             web_tools["web_search"] = create_web_search_tool(tavily_key)
         for spec in local_subagents:
             _resolve_local_tools(cast("LocalSubAgent", spec), catalog, web_tools)
+        background = self.background.configured(resolved)
         resolved, attachments = prepare_subagents(resolved, model, interrupt_on)
         tools.append(self._attachment_tool(attachments))
         # The summarizer replacement lands in the Deep Agents summarizer's slot; the
@@ -527,7 +528,7 @@ class DeepAgentRuntime:
             backend=self.backend,
         )
         middleware.append(task_tools)
-        middleware.append(self.background.configured(resolved))
+        middleware.append(background)
         if context_size is not None and not _has_summarization_tool_middleware(
             [*middleware, *self.middleware]
         ):

@@ -188,10 +188,12 @@ SELECTION_CASES = [
 ]
 
 
+@pytest.mark.parametrize("event", ["pull_request", "push"])
 @pytest.mark.parametrize("curated", ["true", "false"])
+@pytest.mark.parametrize("gated", ["LOCKFILES_RESULT", "HYGIENE_RESULT"])
 @pytest.mark.parametrize("result", ["success", "failure", "cancelled", "skipped", ""])
 def test_lockfiles_gate_merges_even_with_inherited_ci(
-    tmp_path: Path, curated: str, result: str
+    tmp_path: Path, event: str, curated: str, gated: str, result: str
 ) -> None:
     workflow = _load_workflow(CI_WORKFLOW)
     job = workflow["jobs"]["check-lockfiles"]
@@ -200,6 +202,7 @@ def test_lockfiles_gate_merges_even_with_inherited_ci(
     assert "check-lockfiles" in workflow["jobs"]["ci_success"]["needs"]
     step = _find_step(workflow, job="ci_success", name="🎉 All Checks Passed")
     assert step["env"]["LOCKFILES_RESULT"] == "${{ needs.check-lockfiles.result }}"
+    assert step["env"]["HYGIENE_RESULT"] == "${{ needs.text-hygiene.result }}"
     gate = tmp_path / ".ci-gate-base/.github/scripts/checks/ci_gate.py"
     gate.parent.mkdir(parents=True)
     gate.write_text((ROOT / ".github/scripts/checks/ci_gate.py").read_text())
@@ -208,18 +211,24 @@ def test_lockfiles_gate_merges_even_with_inherited_ci(
         cwd=tmp_path,
         env={
             **os.environ,
-            "EVENT_NAME": "pull_request",
-            "LOCKFILES_RESULT": result,
+            "EVENT_NAME": event,
+            "LOCKFILES_RESULT": "success",
+            "HYGIENE_RESULT": "success",
+            gated: result,
             "CURATED_APPLY_ONLY": curated,
             "CURATED_APPLY_PARENT_CONCLUSION": "success",
             "TALON_CHANGED": "false",
-            "NEEDS": json.dumps({"check-lockfiles": {"result": result}}),
+            "NEEDS": json.dumps({"check-lockfiles": {"result": "success"}}),
         },
         capture_output=True,
         text=True,
         check=False,
     )
-    assert completed.returncode == (0 if result == "success" else 1)
+    # Text hygiene does not run on push, so only there is a skip a pass.
+    passes = result == "success" or (
+        gated == "HYGIENE_RESULT" and event == "push" and result == "skipped"
+    )
+    assert completed.returncode == (0 if passes else 1)
 
 
 def test_lockfile_workflow_checks_every_package() -> None:
@@ -229,35 +238,42 @@ def test_lockfile_workflow_checks_every_package() -> None:
     assert step["run"] == "python3 .github/scripts/checks/check_lockfiles_pre_commit.py"
 
 
-@pytest.mark.parametrize("lockfiles,hygiene", [(0, 0), (1, 0), (0, 1)])
-def test_shared_validation_propagates_failures(
-    tmp_path: Path, lockfiles: int, hygiene: int
+@pytest.mark.parametrize("hygiene", [0, 1])
+def test_text_hygiene_job_annotates_and_propagates_failure(
+    tmp_path: Path, hygiene: int
 ) -> None:
-    """Either validation failure fails the existing shared job."""
-    workflow = _load_workflow(WORKFLOWS / "check_lockfiles.yml")
-    steps = workflow["jobs"]["check-lockfiles"]["steps"]
-    hygiene_step = _find_step(
-        workflow, job="check-lockfiles", name="📝 Run hygiene hooks on changed files"
+    """A hygiene failure fails its own job and annotates each fixed hunk."""
+    workflow = _load_workflow(CI_WORKFLOW)
+    job = workflow["jobs"]["text-hygiene"]
+    assert job["if"] == "github.event_name != 'push'"
+    assert "text-hygiene" in workflow["jobs"]["ci_success"]["needs"]
+    step = _find_step(
+        workflow, job="text-hygiene", name="📝 Run hygiene hooks on changed files"
     )
-    assert hygiene_step["if"] == "github.event_name != 'push'"
-    marker = tmp_path / "hygiene-ran"
-    for name, body in {
-        "python3": f"exit {lockfiles}",
-        "make": f'touch "{marker}"; exit {hygiene}',
-    }.items():
-        executable = tmp_path / name
-        executable.write_text(f"#!/bin/sh\n{body}\n")
-        executable.chmod(0o755)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    git = ["git", "-c", "user.email=ci@example.com", "-c", "user.name=ci"]
+    (repo / "notes.md").write_text("one\ntwo\n")
+    subprocess.run([*git, "init", "-q"], cwd=repo, check=True)
+    subprocess.run([*git, "add", "."], cwd=repo, check=True)
+    subprocess.run([*git, "commit", "-qm", "init"], cwd=repo, check=True)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    make = bin_dir / "make"
+    # Stand in for the fixing hooks: rewrite line two, then report the result.
+    make.write_text(f"#!/bin/sh\nprintf 'one\\nfixed\\n' > notes.md\nexit {hygiene}\n")
+    make.chmod(0o755)
     completed = subprocess.run(
-        ["bash", "-e", "-c", "\n".join(step["run"] for step in steps if "run" in step)],
-        env={**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}"},
+        ["bash", "-e", "-c", step["run"]],
+        cwd=repo,
+        env={**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}"},
         capture_output=True,
         text=True,
         check=False,
         timeout=10,
     )
-    assert completed.returncode == (1 if lockfiles or hygiene else 0)
-    assert marker.exists() == (lockfiles == 0)
+    assert completed.returncode == hygiene
+    assert ("::error file=notes.md,line=2," in completed.stdout) == bool(hygiene)
 
 
 def test_ci_success_builds_named_results_from_needs_object() -> None:

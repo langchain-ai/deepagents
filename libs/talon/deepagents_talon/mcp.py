@@ -331,7 +331,7 @@ class MCPToolProvider:
             path = mcp_config_path(self._config)
             servers = _load_config(path, self._config.env)
             server = servers.get(server_name)
-            if server is None or server.get("auth") != "oauth":
+            if server is None or not server.get("enabled", True) or server.get("auth") != "oauth":
                 return {"status": "failed", "server_name": server_name}
 
             opened = await _run_authorized(
@@ -406,6 +406,16 @@ async def load_mcp_tools(config: TalonConfig) -> MCPTools:
     infos: list[MCPServerInfo] = []
     for name, server in servers.items():
         transport = _transport_label(server)
+        if not server.get("enabled", True):
+            infos.append(
+                MCPServerInfo(
+                    name=name,
+                    transport=transport,
+                    status="disabled",
+                    error="Disabled in MCP configuration",
+                )
+            )
+            continue
         try:
             connection, transport = await _connection(name, server)
             adapter = MCPAdapter(connection)
@@ -490,6 +500,9 @@ async def login_mcp_server(
         server = servers.get(server_name)
         if server is None:
             msg = f"MCP server {server_name!r} was not found in {path}"
+            raise MCPConfigError(msg)
+        if not server.get("enabled", True):
+            msg = f"MCP server {server_name!r} is disabled; enable it before logging in"
             raise MCPConfigError(msg)
         connection, transport = await _connection(
             server_name,
@@ -694,7 +707,14 @@ def _load_config(path: Path, env: Mapping[str, str]) -> dict[str, dict[str, obje
         if not isinstance(value, dict):
             msg = f"MCP server {name!r} must be an object"
             raise MCPConfigError(msg)
-        servers[name] = _resolve_server_env(name, value, env)
+        if "enabled" in value and not isinstance(value["enabled"], bool):
+            msg = f"MCP server {name!r} enabled must be a boolean"
+            raise MCPConfigError(msg)
+        servers[name] = (
+            _resolve_server_env(name, value, env)
+            if value.get("enabled", True)
+            else copy.deepcopy(value)
+        )
     return servers
 
 

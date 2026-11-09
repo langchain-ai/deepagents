@@ -3877,6 +3877,29 @@ async def _run_acp_cli_async(
     return exit_code
 
 
+def _is_session_launch(args: argparse.Namespace) -> bool:
+    """Return whether these arguments start an agent session.
+
+    Subcommands and the management flags (`--update`, `--install`,
+    `--default-model` and the rest) exit without one, so piped stdin is their
+    input rather than a prompt. A new flag that exits before the session starts
+    belongs here too.
+
+    Returns:
+        `True` for interactive and headless launches.
+    """
+    if getattr(args, "command", None) is not None:
+        return False
+    return not (
+        args.update
+        or args.install
+        or args.uninstall is not None
+        or args.auto_update
+        or args.clear_default_model
+        or args.default_model is not None
+    )
+
+
 def apply_stdin_pipe(args: argparse.Namespace) -> None:
     r"""Read piped stdin and merge it into the parsed CLI arguments.
 
@@ -5803,7 +5826,11 @@ def cli_main() -> None:
             )
             sys.exit(exit_code)
 
-        apply_stdin_pipe(args)
+        # Only a session takes piped stdin as its prompt. Everything else leaves
+        # it alone, so a pipe that stays open cannot stall a subcommand and a
+        # subcommand's own prompt reads the piped answer.
+        if _is_session_launch(args):
+            apply_stdin_pipe(args)
         if args.non_interactive_message:
             # Piped stdin turned this launch headless. It gets no prewarm
             # thread, so install the redacting client now, as bootstrap would.

@@ -6781,6 +6781,7 @@ class DeepAgentsApp(App):
 
     def on_deep_agents_app_server_start_failed(self, event: ServerStartFailed) -> None:
         """Handle background server startup failure."""
+        from deepagents_code.client.launch.server import ServerStartupTimeoutError
         from deepagents_code.mcp_tools import MCPConfigError
         from deepagents_code.model_config import (
             MissingCredentialsError,
@@ -6854,6 +6855,18 @@ class DeepAgentsApp(App):
         # input. Banner is set to idle above to drop the connecting spinner.
         if isinstance(event.error, MissingCredentialsError):
             text = f"Model setup required: {event.error}"
+        elif isinstance(event.error, ServerStartupTimeoutError):
+            recovery = (
+                "Run `/restart` to try again."
+                if self._server_kwargs is not None
+                else "Check that the remote server is reachable, then reconnect."
+            )
+            text = (
+                f"Server startup timed out. {recovery} "
+                "If this started after adding an integration, check its setup "
+                "and credentials before retrying. "
+                "Press Ctrl+\\ to inspect the startup error in the Debug Console."
+            )
         else:
             text = f"Server failed to start: {self._server_startup_error}"
         if had_deferred_actions:

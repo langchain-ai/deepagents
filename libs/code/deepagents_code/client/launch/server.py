@@ -168,20 +168,20 @@ _LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
 
 
 def _bypass_proxy_for_loopback() -> None:
-    """Add loopback hosts to `NO_PROXY` so local server traffic skips proxies.
+    """Bypass loopback traffic while preserving effective proxy settings."""
+    from urllib.request import getproxies
 
-    httpx (and therefore `langgraph_sdk`) routes every request through the proxy
-    it finds in the environment or, on macOS, in the system settings. It does
-    not honor the OS proxy exception list, so a proxy that cannot reach the
-    loopback server makes health checks and agent calls fail. Existing entries
-    are kept; only missing loopback hosts are appended.
-    """
+    proxies = getproxies()
+    for scheme in ("http", "https", "all"):
+        if proxy := proxies.get(scheme):
+            os.environ[f"{scheme}_proxy"] = proxy
     for var in ("NO_PROXY", "no_proxy"):
-        entries = [e.strip() for e in os.environ.get(var, "").split(",")]
+        entries = [
+            e.strip() for e in (os.environ.get(var) or proxies.get("no", "")).split(",")
+        ]
         entries = [e for e in entries if e]
         missing = [h for h in _LOOPBACK_HOSTS if h not in entries]
-        if missing:
-            os.environ[var] = ",".join(entries + missing)
+        os.environ[var] = ",".join(entries + missing)
 
 
 def _find_free_port(host: str) -> int:

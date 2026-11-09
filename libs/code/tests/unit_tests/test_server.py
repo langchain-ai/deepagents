@@ -2031,9 +2031,84 @@ class TestLoopbackProxyBypass:
     """Local server traffic must never be routed through an HTTP proxy."""
 
     @pytest.fixture(autouse=True)
-    def _clear_no_proxy(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delenv("NO_PROXY", raising=False)
-        monkeypatch.delenv("no_proxy", raising=False)
+    def _clear_proxy_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import urllib.request
+
+        for name in tuple(os.environ):
+            if name.lower().endswith("_proxy"):
+                monkeypatch.delenv(name)
+        monkeypatch.setattr(
+            urllib.request, "getproxies", urllib.request.getproxies_environment
+        )
+
+    @pytest.mark.parametrize("empty_bypass", [False, True])
+    def test_preserves_system_proxy_routing(
+        self, monkeypatch: pytest.MonkeyPatch, *, empty_bypass: bool
+    ) -> None:
+        """Local requests bypass proxies without losing system-configured routes."""
+        import urllib.request
+
+        import httpx
+        import httpx._utils
+
+        if empty_bypass:
+            monkeypatch.setenv("NO_PROXY", "")
+            monkeypatch.setenv("no_proxy", "")
+        system_proxies = {
+            "http": "http://company-gateway:8080",
+            "https": "http://company-gateway:8443",
+            "all": "http://company-gateway:8888",
+            "no": "corp.internal,127.0.0.1,localhost,::1",
+        }
+
+        def get_proxies() -> dict[str, str]:
+            return urllib.request.getproxies_environment() or system_proxies
+
+        monkeypatch.setattr(urllib.request, "getproxies", get_proxies)
+        monkeypatch.setattr(httpx._utils, "getproxies", get_proxies)
+
+        server_module._bypass_proxy_for_loopback()
+
+        effective = urllib.request.getproxies_environment()
+        child_env = server_module._build_server_env()
+        for scheme in ("http", "https", "all"):
+            assert effective[scheme] == system_proxies[scheme]
+            assert child_env[f"{scheme}_proxy"] == system_proxies[scheme]
+        assert child_env["no_proxy"] == effective["no"]
+        with httpx.Client() as client:
+            for host in ("127.0.0.1", "localhost", "[::1]", "corp.internal"):
+                assert (
+                    client._transport_for_url(httpx.URL(f"http://{host}/"))
+                    is client._transport
+                )
+            for scheme in ("http", "https"):
+                transport = client._transport_for_url(
+                    httpx.URL(f"{scheme}://api.example.com/")
+                )
+                assert transport is not client._transport
+
+    @pytest.mark.parametrize("proxy", ["http://lower-gateway:8080", ""])
+    def test_preserves_explicit_proxy_precedence(
+        self, monkeypatch: pytest.MonkeyPatch, proxy: str
+    ) -> None:
+        """Lowercase proxy and bypass settings keep precedence over uppercase."""
+        import urllib.request
+
+        monkeypatch.setenv("HTTPS_PROXY", "http://upper-gateway:8080")
+        monkeypatch.setenv("https_proxy", proxy)
+        monkeypatch.setenv("NO_PROXY", "upper.internal")
+        monkeypatch.setenv("no_proxy", "lower.internal")
+
+        server_module._bypass_proxy_for_loopback()
+
+        proxies = urllib.request.getproxies_environment()
+        assert proxies.get("https", "") == proxy
+        assert proxies["no"].split(",") == [
+            "lower.internal",
+            "127.0.0.1",
+            "localhost",
+            "::1",
+        ]
 
     def test_adds_loopback_hosts_when_unset(self) -> None:
         """Both spellings gain every loopback host."""
@@ -2102,3 +2177,5 @@ class TestLoopbackProxyBypass:
         assert "127.0.0.1" in os.environ["NO_PROXY"].split(",")
         child_env = popen.call_args.kwargs["env"]
         assert "127.0.0.1" in child_env["NO_PROXY"].split(",")
+        assert child_env["http_proxy"] == "http://127.0.0.1:9"
+        assert child_env["https_proxy"] == "http://127.0.0.1:9"

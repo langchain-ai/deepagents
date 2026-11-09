@@ -2053,3 +2053,99 @@ class TestTerminateServerProcess:
 
         assert "Dropping handle to server pid=4321 that is still running" in caplog.text
         assert server._process is None
+
+
+class TestLoopbackProxyBypass:
+    """Local probes stay direct without changing other clients' routing."""
+
+    @pytest.mark.parametrize("host", ["127.0.0.1", "localhost"])
+    @pytest.mark.parametrize("proxy_source", ["environment", "system"])
+    async def test_start_preserves_proxy_policy(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        host: str,
+        proxy_source: str,
+    ) -> None:
+        """Startup preserves separate OS exceptions and the child's environment."""
+        import urllib.request
+
+        import httpx
+        import httpx._utils
+        import requests.utils
+
+        for name in tuple(os.environ):
+            if name.lower().endswith("_proxy"):
+                monkeypatch.delenv(name)
+        proxies = {
+            "http": "http://company-gateway:8080",
+            "https": "http://company-gateway:8443",
+        }
+        if proxy_source == "environment":
+            monkeypatch.setenv("HTTP_PROXY", proxies["http"])
+            monkeypatch.setenv("HTTPS_PROXY", proxies["https"])
+            monkeypatch.setenv("NO_PROXY", "corp.internal")
+
+        def get_proxies() -> dict[str, str]:
+            return urllib.request.getproxies_environment() or proxies
+
+        def bypass_proxy(hostname: str) -> bool:
+            env = urllib.request.getproxies_environment()
+            if env:
+                return any(
+                    hostname == host or hostname.endswith(f".{host}")
+                    for host in env.get("no", "").split(",")
+                    if host
+                )
+            return hostname.endswith(".corp.internal")
+
+        monkeypatch.setattr(httpx._utils, "getproxies", get_proxies)
+        monkeypatch.setattr(urllib.request, "getproxies", get_proxies)
+        monkeypatch.setattr(requests.utils, "getproxies", get_proxies)
+        monkeypatch.setattr(requests.utils, "proxy_bypass", bypass_proxy)
+        before = dict(os.environ)
+        direct = MagicMock(return_value=httpx.Response(200))
+        proxy = MagicMock(return_value=httpx.Response(200))
+        monkeypatch.setattr(
+            httpx.AsyncClient,
+            "_init_transport",
+            MagicMock(return_value=httpx.MockTransport(direct)),
+        )
+        monkeypatch.setattr(
+            httpx.AsyncClient,
+            "_init_proxy_transport",
+            MagicMock(return_value=httpx.MockTransport(proxy)),
+        )
+        (tmp_path / "langgraph.json").write_text("{}")
+        server = ServerProcess(config_dir=tmp_path, host=host, port=43210)
+        process = MagicMock(pid=1234)
+        process.poll.return_value = None
+        try:
+            with (
+                patch.object(server_module, "_port_in_use", return_value=False),
+                patch.object(server, "_launch_process", return_value=process) as launch,
+            ):
+                await server.start()
+                await server.wait_for_graph_ready()
+            assert [call.args[0].url.path for call in direct.call_args_list] == [
+                "/ok",
+                "/assistants/agent/graph",
+            ]
+            proxy.assert_not_called()
+            assert dict(os.environ) == before
+            child_env = launch.call_args.args[2]
+            assert {
+                k: v for k, v in child_env.items() if k.lower().endswith("_proxy")
+            } == {k: v for k, v in before.items() if k.lower().endswith("_proxy")}
+            assert (
+                requests.utils.get_environ_proxies("https://smith.corp.internal") == {}
+            )
+            assert (
+                requests.utils.get_environ_proxies("https://api.example.com")["https"]
+                == proxies["https"]
+            )
+            await wait_for_server_healthy("https://remote.example.com")
+            assert proxy.call_count == 1
+        finally:
+            server._process = None
+            server._stop_process()

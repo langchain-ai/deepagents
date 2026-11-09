@@ -333,7 +333,7 @@ async def wait_for_server_healthy(
             we fail fast instead of waiting for the timeout.
         read_log: Optional callable returning log file contents (for
             error messages on early exit).
-        local: Use a shorter poll interval for local servers.
+        local: Connect directly and use a shorter poll interval for local servers.
 
     Raises:
         ModelConfigError: If startup reports missing credentials or a provider package.
@@ -349,7 +349,7 @@ async def wait_for_server_healthy(
     last_status: int | None = None
     last_exc: Exception | None = None
 
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(trust_env=not local) as client:
         while time.monotonic() < deadline:
             if process and process.poll() is not None:
                 output = read_log() if read_log else ""
@@ -1142,7 +1142,7 @@ class ServerProcess:
         graph_url = f"{self.url}/assistants/{quote(graph_name, safe='')}/graph"
         deadline = time.monotonic() + timeout
 
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(trust_env=False) as client:
             while time.monotonic() < deadline:
                 if self._process.poll() is not None:
                     msg = f"Server process exited with code {self._process.returncode}"

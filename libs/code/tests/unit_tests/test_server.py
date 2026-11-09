@@ -216,6 +216,14 @@ class TestServerPortSelection:
         ),
         ("exit", MissingCredentialsError("Credentials missing", provider="custom")),
         (
+            "health_timeout",
+            MissingProviderPackageError(
+                "Provider package missing",
+                provider="fireworks",
+                package="langchain-fireworks",
+            ),
+        ),
+        (
             "transport",
             MissingProviderPackageError(
                 "Provider package missing",
@@ -255,8 +263,13 @@ async def test_startup_preserves_recovery_errors(
     )
 
     ready = (
-        wait_for_server_healthy(server.url, process=process, read_log=lambda: output)
-        if phase == "health"
+        wait_for_server_healthy(
+            server.url,
+            process=process,
+            read_log=lambda: output,
+            timeout=0 if phase == "health_timeout" else 60,
+        )
+        if phase in {"health", "health_timeout"}
         else server.wait_for_graph_ready()
     )
     with (
@@ -293,6 +306,21 @@ def test_invalid_recovery_details_preserve_fallback(payload: str) -> None:
 
 class TestWaitForServerHealthy:
     """Tests for the health-check polling loop."""
+
+    async def test_timeout_keeps_diagnostics(self) -> None:
+        from deepagents_code.client.launch.server import ServerStartupTimeoutError
+
+        output = "DEEPAGENTS_STARTUP_ERROR:Integration initialization failed\n"
+        with (
+            patch("httpx.AsyncClient", return_value=_FakeAsyncClient(OSError())),
+            pytest.raises(ServerStartupTimeoutError) as caught,
+        ):
+            await wait_for_server_healthy(
+                "http://localhost:2024", timeout=0, read_log=lambda: output
+            )
+
+        assert "Integration initialization failed" in str(caught.value).splitlines()[0]
+        assert output in str(caught.value)
 
     async def test_early_exit_promotes_marked_startup_error(self) -> None:
         """Marked server startup errors should survive app error trimming."""

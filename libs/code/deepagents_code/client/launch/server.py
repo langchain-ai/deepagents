@@ -312,6 +312,10 @@ def _scoped_env_overrides(
 # ---------------------------------------------------------------------------
 
 
+class ServerStartupTimeoutError(RuntimeError):
+    """The server did not finish starting before the health-check deadline."""
+
+
 async def wait_for_server_healthy(
     url: str,
     *,
@@ -376,7 +380,16 @@ async def wait_for_server_healthy(
         msg += f" (last status: {last_status})"
     elif last_exc is not None:
         msg += f" (last error: {last_exc})"
-    raise RuntimeError(msg)
+    output = read_log() if read_log else ""
+    summary = _extract_startup_error_marker(output)
+    if summary:
+        msg = f"{msg}: {summary}"
+    if output:
+        msg += f"\n{output[-_LOG_TAIL_CHARS:]}"
+    error = startup_error_from_output(output, msg)
+    if type(error) is RuntimeError:
+        error = ServerStartupTimeoutError(msg)
+    raise error
 
 
 # ---------------------------------------------------------------------------

@@ -23,7 +23,7 @@ from deepagents_talon.subagent_control import _MAX_EVENTS, ACTIVE_CONTROL, Subag
 from deepagents_talon.tool_approvals import APPROVAL_OPERATOR
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator, Awaitable, Callable, Iterable, Iterator, Sequence
+    from collections.abc import AsyncGenerator, Awaitable, Callable, Generator, Iterable, Sequence
 
     from deepagents import CompiledSubAgent, SubAgent
     from deepagents.middleware.async_subagents import AsyncSubAgent
@@ -103,7 +103,7 @@ _SCHEDULED_INSTRUCTIONS = (
 
 
 @contextmanager
-def _track_consumed_results(owner: str, results: dict[str, str]) -> Iterator[None]:
+def _track_consumed_results(owner: str, results: dict[str, str]) -> Generator[None]:
     """Collect results exposed to this turn without acknowledging them until success."""
     token = _CONSUMED_RESULTS.set((owner, results))
     try:

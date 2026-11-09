@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+import subprocess
+import sys
 from pathlib import Path
 from unittest.mock import patch
 
@@ -45,6 +47,54 @@ class TestBuildServerEnv:
         with patch.dict(os.environ, {"LANGGRAPH_NO_VERSION_CHECK": "false"}):
             env = _build_server_env()
         assert env["LANGGRAPH_NO_VERSION_CHECK"] == "1"
+
+    @pytest.mark.parametrize("inherited", [None, "true"])
+    def test_server_logging_loads_without_colorama(self, inherited: str | None) -> None:
+        """The server's log config must load on an install without colorama.
+
+        Colored console logs need colorama on Windows, and a fresh install no
+        longer has it, so the server crashed while configuring logging. Hiding
+        colorama reproduces that crash on Windows. On other platforms the same
+        config writes color codes into the log, which the last assert catches.
+        """
+        with patch.dict(os.environ, {"LOG_JSON": "false"}):
+            os.environ.pop("LOG_COLOR", None)
+            if inherited is not None:
+                os.environ["LOG_COLOR"] = inherited
+            env = _build_server_env()
+        code = """
+import logging.config
+import sys
+
+sys.modules["colorama"] = None
+
+logging.config.dictConfig({
+    "version": 1,
+    "formatters": {"simple": {"class": "langgraph_api.logging.Formatter"}},
+    "handlers": {
+        "console": {
+            "class": "logging.StreamHandler",
+            "formatter": "simple",
+            "stream": "ext://sys.stdout",
+        }
+    },
+    "root": {"handlers": ["console"], "level": "INFO"},
+})
+logging.getLogger("server").info("server started")
+"""
+
+        process = subprocess.run(
+            [sys.executable, "-c", code],
+            env=env,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+
+        assert process.returncode == 0, process.stderr
+        assert "server started" in process.stdout
+        assert "\x1b[" not in process.stdout
 
     def test_strips_auth_variables(self) -> None:
         with patch.dict(

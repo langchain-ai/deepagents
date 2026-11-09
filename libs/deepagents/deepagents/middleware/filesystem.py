@@ -512,6 +512,8 @@ def _is_denied(
         real = _resolve_real_path(backend, path)
     except (ValueError, OSError, RuntimeError):
         return True
+    if path.endswith("/") and _check_fs_permission(rules, operation, real.rstrip("/") + "/") == "deny":
+        return True
     return _check_fs_permission(rules, operation, real) == "deny"
 
 

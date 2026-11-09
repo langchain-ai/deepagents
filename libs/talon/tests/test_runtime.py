@@ -11,7 +11,7 @@ import httpx
 import pytest
 from deepagents.backends import CompositeBackend
 from langchain.agents.middleware.types import AgentMiddleware
-from langchain_core.messages import AIMessage, RemoveMessage, ToolMessage
+from langchain_core.messages import AIMessage
 from langgraph.checkpoint.memory import InMemorySaver
 
 from deepagents_talon.authorization import AuthorizationEvent, current_authorization_handler
@@ -791,7 +791,7 @@ async def test_runtime_recovers_with_exact_human_message_after_latest_checkpoint
     )
 
 
-async def test_runtime_repairs_dangling_tool_call_before_interruption_marker() -> None:
+async def test_runtime_appends_interruption_marker_after_dangling_tool_call() -> None:
     tool_call = {"name": "search", "args": {"query": "test"}, "id": "call-1"}
     graph = RecoverableGraph([AIMessage(content="", tool_calls=[tool_call])])
     runtime = DeepAgentRuntime(
@@ -806,11 +806,9 @@ async def test_runtime_repairs_dangling_tool_call_before_interruption_marker() -
 
     assert graph.update is not None
     messages = graph.update[1]["messages"]
-    assert isinstance(messages[0], RemoveMessage)
-    assert isinstance(messages[-2], ToolMessage)
-    assert messages[-2].tool_call_id == "call-1"
-    assert messages[-1].type == "human"
-    assert messages[-1].content == (
+    assert len(messages) == 1
+    assert messages[0].type == "human"
+    assert messages[0].content == (
         "[SYSTEM] Task interrupted by user. Previous operation was cancelled."
     )
 

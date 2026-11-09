@@ -90,7 +90,7 @@ from deepagents_talon.pairing import (
     sender_jobs,
 )
 from deepagents_talon.questions import Answer, QuestionSession
-from deepagents_talon.speech import transcribe_voice_message
+from deepagents_talon.speech import _is_voice_message, transcribe_voice_message
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -531,7 +531,12 @@ class TalonHost:
             channel_conversation_id,
         )
         questions = self._pending_questions.get(self._agent_conversation_id(conversation_root))
-        if questions is not None and message.sender_id == questions.sender_id and command is None:
+        if (
+            questions is not None
+            and message.sender_id == questions.sender_id
+            and command is None
+            and _is_voice_message(message)
+        ):
             message = await transcribe_voice_message(self.voice_transcriber, message)
         else:
             questions = None
@@ -559,8 +564,6 @@ class TalonHost:
                     await self._handle_tool_approval_reply(channel, message, pending)
                     return
 
-                questions = self._pending_questions.get(agent_conversation_id)
-
                 if await self._intercept_authorization_message(
                     channel,
                     message,
@@ -569,7 +572,8 @@ class TalonHost:
                 ):
                     return
 
-                if questions is not None:
+                questions = self._pending_questions.get(agent_conversation_id)
+                if questions is not None and not questions.future.done():
                     await self._handle_question_reply(channel, message, questions)
                     return
 

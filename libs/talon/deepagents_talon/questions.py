@@ -196,7 +196,10 @@ class QuestionSession:
 
     def reply(self, text: str) -> Step:
         """Apply one chat reply from the person answering."""
-        text = text.strip()[:MAX_ANSWER_CHARS]
+        text = text.strip()
+        if len(text) > MAX_ANSWER_CHARS:
+            hint = f"Reply with at most {MAX_ANSWER_CHARS} characters."
+            return Step("asking", f"{hint}\n\n{self.prompt()}")
         command = text.casefold()
         if command == "cancel":
             return Step("cancelled", "Questions cancelled; the agent will continue without them.")
@@ -208,9 +211,11 @@ class QuestionSession:
         if isinstance(answer, str):
             return Step("asking", f"{answer}\n\n{self._question()}")
         self.answers[self.index] = answer
-        if len(self.questions) == 1:
-            return Step("submitted", f"Answer sent: {answer.describe()}")
-        return self._advance()
+        return (
+            Step("submitted", f"Answer sent: {answer.describe()}")
+            if len(self.questions) == 1
+            else self._advance()
+        )
 
     def _advance(self) -> Step:
         pending = [i for i, answer in enumerate(self.answers) if answer is None]

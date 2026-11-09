@@ -11,6 +11,7 @@ from deepagents_talon.background import _IN_SUBAGENT
 from deepagents_talon.host import TalonHost
 from deepagents_talon.interfaces import AgentRequest, AgentResult, ChannelMessage, SendResult
 from deepagents_talon.questions import (
+    MAX_ANSWER_CHARS,
     Answer,
     Question,
     QuestionSession,
@@ -272,8 +273,10 @@ async def test_host_offers_no_questions_without_a_sender(tmp_path: Path) -> None
 
 
 class QuestionAgent(BlockingAgent):
-    def __init__(self) -> None:
+    def __init__(self, *, batch: bool = False, rounds: int = 1) -> None:
         super().__init__()
+        self.questions = _questions(DATABASE, FEATURES) if batch else _questions(DATABASE)
+        self.rounds = rounds
         self.answers: list[tuple[Answer, ...] | None] = []
         self.finished = asyncio.Event()
 
@@ -281,22 +284,26 @@ class QuestionAgent(BlockingAgent):
         self.requests.append(request)
         assert request.question_handler is not None
         try:
-            self.answers.append(await request.question_handler(_questions(DATABASE)))
+            for _ in range(self.rounds):
+                self.answers.append(await request.question_handler(self.questions))
         finally:
             self.finished.set()
         return AgentResult(text="done")
 
 
-@pytest.mark.parametrize("action", ["answer", "/stop", "/new", "replace"])
+@pytest.mark.parametrize(
+    ("action", "transcript"),
+    [("answer", "2"), ("/stop", "2"), ("/new", "2"), ("replace", "2"), ("/stop", None)],
+)
 async def test_voice_question_reply_leaves_threads_responsive_and_discards_stale_answers(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, action: str
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, action: str, transcript: str | None
 ) -> None:
     started, release = asyncio.Event(), asyncio.Event()
 
-    async def transcribe(_message: ChannelMessage) -> str:
+    async def transcribe(_message: ChannelMessage) -> str | None:
         started.set()
         await release.wait()
-        return "2"
+        return transcript
 
     transcriber = VoiceTranscriber()
     monkeypatch.setattr(transcriber, "transcribe", transcribe)
@@ -347,3 +354,71 @@ async def test_voice_question_reply_leaves_threads_responsive_and_discards_stale
             voice.cancel()
             await asyncio.gather(voice, return_exceptions=True)
         await host.stop()
+
+
+@pytest.mark.parametrize(("reply", "rounds"), [("1", 1), ("submit", 1), ("cancel", 1), ("1", 2)])
+async def test_follow_up_queued_behind_question_completion_reaches_current_recipient(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, reply: str, rounds: int
+) -> None:
+    acknowledging, release = asyncio.Event(), asyncio.Event()
+    channel, agent = RecordingChannel(), QuestionAgent(batch=reply == "submit", rounds=rounds)
+    send = channel.send_message
+
+    async def send_message(chat: str, text: str) -> SendResult:
+        if text.startswith(("Answer sent:", "Answers sent;", "Questions cancelled;")):
+            acknowledging.set()
+            await release.wait()
+        return await send(chat, text)
+
+    monkeypatch.setattr(channel, "send_message", send_message)
+    host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
+
+    async def receive(text: str) -> None:
+        await host.receive_message(channel, ChannelMessage("chat", text, sender_id="alice"))
+
+    await host.start()
+    tasks: list[asyncio.Task[None]] = []
+    try:
+        await receive("ask")
+        await asyncio.sleep(0)
+        if reply == "submit":
+            await receive("1")
+            await receive("1")
+        tasks.append(asyncio.create_task(receive(reply)))
+        await asyncio.wait_for(acknowledging.wait(), 2)
+        follow_up = "also keep it under 100 lines"
+        tasks.append(asyncio.create_task(receive(follow_up)))
+        await asyncio.sleep(0)
+        release.set()
+        await asyncio.wait_for(asyncio.gather(*tasks), 2)
+        await asyncio.sleep(0)
+        if rounds == 2:
+            await asyncio.wait_for(agent.finished.wait(), 2)
+            assert len(agent.requests) == 1
+            assert agent.answers == [(Answer(("Postgres",)),), (Answer(other=follow_up),)]
+        else:
+            assert [request.text for request in agent.requests] == ["ask", follow_up]
+    finally:
+        release.set()
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        await host.stop()
+
+
+def test_answer_at_character_limit_is_preserved() -> None:
+    session = QuestionSession(_questions(DATABASE))
+    text = "x" * MAX_ANSWER_CHARS
+    assert session.reply(text).status == "submitted"
+    assert session.result == (Answer(other=text),)
+
+
+def test_oversized_answer_is_rejected_without_advancing_the_batch() -> None:
+    session = QuestionSession(_questions(DATABASE, FEATURES))
+    session.reply("2")
+    step = session.reply("x" * (MAX_ANSWER_CHARS + 1))
+    assert step.status == "asking"
+    assert f"{MAX_ANSWER_CHARS} characters" in step.message
+    session.reply("1")
+    assert session.reply("submit").status == "submitted"
+    assert session.result == (Answer(("SQLite",)), Answer(("Auth",)))

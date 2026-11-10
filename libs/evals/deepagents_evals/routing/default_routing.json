@@ -1,0 +1,9 @@
+{
+  "decision_model": "gpt-6-luna",
+  "anchor": {"model": "anthropic:claude-sonnet-5-5", "model_kwargs": {"effort": "medium"}},
+  "models": [
+    {"model": "anthropic:claude-haiku-5-5", "model_kwargs": {"effort": "medium"}},
+    {"model": "anthropic:claude-sonnet-5-5", "model_kwargs": {"effort": "medium"}},
+    {"model": "anthropic:claude-opus-5-5", "model_kwargs": {"effort": "medium"}}
+  ]
+}

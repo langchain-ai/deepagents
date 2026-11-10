@@ -48,12 +48,14 @@ class ConversationResult:
         tool_call_log: Every tool invocation recorded during the conversation.
         terminated_by: How the conversation ended.
         turn_count: Number of agent turns completed.
+        thread_id: The agent thread the conversation ran on.
     """
 
     messages: list[Message] = field(default_factory=list)
     tool_call_log: list[ToolCallEntry] = field(default_factory=list)
     terminated_by: str = "max_turns"
     turn_count: int = 0
+    thread_id: str = ""
 
 
 def run_multi_turn(
@@ -77,7 +79,7 @@ def run_multi_turn(
         The full conversation result with transcript and tool call log.
     """
     thread_id = str(uuid.uuid4())
-    result = ConversationResult(tool_call_log=tool_call_log)
+    result = ConversationResult(tool_call_log=tool_call_log, thread_id=thread_id)
 
     user_msg = user_sim.get_opening_message()
     result.messages.append(Message(role="user", content=user_msg))

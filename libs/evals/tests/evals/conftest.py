@@ -125,6 +125,17 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         help="Apply reasoning effort to OpenAI models. E.g. --openai-reasoning-effort high",
     )
     parser.addoption(
+        "--routing",
+        action="store",
+        choices=("per_thread", "per_turn"),
+        default=None,
+        help=(
+            "Route model calls across the tier ladder in deepagents_evals/routing/default_routing.json "
+            "(or ROUTING_CONFIG) for tests that accept the `routing` fixture. The agent then runs on the "
+            "ladder, not --model. Needs LC_GATEWAY_KEY."
+        ),
+    )
+    parser.addoption(
         "--repl",
         action="store",
         choices=("quickjs",),
@@ -232,10 +243,16 @@ def repl_name(request: pytest.FixtureRequest) -> ReplName | None:
     return selected
 
 
+@pytest.fixture
+def routing(request: pytest.FixtureRequest) -> Literal["per_thread", "per_turn"] | None:
+    return request.config.getoption("--routing")
+
+
 @pytest.fixture(scope="session")
 def langsmith_experiment_metadata(request: pytest.FixtureRequest) -> dict[str, Any]:
     return {
         "model": request.config.getoption("--model"),
+        "routing": request.config.getoption("--routing"),
         "date": datetime.now(tz=UTC).strftime("%Y-%m-%d"),
         "deepagents_version": deepagents_version,
     }

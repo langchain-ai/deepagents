@@ -12,20 +12,27 @@ Source: https://github.com/sierra-research/tau2-bench (dev/tau3 branch)
 Usage:
     uv run --group test pytest tests/evals/tau2_airline/ -v --model claude-sonnet-4-6
     uv run --group test pytest tests/evals/tau2_airline/ -k "task_2" --model claude-sonnet-4-6
+
+Routed arms run the agent on the routing ladder instead of --model:
+    uv run --group test pytest tests/evals/tau2_airline/ --model claude-sonnet-4-6 --routing per_turn
 """
 
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+import os
+from typing import TYPE_CHECKING, Any, Literal
 
 import pytest
 from deepagents import create_deep_agent
 from langchain.chat_models import init_chat_model
+from langchain_openai.decisions import OpenAIDecisions
 from langgraph.checkpoint.memory import MemorySaver
 from langsmith import testing as t
 from langsmith.run_helpers import get_current_run_tree
 
+from deepagents_evals.routing.config import GATEWAY_OPENAI_URL, load_config
+from deepagents_evals.routing.middleware import LadderRoutingMiddleware
 from tests.evals.tau2_airline.domain import (
     create_airline_tools,
     load_db,
@@ -37,7 +44,9 @@ from tests.evals.tau2_airline.runner import run_multi_turn
 from tests.evals.tau2_airline.user_sim import UserSimulator
 
 if TYPE_CHECKING:
+    from langchain.agents.middleware import AgentMiddleware
     from langchain_core.language_models import BaseChatModel
+    from langgraph.graph.state import CompiledStateGraph
 
 pytestmark = [pytest.mark.eval_category("conversation")]
 """Apply conversation category to all tests in this module. Tier is set per-test."""
@@ -80,15 +89,34 @@ def _task_id_label(task_id: str) -> str:
     return f"task_{task_id}"
 
 
+def _log_routing(agent: CompiledStateGraph[Any, Any], thread_id: str) -> None:
+    """Log how often the router moved and what deciding cost, from the thread's decision records."""
+    state = agent.get_state({"configurable": {"thread_id": thread_id}}).values
+    records = state.get("decision_log", [])
+    switches = sum(r["from_tier"] not in (None, r["to_tier"]) for r in records)
+    t.log_feedback(key="routing_switches", value=switches)
+    t.log_feedback(key="router_cost", value=sum(r["router_cost"] or 0.0 for r in records))
+    logger.info("Routing tiers by turn: %s", [r["to_tier"] for r in records])
+
+
 @pytest.mark.eval_tier("hillclimb")
+# The routed arms build `OpenAIDecisions`, which is beta.
+@pytest.mark.filterwarnings(
+    "default:The class `OpenAIDecisions` is in beta:langchain_core._api.beta_decorator.LangChainBetaWarning"
+)
 @pytest.mark.langsmith
 @pytest.mark.parametrize("task_id", TASK_IDS, ids=_task_id_label)
-def test_tau2_airline(model: BaseChatModel, task_id: str) -> None:
+def test_tau2_airline(
+    model: BaseChatModel,
+    task_id: str,
+    routing: Literal["per_thread", "per_turn"] | None,
+) -> None:
     """Run a multi-turn tau2 airline task and evaluate the result.
 
     Args:
         model: The agent's chat model (from --model CLI option).
         task_id: The tau2 task ID to run.
+        routing: Routing granularity (from --routing); `None` runs on `model` alone.
     """
     # Immediately override @pytest.mark.langsmith auto-capture so the dataset
     # example records clean metadata even if run_multi_turn() raises.
@@ -125,9 +153,26 @@ def test_tau2_airline(model: BaseChatModel, task_id: str) -> None:
 
     tools, tool_log = create_airline_tools(db)
 
+    agent_model = model
+    middleware: list[AgentMiddleware[Any, Any, Any]] = []
+    if routing is not None:
+        config = load_config()
+        agent_model = config.anchor
+        middleware.append(
+            LadderRoutingMiddleware(
+                config.models,
+                decision_model=OpenAIDecisions(
+                    model=config.decision_model,
+                    api_key=lambda: os.environ["LC_GATEWAY_KEY"],
+                    base_url=GATEWAY_OPENAI_URL,
+                ),
+                granularity=routing,
+            )
+        )
     agent = create_deep_agent(
-        model=model,
+        model=agent_model,
         tools=tools,
+        middleware=middleware,
         system_prompt=AGENT_SYSTEM_PROMPT.format(domain_policy=policy),
         checkpointer=MemorySaver(),
     )
@@ -160,6 +205,8 @@ def test_tau2_airline(model: BaseChatModel, task_id: str) -> None:
     t.log_feedback(key="turn_count", value=conversation.turn_count)
     for key, value in episode_score.expected_metrics.items():
         t.log_feedback(key=key, value=value)
+    if routing is not None:
+        _log_routing(agent, conversation.thread_id)
 
     logger.info(
         "Task %s: success=%s reasons=%s (%s), %d turns, %d tool calls",

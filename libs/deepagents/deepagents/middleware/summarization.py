@@ -1998,8 +1998,9 @@ def create_summarization_middleware(
         raise TypeError(msg)
 
     defaults = compute_summarization_defaults(model)
+    summary_model = model.model_copy(update={"tags": [*(model.tags or []), "nostream"]})
     return SummarizationMiddleware(
-        model=model,
+        model=summary_model,
         backend=backend,
         trigger=defaults["trigger"],
         keep=defaults["keep"],

@@ -139,3 +139,12 @@ def test_factory_chat_model_summarizer_uses_deepagents_prompt() -> None:
     assert "hi" in prompt
     assert middleware._lc_helper.trigger == ("fraction", 0.85)
     assert middleware._get_profile_limits() == 120_000
+
+
+def test_factory_hides_summary_model_from_message_streams() -> None:
+    """Tags the summary model `nostream` so summaries do not stream as agent replies."""
+    model = _make_model(with_profile_limit=None)
+    middleware = create_summarization_middleware(model, cast("Any", MagicMock()))
+
+    assert "nostream" in (middleware._lc_helper.model.tags or [])
+    assert not model.tags

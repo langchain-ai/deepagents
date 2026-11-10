@@ -53,6 +53,7 @@ def test_langgraph_config_points_to_deepagent_factory() -> None:
         "dcode": "./langgraph_agent.py:make_graph",
         "bare": "./langgraph_agent.py:make_bare_graph",
         "tau3": "./langgraph_agent.py:make_tau3_graph",
+        "routed": "./langgraph_agent.py:make_routed_graph",
     }
     assert not (project_path / "langsmith.py").exists()
 

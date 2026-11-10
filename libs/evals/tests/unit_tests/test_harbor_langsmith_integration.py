@@ -146,6 +146,7 @@ def test_harbor_workflow_scopes_secrets_to_runtime_steps() -> None:
         "FIREWORKS_API_KEY",
         "GOOGLE_API_KEY",
         "GROQ_API_KEY",
+        "LC_GATEWAY_KEY",
         "LANGSMITH_API_KEY",
         "NVIDIA_API_KEY",
         "OLLAMA_API_KEY",

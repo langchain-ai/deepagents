@@ -9,8 +9,11 @@ ever runs one model, and installing the other providers just slows the sandbox
 env build.
 
 This script rewrites a `langgraph.json` in place, dropping every provider
-package except the one matching `HARBOR_MODEL`'s provider. Non-provider
-dependencies (langchain core, the staged local packages, MCP adapters, etc.)
+package except the one matching `HARBOR_MODEL`'s provider. With
+`HARBOR_AGENT_IMPL=routed`, it keeps Anthropic for the ladder and OpenAI for
+the Decisions API instead.
+
+Non-provider dependencies (langchain core, the staged local packages, MCP adapters, etc.)
 are always kept. It runs in CI against the ephemeral checkout
 (`.github/workflows/harbor.yml`, from the `libs/evals` working directory); the
 committed file is left untouched.
@@ -114,7 +117,7 @@ def prune_dependencies(deps: list[str], provider: str) -> list[str]:
 
 
 def main() -> None:
-    """Rewrite the langgraph.json at argv[1], pruning to HARBOR_MODEL's provider."""
+    """Prune to the selected provider, or Anthropic and OpenAI for the routed graph."""
     if len(sys.argv) != 2:  # noqa: PLR2004
         raise SystemExit(f"Usage: {sys.argv[0]} <path-to-langgraph.json>")
 
@@ -137,7 +140,8 @@ def main() -> None:
         raise SystemExit(f"::error::{path} must contain a top-level JSON object.")
     deps = config.get("dependencies", [])
 
-    if provider not in PROVIDER_TO_PACKAGE:
+    routed = os.environ.get("HARBOR_AGENT_IMPL") == "routed"
+    if not routed and provider not in PROVIDER_TO_PACKAGE:
         # An unmapped provider is non-functional in this workflow anyway:
         # harbor.yml only wires credentials and agent env for the providers in
         # PROVIDER_TO_PACKAGE, and langgraph.json ships only their packages.
@@ -155,7 +159,9 @@ def main() -> None:
         )
 
     try:
-        pruned = prune_dependencies(deps, provider)
+        providers = ("anthropic", "openai") if routed else (provider,)
+        keep = {dep for name in providers for dep in prune_dependencies(deps, name)}
+        pruned = [dep for dep in deps if dep in keep]
     except ValueError as exc:
         # Drift between PROVIDER_TO_PACKAGE and the config: surface it as a
         # GitHub annotation (like the paths above) rather than a raw traceback.
@@ -172,8 +178,8 @@ def main() -> None:
 
     removed = [dependency_package(d) for d in deps if d not in pruned]
     print(  # noqa: T201
-        f"Pruned agent provider deps for {provider!r}: kept "
-        f"{PROVIDER_TO_PACKAGE[provider]}"
+        f"Pruned agent provider deps for {', '.join(providers)!r}: kept "
+        f"{', '.join(PROVIDER_TO_PACKAGE[name] for name in providers)}"
         + (f", removed {len(removed)}: {', '.join(removed)}" if removed else "")
     )
 

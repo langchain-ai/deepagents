@@ -9,6 +9,7 @@
 #   Ollama Cloud inference; it is not read from secrets.
 #
 # Required secrets (vary by sandbox + model provider):
+#   LC_GATEWAY_KEY            — needed for the routed agent
 #   LANGSMITH_API_KEY          — experiment tracking (always required)
 #   LANGSMITH_SANDBOX_API_KEY  — LangSmith sandboxes, which run on AWS US
 #   ANTHROPIC_API_KEY          — needed for Anthropic models
@@ -118,7 +119,7 @@ on:
           - docker
           - langsmith
       agent_impl:
-        description: "Harness: a Deep Agents graph run through Harbor's LangGraph agent (dcode, bare, tau3), or Harbor's built-in codex, claude-code, or pi."
+        description: "Harness: dcode, bare, tau3, or routed through LangGraph; codex, claude-code, or pi built in. Routed uses the gateway ladder and ignores model selection."
         required: true
         default: "dcode"
         type: choice
@@ -126,9 +127,15 @@ on:
           - dcode
           - bare
           - tau3
+          - routed
           - codex
           - claude-code
           - pi
+      routing_config:
+        description: "Routed agent JSON: models (cheapest first), anchor, decision_model, and optional granularity. Empty uses the packaged defaults. Use model_kwargs on each model for reasoning settings."
+        required: false
+        default: ""
+        type: string
       n_tasks:
         description: "Maximum number of tasks to run (0 = all)."
         required: true
@@ -356,6 +363,7 @@ jobs:
       dataset: ${{ inputs.dataset_override || inputs.dataset }}
       dataset_path: ${{ inputs.dataset_path }}
       agent_impl: ${{ inputs.agent_impl }}
+      routing_config: ${{ inputs.routing_config }}
       # Empty: the leaf derives the dataset name itself.
       langsmith_dataset: ${{ inputs.langsmith_dataset }}
       rollouts: ${{ inputs.rollouts_per_task }}

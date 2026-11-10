@@ -614,3 +614,47 @@ async def make_tau3_graph(config: dict[str, object] | None = None) -> object:
         model=model,
         tools=tools,
     )
+
+
+async def make_routed_graph(config: dict[str, object] | None = None) -> object:
+    """Create the bare graph on the model-routing ladder instead of `configurable.model`.
+
+    The ladder comes from `ROUTING_CONFIG`, else the packaged `default_routing.json`, which
+    `make stage-harbor-local-deps` stages next to this module. Needs `LC_GATEWAY_KEY`.
+
+    Args:
+        config: LangGraph runtime config, as for `make_bare_graph`.
+
+    Returns:
+        A compiled LangGraph graph invokable by Harbor's LangGraph runner.
+    """
+    # Only this graph needs the staged routing package.
+    from langchain_openai.decisions import OpenAIDecisions  # noqa: PLC0415
+
+    from deepagents_evals.routing.config import GATEWAY_OPENAI_URL, load_config  # noqa: PLC0415
+    from deepagents_evals.routing.middleware import LadderRoutingMiddleware  # noqa: PLC0415
+
+    configurable = _configurable(config)
+    routing = load_config()
+    return create_deep_agent(
+        model=routing.anchor,
+        backend=LocalShellBackend(
+            root_dir=_workdir(configurable),
+            inherit_env=False,
+            env={name: os.environ[name] for name in ("PATH", "HOME") if name in os.environ},
+            virtual_mode=False,
+        ),
+        tools=await _mcp_tools(configurable) or None,
+        skills=_skills(configurable),
+        middleware=[
+            LadderRoutingMiddleware(
+                routing.models,
+                decision_model=OpenAIDecisions(
+                    model=routing.decision_model,
+                    api_key=lambda: os.environ["LC_GATEWAY_KEY"],
+                    base_url=GATEWAY_OPENAI_URL,
+                ),
+                granularity=routing.granularity,
+            )
+        ],
+    )

@@ -18,6 +18,9 @@ on:
       agent_impl:
         type: string
         default: "dcode"
+      routing_config:
+        type: string
+        default: ""
       branch:
         type: string
         default: "current"
@@ -381,6 +384,7 @@ jobs:
       HARBOR_N_SHARDS: ${{ matrix.n_shards || needs.prep.outputs.n_shards || '1' }}
       HARBOR_SANDBOX_ENV: ${{ matrix.sandbox_env || inputs.sandbox_env }}
       HARBOR_AGENT_IMPL: ${{ matrix.agent_impl || inputs.agent_impl }}
+      ROUTING_CONFIG: ${{ inputs.routing_config }}
       HARBOR_BRANCH: ${{ inputs.branch }}
       HARBOR_MODEL: ${{ matrix.model }}
       # Per-leaf category, so a multi-category flat_matrix run can be
@@ -404,6 +408,7 @@ jobs:
           FIREWORKS_API_KEY: ${{ (startsWith(matrix.model, 'fireworks:') || inputs.openai_endpoint == 'fireworks') && secrets.FIREWORKS_API_KEY || '' }}
           GOOGLE_API_KEY: ${{ startsWith(matrix.model, 'google_genai:') && secrets.GOOGLE_API_KEY || '' }}
           GROQ_API_KEY: ${{ startsWith(matrix.model, 'groq:') && secrets.GROQ_API_KEY || '' }}
+          LC_GATEWAY_KEY: ${{ env.HARBOR_AGENT_IMPL == 'routed' && secrets.LC_GATEWAY_KEY || '' }}
           LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
           NVIDIA_API_KEY: ${{ startsWith(matrix.model, 'nvidia:') && secrets.NVIDIA_API_KEY || '' }}
           OLLAMA_API_KEY: ${{ startsWith(matrix.model, 'ollama:') && secrets.OLLAMA_API_KEY || '' }}
@@ -440,22 +445,26 @@ jobs:
 
           # Model provider key (infer from model prefix)
           model_provider="${HARBOR_MODEL%%:*}"
-          case "$model_provider" in
-            anthropic)    [ -z "$ANTHROPIC_API_KEY" ] && missing+=("ANTHROPIC_API_KEY") ;;
-            openai)       [ -z "$OPENAI_API_KEY" ] && missing+=("OPENAI_API_KEY") ;;
-            google_genai) [ -z "$GOOGLE_API_KEY" ] && missing+=("GOOGLE_API_KEY") ;;
-            openrouter)   [ -z "$OPENROUTER_API_KEY" ] && missing+=("OPENROUTER_API_KEY") ;;
-            baseten)      [ -z "$BASETEN_API_KEY" ] && missing+=("BASETEN_API_KEY") ;;
-            fireworks)    [ -z "$FIREWORKS_API_KEY" ] && missing+=("FIREWORKS_API_KEY") ;;
-            ollama)       [ -z "$OLLAMA_API_KEY" ] && missing+=("OLLAMA_API_KEY") ;;
-            groq)         [ -z "$GROQ_API_KEY" ] && missing+=("GROQ_API_KEY") ;;
-            xai)          [ -z "$XAI_API_KEY" ] && missing+=("XAI_API_KEY") ;;
-            nvidia)       [ -z "$NVIDIA_API_KEY" ] && missing+=("NVIDIA_API_KEY") ;;
-            *)
-              echo "::error::Unsupported model provider: $model_provider"
-              exit 1
-              ;;
-          esac
+          if [ "$HARBOR_AGENT_IMPL" = "routed" ]; then
+            [ -z "$LC_GATEWAY_KEY" ] && missing+=("LC_GATEWAY_KEY")
+          else
+            case "$model_provider" in
+              anthropic)    [ -z "$ANTHROPIC_API_KEY" ] && missing+=("ANTHROPIC_API_KEY") ;;
+              openai)       [ -z "$OPENAI_API_KEY" ] && missing+=("OPENAI_API_KEY") ;;
+              google_genai) [ -z "$GOOGLE_API_KEY" ] && missing+=("GOOGLE_API_KEY") ;;
+              openrouter)   [ -z "$OPENROUTER_API_KEY" ] && missing+=("OPENROUTER_API_KEY") ;;
+              baseten)      [ -z "$BASETEN_API_KEY" ] && missing+=("BASETEN_API_KEY") ;;
+              fireworks)    [ -z "$FIREWORKS_API_KEY" ] && missing+=("FIREWORKS_API_KEY") ;;
+              ollama)       [ -z "$OLLAMA_API_KEY" ] && missing+=("OLLAMA_API_KEY") ;;
+              groq)         [ -z "$GROQ_API_KEY" ] && missing+=("GROQ_API_KEY") ;;
+              xai)          [ -z "$XAI_API_KEY" ] && missing+=("XAI_API_KEY") ;;
+              nvidia)       [ -z "$NVIDIA_API_KEY" ] && missing+=("NVIDIA_API_KEY") ;;
+              *)
+                echo "::error::Unsupported model provider: $model_provider"
+                exit 1
+                ;;
+            esac
+          fi
 
           # Agent endpoint for `openai:` models, read by the Run Harbor step.
           agent_openai_url="$OPENAI_BASE_URL"
@@ -475,6 +484,10 @@ jobs:
               ;;
           esac
           if [ -n "$HARBOR_OPENAI_ENDPOINT" ]; then
+            if [ "$HARBOR_AGENT_IMPL" = "routed" ]; then
+              echo "::error::routed uses the LangSmith gateway; leave openai_endpoint empty"
+              exit 1
+            fi
             if [ "$model_provider" != "openai" ]; then
               echo "::error::openai_endpoint applies only to openai: models ($HARBOR_MODEL)"
               exit 1
@@ -487,7 +500,7 @@ jobs:
             echo "HARBOR_AGENT_OPENAI_STORE=$agent_openai_store"
           } >> "$GITHUB_ENV"
 
-          if [[ "$HARBOR_DATASET" == *tau3* ]] && [ "$model_provider" != "openai" ] && [ -z "$OPENAI_API_KEY" ]; then
+          if [[ "$HARBOR_DATASET" == *tau3* ]] && { [ "$HARBOR_AGENT_IMPL" = "routed" ] || [ "$model_provider" != "openai" ]; } && [ -z "$OPENAI_API_KEY" ]; then
             missing+=("OPENAI_API_KEY")
           fi
 
@@ -734,6 +747,7 @@ jobs:
           FIREWORKS_API_KEY: ${{ (startsWith(matrix.model, 'fireworks:') || inputs.openai_endpoint == 'fireworks') && secrets.FIREWORKS_API_KEY || '' }}
           GOOGLE_API_KEY: ${{ startsWith(matrix.model, 'google_genai:') && secrets.GOOGLE_API_KEY || '' }}
           GROQ_API_KEY: ${{ startsWith(matrix.model, 'groq:') && secrets.GROQ_API_KEY || '' }}
+          LC_GATEWAY_KEY: ${{ env.HARBOR_AGENT_IMPL == 'routed' && secrets.LC_GATEWAY_KEY || '' }}
           LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
           NVIDIA_API_KEY: ${{ startsWith(matrix.model, 'nvidia:') && secrets.NVIDIA_API_KEY || '' }}
           OLLAMA_API_KEY: ${{ startsWith(matrix.model, 'ollama:') && secrets.OLLAMA_API_KEY || '' }}
@@ -791,6 +805,12 @@ jobs:
             --exclude 'dist' \
             --exclude '*.egg-info' \
             ../partners/quickjs/ "$local_deps_dir/partners/quickjs/"
+
+          if [ "$HARBOR_AGENT_IMPL" = "routed" ]; then
+            rsync -a --delete --exclude '__pycache__' \
+              --include '/__init__.py' --include '/routing/***' --exclude '*' \
+              deepagents_evals/ deepagents_harbor/langgraph_project/deepagents_evals/
+          fi
 
           n_tasks_flag=""
           if [ "$HARBOR_N_TASKS" != "0" ]; then
@@ -1115,23 +1135,30 @@ jobs:
           else
             agent_env_args+=(--agent-env "OPENAI_BASE_URL=$HARBOR_AGENT_OPENAI_URL")
           fi
-          case "$model_provider" in
-            anthropic)    agent_env_args+=(--agent-env 'ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}') ;;
-            openai)       agent_env_args+=(--agent-env "OPENAI_API_KEY=\${$HARBOR_AGENT_OPENAI_KEY}") ;;
-            google_genai) agent_env_args+=(--agent-env 'GOOGLE_API_KEY=${GOOGLE_API_KEY}') ;;
-            openrouter)   agent_env_args+=(--agent-env 'OPENROUTER_API_KEY=${OPENROUTER_API_KEY}') ;;
-            baseten)      agent_env_args+=(--agent-env 'BASETEN_API_KEY=${BASETEN_API_KEY}') ;;
-            fireworks)
-              agent_env_args+=(
-                --agent-env 'FIREWORKS_API_KEY=${FIREWORKS_API_KEY}'
-                --agent-env UV_PRERELEASE=allow
-              )
-              ;;
-            ollama)       agent_env_args+=(--agent-env 'OLLAMA_API_KEY=${OLLAMA_API_KEY}' --agent-env 'OLLAMA_HOST=${OLLAMA_HOST}') ;;
-            groq)         agent_env_args+=(--agent-env 'GROQ_API_KEY=${GROQ_API_KEY}') ;;
-            xai)          agent_env_args+=(--agent-env 'XAI_API_KEY=${XAI_API_KEY}') ;;
-            nvidia)       agent_env_args+=(--agent-env 'NVIDIA_API_KEY=${NVIDIA_API_KEY}') ;;
-          esac
+          if [ "$HARBOR_AGENT_IMPL" = "routed" ]; then
+            agent_env_args+=(--agent-env 'LC_GATEWAY_KEY=${LC_GATEWAY_KEY}')
+            if [ -n "$ROUTING_CONFIG" ]; then
+              agent_env_args+=(--agent-env 'ROUTING_CONFIG=${ROUTING_CONFIG}')
+            fi
+          else
+            case "$model_provider" in
+              anthropic)    agent_env_args+=(--agent-env 'ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}') ;;
+              openai)       agent_env_args+=(--agent-env "OPENAI_API_KEY=\${$HARBOR_AGENT_OPENAI_KEY}") ;;
+              google_genai) agent_env_args+=(--agent-env 'GOOGLE_API_KEY=${GOOGLE_API_KEY}') ;;
+              openrouter)   agent_env_args+=(--agent-env 'OPENROUTER_API_KEY=${OPENROUTER_API_KEY}') ;;
+              baseten)      agent_env_args+=(--agent-env 'BASETEN_API_KEY=${BASETEN_API_KEY}') ;;
+              fireworks)
+                agent_env_args+=(
+                  --agent-env 'FIREWORKS_API_KEY=${FIREWORKS_API_KEY}'
+                  --agent-env UV_PRERELEASE=allow
+                )
+                ;;
+              ollama)       agent_env_args+=(--agent-env 'OLLAMA_API_KEY=${OLLAMA_API_KEY}' --agent-env 'OLLAMA_HOST=${OLLAMA_HOST}') ;;
+              groq)         agent_env_args+=(--agent-env 'GROQ_API_KEY=${GROQ_API_KEY}') ;;
+              xai)          agent_env_args+=(--agent-env 'XAI_API_KEY=${XAI_API_KEY}') ;;
+              nvidia)       agent_env_args+=(--agent-env 'NVIDIA_API_KEY=${NVIDIA_API_KEY}') ;;
+            esac
+          fi
 
           echo "LangSmith plugin experiment: $HARBOR_LANGSMITH_EXPERIMENT"
           echo "Agent implementation: $HARBOR_AGENT_GRAPH"

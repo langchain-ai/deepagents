@@ -365,3 +365,47 @@ def test_real_config_has_no_unmapped_provider() -> None:
                 "PROVIDER_TO_PACKAGE; add it (and wire harbor.yml) or add it to "
                 "NON_PROVIDER_LANGCHAIN_PACKAGES if it is core/infra."
             )
+
+
+def test_routed_graph_keeps_ladder_and_decision_providers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The routed graph needs both providers regardless of the model label."""
+    config_path = tmp_path / "langgraph.json"
+    deps = _real_dependencies()
+    _write_config(config_path, deps)
+    monkeypatch.setenv("HARBOR_AGENT_IMPL", "routed")
+    monkeypatch.setenv("HARBOR_MODEL", "fireworks:example")
+    monkeypatch.setattr("sys.argv", [str(PRUNE_SCRIPT), str(config_path)])
+
+    prune.main()
+
+    written = json.loads(config_path.read_text())
+    assert written["dependencies"] == [
+        dep
+        for dep in deps
+        if prune.dependency_package(dep) not in prune.PRUNABLE_PACKAGES
+        or prune.dependency_package(dep) in {"langchain-anthropic", "langchain-openai"}
+    ]
+    assert written["graphs"] == {"g": "x:y"}
+
+
+@pytest.mark.parametrize("package", ["langchain-anthropic", "langchain-openai"])
+def test_routed_graph_rejects_missing_provider_without_writing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, package: str
+) -> None:
+    """A partial ladder installation fails before altering the config."""
+    config_path = tmp_path / "langgraph.json"
+    deps = [
+        dep for dep in _real_dependencies() if prune.dependency_package(dep) != package
+    ]
+    _write_config(config_path, deps)
+    original = config_path.read_text()
+    monkeypatch.setenv("HARBOR_AGENT_IMPL", "routed")
+    monkeypatch.setenv("HARBOR_MODEL", "anthropic:example")
+    monkeypatch.setattr("sys.argv", [str(PRUNE_SCRIPT), str(config_path)])
+
+    with pytest.raises(SystemExit, match=package):
+        prune.main()
+
+    assert config_path.read_text() == original

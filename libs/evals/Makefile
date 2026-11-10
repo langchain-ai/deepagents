@@ -58,6 +58,7 @@ stage-harbor-local-deps: ## Stage checked-out packages for Harbor LangGraph sand
 	rsync -a --delete --exclude '.venv' --exclude '__pycache__' --exclude '.pytest_cache' --exclude 'build' --exclude 'dist' --exclude '*.egg-info' ../code/ $(HARBOR_LOCAL_DEPS_DIR)/deepagents-code/
 	rsync -a --delete --exclude '.venv' --exclude '__pycache__' --exclude '.pytest_cache' --exclude 'build' --exclude 'dist' --exclude '*.egg-info' ../acp/ $(HARBOR_LOCAL_DEPS_DIR)/acp/
 	rsync -a --delete --exclude '.venv' --exclude '__pycache__' --exclude '.pytest_cache' --exclude 'build' --exclude 'dist' --exclude '*.egg-info' ../partners/quickjs/ $(HARBOR_LOCAL_DEPS_DIR)/partners/quickjs/
+	rsync -a --delete --exclude '__pycache__' --include '/__init__.py' --include '/routing/***' --exclude '*' deepagents_evals/ $(HARBOR_LANGGRAPH_PROJECT)/deepagents_evals/
 
 run-hello-world: stage-harbor-local-deps ## Run hello-world job (override model with MODEL=<id>)
 	@mkdir -p $(HARBOR_HELLO_WORLD_JOBS_DIR)

@@ -15,6 +15,9 @@ from typing import Any
 
 import pytest
 from deepagents import create_deep_agent
+from deepagents.middleware import FilesystemMiddleware
+from langchain.agents import create_agent
+from langchain.agents.middleware import TodoListMiddleware
 from langchain.tools import (
     ToolRuntime,  # noqa: TC002  # tool decorator resolves type hints at import time
 )
@@ -259,3 +262,30 @@ async def test_quickjs_async_parallel_agents() -> None:
         tool_message = _eval_tool_message(result)
         _assert_result_contains(tool_message.content, str(index * 10))
         assert result["messages"][-1].content == f"done-{index}"
+
+
+async def test_deepagent_applies_ptc_tool_state_updates() -> None:
+    """`Command` state updates from `tools.*` calls are applied to the graph."""
+    code = (
+        "await tools.writeTodos({todos: [{content: 'a', status: 'pending'}]});\n"
+        "await tools.writeTodos({todos: [{content: 'b', status: 'pending'}]});\n"
+        "await tools.writeFile({file_path: '/one.txt', content: '1'});\n"
+        "await tools.writeFile({file_path: '/two.txt', content: '2'});\n"
+        "'ok'"
+    )
+    agent = create_agent(
+        model=FakeChatModel(messages=_script(code)),
+        middleware=[
+            TodoListMiddleware(),
+            FilesystemMiddleware(),
+            CodeInterpreterMiddleware(ptc=["write_todos", "write_file"]),
+        ],
+    )
+    result = await agent.ainvoke({"messages": [HumanMessage(content="Plan")]})
+
+    _assert_result_contains(_eval_tool_message(result).content, "ok")
+    assert result["todos"] == [{"content": "b", "status": "pending"}]
+    assert {"/one.txt", "/two.txt"} <= set(result["files"])
+    assert [m.name for m in result["messages"] if isinstance(m, ToolMessage)] == [
+        "eval"
+    ]

@@ -92,6 +92,8 @@ class EvalOutcome:
     error_type: str | None = None
     error_message: str = ""
     error_stack: str | None = None
+    state_update: dict[str, Any] = field(default_factory=dict)
+    """Graph state updates from `Command`s returned by `tools.*` calls."""
 
 
 class _SnapshotRestoreError(RuntimeError):
@@ -129,31 +131,6 @@ class _TaskBridgeError(RuntimeError):
         super().__init__(self.error_message)
 
 
-class _PTCStateUpdateError(RuntimeError):
-    """Raised when a `tools.*` call returns a `Command` that updates state.
-
-    PTC calls stay inside `eval`, so their state updates can't be applied.
-    Failing the eval beats reporting success and dropping the update.
-    """
-
-    def __init__(self, *, function_name: str, keys: list[str]) -> None:
-        msg = (
-            f"{function_name} returned a state update ({', '.join(keys)}) that "
-            "can't be applied from eval. Call the tool directly instead."
-        )
-        super().__init__(msg)
-
-
-def _raise_on_state_update(function_name: str, result: object) -> None:
-    """Reject `Command` results that update keys other than `messages`."""
-    commands = result if isinstance(result, list) else [result]
-    for command in commands:
-        if isinstance(command, Command) and isinstance(command.update, dict):
-            keys = sorted(set(command.update) - {"messages"})
-            if keys:
-                raise _PTCStateUpdateError(function_name=function_name, keys=keys)
-
-
 @dataclass(frozen=True, slots=True)
 class _PTCState:
     """Per-eval PTC state (reset on each eval call)."""
@@ -161,6 +138,7 @@ class _PTCState:
     remaining_calls: int | None
     outer_runtime: ToolRuntime | None = None
     outer_loop: asyncio.AbstractEventLoop | None = None
+    state_update: dict[str, Any] = field(default_factory=dict)
     task_dispatch_count: int = 0
     """Ordinal for the next `task()` dispatch in this eval.
 
@@ -184,6 +162,28 @@ class _PTCState:
             attempted=normalized_limit + 1,
             function_name=function_name,
         )
+
+
+def _merge_state_update(update: dict[str, Any], result: object) -> dict[str, Any]:
+    """Fold the state updates of `Command`s in a tool result into *update*.
+
+    `messages` are left out: JS already sees the tool's content, and the
+    eval's own `ToolMessage` is what lands in history. Dict values are
+    merged so repeated writes to keyed channels (`files`, `async_tasks`)
+    all survive; other values take the latest write.
+    """
+    entries = result if isinstance(result, list) else [result]
+    merged = dict(update)
+    for entry in entries:
+        if not isinstance(entry, Command) or not isinstance(entry.update, dict):
+            continue
+        for key, value in entry.update.items():
+            if key == "messages":
+                continue
+            prior = merged.get(key)
+            both_dicts = isinstance(prior, dict) and isinstance(value, dict)
+            merged[key] = {**prior, **value} if both_dicts else value
+    return merged
 
 
 class _ConsoleBuffer:
@@ -737,7 +737,13 @@ class _ThreadREPL:
                 outer_runtime=state.outer_runtime,
                 outer_loop=state.outer_loop,
             )
-            _raise_on_state_update(f"tools.{camel}", result)
+            current = self._ptc_state
+            if current is None:
+                msg = "PTC bridge called outside active eval"
+                raise ConcurrentEvalError(msg)
+            self._ptc_state = replace(
+                current, state_update=_merge_state_update(current.state_update, result)
+            )
             return coerce_tool_output_for_ptc(result)
 
         bridge_symbol = _bridge_symbol_name(camel)
@@ -901,10 +907,6 @@ class _ThreadREPL:
             outcome.error_type = "PTCCallBudgetExceeded"
             outcome.error_message = e.render_message()
             _clear_exception_references(e)
-        except _PTCStateUpdateError as e:
-            outcome.error_type = "PTCStateUpdate"
-            outcome.error_message = str(e)
-            _clear_exception_references(e)
         except QJSTimeoutError as e:
             outcome.error_type = "Timeout"
             outcome.error_message = str(e)
@@ -939,6 +941,8 @@ class _ThreadREPL:
             outcome.error_message = e.error_message
             _clear_exception_references(e)
         finally:
+            if self._ptc_state is not None:
+                outcome.state_update = self._ptc_state.state_update
             self._ptc_state = prev_ptc_state
             outcome.stdout, outcome.stdout_truncated_chars = self._console.drain()
         return outcome

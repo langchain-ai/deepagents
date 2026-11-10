@@ -2446,6 +2446,60 @@ class TestCreateCliAgentMemorySources:
         assert sources == [str(agent_dir / "AGENTS.md")]
 
 
+class TestCreateCliAgentGitAttribution:
+    """`tracing.git_attribution` controls whether git probing middleware runs."""
+
+    @pytest.mark.parametrize(
+        ("value", "expected"), [(None, True), ("false", False), ("", False)]
+    )
+    def test_opt_out_omits_git_trace_middleware(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        value: str | None,
+        expected: bool,
+    ) -> None:
+        from deepagents_code import _env_vars
+        from deepagents_code.git_trace import GitTraceMiddleware
+
+        if value is None:
+            monkeypatch.delenv(_env_vars.GIT_ATTRIBUTION, raising=False)
+        else:
+            monkeypatch.setenv(_env_vars.GIT_ATTRIBUTION, value)
+        mock_agent = Mock()
+        mock_agent.with_config.return_value = mock_agent
+        with (
+            patch(
+                "deepagents_code.agent.credentials",
+                TestCreateCliAgentMemoryAutoSave._mock_settings(tmp_path),
+            ),
+            patch("deepagents_code.agent.PluginSkillsMiddleware"),
+            patch(
+                "deepagents_code.agent.create_deep_agent", return_value=mock_agent
+            ) as create,
+            patch(
+                "deepagents._models.init_chat_model",
+                return_value=_make_fake_chat_model(),
+            ),
+        ):
+            create_cli_agent(
+                model="fake-model",
+                assistant_id="test",
+                enable_memory=False,
+                enable_skills=False,
+                enable_shell=False,
+            )
+        kwargs = create.call_args.kwargs
+        stacks = [kwargs["middleware"]] + [
+            subagent.get("middleware", []) for subagent in kwargs["subagents"] or []
+        ]
+        assert stacks
+        assert all(
+            any(isinstance(item, GitTraceMiddleware) for item in stack) is expected
+            for stack in stacks
+        )
+
+
 class TestCreateCliAgentMemoryAutoSave:
     """Test that `memory_auto_save` selects the memory prompt variant."""
 

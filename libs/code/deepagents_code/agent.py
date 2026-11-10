@@ -115,6 +115,7 @@ from deepagents_code.config import (
     get_default_coding_instructions,
     get_glyphs,
     get_langsmith_project_name,
+    is_git_attribution_enabled,
     restore_user_langsmith_env,
     runtime_state,
 )
@@ -2832,7 +2833,11 @@ def create_cli_agent(
         if effective_cwd is not None
         else ""
     )
-    git_trace = GitTraceMiddleware(lambda: backend, trace_cwd)
+    git_trace: list[AgentMiddleware[Any, Any]] = (
+        [GitTraceMiddleware(lambda: backend, trace_cwd)]
+        if is_git_attribution_enabled()
+        else []
+    )
 
     # Setup agent directory for persistent memory (if enabled)
     if enable_memory or enable_skills:
@@ -2893,7 +2898,7 @@ def create_cli_agent(
     ) -> list[AgentMiddleware[Any, Any]]:
         from deepagents_code.cost_tracking import CostTrackingMiddleware
 
-        middleware: list[AgentMiddleware[Any, Any]] = [git_trace]
+        middleware: list[AgentMiddleware[Any, Any]] = [*git_trace]
         if resolved_interrupt_on is not None:
             middleware.append(AsyncApprovalHITLMiddleware(resolved_interrupt_on))
         if not has_explicit_model:
@@ -3074,7 +3079,7 @@ def create_cli_agent(
 
     # Build middleware stack based on enabled features
     agent_middleware: list[AgentMiddleware[Any, Any]] = [
-        git_trace,
+        *git_trace,
         ConfigurableModelMiddleware(
             cli_max_retries=cli_max_retries,
             environ=environment,

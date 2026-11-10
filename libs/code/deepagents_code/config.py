@@ -4703,6 +4703,24 @@ def is_openai_prompt_cache_key_enabled() -> bool:
     return bool(resolved.value)
 
 
+def is_git_attribution_enabled() -> bool:
+    """Return whether traces may be labeled with the checkout the agent changed.
+
+    Resolves the `tracing.git_attribution` option from env/`config.toml`,
+    defaulting to enabled. When disabled, the agent omits `GitTraceMiddleware`,
+    so no git inspection subprocesses run around tool calls.
+    """
+    from deepagents_code.config_manifest import _emit_ranked_diagnostics, get_option
+    from deepagents_code.configuration.resolver import get_config_resolver
+
+    option = get_option("tracing.git_attribution")
+    if option is None:
+        return True
+    resolved = get_config_resolver().get(option)
+    _emit_ranked_diagnostics(option, resolved)
+    return bool(resolved.value)
+
+
 def resolve_auto_classifier_model_with_problem() -> tuple[str | None, str | None]:
     """Resolve the Auto classifier spec and any reason it was ignored.
 

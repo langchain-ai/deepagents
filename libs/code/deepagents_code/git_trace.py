@@ -6,6 +6,7 @@ import asyncio
 import logging
 import operator
 import threading
+import time
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, override
@@ -19,8 +20,10 @@ from langchain.agents.middleware.types import (
 )
 from langgraph.config import get_config
 
+from deepagents_code import _env_vars
 from deepagents_code.git_evidence import (
     GitSnapshot,
+    _candidate_paths,
     aprobe_git,
     changed_snapshots,
     probe_git,
@@ -40,6 +43,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 _MAX_THREADS = 64
+_FAILURE_LIMIT = 3
+_COOLDOWN_SECONDS = 30.0
 
 
 def _observes_checkout(request: ToolCallRequest) -> bool:
@@ -73,17 +78,53 @@ class _Turn:
     targets: dict[tuple[str, str], tuple[int, GitSnapshot]] = field(
         default_factory=dict
     )
+    baseline: dict[str, tuple[int, GitSnapshot]] = field(default_factory=dict)
+    covered: set[str] = field(default_factory=set)
     sequence: int = 0
+    probes: int = 0
     lock: threading.RLock = field(default_factory=threading.RLock)
 
-    def record(
-        self, before: list[GitSnapshot], after: list[GitSnapshot], order: int
-    ) -> None:
+    def covers(self, paths: tuple[str, ...] | None) -> bool:
         with self.lock:
-            for snapshot in changed_snapshots(before, after):
+            return paths is not None and self.covered.issuperset(paths)
+
+    def start(self) -> int:
+        with self.lock:
+            self.probes += 1
+            return self.probes
+
+    def observe(
+        self,
+        snapshots: list[GitSnapshot],
+        probe: int,
+        order: int,
+        *,
+        created: bool,
+    ) -> None:
+        """Attribute changes since the newest older snapshot of each checkout."""
+        with self.lock:
+            fresh = [
+                snapshot
+                for snapshot in snapshots
+                if (known := self.baseline.get(snapshot.root)) is None
+                or known[0] < probe
+            ]
+            previous = [
+                self.baseline[snapshot.root][1]
+                for snapshot in fresh
+                if snapshot.root in self.baseline
+            ]
+            candidates = [
+                snapshot
+                for snapshot in fresh
+                if created or snapshot.root in self.baseline
+            ]
+            for snapshot in changed_snapshots(previous, candidates):
                 if snapshot.repository is not None:
                     key = (snapshot.repository.name, snapshot.branch)
                     self.targets.setdefault(key, (order, snapshot))
+            for snapshot in fresh:
+                self.baseline[snapshot.root] = (probe, snapshot)
 
     def metadata(self) -> dict[str, object]:
         with self.lock:
@@ -112,7 +153,13 @@ class _Turn:
 
 
 class GitTraceMiddleware(AgentMiddleware[AgentState, ContextT]):
-    """Observe backend work and backfill only the initiating user turn."""
+    """Observe backend work and backfill only the initiating user turn.
+
+    Each observing tool call compares a snapshot taken after it runs with the
+    newest earlier snapshot from the same turn, so a probe before the call is
+    only needed when its arguments reach paths the turn has not inspected yet.
+    Repeated probe failures back off and then disable probing for the session.
+    """
 
     trace_policy = TracePolicy(process_inputs=omit_payload)
 
@@ -122,6 +169,9 @@ class GitTraceMiddleware(AgentMiddleware[AgentState, ContextT]):
         self._cwd = cwd
         self._turns: OrderedDict[str, tuple[str, _Turn]] = OrderedDict()
         self._lock = threading.RLock()
+        self._failures = 0
+        self._resume_at = 0.0
+        self._disabled = False
 
     def _turn(self, config: RunnableConfig) -> _Turn | None:
         try:
@@ -146,29 +196,80 @@ class GitTraceMiddleware(AgentMiddleware[AgentState, ContextT]):
             logger.debug("Could not capture git attribution turn", exc_info=True)
             return None
 
+    def _ready(self) -> bool:
+        with self._lock:
+            return not self._disabled and time.monotonic() >= self._resume_at
+
+    def _succeeded(self) -> None:
+        with self._lock:
+            self._failures = 0
+
+    def _failed(self, error: Exception) -> None:
+        logger.debug("Could not inspect git attribution evidence", exc_info=error)
+        with self._lock:
+            self._failures += 1
+            if self._disabled or (
+                self._failures < _FAILURE_LIMIT
+                and not isinstance(error, NotImplementedError)
+            ):
+                cooldown = _COOLDOWN_SECONDS * 2 ** (self._failures - 1)
+                self._resume_at = time.monotonic() + cooldown
+                return
+            self._disabled = True
+        logger.info(
+            "Git trace attribution disabled for this session after %d failed "
+            "probe(s) (%s); set %s=false or [tracing].git_attribution = false "
+            "to skip it entirely",
+            self._failures,
+            type(error).__name__,
+            _env_vars.GIT_ATTRIBUTION,
+        )
+
+    def _location(self) -> tuple[BackendProtocol, str]:
+        backend = self._backend()
+        return backend, self._cwd or str(getattr(backend, "cwd", ""))
+
+    def _paths(self, args: Mapping[str, object]) -> tuple[str, ...] | None:
+        try:
+            _, cwd = self._location()
+            return tuple(_candidate_paths(cwd, args)) if cwd else None
+        except Exception:
+            logger.debug("Could not resolve git attribution paths", exc_info=True)
+            return None
+
     def _probe(
         self, args: Mapping[str, object] | None = None
     ) -> list[GitSnapshot] | None:
-        try:
-            backend = self._backend()
-            cwd = self._cwd or str(getattr(backend, "cwd", ""))
-            return probe_git(backend, cwd, args) if cwd else None
-        except Exception:
-            logger.debug("Could not inspect git attribution evidence", exc_info=True)
+        if not self._ready():
             return None
+        try:
+            backend, cwd = self._location()
+            if not cwd:
+                return None
+            snapshots = probe_git(backend, cwd, args)
+        except Exception as error:  # noqa: BLE001  # Telemetry never breaks tools.
+            self._failed(error)
+            return None
+        self._succeeded()
+        return snapshots
 
     async def _aprobe(
         self, args: Mapping[str, object] | None = None
     ) -> list[GitSnapshot] | None:
+        if not self._ready():
+            return None
         try:
-            backend = self._backend()
-            cwd = self._cwd or str(getattr(backend, "cwd", ""))
+            backend, cwd = self._location()
             if not cwd:
                 return None
-            return await asyncio.wait_for(aprobe_git(backend, cwd, args), timeout=10)
-        except Exception:
-            logger.debug("Could not inspect git attribution evidence", exc_info=True)
+            snapshots = await asyncio.wait_for(
+                aprobe_git(backend, cwd, args), timeout=10
+            )
+        except Exception as error:  # noqa: BLE001  # Telemetry never breaks tools.
+            self._failed(error)
             return None
+        self._succeeded()
+        return snapshots
 
     @staticmethod
     def _update(turn: _Turn) -> None:
@@ -187,18 +288,29 @@ class GitTraceMiddleware(AgentMiddleware[AgentState, ContextT]):
             return turn.sequence
 
     @staticmethod
-    def _record(
+    def _observe(
         turn: _Turn,
-        before: list[GitSnapshot] | None,
-        after: list[GitSnapshot] | None,
+        snapshots: list[GitSnapshot] | None,
+        probe: int,
         order: int,
+        paths: tuple[str, ...] | None,
+        *,
+        created: bool,
     ) -> None:
-        if before is None or after is None:
+        if snapshots is None:
             return
         try:
-            turn.record(before, after, order)
+            turn.observe(snapshots, probe, order, created=created)
+            if paths is not None:
+                with turn.lock:
+                    turn.covered.update(paths)
         except Exception:
             logger.debug("Could not retain git attribution evidence", exc_info=True)
+
+    def _begin(self, request: ToolCallRequest) -> _Turn | None:
+        if not _observes_checkout(request) or not self._ready():
+            return None
+        return self._turn(request.runtime.config)
 
     @override
     def before_agent(self, state: AgentState, runtime: Runtime[ContextT]) -> None:
@@ -230,21 +342,24 @@ class GitTraceMiddleware(AgentMiddleware[AgentState, ContextT]):
         request: ToolCallRequest,
         handler: Callable[[ToolCallRequest], ToolMessage | Command[object]],
     ) -> ToolMessage | Command[object]:
-        """Compare actual backend checkouts around tool execution.
+        """Compare actual backend checkouts after tool execution.
 
         Returns:
             The unchanged tool result.
         """
-        if not _observes_checkout(request):
-            return handler(request)
-        turn = self._turn(request.runtime.config)
+        turn = self._begin(request)
         if turn is None:
             return handler(request)
         order = self._order(turn)
         args = request.tool_call["args"]
-        before = self._probe(args)
+        paths = self._paths(args)
+        if not turn.covers(paths):
+            probe = turn.start()
+            self._observe(turn, self._probe(args), probe, order, paths, created=False)
+        created = turn.covers(paths)
         result = handler(request)
-        self._record(turn, before, self._probe(args), order)
+        probe = turn.start()
+        self._observe(turn, self._probe(args), probe, order, paths, created=created)
         return result
 
     @override
@@ -258,14 +373,19 @@ class GitTraceMiddleware(AgentMiddleware[AgentState, ContextT]):
         Returns:
             The unchanged tool result.
         """
-        if not _observes_checkout(request):
-            return await handler(request)
-        turn = self._turn(request.runtime.config)
+        turn = self._begin(request)
         if turn is None:
             return await handler(request)
         order = self._order(turn)
         args = request.tool_call["args"]
-        before = await self._aprobe(args)
+        paths = self._paths(args)
+        if not turn.covers(paths):
+            probe = turn.start()
+            snapshots = await self._aprobe(args)
+            self._observe(turn, snapshots, probe, order, paths, created=False)
+        created = turn.covers(paths)
         result = await handler(request)
-        self._record(turn, before, await self._aprobe(args), order)
+        probe = turn.start()
+        snapshots = await self._aprobe(args)
+        self._observe(turn, snapshots, probe, order, paths, created=created)
         return result

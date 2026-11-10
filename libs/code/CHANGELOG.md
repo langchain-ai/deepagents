@@ -4,24 +4,19 @@
 
 ## [0.2.7](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.2.6...deepagents-code==0.2.7) (2026-11-10)
 
-
 ### Features
 
-* **code:** add shell completion scripts via `dcode completion` ([#7264](https://github.com/langchain-ai/deepagents/issues/7264)) ([41b8cdb](https://github.com/langchain-ai/deepagents/commit/41b8cdbf1c2f764e9cd8da8182094befb3859910))
-
+- Added shell completion scripts via `dcode completion` ([#7264](https://github.com/langchain-ai/deepagents/pull/7264)).
 
 ### Bug Fixes
 
-* **code:** complete `--flag=value` in bash ([#7656](https://github.com/langchain-ai/deepagents/issues/7656)) ([c41e786](https://github.com/langchain-ai/deepagents/commit/c41e7865048fe5de9ac2cdddd3fc6884151981cb))
-* **code:** find editor launchers like `code.cmd` on Windows ([#7642](https://github.com/langchain-ai/deepagents/issues/7642)) ([1ea2055](https://github.com/langchain-ai/deepagents/commit/1ea2055a7615b647cc1961a68b9742b88aef731a))
-* **code:** harden `dcode completion` output and setup steps ([#7658](https://github.com/langchain-ai/deepagents/issues/7658)) ([277c8b5](https://github.com/langchain-ai/deepagents/commit/277c8b5d16dcf8d7af8b6f81bd87e8797f552856))
-* **code:** keep compaction feedback and offload usage when summaries don't stream ([#7644](https://github.com/langchain-ai/deepagents/issues/7644)) ([0edc892](https://github.com/langchain-ai/deepagents/commit/0edc892d2b260199f9dd3a55ae1130b947f260e7))
-
+- Fixed detection of editor launchers such as `code.cmd` on Windows ([#7642](https://github.com/langchain-ai/deepagents/pull/7642)).
+- Improved `dcode completion` output and setup steps, and fixed Bash completion for `--flag=value` arguments ([#7658](https://github.com/langchain-ai/deepagents/pull/7658), [#7656](https://github.com/langchain-ai/deepagents/pull/7656)).
+- Preserved compaction feedback and offload usage when summaries do not stream ([#7644](https://github.com/langchain-ai/deepagents/pull/7644)).
 
 ### Performance Improvements
 
-* **code:** halve git attribution probes, back off on failures, add opt-out ([#7661](https://github.com/langchain-ai/deepagents/issues/7661)) ([7ffdf97](https://github.com/langchain-ai/deepagents/commit/7ffdf97fe3351a774d1ba25e295b94c85837f60a))
-* **code:** scan the worktree once per git evidence probe ([#7660](https://github.com/langchain-ai/deepagents/issues/7660)) ([172814d](https://github.com/langchain-ai/deepagents/commit/172814d25a58f22c0e6da2b88714ca493853e04a))
+- Reduced Git attribution overhead by halving probes, backing off after failures, and scanning the worktree only once per evidence probe. Added an option to disable attribution probes ([#7661](https://github.com/langchain-ai/deepagents/pull/7661), [#7660](https://github.com/langchain-ai/deepagents/pull/7660)).
 
 ## [0.2.6](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.2.5...deepagents-code==0.2.6) (2026-11-09)
 

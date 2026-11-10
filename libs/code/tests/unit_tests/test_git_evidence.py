@@ -141,3 +141,54 @@ def test_unknown_probe_is_not_a_valid_empty_workspace(
     monkeypatch.setattr(backend, "execute", Mock(return_value=response))
     with pytest.raises(ValueError, match=r"Git evidence|Expecting value"):
         probe_git(backend, str(tmp_path))
+
+
+def probe_backend(root: Path, sandbox: bool) -> FilesystemBackend:
+    if sandbox:
+        return LocalShellBackend(root_dir=root)
+    return FilesystemBackend(root_dir=root, virtual_mode=False)
+
+
+@pytest.mark.parametrize("sandbox", [False, True])
+def test_in_place_edits_to_dirty_untracked_and_renamed_files(
+    tmp_path: Path, sandbox: bool
+) -> None:
+    root = repository(tmp_path / "repo")
+    backend = probe_backend(root, sandbox)
+    git(root, "mv", "file.txt", "renamed with space.txt")
+    (root / "new dir").mkdir()
+    (root / "new dir" / "notes.txt").write_text("draft\n")
+    before = probe_git(backend, str(root))
+    assert changed_snapshots(before, probe_git(backend, str(root))) == []
+    (root / "new dir" / "notes.txt").write_text("edit\n")
+    untracked = probe_git(backend, str(root))
+    assert changed_snapshots(before, untracked) == untracked
+    (root / "renamed with space.txt").write_text("edited\n")
+    renamed = probe_git(backend, str(root))
+    assert changed_snapshots(untracked, renamed) == renamed
+
+
+@pytest.mark.parametrize("sandbox", [False, True])
+def test_detached_and_unborn_heads(tmp_path: Path, sandbox: bool) -> None:
+    root = repository(tmp_path / "repo")
+    commit = git(root, "rev-parse", "HEAD")
+    git(root, "switch", "--detach")
+    [detached] = probe_git(probe_backend(root, sandbox), str(root))
+    assert (detached.branch, detached.commit) == ("HEAD", commit)
+    unborn = tmp_path / "unborn"
+    unborn.mkdir()
+    git(unborn, "init", "-b", "trunk")
+    [empty] = probe_git(probe_backend(unborn, sandbox), str(unborn))
+    assert (empty.branch, empty.commit) == ("trunk", "")
+
+
+@pytest.mark.parametrize("sandbox", [False, True])
+def test_ignores_repository_fsmonitor(tmp_path: Path, sandbox: bool) -> None:
+    root = repository(tmp_path / "repo")
+    marker = tmp_path / "queried"
+    hook = tmp_path / "fsmonitor.sh"
+    hook.write_text(f"#!/bin/sh\ntouch '{marker}'\nexit 1\n")
+    hook.chmod(0o755)
+    git(root, "config", "core.fsmonitor", str(hook))
+    assert probe_git(probe_backend(root, sandbox), str(root))
+    assert not marker.exists()

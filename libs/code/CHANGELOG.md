@@ -2,6 +2,22 @@
 
 # Deep Agents Code Changelog
 
+## [0.2.7](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.2.6...deepagents-code==0.2.7) (2026-11-10)
+
+### Features
+
+- Added shell completion scripts via `dcode completion` ([#7264](https://github.com/langchain-ai/deepagents/pull/7264)).
+
+### Bug Fixes
+
+- Fixed detection of editor launchers such as `code.cmd` on Windows ([#7642](https://github.com/langchain-ai/deepagents/pull/7642)).
+- Improved `dcode completion` output and setup steps, and fixed Bash completion for `--flag=value` arguments ([#7658](https://github.com/langchain-ai/deepagents/pull/7658), [#7656](https://github.com/langchain-ai/deepagents/pull/7656)).
+- Preserved compaction feedback and offload usage when summaries do not stream ([#7644](https://github.com/langchain-ai/deepagents/pull/7644)).
+
+### Performance Improvements
+
+- Reduced Git attribution overhead by halving probes, backing off after failures, and scanning the worktree only once per evidence probe. Added an option to disable attribution probes ([#7661](https://github.com/langchain-ai/deepagents/pull/7661), [#7660](https://github.com/langchain-ai/deepagents/pull/7660)).
+
 ## [0.2.6](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.2.5...deepagents-code==0.2.6) (2026-11-09)
 
 ### Features

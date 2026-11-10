@@ -227,6 +227,16 @@ class TestBashCompletion:
         assert "completion" in candidates
         assert "list" not in candidates
 
+    def test_flag_value_lookup_is_per_command(self, bash_script) -> None:
+        # `--project` takes a value under `auth set` but is a switch under
+        # `skills list`, so only `auth set` should wait for a value.
+        skills = self._complete(
+            bash_script, ["dcode", "skills", "list", "--project", ""], 4
+        )
+        assert "--json" in skills
+        auth = self._complete(bash_script, ["dcode", "auth", "set", "--project", ""], 4)
+        assert auth == []
+
     def test_positional_choices(self, bash_script) -> None:
         candidates = self._complete(bash_script, ["dcode", "completion", ""], 2)
         assert set(candidates) >= set(SHELLS)

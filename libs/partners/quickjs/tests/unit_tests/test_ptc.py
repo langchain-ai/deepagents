@@ -730,7 +730,7 @@ async def test_ptc_install_and_eval_resolve_to_same_repl() -> None:
         mw._registry.close()
 
 
-async def test_middleware_eval_tool_returns_tool_message_only() -> None:
+async def test_middleware_eval_tool_applies_ptc_state_update() -> None:
     from types import SimpleNamespace
 
     command_tool = _command_tool()
@@ -752,9 +752,13 @@ async def test_middleware_eval_tool_returns_tool_message_only() -> None:
         runtime=runtime,
         code="await tools.emitCommand({value: 5})",
     )
-    assert isinstance(result, ToolMessage)
-    assert result.name == "eval"
-    assert "<result>value=5</result>" in result.content
+    assert isinstance(result, Command)
+    assert isinstance(result.update, dict)
+    assert result.update["ptc_values"] == [5]
+    [message] = result.update["messages"]
+    assert message.name == "eval"
+    assert message.tool_call_id == "outer_eval_call"
+    assert "<result>value=5</result>" in message.content
 
 
 async def test_mode_call_reinstalls_ptc_tools_for_each_eval_call() -> None:

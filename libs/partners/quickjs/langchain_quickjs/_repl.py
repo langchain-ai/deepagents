@@ -23,6 +23,7 @@ from langchain_core.tools.base import (
 )
 from langgraph.errors import GraphInterrupt
 from langgraph.prebuilt.tool_node import _get_all_injected_args
+from langgraph.types import Command
 from quickjs_rs import (
     UNDEFINED,
     ConcurrentEvalError,
@@ -91,6 +92,8 @@ class EvalOutcome:
     error_type: str | None = None
     error_message: str = ""
     error_stack: str | None = None
+    state_update: dict[str, Any] = field(default_factory=dict)
+    """Graph state updates from `Command`s returned by `tools.*` calls."""
 
 
 class _SnapshotRestoreError(RuntimeError):
@@ -135,6 +138,7 @@ class _PTCState:
     remaining_calls: int | None
     outer_runtime: ToolRuntime | None = None
     outer_loop: asyncio.AbstractEventLoop | None = None
+    state_update: dict[str, Any] = field(default_factory=dict)
     task_dispatch_count: int = 0
     """Ordinal for the next `task()` dispatch in this eval.
 
@@ -158,6 +162,28 @@ class _PTCState:
             attempted=normalized_limit + 1,
             function_name=function_name,
         )
+
+
+def _merge_state_update(update: dict[str, Any], result: object) -> dict[str, Any]:
+    """Fold the state updates of `Command`s in a tool result into *update*.
+
+    `messages` are left out: JS already sees the tool's content, and the
+    eval's own `ToolMessage` is what lands in history. Dict values are
+    merged so repeated writes to keyed channels (`files`, `async_tasks`)
+    all survive; other values take the latest write.
+    """
+    entries = result if isinstance(result, list) else [result]
+    merged = dict(update)
+    for entry in entries:
+        if not isinstance(entry, Command) or not isinstance(entry.update, dict):
+            continue
+        for key, value in entry.update.items():
+            if key == "messages":
+                continue
+            prior = merged.get(key)
+            both_dicts = isinstance(prior, dict) and isinstance(value, dict)
+            merged[key] = {**prior, **value} if both_dicts else value
+    return merged
 
 
 class _ConsoleBuffer:
@@ -711,6 +737,13 @@ class _ThreadREPL:
                 outer_runtime=state.outer_runtime,
                 outer_loop=state.outer_loop,
             )
+            current = self._ptc_state
+            if current is None:
+                msg = "PTC bridge called outside active eval"
+                raise ConcurrentEvalError(msg)
+            self._ptc_state = replace(
+                current, state_update=_merge_state_update(current.state_update, result)
+            )
             return coerce_tool_output_for_ptc(result)
 
         bridge_symbol = _bridge_symbol_name(camel)
@@ -908,6 +941,8 @@ class _ThreadREPL:
             outcome.error_message = e.error_message
             _clear_exception_references(e)
         finally:
+            if self._ptc_state is not None:
+                outcome.state_update = self._ptc_state.state_update
             self._ptc_state = prev_ptc_state
             outcome.stdout, outcome.stdout_truncated_chars = self._console.drain()
         return outcome

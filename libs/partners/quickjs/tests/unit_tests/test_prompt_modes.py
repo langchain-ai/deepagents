@@ -90,6 +90,7 @@ def test_render_eval_tool_description_mode_specific(
     description = render_eval_tool_description(mode=mode)
     assert expected_fragment in description
     assert "Top-level `await` is supported" in description
+    assert "Only one call can run at a time" in description
     assert "will not resolve" not in description
     assert description.startswith("Execute JavaScript in a sandboxed REPL.")
 

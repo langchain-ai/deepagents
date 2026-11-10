@@ -361,6 +361,7 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         ) -> ToolMessage | Command:
             slot_id = middleware._slot_id(runtime.state)
             repl = middleware._repl_for_eval(slot_id)
+            outcome: EvalOutcome | None = None
             try:
                 outcome = repl.eval_sync(
                     code,
@@ -371,7 +372,11 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
             except _SnapshotRestoreError as exc:
                 return _restore_error_output(exc, runtime.tool_call_id)
             finally:
-                if middleware._mode == "call":
+                # A `ConcurrentEval` loser never ran; resetting would close the
+                # context the in-flight eval is still using.
+                if middleware._mode == "call" and (
+                    outcome is None or outcome.error_type != "ConcurrentEval"
+                ):
                     middleware._registry.reset_repl(slot_id)
             return _make_tool_output(outcome, runtime.tool_call_id)
 
@@ -381,6 +386,7 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         ) -> ToolMessage | Command:
             slot_id = middleware._slot_id(runtime.state)
             repl = middleware._repl_for_eval(slot_id)
+            outcome: EvalOutcome | None = None
             try:
                 outcome = await repl.eval_async(
                     code,
@@ -392,7 +398,11 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
             except _SnapshotRestoreError as exc:
                 return _restore_error_output(exc, runtime.tool_call_id)
             finally:
-                if middleware._mode == "call":
+                # A `ConcurrentEval` loser never ran; resetting would close the
+                # context the in-flight eval is still using.
+                if middleware._mode == "call" and (
+                    outcome is None or outcome.error_type != "ConcurrentEval"
+                ):
                     middleware._registry.reset_repl(slot_id)
             return _make_tool_output(outcome, runtime.tool_call_id)
 

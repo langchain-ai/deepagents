@@ -51,7 +51,8 @@ def _git(path: str, *args: str) -> bytes:
         key: value for key, value in os.environ.items() if not key.startswith("GIT_")
     }
     env.update(GIT_OPTIONAL_LOCKS="0", GIT_TERMINAL_PROMPT="0")
-    command = ["git", "-C", path, *args]
+    # A repo-configured fsmonitor hook is an arbitrary executable; never run it.
+    command = ["git", "-c", "core.fsmonitor=false", "-C", path, *args]
     with tempfile.TemporaryFile() as output:
         result = subprocess.run(  # noqa: S603  # Literal Git arguments; never a shell.
             command,

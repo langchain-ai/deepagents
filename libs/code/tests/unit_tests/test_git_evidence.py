@@ -183,7 +183,7 @@ def test_detached_and_unborn_heads(tmp_path: Path, sandbox: bool) -> None:
 
 
 @pytest.mark.parametrize("sandbox", [False, True])
-def test_honors_repository_fsmonitor(tmp_path: Path, sandbox: bool) -> None:
+def test_ignores_repository_fsmonitor(tmp_path: Path, sandbox: bool) -> None:
     root = repository(tmp_path / "repo")
     marker = tmp_path / "queried"
     hook = tmp_path / "fsmonitor.sh"
@@ -191,4 +191,4 @@ def test_honors_repository_fsmonitor(tmp_path: Path, sandbox: bool) -> None:
     hook.chmod(0o755)
     git(root, "config", "core.fsmonitor", str(hook))
     assert probe_git(probe_backend(root, sandbox), str(root))
-    assert marker.exists()
+    assert not marker.exists()

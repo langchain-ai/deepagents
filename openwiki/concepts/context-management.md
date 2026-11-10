@@ -1,18 +1,17 @@
 ---
 type: context-management concept
-title: Context Management and Offload
-description: How Deep Agents derives a compact model-visible conversation from retained state, archives recoverable history, and handles context overflow and dcode server-owned offload safely.
-tags: [context-management, summarization, compaction, offload, persistence, memory-guard]
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-11-06T08:04:19.814Z
+title: Context Management
+description: How dcode reduces model-visible history without deleting checkpoints, stages archive persistence around server-owned offload, and keeps framework context out of user-facing conversation views.
+tags: [context-management, summarization, compaction, offload, checkpoints, model-context]
 sources:
   - id: openwiki-source-05106e66a949150d557266a2
     resource: repo://libs/code/deepagents_code/agent.py
   - id: openwiki-source-fdf5afeb1dd1d11652374e88
     resource: repo://libs/code/deepagents_code/app.py
-  - id: openwiki-source-2fb89d2b59c886d0cb3ee3ea
-    resource: repo://libs/code/deepagents_code/config_manifest.py
+  - id: openwiki-source-dd104912040624b0d673c588
+    resource: repo://libs/code/deepagents_code/goal_state_notice.py
+  - id: openwiki-source-8896ee5af2462c92e51bfb6e
+    resource: repo://libs/code/deepagents_code/local_context.py
   - id: openwiki-source-528731d4c0ef5dde5cf54f4c
     resource: repo://libs/code/deepagents_code/memory_guard.py
   - id: openwiki-source-ea1089f0d7536fbc96c64866
@@ -23,6 +22,10 @@ sources:
     resource: repo://libs/code/deepagents_code/offload.py
   - id: openwiki-source-91cefe99e900fdb6f941b515
     resource: repo://libs/code/deepagents_code/output_truncation.py
+  - id: openwiki-source-d3c832989def55cb99198f1d
+    resource: repo://libs/code/tests/unit_tests/test_compact_tool.py
+  - id: openwiki-source-359dab1054eb0c26067ce930
+    resource: repo://libs/code/tests/unit_tests/test_idle_compaction.py
   - id: openwiki-source-d965874b5a639c3205f2eadd
     resource: repo://libs/code/tests/unit_tests/test_memory_guard.py
   - id: openwiki-source-6a586415ef68cbe7c7967a41
@@ -35,135 +38,100 @@ sources:
     resource: repo://libs/deepagents/tests/unit_tests/middleware/test_compaction_recovery.py
   - id: openwiki-source-8e7076889e81540fe4fcb8c5
     resource: repo://libs/deepagents/tests/unit_tests/middleware/test_summarization_middleware.py
-generated: { by: "openwiki/0.4.2", at: "2026-11-06T08:04:19.814Z" }
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-11-10T08:04:01.717Z
+generated: { by: "openwiki/0.4.2", at: "2026-11-10T08:04:01.717Z" }
 ---
 
-# Context Management and Offload
+# Context Management
 
-Context reduction is not a destructive rewrite of one conversation transcript. The SDK records a **summary event** over retained state, derives a shorter history for each model call, and can archive the covered portion. dcode adds a server-owned commit protocol around that operation. These are separate persistence and safety boundaries:
+Context management has three separate layers. Checkpointed `messages` preserve the raw conversation; a `_summarization_event` changes the **effective** history sent to a model; and an archive is an optional recovery artifact. A shorter model request therefore does not imply that the checkpoint transcript was deleted. dcode's server `/offload` adds a concurrency-controlled commit protocol because it operates on a persisted thread rather than within the normal agent turn.
 
-- **Raw state** is the checkpoint's `messages` list. A summary event does not replace it.
-- **Effective history** is the message view sent to the model: a synthetic summary plus the retained suffix.
-- **An archive** is optional recovery storage. An event can be valid when `file_path` is `None`.
-- **Server offload** is an operation on a stable dcode thread checkpoint, not a client-side messages update.
+See [State, Checkpoints, and Sessions](/openwiki/concepts/state-persistence.md) for state ownership, [Code Agent Architecture](/openwiki/architecture/code-agent.md) for the runtime, and [Running a dcode Session](/openwiki/workflows/run-dcode-session.md) for user-facing operations.
 
-See [Runtime Behavior](/openwiki/architecture/runtime-behavior.md), [Middleware Catalog](/openwiki/concepts/middleware-catalog.md), and [State, Checkpoints, and Sessions](/openwiki/concepts/state-persistence.md) for middleware placement and checkpoint ownership.
+## Effective history and durable cutoffs
+
+`SummarizationMiddleware` retains raw messages and reconstructs model-visible history as a synthetic summary followed by the retained suffix. Its event stores the numeric cutoff, the retained-boundary message ID, summary, optional archive path, and creation index. It resolves `cutoff_message_id` before falling back to `cutoff_index`, so removal of messages before the boundary does not move the effective-history cut incorrectly.
+
+This distinction is important for dcode. Before it reads an event, dcode calls `anchor_summarization_event`: when the boundary ID is still present at a new raw index, it returns a copy with `cutoff_index` moved there and shifts `created_at_index` by the same delta. Consumers which only understand numeric cutoffs then agree with ID-aware readers. A malformed, negative, boolean, or out-of-range cutoff is not clamped: it is treated as invalid, because clamping a stale cutoff could hide live surviving turns.
+
+A forced plan first applies the prior event, computes the proposed cutoff in effective-history coordinates, converts it to an absolute state cutoff, and refuses a non-advancing chained plan before spending on a summary. The committed event records the absolute cutoff and the ID at that boundary; the session ID is also persisted so subsequent compactions append to the same history file.
+
+## Automatic, explicit, and forced compaction
+
+The SDK exposes `compact_conversation` through `SummarizationToolMiddleware`. The model-initiated tool shares the automatic summarizer's event and archive-session state, but its admission gate requires a configured trigger clause to reach about half of the automatic threshold. Archive-helper failure is not equivalent to summary failure: a `None` archive path still yields a valid in-context event, while summary or escaping offload failures return an error `ToolMessage` and do not update event/session state.
+
+`CLICompactionMiddleware` keeps that tool behavior and layers dcode policy on top:
+
+- Before threshold-based automatic compaction, it can dispatch a `PreCompact` hook. A denial skips automatic compaction; for provider-overflow fallback, the original overflow is re-raised rather than bypassing the hook.
+- It selects a summarizer for the runtime model configuration. Thresholds and input counting follow the active main model; a configured summary-model override is constructed lazily and has its own input trim budget and token counter. If that optimization cannot be built or invoked, summary generation falls back to the main model instead of breaking the session.
+- The forced `/offload` entry point plans only: it generates the summary and returns a pending archive append without writing archive storage. The HTTP owner decides when that side effect is allowed.
+
+Recognized provider context overflow gets at most one strictly smaller retry. The recovery path rejects a request known to exceed local budget before it reaches the provider and terminates with `ContextOverflowError` once recovery is exhausted.
+
+## Server-owned `/offload`
+
+The HTTP boundary accepts an operation ID, runtime context, hook responses, and an optional handoff flag; the thread ID is taken from the path. It strips client transport/model selection, then reconstructs the model spec and parameters from the target checkpoint. This protects a checkpointed private endpoint from a client-chosen offload destination; older checkpoints without model metadata use the server startup summarizer.
+
+Before executing, the route holds a per-thread lock, requires an idle or errored registered thread, rejects pending graph work, hydrates serialized messages and the event summary message, and requires its bound workspace. After planning it checks idle status and checkpoint ID again. A changed checkpoint produces a conflict and discards the completed summary rather than committing it to newer state.
+
+The server permits only `_summarization_event`, `_summarization_session_id`, and session-cost channels. In particular, it cannot write `messages`, because this asynchronous operation commits against the latest thread checkpoint and must not clobber messages attributed to another run. Forced hook approval is also fail-closed: missing hook outcome state refuses compaction. Hook-interrupt resume re-executes the operation from the start, using the stable client operation ID to derive a stable forced tool-call ID for that attempt.
+
+### Archive reservation, link, and rollback
 
 ```mermaid
 flowchart TD
-    Raw["Raw state messages"] --> Apply["Apply summary event"]
-    Event["Summary event"] --> Apply
-    Apply --> Effective["Summary plus retained suffix"]
-    Effective --> Call["Model call"]
-    Call --> Overflow{"Context overflow"}
-    Overflow -->|"first recognized error"| Compact["Summarize or clip tail"]
-    Compact --> Retry["One smaller request"]
-    Overflow -->|"repeated or irreducible"| Terminal["ContextOverflowError"]
-    Compact --> Event
-    Compact --> Archive["Append archive when available"]
+    Start["Read idle thread checkpoint"] --> Plan["Plan summary and pending archive"]
+    Plan --> Check{"Thread checkpoint unchanged"}
+    Check -->|"no"| Conflict["Return conflict and commit nothing"]
+    Check -->|"yes"| Reserve["Commit summary event session ID and costs with no archive path"]
+    Reserve --> Append{"Append archive"}
+    Append -->|"fails or returns no path"| SummaryOnly["Keep committed in-context summary with no archive path"]
+    Append -->|"succeeds"| Link["Write event with archive path"]
+    Link --> Linked{"Archive link confirmed"}
+    Linked -->|"yes"| Done["Return archive path"]
+    Linked -->|"confirmed absent"| Rollback["Restore prior archive content or delete new archive"]
+    Linked -->|"unreadable"| Indeterminate["Report indeterminate archive link"]
 ```
 
-*The event changes the request view, while the archive is a separate best-effort recovery artifact.*
+*The summary reservation is committed before archive mutation; rollback is for an append whose follow-up link is known not to have landed.*
 
-## Summary events and effective-history reconstruction
+A pending append snapshots whether the archive existed and its prior content. Its guarded write refuses to overwrite an existing archive when the backend read failed, preventing a transient read failure from becoming destructive truncation. Archive operations for the same session are serialized in-process.
 
-`SummarizationMiddleware` stores its current event at `_summarization_event` and the archive session identifier at `_summarization_session_id`. An event contains a raw `cutoff_index`, the `summary_message`, an optional `file_path`, and two compatibility/reconciliation fields:
+After the reservation checkpoint write succeeds, dcode appends the archive. An append exception or `None` result leaves the already-committed event with `file_path=None`: compaction is useful but not recoverable from archive storage. If the append succeeds but the link checkpoint write errors, dcode reads the checkpoint back. A confirmed linked path is accepted; a confirmed absent link rolls back the append; an unreadable checkpoint is reported as indeterminate because it cannot safely decide whether rollback would erase a linked archive.
 
-- `cutoff_message_id` identifies the first raw message retained after the cutoff. On reconstruction, the middleware resolves that ID in the current state first. This keeps the cutoff correct if earlier checkpoint messages were removed after the event was created. Events created before that field, or whose ID no longer exists, fall back to the stored numeric index.
-- `created_at_index` records how many state messages existed when the event was made. For the part of the retained suffix that was already present then, provider-bound reasoning is stripped from the effective request. The raw messages themselves remain intact; messages created later retain their reasoning. Older events without this field preserve the old behavior.
+Cost settlement follows the same conservative principle. A failed state write rolls back drained cost records only when readback proves the original checkpoint remains unchanged. An advanced or unreadable thread commits the cost claim and reports an indeterminate result, avoiding a future double charge. The commit task is allowed to settle before request cancellation is re-raised.
 
-The effective list is therefore `summary_message + messages[resolved_cutoff:]`, with the reasoning adjustment above. A malformed event falls back to the raw message list; an out-of-range cutoff produces the summary alone. This is intentionally a request-time interpretation layer, not transcript deletion.
+### Handoff versus compaction
 
-### Chained compaction and cutoffs
+A handoff summarizes all source messages to seed another thread, but it does not write a summary event to the source: only the source cost channels are persisted. Its recovery snapshot is assigned a source-thread-prefixed session ID before writing, which allows deletion cleanup to find it even if child creation fails. A failed handoff archive is a failed handoff result, since no summary event exists on the source to provide an in-context replacement.
 
-A new cutoff is initially calculated in **effective-list** coordinates. If a prior event exists, the synthetic summary at effective index zero has no raw-state counterpart, so the middleware translates the new cutoff back to state coordinates. New events also save the matching message ID. Consequently, extensions that prune or otherwise transform old checkpoint messages must preserve the cutoff message if they want ID-based reconciliation; otherwise the system deliberately uses the legacy numeric fallback.
+## Idle cache maintenance
 
-Automatic compaction first derives effective messages, optionally truncates older large tool-call arguments, decides whether its trigger or the input budget requires compaction, and partitions the older prefix from the kept suffix. It archives the prefix before generating a summary, then returns a state update containing the event and session ID. Apart from overflow-tail replacements, it does not write a replacement `messages` list merely because it summarized.
+Idle compaction is opt-in through `history.idle_compaction_tokens`. The TUI schedules at most one offload for a thread and prompt-cache expiry timestamp, requires exact—not approximate—context usage at or above the threshold, a remote agent, and a quiescent UI. It runs only while the cache has positive remaining lifetime within the final 20 percent of its window, capped at 120 seconds. New queued input is checked again by the worker and prevents the maintenance offload. This is a cache-warming optimization, not the context-overflow safety path.
 
-## Archives, media, and failure meaning
+## Local archive lifecycle and related safeguards
 
-The SDK appends each archive section to `/conversation_history/{session_id}.md` on its configured backend and filters earlier synthetic summary messages to avoid archiving a summary of history already saved. A successful archive path is included in the summary message so an agent with filesystem access can reopen the detailed history.
+Local dcode archives normally use a hardened `conversation_history` directory below `DEEPAGENTS_HOME`. If persistent storage cannot be created or written, dcode uses hardened temporary storage and marks the result ephemeral. Cleanup is best effort and uses `history.retention_days`; cleanup failures do not interrupt the session. Handoff recovery snapshots are named for their source thread so thread deletion can remove them.
 
-Archive persistence is best effort. The synchronous and asynchronous archive helpers treat backend read, write, response-error, and ordinary backend exceptions as a `None` path. Automatic compaction logs and warns that the older history is unrecoverable, but still creates an in-context summary event. Thus `file_path=None` means **successful compaction without a recoverable archive**, not necessarily a failed compaction.
+Context overflow concerns model input. Provider output truncation is distinct: dcode normalizes truncation metadata and raises `ModelOutputTruncatedError` for an empty truncated final reply, preventing a silent empty checkpointed success. Task-subagent failures become error `ToolMessage` values; partial replies retain content with a warning.
 
-Inline `data:` media needs a second preservation path because the archive renderer cannot retain inline payloads. Before the archive is rendered, the middleware uploads decoded media under its conversation-history media location and rewrites archive content to path references. Identical payloads are deduplicated by a short SHA-256 key. A decode or upload failure becomes a visible `failed_to_offload` placeholder and is reported as an unrecoverable media warning; it does not silently disappear or prevent the textual history from being archived.
+Managed memory is also not conversation history. `ManagedMemoryGuardMiddleware` protects configured marker-delimited blocks in memory files, restoring a changed protected block where possible and rejecting protected/unreadable-file deletion before the underlying tool runs. It uses no-follow reads and restoration writes, so a guarded-file symlink replacement fails visibly rather than overwriting its target.
 
-## Explicit `compact_conversation`
+## Model-visible boundaries
 
-`SummarizationToolMiddleware` registers the `compact_conversation` tool but is not an automatic middleware by itself. It delegates to a configured `SummarizationMiddleware`; when both layers are registered, automatic and manual compaction share the same event and archive-session state. `create_summarization_tool_middleware(...)` constructs this tool layer and its engine, while `create_deep_agent` supplies the normal automatic summarization layer by default.
+Not every checkpointed `HumanMessage` is user conversation. Goal control and goal-state notices are framework-owned messages marked with `lc_source`; they participate in normal provider ordering but are hidden from transcript, title, and derived-conversation views. The current goal-state notice is fingerprinted and schema-versioned. It embeds actionable objective/status text and active rubric criteria as escaped, explicitly marked context data; oversized state is replaced by bounded guidance that tells the model not to act on it.
 
-The tool is an admission-gated, model-initiated operation rather than a background trigger. It accepts a call only if at least one configured trigger clause reaches approximately half of its automatic threshold; compound dictionary clauses require all of their fields. It then applies any prior event, requires a nonzero cutoff, summarizes the selected prefix, attempts the archive, and returns a correlated confirmation `ToolMessage` with the new event and session ID.
+Local-context refresh messages use the same boundary. After a valid new summarization cutoff, `LocalContextMiddleware` detects the environment again; if its fingerprint differs from the recorded baseline, it appends a model-only message stating that the refreshed facts supersede earlier local-context facts and that the tagged data is untrusted, not instructions. It records the processed cutoff even when detection produces no output, preventing repeated work for the same compaction event.
 
-Failure handling has an important distinction:
+## Operational guidance and focused tests
 
-| Outcome | Tool state update | Meaning |
-|---|---|---|
-| Archive helper returns a path | Event, session ID, confirmation message | Compacted and recoverable through that path. |
-| Archive helper returns `None` | Event, session ID, confirmation message | Compacted, but the summarized source is not recoverable from an archive. |
-| Summary generation, partitioning, or an escaping offload error fails | Error `ToolMessage` only | No new event or session ID is written; the conversation was not compacted. |
-| Ineligible request or zero cutoff | "Nothing to compact" `ToolMessage` only | No compaction is performed. |
+1. Treat raw `messages`, summary events, and archives as independent layers. Never infer deletion from a compact request.
+2. Preserve both cutoff forms when transforming state. Anchor events before index-based accounting and reject invalid/out-of-bounds cutoffs rather than clamping them.
+3. A missing archive path is a recoverability condition, not necessarily a failed compaction. Check whether the event reservation committed.
+4. Do not widen the `/offload` allowlist to include `messages` without a new concurrency design.
+5. Diagnose a checkpoint-write error through readback before restoring costs or rolling back an archive; uncertain outcomes deliberately favor avoiding duplicate cost or destructive cleanup.
+6. Keep framework-owned `lc_source` values in every user-facing transcript/title filter, while retaining them in model requests when they carry live control state.
 
-The sync and async paths have the same state contract. Tests cover successful first and chained events, no-path success, correlated error messages, malformed-event fallback, and the half-trigger eligibility gate.
-
-## Overflow recovery and budgets
-
-Compaction is also a recovery mechanism for recognized provider context overflows. The middleware recognizes `ContextOverflowError` and specific context-limit HTTP errors, but does not retry unrelated bad requests. It reserves configured output tokens and five percent headroom from a model profile's advertised input limit when checking a request budget.
-
-When an over-budget request cannot be summarized further, or a provider rejects a request, the middleware may clip/offload large trailing tool results and send **at most one** smaller retry. Before that retry reaches the provider, it verifies both that it is strictly smaller than the rejected request and that the complete request—including system prompt, tools, and output reservation—is within the local budget. A repeated overflow, unchanged reduction, or irreducible overhead becomes terminal `ContextOverflowError`, rather than an unbounded retry loop.
-
-## dcode server-owned offload
-
-The dcode `/offload` route makes compaction a checkpoint-guarded server operation. It locks the target thread, allows only an idle or errored thread with no pending graph work, hydrates the checkpoint, and runs the offload plan. It then rechecks that the checkpoint has not advanced. If it has, the completed summary is discarded rather than committed to changed state.
-
-The HTTP boundary removes request-provided model settings and restores the model spec and parameters saved in the target checkpoint. A thread that predates model checkpointing instead uses the startup summarizer. This prevents a request client from changing the provider or endpoint that receives archived conversation history.
-
-Only the allowlisted `OffloadStateUpdate` channels may be committed: the summary event, summary session ID, and cost channels. In particular, server offload cannot write `messages`; this prevents a delayed operation from overwriting messages attributed to another run.
-
-```mermaid
-sequenceDiagram
-    participant Client as dcode client
-    participant API as offload API
-    participant Thread as thread checkpoint
-    participant Engine as offload engine
-    participant Store as archive backend
-    Client->>API: request offload
-    API->>Thread: require idle and read checkpoint
-    API->>Engine: summarize hydrated state
-    Engine-->>API: typed state update and pending archive
-    API->>Thread: verify checkpoint unchanged
-    API->>Thread: reserve event and costs
-    API->>Store: append archive
-    API->>Thread: link archive path
-    API-->>Client: complete result
-```
-
-*The server reserves the summary state before it writes and links a deferred archive, while prohibiting conversation-message writes.*
-
-Forced dcode offload stages the archive append with the prior content so a failed append can be rolled back. If the subsequent archive-link checkpoint write is confirmed absent, it also rolls back the completed append. A successful compaction may still commit an in-context event without an archive path. If a state write fails, cost records are rolled back only when the original checkpoint is confirmed unchanged; an advanced or unreadable checkpoint leaves them claimed to avoid double charging and reports an indeterminate outcome.
-
-### Handoff is not source compaction
-
-A handoff summarizes a source thread to seed another thread but does not install a summary event on the source. The source receives only summary-cost channels. Its recovery transcript is named with source-thread ownership so cleanup can delete it with the source, including after a failed child creation.
-
-## Local archive lifecycle and idle maintenance
-
-For local dcode operation, archives normally live in a hardened `conversation_history` directory below `DEEPAGENTS_HOME` (normally `~/.deepagents`). If that persistent location cannot be created or written, dcode uses hardened temporary storage and marks it ephemeral. `history.retention_days` controls best-effort cleanup; `0` disables sweeping. Cleanup only considers expired regular `.md` children and swallows failures, while thread deletion also best-effort removes its archive and source-owned handoff snapshots.
-
-`history.idle_compaction_tokens` is separate from SDK automatic compaction and defaults to disabled. When enabled, dcode schedules no more than one server offload per thread and prompt-cache window, only in the final 20 percent of that window and no more than 120 seconds before expiry. It additionally requires exact context usage at the threshold, a remote agent, and a quiescent UI. This is a prompt-cache optimization, not a context-limit safety trigger.
-
-## Related context safeguards
-
-Provider output truncation is distinct from input overflow. dcode normalizes truncation metadata and turns an empty truncated final reply into `ModelOutputTruncatedError`, so a model node does not checkpoint a silent empty success. Task-subagent failures become error `ToolMessage` values; partial subagent responses retain their content with a warning.
-
-Managed memory is also distinct from conversation history. `ManagedMemoryGuardMiddleware` protects configured marker-delimited blocks in memory files: it intercepts writes, edits, and deletion, restores a changed managed block where possible, and fails the operation even after restoration. It rejects deletion of a protected or unreadable existing file before the underlying tool runs. Its reads and restoration writes use no-follow operations, so a symlink replacement produces a visible restoration failure rather than overwriting the link target.
-
-## Operational checklist and focused tests
-
-1. Treat raw messages, summary events, and archive files as separate layers. Do not replace `messages` just because effective history is shorter.
-2. Preserve both `cutoff_index` and `cutoff_message_id` when constructing or migrating events; the ID is what makes the cutoff robust to earlier-message removal.
-3. Treat `file_path=None` as a recoverability warning, not proof that compaction failed. Inspect the event and tool-message status.
-4. Keep the one-retry and budget checks intact when changing overflow behavior; system prompt, tool schemas, and output reservation count toward the input budget.
-5. Do not widen dcode's offload write allowlist to include `messages` without redesigning the checkpoint concurrency protocol.
-6. Configure archive retention for sensitivity and lifetime, and treat temporary fallback storage as nonpersistent.
-
-`test_summarization_middleware.py` covers event reconstruction, message-ID cutoff reconciliation, chained compaction, provider-bound reasoning removal, media archival, and automatic overflow fallback. `test_compact_tool.py` covers tool registration, success with and without an archive path, event state, ineligible calls, and error results. `test_compaction_recovery.py` verifies the strictly smaller single retry, budget rejection before provider calls, and terminal recovery errors. dcode tests cover the checkpoint, allowlist, archive, and cost-settlement protocol described above.
+`test_compact_tool.py` covers runtime model budgets, pending archive planning, cutoff anchoring, archive-read protection, and dedicated summary-model fallback. `test_offload_api.py` covers checkpoint/model hydration, the no-`messages` commit boundary, handoff source preservation, archive-link rollback, and cost settlement under write failure. `test_idle_compaction.py` exercises the cache-window, idleness, threshold, duplicate-scheduling, and new-input guards.

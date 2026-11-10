@@ -1,27 +1,12 @@
 ---
 type: access-control concept
-title: Permissions and Human-in-the-Loop
-description: Explains filesystem permission enforcement and path-sensitive human review in Deep Agents, including graph assembly, middleware exclusions, subagent boundaries, and dcode approval controls. Distinguishes durable denial, per-call review, shell allow-lists, and independent remote graphs.
-tags: [permissions, human-in-the-loop, filesystem, subagents, deepagents-code, security]
+title: Filesystem Permissions and Human Approval
+description: Explains how Deep Agents enforces filesystem deny rules, derives path-sensitive human approval gates, and handles resolved paths, subagent boundaries, and Talon tool approval policy. Denial and approval are separate controls with different enforcement and lifecycle behavior.
+tags: [permissions, human-in-the-loop, filesystem, subagents, talon, security]
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-11-10T08:04:01.717Z
 sources:
-  - id: openwiki-source-1728494bdd59604ce9b5f65b
-    resource: repo://libs/code/deepagents_code/_server_config.py
-  - id: openwiki-source-05106e66a949150d557266a2
-    resource: repo://libs/code/deepagents_code/agent.py
-  - id: openwiki-source-a9143c1c174362216a1cfa2c
-    resource: repo://libs/code/deepagents_code/approval_mode.py
-  - id: openwiki-source-b9ef532d79a0667acf40e58b
-    resource: repo://libs/code/deepagents_code/client/launch/server_manager.py
-  - id: openwiki-source-ecf20e7a2684ba0d2ae7d701
-    resource: repo://libs/code/deepagents_code/client/non_interactive.py
-  - id: openwiki-source-7f6b98925b5f1ba065df3a04
-    resource: repo://libs/code/deepagents_code/config.py
-  - id: openwiki-source-a9eb680bb6bdae179f52a3ac
-    resource: repo://libs/code/deepagents_code/server_graph.py
-  - id: openwiki-source-7246ad9a05cb1ad11e4569a6
-    resource: repo://libs/code/tests/unit_tests/test_agent.py
-  - id: openwiki-source-d86dd82872da8545a6c8d896
-    resource: repo://libs/code/tests/unit_tests/test_non_interactive.py
   - id: openwiki-source-b93533cac55718d75277d1cf
     resource: repo://libs/deepagents/deepagents/_excluded_middleware.py
   - id: openwiki-source-0fc0e47059e4d07e23e50be2
@@ -42,115 +27,96 @@ sources:
     resource: repo://libs/talon/deepagents_talon/runtime.py
   - id: openwiki-source-267468fe937003d4716fe6c2
     resource: repo://libs/talon/deepagents_talon/tool_approvals.py
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-11-06T08:04:19.814Z
-generated: { by: "openwiki/0.4.2", at: "2026-11-06T08:04:19.814Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-11-10T08:04:01.717Z" }
 ---
 
-# Permissions and Human-in-the-Loop
+# Filesystem Permissions and Human Approval
 
-Deep Agents deliberately separates filesystem policy, graph-level human review, and the configuration of each graph that executes tools. A filesystem `interrupt` requests review; it is not a denial. A remote `AsyncSubAgent` is another Agent Protocol graph and thread, rather than a privileged continuation of its parent, so it owns its tools, permissions, and approval exchange.
+Deep Agents separates **denial** from **approval gating**. A filesystem `deny` is enforced by the built-in filesystem tools before they call their backend. An `interrupt` rule does not deny access: at graph construction it becomes a path-sensitive `HumanInTheLoopMiddleware` gate, whose reviewer may approve, edit, reject, or respond without execution. Removing or bypassing a review layer therefore does not remove filesystem denial, and approving a call does not bypass its later deny check.
 
-See [Tool Surface and Filesystem Policy](/openwiki/concepts/tools-filesystem.md), [Subagents and Skills](/openwiki/concepts/subagents-skills.md), [Security](/openwiki/operations/security.md), [GitHub Action](/openwiki/integrations/github-action.md), and [Run a dcode Session](/openwiki/workflows/run-dcode-session.md).
+This page describes behavior of the configured Deep Agents graph, backend, and permission rules. In particular, resolved-path checking is enforcement behavior for `FilesystemBackend` and routed filesystem backends; it is not a security guarantee beyond the configured backend and rules. See [Tool Surface and Filesystem Policy](/openwiki/concepts/tools-filesystem.md), [SDK Construction and Execution](/openwiki/architecture/sdk-construction-execution.md), [Talon Channel Admission](/openwiki/concepts/talon-channel-admission.md), and [Security](/openwiki/operations/security.md).
 
-## Filesystem permissions are middleware enforcement
+## Filesystem rule model and enforcement boundary
 
-`FilesystemPermission` contains absolute glob `paths`, `read` and/or `write` `operations`, and an `allow`, `deny`, or `interrupt` mode. Rules are evaluated in declaration order: the first matching rule wins, and no match allows the access. Patterns must begin with `/`; traversal (`..`) and home (`~`) components are rejected.
+A `FilesystemPermission` names `read` and/or `write` operations, absolute glob `paths`, and an `allow`, `deny`, or `interrupt` mode. Rules are ordered: the first matching rule decides, while an unmatched operation is allowed. Permission patterns must begin with `/`; patterns containing `..` are rejected, as are patterns containing `~`.
 
-`FilesystemMiddleware` enforces `deny` in its built-in filesystem tools before a backend operation. It is not a general backend ACL: another direct backend caller does not acquire this check. On a `FilesystemBackend`, including one reached through a `CompositeBackend` route, it evaluates both the requested virtual path and its symlink-resolved target; denial of either blocks an operation. Listings and search results remove denied paths.
-
-Recursive or potentially recursive deletion is deliberately stricter than an ordinary first-match lookup. If its target subtree could overlap a write-deny pattern, deletion is refused, so an allowed parent cannot remove a denied descendant. Filesystem permissions do not implement `execute` policy. An execution-capable backend therefore rejects such permissions unless every pattern is scoped to composite routes; this avoids implying that shell execution is protected.
+`FilesystemMiddleware` owns this policy for its own tools—`ls`, `read_file`, `write_file`, `edit_file`, `delete`, `glob`, and `grep`. Its tool wrappers validate a path and return a permission error before the backend operation on a deny. It also filters denied entries from result lists. This is tool-level middleware enforcement, not a universal ACL for arbitrary callers of the backend. `interrupt` paths are deliberately not filtered: by the time results are produced, the graph gate has either approved the call or prevented it.
 
 ```mermaid
 flowchart TD
-    Call["Filesystem tool call"] --> Check["Evaluate requested and resolved path"]
-    Check -->|"Deny"| Error["Return permission error"]
-    Check -->|"Interrupt"| Review["Graph HITL review"]
-    Check -->|"Allow"| Run["Run filesystem tool and backend operation"]
-    Review --> Decision{"Reviewer decision"}
-    Decision -->|"Approve or edit"| Run
-    Decision -->|"Reject or respond"| Stop["Do not execute"]
+    Call["Filesystem tool call"] --> Validate["Validate requested path"]
+    Validate --> Deny{"Deny rule on a checked path"}
+    Deny -->|"Yes"| Error["Return permission error"]
+    Deny -->|"No"| Run["Call configured backend"]
+    Gate["HITL gate from interrupt rule"] --> Decision{"Human decision"}
+    Decision -->|"Approve or edit"| Call
+    Decision -->|"Reject or respond"| Stop["No tool execution"]
 ```
 
-*`deny` is enforced by the filesystem tool; `interrupt` selects review before that tool executes.*
+*An `interrupt` gate runs before the filesystem tool; `deny` is rechecked by that tool before its backend operation.*
 
-## Interrupt rules generate path-sensitive HITL
+### Resolved paths and destructive operations
 
-`FilesystemMiddleware` does not pause a graph itself. During `create_deep_agent` assembly, interrupt-mode permissions become per-tool `HumanInTheLoopMiddleware` `interrupt_on` entries. They cover `ls`, `read_file`, `write_file`, `edit_file`, `delete`, `glob`, and `grep`, with `approve`, `edit`, `reject`, and `respond` available.
+When the backend is a `FilesystemBackend`, directly or through a `CompositeBackend` route, permission evaluation resolves the requested path through symlinks and checks the resolved target as well. A deny on the requested path or target returns an error; failure to resolve returns an error rather than proceeding. The same logic is used when filtering filesystem result paths. A composite route is preserved when the routed filesystem path is resolved.
 
-For exact-path tools, the predicate reviews only a matching requested path, plus its resolved target where a backend is available. A deny on either candidate wins over interrupt, returning a permission error rather than an approvable request. Bulk tools—listing, search, glob, and delete—conservatively pause when their reachable subtree can overlap an interrupt-rule anchor. Missing bulk paths and `.` mean the accessible root. `glob` also examines an absolute `pattern`, which can redirect the search independently of `path`; a relative pattern containing `..` is conservatively reviewed. Prefer literal leading anchors such as `/secrets/**`; `/**/secrets` has root anchor `/` and can review every bulk operation.
+This prevents a configured deny rule from being bypassed through a symlink in that backend model, including for derived HITL predicates when a backend is supplied. It should be described narrowly as configured enforcement behavior—not as a broader guarantee against all filesystem, backend, deployment, or direct-access paths.
 
-Caller-provided `interrupt_on` wins over a generated entry of the same name. That is an extension point, not a filesystem-denial bypass: approved and edited calls still enter filesystem middleware for pre-execution enforcement.
+Deletion has an additional all-or-nothing guard. For a directory or target with descendants, `delete` refuses when a write-deny pattern could overlap its subtree, so an allowed ancestor cannot recursively remove denied descendants. This conservative overlap check is distinct from ordinary first-match lookup for an exact file.
 
-### Middleware exclusion can remove the review layer
+Permissions do not implement an `execute` policy. Consequently, `FilesystemMiddleware` rejects nonempty permissions with an execution-capable backend unless all permission patterns are scoped to `CompositeBackend` routes. Route scoping lets rules apply to non-execution routes; it does not make command execution permission-controlled.
 
-After assembly, a harness profile filters the final middleware stack. `FilesystemMiddleware` and `SubAgentMiddleware` are protected scaffolding and cannot be excluded, but `HumanInTheLoopMiddleware` is not in that protected set. Consequently, excluding `HumanInTheLoopMiddleware`—by its exact class or matching `.name`—removes both generated filesystem interrupts and caller-supplied `interrupt_on` review for that graph. It does **not** remove filesystem tools or `deny` enforcement, because the filesystem middleware remains. Exclusions must match at least one assembled middleware across the applicable main and general-purpose stacks; unmatched entries, protected-scaffolding entries, and ambiguous string-name matches fail assembly. Treat removal of HITL as an explicit policy change, not as a way to tune a single path rule.
+## How interrupt rules become review requests
 
-## Inheritance stops at graph boundaries
+`FilesystemMiddleware` itself enforces denial but does not pause the graph. `create_deep_agent` builds an `interrupt_on` mapping from `interrupt` permissions and adds `HumanInTheLoopMiddleware` when the resulting or caller-supplied map is nonempty. Generated entries cover read tools (`ls`, `read_file`, `glob`, `grep`) and write tools (`write_file`, `edit_file`, `delete`) according to each rule's operation. They offer `approve`, `edit`, `reject`, and `respond`.
 
-For declarative local `SubAgent` specifications, omitting `permissions` inherits parent rules, while an explicit value—including `[]`—replaces them. The same omitted-versus-explicit rule applies to top-level `interrupt_on`. Assembly installs the effective `FilesystemMiddleware` and merges derived filesystem routing with the effective map; an explicit routing entry wins on a name collision. The auto-added `general-purpose` local subagent also receives parent permissions and top-level routing.
+The generated `when` predicates distinguish exact and bulk calls:
 
-This is construction-time inheritance, not ambient authorization. A `CompiledSubAgent` was already assembled and its owner must configure it. An `AsyncSubAgent` names another graph and must be configured independently. `mode="fork"` can copy conversation state and rebuild prompt middleware, but does not make a remote graph inherit filesystem policy or approval authority. Apply sensitive-tool controls to every executable graph.
+- Exact tools match the normalized requested path and, if a backend can resolve it, its target. If either candidate is denied, no approval request is created; the tool returns its denial error.
+- Bulk tools (`ls`, `glob`, `grep`, and `delete`) review when the reachable subtree could overlap an interrupt rule's literal glob anchor. A missing path and current-directory aliases such as `.` are treated as the accessible root, so they cannot localize away a review.
+- `glob` also inspects its `pattern`: an absolute pattern can search independently of `path`, and a relative pattern containing `..` is conservatively reviewed. An unanchored rule such as `/**/secrets` has `/` as its anchor and can therefore review all bulk calls.
 
-## Remote async children retain human-request ownership
+Caller-provided `interrupt_on` entries overwrite generated entries with the same tool name. That is a routing extension point, not a way to make a denied operation approvable: an approved or edited call still enters the filesystem tool and its deny enforcement.
 
-`AsyncSubAgentMiddleware` starts an independent remote Agent Protocol thread and run, returns immediately, and records task/thread state under parent `async_tasks`. If the child interrupts, its run can report success while the child thread reports `interrupted` with pending interrupts. `check_async_task` maps that condition to `waiting` and exposes it for observation.
+## Assembly, exclusion, and child graph boundaries
 
-The parent cannot answer, resume, or approve that request; the child user must respond on the child thread. Parent notification is not an approval bridge: `notify_parent` defaults to true for eligible same-deployment children, while `notify_parent=False` removes the parent assistant reference and remote-url children omit it. A paused child does not wake its parent because only the child user can resolve the pause.
+For declarative local `SubAgent` specifications, omitting `permissions` inherits the parent rules; an explicit value, including `[]`, replaces them. The same omitted-versus-explicit behavior applies to top-level `interrupt_on`, and each local child receives its own generated filesystem review map merged with that effective routing. The auto-added `general-purpose` subagent receives the parent permissions and routing too. A compiled subagent has already been assembled, and an `AsyncSubAgent` runs another graph, so their owners must configure permissions and approval independently.
+
+Harness-profile exclusions are applied after stack assembly. `FilesystemMiddleware` and `SubAgentMiddleware` are required scaffolding and cannot be excluded, but `HumanInTheLoopMiddleware` is removable. Excluding the latter removes generated and caller-configured review for that graph without removing filesystem deny enforcement. Exclusions are validated: required entries, unmatched entries, and ambiguous string-name matches fail graph assembly.
+
+## Async children: status visibility is not approval authority
+
+An `AsyncSubAgent` launches a remote Agent Protocol thread and run, immediately stores task/thread/run state in the parent `async_tasks`, and uses `check_async_task` to observe it. A run paused at an interrupt reports `success`; the child thread carries the pending interrupt, and the task is reported as `waiting` with a note that the user must answer the child directly.
 
 ```mermaid
 sequenceDiagram
     participant Parent as Parent graph
-    participant Tasks as Parent task registry
+    participant Registry as Parent task registry
     participant Child as Child thread
     participant User as Child user
-    Parent->>Child: Start thread and run
-    Parent->>Tasks: Store task and current run
-    Child->>Child: Interrupt for input or approval
+    Parent->>Child: Create thread and run
+    Parent->>Registry: Store task and run identifiers
+    Child->>Child: Pause at an interrupt
     Parent->>Child: Check task status
-    Child-->>Tasks: Waiting with pending interrupt
-    User->>Child: Answer or approve on child thread
-    Parent->>Child: Later check reads outcome
+    Child-->>Registry: Waiting and pending interrupt
+    User->>Child: Answer or approve
+    Parent->>Child: Check later outcome
 ```
 
-*The task registry gives lifecycle visibility; the child thread retains authority to resolve its interrupt.*
+*The parent registry observes lifecycle state; the child thread owns interruption resolution.*
 
-`update_async_task` starts a new run on the same child thread. With its default `interrupt` strategy, and with beta `enqueue` once queued work starts, a pending human request can be dropped rather than answered. Cancelling a waiting task marks it cancelled without cancelling a paused run. Treat update and cancellation as lifecycle operations, never approval mechanisms.
+`update_async_task` creates a new run on the same child thread. The default `interrupt` strategy can replace a waiting run; queued (`enqueue`) work also drops a pending human request when it starts. `cancel_async_task` marks a waiting task cancelled without cancelling its paused child run. Neither update nor cancellation answers or approves a child request. Parent notification is likewise not an approval bridge: remote-url children and `notify_parent=False` omit the parent assistant reference used to wake a same-deployment parent.
 
-## dcode interactive approval routing
+## Talon persisted tool approval policy
 
-The dcode client serializes resolved `ServerConfig` into `DEEPAGENTS_CODE_SERVER_*` variables for its separate graph-server process, whose assembler passes approval settings to `create_cli_agent`. With `auto_approve=False`, dcode installs approve-or-reject routing for shell execution, file write/edit/delete, web search, URL fetch, local and async subagent lifecycle tools, and MCP tools that are not coherently read-only. `auto_approve=True` omits these HITL routes for all tools; it is an unrestricted mode, not a filesystem permission setting.
+Talon has a separate tool-name policy, not filesystem path rules. `ToolApprovalStore` loads an exact-name boolean mapping from a bounded regular JSON file opened without following symlinks. An immutable `ApprovalSnapshot` produces approve-or-reject HITL entries only for enabled names; tools absent from the mapping are not prompted. The default enabled names are `update_tool_approvals`, `delete_conversations`, `update_mcp_server`, `start_async_task`, and `send_message`.
 
-Interactive approval mode is thread-scoped: `manual`, `auto`, and `yolo`. The live mode is loaded from a Store record using a key validated against the active thread. Unexpected context, malformed or mismatched key, unavailable Store, missing or invalid record, and synchronous access where an async Store is required fail closed to `manual`. `yolo` bypasses stock HITL. `auto` bypasses it only in graphs eligible for classifier-backed Auto; sandboxed or otherwise ineligible graphs treat Auto as Manual.
+Policy writes validate entries and use a lock plus an expected byte-revision compare-and-swap. A runtime reads a snapshot for an invocation, rebuilds its graph when the persisted snapshot has changed, and binds that snapshot in a context variable for the turn. Thus a successful update is available on a later invocation, not a way to loosen the graph currently executing. The `update_tool_approvals` tool additionally requires both an active snapshot and an operator context; cron and background-delivery turns are explicitly not operator contexts.
 
-`AsyncApprovalHITLMiddleware` reads that live mode after model completion, then passes a private process-local routing marker to stock HITL. The marker is neither checkpointed nor trusted after serialization, so graph input cannot forge autonomous approval. Local dcode subagents receive this middleware and explicitly set `interrupt_on={}` to suppress the SDK's inherited synchronous HITL layer. One assembled CLI graph therefore has one approval-routing owner; a separately deployed async child retains its own policy.
+## Operating guidance and focused verification
 
-`interrupt_shell_only` is valid only with a restrictive shell allow-list. In that case dcode removes ordinary HITL and installs `ShellAllowListMiddleware`; without a restrictive list it falls back to standard HITL. The JavaScript interpreter is a distinct boundary: PTC host-tool calls bypass `interrupt_on`, so its PTC allow-list is the effective control. The `safe` preset permits only `read_file`, `glob`, and `grep`; broader host-tool access requires an explicit list, or `interpreter_ptc="all"` plus unsafe acknowledgement when not auto-approved.
-
-## dcode headless shell control and approval hooks
-
-Non-interactive `dcode` creates a one-shot graph-server session with `interactive=False` and no `ask_user` tool. Its shell policy is determined by `--shell-allow-list`:
-
-- no list disables shell and requests global auto-approval for other tools;
-- `all` enables unrestricted shell and also requests global auto-approval;
-- `recommended` or an explicit restrictive list enables shell but uses `interrupt_shell_only` with the concrete list. The server installs `ShellAllowListMiddleware`, so commands are validated inline while non-shell tools do not generate routine HITL pauses.
-
-This is an operations trade-off, not a universal approval policy. In the fallback HITL path, the headless client automatically approves non-shell requests and approves `execute` only when `is_shell_command_allowed` accepts it; missing lists, unlisted commands, and dangerous shell constructs are rejected. It resumes each interrupt with collected decisions. A configured permission-request hook changes the arrangement: hooks need to see every gated call, so headless mode disables both the global auto-approve shortcut and `interrupt_shell_only`, lets the hook supply decisions where it can, and applies the client fallback for unresolved requests.
-
-The resume loop counts the initial stream as turn one and each HITL continuation as another turn. `--max-turns` (or a default of 50) stops the loop before an over-budget resume, raising `HITLIterationLimitError`; the command reports this as exit code 124. Use a restrictive list and an explicit turn budget in CI, rather than assuming headless mode supplies a human review boundary.
-
-## Talon has a separate persisted tool policy
-
-Talon's `ToolApprovalStore` is separate from dcode live modes and filesystem path rules. It stores an exact-name boolean mapping in a bounded regular JSON file opened without following symlinks. Enabled names become approve-or-reject HITL entries; unspecified names are not prompted. Its default policy enables review for `update_tool_approvals`, `delete_conversations`, `update_mcp_server`, `start_async_task`, and `send_message`.
-
-A read yields an immutable `ApprovalSnapshot` whose revision hashes policy bytes. Updates validate a complete boolean batch, use a lock and expected-revision compare-and-swap, and report conflict or error instead of overwriting another writer. The runtime binds a loaded snapshot for one invocation and rebuilds its graph only after persisted policy changes, so a saved change applies later rather than loosening the current invocation. The update tool also requires an active snapshot and operator context; cron and background-delivery turns are not operator contexts.
-
-## Operating guidance and focused tests
-
-- Use `deny` for operations that must never run and `interrupt` for a human decision on one graph call. Keep paths absolute and interrupt globs anchored.
-- Install filesystem policy and HITL routing in every graph that can execute sensitive tools. Local declarative children inherit only omitted values; compiled and remote children require independent configuration.
-- Do not use `update_async_task` or cancellation to answer a waiting child; direct the user to the child thread.
-- Treat `--yolo` or `auto_approve=True` as deliberate removal of dcode HITL. In headless runs, no shell list or `all` also permits non-shell tools automatically; prefer a restrictive allow-list, understand that it controls shell commands only, and bound retries with `--max-turns`.
-- Keep interpreter PTC on `safe` unless a broader host-tool list is intentionally reviewed.
-- `test_permissions.py` covers rule order, validation, recursive-delete protection, generated exact and bulk predicates, symlink enforcement, conflicts, and general-purpose inheritance. dcode agent tests cover async Store reads and fail-closed modes; non-interactive tests cover allow-list decisions, hooks, resume rounds, and turn-budget exit behavior.
+- Use `deny` for an operation that must not execute through built-in filesystem tools; use `interrupt` where a human decision is desired for one graph call. Do not model an interrupt as a durable denial.
+- Keep permission patterns absolute and bulk interrupt patterns literally anchored. Test `glob` with both `path` and absolute `pattern`, plus pathless and `.` cases.
+- Configure every executable graph. Omitted values inherit only for declarative local subagents; compiled and remote async children are independent policy boundaries.
+- Do not try to resolve a waiting async child through its parent task tools. Direct the user to the child thread.
+- Treat removal of `HumanInTheLoopMiddleware`, or disabling a Talon enabled name, as a deliberate loss of approval gating. It does not alter a filesystem `deny` rule.
+- `test_permissions.py` covers rule order and validation, recursive-delete overlap, exact and bulk interrupt predicates, execution-capable backend rejection, symlink-resolved enforcement, and resolved-path HITL behavior.

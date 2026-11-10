@@ -151,6 +151,9 @@ def show_help() -> None:
     console.print(
         "  dcode uninstall NAME                      Remove an optional extra"
     )
+    console.print(
+        "  dcode completion <bash|zsh|fish>          Generate shell completions"
+    )
     console.print()
 
     console.print("[bold]Options:[/bold]", style=theme.PRIMARY)
@@ -649,6 +652,44 @@ def show_doctor_help() -> None:
         "     Run `dcode --version` (or `dcode -v`) for dependency versions.",
         style=theme.MUTED,
         highlight=False,
+    )
+    console.print()
+
+
+def show_completion_help() -> None:
+    """Show help information for the `completion` subcommand."""
+    console.print()
+    console.print("[bold]Usage:[/bold]", style=theme.PRIMARY)
+    console.print("  dcode completion <bash|zsh|fish>")
+    console.print()
+    console.print("Print a shell completion script for dcode to stdout.")
+    console.print("Regenerate the script after upgrading dcode so new commands and")
+    console.print("options are completed.")
+    console.print()
+    console.print("[bold]Options:[/bold]", style=theme.PRIMARY)
+    console.print("  --prog NAME             Command name the script completes")
+    console.print(
+        "                          (repeatable; default: dcode and deepagents-code)"
+    )
+    console.print(_HELP_OPTION_LINE)
+    console.print()
+    console.print("[bold]Setup:[/bold]", style=theme.PRIMARY)
+    console.print("  Bash:")
+    console.print("    dcode completion bash > ~/.dcode-completion.bash")
+    console.print("    echo 'source ~/.dcode-completion.bash' >> ~/.bashrc")
+    console.print()
+    console.print("  Zsh:")
+    console.print("    mkdir -p ~/.zfunc")
+    console.print("    dcode completion zsh > ~/.zfunc/_dcode")
+    console.print("    # in ~/.zshrc, add `fpath=(~/.zfunc $fpath)` before `compinit`")
+    console.print()
+    console.print("  Fish:")
+    console.print("    # fish loads one file per command name")
+    console.print("    mkdir -p ~/.config/fish/completions")
+    console.print("    cd ~/.config/fish/completions")
+    console.print("    dcode completion fish --prog dcode > dcode.fish")
+    console.print(
+        "    dcode completion fish --prog deepagents-code > deepagents-code.fish"
     )
     console.print()
 

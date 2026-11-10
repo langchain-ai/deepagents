@@ -2303,7 +2303,15 @@ async def execute_task_textual(
                     # than only once it returns. Consume the event whatever came
                     # of it: a duplicate of a request the message stream already
                     # recorded is still ours, not input for the handlers below.
-                    if not is_main_agent and _session_stats.is_model_usage_event(data):
+                    if is_main_agent and _session_stats.is_summarization_started_event(
+                        data
+                    ):
+                        if not summarization_in_progress:
+                            summarization_in_progress = True
+                            if adapter._set_spinner:
+                                await adapter._set_spinner("Offloading")
+                        continue
+                    if _session_stats.is_model_usage_event(data):
                         try:
                             from deepagents_code.config import runtime_state
 

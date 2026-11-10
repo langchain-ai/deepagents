@@ -13,7 +13,7 @@ from uuid import uuid4
 
 from langchain.agents.middleware import AgentMiddleware
 from langchain.tools import ToolRuntime  # noqa: TC002  # tools inspect injected annotations
-from langchain_core.messages import SystemMessage, ToolMessage, convert_to_messages
+from langchain_core.messages import BaseMessage, SystemMessage, ToolMessage, convert_to_messages
 from langchain_core.tools import tool
 from langgraph.types import Command
 from langgraph_sdk import get_client
@@ -410,11 +410,11 @@ class BackgroundSubagents(AgentMiddleware):
                 else:
                     messages = result.update.get("messages", [])
                     job.result = (
-                        str(messages[-1].content) if messages else "Subagent returned no result."
+                        _result_text(messages[-1]) if messages else "Subagent returned no result."
                     )
             else:
-                job.result = str(getattr(result, "content", result))
-            job.result = job.result[:_MAX_RESULT_CHARACTERS]
+                job.result = _result_text(result)
+            job.result = (job.result or "Subagent returned no result.")[:_MAX_RESULT_CHARACTERS]
         except asyncio.CancelledError:
             job.cancelled = True
             job.control.record("cancelled")
@@ -450,9 +450,10 @@ class BackgroundSubagents(AgentMiddleware):
                     if part.data.get("__interrupt__"):
                         result = "Subagent needs tool approval; the protected action has not run."
                     elif messages := part.data.get("messages"):
-                        result = str(convert_to_messages(messages)[-1].content)[
-                            :_MAX_RESULT_CHARACTERS
-                        ]
+                        result = (
+                            _result_text(convert_to_messages(messages)[-1])
+                            or "Subagent returned no result."
+                        )[:_MAX_RESULT_CHARACTERS]
         return result
 
     def results(self, owner: str) -> dict[str, str]:
@@ -554,18 +555,7 @@ class BackgroundSubagents(AgentMiddleware):
 
 
 def _clamp(result: ToolMessage | Command) -> ToolMessage | Command:
-    """Bound one inline subagent result.
-
-    `_run` clamps before storing a background result. Inline the subagent's output goes
-    straight into the scheduled thread that every later fire of the job reuses, so an
-    unclamped result grows that thread without limit.
-
-    Args:
-        result: What the delegating tool returned.
-
-    Returns:
-        The result, with oversized message text truncated.
-    """
+    """Extract and bound inline subagent answer text."""
     if isinstance(result, Command):
         if not isinstance(result.update, dict):
             return result
@@ -579,19 +569,16 @@ def _clamp(result: ToolMessage | Command) -> ToolMessage | Command:
     return cast("ToolMessage", _clamped(result))
 
 
+def _result_text(value: object) -> str:
+    """Extract message answer text without reasoning or other non-text blocks."""
+    if isinstance(value, BaseMessage):
+        return value.text
+    return value if isinstance(value, str) else str(value)
+
+
 def _clamped(message: object) -> object:
-    """Truncate one message's text, leaving structured content alone.
-
-    Args:
-        message: Message carried back from a subagent.
-
-    Returns:
-        The message, or a copy of it holding only the leading characters.
-    """
-    content = getattr(message, "content", None)
-    if not isinstance(content, str) or len(content) <= _MAX_RESULT_CHARACTERS:
+    """Extract and truncate a tool message while preserving its metadata."""
+    if not isinstance(message, ToolMessage):
         return message
-    copier = getattr(message, "model_copy", None)
-    if not callable(copier):
-        return message
-    return copier(update={"content": content[:_MAX_RESULT_CHARACTERS]})
+    content = (_result_text(message) or "Subagent returned no result.")[:_MAX_RESULT_CHARACTERS]
+    return message.model_copy(update={"content": content})

@@ -915,6 +915,80 @@ async def test_inline_failure_is_reported_without_arguments(caplog):
     assert "sk-secret-arg" not in caplog.text
 
 
+@pytest.fixture(params=["blocks", "string", "empty", "long"])
+def answer_content(request):
+    text = "answer" * 20_000 if request.param == "long" else "answer"
+    if request.param == "string":
+        return text, text
+    blocks = [{"type": "reasoning", "encrypted_content": "encrypted" * 20_000}]
+    if request.param != "empty":
+        blocks.append({"type": "text", "text": text})
+    expected = "Subagent returned no result." if request.param == "empty" else text
+    return blocks, expected[:_MAX_RESULT_CHARACTERS]
+
+
+@pytest.mark.parametrize("command", [False, True])
+async def test_background_results_expose_only_answer_text(answer_content, command):
+    content, expected = answer_content
+
+    @tool
+    async def task() -> ToolMessage | Command:
+        """Delegate."""
+        message = ToolMessage(content, tool_call_id="call")
+        return Command(update={"messages": [message]}) if command else message
+
+    background = BackgroundSubagents()
+    request = _request("chat", task)
+    await background.awrap_tool_call(request, _unused_handler)
+    job = next(iter(background._jobs.values()))
+    await job.worker
+
+    assert job.result == expected
+    delivered = next(iter(background.results("chat").values()))
+    assert f"<subagent_result>\n{expected}\n</subagent_result>" in delivered
+    assert "encrypted" not in delivered
+    listing = await background.tools[0].ainvoke({"runtime": request.runtime})
+    assert listing[0]["result"] == expected
+    assert "encrypted" not in str(listing)
+
+
+@pytest.mark.parametrize("command", [False, True])
+async def test_inline_results_expose_only_answer_text(answer_content, command):
+    content, expected = answer_content
+    message = ToolMessage(content, tool_call_id="call", status="error", artifact={"key": "value"})
+    untouched = AIMessage("other message")
+
+    async def handler(_request):
+        if command:
+            return Command(
+                update={"messages": [untouched, message, 42], "other": "keep"}, goto="next"
+            )
+        return message
+
+    @tool
+    async def task() -> str:
+        """Delegate."""
+        return "unused"
+
+    background = BackgroundSubagents()
+    token = _scheduled()
+    try:
+        result = await background.awrap_tool_call(_request("job:cron", task), handler)
+    finally:
+        _SCHEDULED_TURN.reset(token)
+
+    if command:
+        assert result.goto == "next"
+        assert result.update["other"] == "keep"
+        assert result.update["messages"][0] is untouched
+        assert result.update["messages"][2] == 42
+        result = result.update["messages"][1]
+    assert result.content == expected
+    assert result.tool_call_id == "call"
+    assert result.status == "error"
+    assert result.artifact == {"key": "value"}
+
+
 async def test_inline_result_is_truncated():
     """The scheduled thread is reused on every fire, so one result cannot fill it."""
 
@@ -968,14 +1042,18 @@ async def test_scheduled_run_does_not_consume_background_capacity():
     assert await background.cancel("chat")
 
 
-async def test_scheduled_start_async_task_streams_the_remote(monkeypatch):
+@pytest.mark.parametrize("scheduled", [False, True])
+async def test_start_async_task_streams_plain_remote_results(
+    monkeypatch, answer_content, scheduled
+):
     """The SDK tool would hand back a task id this turn has no way to resolve."""
     created = []
+    content, expected = answer_content
 
     async def stream(*_args: object, **kwargs: object):
         assert kwargs["on_disconnect"] == "cancel"
         yield SimpleNamespace(
-            event="values", data={"messages": [{"role": "assistant", "content": "remote findings"}]}
+            event="values", data={"messages": [{"role": "assistant", "content": content}]}
         )
 
     def client(**_kwargs: object):
@@ -995,7 +1073,7 @@ async def test_scheduled_start_async_task_streams_the_remote(monkeypatch):
     background = BackgroundSubagents().configured(
         [{"name": "remote", "description": "research", "graph_id": "g", "url": "https://e.example"}]
     )
-    token = _scheduled()
+    token = _SCHEDULED_TURN.set(scheduled)
     try:
         result = await asyncio.wait_for(
             background.awrap_tool_call(
@@ -1009,7 +1087,12 @@ async def test_scheduled_start_async_task_streams_the_remote(monkeypatch):
     finally:
         _SCHEDULED_TURN.reset(token)
 
-    assert result.content == "remote findings"
+    if scheduled:
+        assert result.content == expected
+    else:
+        job = next(iter(background._jobs.values()))
+        await job.worker
+        assert job.result == expected
     assert created == []
 
 

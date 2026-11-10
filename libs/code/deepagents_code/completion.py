@@ -12,6 +12,7 @@ shell's startup file. `dcode completion -h` prints the per-shell setup.
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import sys
 from dataclasses import dataclass
@@ -156,8 +157,25 @@ def run_completion_command(args: argparse.Namespace) -> int:
 
     programs = tuple(args.prog) if getattr(args, "prog", None) else DEFAULT_PROGRAMS
     root = build_spec(build_parser(), programs)
-    sys.stdout.write(render_script(args.shell, root, programs))
+    _write_stdout(render_script(args.shell, root, programs))
     return 0
+
+
+def _write_stdout(text: str) -> None:
+    """Write to stdout, staying quiet when the reader closes the pipe early.
+
+    Args:
+        text: Text to write.
+    """
+    try:
+        sys.stdout.write(text)
+        sys.stdout.flush()
+    except BrokenPipeError:
+        # A reader such as `head` exited. Point stdout at devnull so the
+        # interpreter's exit-time flush does not raise again.
+        devnull = os.open(os.devnull, os.O_WRONLY)
+        os.dup2(devnull, sys.stdout.fileno())
+        os.close(devnull)
 
 
 def _command_spec(

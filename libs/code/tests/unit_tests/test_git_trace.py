@@ -283,6 +283,34 @@ async def test_turn_probes_once_per_call_after_baseline(
     ]
 
 
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_undiscovered_nested_checkout_is_credited(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, asynchronous: bool
+) -> None:
+    repo = _repo(tmp_path / "repo")
+    (repo / ".worktrees").mkdir()
+    nested = _repo(repo / ".worktrees" / "feat", "nested")
+    trace = MagicMock()
+    monkeypatch.setattr(git_trace, "capture_turn", lambda _config: trace)
+    middleware = GitTraceMiddleware(
+        lambda: FilesystemBackend(root_dir=repo, virtual_mode=False), str(repo)
+    )
+    calls = [
+        ("execute", {"command": "git status --short"}),
+        ("write_file", {"file_path": str(nested / "work.txt"), "content": "edited"}),
+    ]
+    agent = _tool_agent(middleware, calls)
+    value = {"messages": [{"role": "user", "content": "work"}]}
+    if asynchronous:
+        await agent.ainvoke(value, _config())
+    else:
+        agent.invoke(value, _config())
+    metadata = trace.update.call_args.args[0]
+    assert metadata["open_swe_git_targets"] == [
+        {"repo": "example/nested", "branch": "main"}
+    ]
+
+
 def test_repeated_probe_failures_back_off_then_disable(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:

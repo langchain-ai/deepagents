@@ -9,6 +9,7 @@ import threading
 import time
 from collections import OrderedDict
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING, override
 
 from langchain.agents.middleware.types import (
@@ -72,6 +73,17 @@ def _observes_checkout(request: ToolCallRequest) -> bool:
     )
 
 
+def _nested(path: str, root: str) -> bool:
+    """Return whether a checkout sits between `root` and `path`."""
+    top = Path(root)
+    for directory in (Path(path), *Path(path).parents):
+        if directory == top:
+            return False
+        if (directory / ".git").exists():
+            return True
+    return False
+
+
 @dataclass
 class _Turn:
     trace: TurnTrace
@@ -88,14 +100,29 @@ class _Turn:
         with self.lock:
             return paths is not None and self.covered.issuperset(paths)
 
-    def contains(self, paths: tuple[str, ...] | None) -> bool:
+    def contains(self, paths: tuple[str, ...] | None, *, local: bool) -> bool:
+        """Report whether a pre-call probe would add nothing for these paths.
+
+        Containment in a known checkout only counts on a local filesystem,
+        where a nested checkout `_discover` missed can be ruled out.
+
+        Returns:
+            Whether every path was probed before or sits in a known checkout.
+        """
         with self.lock:
             roots = [root.rstrip("/") + "/" for root in self.baseline]
-            return paths is not None and all(
-                path in self.covered
-                or any(f"{path}/".startswith(root) for root in roots)
-                for path in paths
+            covered = set(self.covered)
+        return paths is not None and all(
+            path in covered
+            or (
+                local
+                and any(
+                    f"{path}/".startswith(root) and not _nested(path, root)
+                    for root in roots
+                )
             )
+            for path in paths
+        )
 
     def start(self) -> int:
         with self.lock:
@@ -240,6 +267,16 @@ class GitTraceMiddleware(AgentMiddleware[AgentState, ContextT]):
         backend = self._backend()
         return backend, self._cwd or str(getattr(backend, "cwd", ""))
 
+    def _local(self) -> bool:
+        from deepagents.backends.filesystem import FilesystemBackend
+
+        try:
+            backend = self._backend()
+        except Exception:
+            logger.debug("Could not resolve git attribution backend", exc_info=True)
+            return False
+        return isinstance(backend, FilesystemBackend) and not backend.virtual_mode
+
     def _paths(self, args: Mapping[str, object]) -> tuple[str, ...] | None:
         try:
             _, cwd = self._location()
@@ -364,7 +401,7 @@ class GitTraceMiddleware(AgentMiddleware[AgentState, ContextT]):
         order = self._order(turn)
         args = request.tool_call["args"]
         paths = self._paths(args)
-        if not turn.contains(paths):
+        if not turn.contains(paths, local=self._local()):
             probe = turn.start()
             self._observe(turn, self._probe(args), probe, order, paths, created=False)
         created = turn.covers(paths)
@@ -390,7 +427,7 @@ class GitTraceMiddleware(AgentMiddleware[AgentState, ContextT]):
         order = self._order(turn)
         args = request.tool_call["args"]
         paths = self._paths(args)
-        if not turn.contains(paths):
+        if not turn.contains(paths, local=self._local()):
             probe = turn.start()
             snapshots = await self._aprobe(args)
             self._observe(turn, snapshots, probe, order, paths, created=False)

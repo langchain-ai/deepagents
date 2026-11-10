@@ -312,6 +312,10 @@ def _scoped_env_overrides(
 # ---------------------------------------------------------------------------
 
 
+class ServerStartupTimeoutError(RuntimeError):
+    """The server did not finish starting before the health-check deadline."""
+
+
 async def wait_for_server_healthy(
     url: str,
     *,
@@ -329,7 +333,7 @@ async def wait_for_server_healthy(
             we fail fast instead of waiting for the timeout.
         read_log: Optional callable returning log file contents (for
             error messages on early exit).
-        local: Use a shorter poll interval for local servers.
+        local: Connect directly and use a shorter poll interval for local servers.
 
     Raises:
         ModelConfigError: If startup reports missing credentials or a provider package.
@@ -345,7 +349,7 @@ async def wait_for_server_healthy(
     last_status: int | None = None
     last_exc: Exception | None = None
 
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(trust_env=not local) as client:
         while time.monotonic() < deadline:
             if process and process.poll() is not None:
                 output = read_log() if read_log else ""
@@ -376,7 +380,16 @@ async def wait_for_server_healthy(
         msg += f" (last status: {last_status})"
     elif last_exc is not None:
         msg += f" (last error: {last_exc})"
-    raise RuntimeError(msg)
+    output = read_log() if read_log else ""
+    summary = _extract_startup_error_marker(output)
+    if summary:
+        msg = f"{msg}: {summary}"
+    if output:
+        msg += f"\n{output[-_LOG_TAIL_CHARS:]}"
+    error = startup_error_from_output(output, msg)
+    if type(error) is RuntimeError:
+        error = ServerStartupTimeoutError(msg)
+    raise error
 
 
 # ---------------------------------------------------------------------------
@@ -432,6 +445,9 @@ def _build_server_env() -> dict[str, str]:
     # dcode pins `langgraph-api`, so the PyPI upgrade check only costs a network
     # fetch at startup and logs a `pip install -U` hint users cannot act on.
     env["LANGGRAPH_NO_VERSION_CHECK"] = "1"
+    # Server output only goes to the log file, and colored logs on Windows need
+    # colorama, which a fresh install no longer pulls in.
+    env["LOG_COLOR"] = "false"
     env[INVOKED_AS] = invoked_name()
 
     # Capture a launch-time PYTHONPATH before stripping it. Never trust inherited
@@ -1126,7 +1142,7 @@ class ServerProcess:
         graph_url = f"{self.url}/assistants/{quote(graph_name, safe='')}/graph"
         deadline = time.monotonic() + timeout
 
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(trust_env=False) as client:
             while time.monotonic() < deadline:
                 if self._process.poll() is not None:
                     msg = f"Server process exited with code {self._process.returncode}"

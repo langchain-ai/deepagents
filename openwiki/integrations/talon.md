@@ -1,131 +1,142 @@
 ---
 type: runtime integration
 title: Talon Runtime Integration
-description: Operator guide to Talon's /effort reasoning control, from model-specific validation and persistence through request-scoped provider settings. Explains authorization, failure behavior, and why effort does not affect subagents.
-tags: [talon, reasoning-effort, model-selection, operator-controls, runtime]
+description: Talon composes trusted channel input, a host-owned turn lifecycle, and a replaceable Deep Agents graph. This page explains runtime construction, attended and unattended execution boundaries, MCP lifecycle, observability, and focused validation seams.
+tags: [talon, runtime, channels, scheduling, mcp, observability]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-10-31T08:04:00.426Z
+    at: 2026-11-10T08:04:01.717Z
 sources:
+  - id: openwiki-source-6a038e6e1a11f450bcafce54
+    resource: repo://libs/talon/deepagents_talon/__main__.py
   - id: openwiki-source-cd45145a8c3a51b52eab3c2b
     resource: repo://libs/talon/deepagents_talon/background.py
-  - id: openwiki-source-80976c09402c30d4f886a2fa
-    resource: repo://libs/talon/deepagents_talon/commands.py
-  - id: openwiki-source-81698d033a5726401d48b135
-    resource: repo://libs/talon/deepagents_talon/config.py
-  - id: openwiki-source-9ee5b3034d091a886c8fdda4
-    resource: repo://libs/talon/deepagents_talon/effort.py
   - id: openwiki-source-6801a88de6305bc8cbdd259f
     resource: repo://libs/talon/deepagents_talon/host.py
   - id: openwiki-source-cebe4ea270e21dce4de9b074
     resource: repo://libs/talon/deepagents_talon/interfaces.py
-  - id: openwiki-source-f04ce33d1db21a61b1e6e8b3
-    resource: repo://libs/talon/deepagents_talon/model_selection.py
+  - id: openwiki-source-111101dcd1462ff54277b1fc
+    resource: repo://libs/talon/deepagents_talon/mcp_config.py
+  - id: openwiki-source-d98b6d615a63b95a7c893810
+    resource: repo://libs/talon/deepagents_talon/mcp_middleware.py
+  - id: openwiki-source-82cac27adeecff8a900a40fa
+    resource: repo://libs/talon/deepagents_talon/mcp.py
+  - id: openwiki-source-5c7840a55ecf6660d9f718f2
+    resource: repo://libs/talon/deepagents_talon/observability.py
   - id: openwiki-source-665a21e2fbd09a89d3f13ac0
     resource: repo://libs/talon/deepagents_talon/runtime.py
-  - id: openwiki-source-022c52172483653e0c3a3eaf
-    resource: repo://libs/talon/tests/unit_tests/test_effort.py
-generated: { by: "openwiki/0.4.2", at: "2026-10-31T08:04:00.426Z" }
+  - id: openwiki-source-2d1f686d24d8182f60108ae7
+    resource: repo://libs/talon/deepagents_talon/subagents.py
+  - id: openwiki-source-ba53b2ab73965694b2510a58
+    resource: repo://libs/talon/Makefile
+  - id: openwiki-source-a69daa62c9a3eb9a49f09bf9
+    resource: repo://libs/talon/tests/test_host.py
+  - id: openwiki-source-4c1a7e831a8cd578116d1f18
+    resource: repo://libs/talon/tests/test_mcp_middleware.py
+  - id: openwiki-source-b087777c8383ba81f7e2cb17
+    resource: repo://libs/talon/tests/test_observability.py
+  - id: openwiki-source-fed7e97e2aca85ebfae626d9
+    resource: repo://libs/talon/tests/unit_tests/test_mcp_adapter.py
+  - id: openwiki-source-e2be45e59936bfba43c18816
+    resource: repo://libs/talon/tests/unit_tests/test_mcp_config.py
+  - id: openwiki-source-1215414599473e1c77733a10
+    resource: repo://libs/talon/tests/unit_tests/test_mcp_enabled.py
+  - id: openwiki-source-5dbe50a53795f3db46509bac
+    resource: repo://libs/talon/tests/unit_tests/test_skill_mcp.py
+  - id: openwiki-source-96c9dfdb1811c0047d23fa47
+    resource: repo://libs/talon/tests/unit_tests/test_telegram_approvals.py
+generated: { by: "openwiki/0.4.2", at: "2026-11-10T08:04:01.717Z" }
 ---
 
 # Talon Runtime Integration
 
-> **Experimental, single-operator control — not a security boundary.** Talon is alpha software and does not provide production-grade HITL policy, channel-administrator controls, or multi-tenant isolation. `/effort` restricts who can change a runtime setting; it does not make an admitted sender, channel, model provider, MCP tool, or host environment safe. Treat channel admission as access to the operator's agent and credentials. See [channel admission](../concepts/talon-channel-admission.md) and [security](../operations/security.md).
+Talon is an experimental long-running assistant host. Its key ownership boundary is deliberate: channel adapters translate provider events, `TalonHost` owns conversation routing, turn replacement, delivery, and interactive channel state, while `DeepAgentRuntime` owns graph construction, checkpointed execution, runtime tool snapshots, and in-process background workers. The host is the only component that turns a channel or scheduler event into an `AgentRequest`; adapters do not invoke the runtime directly.
 
-`/effort` is Talon's assistant-wide, model-specific control for a reasoning model's supported effort or thinking setting. It is a host command, not a prompt for the model: the host answers it directly, and a successful change applies to subsequent main-agent turns in every chat using that exact selected model. It is advertised by `/help` and channel command registries alongside `/model`.
+See [Talon channel admission](../concepts/talon-channel-admission.md) for provider trust and routing, [Talon scheduling](../concepts/talon-scheduling.md) for the durable cron model and worker delivery lifecycle, [MCP integration](mcp.md) for the broader MCP/OAuth model, and the [testing guide](../testing/testing-guide.md) for repository conventions.
 
-## Operator use
+## Composition and ownership
 
-```text
-/effort
-/effort high
-/effort extra-high
-/effort default
-```
+The CLI builds the configured channels and, when channels exist, a `PersistentCronScheduler` whose callbacks are `TalonHost.run_scheduled_job` and scheduled-result delivery. For a model-backed assistant, it first loads `MCPToolProvider`, logs per-server outcomes, and constructs `DeepAgentRuntime` with its tools, refresh/reload callbacks, async-subagent loader, cron store, checkpointer, sandbox backend when configured, and one `talon_mcp_middleware()`.
 
-- `/effort` reports the current setting and the levels known for the **currently selected global model**. Reading the setting does not require operator authority.
-- `/effort <level>` changes it only for a channel operator. `default` removes the saved override and restores the provider's default behavior for that model. `extra-high` and `x_high` normalize to `xhigh`.
-- The host keeps a separate override for each exact `provider:model` identifier. Switching with `/model` therefore exposes that model's own setting; switching back restores the prior model's override. The default runtime model is used when no `/model` override is selected.
-- The command rejects a non-operator write, a model with no known effort control, and an unsupported level without creating or altering saved state. An echo or other runtime that does not implement model selection reports that reasoning effort is unavailable.
-
-The available levels are intentionally an allowlist rather than free-form provider parameters. Talon first asks the shared model profile metadata, then supplies documented fallbacks where metadata may be absent. It also recognizes common OpenAI-compatible model families and route aliases. Consequently, the response from `/effort`—not a generic list in operational documentation—is the authoritative list for the selected model.
-
-## Supported control shapes and provider translation
-
-Most models receive the selected value as `reasoning_effort`, allowing the LangChain provider adapter to serialize it appropriately. For example, Anthropic's adapter serializes the setting in `output_config.effort`, while the OpenAI Responses API serializes it as `reasoning.effort`.
-
-Some OpenAI-compatible families need different wire settings, which Talon translates only after validating the requested label:
-
-| Model family | Operator-visible controls | Invocation settings |
-| --- | --- | --- |
-| DeepSeek reasoning models | `none`, `low`, `high`, `max` | `none` disables `thinking`; another level enables it and supplies `reasoning_effort`. |
-| Qwen reasoning models | `low`, `medium`, `high`, `xhigh`, `max` | Sends `extra_body.enable_thinking` where the checkpoint permits it and maps levels to `thinking_budget`: 1024, 4096, 8192, 16384, or the provider limit for `max`. |
-| GLM | `off` and `on`, except forced-thinking GLM-5.3 models expose only `on` | Sends `extra_body.thinking.type` as `disabled` or `enabled`. |
-| Other profiled or documented models | Model-specific native labels | Sends `reasoning_effort`. |
-
-This translation is not a promise that every provider/model supports every label. Unknown OpenAI-routed names with a slash are deliberately not inferred as native effort-capable models. The selection is revalidated immediately before it becomes runtime settings, which protects the invocation path from stale or externally constructed `AgentRequest` values.
-
-## Command-to-turn flow
+`TalonHost.start()` starts the runtime first, binds each channel's message and optional reaction callbacks before starting it, then starts the scheduler. If startup fails, it unwinds the started scheduler/channels in reverse order and stops the runtime. On normal shutdown it cancels the background dispatch loop and active work, stops channels and scheduler, then stops the runtime; individual stop failures are logged without preventing subsequent cleanup.
 
 ```mermaid
 sequenceDiagram
-    participant Operator
-    participant Channel
+    participant Channel as Channel adapter
     participant Host as TalonHost
-    participant Store as effort.json
+    participant Scheduler as Cron scheduler
     participant Runtime as DeepAgentRuntime
-    participant Middleware as ModelSelectionMiddleware
-    participant Provider
+    participant Graph as Deep Agents graph
+    participant Worker as Background worker
 
-    Operator->>Channel: /effort high
-    Channel->>Host: ChannelMessage
-    Host->>Host: Check operator and model allowlist
-    Host->>Store: Atomically save model override
-    Store-->>Host: Save succeeds
-    Host-->>Channel: Applies across chats from next turn
-    Operator->>Channel: Later normal message
-    Channel->>Host: ChannelMessage
-    Host->>Host: Capture model and effort for turn
-    Host->>Runtime: AgentRequest with effort
-    Runtime->>Runtime: Set turn-local model settings
-    Runtime->>Middleware: Main-agent model call
-    Middleware->>Provider: Merge translated settings
-    Provider-->>Middleware: Response
+    Channel->>Host: admitted ChannelMessage or reaction
+    Scheduler->>Host: claimed cron job
+    Host->>Host: own route lock and interaction state
+    Host->>Runtime: AgentRequest with host metadata and handlers
+    Runtime->>Graph: invoke captured graph snapshot
+    Graph->>Worker: optional attended task
+    Graph-->>Runtime: text and consumed result IDs
+    Runtime-->>Host: AgentResult
+    Host-->>Channel: progress prompt or final delivery
+    Worker-->>Host: later result through runtime background state
 ```
 
-This flow shows the successful write and a later turn. A command message itself is consumed by the host and never invokes the agent. The host dispatches commands while holding the conversation lock, derives the command name from the initial slash token (including an optional `@bot` suffix), and sends the response through the originating channel.
+*The host owns channel-facing lifecycle and delivery; the runtime owns a graph snapshot and the worker table used during execution.*
 
-### Persistence, authorization, and failed writes
+`AgentRequest` is the integration contract: it carries a resolved conversation ID, text, host-supplied metadata, and optional approval, authorization, progress, breakout, and question handlers. `AgentResult` returns text plus the IDs of background results that the runtime has acknowledged; the host alone knows whether that text was actually delivered and can requeue those IDs if it discards the reply. Optional runtime protocols isolate capabilities such as inbound-media staging, model selection, MCP reload, background work, delivery indexing, and history erasure from the base `AgentRuntime` interface.
 
-`TalonConfig.effort_state_path` resolves to `effort.json` within the validated per-assistant home, normally `~/.deepagents/<assistant_id>/effort.json`. The host loads it during construction as a JSON map of model specification to effort string. A successful update writes a temporary mode-`0600` file, flushes and fsyncs it, then replaces the state file. The in-memory selection map changes **only after** that write succeeds. Thus an `OSError` produces a generic operator-facing failure, retains the old active selection, and leaves the previous durable file intact rather than claiming a setting that did not persist.
+## Graph construction and per-turn state
 
-A mutating command requires a configured channel operator ID, or a self-originated message when the channel is in `self` exposure mode. It is a narrow authorization check for this host command, not a general safety guarantee. In particular, configuring open or allowlisted channel exposure does not grant other senders permission to change effort.
+`DeepAgentRuntime.start()` resolves subagents, snapshots the per-assistant approval store, and creates the graph. Graph assembly combines Talon's filesystem middleware, selected-model summarization and selection, progress messages, a human-in-the-loop middleware built from the approval snapshot, server hooks, task selection, configured background workers, optional summarization-tool middleware, skill middleware, and caller-supplied middleware. It adds approval-management and attachment-inspection tools, keeps skill-only MCP tools out of the ordinary main tool list until skill disclosure, and prepares local subagents against the actual tool catalog.
 
-### Capture and lifetime
+The runtime uses a checkpointer so turns in one conversation can share history. Before each invocation it refreshes tools if needed, rebuilds the graph if approvals changed, then stores the current graph in a context variable. That captured graph snapshot means a concurrent replacement cannot alter an in-flight turn. If a tool refresh or graph rebuild fails, the previous graph stays usable and saved MCP changes remain inactive. At shutdown, runtime resource cleanup is intentionally skipped if a background worker outlives the cancellation wait, avoiding writes through a closed checkpointer.
 
-When the host starts a normal agent turn, it snapshots both the current global model selection and the override associated with that model into its internal turn record. It passes those values in the `AgentRequest`; a later `/effort` or `/model` command therefore cannot alter already started work. Newly started turns, including ones in other chats, see the saved selection.
+For a channel turn, the host derives a provider-qualified conversation root, serializes it, and composes host-owned identity and history metadata. Within that lock, commands win; a matching pending approval, OAuth callback, or question reply is processed before an ordinary message may replace the active agent turn. A replacement increments the generation, cancels the previous task, and attempts checkpoint recovery. Settlement checks both generation and conversation ID before sending, so a stale result or progress update cannot arrive in a newer conversation. See [Talon channel admission](../concepts/talon-channel-admission.md) for the detailed admission and metadata trust boundary.
 
-`DeepAgentRuntime` resolves the selected model for the request, translates a valid captured effort into settings, and stores those settings in the `ACTIVE_EFFORT` context variable for the duration of the invocation. It resets that context in `finally`, including on cancellation or failure. Concurrent turns consequently do not leak a Qwen budget or another provider setting into one another, and a following request without effort uses no override.
+## Questions, approvals, and unattended authority
 
-`ModelSelectionMiddleware` is the integration boundary that applies the selection to calls. It optionally swaps the main model, merges effort settings with existing `model_settings`, and merges nested `extra_body` and `thinking` mappings instead of discarding unrelated settings such as temperature or provider options.
+Tool approval and `ask_user` clarification are separate interactions. For an attended run with an identified sender, the host stores pending approval/question state by agent conversation and sends prompts on the originating channel. Approval replies and reactions are bound to that sender; a missing sender is rejected rather than creating a pending approval. Question sessions serialize a batch into channel prompts and return no answers if cancelled or delivery fails, so the model must not assume an answer.
 
-### Subagent exclusion
+The runtime sets `APPROVAL_OPERATOR` only when host metadata says the requester is an operator and the request is neither cron nor background delivery. It scopes the authorization, question, progress, hook, cron-origin, background-result, and graph context around the invocation and resets them in `finally`. Cron and background-delivery requests therefore have no channel approval, authorization, or question handler; cron is additionally rejected by the approval operator gate. This prevents an interaction from outliving the attended turn that could answer it.
 
-Reasoning effort is intentionally a **main-agent-only** adjustment. Background and inline subagents mark their execution context with `_IN_SUBAGENT`; the model-selection middleware does not apply `ACTIVE_EFFORT` in that context. The selected-model summarization path likewise uses a subagent's startup model rather than the main turn's selected model. `/effort` therefore does not silently change the effort, model settings, or context budget of delegated work.
+## Background delegation and cron
 
-## Operational relationships
+`BackgroundSubagents` turns attended `task` and `start_async_task` calls into process-local jobs owned by the current runtime thread. The shared job table is bounded, running capacity is shared across configured graph copies, and each worker runs under a fresh task thread with no authorization handler and no approval operator. Results are capped and failures, timeouts, remote stream errors, and approval interrupts become safe result text rather than propagated arguments or credentials. Only the owning conversation can list, inspect, message, or cancel its jobs; inspection exposes bounded lifecycle metadata rather than reasoning or message bodies.
 
-- Use `/model` first when the intent is to select a different model; `/effort` changes only the setting associated with whichever global model is currently selected. See [profiles and models](../concepts/profiles-models.md).
-- State is per **assistant home**, while the effect is across that assistant's chats. Separate assistant IDs have separate `effort.json` files.
-- The command controls model invocation settings, not scheduling, admission, tool approval, MCP authorization, or the execution sandbox. Scheduled and background work also does not inherit the main-agent effort setting through subagent execution.
+The host polls for completed owner results. It skips locked, active, blocked, superseded, or result-less conversations, uses capped exponential backoff, and creates an unattended `background_delivery` follow-up only when eligible. The runtime injects keyed results into that main-agent turn, acknowledges them after it completes, and reports their IDs in `AgentResult`. If the host later suppresses or fails to deliver that reply, it requeues only those IDs. A failed processing attempt is counted and eventually dropped rather than retried forever.
 
-## Focused verification
+Cron is different: it has no later attended turn. During a `trigger: "cron"` invocation, `task` and `start_async_task` run inline under a separate semaphore and timeout, nested delegation remains forbidden, and all failure paths become a safe tool error. `TalonHost.run_scheduled_job` creates a fresh run conversation under a stable per-job lock, bounds execution, and can read—but does not append execution transcript to—the trusted origin history. The scheduler's durable claim-before-run and delivery semantics are documented in [Talon scheduling](../concepts/talon-scheduling.md).
 
-From `libs/talon`, run:
+## MCP tools, configuration, and reloads
+
+Talon wires one `talon_mcp_middleware()` into the main `DeepAgentRuntime` and installs the same middleware in freshly compiled local subagents, so both paths receive the MCP adapter behavior.
+
+`load_mcp_tools()` discovers each configured server through `MCPAdapter`, prefixes discovered tool names with the server name, and marks their metadata as Talon MCP tools; `skillOnly` servers receive an additional metadata marker. For OpenAI Responses API model requests, Talon's MCP middleware converts only marked MCP `BaseTool` values with `convert_to_openai_tool(..., strict=False)` and otherwise leaves the request tools unchanged; non-Responses models are passed through.
+
+For a marked MCP invocation, the middleware removes only optional empty string arguments for string-like or unspecified properties, retains required empty strings and explicitly non-string properties, and invokes the handler under the exact tool-call ID as authorization context, restoring that context afterward. The middleware converts an `MCPError` into an error `ToolMessage` correlated to the original tool name and tool-call ID and exposes only the code and message, while non-MCP errors propagate through the normal runtime path. Talon has no MCP elicitation UI: recognized elicitation interrupts are resumed with a cancel action for each valid request key, while malformed elicitation payloads are rejected instead of being processed as approval requests.
+
+MCP refresh is serialized and revision-driven; the runtime retains its prior graph after a refresh failure, while successful replacement builds a new graph, so running work retains the capabilities of the graph it began with. The selected MCP config comes from `DEEPAGENTS_TALON_MCP_CONFIG` or `~/.deepagents/.mcp.json`; it validates/expands enabled server definitions, supports stdio, SSE, and streamable HTTP, and reports individual server failures without withdrawing sibling tools. Disabled servers are not expanded, connected, or offered authentication.
+
+`MCPConfigStore` exposes a redacted configuration view with an HMAC revision and an update capability that locks, rereads, compare-and-swaps the revision, validates a single-server replacement, writes atomically, and schedules refresh only after a successful write. Reads redact stored strings except allowed enum values and exact environment references, preserve unseen unmanaged fields across supported updates, and return generic errors rather than file contents. This mediation is not filesystem isolation because Talon's execution-capable shell can bypass it. Reusing a `<redacted>` value without active approval rejects changed managed routing/execution settings except tool filters, preventing a restored credential from being redirected; a required approval policy permits a human-reviewed update.
+
+Fresh local subagents receive only applicable approval rules and add `HumanInTheLoopMiddleware` when such rules exist. Talon refuses precompiled subagents because approval policy cannot be enforced inside them. A senderless Telegram channel post cannot create a pending tool approval, even when the exposure mode otherwise admits that conversation.
+
+## Observability and operational signals
+
+Activity logging is opt-in through `DEEPAGENTS_TALON_AGENT_ACTIVITY_LOGGING`. Per invocation, `AgentActivityCallback` emits structured run, model-thinking, and tool start/completion/failure events with stable hashed activity and conversation references, durations, model/tool names, and bounded input/output previews. Preview traversal, depth, item count, and string length are bounded; secret-named fields, bearer credentials, assignments, URL credentials, and query data are redacted before logging.
+
+LangSmith tracing is separately enabled only when both `LANGSMITH_TRACING` is truthy and `LANGSMITH_API_KEY` is present. The trace context is tagged with Talon and assistant identity, optionally trigger, and carries assistant, conversation, and request metadata. A cancelled root run explicitly marked as user interruption attempts to create LangSmith feedback, but observability failures never prevent cancellation. Operators should still treat request metadata as potentially sensitive and limit access to trace/log sinks.
+
+## Focused validation seams
+
+`libs/talon/tests/test_host.py` is the principal integration seam: startup unwind/shutdown, provider-qualified routing and metadata, replacement/cancellation recovery, generation suppression, approvals/reactions, questions, background delivery, scheduled execution, and final delivery are exercised against small runtime/channel doubles. `libs/talon/tests/test_runtime.py` exercises graph construction, request context scopes, tool replacement, approval interruption, and cron behavior; `libs/talon/tests/test_observability.py` verifies trace opt-in, structured event shape, redaction, and bounded previews.
+
+Focused Talon MCP tests exercise middleware argument and authorization handling, protocol-error behavior, Responses schema preservation and real-adapter invocation, elicitation cancellation, in-flight reload behavior, stdio lifecycle, and skill-scoped MCP disclosure. Configuration tests cover redacted round trips, stale and concurrent CAS updates, lock contention, atomic-write behavior, enable/disable refresh, and approval-policy protection against credential redirection.
+
+From `libs/talon`, a useful focused run is:
 
 ```bash
-uv sync --group test
-uv run --group test pytest tests/unit_tests/test_effort.py
+make test TEST_FILE="tests/test_host.py tests/test_runtime.py tests/test_observability.py tests/test_mcp_middleware.py tests/unit_tests/test_mcp_adapter.py tests/unit_tests/test_mcp_config.py tests/unit_tests/test_mcp_enabled.py tests/unit_tests/test_telegram_approvals.py"
 ```
 
-The focused tests cover per-model persistence and restart recovery, next-turn capture, operator and unsupported-level rejection, failed-save rollback, documented family allowlists, concrete Anthropic/OpenAI/OpenAI-compatible payload serialization, concurrent context isolation, preservation of unrelated settings, and subagent-safe runtime behavior. See the [testing guide](../testing/testing-guide.md) for repository-wide test conventions.
+When changing the integration, preserve the host/runtime ownership split, generation checks, handler-free unattended work, graph snapshot replacement, and redaction boundary. Those invariants matter more than the particular channel or model implementation.

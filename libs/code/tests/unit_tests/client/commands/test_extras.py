@@ -49,6 +49,44 @@ class TestInstallCommandDispatch:
         assert "already running" in printed
         assert "Run manually" not in printed
 
+    def test_deferred_extra_install_prints_guidance_instead_of_failure(self) -> None:
+        """On Windows the printed command replaces the failure report."""
+        console = MagicMock()
+        guidance = (
+            "Quit every dcode session, then run from your shell: "
+            'uv tool install --reinstall -U "deepagents-code[quickjs]==1.0.0"'
+        )
+
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch("deepagents_code.config.console", console, create=True),
+            patch(
+                "deepagents_code.update_check.create_update_log_path",
+                return_value=Path("/tmp/deepagents-install.log"),
+            ),
+            patch(
+                "deepagents_code.update_check.install_extra_command",
+                return_value="install script command",
+            ),
+            patch(
+                "deepagents_code.update_check.perform_install_extra",
+                new_callable=AsyncMock,
+                return_value=ExtraInstallOutcome(False, guidance, deferred=True),
+            ),
+        ):
+            code = run_install_request(name="quickjs", package=False, yes=True)
+
+        assert code == 1
+        # Rich keeps the `[quickjs]` extra and the command on one line.
+        console.print.assert_any_call(
+            guidance, markup=False, highlight=False, soft_wrap=True
+        )
+        printed = " ".join(
+            str(arg) for call in console.print.call_args_list for arg in call.args
+        )
+        assert "Install failed" not in printed
+        assert "Run manually" not in printed
+
 
 class TestInstallCliParsing:
     """Parse-level coverage for the install command."""

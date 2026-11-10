@@ -4,7 +4,7 @@ okf_version: "0.2"
 
 # Files
 
-- [Deep Agents Monorepo Quickstart](quickstart.md) - Choose the Deep Agents package that owns a change, run its narrowest meaningful validation, and continue to the runtime, evaluation, CI, dependency, or release guide that owns the detailed procedure.
+- [Deep Agents Monorepo Quickstart](quickstart.md) - Route a Deep Agents monorepo change to its owning independently versioned package, focused validation path, and generated lockfile closure. Covers current SDK and dcode pins, Talon capabilities, and CI lockfile ownership.
 
 # Directories
 

@@ -4,7 +4,7 @@ from typing import cast
 import pytest
 from langchain.agents.middleware.types import ModelRequest, ModelResponse
 from langchain.tools import ToolRuntime
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage, get_notification_metadata
 from langchain_core.messages.utils import convert_to_openai_messages
 from langgraph.types import Command
 
@@ -79,6 +79,10 @@ def test_read_file_video_routes_to_frame_extractor(monkeypatch: pytest.MonkeyPat
     assert media_message.additional_kwargs["read_file_media_result"] is True
     assert media_message.additional_kwargs["read_file_path"] == "/clips/intro.mkv"
     assert media_message.additional_kwargs["read_file_tool_call_id"] == "video-read-1"
+    assert get_notification_metadata(media_message) == {
+        "source": "read_file_media",
+        "data": {"path": "/clips/intro.mkv", "tool_call_id": "video-read-1"},
+    }
     assert media_message.content == [
         {"type": "text", "text": "Reading first 30s of /clips/intro.mkv at 0.5 fps."},
         *sentinel,

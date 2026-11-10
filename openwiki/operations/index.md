@@ -1,6 +1,7 @@
 # Files
 
-- [CI, Labels, and Workflow Security](ci-labeling.md) - Operational contracts for package-selected CI, reusable test workers, PR labeling, release mutation boundaries, and Harbor-based unified evaluations. Use this page when changing a workflow that interprets untrusted PR data or carries a credential.
+- [CI Gates and Labels](ci-labeling.md) - CI topology, required-gate semantics, unconditional lockfile verification, text hygiene, trusted curated-release handling, and narrowly scoped PR-label exceptions. Also covers labeling and release fan-out controls that affect merge operations.
 - [dcode Costs, Traces, and Session Operations](cost-and-sessions.md) - Operate dcode's durable thread checkpoints and estimated cost accounting while keeping transient UI telemetry distinct. Covers server-side offload settlement, trace redaction and lifecycle, ownership fencing, and focused verification.
-- [Development, Dependencies, Lockfiles, and Releases](development.md) - Package-scoped uv development, dependency contracts, lockfile maintenance, SDK-pin automation, and the guarded Release Please publication lifecycle.
-- [Security and Trust Boundaries](security.md) - Operational boundaries for Deep Agents tools, local execution, dcode workspace trust, extensions and MCP, ACP approvals, Talon channels, credentials, and plugins.
+- [dcode Installation and Update Lifecycle](dcode-install-and-update.md) - How dcode checks, announces, and applies self-updates, including install-method safeguards, metadata caching, locking, Python migrations, and optional dependency changes. Covers safe deferral, recovery, and editable-install behavior for updates, extras, and arbitrary packages.
+- [Development and Dependency Operations](development.md) - Package-local development, interpreter and uv lockfile policy, and the dependency and release contracts that must remain synchronized. Covers reverse-dependent lock refreshes and Code's exact Deep Agents SDK pin.
+- [Security and Trust Boundaries](security.md) - Operational guidance for execution authority, filesystem policy, dcode server startup, MCP/OAuth safety, and Talon channel and unattended-run controls.

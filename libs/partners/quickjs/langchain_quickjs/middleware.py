@@ -3,6 +3,7 @@
 import asyncio
 import contextlib
 import logging
+import sys
 import uuid
 from collections.abc import Awaitable, Callable, Mapping
 from typing import TYPE_CHECKING, Annotated, Any, Literal, NotRequired
@@ -713,6 +714,12 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
 
     def __del__(self) -> None:
         """Best-effort Runtime cleanup on GC; never raises at shutdown."""
+        # During interpreter finalization the daemon worker threads can no
+        # longer take the GIL, so closing a slot (which waits on its worker)
+        # would block forever and the process would never exit. The OS
+        # reclaims the interpreters' memory at exit anyway.
+        if sys.is_finalizing():
+            return
         # Wrapped in `contextlib.suppress` because __del__ must not raise
         # during interpreter shutdown, when dependencies may already be
         # half-unloaded.

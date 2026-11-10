@@ -1,122 +1,38 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:0ac0a4e010745f44f00594a2b3cefac78cb740c44059d36da9cba58790544c95",
+  "pageVersion": "sha256:fcc925b8a632639f528e14ab4616ff5f0f9e448980e37f957de55af47e18dbdc",
   "claims": [
     {
-      "id": "claim_3955ede9d34942a89302a9aba6c32253",
-      "statement": "Dcode assembles discovered local subagents and its optional `general-purpose` worker as declarative SDK children, while passing configured `AsyncSubAgent` specifications separately to the SDK for remote Agent Protocol delegation.",
+      "id": "claim_6bdfb8742f1343cf8ba28d8db535656f",
+      "statement": "Talon's `BackgroundSubagents` detaches local `task` and remote `start_async_task` calls for ordinary conversational turns into owner-scoped in-memory jobs, blocks nested delegation and approvals in workers, enforces job and concurrency limits, and exposes only a bounded text result to the owning conversation.",
       "evidence": [
         {
-          "resource": "repo://libs/code/deepagents_code/agent.py",
-          "version": "repo-file-v1:sha256:4928a5f5a25d4ab3be2bc9de402be3500d5a15549ec7eb1f8e92011f496ae588"
+          "resource": "repo://libs/talon/deepagents_talon/background.py",
+          "version": "repo-file-v1:sha256:ca1d24a8179e5ba6becb1fdde9e66e491aeeb4870e728b9a70fceb86bf759477"
         },
         {
-          "resource": "repo://libs/deepagents/deepagents/middleware/subagents.py",
-          "version": "repo-file-v1:sha256:66d1a30c8669309a306db73f0ce7376ee9ca1e627e7a4456b57bde7f84fec2e5"
+          "resource": "repo://libs/talon/tests/unit_tests/test_background.py",
+          "version": "repo-file-v1:sha256:6500b0331be0212288f4c85b37f1505827155b2b002bf7fc8d999e35250a894e"
         }
       ]
     },
     {
-      "id": "claim_8ffaf2b76cd54d7aa43cb991f471c850",
-      "statement": "For a discovered dcode subagent, a missing or empty `model` installs `ConfigurableModelMiddleware` and follows runtime model selection; a nonempty declared model is policy-validated, attached to the child spec, and is not replaced by that middleware.",
+      "id": "claim_7fc78df2964e46a8ae9ae1919d50210d",
+      "statement": "Talon runs subagent delegation inline during scheduled turns because no later conversational turn can consume a detached result; inline calls leave no job, serializes failure or timeout as sanitized error output, queues fan-out beyond the inline concurrency ceiling, and keeps recursion blocked.",
       "evidence": [
         {
-          "resource": "repo://libs/code/deepagents_code/agent.py",
-          "version": "repo-file-v1:sha256:4928a5f5a25d4ab3be2bc9de402be3500d5a15549ec7eb1f8e92011f496ae588"
+          "resource": "repo://libs/talon/deepagents_talon/background.py",
+          "version": "repo-file-v1:sha256:ca1d24a8179e5ba6becb1fdde9e66e491aeeb4870e728b9a70fceb86bf759477"
         },
         {
-          "resource": "repo://libs/code/tests/unit_tests/test_agent.py",
-          "version": "repo-file-v1:sha256:95150e6c6dde78f93cfea3392b1c8d7623377034ae3437e9fe05505be89455da"
-        }
-      ]
-    },
-    {
-      "id": "claim_bd6407bc92014ef0aedb521652d33b9f",
-      "statement": "Dcode gives each synchronous declarative child its own CLI middleware stack, including nested cost tracking, truncation handling, retry, hooks and applicable approval, MCP, skill-only disclosure, memory-guard, shell-policy, and provider-search layers; setting an empty child `interrupt_on` prevents duplicate inherited SDK HITL, while remote async specs are not locally rewritten.",
-      "evidence": [
-        {
-          "resource": "repo://libs/code/deepagents_code/agent.py",
-          "version": "repo-file-v1:sha256:4928a5f5a25d4ab3be2bc9de402be3500d5a15549ec7eb1f8e92011f496ae588"
-        },
-        {
-          "resource": "repo://libs/code/tests/unit_tests/test_agent.py",
-          "version": "repo-file-v1:sha256:95150e6c6dde78f93cfea3392b1c8d7623377034ae3437e9fe05505be89455da"
-        }
-      ]
-    },
-    {
-      "id": "claim_ba9b95751b994fc7bfd9c912ce3501d9",
-      "statement": "With an explicit `--allow-fs-tools` list, dcode replaces the main filesystem middleware and injects an equivalent restriction into every synchronous declarative child; it refuses compiled subagents rather than silently bypassing the restriction, and leaves remote async agents to their own backend.",
-      "evidence": [
-        {
-          "resource": "repo://libs/code/deepagents_code/agent.py",
-          "version": "repo-file-v1:sha256:4928a5f5a25d4ab3be2bc9de402be3500d5a15549ec7eb1f8e92011f496ae588"
-        },
-        {
-          "resource": "repo://libs/code/tests/unit_tests/test_agent.py",
-          "version": "repo-file-v1:sha256:95150e6c6dde78f93cfea3392b1c8d7623377034ae3437e9fe05505be89455da"
-        }
-      ]
-    },
-    {
-      "id": "claim_dd0e1edc6a7142b8984c385e763b116d",
-      "statement": "Dcode turns a child model reply that is truncated before visible output into a parent-visible error `ToolMessage` at the `task` boundary, while retaining a partial child answer with a truncation warning.",
-      "evidence": [
-        {
-          "resource": "repo://libs/code/deepagents_code/agent.py",
-          "version": "repo-file-v1:sha256:4928a5f5a25d4ab3be2bc9de402be3500d5a15549ec7eb1f8e92011f496ae588"
-        },
-        {
-          "resource": "repo://libs/code/deepagents_code/output_truncation.py",
-          "version": "repo-file-v1:sha256:87f4c187eab0f5ddd5f10b88b494f5fd453388c10666c2c31f2eed347857302b"
-        },
-        {
-          "resource": "repo://libs/code/tests/unit_tests/test_output_truncation.py",
-          "version": "repo-file-v1:sha256:73221b74f7de4719be799259ac8fd8b22176a5504b376a03c34137e4fa8ce621"
-        }
-      ]
-    },
-    {
-      "id": "claim_2bc35dcc92ba4b339361198fd9e0076d",
-      "statement": "The dcode JavaScript interpreter isolates each proxied `task` dispatch in a checkpoint namespace, persists and aggregates its owner-scoped child cost receipts after child work settles, and transfers one receipt to the outer graph so checkpoint replay and parallel fan-out do not double-charge usage.",
-      "evidence": [
-        {
-          "resource": "repo://libs/code/deepagents_code/_js_cost.py",
-          "version": "repo-file-v1:sha256:88e4956e79abac832f4fa4ff5b8aa19e57fcb8b9ca26003229d0f730f567bc0e"
-        },
-        {
-          "resource": "repo://libs/code/tests/unit_tests/test_js_cost_tracking.py",
-          "version": "repo-file-v1:sha256:a75970a18221a93b515279d8c2001e9bf7a76feef78e84b93e1170c29db2b019"
-        }
-      ]
-    },
-    {
-      "id": "claim_0c0887f2338f4c7391762f31b6ca18a3",
-      "statement": "`MCPProviderToolSearchMiddleware` defers only designated MCP tools on supported native OpenAI Responses or Anthropic routes, leaves execution and approval registrations intact, falls back to eager tools otherwise, and strips incompatible native search blocks from history before a model request.",
-      "evidence": [
-        {
-          "resource": "repo://libs/code/deepagents_code/provider_tool_search.py",
-          "version": "repo-file-v1:sha256:b440a559b98cc0c009dfd0af0c14f2cf75dee26c49fc423ba605d73a1b1556d0"
-        },
-        {
-          "resource": "repo://libs/code/tests/unit_tests/test_provider_tool_search.py",
-          "version": "repo-file-v1:sha256:99feefd32aaf3a368f3bce8bf5ecbe6cbc846a94861e0f52e207f443f534d98c"
-        }
-      ]
-    },
-    {
-      "id": "claim_dc3fdc9323e24528b8fee4144e527f82",
-      "statement": "Talon validates MCP `skillOnly` as a boolean; a skill-only MCP tool is hidden until its skill is read or pinned unless eager, and after disclosure it still passes through Talon's approval and authorization paths. Reloading MCP configuration reclassifies the available tools for an existing runtime.",
-      "evidence": [
-        {
-          "resource": "repo://libs/talon/tests/unit_tests/test_skill_mcp.py",
-          "version": "repo-file-v1:sha256:6e6c5ad7e9a7c6fbb3b64bff1bc1a4423eb5ca1c6f8442a5a80f58e1bfae7de1"
+          "resource": "repo://libs/talon/tests/unit_tests/test_background.py",
+          "version": "repo-file-v1:sha256:6500b0331be0212288f4c85b37f1505827155b2b002bf7fc8d999e35250a894e"
         }
       ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-10-28T08:04:17.781Z"
+    "at": "2026-11-10T08:04:01.717Z"
   }
 }

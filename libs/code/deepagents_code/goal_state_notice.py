@@ -352,6 +352,51 @@ def build_goal_continuation(
     )
 
 
+def anchor_summarization_event[EventT](
+    event: EventT, messages: Sequence[object]
+) -> EventT:
+    """Return `event` with `cutoff_index` moved to where `cutoff_message_id` now sits.
+
+    Removing or re-adding messages before the cutoff shifts the stored index but
+    not the id. Rewriting the index here lets every index-based reader, including
+    SDK releases that predate `cutoff_message_id`, agree on the same cutoff.
+
+    Args:
+        event: A `_summarization_event` mapping as persisted in state, or `None`.
+        messages: Full persisted message list, as objects or serialized dicts.
+
+    Returns:
+        An anchored copy of `event`, or `event` unchanged when it has no
+            resolvable id.
+    """
+    if not isinstance(event, Mapping):
+        return event
+    cutoff_id = event.get("cutoff_message_id")
+    stored = event.get("cutoff_index")
+    if not cutoff_id or not isinstance(stored, int) or isinstance(stored, bool):
+        return event
+    index = next(
+        (
+            i
+            for i, message in enumerate(messages)
+            if (
+                message.get("id")
+                if isinstance(message, Mapping)
+                else getattr(message, "id", None)
+            )
+            == cutoff_id
+        ),
+        None,
+    )
+    if index is None or index == stored:
+        return event
+    anchored = {**event, "cutoff_index": index}
+    created_at = event.get("created_at_index")
+    if isinstance(created_at, int) and not isinstance(created_at, bool):
+        anchored["created_at_index"] = created_at + index - stored
+    return cast("EventT", anchored)
+
+
 def validated_summarization_cutoff(
     event: object,
     *,

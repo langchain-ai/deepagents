@@ -60,6 +60,7 @@ def _write_receipt(
     )
 
 
+@pytest.mark.usefixtures("posix_host")
 class TestUninstallExtraCommand:
     """Receipt-aware command generation removes only selected extras."""
 
@@ -305,6 +306,7 @@ class TestUninstallExtraCommand:
             uninstall_extra_command("ollama")
 
 
+@pytest.mark.usefixtures("posix_host")
 class TestPerformUninstallExtra:
     """The performer refuses unsafe/no-op paths before spawning uv."""
 

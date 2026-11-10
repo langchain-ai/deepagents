@@ -616,6 +616,7 @@ def _run_startup_auto_update(console: Console) -> None:
     from deepagents_code._version import __version__ as cli_version
     from deepagents_code.config import _is_editable_install
     from deepagents_code.update_check import (
+        _is_windows,
         clear_startup_auto_update_failure,
         create_update_log_file,
         detect_shadowed_dcode_safe,
@@ -764,7 +765,9 @@ def _run_startup_auto_update(console: Console) -> None:
             from deepagents_code._session_lock import is_sole_session
 
             sole_session = is_sole_session()
-            if retrying_deferral and not sole_session:
+            # Windows defers every uv install, not only migrations, so there
+            # `perform_upgrade` picks which deferral guidance to repeat.
+            if retrying_deferral and not sole_session and not _is_windows():
                 # Repeat the deferral without re-fetching the release's Python
                 # requirement or announcing an update that will not happen.
                 console.print(
@@ -797,7 +800,8 @@ def _run_startup_auto_update(console: Console) -> None:
 
             def show_notice(message: str) -> None:
                 notices.append(message)
-                console.print(message, markup=False, highlight=False)
+                # A notice can name a command to paste, so keep it on one line.
+                console.print(message, markup=False, highlight=False, soft_wrap=True)
 
             success, output, _installed = asyncio.run(
                 perform_upgrade(
@@ -866,7 +870,7 @@ def _run_startup_auto_update(console: Console) -> None:
         if unverified:
             _exit_after_unverified_update(console, persisted=persisted)
         if deferred:
-            # Nothing failed: the notice above explains how to migrate.
+            # Nothing failed: the notice above explains how to update.
             note = escape(_session_lock_unavailable_note())
             message = f"{note}Continuing with v{cli_version}."
         elif notices:
@@ -3916,6 +3920,29 @@ async def _run_acp_cli_async(
     return exit_code
 
 
+def _is_session_launch(args: argparse.Namespace) -> bool:
+    """Return whether these arguments start an agent session.
+
+    Subcommands and the management flags (`--update`, `--install`,
+    `--default-model` and the rest) exit without one, so piped stdin is their
+    input rather than a prompt. A new flag that exits before the session starts
+    belongs here too.
+
+    Returns:
+        `True` for interactive and headless launches.
+    """
+    if getattr(args, "command", None) is not None:
+        return False
+    return not (
+        args.update
+        or args.install
+        or args.uninstall is not None
+        or args.auto_update
+        or args.clear_default_model
+        or args.default_model is not None
+    )
+
+
 def apply_stdin_pipe(args: argparse.Namespace) -> None:
     r"""Read piped stdin and merge it into the parsed CLI arguments.
 
@@ -5847,7 +5874,11 @@ def cli_main() -> None:
             )
             sys.exit(exit_code)
 
-        apply_stdin_pipe(args)
+        # Only a session takes piped stdin as its prompt. Everything else leaves
+        # it alone, so a pipe that stays open cannot stall a subcommand and a
+        # subcommand's own prompt reads the piped answer.
+        if _is_session_launch(args):
+            apply_stdin_pipe(args)
         if args.non_interactive_message:
             # Piped stdin turned this launch headless. It gets no prewarm
             # thread, so install the redacting client now, as bootstrap would.
@@ -6246,7 +6277,11 @@ def cli_main() -> None:
 
                     def show_notice(message: str) -> None:
                         notices.append(message)
-                        console.print(message, markup=False, highlight=False)
+                        # A notice can name a command to paste, so keep it on
+                        # one line.
+                        console.print(
+                            message, markup=False, highlight=False, soft_wrap=True
+                        )
 
                     success, output, _installed = asyncio.run(
                         perform_upgrade(

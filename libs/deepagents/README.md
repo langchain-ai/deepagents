@@ -38,6 +38,8 @@ Deep Agents is an open source agent harness — an opinionated agent that runs o
 - **Skills** — reusable behaviors the agent can load on demand
 - **Tools** — bring your own functions or any MCP server
 
+> **Deep Agents Code** — a pre-built coding agent in your terminal, similar to Claude Code or Cursor, powered by any LLM. Install with `curl -LsSf https://langch.in/dcode | bash`. See the [documentation](https://docs.langchain.com/deepagents-code) for the full feature set.
+
 ```python
 from deepagents import create_deep_agent
 
@@ -83,6 +85,8 @@ The layers compose: any LangGraph `CompiledStateGraph` can be passed in as a sub
 - [Code of Conduct](https://github.com/langchain-ai/langchain/?tab=coc-ov-file) — community guidelines and standards
 
 ## 📕 Releases & Versioning
+
+See the [changelog](https://github.com/langchain-ai/deepagents/blob/main/libs/deepagents/CHANGELOG.md) for release history.
 
 See our [Releases](https://docs.langchain.com/oss/python/release-policy) and [Versioning](https://docs.langchain.com/oss/python/versioning) policies.
 

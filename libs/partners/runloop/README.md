@@ -44,6 +44,8 @@ Runloop sandbox integration for Deep Agents.
 
 ## 📕 Releases & Versioning
 
+See the [changelog](https://github.com/langchain-ai/deepagents/blob/main/libs/partners/runloop/CHANGELOG.md) for release history.
+
 See our [Releases](https://docs.langchain.com/oss/python/release-policy) and [Versioning](https://docs.langchain.com/oss/python/versioning) policies.
 
 ## 💁 Contributing

@@ -61,6 +61,7 @@ from deepagents_code.cost_tracking import (
     _RECORDER_VAR,
     MODEL_USAGE_EVENT_TYPE,
     SESSION_COST_EVENT_TYPE,
+    SUMMARIZATION_STARTED_EVENT_TYPE,
     CostState,
     CostTrackingMiddleware,
     _ModelCallRecord,
@@ -1531,6 +1532,43 @@ class TestSessionCostRecorder:
 
         assert events == []
         assert len(recorder.drain(THREAD_ID)) == 2
+
+    def test_root_summarization_emits_start_and_usage(
+        self, recorder: _SessionCostRecorder, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        events: list[dict[str, Any]] = []
+        monkeypatch.setattr("langgraph.config.get_stream_writer", lambda: events.append)
+        run_id = uuid4()
+
+        recorder.on_chat_model_start(
+            {},
+            [],
+            run_id=run_id,
+            metadata={"thread_id": THREAD_ID, "lc_source": "summarization"},
+        )
+        recorder.on_llm_end(
+            LLMResult(
+                generations=[
+                    [
+                        ChatGeneration(
+                            message=_message(
+                                _usage(),
+                                model=KNOWN_MODEL,
+                                provider=KNOWN_PROVIDER,
+                                message_id="summary-1",
+                            )
+                        )
+                    ]
+                ]
+            ),
+            run_id=run_id,
+        )
+
+        assert events[0] == {"type": SUMMARIZATION_STARTED_EVENT_TYPE}
+        assert events[1]["type"] == MODEL_USAGE_EVENT_TYPE
+        assert events[1]["lc_source"] == "summarization"
+        assert events[1]["scope"] == ""
+        assert events[1]["request_id"] == "summary-1"
 
     def test_usage_writer_failure_keeps_the_durable_record(
         self, recorder: _SessionCostRecorder, monkeypatch: pytest.MonkeyPatch

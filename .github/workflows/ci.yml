@@ -45,6 +45,51 @@ jobs:
     name: "🔒 Check Lockfiles"
     uses: ./.github/workflows/check_lockfiles.yml
 
+  # Its own job (not a step of another) so a failure is named for what failed.
+  # The hook list lives in libs/Makefile so `make -C libs hygiene` runs the
+  # same check locally.
+  text-hygiene:
+    name: "📝 Text Hygiene"
+    if: github.event_name != 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: "📋 Checkout Code"
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: "🐍 Set up uv"
+        uses: "./.github/actions/uv_setup"
+        with:
+          python-version: "3.14"
+          # Nothing runs `uv sync`, so there is no cache dir for setup-uv's
+          # post-job save, which would otherwise fail the job.
+          enable-cache: "false"
+
+      - name: "📝 Run hygiene hooks on changed files"
+        env:
+          HYGIENE_FROM: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+          HYGIENE_TO: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
+          PRE_COMMIT_COLOR: always
+        run: |
+          if make -C libs hygiene; then exit 0; fi
+          # The fixing hooks leave their edits in the worktree; annotate each
+          # changed hunk so the failure shows on the PR's diff and checks page
+          # instead of only in this log.
+          git diff -U0 --no-color | awk '
+            /^\+\+\+ b\// { file = substr($0, 7) }
+            /^@@/ {
+              split($3, hunk, ",")
+              line = substr(hunk[1], 2)
+              printf "::error file=%s,line=%s,title=Text hygiene::Smart quotes, irregular spaces, trailing whitespace or a missing final newline. Run `make -C libs hygiene` and commit the fixes.\n", file, line
+            }'
+          echo "::error::Changed files fail text hygiene hooks. Run \`make -C libs hygiene\` locally and commit the fixes."
+          exit 1
+
   # Detect which packages have changes
   changes:
     name: "🔍 Detect Changes"
@@ -702,6 +747,7 @@ jobs:
     needs:
       - changes
       - check-lockfiles
+      - text-hygiene
       - lint-deepagents
       - lint-code
       - lint-talon
@@ -849,6 +895,7 @@ jobs:
         env:
           EVENT_NAME: ${{ github.event_name }}
           LOCKFILES_RESULT: ${{ needs.check-lockfiles.result }}
+          HYGIENE_RESULT: ${{ needs.text-hygiene.result }}
           CURATED_APPLY_ONLY: ${{ needs.changes.outputs.curated-apply-only }}
           CURATED_APPLY_PARENT_CONCLUSION: ${{ needs.changes.outputs.curated-apply-parent-conclusion }}
           # Full needs context: the wildcard `toJSON(needs.*.result)` form
@@ -861,6 +908,11 @@ jobs:
           set -euo pipefail
           if [ "$LOCKFILES_RESULT" != success ]; then
             echo "Lockfile validation did not pass: $LOCKFILES_RESULT"
+            exit 1
+          fi
+          # Text hygiene only runs on pull_request and merge_group.
+          if [ "$HYGIENE_RESULT" != success ] && ! { [ "$EVENT_NAME" = push ] && [ "$HYGIENE_RESULT" = skipped ]; }; then
+            echo "Text hygiene validation did not pass: $HYGIENE_RESULT"
             exit 1
           fi
           if [ "$CURATED_APPLY_ONLY" = true ]; then

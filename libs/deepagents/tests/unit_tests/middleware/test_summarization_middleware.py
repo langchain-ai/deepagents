@@ -4,18 +4,23 @@ import asyncio
 import base64 as _base64
 import hashlib
 import inspect
+import itertools
 import re
 import time
 from collections.abc import Callable
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from langchain.agents import create_agent
 from langchain.agents.middleware.types import ExtendedModelResponse, ModelRequest, ModelResponse
 from langchain_core.exceptions import ContextOverflowError
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage, get_notification_metadata
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, RemoveMessage, SystemMessage, ToolMessage, get_notification_metadata
+from langgraph.checkpoint.memory import InMemorySaver
 
 from deepagents.backends.composite import CompositeBackend
+from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.backends.protocol import BackendProtocol, EditResult, FileDownloadResponse, FileUploadResponse, ReadResult, WriteResult
 from deepagents.middleware.summarization import (
     SummarizationEvent,
@@ -23,6 +28,7 @@ from deepagents.middleware.summarization import (
     _token_counter_accepts_tools,
     _upload_response_error,
 )
+from tests.unit_tests.chat_model import GenericFakeChatModel
 
 if TYPE_CHECKING:
     from langchain.agents.middleware.types import AgentState
@@ -2751,6 +2757,7 @@ def test_chained_summarization_cutoff_index() -> None:
     assert isinstance(result, ExtendedModelResponse)
     event_1 = result.command.update["_summarization_event"]
     assert event_1["cutoff_index"] == 6
+    assert event_1["cutoff_message_id"] == "s6"
     assert modified_request is not None
     assert [m.content for m in modified_request.messages[1:]] == ["S6", "S7"]
     _, content = backend.write_calls[0]
@@ -2766,6 +2773,7 @@ def test_chained_summarization_cutoff_index() -> None:
     assert isinstance(result, ExtendedModelResponse)
     event_2 = result.command.update["_summarization_event"]
     assert event_2["cutoff_index"] == 12
+    assert event_2["cutoff_message_id"] == "s12"
     assert modified_request is not None
     assert [m.content for m in modified_request.messages[1:]] == ["S12", "S13"]
     _, content = backend.write_calls[1]
@@ -2781,6 +2789,7 @@ def test_chained_summarization_cutoff_index() -> None:
     assert isinstance(result, ExtendedModelResponse)
     event_3 = result.command.update["_summarization_event"]
     assert event_3["cutoff_index"] == 18
+    assert event_3["cutoff_message_id"] == "s18"
     assert modified_request is not None
     assert [m.content for m in modified_request.messages[1:]] == ["S18", "S19"]
     _, content = backend.write_calls[2]
@@ -2898,6 +2907,66 @@ def test_summary_event_without_reasoning_index_keeps_reasoning() -> None:
     effective = SummarizationMiddleware._apply_event_to_messages(messages, event)
 
     assert effective[1] is messages[1]
+
+
+def _labelled_messages(labels: list[int]) -> list[BaseMessage]:
+    return [HumanMessage(content=f"S{i}", id=f"s{i}") for i in labels]
+
+
+def test_summary_event_cutoff_follows_message_id_after_earlier_removal() -> None:
+    event: SummarizationEvent = {
+        "cutoff_index": 4,
+        "cutoff_message_id": "s4",
+        "summary_message": HumanMessage(content="summary"),
+        "file_path": None,
+    }
+    # s1 was removed after the summary, so s4 now sits at index 3.
+    messages = _labelled_messages([0, 2, 3, 4, 5])
+
+    effective = SummarizationMiddleware._apply_event_to_messages(messages, event)
+
+    assert [m.content for m in effective] == ["summary", "S4", "S5"]
+
+
+def test_summary_event_cutoff_falls_back_to_index_when_id_missing() -> None:
+    messages = _labelled_messages([0, 1, 2, 3])
+    legacy: SummarizationEvent = {
+        "cutoff_index": 2,
+        "summary_message": HumanMessage(content="summary"),
+        "file_path": None,
+    }
+    stale: SummarizationEvent = {**legacy, "cutoff_message_id": "gone"}
+
+    for event in (legacy, stale):
+        effective = SummarizationMiddleware._apply_event_to_messages(messages, event)
+        assert [m.content for m in effective] == ["summary", "S2", "S3"]
+
+
+def test_chained_summarization_resolves_prior_cutoff_by_id() -> None:
+    middleware = SummarizationMiddleware(
+        model=make_mock_model(),
+        backend=MockBackend(),
+        trigger=("messages", 5),
+        keep=("messages", 2),
+    )
+    prior: SummarizationEvent = {
+        "cutoff_index": 6,
+        "cutoff_message_id": "s6",
+        "summary_message": HumanMessage(content="summary"),
+        "file_path": None,
+    }
+    # s1 was removed after the first summary, so s6 now sits at index 5.
+    messages = _labelled_messages([0, *range(2, 14)])
+    state = cast("AgentState[Any]", {"messages": messages, "_summarization_event": prior})
+
+    result, modified_request = call_wrap_model_call(middleware, state, make_mock_runtime())
+
+    assert isinstance(result, ExtendedModelResponse)
+    event = result.command.update["_summarization_event"]
+    assert event["cutoff_message_id"] == "s12"
+    assert messages[event["cutoff_index"]].id == "s12"
+    assert modified_request is not None
+    assert [m.content for m in modified_request.messages[1:]] == ["S12", "S13"]
 
 
 async def _async_call_wrap_model_call(
@@ -3678,3 +3747,35 @@ def test_upload_response_error_classifies_batch_result() -> None:
     assert _upload_response_error([FileUploadResponse(path="/m.png", error="permission_denied")]) == "permission_denied"
     # Success (error is None) returns None.
     assert _upload_response_error([FileUploadResponse(path="/m.png", error=None)]) is None
+
+
+def test_cutoff_message_id_survives_checkpoint_and_removal(tmp_path: Path) -> None:
+    def replies(prefix: str) -> GenericFakeChatModel:
+        return GenericFakeChatModel(messages=(AIMessage(content=f"{prefix} {i}") for i in itertools.count()))
+
+    middleware = SummarizationMiddleware(
+        model=replies("summary"),
+        backend=FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True),
+        trigger=("messages", 8),
+        keep=("messages", 2),
+    )
+    agent = create_agent(replies("reply"), middleware=[middleware], checkpointer=InMemorySaver())
+    config = {"configurable": {"thread_id": "t"}}
+
+    event = None
+    for i in range(10):
+        agent.invoke({"messages": [HumanMessage(content=f"user {i}")]}, config)
+        event = agent.get_state(config).values.get("_summarization_event")
+        if event:
+            break
+    assert event is not None
+
+    messages = agent.get_state(config).values["messages"]
+    cutoff_message = messages[event["cutoff_index"]]
+    assert event["cutoff_message_id"] == cutoff_message.id
+
+    agent.update_state(config, {"messages": [RemoveMessage(id=messages[1].id)]})
+    messages = agent.get_state(config).values["messages"]
+
+    assert messages[event["cutoff_index"]].id != cutoff_message.id
+    assert SummarizationMiddleware._apply_event_to_messages(messages, event)[1].id == cutoff_message.id

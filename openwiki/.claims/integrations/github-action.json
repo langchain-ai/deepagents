@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:3925dba5abeee4b2f8b519663db4d54f723325f6f3018d633f6801870eaa8d26",
+  "pageVersion": "sha256:b1ec2803a46acefb755f16cfb5d274334293ea51110f72600ec3f023b9789ff8",
   "claims": [
     {
       "id": "claim_66c8cdf2e322499f9163f44abcb9af36",
@@ -206,7 +206,7 @@
       "evidence": [
         {
           "resource": "repo://.github/workflows/ci.yml",
-          "version": "repo-file-v1:sha256:cf0654a8c4f87483861271e48eecbb7eb3aeb0791a2312f6854edf720a1ed88e"
+          "version": "repo-file-v1:sha256:c07742c5e7a329cd6d548e5c644757c8e7636b3808714ab1474786e6da64cc08"
         }
       ]
     },
@@ -229,48 +229,12 @@
       ]
     },
     {
-      "id": "claim_3262d6c3e6e8479d8c51da58672cf1c9",
-      "statement": "Release-please manages `libs/code` as the `deepagents-code` component and, after recognizing its release commit from the Code changelog and commit title, dispatches the separate package release workflow; that workflow maps `deepagents-code` back to `libs/code`.",
-      "evidence": [
-        {
-          "resource": "repo://.github/workflows/release-please.yml#L1321-L1329",
-          "version": "repo-lines-v1:sha256:fdcf3115f295d13913aeff91d8a18104d7e39c85a72a2fb6f4ce02deadd5b475:eyJzZWxlY3RlZExpbmVDb3VudCI6OSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiOThmZDU0MTNiNDI1M2I4MzAxMzkyMTJjOWI4Y2I4NGYwOGMwODQzOGY5NGM5Njg2YjBhNzNkNmRmYjRjMGU2ZiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMzE1YmM2MmIyYjEzMGNlZmVjNzE1NjdkNjdmOGJhMjFkMmNmMTkxZWJmMzZjZjgwZThjMmZiMGJlOTA5NTBhZCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNGYxNDQ4NTAwNmI1YTJjYTJlODM1NzU3MjUxMjVkOTc3N2YzY2UwMzE4YjA3NTM3YjIyZjZjNDkxMzA2MTVlYSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMDYwNDg5NmVkNzkyNWM4ZGRkYTQyN2UzZWUwN2YyYTBjN2QxMzhkYTMyM2IzYWUwODMyMGRkMjgzNjIxZDRjZiJ9"
-        },
-        {
-          "resource": "repo://.github/workflows/release-please.yml#L207-L213",
-          "version": "repo-lines-v1:sha256:7f128d46ddf9a5e9d88b49bf0f903476b8c03737a580807c86b7b1e14da63466:eyJzZWxlY3RlZExpbmVDb3VudCI6NywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNzhlYjhkMTFiNDUzNjZjNWI2NTIyZjI1YzMwYmYwMWVkNDZjZmMxYTU1Njc0NDQyYTNlODliODdjMDEzNWMyYyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiYmY1NTk3OWNlNzMwMjAzM2U2YjJmZDdkODhmNTM3YTNiOGUwOTFlYTMwNWM4MTFmZmExMjc0YmY1NzY0ZWE1ZSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiYzNhMzk4YTE3Y2M5ZTZkMzRiZjE5NzUwOWUzNWQ2ZGZmOWY2YjZkNzBlNjBiN2MxOTk5NTIxODIzYTAxM2IwMyIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZDI1MjM3NzUxNTk3NjU2MGU5NDA5M2QxMTczZGFhY2RiYjYxNThiN2IxOTk5ZjE3Yzc0MjA3ODViNTQ1NjEyNSJ9"
-        },
-        {
-          "resource": "repo://.github/workflows/release.yml#L122-L132",
-          "version": "repo-lines-v1:sha256:fe76f0ece86d3ac8240672053bee5cb565ac81185e395400d414d2396ee53639:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg4ZDUwNGE5NzhjM2M0M2FlMzRlMTU4ZDQ2ZDE2MmIzMjk1MjE4N2VhOTBkYzQ5MjM1NWJiYWNkNjlhMmMzZWUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjZlMDZjZWFjOThkYzI0NWZjNzA4MGVlNTE5ZGYyZjVlZjg2ZjMzZDE5YTMzZTRhNGI5NjA3MGE3ZGZmMDgxYzUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijc0MzdjYzdhMzNiMDhmNGZjYTI0MWQzMTIzYjdjNTc1YjZhMWZkNGM4NjY3MTFmNTliNDNlMjA5MzRhMzU2NDgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImVjYTJkZmQ5OTVjMmVmZjVkNTA4N2M2ZTA4ZWZjMmY2ZTg3Njg5NTc2NzEwYmNmY2I3Y2U1NDAwNjVhYzZjZDAifQ"
-        },
-        {
-          "resource": "repo://release-please-config.json#L90-L103",
-          "version": "repo-lines-v1:sha256:dea4852f8dff9aafb818947211694e01a40bc609193a4198c5ab50dae7026455:eyJzZWxlY3RlZExpbmVDb3VudCI6MTQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjA3ZmUwZGRkMmMyNDhmYWZkNjA5N2ZmZjgyOTJhYjNkMTQxNWMyOTVmMjI1ODY2NjM2NTFlYzVmOWI2NjZiMmUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImI0MjIzOWIxYmQ4MmI4NWVkNTBjMThhYmU2YjhlOTk3ODc1NWRhYzZmZDgwNDA5MjRjOGE4ODBjNTJmMDY1ZDIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImNjM2EzYWI3ZDYwNWRhMjQzOWUwNmEyZWEzMTExMjQyY2VhZjFhYjNkZThjMmVmOWMwZGFhYzVkYjUzNDgzYzAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImQwMGVjZTlhNDQyYzAxNjQ3MzgzMGQ1Yzc0ZDBjYTdiY2Q3ZWJjYzg2OGZmODE5ZmUyNTU0YjY5ZThkNmYyOGYifQ"
-        }
-      ]
-    },
-    {
-      "id": "claim_7e41a94394004ceb8323ca1b7804ab8f",
-      "statement": "A release build of `deepagents-code` can stamp its validated release commit into a generated wheel artifact for later reporting, while local and editable builds omit that artifact.",
-      "evidence": [
-        {
-          "resource": "repo://libs/code/hatch_build.py#L2-L7",
-          "version": "repo-lines-v1:sha256:2e61d183728e032a75d09e9fa566d2f9b1614f81ca0578749946b776d1e7a17e:eyJzZWxlY3RlZExpbmVDb3VudCI6NiwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMDFiYTQ3MTljODBiNmZlOTExYjA5MWE3YzA1MTI0YjY0ZWVlY2U5NjRlMDljMDU4ZWY4Zjk4MDVkYWNhNTQ2YiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMGIxNDUwNWIzMTIyM2YwN2RlYWQ5N2MyYWUwYjA5MTExNjU2YjgxMWE1YjNiYjVmMDIwYzc1ZjlmOWIxODJlOCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjEsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMGNjYjRkZWI5ZTVkMGY3NTY4YjhkYzgwY2YzODRiOTk0ZDZiNjI3Y2NmNjcwZTVjOWQyYzJmNTJlMmZlMGRiNCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMWFhZjc2MzdjYjZlN2U1ZGI4NWQ2MzQyNzQ2MDE0ZGYwNDFjY2Q1NThhOTIwYjI5ZWI2YWM3MTlkN2JhZjVjMiJ9"
-        },
-        {
-          "resource": "repo://libs/code/hatch_build.py#L26-L67",
-          "version": "repo-lines-v1:sha256:13c2e4f2e336b29746115de1353351608774ec83ae0c57120edae6f6fac17496:eyJzZWxlY3RlZExpbmVDb3VudCI6NDIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjhlYmEwOGEyNDRkNmNhN2I1NDBlNzNjYTBjN2M0NzE2MWVhNjg3NThlMDcxMDUwMTJmZWEyN2ZiOTNiMDAxYmYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjlmODU5YjJiNTMxNzBkNWM4NThkYjQ2NGQ2YzYyMmYzYmM4MzgyY2E0MTM4NWRmZDhmYWQ0N2I0ZDBjYzNkMTkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjkxYjYzMTA0YzNhMzg5ODZiOTMyZWVmY2M1MWM0ZDI4MDFiZWU1YzQwMDdiMmU4MzY1ZTMwYzYwZjJiNjAzMWMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
-        }
-      ]
-    },
-    {
       "id": "claim_eba1cb041c5540dd8e0a341a91b40742",
       "statement": "CI selects `libs/code` changes for dedicated Code lint and unit-test reusable workflows on Python 3.14.",
       "evidence": [
         {
           "resource": "repo://.github/workflows/ci.yml",
-          "version": "repo-file-v1:sha256:cf0654a8c4f87483861271e48eecbb7eb3aeb0791a2312f6854edf720a1ed88e"
+          "version": "repo-file-v1:sha256:c07742c5e7a329cd6d548e5c644757c8e7636b3808714ab1474786e6da64cc08"
         }
       ]
     },
@@ -280,7 +244,7 @@
       "evidence": [
         {
           "resource": "repo://.github/workflows/ci.yml",
-          "version": "repo-file-v1:sha256:cf0654a8c4f87483861271e48eecbb7eb3aeb0791a2312f6854edf720a1ed88e"
+          "version": "repo-file-v1:sha256:c07742c5e7a329cd6d548e5c644757c8e7636b3808714ab1474786e6da64cc08"
         }
       ]
     },
@@ -302,13 +266,27 @@
         },
         {
           "resource": "repo://.github/workflows/ci.yml",
-          "version": "repo-file-v1:sha256:cf0654a8c4f87483861271e48eecbb7eb3aeb0791a2312f6854edf720a1ed88e"
+          "version": "repo-file-v1:sha256:c07742c5e7a329cd6d548e5c644757c8e7636b3808714ab1474786e6da64cc08"
+        }
+      ]
+    },
+    {
+      "id": "claim_ca5f242df6d4427390736f3401c30e57",
+      "statement": "The current `deepagents-code` package is version `0.2.6` and requires Python `>=3.14,<3.15`; the changelog identifies the Python 3.14 requirement introduced in 0.2.0 as a breaking change.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/CHANGELOG.md#L129-L133",
+          "version": "repo-lines-v1:sha256:a9bad2712640d1aceb1366b1e7bcaa2f65cb3fc7118eae878370fff92673c169:eyJzZWxlY3RlZExpbmVDb3VudCI6NSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYWZiMjE3NzdkOGU3ZjZmNmQ1MzBiNDQ0N2YwNWRhZDcwMTczZmFiNjZjYTk0ZDBkMmU0MTFmNmVhOTVkMjEzNCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMTU2OGEyYTVmODk2MDNhZDVkNTNhYzg4ZTVlYjRjZWIyYWQ1NTMyNzNlYWQ1M2I0ODZhYjg3OWJkMDY1MGNlMiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMDU2YmZiMjI3NjcwYmU3OGIwMTcwZGQ4OTQwNmQwMWE3MjQ2NDYyOTU5ZDY0MjA5MDA5MTVhMmI3YWU0NjYwNCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMDI1N2JjYmMzMThkNjQ0YzYyZDhjYzlkZjVmNmFmMjFiMzdmYWM5ZmUxYWJlYmY0NDU4YjZkMGFjZDI1OGE3MSJ9"
+        },
+        {
+          "resource": "repo://libs/code/pyproject.toml#L5-L14",
+          "version": "repo-lines-v1:sha256:1fc7a5dbbd3ea4280e7b6bc059ba3fbf2f83cd39c5c11c41469f2456c4cbb1e1:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjcwMmE4MWMzODM2ZWRlZjJkMGJhMTFkMjM1M2ZiNmRhYmM3NzcxNTBhN2NhODNlYTBkOWU5YTcwMzEzZmVhYmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZhMjczYzUzYjJjMGIyMWZhMGYyZmU2YTUyZmZlZDQ3OGU5MjI3YWQyYjVmMTUzZWYwMDNhNzI2NTdiNzQyMDEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImYxMzdhYWFhYzhhZjRmMGNiYjA4YTcxZjZlNTRjMjhmYjBhNDgxYjdlYWRlZWExMjEzNGM0NzM4NzUzNGU3ZjgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImE0YzZmNDE2ZTEzZWYxOTEwMDJkYmNhZmRhOTNiMTU2ZmI3Y2EwMGIyYmU4MWQ4ZGNlMWE4NWRiMzgxNDY3NmEifQ"
         }
       ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-11-02T08:04:35.090Z"
+    "at": "2026-11-10T08:04:01.717Z"
   }
 }

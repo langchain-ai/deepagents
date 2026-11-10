@@ -26,9 +26,7 @@ const sessionDir = path.resolve(process.env.WHATSAPP_SESSION_DIR || path.join(pr
 const mediaDir = path.resolve(process.env.WHATSAPP_MEDIA_DIR || path.join(sessionDir, "..", "media"));
 const bridgeToken = process.env.WHATSAPP_BRIDGE_TOKEN || "";
 const maxMediaBytes = Number(process.env.WHATSAPP_MAX_MEDIA_BYTES) || 64 * 1024 * 1024;
-const webVersionCacheUrl =
-  process.env.WHATSAPP_WEB_VERSION_CACHE_URL ||
-  "https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.3000.1026029003.html";
+const webVersionCacheUrl = process.env.WHATSAPP_WEB_VERSION_CACHE_URL;
 
 const ACK_TIMEOUT_MS = 60 * 1000;
 const MAX_CACHED_SENT_MESSAGES = 200;
@@ -86,10 +84,10 @@ const client = new CompatibleClient({
     dataPath: sessionDir,
   }),
   puppeteer,
-  webVersionCache: {
-    type: "remote",
-    remotePath: webVersionCacheUrl,
-  },
+  // Cached HTML can reference expired assets and leave authentication modules null.
+  webVersionCache: webVersionCacheUrl
+    ? { type: "remote", remotePath: webVersionCacheUrl }
+    : { type: "none" },
 });
 
 client.on("qr", (qr) => {
@@ -720,7 +718,10 @@ server.listen(port, host, () => {
   console.log(`WhatsApp bridge listening on http://${host}:${port}`);
 });
 
-client.initialize();
+client.initialize().catch((error) => {
+  status = "initialization_error";
+  console.error("WhatsApp initialization failed:", error.stack || error.message || error);
+});
 
 process.on("SIGTERM", async () => {
   server.close();

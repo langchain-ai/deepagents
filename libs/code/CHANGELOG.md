@@ -2,6 +2,22 @@
 
 # Deep Agents Code Changelog
 
+## [0.2.6](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.2.5...deepagents-code==0.2.6) (2026-11-09)
+
+### Features
+
+- Make idle compaction settings filterable in traces ([#7624](https://github.com/langchain-ai/deepagents/pull/7624)).
+- Tag offload traces with their triggers ([#7630](https://github.com/langchain-ai/deepagents/pull/7630)).
+
+### Bug Fixes
+
+- Fix dcode startup on Windows by disabling server log colors ([#7591](https://github.com/langchain-ai/deepagents/pull/7591)).
+- Bypass proxies for local server traffic ([#7613](https://github.com/langchain-ai/deepagents/pull/7613)).
+- Offer recovery options when server startup times out ([#7610](https://github.com/langchain-ai/deepagents/pull/7610)).
+- Leave piped standard input available to subcommands ([#7601](https://github.com/langchain-ai/deepagents/pull/7601)).
+- Resolve the summarization cutoff by message ID ([#7570](https://github.com/langchain-ai/deepagents/pull/7570)).
+- Keep queued prompts beside long message text ([#7611](https://github.com/langchain-ai/deepagents/pull/7611)).
+
 ## [0.2.5](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.2.4...deepagents-code==0.2.5) (2026-11-05)
 
 ### Bug Fixes

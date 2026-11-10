@@ -230,6 +230,27 @@ class TestBashCompletion:
         assert "completion" in candidates
         assert "list" not in candidates
 
+    @pytest.mark.parametrize(
+        ("words", "cword"),
+        [
+            # Bash 4+ splits `--sort=c` at `=`; bash 3.2 keeps one word.
+            (["dcode", "threads", "list", "--sort", "=", "c"], 5),
+            (["dcode", "threads", "list", "--sort=c"], 3),
+        ],
+    )
+    def test_equals_form_value(self, bash_script, words, cword) -> None:
+        assert self._complete(bash_script, words, cword) == ["created"]
+
+    def test_flag_value_lookup_is_per_command(self, bash_script) -> None:
+        # `--project` takes a value under `auth set` but is a switch under
+        # `skills list`, so only `auth set` should wait for a value.
+        skills = self._complete(
+            bash_script, ["dcode", "skills", "list", "--project", ""], 4
+        )
+        assert "--json" in skills
+        auth = self._complete(bash_script, ["dcode", "auth", "set", "--project", ""], 4)
+        assert auth == []
+
     def test_registers_both_command_names(self, bash_script) -> None:
         script = (
             f"source {shlex.quote(str(bash_script))}\ncomplete -p dcode deepagents-code"

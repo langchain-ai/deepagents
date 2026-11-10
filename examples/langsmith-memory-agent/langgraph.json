@@ -1,0 +1,8 @@
+{
+  "$schema": "https://langgra.ph/schema.json",
+  "dependencies": ["."],
+  "graphs": {
+    "memory_agent": "./agent.py:make_agent"
+  },
+  "env": ".env"
+}

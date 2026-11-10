@@ -1,0 +1,52 @@
+[project]
+name = "langsmith-memory-agent"
+version = "0.1.0"
+description = "A Deep Agent that demonstrates short-term, semantic, episodic, and procedural memory backed by LangSmith"
+readme = "README.md"
+requires-python = ">=3.11,<4.0"
+dependencies = [
+    "deepagents>=0.7.35,<0.8.0",
+    "langgraph-sdk>=0.4.14,<0.5.0",
+    "python-dotenv>=1.2.2",
+]
+
+[dependency-groups]
+dev = [
+    "langgraph-cli[inmem]>=0.4.42",
+    "pytest>=9.0.0",
+    "ruff>=0.15.0",
+]
+
+[project.urls]
+Repository = "https://github.com/langchain-ai/deepagents/tree/main/examples/langsmith-memory-agent"
+
+[build-system]
+requires = ["setuptools>=80.0.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+py-modules = ["agent"]
+
+[tool.ruff]
+line-length = 150
+
+[tool.ruff.lint]
+select = ["ALL"]
+ignore = [
+    "COM812",  # Conflicts with the ruff formatter
+    "CPY001",  # Examples do not carry copyright headers
+    "T201",    # Scripts print their progress
+]
+
+[tool.ruff.lint.flake8-annotations]
+allow-star-arg-any = true
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+ignore-var-parameters = true
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["D1", "INP001", "PLR2004", "S101"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]

@@ -362,6 +362,9 @@ class MCPToolProvider:
             ValueError,
         ) as exc:
             if not attempt.completed:
+                logger.warning(
+                    "MCP login failed before authorization completed (%s)", type(exc).__name__
+                )
                 return {
                     "status": "failed",
                     "server_name": server_name,

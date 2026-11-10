@@ -23,7 +23,7 @@ version = "0.0.7"
 requires-python = ">=3.11,<4.0"
 dependencies = [
     "deepagents>=0.7.34,<0.8.0",
-    "modal",
+    "modal>=1.5.3",
 ]
 
 [tool.hatch.build.targets.wheel]

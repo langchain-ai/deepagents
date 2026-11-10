@@ -23,6 +23,7 @@ from langchain_core.tools.base import (
 )
 from langgraph.errors import GraphInterrupt
 from langgraph.prebuilt.tool_node import _get_all_injected_args
+from langgraph.types import Command
 from quickjs_rs import (
     UNDEFINED,
     ConcurrentEvalError,
@@ -126,6 +127,31 @@ class _TaskBridgeError(RuntimeError):
         self.error_type = type(exc).__name__
         self.error_message = str(exc)
         super().__init__(self.error_message)
+
+
+class _PTCStateUpdateError(RuntimeError):
+    """Raised when a `tools.*` call returns a `Command` that updates state.
+
+    PTC calls stay inside `eval`, so their state updates can't be applied.
+    Failing the eval beats reporting success and dropping the update.
+    """
+
+    def __init__(self, *, function_name: str, keys: list[str]) -> None:
+        msg = (
+            f"{function_name} returned a state update ({', '.join(keys)}) that "
+            "can't be applied from eval. Call the tool directly instead."
+        )
+        super().__init__(msg)
+
+
+def _raise_on_state_update(function_name: str, result: object) -> None:
+    """Reject `Command` results that update keys other than `messages`."""
+    commands = result if isinstance(result, list) else [result]
+    for command in commands:
+        if isinstance(command, Command) and isinstance(command.update, dict):
+            keys = sorted(set(command.update) - {"messages"})
+            if keys:
+                raise _PTCStateUpdateError(function_name=function_name, keys=keys)
 
 
 @dataclass(frozen=True, slots=True)
@@ -711,6 +737,7 @@ class _ThreadREPL:
                 outer_runtime=state.outer_runtime,
                 outer_loop=state.outer_loop,
             )
+            _raise_on_state_update(f"tools.{camel}", result)
             return coerce_tool_output_for_ptc(result)
 
         bridge_symbol = _bridge_symbol_name(camel)
@@ -873,6 +900,10 @@ class _ThreadREPL:
             # agent can shorten its script rather than crash.
             outcome.error_type = "PTCCallBudgetExceeded"
             outcome.error_message = e.render_message()
+            _clear_exception_references(e)
+        except _PTCStateUpdateError as e:
+            outcome.error_type = "PTCStateUpdate"
+            outcome.error_message = str(e)
             _clear_exception_references(e)
         except QJSTimeoutError as e:
             outcome.error_type = "Timeout"

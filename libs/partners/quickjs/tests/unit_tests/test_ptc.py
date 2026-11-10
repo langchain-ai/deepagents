@@ -87,7 +87,9 @@ def _echo_tool(name: str = "echo") -> BaseTool:
     )
 
 
-def _command_tool(name: str = "emit_command") -> BaseTool:
+def _command_tool(
+    name: str = "emit_command", *, state_update: bool = False
+) -> BaseTool:
     """A tool that returns a LangGraph `Command` update."""
 
     class _In(BaseModel):
@@ -96,7 +98,7 @@ def _command_tool(name: str = "emit_command") -> BaseTool:
     def _fn(value: int) -> Command:
         return Command(
             update={
-                "ptc_values": [value],
+                **({"ptc_values": [value]} if state_update else {}),
                 "messages": [
                     ToolMessage(
                         content=f"value={value}",
@@ -153,7 +155,6 @@ def _mixed_list_tool(name: str = "emit_mixed") -> BaseTool:
         return [
             Command(
                 update={
-                    "ptc_values": [value],
                     "messages": [
                         ToolMessage(
                             content=f"from-command={value}",
@@ -438,6 +439,14 @@ async def test_command_tool_does_not_change_eval_outcome_shape(
     assert second.error_type is None, second.error_message
     assert second.result == "2"
     assert not hasattr(second, "commands")
+
+
+async def test_command_tool_state_update_fails_eval(repl: _ThreadREPL) -> None:
+    repl.install_tools([_command_tool(state_update=True)])
+    outcome = await repl.eval_async("await tools.emitCommand({value: 1})")
+    assert outcome.error_type == "PTCStateUpdate"
+    assert "tools.emitCommand" in outcome.error_message
+    assert "ptc_values" in outcome.error_message
 
 
 async def test_toolmessage_list_uses_last_message_content(repl: _ThreadREPL) -> None:
@@ -755,6 +764,35 @@ async def test_middleware_eval_tool_returns_tool_message_only() -> None:
     assert isinstance(result, ToolMessage)
     assert result.name == "eval"
     assert "<result>value=5</result>" in result.content
+
+
+async def test_middleware_eval_rejects_write_todos_state_update() -> None:
+    from types import SimpleNamespace
+
+    from langchain.agents.middleware import TodoListMiddleware
+
+    write_todos = TodoListMiddleware().tools[0]
+    mw = CodeInterpreterMiddleware(ptc=[write_todos])
+    tool = mw.tools[0]
+    state = {"_quickjs_slot_id": "ptc-todos-slot"}
+    mw._prepare_for_call(SimpleNamespace(tools=[write_todos, tool], state=state))
+    runtime = ToolRuntime(
+        state=state,
+        context={},
+        config={},
+        stream_writer=lambda _chunk: None,
+        tools=[tool],
+        tool_call_id="outer_eval_call",
+        store=None,
+    )
+    assert tool.coroutine is not None
+    result = await tool.coroutine(
+        runtime=runtime,
+        code="await tools.writeTodos({todos: [{content: 'a', status: 'pending'}]})",
+    )
+    assert isinstance(result, ToolMessage)
+    assert "PTCStateUpdate" in result.content
+    assert "todos" in result.content
 
 
 async def test_mode_call_reinstalls_ptc_tools_for_each_eval_call() -> None:

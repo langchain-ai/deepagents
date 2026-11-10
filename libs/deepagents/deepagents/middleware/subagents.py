@@ -609,7 +609,7 @@ class _CheckpointNsMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
 
     state_schema = _CheckpointNsState
 
-    def before_agent(self, state: _CheckpointNsState, runtime: Runtime[ContextT]) -> dict[str, Any] | None:  # noqa: ARG002
+    def before_agent(self, state: _CheckpointNsState, runtime: Runtime[ContextT]) -> dict[str, Any] | None:  # noqa: ARG002  # signature set by AgentMiddleware
         if runtime.execution_info is None:
             return None
         # LangGraph separates namespace segments with `|`.

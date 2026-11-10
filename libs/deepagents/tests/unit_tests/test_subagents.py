@@ -17,7 +17,7 @@ from unittest.mock import MagicMock
 
 import pytest
 from langchain.agents import create_agent
-from langchain.agents.middleware import TodoListMiddleware, ToolRetryMiddleware
+from langchain.agents.middleware import TodoListMiddleware, ToolRetryMiddleware, hook_config
 from langchain.agents.middleware.types import AgentMiddleware, AgentState, PrivateStateAttr
 from langchain.agents.structured_output import ToolStrategy
 from langchain.tools import ToolRuntime
@@ -29,6 +29,7 @@ from langchain_core.runnables import Runnable, RunnableConfig, RunnableLambda
 from langchain_core.tools import BaseTool, tool
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, MessagesState, StateGraph
+from langgraph.runtime import Runtime
 from langgraph.types import Command
 from langsmith import Client
 from langsmith.run_helpers import tracing_context
@@ -2159,6 +2160,30 @@ class TestSubAgents:
         assert _messages_saved_under(checkpointer, thread_id, failed_run) == ["Do task"]
         assert tool_message.artifact == {"checkpoint_ns": finished_run}
         assert _messages_saved_under(checkpointer, thread_id, finished_run) == ["Do task", "SUBAGENT_RESPONSE"]
+
+    def test_task_tool_message_records_namespace_of_a_subagent_ended_by_its_own_hook(self) -> None:
+        """A subagent whose own `before_agent` hook ends its run still names where it checkpointed."""
+
+        class _EndEarlyMiddleware(AgentMiddleware):
+            @hook_config(can_jump_to=["end"])
+            def before_agent(self, state: AgentState, runtime: Runtime) -> dict[str, Any]:
+                return {"jump_to": "end", "messages": [AIMessage(content="ENDED_EARLY")]}
+
+        checkpointer = InMemorySaver()
+        agent = create_deep_agent(
+            model=_delegate_once(),
+            checkpointer=checkpointer,
+            subagents=[_worker(_ScriptedChatModel(responses=[AIMessage(content="UNREACHED")]), middleware=[_EndEarlyMiddleware()])],
+        )
+        thread_id = "ended-early-subagent-checkpoint-namespace"
+
+        result = agent.invoke({"messages": [HumanMessage(content="Do something")]}, {"configurable": {"thread_id": thread_id}})
+
+        tool_message = next(message for message in result["messages"] if isinstance(message, ToolMessage))
+        assert tool_message.content == "ENDED_EARLY"
+        (namespace,) = _subagent_namespaces(checkpointer, thread_id)
+        assert tool_message.artifact == {"checkpoint_ns": namespace}
+        assert _messages_saved_under(checkpointer, thread_id, namespace) == ["Do task", "ENDED_EARLY"]
 
     @pytest.mark.parametrize("mode", ["isolated", "fork"])
     def test_nested_task_tool_message_records_full_checkpoint_namespace(self, mode: Literal["isolated", "fork"]) -> None:

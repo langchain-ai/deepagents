@@ -13,6 +13,7 @@ from langchain.agents.middleware.types import (
     ContextT,
     ModelRequest,
     ModelResponse,
+    OmitFromInput,
     OmitFromSchema,
     ResponseT,
     TracePolicy,
@@ -24,10 +25,10 @@ from langchain_core._api.beta_decorator import warn_beta
 from langchain_core.exceptions import ModelRefusalError
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, AnyMessage, BaseMessage, HumanMessage, RefusalContentBlock, ToolMessage
-from langchain_core.runnables import Runnable, RunnableBinding, RunnableConfig
+from langchain_core.runnables import Runnable, RunnableConfig
 from langchain_core.tools import StructuredTool
-from langgraph.pregel import Pregel
-from langgraph.types import Command, StreamMode
+from langgraph.runtime import Runtime
+from langgraph.types import Command
 from langsmith.run_helpers import get_tracing_context, tracing_context
 from pydantic import BaseModel, Field, ValidationError, model_validator
 from typing_extensions import TypeIs
@@ -51,6 +52,12 @@ if TYPE_CHECKING:
 SUBAGENT_RESPONSE_FORMAT_CONFIG_KEY = "__deepagents_subagent_response_format"
 """Configurable key used by task-tool callers to request dynamic response format."""
 
+_CHECKPOINT_NS_KEY = "_deepagents_checkpoint_ns"
+"""Set on a subagent built from a spec to the namespace its run is checkpointed under.
+
+`task` returns it as its `ToolMessage`'s artifact -- see `_CheckpointNsMiddleware`.
+"""
+
 _FORK_EXCLUDED_STATE_KEYS = frozenset(
     {
         "structured_response",
@@ -59,6 +66,7 @@ _FORK_EXCLUDED_STATE_KEYS = frozenset(
         SUMMARIZATION_EVENT_KEY,
         SUMMARIZATION_SESSION_ID_KEY,
         _SKILL_TOOLS_DISCLOSED_KEY,
+        _CHECKPOINT_NS_KEY,
     }
 )
 """State a fork must not resume.
@@ -68,7 +76,8 @@ session ID lets the subagent generate its own, and dropping a prior structured r
 ensures it cannot be mistaken for the fork's result. The disclosed skill tools
 describe the parent's last model call; the fork records its own. Skills the parent
 has yet to pin are the parent's own. The rubric grades the parent's whole goal,
-not the fork's task.
+not the fork's task. The checkpoint namespace names the parent's run; the fork
+records its own.
 """
 
 _FORKED_CONTEXT_KEY = "_deepagents_forked_context"
@@ -438,6 +447,7 @@ _EXCLUDED_STATE_KEYS = {
     _SKILL_TOOLS_DISCLOSED_KEY,
     _FORKED_CONTEXT_KEY,
     _RUBRIC_KEY,
+    _CHECKPOINT_NS_KEY,
 }
 """State keys that are excluded when passing state to subagents and when
 returning updates from subagents.
@@ -458,7 +468,9 @@ When returning updates:
     the caller's whole goal instead of its own task. It has no reducer, so
     parallel `task` calls that each return it would conflict, and one child
     could also replace the caller's rubric.
-5. Agent-private fields on middleware state schemas are excluded from both
+5. The checkpoint namespace names one subagent run. A child's would replace
+    the namespace its caller recorded for itself.
+6. Agent-private fields on middleware state schemas are excluded from both
     subagent output and subagent inputs.
 """
 
@@ -576,6 +588,36 @@ class _ForkTaskToolMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         self.tools = [task_tool]
 
 
+class _CheckpointNsState(TypedDict):
+    """Private state holding the namespace a subagent run is checkpointed under.
+
+    Omitted from the input only: `task` reads it off the subagent's result.
+    """
+
+    _deepagents_checkpoint_ns: NotRequired[Annotated[str, OmitFromInput]]
+
+
+class _CheckpointNsMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
+    """Records the namespace this subagent run is checkpointed under, for `task` to return.
+
+    A subagent saves under the namespace of the `task` call that runs it, which
+    LangGraph extends to `<namespace>|1` for a second run in the same step, such
+    as a retried `task` call. Each of the subagent's nodes runs under that
+    namespace plus `|<node>:<task_id>`, so dropping the last segment gives the
+    namespace the run is saved under.
+    """
+
+    state_schema = _CheckpointNsState
+
+    def before_agent(self, state: _CheckpointNsState, runtime: Runtime[ContextT]) -> dict[str, Any] | None:  # noqa: ARG002
+        if runtime.execution_info is None:
+            return None
+        # LangGraph separates namespace segments with `|`.
+        namespace, separator, _node = runtime.execution_info.checkpoint_ns.rpartition("|")
+        # A graph run on its own rather than by `task` has nothing to record.
+        return {_CHECKPOINT_NS_KEY: namespace} if separator else None
+
+
 @contextlib.contextmanager
 def _subagent_tracing_context() -> Generator[None, None, None]:
     """Context manager that tags subagent runs with `ls_agent_type="subagent"`.
@@ -635,7 +677,8 @@ def create_sub_agent(
     from deepagents._models import resolve_model  # noqa: PLC0415
 
     model = resolve_model(spec["model"])
-    middleware: list[AgentMiddleware] = list(spec.get("middleware", []))
+    # First, so no other `before_agent` hook can end the run before it records.
+    middleware: list[AgentMiddleware] = [_CheckpointNsMiddleware(), *spec.get("middleware", [])]
 
     interrupt_on = spec.get("interrupt_on")
     if interrupt_on:
@@ -670,48 +713,6 @@ def _get_subagent_response_format(
     if value is None:
         return None
     return value
-
-
-def _compiled_graph(runnable: Runnable) -> Pregel | None:
-    """Return the compiled graph behind a subagent runnable, or `None` for any other runnable."""
-    graph = runnable.bound if isinstance(runnable, RunnableBinding) else runnable
-    return graph if isinstance(graph, Pregel) else None
-
-
-# A compiled subagent is streamed rather than invoked so its checkpoint events
-# report the namespace it saved under. LangGraph changes that namespace from the
-# `task` call's own for a second run in the same step (`<namespace>|1`) and for
-# `checkpointer=True` (task ids removed). No checkpoint event means nothing was
-# saved. Any other runnable is invoked and assumed to save under `fallback_ns`.
-_SUBAGENT_STREAM_MODES: list[StreamMode] = ["values", "checkpoints"]
-
-
-def _run_subagent(runnable: Runnable, state: dict[str, Any], config: RunnableConfig, *, fallback_ns: str | None) -> tuple[Any, str | None]:
-    """Invoke a subagent, returning its final state and the namespace it checkpointed under."""
-    graph = _compiled_graph(runnable)
-    if graph is None:
-        return runnable.invoke(state, config), fallback_ns
-    result, checkpoint_ns = None, None
-    for mode, chunk in runnable.stream(state, config, stream_mode=_SUBAGENT_STREAM_MODES, output_keys=graph.output_channels):
-        if mode == "values":
-            result = chunk
-        elif checkpoint_ns is None:
-            checkpoint_ns = chunk["config"]["configurable"]["checkpoint_ns"]
-    return result, checkpoint_ns
-
-
-async def _arun_subagent(runnable: Runnable, state: dict[str, Any], config: RunnableConfig, *, fallback_ns: str | None) -> tuple[Any, str | None]:
-    """Async version of `_run_subagent`."""
-    graph = _compiled_graph(runnable)
-    if graph is None:
-        return await runnable.ainvoke(state, config), fallback_ns
-    result, checkpoint_ns = None, None
-    async for mode, chunk in runnable.astream(state, config, stream_mode=_SUBAGENT_STREAM_MODES, output_keys=graph.output_channels):
-        if mode == "values":
-            result = chunk
-        elif checkpoint_ns is None:
-            checkpoint_ns = chunk["config"]["configurable"]["checkpoint_ns"]
-    return result, checkpoint_ns
 
 
 def _build_task_tool(  # noqa: C901, PLR0915
@@ -814,7 +815,7 @@ def _build_task_tool(  # noqa: C901, PLR0915
     # mirror tool (above) can reference these directly -- everything they
     # call is only looked up when actually invoked, long after this
     # function returns, so those don't need to exist yet.
-    def _return_command_with_state_update(result: dict, tool_call_id: str, inputs: dict, *, checkpoint_ns: str | None) -> Command:
+    def _return_command_with_state_update(result: dict, tool_call_id: str, inputs: dict) -> Command:
         # Validate that the result contains a 'messages' key
         if "messages" not in result:
             error_msg = (
@@ -851,8 +852,10 @@ def _build_task_tool(  # noqa: C901, PLR0915
                         content = text
                         break
 
-        # The subagent saves its checkpoints under `checkpoint_ns`, so a client can
-        # load its history from it. The model never sees `artifact`.
+        # A subagent built from a spec records the namespace it saved its checkpoints
+        # under, so a client can load its history from it. The model never sees
+        # `artifact`.
+        checkpoint_ns = result.get(_CHECKPOINT_NS_KEY)
         artifact = {"checkpoint_ns": checkpoint_ns} if checkpoint_ns else None
         return Command(
             update={
@@ -941,15 +944,14 @@ def _build_task_tool(  # noqa: C901, PLR0915
             "configurable": {"ls_agent_type": "subagent"},
             "metadata": {"lc_subagent_tool_call_id": runtime.tool_call_id},
         }
-        fallback_ns = (runtime.config.get("configurable") or {}).get("checkpoint_ns")
         try:
             with _subagent_tracing_context():
-                result, checkpoint_ns = _run_subagent(subagent, subagent_state, subagent_config, fallback_ns=fallback_ns)
+                result = subagent.invoke(subagent_state, subagent_config)
         except (ModelRefusalError, StructuredOutputValidationError) as error:
             if (notice := _refusal_notice_for(error)) is None:
                 raise
             return notice
-        return _return_command_with_state_update(result, runtime.tool_call_id, subagent_state, checkpoint_ns=checkpoint_ns)
+        return _return_command_with_state_update(result, runtime.tool_call_id, subagent_state)
 
     async def atask(
         description: str,
@@ -982,15 +984,14 @@ def _build_task_tool(  # noqa: C901, PLR0915
             "configurable": {"ls_agent_type": "subagent"},
             "metadata": {"lc_subagent_tool_call_id": runtime.tool_call_id},
         }
-        fallback_ns = (runtime.config.get("configurable") or {}).get("checkpoint_ns")
         try:
             with _subagent_tracing_context():
-                result, checkpoint_ns = await _arun_subagent(subagent, subagent_state, subagent_config, fallback_ns=fallback_ns)
+                result = await subagent.ainvoke(subagent_state, subagent_config)
         except (ModelRefusalError, StructuredOutputValidationError) as error:
             if (notice := _refusal_notice_for(error)) is None:
                 raise
             return notice
-        return _return_command_with_state_update(result, runtime.tool_call_id, subagent_state, checkpoint_ns=checkpoint_ns)
+        return _return_command_with_state_update(result, runtime.tool_call_id, subagent_state)
 
     compiled_subagents = [_compile_spec(spec) for spec in subagents]
     subagents_by_name = {spec["name"]: spec for spec in subagents}

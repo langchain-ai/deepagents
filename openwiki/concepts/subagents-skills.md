@@ -5,45 +5,13 @@ description: Deep Agents Code discovers local subagent definitions and assembles
 tags: [deepagents, subagents, delegation, skills, middleware, agent-protocol, code-cli]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-11-06T08:04:19.814Z
+    at: 2026-11-10T08:04:01.717Z
 sources:
-  - id: openwiki-source-d4716b8ae162796c2c7ad991
-    resource: repo://libs/code/deepagents_code/_js_cost.py
-  - id: openwiki-source-05106e66a949150d557266a2
-    resource: repo://libs/code/deepagents_code/agent.py
-  - id: openwiki-source-91cefe99e900fdb6f941b515
-    resource: repo://libs/code/deepagents_code/output_truncation.py
-  - id: openwiki-source-dc1e984fa4e6a51458e9ff9d
-    resource: repo://libs/code/deepagents_code/plugins/adapters/skills_middleware.py
-  - id: openwiki-source-a212c04b024619b9d16833e6
-    resource: repo://libs/code/deepagents_code/plugins/adapters/skills.py
-  - id: openwiki-source-2197a24480aac91a9ddcb920
-    resource: repo://libs/code/deepagents_code/provider_tool_search.py
-  - id: openwiki-source-d6d6cad076201f4abeec2084
-    resource: repo://libs/code/deepagents_code/subagents.py
-  - id: openwiki-source-7246ad9a05cb1ad11e4569a6
-    resource: repo://libs/code/tests/unit_tests/test_agent.py
-  - id: openwiki-source-8574be7f7f29e3e1dd328837
-    resource: repo://libs/code/tests/unit_tests/test_js_cost_tracking.py
-  - id: openwiki-source-e4a7bc21d51c04aa0c75f854
-    resource: repo://libs/code/tests/unit_tests/test_output_truncation.py
-  - id: openwiki-source-510074a1c07e7ddc05cddcb0
-    resource: repo://libs/code/tests/unit_tests/test_provider_tool_search.py
-  - id: openwiki-source-1965598f31611da8b172dc0f
-    resource: repo://libs/code/tests/unit_tests/test_subagents.py
-  - id: openwiki-source-0fc0e47059e4d07e23e50be2
-    resource: repo://libs/deepagents/deepagents/graph.py
-  - id: openwiki-source-e51c4102234507d1529a2440
-    resource: repo://libs/deepagents/deepagents/middleware/async_subagents.py
-  - id: openwiki-source-66cf9d0832d3cb55bec2b5ed
-    resource: repo://libs/deepagents/deepagents/middleware/skills.py
-  - id: openwiki-source-114a1c7a58992fa867a94ef0
-    resource: repo://libs/deepagents/deepagents/middleware/subagents.py
-  - id: openwiki-source-917b61d56e652536ba962f3a
-    resource: repo://libs/deepagents/tests/unit_tests/test_subagent_refusal.py
-  - id: openwiki-source-ca8183c87e6002c442ee2d62
-    resource: repo://libs/deepagents/tests/unit_tests/test_subagents.py
-generated: { by: "openwiki/0.4.2", at: "2026-11-06T08:04:19.814Z" }
+  - id: openwiki-source-cd45145a8c3a51b52eab3c2b
+    resource: repo://libs/talon/deepagents_talon/background.py
+  - id: openwiki-source-82dab853903c3a574614fd1e
+    resource: repo://libs/talon/tests/unit_tests/test_background.py
+generated: { by: "openwiki/0.4.2", at: "2026-11-10T08:04:01.717Z" }
 ---
 
 # Subagents and Skills
@@ -136,6 +104,20 @@ An isolated child gets a fresh `HumanMessage` containing only the delegated desc
 
 A fork is experimental. The SDK reconstructs effective history after summarization, removes the pending parent tool-call message, and appends a task preamble and description. Declarative forks retain enough state and middleware to rebuild the parent prompt; their own system prompt is an addendum. They cannot declare independent `skills`, and the fork marker rejects nested `task` and `atask` calls. A fork therefore shares the parent conversation at invocation time without enabling recursive delegation.
 
+```mermaid
+flowchart TD
+    Parent["Parent state"] --> Choice{"Subagent mode"}
+    Choice -->|"isolated"| Filter["Remove excluded and private state"]
+    Filter --> Fresh["One HumanMessage with task description"]
+    Choice -->|"fork"| History["Apply summary and remove pending task call"]
+    History --> ForkState["Inherited state and task preamble"]
+    Fresh --> Invoke["Invoke child runnable"]
+    ForkState --> Invoke
+    Invoke --> Result["Filter updates and return correlated ToolMessage"]
+```
+
+*Isolated delegation creates a task-only message, whereas a fork reconstructs the effective parent conversation before it invokes the child.*
+
 A completed local child produces exactly one parent-facing result correlated to the tool-call ID. A non-null `structured_response` is JSON serialized. Otherwise, if the child's final message has a refusal content block, the result is a safe refusal notice; if not, the boundary selects the last nonempty `AIMessage` text. State updates may accompany that result, but excluded, private, and unchanged state cannot cross the boundary. The `task` implementation does not manually copy the parent runnable configuration: LangGraph inherits ambient callbacks, tags, configurable values, and user metadata, merging them with the child's bound configuration so child values such as `lc_agent_name` and `recursion_limit` win collisions. It adds the tool-call ID as checkpoint metadata. Separately, a LangSmith tracing context tags the child `ls_agent_type="subagent"`; that tag reaches LangSmith without leaking into streamed callback metadata.
 
 ### Model refusals are task results, not parent failures
@@ -157,6 +139,14 @@ An `AsyncSubAgent` identifies a remote graph through `name`, `description`, and 
 Use the async task tools—not the synchronous `task` tool—to check, update, cancel, or list remote work. `mode="isolated"` sends the description only. Experimental `fork` sends a snapshot of reconstructed parent history followed by the task, but it does not synchronize parent configuration; matching child configuration may help prompt caching but does not guarantee a cache hit. An URL-less in-process ASGI remote target requires an async parent entrypoint such as `ainvoke`; synchronous invocation requires a reachable URL.
 
 A remote task that has completed its run while its remote thread waits for a human is `waiting`, not successful. The parent can observe the child-thread interrupts but cannot answer them. For an `enqueue` update, the newest run can be `pending` while the prior run still executes; prior IDs are retained as superseded so their notifications cannot complete the newer task. `interrupt` is the default update strategy.
+
+## Talon background delegation
+
+Talon changes the local `task` and remote `start_async_task` interaction at the middleware boundary. For an ordinary conversational turn, `BackgroundSubagents` detaches either call into an in-memory, owner-scoped job and immediately returns a task ID. It gives the worker an independent thread ID, disables nested delegation, approvals, and authorization handlers, and bounds execution to one hour. Jobs are globally capped (128 retained jobs and four concurrent workers by default; the runtime can configure the concurrency limit). A result includes text only, is limited to 64,000 characters, and is offered only to its owner through `list_subagents` or the next main-agent turn; another conversation cannot inspect, cancel, or consume it.
+
+The main turn acknowledges a result only after it has completed. If the host later discards that reply, it can requeue the returned result IDs; repeated failed deliveries are capped at three, after which the result is marked dropped. This separates successful worker completion from successful delivery to a user.
+
+A scheduled Talon turn has no future conversational turn to receive a detached answer. It therefore runs delegation inline, queues rather than rejects excess inline fan-out, and returns the child result in the same tool call. Inline work has a shorter timeout (ten minutes), does not create a job, and reports a sanitized failure or timeout as an error result. Both detached and inline workers prohibit recursive delegation; a scheduled run also hides management tools that could not usefully report a later result.
 
 ## Skills and dcode plugin sources
 
@@ -185,10 +175,25 @@ Focused dcode coverage is split by boundary:
 - `test_subagents.py` covers definition parsing, required frontmatter, source precedence, collisions, and discovery diagnostics.
 - `test_agent.py` verifies fallback fork behavior, preservation of a discovered `general-purpose`, implicit versus explicit child models, approval and shell wiring, memory guarding, and filesystem allowlist injection into main and child middleware.
 - `test_output_truncation.py` exercises provider truncation classification, reasoning-only and interrupted-tool-call failures, recovery ordering, and the parent-visible empty versus partial child behavior.
-- SDK `test_subagents.py` covers synchronous result extraction, structured-result serialization, state filtering and parallel isolation, forked history, inherited configuration and metadata precedence, checkpoint correlation, and sync/async LangSmith-only subagent tracing.
+- `libs/deepagents/tests/unit_tests/middleware/test_subagent_middleware_init.py` exercises middleware construction, invalid and duplicate specifications, isolated versus forked state preparation, fork prompt/cache invariants, private-state handling, skills restrictions, and dynamic structured-output limits.
 - `test_subagent_refusal.py` verifies sync and async local task calls turn returned and raised provider refusals—including structured-output refusals—into parent task results; it also verifies the main-agent policy remains independently configurable and remote result extraction uses the same notice.
 - `test_js_cost_tracking.py` exercises isolated task dispatch namespaces, durable receipts, child failure and cancellation, pauses, replay, and fan-out aggregation.
 - `test_provider_tool_search.py` covers provider and endpoint capability gates, request serialization, eager fallback, approval/resume, model switches, and cross-provider history filtering.
+- `libs/talon/tests/unit_tests/test_background.py` covers owner isolation and capacity, result acknowledgement and requeue, scheduled inline execution and fan-out, timeouts, and text-only result projection.
+
+When changing this area, preserve the boundary distinctions: filesystem discovery is a dcode concern, declarative child assembly is local, compiled runnables are caller-owned, and async specs belong to their remote deployment. Treat a child middleware omission as a potential policy bypass, especially for approval, filesystem restrictions, and skill-only tool visibility. For Talon, also preserve the ownership and acknowledgement boundary: do not expose a background result to a different conversation or mark it delivered before the host has completed the consuming turn.
+
+## Related
+
+- [Middleware stack](/openwiki/architecture/middleware-stack.md)
+- [Runtime behavior](/openwiki/architecture/runtime-behavior.md)
+- [Context management](/openwiki/concepts/context-management.md)
+- [Middleware catalog](/openwiki/concepts/middleware-catalog.md)
+- [Testing guide](/openwiki/testing/testing-guide.md)
+- [Permissions and HITL](/openwiki/concepts/permissions-hitl.md)
+- [Plugins](/openwiki/concepts/plugins.md)
+- [MCP](/openwiki/integrations/mcp.md)
+s, request serialization, eager fallback, approval/resume, model switches, and cross-provider history filtering.
 
 When changing this area, preserve the boundary distinctions: filesystem discovery is a dcode concern, declarative child assembly is local, compiled runnables are caller-owned, and async specs belong to their remote deployment. Treat a child middleware omission as a potential policy bypass, especially for approval, filesystem restrictions, and skill-only tool visibility.
 

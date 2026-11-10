@@ -5,7 +5,7 @@ description: dcode separates terminal presentation from a local agent server and
 tags: [dcode, deepagents, terminal-ui, agent-server, lifecycle, model-metadata, virtualization, tool-messages, mcp]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-11-09T08:04:29.143Z
+    at: 2026-11-10T08:04:01.717Z
 sources:
   - id: openwiki-source-6f5b1b7a043ee1d414708793
     resource: repo://libs/code/ARCHITECTURE.md
@@ -47,11 +47,13 @@ sources:
     resource: repo://libs/code/tests/unit_tests/test_app.py
   - id: openwiki-source-669a6d1361755f2deb4515d2
     resource: repo://libs/code/tests/unit_tests/test_model_metadata.py
+  - id: openwiki-source-439d3e6c6f1b62e6d282df3f
+    resource: repo://libs/code/tests/unit_tests/test_remote_client.py
   - id: openwiki-source-26a4c6ebab346c13697072eb
     resource: repo://libs/code/tests/unit_tests/test_server.py
   - id: openwiki-source-a792fe22a007a50c07cc0c34
     resource: repo://libs/code/tests/unit_tests/tui/widgets/test_messages.py
-generated: { by: "openwiki/0.4.2", at: "2026-11-09T08:04:29.143Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-11-10T08:04:01.717Z" }
 ---
 
 # Deep Agents Code Architecture
@@ -80,20 +82,24 @@ sequenceDiagram
     participant Process as ServerProcess
     participant Server as Local agent server
     participant Remote as RemoteAgent
-    Client->>Manager: start server worker
-    Manager->>Process: scaffold workspace and start
-    Process->>Server: spawn langgraph dev on loopback port
-    Process->>Server: poll ok endpoint
+    Client->>Manager: start worker after first paint
+    Manager->>Process: scaffold workspace and spawn
+    Process->>Server: start langgraph dev on loopback
+    Process->>Server: poll GET /ok
     Process->>Server: resolve agent graph
-    Manager->>Remote: construct after graph ready
-    Manager->>Remote: set workspace claim
-    Manager-->>Client: agent and process ownership
+    Manager->>Remote: construct and set workspace claim
+    Manager-->>Client: hand off agent and process
     Client->>Remote: GET startup model metadata
-    Client->>Client: post ServerReady and run session startup
-    Client->>Remote: stream requests and render events
+    alt metadata succeeds
+        Client->>Client: store process and post ServerReady
+        Client->>Remote: stream requests and render events
+    else metadata or startup fails
+        Client->>Process: stop owned process
+        Client->>Client: post ServerStartFailed
+    end
 ```
 
-*The client receives a graph-ready remote agent; the local server, not the UI, executes the graph.*
+*Readiness requires both a healthy listener and a resolvable graph. Once ownership is handed off, metadata failure is also a client-side process-cleanup path.*
 
 `PrespawnedServer` can overlap process spawning with app import and first paint. It pauses the launch after spawning; adoption runs the caller's post-spawn work, releases the health-check gate, and transfers ownership. If no caller adopts it, `aclose()` cancels or reaps the startup result instead of leaving a process behind.
 
@@ -120,6 +126,12 @@ Model construction and provider inference belong to the server's workspace envir
 For an existing thread, the client posts a workspace-bound request to `POST /dcode/threads/{thread_id}/model`. The server validates the request shape and purpose, confirms the thread workspace binding, and resolves a proposed model in that server runtime's saved environment. Main-model resolution receives workspace profile overrides; auxiliary resolution does not. Invalid specifications and model configuration errors return 422, a workspace conflict returns 409, and unavailable runtime/environment or unexpected resolution failures return 503. The client preserves its active override and runtime metadata if resolution fails.
 
 This division handles provider aliases correctly: a bare client selection can be adopted using the provider the server actually resolved, without importing provider packages or constructing the model in the terminal process. Before a server exists, the client can only perform a policy/identity check for a default selection; runtime capabilities remain unknown.
+
+## Remote stream and thread boundary
+
+`RemoteAgent` is the client-side transport seam, not a second agent implementation. For every stream it requires a `thread_id`, resolves the server-authorized workspace for that thread, and delegates HTTP plus SSE and stream-mode negotiation to LangGraph's `RemoteGraph`. It requests `messages` and `updates` by default, converts serialized message dictionaries to LangChain message objects for the Textual adapter, and converts serialized interrupts in update events. Non-message events remain transport data; root-level `session_cost` events additionally update the client display tracker.
+
+For locally owned sessions, a mutation first verifies the current thread lease, sends its token in the ownership header, and removes that token from the run configuration because a LangGraph run cannot carry both configurable values and workspace context. The remote server, rather than the client cache, remains the source of graph state. After a dev-server restart, `aensure_thread()` idempotently materializes the HTTP thread record without overwriting a persisted checkpoint, allowing subsequent state mutation to proceed.
 
 The server also authorizes project-scoped workspace policy. It rejects client-claimed project fields, verifies the client-claimable session-policy fingerprint, resolves policy for the canonical target directory, and persists the server-authoritative workspace payload with the thread binding. Treat client workspace configuration as a claim, not authority. See [Configuration layering](/openwiki/concepts/config-layering.md) and [Profiles and models](/openwiki/concepts/profiles-models.md).
 

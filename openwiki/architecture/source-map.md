@@ -1,14 +1,13 @@
 ---
 type: architecture source map
-title: System Source Map
-description: Change-routing map for the Deep Agents SDK, dcode server boundary, and Talon graph assembly, MCP reload, delegation, speech, and host lifecycle. Use it to find the state owner, enforcement boundary, and focused tests before changing behavior.
+title: Repository Source Map
+description: System-oriented change-routing map from public package surfaces through SDK graph construction, dcode client/server operations, and Talon runtime, persistence, integrations, delegation, speech, and hosting. Use it to find the state owner, enforcement boundary, and focused tests before changing behavior.
 tags: [deepagents, talon, source-map, middleware, runtime, mcp, subagents, lifecycle]
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-11-09T08:04:29.143Z
 sources:
   - id: openwiki-source-074ce96a8baea27a6c43328b
     resource: repo://libs/code/deepagents_code/client/launch/server.py
+  - id: openwiki-source-ea1089f0d7536fbc96c64866
+    resource: repo://libs/code/deepagents_code/offload_api.py
   - id: openwiki-source-0fc0e47059e4d07e23e50be2
     resource: repo://libs/deepagents/deepagents/graph.py
   - id: openwiki-source-e51c4102234507d1529a2440
@@ -63,10 +62,13 @@ sources:
     resource: repo://libs/talon/tests/unit_tests/test_speech.py
   - id: openwiki-source-cf14bb91e6251d6d6d4a9413
     resource: repo://libs/talon/tests/unit_tests/test_subagent_control.py
-generated: { by: "openwiki/0.4.2", at: "2026-11-09T08:04:29.143Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-11-10T08:04:01.717Z" }
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-11-10T08:04:01.717Z
 ---
 
-# System Source Map
+# Repository Source Map
 
 Route a change to the component that owns its state and lifetime—not merely the API that exposes it. This map follows the seams from SDK graph construction through dcode's local server process to Talon's long-lived, channel-facing host. See also [Architecture Overview](./overview.md), [Code Agent](./code-agent.md), [Talon integration](../integrations/talon.md), [Talon channel admission](../concepts/talon-channel-admission.md), [Talon scheduling](../concepts/talon-scheduling.md), and the [testing guide](../testing/testing-guide.md).
 
@@ -75,7 +77,7 @@ Route a change to the component that owns its state and lifetime—not merely th
 | If the change affects… | Start at | Owner and boundary | Focused tests |
 | --- | --- | --- | --- |
 | SDK tools, profiles, middleware order, state schema, or injected persistence | `libs/deepagents/deepagents/graph.py` — `create_deep_agent` | The compiled graph; callers retain checkpointer, store, and cache ownership | `libs/deepagents/tests/unit_tests/test_graph.py`, `test_end_to_end.py`, `test_subagent_refusal.py` |
-| Interactive dcode graph server startup, loopback environment, health, restart, or reaping | `libs/code/deepagents_code/client/launch/server.py` — `ServerProcess` | The server-process manager, not the Textual app; `app.py` adopts it and guarantees final cleanup | dcode server-launch tests |
+| dcode graph serving, private offload operations, startup, loopback health, restart, or reaping | `libs/code/deepagents_code/client/launch/server.py` — `generate_langgraph_json` and `ServerProcess`; `offload_api.py` | Generated `langgraph.json` is the public graph/HTTP boundary; `ServerProcess` owns its local subprocess, not the Textual app | dcode server-launch and offload API tests |
 | Talon graph wiring, turn snapshots, approval changes, MCP/subagent reload, or runtime shutdown | `libs/talon/deepagents_talon/runtime.py` — `DeepAgentRuntime` | Runtime graph snapshot and invocation context variables | `libs/talon/tests/test_runtime.py`, `test_subagent_reload.py`, `test_mcp_config.py` |
 | MCP server loading, OAuth availability, deferred reload, or management tools | `libs/talon/deepagents_talon/mcp.py` — `MCPToolProvider` | Provider refresh revisions and runtime graph replacement | `test_mcp_enabled.py`, `test_mcp_config.py`, `test_mcp_adapter.py` |
 | MCP configuration mutation, redaction, revision conflicts, or filesystem safety | `libs/talon/deepagents_talon/mcp_config.py` — `MCPConfigStore` | One locked configuration file; the tool mediates changes but is not a filesystem secrecy boundary | `test_mcp_config.py` |
@@ -112,7 +114,9 @@ Rubric evaluation is another SDK-private loop. Without `rubric` state it is inac
 
 ## dcode: a local graph-server process boundary
 
-dcode's Textual app is a client/lifecycle consumer rather than Talon's runtime. `generate_langgraph_json()` registers the interactive `agent` graph and, for dcode's built-in graph, its authenticated offload HTTP app. `ServerProcess` creates the temporary or supplied server workspace, chooses a loopback ephemeral port by default, sanitizes inherited server startup environment, starts `langgraph dev`, and waits for `/ok` health before use.
+dcode's Textual app is a client/lifecycle consumer rather than Talon's runtime. `generate_langgraph_json()` registers the interactive `agent` graph. When that graph is dcode's built-in graph, it also registers `deepagents_code.offload_api:app` and enables LangGraph custom-route authentication; custom graph references deliberately do not get the offload service. The private Starlette boundary provides thread-scoped model, cost/usage, workspace, offload, handoff, cancellation, and extension routes. Production's loopback deployment uses noop route auth, whereas a deployment that configures a LangGraph auth backend gates these routes.
+
+The app lifespan installs run-queue wakeup, starts a default runtime prebuild while clients poll health, cancels and joins that build before extensions shut down, and makes a bounded best-effort LangSmith trace flush. `ServerProcess` creates the temporary or supplied server workspace, chooses a loopback ephemeral port by default, sanitizes inherited server startup environment, starts `langgraph dev`, and waits for `/ok` health before use.
 
 The process manager serializes asynchronous lifecycle operations and cleans up a partially started process even on cancellation. On POSIX it starts a dedicated session/process group and passes an owner-death pipe; normal stop sends a graceful signal, then escalates to a hard kill after a timeout. On Windows escalation reaches only the root process, so a surviving descendant can be orphaned. `DeepAgentsApp` owns UI adoption and calls the manager's idempotent stop from its final cleanup path.
 

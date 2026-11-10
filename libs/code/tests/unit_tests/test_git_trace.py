@@ -276,7 +276,7 @@ async def test_turn_probes_once_per_call_after_baseline(
         await agent.ainvoke(value, _config())
     else:
         agent.invoke(value, _config())
-    assert len(probes) == len(calls) + 3
+    assert len(probes) == len(calls) + 2
     metadata = trace.update.call_args.args[0]
     assert metadata["open_swe_git_targets"] == [
         {"repo": "example/repo", "branch": "main"}

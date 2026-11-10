@@ -88,6 +88,15 @@ class _Turn:
         with self.lock:
             return paths is not None and self.covered.issuperset(paths)
 
+    def contains(self, paths: tuple[str, ...] | None) -> bool:
+        with self.lock:
+            roots = [root.rstrip("/") + "/" for root in self.baseline]
+            return paths is not None and all(
+                path in self.covered
+                or any(f"{path}/".startswith(root) for root in roots)
+                for path in paths
+            )
+
     def start(self) -> int:
         with self.lock:
             self.probes += 1
@@ -157,7 +166,9 @@ class GitTraceMiddleware(AgentMiddleware[AgentState, ContextT]):
 
     Each observing tool call compares a snapshot taken after it runs with the
     newest earlier snapshot from the same turn, so a probe before the call is
-    only needed when its arguments reach paths the turn has not inspected yet.
+    only needed when its arguments reach paths outside checkouts the turn has
+    already inspected. A checkout first seen without an earlier inspection of
+    the same paths only becomes a baseline, so preexisting dirt is not credited.
     Repeated probe failures back off and then disable probing for the session.
     """
 
@@ -353,7 +364,7 @@ class GitTraceMiddleware(AgentMiddleware[AgentState, ContextT]):
         order = self._order(turn)
         args = request.tool_call["args"]
         paths = self._paths(args)
-        if not turn.covers(paths):
+        if not turn.contains(paths):
             probe = turn.start()
             self._observe(turn, self._probe(args), probe, order, paths, created=False)
         created = turn.covers(paths)
@@ -379,7 +390,7 @@ class GitTraceMiddleware(AgentMiddleware[AgentState, ContextT]):
         order = self._order(turn)
         args = request.tool_call["args"]
         paths = self._paths(args)
-        if not turn.covers(paths):
+        if not turn.contains(paths):
             probe = turn.start()
             snapshots = await self._aprobe(args)
             self._observe(turn, snapshots, probe, order, paths, created=False)

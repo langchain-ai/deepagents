@@ -293,6 +293,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     system_prompt: str | SystemMessage | None = None,
     middleware: Sequence[AgentMiddleware[StateT_co, ContextT]] = (),
     subagents: Sequence[SubAgent | CompiledSubAgent | AsyncSubAgent] | None = None,
+    subagent_middleware: Callable[[SubAgent], Sequence[AgentMiddleware]] | None = None,
     skills: list[str] | None = None,
     memory: list[str] | None = None,
     permissions: list[FilesystemPermission] | None = None,
@@ -477,6 +478,15 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             subagents in play — none passed and the default disabled via
             `general_purpose_subagent=GeneralPurposeSubagentProfile(enabled=False)`
             — the `task` tool is not exposed. Async subagents are independent.
+
+        subagent_middleware: Optional factory for middleware added to each declarative
+            synchronous child, including the native default general-purpose agent.
+            Called at graph construction with a shallow copy of the child's spec;
+            compiled and async children are unchanged. Entries replace child middleware
+            by name after authored entries, before harness exclusions are applied.
+
+            !!! beta
+                This middleware factory is experimental and may change in minor releases.
 
         skills: List of skill source paths (e.g., `["/skills/user/", "/skills/project/"]`).
 
@@ -734,7 +744,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             # A fork also mirrors the parent's prompt-producing middleware, in the
             # parent's order, so its own stack rebuilds the parent's system message
             # from the inherited state.
-            subagent_middleware: list[AgentMiddleware[Any, Any, Any]] = [
+            child_middleware: list[AgentMiddleware[Any, Any, Any]] = [
                 FilesystemMiddleware(
                     backend=backend,
                     custom_tool_descriptions=_subagent_profile.tool_description_overrides,
@@ -746,16 +756,16 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             # Core names captured before the tail so new spec middleware (and a
             # fork's inherited parent middleware) splices in ahead of it,
             # including ahead of Skills.
-            _subagent_core_names = {m.name for m in subagent_middleware}
+            _subagent_core_names = {m.name for m in child_middleware}
             # Harness-profile middleware for this subagent's model
-            subagent_middleware.extend(_subagent_profile.materialize_extra_middleware())
+            child_middleware.extend(_subagent_profile.materialize_extra_middleware())
             if subagent_skills is not None:
-                subagent_middleware.append(SkillsMiddleware(backend=backend, sources=subagent_skills))
+                child_middleware.append(SkillsMiddleware(backend=backend, sources=subagent_skills))
 
-            append_prompt_caching_middleware(subagent_middleware)
+            append_prompt_caching_middleware(child_middleware)
             if is_forked and memory is not None:
-                subagent_middleware.append(MemoryMiddleware(backend=backend, sources=memory, add_cache_control=True))
-            subagent_middleware.append(ModelRefusalMiddleware())
+                child_middleware.append(MemoryMiddleware(backend=backend, sources=memory, add_cache_control=True))
+            child_middleware.append(ModelRefusalMiddleware())
 
             _subagent_matched_classes: set[type[AgentMiddleware[Any, Any, Any]]] = set()
             _subagent_matched_names: set[str] = set()
@@ -764,8 +774,8 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
                 required_classes=_REQUIRED_MIDDLEWARE_CLASSES,
                 required_names=_REQUIRED_MIDDLEWARE_NAMES,
             )
-            subagent_middleware = _apply_excluded_middleware(
-                subagent_middleware,
+            child_middleware = _apply_excluded_middleware(
+                child_middleware,
                 _subagent_profile,
                 matched_classes=_subagent_matched_classes,
                 matched_names=_subagent_matched_names,
@@ -775,13 +785,17 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
                 # `create_agent` rejects two middleware sharing a name, so a spec
                 # entry replaces the inherited one in place rather than adding to it.
                 subagent_custom_middleware = list({m.name: m for m in [*middleware, *subagent_custom_middleware]}.values())
-            subagent_middleware = _apply_custom_middleware(
-                subagent_middleware,
+            if subagent_middleware is not None:
+                subagent_custom_middleware = list(
+                    {m.name: m for m in [*subagent_custom_middleware, *subagent_middleware(cast("SubAgent", dict(spec)))]}.values()
+                )
+            child_middleware = _apply_custom_middleware(
+                child_middleware,
                 subagent_custom_middleware,
                 core_names=_subagent_core_names,
             )
-            subagent_middleware = _apply_excluded_middleware(
-                subagent_middleware,
+            child_middleware = _apply_excluded_middleware(
+                child_middleware,
                 _subagent_profile,
                 matched_classes=_subagent_matched_classes,
                 matched_names=_subagent_matched_names,
@@ -794,7 +808,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
                 required_names=_REQUIRED_MIDDLEWARE_NAMES,
             )
             if _subagent_profile.excluded_tools:
-                subagent_middleware.append(_ToolExclusionMiddleware(excluded=_subagent_profile.excluded_tools))
+                child_middleware.append(_ToolExclusionMiddleware(excluded=_subagent_profile.excluded_tools))
 
             subagent_interrupt_on = spec.get("interrupt_on", interrupt_on)
             subagent_interrupt_on = _merge_fs_interrupt_on(
@@ -814,7 +828,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
                 **spec,
                 "model": subagent_model,
                 "tools": subagent_tools or [],
-                "middleware": subagent_middleware,
+                "middleware": child_middleware,
             }
             if is_forked:
                 # Keep the parent's system prompt byte-identical so the fork reuses
@@ -865,6 +879,10 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         # Inherit only middleware that overrides a default GP slot (including excluded
         # ones) without carrying over middleware that's specific to the main agent.
         _gp_inheritable = [m for m in (middleware or []) if m.name in _gp_original_name_to_index]
+        if subagent_middleware is not None:
+            _gp_inheritable = list(
+                {m.name: m for m in [*_gp_inheritable, *subagent_middleware(cast("SubAgent", dict(GENERAL_PURPOSE_SUBAGENT)))]}.values()
+            )
         gp_middleware = _apply_custom_middleware(gp_middleware, _gp_inheritable)
         gp_middleware = _apply_excluded_middleware(
             gp_middleware,

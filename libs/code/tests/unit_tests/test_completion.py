@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from deepagents_code.completion import (
+    _WORD_RE,
     SHELLS,
     CommandSpec,
     OptionSpec,
@@ -84,6 +85,22 @@ class TestBuildSpec:
         assert [positional.name for positional in threads_delete.positionals] == [
             "thread_id"
         ]
+
+    def test_every_real_candidate_is_shell_safe(self, root: CommandSpec) -> None:
+        # Scripts drop words that fail `_WORD_RE`; a real flag, command, or
+        # choice failing it would silently vanish from completion.
+        levels = [root]
+        words: list[str] = []
+        while levels:
+            level = levels.pop()
+            levels.extend(level.subcommands)
+            words.extend(name for child in level.subcommands for name in child.names)
+            for option in level.options:
+                words.extend(option.flags)
+                words.extend(option.choices)
+            for positional in level.positionals:
+                words.extend(positional.choices)
+        assert [word for word in words if not _WORD_RE.match(word)] == []
 
     def test_completion_shell_choices(self, root: CommandSpec) -> None:
         completion = _find(root, "completion")

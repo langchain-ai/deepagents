@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 from deepagents import create_deep_agent
-from deepagents.backends import FilesystemBackend, StateBackend
+from deepagents.backends import CompositeBackend, FilesystemBackend, StateBackend
 from deepagents.backends.utils import create_file_data
 from langchain.agents import create_agent
 from langchain_core.callbacks import BaseCallbackHandler
@@ -98,6 +98,87 @@ def test_reads_files_in_agent_state_as_text(*, run_async: bool) -> None:
     assert run(code, run_async=run_async) == [{"read": "hello\nworld", "rows": 150}]
 
 
+@pytest.mark.parametrize("run_async", [False, True], ids=["invoke", "ainvoke"])
+def test_writes_lists_and_deletes_files_in_agent_state(*, run_async: bool) -> None:
+    code = """const out = {};
+    await fs.writeFile("/w/new.txt", "made");
+    out.readBack = await fs.readFile("/w/new.txt");
+    out.listed = (await fs.readdir("/docs")).sort();
+    out.exists = await fs.access("/docs/a.md").then(() => true, () => false);
+    out.root = await fs.access("/").then(() => true, () => false);
+    out.mode = await fs.access("/docs/a.md", fs.constants.R_OK).then(
+      () => [fs.constants.F_OK, fs.promises.constants.W_OK],
+    );
+    await fs.rm("/docs/b.txt");
+    out.deleted = await fs.access("/docs/b.txt").then(() => "kept", (e) => e.code);
+    JSON.stringify(out)"""
+    backend = StateBackend()
+    agent = create_deep_agent(
+        model=model(code),
+        backend=backend,
+        middleware=[CodeInterpreterMiddleware(fs=backend)],
+    )
+    payload = {"messages": [{"role": "user", "content": "go"}], "files": files()}
+
+    state = asyncio.run(agent.ainvoke(payload)) if run_async else agent.invoke(payload)
+
+    assert results(state) == [
+        {
+            "readBack": "made",
+            "listed": ["a.md", "b.txt"],
+            "exists": True,
+            "root": True,
+            "mode": [0, 2],
+            "deleted": "ENOENT",
+        }
+    ]
+    assert state["files"]["/w/new.txt"]["content"] == "made"
+    assert "/docs/b.txt" not in state["files"]
+
+
+@pytest.mark.parametrize("on_disk", [False, True], ids=["state", "filesystem"])
+def test_write_file_replaces_an_existing_file(tmp_path: Path, *, on_disk: bool) -> None:
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "b.txt").write_text("plain")
+    backend = (
+        FilesystemBackend(root_dir=tmp_path, virtual_mode=True) if on_disk else None
+    )
+    code = """await fs.writeFile("/docs/b.txt", "replaced");
+    JSON.stringify(await fs.readFile("/docs/b.txt"))"""
+
+    assert run(code, backend=backend) == ["replaced"]
+
+
+def test_fs_follows_the_routes_of_a_composite_backend(tmp_path: Path) -> None:
+    (tmp_path / "a.txt").write_text("on disk")
+    disk = FilesystemBackend(root_dir=tmp_path, virtual_mode=True)
+    backend = CompositeBackend(default=StateBackend(), routes={"/disk/": disk})
+    code = (
+        CODE_OF
+        + """const out = {};
+    out.read = await fs.readFile("/disk/a.txt");
+    out.listed = await fs.readdir("/disk");
+    out.missing = await codeOf(() => fs.access("/disk/nope.txt"));
+    await fs.writeFile("/disk/new/b.txt", "made");
+    await fs.rm("/disk/a.txt");
+    out.removed = await codeOf(() => fs.access("/disk/a.txt"));
+    out.stateRead = await fs.readFile("/docs/b.txt");
+    JSON.stringify(out)"""
+    )
+
+    assert run(code, backend=backend) == [
+        {
+            "read": "on disk",
+            "listed": ["a.txt"],
+            "missing": "ENOENT",
+            "removed": "ENOENT",
+            "stateRead": "plain",
+        }
+    ]
+    assert (tmp_path / "new" / "b.txt").read_text() == "made"
+    assert not (tmp_path / "a.txt").exists()
+
+
 def test_failures_are_node_errors(tmp_path: Path) -> None:
     (tmp_path / "docs").mkdir()
     (tmp_path / "docs" / "a.md").write_text("hello")
@@ -110,6 +191,16 @@ def test_failures_are_node_errors(tmp_path: Path) -> None:
       underAFile: await codeOf(() => fs.readFile("/docs/a.md/x")),
       trailingSlash: await codeOf(() => fs.readFile("/docs/a.md/")),
       notUtf8: await codeOf(() => fs.readFile("/latin1.txt")),
+      listFile: await codeOf(() => fs.readdir("/docs/a.md")),
+      listMissing: await codeOf(() => fs.readdir("/nope/deeper")),
+      accessUnderFile: await codeOf(() => fs.access("/docs/a.md/x")),
+      accessFileAsDirectory: await codeOf(() => fs.access("/docs/a.md/")),
+      writeDirectory: await codeOf(() => fs.writeFile("/docs", "x")),
+      writeDirectoryPath: await codeOf(() => fs.writeFile("/new/", "x")),
+      rmMissing: await codeOf(() => fs.rm("/missing.txt")),
+      rmMissingForced: await codeOf(() => fs.rm("/missing.txt", { force: true })),
+      rmDirectory: await codeOf(() => fs.rm("/docs")),
+      rmDirectoryRecursive: await codeOf(() => fs.rm("/docs", { recursive: true })),
     })"""
     )
     backend = FilesystemBackend(root_dir=tmp_path, virtual_mode=True)
@@ -121,14 +212,52 @@ def test_failures_are_node_errors(tmp_path: Path) -> None:
             "underAFile": "ENOENT",
             "trailingSlash": "ENOTDIR",
             "notUtf8": "ERR_ENCODING_INVALID_ENCODED_DATA",
+            "listFile": "ENOTDIR",
+            "listMissing": "ENOENT",
+            "accessUnderFile": "ENOENT",
+            "accessFileAsDirectory": "ENOTDIR",
+            "writeDirectory": "EISDIR",
+            "writeDirectoryPath": "EISDIR",
+            "rmMissing": "ENOENT",
+            "rmMissingForced": "ok",
+            "rmDirectory": "ERR_FS_EISDIR",
+            "rmDirectoryRecursive": "ok",
         }
     ]
+    assert (tmp_path / "latin1.txt").read_bytes() == "café".encode("latin-1")
+    assert not (tmp_path / "docs").exists()
+    assert not (tmp_path / "new").exists()
 
 
-def test_a_directory_in_agent_state_is_eisdir() -> None:
-    code = CODE_OF + 'JSON.stringify(await codeOf(() => fs.readFile("/docs")))'
+def test_agent_state_failures_are_node_errors() -> None:
+    code = (
+        CODE_OF
+        + """const syscall = (f) => f().catch((e) => e.syscall);
+    JSON.stringify({
+      readDirectory: await codeOf(() => fs.readFile("/docs")),
+      accessMissing: await codeOf(() => fs.access("/missing.txt")),
+      accessFileAsDirectory: await codeOf(() => fs.access("/docs/a.md/")),
+      writeDirectoryPath: await codeOf(() => fs.writeFile("/docs/", "x")),
+      rmMissing: await codeOf(() => fs.rm("/missing.txt")),
+      rmDirectory: await codeOf(() => fs.rm("/docs")),
+      syscalls: [
+        await syscall(() => fs.access("/missing.txt")),
+        await syscall(() => fs.rm("/missing.txt")),
+      ],
+    })"""
+    )
 
-    assert run(code) == ["EISDIR"]
+    assert run(code) == [
+        {
+            "readDirectory": "EISDIR",
+            "accessMissing": "ENOENT",
+            "accessFileAsDirectory": "ENOTDIR",
+            "writeDirectoryPath": "EISDIR",
+            "rmMissing": "ENOENT",
+            "rmDirectory": "ERR_FS_EISDIR",
+            "syscalls": ["access", "lstat"],
+        }
+    ]
 
 
 def test_dot_dot_segments_stay_inside_the_backend_root(tmp_path: Path) -> None:
@@ -173,9 +302,16 @@ def test_a_deep_missing_path_costs_a_few_listings(tmp_path: Path) -> None:
 
 
 def test_the_host_function_rejects_arguments_that_are_not_strings() -> None:
-    code = 'JSON.stringify((await __lc_fs("readFile", { path: 42 })).error.code)'
+    code = (
+        CODE_OF
+        + """JSON.stringify([
+      (await __lc_fs("readFile", { path: 42 })).error.code,
+      (await __lc_fs("writeFile", { path: "/n.txt", data: 42 })).error.code,
+      await codeOf(() => fs.access("/n.txt")),
+    ])"""
+    )
 
-    assert run(code) == ["ERR_INVALID_ARG_TYPE"]
+    assert run(code) == [["ERR_INVALID_ARG_TYPE", "ERR_INVALID_ARG_TYPE", "ENOENT"]]
 
 
 class _Broken(StateBackend):
@@ -205,6 +341,12 @@ def test_arguments_fs_cannot_honor_are_refused() -> None:
         CODE_OF
         + """JSON.stringify({
       base64: await codeOf(() => fs.readFile("/docs/b.txt", "base64")),
+      bytes: await codeOf(() => fs.writeFile("/w.txt", new Uint8Array([1]))),
+      append: await codeOf(() => fs.writeFile("/w.txt", "x", { flag: "a" })),
+      replace: await codeOf(() => fs.writeFile("/w.txt", "x", { flag: "w" })),
+      fileTypes: await codeOf(() => fs.readdir("/docs", { withFileTypes: true })),
+      recursive: await codeOf(() => fs.readdir("/docs", { recursive: true })),
+      buffer: await codeOf(() => fs.readdir("/docs", "buffer")),
       callback: await codeOf(() => fs.readFile("/docs/b.txt", "utf8", () => {})),
       notAPath: await codeOf(() => fs.readFile(42)),
     })"""
@@ -213,6 +355,12 @@ def test_arguments_fs_cannot_honor_are_refused() -> None:
     assert run(code) == [
         {
             "base64": "ERR_INVALID_ARG_VALUE",
+            "bytes": "ERR_INVALID_ARG_TYPE",
+            "append": "ERR_INVALID_ARG_VALUE",
+            "replace": "ok",
+            "fileTypes": "ERR_INVALID_ARG_VALUE",
+            "recursive": "ERR_INVALID_ARG_VALUE",
+            "buffer": "ERR_INVALID_ARG_VALUE",
             "callback": "ERR_INVALID_ARG_TYPE",
             "notAPath": "ERR_INVALID_ARG_TYPE",
         }
@@ -239,18 +387,23 @@ def test_sync_and_dropped_functions_throw_an_error_naming_the_replacement() -> N
     assert len(dropped) == 15
     assert {code for code, _ in dropped.values()} == {"ERR_METHOD_NOT_IMPLEMENTED"}
     assert "Use await fs.readFile(path)." in dropped["readFileSync"][1]
+    assert "Use await fs.access(path)," in dropped["existsSync"][1]
     assert result == {"require": "MODULE_NOT_FOUND", "promisesReadFile": "function"}
 
 
-def test_code_has_no_fs_without_a_backend() -> None:
-    agent = create_deep_agent(
-        model=model("JSON.stringify([typeof fs, typeof require])"),
-        middleware=[CodeInterpreterMiddleware()],
-    )
+@pytest.mark.parametrize("enabled", [True, False], ids=["backend", "default"])
+def test_fs_and_its_prompt_section_need_a_backend(*, enabled: bool) -> None:
+    backend = StateBackend()
+    llm = model("JSON.stringify([typeof fs, typeof require])")
+    middleware = CodeInterpreterMiddleware(fs=backend if enabled else None)
+    agent = create_deep_agent(model=llm, backend=backend, middleware=[middleware])
 
     state = agent.invoke({"messages": [{"role": "user", "content": "go"}]})
 
-    assert results(state) == [["undefined", "undefined"]]
+    expected = ["object", "function"] if enabled else ["undefined", "undefined"]
+    assert results(state) == [expected]
+    assert ("### Files: `fs`" in llm.prompts[0]) is enabled
+    assert ("No filesystem" in middleware.tools[0].description) is not enabled
 
 
 def test_an_oversized_read_ends_only_that_eval(tmp_path: Path) -> None:
@@ -353,3 +506,12 @@ def test_fs_works_in_a_repl_restored_from_a_snapshot(*, run_async: bool) -> None
     out = turn("JSON.stringify([await read(), await fs.readFile('/docs/a.md')])")
 
     assert out[-1] == ["plain", "hello\nworld"]
+
+
+@pytest.mark.parametrize("function", ["access", "rm"])
+def test_a_budget_error_names_the_fs_function_the_code_called(function: str) -> None:
+    code = f'await fs.readFile("/docs/a.md"); await fs.{function}("/docs/b.txt")'
+
+    [message] = run(code, max_ptc_calls=1)
+
+    assert f"attempted=2, function=fs.{function})" in message

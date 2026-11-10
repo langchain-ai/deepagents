@@ -58,16 +58,63 @@ async def _read_file(
         raise FsError(msg, code=code, name="TypeError") from None
 
 
+async def _write_file(
+    backend: BackendProtocol, op: str, path: str, args: dict[str, Any]
+) -> None:
+    if path.endswith("/"):
+        raise _system_error(op, path, "EISDIR")
+    result = await backend.awrite(path, args["data"])
+    if result.error is not None:
+        raise await _failure(backend, op, path, result.error)
+
+
+async def _readdir(
+    backend: BackendProtocol, op: str, path: str, _args: dict[str, Any]
+) -> list[str]:
+    if not await _stat(backend, op, path):
+        raise _system_error(op, path, "ENOTDIR")
+    listing = await backend.als(path)
+    if listing.error is not None:
+        raise _system_error(op, path, "EIO", listing.error)
+    return [posixpath.basename(e["path"].rstrip("/")) for e in listing.entries or ()]
+
+
+async def _access(
+    backend: BackendProtocol, op: str, path: str, _args: dict[str, Any]
+) -> None:
+    await _stat(backend, op, path)
+
+
+async def _rm_stat(
+    backend: BackendProtocol, op: str, path: str, _args: dict[str, Any]
+) -> bool:
+    return await _stat(backend, op, path)
+
+
+async def _rm(
+    backend: BackendProtocol, op: str, path: str, _args: dict[str, Any]
+) -> None:
+    result = await backend.adelete(path)
+    if result.error is not None:
+        raise _system_error(op, path, "EIO", result.error)
+
+
 _OPERATIONS: dict[
     str,
     tuple[str, Callable[[BackendProtocol, str, str, dict[str, Any]], Awaitable[Any]]],
 ] = {
     "readFile": ("open", _read_file),
+    "writeFile": ("open", _write_file),
+    "readdir": ("scandir", _readdir),
+    "access": ("access", _access),
+    # The shim checks a path before `rm`, as Node does; Node names `lstat` then.
+    "rmStat": ("lstat", _rm_stat),
+    "rm": ("rm", _rm),
 }
 
 
 def public_name(op: str) -> str:
-    return f"fs.{op}"
+    return "fs.rm" if op == "rmStat" else f"fs.{op}"
 
 
 async def run(backend: BackendProtocol, op: str, args: dict[str, Any]) -> Any:
@@ -98,6 +145,16 @@ async def _failure(backend: BackendProtocol, op: str, path: str, error: str) -> 
     if await _is_directory(backend, op, path):
         return _system_error(op, path, "EISDIR")
     return _system_error(op, path, code or "EIO", None if code else error)
+
+
+async def _stat(backend: BackendProtocol, op: str, path: str) -> bool:
+    """Whether `path` is a directory, raising `ENOENT` if nothing is there."""
+    is_directory = await _is_directory(backend, op, path)
+    if is_directory is None:
+        raise _system_error(op, path, "ENOENT")
+    if path.endswith("/") and not is_directory:
+        raise _system_error(op, path, "ENOTDIR")
+    return is_directory
 
 
 async def _is_directory(backend: BackendProtocol, op: str, path: str) -> bool | None:

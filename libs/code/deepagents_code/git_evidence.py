@@ -19,8 +19,6 @@ from deepagents_code._git import (
     RepositoryMetadata,
     find_git_root,
     parse_repository_metadata,
-    resolve_git_branch,
-    resolve_git_commit_sha,
     resolve_git_remote_url,
 )
 
@@ -34,6 +32,7 @@ _MAX_REPOSITORIES = 16
 _MAX_PATHS = 4096
 _MAX_DIRECTORIES = 64
 _ROW_FIELDS = 5
+_PATH_FIELDS = {b"1": 8, b"2": 9, b"u": 10, b"?": 1}
 
 
 @dataclass(frozen=True)
@@ -52,16 +51,7 @@ def _git(path: str, *args: str) -> bytes:
         key: value for key, value in os.environ.items() if not key.startswith("GIT_")
     }
     env.update(GIT_OPTIONAL_LOCKS="0", GIT_TERMINAL_PROMPT="0")
-    command = [
-        "git",
-        "-c",
-        "core.fsmonitor=false",
-        "-c",
-        "core.untrackedCache=false",
-        "-C",
-        path,
-        *args,
-    ]
+    command = ["git", "-C", path, *args]
     with tempfile.TemporaryFile() as output:
         result = subprocess.run(  # noqa: S603  # Literal Git arguments; never a shell.
             command,
@@ -79,32 +69,51 @@ def _git(path: str, *args: str) -> bytes:
     return data
 
 
-def _fingerprint(root: str) -> str:
-    status = _git(root, "status", "--porcelain=v2", "-z", "--untracked-files=all")
-    paths = _git(root, "ls-files", "-m", "-o", "--exclude-standard", "-z").split(b"\0")
-    digest = hashlib.sha256(status)
-    if len(paths) > _MAX_PATHS:
+def _status_changes(output: bytes) -> tuple[str, str, list[tuple[bytes, bytes]]]:
+    branch, commit, changes = "HEAD", "", []
+    records = iter(output.split(b"\0"))
+    for record in records:
+        kind = record[:1]
+        if kind == b"#":
+            key, _, value = record[2:].partition(b" ")
+            if key == b"branch.head" and value != b"(detached)":
+                branch = os.fsdecode(value)
+            elif key == b"branch.oid" and value != b"(initial)":
+                commit = value.decode()
+        elif kind in _PATH_FIELDS:
+            path = record.split(b" ", _PATH_FIELDS[kind])[-1]
+            entry = record + b"\0" + next(records, b"") if kind == b"2" else record
+            changes.append((entry, path))
+    return branch, commit, changes
+
+
+def _stat_token(root: str, raw: bytes) -> bytes:
+    try:
+        stat = (Path(root) / os.fsdecode(raw)).lstat()
+    except OSError:
+        return b"missing"
+    fields = (stat.st_mode, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+    return repr(fields).encode()
+
+
+def _scan(root: str) -> tuple[str, str, str]:
+    output = _git(
+        root,
+        "status",
+        "--porcelain=v2",
+        "--branch",
+        "--no-ahead-behind",
+        "-z",
+        "--untracked-files=all",
+    )
+    branch, commit, changes = _status_changes(output)
+    if len(changes) > _MAX_PATHS:
         msg = "Git evidence exceeds the dirty-file limit."
         raise ValueError(msg)
-    for raw in paths:
-        if raw:
-            path = Path(root) / os.fsdecode(raw)
-            try:
-                stat = path.lstat()
-                digest.update(
-                    repr(
-                        (
-                            raw,
-                            stat.st_mode,
-                            stat.st_size,
-                            stat.st_mtime_ns,
-                            stat.st_ctime_ns,
-                        )
-                    ).encode()
-                )
-            except FileNotFoundError:
-                digest.update(raw + b"\0missing")
-    return digest.hexdigest()
+    digest = hashlib.sha256()
+    for record, raw in changes:
+        digest.update(record + b"\0" + _stat_token(root, raw) + b"\0")
+    return branch, commit, digest.hexdigest()
 
 
 def _discover(paths: list[str]) -> list[str]:
@@ -150,14 +159,7 @@ def _discover(paths: list[str]) -> list[str]:
 def _remote_rows(paths: list[str]) -> list[list[str]]:
     rows = []
     for root in _discover(paths):
-        try:
-            branch = _git(root, "symbolic-ref", "--short", "HEAD").decode().strip()
-        except ValueError:
-            branch = "HEAD"
-        try:
-            commit = _git(root, "rev-parse", "--verify", "HEAD").decode().strip()
-        except ValueError:
-            commit = ""
+        branch, commit, fingerprint = _scan(root)
         try:
             remote = _git(root, "config", "--get", "remote.origin.url").decode().strip()
         except ValueError:
@@ -167,7 +169,7 @@ def _remote_rows(paths: list[str]) -> list[list[str]]:
             remote = f"https://{parsed.hostname or ''}{parsed.path}"
         else:
             remote = remote.rsplit("@", 1)[-1]
-        rows.append([root, remote, branch, commit, _fingerprint(root)])
+        rows.append([root, remote, branch, commit, fingerprint])
     return rows
 
 
@@ -213,9 +215,17 @@ def _sandbox_command(paths: list[str]) -> str:
     )
     source += f"_LIMIT={_LIMIT}\n_MAX_REPOSITORIES={_MAX_REPOSITORIES}\n"
     source += f"_MAX_PATHS={_MAX_PATHS}\n_MAX_DIRECTORIES={_MAX_DIRECTORIES}\n"
+    source += f"_PATH_FIELDS={_PATH_FIELDS!r}\n"
     source += "\n".join(
         inspect.getsource(function)
-        for function in (_git, _fingerprint, _discover, _remote_rows)
+        for function in (
+            _git,
+            _status_changes,
+            _stat_token,
+            _scan,
+            _discover,
+            _remote_rows,
+        )
     )
     source += f"\nprint(json.dumps(_remote_rows({paths!r})))\n"
     return "python3 -c " + shlex.quote(source)
@@ -264,15 +274,9 @@ def _local_probe(
             continue
         if find_git_root(root) is None:
             continue
-        result.append(
-            GitSnapshot(
-                root,
-                parse_repository_metadata(resolve_git_remote_url(root)),
-                resolve_git_branch(root),
-                resolve_git_commit_sha(root),
-                _fingerprint(root),
-            )
-        )
+        branch, commit, fingerprint = _scan(root)
+        remote = parse_repository_metadata(resolve_git_remote_url(root))
+        result.append(GitSnapshot(root, remote, branch, commit, fingerprint))
     return result
 
 

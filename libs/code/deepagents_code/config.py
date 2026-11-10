@@ -2750,9 +2750,12 @@ def build_coding_agent_metadata(
         metadata["repository_url"] = repository_url
         metadata["repository_provider"] = repository_provider
         metadata["repository_name"] = repository_name
+        metadata["ls_git_repo"] = repository_name
+        metadata["ls_repo_provider"] = repository_provider
 
     if git_branch:
         metadata["git_branch"] = git_branch
+        metadata["ls_git_branch"] = git_branch
     commit_sha = _get_git_commit_sha()
     if commit_sha:
         metadata["git_commit_sha"] = commit_sha
@@ -2761,6 +2764,7 @@ def build_coding_agent_metadata(
 
     if user_id:
         metadata["user_id"] = user_id
+        metadata["ls_attribution_identifier"] = user_id
     if sandbox_type and sandbox_type != "none":
         metadata["sandbox_type"] = sandbox_type
 
@@ -2819,6 +2823,10 @@ def build_stream_config(
     metadata. This is a diagnostic key, not the contract-scoped `approval_policy`
     key (see above), so it is safe to stamp trace-wide.
 
+    Also records `dcode_idle_compaction` and `dcode_idle_compaction_tokens` from
+    the resolved history setting so traces can be filtered by whether idle
+    compaction is configured, independently of whether it actually runs.
+
     Also records `dcode_term_program` from `TERM_PROGRAM` when that is non-empty
     after stripping, so traces are groupable by launch environment (e.g.
     "iTerm.app", "vscode", "Apple_Terminal"). Blank values are treated as unset
@@ -2874,6 +2882,16 @@ def build_stream_config(
     # Mark auto-approve ("YOLO") runs so they are filterable in trace metadata.
     if auto_approve:
         metadata["dcode_auto_approve"] = True
+
+    from deepagents_code.config_manifest import get_option
+    from deepagents_code.configuration.resolver import get_config_resolver
+
+    idle_option = get_option("history.idle_compaction_tokens")
+    idle_threshold = get_config_resolver().get(idle_option).value if idle_option else 0
+    metadata["dcode_idle_compaction"] = (
+        isinstance(idle_threshold, int) and idle_threshold > 0
+    )
+    metadata["dcode_idle_compaction_tokens"] = idle_threshold
 
     if skill_name:
         metadata["ls_skill_name"] = skill_name

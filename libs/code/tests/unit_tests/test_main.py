@@ -442,7 +442,9 @@ class TestStartupAutoUpdate:
         assert upgrade.call_args.kwargs["allow_python_migration"] is False
         mark_failed.assert_called_once_with("9.9.9", deferred=False)
         restart.assert_not_called()
-        console.print.assert_any_call(notice, markup=False, highlight=False)
+        console.print.assert_any_call(
+            notice, markup=False, highlight=False, soft_wrap=True
+        )
         printed = " ".join(str(c.args[0]) for c in console.print.call_args_list)
         # The returned-failure branch ran, not the exception fallback.
         assert "see the message above" in printed
@@ -508,7 +510,7 @@ class TestStartupAutoUpdate:
     @staticmethod
     @contextmanager
     def _pending_migration(
-        *, deferred_before: bool, sole: bool, upgrade: AsyncMock
+        *, deferred_before: bool, sole: bool, upgrade: AsyncMock, windows: bool = False
     ) -> Iterator[MagicMock]:
         """Patch a launch with v9.9.9 available, optionally after a deferral.
 
@@ -516,6 +518,7 @@ class TestStartupAutoUpdate:
             The `mark_startup_auto_update_failed` mock.
         """
         with (
+            patch("deepagents_code.update_check._is_windows", return_value=windows),
             patch("deepagents_code.config._is_editable_install", return_value=False),
             patch(
                 "deepagents_code.update_check.is_auto_update_enabled",
@@ -577,6 +580,34 @@ class TestStartupAutoUpdate:
         assert "Continuing with v" in printed
         assert "Updating dcode" not in printed
         assert "did not complete" not in printed
+
+    def test_windows_deferral_is_repeated_by_perform_upgrade(self) -> None:
+        """Windows defers updates without a migration too, so none is assumed."""
+        console = MagicMock()
+        guidance = "On Windows, dcode cannot rebuild the environment it runs from."
+
+        def defer(
+            *,
+            on_notice: Callable[[str], None],
+            on_migration_deferred: Callable[[], None],
+            **_kwargs: object,
+        ) -> tuple[bool, str, None]:
+            on_migration_deferred()
+            on_notice(guidance)
+            return False, guidance, None
+
+        upgrade = AsyncMock(side_effect=defer)
+        with self._pending_migration(
+            deferred_before=True, sole=False, upgrade=upgrade, windows=True
+        ) as mark_failed:
+            _run_startup_auto_update(console)
+
+        upgrade.assert_awaited_once()
+        mark_failed.assert_called_once_with("9.9.9", deferred=True)
+        printed = " ".join(str(c.args[0]) for c in console.print.call_args_list)
+        assert guidance in printed
+        assert "needs a Python update" not in printed
+        assert "Continuing with v" in printed
 
     def test_unverified_install_exits_instead_of_launching(self) -> None:
         """A changed but unverified environment stops startup instead of launching."""

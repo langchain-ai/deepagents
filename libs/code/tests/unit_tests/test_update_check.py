@@ -16,8 +16,15 @@ import sysconfig
 import tempfile
 import threading
 import time
-from collections.abc import Iterator, Mapping, Sequence  # noqa: TC003
+from collections.abc import (  # noqa: TC003
+    Awaitable,
+    Callable,
+    Iterator,
+    Mapping,
+    Sequence,
+)
 from contextlib import contextmanager, nullcontext
+from functools import partial
 from itertools import starmap
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -30,7 +37,9 @@ from deepagents_code.extras_info import ExtrasIntrospectionError, installed_extr
 from deepagents_code.update_check import (
     CACHE_TTL,
     ExtraInstallOutcome,
+    ExtraRemovalOutcome,
     InstallMethod,
+    InstallOutcome,
     ShadowedDcode,
     ToolRequirementIntrospectionError,
     _extract_release_times,
@@ -73,8 +82,10 @@ from deepagents_code.update_check import (
     mark_startup_auto_update_failed,
     mark_update_notified,
     mark_version_seen,
+    perform_dependency_refresh,
     perform_install_extra,
     perform_install_package,
+    perform_uninstall_extra,
     perform_upgrade,
     read_installed_distribution_version,
     release_prerelease_pins,
@@ -1838,6 +1849,7 @@ class TestUpdateInstallLock:
         assert "filelock is unavailable" in caplog.text
 
 
+@pytest.mark.usefixtures("posix_host")
 class TestUpgradeInstallCommand:
     """Direct coverage for the receipt-aware unpinned-upgrade command builder.
 
@@ -2051,6 +2063,7 @@ class TestDependencyRefreshSupported:
     """`dependency_refresh_supported` gates the dependency-only refresh."""
 
 
+@pytest.mark.usefixtures("posix_host")
 class TestInstallExtraCommand:
     """`install_extra_command` builds the promoted install-script string."""
 
@@ -2307,6 +2320,7 @@ class TestEditableExtraHint:
         assert "[fireworks]" in editable_extra_hint("fireworks")
 
 
+@pytest.mark.usefixtures("posix_host")
 class TestInstallPackageCommand:
     """`install_package_command` builds a uv tool package install string."""
 
@@ -2472,6 +2486,7 @@ class TestInstallPackageCommand:
             )
 
 
+@pytest.mark.usefixtures("posix_host")
 class TestPerformInstallExtra:
     """`perform_install_extra` execution paths."""
 
@@ -2503,7 +2518,7 @@ class TestPerformInstallExtra:
             "deepagents_code.update_check.detect_install_method",
             return_value=method,
         ):
-            success, output, _safe = await perform_install_extra("quickjs")
+            success, output, _safe, _deferred = await perform_install_extra("quickjs")
         assert success is False
         assert needle in output
         assert "ToolRequirementIntrospectionError" not in output
@@ -2529,7 +2544,7 @@ class TestPerformInstallExtra:
                 return_value="printf 'ok\\n'",
             ),
         ):
-            success, output, _safe = await perform_install_extra(
+            success, output, _safe, _deferred = await perform_install_extra(
                 "quickjs", log_path=log_path
             )
         assert success is True
@@ -2553,7 +2568,7 @@ class TestPerformInstallExtra:
                 return_value=frozenset(),
             ),
         ):
-            success, output, _safe = await perform_install_extra("quickjs")
+            success, output, _safe, _deferred = await perform_install_extra("quickjs")
         assert success is False
         assert "ToolRequirementIntrospectionError" in output
         assert "non-table requirement" in output
@@ -2627,7 +2642,7 @@ class TestPerformInstallExtra:
             ),
             patch("deepagents_code.update_check._run_install_subprocess", run),
         ):
-            success, output, _safe = await perform_install_extra("quickjs")
+            success, output, _safe, _deferred = await perform_install_extra("quickjs")
 
         assert (success, output) == (True, "installed")
         assert events == ["acquire", "command", "run", "release"]
@@ -2653,6 +2668,7 @@ class TestEditablePackageHint:
     """`editable_package_hint` names the package without a raw `uv` command."""
 
 
+@pytest.mark.usefixtures("posix_host")
 class TestPerformInstallPackage:
     """`perform_install_package` execution paths."""
 
@@ -2675,7 +2691,7 @@ class TestPerformInstallPackage:
                 return_value="printf 'ok\\n'",
             ),
         ):
-            success, output = await perform_install_package(
+            success, output, _deferred = await perform_install_package(
                 "langchain-custom", log_path=log_path
             )
         assert success is True
@@ -2710,7 +2726,9 @@ class TestPerformInstallPackage:
             ),
             caplog.at_level(logging.WARNING, logger="deepagents_code.update_check"),
         ):
-            success, output = await perform_install_package("langchain-custom")
+            success, output, _deferred = await perform_install_package(
+                "langchain-custom"
+            )
         assert success is False
         assert "ExtrasIntrospectionError" in output
         assert "metadata unreadable" in output
@@ -2744,7 +2762,9 @@ class TestPerformInstallPackage:
             ),
             caplog.at_level(logging.WARNING, logger="deepagents_code.update_check"),
         ):
-            success, output = await perform_install_package("langchain-custom")
+            success, output, _deferred = await perform_install_package(
+                "langchain-custom"
+            )
         assert success is False
         assert "ToolRequirementIntrospectionError" in output
         assert "non-table requirement" in output
@@ -2766,7 +2786,9 @@ class TestPerformInstallPackage:
             ),
             patch("deepagents_code.update_check.__version__", "not-a-version"),
         ):
-            success, output = await perform_install_package("langchain-custom")
+            success, output, _deferred = await perform_install_package(
+                "langchain-custom"
+            )
         assert success is False
         assert "ValueError" in output
         assert "Invalid deepagents-code version" in output
@@ -2791,7 +2813,9 @@ class TestPerformInstallPackage:
             patch("deepagents_code.update_check.install_package_command", command),
             patch("deepagents_code.update_check._run_install_subprocess", run),
         ):
-            success, output = await perform_install_package("langchain-custom")
+            success, output, _deferred = await perform_install_package(
+                "langchain-custom"
+            )
 
         assert success is False
         assert "already running" in output
@@ -2835,10 +2859,98 @@ class TestPerformInstallPackage:
             ),
             patch("deepagents_code.update_check._run_install_subprocess", run),
         ):
-            success, output = await perform_install_package("langchain-custom")
+            success, output, _deferred = await perform_install_package(
+                "langchain-custom"
+            )
 
         assert (success, output) == (True, "installed")
         assert events == ["acquire", "command", "run", "release"]
+
+
+class TestWindowsInstallDeferral:
+    """On Windows, uv cannot replace the running `dcode.exe` and deletes the env."""
+
+    @pytest.fixture
+    def windows_uv(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> AsyncMock:
+        _write_uv_receipt(
+            tmp_path,
+            '{ name = "deepagents-code", extras = ["ollama"] }, '
+            '{ name = "langchain-custom" }',
+            python="3.13",
+        )
+        monkeypatch.setattr(update_check.sys, "prefix", str(tmp_path))
+        monkeypatch.setattr(update_check, "_is_windows", lambda: True)
+        monkeypatch.setattr(update_check, "detect_install_method", lambda: "uv")
+        monkeypatch.setattr(update_check.shutil, "which", lambda _name: "uv.exe")
+        monkeypatch.setattr(
+            update_check, "update_install_lock", lambda: nullcontext(True)
+        )
+        monkeypatch.setattr(
+            update_check, "read_installed_distribution_version", lambda: "1.0.0"
+        )
+        monkeypatch.setattr(
+            "deepagents_code.config._is_editable_install", lambda: False
+        )
+        run = AsyncMock(return_value=(True, "installed"))
+        monkeypatch.setattr(update_check, "_run_install_subprocess", run)
+        return run
+
+    @pytest.mark.parametrize(
+        ("perform", "requirement"),
+        [
+            (
+                partial(perform_install_extra, "quickjs"),
+                f"deepagents-code[ollama,quickjs]=={__version__}",
+            ),
+            (
+                partial(perform_install_package, "six"),
+                f"deepagents-code[ollama]=={__version__}",
+            ),
+            (partial(perform_uninstall_extra, "ollama"), "deepagents-code==1.0.0"),
+            (perform_dependency_refresh, f"deepagents-code[ollama]=={__version__}"),
+        ],
+        ids=["install-extra", "install-package", "uninstall-extra", "refresh"],
+    )
+    async def test_install_prints_command_instead_of_running_it(
+        self,
+        windows_uv: AsyncMock,
+        perform: Callable[
+            ..., Awaitable[InstallOutcome | ExtraInstallOutcome | ExtraRemovalOutcome]
+        ],
+        requirement: str,
+    ) -> None:
+        """Nothing runs; the guidance names the receipt-preserving uv command."""
+        outcome = await perform()
+
+        assert outcome.success is False
+        assert outcome.deferred is True
+        windows_uv.assert_not_awaited()
+        guidance, command = outcome.output.split("your shell: ")
+        assert "Nothing was installed. Quit every dcode session" in guidance
+        args = shlex.split(command)
+        assert args[:3] == ["uv", "tool", "install"]
+        assert requirement in args
+        assert args[args.index("--python") + 1] == "3.13"
+        assert "langchain-custom" in args
+        # cmd.exe would pass single quotes on to uv as part of the requirement.
+        assert "'" not in command
+
+    @pytest.mark.usefixtures("windows_uv")
+    def test_dry_run_command_is_quoted_for_cmd_and_powershell(self) -> None:
+        """The dry run still executes on Windows, through cmd.exe."""
+        python = r"C:\Program Files\Python314\python.exe"
+
+        command = dependency_refresh_dry_run_command(version="1.0.0", python=python)
+
+        assert f'--python "{python}"' in command
+        assert '"deepagents-code[ollama]==1.0.0"' in command
+        assert "'" not in command
+        assert shlex.split(command)[5:9] == [
+            python,
+            "-U",
+            "deepagents-code[ollama]==1.0.0",
+            "langchain-custom",
+        ]
 
 
 class TestRunInstallSubprocessFailureModes:

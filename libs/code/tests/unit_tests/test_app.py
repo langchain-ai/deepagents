@@ -17425,6 +17425,45 @@ class TestDeferredActions:
 
             assert len(app._deferred_actions) == 0
 
+    @pytest.mark.parametrize(
+        ("owned", "spawned", "hint"),
+        [
+            (True, False, "/model"),
+            (True, True, "/restart"),
+            (False, False, "remote server"),
+        ],
+    )
+    async def test_startup_timeout_offers_recovery(
+        self, owned: bool, spawned: bool, hint: str
+    ) -> None:
+        from deepagents_code.client.launch.server import ServerStartupTimeoutError
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._server_kwargs = {} if owned else None
+            app._server_proc = MagicMock() if spawned else None
+            app.on_deep_agents_app_server_start_failed(
+                DeepAgentsApp.ServerStartFailed(
+                    error=ServerStartupTimeoutError(
+                        "Server did not become healthy within 60s "
+                        "(last error: Server disconnected without sending a response.)"
+                    )
+                )
+            )
+            await pilot.pause()
+
+            widget = app._startup_failure_widget
+            assert widget is not None
+            text = str(widget._content)
+            assert "Server startup timed out" in text
+            assert "Debug Console" in text
+            assert hint in text
+            assert ("/restart" in text) is spawned
+            assert ("remote server" in text) is not owned
+            assert "RuntimeError" not in text
+            assert "Server disconnected" not in text
+
     async def test_server_failure_truncated_headline_notes_debug_rerun(self) -> None:
         """A clipped headline appends a re-run hint when no debug log is active.
 
@@ -18499,6 +18538,54 @@ class TestStartMcpLogin:
 
 class TestBuildModelSwitchErrorBody:
     """Tests for `_build_model_switch_error_body` link-aware formatting."""
+
+    @pytest.mark.parametrize("with_diagnostics", [True, False])
+    def test_workspace_conflict_is_not_a_model_failure(
+        self, with_diagnostics: bool
+    ) -> None:
+        import httpx
+        from langgraph_sdk.errors import ConflictError
+        from textual.content import Content
+
+        from deepagents_code.app import _build_model_switch_error_body
+
+        body: dict[str, object] = {"detail": "workspace policy conflict"}
+        if with_diagnostics:
+            body["diagnostics"] = {
+                "category": "policy_drift",
+                "reason": "project policy changed",
+                "changes": [
+                    {
+                        "name": "trust_project_mcp",
+                        "state": "changed",
+                        "bound": False,
+                        "current": True,
+                    }
+                ],
+                "snapshot_status": "current",
+            }
+        response = httpx.Response(
+            409, request=httpx.Request("POST", "http://test/workspace")
+        )
+        exc = ConflictError("workspace policy conflict", response=response, body=body)
+        result = _build_model_switch_error_body(exc)
+        text = result.plain if isinstance(result, Content) else result
+        assert "Model switch blocked" in text
+        assert "The model was not changed" in text
+        assert "Failed to switch model" not in text
+        if with_diagnostics:
+            assert "trust_project_mcp" in text
+            assert "/clear" in text
+            assert "existing conversation is preserved" in text
+        else:
+            assert "/clear" not in text
+
+    def test_non_workspace_failure_keeps_original_detail(self) -> None:
+        from deepagents_code.app import _build_model_switch_error_body
+
+        assert "Failed to switch model" in str(
+            _build_model_switch_error_body(ValueError("bad model"))
+        )
 
 
 class TestServerStartupError:
@@ -25872,7 +25959,7 @@ class TestFormatMcpServerChanges:
 
         assert (
             _format_mcp_server_changes(servers, servers)
-            == "MCP server changes: no changes detected."
+            == "MCP server changes: no metadata changes detected."
         )
 
     def test_reports_unavailable_metadata_when_refresh_failed(self) -> None:
@@ -26057,7 +26144,7 @@ class TestFormatMcpServerChanges:
         ]
 
         assert _format_mcp_server_changes(servers, servers) == (
-            "MCP server changes: no changes detected "
+            "MCP server changes: no metadata changes detected "
             "(still needs attention: notion; use /mcp)."
         )
 
@@ -26075,7 +26162,7 @@ class TestFormatMcpServerChanges:
         ]
 
         assert _format_mcp_server_changes(servers, servers) == (
-            "MCP server changes: no changes detected "
+            "MCP server changes: no metadata changes detected "
             "(still needs attention: notion; use /mcp)."
         )
 
@@ -26093,7 +26180,7 @@ class TestFormatMcpServerChanges:
         ]
 
         assert _format_mcp_server_changes(servers, servers) == (
-            "MCP server changes: no changes detected "
+            "MCP server changes: no metadata changes detected "
             "(still needs attention: <config:mcp.json>; use /mcp)."
         )
 

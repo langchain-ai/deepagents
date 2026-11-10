@@ -12,6 +12,7 @@ import pytest
 from langchain.agents import create_agent
 from langchain.agents.middleware import ToolErrorMiddleware
 from langchain.agents.middleware.types import ModelRequest, ModelResponse
+from langchain_core.exceptions import ModelRefusalError
 from langchain_core.language_models import BaseChatModel
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage
@@ -606,3 +607,52 @@ def test_guard_raises_when_glm_recovery_still_stalls() -> None:
 
     with pytest.raises(ModelOutputTruncatedError, match=r"\(length\)"):
         _glm_stack([stalled, stalled])
+
+
+_ANTHROPIC_REFUSAL = {"model_provider": "anthropic", "stop_reason": "refusal"}
+
+
+async def _guard_refusal(
+    error: ModelRefusalError, *, asynchronous: bool
+) -> ModelResponse[Any]:
+    middleware = EmptyTruncatedReplyMiddleware()
+    if asynchronous:
+        return await middleware.awrap_model_call(
+            _request(), AsyncMock(side_effect=error)
+        )
+    return middleware.wrap_model_call(_request(), MagicMock(side_effect=error))
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_raised_refusal_with_empty_reply_is_reported_as_cut_off(
+    *, asynchronous: bool
+) -> None:
+    refused = AIMessage(content=[], response_metadata=_ANTHROPIC_REFUSAL)
+    error = ModelRefusalError(raw_message=refused)
+
+    with pytest.raises(ModelOutputTruncatedError) as caught:
+        await _guard_refusal(error, asynchronous=asynchronous)
+
+    assert caught.value.truncation.reason == "content_filter"
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_raised_refusal_with_partial_reply_passes_through(
+    *, asynchronous: bool
+) -> None:
+    refused = AIMessage(
+        content="Partial findings", response_metadata=_ANTHROPIC_REFUSAL
+    )
+    error = ModelRefusalError(raw_message=refused)
+
+    response = await _guard_refusal(error, asynchronous=asynchronous)
+
+    assert response.result == [refused]
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_raised_refusal_without_message_propagates(*, asynchronous: bool) -> None:
+    error = ModelRefusalError()
+
+    with pytest.raises(ModelRefusalError):
+        await _guard_refusal(error, asynchronous=asynchronous)

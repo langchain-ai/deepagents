@@ -5,7 +5,7 @@ import io
 import os
 import sys
 from collections.abc import Callable
-from contextlib import AbstractContextManager
+from contextlib import AbstractContextManager, suppress
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -1116,6 +1116,62 @@ class TestApplyStdinPipe:
         ):
             apply_stdin_pipe(args)
         assert exc_info.value.code == 1
+
+
+class TestPipedStdinOutsideSessions:
+    """Commands that start no agent session leave piped stdin to themselves."""
+
+    @pytest.mark.parametrize(
+        ("argv", "entry_point", "piped"),
+        [
+            (
+                ["threads", "delete", "thread-1"],
+                "deepagents_code.sessions.delete_thread_command",
+                "thread-2\nthread-3\n",
+            ),
+            (
+                ["skills", "delete", "notes"],
+                "deepagents_code.skills.execute_skills_command",
+                "y\n",
+            ),
+            (
+                ["--install", "daytona"],
+                "deepagents_code.client.commands.extras.run_install_request",
+                "y\n",
+            ),
+        ],
+        ids=["threads-delete", "skills-delete", "install-flag"],
+    )
+    def test_command_reads_the_pipe(
+        self, argv: list[str], entry_point: str, piped: str
+    ) -> None:
+        """Regression test for #7587: piped stdin reaches the command unread.
+
+        In a `while read` loop the rest of the pipe is input for the next
+        iterations, and a command's own y/N prompt reads the piped answer.
+        """
+        from deepagents_code.main import cli_main
+
+        received: list[str] = []
+
+        def run_command(*_args: object, **_kwargs: object) -> int:
+            received.append(sys.stdin.read())
+            return 0
+
+        with (
+            patch.object(sys, "argv", ["deepagents", *argv]),
+            patch.object(sys, "stdin", io.StringIO(piped)),
+            patch("deepagents_code.main.check_cli_dependencies"),
+            # Keeps a regression from pointing this process's fd 0 at the
+            # terminal after it drains the pipe.
+            patch("deepagents_code.main.os.open", side_effect=OSError("no tty")),
+            patch(entry_point, side_effect=run_command),
+            # `--install` exits through `sys.exit`; subcommands return.
+            suppress(SystemExit),
+        ):
+            cli_main()
+
+        assert received == [piped]
 
 
 class TestAgentResolutionScope:

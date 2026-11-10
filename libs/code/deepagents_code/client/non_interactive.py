@@ -48,6 +48,8 @@ from deepagents_code._session_stats import (
     UsageLedgerKey,
     classify_usage_kind,
     finalize_recorded_requests,
+    is_model_usage_event,
+    is_summarization_started_event,
     print_usage_table,
     record_message_usage,
     record_model_usage_event,
@@ -1669,7 +1671,16 @@ def _process_stream_chunk(
     if stream_mode == "updates" and isinstance(data, dict) and "__interrupt__" in data:
         _process_interrupts(cast("dict[str, list[Interrupt]]", data), state, console)
     elif stream_mode == "custom" and isinstance(data, dict):
-        if data.get("type") == "model_retry":
+        if is_model_usage_event(data):
+            record_model_usage_event(
+                state.stats,
+                data,
+                active_thread_id=state.thread_id,
+                fallback_model=runtime_state.model_name or "",
+                fallback_provider=runtime_state.model_provider or "",
+                recorded_requests=state.recorded_usage_requests,
+            )
+        elif data.get("type") == "model_retry":
             correlation = model_retry_from_event(data)
             if correlation is not None:
                 _process_retry_lifecycle(
@@ -1965,7 +1976,9 @@ async def _stream_agent(
         ):
             summarization = _summarization_stream_status(chunk)
             compaction_id = _compaction_result_id(chunk)
-            if summarization is False and state.summarization_observed:
+            if summarization:
+                state.summarization_observed = True
+            elif summarization is False and state.summarization_observed:
                 if compaction_id is not None:
                     state.completed_compaction_ids.add(compaction_id)
                 await _after_headless_compact(state)
@@ -1996,6 +2009,8 @@ def _summarization_stream_status(chunk: object) -> bool | None:
     namespace, stream_mode, data = chunk
     if namespace:
         return None
+    if stream_mode == "custom":
+        return True if is_summarization_started_event(data) else None
     if (
         stream_mode != "messages"
         or not isinstance(data, tuple)

@@ -18,11 +18,12 @@ from langchain.agents.middleware.types import (
     TracePolicy,
     omit_payload,
 )
-from langchain.agents.structured_output import ResponseFormat
+from langchain.agents.structured_output import ResponseFormat, StructuredOutputValidationError
 from langchain.tools import BaseTool, ToolRuntime
 from langchain_core._api.beta_decorator import warn_beta
+from langchain_core.exceptions import ModelRefusalError
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, AnyMessage, BaseMessage, HumanMessage, RefusalContentBlock, ToolMessage
 from langchain_core.runnables import Runnable, RunnableConfig
 from langchain_core.tools import StructuredTool
 from langgraph.types import Command
@@ -76,9 +77,44 @@ Lets `task`/`atask` refuse recursive delegation at call time instead of
 omitting the tool -- see `_ForkTaskToolMiddleware` for why.
 """
 
+_FORK_INSTRUCTIONS_KEY = "_deepagents_fork_instructions"
+"""Private spec key holding a declarative fork's own `system_prompt`.
+
+`create_deep_agent` gives a fork the parent's system prompt unchanged and moves
+the fork's own instructions here, so they are delivered with the task after the
+inherited history. Changing the system message would put the difference ahead
+of the history and stop the fork from reusing the parent's cached prompt prefix.
+"""
+
 _FORK_RECURSION_REFUSAL = (
     "You are a subagent and cannot delegate to another subagent. Complete this task yourself instead of calling this tool again."
 )
+
+
+def _refusal_notice(refusal: RefusalContentBlock) -> str:
+    """Return the task result reported when a model in the subagent refused."""
+    notice = "The subagent stopped because a model refused the request."
+    if category := refusal.get("extras", {}).get("category"):
+        notice += f" Category: {category}."
+    if text := refusal.get("refusal"):
+        notice += f' Explanation: "{text}"'
+    return notice + " Retrying the same request is unlikely to succeed; rephrase it or continue without it."
+
+
+def _refusal_in(message: object) -> RefusalContentBlock | None:
+    """Return the refusal block in `message`, if it is a message that refused."""
+    if not isinstance(message, BaseMessage):
+        return None
+    return next((block for block in message.content_blocks if block["type"] == "refusal"), None)
+
+
+def _refusal_notice_for(error: Exception) -> str | None:
+    """Return the task result for an error caused by a refusal, or `None` to re-raise it."""
+    if isinstance(error, ModelRefusalError):
+        return _refusal_notice(_refusal_in(error.raw_message) or {"type": "refusal", "refusal": str(error)})
+    if isinstance(error, StructuredOutputValidationError) and (refusal := _refusal_in(error.ai_message)):
+        return _refusal_notice(refusal)
+    return None
 
 
 class SubAgent(TypedDict):
@@ -131,9 +167,10 @@ class SubAgent(TypedDict):
     Avoid middleware that rewrites the inherited system-prompt prefix in the
     fork's model request or changes tool definitions unless you accept reduced
     shared prompt-cache reuse and potentially higher model costs. This is
-    distinct from `SubAgent.system_prompt`, which appends instructions to the
-    inherited prompt. A `wrap_model_call` hook receives that prompt through
-    `request.system_message`. For example, this prepends text before the inherited
+    distinct from `SubAgent.system_prompt`, which a fork delivers with its task
+    message rather than in the system prompt. A `wrap_model_call` hook receives
+    the inherited prompt through `request.system_message`. For example, this
+    prepends text before the inherited
     prefix in the fork's request, preventing reuse of that prefix:
 
     ```python
@@ -212,8 +249,9 @@ class SubAgent(TypedDict):
     system_prompt: NotRequired[str]
     """Instructions for the subagent. Uses an empty prompt when omitted.
 
-    Under `mode="fork"` this is appended to the inherited prompt rather than
-    replacing it.
+    Under `mode="fork"` the fork keeps the parent's system prompt unchanged so it
+    can reuse the parent's cached prompt prefix; these instructions are delivered
+    with the task message after the inherited conversation instead.
     """
 
     mode: NotRequired[Literal["isolated", "fork"]]
@@ -383,17 +421,21 @@ def _fork_messages(
     description: str,
     *,
     preamble: str = _FORK_TASK_PREAMBLE,
+    instructions: str | None = None,
 ) -> list[AnyMessage]:
     """Build a fork's history: the parent's effective conversation, then the task.
 
     Applies summarization event so that a compiled subagent sees the
     compacted conversation instead of replaying what the parent already evicted.
+    The fork's own `instructions`, if any, go in the task message so everything
+    before it stays identical to the parent's request.
     """
     history = list(messages)
     if history and isinstance(history[-1], AIMessage) and history[-1].tool_calls:
         history.pop()
     effective = _DeepAgentsSummarizationMiddleware._apply_event_to_messages(history, event)
-    return [*effective, HumanMessage(content=preamble + description)]
+    task = f"{preamble}{instructions}\n\n{description}" if instructions else preamble + description
+    return [*effective, HumanMessage(content=task)]
 
 
 DEFAULT_SUBAGENT_PROMPT = """In order to complete the objective that the user asks of you, you have access to a number of standard tools.
@@ -766,6 +808,8 @@ def _build_task_tool(  # noqa: C901, PLR0915
                 content = json.dumps(dataclasses.asdict(structured))
             else:
                 content = json.dumps(structured)
+        elif refusal := _refusal_in(result["messages"][-1] if result["messages"] else None):
+            content = _refusal_notice(refusal)
         else:
             # Walk back to the last AIMessage with non-empty text. Anthropic
             # occasionally emits a trailing empty `end_turn` AIMessage after a
@@ -828,6 +872,7 @@ def _build_task_tool(  # noqa: C901, PLR0915
                     runtime.state.get("messages", []),
                     runtime.state.get(SUMMARIZATION_EVENT_KEY),
                     description,
+                    instructions=cast("dict[str, Any]", subagent).get(_FORK_INSTRUCTIONS_KEY),
                 ),
             }
         else:
@@ -859,10 +904,20 @@ def _build_task_tool(  # noqa: C901, PLR0915
         # the subagent's bound config still wins collisions (e.g. `lc_agent_name`,
         # `recursion_limit`) and parent metadata propagates (deepagents#3634).
         # Forwarding those keys explicitly would double-count under the merge
-        # (e.g. duplicate `tags`), so we only stamp the subagent tracing tag.
-        subagent_config: RunnableConfig = {"configurable": {"ls_agent_type": "subagent"}}
-        with _subagent_tracing_context():
-            result = subagent.invoke(subagent_state, subagent_config)
+        # (e.g. duplicate `tags`), so we only stamp the subagent tracing tag and
+        # the `task` call's id. Checkpointers copy config metadata into each
+        # checkpoint, so the subagent's stored namespace names the call that ran it.
+        subagent_config: RunnableConfig = {
+            "configurable": {"ls_agent_type": "subagent"},
+            "metadata": {"lc_subagent_tool_call_id": runtime.tool_call_id},
+        }
+        try:
+            with _subagent_tracing_context():
+                result = subagent.invoke(subagent_state, subagent_config)
+        except (ModelRefusalError, StructuredOutputValidationError) as error:
+            if (notice := _refusal_notice_for(error)) is None:
+                raise
+            return notice
         return _return_command_with_state_update(result, runtime.tool_call_id, subagent_state)
 
     async def atask(
@@ -889,10 +944,20 @@ def _build_task_tool(  # noqa: C901, PLR0915
         # the subagent's bound config still wins collisions (e.g. `lc_agent_name`,
         # `recursion_limit`) and parent metadata propagates (deepagents#3634).
         # Forwarding those keys explicitly would double-count under the merge
-        # (e.g. duplicate `tags`), so we only stamp the subagent tracing tag.
-        subagent_config: RunnableConfig = {"configurable": {"ls_agent_type": "subagent"}}
-        with _subagent_tracing_context():
-            result = await subagent.ainvoke(subagent_state, subagent_config)
+        # (e.g. duplicate `tags`), so we only stamp the subagent tracing tag and
+        # the `task` call's id. Checkpointers copy config metadata into each
+        # checkpoint, so the subagent's stored namespace names the call that ran it.
+        subagent_config: RunnableConfig = {
+            "configurable": {"ls_agent_type": "subagent"},
+            "metadata": {"lc_subagent_tool_call_id": runtime.tool_call_id},
+        }
+        try:
+            with _subagent_tracing_context():
+                result = await subagent.ainvoke(subagent_state, subagent_config)
+        except (ModelRefusalError, StructuredOutputValidationError) as error:
+            if (notice := _refusal_notice_for(error)) is None:
+                raise
+            return notice
         return _return_command_with_state_update(result, runtime.tool_call_id, subagent_state)
 
     compiled_subagents = [_compile_spec(spec) for spec in subagents]

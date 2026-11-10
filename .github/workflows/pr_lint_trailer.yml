@@ -37,9 +37,6 @@ jobs:
               return;
             }
             const { title, body, number } = context.payload.pull_request;
-            // The PR's total commit count, used to detect when GitHub's commit
-            // list API returned fewer commits than the PR actually has.
-            const prCommitCount = context.payload.pull_request.commits;
             // Normalize line endings — GitHub returns whatever the editor used,
             // and CRLF leaves stray \r chars in offending-line displays.
             const fullBody = (body || '').replace(/\r\n/g, '\n');
@@ -117,13 +114,8 @@ jobs:
               }
             }
 
-            // Collect up to MAX_COMMITS_TO_SCAN commit objects for scanning.
-            // `truncated` reports whether commits went unscanned, detected two
-            // ways: we hit our own scan ceiling, or the PR's declared commit
-            // count (`prCommitCount`) exceeds what the list API handed back
-            // (GitHub caps that endpoint at 250). We compare counts rather than
-            // trust "no next page", which cannot distinguish exactly-250 from
-            // a silently-capped larger PR.
+            // Collect up to MAX_COMMITS_TO_SCAN commit objects. `capped` is
+            // true only when we hit our own scan ceiling.
             async function listPrCommits() {
               const commits = [];
               for await (const response of github.paginate.iterator(github.rest.pulls.listCommits, {
@@ -133,15 +125,53 @@ jobs:
               })) {
                 for (const commit of response.data) {
                   if (commits.length >= MAX_COMMITS_TO_SCAN) {
-                    return { commits, truncated: true };
+                    return { commits, capped: true };
                   }
                   commits.push(commit);
                 }
               }
-              return {
-                commits,
-                truncated: typeof prCommitCount === 'number' && prCommitCount > commits.length,
-              };
+              return { commits, capped: false };
+            }
+
+            // Lists the PR's commits and checks the list against the PR's
+            // declared commit count. We compare counts rather than trust
+            // "no next page", which cannot distinguish exactly-250 from a
+            // silently-capped larger PR.
+            //
+            // A short list has two very different causes:
+            //   - `capped`: the PR has more commits than GitHub's list API
+            //     returns. Retrying cannot help.
+            //   - `changed`: the branch was force-pushed between the event
+            //     firing and the list call (common on bot-managed branches like
+            //     release-please, which force-push and then add a lockfile
+            //     commit seconds later), so the payload's count is stale or
+            //     the list API is lagging. Re-read the PR's current count and
+            //     retry before giving up.
+            // Either way an incomplete scan fails closed, but with an accurate
+            // reason instead of reporting a 2-commit PR as "more than 250".
+            const MAX_SCAN_ATTEMPTS = 3;
+            async function scanPrCommits() {
+              let expected = context.payload.pull_request.commits;
+              let commits = [];
+              for (let attempt = 1; attempt <= MAX_SCAN_ATTEMPTS; attempt++) {
+                let capped;
+                ({ commits, capped } = await listPrCommits());
+                if (capped || expected > MAX_COMMITS_TO_SCAN) {
+                  return { commits, incomplete: 'capped', expected };
+                }
+                if (typeof expected !== 'number' || commits.length >= expected) {
+                  return { commits, incomplete: null, expected };
+                }
+                core.info(`Commit list returned ${commits.length} of ${expected} expected commits (attempt ${attempt}/${MAX_SCAN_ATTEMPTS}); branch likely changed mid-run.`);
+                if (attempt === MAX_SCAN_ATTEMPTS) break;
+                await new Promise(resolve => setTimeout(resolve, 5000 * attempt));
+                const { data: pr } = await github.rest.pulls.get({
+                  ...context.repo,
+                  pull_number: number,
+                });
+                expected = pr.commits;
+              }
+              return { commits, incomplete: 'changed', expected };
             }
 
             function findOffendingLines(source, text) {
@@ -157,21 +187,22 @@ jobs:
 
             const offendingLines = findOffendingLines('squash merge message', squashMessage);
 
-            // Fail closed if we cannot enumerate every commit. `listPrCommits`
-            // may throw (rate limit, transient API error) or report truncation
-            // (the PR has more commits than GitHub's list API returns). Either
-            // way we cannot certify the PR clean, so route into the failure
-            // branch below — carrying the real error message so the report is
-            // not misattributed to PR size.
+            // Fail closed if we cannot enumerate every commit. `scanPrCommits`
+            // may throw (rate limit, transient API error) or report an
+            // incomplete scan (`capped` or `changed`). Either way we cannot
+            // certify the PR clean, so route into the failure branch below,
+            // carrying the real cause so the report is not misattributed.
             let commits = [];
-            let truncated = false;
+            let incomplete = null;
+            let expectedCount = context.payload.pull_request.commits;
             let listError = null;
             try {
-              ({ commits, truncated } = await listPrCommits());
+              ({ commits, incomplete, expected: expectedCount } = await scanPrCommits());
             } catch (listErr) {
               listError = listErr.message;
-              truncated = true;
+              incomplete = 'error';
             }
+            const truncated = incomplete !== null;
             for (const commit of commits) {
               const sha = (commit.sha || '').slice(0, 12);
               const message = (commit.commit?.message || '').replace(/\r\n/g, '\n');
@@ -183,7 +214,9 @@ jobs:
             // `main` ruleset will reject. Dropping it reopens that hole silently.
             if (offendingLines.length === 0 && !truncated) {
               core.info('No banned trailer in squash-merge message or PR commit messages.');
-              // Mark any prior failure comment as resolved. We update rather
+              // Mark any prior failure comment as resolved. The wording is
+              // neutral because the prior warning may have been an incomplete
+              // scan rather than an actual trailer. We update rather
               // than delete because `deleteComment` 403s under restricted
               // fork-PR tokens, whereas `updateComment` on a bot-authored
               // comment works in both modes. Wrapped in try/catch because a
@@ -194,7 +227,7 @@ jobs:
                 if (existing) {
                   const resolvedBody = [
                     STICKY_MARKER,
-                    '✅ **Trailer fixed.** The previous warning is resolved.',
+                    '✅ **Re-checked: no banned trailer found.** The previous warning no longer applies.',
                   ].join('\n');
                   if (existing.body !== resolvedBody) {
                     await github.rest.issues.updateComment({
@@ -236,15 +269,19 @@ jobs:
               failureReason = `PR contains banned trailer matching ${BANNED_REGEX}`;
             } else {
               titleLine = '⚠️ **Banned trailer check could not inspect every PR commit.**';
-              intro = listError
-                ? `The GitHub API call to list this PR's commits failed, so the workflow could not scan every commit message for the banned Claude Code co-author trailer: ${listError}`
-                : `This PR has more than ${MAX_COMMITS_TO_SCAN} commits, so the workflow stopped before it could inspect every commit message for the banned Claude Code co-author trailer.`;
-              foundBlock = listError
-                ? 'The commit list could not be retrieved; no commit messages were scanned.'
-                : `No matching trailer found in the first ${MAX_COMMITS_TO_SCAN} commits, but the PR has more commits than this workflow scans.`;
-              failureReason = listError
-                ? `Could not list PR commits to scan for banned trailer: ${listError}`
-                : `Could not inspect every PR commit for banned trailer (scanned first ${MAX_COMMITS_TO_SCAN} of ${prCommitCount})`;
+              if (incomplete === 'error') {
+                intro = `The GitHub API call to list this PR's commits failed, so the workflow could not scan every commit message for the banned Claude Code co-author trailer: ${listError}`;
+                foundBlock = 'The commit list could not be retrieved; no commit messages were scanned.';
+                failureReason = `Could not list PR commits to scan for banned trailer: ${listError}`;
+              } else if (incomplete === 'changed') {
+                intro = `The PR branch changed while the workflow was scanning it: GitHub reported ${expectedCount} commits but the commit list returned ${commits.length}, even after ${MAX_SCAN_ATTEMPTS} attempts. The workflow could not confirm that every commit message is free of the banned Claude Code co-author trailer.`;
+                foundBlock = `No matching trailer found in the ${commits.length} commits that were listed, but the PR reports ${expectedCount}.`;
+                failureReason = `Could not inspect every PR commit for banned trailer (listed ${commits.length} of ${expectedCount}; branch changed during scan)`;
+              } else {
+                intro = `This PR has more than ${MAX_COMMITS_TO_SCAN} commits, so the workflow stopped before it could inspect every commit message for the banned Claude Code co-author trailer.`;
+                foundBlock = `No matching trailer found in the first ${commits.length} commits, but the PR has more commits than this workflow scans.`;
+                failureReason = `Could not inspect every PR commit for banned trailer (scanned first ${commits.length} of ${expectedCount})`;
+              }
             }
 
             const fixLines = [];
@@ -254,7 +291,10 @@ jobs:
             if (hasCommitMessageOffense) {
               fixLines.push('If the trailer appears in an individual commit, rewrite that commit message to remove the offending line.');
             }
-            if (truncated && !listError) {
+            if (incomplete === 'changed') {
+              fixLines.push('This is usually a race with a push that landed while the check ran; a later push re-runs the check automatically, or re-run it manually. If it persists, a maintainer should verify the commit messages manually before merging.');
+            }
+            if (incomplete === 'capped') {
               fixLines.push(`This workflow scanned only the first ${MAX_COMMITS_TO_SCAN} commits because GitHub's pull request commit API returns at most that many. Ask a maintainer to inspect the remaining commits before merging.`);
             }
             if (listError) {

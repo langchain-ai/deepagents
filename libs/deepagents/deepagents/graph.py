@@ -10,7 +10,7 @@ from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, Annotated, Any, Required, cast
 
 from langchain.agents import AgentState, create_agent
-from langchain.agents.middleware import HumanInTheLoopMiddleware, InterruptOnConfig
+from langchain.agents.middleware import HumanInTheLoopMiddleware, InterruptOnConfig, ModelRefusalMiddleware
 from langchain.agents.middleware.types import (
     AgentMiddleware,
     InputAgentState,
@@ -46,13 +46,13 @@ from deepagents.middleware._parent_notifier import _ParentNotifierMiddleware
 from deepagents.middleware._prompt_caching import append_prompt_caching_middleware
 from deepagents.middleware._state import private_state_field_names
 from deepagents.middleware._tool_exclusion import _ToolExclusionMiddleware
-from deepagents.middleware._utils import append_to_system_message
 from deepagents.middleware.async_subagents import AsyncSubAgent, AsyncSubAgentMiddleware
 from deepagents.middleware.filesystem import FilesystemMiddleware, FilesystemPermission
 from deepagents.middleware.memory import MemoryMiddleware
 from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
 from deepagents.middleware.skills import SkillsMiddleware
 from deepagents.middleware.subagents import (
+    _FORK_INSTRUCTIONS_KEY,
     GENERAL_PURPOSE_SUBAGENT,
     CompiledSubAgent,
     SubAgent,
@@ -413,6 +413,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             - [`MemoryMiddleware`][deepagents.middleware.memory.MemoryMiddleware] (if `memory` is provided)
             - [`HumanInTheLoopMiddleware`][langchain.agents.middleware.HumanInTheLoopMiddleware] (if `interrupt_on` is provided)
             - [`UnsupportedContentMiddleware`][deepagents.middleware.unsupported_content.UnsupportedContentMiddleware]
+            - [`ModelRefusalMiddleware`][langchain.agents.middleware.ModelRefusalMiddleware]
             - `_ToolExclusionMiddleware` (if profile has `excluded_tools`)
 
             `SkillsMiddleware` sits after user and profile middleware so that
@@ -754,6 +755,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             append_prompt_caching_middleware(subagent_middleware)
             if is_forked and memory is not None:
                 subagent_middleware.append(MemoryMiddleware(backend=backend, sources=memory, add_cache_control=True))
+            subagent_middleware.append(ModelRefusalMiddleware())
 
             _subagent_matched_classes: set[type[AgentMiddleware[Any, Any, Any]]] = set()
             _subagent_matched_names: set[str] = set()
@@ -815,14 +817,11 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
                 "middleware": subagent_middleware,
             }
             if is_forked:
-                # The parent's prompt is the fork's base; the fork's own is an addendum.
-                fork_addendum = spec.get("system_prompt")
-                if not fork_addendum:
-                    processed["system_prompt"] = final_system_prompt
-                elif isinstance(final_system_prompt, SystemMessage):
-                    processed["system_prompt"] = append_to_system_message(final_system_prompt, fork_addendum)
-                else:
-                    processed["system_prompt"] = f"{final_system_prompt}\n\n{fork_addendum}" if final_system_prompt else fork_addendum
+                # Keep the parent's system prompt byte-identical so the fork reuses
+                # the parent's cached prefix; its own prompt rides with the task.
+                processed["system_prompt"] = final_system_prompt
+                if fork_instructions := spec.get("system_prompt"):
+                    processed[_FORK_INSTRUCTIONS_KEY] = fork_instructions
             else:
                 processed["system_prompt"] = _apply_profile_prompt(_subagent_profile, spec.get("system_prompt", ""))
             if subagent_interrupt_on is not None:
@@ -855,6 +854,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             gp_middleware.append(SkillsMiddleware(backend=backend, sources=skills))
 
         append_prompt_caching_middleware(gp_middleware)
+        gp_middleware.append(ModelRefusalMiddleware())
         _gp_original_name_to_index = {m.name: i for i, m in enumerate(gp_middleware)}
         gp_middleware = _apply_excluded_middleware(
             gp_middleware,
@@ -969,6 +969,8 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     if main_interrupt_on is not None:
         deepagent_middleware.append(HumanInTheLoopMiddleware(interrupt_on=main_interrupt_on))
     deepagent_middleware.append(UnsupportedContentMiddleware())
+    # In the tail, so a caller's `ModelFallbackMiddleware` catches refusals first.
+    deepagent_middleware.append(ModelRefusalMiddleware())
     deepagent_middleware = _apply_excluded_middleware(
         deepagent_middleware,
         _profile,

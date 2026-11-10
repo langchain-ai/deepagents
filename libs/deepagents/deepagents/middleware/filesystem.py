@@ -33,7 +33,7 @@ from langchain.agents.middleware.types import (
 from langchain.tools import ToolRuntime
 from langchain.tools.tool_node import ToolCallRequest
 from langchain_core.exceptions import ModelInvalidRequestError
-from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, RemoveMessage, ToolMessage
+from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, RemoveMessage, ToolMessage, add_notification_metadata
 from langchain_core.messages.content import ContentBlock
 from langchain_core.tools import BaseTool, StructuredTool
 from langgraph.channels.delta import DeltaChannel
@@ -185,6 +185,9 @@ _FILE_MUTATION_TOOLS: Final = frozenset({"write_file", "edit_file", "delete"})
 _READ_FILE_MEDIA_RESULT: Final = "read_file_media_result"
 """`additional_kwargs` key marking synthetic `HumanMessage` media from `read_file`."""
 
+_READ_FILE_MEDIA_SOURCE: Final = "read_file_media"
+"""`lc_source` of the synthetic `HumanMessage` carrying `read_file` media."""
+
 _VIDEO_SAMPLING_RATE: Final = 0.5
 """Seconds between sampled frames when extracting stills from a video."""
 
@@ -330,13 +333,17 @@ def _handle_video_read(
         additional_kwargs={"read_file_path": validated_path, "read_file_frame_count": frame_count},
         status="success",
     )
-    media_message = HumanMessage(
-        content_blocks=blocks,
-        additional_kwargs={
-            _READ_FILE_MEDIA_RESULT: True,
-            "read_file_path": validated_path,
-            "read_file_tool_call_id": tool_call_id,
-        },
+    media_message = add_notification_metadata(
+        HumanMessage(
+            content_blocks=blocks,
+            additional_kwargs={
+                _READ_FILE_MEDIA_RESULT: True,
+                "read_file_path": validated_path,
+                "read_file_tool_call_id": tool_call_id,
+            },
+        ),
+        source=_READ_FILE_MEDIA_SOURCE,
+        data={"path": validated_path, "tool_call_id": tool_call_id},
     )
     return Command(
         update={
@@ -504,6 +511,8 @@ def _is_denied(
     try:
         real = _resolve_real_path(backend, path)
     except (ValueError, OSError, RuntimeError):
+        return True
+    if path.endswith("/") and _check_fs_permission(rules, operation, real.rstrip("/") + "/") == "deny":
         return True
     return _check_fs_permission(rules, operation, real) == "deny"
 
@@ -816,6 +825,40 @@ async def _agrep_backend(
     return _apply_grep_max_count(result, max_count)
 
 
+GREP_LINE_CHAR_LIMIT = 2000
+"""Characters of a grep line shown to the model.
+
+Longer lines (minified JSON, offloaded tool results) show a window around the
+match instead, so one hit can't return the whole line.
+"""
+
+
+def _clip_grep_line(text: str, pattern: str) -> str:
+    """Clip `text` to a `GREP_LINE_CHAR_LIMIT` window centered on `pattern`.
+
+    Falls back to the head of the line when `pattern` isn't found in it, as for
+    context lines.
+    """
+    if len(text) <= GREP_LINE_CHAR_LIMIT:
+        return text
+    center = max(text.find(pattern), 0) + len(pattern) // 2
+    start = min(max(center - GREP_LINE_CHAR_LIMIT // 2, 0), len(text) - GREP_LINE_CHAR_LIMIT)
+    end = start + GREP_LINE_CHAR_LIMIT
+    before = f"[{start} chars clipped] " if start else ""
+    after = f" [{len(text) - end} chars clipped]" if end < len(text) else ""
+    return f"{before}{text[start:end]}{after}"
+
+
+def _clip_grep_match(match: GrepMatch, pattern: str) -> GrepMatch:
+    """Return `match` with its line and context lines clipped by `_clip_grep_line`."""
+    clipped: GrepMatch = {**match, "text": _clip_grep_line(match["text"], pattern)}
+    if "context_before" in match:
+        clipped["context_before"] = [{**c, "text": _clip_grep_line(c["text"], pattern)} for c in match["context_before"]]
+    if "context_after" in match:
+        clipped["context_after"] = [{**c, "text": _clip_grep_line(c["text"], pattern)} for c in match["context_after"]]
+    return clipped
+
+
 def _format_grep_tool_result(
     result: GrepResult,
     output_mode: Literal["files_with_matches", "content", "count"],
@@ -835,7 +878,7 @@ def _format_grep_tool_result(
     not when matches existed but were all redacted by read permissions (a
     redaction miss has nothing to do with regex syntax).
     """
-    matches = result.matches or []
+    matches = [_clip_grep_match(match, pattern) for match in result.matches or []]
     if result.error and not matches:
         return result.error, "error"
 

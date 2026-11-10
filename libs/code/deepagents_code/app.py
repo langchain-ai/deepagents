@@ -124,6 +124,7 @@ from deepagents_code.goal_state_limits import (
 )
 from deepagents_code.goal_state_notice import (
     GOAL_CONTROL_MESSAGE_SOURCE,
+    anchor_summarization_event as _anchor_summarization_event,
     build_goal_continuation,
     build_goal_state_notice,
     goal_notice_size_error,
@@ -760,6 +761,7 @@ def _effective_conversation(messages: list[Any], event: Any) -> list[Any]:  # no
     if not isinstance(event, dict):
         _log_malformed_summarization_event(event, len(messages))
         return list(messages)
+    event = _anchor_summarization_event(event, messages)
     summary = event.get("summary_message")
     cutoff = _validated_summarization_cutoff(
         event,
@@ -1080,10 +1082,10 @@ def _format_mcp_server_changes(
     ):
         if stuck:
             return (
-                "MCP server changes: no changes detected "
+                "MCP server changes: no metadata changes detected "
                 f"(still needs attention: {', '.join(stuck)}; use /mcp)."
             )
-        return "MCP server changes: no changes detected."
+        return "MCP server changes: no metadata changes detected."
 
     lines = ["MCP server changes:"]
     if loaded:
@@ -2642,8 +2644,32 @@ def _build_model_switch_error_body(exc: BaseException) -> str | Content:
             ") or see the provider reference: ",
             (exc.docs_url, TStyle(underline=True, link=exc.docs_url)),
         )
-    from deepagents_code.client.remote_client import format_agent_exception
+    from langgraph_sdk.errors import ConflictError
 
+    from deepagents_code.client.remote_client import (
+        format_agent_exception,
+        workspace_conflict_diagnostics,
+    )
+
+    if isinstance(exc, ConflictError):
+        diagnostics = workspace_conflict_diagnostics(exc)
+        if diagnostics is not None and diagnostics.category in {
+            "policy_drift",
+            "config_drift",
+        }:
+            text = (
+                "Model switch blocked: this conversation's workspace settings "
+                "changed. The model was not changed.\n\n"
+                "Restore the original settings and relaunch to continue this "
+                "conversation, or use /clear to start a new conversation with "
+                "the current settings. The existing conversation is preserved."
+            )
+        else:
+            text = (
+                "Model switch blocked by a workspace conflict. "
+                f"The model was not changed.\n\n{format_agent_exception(exc)}"
+            )
+        return _build_agent_error_body(text, exc)
     return f"Failed to switch model: {format_agent_exception(exc)}"
 
 
@@ -6757,6 +6783,7 @@ class DeepAgentsApp(App):
 
     def on_deep_agents_app_server_start_failed(self, event: ServerStartFailed) -> None:
         """Handle background server startup failure."""
+        from deepagents_code.client.launch.server import ServerStartupTimeoutError
         from deepagents_code.mcp_tools import MCPConfigError
         from deepagents_code.model_config import (
             MissingCredentialsError,
@@ -6830,12 +6857,23 @@ class DeepAgentsApp(App):
         # input. Banner is set to idle above to drop the connecting spinner.
         if isinstance(event.error, MissingCredentialsError):
             text = f"Model setup required: {event.error}"
+        elif isinstance(event.error, ServerStartupTimeoutError):
+            if self._server_kwargs is None:
+                recovery = "Check that the remote server is reachable, then reconnect."
+            elif self._server_proc is not None:
+                recovery = "Run `/restart` to try again."
+            else:
+                recovery = "Use `/model` to select a model and retry startup."
+            text = (
+                f"Server startup timed out. {recovery} "
+                "Press Ctrl+\\ to inspect the startup error in the Debug Console."
+            )
         else:
             text = f"Server failed to start: {self._server_startup_error}"
         if had_deferred_actions:
             text += (
-                "\n\nQueued changes were not applied. "
-                "Reissue those commands to try again."
+                "\n\nCommands you ran while the server was starting were "
+                "not applied. Run them again once it is up."
             )
         if (
             self._server_startup_missing_credentials_provider is not None
@@ -8070,22 +8108,26 @@ class DeepAgentsApp(App):
                 AppMessage("Skipped dependency refresh (debug mode)."),
             )
             return
-        success, output = await perform_dependency_refresh(
+        outcome = await perform_dependency_refresh(
             include_prereleases=include_prereleases,
         )
-        if not success:
+        if outcome.deferred:
+            # Nothing ran; the guidance names the command to run instead.
+            await self._mount_message(AppMessage(outcome.output))
+            return
+        if not outcome.success:
             # Lead with the start of the output for parity with the upgrade
             # failure path; uv prints the actionable summary (e.g. "No solution
             # found") first. The full output is persisted to the update log.
-            detail = f": {output[:200]}" if output else ""
+            detail = f": {outcome.output[:200]}" if outcome.output else ""
             await self._mount_message(
                 AppMessage(
                     f"Dependency refresh failed{detail}",
                 ),
             )
             return
-        changes = parse_dependency_changes(output)
-        if output.strip() and not changes:
+        changes = parse_dependency_changes(outcome.output)
+        if outcome.output.strip() and not changes:
             # The refresh succeeded but nothing parsed out of uv's diff. Either
             # nothing moved, or uv's output format drifted past our parser. Leave
             # a breadcrumb so the latter doesn't masquerade as "up to date"
@@ -8430,6 +8472,11 @@ class DeepAgentsApp(App):
             )
             return False
 
+        if outcome.deferred:
+            # Nothing ran; the guidance names the command to run instead.
+            await self._mount_message(AppMessage(outcome.output))
+            return False
+
         if not outcome.success:
             # Tail the last 200 chars — uv resolver prints the resolved
             # error at the end, not the beginning.
@@ -8638,7 +8685,7 @@ class DeepAgentsApp(App):
                 )
             )
             raise asyncio.CancelledError
-        if outcome.extra_was_absent:
+        if outcome.extra_was_absent or outcome.deferred:
             await self._mount_message(AppMessage(outcome.output))
             return
         if not outcome.success:
@@ -8798,7 +8845,7 @@ class DeepAgentsApp(App):
             AppMessage(f"Installing package '{package}'..."),
         )
         try:
-            success, output = await perform_install_package(package, log_path=log_path)
+            outcome = await perform_install_package(package, log_path=log_path)
         except OSError as exc:
             # Let `asyncio.CancelledError` propagate: on the message pump
             # swallowing it would suppress shutdown, and on the detached
@@ -8811,8 +8858,13 @@ class DeepAgentsApp(App):
             )
             return
 
-        if not success:
-            detail = f": {output[-200:]}" if output else ""
+        if outcome.deferred:
+            # Nothing ran; the guidance names the command to run instead.
+            await self._mount_message(AppMessage(outcome.output))
+            return
+
+        if not outcome.success:
+            detail = f": {outcome.output[-200:]}" if outcome.output else ""
             await self._mount_message(
                 ErrorMessage(
                     f"Install failed{detail}\nLog: {log_path}",
@@ -14927,7 +14979,7 @@ class DeepAgentsApp(App):
         try:
             import httpx
 
-            async with httpx.AsyncClient(timeout=2.0) as client:
+            async with httpx.AsyncClient(timeout=2.0, trust_env=False) as client:
                 response = await client.get(f"{self._server_proc.url}/extensions")
                 response.raise_for_status()
                 payload = response.json()
@@ -15244,7 +15296,9 @@ class DeepAgentsApp(App):
             latest = latest_goal_state_notice(messages)
             latest_candidate = latest_goal_state_message_index(messages)
             fingerprint = goal_state_fingerprint(desired_state)
-            event = state_values.get("_summarization_event")
+            event = _anchor_summarization_event(
+                state_values.get("_summarization_event"), messages
+            )
             validated_cutoff = _validated_summarization_cutoff(
                 event,
                 message_count=len(messages),
@@ -18843,7 +18897,7 @@ class DeepAgentsApp(App):
                     if restart_result.restarted:
                         server_fresh = True
                         self._session_plugin_ids = discovered_plugin_ids
-                        report += "\nAgent server restarted for plugin MCP."
+                        report += "\nAgent server restarted."
                         if restart_result.mcp_status == "disabled":
                             # `--no-mcp`: there is nothing to refresh, so an
                             # empty diff is the truth rather than an unknown.
@@ -18856,6 +18910,10 @@ class DeepAgentsApp(App):
                                 "no servers were loaded."
                             )
                         else:
+                            if restart_result.mcp_status == "fresh":
+                                report += (
+                                    "\nMCP configuration re-read (including .mcp.json)."
+                                )
                             report += "\n" + _format_mcp_server_changes(
                                 old_mcp_server_info,
                                 restart_result.mcp_server_info,
@@ -19021,6 +19079,7 @@ class DeepAgentsApp(App):
                 config=config,
                 context=self._offload_context(self._lc_thread_id),
                 fulfill_hook=self._hooks.fulfill_interrupt,
+                offload_trigger="idle" if automatic else "manual",
             )
             await self._sync_session_cost_from_checkpoint()
 
@@ -28033,9 +28092,7 @@ class DeepAgentsApp(App):
                         return
                     self._notice_registry.remove(entry.key)
                     if deferred:
-                        logger.info(
-                            "Deferred the Python migration for v%s", payload.latest
-                        )
+                        logger.info("Deferred the update to v%s", payload.latest)
                         screen.mark_warning("Update deferred. See details.")
                         return
                     logger.warning(
@@ -29420,7 +29477,7 @@ class DeepAgentsApp(App):
             # exception — its `args`/repr may include an `OAuthToken` from
             # the MCP SDK. `format_login_failure` unwraps `ExceptionGroup`
             # roots and degrades to a class-name chain for unknown types.
-            summary = format_login_failure(login_error)
+            summary = format_login_failure(login_error, include_login_hint=True)
             logger.warning("MCP login for %r failed: %s", server_name, summary)
             screen.finish(success=False, message=f"Login failed: {summary}")
             await asyncio.wait_for(outcome_future, timeout=5.0)

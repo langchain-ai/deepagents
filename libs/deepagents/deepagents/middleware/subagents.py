@@ -13,6 +13,7 @@ from langchain.agents.middleware.types import (
     ContextT,
     ModelRequest,
     ModelResponse,
+    OmitFromInput,
     OmitFromSchema,
     ResponseT,
     TracePolicy,
@@ -26,6 +27,8 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, AnyMessage, BaseMessage, HumanMessage, RefusalContentBlock, ToolMessage
 from langchain_core.runnables import Runnable, RunnableConfig
 from langchain_core.tools import StructuredTool
+from langgraph.config import get_config
+from langgraph.runtime import Runtime
 from langgraph.types import Command
 from langsmith.run_helpers import get_tracing_context, tracing_context
 from pydantic import BaseModel, Field, ValidationError, model_validator
@@ -452,6 +455,7 @@ _EXCLUDED_STATE_KEYS = {
     _SKILL_TOOLS_DISCLOSED_KEY,
     _FORKED_CONTEXT_KEY,
     _RUBRIC_KEY,
+    "subagent_checkpoint_ns",
 }
 """State keys that are excluded when passing state to subagents and when
 returning updates from subagents.
@@ -590,6 +594,20 @@ class _ForkTaskToolMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         self.tools = [task_tool]
 
 
+class _CheckpointNsState(TypedDict):
+    subagent_checkpoint_ns: NotRequired[Annotated[str, OmitFromInput]]
+
+
+class _CheckpointNsMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
+    """Records the namespace this subagent run is checkpointed under, for `task` to return."""
+
+    state_schema = _CheckpointNsState
+
+    def before_agent(self, state: _CheckpointNsState, runtime: Runtime[ContextT]) -> dict[str, Any]:  # noqa: ARG002
+        # Drop the trailing `|node:task_id` of the subagent's own start node.
+        return {"subagent_checkpoint_ns": get_config()["configurable"]["checkpoint_ns"].rsplit("|", 1)[0]}
+
+
 @contextlib.contextmanager
 def _subagent_tracing_context() -> Generator[None, None, None]:
     """Context manager that tags subagent runs with `ls_agent_type="subagent"`.
@@ -649,7 +667,7 @@ def create_sub_agent(
     from deepagents._models import resolve_model  # noqa: PLC0415
 
     model = resolve_model(spec["model"])
-    middleware: list[AgentMiddleware] = list(spec.get("middleware", []))
+    middleware: list[AgentMiddleware] = [*spec.get("middleware", []), _CheckpointNsMiddleware()]
 
     interrupt_on = spec.get("interrupt_on")
     if interrupt_on:
@@ -823,10 +841,12 @@ def _build_task_tool(  # noqa: C901, PLR0915
                         content = text
                         break
 
+        ns = result.get("subagent_checkpoint_ns")
+        artifact = {"checkpoint_ns": ns} if ns is not None else None
         return Command(
             update={
                 **state_update,
-                "messages": [ToolMessage(content, tool_call_id=tool_call_id)],
+                "messages": [ToolMessage(content, tool_call_id=tool_call_id, artifact=artifact)],
             }
         )
 

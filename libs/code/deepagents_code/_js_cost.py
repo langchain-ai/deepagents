@@ -1,4 +1,4 @@
-"""Accounting-only transport for JavaScript subagents."""
+"""Cost receipt transport and interrupted report recovery for JavaScript subagents."""
 
 from __future__ import annotations
 
@@ -10,10 +10,14 @@ import json
 import logging
 import math
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, override
+from typing import TYPE_CHECKING, NotRequired, TypedDict, override
 
+from langchain_core.messages import HumanMessage
 from langchain_core.tools import StructuredTool
 from langchain_quickjs import CodeInterpreterMiddleware
+from langchain_quickjs._format import (  # noqa: PLC2701  # Match the interpreter's report unwrapping.
+    coerce_tool_output_for_ptc,
+)
 from langgraph.checkpoint.base import (
     BaseCheckpointSaver,
     CheckpointMetadata,
@@ -36,7 +40,9 @@ if TYPE_CHECKING:
     from langchain.agents.middleware.types import ModelRequest
     from langchain_core.messages import ToolMessage
     from langchain_core.runnables import RunnableConfig
+    from langchain_quickjs.middleware import REPLState
     from langgraph.prebuilt.tool_node import ToolCallRequest, ToolRuntime
+    from langgraph.runtime import Runtime
 
     from deepagents_code.cost_tracking import CostBreakdown
 
@@ -44,6 +50,13 @@ logger = logging.getLogger(__name__)
 
 _ACCOUNTING_KEY = "__deepagents_js_cost_owner"
 _RESPONSE_FORMAT_KEY = "__deepagents_subagent_response_format"
+
+
+class _DispatchResult(TypedDict):
+    index: int
+    subagent_type: str
+    description: str
+    result: NotRequired[object]
 
 
 class _ReceiptMetadata(CheckpointMetadata):
@@ -56,7 +69,18 @@ def _digest(value: str) -> str:
 
 
 class CostAwareCodeInterpreterMiddleware(CodeInterpreterMiddleware):
-    """Transport cost receipts without caching JavaScript or forwarding state."""
+    """Transport cost receipts and preserve reports from interrupted JavaScript."""
+
+    @override
+    async def abefore_agent(
+        self, state: REPLState, runtime: Runtime[None]
+    ) -> dict[str, object] | None:
+        """Return interrupted reports alongside the REPL's normal preparation."""
+        update = await super().abefore_agent(state, runtime)
+        messages = await _interrupted_reports(get_config(), state)
+        if messages:
+            return {**(update or {}), "messages": messages}
+        return update
 
     @override
     def _prepare_for_call(self, request: ModelRequest) -> str:
@@ -101,7 +125,7 @@ class CostAwareCodeInterpreterMiddleware(CodeInterpreterMiddleware):
         request: ToolCallRequest,
         handler: Callable[[ToolCallRequest], Awaitable[ToolMessage | Command]],
     ) -> ToolMessage | Command:
-        """Return owned receipts after settling all dispatched children."""
+        """Return owned receipts after settling all dispatched children."""  # noqa: DOC501  # Control-flow signals are propagated unchanged.
         if request.tool not in self.tools:
             return await handler(request)
         configurable = request.runtime.config.get("configurable", {})
@@ -111,8 +135,11 @@ class CostAwareCodeInterpreterMiddleware(CodeInterpreterMiddleware):
             owner or f"{scope}|js_cost:{_digest(request.runtime.tool_call_id or '')}"
         )
         active: set[asyncio.Task] = set()
+        dispatched: dict[str, _DispatchResult] = {}
+        completed: dict[str, _DispatchResult] = {}
+        interrupted = False
         tools = [
-            _cost_task(tool, request.runtime, accounting, active)
+            _cost_task(tool, request.runtime, accounting, active, dispatched, completed)
             if isinstance(tool, StructuredTool) and tool.name == "task"
             else tool
             for tool in request.runtime.tools
@@ -120,11 +147,19 @@ class CostAwareCodeInterpreterMiddleware(CodeInterpreterMiddleware):
         runtime = dataclasses.replace(request.runtime, tools=tools)
         try:
             result = await handler(request.override(runtime=runtime))
+        except asyncio.CancelledError, GraphBubbleUp, NodeCancelledError:
+            interrupted = True
+            raise
         finally:
             for invocation in list(active):
                 if not invocation.cancelling():
                     invocation.cancel()
             await asyncio.gather(*active, return_exceptions=True)
+            if interrupted and dispatched:
+                await _save_interrupted_reports(runtime, dispatched, completed)
+        await _save_interrupted_reports(
+            runtime, dispatched, completed, interrupted=False
+        )
         if owner:
             return result
         receipt = await _receipt_total(runtime.config, accounting)
@@ -152,9 +187,13 @@ def _cost_task(
     outer_runtime: ToolRuntime,
     owner: str,
     active: set[asyncio.Task],
+    dispatched: dict[str, _DispatchResult] | None = None,
+    completed: dict[str, _DispatchResult] | None = None,
 ) -> StructuredTool:
     """Return a task proxy with request-isolated child graph checkpoints."""
     occurrences: dict[str, int] = {}
+    dispatched = dispatched if dispatched is not None else {}
+    completed = completed if completed is not None else {}
 
     async def invoke(
         description: str, subagent_type: str, runtime: ToolRuntime
@@ -169,6 +208,12 @@ def _cost_task(
         )
         occurrence = occurrences.get(fingerprint, 0)
         occurrences[fingerprint] = occurrence + 1
+        key = f"{fingerprint}_{occurrence}"
+        dispatched[key] = {
+            "index": len(dispatched),
+            "subagent_type": subagent_type,
+            "description": description[:200],
+        }
         scope = outer_runtime.config.get("configurable", {}).get("checkpoint_ns", "")
         configurable["checkpoint_ns"] = (
             f"{scope}|js_dispatch:{fingerprint}_{occurrence}"
@@ -189,7 +234,7 @@ def _cost_task(
         if invocation is not None:
             active.add(invocation)
         try:
-            return await tool.arun(
+            result = await tool.arun(
                 {
                     "description": description,
                     "subagent_type": subagent_type,
@@ -209,11 +254,95 @@ def _cost_task(
                 ),
                 "failed": True,
             }
+        else:
+            completed[key] = {
+                **dispatched[key],
+                "result": coerce_tool_output_for_ptc(result),
+            }
+            return result
         finally:
             if invocation is not None:
                 active.discard(invocation)
 
     return tool.model_copy(update={"coroutine": invoke})
+
+
+async def _save_interrupted_reports(
+    runtime: ToolRuntime,
+    dispatched: dict[str, _DispatchResult],
+    completed: dict[str, _DispatchResult],
+    *,
+    interrupted: bool = True,
+) -> None:
+    """Persist partial results separately from cost receipts and graph state."""
+    configurable = dict(runtime.config.get("configurable", {}))
+    saver = configurable.get("__pregel_checkpointer")
+    if not isinstance(saver, BaseCheckpointSaver):
+        return
+    scope = _parent_checkpoint_scope(configurable.get("checkpoint_ns", ""))
+    configurable["checkpoint_ns"] = (
+        f"{scope}|js_interrupted:{_digest(runtime.tool_call_id or '')}"
+    )
+    configurable.pop("checkpoint_id", None)
+    config: RunnableConfig = {"configurable": configurable}
+    if not interrupted and await saver.aget_tuple(config) is None:
+        return
+    checkpoint = empty_checkpoint()
+    checkpoint["channel_values"] = {
+        "tool_call_id": runtime.tool_call_id,
+        "interrupted": interrupted,
+        "completed": list(completed.values()),
+        "unfinished": [
+            value for key, value in dispatched.items() if key not in completed
+        ],
+    }
+    checkpoint["channel_versions"] = dict.fromkeys(
+        checkpoint["channel_values"], checkpoint["id"]
+    )
+    await saver.aput(
+        config,
+        checkpoint,
+        {"js_interrupted_scope": scope},
+        checkpoint["channel_versions"],
+    )
+
+
+async def _interrupted_reports(
+    config: RunnableConfig, state: REPLState
+) -> list[HumanMessage]:
+    """Return saved partial reports once per tool call in conversation history."""
+    configurable = config.get("configurable", {})
+    saver = configurable.get("__pregel_checkpointer")
+    if not isinstance(saver, BaseCheckpointSaver):
+        return []
+    seen = {message.id for message in state["messages"]}
+    messages = []
+    async for receipt in saver.alist(
+        {"configurable": {"thread_id": configurable["thread_id"]}},
+        filter={
+            "js_interrupted_scope": _parent_checkpoint_scope(
+                configurable.get("checkpoint_ns", "")
+            )
+        },
+    ):
+        values = receipt.checkpoint["channel_values"]
+        message_id = f"js-interrupted:{values['tool_call_id']}"
+        if message_id in seen:
+            continue
+        seen.add(message_id)
+        if not values["interrupted"]:
+            continue
+        messages.append(
+            HumanMessage(
+                id=message_id,
+                content=(
+                    "Recovered subagent reports from interrupted js_eval. "
+                    "Use completed reports; only unfinished briefs need further work.\n"
+                    + json.dumps(values, default=str)
+                ),
+            )
+        )
+    return messages
 
 
 def record_cost_receipt(

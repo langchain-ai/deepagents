@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Literal, NotRequired
 
@@ -313,6 +314,12 @@ async def test_completed_sibling_interrupt_fresh_runtime(
     await resumed.ainvoke(None, _CONFIG)
     assert await _total(resumed) == pytest.approx(5.0)
     await _assert_accounting(resumed, 5)
+    _fresh_runtime()
+    continued = _parent("", {"done": _child()}, saver, resuming=True)
+    result = await continued.ainvoke({"messages": [HumanMessage("next turn")]}, _CONFIG)
+    assert not any(
+        message.id == "js-interrupted:parent-call" for message in result["messages"]
+    )
 
 
 async def test_completed_sibling_cost_survives_owned_sqlite_resume(
@@ -805,8 +812,10 @@ async def test_completion_order_does_not_swap_results_on_sqlite_resume(
     resumed_dispatches = []
     c_started = asyncio.Event()
 
-    def reordered(tool, runtime, owner, active) -> StructuredTool:
-        proxy = original(tool, runtime, owner, active)
+    def reordered(
+        tool, runtime, owner, active, dispatched, completed
+    ) -> StructuredTool:
+        proxy = original(tool, runtime, owner, active, dispatched, completed)
         invoke = proxy.coroutine
         assert invoke is not None
 
@@ -1147,3 +1156,182 @@ async def test_legacy_dollar_only_receipt_survives_sqlite_resume(
         replayed = await agent.aget_state(_CONFIG)
         assert replayed.values["_session_cost_usd"] == pytest.approx(4.0)
         assert replayed.values["_session_cost_breakdown"] == breakdown
+
+
+@pytest.mark.parametrize("signal", ["cancel", "interrupt", "node_cancel"])
+async def test_interrupted_fanout_reports_reach_next_turn(tmp_path, signal) -> None:
+    from langgraph.prebuilt.tool_node import ToolCallRequest
+
+    settled = asyncio.Event()
+    blocked = asyncio.Event()
+
+    @tool
+    async def task(description: str, subagent_type: str) -> str:  # noqa: ARG001  # Task tool signature.
+        """Return finished reports while leaving the third brief pending."""
+        if description == "pending":
+            blocked.set()
+            await asyncio.Event().wait()
+        return f"report for {description}"
+
+    interpreter = CostAwareCodeInterpreterMiddleware(tool_name="js_eval", mode="call")
+    _INTERPRETERS.append(interpreter)
+    database = str(tmp_path / "reports.sqlite")
+    async with AsyncSqliteSaver.from_conn_string(database) as saver:
+        runtime = ToolRuntime(
+            state={},
+            context=None,
+            config={
+                "configurable": {
+                    "thread_id": "js-cost",
+                    "__pregel_checkpointer": saver,
+                }
+            },
+            stream_writer=lambda _value: None,
+            tool_call_id="fanout",
+            store=None,
+            tools=[task],
+        )
+        request = ToolCallRequest(
+            tool_call={"name": "js_eval", "args": {"code": ""}, "id": "fanout"},
+            tool=interpreter.tools[0],
+            state={},
+            runtime=runtime,
+        )
+
+        async def handler(request: ToolCallRequest) -> ToolMessage:
+            proxy = request.runtime.tools[0]
+            assert isinstance(proxy, StructuredTool)
+            assert proxy.coroutine is not None
+            pending = asyncio.ensure_future(
+                proxy.coroutine("pending", "research", request.runtime)
+            )
+            await asyncio.gather(
+                proxy.coroutine("first", "research", request.runtime),
+                proxy.coroutine("second", "research", request.runtime),
+            )
+            await blocked.wait()
+            settled.set()
+            if signal == "interrupt":
+                raise GraphInterrupt(())
+            if signal == "node_cancel":
+                msg = "cancelled"
+                raise NodeCancelledError(msg)
+            await pending
+            return ToolMessage(content="done", tool_call_id="fanout")
+
+        invocation = asyncio.create_task(interpreter.awrap_tool_call(request, handler))
+        await asyncio.wait_for(settled.wait(), timeout=10)
+        if signal == "cancel":
+            invocation.cancel()
+        expected = {
+            "cancel": asyncio.CancelledError,
+            "interrupt": GraphInterrupt,
+            "node_cancel": NodeCancelledError,
+        }[signal]
+        with pytest.raises(expected):
+            await invocation
+
+    _fresh_runtime()
+    async with AsyncSqliteSaver.from_conn_string(database) as saver:
+        agent = _parent(
+            "",
+            {"research": _child()},
+            saver,
+            messages=[_message("next"), _message("again")],
+        )
+        result = await agent.ainvoke({"messages": [HumanMessage("continue")]}, _CONFIG)
+        recovered = [
+            message
+            for message in result["messages"]
+            if message.id == "js-interrupted:fanout"
+        ]
+        assert len(recovered) == 1
+        reports = json.loads(str(recovered[0].content).split("\n", 1)[1])
+        assert {entry["result"] for entry in reports["completed"]} == {
+            "report for first",
+            "report for second",
+        }
+        assert [entry["description"] for entry in reports["unfinished"]] == ["pending"]
+        await agent.ainvoke({"messages": [HumanMessage("continue again")]}, _CONFIG)
+        snapshot = await agent.aget_state(_CONFIG)
+        assert (
+            sum(
+                message.id == "js-interrupted:fanout"
+                for message in snapshot.values["messages"]
+            )
+            == 1
+        )
+
+
+async def test_cancelled_javascript_fanout_recovers_reports_after_restart(
+    tmp_path,
+) -> None:
+    settled = asyncio.Event()
+
+    @tool
+    async def task(
+        description: str,
+        subagent_type: str,
+        runtime: ToolRuntime,
+    ) -> str:
+        """Finish two briefs and block the remaining one."""
+        del subagent_type, runtime
+        if description == "pending":
+            await asyncio.Event().wait()
+        return f"report for {description}"
+
+    @tool
+    async def ready() -> str:
+        """Signal that JavaScript has received both completed reports."""
+        settled.set()
+        await asyncio.sleep(0)
+        return "ready"
+
+    code = (
+        'const pending = task({description:"pending",subagentType:"research"});'
+        'await Promise.all([task({description:"first",subagentType:"research"}),'
+        'task({description:"second",subagentType:"research"})]);'
+        "await tools.ready({}); await pending"
+    )
+    database = str(tmp_path / "js-cancel.sqlite")
+    async with AsyncSqliteSaver.from_conn_string(database) as saver:
+        interpreter = CostAwareCodeInterpreterMiddleware(
+            tool_name="js_eval", mode="call", ptc=["ready"]
+        )
+        _INTERPRETERS.append(interpreter)
+        agent = create_agent(
+            _fake_model(_call(code)),
+            tools=[task, ready],
+            middleware=[interpreter],
+            checkpointer=saver,
+        )
+        invocation = asyncio.create_task(
+            agent.ainvoke({"messages": [HumanMessage("research")]}, _CONFIG)
+        )
+        await asyncio.wait_for(settled.wait(), timeout=10)
+        invocation.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await invocation
+        await agent.aupdate_state(
+            _CONFIG,
+            {
+                "messages": [
+                    ToolMessage(content="cancelled", tool_call_id="parent-call")
+                ]
+            },
+            as_node="tools",
+        )
+        await agent.aupdate_state(_CONFIG, None, as_node="__end__")
+    _fresh_runtime()
+    async with AsyncSqliteSaver.from_conn_string(database) as saver:
+        agent = _parent("", {"research": _child()}, saver, resuming=True)
+        result = await agent.ainvoke({"messages": [HumanMessage("continue")]}, _CONFIG)
+        recovered = next(
+            message
+            for message in result["messages"]
+            if message.id == "js-interrupted:parent-call"
+        )
+        assert "report for first" in str(recovered.content)
+        assert "report for second" in str(recovered.content)
+        reports = json.loads(str(recovered.content).split("\n", 1)[1])
+        assert [entry["description"] for entry in reports["unfinished"]] == ["pending"]

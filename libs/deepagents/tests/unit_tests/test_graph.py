@@ -23,7 +23,7 @@ from langchain_core.tools import BaseTool, StructuredTool
 from deepagents._api.deprecation import LangChainDeprecationWarning
 from deepagents._tools import _apply_tool_description_overrides, _tool_name
 from deepagents._version import __version__, _lc_version, _with_editable_local_version
-from deepagents.backends import StateBackend
+from deepagents.backends import BackendConsumer, StateBackend
 from deepagents.graph import (
     _REQUIRED_MIDDLEWARE_CLASSES,
     _REQUIRED_MIDDLEWARE_NAMES,
@@ -53,6 +53,8 @@ from tests.unit_tests.chat_model import GenericFakeChatModel
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+
+    from deepagents.backends.protocol import BackendProtocol
 
 
 def _make_model(attrs: dict[str, Any]) -> MagicMock:
@@ -3285,3 +3287,53 @@ class TestSkillsMiddlewarePlacement:
             "ModelFallbackMiddleware",
             "AnthropicPromptCachingMiddleware",
         ]
+
+
+class _WantsBackend(AgentMiddleware[Any, Any, Any]):
+    def __init__(self, name: str = "WantsBackend") -> None:
+        super().__init__()
+        self._name = name
+        self.backends: list[BackendProtocol] = []
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    def bind_backend(self, backend: BackendProtocol) -> None:
+        self.backends.append(backend)
+
+
+class TestBackendBinding:
+    """`create_deep_agent` hands its backend to middleware that ask for it."""
+
+    def _build(self, **kwargs: Any) -> tuple[list[AgentMiddleware], dict[str, list[AgentMiddleware]]]:
+        return TestSkillsMiddlewarePlacement()._build(skills=None, **kwargs)
+
+    @staticmethod
+    def _file_backend(stack: list[AgentMiddleware]) -> BackendProtocol:
+        return next(m.backend for m in stack if isinstance(m, FilesystemMiddleware))
+
+    @pytest.mark.parametrize("explicit", [False, True], ids=["default_backend", "explicit_backend"])
+    def test_user_middleware_gets_the_backend_the_file_tools_use(self, *, explicit: bool) -> None:
+        wants = _WantsBackend()
+        kwargs: dict[str, Any] = {"backend": StateBackend()} if explicit else {}
+
+        main, _ = self._build(middleware=[wants], **kwargs)
+
+        assert wants.backends == [self._file_backend(main)]
+
+    def test_declarative_subagent_middleware_gets_the_backend(self) -> None:
+        own = _WantsBackend("OwnBackendMW")
+        worker: SubAgent = {"name": "worker", "description": "d", "middleware": [own]}
+
+        _, subagents = self._build(subagents=[worker])
+
+        assert own.backends == [self._file_backend(subagents["worker"])]
+
+    def test_middleware_without_the_method_is_left_alone(self) -> None:
+        plain = _named_mw("PlainMW")
+
+        main, _ = self._build(middleware=[plain])
+
+        assert plain in main
+        assert not isinstance(plain, BackendConsumer)

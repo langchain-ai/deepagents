@@ -1268,6 +1268,37 @@ class TestAttemptScopedUsage:
         assert stats.output_tokens == 150
         assert stats.per_kind["assistant"].request_count == 2
 
+    def test_root_summarization_usage_event_records_offload(self) -> None:
+        stats = SessionStats()
+        event = {
+            "type": "model_usage",
+            "version": 1,
+            "lc_source": "summarization",
+            "request_id": "summary-1",
+            "usage_metadata": {
+                "input_tokens": 1_000,
+                "output_tokens": 100,
+                "total_tokens": 1_100,
+            },
+            "model_name": "gpt-5.5",
+            "provider": "openai",
+            "thread_id": "thread-1",
+            "scope": "",
+        }
+
+        recorded = record_model_usage_event(
+            stats, event, active_thread_id="thread-1", recorded_requests={}
+        )
+
+        assert recorded is not None
+        assert set(stats.per_kind) == {"offload"}
+        assert (
+            record_model_usage_event(
+                stats, event | {"lc_source": None}, active_thread_id="thread-1"
+            )
+            is None
+        )
+
     def test_model_usage_event_dedupes_per_attempt_scope(self) -> None:
         stats = SessionStats()
         ledger: dict[UsageLedgerKey, RecordedRequest] = {}

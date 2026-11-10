@@ -145,9 +145,17 @@ def run_completion_command(args: argparse.Namespace) -> int:
         args: Parsed CLI namespace with `shell` and optional `prog`.
 
     Returns:
-        Process exit code.
+        Process exit code: `2` when no shell is given and stdout is not a
+            terminal, so `dcode completion > file` fails instead of saving the
+            help screen as a script.
     """
     if getattr(args, "shell", None) is None:
+        if not sys.stdout.isatty():
+            sys.stderr.write(
+                "dcode completion: missing shell (bash, zsh, or fish); "
+                "run `dcode completion -h` for setup\n"
+            )
+            return 2
         from deepagents_code import ui
 
         ui.show_completion_help()

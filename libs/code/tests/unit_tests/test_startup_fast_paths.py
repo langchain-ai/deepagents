@@ -121,7 +121,7 @@ def _read_marker(stderr: str, prefix: str) -> object:
         (["config", "-h"], "dcode config [options]"),
         (["auth"], "dcode auth <command>"),
         (["tools"], "dcode tools <command>"),
-        (["completion"], "dcode completion <bash|zsh|fish>"),
+        (["completion", "-h"], "dcode completion <bash|zsh|fish>"),
         (["completion", "bash"], "# bash completion for dcode"),
     ],
 )

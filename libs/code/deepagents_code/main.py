@@ -2195,18 +2195,15 @@ _HELP_SPECS: dict[str, tuple[str | None, str]] = {
     "mcp": ("mcp_command", "show_mcp_help"),
     "auth": ("auth_command", "show_auth_help"),
     "tools": ("tools_command", "show_tools_help"),
-    "completion": ("shell", "show_completion_help"),
 }
 """Maps top-level command names to their startup-fast-path help dispatch.
 
 Each value is `(subcommand_dest, ui_help_fn_name)`:
 
-- `subcommand_dest` is the attribute that is non-`None` once the group's own
-    arguments were given: the argparse `dest=` of its sub-subparsers, or a
-    positional dest for leaf commands such as `completion`'s `shell`, or
-    `None` for zero-argument commands like `help`. When non-`None` and the
-    parsed namespace has a value at that attribute, a real argument was given
-    and the fast path declines.
+- `subcommand_dest` is the argparse `dest=` for the group's sub-subparsers,
+    or `None` for leaf commands like `help`. When non-`None` and the parsed
+    namespace has a value at that attribute, a real subcommand was given and
+    the fast path declines.
 - `ui_help_fn_name` is the attribute on `deepagents_code.ui` invoked to
     render the help screen.
 
@@ -2221,16 +2218,15 @@ _BARE_ACTION_GROUPS = frozenset({"config"})
 
 
 def _show_bare_command_group_help(args: argparse.Namespace) -> bool:
-    """Render help for `help`, bare command groups, and bare `completion`.
+    """Render help for `help` and bare command groups before the heavy bootstrap.
 
     Short-circuits before `console`/`settings` are imported so help-only
     invocations stay snappy. Command groups in `_BARE_ACTION_GROUPS` bypass
     this path because their bare invocation has useful behavior.
 
     Args:
-        args: Namespace from `parse_args()`. Only `command` and each spec's
-            `subcommand_dest` attribute (see `_HELP_SPECS`) are read; both
-            may be absent.
+        args: Namespace from `parse_args()`. Only `command` and the per-group
+            `<group>_command` attributes are read; both may be absent.
 
     Returns:
         `True` when help was rendered and the caller should exit; `False`

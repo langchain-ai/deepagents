@@ -9,7 +9,6 @@ import shutil
 import subprocess
 import sys
 from typing import TYPE_CHECKING
-from unittest.mock import patch
 
 import pytest
 
@@ -22,7 +21,7 @@ from deepagents_code.completion import (
     render_script,
     run_completion_command,
 )
-from deepagents_code.main import _show_bare_command_group_help, build_parser, parse_args
+from deepagents_code.main import build_parser, parse_args
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -316,8 +315,9 @@ class TestRunCompletionCommand:
         assert "mydcode" in output
         assert "deepagents-code" not in output
 
-    def test_missing_shell_shows_help(self, monkeypatch) -> None:
+    def test_missing_shell_shows_help_in_terminal(self, monkeypatch) -> None:
         calls: list[str] = []
+        monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
         monkeypatch.setattr(
             "deepagents_code.ui.show_completion_help",
             lambda: calls.append("help"),
@@ -326,26 +326,14 @@ class TestRunCompletionCommand:
         assert run_completion_command(argparse.Namespace()) == 0
         assert calls == ["help"]
 
+    def test_missing_shell_fails_when_redirected(self, capsys) -> None:
+        assert run_completion_command(argparse.Namespace()) == 2
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert "missing shell" in captured.err
+
 
 class TestParserIntegration:
-    def test_shell_argument_skips_bare_help_fast_path(self, monkeypatch) -> None:
-        monkeypatch.setattr(sys, "argv", ["deepagents", "completion", "bash"])
-
-        args = parse_args()
-
-        assert args.shell == "bash"
-        assert _show_bare_command_group_help(args) is False
-
-    def test_bare_completion_shows_help(self, monkeypatch) -> None:
-        monkeypatch.setattr(sys, "argv", ["deepagents", "completion"])
-
-        args = parse_args()
-
-        assert args.shell is None
-        with patch("deepagents_code.ui.show_completion_help") as help_fn:
-            assert _show_bare_command_group_help(args) is True
-        help_fn.assert_called_once_with()
-
     def test_invalid_shell_rejected(self, monkeypatch) -> None:
         monkeypatch.setattr(sys, "argv", ["deepagents", "completion", "powershell"])
 

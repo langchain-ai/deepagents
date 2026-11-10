@@ -18,6 +18,7 @@ from langchain.agents import create_agent
 from langchain.agents.middleware.types import ModelRequest
 from langchain.agents.structured_output import AutoStrategy
 from langchain.tools import ToolRuntime
+from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, SystemMessage
 from langchain_core.runnables import RunnableLambda
@@ -925,22 +926,28 @@ async def test_call_subagent_task_tool_forwards_config_and_tool_call_id() -> Non
             self,
             tool_input: dict[str, Any],
             *,
+            callbacks: Any = None,
             config: dict[str, Any] | None = None,
             tool_call_id: str | None = None,
         ) -> str:
             calls.append(
                 {
                     "tool_input": tool_input,
+                    "callbacks": callbacks,
                     "config": config,
                     "tool_call_id": tool_call_id,
                 }
             )
             return "ok"
 
+    handler = BaseCallbackHandler()
     runtime = ToolRuntime(
         state={},
         context={},
-        config={"configurable": {"thread_id": "parent-thread"}},
+        config={
+            "configurable": {"thread_id": "parent-thread"},
+            "callbacks": [handler],
+        },
         stream_writer=lambda _chunk: None,
         tools=[],
         tool_call_id="outer_eval_call",
@@ -958,6 +965,7 @@ async def test_call_subagent_task_tool_forwards_config_and_tool_call_id() -> Non
     assert result == "ok"
     assert calls
     assert calls[0]["config"] == runtime.config
+    assert calls[0]["callbacks"] == [handler]
     assert calls[0]["tool_call_id"].startswith("ptc_task_")
     assert calls[0]["tool_input"]["runtime"].tool_call_id == calls[0]["tool_call_id"]
 

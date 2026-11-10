@@ -18,6 +18,7 @@ from deepagents import create_deep_agent
 from langchain.tools import (
     ToolRuntime,  # noqa: TC002  # tool decorator resolves type hints at import time
 )
+from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.tools import tool
 
@@ -259,3 +260,64 @@ async def test_quickjs_async_parallel_agents() -> None:
         tool_message = _eval_tool_message(result)
         _assert_result_contains(tool_message.content, str(index * 10))
         assert result["messages"][-1].content == f"done-{index}"
+
+
+class _ToolParents(BaseCallbackHandler):
+    """Record each tool run's name and parent run id."""
+
+    def __init__(self) -> None:
+        self.runs: dict[Any, tuple[str, Any]] = {}
+
+    def on_tool_start(
+        self,
+        serialized: dict[str, Any],
+        input_str: str,
+        *,
+        run_id: Any,
+        parent_run_id: Any = None,
+        **kwargs: Any,
+    ) -> None:
+        del input_str, kwargs
+        self.runs[run_id] = (serialized["name"], parent_run_id)
+
+
+async def test_quickjs_async_ptc_and_task_runs_nest_under_eval() -> None:
+    """PTC tool calls and `task()` dispatches are child runs of the eval run."""
+    handler = _ToolParents()
+    model = FakeChatModel(
+        messages=iter(
+            [
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "eval",
+                            "args": {
+                                "code": "await tools.listUserIds();"
+                                "await task({description: 'work',"
+                                " subagentType: 'general-purpose'})"
+                            },
+                            "id": "call_1",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(content="subagent done"),
+                AIMessage(content="done"),
+            ]
+        )
+    )
+    agent = create_deep_agent(
+        model=model,
+        middleware=[CodeInterpreterMiddleware(ptc=[list_user_ids])],
+    )
+
+    await agent.ainvoke(
+        {"messages": [HumanMessage(content="go")]},
+        config={"callbacks": [handler]},
+    )
+
+    eval_id = next(rid for rid, (name, _) in handler.runs.items() if name == "eval")
+    parents = dict(handler.runs.values())
+    assert parents["list_user_ids"] == eval_id
+    assert parents["task"] == eval_id

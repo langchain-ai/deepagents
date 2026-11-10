@@ -6,6 +6,7 @@ import logging
 import sys
 import uuid
 from collections.abc import Awaitable, Callable, Mapping
+from dataclasses import replace
 from typing import TYPE_CHECKING, Annotated, Any, Literal, NotRequired
 
 from deepagents.middleware._utils import append_to_system_message
@@ -22,7 +23,9 @@ from langchain.agents.middleware.types import (
 )
 from langchain.tools import BaseTool, ToolRuntime
 from langchain_core._api import beta
+from langchain_core.callbacks import BaseCallbackManager
 from langchain_core.messages import SystemMessage, ToolMessage
+from langchain_core.runnables.config import patch_config
 from langchain_core.tools import StructuredTool
 from langgraph.channels import DeltaChannel
 from langgraph.types import Command
@@ -121,6 +124,20 @@ def _same_tools(cached: tuple[BaseTool, ...], exposed: tuple[BaseTool, ...]) -> 
 def _new_slot_id() -> str:
     """Create a private interpreter slot id."""
     return f"qjs_{uuid.uuid4().hex}"
+
+
+def _with_eval_callbacks(
+    runtime: ToolRuntime, callbacks: BaseCallbackManager | None
+) -> ToolRuntime:
+    """Point the runtime at the eval run's callbacks.
+
+    `ToolRuntime.config` carries the tools step's callbacks, so PTC calls and
+    `task()` dispatches made with it would be parented to the step instead of
+    the eval run.
+    """
+    if callbacks is None:
+        return runtime
+    return replace(runtime, config=patch_config(runtime.config, callbacks=callbacks))
 
 
 @beta()
@@ -358,7 +375,9 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         def sync_eval(
             runtime: ToolRuntime[None, Any],
             code: Annotated[str, code_doc],
+            callbacks: BaseCallbackManager | None = None,
         ) -> ToolMessage | Command:
+            runtime = _with_eval_callbacks(runtime, callbacks)
             slot_id = middleware._slot_id(runtime.state)
             repl = middleware._repl_for_eval(slot_id)
             try:
@@ -378,7 +397,9 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         async def async_eval(
             runtime: ToolRuntime[None, Any],
             code: Annotated[str, code_doc],
+            callbacks: BaseCallbackManager | None = None,
         ) -> ToolMessage | Command:
+            runtime = _with_eval_callbacks(runtime, callbacks)
             slot_id = middleware._slot_id(runtime.state)
             repl = middleware._repl_for_eval(slot_id)
             try:

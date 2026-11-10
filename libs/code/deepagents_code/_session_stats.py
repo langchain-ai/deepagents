@@ -1237,6 +1237,23 @@ def is_model_usage_event(data: object) -> bool:
     return isinstance(data, Mapping) and data.get("type") == MODEL_USAGE_EVENT_TYPE
 
 
+def is_summarization_started_event(data: object) -> bool:
+    """Report whether a custom-stream payload marks a summarization call starting.
+
+    Args:
+        data: A `custom` stream payload.
+
+    Returns:
+        `True` when the payload is a summarization start event.
+    """
+    from deepagents_code.cost_tracking import SUMMARIZATION_STARTED_EVENT_TYPE
+
+    return (
+        isinstance(data, Mapping)
+        and data.get("type") == SUMMARIZATION_STARTED_EVENT_TYPE
+    )
+
+
 def record_model_usage_event(
     stats: SessionStats,
     data: object,
@@ -1288,7 +1305,7 @@ def record_model_usage_event(
         or not isinstance(thread_id, str)
         or not thread_id
         or not isinstance(scope, str)
-        or not scope
+        or (not scope and data.get("lc_source") != "summarization")
         or not isinstance(usage, Mapping)
         or not usage
         or not isinstance(model_name, str)
@@ -1319,7 +1336,7 @@ def record_model_usage_event(
         message,
         fallback_model=fallback_model,
         fallback_provider=fallback_provider,
-        kind="subagent",
+        kind="subagent" if scope else "offload",
         recorded_requests=recorded_requests,
         attempt_scope=attempt_scope,
         invocation_id=invocation_id or None,

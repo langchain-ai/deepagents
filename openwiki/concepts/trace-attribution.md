@@ -1,12 +1,16 @@
 ---
 type: observability architecture
-title: dcode Turn Trace and Git Attribution
-description: Best-effort dcode observability that detects changed Git checkouts around tool calls and retrospectively attributes them to completed LangSmith runs for one user turn.
-tags: [dcode, observability, tracing, langsmith, git, middleware]
+title: Trace Attribution and Observability
+description: How dcode attributes Git checkout work to a scoped LangSmith turn, and how Talon establishes trace context, records user cancellation, and produces bounded redacted activity logs.
+tags: [dcode, talon, observability, tracing, langsmith, git, redaction]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-11-03T08:04:09.572Z
+    at: 2026-11-10T08:04:01.717Z
 sources:
+  - id: openwiki-source-1b65375bb7d7df74863a3f36
+    resource: repo://libs/code/deepagents_code/_trace_redaction.py
+  - id: openwiki-source-9d2d5e136d0c91e85635b155
+    resource: repo://libs/code/deepagents_code/_tracing.py
   - id: openwiki-source-05106e66a949150d557266a2
     resource: repo://libs/code/deepagents_code/agent.py
   - id: openwiki-source-4861406487e57b1f6364b723
@@ -23,91 +27,123 @@ sources:
     resource: repo://libs/code/tests/unit_tests/test_git_trace.py
   - id: openwiki-source-d8ac92b7d01d6c8ed92689c6
     resource: repo://libs/code/tests/unit_tests/test_turn_trace.py
-generated: { by: "openwiki/0.4.2", at: "2026-11-03T08:04:09.572Z" }
+  - id: openwiki-source-6801a88de6305bc8cbdd259f
+    resource: repo://libs/talon/deepagents_talon/host.py
+  - id: openwiki-source-5c7840a55ecf6660d9f718f2
+    resource: repo://libs/talon/deepagents_talon/observability.py
+  - id: openwiki-source-665a21e2fbd09a89d3f13ac0
+    resource: repo://libs/talon/deepagents_talon/runtime.py
+  - id: openwiki-source-a69daa62c9a3eb9a49f09bf9
+    resource: repo://libs/talon/tests/test_host.py
+  - id: openwiki-source-b087777c8383ba81f7e2cb17
+    resource: repo://libs/talon/tests/test_observability.py
+generated: { by: "openwiki/0.4.2", at: "2026-11-10T08:04:01.717Z" }
 ---
 
-# dcode Turn Trace and Git Attribution
+# Trace Attribution and Observability
 
-`GitTraceMiddleware` is a **best-effort attribution path**, not a source of agent behavior or an authorization mechanism. It observes Git checkout changes made while a dcode agent or its subagents run, then adds repository attribution to LangSmith metadata after the turn's runs have completed. It does not alter the tool result, graph state, agent response, or recorded input/output/error payloads. A missing trace, unsupported backend, failed inspection, or failed telemetry transport simply leaves attribution absent.
+Observability in this repository is deliberately supplementary to execution. dcode's `GitTraceMiddleware` observes checkout changes around eligible tools and retrospectively annotates completed LangSmith runs; it is not an authorization mechanism and never changes a tool result or graph state. Talon establishes a LangSmith context around a host invocation only when explicitly configured, separately records an intentional user cancellation as feedback, and can emit local activity events with redacted, bounded previews. Execution, approval, persistence, and delivery retain their own failure boundaries; see [Runtime Behavior and Failure Boundaries](../architecture/runtime-behavior.md), [Talon Scheduling and Background Work](talon-scheduling.md), and [Security and Trust Boundaries](../operations/security.md).
 
-The middleware is installed first in both the main agent and dcode-created subagent middleware stacks. Its checkout root is the effective working directory for local backends, or the default working directory for a configured sandbox. See [Run a dcode Session](../workflows/run-dcode-session.md) for runtime setup, [Permissions and HITL](permissions-hitl.md) for execution authorization, and [Security and Trust Boundaries](../operations/security.md) for the separate backend trust boundary.
+## dcode Git attribution
 
-## End-to-end flow
+`create_deep_agent` puts one `GitTraceMiddleware` first in the main middleware stack and in dcode-created subagent stacks. It binds the middleware to the execution backend and a trace working directory: a sandbox uses its default working directory; otherwise it uses the effective local cwd. The middleware's `TracePolicy` omits its own input payload processing.
 
 ```mermaid
 sequenceDiagram
-    participant Graph as Agent graph
+    participant Graph as agent graph
     participant Middleware as GitTraceMiddleware
     participant Evidence as Git evidence probe
-    participant Backend as Execution backend
-    participant Trace as TurnTrace
+    participant Backend as execution backend
+    participant Turn as TurnTrace
     participant LangSmith as LangSmith
 
-    Graph->>Middleware: before agent
-    Middleware->>Trace: capture scoped thread and turn roots
-    Graph->>Middleware: potentially mutating tool call
+    Graph->>Middleware: before agent captures scoped turn
+    Graph->>Middleware: eligible tool call
     Middleware->>Evidence: snapshot before
-    Evidence->>Backend: bounded read-only Git inspection
-    Middleware->>Graph: invoke unchanged tool handler
-    Graph-->>Middleware: unchanged tool result
-    Middleware->>Evidence: snapshot after
-    Evidence->>Trace: retain changed checkout targets
+    Evidence->>Backend: bounded read-only probe
+    Middleware->>Graph: invoke tool handler
+    Graph-->>Middleware: original result or error
+    Middleware->>Evidence: snapshot after successful handler
+    Middleware->>Turn: retain changed targets
     Graph->>Middleware: after agent
-    Middleware->>Trace: derive attribution metadata
-    Trace->>LangSmith: patch completed runs only
-    Note over Middleware,LangSmith: Probe and patch errors are swallowed as optional telemetry
-    Note over Graph: Tool and graph errors still propagate normally
+    Middleware->>Turn: derive metadata
+    Turn->>LangSmith: patch completed scoped runs
+    Note over Middleware,LangSmith: Probe and update failures are non-fatal
 ```
 
-*Potentially mutating tools are bracketed by checkout observations; only successful observations can later update completed runs belonging to the same thread and turn.*
+*Checkout attribution brackets candidate mutations but leaves graph execution and handler errors unchanged.*
 
-The middleware does not probe known read-only filesystem tools (`read_file`, `ls`, `glob`, `grep`), tools explicitly marked `readOnlyHint` unless also marked destructive, or unrelated tools such as `write_todos` and `ask_user`. It observes tools with `destructiveHint`, the known shell/write/delegation names (`execute`, `write_file`, `edit_file`, `apply_patch`, `js`, `task`), and otherwise tools whose arguments include a string `file_path`, `path`, `cwd`, or `command`. This heuristic deliberately favors attributing possible checkout work over attempting to infer actual mutation from a tool's name alone.
+### Eligibility and failure boundary
 
-When tracing is unavailable or the runnable config lacks string `thread_id` and `turn_id` metadata, the middleware bypasses probes and calls the handler directly. A throwing or cancelled handler likewise propagates without an after snapshot: observability never masks or delays the original execution outcome.
+The middleware avoids known read-only filesystem tools (`read_file`, `ls`, `glob`, `grep`), tools carrying `readOnlyHint` unless they are also destructive, and tools such as `write_todos` and `ask_user` that lack relevant arguments. It observes tools marked `destructiveHint`, known shell/write/delegation tools (`execute`, `write_file`, `edit_file`, `apply_patch`, `js`, `task`), and otherwise calls with a string `file_path`, `path`, `cwd`, or `command` argument. This is intentionally a conservative eligibility heuristic, not proof that a write occurred.
 
-## Checkout evidence: bounded and non-content
+A trace must be active and scoped by string `thread_id` and `turn_id`; otherwise the middleware directly calls the handler without probing. Capture, backend lookup, snapshots, retention, and LangSmith updates are all best effort. If the handler raises or is cancelled, that outcome propagates and no after snapshot is taken. The async probe itself has a ten-second enclosing wait, while the synchronous implementation follows its backend-specific bounds.
 
-A `GitSnapshot` records the discovered checkout root, parsed repository identity, branch, commit, and a fingerprint. Repository identity is parsed from `origin`; URL credentials are removed before metadata parsing. The fingerprint hashes porcelain-v2 status plus non-content filesystem metadata for modified and untracked paths (path bytes, mode, size, and timestamps). It can therefore distinguish a later edit from dirt that was already present, and sees commits, branch switches, and new checkouts without copying file content into tracing metadata.
+### Bounded, non-content evidence
 
-Candidate paths begin with the configured working directory and may include `cwd`, `file_path`, and `path` arguments. For a command, shell-like tokenization additionally recognizes absolute tokens and paths after `cd` or `-C`. Invalid or suspicious values are discarded, as are memory and conversation-history paths. Discovery looks for Git roots in the candidates and a shallow bounded directory walk, skipping hidden directories, `node_modules`, `vendor`, and `__pycache__`; it stops at 16 repositories and 64 directories.
+A snapshot contains a checkout root, parsed repository identity, branch, commit, and fingerprint. Repository identity comes from `origin` with URL credentials removed. The fingerprint combines porcelain-v2 status with non-content metadata for modified and untracked paths, so it can identify edits without exporting file contents.
 
-The implementation performs only bounded read-only Git commands. Each invocation clears inherited `GIT_*` variables, disables optional Git locks, fsmonitor, and untracked caching, disables terminal prompting, has a two-second subprocess timeout, and accepts no more than 256,000 bytes. It rejects a dirty-path list over 4,096 paths. For a `FilesystemBackend`, probing is local and resolves requested paths through the backend; virtual mode does not inspect roots outside its configured cwd. For sandbox-protocol backends, a self-contained Python probe runs through bounded backend execution with a ten-second timeout and validates the returned JSON, exit status, and truncation flag. Other backends, or sandbox implementations that cannot accept a timeout, provide no usable evidence.
+Candidate discovery starts from the configured cwd and selected arguments. Command parsing can recognize absolute tokens and paths after `cd` or `-C`; unsafe, memory, and history paths are excluded. Discovery uses bounded shallow walking and skips common irrelevant directories, stopping after at most 16 repositories. Git subprocesses are noninteractive, lock-free, time- and output-limited, and invoked without a shell. Local probes resolve paths through a `FilesystemBackend`; sandbox-protocol probes use a bounded self-contained probe and validate its response. Unsupported backends and invalid or truncated sandbox responses yield no evidence rather than an attribution claim.
 
-`changed_snapshots` compares snapshots by checkout root and treats a checkout as changed if it is newly discovered or its branch, commit, or fingerprint differs. Consequently, unchanged pre-existing dirt is not attributed, whereas edits, commits, branch changes, and newly created checkouts are.
+`changed_snapshots` compares checkout roots. A newly found root, changed branch, changed commit, or changed fingerprint is work; unchanged dirt that already existed before the tool call is not. For a turn, changed repositories are de-duplicated by repository name and branch and retain first-observation order. At completion, the first target supplies `ls_git_repo`, `ls_repo_provider`, and, when applicable, `ls_git_branch`; all targets become ordered `open_swe_git_targets`. A no-change turn removes the three `ls_*` Git fields, preventing stale first-target attribution, while unrelated metadata remains intact.
 
-## From evidence to turn attribution
+### Retrospective turn scope
 
-Each active `GitTraceMiddleware` keeps an LRU map of at most 64 threads. A thread entry is replaced when its `turn_id` changes and has its own lock and monotonic observation order. Successful before/after pairs contribute only changed snapshots that have recognized repository metadata. Targets are de-duplicated by `(repository name, branch)`, retaining the first observed occurrence and rendering them in tool-observation order.
+`capture_turn` locates the current `LangChainTracer` root and walks upward only across parents whose `thread_id` and `turn_id` agree. Its thread-bounded cache joins the sibling roots created by an approval/resume cycle. `TurnTrace.update` walks those roots and descendants, merges metadata in memory, and sends a metadata-only patch only for completed runs. The patch preserves destination and routing fields including trace/order/session/address; it does not resend inputs, outputs, errors, events, tags, or attachments. Replica runs are patched through their replica groups. A patch failure is debug logged and traversal continues; active runs are never ended merely to add telemetry.
 
-At `after_agent`, the middleware updates the captured turn with:
+## Resume labels and trace-payload redaction
 
-- `ls_git_repo` and `ls_repo_provider` from the first changed target;
-- `ls_git_branch` when that branch is nonempty and not detached `HEAD`; and
-- `open_swe_git_targets`, an ordered list of every attributed `{repo, branch}` target.
+A graph invocation resumed with a LangGraph `Command` is labelled `dcode:resume`; an initial invocation remains untagged. Since LangGraph inherits tags to child configs, the label reaches model, tool, and subagent runs beneath that resume. The literal is an external LangSmith saved-view and cost-report contract, so it must not be casually renamed. Reusing the same stream config carries the common `thread_id`, `turn_id`, and `turn_number`; the tag distinguishes the continuation round rather than providing grouping itself.
 
-The update removes `ls_git_repo`, `ls_git_branch`, and `ls_repo_provider` first when no checkout work was observed, preventing stale attribution from carrying into a read-only turn. It intentionally does not overwrite unrelated metadata, including other Git fields a caller supplied.
+When dcode configures its LangSmith client secret anonymizer, it uses the standard LangSmith secret rules and depth with a thread-safe bounded LRU keyed by each string. Repeated message-history strings therefore reuse the same masked output rather than running the regex rules again. The cache holds at most 50,000 entries and 16 MiB of key/changed-value characters; oversized strings are still masked but not cached. This is a performance optimization, not a relaxation of redaction.
 
-## Scoped retrospective LangSmith updates
+## Talon trace context and cancellation attribution
 
-`capture_turn` finds the current `LangChainTracer` root from runnable callbacks, but walks upward only while the enclosing parents have the same `thread_id` and `turn_id`. It refuses disabled tracing, absent clients, unscoped configs, and disabled roots. Captured roots are stored by thread and turn in a separate 128-thread LRU map; repeated invocations for an approval/resume cycle join the same `TurnTrace`, allowing sibling invocation roots to be patched together.
+Talon's host wraps each `_invoke_agent` call in `langsmith_trace_context`. It is inactive unless both `LANGSMITH_TRACING` is truthy and `LANGSMITH_API_KEY` is present. If tracing is requested but the optional `langsmith` dependency is unavailable, Talon warns and executes normally. With tracing enabled, the context selects `LANGSMITH_PROJECT` or `deepagents-talon`, attaches `deepagents-talon` and `assistant:<id>` tags plus `trigger:<trigger>` when applicable, and merges the assistant ID, conversation ID, and host request metadata into trace metadata.
 
-`TurnTrace.update` traverses every captured root and its child runs. For each run, it merges metadata in memory but calls LangSmith `update_run` only after the run has an `end_time`. The patch includes the existing timing, trace identity, ordering, session, and address information, but does not resend inputs, outputs, errors, events, tags, or attachments. Replica-enabled runs are remapped and patched per replica group so their destinations and authorization remain correct. Individual update failures are debug-logged and do not stop traversal.
+The host constructs that metadata from trusted routing fields and request/channel metadata, then overwrites `tool_approval_operator` according to operator status and excludes cron and background-delivery turns. Consequently, tracing sees the same request context passed to `AgentRequest`, but the host—not inbound channel metadata—owns its authority flag. Talon's graph configuration always carries the conversation ID as LangGraph `thread_id`; history metadata is added when the history scope exists.
 
-This scope is important for both correctness and privacy: a trace outside the current turn is not backfilled, active runs are not ended by telemetry, and the feature changes metadata rather than trace payloads. For thread and resume semantics more generally, see [State Persistence](state-persistence.md); for session-level trace and spend operations, see [Cost and Sessions](../operations/cost-and-sessions.md).
+```mermaid
+sequenceDiagram
+    participant Channel as channel adapter
+    participant Host as TalonHost
+    participant Context as LangSmith context
+    participant Runtime as DeepAgentRuntime
+    participant Graph as agent graph
+    participant Feedback as LangSmith feedback
 
-## Operating and changing the feature
+    Channel->>Host: accepted message and metadata
+    Host->>Context: open context when tracing is configured
+    Host->>Runtime: AgentRequest with protected metadata
+    Runtime->>Graph: invoke with conversation thread ID
+    alt user stop cancellation
+        Graph-->>Runtime: CancelledError with user marker
+        Runtime->>Feedback: user_interrupted score 1
+        Runtime-->>Host: cancellation propagates
+    else normal result or other failure
+        Graph-->>Runtime: outcome
+        Runtime-->>Host: outcome
+    end
+    Host->>Context: close context
+```
 
-There is no user-facing switch or trace payload configuration specific to Git attribution. It is created during agent assembly and activates only when LangSmith tracing supplies a live, turn-scoped root. Operators should treat its absence as normal under disabled tracing, unscoped invocations, non-Git workspaces, unsupported backends, inspection limits, or telemetry failures—not as evidence that no work occurred.
+*The LangSmith context surrounds a Talon host invocation; explicit user cancellation is an optional root-run feedback signal, not a replacement for cancellation propagation.*
 
-The feature neither grants filesystem/shell access nor validates a repository's trust. Git probing runs in the same backend environment as the tool, and the backend and HITL policy remain the controls that determine what code can execute. The probe avoids file contents and credential-bearing remote URLs, but repository names, providers, branches, checkout roots during local inspection, and change presence remain observability-sensitive data; configure tracing and backend access accordingly.
+For each graph payload invocation, Talon appends `UserInterruptionCallback` only when tracing is enabled. It creates `user_interrupted` feedback with score `1` only when a **root** callback receives `asyncio.CancelledError` whose sole argument is `talon:user-interrupted`. Nested cancellation, a different cancellation reason, or a failure to send feedback produces no such attribution. Feedback transport failures are logged as warnings and never prevent cancellation.
 
-Extensions that introduce a new tool should provide accurate `readOnlyHint` and `destructiveHint` metadata when possible. Otherwise a path- or command-bearing tool can be observed conservatively. Do not make the probe path a prerequisite for a tool handler, and preserve the current failure boundary: broad exceptions around capture, probes, recording, and trace reconciliation must remain non-fatal.
+Interrupted-checkpoint recovery is separately traced when enabled. `recover_interrupted` retains the checkpoint configuration, adds the Talon/assistant/recovery tags and `conversation_id`, opens Talon's normal trace context, and creates a `talon_interrupt_recovery` trace while it appends the repaired interruption message. This makes state repair identifiable without treating it as an ordinary user turn.
 
-## Focused regression coverage
+## Talon local activity logs and redaction
 
-The unit tests exercise real temporary checkouts for local and sandbox-style backends: credential stripping, pre-existing dirt exclusion, edits and commits, branch/worktree behavior, multiple and newly created repositories, path candidates outside the default workspace, virtual filesystem routing, and invalid/truncated sandbox results. Middleware tests cover ordering across two repositories, a fresh turn with no changes, disabled tracing, read-only exclusion, and error/cancellation propagation.
+`DEEPAGENTS_TALON_AGENT_ACTIVITY_LOGGING` enables an `AgentActivityCallback` for a runtime invocation. It emits structured `talon_event` JSON for run start/completion/failure, model thinking start/completion/failure, and tool start/completion/failure. Events use stable 12-hex-character SHA-256 references for conversation and activity IDs rather than raw identifiers. They include duration, type/name, and counts; tool events may include a preview.
 
-Integration-style unit tests build real LangGraph/LangSmith tracer trees to verify approval-resume sibling roots, root/LLM/tool/nested run patching, turn isolation, metadata preservation, active-run safety, replica delivery, and optional probe/update failures that leave the agent result and side effects intact. Run the focused set through the package Makefile:
+Previews are intentionally bounded before logging: strings and final serialized previews are limited to 1,000 characters, nested data stops at depth five, sequences and mappings take at most 20 entries, and traversal has a 100-value budget. Bytes become a size marker and unknown objects a type marker. The preview redacts secret- or identity-named keys, bearer tokens, secret assignments, URL userinfo, and URL query/fragment data. Structured `log_event` and debug-only `log_debug_event` use the same recursive redaction; `conversation_id`, `message_id`, and `sender_id` are treated as sensitive keys. Redaction is a log-safety boundary, not a guarantee that arbitrary prose or every secret format can be safely emitted.
+
+## Operations and focused tests
+
+Git attribution has no separate user-facing switch: its absence is expected when tracing is disabled or unscoped, work is not in Git, a backend cannot probe safely, bounds are exceeded, or telemetry fails. It does not grant filesystem or shell authority. Although it avoids file contents and remote URL credentials, repository/provider names, branches, change presence, and locally inspected roots remain observability-sensitive data; configure tracing and backend access accordingly. New tools should accurately declare `readOnlyHint` and `destructiveHint`, and extensions must preserve the non-fatal telemetry boundary.
+
+Run focused dcode coverage with:
 
 ```bash
 make -C libs/code test TEST_FILE=tests/unit_tests/test_git_evidence.py
@@ -116,4 +152,4 @@ make -C libs/code test TEST_FILE=tests/unit_tests/test_git_trace_integration.py
 make -C libs/code test TEST_FILE=tests/unit_tests/test_turn_trace.py
 ```
 
-See the repository-wide [Testing Guide](../testing/testing-guide.md) for test-command conventions.
+These tests cover snapshots and backend probes, ordering and stale-field removal, approval/resume sibling backfill, turn isolation, active-run safety, replica delivery, and optional telemetry failure. Talon tests in `libs/talon/tests/test_observability.py`, `test_runtime.py`, and `test_host.py` cover tracing opt-in/context metadata, log redaction and bounds, callback installation, and cancellation feedback behavior. See [Talon Runtime Integration](../integrations/talon.md) for tool integration and [Security and Trust Boundaries](../operations/security.md) for the authority model.

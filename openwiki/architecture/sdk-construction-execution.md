@@ -1,154 +1,126 @@
 ---
 type: architecture
 title: SDK Construction and Execution
-description: How create_deep_agent assembles and compiles the Deep Agents graph, including middleware ordering, model-refusal handling, profiles, and child-graph boundaries.
-tags: [deepagents, sdk-construction, middleware, subagents, langgraph, rubric-evaluation]
+description: How create_deep_agent builds the LangChain graph, orders middleware, delegates work, and applies filesystem permissions and approval policies.
+tags: [deepagents, sdk-construction, middleware, subagents, permissions, langgraph]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-11-06T08:04:19.814Z
+    at: 2026-11-10T08:04:01.717Z
 sources:
-  - id: openwiki-source-fd64c1b88759a3b897a5452c
-    resource: repo://libs/deepagents/deepagents/__init__.py
+  - id: openwiki-source-b93533cac55718d75277d1cf
+    resource: repo://libs/deepagents/deepagents/_excluded_middleware.py
   - id: openwiki-source-822ae989625ba99d4c7cc08b
     resource: repo://libs/deepagents/deepagents/_messages_reducer.py
+  - id: openwiki-source-e483ff4cfd25918c8107d575
+    resource: repo://libs/deepagents/deepagents/backends/filesystem.py
   - id: openwiki-source-0fc0e47059e4d07e23e50be2
     resource: repo://libs/deepagents/deepagents/graph.py
+  - id: openwiki-source-0fb4155c19dd248acd3ffe4f
+    resource: repo://libs/deepagents/deepagents/middleware/_fs_interrupt.py
   - id: openwiki-source-e51c4102234507d1529a2440
     resource: repo://libs/deepagents/deepagents/middleware/async_subagents.py
-  - id: openwiki-source-b93c32bc33a8fa17b52b8a0e
-    resource: repo://libs/deepagents/deepagents/middleware/rubric.py
-  - id: openwiki-source-66cf9d0832d3cb55bec2b5ed
-    resource: repo://libs/deepagents/deepagents/middleware/skills.py
+  - id: openwiki-source-fed4b84a38685f37e58018c5
+    resource: repo://libs/deepagents/deepagents/middleware/filesystem.py
   - id: openwiki-source-114a1c7a58992fa867a94ef0
     resource: repo://libs/deepagents/deepagents/middleware/subagents.py
-  - id: openwiki-source-a6f0952b514b04c99bc51705
-    resource: repo://libs/deepagents/tests/unit_tests/middleware/test_pinned_skills.py
-  - id: openwiki-source-10e4084b6aa57e5cc82620b3
-    resource: repo://libs/deepagents/tests/unit_tests/test_end_to_end.py
+  - id: openwiki-source-454da083c2cc29febd156c7e
+    resource: repo://libs/deepagents/tests/unit_tests/middleware/test_subagent_middleware_init.py
   - id: openwiki-source-917b61d56e652536ba962f3a
     resource: repo://libs/deepagents/tests/unit_tests/test_subagent_refusal.py
-generated: { by: "openwiki/0.4.2", at: "2026-11-06T08:04:19.814Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-11-10T08:04:01.717Z" }
 ---
 
 # SDK Construction and Execution
 
-`create_deep_agent()` is the SDK assembly boundary. It resolves the model and harness profile, chooses a backend, separates inline from remote subagent specifications, assembles the main and SDK-built child middleware stacks, and calls LangChain `create_agent()`. The result is a configured compiled LangGraph, not a separate Deep Agents event loop.
+`create_deep_agent()` is the Deep Agents assembly boundary, not a separate runtime. It resolves the model and its harness profile, prepares a backend, prompt, tools, subagent specifications, and middleware, then delegates graph compilation to LangChain `create_agent()`. The returned compiled LangGraph receives the caller's checkpointer, store, cache, schemas, name, and debug option; Deep Agents adds a recursion limit of `9999` and integration metadata.
 
-The normal LangChain agent finishes when the model has no more tool calls. `RubricMiddleware` is a separately installed, public middleware that can review that natural completion when an invocation supplies a `rubric`; it is not in the default SDK stack. It uses a nested grader agent and, only when appropriate, sends the main graph back to its model node with revision feedback.
-
-## Construction boundary
-
-The entry point accepts a model, tools, prompt, caller middleware, subagents, skill and memory sources, permissions, backend, interrupt policy, response and state schemas, and LangGraph execution dependencies. A missing backend becomes `StateBackend()`. A model string is resolved before selecting its harness profile, while `model=None` follows the deprecated default-model path. The profile can rewrite tool descriptions and contributes base/suffix prompt material; a supplied `SystemMessage` retains its content blocks and receives profile prompt content as a new text block.
-
-Subagent routing is structural:
-
-- a spec with `graph_id` is a remote `AsyncSubAgent` and is handled by `AsyncSubAgentMiddleware`;
-- a declarative `SubAgent` or runnable-bearing `CompiledSubAgent` is an inline `task` subagent;
-- unless disabled by the profile or explicitly replaced, the SDK prepends the inline `general-purpose` subagent.
-
-Thus remote specifications do not themselves add the blocking `task` tool, and disabling all inline agents does not disable the remote async-task tools.
-
-### Middleware assembly
-
-The main core is built as `FilesystemMiddleware`, optional `SubAgentMiddleware`, `_ParentNotifierMiddleware`, summarization middleware, `PatchToolCallsMiddleware`, and optional `AsyncSubAgentMiddleware`. The SDK then appends profile middleware, optional `SkillsMiddleware`, provider prompt-caching middleware, optional `MemoryMiddleware`, generated human-approval middleware, `UnsupportedContentMiddleware`, and finally `ModelRefusalMiddleware`.
-
-Caller middleware is not simply appended. Profile exclusions run over the assembled stack, caller middleware replaces a surviving same-name entry in place or is spliced after the core and before the tail, then exclusions run again. Consequently, a newly supplied `ModelFallbackMiddleware` is inside the final SDK `ModelRefusalMiddleware` and can catch its `ModelRefusalError` before it reaches the caller. If the profile excludes model-visible tools, `_ToolExclusionMiddleware` is appended last so a later middleware cannot restore them. Filesystem and inline-subagent scaffolding are protected from profile exclusion; unmatched, ambiguous, or protected exclusions fail construction rather than silently producing a partial harness. A replacement filesystem middleware inherits configured agent permissions when it has none of its own, but conflicting nonempty policies are rejected.
-
-The automatically generated `general-purpose` child has its own narrower stack—filesystem, summarization, patching, profile middleware, optional skills, caching, and a final `ModelRefusalMiddleware`. Caller middleware reaches it only when it replaces an original slot in that child stack. This prevents main-agent-only middleware, including a new main `ModelFallbackMiddleware`, from accidentally becoming child behavior.
-
-### Refusals, fallback, and graph boundaries
-
-`ModelRefusalMiddleware` is deliberately the last non-tool-exclusion SDK middleware in each graph the SDK itself constructs: the main graph, the generated `general-purpose` graph, and each declarative `SubAgent` graph. By default, a main-model refusal is therefore raised to the caller. A harness profile may exclude `ModelRefusalMiddleware` by its class or exact name, in which case the raw refusal response remains available instead; it is not protected scaffolding. Exclusions are applied to each applicable SDK-built stack, with exact-type class matching and exact-name string matching.
-
-A caller-provided `ModelFallbackMiddleware` takes the main stack's custom-middleware insertion point ahead of that final refusal middleware, so it catches the default refusal and can invoke its fallback model. Do not infer that the fallback is inherited everywhere: a declarative isolated subagent uses its own `middleware`; a `mode="fork"` subagent merges parent caller middleware with its own, allowing its own or inherited fallback to occupy the child stack; and the generated general-purpose child receives only caller middleware that replaces an existing generated-child slot. Its final refusal middleware remains present unless its profile removes it.
-
-A `CompiledSubAgent` is already compiled and is used as-is, so `create_deep_agent()` cannot install refusal or fallback middleware inside it. The enclosing `task` tool instead catches `ModelRefusalError` and a structured-output validation error carrying a refusal, returning a retry-warning tool result to the parent; unrelated structured-output errors still propagate. This behavior applies on both `invoke` and `ainvoke`. A remote `AsyncSubAgent` likewise owns its remote graph and returns background task IDs rather than receiving the local child stack.
-
-### State and compilation
-
-Without a supplied schema, the graph uses `DeepAgentState`. Its `messages` channel is a `DeltaChannel` with the message-delta reducer: raw inputs are normalized; absent replay state is empty; messages update or remove by ID; and the remove-all sentinel resets history. A custom schema remains the base schema, and private fields contributed by it or installed middleware are given to installed `SubAgentMiddleware` instances as keys that must not cross a `task` boundary.
-
-Finally, `create_deep_agent()` forwards the resolved model, prompt, rewritten tools, complete middleware stack, schemas, checkpointer, store, cache, and other execution options to `create_agent()`. It configures the resulting graph with recursion limit `9999` and Deep Agents integration metadata. Checkpointing and store ownership are therefore established at this outer graph-compilation boundary.
-
-## Delegation and skills at the assembly boundary
-
-Inline `task` delegation is a blocking child-graph invocation. Declarative children inherit parent permissions and `interrupt_on` only when they do not specify their own, and inherit caller tools only when `tools` is omitted. A forked inline child rebuilds the inherited prompt and conversation context; a compiled runnable owns its own compilation and schema. Remote async subagents are deliberately different: they return a task ID while work continues on an Agent Protocol server, with parent-local tracking in `async_tasks`; their configuration validates unique names plus `isolated` or beta `fork` mode and `interrupt` or `enqueue` update strategy.
-
-When `skills=` is configured, `SkillsMiddleware` is placed after compaction and routing/fallback middleware and before prompt caching. It loads metadata once per thread, with later sources overriding duplicate names; setting `skills_metadata` to `None` requests a reload. `pinned_skills` is a stronger, per-turn disclosure mechanism: before the model call, known readable skills are appended in requested order as tagged `HumanMessage` snapshots, then the request field is cleared. Pins persist as conversation messages, not public output state; unknown or unreadable names are skipped. A pin also keeps tools named by that skill's `metadata.include_tools` disclosed only while the relevant skill message remains in context.
-
-## Rubric-driven completion review
-
-Install review explicitly and provide a rubric on the invocation that needs it:
-
-```python
-from deepagents import RubricMiddleware, create_deep_agent
-
-agent = create_deep_agent(
-    model=main_model,
-    middleware=[RubricMiddleware(model=grader_model, max_iterations=3)],
-)
-result = agent.invoke({
-    "messages": [{"role": "user", "content": "Implement the change."}],
-    "rubric": "Tests pass and the requested behavior is documented.",
-})
-```
-
-The middleware is a no-op without `rubric`. `before_agent` starts a fresh grading run when the rubric changed or the prior run was terminal; it resets the iteration count, mints a run ID, and clears frozen criteria. A nonterminal run with the same rubric retains its budget. At natural `after_agent` completion, the middleware synchronously or asynchronously invokes the grader, records its evaluation, and either falls through to normal termination or jumps to `model`.
+## Construction flow
 
 ```mermaid
 flowchart TD
-    Caller["Caller invokes compiled agent"] --> Main["Main agent loop"]
-    Main --> Natural["Natural completion"]
-    Natural --> Present{"Rubric supplied"}
-    Present -- "no" --> Normal["Normal graph completion"]
-    Present -- "yes" --> Grade["Nested structured grader"]
-    Grade --> Coverage{"Coverage usable"}
-    Coverage -- "no" --> Retry["One corrected grader retry"]
-    Retry --> Verdict
-    Coverage -- "yes" --> Verdict{"Evaluation result"}
-    Verdict -- "satisfied" --> Accepted["Complete with satisfied status"]
-    Verdict -- "failed" --> Unevaluable["Complete with failed status"]
-    Verdict -- "grader error" --> Error["Complete with grader error status"]
-    Verdict -- "needs revision below cap" --> Feedback["Tagged revision message"]
-    Feedback --> Main
-    Verdict -- "needs revision at cap" --> Capped["Complete with max iterations status"]
+    Input["SDK options"] --> Resolve["Resolve model and harness profile"]
+    Resolve --> Prepare["Prepare prompt tools and backend"]
+    Prepare --> Split{"Subagent specification"}
+    Split -->|"declarative or compiled"| Inline["Inline task subagents"]
+    Split -->|"graph_id"| Remote["Remote async subagents"]
+    Inline --> Stack["Assemble main middleware stack"]
+    Remote --> Stack
+    Stack --> Schema["Register private state keys"]
+    Schema --> Compile["LangChain create_agent"]
+    Compile --> Graph["Configured compiled graph"]
+    Graph --> Task["task invokes inline child"]
+    Graph --> Async["async tools launch remote task"]
 ```
 
-Caption: completion review begins only after the ordinary agent would stop; one coverage retry is internal to a grading iteration, while only an eligible revision verdict returns control to the main model.
+Caption: `create_deep_agent()` classifies subagent specifications before building the main stack, then hands the assembled graph to LangChain; inline and remote delegation have different execution paths.
 
-### Grader contract and trust boundary
+### Model, profile, prompt, and backend
 
-The middleware lazily resolves its configured model and builds a distinct `rubric_grader` graph with `GraderResponse` structured output. The nested agent can have a custom prompt, tools, middleware, context schema, and state schema. `prepare_messages_for_grader` can transform the transcript; `build_grader_state` can add custom fields only with `grader_state_schema`, and cannot replace the middleware-owned `messages` payload. Static runtime context and diagnostic metadata are forwarded to grader invocation.
+A string model is resolved before its harness profile is selected. Passing `model=None` still builds the default Anthropic model, but that compatibility path is deprecated. In the absence of `backend=`, the SDK uses `StateBackend()`.
 
-A valid structured response contains `satisfied`, `needs_revision`, or `failed`, an explanation, and criterion verdicts. Validation prevents a satisfied verdict with failures or a revision verdict whose nonempty criteria all pass; a failing criterion needs an actionable gap. `failed` means the rubric cannot be evaluated, rather than an infrastructure failure.
+The active profile rewrites user-tool descriptions and supplies profile prompt material. The authored prompt order is caller text, profile base prompt, then profile suffix. If the caller passes a `SystemMessage`, its content blocks (including cache-control blocks) remain intact and the profile material is appended as a text block. Tool exclusion is separate from this rewrite: it is applied at the end of stack construction so middleware cannot reintroduce a model-visible excluded tool.
 
-The grader receives a bounded, role-labelled transcript: the newest 30 messages, plus the original non-synthetic user message when it fell out of that window, with each message capped at 4,000 characters. The rubric, transcript, and criteria checklist are nonce-delimited and sanitised; the payload tells the grader that transcript content is untrusted. This is the trust boundary that prevents conversation or tool content from redefining completion.
+## Main middleware stack and profiles
 
-### Criterion freezing, audit, and revision semantics
+The SDK first builds its core stack in this order:
 
-The first non-`failed` evaluation with criteria freezes criterion **names** for the grading run. Later grader payloads replay that checklist and request its count, preventing the grader from shrinking the criterion set between iterations. This is a consistency guard, not independent proof that the initial decomposition was complete: the middleware never parses free-form rubric prose, compares later coverage by count rather than names, and accepts over-coverage.
+1. `FilesystemMiddleware`;
+2. `SubAgentMiddleware` when at least one inline subagent is available;
+3. `_ParentNotifierMiddleware`;
+4. summarization middleware;
+5. `PatchToolCallsMiddleware`;
+6. `AsyncSubAgentMiddleware` when remote async subagents were supplied.
 
-An empty non-failed response or an under-covered response causes one corrected grader retry. If coverage is still inadequate and the grader says `satisfied`, the result is downgraded to `needs_revision` with `unverified=True`. This is a **verification gap, not a confirmed defect**: revision feedback says so explicitly and does not present under-reported passing items as verified. If the retry itself raises, the valid first response is retained so the coverage gate can apply this downgrade rather than replacing it with a terminal grader error.
+It then adds profile middleware, optional `SkillsMiddleware`, provider prompt-caching middleware, optional `MemoryMiddleware`, and `HumanInTheLoopMiddleware` when either permissions or `interrupt_on` require it. `UnsupportedContentMiddleware` precedes `ModelRefusalMiddleware`. A profile's excluded tools are enforced by `_ToolExclusionMiddleware`, which is appended last.
 
-A `needs_revision` verdict below `max_iterations` appends a synthetic `HumanMessage` named and sourced `rubric_grader`, records the evaluation, and returns `jump_to="model"`. Ordinary feedback identifies failed criteria and asks the agent not to regress confirmed passes. At the cap the evaluation is rewritten to `max_iterations_reached`, so it no longer jumps. `satisfied`, `failed`, `grader_error`, and the capped result all preserve the last main-agent response; downstream acceptance logic must inspect rubric bookkeeping rather than infer success from that response.
+Caller middleware does not simply append. The SDK first applies profile exclusions, replaces a same-named surviving middleware in place, inserts new caller middleware after the core stack and before the tail, then applies exclusions again. This placement lets a newly supplied `ModelFallbackMiddleware` catch the final default `ModelRefusalMiddleware`. Replacing `FilesystemMiddleware` inherits the agent permissions if the replacement has none; a nonempty conflicting permission policy raises `ValueError`.
 
-`RubricState` exposes only `rubric` as public middleware I/O. Status, iteration count, evaluation history, active run identity, active rubric, and frozen criteria are `PrivateStateAttr` fields. They are absent from input/output schemas but remain checkpoint-visible through `agent.get_state(config).values`; evaluations include run ID, iteration, verdict, explanation, criteria, and `unverified`. The middleware emits `rubric_evaluation_start` and `rubric_evaluation_end` events and calls `on_evaluation`; callback exceptions are logged and suppressed, so callbacks are observational rather than an enforcement mechanism.
+Profiles cannot exclude the required filesystem or synchronous subagent middleware. Exclusions match a class by exact type or a string by exact middleware name. Construction rejects protected exclusions, an exclusion that matches no applicable stack, and ambiguous name collisions across distinct middleware classes rather than silently producing a degraded harness. `ModelRefusalMiddleware` is not protected, so a profile may remove it to preserve a raw refusal response.
 
-### Failure semantics and operation
+### Built child stacks
 
-`max_iterations` must be a positive integer and defaults to `3`. Grader exceptions, including a missing or malformed structured result, are recorded as `grader_error` with diagnostic model/strategy information rather than as rubric `failed`. `GraphBubbleUp` propagates as graph control flow, and `KeyboardInterrupt` and cancellation propagate because they are not caught as ordinary exceptions. A grader with tools can therefore pause or interrupt without having its control flow mislabeled as a failed evaluation.
+The SDK adds `general-purpose` as the first inline subagent unless the profile disables it or an inline spec already uses that name. Its stack is filesystem, summarization, patching, profile middleware, optional skills, prompt caching, and `ModelRefusalMiddleware`; only caller middleware whose names match existing general-purpose slots is inherited. This avoids leaking arbitrary main-agent middleware into that default child.
 
-Use a dedicated grader model and supply only the verification tools and extra state it needs. Each natural completion adds a grader call, plus at most one coverage retry, so review adds latency and cost. For an acceptance gate, consume private status from a checkpointed thread, rubric stream events, or the evaluation callback; do not rely on the final assistant text.
+A declarative `SubAgent` gets its own constructed stack: filesystem, summarization, patching, that child model's profile middleware, optional skills, caching, and refusal handling. `create_sub_agent()` appends a child `HumanInTheLoopMiddleware` for its `interrupt_on` setting and appends `UnsupportedContentMiddleware` if absent before calling LangChain `create_agent()`. A `CompiledSubAgent`, by contrast, is already a runnable and remains opaque to SDK stack construction.
 
-## Focused verification
+## Delegation variants and state boundaries
 
-End-to-end fake-model tests construct an agent through `create_deep_agent()` and verify the first-pass satisfied path, a revision jump and subsequent satisfaction, capped revision, no-rubric no-op, frozen-criterion coverage recovery, tagged feedback, and interrupt propagation. Refusal-focused tests verify that the default main graph raises, that a caller `ModelFallbackMiddleware` catches that default refusal, that profile exclusion leaves the raw refusal response, and that declarative or opaque compiled child refusals become `task` results in both synchronous and asynchronous invocation. Pinned-skill tests cover requested ordering, snapshot persistence, duplicate and unknown names, unreadable files, parallel pins, tool disclosure lifetime, and isolation from child results.
+`subagents=` supports three distinct forms:
+
+- **Declarative `SubAgent`** — compiled into a local child graph and invoked synchronously through the parent `task` tool.
+- **`CompiledSubAgent`** — an existing runnable used by `task`; it must return state containing `messages`.
+- **`AsyncSubAgent`** — recognized by `graph_id` and routed to `AsyncSubAgentMiddleware`, which exposes remote background-task tools rather than the synchronous `task` tool.
+
+The `task` tool validates unique names and accepts only `isolated` or beta `fork` mode. Isolated children receive the delegated description as a new human message. A fork receives the parent's effective, summarization-adjusted conversation plus the task; its own instructions are delivered in that task message so the inherited system-prompt prefix can be reused. A forked child is given a guarded `task` tool which refuses recursive delegation. Declarative forks can receive compatible parent private channels to rebuild their stack; opaque compiled forks exclude private keys.
+
+Before either child form runs, the task middleware removes messages handled specially, structured output, skills bookkeeping, the caller rubric, and registered private fields. On return it passes only changed, non-excluded state keys and a single `ToolMessage`: a JSON serialization of `structured_response` when present, otherwise the last nonempty AI text. Parallel child calls that write the same custom parent field need a reducer; otherwise LangGraph raises `InvalidUpdateError`.
+
+A child model refusal is handled at the delegation boundary. `task` and its async counterpart turn `ModelRefusalError`, or a structured-output validation failure containing a refusal block, into a retry-warning result for the parent. Other structured-output failures propagate. This gives declarative and opaque compiled children a usable parent-level failure result without claiming to install middleware inside opaque runnables.
+
+Remote `AsyncSubAgentMiddleware` validates unique names, `isolated` or beta `fork` mode, and `interrupt` or `enqueue` update strategy. It stores task records under `async_tasks`, so IDs survive compaction. Launching returns promptly with an ID; status polling and follow-up model turns occur only in the asynchronous hooks (`ainvoke`/Agent Server path), while synchronous `invoke` still exposes the remote-task tools but does not poll.
+
+## State, persistence, and execution
+
+Without `state_schema=`, the main graph uses `DeepAgentState`. Its `messages` channel is a `DeltaChannel` using the local delta reducer, which normalizes raw message inputs, treats missing replay state as empty, replaces or removes messages by ID, and honors the remove-all sentinel. A custom schema is the graph base schema and is forwarded to declarative child compilation, not to precompiled or remote graphs. After final middleware assembly, the SDK collects private state fields from the base and installed middleware schemas and registers them with every installed `SubAgentMiddleware`, preventing those internal keys from crossing a task boundary.
+
+The checkpointer and store are passed to the outer `create_agent()` call. Child calls inherit ambient LangGraph configuration and are tagged as subagent runs; their task call ID is stored as tracing metadata. Consequently, persistence, stream behavior, and resume semantics remain LangGraph responsibilities at the compiled graph boundary rather than a Deep Agents-owned loop.
+
+## Filesystem permissions and approval
+
+`FilesystemPermission` rules classify filesystem calls as `read` or `write` and have `allow`, `deny`, or `interrupt` effects. Rules are evaluated in declaration order and the first match wins; no match allows the call. `FilesystemMiddleware` enforces these policies for its filesystem tools, not for direct backend calls. A declarative subagent inherits parent permissions only if it does not set its own list; a child list replaces the parent policy. Compiled and remote subagents must be configured independently.
+
+For a real `FilesystemBackend`, permission checks consider both the requested path and its symlink-resolved target, preventing a permitted alias from bypassing a deny rule. `interrupt` rules are translated during graph assembly into scoped `HumanInTheLoopMiddleware` predicates: exact operations are approved only when the target matches, whereas bulk operations such as `glob` and `grep` interrupt when their search subtree can overlap a protected path. User-provided `interrupt_on` entries override generated entries for the same tool.
+
+`FilesystemBackend` itself has a separate containment choice. Its default `virtual_mode=True` anchors virtual paths under `root_dir`, rejects traversal and escaping resolved paths, and avoids exposing the physical root in tool-visible paths. It is a path guardrail, not process isolation; `virtual_mode=False` permits host-path access for trusted local workflows. Direct filesystem access is inappropriate for a web server without stronger isolation.
+
+## Operational checks
+
+Focused subagent tests verify constructor failures for empty or duplicate sets and invalid modes, default task-tool registration, declarative compilation with HITL, dynamic structured output only for declarative variants, and rejection of dynamic schemas for opaque compiled runnables. Fork tests verify prompt-prefix and tool-order preservation, inherited memory and prompt middleware, rejection of fork-local skills, summarization-aware history, and recursive-delegation refusal. These are the key regression points when changing construction order or child-state transfer.
 
 ## Related pages
 
 - [Middleware stack](middleware-stack.md) — hook responsibilities and ordering.
-- [Runtime behavior](runtime-behavior.md) — runtime execution and operations.
-- [Middleware catalog](../concepts/middleware-catalog.md) — middleware capabilities.
-- [Subagents and skills](../concepts/subagents-skills.md) — delegation and skills configuration.
-- [Testing guide](../testing/testing-guide.md) — test selection and execution.
+- [Permissions and HITL](../concepts/permissions-hitl.md) — policy configuration and approvals.
+- [Profiles and models](../concepts/profiles-models.md) — profile selection and prompt behavior.
+- [Subagents and skills](../concepts/subagents-skills.md) — delegation configuration.
 - [Build a Deep Agent](../workflows/build-a-deep-agent.md) — SDK usage workflow.

@@ -36,6 +36,7 @@ from langchain_core.tools import BaseTool, tool
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.prebuilt import ToolNode
 from langgraph.types import Command
+from langsmith import trace
 
 from deepagents_code.hooks.server_middleware import ServerHooksMiddleware
 from deepagents_code.tools import create_web_search_tool, fetch_url
@@ -52,6 +53,7 @@ from deepagents_talon.background import (
     _MAX_RUNNING,
     _SCHEDULED_TURN,
     BackgroundSubagents,
+    _track_consumed_results,
 )
 from deepagents_talon.breakout import BREAKOUT_HANDLER, breakout
 from deepagents_talon.clock import current_time
@@ -81,7 +83,10 @@ from deepagents_talon.model_selection import (
 )
 from deepagents_talon.observability import (
     AgentActivityCallback,
+    UserInterruptionCallback,
     agent_activity_logging_enabled,
+    langsmith_trace_context,
+    langsmith_tracing_enabled,
     log_event,
     stable_log_ref,
 )
@@ -106,6 +111,7 @@ if TYPE_CHECKING:
     from deepagents.middleware.subagents import CompiledSubAgent, SubAgent
     from langchain.agents.middleware import AgentState, InterruptOnConfig
     from langchain.agents.middleware.types import AgentMiddleware
+    from langchain_core.callbacks import AsyncCallbackHandler
     from langchain_core.language_models import BaseChatModel
     from langgraph.types import Checkpointer
 
@@ -712,10 +718,42 @@ class DeepAgentRuntime:
         values = cast("AgentState[Any]", getattr(snapshot, "values", {}))
         repair = PatchToolCallsMiddleware().before_agent(values, cast("Any", None))
         messages = [] if repair is None else repair.get("messages", [])
-        await update_state(
-            checkpoint_config,
-            {"messages": [*messages, HumanMessage(content=_INTERRUPTED_MESSAGE)]},
-        )
+        assistant_id = TalonConfig.from_env(self.env).assistant_id
+        recovery_config = {
+            **checkpoint_config,
+            "configurable": {
+                **checkpoint_config.get("configurable", {}),
+                "thread_id": conversation_id,
+            },
+            "run_name": "talon_interrupt_recovery",
+            "tags": [
+                *checkpoint_config.get("tags", []),
+                "deepagents-talon",
+                f"assistant:{assistant_id}",
+                "talon:interrupt-recovery",
+            ],
+            "metadata": {
+                **checkpoint_config.get("metadata", {}),
+                "conversation_id": conversation_id,
+            },
+        }
+        with (
+            langsmith_trace_context(
+                self.env,
+                assistant_id=assistant_id,
+                conversation_id=conversation_id,
+                metadata={},
+            ),
+            (
+                trace("talon_interrupt_recovery", tags=["talon:interrupt-recovery"])
+                if langsmith_tracing_enabled(self.env)
+                else contextlib.nullcontext()
+            ),
+        ):
+            await update_state(
+                recovery_config,
+                {"messages": [*messages, HumanMessage(content=_INTERRUPTED_MESSAGE)]},
+            )
 
     async def prepare_inbound_media(
         self, message: ChannelMessage, *, config: TalonConfig
@@ -758,7 +796,7 @@ class DeepAgentRuntime:
             and request.metadata.get("background_delivery") is not True
         )
         pending = self.background.results(request.conversation_id)
-        pending_token = self._pending_results.set(pending)
+        pending_token = self._pending_results.set(pending.copy())
         activity = self._activity_callback(request)
         if activity is not None:
             activity.run_started(request.metadata.get("trigger"))
@@ -780,6 +818,7 @@ class DeepAgentRuntime:
                 )
             )
             with (
+                _track_consumed_results(request.conversation_id, pending),
                 progress_messages(request.message_handler, self.verbosity),
                 question_scope(_question_handler_from_request(request)),
                 _history_context(request),
@@ -1173,6 +1212,7 @@ class DeepAgentRuntime:
             }
         if activity is not None:
             config["callbacks"] = [activity]
+        self._add_interruption_callback(config)
         last_exc: Exception | None = None
         for attempt in range(self.max_retries):
             try:
@@ -1201,6 +1241,12 @@ class DeepAgentRuntime:
             raise last_exc
         msg = "agent invocation retry loop exited unexpectedly"
         raise RuntimeError(msg)
+
+    def _add_interruption_callback(self, config: dict[str, object]) -> None:
+        """Observe root cancellation only when LangSmith tracing is enabled."""
+        if langsmith_tracing_enabled(self.env):
+            callbacks = cast("list[AsyncCallbackHandler]", config.setdefault("callbacks", []))
+            callbacks.append(UserInterruptionCallback())
 
     def _graph_invoke(self) -> Callable[..., Awaitable[object]]:
         graph = self._invocation_graph.get()
@@ -1322,6 +1368,9 @@ class DeepAgentRuntime:
         for path in _split_path_env(
             self.env.get("DEEPAGENTS_TALON_SKILLS_DIRS") or self.env.get("SKILLS_DIRS"),
         ):
+            if not Path(path).is_dir():
+                logger.warning("Ignoring Talon skills directory %s: not a directory", path)
+                continue
             if path not in sources:
                 sources.append(path)
         return sources or None
@@ -1770,8 +1819,8 @@ def _is_model_content(value: object) -> TypeGuard[list[dict[str, object]]]:
 def _split_path_env(raw: str | None) -> list[str]:
     if not raw:
         return []
-    separator = ";" if ";" in raw else os.pathsep
-    return [str(Path(part).expanduser()) for part in raw.split(separator) if part.strip()]
+    separator = ";" if ";" in raw else "," if "," in raw else os.pathsep
+    return [str(Path(part.strip()).expanduser()) for part in raw.split(separator) if part.strip()]
 
 
 def _manifest_memory_paths(assistant_dir: Path) -> list[str]:

@@ -783,7 +783,7 @@ async def test_unrelated_exception_group_remains_server_error(
 
     assert result.tools == ()
     assert result.servers[0].status == "error"
-    assert result.servers[0].error == "RuntimeError"
+    assert "retry login" in result.servers[0].error
     assert "nested detail" not in result.servers[0].error
     assert "internal detail" not in result.servers[0].error
 
@@ -1270,6 +1270,43 @@ async def test_authenticate_reports_failure_for_a_grouped_session_error(
 
     assert result == {"status": "failed", "server_name": "notion", "message": "connection reset"}
     assert "ExceptionGroup" not in result["message"]
+    assert await provider.refresh_if_needed() is None
+
+
+@pytest.mark.parametrize("grouped", [False, True])
+async def test_authenticate_reports_safe_connection_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    *,
+    grouped: bool,
+) -> None:
+    config_path = tmp_path / "oauth.mcp.json"
+    _write_config(config_path, {"notion": {"url": "https://mcp.example", "auth": "oauth"}})
+    provider = MCPToolProvider(_config(tmp_path, {"DEEPAGENTS_TALON_MCP_CONFIG": str(config_path)}))
+    provider._oauth_servers = frozenset({"notion"})
+    sensitive = "https://user:password@private.example/mcp?token=secret-token"
+
+    async def fail_login(*_args: object, **_kwargs: object) -> None:
+        msg = f"Client failed to connect: {sensitive}"
+        error = RuntimeError(msg)
+        if grouped:
+            raise ExceptionGroup(sensitive, [error])
+        raise error
+
+    monkeypatch.setattr("deepagents_talon.mcp._open_authenticated_session", fail_login)
+    with caplog.at_level(logging.WARNING, logger="deepagents_talon.mcp"):
+        result = await provider._authenticate("notion", "tool-call")
+
+    assert result["status"] == "failed"
+    assert "check the configured server URL and availability" in result["message"]
+    assert "retry login" in result["message"]
+    assert "MCP login failed before authorization completed" in caplog.text
+    assert ("ExceptionGroup" if grouped else "RuntimeError") in caplog.text
+    for secret in (sensitive, "password", "private.example", "secret-token"):
+        assert secret not in result["message"]
+        assert secret not in caplog.text
+    assert all(record.exc_info is None for record in caplog.records)
     assert await provider.refresh_if_needed() is None
 
 

@@ -77,6 +77,15 @@ Lets `task`/`atask` refuse recursive delegation at call time instead of
 omitting the tool -- see `_ForkTaskToolMiddleware` for why.
 """
 
+_FORK_INSTRUCTIONS_KEY = "_deepagents_fork_instructions"
+"""Private spec key holding a declarative fork's own `system_prompt`.
+
+`create_deep_agent` gives a fork the parent's system prompt unchanged and moves
+the fork's own instructions here, so they are delivered with the task after the
+inherited history. Changing the system message would put the difference ahead
+of the history and stop the fork from reusing the parent's cached prompt prefix.
+"""
+
 _FORK_RECURSION_REFUSAL = (
     "You are a subagent and cannot delegate to another subagent. Complete this task yourself instead of calling this tool again."
 )
@@ -158,9 +167,10 @@ class SubAgent(TypedDict):
     Avoid middleware that rewrites the inherited system-prompt prefix in the
     fork's model request or changes tool definitions unless you accept reduced
     shared prompt-cache reuse and potentially higher model costs. This is
-    distinct from `SubAgent.system_prompt`, which appends instructions to the
-    inherited prompt. A `wrap_model_call` hook receives that prompt through
-    `request.system_message`. For example, this prepends text before the inherited
+    distinct from `SubAgent.system_prompt`, which a fork delivers with its task
+    message rather than in the system prompt. A `wrap_model_call` hook receives
+    the inherited prompt through `request.system_message`. For example, this
+    prepends text before the inherited
     prefix in the fork's request, preventing reuse of that prefix:
 
     ```python
@@ -239,8 +249,9 @@ class SubAgent(TypedDict):
     system_prompt: NotRequired[str]
     """Instructions for the subagent. Uses an empty prompt when omitted.
 
-    Under `mode="fork"` this is appended to the inherited prompt rather than
-    replacing it.
+    Under `mode="fork"` the fork keeps the parent's system prompt unchanged so it
+    can reuse the parent's cached prompt prefix; these instructions are delivered
+    with the task message after the inherited conversation instead.
     """
 
     mode: NotRequired[Literal["isolated", "fork"]]
@@ -410,17 +421,21 @@ def _fork_messages(
     description: str,
     *,
     preamble: str = _FORK_TASK_PREAMBLE,
+    instructions: str | None = None,
 ) -> list[AnyMessage]:
     """Build a fork's history: the parent's effective conversation, then the task.
 
     Applies summarization event so that a compiled subagent sees the
     compacted conversation instead of replaying what the parent already evicted.
+    The fork's own `instructions`, if any, go in the task message so everything
+    before it stays identical to the parent's request.
     """
     history = list(messages)
     if history and isinstance(history[-1], AIMessage) and history[-1].tool_calls:
         history.pop()
     effective = _DeepAgentsSummarizationMiddleware._apply_event_to_messages(history, event)
-    return [*effective, HumanMessage(content=preamble + description)]
+    task = f"{preamble}{instructions}\n\n{description}" if instructions else preamble + description
+    return [*effective, HumanMessage(content=task)]
 
 
 DEFAULT_SUBAGENT_PROMPT = """In order to complete the objective that the user asks of you, you have access to a number of standard tools.
@@ -857,6 +872,7 @@ def _build_task_tool(  # noqa: C901, PLR0915
                     runtime.state.get("messages", []),
                     runtime.state.get(SUMMARIZATION_EVENT_KEY),
                     description,
+                    instructions=cast("dict[str, Any]", subagent).get(_FORK_INSTRUCTIONS_KEY),
                 ),
             }
         else:

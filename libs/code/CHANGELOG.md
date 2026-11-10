@@ -2,6 +2,38 @@
 
 # Deep Agents Code Changelog
 
+## [0.2.7](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.2.6...deepagents-code==0.2.7) (2026-11-10)
+
+### Features
+
+- Added shell completion scripts via `dcode completion` ([#7264](https://github.com/langchain-ai/deepagents/pull/7264)).
+
+### Bug Fixes
+
+- Fixed detection of editor launchers such as `code.cmd` on Windows ([#7642](https://github.com/langchain-ai/deepagents/pull/7642)).
+- Improved `dcode completion` output and setup steps, and fixed Bash completion for `--flag=value` arguments ([#7658](https://github.com/langchain-ai/deepagents/pull/7658), [#7656](https://github.com/langchain-ai/deepagents/pull/7656)).
+- Preserved compaction feedback and offload usage when summaries do not stream ([#7644](https://github.com/langchain-ai/deepagents/pull/7644)).
+
+### Performance Improvements
+
+- Reduced Git attribution overhead by halving probes, backing off after failures, and scanning the worktree only once per evidence probe. Added an option to disable attribution probes ([#7661](https://github.com/langchain-ai/deepagents/pull/7661), [#7660](https://github.com/langchain-ai/deepagents/pull/7660)).
+
+## [0.2.6](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.2.5...deepagents-code==0.2.6) (2026-11-09)
+
+### Features
+
+- Make idle compaction settings filterable in traces ([#7624](https://github.com/langchain-ai/deepagents/pull/7624)).
+- Tag offload traces with their triggers ([#7630](https://github.com/langchain-ai/deepagents/pull/7630)).
+
+### Bug Fixes
+
+- Fix dcode startup on Windows by disabling server log colors ([#7591](https://github.com/langchain-ai/deepagents/pull/7591)).
+- Bypass proxies for local server traffic ([#7613](https://github.com/langchain-ai/deepagents/pull/7613)).
+- Offer recovery options when server startup times out ([#7610](https://github.com/langchain-ai/deepagents/pull/7610)).
+- Leave piped standard input available to subcommands ([#7601](https://github.com/langchain-ai/deepagents/pull/7601)).
+- Resolve the summarization cutoff by message ID ([#7570](https://github.com/langchain-ai/deepagents/pull/7570)).
+- Keep queued prompts beside long message text ([#7611](https://github.com/langchain-ai/deepagents/pull/7611)).
+
 ## [0.2.5](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.2.4...deepagents-code==0.2.5) (2026-11-05)
 
 ### Bug Fixes

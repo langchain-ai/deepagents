@@ -1,70 +1,26 @@
 ---
 type: architecture concept
-title: Filesystem Tools and Backends
-description: Deep Agents and dcode expose filesystem and execution tools through capability-aware middleware backed by pluggable storage and sandbox implementations. This page explains tool allowlists, routing, permission and approval controls, content lifecycle, media reads, and containment boundaries.
+title: Tools and Filesystem Access
+description: Deep Agents and dcode expose filesystem and execution tools through capability-aware middleware backed by pluggable storage and sandbox implementations. This page explains tool allowlists, routing, permission and approval controls, search deadlines, content lifecycle, media reads, and containment boundaries.
 tags: [tools, filesystem, execution, middleware, backends, persistence, multimodal, permissions]
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-11-07T08:03:46.171Z
 sources:
-  - id: openwiki-source-1728494bdd59604ce9b5f65b
-    resource: repo://libs/code/deepagents_code/_server_config.py
-  - id: openwiki-source-05106e66a949150d557266a2
-    resource: repo://libs/code/deepagents_code/agent.py
-  - id: openwiki-source-b9ef532d79a0667acf40e58b
-    resource: repo://libs/code/deepagents_code/client/launch/server_manager.py
-  - id: openwiki-source-a12868876b60484607797187
-    resource: repo://libs/code/deepagents_code/file_ops.py
-  - id: openwiki-source-2e03fee957625ca21a1c21af
-    resource: repo://libs/code/deepagents_code/main.py
-  - id: openwiki-source-752b52e8fedb86515652254d
-    resource: repo://libs/code/deepagents_code/managed_tools.py
-  - id: openwiki-source-f6d553e7afdf54acac36e7d3
-    resource: repo://libs/code/deepagents_code/mcp_tools.py
-  - id: openwiki-source-ea1089f0d7536fbc96c64866
-    resource: repo://libs/code/deepagents_code/offload_api.py
-  - id: openwiki-source-3300d75e0c132882e2e3b4ce
-    resource: repo://libs/code/deepagents_code/tool_catalog.py
-  - id: openwiki-source-8ccbc389e8d6198afea76baa
-    resource: repo://libs/code/tests/unit_tests/test_file_ops.py
-  - id: openwiki-source-f598809da8d8fbff2d7ae090
-    resource: repo://libs/code/tests/unit_tests/test_server_manager.py
   - id: openwiki-source-a1549ea98d425efea270be93
     resource: repo://libs/deepagents/deepagents/backends/composite.py
   - id: openwiki-source-e483ff4cfd25918c8107d575
     resource: repo://libs/deepagents/deepagents/backends/filesystem.py
-  - id: openwiki-source-f84c83d6fab6028c94be90bc
-    resource: repo://libs/deepagents/deepagents/backends/local_shell.py
   - id: openwiki-source-e3efb5f3e4a9e8517eb6d8f5
     resource: repo://libs/deepagents/deepagents/backends/protocol.py
-  - id: openwiki-source-d4463137befa776cd47750d4
-    resource: repo://libs/deepagents/deepagents/backends/sandbox.py
-  - id: openwiki-source-c972622237a22631e36f3625
-    resource: repo://libs/deepagents/deepagents/backends/utils.py
-  - id: openwiki-source-0fc0e47059e4d07e23e50be2
-    resource: repo://libs/deepagents/deepagents/graph.py
-  - id: openwiki-source-303a7196a0e1a36cc078621b
-    resource: repo://libs/deepagents/deepagents/middleware/_blob_offload.py
-  - id: openwiki-source-0fb4155c19dd248acd3ffe4f
-    resource: repo://libs/deepagents/deepagents/middleware/_fs_interrupt.py
-  - id: openwiki-source-8b1aaf77fc0430fd00711a73
-    resource: repo://libs/deepagents/deepagents/middleware/_tool_exclusion.py
-  - id: openwiki-source-454ab6b822ad87c53f679f58
-    resource: repo://libs/deepagents/deepagents/middleware/_video.py
   - id: openwiki-source-fed4b84a38685f37e58018c5
     resource: repo://libs/deepagents/deepagents/middleware/filesystem.py
   - id: openwiki-source-7b8607fdda73d9d47ee17387
     resource: repo://libs/deepagents/tests/unit_tests/backends/test_filesystem_backend.py
-  - id: openwiki-source-270e58b08372692cc14c869c
-    resource: repo://libs/deepagents/tests/unit_tests/middleware/test_filesystem_video.py
-  - id: openwiki-source-6d183faf1a4bc5a5ba451aba
-    resource: repo://libs/deepagents/tests/unit_tests/test_graph.py
-  - id: openwiki-source-903e05891b2ddf4f958276fd
-    resource: repo://libs/deepagents/tests/unit_tests/test_local_sandbox_operations.py
-generated: { by: "openwiki/0.4.2", at: "2026-11-07T08:03:46.171Z" }
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-11-10T08:04:01.717Z
+generated: { by: "openwiki/0.4.2", at: "2026-11-10T08:04:01.717Z" }
 ---
 
-# Filesystem Tools and Backends
+# Tools and Filesystem Access
 
 `FilesystemMiddleware` is the model-facing adapter over an initialized `BackendProtocol`: it creates tools, validates and formats their results, applies middleware-owned filesystem policy, and manages large or binary message content. The backend owns storage and operation implementation. A visible tool is not a guarantee that the backend implements it. SDK profile exclusions are model-surface controls rather than authorization, while dcode treats its explicitly configured filesystem allowlist as a security control and carries it into configurable subagents. See [Backends](backends.md) for storage and routing, [Permissions & HITL](permissions-hitl.md) for approval configuration, and [MCP](../integrations/mcp.md) for remote tools.
 
@@ -172,7 +128,7 @@ File operations route individually, but `execute` does not: a composite always d
 
 ### Local search and glob behavior
 
-The backend-level `grep` is a literal substring search, not a regex facility. It first uses `rg` when available with fixed-string mode, streams JSON matches, drains stderr concurrently, and stops only after observing a match beyond a total `max_count` cap; therefore exactly `max_count` matches can still be complete, while a result marked `truncated=True` is incomplete. If `rg` is absent, cannot be executed, or exits with a hard error, the backend reruns the search through its Python fallback. That fallback applies the same total-cap and time-budget rules, skips files over `max_file_size_mb`, and returns previously found matches with an error when a walk or file read fails partway through. Both paths preserve the searched symlink spelling in results where possible but filter results whose resolved target lies outside the requested search root. In virtual mode, agent-visible fallback errors are sanitized so the physical root and embedded host paths do not leak.
+The backend-level `grep` is a literal substring search, not a regex facility. It first uses `rg` when available with fixed-string mode, streams JSON matches, drains stderr concurrently, and stops only after observing a match beyond a total `max_count` cap; therefore exactly `max_count` matches can still be complete, while a result marked `truncated=True` is incomplete. One synchronous search phase has a 15-second deadline. A watchdog kills a stalled `rg`: if it already emitted matches, those partial results are returned as truncated; with no output it falls back to Python. An unavailable or unexecutable `rg`, and a hard nonzero exit, also trigger the fallback (discarding any hard-error partial output). The Python fallback has its own 15-second budget, skips files over `max_file_size_mb`, and returns previously found matches with an error when a walk or file read fails partway through. The asynchronous wrapper allows 35 seconds so a timed-out ripgrep phase can be followed by the fallback phase. Both paths preserve the searched symlink spelling in results where possible but filter results whose resolved target lies outside the requested search root. In virtual mode, agent-visible fallback errors are sanitized so the physical root and embedded host paths do not leak.
 
 `glob` and grep's `glob` filter share one matcher. A pattern without `/` matches a basename at any depth; a pattern with `/` is evaluated relative to the search root; `**` is supported; and a leading `/` anchors to that root. Brace expansion is supported. Dot names require an explicit dot in the matching segment, and `**` does not descend into dot-directories—so `*.yml` can match a nested file beneath `.github`, while `**/*.yml` does not. Traversal segments (`..`) and patterns refused by the matcher return a structured glob error rather than escaping the backend. Local `glob` walks entries under a five-second backend budget, returns sorted regular-file matches collected before expiry with `truncated=True` and reason `budget`, and treats a mid-walk failure as an error rather than benign truncation. The middleware adds a longer outer `GLOB_TIMEOUT`, uses a bounded shared worker pool for synchronous calls so abandoned workers cannot queue without limit, and returns a tool error when that outer deadline expires.
 
@@ -269,7 +225,7 @@ Keep `read_file` in explicit tool lists, and treat missing `delete` or `execute`
 
 When changing this area, exercise the focused behavior rather than only tool registration. The filesystem-backend suite is the regression boundary for both modes: it checks virtual paths and host-path mode, direct-child `ls` ordering and errors, text pagination (including negative/zero limits and end-of-file), binary/video classification and size guards, byte upload/download with partial batch success, edit newline normalization, and recursive deletion that removes a symlink itself rather than its directory target. It also verifies symlink-loop errors and that virtual display paths do not reveal `root_dir`. The video middleware suite separately verifies sync and async extraction routing, seconds-window forwarding, error conversion, generic fallback without the optional extra, and reordering synthetic media after a parallel tool-result batch.
 
-For search, retain literal treatment of regex-looking input; directory-component include globs when the process cwd differs from the search root; file-scoped search; total match caps; ripgrep timeout, executable-race, stderr-draining, and hard-error fallback paths; Python fallback partial-error behavior; and containment filtering for a symlink that points outside a searched root. Preserve the shared glob dialect—hidden-name behavior, brace expansion, traversal refusal, anchoring, and basename-at-any-depth matching—and its failure distinction: a deadline returns partial `truncated` results, while a mid-walk exception is an error. Keep the backend glob budget below the middleware deadline so the useful partial backend result wins before the outer tool timeout.
+For search, retain literal treatment of regex-looking input; directory-component include globs when the process cwd differs from the search root; file-scoped search; total match caps; ripgrep timeout, executable-race, stderr-draining, and hard-error fallback paths; Python fallback partial-error behavior; and containment filtering for a symlink that points outside a searched root. The suite isolates the cached ripgrep resolver around tests. It skips real-binary coverage when `rg` is locally unavailable, but treats a missing binary as a failure when CI sets `DEEPAGENTS_RIPGREP_EXPECTED=1`; this protects the real-binary and symlink-containment contract from a silently failed CI installation. Preserve the shared glob dialect—hidden-name behavior, brace expansion, traversal refusal, anchoring, and basename-at-any-depth matching—and its failure distinction: a deadline returns partial `truncated` results, while a mid-walk exception is an error. Keep the backend glob budget below the middleware deadline so the useful partial backend result wins before the outer tool timeout.
 
 Also test composite routing and merged search errors/truncation; request-time capability filtering and excluded-call rejection; permission first-match, recursive-delete, and bulk HITL cases; execution timeout/exit-code behavior; and offload upload, digest verification, and state-backed-route disablement. For server-backed dcode sessions, also test the environment round trip and fail-closed `allow_fs_tools` validation, workspace claim contents, cancellation-safe startup cleanup, and context-manager shutdown. Run the `BaseSandbox` local operation suite with `RUN_SANDBOX_TESTS=true` when modifying its portable file-operation behavior, but do not treat its local subprocess fixture as a sandbox security test.
 

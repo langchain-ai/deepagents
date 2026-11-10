@@ -185,11 +185,11 @@ def _command_spec(
         if isinstance(action, argparse._SubParsersAction):
             subparsers = action
         elif action.option_strings:
-            option = _option_spec(action)
+            option = _option_spec(action, _help_text(parser, action))
             if option is not None:
                 options.append(option)
         else:
-            positional = _positional_spec(action)
+            positional = _positional_spec(action, _help_text(parser, action))
             if positional is not None:
                 positionals.append(positional)
     subcommands = _subcommand_specs(subparsers, path) if subparsers is not None else ()
@@ -203,11 +203,29 @@ def _command_spec(
     )
 
 
-def _option_spec(action: argparse.Action) -> OptionSpec | None:
+def _help_text(parser: argparse.ArgumentParser, action: argparse.Action) -> str:
+    """Return an action's help as `-h` shows it, on one line.
+
+    Expands placeholders such as `%(default)s` the same way argparse does.
+
+    Args:
+        parser: Parser that owns the action.
+        action: Argument action to describe.
+
+    Returns:
+        The expanded help text, or an empty string when there is none.
+    """
+    if not action.help or action.help is argparse.SUPPRESS:
+        return ""
+    return _one_line(parser._get_formatter()._expand_help(action))
+
+
+def _option_spec(action: argparse.Action, help_text: str) -> OptionSpec | None:
     """Convert an optional action.
 
     Args:
         action: Option action from an argparse parser.
+        help_text: Expanded one-line help for the action.
 
     Returns:
         The option spec, or `None` when the action is hidden.
@@ -216,18 +234,19 @@ def _option_spec(action: argparse.Action) -> OptionSpec | None:
         return None
     return OptionSpec(
         flags=tuple(action.option_strings),
-        help=_one_line(action.help),
+        help=help_text,
         takes_value=action.nargs != 0,
         optional_value=action.nargs == argparse.OPTIONAL,
         choices=_choices(action),
     )
 
 
-def _positional_spec(action: argparse.Action) -> PositionalSpec | None:
+def _positional_spec(action: argparse.Action, help_text: str) -> PositionalSpec | None:
     """Convert a positional action.
 
     Args:
         action: Positional action from an argparse parser.
+        help_text: Expanded one-line help for the action.
 
     Returns:
         The positional spec, or `None` when the action is hidden.
@@ -236,7 +255,7 @@ def _positional_spec(action: argparse.Action) -> PositionalSpec | None:
         return None
     return PositionalSpec(
         name=action.dest,
-        help=_one_line(action.help),
+        help=help_text,
         choices=_choices(action),
     )
 

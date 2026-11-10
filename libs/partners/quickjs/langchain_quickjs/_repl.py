@@ -16,6 +16,7 @@ import uuid
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, get_type_hints
 
+from langchain_core.runnables import RunnableLambda
 from langchain_core.tools.base import (
     InjectedToolCallId,
     _is_injected_arg_type,
@@ -41,6 +42,7 @@ from quickjs_rs import (
     TimeoutError as QJSTimeoutError,
 )
 
+from langchain_quickjs import _fs
 from langchain_quickjs._format import (
     coerce_tool_output_for_ptc,
     format_handle,
@@ -53,8 +55,9 @@ from langchain_quickjs._subagent import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Callable, Coroutine, Sequence
 
+    from deepagents.backends.protocol import BackendProtocol
     from langchain_core.tools import BaseTool
     from langgraph.prebuilt import ToolRuntime
 
@@ -135,6 +138,7 @@ class _PTCState:
     remaining_calls: int | None
     outer_runtime: ToolRuntime | None = None
     outer_loop: asyncio.AbstractEventLoop | None = None
+    fs: BackendProtocol | None = None
     task_dispatch_count: int = 0
     """Ordinal for the next `task()` dispatch in this eval.
 
@@ -250,6 +254,21 @@ def _normalize_tool_input(raw: Any) -> dict[str, Any]:
 def _synth_tool_call_id(tool_name: str) -> str:
     """Mint a synthetic tool_call_id for a PTC-driven tool invocation."""
     return f"ptc_{tool_name}_{uuid.uuid4().hex[:8]}"
+
+
+async def _on_outer_loop(
+    call: Callable[[], Coroutine[Any, Any, Any]],
+    outer_loop: asyncio.AbstractEventLoop | None,
+) -> Any:
+    """Await `call()` on the agent's event loop when one is known."""
+    if outer_loop is None or asyncio.get_running_loop() is outer_loop:
+        return await call()
+    future = asyncio.run_coroutine_threadsafe(call(), outer_loop)
+    try:
+        return await asyncio.wrap_future(future)
+    except asyncio.CancelledError:
+        future.cancel()
+        raise
 
 
 def _inject_tool_args_for_ptc(
@@ -413,6 +432,7 @@ class _ThreadREPL:
         if self._subagents_enabled:
             self._task_calls = asyncio.Semaphore(self._max_subagent_concurrency)
             self._register_task_bridge()
+        self._register_fs_bridge()
 
     def _require_ctx(self) -> Context:
         """Return the live QuickJS context or raise if this REPL is closed."""
@@ -573,18 +593,7 @@ class _ThreadREPL:
                 dispatch_ordinal=dispatch_ordinal,
             )
 
-        outer_loop = state.outer_loop
-        if outer_loop is None:
-            return await _call()
-        current_loop = asyncio.get_running_loop()
-        if current_loop is outer_loop:
-            return await _call()
-        future = asyncio.run_coroutine_threadsafe(_call(), outer_loop)
-        try:
-            return await asyncio.wrap_future(future)
-        except asyncio.CancelledError:
-            future.cancel()
-            raise
+        return await _on_outer_loop(_call, state.outer_loop)
 
     def _register_task_bridge(self) -> None:
         """Install the async host function backing top-level `task()`."""
@@ -656,17 +665,7 @@ class _ThreadREPL:
                 ),
             )
 
-        if outer_loop is None:
-            return await _call()
-        current_loop = asyncio.get_running_loop()
-        if current_loop is outer_loop:
-            return await _call()
-        future = asyncio.run_coroutine_threadsafe(_call(), outer_loop)
-        try:
-            return await asyncio.wrap_future(future)
-        except asyncio.CancelledError:
-            future.cancel()
-            raise
+        return await _on_outer_loop(_call, outer_loop)
 
     def _register_tool_bridge(self, camel: str) -> str:
         """Install a host-function bridge for one camel-cased tool name.
@@ -717,6 +716,42 @@ class _ThreadREPL:
         ctx.register(bridge_symbol, _bridge, is_async=True)
         return bridge_symbol
 
+    def _register_fs_bridge(self) -> None:
+        ctx = self._require_ctx()
+        ctx.register(_fs.HOST_FUNCTION, self._fs_call, is_async=True)
+        ctx.eval(
+            f"Object.defineProperty(globalThis, '{_fs.HOST_FUNCTION}',"
+            " { writable: false, configurable: false }); undefined"
+        )
+
+    async def _fs_call(self, op: str, args: dict[str, Any]) -> dict[str, Any]:
+        state = self._ptc_state
+        if state is None or state.fs is None:
+            msg = "fs called outside active eval"
+            raise ConcurrentEvalError(msg)
+        name = _fs.public_name(op)
+        self._ptc_state = state.consume_call_budget(
+            function_name=name, max_ptc_calls=self._max_ptc_calls
+        )
+        backend = state.fs
+        reply: dict[str, Any] = {}
+
+        async def call(_: None) -> None:
+            # The value skips the run's output so file text stays out of traces.
+            reply["value"] = await _fs.run(backend, op, args)
+
+        # Running under the eval call's config lets backends that keep files in
+        # graph state, such as `StateBackend`, read and write them.
+        config = state.outer_runtime.config if state.outer_runtime else None
+        runnable = RunnableLambda(call, name=name)
+        try:
+            await _on_outer_loop(
+                lambda: runnable.ainvoke(None, config), state.outer_loop
+            )
+        except _fs.FsError as e:
+            return e.reply
+        return reply
+
     def eval_sync(
         self,
         code: str,
@@ -724,6 +759,7 @@ class _ThreadREPL:
         outer_runtime: ToolRuntime | None = None,
         snapshot_payload: bytes | None = None,
         tools: Sequence[BaseTool] | None = None,
+        fs: BackendProtocol | None = None,
     ) -> EvalOutcome:
         # Both sync and async entry points funnel through ctx.eval_async on
         # the worker loop. Sync ctx.eval can't dispatch async host functions
@@ -735,6 +771,7 @@ class _ThreadREPL:
                 outer_runtime=outer_runtime,
                 snapshot_payload=snapshot_payload,
                 tools=tools,
+                fs=fs,
             )
         )
 
@@ -746,6 +783,7 @@ class _ThreadREPL:
         snapshot_payload: bytes | None = None,
         tools: Sequence[BaseTool] | None = None,
         outer_loop: asyncio.AbstractEventLoop | None = None,
+        fs: BackendProtocol | None = None,
     ) -> EvalOutcome:
         return await self._worker.run_async(
             self._aeval_async(
@@ -754,6 +792,7 @@ class _ThreadREPL:
                 snapshot_payload=snapshot_payload,
                 tools=tools,
                 outer_loop=outer_loop,
+                fs=fs,
             )
         )
 
@@ -794,7 +833,10 @@ class _ThreadREPL:
         )
 
     async def _aprepare_for_eval(
-        self, payload: bytes | None, tools: Sequence[BaseTool] | None
+        self,
+        payload: bytes | None,
+        tools: Sequence[BaseTool] | None,
+        fs: BackendProtocol | None,
     ) -> None:
         """Restore once and bind current tools on the owning worker."""
         if not self._prepared_for_eval:
@@ -808,6 +850,8 @@ class _ThreadREPL:
                     raise _SnapshotRestoreError(msg) from exc
         if tools is not None:
             await self._ainstall_tools(tools)
+        if fs is not None:
+            self._require_ctx().eval(_fs.install_source())
 
     async def _aeval_async(  # noqa: C901, PLR0912, PLR0915
         self,
@@ -817,6 +861,7 @@ class _ThreadREPL:
         snapshot_payload: bytes | None = None,
         tools: Sequence[BaseTool] | None = None,
         outer_loop: asyncio.AbstractEventLoop | None = None,
+        fs: BackendProtocol | None = None,
     ) -> EvalOutcome:
         """Uses `ctx.eval_async` directly.
 
@@ -836,9 +881,10 @@ class _ThreadREPL:
             remaining_calls=self._max_ptc_calls,
             outer_runtime=outer_runtime,
             outer_loop=outer_loop,
+            fs=fs,
         )
         try:
-            await self._aprepare_for_eval(snapshot_payload, tools)
+            await self._aprepare_for_eval(snapshot_payload, tools, fs)
             # Drive any final-expression Promise (e.g. a bare async
             # IIFE) to its resolved value before marshaling. Without
             # this the Promise object itself fails to marshal and
@@ -902,6 +948,15 @@ class _ThreadREPL:
         except MemoryLimitError as e:
             outcome.error_type = "OutOfMemory"
             outcome.error_message = str(e)
+            _clear_exception_references(e)
+        except MarshalError as e:
+            # A host result, such as a large `fs.readFile`, could not be
+            # converted to a JS value; without this the agent run would crash.
+            outcome.error_type = "MarshalError"
+            outcome.error_message = (
+                f"a host result could not be passed to JavaScript ({e}); "
+                "it may be too large or too deeply nested."
+            )
             _clear_exception_references(e)
         except _TaskBridgeError as e:
             outcome.error_type = e.error_type

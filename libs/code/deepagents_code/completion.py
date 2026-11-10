@@ -30,11 +30,11 @@ DEFAULT_PROGRAMS: tuple[str, ...] = ("dcode", "deepagents-code")
 _PROGRAM_RE = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9._+-]*\Z")
 """Command names allowed in generated shell code."""
 
-_WORD_RE = re.compile(r"\A[^\s'\"\\`$]+\Z")
-"""Words with no whitespace, quotes, backslashes, backticks, or `$`.
+_WORD_RE = re.compile(r"\A[A-Za-z0-9_.:/@+=,-]+\Z")
+"""Words safe to emit unquoted in bash, zsh, and fish completion code.
 
-Not a full shell-safety check: `(`, `;`, `*`, and similar characters pass.
-Candidates come from the CLI's own parser, which uses none of them.
+An allowlist, so a future choice containing `|`, `;`, `*`, `$`, or `(` is
+dropped instead of running as shell code when the user presses TAB.
 """
 
 _INDENT = "    "
@@ -176,7 +176,14 @@ def _write_stdout(text: str) -> None:
         text: Text to write.
     """
     try:
-        sys.stdout.write(text)
+        # Scripts are UTF-8 regardless of the locale; help text can contain
+        # characters such as an em dash that an ASCII stdout cannot encode.
+        buffer = getattr(sys.stdout, "buffer", None)
+        if buffer is None:
+            sys.stdout.write(text)
+        else:
+            sys.stdout.flush()
+            buffer.write(text.encode())
         sys.stdout.flush()
     except BrokenPipeError:
         # A reader such as `head` exited. Point stdout at devnull so the
@@ -901,8 +908,9 @@ def _fish_level_lines(level: CommandSpec, program: str) -> list[str]:
         # Fish reads a required value's candidates only from the flag's own
         # line, so the choices must be attached here.
         values = ""
-        if option.takes_value and option.choices:
-            values = f" -f -a {_fish_quote(' '.join(option.choices))}"
+        choices = _safe_words(option.choices)
+        if option.takes_value and choices:
+            values = f" -f -a {_fish_quote(' '.join(choices))}"
         for flag in option.flags:
             spec = _fish_flag(flag, option.takes_value and not option.optional_value)
             if spec is not None:
@@ -914,13 +922,29 @@ def _fish_level_lines(level: CommandSpec, program: str) -> list[str]:
         f"complete -c {program} -f -n {condition} "
         f"-a {_fish_quote(name)} -d {_fish_quote(child.help)}"
         for child in level.subcommands
-        for name in child.names
+        for name in _safe_words(child.names)
     )
     for positional in level.positionals:
-        if positional.choices:
-            values = _fish_quote(" ".join(positional.choices))
+        choices = _safe_words(positional.choices)
+        if choices:
+            values = _fish_quote(" ".join(choices))
             lines.append(f"complete -c {program} -f -n {condition} -a {values}")
     return lines
+
+
+def _safe_words(words: Sequence[str]) -> tuple[str, ...]:
+    """Keep only words that pass `_WORD_RE`.
+
+    Fish expands `-a` arguments each time it completes, so quoting alone does
+    not stop `$x` or `(cmd)` in a candidate from running.
+
+    Args:
+        words: Candidate words.
+
+    Returns:
+        The words that are safe to emit.
+    """
+    return tuple(word for word in words if _WORD_RE.match(word))
 
 
 def _fish_flag(flag: str, requires_value: bool) -> str | None:

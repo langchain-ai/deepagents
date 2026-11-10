@@ -375,12 +375,18 @@ def render_eval_tool_description(*, mode: Literal["thread", "turn", "call"]) -> 
             "functions defined in one call are visible to later calls within "
             "the same turn, but reset between turns."
         )
+    concurrency_line = (
+        ""
+        if mode == "call"
+        else " Only one call can run at a time: do not issue parallel calls; "
+        "use `Promise.all` inside a single call instead."
+    )
     return (
         "Execute JavaScript in a sandboxed REPL. "
         f"{state_line} No filesystem, network, or real clock. "
         "Top-level `await` is supported; a final-expression Promise resolves "
-        "before the call returns. Only one call can run at a time: do not issue "
-        "parallel calls; use `Promise.all` inside a single call instead."
+        "before the call returns."
+        f"{concurrency_line}"
     )
 
 

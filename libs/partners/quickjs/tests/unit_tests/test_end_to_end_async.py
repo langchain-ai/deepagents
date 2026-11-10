@@ -268,8 +268,8 @@ async def slow_tool() -> str:
     return "done"
 
 
-async def test_quickjs_mode_call_parallel_evals_keep_in_flight_eval() -> None:
-    """The `ConcurrentEval` loser must not reset the slot the winner is using."""
+async def test_quickjs_mode_call_parallel_evals_run_independently() -> None:
+    """Parallel `mode="call"` evals each get their own REPL and both finish."""
     model = FakeChatModel(
         messages=iter(
             [
@@ -307,5 +307,5 @@ async def test_quickjs_mode_call_parallel_evals_keep_in_flight_eval() -> None:
         if isinstance(m, ToolMessage) and m.name == "eval"
     }
     _assert_result_contains(contents["call_slow"], "done")
-    assert 'type="ConcurrentEval"' in contents["call_fast"], contents["call_fast"]
+    _assert_result_contains(contents["call_fast"], "2")
     assert result["messages"][-1].content == "finished"

@@ -9,7 +9,7 @@ import pytest
 from langchain.agents import create_agent
 from langchain.agents.middleware import AgentMiddleware
 from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, ToolMessage
 from langchain_core.runnables import RunnableLambda
 from langchain_core.tools import StructuredTool, tool
 from mcp.shared.exceptions import MCPError
@@ -700,8 +700,28 @@ async def test_declared_web_capability_travels_with_a_renamed_agent(tmp_path, mo
         await runtime.stop()
 
 
+@pytest.mark.parametrize(
+    ("result", "expected"),
+    [
+        ({"messages": []}, "Subagent returned no result."),
+        ({"messages": [AIMessage(content="")]}, "Subagent returned no result."),
+        (
+            {
+                "messages": [
+                    AIMessage(content=[{"type": "reasoning", "encrypted_content": "secret"}])
+                ]
+            },
+            "Subagent returned no result.",
+        ),
+        ({"messages": [AIMessage(content="answer")]}, "answer"),
+        (
+            {"messages": [], "__interrupt__": ["approval"]},
+            "Subagent needs tool approval; the protected action has not run.",
+        ),
+    ],
+)
 async def test_per_task_agent_runs_with_an_explicit_config_and_survives_no_messages(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, result, expected
 ):
     captured = {}
 
@@ -709,7 +729,7 @@ async def test_per_task_agent_runs_with_an_explicit_config_and_survives_no_messa
         async def ainvoke(self, payload, config=None):
             captured["config"] = config
             captured["payload"] = payload
-            return {"messages": []}
+            return result
 
     _write_agent(tmp_path)
     parent = ToolModel(
@@ -748,4 +768,63 @@ async def test_per_task_agent_runs_with_an_explicit_config_and_survives_no_messa
         await runtime.stop()
 
     assert captured["config"] == {"recursion_limit": 500}
-    assert "Subagent returned no result." in results[0]
+    assert f"<subagent_result>\n{expected}\n</subagent_result>" in results[0]
+
+
+@pytest.mark.parametrize("dynamic", [False, True])
+@pytest.mark.parametrize("background", [False, True])
+async def test_task_answer_excludes_reasoning_blocks(tmp_path, monkeypatch, dynamic, background):
+    _write_agent(tmp_path)
+    child = ToolModel(
+        responses=[
+            AIMessage(
+                content=[
+                    {"type": "reasoning", "encrypted_content": "secret"},
+                    {"type": "text", "text": "answer"},
+                ]
+            )
+        ]
+    )
+    launch = {"tools": ["current_time"]} if dynamic else {}
+    parent = ToolModel(
+        responses=[
+            AIMessage(
+                content="",
+                tool_calls=[
+                    _call("task", subagent_type="researcher", description="Research", **launch)
+                ],
+            ),
+            AIMessage(content="Done"),
+            AIMessage(content="", tool_calls=[_call("list_subagents")]),
+            AIMessage(content="Processed"),
+        ]
+    )
+    runtime = _runtime(tmp_path, monkeypatch, parent, child)
+    if not background:
+        monkeypatch.setattr(runtime.background, "configured", lambda _: AgentMiddleware())
+    await runtime.start()
+    try:
+        await runtime.invoke(AgentRequest("chat", "Research"))
+        await asyncio.gather(*(job.worker for job in runtime.background._jobs.values()))
+        if background:
+            delivered = next(iter(runtime.background.results("chat").values()))
+            assert "<subagent_result>\nanswer\n</subagent_result>" in delivered
+            assert "encrypted_content" not in delivered
+            assert "'type': 'text'" not in delivered
+            await runtime.invoke(AgentRequest("chat", "Read the result"))
+            listing = next(
+                message
+                for message in parent._seen[-1]
+                if isinstance(message, ToolMessage) and message.name == "list_subagents"
+            )
+            assert json.loads(listing.content)[0]["result"] == "answer"
+        else:
+            result = next(
+                message
+                for message in parent._seen[-1]
+                if isinstance(message, ToolMessage) and message.name == "task"
+            )
+            assert result.content == "answer"
+        assert "encrypted_content" not in str(parent._seen)
+    finally:
+        await runtime.stop()

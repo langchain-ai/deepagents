@@ -16,7 +16,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command  # tool schemas resolve return annotations
 
 from deepagents_code.hooks.server_middleware import ServerHooksMiddleware
-from deepagents_talon.background import _IN_SUBAGENT
+from deepagents_talon.background import _IN_SUBAGENT, _result_text
 from deepagents_talon.hooks import ACTIVE_HOOKS
 from deepagents_talon.mcp_middleware import talon_mcp_middleware
 from deepagents_talon.subagent_control import SubagentControlMiddleware
@@ -188,7 +188,8 @@ class TaskTools(AgentMiddleware):
             if result.get("__interrupt__"):
                 return "Subagent needs tool approval; the protected action has not run."
             messages = result.get("messages") or []
-            return str(messages[-1].content) if messages else "Subagent returned no result."
+            text = _result_text(messages[-1]) if messages else ""
+            return text or "Subagent returned no result."
 
         self._task = task
         return sorted(available)

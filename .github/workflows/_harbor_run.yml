@@ -1168,7 +1168,7 @@ jobs:
                 --agent-env "OPENAI_BASE_URL=$FIREWORKS_BASE_URL/v1"
               )
               if [ "$HARBOR_AGENT_IMPL" = pi ]; then
-                agent_args+=(--agent-kwarg model_api=openai-responses --agent-kwarg max_output_tokens=65536)
+                agent_args+=(--agent-kwarg model_api=openai-responses --agent-kwarg max_output_tokens=262144)
               else
                 # Codex defaults the `openai` provider to remote compaction, which
                 # Fireworks lacks; a custom provider compacts locally instead.

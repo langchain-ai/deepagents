@@ -12,7 +12,7 @@ from langchain_anthropic import ChatAnthropic
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
-from deepagents.middleware._cache_keepalive import AnthropicCacheKeepaliveMiddleware
+from deepagents.middleware import AnthropicCacheKeepaliveMiddleware
 
 INTERVAL = 0.05
 

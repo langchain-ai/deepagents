@@ -7,15 +7,17 @@ import concurrent.futures
 import contextlib
 import contextvars
 import mimetypes
+import os
 import threading
 import uuid
 import warnings
+import weakref
 from binascii import Error as BinasciiError
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
 from copy import copy
 from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
-from typing import Annotated, Any, Final, Literal, NotRequired, cast
+from typing import Annotated, Any, Final, Literal, NotRequired, TypeVar, cast
 
 import wcmatch.glob as wcglob
 from langchain.agents.middleware.types import (
@@ -499,22 +501,399 @@ def _is_denied(
     operation: FilesystemOperation,
     path: str,
     backend: BackendProtocol | None,
+    *,
+    gate: "_BulkGate | None" = None,
 ) -> bool:
     """Whether `path` or, when `backend` is given, its resolved target is denied.
 
-    Paths the backend cannot resolve count as denied.
+    With `gate`, a path that needs approval the call did not get counts as
+    denied too. Paths the backend cannot resolve count as denied.
     """
     if _check_fs_permission(rules, operation, path) == "deny":
         return True
     if backend is None:
-        return False
+        return gate is not None and gate.blocks(path, path)
     try:
         real = _resolve_real_path(backend, path)
     except (ValueError, OSError, RuntimeError):
         return True
     if path.endswith("/") and _check_fs_permission(rules, operation, real.rstrip("/") + "/") == "deny":
         return True
-    return _check_fs_permission(rules, operation, real) == "deny"
+    if _check_fs_permission(rules, operation, real) == "deny":
+        return True
+    return gate is not None and gate.blocks(path, real)
+
+
+@dataclass(frozen=True)
+class _InterruptDecision:
+    """What a filesystem `interrupt` predicate decided for one tool call."""
+
+    requested: str | None
+    """The validated path argument, or `None` for a pathless bulk call."""
+
+    real: str | None
+    """`requested` resolved through symlinks when the predicate ran, if resolvable."""
+
+    fired: bool
+    """Whether the call was paused for approval."""
+
+
+def _decision_scope(runtime: object) -> str:
+    """Scope decisions to the run's thread and graph, so reused call ids don't collide.
+
+    The predicate (in `HumanInTheLoopMiddleware.after_model`) and the tool
+    (in the tools node) run in sibling nodes, so they share the parent of
+    their checkpoint namespaces.
+    """
+    config = getattr(runtime, "config", None)
+    configurable = config.get("configurable", {}) if isinstance(config, Mapping) else {}
+    thread_id = configurable.get("thread_id")
+    namespace = configurable.get("checkpoint_ns") or ""
+    parent = namespace.rpartition("|")[0]
+    return f"{thread_id}\x00{parent}"
+
+
+class _InterruptDecisions:
+    """Interrupt predicate decisions, by run scope, tool name and call id.
+
+    The predicates in `_fs_interrupt` record here; the tools read back what
+    was decided so they refuse a target that needs approval the call did not
+    get. Bounded, since rejected calls never reach their tool; a backend with
+    predicates attached treats a missing decision as no approval.
+    """
+
+    _MAX_ENTRIES = 16384
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._entries: dict[tuple[str, str, str], _InterruptDecision] = {}
+        self._gated_backends: weakref.WeakSet[object] = weakref.WeakSet()
+        self._gated_ids: set[int] = set()
+
+    def attach(self, backend: BackendProtocol) -> None:
+        """Mark `backend` as served by interrupt predicates."""
+        with self._lock:
+            try:
+                self._gated_backends.add(backend)
+            except TypeError:
+                self._gated_ids.add(id(backend))
+
+    def gated(self, backend: BackendProtocol) -> bool:
+        """Whether interrupt predicates were built for `backend`."""
+        with self._lock:
+            try:
+                return backend in self._gated_backends or id(backend) in self._gated_ids
+            except TypeError:
+                return id(backend) in self._gated_ids
+
+    def record(self, scope: str, tool_name: str, tool_call_id: str, decision: _InterruptDecision) -> bool:
+        """Record `decision` and return whether the call is paused.
+
+        The predicate runs again when a paused run resumes, and a `False`
+        then skips the reviewer's answer. A call paused once stays paused for
+        the same path, so a symlink changed while it waited for review cannot
+        skip the review.
+        """
+        key = (scope, tool_name, tool_call_id)
+        with self._lock:
+            previous = self._entries.pop(key, None)
+            if previous is not None and previous.fired and not decision.fired and previous.requested == decision.requested:
+                decision = previous
+            self._entries[key] = decision
+            while len(self._entries) > self._MAX_ENTRIES:
+                del self._entries[next(iter(self._entries))]
+        return decision.fired
+
+    def get(self, scope: str, tool_name: str, tool_call_id: str | None) -> _InterruptDecision | None:
+        if tool_call_id is None:
+            return None
+        with self._lock:
+            return self._entries.get((scope, tool_name, tool_call_id))
+
+
+_INTERRUPT_DECISIONS = _InterruptDecisions()
+
+
+def _approval_missing(
+    backend: BackendProtocol,
+    decision: _InterruptDecision | None,
+    requested: str | None,
+    real: str | None,
+) -> bool:
+    """Whether a call reaching a target that needs approval was not approved for it.
+
+    With no recorded decision, a backend without interrupt predicates keeps
+    its behavior, and one with them refuses. A call the reviewer edited to a
+    different path was approved as edited.
+    """
+    if decision is None:
+        return _INTERRUPT_DECISIONS.gated(backend)
+    if not decision.fired:
+        return True
+    return decision.requested == requested and decision.real != real
+
+
+def _interrupt_anchors(rules: list[FilesystemPermission], operation: FilesystemOperation) -> list[str]:
+    return [_glob_anchor(pattern) for rule in rules if rule.mode == "interrupt" and operation in rule.operations for pattern in rule.paths]
+
+
+@dataclass(frozen=True)
+class _BulkGate:
+    """Decides which `ls`/`glob`/`grep` results need approval the call did not get."""
+
+    rules: list[FilesystemPermission]
+    operation: FilesystemOperation
+    approved: bool
+    """Whether the call was paused and approved for its search root."""
+
+    root: str | None
+    """The search root's resolved path, or `None` for a pathless call."""
+
+    def blocks(self, path: str, real: str) -> bool:
+        decisions = {_check_fs_permission(self.rules, self.operation, path), _check_fs_permission(self.rules, self.operation, real)}
+        if "interrupt" not in decisions:
+            return False
+        if not self.approved:
+            return True
+        # The reviewer approved the search root, so keep what lies under it,
+        # by its path or its resolved path, but not what a symlink beneath it
+        # reaches elsewhere.
+        if self.root is None or _check_fs_permission(self.rules, self.operation, path) == "interrupt":
+            return False
+        root = self.root.rstrip("/")
+        return not (not root or real == self.root or real.startswith(root + "/"))
+
+
+def _bulk_gate(
+    rules: list[FilesystemPermission],
+    operation: FilesystemOperation,
+    backend: BackendProtocol,
+    tool_name: str,
+    runtime: object,
+    requested: str | None,
+) -> _BulkGate | None:
+    """Return the gate for a bulk call's results, or `None` when no rule needs approval.
+
+    The bulk predicate decides on the search root alone, so entries reached
+    through a symlink can need approval the call never got.
+    """
+    if not _interrupt_anchors(rules, operation):
+        return None
+    real: str | None = None
+    if requested is not None:
+        try:
+            real = _resolve_real_path(backend, requested)
+        except (ValueError, OSError, RuntimeError):
+            return _BulkGate(rules, operation, approved=False, root=None)
+    decision = _INTERRUPT_DECISIONS.get(_decision_scope(runtime), tool_name, getattr(runtime, "tool_call_id", None))
+    if decision is None and not _INTERRUPT_DECISIONS.gated(backend):
+        return None
+    approved = not _approval_missing(backend, decision, requested, real)
+    return _BulkGate(rules, operation, approved=approved, root=real)
+
+
+def _resolve_operation_path(backend: BackendProtocol, path: str) -> str:
+    """Return the path to hand the backend for `path`, resolved through symlinks.
+
+    A virtual `FilesystemBackend` follows a symlinked final component, so it
+    gets the fully resolved path. A non-virtual one refuses (or, for delete,
+    removes) a symlinked final component, so only the parent is resolved;
+    on Windows its resolved form has no drive, so `path` is returned as given.
+    """
+    if isinstance(backend, CompositeBackend):
+        routed, routed_path, route_prefix = _route_for_path(default=backend.default, sorted_routes=backend.sorted_routes, path=path)
+        resolved = _resolve_operation_path(routed, routed_path)
+        return resolved if route_prefix is None else validate_path(route_prefix.rstrip("/") + resolved)
+    if isinstance(backend, FilesystemBackend) and not backend.virtual_mode:
+        if os.name == "nt":
+            return path
+        parent, _, leaf = path.rstrip("/").rpartition("/")
+        if not leaf:
+            return path
+        return validate_path(_resolve_real_path(backend, parent or "/").rstrip("/") + "/" + leaf)
+    return _resolve_real_path(backend, path)
+
+
+def _route_chain(backend: BackendProtocol, path: str) -> list[int]:
+    """Identify the chain of backends a `CompositeBackend` routes `path` through."""
+    chain: list[int] = []
+    while isinstance(backend, CompositeBackend):
+        backend, path, _route_prefix = _route_for_path(default=backend.default, sorted_routes=backend.sorted_routes, path=path)
+        chain.append(id(backend))
+    return chain
+
+
+@dataclass(frozen=True)
+class _PermissionTarget:
+    """A permission-checked single-path operation."""
+
+    path: str
+    """The validated path the tool was called with."""
+
+    target: str
+    """The resolved path the check covered, to hand the backend."""
+
+
+def _resolved_target(backend: BackendProtocol, validated_path: str) -> _PermissionTarget | str:
+    try:
+        target = _resolve_operation_path(backend, validated_path)
+    except (ValueError, OSError, RuntimeError):
+        return f"Error: cannot resolve {validated_path}"
+    if _route_chain(backend, target) != _route_chain(backend, validated_path):
+        return f"Error: {validated_path} resolves to {target}, which is served by a different backend"
+    return _PermissionTarget(validated_path, target)
+
+
+def _check_target(
+    rules: list[FilesystemPermission],
+    operation: FilesystemOperation,
+    backend: BackendProtocol,
+    validated_path: str,
+) -> _PermissionTarget | str:
+    """Check `validated_path` and return the target to operate on, or an error.
+
+    The backend gets the path the check resolved, so a symlink swapped after
+    the check cannot redirect the operation. With no rules, the path is used
+    as given.
+    """
+    if (error := _permission_error(rules, operation, backend, validated_path)) is not None:
+        return error
+    if not rules:
+        return _PermissionTarget(validated_path, validated_path)
+    return _resolved_target(backend, validated_path)
+
+
+def _check_delete_target(
+    rules: list[FilesystemPermission],
+    backend: BackendProtocol,
+    validated_path: str,
+    *,
+    has_descendants: bool,
+) -> _PermissionTarget | str:
+    """`_check_target` for `delete`, which also refuses removing a subtree a rule denies."""
+    if (error := _delete_permission_error(rules, backend, validated_path, has_descendants=has_descendants)) is not None:
+        return error
+    if not rules:
+        return _PermissionTarget(validated_path, validated_path)
+    return _resolved_target(backend, validated_path)
+
+
+def _pinning_backend(backend: BackendProtocol, path: str) -> tuple[FilesystemBackend, str, str | None] | None:
+    """Return the `FilesystemBackend` that serves `path` if it can pin, its path there, and the route prefix."""
+    if isinstance(backend, CompositeBackend):
+        routed, routed_path, route_prefix = _route_for_path(default=backend.default, sorted_routes=backend.sorted_routes, path=path)
+        inner = _pinning_backend(routed, routed_path)
+        if inner is None or route_prefix is None:
+            return inner
+        return inner[0], inner[1], route_prefix.rstrip("/") + (inner[2] or "")
+    if isinstance(backend, FilesystemBackend) and backend._supports_pinning():
+        return backend, path, None
+    return None
+
+
+@contextlib.contextmanager
+def _bound_to_target(
+    rules: list[FilesystemPermission],
+    backend: BackendProtocol,
+    checked: _PermissionTarget,
+    *,
+    create: bool,
+    authorize: Callable[[str], str | None],
+    not_found: str,
+) -> Iterator["_Binding"]:
+    """Hold the target's parent directory open for the operation, where the backend supports it.
+
+    `authorize` gets the real path the open directory leads to, and returns an
+    error to refuse. Without rules, or on a backend that cannot pin, the
+    operation runs on `checked.target` as resolved.
+    """
+    if not rules:
+        yield _Binding(None, _unchanged)
+        return
+    pinning = _pinning_backend(backend, checked.target)
+    if pinning is None:
+        yield _Binding(authorize(checked.target), _unchanged)
+        return
+    fs_backend, inner_path, route_prefix = pinning
+
+    def authorize_inner(real: str) -> str | None:
+        try:
+            full = validate_path((route_prefix or "") + real) if route_prefix else real
+        except ValueError as e:
+            return f"Error: {e}"
+        return authorize(full)
+
+    with fs_backend._pin(inner_path, create=create, authorize=authorize_inner) as pin:
+        yield _Binding(not_found if pin.missing else pin.error, pin.scrub)
+
+
+@dataclass(frozen=True)
+class _Binding:
+    error: str | None
+    """An error to return instead of running the operation."""
+
+    scrub: Callable[[str], str]
+    """Rewrites descriptor paths in a backend error back to the directory's path."""
+
+
+def _unchanged(text: str) -> str:
+    return text
+
+
+_OperationResult = TypeVar("_OperationResult", ReadResult, WriteResult, EditResult, DeleteResult)
+
+
+def _scrub_result_error(result: _OperationResult, binding: _Binding) -> _OperationResult:
+    if result.error:
+        return replace(result, error=binding.scrub(result.error))
+    return result
+
+
+def _target_authorizer(
+    rules: list[FilesystemPermission],
+    operation: FilesystemOperation,
+    backend: BackendProtocol,
+    checked: _PermissionTarget,
+    tool_name: str,
+    runtime: object,
+    *,
+    is_denied: Callable[[str], bool] | None = None,
+) -> Callable[[str], str | None]:
+    """Build the final check run on the real path an operation will touch.
+
+    Refuses a path a rule denies, and one that needs approval the call did not
+    get for it, such as after a symlink was swapped once the call was approved.
+    """
+
+    def denied(real: str) -> bool:
+        return is_denied(real) if is_denied is not None else _check_fs_permission(rules, operation, real) == "deny"
+
+    def authorize(real: str) -> str | None:
+        if denied(real):
+            return f"Error: permission denied for {operation} on {checked.path} (resolves to {real})"
+        if _needs_approval(rules, operation, checked.path, real, bulk=tool_name == "delete") and _approval_missing(
+            backend,
+            _INTERRUPT_DECISIONS.get(_decision_scope(runtime), tool_name, getattr(runtime, "tool_call_id", None)),
+            checked.path,
+            real,
+        ):
+            return f"Error: {checked.path} resolves to {real}, which needs approval this call did not get"
+        return None
+
+    return authorize
+
+
+def _needs_approval(
+    rules: list[FilesystemPermission],
+    operation: FilesystemOperation,
+    path: str,
+    real: str,
+    *,
+    bulk: bool,
+) -> bool:
+    if bulk:
+        return any(_paths_overlap(candidate, anchor) for candidate in (path, real) for anchor in _interrupt_anchors(rules, operation))
+    return "interrupt" in {_check_fs_permission(rules, operation, path), _check_fs_permission(rules, operation, real)}
 
 
 def _wildcard_delete_overlap(pattern: str, anchor: str, target: str) -> bool:
@@ -710,6 +1089,7 @@ def _filter_paths_by_permission(
     paths: list[str],
     *,
     backend: BackendProtocol | None = None,
+    gate: _BulkGate | None = None,
 ) -> list[str]:
     """Filter paths, removing only those denied by a rule.
 
@@ -720,10 +1100,13 @@ def _filter_paths_by_permission(
     results out here would silently empty the listing the user just approved.
 
     When `backend` is given, each path's symlink-resolved target is checked too.
+    With `gate`, entries that need approval the call did not get are removed
+    too: one reached through a symlink can need approval its search root did
+    not.
     """
     if not rules:
         return paths
-    denied = _denied_lookup(rules, operation, backend)
+    denied = _denied_lookup(rules, operation, backend, gate=gate)
     return [p for p in paths if not denied(p)]
 
 
@@ -731,6 +1114,8 @@ def _denied_lookup(
     rules: list[FilesystemPermission],
     operation: FilesystemOperation,
     backend: BackendProtocol | None,
+    *,
+    gate: _BulkGate | None = None,
 ) -> Callable[[str], bool]:
     """Return `_is_denied` memoized per path, for filtering many results."""
     if not rules:
@@ -739,7 +1124,7 @@ def _denied_lookup(
 
     def denied(path: str) -> bool:
         if path not in cache:
-            cache[path] = _is_denied(rules, operation, path, backend)
+            cache[path] = _is_denied(rules, operation, path, backend, gate=gate)
         return cache[path]
 
     return denied
@@ -769,13 +1154,14 @@ def _filter_file_infos_by_permission(
     *,
     operation: FilesystemOperation,
     backend: BackendProtocol | None = None,
+    gate: _BulkGate | None = None,
 ) -> list[FileInfo]:
     """Filter file-info entries, removing only those denied by a rule.
 
     See `_filter_paths_by_permission` for why interrupt-mode entries
-    pass through, and for `backend`.
+    pass through, and for `backend` and `gate`.
     """
-    denied = _denied_lookup(rules, operation, backend)
+    denied = _denied_lookup(rules, operation, backend, gate=gate)
     return [fi for fi in infos if not denied(fi.get("path", ""))]
 
 
@@ -785,13 +1171,14 @@ def _filter_grep_matches_by_permission(
     *,
     operation: FilesystemOperation,
     backend: BackendProtocol | None = None,
+    gate: _BulkGate | None = None,
 ) -> list[GrepMatch]:
     """Filter grep matches, removing only those denied by a rule.
 
     See `_filter_paths_by_permission` for why interrupt-mode entries
-    pass through, and for `backend`.
+    pass through, and for `backend` and `gate`.
     """
-    denied = _denied_lookup(rules, operation, backend)
+    denied = _denied_lookup(rules, operation, backend, gate=gate)
     return [m for m in matches if not denied(m.get("path", ""))]
 
 
@@ -906,9 +1293,10 @@ def _apply_permissions_to_ls_results(
     entries: list[FileInfo],
     *,
     backend: BackendProtocol | None = None,
+    gate: _BulkGate | None = None,
 ) -> list[str]:
     """Filter ls entries by permission and return their paths."""
-    filtered_entries = _filter_file_infos_by_permission(rules, entries, operation="read", backend=backend)
+    filtered_entries = _filter_file_infos_by_permission(rules, entries, operation="read", backend=backend, gate=gate)
     return [fi.get("path", "") for fi in filtered_entries]
 
 
@@ -917,9 +1305,10 @@ def _apply_permissions_to_glob_results(
     matches: list[FileInfo],
     *,
     backend: BackendProtocol | None = None,
+    gate: _BulkGate | None = None,
 ) -> list[str]:
     """Filter glob matches by permission and return their paths."""
-    filtered_infos = _filter_file_infos_by_permission(rules, matches, operation="read", backend=backend)
+    filtered_infos = _filter_file_infos_by_permission(rules, matches, operation="read", backend=backend, gate=gate)
     return [fi.get("path", "") for fi in filtered_infos]
 
 
@@ -2140,7 +2529,12 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     status="error",
                 )
             infos = ls_result.entries or []
-            paths = _apply_permissions_to_ls_results(self._permissions, infos, backend=self.backend)
+            paths = _apply_permissions_to_ls_results(
+                self._permissions,
+                infos,
+                backend=self.backend,
+                gate=_bulk_gate(self._permissions, "read", self.backend, "ls", runtime, validated_path),
+            )
             return ToolMessage(
                 content=_format_file_paths(paths),
                 tool_call_id=runtime.tool_call_id,
@@ -2179,7 +2573,12 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     status="error",
                 )
             infos = ls_result.entries or []
-            paths = _apply_permissions_to_ls_results(self._permissions, infos, backend=self.backend)
+            paths = _apply_permissions_to_ls_results(
+                self._permissions,
+                infos,
+                backend=self.backend,
+                gate=_bulk_gate(self._permissions, "read", self.backend, "ls", runtime, validated_path),
+            )
             return ToolMessage(
                 content=_format_file_paths(paths),
                 tool_call_id=runtime.tool_call_id,
@@ -2196,7 +2595,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             args_schema=LsSchema,
         )
 
-    def _create_read_file_tool(self) -> BaseTool:  # noqa: C901
+    def _create_read_file_tool(self) -> BaseTool:  # noqa: C901, PLR0915
         """Create the read_file tool."""
         video_enabled = video_dependencies_available()
         default_description = READ_FILE_VIDEO_TOOL_DESCRIPTION if video_enabled else READ_FILE_TOOL_DESCRIPTION
@@ -2328,14 +2727,26 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     tool_call_id=runtime.tool_call_id,
                     status="error",
                 )
-            if (error := _permission_error(self._permissions, "read", self.backend, validated_path)) is not None:
+            checked = _check_target(self._permissions, "read", self.backend, validated_path)
+            if isinstance(checked, str):
                 return ToolMessage(
-                    content=error,
+                    content=checked,
                     name="read_file",
                     tool_call_id=runtime.tool_call_id,
                     status="error",
                 )
-            read_result = resolved_backend.read(validated_path, offset=offset, limit=limit)
+            with _bound_to_target(
+                self._permissions,
+                resolved_backend,
+                checked,
+                create=False,
+                authorize=_target_authorizer(self._permissions, "read", self.backend, checked, "read_file", runtime),
+                not_found=f"Error: File '{validated_path}' not found",
+            ) as binding:
+                if binding.error is not None:
+                    read_result = ReadResult(error=binding.error.removeprefix("Error: "))
+                else:
+                    read_result = _scrub_result_error(resolved_backend.read(checked.target, offset=offset, limit=limit), binding)
             return _handle_read_result(read_result, validated_path, runtime.tool_call_id, offset, limit)
 
         async def async_read_file(
@@ -2355,14 +2766,26 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     tool_call_id=runtime.tool_call_id,
                     status="error",
                 )
-            if (error := _permission_error(self._permissions, "read", self.backend, validated_path)) is not None:
+            checked = _check_target(self._permissions, "read", self.backend, validated_path)
+            if isinstance(checked, str):
                 return ToolMessage(
-                    content=error,
+                    content=checked,
                     name="read_file",
                     tool_call_id=runtime.tool_call_id,
                     status="error",
                 )
-            read_result = await resolved_backend.aread(validated_path, offset=offset, limit=limit)
+            with _bound_to_target(
+                self._permissions,
+                resolved_backend,
+                checked,
+                create=False,
+                authorize=_target_authorizer(self._permissions, "read", self.backend, checked, "read_file", runtime),
+                not_found=f"Error: File '{validated_path}' not found",
+            ) as binding:
+                if binding.error is not None:
+                    read_result = ReadResult(error=binding.error.removeprefix("Error: "))
+                else:
+                    read_result = _scrub_result_error(await resolved_backend.aread(checked.target, offset=offset, limit=limit), binding)
             return _handle_read_result(read_result, validated_path, runtime.tool_call_id, offset, limit)
 
         return StructuredTool.from_function(
@@ -2395,14 +2818,27 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     status="error",
                 )
 
-            if (error := _permission_error(self._permissions, "write", self.backend, validated_path)) is not None:
+            checked = _check_target(self._permissions, "write", self.backend, validated_path)
+            if isinstance(checked, str):
                 return ToolMessage(
-                    content=error,
+                    content=checked,
                     name="write_file",
                     tool_call_id=runtime.tool_call_id,
                     status="error",
                 )
-            res: WriteResult = resolved_backend.write(validated_path, content)
+            with _bound_to_target(
+                self._permissions,
+                resolved_backend,
+                checked,
+                create=True,
+                authorize=_target_authorizer(self._permissions, "write", self.backend, checked, "write_file", runtime),
+                not_found=f"Error writing file '{validated_path}': its directory was removed",
+            ) as binding:
+                res = (
+                    WriteResult(error=binding.error)
+                    if binding.error is not None
+                    else _scrub_result_error(resolved_backend.write(checked.target, content), binding)
+                )
             if res.error:
                 return ToolMessage(
                     content=res.error,
@@ -2411,7 +2847,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     status="error",
                 )
             return ToolMessage(
-                content=f"Updated file {res.path}",
+                content=f"Updated file {validated_path}",
                 name="write_file",
                 tool_call_id=runtime.tool_call_id,
                 status="success",
@@ -2434,14 +2870,27 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     status="error",
                 )
 
-            if (error := _permission_error(self._permissions, "write", self.backend, validated_path)) is not None:
+            checked = _check_target(self._permissions, "write", self.backend, validated_path)
+            if isinstance(checked, str):
                 return ToolMessage(
-                    content=error,
+                    content=checked,
                     name="write_file",
                     tool_call_id=runtime.tool_call_id,
                     status="error",
                 )
-            res: WriteResult = await resolved_backend.awrite(validated_path, content)
+            with _bound_to_target(
+                self._permissions,
+                resolved_backend,
+                checked,
+                create=True,
+                authorize=_target_authorizer(self._permissions, "write", self.backend, checked, "write_file", runtime),
+                not_found=f"Error writing file '{validated_path}': its directory was removed",
+            ) as binding:
+                res = (
+                    WriteResult(error=binding.error)
+                    if binding.error is not None
+                    else _scrub_result_error(await resolved_backend.awrite(checked.target, content), binding)
+                )
             if res.error:
                 return ToolMessage(
                     content=res.error,
@@ -2450,7 +2899,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     status="error",
                 )
             return ToolMessage(
-                content=f"Updated file {res.path}",
+                content=f"Updated file {validated_path}",
                 name="write_file",
                 tool_call_id=runtime.tool_call_id,
                 status="success",
@@ -2489,14 +2938,27 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     status="error",
                 )
 
-            if (error := _permission_error(self._permissions, "write", self.backend, validated_path)) is not None:
+            checked = _check_target(self._permissions, "write", self.backend, validated_path)
+            if isinstance(checked, str):
                 return ToolMessage(
-                    content=error,
+                    content=checked,
                     name="edit_file",
                     tool_call_id=runtime.tool_call_id,
                     status="error",
                 )
-            res: EditResult = resolved_backend.edit(validated_path, old_string, new_string, replace_all=replace_all)
+            with _bound_to_target(
+                self._permissions,
+                resolved_backend,
+                checked,
+                create=False,
+                authorize=_target_authorizer(self._permissions, "write", self.backend, checked, "edit_file", runtime),
+                not_found=f"Error: File '{validated_path}' not found",
+            ) as binding:
+                res = (
+                    EditResult(error=binding.error)
+                    if binding.error is not None
+                    else _scrub_result_error(resolved_backend.edit(checked.target, old_string, new_string, replace_all=replace_all), binding)
+                )
             if res.error:
                 return ToolMessage(
                     content=res.error,
@@ -2505,7 +2967,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     status="error",
                 )
             return ToolMessage(
-                content=f"Successfully replaced {res.occurrences} instance(s) of the string in '{res.path}'",
+                content=f"Successfully replaced {res.occurrences} instance(s) of the string in '{validated_path}'",
                 name="edit_file",
                 tool_call_id=runtime.tool_call_id,
                 status="success",
@@ -2531,14 +2993,27 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     status="error",
                 )
 
-            if (error := _permission_error(self._permissions, "write", self.backend, validated_path)) is not None:
+            checked = _check_target(self._permissions, "write", self.backend, validated_path)
+            if isinstance(checked, str):
                 return ToolMessage(
-                    content=error,
+                    content=checked,
                     name="edit_file",
                     tool_call_id=runtime.tool_call_id,
                     status="error",
                 )
-            res: EditResult = await resolved_backend.aedit(validated_path, old_string, new_string, replace_all=replace_all)
+            with _bound_to_target(
+                self._permissions,
+                resolved_backend,
+                checked,
+                create=False,
+                authorize=_target_authorizer(self._permissions, "write", self.backend, checked, "edit_file", runtime),
+                not_found=f"Error: File '{validated_path}' not found",
+            ) as binding:
+                res = (
+                    EditResult(error=binding.error)
+                    if binding.error is not None
+                    else _scrub_result_error(await resolved_backend.aedit(checked.target, old_string, new_string, replace_all=replace_all), binding)
+                )
             if res.error:
                 return ToolMessage(
                     content=res.error,
@@ -2547,7 +3022,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     status="error",
                 )
             return ToolMessage(
-                content=f"Successfully replaced {res.occurrences} instance(s) of the string in '{res.path}'",
+                content=f"Successfully replaced {res.occurrences} instance(s) of the string in '{validated_path}'",
                 name="edit_file",
                 tool_call_id=runtime.tool_call_id,
                 status="success",
@@ -2583,14 +3058,35 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 )
 
             has_descendants = _delete_target_may_have_descendants(resolved_backend, validated_path, permissions_configured=bool(self._permissions))
-            if (error := _delete_permission_error(self._permissions, resolved_backend, validated_path, has_descendants=has_descendants)) is not None:
+            checked = _check_delete_target(self._permissions, resolved_backend, validated_path, has_descendants=has_descendants)
+            if isinstance(checked, str):
                 return ToolMessage(
-                    content=error,
+                    content=checked,
                     name="delete",
                     tool_call_id=runtime.tool_call_id,
                     status="error",
                 )
-            res: DeleteResult = resolved_backend.delete(validated_path)
+            with _bound_to_target(
+                self._permissions,
+                resolved_backend,
+                checked,
+                create=False,
+                authorize=_target_authorizer(
+                    self._permissions,
+                    "write",
+                    resolved_backend,
+                    checked,
+                    "delete",
+                    runtime,
+                    is_denied=lambda real: bool(_find_delete_deny_patterns(self._permissions, real, has_descendants=has_descendants)),
+                ),
+                not_found=f"Error: '{validated_path}' not found",
+            ) as binding:
+                res = (
+                    DeleteResult(error=binding.error)
+                    if binding.error is not None
+                    else _scrub_result_error(resolved_backend.delete(checked.target), binding)
+                )
             if res.error:
                 return ToolMessage(
                     content=res.error,
@@ -2599,7 +3095,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     status="error",
                 )
             return ToolMessage(
-                content=f"Deleted {res.path}",
+                content=f"Deleted {validated_path}",
                 name="delete",
                 tool_call_id=runtime.tool_call_id,
                 status="success",
@@ -2624,14 +3120,35 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             has_descendants = await _adelete_target_may_have_descendants(
                 resolved_backend, validated_path, permissions_configured=bool(self._permissions)
             )
-            if (error := _delete_permission_error(self._permissions, resolved_backend, validated_path, has_descendants=has_descendants)) is not None:
+            checked = _check_delete_target(self._permissions, resolved_backend, validated_path, has_descendants=has_descendants)
+            if isinstance(checked, str):
                 return ToolMessage(
-                    content=error,
+                    content=checked,
                     name="delete",
                     tool_call_id=runtime.tool_call_id,
                     status="error",
                 )
-            res: DeleteResult = await resolved_backend.adelete(validated_path)
+            with _bound_to_target(
+                self._permissions,
+                resolved_backend,
+                checked,
+                create=False,
+                authorize=_target_authorizer(
+                    self._permissions,
+                    "write",
+                    resolved_backend,
+                    checked,
+                    "delete",
+                    runtime,
+                    is_denied=lambda real: bool(_find_delete_deny_patterns(self._permissions, real, has_descendants=has_descendants)),
+                ),
+                not_found=f"Error: '{validated_path}' not found",
+            ) as binding:
+                res = (
+                    DeleteResult(error=binding.error)
+                    if binding.error is not None
+                    else _scrub_result_error(await resolved_backend.adelete(checked.target), binding)
+                )
             if res.error:
                 return ToolMessage(
                     content=res.error,
@@ -2640,7 +3157,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     status="error",
                 )
             return ToolMessage(
-                content=f"Deleted {res.path}",
+                content=f"Deleted {validated_path}",
                 name="delete",
                 tool_call_id=runtime.tool_call_id,
                 status="success",
@@ -2754,7 +3271,12 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     status="error",
                 )
             infos = glob_result.matches or []
-            paths = _apply_permissions_to_glob_results(self._permissions, infos, backend=self.backend)
+            paths = _apply_permissions_to_glob_results(
+                self._permissions,
+                infos,
+                backend=self.backend,
+                gate=_bulk_gate(self._permissions, "read", self.backend, "glob", runtime, backend_path),
+            )
             return ToolMessage(
                 content=_format_glob_tool_result(
                     paths,
@@ -2829,7 +3351,12 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     status="error",
                 )
             infos = glob_result.matches or []
-            paths = _apply_permissions_to_glob_results(self._permissions, infos, backend=self.backend)
+            paths = _apply_permissions_to_glob_results(
+                self._permissions,
+                infos,
+                backend=self.backend,
+                gate=_bulk_gate(self._permissions, "read", self.backend, "glob", runtime, backend_path),
+            )
             return ToolMessage(
                 content=_format_glob_tool_result(
                     paths,
@@ -2889,7 +3416,13 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             effective_max_count = max_count if max_count is not None else self._grep_max_count
             grep_result = _grep_backend(resolved_backend, pattern, path, glob, effective_max_count)
             matches = grep_result.matches or []
-            filtered_matches = _filter_grep_matches_by_permission(self._permissions, matches, operation="read", backend=self.backend)
+            filtered_matches = _filter_grep_matches_by_permission(
+                self._permissions,
+                matches,
+                operation="read",
+                backend=self.backend,
+                gate=_bulk_gate(self._permissions, "read", self.backend, "grep", runtime, path),
+            )
             formatted, status = _format_grep_tool_result(
                 GrepResult(error=grep_result.error, matches=filtered_matches, truncated=grep_result.truncated),
                 output_mode,
@@ -2935,7 +3468,13 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             effective_max_count = max_count if max_count is not None else self._grep_max_count
             grep_result = await _agrep_backend(resolved_backend, pattern, path, glob, effective_max_count)
             matches = grep_result.matches or []
-            filtered_matches = _filter_grep_matches_by_permission(self._permissions, matches, operation="read", backend=self.backend)
+            filtered_matches = _filter_grep_matches_by_permission(
+                self._permissions,
+                matches,
+                operation="read",
+                backend=self.backend,
+                gate=_bulk_gate(self._permissions, "read", self.backend, "grep", runtime, path),
+            )
             formatted, status = _format_grep_tool_result(
                 GrepResult(error=grep_result.error, matches=filtered_matches, truncated=grep_result.truncated),
                 output_mode,

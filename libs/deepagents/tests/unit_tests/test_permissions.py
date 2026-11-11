@@ -2,6 +2,7 @@
 
 import json
 import threading
+from collections.abc import Callable
 
 import pytest
 from langchain.tools import ToolRuntime
@@ -14,7 +15,7 @@ from langgraph.store.memory import InMemoryStore
 from deepagents._api.deprecation import LangChainDeprecationWarning
 from deepagents.backends import StateBackend, StoreBackend
 from deepagents.backends.composite import CompositeBackend
-from deepagents.backends.filesystem import FilesystemBackend
+from deepagents.backends.filesystem import _SUPPORTS_PINNING, FilesystemBackend
 from deepagents.backends.protocol import EditResult, ExecuteResponse, GlobResult, ReadResult, SandboxBackendProtocol, WriteResult
 from deepagents.backends.sandbox import _parse_glob_output
 from deepagents.backends.utils import _glob_anchor, _paths_overlap
@@ -1941,3 +1942,309 @@ class TestResolvedPathPermissions:
         backend = FilesystemBackend(root_dir=str(root), virtual_mode=True)
         result = _invoke_with_permissions(self._tool(backend, "read_file"), {"file_path": "/escape/x"}, list(self._DENY_READ), backend=backend)
         assert "cannot resolve /escape/x" in str(result)
+
+
+class _CallReq:
+    """Stand-in for the `ToolCallRequest` `HumanInTheLoopMiddleware` passes a `when` predicate."""
+
+    def __init__(self, call_id: str, name: str, args: dict) -> None:
+        self.tool_call = {"id": call_id, "name": name, "args": args}
+
+
+class TestInterruptBoundToTarget:
+    """Approval decisions hold for the target the call reaches, not just its root."""
+
+    _INTERRUPT_READ = FilesystemPermission(operations=["read"], paths=["/secrets/**"], mode="interrupt")
+    _INTERRUPT_WRITE = FilesystemPermission(operations=["write"], paths=["/secrets/**"], mode="interrupt")
+
+    def _backend(self, tmp_path, monkeypatch):
+        # /secrets/key.txt, /public/key.txt, /work/notes.txt,
+        # /work/alias.txt -> /secrets/key.txt, /work/dir -> /public
+        for name in ("secrets", "public", "work"):
+            (tmp_path / name).mkdir()
+        (tmp_path / "secrets" / "key.txt").write_text("TOPSECRET\n")
+        (tmp_path / "public" / "key.txt").write_text("PUBLIC\n")
+        (tmp_path / "work" / "notes.txt").write_text("notes\n")
+        _symlink(tmp_path / "work" / "alias.txt", tmp_path / "secrets" / "key.txt")
+        _symlink(tmp_path / "work" / "dir", tmp_path / "public", is_dir=True)
+        backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+        # Exercise the Python grep fallback, which reads through symlinks.
+        monkeypatch.setattr(backend, "_ripgrep_search", lambda *_args, **_kwargs: (None, False))
+        return backend
+
+    @staticmethod
+    def _gate(backend, rule, call_id: str, name: str, args: dict) -> bool:
+        """Run the generated `when` predicate as `HumanInTheLoopMiddleware` would."""
+        return _build_interrupt_on_from_permissions([rule], backend)[name]["when"](_CallReq(call_id, name, args))
+
+    @staticmethod
+    def _run(backend, rule, call_id: str, name: str, args: dict) -> str:
+        tool = next(t for t in FilesystemMiddleware(backend=backend).tools if t.name == name)
+        return str(_invoke_with_permissions(tool, args, [rule], tool_call_id=call_id, backend=backend))
+
+    @pytest.mark.parametrize(
+        ("name", "args"),
+        [
+            ("ls", {"path": "/work"}),
+            ("glob", {"pattern": "**/*.txt", "path": "/work"}),
+            ("grep", {"pattern": "TOPSECRET", "path": "/work", "output_mode": "content"}),
+        ],
+    )
+    def test_bulk_results_needing_approval_dropped_when_not_paused(self, tmp_path, monkeypatch, name, args):
+        backend = self._backend(tmp_path, monkeypatch)
+        call_id = f"bulk-{name}"
+        assert self._gate(backend, self._INTERRUPT_READ, call_id, name, args) is False
+        result = self._run(backend, self._INTERRUPT_READ, call_id, name, args)
+        assert "/work/alias.txt" not in result
+        assert "TOPSECRET" not in result
+
+    def test_bulk_results_kept_when_paused(self, tmp_path, monkeypatch):
+        backend = self._backend(tmp_path, monkeypatch)
+        args = {"pattern": "TOPSECRET", "path": "/", "output_mode": "content"}
+        assert self._gate(backend, self._INTERRUPT_READ, "bulk-approved", "grep", args) is True
+        result = self._run(backend, self._INTERRUPT_READ, "bulk-approved", "grep", args)
+        assert "/work/alias.txt" in result
+
+    def test_bulk_results_kept_without_approval_step(self, tmp_path, monkeypatch):
+        """With no `when` predicate run for the call, interrupt rules filter nothing, as before."""
+        backend = self._backend(tmp_path, monkeypatch)
+        result = self._run(backend, self._INTERRUPT_READ, "no-hitl", "ls", {"path": "/work"})
+        assert "/work/alias.txt" in result
+
+    def test_read_refused_when_symlink_swapped_after_decision(self, tmp_path, monkeypatch):
+        backend = self._backend(tmp_path, monkeypatch)
+        args = {"file_path": "/work/dir/key.txt"}
+        assert self._gate(backend, self._INTERRUPT_READ, "swap-read", "read_file", args) is False
+        (tmp_path / "work" / "dir").unlink()
+        _symlink(tmp_path / "work" / "dir", tmp_path / "secrets", is_dir=True)
+        result = self._run(backend, self._INTERRUPT_READ, "swap-read", "read_file", args)
+        assert "needs approval this call did not get" in result
+        assert "TOPSECRET" not in result
+
+    def test_write_refused_when_symlink_swapped_after_decision(self, tmp_path, monkeypatch):
+        backend = self._backend(tmp_path, monkeypatch)
+        args = {"file_path": "/work/dir/new.txt", "content": "x"}
+        assert self._gate(backend, self._INTERRUPT_WRITE, "swap-write", "write_file", args) is False
+        (tmp_path / "work" / "dir").unlink()
+        _symlink(tmp_path / "work" / "dir", tmp_path / "secrets", is_dir=True)
+        result = self._run(backend, self._INTERRUPT_WRITE, "swap-write", "write_file", args)
+        assert "needs approval this call did not get" in result
+        assert not (tmp_path / "secrets" / "new.txt").exists()
+
+    def test_approved_read_refused_when_retargeted(self, tmp_path, monkeypatch):
+        backend = self._backend(tmp_path, monkeypatch)
+        (tmp_path / "secrets" / "other").mkdir()
+        (tmp_path / "secrets" / "other" / "key.txt").write_text("OTHER\n")
+        _symlink(tmp_path / "work" / "s", tmp_path / "secrets", is_dir=True)
+        args = {"file_path": "/work/s/key.txt"}
+        assert self._gate(backend, self._INTERRUPT_READ, "retarget", "read_file", args) is True
+        (tmp_path / "work" / "s").unlink()
+        _symlink(tmp_path / "work" / "s", tmp_path / "secrets" / "other", is_dir=True)
+        result = self._run(backend, self._INTERRUPT_READ, "retarget", "read_file", args)
+        assert "needs approval this call did not get" in result
+        assert "OTHER" not in result
+
+    def test_approved_read_runs(self, tmp_path, monkeypatch):
+        backend = self._backend(tmp_path, monkeypatch)
+        args = {"file_path": "/work/alias.txt"}
+        assert self._gate(backend, self._INTERRUPT_READ, "approved", "read_file", args) is True
+        assert "TOPSECRET" in self._run(backend, self._INTERRUPT_READ, "approved", "read_file", args)
+
+    def test_paused_call_stays_paused_on_resume(self, tmp_path, monkeypatch):
+        """The predicate runs again on resume; a swapped path must not skip the review."""
+        backend = self._backend(tmp_path, monkeypatch)
+        args = {"file_path": "/work/alias.txt"}
+        assert self._gate(backend, self._INTERRUPT_READ, "resume", "read_file", args) is True
+        (tmp_path / "work" / "alias.txt").unlink()
+        _symlink(tmp_path / "work" / "alias.txt", tmp_path / "public" / "key.txt")
+        assert self._gate(backend, self._INTERRUPT_READ, "resume", "read_file", args) is True
+
+
+@pytest.mark.skipif(not _SUPPORTS_PINNING, reason="needs Linux /proc/self/fd")
+class TestPinnedParentDirectory:
+    """On Linux the operation runs in the directory the final check saw."""
+
+    _DENY = FilesystemPermission(operations=["read", "write"], paths=["/secrets/**"], mode="deny")
+
+    def _backend(self, tmp_path, monkeypatch, swap):
+        # /secrets/key.txt and /public/key.txt; `swap` replaces /public with a
+        # symlink to /secrets once the checks are done, as the operation starts.
+        (tmp_path / "secrets").mkdir()
+        (tmp_path / "public").mkdir()
+        (tmp_path / "secrets" / "key.txt").write_text("TOPSECRET\n")
+        (tmp_path / "public" / "key.txt").write_text("PUBLIC\n")
+        backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+        if not swap:
+            return backend
+
+        def swap_then(operation: Callable[..., object]) -> Callable[..., object]:
+            def run(*args: object, **kwargs: object) -> object:
+                if not (tmp_path / "public").is_symlink():
+                    (tmp_path / "public").rename(tmp_path / "public-old")
+                    (tmp_path / "public").symlink_to(tmp_path / "secrets", target_is_directory=True)
+                return operation(*args, **kwargs)
+
+            return run
+
+        for name in ("read", "write", "edit", "delete"):
+            monkeypatch.setattr(backend, name, swap_then(getattr(backend, name)))
+        return backend
+
+    def _run(self, backend, name, args):
+        tool = next(t for t in FilesystemMiddleware(backend=backend).tools if t.name == name)
+        return str(_invoke_with_permissions(tool, args, [self._DENY], backend=backend))
+
+    def test_read_uses_checked_directory(self, tmp_path, monkeypatch):
+        result = self._run(self._backend(tmp_path, monkeypatch, swap=True), "read_file", {"file_path": "/public/key.txt"})
+        assert "PUBLIC" in result
+        assert "TOPSECRET" not in result
+
+    def test_write_uses_checked_directory(self, tmp_path, monkeypatch):
+        backend = self._backend(tmp_path, monkeypatch, swap=True)
+        self._run(backend, "write_file", {"file_path": "/public/new.txt", "content": "x"})
+        assert (tmp_path / "public-old" / "new.txt").read_text() == "x"
+        assert not (tmp_path / "secrets" / "new.txt").exists()
+
+    def test_edit_uses_checked_directory(self, tmp_path, monkeypatch):
+        backend = self._backend(tmp_path, monkeypatch, swap=True)
+        self._run(backend, "edit_file", {"file_path": "/public/key.txt", "old_string": "PUBLIC", "new_string": "EDITED"})
+        assert (tmp_path / "public-old" / "key.txt").read_text() == "EDITED\n"
+        assert (tmp_path / "secrets" / "key.txt").read_text() == "TOPSECRET\n"
+
+    def test_delete_uses_checked_directory(self, tmp_path, monkeypatch):
+        backend = self._backend(tmp_path, monkeypatch, swap=True)
+        self._run(backend, "delete", {"file_path": "/public/key.txt"})
+        assert not (tmp_path / "public-old" / "key.txt").exists()
+        assert (tmp_path / "secrets" / "key.txt").exists()
+
+    def test_write_creates_missing_directories(self, tmp_path, monkeypatch):
+        backend = self._backend(tmp_path, monkeypatch, swap=False)
+        result = self._run(backend, "write_file", {"file_path": "/public/a/b/new.txt", "content": "x"})
+        assert "Updated file /public/a/b/new.txt" in result
+        assert (tmp_path / "public" / "a" / "b" / "new.txt").read_text() == "x"
+
+    def test_denied_real_directory_refused(self, tmp_path, monkeypatch):
+        backend = self._backend(tmp_path, monkeypatch, swap=False)
+        (tmp_path / "link").symlink_to(tmp_path / "secrets", target_is_directory=True)
+        result = self._run(backend, "read_file", {"file_path": "/link/key.txt"})
+        assert "permission denied for read" in result
+        assert "TOPSECRET" not in result
+
+    def test_errors_name_the_directory_not_the_descriptor(self, tmp_path, monkeypatch):
+        backend = self._backend(tmp_path, monkeypatch, swap=False)
+        (tmp_path / "public" / "sub").mkdir()
+        result = self._run(backend, "write_file", {"file_path": "/public/sub", "content": "x"})
+        assert "/proc/self/fd" not in result
+
+    def test_missing_parent_reported_as_not_found(self, tmp_path, monkeypatch):
+        backend = self._backend(tmp_path, monkeypatch, swap=False)
+        result = self._run(backend, "read_file", {"file_path": "/public/nope/key.txt"})
+        assert "not found" in result
+
+
+class TestReviewFollowUps:
+    """Regressions found reviewing the approval and target binding."""
+
+    _INTERRUPT_READ = FilesystemPermission(operations=["read"], paths=["/secrets/**"], mode="interrupt")
+
+    @staticmethod
+    def _tool(backend, name) -> BaseTool:
+        return next(t for t in FilesystemMiddleware(backend=backend).tools if t.name == name)
+
+    def test_non_virtual_delete_removes_the_link_not_its_target(self, tmp_path):
+        (tmp_path / "target").mkdir()
+        (tmp_path / "target" / "keep.txt").write_text("keep")
+        _symlink(tmp_path / "link", tmp_path / "target", is_dir=True)
+        backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+        rules = [FilesystemPermission(operations=["write"], paths=["/nonexistent/**"], mode="deny")]
+        result = _invoke_with_permissions(self._tool(backend, "delete"), {"file_path": str(tmp_path / "link")}, rules, backend=backend)
+        assert "Deleted" in str(result)
+        assert not (tmp_path / "link").is_symlink()
+        assert (tmp_path / "target" / "keep.txt").exists()
+
+    def test_non_virtual_write_still_refuses_a_symlinked_file(self, tmp_path):
+        (tmp_path / "real.txt").write_text("original")
+        _symlink(tmp_path / "alias.txt", tmp_path / "real.txt")
+        backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+        rules = [FilesystemPermission(operations=["write"], paths=["/nonexistent/**"], mode="deny")]
+        _invoke_with_permissions(
+            self._tool(backend, "write_file"), {"file_path": str(tmp_path / "alias.txt"), "content": "changed"}, rules, backend=backend
+        )
+        assert (tmp_path / "real.txt").read_text() == "original"
+
+    def test_target_resolving_into_another_route_refused(self, tmp_path):
+        (tmp_path / "memories").mkdir()
+        (tmp_path / "memories" / "x.txt").write_text("disk copy")
+        (tmp_path / "work").mkdir()
+        _symlink(tmp_path / "work" / "m", tmp_path / "memories", is_dir=True)
+        disk = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+        backend = CompositeBackend(default=disk, routes={"/memories/": StateBackend()})
+        rules = [FilesystemPermission(operations=["read"], paths=["/nonexistent/**"], mode="deny")]
+        result = _invoke_with_permissions(self._tool(backend, "read_file"), {"file_path": "/work/m/x.txt"}, rules, backend=backend)
+        assert "served by a different backend" in str(result)
+
+    def test_decisions_scoped_by_thread_and_graph(self):
+        decisions = filesystem_module._InterruptDecisions()
+        scope = filesystem_module._decision_scope
+
+        def runtime(thread, namespace):
+            return ToolRuntime(
+                state={},
+                context=None,
+                tool_call_id="call_0",
+                store=None,
+                stream_writer=lambda _: None,
+                config={"configurable": {"thread_id": thread, "checkpoint_ns": namespace}},
+            )
+
+        predicate = runtime("t1", "model_to_tools:a")
+        tool = runtime("t1", "tools:b")
+        other_thread = runtime("t2", "tools:b")
+        subagent = runtime("t1", "tools:b|tools:c")
+        assert scope(predicate) == scope(tool)
+        decision = filesystem_module._InterruptDecision(requested="/secrets/a", real="/secrets/a", fired=True)
+        decisions.record(scope(predicate), "read_file", "call_0", decision)
+        assert decisions.get(scope(tool), "read_file", "call_0") == decision
+        assert decisions.get(scope(other_thread), "read_file", "call_0") is None
+        assert decisions.get(scope(subagent), "read_file", "call_0") is None
+
+    def test_paused_decision_sticks_only_for_the_same_path(self):
+        decisions = filesystem_module._InterruptDecisions()
+        decision = filesystem_module._InterruptDecision
+        assert decisions.record("s", "read_file", "call_0", decision("/secrets/a", "/secrets/a", fired=True)) is True
+        assert decisions.record("s", "read_file", "call_0", decision("/secrets/a", "/public/a", fired=False)) is True
+        assert decisions.record("s", "read_file", "call_0", decision("/public/b", "/public/b", fired=False)) is False
+
+    def test_missing_decision_refused_when_predicates_attached(self, tmp_path):
+        (tmp_path / "secrets").mkdir()
+        (tmp_path / "secrets" / "key.txt").write_text("TOPSECRET")
+        (tmp_path / "work").mkdir()
+        _symlink(tmp_path / "work" / "alias.txt", tmp_path / "secrets" / "key.txt")
+        backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+        _build_interrupt_on_from_permissions([self._INTERRUPT_READ], backend)
+        result = _invoke_with_permissions(
+            self._tool(backend, "read_file"), {"file_path": "/work/alias.txt"}, [self._INTERRUPT_READ], tool_call_id="never-recorded", backend=backend
+        )
+        assert "needs approval this call did not get" in str(result)
+        assert "TOPSECRET" not in str(result)
+
+    def test_approved_search_drops_symlinks_into_other_protected_areas(self, tmp_path, monkeypatch):
+        for name in ("secrets", "work", "work/private"):
+            (tmp_path / name).mkdir()
+        (tmp_path / "secrets" / "key.txt").write_text("TOPSECRET\n")
+        (tmp_path / "work" / "private" / "notes.txt").write_text("TOPSECRET draft\n")
+        _symlink(tmp_path / "work" / "alias.txt", tmp_path / "secrets" / "key.txt")
+        _symlink(tmp_path / "work" / "s", tmp_path / "secrets", is_dir=True)
+        backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+        monkeypatch.setattr(backend, "_ripgrep_search", lambda *_args, **_kwargs: (None, False))
+        rule = FilesystemPermission(operations=["read"], paths=["/work/private/**", "/secrets/**"], mode="interrupt")
+        args = {"pattern": "TOPSECRET", "path": "/work", "output_mode": "content"}
+        assert _build_interrupt_on_from_permissions([rule], backend)["grep"]["when"](_CallReq("approved-grep", "grep", args)) is True
+        result = str(_invoke_with_permissions(self._tool(backend, "grep"), args, [rule], tool_call_id="approved-grep", backend=backend))
+        assert "/work/private/notes.txt" in result
+        assert "/work/alias.txt" not in result
+
+        listing = {"path": "/work/s"}
+        assert _build_interrupt_on_from_permissions([rule], backend)["ls"]["when"](_CallReq("approved-ls", "ls", listing)) is True
+        result = str(_invoke_with_permissions(self._tool(backend, "ls"), listing, [rule], tool_call_id="approved-ls", backend=backend))
+        assert "key.txt" in result

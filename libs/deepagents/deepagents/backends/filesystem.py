@@ -2,6 +2,8 @@
 
 import asyncio
 import base64
+import contextlib
+import contextvars
 import errno
 import functools
 import json
@@ -10,9 +12,12 @@ import os
 import shutil
 import stat
 import subprocess
+import sys
 import threading
 import time
 from bisect import bisect_left, bisect_right
+from collections.abc import Callable, Iterator
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
@@ -67,6 +72,49 @@ _RIPGREP_STDERR_CAPTURE_LIMIT = 500
 
 _RIPGREP_STDERR_READ_SIZE = 8192
 """Number of stderr characters read per chunk while draining ripgrep."""
+
+
+_PROC_FD = "/proc/self/fd"
+"""Linux exposes each open descriptor here: the link names the real path of
+what is open, and a path through it stays inside that directory."""
+
+_SUPPORTS_PINNING = sys.platform.startswith("linux") and hasattr(os, "O_PATH") and Path(_PROC_FD).is_dir()
+
+_DIR_FLAGS = getattr(os, "O_PATH", 0) | getattr(os, "O_DIRECTORY", 0)
+"""`O_PATH` holds a directory open without needing read permission on it."""
+
+
+@dataclass(frozen=True)
+class _PinnedDir:
+    """A parent directory held open for one operation by `FilesystemBackend._pin`."""
+
+    owner: "FilesystemBackend"
+    key: str
+    fd: int
+    leaf: str
+
+
+_PINNED: contextvars.ContextVar[_PinnedDir | None] = contextvars.ContextVar("deepagents_filesystem_pinned", default=None)
+
+
+@dataclass(frozen=True)
+class _Pin:
+    """Outcome of `FilesystemBackend._pin`."""
+
+    error: str | None = None
+    """An error to return instead of running the operation."""
+
+    missing: bool = False
+    """The parent directory does not exist and was not to be created."""
+
+    fd_prefix: str | None = None
+    display: str | None = None
+
+    def scrub(self, text: str) -> str:
+        """Report the pinned directory by its path rather than by descriptor."""
+        if self.fd_prefix is None or self.display is None:
+            return text
+        return text.replace(self.fd_prefix, self.display)
 
 
 @functools.cache
@@ -241,6 +289,122 @@ class FilesystemBackend(BackendProtocol):
             relative = real.relative_to(real.anchor)
         posix = relative.as_posix()
         return "/" if posix == "." else f"/{posix}"
+
+    def _supports_pinning(self) -> bool:
+        """Whether `_pin` can hold a parent directory open on this platform."""
+        return _SUPPORTS_PINNING
+
+    def _lexical_path(self, key: str) -> Path:
+        """Map `key` to a native path without resolving symlinks."""
+        if self.virtual_mode:
+            vpath = key if key.startswith("/") else "/" + key
+            if ".." in vpath or vpath.startswith("~"):
+                msg = "Path traversal not allowed"
+                raise ValueError(msg)
+            return self.cwd / vpath.lstrip("/")
+        path = Path(key)
+        return path if path.is_absolute() else self.cwd / path
+
+    def _tool_path(self, real: Path) -> str:
+        """Map a native real path to the form `_real_path` returns.
+
+        Raises:
+            ValueError: If `real` is outside the root in virtual mode.
+        """
+        relative = real.relative_to(self.cwd) if self.virtual_mode else real.relative_to(real.anchor)
+        posix = relative.as_posix()
+        return "/" if posix == "." else f"/{posix}"
+
+    @contextlib.contextmanager
+    def _pin(self, key: str, *, create: bool, authorize: Callable[[str], str | None]) -> Iterator[_Pin]:
+        """Hold the parent directory of `key` open while an operation on `key` runs.
+
+        Opens the deepest existing directory above `key`, passes `authorize`
+        the real path the kernel reports for it joined with the rest of `key`,
+        creates missing directories beneath it without following symlinks
+        (when `create`), then routes I/O on `key` in this context through the
+        open directory. A path component swapped after the directory is
+        opened cannot redirect the operation. Linux only; see
+        `_supports_pinning`.
+        """
+        opened = self._open_parent(key, create=create, authorize=authorize)
+        if isinstance(opened, _Pin):
+            yield opened
+            return
+        fd, parent, leaf = opened
+        token = _PINNED.set(_PinnedDir(self, key, fd, leaf))
+        try:
+            yield _Pin(fd_prefix=f"{_PROC_FD}/{fd}/", display=f"{parent}/")
+        finally:
+            _PINNED.reset(token)
+            os.close(fd)
+
+    def _open_parent(  # noqa: C901, PLR0911, PLR0912  # one early return per refusal reads clearer than nesting
+        self,
+        key: str,
+        *,
+        create: bool,
+        authorize: Callable[[str], str | None],
+    ) -> tuple[int, Path, str] | _Pin:
+        """Open and authorize the parent directory for `_pin`, or return why not."""
+        try:
+            target = self._lexical_path(key)
+        except ValueError as e:
+            return _Pin(error=f"Error: {e}")
+        parent = target.parent
+        if parent == target or (self.virtual_mode and target == self.cwd):
+            try:
+                return _Pin(error=authorize(self._real_path(key)))
+            except (ValueError, OSError, RuntimeError) as e:
+                return _Pin(error=f"Error: cannot resolve {key}: {e}")
+
+        missing: list[str] = []
+        directory = parent
+        while True:
+            try:
+                fd = os.open(directory, _DIR_FLAGS)
+                break
+            except (FileNotFoundError, NotADirectoryError):
+                if directory.parent == directory:
+                    return _Pin(missing=True)
+                missing.insert(0, directory.name)
+                directory = directory.parent
+            except OSError as e:
+                return _Pin(error=f"Error: cannot open the directory of {key}: {e}")
+
+        try:
+            real_dir = str(Path(f"{_PROC_FD}/{fd}").readlink())
+            if real_dir.endswith(" (deleted)"):
+                os.close(fd)
+                return _Pin(missing=True)
+            try:
+                real = self._tool_path(Path(real_dir, *missing, target.name))
+            except ValueError:
+                os.close(fd)
+                return _Pin(error=f"Error: {key} resolves outside the root directory")
+            if (error := authorize(real)) is not None:
+                os.close(fd)
+                return _Pin(error=error)
+            if missing and not create:
+                os.close(fd)
+                return _Pin(missing=True)
+            for segment in missing:
+                with contextlib.suppress(FileExistsError):
+                    os.mkdir(segment, dir_fd=fd)
+                child = os.open(segment, _DIR_FLAGS | os.O_NOFOLLOW, dir_fd=fd)
+                os.close(fd)
+                fd = child
+        except OSError as e:
+            os.close(fd)
+            return _Pin(error=f"Error: cannot open the directory of {key}: {e}")
+        return fd, parent, target.name
+
+    def _io_path(self, key: str, resolved: Path) -> Path:
+        """Return the path for I/O on `key`: through the directory `_pin` holds open, if any."""
+        pinned = _PINNED.get()
+        if pinned is not None and pinned.owner is self and pinned.key == key:
+            return Path(f"{_PROC_FD}/{pinned.fd}/{pinned.leaf}")
+        return resolved
 
     def _to_virtual_path(self, path: Path) -> str:
         """Validate resolved-target containment, then format the original path relative to cwd.
@@ -462,12 +626,13 @@ class FilesystemBackend(BackendProtocol):
             resolved_path = self._resolve_path(file_path)
         except (OSError, RuntimeError) as e:
             return ReadResult(error=f"Error reading file '{file_path}': {e}")
+        io_path = self._io_path(file_path, resolved_path)
 
         try:
-            if not resolved_path.exists() or not resolved_path.is_file():
+            if not io_path.exists() or not io_path.is_file():
                 return ReadResult(error=f"File '{file_path}' not found")
 
-            fd = os.open(resolved_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+            fd = os.open(io_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
             try:
                 file_type = _get_backend_read_file_type(file_path)
                 if file_type != "text":
@@ -520,16 +685,17 @@ class FilesystemBackend(BackendProtocol):
             resolved_path = self._resolve_path(file_path)
         except (OSError, RuntimeError) as e:
             return WriteResult(error=f"Error writing file '{file_path}': {e}")
+        io_path = self._io_path(file_path, resolved_path)
 
         try:
             # Create parent directories if needed
-            resolved_path.parent.mkdir(parents=True, exist_ok=True)
+            io_path.parent.mkdir(parents=True, exist_ok=True)
 
             # Prefer O_NOFOLLOW to avoid writing through symlinks
             flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
             if hasattr(os, "O_NOFOLLOW"):
                 flags |= os.O_NOFOLLOW
-            fd = os.open(resolved_path, flags, 0o644)
+            fd = os.open(io_path, flags, 0o644)
             # newline="" disables Windows CRLF translation so callers that
             # pass LF-only content get LF-only bytes on disk.
             with os.fdopen(fd, "w", encoding="utf-8", newline="") as f:
@@ -563,13 +729,14 @@ class FilesystemBackend(BackendProtocol):
             resolved_path = self._resolve_path(file_path)
         except (OSError, RuntimeError) as e:
             return EditResult(error=f"Error editing file '{file_path}': {e}")
+        io_path = self._io_path(file_path, resolved_path)
 
         try:
-            if not resolved_path.exists() or not resolved_path.is_file():
+            if not io_path.exists() or not io_path.is_file():
                 return EditResult(error=f"Error: File '{file_path}' not found")
 
             # Read securely
-            fd = os.open(resolved_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+            fd = os.open(io_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
             with os.fdopen(fd, "r", encoding="utf-8") as f:
                 content = f.read()
 
@@ -593,7 +760,7 @@ class FilesystemBackend(BackendProtocol):
             flags = os.O_WRONLY | os.O_TRUNC
             if hasattr(os, "O_NOFOLLOW"):
                 flags |= os.O_NOFOLLOW
-            fd = os.open(resolved_path, flags)
+            fd = os.open(io_path, flags)
             with os.fdopen(fd, "w", encoding="utf-8", newline="") as f:
                 f.write(new_content)
 
@@ -621,16 +788,17 @@ class FilesystemBackend(BackendProtocol):
             resolved_path = self._resolve_path(file_path)
         except (OSError, RuntimeError) as e:
             return DeleteResult(error=f"Error deleting '{file_path}': {e}")
+        io_path = self._io_path(file_path, resolved_path)
 
         try:
-            if not resolved_path.exists() and not resolved_path.is_symlink():
+            if not io_path.exists() and not io_path.is_symlink():
                 return DeleteResult(error=f"Error: '{file_path}' not found")
-            if resolved_path.is_symlink():
-                resolved_path.unlink()
-            elif resolved_path.is_dir():
-                shutil.rmtree(resolved_path)
+            if io_path.is_symlink():
+                io_path.unlink()
+            elif io_path.is_dir():
+                shutil.rmtree(io_path)
             else:
-                resolved_path.unlink()
+                io_path.unlink()
             return DeleteResult(path=file_path)
         except (OSError, RuntimeError) as e:
             return DeleteResult(error=f"Error deleting '{file_path}': {e}")

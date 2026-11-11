@@ -17,7 +17,15 @@ from langchain.tools.tool_node import ToolCallRequest
 
 from deepagents.backends.protocol import BackendProtocol
 from deepagents.backends.utils import _glob_anchor, _paths_overlap, to_posix_path, validate_path
-from deepagents.middleware.filesystem import FilesystemOperation, FilesystemPermission, _check_fs_permission, _resolve_real_path
+from deepagents.middleware.filesystem import (
+    _INTERRUPT_DECISIONS,
+    FilesystemOperation,
+    FilesystemPermission,
+    _check_fs_permission,
+    _decision_scope,
+    _InterruptDecision,
+    _resolve_real_path,
+)
 
 # Scope of a filesystem tool's path argument:
 #   - "exact": the call operates on exactly the named path (read_file,
@@ -88,6 +96,21 @@ def _candidate_paths(backend: BackendProtocol | None, normalized: str) -> list[s
         return []
 
 
+def _record(req: ToolCallRequest, requested: str | None, candidates: list[str], *, fired: bool) -> bool:
+    """Record the decision for the call's tool to bind to, and return whether to pause.
+
+    A call paused once keeps pausing when the predicate runs again on resume;
+    see `_InterruptDecisions.record`.
+    """
+    tool_call_id = req.tool_call.get("id")
+    tool_name = req.tool_call.get("name")
+    if not isinstance(tool_call_id, str) or not isinstance(tool_name, str):
+        return fired
+    real = candidates[1] if len(candidates) > 1 else None
+    scope = _decision_scope(getattr(req, "runtime", None))
+    return _INTERRUPT_DECISIONS.record(scope, tool_name, tool_call_id, _InterruptDecision(requested=requested, real=real, fired=fired))
+
+
 def _make_exact_when_predicate(
     rules: list[FilesystemPermission],
     operation: FilesystemOperation,
@@ -102,8 +125,9 @@ def _make_exact_when_predicate(
             normalized = validate_path(raw_path)
         except ValueError:
             return False
-        decisions = {_check_fs_permission(rules, operation, path) for path in _candidate_paths(backend, normalized)}
-        return "interrupt" in decisions and "deny" not in decisions
+        candidates = _candidate_paths(backend, normalized)
+        decisions = {_check_fs_permission(rules, operation, path) for path in candidates}
+        return _record(req, normalized, candidates, fired="interrupt" in decisions and "deny" not in decisions)
 
     return when
 
@@ -129,7 +153,7 @@ def _make_bulk_when_predicate(
         if not isinstance(raw_path, str):
             # A missing path (pathless bulk call) can't be localized, so fire;
             # any other non-string is malformed, so don't.
-            return raw_path is None
+            return _record(req, None, [], fired=True) if raw_path is None else False
         try:
             normalized = validate_path(raw_path)
         except ValueError:
@@ -141,16 +165,15 @@ def _make_bulk_when_predicate(
         # this, an agent could pass `path="."` to bypass HITL.
         if normalized == "/.":
             normalized = "/"
-        if any(_paths_overlap(root, anchor) for root in _candidate_paths(backend, normalized) for anchor in interrupt_anchors):
-            return True
+        candidates = _candidate_paths(backend, normalized)
+        fired = any(_paths_overlap(root, anchor) for root in candidates for anchor in interrupt_anchors)
         # `glob`'s `pattern` can redirect the search root away from `path`, so
         # gating on `path` alone would let `glob(pattern="/secrets/**",
         # path="/workspace")` bypass an interrupt rule on `/secrets/**`.
-        if pattern_arg_name is not None:
+        if not fired and pattern_arg_name is not None:
             raw_pattern = args.get(pattern_arg_name)
-            if isinstance(raw_pattern, str) and _bulk_pattern_fires(raw_pattern, interrupt_anchors):
-                return True
-        return False
+            fired = isinstance(raw_pattern, str) and _bulk_pattern_fires(raw_pattern, interrupt_anchors)
+        return _record(req, normalized, candidates, fired=fired)
 
     return when
 
@@ -185,6 +208,10 @@ def _build_interrupt_on_from_permissions(
     """
     if not any(r.mode == "interrupt" for r in rules):
         return {}
+    if backend is not None:
+        # The tools refuse a target that needs approval when no decision was
+        # recorded for the call, rather than assume no predicate ran.
+        _INTERRUPT_DECISIONS.attach(backend)
 
     # Offer the approver the full decision set, matching the default for
     # user-supplied `interrupt_on` tools. All four are human-controlled, so the

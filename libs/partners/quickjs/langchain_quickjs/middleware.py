@@ -8,6 +8,7 @@ import uuid
 from collections.abc import Awaitable, Callable, Mapping
 from typing import TYPE_CHECKING, Annotated, Any, Literal, NotRequired
 
+from deepagents.backends.protocol import BackendProtocol
 from deepagents.middleware._utils import append_to_system_message
 from langchain.agents.middleware.types import (
     AgentMiddleware,
@@ -211,6 +212,18 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
 
             The REPL's own tool is always excluded; a model asking for
             `tools.eval("...")` would recurse pointlessly.
+        fs: Backend for a Node-style `fs` global in code, such as
+            `await fs.readFile(path)`. `None` (default) gives code no `fs`.
+            Pass the agent's own backend to let code reach the files its file
+            tools see. `fs` reads UTF-8 text only and has only async
+            functions. A file too big for the QuickJS heap (`memory_limit`)
+            ends the eval with `MarshalError`.
+
+            !!! warning
+                `fs` calls the backend directly, not the file tools, so
+                `FilesystemMiddleware` permission rules and `interrupt_on`
+                approval do not apply to it. Leave `fs` unset for an agent
+                that relies on either for files.
         mode: REPL state persistence mode.
             - `"thread"`: state persists across calls and across turns.
             - `"turn"`: state persists across calls within a turn only.
@@ -263,6 +276,7 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         subagents: bool = True,
         max_subagent_concurrency: int = _DEFAULT_MAX_SUBAGENT_CONCURRENCY,
         ptc: PTCOption | None = None,
+        fs: BackendProtocol | None = None,
         mode: PersistenceMode | None = None,
         max_snapshot_bytes: int | None = None,
         snapshot_signing_key: str | bytes | None = None,
@@ -290,6 +304,7 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         self._subagents = subagents
         self._max_subagent_concurrency = max_subagent_concurrency
         self._ptc = ptc
+        self._fs = fs
         self._mode = _resolve_mode(mode=mode)
         self._max_snapshot_bytes = (
             memory_limit if max_snapshot_bytes is None else max_snapshot_bytes
@@ -367,6 +382,7 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
                     outer_runtime=runtime,
                     snapshot_payload=middleware._snapshot_for_eval(runtime.state),
                     tools=middleware._tools_for_eval(slot_id),
+                    fs=middleware._fs,
                 )
             except _SnapshotRestoreError as exc:
                 return _restore_error_output(exc, runtime.tool_call_id)
@@ -388,6 +404,7 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
                     snapshot_payload=middleware._snapshot_for_eval(runtime.state),
                     tools=middleware._tools_for_eval(slot_id),
                     outer_loop=asyncio.get_running_loop(),
+                    fs=middleware._fs,
                 )
             except _SnapshotRestoreError as exc:
                 return _restore_error_output(exc, runtime.tool_call_id)

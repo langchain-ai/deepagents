@@ -4543,6 +4543,61 @@ class TestTurnStateRelease:
         app._session_state.hooks = HooksManager.inert()
         return app
 
+    @pytest.mark.parametrize(
+        "accounting_method",
+        ["_sync_session_cost_from_checkpoint", "_refresh_cache_timing"],
+    )
+    @pytest.mark.parametrize("error_type", [asyncio.CancelledError, RuntimeError])
+    async def test_final_accounting_failure_releases_turn(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        accounting_method: str,
+        error_type: type[BaseException],
+    ) -> None:
+        """Failed final accounting must not strand the next user message."""
+        monkeypatch.setenv(name="HOME", value=str(tmp_path))
+        app = self._configured_app()
+        monkeypatch.setattr(
+            target=app,
+            name="_ensure_goal_state_notice",
+            value=AsyncMock(return_value=True),
+        )
+        for method in (
+            "_sync_session_cost_from_checkpoint",
+            "_refresh_cache_timing",
+        ):
+            monkeypatch.setattr(target=app, name=method, value=AsyncMock())
+        monkeypatch.setattr(
+            target=app,
+            name=accounting_method,
+            value=AsyncMock(side_effect=error_type("accounting failed")),
+        )
+
+        with patch(
+            "deepagents_code.tui.textual_adapter.execute_task_textual",
+            new_callable=AsyncMock,
+        ):
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                app._lc_thread_id = "accounting-failure"
+                app._set_agent_running(True)
+                with pytest.raises(error_type, match="accounting failed"):
+                    await app._run_agent_task(message="hello")
+
+                assert app._agent_running is False
+                assert app._agent_turn_started is False
+                assert app._agent_quiescent.is_set()
+
+                monkeypatch.setattr(
+                    target=app, name=accounting_method, value=AsyncMock()
+                )
+                app.post_message(
+                    ChatInput.Submitted(value="next message", mode="normal")
+                )
+                await pilot.pause()
+                assert not app._pending_messages
+
     async def test_interrupt_before_worker_starts_releases_turn(self) -> None:
         """An interrupt landing before the worker's first step ends the turn.
 

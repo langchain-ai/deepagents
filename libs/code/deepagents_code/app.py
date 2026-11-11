@@ -20618,57 +20618,61 @@ class DeepAgentsApp(App):
                         exc_info=True,
                     )
         finally:
-            # Merge turn stats before cleanup — _cleanup_agent_task may raise
-            # during teardown (widget removal on a torn-down DOM), and stats
-            # should ideally be captured regardless.
-            # exit() clears _inflight_turn_stats when it merges, so
-            # checking for None prevents double-counting.
-            if self._inflight_turn_stats is not None:
-                self._session_stats.merge(turn_stats)
-                if self._inflight_thread_id == self._lc_thread_id:
-                    self._thread_stats.merge(turn_stats)
-                self._inflight_turn_stats = None
-                self._inflight_thread_id = None
-                self._refresh_cache_display()
-            # Settle the display on the committed total. Only a completed turn
-            # is read back: `durability="exit"` may drop an aborted turn's
-            # writes, and the streamed totals already seen are closer to what
-            # was actually spent than that turn's stale checkpoint.
-            if turn_completed and self._lc_thread_id is not None:
-                await self._sync_session_cost_from_checkpoint()
-                await self._refresh_cache_timing()
-            elif turn_stats.request_count > 0:
-                # An interrupted turn never reads the checkpoint back (its
-                # writes may have been dropped), but the model *was* reached,
-                # and the checkpoint read is the only other thing that advances
-                # the in-memory request time. Leaving it stale would make the
-                # very next send report "no record of when this thread last
-                # reached the model" seconds after a turn that plainly did.
-                await self._stamp_cache_identity_locally()
-            # Finalize any subagent rows left "running" — an interrupt cancels
-            # the worker before the bridge emits terminal events (a cancel is a
-            # BaseException, which the bridge's `except Exception` skips), so the
-            # panel would otherwise spin forever. No-op when nothing's running.
-            subagent_panel = self._get_subagent_panel()
-            if subagent_panel is not None:
-                subagent_panel.finalize_running()
-            # Collapse the open tool group so an interrupted turn doesn't leave a
-            # summary spinning "Running…" forever (synchronous, cancel-safe).
-            self._close_active_tool_group()
-            # Only a turn that finished streaming can authorize completion: an
-            # abort may have left the checkpoint's grade write incomplete, so a
-            # grade observed on such a turn is dropped by yielding `None` here.
-            goal_grade = (
-                _GoalGradeObservation(latest_goal_grade.grading_run_id)
-                if turn_completed and latest_goal_grade is not None
-                else None
-            )
-            await self._cleanup_agent_task(
-                force_goal_sync=graph_input is not None,
-                goal_criteria_request_id=criteria_request_id,
-                goal_grade=goal_grade,
-                goal_criteria_succeeded=(criteria_request_id is None or task_succeeded),
-            )
+            try:
+                # Merge turn stats before cleanup — _cleanup_agent_task may raise
+                # during teardown (widget removal on a torn-down DOM), and stats
+                # should ideally be captured regardless.
+                # exit() clears _inflight_turn_stats when it merges, so
+                # checking for None prevents double-counting.
+                if self._inflight_turn_stats is not None:
+                    self._session_stats.merge(turn_stats)
+                    if self._inflight_thread_id == self._lc_thread_id:
+                        self._thread_stats.merge(turn_stats)
+                    self._inflight_turn_stats = None
+                    self._inflight_thread_id = None
+                    self._refresh_cache_display()
+                # Settle the display on the committed total. Only a completed turn
+                # is read back: `durability="exit"` may drop an aborted turn's
+                # writes, and the streamed totals already seen are closer to what
+                # was actually spent than that turn's stale checkpoint.
+                if turn_completed and self._lc_thread_id is not None:
+                    await self._sync_session_cost_from_checkpoint()
+                    await self._refresh_cache_timing()
+                elif turn_stats.request_count > 0:
+                    # An interrupted turn never reads the checkpoint back (its
+                    # writes may have been dropped), but the model *was* reached,
+                    # and the checkpoint read is the only other thing that advances
+                    # the in-memory request time. Leaving it stale would make the
+                    # very next send report "no record of when this thread last
+                    # reached the model" seconds after a turn that plainly did.
+                    await self._stamp_cache_identity_locally()
+            finally:
+                # Finalize any subagent rows left "running" — an interrupt cancels
+                # the worker before the bridge emits terminal events (a cancel is a
+                # BaseException, which the bridge's `except Exception` skips), so the
+                # panel would otherwise spin forever. No-op when nothing's running.
+                subagent_panel = self._get_subagent_panel()
+                if subagent_panel is not None:
+                    subagent_panel.finalize_running()
+                # Collapse the open tool group so an interrupted turn doesn't leave a
+                # summary spinning "Running…" forever (synchronous, cancel-safe).
+                self._close_active_tool_group()
+                # Only a turn that finished streaming can authorize completion: an
+                # abort may have left the checkpoint's grade write incomplete, so a
+                # grade observed on such a turn is dropped by yielding `None` here.
+                goal_grade = (
+                    _GoalGradeObservation(latest_goal_grade.grading_run_id)
+                    if turn_completed and latest_goal_grade is not None
+                    else None
+                )
+                await self._cleanup_agent_task(
+                    force_goal_sync=graph_input is not None,
+                    goal_criteria_request_id=criteria_request_id,
+                    goal_grade=goal_grade,
+                    goal_criteria_succeeded=(
+                        criteria_request_id is None or task_succeeded
+                    ),
+                )
 
     async def _process_next_from_queue(self) -> None:
         """Process the next message from the queue if any exist.

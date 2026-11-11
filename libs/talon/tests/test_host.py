@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, cast
 from unittest.mock import Mock
 from uuid import uuid4
 
+from langchain_core.tracers.langchain import wait_for_all_tracers
 from langgraph.graph import END, START, MessagesState, StateGraph
 
 from deepagents_talon.background import BackgroundSubagents
@@ -2353,7 +2354,17 @@ async def test_user_cancellation_feedback(tmp_path: Path, monkeypatch, tracing, 
         await host.receive_message(channel, ChannelMessage(conversation_id="chat", text=action))
     await host.stop()
 
+    await asyncio.to_thread(wait_for_all_tracers)
     if tracing and action != "shutdown":
-        feedback.create_feedback.assert_called_once_with(root_id, "user_interrupted", score=1)
+        roots = [
+            call.kwargs
+            for call in feedback.create_run.call_args_list
+            if not call.kwargs.get("parent_run_id")
+        ]
+        assert len(roots) == 1
+        assert roots[0]["name"] == "talon_turn"
+        feedback.create_feedback.assert_called_once_with(
+            roots[0]["id"], "user_interrupted", score=1
+        )
     else:
         feedback.create_feedback.assert_not_called()

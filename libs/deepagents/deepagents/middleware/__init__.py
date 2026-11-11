@@ -52,6 +52,7 @@ from deepagents.middleware.async_subagents import (
     AsyncSubAgentMiddleware,
     TaskEvent,
 )
+from deepagents.middleware.cache_keepalive import AnthropicCacheKeepaliveMiddleware
 from deepagents.middleware.filesystem import FilesystemMiddleware, FilesystemPermission
 from deepagents.middleware.memory import MemoryMiddleware
 from deepagents.middleware.rubric import (
@@ -85,6 +86,7 @@ __all__ = [
     "DEEPAGENTS_DEFAULT_SUMMARY_PROMPT",
     "GRADER_SYSTEM_PROMPT",
     "RUBRIC_GRADER_MESSAGE_SOURCE",
+    "AnthropicCacheKeepaliveMiddleware",
     "AsyncSubAgent",
     "AsyncSubAgentMiddleware",
     "CompiledSubAgent",

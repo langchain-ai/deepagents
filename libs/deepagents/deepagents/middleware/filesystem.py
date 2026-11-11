@@ -558,8 +558,9 @@ class _InterruptDecisions:
 
     The predicates in `_fs_interrupt` record here; the tools read back what
     was decided so they refuse a target that needs approval the call did not
-    get. Bounded, since rejected calls never reach their tool; a backend with
-    predicates attached treats a missing decision as no approval.
+    get. Bounded, since rejected calls never reach their tool. Once a tool's
+    predicate has run for a backend, a missing decision for that tool counts as
+    no approval.
     """
 
     _MAX_ENTRIES = 16384
@@ -567,24 +568,26 @@ class _InterruptDecisions:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._entries: dict[tuple[str, str, str], _InterruptDecision] = {}
-        self._gated_backends: weakref.WeakSet[object] = weakref.WeakSet()
-        self._gated_ids: set[int] = set()
+        self._gated: weakref.WeakKeyDictionary[object, set[str]] = weakref.WeakKeyDictionary()
+        self._gated_ids: set[tuple[int, str]] = set()
 
-    def attach(self, backend: BackendProtocol) -> None:
-        """Mark `backend` as served by interrupt predicates."""
+    def attach(self, backend: BackendProtocol, tool_name: str) -> None:
+        """Mark `tool_name` on `backend` as served by an interrupt predicate."""
         with self._lock:
             try:
-                self._gated_backends.add(backend)
+                self._gated.setdefault(backend, set()).add(tool_name)
             except TypeError:
-                self._gated_ids.add(id(backend))
+                self._gated_ids.add((id(backend), tool_name))
 
-    def gated(self, backend: BackendProtocol) -> bool:
-        """Whether interrupt predicates were built for `backend`."""
+    def gated(self, backend: BackendProtocol, tool_name: str) -> bool:
+        """Whether an interrupt predicate has run for `tool_name` on `backend`."""
         with self._lock:
             try:
-                return backend in self._gated_backends or id(backend) in self._gated_ids
+                if tool_name in self._gated.get(backend, ()):
+                    return True
             except TypeError:
-                return id(backend) in self._gated_ids
+                pass
+            return (id(backend), tool_name) in self._gated_ids
 
     def record(self, scope: str, tool_name: str, tool_call_id: str, decision: _InterruptDecision) -> bool:
         """Record `decision` and return whether the call is paused.
@@ -616,18 +619,20 @@ _INTERRUPT_DECISIONS = _InterruptDecisions()
 
 def _approval_missing(
     backend: BackendProtocol,
+    tool_name: str,
     decision: _InterruptDecision | None,
     requested: str | None,
     real: str | None,
 ) -> bool:
     """Whether a call reaching a target that needs approval was not approved for it.
 
-    With no recorded decision, a backend without interrupt predicates keeps
-    its behavior, and one with them refuses. A call the reviewer edited to a
+    With no recorded decision, a tool whose predicate never ran (none is
+    configured, or the caller's `interrupt_on` replaced it) keeps its
+    behavior, and one whose predicate has run refuses. A call the reviewer edited to a
     different path was approved as edited.
     """
     if decision is None:
-        return _INTERRUPT_DECISIONS.gated(backend)
+        return _INTERRUPT_DECISIONS.gated(backend, tool_name)
     if not decision.fired:
         return True
     return decision.requested == requested and decision.real != real
@@ -686,9 +691,9 @@ def _bulk_gate(
         except (ValueError, OSError, RuntimeError):
             return _BulkGate(rules, operation, approved=False, root=None)
     decision = _INTERRUPT_DECISIONS.get(_decision_scope(runtime), tool_name, getattr(runtime, "tool_call_id", None))
-    if decision is None and not _INTERRUPT_DECISIONS.gated(backend):
+    if decision is None and not _INTERRUPT_DECISIONS.gated(backend, tool_name):
         return None
-    approved = not _approval_missing(backend, decision, requested, real)
+    approved = not _approval_missing(backend, tool_name, decision, requested, real)
     return _BulkGate(rules, operation, approved=approved, root=real)
 
 
@@ -873,6 +878,7 @@ def _target_authorizer(
             return f"Error: permission denied for {operation} on {checked.path} (resolves to {real})"
         if _needs_approval(rules, operation, checked.path, real, bulk=tool_name == "delete") and _approval_missing(
             backend,
+            tool_name,
             _INTERRUPT_DECISIONS.get(_decision_scope(runtime), tool_name, getattr(runtime, "tool_call_id", None)),
             checked.path,
             real,

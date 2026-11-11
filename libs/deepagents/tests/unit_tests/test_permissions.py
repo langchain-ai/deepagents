@@ -1,6 +1,7 @@
 """Unit tests for filesystem permission enforcement in `FilesystemMiddleware`."""
 
 import json
+import sys
 import threading
 from collections.abc import Callable
 
@@ -2151,6 +2152,7 @@ class TestReviewFollowUps:
     def _tool(backend, name) -> BaseTool:
         return next(t for t in FilesystemMiddleware(backend=backend).tools if t.name == name)
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="non-virtual paths here are POSIX absolute paths")
     def test_non_virtual_delete_removes_the_link_not_its_target(self, tmp_path):
         (tmp_path / "target").mkdir()
         (tmp_path / "target" / "keep.txt").write_text("keep")
@@ -2162,6 +2164,7 @@ class TestReviewFollowUps:
         assert not (tmp_path / "link").is_symlink()
         assert (tmp_path / "target" / "keep.txt").exists()
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="non-virtual paths here are POSIX absolute paths")
     def test_non_virtual_write_still_refuses_a_symlinked_file(self, tmp_path):
         (tmp_path / "real.txt").write_text("original")
         _symlink(tmp_path / "alias.txt", tmp_path / "real.txt")
@@ -2221,12 +2224,24 @@ class TestReviewFollowUps:
         (tmp_path / "work").mkdir()
         _symlink(tmp_path / "work" / "alias.txt", tmp_path / "secrets" / "key.txt")
         backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
-        _build_interrupt_on_from_permissions([self._INTERRUPT_READ], backend)
+        when = _build_interrupt_on_from_permissions([self._INTERRUPT_READ], backend)["read_file"]["when"]
+        when(_CallReq("earlier-call", "read_file", {"file_path": "/work/notes.txt"}))
         result = _invoke_with_permissions(
             self._tool(backend, "read_file"), {"file_path": "/work/alias.txt"}, [self._INTERRUPT_READ], tool_call_id="never-recorded", backend=backend
         )
         assert "needs approval this call did not get" in str(result)
         assert "TOPSECRET" not in str(result)
+
+    def test_caller_interrupt_on_override_keeps_approved_calls_working(self, tmp_path):
+        """A caller's `interrupt_on` entry replaces the generated predicate, so no decision is recorded."""
+        (tmp_path / "secrets").mkdir()
+        (tmp_path / "secrets" / "key.txt").write_text("TOPSECRET")
+        backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+        _build_interrupt_on_from_permissions([self._INTERRUPT_READ], backend)
+        result = _invoke_with_permissions(
+            self._tool(backend, "read_file"), {"file_path": "/secrets/key.txt"}, [self._INTERRUPT_READ], tool_call_id="user-hitl", backend=backend
+        )
+        assert "TOPSECRET" in str(result)
 
     def test_approved_search_drops_symlinks_into_other_protected_areas(self, tmp_path, monkeypatch):
         for name in ("secrets", "work", "work/private"):

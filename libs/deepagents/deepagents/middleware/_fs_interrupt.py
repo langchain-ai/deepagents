@@ -96,16 +96,28 @@ def _candidate_paths(backend: BackendProtocol | None, normalized: str) -> list[s
         return []
 
 
-def _record(req: ToolCallRequest, requested: str | None, candidates: list[str], *, fired: bool) -> bool:
+def _record(
+    req: ToolCallRequest,
+    backend: BackendProtocol | None,
+    requested: str | None,
+    candidates: list[str],
+    *,
+    fired: bool,
+) -> bool:
     """Record the decision for the call's tool to bind to, and return whether to pause.
 
     A call paused once keeps pausing when the predicate runs again on resume;
-    see `_InterruptDecisions.record`.
+    see `_InterruptDecisions.record`. Once this runs for a tool, the tool
+    treats a call with no recorded decision as not approved. That is set here,
+    when the predicate runs, rather than when it is built, so a caller's
+    `interrupt_on` entry that replaces it leaves the tool unaffected.
     """
     tool_call_id = req.tool_call.get("id")
     tool_name = req.tool_call.get("name")
     if not isinstance(tool_call_id, str) or not isinstance(tool_name, str):
         return fired
+    if backend is not None:
+        _INTERRUPT_DECISIONS.attach(backend, tool_name)
     real = candidates[1] if len(candidates) > 1 else None
     scope = _decision_scope(getattr(req, "runtime", None))
     return _INTERRUPT_DECISIONS.record(scope, tool_name, tool_call_id, _InterruptDecision(requested=requested, real=real, fired=fired))
@@ -127,7 +139,7 @@ def _make_exact_when_predicate(
             return False
         candidates = _candidate_paths(backend, normalized)
         decisions = {_check_fs_permission(rules, operation, path) for path in candidates}
-        return _record(req, normalized, candidates, fired="interrupt" in decisions and "deny" not in decisions)
+        return _record(req, backend, normalized, candidates, fired="interrupt" in decisions and "deny" not in decisions)
 
     return when
 
@@ -153,7 +165,7 @@ def _make_bulk_when_predicate(
         if not isinstance(raw_path, str):
             # A missing path (pathless bulk call) can't be localized, so fire;
             # any other non-string is malformed, so don't.
-            return _record(req, None, [], fired=True) if raw_path is None else False
+            return _record(req, backend, None, [], fired=True) if raw_path is None else False
         try:
             normalized = validate_path(raw_path)
         except ValueError:
@@ -173,7 +185,7 @@ def _make_bulk_when_predicate(
         if not fired and pattern_arg_name is not None:
             raw_pattern = args.get(pattern_arg_name)
             fired = isinstance(raw_pattern, str) and _bulk_pattern_fires(raw_pattern, interrupt_anchors)
-        return _record(req, normalized, candidates, fired=fired)
+        return _record(req, backend, normalized, candidates, fired=fired)
 
     return when
 
@@ -208,10 +220,6 @@ def _build_interrupt_on_from_permissions(
     """
     if not any(r.mode == "interrupt" for r in rules):
         return {}
-    if backend is not None:
-        # The tools refuse a target that needs approval when no decision was
-        # recorded for the call, rather than assume no predicate ran.
-        _INTERRUPT_DECISIONS.attach(backend)
 
     # Offer the approver the full decision set, matching the default for
     # user-supplied `interrupt_on` tools. All four are human-controlled, so the

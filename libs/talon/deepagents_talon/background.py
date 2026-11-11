@@ -39,6 +39,18 @@ _IN_SUBAGENT: contextvars.ContextVar[bool] = contextvars.ContextVar("talon_subag
 _CONSUMED_RESULTS: contextvars.ContextVar[tuple[str, dict[str, str]] | None] = (
     contextvars.ContextVar("talon_consumed_subagent_results", default=None)
 )
+
+
+@dataclass
+class _ListingState:
+    owner: str
+    snapshot: tuple[tuple[str, str], ...] | None = None
+    returned: set[str] = field(default_factory=set)
+
+
+_LISTING_STATE: contextvars.ContextVar[_ListingState | None] = contextvars.ContextVar(
+    "talon_subagent_listing", default=None
+)
 # Set by the runtime for a scheduled run, which has no user to keep talking to and no later
 # turn to deliver into: its delegations finish inside the turn that made them.
 _SCHEDULED_TURN: contextvars.ContextVar[bool] = contextvars.ContextVar(
@@ -106,10 +118,12 @@ _SCHEDULED_INSTRUCTIONS = (
 def _track_consumed_results(owner: str, results: dict[str, str]) -> Generator[None]:
     """Collect results exposed to this turn without acknowledging them until success."""
     token = _CONSUMED_RESULTS.set((owner, results))
+    listing_token = _LISTING_STATE.set(_ListingState(owner))
     try:
         yield
     finally:
         _CONSUMED_RESULTS.reset(token)
+        _LISTING_STATE.reset(listing_token)
 
 
 @dataclass
@@ -157,23 +171,41 @@ class BackgroundSubagents(AgentMiddleware):
         self.messageable: frozenset[str] = frozenset()
 
         @tool
-        async def list_subagents(runtime: ToolRuntime) -> list[dict[str, str | list[str] | None]]:
-            """Inspect this thread's subagents, including their status and final results."""
+        async def list_subagents(
+            runtime: ToolRuntime,
+        ) -> list[dict[str, str | list[str] | None]] | str:
+            """Inspect this thread's subagents, including changed status and final results."""
             owner = runtime.config.get("configurable", {}).get("thread_id")
+            jobs = [(key, job, job.status) for key, job in self._jobs.items() if job.owner == owner]
+            state = _LISTING_STATE.get() if not _IN_SUBAGENT.get() else None
+            if state is not None and state.owner != owner:
+                state = None
+            snapshot = tuple((key, status) for key, _, status in jobs)
+            if state is not None:
+                if state.snapshot == snapshot:
+                    return (
+                        "No subagent status changed. Results arrive automatically. "
+                        "Continue independent work or end your turn."
+                    )
+                state.snapshot = snapshot
             consumed = _CONSUMED_RESULTS.get()
             if consumed is not None and consumed[0] == owner and not _IN_SUBAGENT.get():
                 consumed[1].update(self.results(owner))
-            return [
+            listing = [
                 {
                     "task_id": key,
                     "name": job.name,
-                    "status": job.status,
-                    "result": job.result,
+                    "status": status,
+                    "result": "Result already returned; use inspect_subagent to read it again."
+                    if state is not None and key in state.returned and job.result is not None
+                    else job.result,
                     "tools": job.tools,
                 }
-                for key, job in self._jobs.items()
-                if job.owner == owner
+                for key, job, status in jobs
             ]
+            if state is not None:
+                state.returned.update(key for key, job, _ in jobs if job.result is not None)
+            return listing
 
         @tool
         async def cancel_subagent(task_id: str, runtime: ToolRuntime) -> str:
@@ -192,7 +224,7 @@ class BackgroundSubagents(AgentMiddleware):
         async def inspect_subagent(
             task_id: str, runtime: ToolRuntime, limit: int = 10
         ) -> dict[str, object]:
-            """Inspect recent metadata-only activity and queued/consumed message receipts."""
+            """Inspect final results, recent metadata-only activity, and message receipts."""
             owner = runtime.config.get("configurable", {}).get("thread_id")
             job = self._jobs.get(task_id)
             if not owner or job is None or job.owner != owner:
@@ -202,6 +234,7 @@ class BackgroundSubagents(AgentMiddleware):
             return {
                 "task_id": task_id,
                 "status": job.status,
+                "result": job.result,
                 "messaging_supported": job.control.supported,
                 "activity": "local model/tool metadata"
                 if job.control.supported
@@ -383,6 +416,7 @@ class BackgroundSubagents(AgentMiddleware):
     async def _run(self, job: _Job, request: ToolCallRequest, task_id: str) -> None:
         _IN_SUBAGENT.set(True)
         _CONSUMED_RESULTS.set(None)
+        _LISTING_STATE.set(None)
         ACTIVE_CONTROL.set(job.control)
         APPROVAL_OPERATOR.set(False)
         # The copied context carries the host's history scope and cron origin, which the

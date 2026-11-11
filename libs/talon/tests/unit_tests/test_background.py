@@ -30,6 +30,7 @@ from deepagents_talon.background import (
     _SCHEDULED_TURN,
     _TIMED_OUT_RESULT,
     BackgroundSubagents,
+    _track_consumed_results,
 )
 from deepagents_talon.cron import CronOrigin
 from deepagents_talon.host import TalonHost
@@ -1250,3 +1251,62 @@ async def test_chat_turn_is_not_scheduled(monkeypatch):
         await runtime.stop()
 
     assert seen == [False]
+
+
+async def test_listing_suppresses_unchanged_polls_and_repeated_results():
+    release = asyncio.Event()
+
+    @tool
+    async def task() -> str:
+        """Wait for research."""
+        await release.wait()
+        return "research result"
+
+    background = BackgroundSubagents()
+    runtime = _request("chat", task).runtime
+    listing, _, inspect, *_ = background.tools
+    try:
+        await background.awrap_tool_call(_request("chat", task), _unused_handler)
+        with _track_consumed_results("chat", {}):
+            running = await listing.ainvoke({"runtime": runtime})
+            assert running[0]["status"] == "running"
+            unchanged = await listing.ainvoke({"runtime": runtime})
+            assert isinstance(unchanged, str)
+            assert len(unchanged) < 160
+            assert "automatically" in unchanged
+            assert "independent work or end your turn" in unchanged
+            release.set()
+            await asyncio.gather(*(job.worker for job in background._jobs.values()))
+            finished = await listing.ainvoke({"runtime": runtime})
+            assert finished[0]["status"] == "finished"
+            assert finished[0]["result"] == "research result"
+            assert await listing.ainvoke({"runtime": runtime}) == unchanged
+            await background.awrap_tool_call(_request("chat", task), _unused_handler)
+            updated = await listing.ainvoke({"runtime": runtime})
+            assert "inspect_subagent" in updated[0]["result"]
+            assert "research result" not in updated[0]["result"]
+            detail = await inspect.ainvoke({"runtime": runtime, "task_id": finished[0]["task_id"]})
+            assert detail["result"] == "research result"
+        with _track_consumed_results("chat", {}):
+            assert (await listing.ainvoke({"runtime": runtime}))[0]["result"] == "research result"
+    finally:
+        release.set()
+        await background.cancel()
+
+
+async def test_listing_state_is_isolated_between_concurrent_turns():
+    background = BackgroundSubagents()
+    listing = background.tools[0]
+    ready = asyncio.Barrier(2)
+
+    async def poll(owner):
+        runtime = _request(owner, listing).runtime
+        with _track_consumed_results(owner, {}):
+            assert await listing.ainvoke({"runtime": runtime}) == []
+            await ready.wait()
+            assert isinstance(await listing.ainvoke({"runtime": runtime}), str)
+            with _track_consumed_results("other", {}):
+                assert await listing.ainvoke({"runtime": runtime}) == []
+            assert isinstance(await listing.ainvoke({"runtime": runtime}), str)
+
+    await asyncio.gather(poll("one"), poll("two"))

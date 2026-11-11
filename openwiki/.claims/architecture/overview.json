@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:96b27f57bdddc1c74a81ca0603365ce631be3296c42c4b8c47e909c34fedcb75",
+  "pageVersion": "sha256:13d8af5aee9f69cf3e39fb357e5993806f70ceeb996bc6b0f8ba355e02f9b778",
   "claims": [
     {
       "id": "claim_5ef39897fd084ab1ab8be36de0d9b51e",
@@ -16,11 +16,11 @@
         },
         {
           "resource": "repo://libs/code/pyproject.toml",
-          "version": "repo-file-v1:sha256:73848e6aba521a80041a0e6151c7d8c4be24b364eb7ae3ecf91bfc8b9271ddd4"
+          "version": "repo-file-v1:sha256:7553adbe4766b4d796cc24e9ee8c98598540516438cafc024122b438c85de0b9"
         },
         {
           "resource": "repo://libs/deepagents/pyproject.toml",
-          "version": "repo-file-v1:sha256:dce151ee51cffc31317bceb9458ec9d267cf1f1dd70bad00f03bcbce75a3885d"
+          "version": "repo-file-v1:sha256:2447cc4c3f8cf18a537259c80a45daee3d2d9502f1d8c1ab6cd57f1ed4bd8fc3"
         },
         {
           "resource": "repo://libs/evals/pyproject.toml",
@@ -28,7 +28,7 @@
         },
         {
           "resource": "repo://libs/talon/pyproject.toml",
-          "version": "repo-file-v1:sha256:b59dc97a1fa7b36ae3e8b3644c66002714d6b118f5ab00eb9cf6248372a61e79"
+          "version": "repo-file-v1:sha256:d87f9943b0d4d7c9501e81f6f4dad797d9e2dcd64ccf8acb0130e244c14c6530"
         }
       ]
     },
@@ -42,7 +42,7 @@
         },
         {
           "resource": "repo://.release-please-manifest.json",
-          "version": "repo-file-v1:sha256:9bc2ddc8c35ba93beac81c4f6d112d190b8879cf18edd901f12328da47584b54"
+          "version": "repo-file-v1:sha256:f6b4d999e05c1e544bd39b7aa219be1feff42212c4297b2877a1a66e5645ab9b"
         },
         {
           "resource": "repo://release-please-config.json",
@@ -68,7 +68,7 @@
         },
         {
           "resource": "repo://libs/talon/pyproject.toml",
-          "version": "repo-file-v1:sha256:b59dc97a1fa7b36ae3e8b3644c66002714d6b118f5ab00eb9cf6248372a61e79"
+          "version": "repo-file-v1:sha256:d87f9943b0d4d7c9501e81f6f4dad797d9e2dcd64ccf8acb0130e244c14c6530"
         }
       ]
     },
@@ -82,7 +82,7 @@
         },
         {
           "resource": "repo://libs/deepagents/deepagents/graph.py",
-          "version": "repo-file-v1:sha256:81ddf941ff2a3766cc4641bf1a81dfba286278de8d045b6500b69027fb758e5c"
+          "version": "repo-file-v1:sha256:d266ce645cbc773854d6b086049a597dd2accb70461e6545f61d6076c43310f0"
         }
       ]
     },
@@ -110,7 +110,7 @@
         },
         {
           "resource": "repo://libs/talon/pyproject.toml",
-          "version": "repo-file-v1:sha256:b59dc97a1fa7b36ae3e8b3644c66002714d6b118f5ab00eb9cf6248372a61e79"
+          "version": "repo-file-v1:sha256:d87f9943b0d4d7c9501e81f6f4dad797d9e2dcd64ccf8acb0130e244c14c6530"
         }
       ]
     },
@@ -126,33 +126,33 @@
     },
     {
       "id": "claim_e0fb494d53cb488b92502cbb34dd77b6",
-      "statement": "The five partner distributions support Python >=3.11,<4.0, depend on deepagents >=0.7.34,<0.8.0, and use editable SDK sibling mappings during checkout development.",
+      "statement": "The five partner distributions support Python >=3.11,<4.0, depend on deepagents >=0.7.35,<0.8.0, and use editable SDK sibling mappings during checkout development.",
       "evidence": [
         {
           "resource": "repo://libs/partners/daytona/pyproject.toml",
-          "version": "repo-file-v1:sha256:2adac76bc8192b41418941a58e8047c6e470ac3de008a816980357b8c95dfbe0"
+          "version": "repo-file-v1:sha256:0b71f5e5035a20ee5be2448d3702484ad0a10c0e2b7e1e90ea474409a89b3e5b"
         },
         {
           "resource": "repo://libs/partners/modal/pyproject.toml",
-          "version": "repo-file-v1:sha256:ad7442643f22b57efffd20a7eb515e5ee90510c34bc1c5b854eba0791aa3f7a6"
+          "version": "repo-file-v1:sha256:0671cae3cef31ba7ffb3d4f4756722f18a1968052c564874acc448550259897a"
         },
         {
           "resource": "repo://libs/partners/quickjs/pyproject.toml",
-          "version": "repo-file-v1:sha256:d1e2261060a836ccba34f263f6af1e1ab41505aa23ed393192b354f6d5942a1b"
+          "version": "repo-file-v1:sha256:5e4c64473997b69ad37f8f501eb657484d3c148a3f901ae0e95c78063f1411a5"
         },
         {
           "resource": "repo://libs/partners/runloop/pyproject.toml",
-          "version": "repo-file-v1:sha256:a6b0c96d4f0efabc7f0d821ca7e539a94a962a56d7589be24940fd412775c05e"
+          "version": "repo-file-v1:sha256:0367834d6a87dc19e15eb7bdc1a7f5a9fa3f7117bac7f05afc693480beb7f585"
         },
         {
           "resource": "repo://libs/partners/vercel/pyproject.toml",
-          "version": "repo-file-v1:sha256:22ca245de7ccb0794452dace7624fac96213a4db005f492ef65f7ef2ae1ff600"
+          "version": "repo-file-v1:sha256:266819e17dc705ebd26bfc52b43357209db4155c1965ecec39f62e1cddcbf8f8"
         }
       ]
     },
     {
       "id": "claim_b19104e3a5374437a0e4f3286632f896",
-      "statement": "The current source manifests declare deepagents 0.7.35, deepagents-acp 0.0.13, deepagents-code 0.2.6, deepagents-talon 0.1.0, and deepagents-evals 0.0.1; the SDK and ACP support Python >=3.11,<4.0, while dcode, Talon, and evals require Python >=3.14,<3.15.",
+      "statement": "The current source manifests declare deepagents 0.7.35, deepagents-acp 0.0.13, deepagents-code 0.2.7, deepagents-talon 0.1.0, and deepagents-evals 0.0.1; the SDK and ACP support Python >=3.11,<4.0, while dcode, Talon, and evals require Python >=3.14,<3.15.",
       "evidence": [
         {
           "resource": "repo://libs/acp/pyproject.toml#L5-L29",
@@ -160,11 +160,11 @@
         },
         {
           "resource": "repo://libs/code/pyproject.toml#L5-L39",
-          "version": "repo-lines-v1:sha256:39a2ac573559745444089bdf82d1464021fdf82fcac0899e7b2ab73e91c64b6e:eyJzZWxlY3RlZExpbmVDb3VudCI6MzUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjcwMmE4MWMzODM2ZWRlZjJkMGJhMTFkMjM1M2ZiNmRhYmM3NzcxNTBhN2NhODNlYTBkOWU5YTcwMzEzZmVhYmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjE1MTgwMjg1NjhjYjc0MDYyNWU5YTk1ZGEyODFiMDM1MWI0MGU5MzQ2MGY3M2M5NDM5YmQ3NWMwZjllZWUyM2EiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImYxMzdhYWFhYzhhZjRmMGNiYjA4YTcxZjZlNTRjMjhmYjBhNDgxYjdlYWRlZWExMjEzNGM0NzM4NzUzNGU3ZjgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImU4NGU5YWQ2ZWVlZmVmMzBiZWEyYzcyYmQ2M2I5NzhhZTYyZGM0M2FjOTVlZjQ2MGY5N2NkYzYyZmExNGUzZGQifQ"
+          "version": "repo-lines-v1:sha256:948d92c01c5753115fbb9a22e2473c57f832efc3d02a2aae61237305effa5036:eyJzZWxlY3RlZExpbmVDb3VudCI6MzUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjcwMmE4MWMzODM2ZWRlZjJkMGJhMTFkMjM1M2ZiNmRhYmM3NzcxNTBhN2NhODNlYTBkOWU5YTcwMzEzZmVhYmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjE1MTgwMjg1NjhjYjc0MDYyNWU5YTk1ZGEyODFiMDM1MWI0MGU5MzQ2MGY3M2M5NDM5YmQ3NWMwZjllZWUyM2EiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImYxMzdhYWFhYzhhZjRmMGNiYjA4YTcxZjZlNTRjMjhmYjBhNDgxYjdlYWRlZWExMjEzNGM0NzM4NzUzNGU3ZjgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImU4NGU5YWQ2ZWVlZmVmMzBiZWEyYzcyYmQ2M2I5NzhhZTYyZGM0M2FjOTVlZjQ2MGY5N2NkYzYyZmExNGUzZGQifQ"
         },
         {
           "resource": "repo://libs/deepagents/pyproject.toml#L1-L35",
-          "version": "repo-lines-v1:sha256:f075963ce76acd6c9b432e1f9f70ff71be6148a55b43c6a3f6e1a508cf6091d1:eyJzZWxlY3RlZExpbmVDb3VudCI6MzUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjcwMmE4MWMzODM2ZWRlZjJkMGJhMTFkMjM1M2ZiNmRhYmM3NzcxNTBhN2NhODNlYTBkOWU5YTcwMzEzZmVhYmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY3Njk4NTcwNTkwZTBhZGNhNTM0ZDM5ODVmNmZhNmQ4NDc2OTVlMjdjOGQzYjU3YWMzYjY3OTVhNzRkYWJmOWIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImQ4ODI2YmMxODkyZTllMTM5Y2MxOTczZjc5MTkxYzkyMTg2NjIzZjA4ZjdmMTgxYzI2NTFlYmNiZmU2ZmE0YmYifQ"
+          "version": "repo-lines-v1:sha256:2d07eae89a8a8d9bb72ac3fc7623c6fd294fe905184efefb25a9e37fa2cc4b21:eyJzZWxlY3RlZExpbmVDb3VudCI6MzUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjcwMmE4MWMzODM2ZWRlZjJkMGJhMTFkMjM1M2ZiNmRhYmM3NzcxNTBhN2NhODNlYTBkOWU5YTcwMzEzZmVhYmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY3Njk4NTcwNTkwZTBhZGNhNTM0ZDM5ODVmNmZhNmQ4NDc2OTVlMjdjOGQzYjU3YWMzYjY3OTVhNzRkYWJmOWIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImQ4ODI2YmMxODkyZTllMTM5Y2MxOTczZjc5MTkxYzkyMTg2NjIzZjA4ZjdmMTgxYzI2NTFlYmNiZmU2ZmE0YmYifQ"
         },
         {
           "resource": "repo://libs/evals/pyproject.toml#L1-L23",
@@ -172,13 +172,13 @@
         },
         {
           "resource": "repo://libs/talon/pyproject.toml#L5-L29",
-          "version": "repo-lines-v1:sha256:d3f2be817456cb63bf436fafe769b1226090815d045cf619d4c77d2e2a438aaa:eyJzZWxlY3RlZExpbmVDb3VudCI6MjUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjcwMmE4MWMzODM2ZWRlZjJkMGJhMTFkMjM1M2ZiNmRhYmM3NzcxNTBhN2NhODNlYTBkOWU5YTcwMzEzZmVhYmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjlhMTZkMjczNzUxYmY1NTBlMzZlNDlkMTUwZGNhZjZkMzBiNTU0YzllMmNlYjY1ZmQ2MTZmYWQyMWU3Y2MxZWIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImYxMzdhYWFhYzhhZjRmMGNiYjA4YTcxZjZlNTRjMjhmYjBhNDgxYjdlYWRlZWExMjEzNGM0NzM4NzUzNGU3ZjgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjVmNTA1YTFlYzkyODBmYmJhNDZhMTZmOTRjMzNiY2U4ZGVmMzVhNjY4MzA5YTQ0MzBkNDQzNzViZWMzZDdkOWYifQ"
+          "version": "repo-lines-v1:sha256:d88cf930f096293a521793ddd8179c89126cb198e86183fbafa2bf6552e1bee8:eyJzZWxlY3RlZExpbmVDb3VudCI6MjUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjcwMmE4MWMzODM2ZWRlZjJkMGJhMTFkMjM1M2ZiNmRhYmM3NzcxNTBhN2NhODNlYTBkOWU5YTcwMzEzZmVhYmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjlhMTZkMjczNzUxYmY1NTBlMzZlNDlkMTUwZGNhZjZkMzBiNTU0YzllMmNlYjY1ZmQ2MTZmYWQyMWU3Y2MxZWIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImYxMzdhYWFhYzhhZjRmMGNiYjA4YTcxZjZlNTRjMjhmYjBhNDgxYjdlYWRlZWExMjEzNGM0NzM4NzUzNGU3ZjgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjVmNTA1YTFlYzkyODBmYmJhNDZhMTZmOTRjMzNiY2U4ZGVmMzVhNjY4MzA5YTQ0MzBkNDQzNzViZWMzZDdkOWYifQ"
         }
       ]
     },
     {
       "id": "claim_54b8fd1c3306453da98f7935943445f9",
-      "statement": "Dcode publishes an exact deepagents==0.7.35 compatibility pin alongside ACP >=0.0.13,<1.0.0 and QuickJS >=0.3.12,<0.4.0; Talon instead publishes lower-bound SDK and dcode requirements while resolving both sibling packages editable in a checkout.",
+      "statement": "Dcode publishes an exact deepagents==0.7.35 compatibility pin alongside ACP >=0.0.13,<1.0.0 and QuickJS >=0.3.12,<0.4.0; Talon instead publishes lower-bound SDK and dcode requirements of >=0.7.35 and >=0.2.6,<1.0.0 while resolving both sibling packages editable in a checkout.",
       "evidence": [
         {
           "resource": "repo://libs/code/pyproject.toml#L224-L231",
@@ -186,7 +186,7 @@
         },
         {
           "resource": "repo://libs/code/pyproject.toml#L26-L39",
-          "version": "repo-lines-v1:sha256:7c7a763a9ef46b3ac9ade2fa5d689907ae2217dfefe137c2d8b816721ff12529:eyJzZWxlY3RlZExpbmVDb3VudCI6MTQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFkOTVmNWU5ZWRlMDE4MTYwNDNjMDc5N2FjZThkYTJhYzRlOTlhOGE2YTYxMGZhOTg1NzBlZjM0YjkzNTYxMDkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjE1MTgwMjg1NjhjYjc0MDYyNWU5YTk1ZGEyODFiMDM1MWI0MGU5MzQ2MGY3M2M5NDM5YmQ3NWMwZjllZWUyM2EiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImFhZmQwZDk4OTM5MWMwMDdhN2Q3YWM0NWI0OWJmY2Y3MjE0OWNlNjA3MTgzOTBiY2U0MTQzMDZkNGQ4YTQ2ZDQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImU4NGU5YWQ2ZWVlZmVmMzBiZWEyYzcyYmQ2M2I5NzhhZTYyZGM0M2FjOTVlZjQ2MGY5N2NkYzYyZmExNGUzZGQifQ"
+          "version": "repo-lines-v1:sha256:7ddfeff973512b52cbb81c5bade757627972fa66539c4ea51ec0fe1407135a79:eyJzZWxlY3RlZExpbmVDb3VudCI6MTQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFkOTVmNWU5ZWRlMDE4MTYwNDNjMDc5N2FjZThkYTJhYzRlOTlhOGE2YTYxMGZhOTg1NzBlZjM0YjkzNTYxMDkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjE1MTgwMjg1NjhjYjc0MDYyNWU5YTk1ZGEyODFiMDM1MWI0MGU5MzQ2MGY3M2M5NDM5YmQ3NWMwZjllZWUyM2EiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImFhZmQwZDk4OTM5MWMwMDdhN2Q3YWM0NWI0OWJmY2Y3MjE0OWNlNjA3MTgzOTBiY2U0MTQzMDZkNGQ4YTQ2ZDQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImU4NGU5YWQ2ZWVlZmVmMzBiZWEyYzcyYmQ2M2I5NzhhZTYyZGM0M2FjOTVlZjQ2MGY5N2NkYzYyZmExNGUzZGQifQ"
         },
         {
           "resource": "repo://libs/code/pyproject.toml#L93-L107",
@@ -198,17 +198,17 @@
         },
         {
           "resource": "repo://libs/talon/pyproject.toml#L22-L50",
-          "version": "repo-lines-v1:sha256:b910b54b2df648f3113b89fe636704d36db1da5586957c187c420c81fdbe69a8:eyJzZWxlY3RlZExpbmVDb3VudCI6MjksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFkOTVmNWU5ZWRlMDE4MTYwNDNjMDc5N2FjZThkYTJhYzRlOTlhOGE2YTYxMGZhOTg1NzBlZjM0YjkzNTYxMDkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY5NDE2ZTA5Zjc4YmEzMTZjMDMyNTY4MjEzYjg1NWVlNzU2ZTQxNTY1ZDkxOGYwOTUxOWM4MWZkNjIwZjQwNjAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjA5M2ViZjNhZWE3MzgxN2NmZTQzNmY4YTVhOWIxNGVhMDI4NmE2MmVhNDRhMWYyZTk4ZjUxODBhZTUyODNiY2MiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjY3NGY3NjBkNTIwMzNjZGJmMGNiODVmYzMwNmI1MjJhNzA5NjBhZmFmMTg5ZmEyNjQ3OTlmYjAwODkyNzgxM2EifQ"
+          "version": "repo-lines-v1:sha256:60964fe1e4f566cde4c963fdc9fc2d467298e2583760fcd890ea73b63689512a:eyJzZWxlY3RlZExpbmVDb3VudCI6MjksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFkOTVmNWU5ZWRlMDE4MTYwNDNjMDc5N2FjZThkYTJhYzRlOTlhOGE2YTYxMGZhOTg1NzBlZjM0YjkzNTYxMDkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY5NDE2ZTA5Zjc4YmEzMTZjMDMyNTY4MjEzYjg1NWVlNzU2ZTQxNTY1ZDkxOGYwOTUxOWM4MWZkNjIwZjQwNjAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjA5M2ViZjNhZWE3MzgxN2NmZTQzNmY4YTVhOWIxNGVhMDI4NmE2MmVhNDRhMWYyZTk4ZjUxODBhZTUyODNiY2MiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjY3NGY3NjBkNTIwMzNjZGJmMGNiODVmYzMwNmI1MjJhNzA5NjBhZmFmMTg5ZmEyNjQ3OTlmYjAwODkyNzgxM2EifQ"
         }
       ]
     },
     {
       "id": "claim_b1a7b7a04cc64931a2ba60d754bd0c73",
-      "statement": "The release manifest records released-version baselines separately from package source metadata: it currently lists SDK 0.7.35, ACP 0.0.13, dcode 0.2.6, Talon 0.1.0, and five partner releases, whereas evals has no manifest entry or Release Please package configuration.",
+      "statement": "The release manifest records released-version baselines separately from package source metadata: it currently lists SDK 0.7.35, ACP 0.0.13, dcode 0.2.7, Talon 0.1.0, and five partner releases, whereas evals has no manifest entry or Release Please package configuration.",
       "evidence": [
         {
           "resource": "repo://.release-please-manifest.json#L1-L11",
-          "version": "repo-lines-v1:sha256:9bc2ddc8c35ba93beac81c4f6d112d190b8879cf18edd901f12328da47584b54:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE2ZmIwOGZkYTFhY2I5NTdiNjExNmJkMzc4MTFhMWZlNDFhMDE2MTFjMDYzMWVkYmY3ODZkNjg4OWEyN2E1NWMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+          "version": "repo-lines-v1:sha256:f6b4d999e05c1e544bd39b7aa219be1feff42212c4297b2877a1a66e5645ab9b:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE2ZmIwOGZkYTFhY2I5NTdiNjExNmJkMzc4MTFhMWZlNDFhMDE2MTFjMDYzMWVkYmY3ODZkNjg4OWEyN2E1NWMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
         },
         {
           "resource": "repo://libs/evals/pyproject.toml#L1-L8",
@@ -230,13 +230,13 @@
         },
         {
           "resource": "repo://libs/talon/pyproject.toml#L52-L101",
-          "version": "repo-lines-v1:sha256:5024fad646f7cf17b925a25911739c450904d203002691a2bcb5fac01c358452:eyJzZWxlY3RlZExpbmVDb3VudCI6NTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU5MjE4ZGM0Y2U5NzFjYmUzZDM4ZDc3NDMwZTYzOTkxODg4NGRkNzdkNzE4NGM3YjkzZGZkYzJlOTk4NjkxYjQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY5NDE2ZTA5Zjc4YmEzMTZjMDMyNTY4MjEzYjg1NWVlNzU2ZTQxNTY1ZDkxOGYwOTUxOWM4MWZkNjIwZjQwNjAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjJiMDgzNjZhNzNmY2E5ZmU0OTdlMmQyZWJmNDA1M2NmN2E1ZmY0Nzc3MTY0Yjc0ZjgxZjdkNzUyODU2YjQ2YjciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjU1NDViMzhhOWM0YzA0NzA4YTc3YWM5YTMyOWY4YTdkY2I1ODk1MDRhNGNhOGIxMTk5NThmNWM2ZTc1NThkODUifQ"
+          "version": "repo-lines-v1:sha256:7502eae518b1df97992eb77f1f62341c0c65995a970ac155e1ddb52b395ea476:eyJzZWxlY3RlZExpbmVDb3VudCI6NTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU5MjE4ZGM0Y2U5NzFjYmUzZDM4ZDc3NDMwZTYzOTkxODg4NGRkNzdkNzE4NGM3YjkzZGZkYzJlOTk4NjkxYjQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY5NDE2ZTA5Zjc4YmEzMTZjMDMyNTY4MjEzYjg1NWVlNzU2ZTQxNTY1ZDkxOGYwOTUxOWM4MWZkNjIwZjQwNjAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjJiMDgzNjZhNzNmY2E5ZmU0OTdlMmQyZWJmNDA1M2NmN2E1ZmY0Nzc3MTY0Yjc0ZjgxZjdkNzUyODU2YjQ2YjciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjU1NDViMzhhOWM0YzA0NzA4YTc3YWM5YTMyOWY4YTdkY2I1ODk1MDRhNGNhOGIxMTk5NThmNWM2ZTc1NThkODUifQ"
         }
       ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-11-10T08:04:01.717Z"
+    "at": "2026-11-11T08:04:08.950Z"
   }
 }

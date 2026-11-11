@@ -4,10 +4,16 @@ title: Context Management
 description: How dcode reduces model-visible history without deleting checkpoints, stages archive persistence around server-owned offload, and keeps framework context out of user-facing conversation views.
 tags: [context-management, summarization, compaction, offload, checkpoints, model-context]
 sources:
+  - id: openwiki-source-e17f86b728ef61ea156ef240
+    resource: repo://libs/code/deepagents_code/_cli_context.py
   - id: openwiki-source-05106e66a949150d557266a2
     resource: repo://libs/code/deepagents_code/agent.py
   - id: openwiki-source-fdf5afeb1dd1d11652374e88
     resource: repo://libs/code/deepagents_code/app.py
+  - id: openwiki-source-48f42c39606ffdf77134df39
+    resource: repo://libs/code/deepagents_code/completion.py
+  - id: openwiki-source-90b0432baed346a5599a4e6c
+    resource: repo://libs/code/deepagents_code/editor.py
   - id: openwiki-source-dd104912040624b0d673c588
     resource: repo://libs/code/deepagents_code/goal_state_notice.py
   - id: openwiki-source-8896ee5af2462c92e51bfb6e
@@ -22,14 +28,24 @@ sources:
     resource: repo://libs/code/deepagents_code/offload.py
   - id: openwiki-source-91cefe99e900fdb6f941b515
     resource: repo://libs/code/deepagents_code/output_truncation.py
+  - id: openwiki-source-7246ad9a05cb1ad11e4569a6
+    resource: repo://libs/code/tests/unit_tests/test_agent.py
   - id: openwiki-source-d3c832989def55cb99198f1d
     resource: repo://libs/code/tests/unit_tests/test_compact_tool.py
+  - id: openwiki-source-b9651042f519c9443b0f7085
+    resource: repo://libs/code/tests/unit_tests/test_completion.py
+  - id: openwiki-source-fa73e654f633986ba209ac92
+    resource: repo://libs/code/tests/unit_tests/test_editor.py
   - id: openwiki-source-359dab1054eb0c26067ce930
     resource: repo://libs/code/tests/unit_tests/test_idle_compaction.py
   - id: openwiki-source-d965874b5a639c3205f2eadd
     resource: repo://libs/code/tests/unit_tests/test_memory_guard.py
   - id: openwiki-source-6a586415ef68cbe7c7967a41
     resource: repo://libs/code/tests/unit_tests/test_offload_api.py
+  - id: openwiki-source-0fc0e47059e4d07e23e50be2
+    resource: repo://libs/deepagents/deepagents/graph.py
+  - id: openwiki-source-114a1c7a58992fa867a94ef0
+    resource: repo://libs/deepagents/deepagents/middleware/subagents.py
   - id: openwiki-source-f763e99e439a1356866a7aa4
     resource: repo://libs/deepagents/deepagents/middleware/summarization.py
   - id: openwiki-source-69c260914d2dd18b60ad5900
@@ -38,10 +54,10 @@ sources:
     resource: repo://libs/deepagents/tests/unit_tests/middleware/test_compaction_recovery.py
   - id: openwiki-source-8e7076889e81540fe4fcb8c5
     resource: repo://libs/deepagents/tests/unit_tests/middleware/test_summarization_middleware.py
+generated: { by: "openwiki/0.4.2", at: "2026-11-11T08:04:08.950Z" }
 verified:
   - by: openwiki/0.4.2
-    at: 2026-11-10T08:04:01.717Z
-generated: { by: "openwiki/0.4.2", at: "2026-11-10T08:04:01.717Z" }
+    at: 2026-11-11T08:04:08.950Z
 ---
 
 # Context Management
@@ -125,6 +141,41 @@ Not every checkpointed `HumanMessage` is user conversation. Goal control and goa
 
 Local-context refresh messages use the same boundary. After a valid new summarization cutoff, `LocalContextMiddleware` detects the environment again; if its fingerprint differs from the recorded baseline, it appends a model-only message stating that the refreshed facts supersede earlier local-context facts and that the tagged data is untrusted, not instructions. It records the processed cutoff even when detection produces no output, preventing repeated work for the same compaction event.
 
+## Runtime context and delegation boundaries
+
+### Per-run configuration is not conversation state
+
+`CLIContext` is the client-facing payload passed to `astream` or `ainvoke`; the graph registers `CLIContextSchema` as its `context_schema`. Local runs therefore receive the dataclass, while RemoteGraph/API runs receive JSON-shaped dictionaries. `from_payload` is the single normalization boundary used by consumers: it preserves usable model, summary-model, profile-override, model-context-limit, workspace, thread, approval, and hook fields, but turns malformed containers into empty values, rejects boolean token limits, and fails closed for a non-boolean `auto_approve` value.
+
+This is deliberately separate from checkpoint state. It selects the active model and its parameters for this run, can select a summary-only model, supplies an effective context limit to profile-aware compaction, and binds a server run to its validated workspace. It should not be used as a durable replacement for `messages` or summary-event state. In particular, a summary-model choice affects summary generation only: normal thresholds and token accounting continue to follow the main model.
+
+### Subagent context modes
+
+The SDK's declarative `SubAgent` defaults to `isolated`: it receives a state copy whose `messages` are just the delegated task. `mode="fork"` is the explicit, experimental alternative. A fork receives the parent's **effective** conversation—applying the summary event rather than replaying evicted raw history—plus a task preamble that says delegation in the earlier history has already happened. Its task tool is then refused, preventing recursive delegation.
+
+Forking is intentionally not a general state-sharing mechanism. Private middleware fields and defined excluded channels are withheld where appropriate; ordinary child results return to the parent through the `task` tool's final response/state-update path. A declarative fork may inherit private channels so its matching middleware can rebuild the parent's prompt, but a compiled runnable is treated as opaque and is not given those private channels. Forked specifications cannot declare their own skills, and their authored `system_prompt` is appended to the task rather than replacing the inherited system prefix; both restrictions protect prompt consistency and cache reuse.
+
+```mermaid
+flowchart TD
+    Parent["Parent checkpoint state"] --> Decide{"Subagent mode"}
+    Decide -->|"isolated"| Isolated["Copy allowed state and task-only messages"]
+    Decide -->|"fork"| Effective["Apply summary event to parent history"]
+    Effective --> Forked["Inherited allowed state and task preamble"]
+    Isolated --> Invoke["Invoke child through task"]
+    Forked --> Invoke
+    Invoke --> Return["Return child result to parent tool call"]
+```
+
+*An isolated subagent receives only the delegated task as message history; a fork receives compacted effective history, but neither path makes the child a free writer of parent state.*
+
+dcode configures its generated `general-purpose` subagent as a fork when `FORKED_SUBAGENTS` is enabled (the default). It separately injects dcode's filesystem-tool allowlist into every custom subagent because the SDK's usual automatic general-purpose inheritance path is not used. Thus changing `--allow-fs-tools` must keep the parent and delegated tool surfaces aligned.
+
+### Input composition versus saved history
+
+The external editor is only a prompt-composition boundary: it writes the current draft to a temporary UTF-8 Markdown file, invokes the resolved editor without a shell, reads back normalized line endings, and deletes the file best-effort. A nonzero editor exit or blank result normally means no replacement draft; callers that need submit-time validation may retain blank content with `allow_empty=True`. This prepares user input but does not itself modify a checkpoint or model history.
+
+Shell completion is similarly outside model context. It introspects the same argparse parser used for real invocations, filters emitted completion words through an allowlist, and renders static scripts for bash, zsh, or fish. Keeping this command surface parser-derived avoids an unreviewed, divergent set of executable-looking completion candidates.
+
 ## Operational guidance and focused tests
 
 1. Treat raw `messages`, summary events, and archives as independent layers. Never infer deletion from a compact request.
@@ -133,5 +184,7 @@ Local-context refresh messages use the same boundary. After a valid new summariz
 4. Do not widen the `/offload` allowlist to include `messages` without a new concurrency design.
 5. Diagnose a checkpoint-write error through readback before restoring costs or rolling back an archive; uncertain outcomes deliberately favor avoiding duplicate cost or destructive cleanup.
 6. Keep framework-owned `lc_source` values in every user-facing transcript/title filter, while retaining them in model requests when they carry live control state.
+7. Choose `isolated` unless the child needs the parent conversation. Treat `fork` as an explicit cache- and state-coupled mode; do not give it divergent skills or expect it to delegate again.
+8. Treat `CLIContext` as untrusted, per-run transport at a RemoteGraph boundary. Normalize it once and do not promote its model or workspace fields into checkpointed conversation state.
 
-`test_compact_tool.py` covers runtime model budgets, pending archive planning, cutoff anchoring, archive-read protection, and dedicated summary-model fallback. `test_offload_api.py` covers checkpoint/model hydration, the no-`messages` commit boundary, handoff source preservation, archive-link rollback, and cost settlement under write failure. `test_idle_compaction.py` exercises the cache-window, idleness, threshold, duplicate-scheduling, and new-input guards.
+`test_compact_tool.py` covers runtime model budgets, pending archive planning, cutoff anchoring, archive-read protection, and dedicated summary-model fallback. `test_offload_api.py` covers checkpoint/model hydration, the no-`messages` commit boundary, handoff source preservation, archive-link rollback, and cost settlement under write failure. `test_idle_compaction.py` exercises the cache-window, idleness, threshold, duplicate-scheduling, and new-input guards. `test_agent.py` covers dict-to-schema preservation of compaction fields and workspace-bound execution descriptions. `test_completion.py` exercises parser-derived, shell-safe candidates and generated script parsing; `test_editor.py` covers editor cleanup and the Windows launcher boundary.

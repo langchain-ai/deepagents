@@ -1,11 +1,11 @@
 ---
 type: integration architecture
 title: Sandbox and Partner Integrations
-description: How dcode discovers, selects, and owns remote sandbox providers, and how the separately packaged QuickJS middleware provides an in-process JavaScript REPL. Covers partner release contracts, package-local locks, and the distinction between provider discovery and execution policy.
-tags: [dcode, sandbox, integrations, providers, quickjs, persistence, lockfiles]
+description: How dcode selects and owns optional remote sandbox providers, and how the separately packaged QuickJS middleware embeds a JavaScript REPL. Covers QuickJS persistence, direct filesystem and tool bridges, approval boundaries, and partner package contracts.
+tags: [dcode, sandbox, integrations, providers, quickjs, persistence, filesystem]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-11-10T08:04:01.717Z
+    at: 2026-11-11T08:04:08.950Z
 sources:
   - id: openwiki-source-5e59f90a38f5bdf9ed76984b
     resource: repo://.release-please-manifest.json
@@ -37,6 +37,8 @@ sources:
     resource: repo://libs/partners/quickjs/langchain_quickjs/middleware.py
   - id: openwiki-source-b38d20ec21c25c8c726dc1b6
     resource: repo://libs/partners/quickjs/pyproject.toml
+  - id: openwiki-source-1192610625477956a086526a
+    resource: repo://libs/partners/quickjs/tests/unit_tests/test_fs.py
   - id: openwiki-source-6b29adb9360fecabb8435bc3
     resource: repo://libs/partners/quickjs/tests/unit_tests/test_shutdown.py
   - id: openwiki-source-5742b8b792426010995c1325
@@ -51,7 +53,7 @@ sources:
     resource: repo://libs/partners/vercel/uv.lock
   - id: openwiki-source-fdd0c2c3830b8e9a88502a57
     resource: repo://libs/talon/README.md
-generated: { by: "openwiki/0.4.2", at: "2026-11-10T08:04:01.717Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-11-11T08:04:08.950Z" }
 ---
 
 # Sandbox and Partner Integrations
@@ -110,7 +112,7 @@ This table records dcode's built-in metadata. `sandbox_id` means dcode permits a
 
 Partner packages are independently versioned distributions. Each owns its environment, `pyproject.toml`, `Makefile`, tests, and package-local `uv.lock`; they are not owned by dcode's curated provider registry. A lock is generated resolution for that package's development/CI environment, not a second dependency manifest. Do not hand-edit it.
 
-The current release manifest lists `deepagents-code` `0.2.6`, `langchain-daytona` `0.0.9`, `langchain-modal` `0.0.7`, `langchain-runloop` `0.0.7`, `langchain-vercel-sandbox` `0.0.2`, and `langchain-quickjs` `0.3.12`. Daytona, Modal, Runloop, and Vercel each require Python `>=3.11,<4.0`, bound Deep Agents to `>=0.7.34,<0.8.0`, and declare their provider SDK. dcode requires Python `>=3.14,<3.15`, pins `deepagents==0.7.35`, bundles LangSmith sandbox support, and exposes the other curated remote providers through optional extras.
+The current release manifest lists `deepagents-code` `0.2.7`, `langchain-daytona` `0.0.9`, `langchain-modal` `0.0.7`, `langchain-runloop` `0.0.7`, `langchain-vercel-sandbox` `0.0.2`, and `langchain-quickjs` `0.3.12`. Daytona, Modal, Runloop, and Vercel each require Python `>=3.11,<4.0`, bound Deep Agents to `>=0.7.35,<0.8.0`, and declare their provider SDK. dcode requires Python `>=3.14,<3.15`, pins `deepagents==0.7.35`, bundles LangSmith sandbox support, and exposes the other curated remote providers through optional extras.
 
 A manifest or local-path-source change can invalidate reverse consumers' locks as well as its own. Refresh the affected closure rather than changing a lock by hand, and keep dependency/lockfile churn separate from a bump-worthy feature or fix when release scope matters. The repository's targeted refresher and checker select the appropriate interpreter and report the required closure:
 
@@ -137,9 +139,33 @@ agent = create_deep_agent(
 
 The lack of ambient host APIs confines pure JavaScript computation but is not complete isolation. `console` is an optional host bridge; PTC and `task()` expose selected agent tools or subagents. Use a remote sandbox when the desired boundary is provider-managed execution isolation, and separately secure every host capability that QuickJS may invoke.
 
+### Direct bridges bypass the normal tool path
+
+`fs` is disabled by default. Passing a backend, or `fs=True` when `create_deep_agent` binds the agent backend, adds an asynchronous Node-style `fs` global with UTF-8-text `readFile`, `writeFile`, `readdir`, `access`, and `rm` APIs plus `fs.promises`. It calls that backend directly rather than file tools: `FilesystemMiddleware` rules, `create_deep_agent` `permissions`, and `interrupt_on` do not govern individual filesystem operations. Thus `fs` has all authority of the supplied backend; on a non-virtual `FilesystemBackend` or local shell backend this can mean host files. Do not enable it for an agent whose file policy depends on those guards. A middleware with `fs=True` must be bound before its first model call and may serve only one non-interchangeable backend.
+
+```mermaid
+flowchart TD
+    Model["Model invokes eval"] --> REPL["QuickJS REPL"]
+    REPL --> Pure["Pure JavaScript no ambient file network or clock"]
+    REPL --> PTC["tools bridge when enabled"]
+    REPL --> Task["task bridge when enabled"]
+    REPL --> FS["fs bridge when configured"]
+    PTC --> HostTools["Selected agent tools"]
+    Task --> Subagents["Configured subagent task tool"]
+    FS --> Backend["Bound backend directly"]
+    Backend --> Storage["Backend reachable files"]
+    PTC -.-> Bypass["Bypasses parent ToolNode HITL"]
+    Task -.-> Bypass
+    FS -.-> FileBypass["Bypasses file permissions and approval"]
+```
+
+*QuickJS starts without ambient host access; every arrow leaving the REPL is an explicitly configured authority boundary, and bridge calls do not take the normal parent tool or file-policy route.*
+
+The bridge budgets filesystem operations with PTC calls: each `fs.*` operation consumes `max_ptc_calls`, even when PTC tool exposure is otherwise not configured. File content is omitted from the fs runnable's trace output, and a response too large or deeply nested to marshal into QuickJS produces a per-eval `MarshalError` rather than crashing the run. The focused filesystem tests cover state, disk, and composite-backend routing; text-only API/error behavior; root-traversal containment; call-budget accounting; snapshot restoration; binding errors; and trace redaction.
+
 ## Slot lifecycle, persistence, and cleanup
 
-`before_agent` allocates a private `qjs_...` slot ID if needed and authenticates persisted state, but **does not create a VM**. The first `eval` calls `_Registry.get(slot_id)`, which creates one dedicated `ThreadWorker`, one `Runtime`, and one `_ThreadREPL` context for that slot. QuickJS values remain on the owning worker because they cannot safely cross threads. Runtime creation rewrites top-level `const` and `let` declarations to persistent globals. Overlapping evaluation surfaces `ConcurrentEval`; it is not queued.
+`before_agent` allocates a private `qjs_...` slot ID if needed and authenticates persisted state, but **does not create a VM**. The first `eval` calls `_Registry.get(slot_id)`, which creates one dedicated `ThreadWorker`, one `Runtime`, and one `_ThreadREPL` context for that slot. QuickJS values remain on the owning worker because they cannot safely cross threads. Runtime creation uses `SourceTransform.TOP_LEVEL_CONST_TO_VAR` so top-level `const` declarations can remain persistent globals. Overlapping evaluation surfaces `ConcurrentEval`; it is not queued.
 
 | `mode` | State lifetime | Reset and final release |
 | --- | --- | --- |
@@ -198,8 +224,9 @@ For dcode provider discovery, precedence, factory ownership, and invalid-option 
 make -C libs/code test TEST_FILE=tests/unit_tests/test_sandbox_registry.py
 make -C libs/code test TEST_FILE=tests/unit_tests/test_sandbox_factory.py
 make -C libs/partners/quickjs test TEST_FILE=tests/unit_tests/test_repl_middleware.py
+make -C libs/partners/quickjs test TEST_FILE=tests/unit_tests/test_fs.py
 make -C libs/partners/quickjs test TEST_FILE=tests/unit_tests/test_snapshot.py
 make -C libs/partners/quickjs test TEST_FILE=tests/unit_tests/test_shutdown.py
 ```
 
-The focused tests cover configuration/entry-point precedence and degraded discovery, factory cleanup on setup/body failures, QuickJS lazy allocation, independent workers and runtimes, context-only call-mode reset, snapshot reconstruction and signing failures, and shutdown paths. Treat changes to provider capability metadata, policy selection, bridge authority, or persistence reset scope as behavior changes requiring their corresponding tests.
+The focused tests cover configuration/entry-point precedence and degraded discovery, factory cleanup on setup/body failures, QuickJS lazy allocation, independent workers and runtimes, context-only call-mode reset, filesystem backend routing and failure isolation, snapshot reconstruction and signing failures, and shutdown paths. Treat changes to provider capability metadata, policy selection, bridge authority, filesystem reach, or persistence reset scope as behavior changes requiring their corresponding tests.

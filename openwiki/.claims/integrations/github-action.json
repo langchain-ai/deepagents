@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:b1ec2803a46acefb755f16cfb5d274334293ea51110f72600ec3f023b9789ff8",
+  "pageVersion": "sha256:743620c6ea90eb5a4ddfc8771da326b743c5220383ec87d934c445bafb426764",
   "claims": [
     {
       "id": "claim_66c8cdf2e322499f9163f44abcb9af36",
@@ -272,7 +272,7 @@
     },
     {
       "id": "claim_ca5f242df6d4427390736f3401c30e57",
-      "statement": "The current `deepagents-code` package is version `0.2.6` and requires Python `>=3.14,<3.15`; the changelog identifies the Python 3.14 requirement introduced in 0.2.0 as a breaking change.",
+      "statement": "The current `deepagents-code` package is version `0.2.7` and requires Python `>=3.14,<3.15`; the changelog identifies the Python 3.14 requirement introduced in 0.2.0 as a breaking change.",
       "evidence": [
         {
           "resource": "repo://libs/code/CHANGELOG.md#L129-L133",
@@ -280,13 +280,27 @@
         },
         {
           "resource": "repo://libs/code/pyproject.toml#L5-L14",
-          "version": "repo-lines-v1:sha256:1fc7a5dbbd3ea4280e7b6bc059ba3fbf2f83cd39c5c11c41469f2456c4cbb1e1:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjcwMmE4MWMzODM2ZWRlZjJkMGJhMTFkMjM1M2ZiNmRhYmM3NzcxNTBhN2NhODNlYTBkOWU5YTcwMzEzZmVhYmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZhMjczYzUzYjJjMGIyMWZhMGYyZmU2YTUyZmZlZDQ3OGU5MjI3YWQyYjVmMTUzZWYwMDNhNzI2NTdiNzQyMDEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImYxMzdhYWFhYzhhZjRmMGNiYjA4YTcxZjZlNTRjMjhmYjBhNDgxYjdlYWRlZWExMjEzNGM0NzM4NzUzNGU3ZjgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImE0YzZmNDE2ZTEzZWYxOTEwMDJkYmNhZmRhOTNiMTU2ZmI3Y2EwMGIyYmU4MWQ4ZGNlMWE4NWRiMzgxNDY3NmEifQ"
+          "version": "repo-lines-v1:sha256:6f4572afd3ad414279437e98c47f5783490bebe37d15918728fc2ed67a6820d7:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjcwMmE4MWMzODM2ZWRlZjJkMGJhMTFkMjM1M2ZiNmRhYmM3NzcxNTBhN2NhODNlYTBkOWU5YTcwMzEzZmVhYmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZhMjczYzUzYjJjMGIyMWZhMGYyZmU2YTUyZmZlZDQ3OGU5MjI3YWQyYjVmMTUzZWYwMDNhNzI2NTdiNzQyMDEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImYxMzdhYWFhYzhhZjRmMGNiYjA4YTcxZjZlNTRjMjhmYjBhNDgxYjdlYWRlZWExMjEzNGM0NzM4NzUzNGU3ZjgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImE0YzZmNDE2ZTEzZWYxOTEwMDJkYmNhZmRhOTNiMTU2ZmI3Y2EwMGIyYmU4MWQ4ZGNlMWE4NWRiMzgxNDY3NmEifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_2626df8f7b0d490689b0fbde9f68d938",
+      "statement": "The dcode root parser defines `--non-interactive` as a one-task, no-human-approval mode that can change files and access the network; the GitHub action selects that mode for its default prompt-delivery path.",
+      "evidence": [
+        {
+          "resource": "repo://action.yml#L482-L490",
+          "version": "repo-lines-v1:sha256:70d22d6615811e919af55e4f0045f9481accb64222fdc75f3225b74dcb1b6dc1:eyJzZWxlY3RlZExpbmVDb3VudCI6OSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYmE1Yjk2ZjFkNTRjNTRlOWJmNDk5YzI1Y2U4ZjY0ODRmNTdkMWM5NDY3ODA1ODhiM2JlNTUxZTUyODJmMTk5ZSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNTgzYmE2ZWJhZmNjMzUyYzQyZGUxOTk2NTNhOGU3Nzc3ODBjM2E2OTk1YzExMjg5MDMzZmY0NTlkMGNiZjAxYyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZGViNmMxMjFmM2RkN2RjZDg4ZDI1ODEwOTM3Yzc4ZDA2MDg1YmVjYWE2MTUwNzcyZTZjZGQ3MDNhYWQwZTZhZSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMWVkMzI1MzlkNmE2MThlMWZiNTA0MTMwY2ZmMzM1ODJmMDQzYTY4ZDM4NmU5ODI1NDgzOTk1OGE0NGE2ZjY5ZSJ9"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/main.py#L2739-L2747",
+          "version": "repo-lines-v1:sha256:309298730b0675a8f8a8ee40a54663219e4277f73f252d0efaa5760e3578b5d8:eyJzZWxlY3RlZExpbmVDb3VudCI6OSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNmJlNDM5YTQ3NTAzNDI3YTRjNzlmOWJkM2MzYzNmYzFmOTNmZDFlN2I0YzdhMTUxZDVhZmFkMDQwMmQxYThlYSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMzBjMWYxODhmMTQyZWQ3YTgyNDY4MGIyMDcxNzJjNTUxOWJjNjE0YTQ4ZmRhN2NmMTY3ZWRiOGRkZjc5OTU2YyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMzJjMmViZmNhYzBiZjM2N2YzMjYyZDdhNWE2NmNhOWY0YjFiMGEzZGQ4OGU4ZDMxNDJkNjM2NGJlMGU0NjQxMSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZWU1MzYwZTg3ZTJhNDUxMzYzOTI1ZmZhNGYyOWU0NTQ2NjE2NzJiYWI0MjQxYzgwOTc5YmQ3M2M0OWJlMjM2MSJ9"
         }
       ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-11-10T08:04:01.717Z"
+    "at": "2026-11-11T08:04:08.950Z"
   }
 }

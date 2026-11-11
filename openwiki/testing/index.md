@@ -1,3 +1,3 @@
 # Files
 
-- [Testing Guide](testing-guide.md) - Focused package test routes and boundary contracts for dcode startup and offload, Deep Agents filesystem permissions and subagents, Talon runtime and background work, and release and CI scripts.
+- [Testing Guide](testing-guide.md) - Focused test routes and behavioral invariants for SDK graph and filesystem changes, dcode headless execution and observability, QuickJS filesystem integration, Talon delegation, and the root GitHub Action.

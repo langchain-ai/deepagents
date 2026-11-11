@@ -1,14 +1,14 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:bdc85a6cf29ec51ba065e7838a02bd7e9009b5356ff47bb4e42c552bfa688bc3",
+  "pageVersion": "sha256:da92ebdb7161657f252a3b6ba44d9b9123aa03a3cd0366e08bff1362dd5bb9c6",
   "claims": [
     {
       "id": "claim_84c087f65f2749b8bf613b47f43f37ee",
-      "statement": "The release-please manifest has nine independently released package baselines—Deep Agents 0.7.35, ACP 0.0.13, Code 0.2.6, Talon 0.1.0, Daytona 0.0.9, Modal 0.0.7, Runloop 0.0.7, Vercel 0.0.2, and QuickJS 0.3.12—and configuration creates separate draft Python release PRs with pre-1.0 bump behavior while delegating publication to release.yml.",
+      "statement": "The release-please manifest has nine independently released package baselines—Deep Agents 0.7.35, ACP 0.0.13, Code 0.2.7, Talon 0.1.0, Daytona 0.0.9, Modal 0.0.7, Runloop 0.0.7, Vercel 0.0.2, and QuickJS 0.3.12—and configuration creates separate draft Python release PRs with pre-1.0 bump behavior while delegating publication to release.yml.",
       "evidence": [
         {
           "resource": "repo://.release-please-manifest.json",
-          "version": "repo-file-v1:sha256:9bc2ddc8c35ba93beac81c4f6d112d190b8879cf18edd901f12328da47584b54"
+          "version": "repo-file-v1:sha256:f6b4d999e05c1e544bd39b7aa219be1feff42212c4297b2877a1a66e5645ab9b"
         },
         {
           "resource": "repo://release-please-config.json",
@@ -114,7 +114,7 @@
         },
         {
           "resource": "repo://libs/code/pyproject.toml#L5-L14",
-          "version": "repo-lines-v1:sha256:1fc7a5dbbd3ea4280e7b6bc059ba3fbf2f83cd39c5c11c41469f2456c4cbb1e1:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjcwMmE4MWMzODM2ZWRlZjJkMGJhMTFkMjM1M2ZiNmRhYmM3NzcxNTBhN2NhODNlYTBkOWU5YTcwMzEzZmVhYmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZhMjczYzUzYjJjMGIyMWZhMGYyZmU2YTUyZmZlZDQ3OGU5MjI3YWQyYjVmMTUzZWYwMDNhNzI2NTdiNzQyMDEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImYxMzdhYWFhYzhhZjRmMGNiYjA4YTcxZjZlNTRjMjhmYjBhNDgxYjdlYWRlZWExMjEzNGM0NzM4NzUzNGU3ZjgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImE0YzZmNDE2ZTEzZWYxOTEwMDJkYmNhZmRhOTNiMTU2ZmI3Y2EwMGIyYmU4MWQ4ZGNlMWE4NWRiMzgxNDY3NmEifQ"
+          "version": "repo-lines-v1:sha256:6f4572afd3ad414279437e98c47f5783490bebe37d15918728fc2ed67a6820d7:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjcwMmE4MWMzODM2ZWRlZjJkMGJhMTFkMjM1M2ZiNmRhYmM3NzcxNTBhN2NhODNlYTBkOWU5YTcwMzEzZmVhYmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZhMjczYzUzYjJjMGIyMWZhMGYyZmU2YTUyZmZlZDQ3OGU5MjI3YWQyYjVmMTUzZWYwMDNhNzI2NTdiNzQyMDEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImYxMzdhYWFhYzhhZjRmMGNiYjA4YTcxZjZlNTRjMjhmYjBhNDgxYjdlYWRlZWExMjEzNGM0NzM4NzUzNGU3ZjgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImE0YzZmNDE2ZTEzZWYxOTEwMDJkYmNhZmRhOTNiMTU2ZmI3Y2EwMGIyYmU4MWQ4ZGNlMWE4NWRiMzgxNDY3NmEifQ"
         },
         {
           "resource": "repo://libs/deepagents/pyproject.toml#L1-L8",
@@ -136,7 +136,7 @@
         },
         {
           "resource": "repo://libs/code/pyproject.toml#L26-L32",
-          "version": "repo-lines-v1:sha256:e7c5314b6549b5fbc25550d4a1718f1dcacaa88039c2aa3a26b6645a4f2e6c2a:eyJzZWxlY3RlZExpbmVDb3VudCI6NywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYWQ5NWY1ZTllZGUwMTgxNjA0M2MwNzk3YWNlOGRhMmFjNGU5OWE4YTZhNjEwZmE5ODU3MGVmMzRiOTM1NjEwOSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiZGUwODdhNmIxNWJjMmE3MDU2YTc1MjU0ZmQ0MWUwNmU5YmE3MjBkZDQ2YmZjZjc3NTA0Yjc5MTY4MzRkYWM5ZCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiYWFmZDBkOTg5MzkxYzAwN2E3ZDdhYzQ1YjQ5YmZjZjcyMTQ5Y2U2MDcxODM5MGJjZTQxNDMwNmQ0ZDhhNDZkNCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNDJmY2ZlNTQxNjczYzI0NDk2NmZiMzMxY2UyMjZhNWU5YzFjNDY2MWQ3MTQyMDBhNWVhNTkyYmViMTVhOTMxNyJ9"
+          "version": "repo-lines-v1:sha256:951e3eceed030812968debb9efe4618cfed9d71740670f5fdc788735763d124d:eyJzZWxlY3RlZExpbmVDb3VudCI6NywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYWQ5NWY1ZTllZGUwMTgxNjA0M2MwNzk3YWNlOGRhMmFjNGU5OWE4YTZhNjEwZmE5ODU3MGVmMzRiOTM1NjEwOSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiM2FmNGFkYmY3YzA1NDUwNjcwZjYyOGFjNTU3ZjVmNzk4ZjIwMGQ2YjhkMDcyYWZhYzRlYmMyODhiOTQ3MTVhNyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiYWFmZDBkOTg5MzkxYzAwN2E3ZDdhYzQ1YjQ5YmZjZjcyMTQ5Y2U2MDcxODM5MGJjZTQxNDMwNmQ0ZDhhNDZkNCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNDJmY2ZlNTQxNjczYzI0NDk2NmZiMzMxY2UyMjZhNWU5YzFjNDY2MWQ3MTQyMDBhNWVhNTkyYmViMTVhOTMxNyJ9"
         }
       ]
     },
@@ -167,10 +167,64 @@
           "version": "repo-lines-v1:sha256:7fadcab0884d15474b9ffc94632e833e341967e49cdc798b113d09d8d854a6f2:eyJzZWxlY3RlZExpbmVDb3VudCI6MjAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg1YTU3M2ViOTJkN2U2ZDc2NmIwOGNmNTU4ZjUzZjhjM2M5MDNiMTdhMzM0ZmRiMDBhNThjYjVlNmEzY2NhYWMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc2OTU5OTNiM2Q5NDNkMDZiMmRlN2I4OTViMDE1MmY3YzNmZmQ2YmI2YjcxZGI4ZDgyNGI0NjNmZjA4OTA1ZDIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImZiNzM1YTE1OWU0MTI5M2Q4NWMwMWQ0MWE3NzAzOTk3ZGI0YjE3MGM0MTM3YzU2NGQzNDBmMGFlNWEzYzY0OTMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjU2ODE3MzI2NGExYjg2YzJlMWVmY2ZiMTZhNTk2OTRiNGI4OWUxNWJhOGJkODhmOTI0NmMzZTU1ZTdmNTM5ZGYifQ"
         }
       ]
+    },
+    {
+      "id": "claim_201b56a30fcd4581bc3db3aeedf048fa",
+      "statement": "A new release-please-managed package must be added to both the configuration and manifest; for a package whose source starts at 0.0.1 and has not already shipped, the manifest baseline must be 0.0.0 so its first release is 0.0.1 rather than 0.0.2.",
+      "evidence": [
+        {
+          "resource": "repo://.github/RELEASING.md#L244-L250",
+          "version": "repo-lines-v1:sha256:195fc86d7fbdf369a978fb6863fcdabf68e0c28a6514a0c689f7924f58517497:eyJzZWxlY3RlZExpbmVDb3VudCI6NywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYmI3YmIzYWRlMDAzMjdkMDRlMjYzNTI1ZGFhMzU0MzdhNTE4MDU3ZGNkNWFhOTlmMDMyZTFmNTk4YWVlZjBiMiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiYTJmZTU0MzIxNmVjMDVhNDA4NGYyM2Y0YTJjNzA3MDI3N2M4NWZjOGI3NWU1OGEwNGYzMjNiNTFiNTkzYTUwMyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiODgwOTE4YWM2NDMwNzA0MDMwMDQzMjc4YWJiMTY3MDAxYzY4MzQzZmM1YTNhZGY3ZjgyYjYxNjk1MjliODRhZiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMTQxZGU5MzE1MzgyMWU4YTFhMzhkZDIzYWUyYWQxODgwYzA5MTI0YTM3YjJjNTIwZjJiNDNiZjAwMWVjOGY1ZiJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_df7a8afaa963413d8f8e5cd7419c30d2",
+      "statement": "Repository development uses package-local Make targets and uv-managed environments; contributors install dependencies explicitly with `uv sync`, avoid environments outside the package and mixing environments, and use `uv run` for direct one-off commands.",
+      "evidence": [
+        {
+          "resource": "repo://libs/DEVELOPMENT.md#L51-L67",
+          "version": "repo-lines-v1:sha256:5edb55bf8a7f35b0ba436a74f8751fb1c4604bfb5cb82749cbbd82633b85b1b6:eyJzZWxlY3RlZExpbmVDb3VudCI6MTcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImUxN2ZkZDFhYTMwY2M0ZGFjNDk2MzcwZmQ1NmViZWIyMTI5MWE2Zjk4MGZjMDU3MzFiYTg2MTM3MWIyNWM2NDMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM1YTk0MjI2ODQwZDNiNTQ3MzhlYzJiNjA0MzRiYThlNjY0YmU3NzM4MmYzYjI0MzM5YjEwNDBjNDE5OTIwNWEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjU5ODMyMGYzMDZlMjdiNmZiOWJhYmUyMjg0YTkwZWVhYjUyMDVhYWFlNWMyYzZkYTIzNGVmMWU2YzlkYTAzNDciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImY0ODQ2NTUwZjNmOWMwMTJlYWYxNThiODY4MjdiMTc4MDY2ZjQ3MWQwZjhjOTE1YmVlYjY2ZTUzZjkyYmM4MzkifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_b847c6e048a242f7a3b4a339d132cfd8",
+      "statement": "The Code package's `check` target verifies extras consistency, version-file equality, lock freshness, and the SDK pin in addition to lint, import checks, and unit tests; it allows only the stale-pin exit code as advisory.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/Makefile#L106-L117",
+          "version": "repo-lines-v1:sha256:6e94ed92582b4ef86a8789300243d2f94e9b701786809e54451da6f65130bc57:eyJzZWxlY3RlZExpbmVDb3VudCI6MTIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc1MDMzYmM3YzZkNmI3ZWJiYzU1ZmY5OWJiMzNjMWMzNDM4MTA2NWQ0YzMyZTE2OWM1N2Y1MjdhZjVlODkzMmUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImRmODBmMjk5MmQ2OTYyYzE2Mzg1NzQ0ZDdmNzc5ODc0YjFmMzk1MDJiOTU1MTVhYWY2MWQzYmY4MWI5ZmJhYzAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjM4YzY0OWE5OWFjYmFkZTA2NThiMGM1YjA3OTU4ODQ4YWRmYWMxZWEyOWQwNzg0NzIxNzNkNDY2MmM0OWRjM2UiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjJhYWI5YzQ3MzQ2NGI2ZGQ3YThmMzBlMTNlYzYzMzlkNzk5MWFmNDNkNjc5NTZlM2NiYmQ4NTE4NjA5ZjJhZWEifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_6aa9670d1a2b4d43bcebfd70da4aee62",
+      "statement": "Unexpected pytest warnings fail package test suites by default; accepted warning filters are an explicit reviewed allowlist, and warnings can surface as test failures, collection failures, or pytest configuration errors depending on when they occur.",
+      "evidence": [
+        {
+          "resource": "repo://libs/DEVELOPMENT.md#L181-L197",
+          "version": "repo-lines-v1:sha256:71902ccfda28bccd6eae235eca4207d2b391ede1749bf1557ecbd80a3ace95ba:eyJzZWxlY3RlZExpbmVDb3VudCI6MTcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU4OTQ5ODRkZDdmZDQyN2E2N2VhYjQ5ZDA2NTU1MmM4MGY5YWQyYjJlOTBmYzVlMDE2ZGFkNzE4OWY0MWM4NzIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjI3MmRlNmIxZDE4MjUyNWY2MDNiNTA1Nzg4MmJjYWQwOTMzZmZhZTVkYWQ4YTI5YWI3YmMwY2FmNmMyNWI3ZTIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUxNTNkNWIyOWIwYTQ4ZDE1ZTg0OWEzNjU0ZjNiZTBkNDYwNmM0NGY2MGMwY2RjNzM2ZThhMjc3NjY3NDNlNzAifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_4b570ede444c4cf088fba0060e3c853d",
+      "statement": "The repository pre-commit configuration runs package-specific formatting and linting for matching Deep Agents, Code, Evals, and ACP changes, checks lock freshness for library manifest or lock changes, and validates Conventional Commit messages.",
+      "evidence": [
+        {
+          "resource": "repo://.pre-commit-config.yaml#L12-L34",
+          "version": "repo-lines-v1:sha256:139c743d5fec2b02707eec600bccf24c0dfb263b2c140b531bb3359fdbeaf0c8:eyJzZWxlY3RlZExpbmVDb3VudCI6MjMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjVhMTEwZGI1YTkzNTdjZGExZDc4MjE2Y2RjMGJmOGIyNTVlMzM4Y2JjMWYzMjdlMGRmMDhjZmM3NzM5MWRkZWYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI0YzMzNGExNzMzY2U1Y2NmZjA1NWZjYzUzODNkMjA0Yjk2NjkzMDA1NmQ5MjIwMTY0ZDlhMmUxNDVkNmQ3ZDkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImVhMDZjODM0M2JkM2VhYmY1MjczMGY2MDQwYmQ3OTE1Zjk0Njc5YTA3MGEyMzQ4MGE5Y2NiZGJmNTRjZWJmZTkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImNjMDAxMWU2NGM1ZGE1Yzg2YzQwOTRiYWM4OGFlZDZhMzc4MDc3NjI1MTUyN2UxODQ1M2MwYTY1NGU3ZjFmYmMifQ"
+        },
+        {
+          "resource": "repo://.pre-commit-config.yaml#L57-L104",
+          "version": "repo-lines-v1:sha256:f22511333e32a3ba99913b63ff4d87b2d065f472a762ca4d67b58b45b818f240:eyJzZWxlY3RlZExpbmVDb3VudCI6NDgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjEwNWFjN2E3OGNlODgzZmExOGI3MDdlODJmMzU1ZjRkZDQ0OWNmZWNjNzkyZmVkMWYwZGQyOGFlM2Y2MDk4NTUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjkxNzg2YmQzZDQ5YmE5M2IyNmM0NDY4MzUyZDVlYjA3OWI1ZmNlNGZkZmQ2MzY4Mzg2NDIxZGVmYzI2NzA0ZTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjhhOTJiN2YyMDUzNTE5NjZjNmJmM2ZjNWYyZGM5NTZlNWYzYTk1OTk4MzEwMjMwM2YwZWQyY2JlNDgwMWM4NjIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjYyM2YwMjY2NTdjN2Y3OTY4ZTI5OTZkOWYxYmJmZTE5NmNmMWQyMTUyZjc4NzVmNDkyYTMzY2JhZmEwNjFiODMifQ"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-11-10T08:04:01.717Z"
+    "at": "2026-11-11T08:04:08.950Z"
   }
 }

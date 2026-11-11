@@ -5,7 +5,7 @@ description: Package roles, published Python and dependency contracts, developme
 tags: [architecture, monorepo, python, dependencies, releases]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-11-10T08:04:01.717Z
+    at: 2026-11-11T08:04:08.950Z
 sources:
   - id: openwiki-source-9a1c436646ef8c4f6dde787a
     resource: repo://.github/RELEASING.md
@@ -47,7 +47,7 @@ sources:
     resource: repo://libs/talon/README.md
   - id: openwiki-source-482fa4ca84f42b04ba025fc1
     resource: repo://release-please-config.json
-generated: { by: "openwiki/0.4.2", at: "2026-11-10T08:04:01.717Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-11-11T08:04:08.950Z" }
 ---
 
 # Repository Architecture Overview
@@ -64,7 +64,7 @@ A package's `pyproject.toml` is its installer-visible contract: its version, `re
 | --- | --- | --- | --- |
 | `deepagents` | `0.7.35` | `>=3.11,<4.0` | Reusable, opinionated agent-harness SDK. |
 | `deepagents-acp` | `0.0.13` | `>=3.11,<4.0` | ACP protocol-to-graph bridge. |
-| `deepagents-code` / `dcode` | `0.2.6` | `>=3.14,<3.15` | Prebuilt terminal coding-agent product; both script names call the same CLI. |
+| `deepagents-code` / `dcode` | `0.2.7` | `>=3.14,<3.15` | Prebuilt terminal coding-agent product; both script names call the same CLI. |
 | `deepagents-talon` | `0.1.0` | `>=3.14,<3.15` | Experimental local host for channels, schedules, and agent lifecycle. |
 | `deepagents-evals` | `0.0.1` | `>=3.14,<3.15` | Evaluation suite and Harbor integration, not an online-serving component. |
 | `langchain-daytona`, `langchain-modal`, `langchain-runloop` | `0.0.9`, `0.0.7`, `0.0.7` | `>=3.11,<4.0` | Optional sandbox integrations. |
@@ -116,7 +116,7 @@ flowchart TD
 
 *Solid edges are installer-visible dependency relationships; dotted edges are development-only `uv` source substitutions.*
 
-The most consequential compatibility edge is dcode's exact `deepagents==0.7.35` requirement. Raise that pin in the change that starts requiring newer SDK behavior; an editable checkout can otherwise hide an insufficient PyPI requirement. Dcode also requires ACP `>=0.0.13,<1.0.0` and QuickJS `>=0.3.12,<0.4.0`. By comparison, ACP deliberately has no SDK version bound, while Talon declares `deepagents>=0.7.34` and `deepagents-code>=0.2.5,<1.0.0`.
+The most consequential compatibility edge is dcode's exact `deepagents==0.7.35` requirement. Raise that pin in the change that starts requiring newer SDK behavior; an editable checkout can otherwise hide an insufficient PyPI requirement. Dcode also requires ACP `>=0.0.13,<1.0.0` and QuickJS `>=0.3.12,<0.4.0`. By comparison, ACP deliberately has no SDK version bound, while Talon declares `deepagents>=0.7.35` and `deepagents-code>=0.2.6,<1.0.0`.
 
 The checkout graph is deliberately not identical to this dependency graph:
 
@@ -124,7 +124,7 @@ The checkout graph is deliberately not identical to this dependency graph:
 - Dcode maps the SDK, ACP, and all five partner distributions to editable siblings, even though provider packages remain optional wheel extras.
 - Evals maps its dcode sibling **non-editably**, while its SDK and QuickJS mappings are editable. Its published floors are `deepagents>=0.7.32`, `deepagents-code>=0.2.1`, and `langchain-quickjs>=0.3.3`.
 - Talon maps only the direct SDK and dcode siblings editable. ACP or QuickJS may occur in its resolved local closure through dcode; they are not Talon direct source mappings or direct wheel requirements.
-- All five partner packages publish `deepagents>=0.7.34,<0.8.0` and map the local SDK editable for checkout development.
+- All five partner packages publish `deepagents>=0.7.35,<0.8.0` and map the local SDK editable for checkout development.
 
 ### Extras are install choices, not policy or isolation
 
@@ -136,7 +136,7 @@ Talon's base wheel contains its host dependencies and default SQLite support. It
 
 Release Please manages distinct draft release PRs for the SDK, ACP, dcode, Talon, and the five partner distributions. Evals is intentionally absent from that configuration. The release configuration uses separate draft PRs and suppresses Release Please's own GitHub-release step; merging a managed release PR triggers the repository release workflow, which performs checks and creates the PyPI and GitHub releases.
 
-The release manifest is the current released-version baseline: `0.7.35` for the SDK, `0.0.13` for ACP, `0.2.6` for dcode, `0.1.0` for Talon, and the table's five partner versions. It is distinct from a package source manifest. Release Please updates it; it is not ordinary dependency metadata. This separation matters when adding a managed package: the baseline represents what has already shipped, while the package's own source version represents what its wheel will declare.
+The release manifest is the current released-version baseline: `0.7.35` for the SDK, `0.0.13` for ACP, `0.2.7` for dcode, `0.1.0` for Talon, and the table's five partner versions. It is distinct from a package source manifest. Release Please updates it; it is not ordinary dependency metadata. This separation matters when adding a managed package: the baseline represents what has already shipped, while the package's own source version represents what its wheel will declare.
 
 ## Lockfile lifecycle
 

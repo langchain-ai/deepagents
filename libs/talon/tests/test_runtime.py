@@ -18,6 +18,7 @@ from langchain_core.messages import AIMessage, RemoveMessage, ToolMessage
 from langchain_core.tracers.langchain import wait_for_all_tracers
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, MessagesState, StateGraph
+from langgraph.prebuilt import ToolNode, tools_condition
 from langsmith import tracing_context
 
 from deepagents_talon.authorization import AuthorizationEvent, current_authorization_handler
@@ -1448,3 +1449,55 @@ async def test_recovery_trace_has_named_root_and_conversation_metadata(monkeypat
     assert roots[0]["extra"]["metadata"]["conversation_id"] == "chat"
     state = await graph.aget_state({"configurable": {"thread_id": "chat"}})
     assert state.values["messages"][-1].content.startswith("[SYSTEM] Task interrupted")
+
+
+async def test_retry_preserves_checkpointed_user_message_and_completed_tool() -> None:
+    actions: list[str] = []
+    failed = False
+
+    def model(state: MessagesState) -> dict[str, list[AIMessage]]:
+        nonlocal failed
+        if state["messages"][-1].type == "human":
+            return {
+                "messages": [
+                    AIMessage(
+                        content="",
+                        tool_calls=[{"name": "complete_action", "args": {}, "id": "action"}],
+                    )
+                ]
+            }
+        if not failed:
+            failed = True
+            msg = "connection reset by peer"
+            raise ConnectionError(msg)
+        return {"messages": [AIMessage(content="done")]}
+
+    def complete_action() -> str:
+        """Complete the requested action."""
+        actions.append("completed")
+        return "completed"
+
+    builder = StateGraph(MessagesState)
+    builder.add_node("model", model)
+    builder.add_node("tools", ToolNode([complete_action]))
+    builder.add_edge(START, "model")
+    builder.add_conditional_edges("model", tools_condition)
+    builder.add_edge("tools", "model")
+    graph = builder.compile(checkpointer=InMemorySaver())
+    runtime = DeepAgentRuntime(model="test:model", include_web_tools=False)
+    runtime._graph = graph
+
+    with tracing_context(enabled=False):
+        result = await runtime._invoke_with_retries("perform action", "chat", None)
+        state = await graph.aget_state({"configurable": {"thread_id": "chat"}})
+
+    assert isinstance(result, dict)
+    assert result["messages"][-1].content == "done"
+    assert [m.content for m in state.values["messages"] if m.type == "human"] == ["perform action"]
+    assert actions == ["completed"]
+
+
+@pytest.mark.parametrize("text", ["blocked by gateway policies", "Blocked by Gateway Policies"])
+def test_gateway_policy_429_is_not_retryable(text: str) -> None:
+    assert not _is_retryable(StatusError(429, text))
+    assert _is_retryable(StatusError(429, "rate limit exceeded"))

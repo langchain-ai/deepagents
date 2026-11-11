@@ -15,8 +15,10 @@ import re
 from collections.abc import AsyncGenerator, Awaitable, Callable, Generator, Mapping, Sequence
 from dataclasses import dataclass
 from functools import partial
+from http import HTTPStatus
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeGuard, cast
+from uuid import uuid4
 
 import yaml
 from deepagents import create_deep_agent
@@ -703,6 +705,23 @@ class DeepAgentRuntime:
             if isinstance(result, Awaitable):
                 await result
 
+    async def has_tool_activity(self, conversation_id: str) -> bool:
+        """Report checkpointed tool results since the latest user message."""
+        get_state = getattr(self._graph, "aget_state", None)
+        if not callable(get_state):
+            return False
+        snapshot = await get_state({"configurable": {"thread_id": conversation_id}})
+        values = cast("Mapping[str, object]", getattr(snapshot, "values", {}))
+        messages = values.get("messages", [])
+        if not isinstance(messages, list):
+            return False
+        for message in reversed(messages):
+            if getattr(message, "type", None) == "human":
+                return False
+            if getattr(message, "type", None) == "tool":
+                return True
+        return False
+
     async def recover_interrupted(self, conversation_id: str) -> None:
         """Append an interruption marker after the latest committed checkpoint."""
         if self._graph is None:
@@ -1152,6 +1171,7 @@ class DeepAgentRuntime:
                 {
                     "role": "user",
                     "content": content,
+                    "id": str(uuid4()),
                     "additional_kwargs": {"talon_history_source": source},
                 },
             ]
@@ -2046,6 +2066,8 @@ def _is_retryable(exc: Exception) -> bool:
 
     text = str(exc).lower()
     status_code = _status_code(exc)
+    if status_code == HTTPStatus.TOO_MANY_REQUESTS and "blocked by gateway policies" in text:
+        return False
     if status_code in _RETRYABLE_STATUS_CODES:
         return True
     if status_code == _BAD_REQUEST_STATUS_CODE:

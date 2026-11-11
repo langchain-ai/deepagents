@@ -8,6 +8,8 @@ from typing import TYPE_CHECKING, cast
 from unittest.mock import Mock
 from uuid import uuid4
 
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, MessagesState, StateGraph
 
 from deepagents_talon.background import BackgroundSubagents
@@ -2357,3 +2359,49 @@ async def test_user_cancellation_feedback(tmp_path: Path, monkeypatch, tracing, 
         feedback.create_feedback.assert_called_once_with(root_id, "user_interrupted", score=1)
     else:
         feedback.create_feedback.assert_not_called()
+
+
+@pytest.mark.parametrize("activity", ["current", "previous", "none", "unavailable"])
+async def test_failed_turn_reports_checkpointed_tool_activity(
+    tmp_path: Path, activity: str
+) -> None:
+    builder = StateGraph(MessagesState)
+    builder.add_node("agent", lambda _state: {"messages": []})
+    builder.add_edge(START, "agent")
+    builder.add_edge("agent", END)
+    graph = builder.compile(checkpointer=InMemorySaver())
+    messages = [HumanMessage(content="hello")]
+    if activity in {"current", "previous"}:
+        messages.extend(
+            [
+                AIMessage(content="", tool_calls=[{"id": "action", "name": "action", "args": {}}]),
+                ToolMessage(content="completed", tool_call_id="action"),
+            ]
+        )
+    if activity == "previous":
+        messages.append(HumanMessage(content="next turn"))
+    await graph.ainvoke({"messages": messages}, {"configurable": {"thread_id": "test:chat"}})
+
+    class FailedRuntime(DeepAgentRuntime):
+        async def start(self) -> None:
+            self._graph = graph if activity != "unavailable" else None
+
+        async def invoke(self, _request: AgentRequest) -> AgentResult:
+            msg = "sensitive upstream detail"
+            raise RuntimeError(msg)
+
+    agent = FailedRuntime(model="test:model", include_web_tools=False)
+    channel = RecordingChannel()
+    host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
+    await host.start()
+    try:
+        await host.receive_message(channel, ChannelMessage("chat", "hello"))
+        await asyncio.wait_for(host._tasks["test:chat"], 2)
+        response = channel.sent[0][1]
+        if activity == "current":
+            assert "Actions may have partially completed" in response
+        else:
+            assert response == "Something went wrong while working on that. Check Talon logs."
+        assert "sensitive upstream detail" not in response
+    finally:
+        await host.stop()

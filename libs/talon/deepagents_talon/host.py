@@ -182,6 +182,40 @@ _EMOJI_SKIN_TONES = frozenset(
 )
 
 
+def _is_model_unavailable(error: BaseException) -> bool:
+    """Recognize provider model-access failures through chained exceptions."""
+    seen: set[int] = set()
+    while id(error) not in seen:
+        seen.add(id(error))
+        if _provider_model_unavailable(error):
+            return True
+        cause = error.__cause__ or (None if error.__suppress_context__ else error.__context__)
+        if cause is None:
+            return False
+        error = cause
+    return False
+
+
+def _provider_model_unavailable(error: BaseException) -> bool:
+    """Inspect SDK error bodies without importing optional provider packages."""
+    body = getattr(error, "body", None)
+    if not isinstance(body, dict):
+        return False
+    detail = body.get("error", body)
+    if not isinstance(detail, dict):
+        return False
+    for cls in type(error).__mro__:
+        provider = cls.__module__.split(".")[0]
+        if provider == "openai" and cls.__name__ == "NotFoundError":
+            return detail.get("code") == "model_not_found"
+        if provider == "anthropic" and cls.__name__ in {"NotFoundError", "BadRequestError"}:
+            details = detail.get("details", body.get("details"))
+            return detail.get("type") == "not_found_error" or (
+                isinstance(details, dict) and details.get("error_code") == "model_not_available"
+            )
+    return False
+
+
 class ScheduledRunRevokedError(RuntimeError):
     """Raised when revoking a paired sender stops a scheduled run from their DM."""
 
@@ -1167,8 +1201,14 @@ class TalonHost:
                 effort=turn.effort,
             )
             suppress_result = agent_conversation_id in self._terminal_authorizations
-        except Exception:  # noqa: BLE001  # _invoke_agent logged the traceback for operators
-            result = AgentResult(text=_AGENT_FAILURE_MESSAGE)
+        except Exception as error:  # noqa: BLE001  # _invoke_agent logged the traceback for operators
+            text = _AGENT_FAILURE_MESSAGE
+            if _is_model_unavailable(error):
+                text = (
+                    f"Model {turn.model or getattr(self.agent, 'default_model', 'default')} "
+                    "is unavailable. Send /model default or choose another model with /model."
+                )
+            result = AgentResult(text=text)
         finally:
             active = False
             self._clear_authorization(agent_conversation_id)

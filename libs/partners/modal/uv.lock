@@ -1186,7 +1186,7 @@ test = [
 [package.metadata]
 requires-dist = [
     { name = "deepagents", editable = "../../deepagents" },
-    { name = "modal", specifier = ">=1.5.3" },
+    { name = "modal" },
 ]
 
 [package.metadata.requires-dev]

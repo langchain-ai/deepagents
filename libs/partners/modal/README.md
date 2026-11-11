@@ -18,7 +18,7 @@ import modal
 
 from langchain_modal import ModalSandbox
 
-sandbox = ModalSandbox(sandbox=modal.Sandbox.create(app=modal.App.lookup("your-app")))
+sandbox = ModalSandbox(modal.Sandbox.create(app=modal.App.lookup("your-app")))
 result = sandbox.execute("echo hello")
 print(result.output)
 ```

@@ -588,13 +588,13 @@ class CodeInterpreterMiddleware(
         handler: Callable[[ModelRequest[ContextT]], ModelResponse[ResponseT]],
     ) -> ModelCallResult[ResponseT]:
         """Inject the REPL's system-prompt snippet on every model call."""
-        prompt, names = self._prepare_for_call(request)
+        prompt = self._prepare_for_call(request)
         response = handler(
             request.override(
                 system_message=self._extend(request.system_message, prompt)
             ),
         )
-        return self._record_bindings(request, names, response)
+        return self._record_bindings(request, response)
 
     async def awrap_model_call(
         self,
@@ -604,18 +604,17 @@ class CodeInterpreterMiddleware(
         ],
     ) -> ModelCallResult[ResponseT]:
         """(async) Inject the REPL's system-prompt snippet on every model call."""
-        prompt, names = self._prepare_for_call(request)
+        prompt = self._prepare_for_call(request)
         response = await handler(
             request.override(
                 system_message=self._extend(request.system_message, prompt)
             ),
         )
-        return self._record_bindings(request, names, response)
+        return self._record_bindings(request, response)
 
     def _record_bindings(
         self,
         request: ModelRequest[ContextT],
-        names: list[str] | None,
         response: ModelResponse[ResponseT],
     ) -> ModelCallResult[ResponseT]:
         """Record this call's `tools.*` names in state when they changed.
@@ -623,7 +622,12 @@ class CodeInterpreterMiddleware(
         The bindings cache lives in this instance only; `_tools_for_eval`
         reads the names back when another instance resumes the run.
         """
-        if names is None or request.state.get("_quickjs_ptc_tools") == names:
+        if self._ptc is None:
+            return response
+        slot_id = self._slot_id(getattr(request, "state", {}))
+        bound = self._ptc_tools_by_slot.get(slot_id, ())
+        names = sorted(tool.name for tool in bound)
+        if request.state.get("_quickjs_ptc_tools") == names:
             return response
         return ExtendedModelResponse(
             model_response=response,
@@ -650,10 +654,8 @@ class CodeInterpreterMiddleware(
             self._base_prompt_cache[ptc_attached] = cached
         return cached
 
-    def _prepare_for_call(
-        self, request: ModelRequest[ContextT]
-    ) -> tuple[str, list[str] | None]:
-        """Cache live PTC bindings and return the prompt addendum and their names.
+    def _prepare_for_call(self, request: ModelRequest[ContextT]) -> str:
+        """Cache live PTC bindings and return the prompt addendum.
 
         Called from both sync and async model-call wrappers. Reads the
         live tool list off the request (middlewares upstream may have
@@ -675,8 +677,9 @@ class CodeInterpreterMiddleware(
             )
 
         if self._ptc is None:
-            prompt = self._base_prompt(ptc_attached=False) + subagent_section
-            return self._with_fs(prompt), None
+            return self._with_fs(
+                self._base_prompt(ptc_attached=False) + subagent_section
+            )
 
         exposed = filter_tools_for_ptc(
             request_tools,
@@ -698,8 +701,7 @@ class CodeInterpreterMiddleware(
                 render_ptc_prompt(exposed_tools, tool_name=self._tool_name),
             )
             self._ptc_prompt_by_slot[slot_id] = cached
-        exposed_names = sorted(tool.name for tool in exposed_tools)
-        return self._with_fs(prompt + cached[1]), exposed_names
+        return self._with_fs(prompt + cached[1])
 
     def _with_fs(self, prompt: str) -> str:
         if not self._fs_enabled:

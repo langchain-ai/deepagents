@@ -694,10 +694,14 @@ launch-time additions apply only to that task. Main retains filesystem, action t
 approval controls, chooses placement from the workflow, and mediates minimal
 internal-to-external context.
 
-Existing files are unchanged; missing research definitions are installed automatically.
-Review the packaged `deepagents_talon/defaults/` files,
-back up affected instructions, and merge the selected changes without replacing custom
-content. Call `reload_subagent_configuration` and inspect `get_agent_tools`; roll back
+Custom files are never overwritten; missing defaults are installed automatically.
+Startup tracks packaged defaults by SHA-256 in `.talon-defaults.json`. Changed or
+untracked defaults that differ from existing files produce a warning naming the file
+and a `<name>.packaged` review copy. Review and merge selected changes into your custom
+files. Main always receives runtime-appended retrieval, credential, and early delegation
+guardrails, even with custom `AGENTS.md` instructions. These are prompt guidance, not
+enforced tool restrictions. Restart Talon after editing main instructions. For subagent
+changes, call `reload_subagent_configuration` and inspect `get_agent_tools`; roll back
 by restoring those files and reloading. Include restored capabilities in the rollback
 review. Running tasks retain their original graphs until finished or canceled.
 

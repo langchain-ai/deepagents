@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 from pathlib import Path
 
@@ -12,6 +13,7 @@ from langchain_core.tools import tool
 
 from deepagents_talon.config import TalonConfig, _install_defaults
 from deepagents_talon.interfaces import AgentRequest
+from deepagents_talon.runtime import _GUARDRAILS_PROMPT
 from deepagents_talon.tool_approvals import ToolApprovalStore
 from tests.unit_tests.test_research_subagents import ToolModel, _call, _inventory, _runtime
 
@@ -37,6 +39,78 @@ def test_install_defaults_preserves_existing_files(tmp_path: Path) -> None:
     assert (existing.home / "AGENTS.md").is_file()
     assert (existing.agents_dir / "internal-research" / "AGENTS.md").is_file()
     assert (existing.agents_dir / "external-research" / "AGENTS.md").is_file()
+
+
+@pytest.mark.parametrize("tracking", [None, "invalid", "[]", '{"AGENTS.md": 123}', "unreadable"])
+def test_untracked_defaults_offer_review_copy(tmp_path, caplog, tracking):
+    config = TalonConfig("existing", tmp_path)
+    instructions = tmp_path / "AGENTS.md"
+    instructions.write_text("Custom instructions")
+    sidecar = tmp_path / ".talon-defaults.json"
+    if tracking == "unreadable":
+        sidecar.mkdir()
+    elif tracking is not None:
+        sidecar.write_text(tracking)
+    if tracking == "unreadable":
+        with pytest.raises(IsADirectoryError):
+            config.ensure_home()
+    else:
+        config.ensure_home()
+    assert instructions.read_text() == "Custom instructions"
+    packaged = Path(__file__).parents[2] / "deepagents_talon/defaults/AGENTS.md"
+    assert (tmp_path / "AGENTS.md.packaged").read_bytes() == packaged.read_bytes()
+    assert "AGENTS.md" in caplog.text
+    assert "review" in caplog.text
+
+
+def test_packaged_update_preserves_custom_instructions(tmp_path, caplog):
+    config = TalonConfig("existing", tmp_path)
+    config.ensure_home()
+    instructions = tmp_path / "AGENTS.md"
+    original = instructions.read_bytes()
+    sidecar = tmp_path / ".talon-defaults.json"
+    hashes = json.loads(sidecar.read_text())
+    assert hashes["AGENTS.md"] == hashlib.sha256(original).hexdigest()
+    instructions.write_text("Custom instructions")
+    config.ensure_home()
+    assert not (tmp_path / "AGENTS.md.packaged").exists()
+    assert not caplog.records
+    hashes["AGENTS.md"] = "0" * 64
+    sidecar.write_text(json.dumps(hashes))
+    config.ensure_home()
+    assert instructions.read_text() == "Custom instructions"
+    assert (tmp_path / "AGENTS.md.packaged").read_bytes() == original
+    assert "AGENTS.md" in caplog.text
+    caplog.clear()
+    config.ensure_home()
+    assert not caplog.records
+    instructions.unlink()
+    config.ensure_home()
+    assert instructions.read_bytes() == original
+    assert not caplog.records
+
+
+@pytest.mark.parametrize("custom", [False, True])
+async def test_started_main_receives_guardrails_with_custom_instructions(
+    tmp_path, monkeypatch, custom
+):
+    config = TalonConfig("existing", tmp_path)
+    config.ensure_home()
+    path = tmp_path / "AGENTS.md"
+    if custom:
+        path.write_text("Custom main instructions")
+    instructions = path.read_text()
+    model = ToolModel(responses=[AIMessage(content="Done")])
+    runtime = _runtime(tmp_path, monkeypatch, model, model, include_web_tools=False)
+    await runtime.start()
+    try:
+        await runtime.invoke(AgentRequest("chat", "Hello"))
+        system = model._seen[0][0].text
+        assert instructions in system
+        assert _GUARDRAILS_PROMPT in system
+        assert path.read_text() == instructions
+    finally:
+        await runtime.stop()
 
 
 def test_existing_home_backfills_missing_research_defaults(tmp_path: Path) -> None:

@@ -8,6 +8,9 @@ updates. Final replies and host-visible tool activity are unaffected.
 
 from __future__ import annotations
 
+import hashlib
+import json
+import logging
 import os
 import re
 import tempfile
@@ -22,6 +25,8 @@ if TYPE_CHECKING:
 
     from deepagents_talon.history_profiles import EmbeddingProfile
     from deepagents_talon.sandbox import SandboxSettings
+
+logger = logging.getLogger(__name__)
 
 _ASSISTANT_ID_PATTERN = re.compile(r"[A-Za-z0-9_.-]{1,128}")
 _ENV_PREFIX = "DEEPAGENTS_TALON_"
@@ -300,22 +305,53 @@ def _create_home(home: Path) -> None:
                 raise
 
 
+def _default_hashes(path: Path) -> dict[str, str]:
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(document, dict) and all(
+            isinstance(key, str) and isinstance(value, str) and re.fullmatch(r"[a-f0-9]{64}", value)
+            for key, value in document.items()
+        ):
+            return document
+    except FileNotFoundError:
+        return {}
+    except OSError, ValueError:
+        logger.warning("Could not read packaged-default tracking from %s", path, exc_info=True)
+        return {}
+    logger.warning("Invalid packaged-default tracking in %s", path)
+    return {}
+
+
 def _install_defaults(home: Path) -> None:
     defaults = Path(__file__).with_name("defaults")
+    tracking = home / ".talon-defaults.json"
+    previous = _default_hashes(tracking)
+    hashes: dict[str, str] = {}
     for source in defaults.rglob("*.md"):
         contents = source.read_text(encoding="utf-8")
-        target = home / source.relative_to(defaults)
+        name = source.relative_to(defaults).as_posix()
+        target = home / name
         target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        digest = hashlib.sha256(contents.encode("utf-8")).hexdigest()
         _publish_default(target, contents)
+        if previous.get(name) != digest and target.read_text(encoding="utf-8") != contents:
+            review = target.with_name(target.name + ".packaged")
+            logger.warning("Packaged default %s changed or is untracked; review %s", target, review)
+            _publish_default(review, contents, replace=True)
+        hashes[name] = digest
+    _publish_default(tracking, json.dumps(hashes, sort_keys=True) + "\n", replace=True)
 
 
-def _publish_default(target: Path, contents: str) -> None:
+def _publish_default(target: Path, contents: str, *, replace: bool = False) -> None:
     with tempfile.TemporaryDirectory(prefix=".talon-", dir=target.parent) as directory:
         staged = Path(directory) / target.name
         staged.write_text(contents, encoding="utf-8")
         staged.chmod(0o600)
-        with suppress(FileExistsError):
-            os.link(staged, target)
+        if replace:
+            staged.replace(target)
+        else:
+            with suppress(FileExistsError):
+                os.link(staged, target)
 
 
 def _first_present(

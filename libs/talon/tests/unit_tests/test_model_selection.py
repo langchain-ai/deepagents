@@ -7,9 +7,12 @@ from typing import TYPE_CHECKING, Any, cast
 
 import httpx
 import pytest
+from anthropic import AsyncAnthropic
+from langchain_anthropic import ChatAnthropic
 from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
 from langchain_core.messages import AIMessage
 from langchain_core.messages.utils import count_tokens_approximately
+from langchain_openai import ChatOpenAI
 from pydantic import Field
 
 from deepagents_talon.background import _IN_SUBAGENT
@@ -758,3 +761,78 @@ def test_subagents_keep_the_startup_summarizer(monkeypatch: pytest.MonkeyPatch) 
 
     assert model == "startup"
     assert isinstance(request, _Request)
+
+
+@pytest.mark.usefixtures("discovered")
+@pytest.mark.parametrize("provider", ["anthropic", "openai", "baseten", "gateway"])
+async def test_selected_model_request_cache_lifetime(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, provider: str
+) -> None:
+    requests: list[dict[str, Any]] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        requests.append(json.loads(request.content))
+        if provider == "anthropic":
+            body = {
+                "id": "msg_test",
+                "type": "message",
+                "role": "assistant",
+                "model": "test-model",
+                "content": [{"type": "text", "text": "done"}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 10, "output_tokens": 1},
+            }
+        else:
+            body = {
+                "id": "chat_test",
+                "model": "test-model",
+                "choices": [
+                    {
+                        "message": {"role": "assistant", "content": "done"},
+                        "finish_reason": "stop",
+                        "index": 0,
+                    }
+                ],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 1, "total_tokens": 11},
+            }
+        return httpx.Response(200, json=body)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        selected = (
+            ChatAnthropic(model="test-model", api_key="test")
+            if provider == "anthropic"
+            else ChatOpenAI(
+                model="test-model",
+                api_key="test",
+                http_async_client=client,
+                base_url=f"https://{provider}.example/v1",
+                use_responses_api=False,
+            )
+        )
+        if isinstance(selected, ChatAnthropic):
+            selected._async_client = AsyncAnthropic(api_key="test", http_client=client)
+        models = {
+            "test:primary": ReplyModel(responses=[AIMessage(content="primary")]),
+            "test:alt": selected,
+        }
+        monkeypatch.setattr(
+            "deepagents_talon.runtime._resolve_model_from_env",
+            lambda model, *_args, **_kwargs: models[model],
+        )
+        runtime = _runtime(tmp_path)
+        await runtime.start()
+        try:
+            result = await runtime.invoke(AgentRequest("a", "hi", model="test:alt"))
+        finally:
+            await runtime.stop()
+
+    assert result.text == "done"
+    assert len(requests) == 1
+    payload = requests[0]
+    if provider == "anthropic":
+        control = {"type": "ephemeral", "ttl": "1h"}
+        assert payload["cache_control"] == control
+        assert payload["system"][-1]["cache_control"] == control
+        assert payload["tools"][-1]["cache_control"] == control
+    else:
+        assert "cache_control" not in json.dumps(payload)

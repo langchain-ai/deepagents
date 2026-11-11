@@ -31,6 +31,7 @@ from deepagents.middleware.summarization import (
 from deepagents.profiles.provider.provider_profiles import apply_provider_profile
 from langchain.agents.middleware import HumanInTheLoopMiddleware
 from langchain.chat_models import init_chat_model
+from langchain_anthropic.middleware import AnthropicPromptCachingMiddleware
 from langchain_core.messages import HumanMessage
 from langchain_core.tools import BaseTool, tool
 from langgraph.checkpoint.memory import InMemorySaver
@@ -516,6 +517,7 @@ class DeepAgentRuntime:
                 self.backend,
             ),
             ModelSelectionMiddleware(),
+            AnthropicPromptCachingMiddleware(ttl="1h", unsupported_model_behavior="ignore"),
             ProgressMessages(),
         ]
         middleware.append(HumanInTheLoopMiddleware(interrupt_on=interrupt_on))

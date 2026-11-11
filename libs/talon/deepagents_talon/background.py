@@ -177,7 +177,7 @@ class BackgroundSubagents(AgentMiddleware):
             """Inspect this thread's subagents, including changed status and final results."""
             owner = runtime.config.get("configurable", {}).get("thread_id")
             jobs = [(key, job, job.status) for key, job in self._jobs.items() if job.owner == owner]
-            state = _LISTING_STATE.get() if not _IN_SUBAGENT.get() else None
+            state = _LISTING_STATE.get() if jobs and not _IN_SUBAGENT.get() else None
             if state is not None and state.owner != owner:
                 state = None
             snapshot = tuple((key, status) for key, _, status in jobs)

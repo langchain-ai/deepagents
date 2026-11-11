@@ -1295,6 +1295,14 @@ async def test_listing_suppresses_unchanged_polls_and_repeated_results():
 
 
 async def test_listing_state_is_isolated_between_concurrent_turns():
+    release = asyncio.Event()
+
+    @tool
+    async def task() -> str:
+        """Wait for research."""
+        await release.wait()
+        return "done"
+
     background = BackgroundSubagents()
     listing = background.tools[0]
     ready = asyncio.Barrier(2)
@@ -1303,10 +1311,17 @@ async def test_listing_state_is_isolated_between_concurrent_turns():
         runtime = _request(owner, listing).runtime
         with _track_consumed_results(owner, {}):
             assert await listing.ainvoke({"runtime": runtime}) == []
+            assert await listing.ainvoke({"runtime": runtime}) == []
+            await background.awrap_tool_call(_request(owner, task), _unused_handler)
+            assert len(await listing.ainvoke({"runtime": runtime})) == 1
             await ready.wait()
             assert isinstance(await listing.ainvoke({"runtime": runtime}), str)
             with _track_consumed_results("other", {}):
-                assert await listing.ainvoke({"runtime": runtime}) == []
+                assert len(await listing.ainvoke({"runtime": runtime})) == 1
             assert isinstance(await listing.ainvoke({"runtime": runtime}), str)
 
-    await asyncio.gather(poll("one"), poll("two"))
+    try:
+        await asyncio.gather(poll("one"), poll("two"))
+    finally:
+        release.set()
+        await background.cancel()

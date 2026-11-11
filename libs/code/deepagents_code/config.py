@@ -7339,6 +7339,25 @@ def create_model(
             raise_on_failure=True,
         )
 
+    if provider == "baseten":
+        from deepagents_code.model_config import (
+            BASETEN_GLM_5P3_MODELS,
+            BASETEN_GLM_AUTO_BUDGET_ATTR,
+            BASETEN_GLM_DEFAULT_OUTPUT_TOKENS,
+        )
+
+        limits = {"max_tokens", "max_completion_tokens", "max_output_tokens"}
+        nested = kwargs.get("model_kwargs") or {}
+        if model_name in BASETEN_GLM_5P3_MODELS and not (
+            limits.intersection(kwargs) or limits.intersection(nested)
+        ):
+            profile = getattr(model, "profile", None) or {}
+            budget = profile.get("max_output_tokens")
+            if not isinstance(budget, int) or budget <= 0:
+                budget = BASETEN_GLM_DEFAULT_OUTPUT_TOKENS
+            model.max_tokens = budget  # ty: ignore[unresolved-attribute]  # Baseten exposes the OpenAI-compatible output budget.
+            object.__setattr__(model, BASETEN_GLM_AUTO_BUDGET_ATTR, budget)  # noqa: PLC2801  # Pydantic rejects internal metadata fields.
+
     # Keep retry policy metadata on the concrete model selected for the request.
     # Runtime `/model` switches replace `request.model`, so the downstream retry
     # middleware can read the matching budget without mutating shared middleware

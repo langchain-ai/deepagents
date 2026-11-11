@@ -7920,3 +7920,37 @@ class TestBuildStreamConfigRecursionLimit:
             model_config.clear_caches()
 
         assert config["recursion_limit"] == 12_000
+
+
+@pytest.mark.parametrize("name", ["GLM-5.3", "GLM-5.3-Fast"])
+@pytest.mark.parametrize("maximum", [None, 65536])
+@pytest.mark.parametrize("limit", [None, 2048])
+@pytest.mark.parametrize("source", ["caller", "config"])
+def test_baseten_glm_output_budget(
+    monkeypatch: pytest.MonkeyPatch,
+    name: str,
+    maximum: int | None,
+    limit: int | None,
+    source: str,
+) -> None:
+    """Baseten GLM defaults follow the profile and preserve caller limits."""
+    from langchain_openai import ChatOpenAI
+
+    clear_caches()
+    monkeypatch.setattr(
+        "deepagents_code.model_config.has_provider_credentials", lambda _: True
+    )
+    model = ChatOpenAI(model=f"zai-org/{name}", api_key="test", max_tokens=limit)
+    model.profile = {"max_output_tokens": maximum} if maximum else None
+    monkeypatch.setattr(config_module, "_create_model_via_init", lambda *_args: model)
+    if source == "config":
+        monkeypatch.setattr(
+            config_module,
+            "_get_provider_kwargs",
+            lambda *_args, **_kwargs: {"max_tokens": limit} if limit else {},
+        )
+    create_model(
+        f"baseten:zai-org/{name}",
+        extra_kwargs={"max_tokens": limit} if limit and source == "caller" else None,
+    )
+    assert model.max_tokens == (limit or maximum or 32768)

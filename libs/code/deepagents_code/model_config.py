@@ -44,6 +44,10 @@ if TYPE_CHECKING:
     from deepagents_code.configuration.types import ProviderStatus
     from deepagents_code.json_types import JsonValue
 
+BASETEN_GLM_5P3_MODELS = frozenset({"zai-org/GLM-5.3", "zai-org/GLM-5.3-Fast"})
+BASETEN_GLM_DEFAULT_OUTPUT_TOKENS = 32768
+BASETEN_GLM_AUTO_BUDGET_ATTR = "_dcode_baseten_glm_auto_budget"
+
 logger = logging.getLogger(__name__)
 
 _ENV_PREFIX = "DEEPAGENTS_CODE_"

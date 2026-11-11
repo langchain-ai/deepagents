@@ -284,6 +284,66 @@ def _model_name(message: AIMessage, model: str | BaseChatModel) -> str | None:
     return get_model_identifier(model)
 
 
+def _baseten_recovery_request(
+    response: ModelResponse, request: ModelRequest
+) -> ModelRequest | None:
+    from deepagents._models import (  # ruff:ignore[import-private-name]
+        get_model_identifier,
+        get_model_provider,
+    )
+
+    from deepagents_code.model_config import BASETEN_GLM_5P3_MODELS
+
+    model = request.model
+    spec = (
+        model
+        if isinstance(model, str)
+        else f"{get_model_provider(model)}:{get_model_identifier(model)}"
+    )
+    if spec not in {f"baseten:{name}" for name in BASETEN_GLM_5P3_MODELS}:
+        return None
+    message = _final_ai_message(response)
+    if message is None or has_visible_reply(message):
+        return None
+    truncation = output_truncation(message)
+    if truncation is None or truncation.reason != MAX_OUTPUT_TOKENS:
+        return None
+    return request.override(model_settings=_baseten_recovery_settings(request))
+
+
+def _baseten_recovery_settings(request: ModelRequest) -> dict[str, object]:
+    from deepagents_code.model_config import (
+        BASETEN_GLM_AUTO_BUDGET_ATTR,
+        BASETEN_GLM_DEFAULT_OUTPUT_TOKENS,
+    )
+
+    model = request.model
+    profile = getattr(model, "profile", None) or {}
+    maximum = profile.get("max_output_tokens")
+    if not isinstance(maximum, int) or maximum <= 0:
+        maximum = BASETEN_GLM_DEFAULT_OUTPUT_TOKENS
+    settings = dict(request.model_settings)
+    limits = {"max_tokens", "max_completion_tokens", "max_output_tokens"}
+    nested = settings.get("model_kwargs") or {}
+    budget = getattr(model, "max_tokens", None)
+    automatic = getattr(model, BASETEN_GLM_AUTO_BUDGET_ATTR, None)
+    configured = getattr(model, "model_kwargs", None) or {}
+    if (
+        not (
+            limits.intersection(settings)
+            or limits.intersection(nested)
+            or limits.intersection(configured)
+        )
+        and (budget is None or budget == automatic)
+        and (budget is None or budget < maximum)
+    ):
+        settings["max_tokens"] = maximum
+    levels = profile.get("reasoning_effort_levels", [])
+    if isinstance(levels, (list, tuple)) and "low" in levels:
+        settings["reasoning_effort"] = "low"
+    return settings
+
+
 class EmptyTruncatedReplyMiddleware(AgentMiddleware):
     """Fail the main run when the provider cut off a reply before any output.
 
@@ -293,9 +353,8 @@ class EmptyTruncatedReplyMiddleware(AgentMiddleware):
     model node, so the empty message is not saved and the client shows the
     error. A partial reply is left alone; the client warns about it.
 
-    This middleware never retries. It must wrap the retry middleware, so the
-    error is not retried, and any recovery middleware that may still repair
-    the reply.
+    Empty Baseten GLM-5.3 output-cap stops receive one recovery attempt before
+    the error guard. This must wrap the retry and other recovery middleware.
     """
 
     trace_policy = TracePolicy(process_inputs=omit_payload)
@@ -389,6 +448,9 @@ class EmptyTruncatedReplyMiddleware(AgentMiddleware):
             if not isinstance(error.raw_message, AIMessage):
                 raise
             response = ModelResponse(result=[error.raw_message])
+        recovery = _baseten_recovery_request(response, request)
+        if recovery is not None:
+            response = handler(recovery)
         self._check(response, request)
         return response
 
@@ -414,6 +476,9 @@ class EmptyTruncatedReplyMiddleware(AgentMiddleware):
             if not isinstance(error.raw_message, AIMessage):
                 raise
             response = ModelResponse(result=[error.raw_message])
+        recovery = _baseten_recovery_request(response, request)
+        if recovery is not None:
+            response = await handler(recovery)
         self._check(response, request)
         return response
 

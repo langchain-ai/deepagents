@@ -5,7 +5,7 @@ from __future__ import annotations
 import copy
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Literal, cast
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import httpx
 import pytest
@@ -656,3 +656,166 @@ async def test_raised_refusal_without_message_propagates(*, asynchronous: bool) 
 
     with pytest.raises(ModelRefusalError):
         await _guard_refusal(error, asynchronous=asynchronous)
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("name", ["GLM-5.3", "GLM-5.3-Fast"])
+@pytest.mark.parametrize(
+    ("budget", "explicit"), [(4096, False), (32768, False), (2048, True)]
+)
+@pytest.mark.parametrize("repeated", [False, True])
+async def test_baseten_empty_length_recovery(
+    monkeypatch: pytest.MonkeyPatch,
+    name: str,
+    budget: int,
+    *,
+    explicit: bool,
+    repeated: bool,
+    asynchronous: bool,
+) -> None:
+    """One retry recovers reasoning-only length stops without overriding limits."""
+    from langchain_openai import ChatOpenAI
+
+    from deepagents_code.model_config import BASETEN_GLM_AUTO_BUDGET_ATTR
+
+    model = ChatOpenAI(model=f"zai-org/{name}", api_key="test", max_tokens=budget)
+    model.profile = {
+        "max_output_tokens": 32768,
+        "reasoning_effort_levels": ["low", "medium", "high"],
+    }
+    monkeypatch.setattr(
+        "deepagents._models.get_model_provider", lambda _model: "baseten"
+    )
+    if not explicit:
+        monkeypatch.setattr(model, BASETEN_GLM_AUTO_BUDGET_ATTR, budget, raising=False)
+    request = ModelRequest(model=model, messages=[HumanMessage(content="Help")])
+    stalled = AIMessage(
+        content=[{"type": "reasoning", "reasoning": "Thinking"}],
+        response_metadata={"finish_reason": "length"},
+        usage_metadata={
+            "input_tokens": 177000,
+            "output_tokens": 4096,
+            "total_tokens": 181096,
+        },
+    )
+    responses = iter(
+        [
+            ModelResponse(result=[stalled]),
+            ModelResponse(result=[stalled if repeated else AIMessage(content="Done")]),
+        ]
+    )
+    budgets = []
+
+    def handle(current: ModelRequest) -> ModelResponse:
+        budgets.append(current.model_settings.get("max_tokens", model.max_tokens))
+        assert current.tool_choice is None
+        if len(budgets) == 2:
+            assert current.model_settings["reasoning_effort"] == "low"
+        return next(responses)
+
+    ahandle = AsyncMock(side_effect=handle)
+
+    middleware = EmptyTruncatedReplyMiddleware()
+
+    async def invoke() -> ModelResponse:
+        if asynchronous:
+            return await middleware.awrap_model_call(request, ahandle)
+        return middleware.wrap_model_call(request, handle)
+
+    if repeated:
+        with pytest.raises(ModelOutputTruncatedError):
+            await invoke()
+    else:
+        assert (await invoke()).result[-1].text == "Done"
+    assert budgets == [budget, budget if explicit else 32768]
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        AIMessage(content="Partial", response_metadata={"finish_reason": "length"}),
+        AIMessage(
+            content="",
+            tool_calls=[{"id": "1", "name": "read_file", "args": {}}],
+            response_metadata={"finish_reason": "length"},
+        ),
+        AIMessage(content="", response_metadata={"finish_reason": "stop"}),
+    ],
+)
+def test_baseten_visible_or_complete_reply_is_not_retried(
+    monkeypatch: pytest.MonkeyPatch, message: AIMessage
+) -> None:
+    """Visible replies and normal stops remain unchanged."""
+    from langchain_openai import ChatOpenAI
+
+    monkeypatch.setattr(
+        "deepagents._models.get_model_provider", lambda _model: "baseten"
+    )
+    request = ModelRequest(
+        model=ChatOpenAI(model="zai-org/GLM-5.3", api_key="test"), messages=[]
+    )
+    response = ModelResponse(result=[message])
+    handler = Mock(return_value=response)
+    assert EmptyTruncatedReplyMiddleware().wrap_model_call(request, handler) is response
+    assert handler.call_count == 1
+
+
+async def test_baseten_interactive_agent_recovers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The interactive agent graph returns the answer after a reasoning-only stop."""
+    monkeypatch.setattr(
+        "deepagents._models.get_model_provider", lambda _model: "baseten"
+    )
+    monkeypatch.setattr(
+        "deepagents._models.get_model_identifier", lambda _model: "zai-org/GLM-5.3"
+    )
+    model = GenericFakeChatModel(
+        messages=iter(
+            [
+                AIMessage(
+                    content=[{"type": "reasoning", "reasoning": "Thinking"}],
+                    response_metadata={"finish_reason": "length"},
+                ),
+                AIMessage(content="Recovered answer"),
+            ]
+        )
+    )
+    graph = create_agent(model, middleware=[EmptyTruncatedReplyMiddleware()])
+    result = await graph.ainvoke({"messages": [HumanMessage(content="Help")]})
+    assert result["messages"][-1].text == "Recovered answer"
+
+
+@pytest.mark.parametrize(
+    "limit", [{"max_tokens": 2048}, {"model_kwargs": {"max_completion_tokens": 2048}}]
+)
+def test_baseten_request_limits_survive_recovery(
+    monkeypatch: pytest.MonkeyPatch, limit: dict[str, Any]
+) -> None:
+    """Per-request limits remain authoritative during recovery."""
+    from langchain_openai import ChatOpenAI
+
+    monkeypatch.setattr(
+        "deepagents._models.get_model_provider", lambda _model: "baseten"
+    )
+    request = ModelRequest(
+        model=ChatOpenAI(model="zai-org/GLM-5.3", api_key="test"),
+        messages=[],
+        model_settings=limit,
+    )
+    stalled = ModelResponse(
+        result=[AIMessage(content="", response_metadata={"finish_reason": "length"})]
+    )
+    requests = []
+
+    def handle(current: ModelRequest) -> ModelResponse:
+        requests.append(current)
+        return (
+            stalled
+            if len(requests) == 1
+            else ModelResponse(result=[AIMessage(content="Done")])
+        )
+
+    result = EmptyTruncatedReplyMiddleware().wrap_model_call(request, handle)
+    assert result.result[-1].text == "Done"
+    assert requests[-1].model_settings == limit

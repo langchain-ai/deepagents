@@ -327,7 +327,23 @@ def prepare_subagents(
     *,
     backend: BackendProtocol | None = None,
 ) -> tuple[list[SubAgent | CompiledSubAgent | AsyncSubAgent], list[Attachment]]:
-    """Resolve attachments and compile fresh roles with model-aware context management."""
+    """Resolve exact attachments, compiling fresh roles without inherited middleware.
+
+    Frontmatter tool names are resolved against the runtime catalog before this
+    runs, so every spec arriving here already carries resolved tool objects.
+
+    Args:
+        specs: Loaded local, compiled, or remote definitions.
+        model: Default model for fresh agents.
+        interrupt_on: Operator approval policy retained by fresh agents.
+        backend: Storage for history evicted by fresh agents' summarization.
+
+    Returns:
+        SDK definitions and a safe inventory; opaque agents have unknown tools.
+
+    Raises:
+        ValueError: A configuration is unsupported.
+    """
     prepared: list[SubAgent | CompiledSubAgent | AsyncSubAgent] = []
     inventory: list[Attachment] = []
     for original in specs:

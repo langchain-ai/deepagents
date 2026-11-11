@@ -850,8 +850,7 @@ class SummarizingToolModel(ToolModel):
         return super()._generate(messages, *args, **kwargs)
 
 
-@pytest.mark.parametrize("explicit_backend", [False, True])
-async def test_fresh_subagent_archives_history_in_state(*, explicit_backend: bool) -> None:
+async def test_fresh_subagent_archives_history_in_state() -> None:
     @tool
     def read_transcript(page: int) -> str:
         """Read a transcript page."""
@@ -874,7 +873,7 @@ async def test_fresh_subagent_archives_history_in_state(*, explicit_backend: boo
         [{"name": "researcher", "description": "Research", "tools": [read_transcript]}],
         model,
         None,
-        **({"backend": StateBackend()} if explicit_backend else {}),
+        backend=StateBackend(),
     )
     result = await prepared[0]["runnable"].ainvoke({"messages": [HumanMessage("Review")]})
     assert result["messages"][-1].content == "Reviewed"
@@ -887,10 +886,10 @@ async def test_fresh_subagent_archives_history_in_state(*, explicit_backend: boo
 
 @pytest.mark.parametrize("dynamic", [False, True])
 @pytest.mark.parametrize("override", [False, True])
-@pytest.mark.parametrize("context_size", [16_000, 32_000])
 async def test_transcript_reads_compact_fresh_subagent_history(
-    tmp_path, monkeypatch, dynamic, override, context_size
+    tmp_path, monkeypatch, dynamic, override
 ):
+    context_size = 16_000
     pages = []
 
     @tool

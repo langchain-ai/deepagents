@@ -327,6 +327,7 @@ async def call_subagent_task_tool(
         start_event["eval_id"] = eval_id
     _emit_subagent_event(stream_writer, start_event)
 
+    config = getattr(runtime, "config", None)
     started_at = time.monotonic()
     try:
         result = await task_tool.arun(
@@ -335,7 +336,8 @@ async def call_subagent_task_tool(
                 "subagent_type": subagent_type,
                 "runtime": runtime,
             },
-            config=getattr(runtime, "config", None),
+            callbacks=config.get("callbacks") if config else None,
+            config=config,
             tool_call_id=subagent_id,
         )
     except GraphInterrupt:

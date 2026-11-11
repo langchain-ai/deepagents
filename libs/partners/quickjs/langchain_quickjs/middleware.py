@@ -6,6 +6,7 @@ import logging
 import sys
 import uuid
 from collections.abc import Awaitable, Callable, Mapping
+from dataclasses import replace
 from typing import TYPE_CHECKING, Annotated, Any, Literal, NotRequired
 
 from deepagents.backends import BackendConsumer, StateBackend
@@ -24,7 +25,9 @@ from langchain.agents.middleware.types import (
 )
 from langchain.tools import BaseTool, ToolRuntime
 from langchain_core._api import beta
+from langchain_core.callbacks import BaseCallbackManager
 from langchain_core.messages import SystemMessage, ToolMessage
+from langchain_core.runnables.config import patch_config
 from langchain_core.tools import StructuredTool
 from langgraph.channels import DeltaChannel
 from langgraph.types import Command
@@ -393,16 +396,26 @@ class CodeInterpreterMiddleware(
                 }
             )
 
+        def _with_eval_callbacks(
+            runtime: ToolRuntime[None, Any], callbacks: BaseCallbackManager | None
+        ) -> ToolRuntime[None, Any]:
+            # Parent PTC tool calls and `task()` subagents on the eval run, not
+            # on the agent's tools step.
+            return replace(
+                runtime, config=patch_config(runtime.config, callbacks=callbacks)
+            )
+
         def sync_eval(
             runtime: ToolRuntime[None, Any],
             code: Annotated[str, code_doc],
+            callbacks: BaseCallbackManager | None = None,
         ) -> ToolMessage | Command:
             slot_id = middleware._slot_id(runtime.state)
             repl = middleware._repl_for_eval(slot_id)
             try:
                 outcome = repl.eval_sync(
                     code,
-                    outer_runtime=runtime,
+                    outer_runtime=_with_eval_callbacks(runtime, callbacks),
                     snapshot_payload=middleware._snapshot_for_eval(runtime.state),
                     tools=middleware._tools_for_eval(slot_id),
                     fs=middleware._fs,
@@ -417,13 +430,14 @@ class CodeInterpreterMiddleware(
         async def async_eval(
             runtime: ToolRuntime[None, Any],
             code: Annotated[str, code_doc],
+            callbacks: BaseCallbackManager | None = None,
         ) -> ToolMessage | Command:
             slot_id = middleware._slot_id(runtime.state)
             repl = middleware._repl_for_eval(slot_id)
             try:
                 outcome = await repl.eval_async(
                     code,
-                    outer_runtime=runtime,
+                    outer_runtime=_with_eval_callbacks(runtime, callbacks),
                     snapshot_payload=middleware._snapshot_for_eval(runtime.state),
                     tools=middleware._tools_for_eval(slot_id),
                     outer_loop=asyncio.get_running_loop(),

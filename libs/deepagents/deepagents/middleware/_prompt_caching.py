@@ -9,7 +9,6 @@ from typing import TYPE_CHECKING, Any, cast
 
 from langchain.agents.middleware.types import AgentMiddleware, TracePolicy, omit_payload
 
-from deepagents.middleware._cache_keepalive import AnthropicCacheKeepaliveMiddleware
 from deepagents.middleware._utils import is_anthropic_chat_model
 
 if TYPE_CHECKING:
@@ -119,7 +118,6 @@ def _create_fireworks_prompt_caching_middleware() -> AgentMiddleware[Any, Any, A
 def append_prompt_caching_middleware(middleware: list[AgentMiddleware[Any, Any, Any]]) -> None:
     """Append provider-specific prompt caching middleware."""
     middleware.append(_LazyAnthropicPromptCachingMiddleware())
-    middleware.append(AnthropicCacheKeepaliveMiddleware())
     bedrock_middleware = _create_bedrock_prompt_caching_middleware()
     if bedrock_middleware is not None:
         middleware.append(bedrock_middleware)

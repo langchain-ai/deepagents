@@ -83,7 +83,22 @@ class AnthropicCacheKeepaliveMiddleware(AgentMiddleware[Any, Any, Any]):
     soon as the last of those tool calls finishes, and stop for good after
     `max_pings` pings or the first ping error, so a hung tool costs at most
     `max_pings` cache reads. Pings appear in traces as model calls with no
-    output tokens.
+    output tokens. Requests to other providers pass through untouched.
+
+    !!! warning "Experimental"
+
+        This middleware is experimental and may change in a future release.
+
+    Example:
+        ```python
+        from deepagents import create_deep_agent
+        from deepagents.middleware import AnthropicCacheKeepaliveMiddleware
+
+        agent = create_deep_agent(
+            model="anthropic:claude-opus-5-5",
+            middleware=[AnthropicCacheKeepaliveMiddleware()],
+        )
+        ```
     """
 
     def __init__(self, *, interval: float = _DEFAULT_INTERVAL_SECONDS, max_pings: int = _DEFAULT_MAX_PINGS) -> None:

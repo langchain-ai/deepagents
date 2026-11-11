@@ -19,7 +19,12 @@ from langgraph.types import Command
 from langgraph_sdk import get_client
 
 from deepagents_talon.authorization import set_authorization_handler
-from deepagents_talon.subagent_control import _MAX_EVENTS, ACTIVE_CONTROL, SubagentControl
+from deepagents_talon.subagent_control import (
+    _MAX_EVENTS,
+    ACTIVE_CONTROL,
+    INLINE_DEADLINE,
+    SubagentControl,
+)
 from deepagents_talon.tool_approvals import APPROVAL_OPERATOR
 
 if TYPE_CHECKING:
@@ -256,7 +261,12 @@ class BackgroundSubagents(AgentMiddleware):
             return await handler(request)
         scheduled = _SCHEDULED_TURN.get()
         instructions = _SCHEDULED_INSTRUCTIONS if scheduled else _INSTRUCTIONS
-        if not scheduled:
+        if scheduled:
+            instructions += (
+                f" Each delegation has a {self._inline_timeout:g}-second execution deadline. "
+                "Bound the scope and return available results within that budget."
+            )
+        else:
             instructions += (
                 f" You can run at most {self._max_running} background subagents concurrently, "
                 "shared across all conversations. "
@@ -333,30 +343,36 @@ class BackgroundSubagents(AgentMiddleware):
         request: ToolCallRequest,
         handler: Callable[[ToolCallRequest], Awaitable[ToolMessage | Command]],
     ) -> ToolMessage | Command:
-        """Run one delegation to completion inside the calling turn.
-
-        Reached only from a scheduled turn, which already holds the posture `_run` forces
-        on a worker: no operator to answer an approval and no authorization handler.
-
-        Nothing may propagate out of here. The tool node re-raises anything that is not a
-        tool invocation error, and the runtime treats a timeout as retryable, so an
-        escaping deadline would re-invoke the whole graph and relaunch every sibling
-        delegation in the same assistant message.
-
-        Args:
-            request: Delegating tool call from a scheduled turn.
-            handler: Downstream tool invocation, which is the subagent itself.
-
-        Returns:
-            The subagent's result, or why it produced none.
-        """
+        """Run a bounded delegation and contain failures inside the scheduled turn."""
         # Held for the same reason `_run` sets it: a subagent must not itself delegate.
         # Inline runs in the caller's context rather than a copy, so this has to be undone.
         token = _IN_SUBAGENT.set(True)
+        control = SubagentControl()
+        control_token = ACTIVE_CONTROL.set(control)
+        deadline_token = INLINE_DEADLINE.set(None)
         try:
             # Acquired outside the deadline so a queued call spends its budget on work.
             async with self._inline_slots:
-                timeout = asyncio.timeout(self._inline_timeout)
+                deadline = asyncio.get_running_loop().time() + self._inline_timeout
+                INLINE_DEADLINE.set(deadline)
+                remaining = deadline - asyncio.get_running_loop().time()
+                call = request.tool_call
+                description = call["args"].get("description", "")
+                request = request.override(
+                    tool_call={
+                        **call,
+                        "args": {
+                            **call["args"],
+                            "description": (
+                                f"{description}\n\nExecution budget: "
+                                f"{remaining:.3f} seconds remaining. "
+                                "Bound work and command timeouts to this budget; return available "
+                                "results and identify unfinished work before it expires."
+                            ),
+                        },
+                    }
+                )
+                timeout = asyncio.timeout_at(deadline)
                 try:
                     async with timeout:
                         if request.tool_call["name"] == "start_async_task":
@@ -373,11 +389,13 @@ class BackgroundSubagents(AgentMiddleware):
                     # This result reaches the model and the user: no arguments, no
                     # credentials.
                     return ToolMessage(
-                        _TIMED_OUT_RESULT if timeout.expired() else _FAILED_RESULT,
+                        _inline_timeout_result(control) if timeout.expired() else _FAILED_RESULT,
                         tool_call_id=request.tool_call["id"],
                         status="error",
                     )
         finally:
+            INLINE_DEADLINE.reset(deadline_token)
+            ACTIVE_CONTROL.reset(control_token)
             _IN_SUBAGENT.reset(token)
 
     async def _run(self, job: _Job, request: ToolCallRequest, task_id: str) -> None:
@@ -582,3 +600,22 @@ def _clamped(message: object) -> object:
         return message
     content = (_result_text(message) or "Subagent returned no result.")[:_MAX_RESULT_CHARACTERS]
     return message.model_copy(update={"content": content})
+
+
+def _inline_timeout_result(control: SubagentControl) -> str:
+    """Describe interrupted activity without exposing tool arguments or outputs."""
+    completed = sum(event["event"] == "tool_finished" for event in control.events)
+    activity = "delegation"
+    if control.events:
+        event = control.events[-1]["event"]
+        if event == "shell_started":
+            activity = "local shell command (process group terminated and shell reaped)"
+        elif event == "model_started":
+            activity = "model request"
+        elif event == "tool_started":
+            activity = "tool call"
+    return (
+        f"{_TIMED_OUT_RESULT} Interrupted operation: {activity}. "
+        f"Recent completed tool calls: {completed}. "
+        "Completion of unfinished work is unconfirmed; review available results before retrying."
+    )

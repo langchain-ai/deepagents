@@ -50,6 +50,9 @@ class SubagentControl:
         return {key: receipt[key] for key in ("message_id", "status")}
 
 
+INLINE_DEADLINE: ContextVar[float | None] = ContextVar("talon_inline_deadline", default=None)
+
+
 ACTIVE_CONTROL: ContextVar[SubagentControl | None] = ContextVar(
     "talon_subagent_control", default=None
 )

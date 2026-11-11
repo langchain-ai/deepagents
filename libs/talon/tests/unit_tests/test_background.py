@@ -3,6 +3,10 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import logging
+import os
+import shlex
+import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -34,7 +38,13 @@ from deepagents_talon.background import (
 from deepagents_talon.cron import CronOrigin
 from deepagents_talon.host import TalonHost
 from deepagents_talon.interfaces import AgentRequest, ChannelMessage
-from deepagents_talon.runtime import _CRON_ORIGIN, _HISTORY_SCOPE, DeepAgentRuntime
+from deepagents_talon.runtime import (
+    _CRON_ORIGIN,
+    _HISTORY_SCOPE,
+    DeepAgentRuntime,
+    _default_backend,
+)
+from deepagents_talon.subagent_control import INLINE_DEADLINE
 from tests.conftest import RecordingChannel
 from tests.test_host import _config
 
@@ -883,7 +893,8 @@ async def test_inline_timeout_is_reported_separately_from_failure():
     finally:
         _SCHEDULED_TURN.reset(token)
 
-    assert result.content == _TIMED_OUT_RESULT
+    assert result.content.startswith(_TIMED_OUT_RESULT)
+    assert "Interrupted operation: delegation" in result.content
     assert result.status == "error"
 
 
@@ -1186,7 +1197,9 @@ async def test_inline_timeout_does_not_escape_the_graph(monkeypatch):
         for message in state.values["messages"]
         if isinstance(message, ToolMessage) and message.tool_call_id == "launch"
     ]
-    assert answers == [_TIMED_OUT_RESULT]
+    assert len(answers) == 1
+    assert answers[0].startswith(_TIMED_OUT_RESULT)
+    assert "Interrupted operation:" in answers[0]
 
 
 @pytest.mark.parametrize("failing", [False, True])
@@ -1250,3 +1263,104 @@ async def test_chat_turn_is_not_scheduled(monkeypatch):
         await runtime.stop()
 
     assert seen == [False]
+
+
+@pytest.mark.parametrize("configured", [600, 1200])
+async def test_scheduled_budget_reaches_parent_and_queued_delegation(tmp_path, configured):
+    runtime = DeepAgentRuntime(
+        model="test:parent",
+        assistant_dir=tmp_path,
+        env={
+            "DEEPAGENTS_TALON_INLINE_SUBAGENT_TIMEOUT": str(configured),
+        },
+    )
+    background = runtime.background
+    captured = []
+
+    async def model_handler(request):
+        captured.append(request.system_message.text)
+        return "response"
+
+    async def handler(request):
+        remaining = INLINE_DEADLINE.get() - asyncio.get_running_loop().time()
+        assert configured - 1 < remaining <= configured
+        description = request.tool_call["args"]["description"]
+        budget = float(description.split("Execution budget: ")[1].split()[0])
+        assert configured - 1 < budget <= configured
+        return ToolMessage("available findings", tool_call_id=request.tool_call["id"])
+
+    @tool
+    async def task() -> str:
+        """Delegate."""
+        return "unused"
+
+    token = _scheduled()
+    try:
+        await background.awrap_model_call(
+            SimpleNamespace(system_message=None, tools=[], override=_override), model_handler
+        )
+        background._inline_slots = asyncio.Semaphore(0)
+        worker = asyncio.create_task(
+            background.awrap_tool_call(
+                _request("job:cron", task, subagent_type="researcher", description="scan"), handler
+            )
+        )
+        await asyncio.sleep(0.02)
+        background._inline_slots.release()
+        result = await worker
+    finally:
+        _SCHEDULED_TURN.reset(token)
+    assert f"{configured}-second execution deadline" in captured[0]
+    assert result.content == "available findings"
+    assert INLINE_DEADLINE.get() is None
+
+
+@pytest.mark.skipif(
+    sys.platform != "linux", reason="Uses Linux process state to check child cleanup"
+)
+@pytest.mark.parametrize("command_timeout", [None, 1200])
+async def test_inline_deadline_stops_shell_and_child(tmp_path, command_timeout):
+    backend = _default_backend({}, tmp_path)
+    marker = tmp_path / "pids"
+    script = (
+        "import os, pathlib, subprocess, time; "
+        "child = subprocess.Popen(['sleep', '60']); "
+        f"pathlib.Path({str(marker)!r}).write_text("
+        "f'{os.getppid()} {os.getpid()} {child.pid}'); "
+        "child.wait()"
+    )
+    command = f"{shlex.quote(sys.executable)} -c {shlex.quote(script)} sk-secret-argument"
+
+    async def handler(request):
+        await backend.aexecute(command, timeout=command_timeout)
+        await asyncio.Event().wait()
+        return ToolMessage("unreachable", tool_call_id=request.tool_call["id"])
+
+    @tool
+    async def task() -> str:
+        """Delegate."""
+        return "unused"
+
+    background = BackgroundSubagents(inline_timeout=0.3)
+    token = _scheduled()
+    try:
+        result = await asyncio.wait_for(
+            background.awrap_tool_call(
+                _request("job:cron", task, subagent_type="researcher"), handler
+            ),
+            2,
+        )
+    finally:
+        _SCHEDULED_TURN.reset(token)
+    assert result.status == "error"
+    assert "local shell command" in result.content
+    assert "sk-secret" not in result.content
+    shell, *children = map(int, marker.read_text().split())
+    with pytest.raises(ProcessLookupError):
+        os.kill(shell, 0)
+    for pid in children:
+        state = Path(f"/proc/{pid}/stat")
+        assert (
+            not await asyncio.to_thread(state.exists)
+            or (await asyncio.to_thread(state.read_text)).split()[2] == "Z"
+        )

@@ -12,6 +12,8 @@ import json
 import logging
 import os
 import re
+import signal
+import subprocess
 from collections.abc import AsyncGenerator, Awaitable, Callable, Generator, Mapping, Sequence
 from dataclasses import dataclass
 from functools import partial
@@ -21,6 +23,7 @@ from typing import TYPE_CHECKING, Any, TypeGuard, cast
 import yaml
 from deepagents import create_deep_agent
 from deepagents.backends import CompositeBackend, LocalShellBackend, StateBackend
+from deepagents.backends.protocol import ExecuteResponse
 from deepagents.middleware.filesystem import FilesystemMiddleware
 from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
 from deepagents.middleware.skills import SkillsMiddleware
@@ -91,6 +94,7 @@ from deepagents_talon.observability import (
     stable_log_ref,
 )
 from deepagents_talon.questions import ask_user, question_scope
+from deepagents_talon.subagent_control import ACTIVE_CONTROL, INLINE_DEADLINE
 from deepagents_talon.subagents import (
     Attachment,
     LocalSubAgent,
@@ -1611,12 +1615,95 @@ def _decision_payload(
     return [{"type": "reject"} for _ in range(count)]
 
 
+class _ScheduledShellBackend(LocalShellBackend):
+    """Stop scheduled commands and their process groups when delegation ends."""
+
+    async def aexecute(
+        self,
+        command: str,
+        *,
+        timeout: int | None = None,  # noqa: ASYNC109  # Backend protocol.
+    ) -> ExecuteResponse:
+        """Limit scheduled execution to the delegation's remaining time."""
+        deadline = INLINE_DEADLINE.get()
+        if deadline is None:
+            return await super().aexecute(command, timeout=timeout)
+        effective = self._default_timeout if timeout is None else timeout
+        if effective <= 0:
+            msg = "timeout must be positive"
+            raise ValueError(msg)
+        remaining = deadline - asyncio.get_running_loop().time()
+        if remaining <= 0:
+            return ExecuteResponse(
+                output="Delegation deadline expired; command not started.",
+                exit_code=124,
+                truncated=False,
+            )
+        return await self._execute_scheduled(command, min(effective, remaining))
+
+    async def _execute_scheduled(self, command: str, budget: float) -> ExecuteResponse:
+        """Own the subprocess until it has stopped, including during cancellation."""
+        process = subprocess.Popen(  # noqa: ASYNC220, S602  # Synchronous spawn retains the shell handle across cancellation.
+            command,
+            shell=True,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=self._env,
+            cwd=str(self.cwd),
+            start_new_session=True,
+        )
+        control = ACTIVE_CONTROL.get()
+        if control is not None:
+            control.record("shell_started")
+        output = asyncio.create_task(asyncio.to_thread(process.communicate))
+        try:
+            async with asyncio.timeout(budget):
+                stdout, stderr = await asyncio.shield(output)
+        except TimeoutError:
+            return ExecuteResponse(
+                output="Shell command exceeded its execution budget; "
+                "process group terminated and shell reaped.",
+                exit_code=124,
+                truncated=False,
+            )
+        finally:
+            self._kill_group(process)
+            await asyncio.shield(output)
+        if control is not None:
+            control.record("shell_finished")
+        return self._shell_result(stdout, stderr, process.returncode)
+
+    @staticmethod
+    def _kill_group(process: subprocess.Popen[bytes]) -> None:
+        """Terminate the command's session even if its shell has already exited."""
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(process.pid, signal.SIGKILL)
+
+    def _shell_result(self, stdout: bytes, stderr: bytes, code: int) -> ExecuteResponse:
+        """Match the local backend's output format and byte limit."""
+        parts = [stdout.decode(errors="replace")] if stdout else []
+        if stderr:
+            parts.extend(
+                f"[stderr] {line}" for line in stderr.decode(errors="replace").strip().split("\n")
+            )
+        output = "\n".join(parts) if parts else "<no output>"
+        encoded = output.encode()
+        truncated = len(encoded) > self._max_output_bytes
+        if truncated:
+            output = encoded[: self._max_output_bytes].decode(errors="ignore")
+            output += f"\n\n... Output truncated at {self._max_output_bytes} bytes."
+        if code != 0:
+            output = f"{output.rstrip()}\n\nExit code: {code}"
+        return ExecuteResponse(output=output, exit_code=code, truncated=truncated)
+
+
 def _default_backend(env: Mapping[str, str] | None, assistant_dir: Path | None) -> CompositeBackend:
     values = os.environ if env is None else env
     root = values.get(_WORKSPACE_ENV) or None
     home = assistant_dir or TalonConfig.from_env(values).home
     artifacts = _prepare_artifacts(home)
-    local = LocalShellBackend(
+    local = _ScheduledShellBackend(
         root_dir=root,
         virtual_mode=False,
         env=_backend_child_env(values),

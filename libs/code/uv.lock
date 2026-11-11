@@ -864,7 +864,7 @@ requires-dist = [
     { name = "av", marker = "extra == 'video'", specifier = ">=18.0.0" },
     { name = "langchain", specifier = ">=1.4.10,<2.0.0" },
     { name = "langchain-anthropic", specifier = ">=1.7.10,<2.0.0" },
-    { name = "langchain-aws", marker = "extra == 'aws'", specifier = ">=1.9.2,<2.0.0" },
+    { name = "langchain-aws", marker = "extra == 'aws'", specifier = ">=1.9.3,<2.0.0" },
     { name = "langchain-core", specifier = ">=1.7.7,<2.0.0" },
     { name = "langchain-google-genai", specifier = ">=4.4.3,<5.0.0" },
     { name = "langchain-quickjs", marker = "extra == 'quickjs'", specifier = ">=0.3.12" },
@@ -879,7 +879,7 @@ provides-extras = ["aws", "quickjs", "video"]
 test = [
     { name = "av", specifier = ">=18.0.0,<19.0.0" },
     { name = "build" },
-    { name = "langchain-aws", specifier = ">=1.9.2,<2.0.0" },
+    { name = "langchain-aws", specifier = ">=1.9.3,<2.0.0" },
     { name = "langchain-openai", specifier = ">=1.7.4,<2.0.0" },
     { name = "langchain-tests", specifier = ">=1.1.9" },
     { name = "pillow", specifier = ">=12.3.0,<14.0.0" },
@@ -1134,7 +1134,7 @@ requires-dist = [
     { name = "langchain-agentcore-codeinterpreter", marker = "extra == 'agentcore'", specifier = ">=0.0.6,<1.0.0" },
     { name = "langchain-anthropic", specifier = ">=1.7.10,<2.0.0" },
     { name = "langchain-anthropic", marker = "extra == 'anthropic'", specifier = ">=1.7.10,<2.0.0" },
-    { name = "langchain-aws", marker = "extra == 'bedrock'", specifier = ">=1.9.2,<2.0.0" },
+    { name = "langchain-aws", marker = "extra == 'bedrock'", specifier = ">=1.9.3,<2.0.0" },
     { name = "langchain-baseten", marker = "extra == 'baseten'", specifier = ">=0.2.5,<1.0.0" },
     { name = "langchain-cohere", marker = "extra == 'cohere'", specifier = ">=0.6.0,<1.0.0" },
     { name = "langchain-core", specifier = ">=1.7.7,<2.0.0" },
@@ -2442,7 +2442,7 @@ wheels = [
 
 [[package]]
 name = "langchain-aws"
-version = "1.9.2"
+version = "1.9.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "boto3" },
@@ -2450,9 +2450,9 @@ dependencies = [
     { name = "numpy" },
     { name = "pydantic" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/ff/bf/e2aff8c508265e1b75424a86dbe940aef62d0094b468c5b615857b846663/langchain_aws-1.9.2.tar.gz", hash = "sha256:d98994622219e92a1c1ccd09edcfd8d593e80d9542bd052ddd4d1e5fb3ea460b", size = 849730, upload-time = "2026-11-06T04:22:29.458Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/74/90/3507de57f89975a97427c5a1497314dc557b1e47c4dc579c13443c904c3e/langchain_aws-1.9.3.tar.gz", hash = "sha256:d37b442a16ffdc52ead72a92b8225bf8c66eb76ee91368e5ffe65eabca3dd8c1", size = 874750, upload-time = "2026-11-10T23:08:21.243Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/7e/a9/2188d381b88ef1031789f14ef53eb8ae0e878b031f70dc2ae3f7a2a45b38/langchain_aws-1.9.2-py3-none-any.whl", hash = "sha256:6048a97d1006d2761e02a6e9177588e07aafcb0e20888e098ec432ad2149e09b", size = 252087, upload-time = "2026-11-06T04:22:28.189Z" },
+    { url = "https://files.pythonhosted.org/packages/e9/de/28aa7147c9cc141f9cf417372ddce263f9cb0a2f4f632dee773eb5de6452/langchain_aws-1.9.3-py3-none-any.whl", hash = "sha256:7b23c0dff0190c94094a7aa285118d219eeb9ed4f2d005caf554a5800a10e915", size = 253819, upload-time = "2026-11-10T23:08:19.692Z" },
 ]
 
 [[package]]

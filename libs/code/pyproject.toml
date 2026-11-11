@@ -111,7 +111,7 @@ dependencies = [
 # Model providers
 anthropic = ["langchain-anthropic>=1.7.10,<2.0.0"]
 baseten = ["langchain-baseten>=0.2.5,<1.0.0"]
-bedrock = ["langchain-aws>=1.9.2,<2.0.0"]
+bedrock = ["langchain-aws>=1.9.3,<2.0.0"]
 cohere = ["langchain-cohere>=0.6.0,<1.0.0"]
 deepseek = ["langchain-deepseek>=1.1.1,<2.0.0"]
 fireworks = ["langchain-fireworks>=1.7.3,<2.0.0"]

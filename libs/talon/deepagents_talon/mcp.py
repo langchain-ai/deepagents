@@ -115,6 +115,25 @@ def _exception_leaves(exc: BaseException) -> Iterator[BaseException]:
         yield exc
 
 
+def _device_authorization_completed(exc: BaseException) -> bool:
+    pending = [exc]
+    seen: set[int] = set()
+    while pending:
+        current = pending.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        if isinstance(current, DeviceAuthorizationCompletedError):
+            return True
+        if isinstance(current, BaseExceptionGroup):
+            pending.extend(_exception_leaves(current))
+        if current.__cause__ is not None:
+            pending.append(current.__cause__)
+        if current.__context__ is not None:
+            pending.append(current.__context__)
+    return False
+
+
 def _authentication_required(exc: BaseException) -> bool:
     return any(
         isinstance(leaf, (_MCPLoginRequiredError, MCPAuthorizationError))

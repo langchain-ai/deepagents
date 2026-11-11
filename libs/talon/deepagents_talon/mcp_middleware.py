@@ -9,9 +9,14 @@ from langchain_core.messages import ToolMessage
 from langchain_core.tools import BaseTool
 from langchain_core.utils.function_calling import convert_to_openai_tool
 from langchain_openai.chat_models.base import BaseChatOpenAI
-from mcp.shared.exceptions import MCPError
+from langgraph.errors import GraphBubbleUp
 
-from deepagents_talon.mcp import _normalize_mcp_arguments, _run_authorized
+from deepagents_talon.mcp import (
+    _device_authorization_completed,
+    _normalize_mcp_arguments,
+    _run_authorized,
+)
+from deepagents_talon.mcp_auth import format_login_error
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -66,13 +71,20 @@ class _TalonMCPMiddleware(AgentMiddleware):
         )
         request = request.override(tool_call={**request.tool_call, "args": arguments})
         try:
+            try:
+                return await _run_authorized(request.tool_call["id"], lambda: handler(request))
+            except Exception as exc:
+                if not _device_authorization_completed(exc):
+                    raise
             return await _run_authorized(
                 request.tool_call["id"],
                 lambda: handler(request),
             )
-        except MCPError as exc:
+        except GraphBubbleUp:
+            raise
+        except Exception as exc:  # noqa: BLE001  # MCP failures must reach the model as tool results.
             return ToolMessage(
-                content=f"MCP protocol error {exc.code}: {exc.message}",
+                content=f"MCP tool {request.tool_call['name']} failed: {format_login_error(exc)}",
                 name=request.tool_call["name"],
                 tool_call_id=request.tool_call["id"],
                 status="error",

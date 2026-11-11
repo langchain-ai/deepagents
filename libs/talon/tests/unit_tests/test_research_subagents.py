@@ -26,7 +26,11 @@ from deepagents_talon.authorization import (
     current_authorization_invocation,
 )
 from deepagents_talon.interfaces import AgentRequest
-from deepagents_talon.mcp_auth import _channel_handlers
+from deepagents_talon.mcp_auth import (
+    DeviceAuthorizationCompletedError,
+    _channel_handlers,
+    format_login_error,
+)
 from deepagents_talon.mcp_middleware import MCP_TOOL_METADATA_KEY
 from deepagents_talon.runtime import DeepAgentRuntime
 from deepagents_talon.subagents import prepare_subagents
@@ -240,9 +244,14 @@ async def _inventory(runtime):
 
 @pytest.mark.parametrize("dynamic", [False, True])
 @pytest.mark.parametrize("background", [False, True])
-@pytest.mark.parametrize("fail", [False, True])
+@pytest.mark.parametrize("outcome", ["success", "protocol", "runtime", "login"])
 async def test_local_subagents_retain_mcp_protections(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, dynamic: bool, background: bool, fail: bool
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    dynamic: bool,
+    background: bool,
+    outcome: str,
 ) -> None:
     _write_agent(tmp_path, "[]" if dynamic else "[remote_search]")
     received: list[tuple[str, str]] = []
@@ -251,8 +260,15 @@ async def test_local_subagents_retain_mcp_protections(
         received.append((query, optional))
         assert current_authorization_invocation() == "remote_search"
         assert current_authorization_attempt() is not None
-        if fail:
+        if outcome == "protocol":
             raise MCPError(-32602, "Invalid query", data={"private": "hidden-error-data"})
+        if outcome == "runtime":
+            msg = "Client failed to connect: hidden-error-data"
+            raise RuntimeError(msg)
+        if outcome == "login" and len(received) == 1:
+            current_authorization_attempt().completed = True
+            msg = "Client failed to connect: "
+            raise RuntimeError(msg) from DeviceAuthorizationCompletedError()
         if background:
             assert current_authorization_handler() is None
         else:
@@ -303,10 +319,19 @@ async def test_local_subagents_retain_mcp_protections(
     try:
         await runtime.invoke(AgentRequest("chat", "Research", authorization_handler=authorize))
         await asyncio.gather(*(job.worker for job in runtime.background._jobs.values()))
-        assert received == [("", "default")]
+        assert received == [("", "default")] * (2 if outcome == "login" else 1)
         message = child._seen[-1][-1]
-        assert message.status == ("error" if fail else "success")
-        assert message.content == ("MCP protocol error -32602: Invalid query" if fail else "found")
+        failed = outcome in {"protocol", "runtime"}
+        assert message.status == ("error" if failed else "success")
+        if failed:
+            error = (
+                MCPError(-32602, "Invalid query")
+                if outcome == "protocol"
+                else RuntimeError("Client failed to connect: hidden-error-data")
+            )
+            assert message.content == f"MCP tool remote_search failed: {format_login_error(error)}"
+        else:
+            assert message.content == "found"
         assert "hidden-error-data" not in str(child._seen)
         assert current_authorization_invocation() is None
         assert current_authorization_attempt() is None

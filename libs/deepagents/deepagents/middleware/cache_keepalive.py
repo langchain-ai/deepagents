@@ -17,16 +17,19 @@ import logging
 import threading
 import time
 from collections import OrderedDict
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from langchain.agents.middleware.types import AgentMiddleware, ModelResponse
 from langchain_core.messages import AIMessage
+from langchain_core.runnables.config import var_child_runnable_config
+from langgraph.constants import TAG_NOSTREAM
 
 from deepagents.middleware._utils import is_anthropic_chat_model
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
+    from collections.abc import Awaitable, Callable, Iterator
 
     from langchain.agents.middleware.types import ModelCallResult, ModelRequest
     from langchain.tools.tool_node import ToolCallRequest
@@ -40,6 +43,9 @@ _DEFAULT_INTERVAL_SECONDS = 240.0
 
 _DEFAULT_MAX_PINGS = 6
 """Bounds the cost of a hung tool to a handful of cache reads."""
+
+PING_TAG = "cache_keepalive"
+"""Trace tag on every ping, so pings can be filtered out of turn and call counts."""
 
 _MAX_TRACKED_CALLS = 64
 """Model calls whose tool calls never ran (rejected, interrupted) are dropped past this."""
@@ -66,6 +72,23 @@ def _tool_call_ids(response: ModelCallResult) -> list[str]:
     return [i for i in ids if i]
 
 
+@contextmanager
+def _ping_config() -> Iterator[None]:
+    """Tag the model call made inside this block as a ping that is not streamed.
+
+    The ping runs inside the tool call's config, so without the `nostream` tag
+    LangGraph's `messages` stream would emit its empty reply as an assistant
+    message. Tags change only the callbacks, not the request sent to the API.
+    """
+    config = var_child_runnable_config.get() or {}
+    tags = [*(config.get("tags") or []), TAG_NOSTREAM, PING_TAG]
+    token = var_child_runnable_config.set({**config, "tags": tags})
+    try:
+        yield
+    finally:
+        var_child_runnable_config.reset(token)
+
+
 def _ping_request(request: ModelRequest) -> ModelRequest:
     """Return `request` asking for no output and no streaming.
 
@@ -83,7 +106,8 @@ class AnthropicCacheKeepaliveMiddleware(AgentMiddleware[Any, Any, Any]):
     soon as the last of those tool calls finishes, and stop for good after
     `max_pings` pings or the first ping error, so a hung tool costs at most
     `max_pings` cache reads. Pings appear in traces as model calls with no
-    output tokens. Requests to other providers pass through untouched.
+    output tokens, tagged `cache_keepalive` and `nostream` so they never reach a
+    `messages` stream. Requests to other providers pass through untouched.
 
     !!! warning "Experimental"
 
@@ -183,7 +207,8 @@ class AnthropicCacheKeepaliveMiddleware(AgentMiddleware[Any, Any, Any]):
             call.started_at = time.monotonic()
             call.pings += 1
             try:
-                response = call.handler(_ping_request(call.request))  # ty: ignore[call-non-callable]
+                with _ping_config():
+                    response = call.handler(_ping_request(call.request))  # ty: ignore[call-non-callable]
             except Exception:  # noqa: BLE001  # A best-effort ping must never fail the running tool call.
                 logger.warning("Prompt-cache keep-alive ping failed; stopping pings.", exc_info=True)
                 return
@@ -196,7 +221,8 @@ class AnthropicCacheKeepaliveMiddleware(AgentMiddleware[Any, Any, Any]):
             call.started_at = time.monotonic()
             call.pings += 1
             try:
-                response = await call.ahandler(_ping_request(call.request))  # ty: ignore[call-non-callable]
+                with _ping_config():
+                    response = await call.ahandler(_ping_request(call.request))  # ty: ignore[call-non-callable]
             except Exception:  # noqa: BLE001  # A best-effort ping must never fail the running tool call.
                 logger.warning("Prompt-cache keep-alive ping failed; stopping pings.", exc_info=True)
                 return

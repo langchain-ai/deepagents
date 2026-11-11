@@ -11,6 +11,8 @@ from langchain.agents.middleware.types import ModelRequest, ModelResponse, ToolC
 from langchain_anthropic import ChatAnthropic
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.runnables.config import ensure_config
+from langgraph.constants import TAG_NOSTREAM
 
 from deepagents.middleware import AnthropicCacheKeepaliveMiddleware
 
@@ -158,3 +160,22 @@ def test_unknown_tool_call_passes_through() -> None:
     result = mw.wrap_tool_call(_tool_request("missing"), lambda r: ToolMessage("ok", tool_call_id=r.tool_call["id"]))
     assert isinstance(result, ToolMessage)
     assert result.content == "ok"
+
+
+async def test_ping_is_tagged_nostream_so_message_streams_skip_it() -> None:
+    mw = AnthropicCacheKeepaliveMiddleware(interval=INTERVAL)
+    tags: list[list[str]] = []
+
+    async def model_handler(_request: ModelRequest) -> ModelResponse:
+        tags.append(ensure_config().get("tags") or [])
+        return _response("t1") if len(tags) == 1 else ModelResponse(result=[AIMessage(content="")])
+
+    async def tool_handler(request: ToolCallRequest) -> ToolMessage:
+        await asyncio.sleep(INTERVAL * 1.5)
+        return ToolMessage("done", tool_call_id=request.tool_call["id"])
+
+    await mw.awrap_model_call(_request(), model_handler)
+    await mw.awrap_tool_call(_tool_request("t1"), tool_handler)
+    assert TAG_NOSTREAM not in tags[0]
+    assert TAG_NOSTREAM in tags[1]
+    assert "cache_keepalive" in tags[1]

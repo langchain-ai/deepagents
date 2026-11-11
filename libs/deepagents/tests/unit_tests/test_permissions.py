@@ -2243,6 +2243,30 @@ class TestReviewFollowUps:
         )
         assert "TOPSECRET" in str(result)
 
+    @pytest.mark.parametrize(
+        ("name", "args"),
+        [
+            ("ls", {"path": "/work"}),
+            ("glob", {"pattern": "**/*.txt", "path": "/work"}),
+            ("grep", {"pattern": "TOPSECRET", "path": "/work", "output_mode": "content"}),
+        ],
+    )
+    def test_approved_search_drops_symlink_out_of_root_when_both_need_approval(self, tmp_path, monkeypatch, name, args):
+        """Approving a search of `/work` does not approve `/secrets`, even when `/work/**` needs approval too."""
+        for directory in ("secrets", "work"):
+            (tmp_path / directory).mkdir()
+        (tmp_path / "secrets" / "key.txt").write_text("TOPSECRET\n")
+        (tmp_path / "work" / "notes.txt").write_text("TOPSECRET draft\n")
+        _symlink(tmp_path / "work" / "alias.txt", tmp_path / "secrets" / "key.txt")
+        backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+        monkeypatch.setattr(backend, "_ripgrep_search", lambda *_args, **_kwargs: (None, False))
+        rule = FilesystemPermission(operations=["read"], paths=["/work/**", "/secrets/**"], mode="interrupt")
+        call_id = f"both-{name}"
+        assert _build_interrupt_on_from_permissions([rule], backend)[name]["when"](_CallReq(call_id, name, args)) is True
+        result = str(_invoke_with_permissions(self._tool(backend, name), args, [rule], tool_call_id=call_id, backend=backend))
+        assert "/work/notes.txt" in result
+        assert "/work/alias.txt" not in result
+
     def test_approved_search_drops_symlinks_into_other_protected_areas(self, tmp_path, monkeypatch):
         for name in ("secrets", "work", "work/private"):
             (tmp_path / name).mkdir()

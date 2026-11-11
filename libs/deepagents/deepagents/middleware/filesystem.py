@@ -660,10 +660,11 @@ class _BulkGate:
             return False
         if not self.approved:
             return True
-        # The reviewer approved the search root, so keep what lies under it,
-        # by its path or its resolved path, but not what a symlink beneath it
-        # reaches elsewhere.
-        if self.root is None or _check_fs_permission(self.rules, self.operation, path) == "interrupt":
+        # The reviewer approved the search root, so keep what resolves under
+        # it, but not what a symlink beneath it reaches elsewhere, even when
+        # the symlink's own path needs approval too. A pathless call was
+        # approved for everything.
+        if self.root is None:
             return False
         root = self.root.rstrip("/")
         return not (not root or real == self.root or real.startswith(root + "/"))

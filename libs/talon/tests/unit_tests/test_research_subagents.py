@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import shlex
+from itertools import pairwise
 from typing import TYPE_CHECKING
 
 import pytest
@@ -10,6 +11,8 @@ from langchain.agents import create_agent
 from langchain.agents.middleware import AgentMiddleware
 from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
 from langchain_core.messages import AIMessage, ToolMessage
+from langchain_core.messages.utils import count_tokens_approximately
+from langchain_core.outputs import ChatGeneration, ChatResult
 from langchain_core.runnables import RunnableLambda
 from langchain_core.tools import StructuredTool, tool
 from mcp.shared.exceptions import MCPError
@@ -826,5 +829,101 @@ async def test_task_answer_excludes_reasoning_blocks(tmp_path, monkeypatch, dyna
             )
             assert result.content == "answer"
         assert "encrypted_content" not in str(parent._seen)
+    finally:
+        await runtime.stop()
+
+
+class SummarizingToolModel(ToolModel):
+    _summaries: list = PrivateAttr(default_factory=list)
+
+    def bind_tools(self, tools, **kwargs: object):
+        super().bind_tools(tools, **kwargs)
+        return self.bind(research_call=True)
+
+    def _generate(self, messages, *args: object, **kwargs: object):
+        if not kwargs.pop("research_call", False):
+            self._summaries.append(messages)
+            return ChatResult(
+                generations=[ChatGeneration(message=AIMessage(content="Page summary"))]
+            )
+        return super()._generate(messages, *args, **kwargs)
+
+
+@pytest.mark.parametrize("dynamic", [False, True])
+@pytest.mark.parametrize("override", [False, True])
+@pytest.mark.parametrize("context_size", [16_000, 32_000])
+async def test_transcript_reads_compact_fresh_subagent_history(
+    tmp_path, monkeypatch, dynamic, override, context_size
+):
+    pages = []
+
+    @tool
+    def read_transcript() -> str:
+        """Read the next transcript page."""
+        pages.append(len(pages))
+        return f"Transcript page {pages[-1]}: " + "evidence " * 2_000
+
+    launch = {"tools": ["read_transcript"]} if dynamic else {}
+    delegate = AIMessage(
+        content="",
+        tool_calls=[_call("task", subagent_type="researcher", description="Review", **launch)],
+    )
+    reads = [
+        AIMessage(content="", tool_calls=[{**_call("read_transcript"), "id": f"page-{page}"}])
+        for page in range(16)
+    ]
+    child = SummarizingToolModel(
+        responses=[*reads, AIMessage(content="Reviewed")],
+        profile={"max_input_tokens": context_size},
+    )
+    parent = (
+        ToolModel(
+            responses=[delegate, AIMessage(content="Done")],
+            profile={"max_input_tokens": 1_000_000},
+        )
+        if override
+        else child
+    )
+    if not override:
+        parent.responses = [delegate, *child.responses, AIMessage(content="Done")]
+    monkeypatch.setattr(
+        "deepagents_talon.runtime._resolve_model_from_env",
+        lambda model, *_args, **_kwargs: child if model == "test:child" else parent,
+    )
+    spec = {
+        "name": "researcher",
+        "description": "Research",
+        "tools": [] if dynamic else [read_transcript],
+    }
+    if override:
+        spec["model"] = "test:child"
+    runtime = DeepAgentRuntime(
+        model="test:parent",
+        assistant_dir=tmp_path,
+        subagents=[spec],
+        tools=[read_transcript],
+        skills=(),
+        memory=(),
+        include_web_tools=False,
+    )
+    monkeypatch.setattr(runtime.background, "configured", lambda _: AgentMiddleware())
+    await runtime.start()
+    try:
+        result = await runtime.invoke(AgentRequest("chat", "Review transcripts"))
+        assert result.text == "Done"
+        assert len(pages) == 16
+        assert child._summaries
+        research = [
+            messages
+            for messages in child._seen
+            if "Answer the delegated question" in str(messages[0].content)
+        ]
+        sizes = [count_tokens_approximately(messages) for messages in research]
+        assert len(sizes) == 17
+        assert max(sizes) < context_size
+        assert any(after < before for before, after in pairwise(sizes))
+        assert "Page summary" in str(research[-1])
+        assert "Transcript page 0:" not in str(research[-1])
+        assert list((tmp_path / "artifacts").rglob("*.md"))
     finally:
         await runtime.stop()

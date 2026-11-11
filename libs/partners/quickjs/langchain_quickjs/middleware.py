@@ -8,6 +8,7 @@ import uuid
 from collections.abc import Awaitable, Callable, Mapping
 from typing import TYPE_CHECKING, Annotated, Any, Literal, NotRequired
 
+from deepagents.backends import BackendConsumer, StateBackend
 from deepagents.backends.protocol import BackendProtocol
 from deepagents.middleware._utils import append_to_system_message
 from langchain.agents.middleware.types import (
@@ -126,11 +127,23 @@ def _new_slot_id() -> str:
 
 
 @beta()
-class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT]):
+class CodeInterpreterMiddleware(
+    AgentMiddleware[REPLState, ContextT, ResponseT], BackendConsumer
+):
     """Middleware exposing a JS REPL to the agent.
 
     Each LangGraph thread gets its own QuickJS slot (worker + runtime +
     context), so globals from one conversation cannot leak into another.
+
+    !!! danger "`fs` bypasses file permissions and approvals"
+
+        With `fs` set, code the model writes can read, write, and delete
+        anything the backend can reach. `fs` calls the backend directly, so
+        `FilesystemMiddleware` permission rules, `create_deep_agent`
+        `permissions`, and `interrupt_on` approval do not apply to it. On a
+        `FilesystemBackend` with `virtual_mode=False`, or a local shell
+        backend, that is the host's filesystem. Enable `fs` only for trusted
+        use or with a backend sandboxed to files the agent may change.
 
     Args:
         memory_limit: Bytes the QuickJS heap may use. Shared across all
@@ -215,17 +228,22 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
             `tools.eval("...")` would recurse pointlessly.
         fs: Backend for a Node-style `fs` global in code: `readFile`,
             `writeFile`, `readdir`, `access`, and `rm`, also under
-            `fs.promises`. `None` (default) gives code no `fs`. Pass the
-            agent's own backend to let code reach the files its file tools
-            see. `fs` reads and writes UTF-8 text only and has only async
-            functions. A file too big for the QuickJS heap (`memory_limit`)
-            ends the eval with `MarshalError`.
+            `fs.promises`. `None` (default) gives code no `fs`. `True` uses
+            the backend `create_deep_agent` gives its file tools; with any
+            other agent factory, pass the backend itself. One middleware
+            instance with `fs=True` serves one agent's backend. `fs` reads
+            and writes UTF-8 text only and has only async functions. A file
+            too big for the QuickJS heap (`memory_limit`) ends the eval with
+            `MarshalError`.
 
-            !!! warning
-                `fs` calls the backend directly, not the file tools, so
-                `FilesystemMiddleware` permission rules and `interrupt_on`
-                approval do not apply to it. Leave `fs` unset for an agent
-                that relies on either for files.
+            !!! danger
+                `fs` calls the backend directly, not the file tools, so no
+                permission rule or approval guards it: code can read, write,
+                and delete anything the backend can reach. Leave `fs` unset
+                for an agent that relies on `FilesystemMiddleware`
+                permissions, `create_deep_agent` `permissions`, or
+                `interrupt_on` for files. `fs=True` gives code the same reach
+                as the agent's own backend.
         mode: REPL state persistence mode.
             - `"thread"`: state persists across calls and across turns.
             - `"turn"`: state persists across calls within a turn only.
@@ -278,7 +296,7 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         subagents: bool = True,
         max_subagent_concurrency: int = _DEFAULT_MAX_SUBAGENT_CONCURRENCY,
         ptc: PTCOption | None = None,
-        fs: BackendProtocol | None = None,
+        fs: BackendProtocol | bool | None = None,
         mode: PersistenceMode | None = None,
         max_snapshot_bytes: int | None = None,
         snapshot_signing_key: str | bytes | None = None,
@@ -306,7 +324,8 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         self._subagents = subagents
         self._max_subagent_concurrency = max_subagent_concurrency
         self._ptc = ptc
-        self._fs = fs
+        self._fs_from_agent = fs is True
+        self._fs = None if isinstance(fs, bool) else fs
         self._mode = _resolve_mode(mode=mode)
         self._max_snapshot_bytes = (
             memory_limit if max_snapshot_bytes is None else max_snapshot_bytes
@@ -338,7 +357,7 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         middleware = self
         code_doc = render_eval_tool_code_doc(mode=self._mode)
         tool_description = render_eval_tool_description(
-            mode=self._mode, files_attached=self._fs is not None
+            mode=self._mode, files_attached=self._fs_enabled
         )
 
         def _make_tool_output(
@@ -582,7 +601,7 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
                 memory_limit_mb=self._memory_limit_mb,
                 mode=self._mode,
                 ptc_attached=ptc_attached,
-                files_attached=self._fs is not None,
+                files_attached=self._fs_enabled,
             )
             self._base_prompt_cache[ptc_attached] = cached
         return cached
@@ -594,6 +613,12 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         live tool list off the request (middlewares upstream may have
         filtered it) and renders matching API-reference text without creating a VM.
         """
+        if self._fs_from_agent and self._fs is None:
+            msg = (
+                "CodeInterpreterMiddleware(fs=True) has no backend: build the agent "
+                "with create_deep_agent, or pass the backend as fs."
+            )
+            raise ValueError(msg)
         request_tools: list[BaseTool] = list(getattr(request, "tools", []) or [])
 
         subagent_section = ""
@@ -631,7 +656,28 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         return self._with_fs(prompt + cached[1])
 
     def _with_fs(self, prompt: str) -> str:
-        return prompt if self._fs is None else prompt.rstrip("\n") + FS_SYSTEM_PROMPT
+        if not self._fs_enabled:
+            return prompt
+        return prompt.rstrip("\n") + FS_SYSTEM_PROMPT
+
+    @property
+    def _fs_enabled(self) -> bool:
+        return self._fs_from_agent or self._fs is not None
+
+    def bind_backend(self, backend: BackendProtocol) -> None:
+        """Use the agent's backend for `fs=True`; `create_deep_agent` calls this."""
+        if not self._fs_from_agent:
+            return
+        # Every `StateBackend` reads the running graph's own state, so any two
+        # are interchangeable; other backends must be the same object.
+        interchangeable = type(self._fs) is type(backend) is StateBackend
+        if self._fs is not None and self._fs is not backend and not interchangeable:
+            msg = (
+                "This CodeInterpreterMiddleware(fs=True) already serves another "
+                "agent's backend; create one middleware per agent."
+            )
+            raise ValueError(msg)
+        self._fs = backend
 
     def _extend(
         self, system_message: SystemMessage | None, prompt: str

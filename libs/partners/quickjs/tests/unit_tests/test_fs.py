@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any
 import pytest
 from deepagents import create_deep_agent
 from deepagents.backends import CompositeBackend, FilesystemBackend, StateBackend
+from deepagents.backends.protocol import FileDownloadResponse
 from deepagents.backends.utils import create_file_data
 from langchain.agents import create_agent
 from langchain_core.callbacks import BaseCallbackHandler
@@ -26,7 +27,6 @@ if TYPE_CHECKING:
 
     from deepagents.backends.protocol import (
         BackendProtocol,
-        FileDownloadResponse,
         LsResult,
     )
     from langchain_core.messages import BaseMessage
@@ -515,3 +515,87 @@ def test_a_budget_error_names_the_fs_function_the_code_called(function: str) -> 
     [message] = run(code, max_ptc_calls=1)
 
     assert f"attempted=2, function=fs.{function})" in message
+
+
+@pytest.mark.parametrize("run_async", [False, True], ids=["invoke", "ainvoke"])
+@pytest.mark.parametrize(
+    ("kind", "path", "expected"),
+    [
+        ("state", "/docs/b.txt", "plain"),
+        ("filesystem", "/a.txt", "on disk"),
+        ("composite", "/d/a.txt", "on disk"),
+    ],
+)
+def test_fs_true_reads_through_the_agents_backend(
+    tmp_path: Path, kind: str, path: str, expected: str, *, run_async: bool
+) -> None:
+    (tmp_path / "a.txt").write_text("on disk")
+    disk = FilesystemBackend(root_dir=tmp_path, virtual_mode=True)
+    composite = CompositeBackend(default=StateBackend(), routes={"/d/": disk})
+    backend = {"state": None, "filesystem": disk, "composite": composite}[kind]
+    agent = create_deep_agent(
+        model=model(f"JSON.stringify(await fs.readFile({path!r}))"),
+        middleware=[CodeInterpreterMiddleware(fs=True)],
+        **({} if backend is None else {"backend": backend}),
+    )
+    payload = {"messages": [{"role": "user", "content": "go"}], "files": files()}
+
+    state = asyncio.run(agent.ainvoke(payload)) if run_async else agent.invoke(payload)
+
+    assert results(state) == [expected]
+
+
+def test_an_explicit_fs_backend_wins_over_the_agents(tmp_path: Path) -> None:
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "b.txt").write_text("own disk")
+    own = FilesystemBackend(root_dir=tmp_path, virtual_mode=True)
+    agent = create_deep_agent(
+        model=model('JSON.stringify(await fs.readFile("/docs/b.txt"))'),
+        middleware=[CodeInterpreterMiddleware(fs=own)],
+    )
+
+    state = agent.invoke(
+        {"messages": [{"role": "user", "content": "go"}], "files": files()}
+    )
+
+    assert results(state) == ["own disk"]
+
+
+def test_one_fs_true_middleware_serves_one_agents_files(tmp_path: Path) -> None:
+    shared = CodeInterpreterMiddleware(fs=True)
+    create_deep_agent(model=model("1"), middleware=[shared])
+    create_deep_agent(model=model("1"), middleware=[shared])
+    disk = FilesystemBackend(root_dir=tmp_path, virtual_mode=True)
+    other = CodeInterpreterMiddleware(fs=True)
+    create_deep_agent(model=model("1"), backend=disk, middleware=[other])
+
+    with pytest.raises(ValueError, match="one middleware per agent"):
+        create_deep_agent(
+            model=model("1"),
+            backend=FilesystemBackend(root_dir=tmp_path / "x", virtual_mode=True),
+            middleware=[other],
+        )
+
+
+def test_fs_accepts_a_backend_that_does_not_subclass_the_protocol() -> None:
+    class Duck:
+        async def adownload_files(self, paths: list[str]) -> list[Any]:
+            return [FileDownloadResponse(path=p, content=b"duck") for p in paths]
+
+    agent = create_deep_agent(
+        model=model('JSON.stringify(await fs.readFile("/a.txt"))'),
+        middleware=[CodeInterpreterMiddleware(fs=Duck())],
+    )
+
+    state = agent.invoke({"messages": [{"role": "user", "content": "go"}]})
+
+    assert results(state) == ["duck"]
+
+
+def test_fs_true_without_a_bound_backend_fails_on_the_first_model_call() -> None:
+    agent = create_agent(
+        model=model("1"), middleware=[CodeInterpreterMiddleware(fs=True)]
+    )
+
+    with pytest.raises(ValueError, match="has no backend"):
+        agent.invoke({"messages": [{"role": "user", "content": "go"}]})

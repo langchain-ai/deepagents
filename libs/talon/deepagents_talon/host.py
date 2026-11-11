@@ -81,6 +81,8 @@ from deepagents_talon.media import (
 )
 from deepagents_talon.observability import (
     USER_INTERRUPTED,
+    USER_INTERRUPTION_CALLBACK,
+    UserInterruptionCallback,
     langsmith_trace_context,
     log_event,
     stable_log_ref,
@@ -318,6 +320,7 @@ class TalonHost:
         self._history_locks: dict[tuple[str, str], asyncio.Lock] = {}
         self._history_roots: dict[str, tuple[str, str]] = {}
         self._tasks: dict[str, asyncio.Task[None]] = {}
+        self._interruption_callbacks: dict[asyncio.Task[object], UserInterruptionCallback] = {}
         self._conversation_tasks: defaultdict[str, set[asyncio.Task[None]]] = defaultdict(set)
         self._generations: defaultdict[str, int] = defaultdict(int)
         self._blocked: set[str] = set()
@@ -1472,6 +1475,11 @@ class TalonHost:
             and metadata.get("trigger") != "cron"
             and not metadata.get("background_delivery"),
         }
+        callback = UserInterruptionCallback()
+        task = asyncio.current_task()
+        if task is not None:
+            self._interruption_callbacks[task] = callback
+        token = USER_INTERRUPTION_CALLBACK.set(callback)
         try:
             with langsmith_trace_context(
                 self.config.env,
@@ -1501,6 +1509,10 @@ class TalonHost:
                 conversation_id,
             )
             raise
+        finally:
+            USER_INTERRUPTION_CALLBACK.reset(token)
+            if task is not None:
+                self._interruption_callbacks.pop(task, None)
 
     async def _reset_all_history(
         self,
@@ -1643,6 +1655,7 @@ class TalonHost:
         user_interrupted: bool = False,
     ) -> _CancelOutcome:
         self._generations[conversation_id] += 1
+        callback = self._interruption_callbacks.get(task)
         task.cancel(USER_INTERRUPTED if user_interrupted else None)
         deadline = asyncio.get_running_loop().time() + _CANCEL_TIMEOUT_SECONDS
         try:
@@ -1651,6 +1664,8 @@ class TalonHost:
                 return self._mark_cancellation_timeout(conversation_id)
             with contextlib.suppress(asyncio.CancelledError):
                 task.result()
+            if user_interrupted and task.cancelled() and callback is not None:
+                await callback.record_interruption()
             if recover:
                 remaining = deadline - asyncio.get_running_loop().time()
                 if remaining <= 0:

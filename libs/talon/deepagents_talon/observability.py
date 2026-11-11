@@ -12,6 +12,7 @@ import re
 import time
 from collections.abc import Mapping, Sequence
 from contextlib import contextmanager
+from contextvars import ContextVar
 from hashlib import sha256
 from itertools import islice
 from typing import TYPE_CHECKING, Any, cast
@@ -63,29 +64,55 @@ USER_INTERRUPTED = "talon:user-interrupted"
 
 
 class UserInterruptionCallback(AsyncCallbackHandler):
-    """Record user cancellation feedback only for the interrupted root."""
+    """Capture the active graph root for host-owned cancellation feedback."""
 
-    async def on_chain_error(
+    run_inline = True
+
+    def __init__(self) -> None:
+        """Initialize feedback tracking for one host invocation."""
+        self.run_id: UUID | None = None
+
+    async def on_chain_start(
         self,
-        error: BaseException,
+        serialized: dict[str, Any] | None,  # noqa: ARG002  # Callback protocol parameter.
+        inputs: dict[str, Any],  # noqa: ARG002  # Callback protocol parameter.
         *,
         run_id: UUID,
         parent_run_id: UUID | None = None,
         **_kwargs: Any,
     ) -> None:
-        """Distinguish explicitly requested cancellation from other failures."""
-        if parent_run_id is not None or not isinstance(error, asyncio.CancelledError):
-            return
-        if error.args != (USER_INTERRUPTED,):
+        """Capture the actual root ID, including retry and resume invocations."""
+        if parent_run_id is None:
+            self.run_id = run_id
+
+    async def on_chain_end(
+        self,
+        outputs: dict[str, Any],  # noqa: ARG002  # Callback protocol parameter.
+        *,
+        run_id: UUID,
+        **_kwargs: Any,
+    ) -> None:
+        """Avoid labeling a completed root when cancellation occurs between invocations."""
+        if run_id == self.run_id:
+            self.run_id = None
+
+    async def record_interruption(self) -> None:
+        """Record feedback after the host has awaited user cancellation."""
+        if self.run_id is None:
             return
         try:
             from langsmith.run_trees import get_cached_client  # noqa: PLC0415
 
             await asyncio.to_thread(
-                get_cached_client().create_feedback, run_id, "user_interrupted", score=1
+                get_cached_client().create_feedback, self.run_id, "user_interrupted", score=1
             )
         except Exception:  # noqa: BLE001  # Observability must not prevent cancellation.
             logging.getLogger(__name__).warning("Could not record user interruption feedback")
+
+
+USER_INTERRUPTION_CALLBACK: ContextVar[UserInterruptionCallback | None] = ContextVar(
+    "talon_user_interruption_callback", default=None
+)
 
 
 class AgentActivityCallback(AsyncCallbackHandler):

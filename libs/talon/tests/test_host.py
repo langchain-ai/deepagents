@@ -2314,16 +2314,26 @@ async def test_host_batch_reprompts_partial_reply(tmp_path: Path, reply: str) ->
 
 
 @pytest.mark.parametrize("tracing", [False, True])
-@pytest.mark.parametrize("action", ["/stop", "continue", "shutdown"])
-async def test_user_cancellation_feedback(tmp_path: Path, monkeypatch, tracing, action) -> None:
+@pytest.mark.parametrize("action", ["/stop", "continue", "shutdown", "preempt"])
+@pytest.mark.parametrize("phase", ["graph", "drop_message", "completed"])
+async def test_user_cancellation_feedback(
+    tmp_path: Path, monkeypatch, tracing, action, phase
+) -> None:
     started = asyncio.Event()
     root_id = uuid4()
     feedback = Mock()
     monkeypatch.setattr("langsmith.run_trees.get_cached_client", lambda: feedback)
 
     async def block(_payload):
+        if phase == "completed":
+            return {}
         started.set()
-        await asyncio.Event().wait()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            if phase == "drop_message":
+                raise asyncio.CancelledError from None
+            raise
 
     runtime = DeepAgentRuntime(
         model="test:model",
@@ -2342,6 +2352,8 @@ async def test_user_cancellation_feedback(tmp_path: Path, monkeypatch, tracing, 
         async def invoke(self, request: AgentRequest) -> AgentResult:
             if request.text == "block":
                 await runtime._invoke_payload_with_retries({}, request.conversation_id, None)
+                started.set()
+                await asyncio.Event().wait()
             return AgentResult(text="done")
 
     channel = RecordingChannel()
@@ -2349,11 +2361,13 @@ async def test_user_cancellation_feedback(tmp_path: Path, monkeypatch, tracing, 
     await host.start()
     await host.receive_message(channel, ChannelMessage(conversation_id="chat", text="block"))
     await asyncio.wait_for(started.wait(), timeout=1)
-    if action != "shutdown":
+    if action == "preempt":
+        await host._cancel_conversation_tasks("test:chat", user_interrupted=False)
+    elif action != "shutdown":
         await host.receive_message(channel, ChannelMessage(conversation_id="chat", text=action))
     await host.stop()
 
-    if tracing and action != "shutdown":
+    if tracing and phase != "completed" and action not in {"shutdown", "preempt"}:
         feedback.create_feedback.assert_called_once_with(root_id, "user_interrupted", score=1)
     else:
         feedback.create_feedback.assert_not_called()

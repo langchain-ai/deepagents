@@ -82,6 +82,7 @@ from deepagents_talon.model_selection import (
     gateway_connection,
 )
 from deepagents_talon.observability import (
+    USER_INTERRUPTION_CALLBACK,
     AgentActivityCallback,
     UserInterruptionCallback,
     agent_activity_logging_enabled,
@@ -1248,7 +1249,7 @@ class DeepAgentRuntime:
         """Observe root cancellation only when LangSmith tracing is enabled."""
         if langsmith_tracing_enabled(self.env):
             callbacks = cast("list[AsyncCallbackHandler]", config.setdefault("callbacks", []))
-            callbacks.append(UserInterruptionCallback())
+            callbacks.append(USER_INTERRUPTION_CALLBACK.get() or UserInterruptionCallback())
 
     def _graph_invoke(self) -> Callable[..., Awaitable[object]]:
         graph = self._invocation_graph.get()

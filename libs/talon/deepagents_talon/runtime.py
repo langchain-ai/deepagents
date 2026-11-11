@@ -497,7 +497,9 @@ class DeepAgentRuntime:
         for spec in local_subagents:
             _resolve_local_tools(cast("LocalSubAgent", spec), catalog, web_tools)
         background = self.background.configured(resolved)
-        resolved, attachments = prepare_subagents(resolved, model, interrupt_on)
+        resolved, attachments = prepare_subagents(
+            resolved, model, interrupt_on, backend=self.backend
+        )
         tools.append(self._attachment_tool(attachments))
         # The summarizer replacement lands in the Deep Agents summarizer's slot; the
         # selection middleware still swaps the model for everything after it.

@@ -61,6 +61,9 @@ _MAX_TASKS = 128
 # Results from outside Talon share the job table, so their own cap keeps a noisy source
 # from starving subagent launches.
 _MAX_EXTERNAL = 32
+# The host can requeue an acknowledged result until it settles the turn that consumed it,
+# so an external delivery only reclaims results acknowledged well before that.
+_REQUEUE_GRACE_SECONDS = 900.0
 _MAX_RUNNING = 4
 _MAX_DELIVERIES = 3
 _TASK_TIMEOUT_SECONDS = 3600
@@ -142,6 +145,7 @@ class _Job:
     tools: list[str] | None = None
     control: SubagentControl = field(default_factory=SubagentControl)
     external: bool = False
+    notified_at: float = 0.0
 
     @property
     def status(self) -> str:
@@ -563,13 +567,14 @@ class BackgroundSubagents(AgentMiddleware):
         Returns:
             Whether the result was queued; `False` when the job table is full.
         """
+        settled = time.monotonic() - _REQUEUE_GRACE_SECONDS
         for key in [
             key
             for key, job in self._jobs.items()
-            if job.notified or (job.external and job.cancelled)
+            if (job.notified and job.notified_at < settled) or (job.external and job.cancelled)
         ]:
             del self._jobs[key]
-        external = sum(job.external for job in self._jobs.values())
+        external = sum(job.external and not job.notified for job in self._jobs.values())
         if len(self._jobs) >= _MAX_TASKS or external >= _MAX_EXTERNAL:
             logger.warning("Dropped external result from %s: job table full", name)
             return False
@@ -593,7 +598,7 @@ class BackgroundSubagents(AgentMiddleware):
             job.deliveries += 1
             if job.deliveries < _MAX_DELIVERIES:
                 continue
-            job.notified = True
+            job.notified, job.notified_at = True, time.monotonic()
             job.result = f"{_UNDELIVERED_RESULT}\n{job.result}"
             dropped.append(key)
             logger.warning("Dropped undelivered background subagent result %s", key)
@@ -628,7 +633,7 @@ class BackgroundSubagents(AgentMiddleware):
         """
         for key in results:
             if key in self._jobs:
-                self._jobs[key].notified = True
+                self._jobs[key].notified, self._jobs[key].notified_at = True, time.monotonic()
 
     async def cancel(self, owner: str | None = None) -> bool:
         """Cancel a thread's workers and discard results, or clear all at shutdown.

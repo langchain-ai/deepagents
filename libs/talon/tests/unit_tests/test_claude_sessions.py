@@ -478,3 +478,15 @@ async def test_reply_after_the_turn_ends_starts_a_delivery_turn(
         await host.stop()
 
     assert channel.sent == [("chat", "Sent it"), ("chat", "It said pong")]
+
+
+def test_a_later_reply_keeps_an_acknowledged_result_requeueable() -> None:
+    background = BackgroundSubagents()
+    background.deliver("thread-1", "Claude Code session w", "first reply")
+    consumed = background.results("thread-1")
+    background.acknowledge(consumed)
+
+    background.deliver("thread-1", "Claude Code session w", "idle notice")
+    background.requeue(consumed)
+
+    assert sorted(background.results("thread-1").values()) == ["first reply", "idle notice"]

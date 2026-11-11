@@ -34,6 +34,7 @@ if TYPE_CHECKING:
 
 from langchain_quickjs._format import format_outcome
 from langchain_quickjs._prompt import (
+    FS_SYSTEM_PROMPT,
     render_eval_tool_code_doc,
     render_eval_tool_description,
     render_repl_system_prompt,
@@ -90,7 +91,7 @@ class EvalSchema(BaseModel):
     code: str = Field(
         description=(
             "JavaScript expression or statement(s) to evaluate. "
-            "No fs/network/real-clock access."
+            "No network/real-clock access."
         ),
     )
 
@@ -212,10 +213,11 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
 
             The REPL's own tool is always excluded; a model asking for
             `tools.eval("...")` would recurse pointlessly.
-        fs: Backend for a Node-style `fs` global in code, such as
-            `await fs.readFile(path)`. `None` (default) gives code no `fs`.
-            Pass the agent's own backend to let code reach the files its file
-            tools see. `fs` reads UTF-8 text only and has only async
+        fs: Backend for a Node-style `fs` global in code: `readFile`,
+            `writeFile`, `readdir`, `access`, and `rm`, also under
+            `fs.promises`. `None` (default) gives code no `fs`. Pass the
+            agent's own backend to let code reach the files its file tools
+            see. `fs` reads and writes UTF-8 text only and has only async
             functions. A file too big for the QuickJS heap (`memory_limit`)
             ends the eval with `MarshalError`.
 
@@ -335,7 +337,9 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         max_chars = self._max_result_chars
         middleware = self
         code_doc = render_eval_tool_code_doc(mode=self._mode)
-        tool_description = render_eval_tool_description(mode=self._mode)
+        tool_description = render_eval_tool_description(
+            mode=self._mode, files_attached=self._fs is not None
+        )
 
         def _make_tool_output(
             outcome: EvalOutcome,
@@ -578,6 +582,7 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
                 memory_limit_mb=self._memory_limit_mb,
                 mode=self._mode,
                 ptc_attached=ptc_attached,
+                files_attached=self._fs is not None,
             )
             self._base_prompt_cache[ptc_attached] = cached
         return cached
@@ -599,7 +604,9 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
             )
 
         if self._ptc is None:
-            return self._base_prompt(ptc_attached=False) + subagent_section
+            return self._with_fs(
+                self._base_prompt(ptc_attached=False) + subagent_section
+            )
 
         exposed = filter_tools_for_ptc(
             request_tools,
@@ -621,7 +628,10 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
                 render_ptc_prompt(exposed_tools, tool_name=self._tool_name),
             )
             self._ptc_prompt_by_slot[slot_id] = cached
-        return prompt + cached[1]
+        return self._with_fs(prompt + cached[1])
+
+    def _with_fs(self, prompt: str) -> str:
+        return prompt if self._fs is None else prompt.rstrip("\n") + FS_SYSTEM_PROMPT
 
     def _extend(
         self, system_message: SystemMessage | None, prompt: str

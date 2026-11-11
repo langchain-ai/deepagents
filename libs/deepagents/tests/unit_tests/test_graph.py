@@ -658,7 +658,7 @@ class TestPromptCachingWiring:
             patch("deepagents.middleware._prompt_caching._create_fireworks_prompt_caching_middleware", return_value=None),
         ):
             append_prompt_caching_middleware(stack)
-        (caching,) = stack
+        caching, _keepalive = stack
         seen: list[ModelRequest] = []
 
         def handler(request: ModelRequest) -> AIMessage:

@@ -6,6 +6,7 @@ from dataclasses import replace
 from typing import TYPE_CHECKING, Any, NotRequired, TypedDict, cast
 
 from deepagents.backends import StateBackend
+from deepagents.middleware.filesystem import FilesystemState
 from deepagents.middleware.subagents import SubAgent, SubAgentMiddleware
 from deepagents.middleware.summarization import create_summarization_middleware
 from langchain.agents import create_agent
@@ -287,6 +288,7 @@ def _compile_fresh(
             tools=spec.get("tools", []),
             system_prompt=_SUBAGENT_CONTRACT + "\n\n" + spec.get("system_prompt", ""),
             middleware=[summarization, *middleware, *hook_middleware],
+            state_schema=FilesystemState,
             checkpointer=InMemorySaver() if hooks else False,
         )
         if hooks is None:

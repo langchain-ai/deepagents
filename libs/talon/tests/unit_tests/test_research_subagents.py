@@ -7,10 +7,11 @@ from itertools import pairwise
 from typing import TYPE_CHECKING
 
 import pytest
+from deepagents.backends import StateBackend
 from langchain.agents import create_agent
 from langchain.agents.middleware import AgentMiddleware
 from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
-from langchain_core.messages import AIMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.messages.utils import count_tokens_approximately
 from langchain_core.outputs import ChatGeneration, ChatResult
 from langchain_core.runnables import RunnableLambda
@@ -847,6 +848,41 @@ class SummarizingToolModel(ToolModel):
                 generations=[ChatGeneration(message=AIMessage(content="Page summary"))]
             )
         return super()._generate(messages, *args, **kwargs)
+
+
+@pytest.mark.parametrize("explicit_backend", [False, True])
+async def test_fresh_subagent_archives_history_in_state(*, explicit_backend: bool) -> None:
+    @tool
+    def read_transcript(page: int) -> str:
+        """Read a transcript page."""
+        return f"Transcript page {page}: " + "evidence " * 2_000
+
+    model = SummarizingToolModel(
+        responses=[
+            *[
+                AIMessage(
+                    content="",
+                    tool_calls=[{**_call("read_transcript", page=page), "id": f"page-{page}"}],
+                )
+                for page in range(16)
+            ],
+            AIMessage(content="Reviewed"),
+        ],
+        profile={"max_input_tokens": 16_000},
+    )
+    prepared, _ = prepare_subagents(
+        [{"name": "researcher", "description": "Research", "tools": [read_transcript]}],
+        model,
+        None,
+        **({"backend": StateBackend()} if explicit_backend else {}),
+    )
+    result = await prepared[0]["runnable"].ainvoke({"messages": [HumanMessage("Review")]})
+    assert result["messages"][-1].content == "Reviewed"
+    assert len(model._summaries) > 1
+    history = next(iter(result["files"].values()))["content"]
+    assert "Transcript page 0:" in history
+    assert "Transcript page 10:" in history
+    assert all(names == ["read_transcript"] for names in model._tools)
 
 
 @pytest.mark.parametrize("dynamic", [False, True])

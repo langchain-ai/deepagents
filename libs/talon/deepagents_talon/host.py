@@ -377,6 +377,18 @@ class TalonHost:
         self._stopped = asyncio.Event()
         self._running = False
 
+    async def _agent_failure_message(self, conversation_id: str) -> str:
+        check = getattr(self.agent, "has_tool_activity", None)
+        try:
+            if callable(check) and await check(conversation_id):
+                return (
+                    "Something went wrong after tools ran. Actions may have partially completed. "
+                    "Check the results before retrying, and check Talon logs."
+                )
+        except Exception:  # noqa: BLE001  # State inspection must not hide the original failure.
+            logger.warning("Could not inspect failed turn state", exc_info=True)
+        return _AGENT_FAILURE_MESSAGE
+
     @asynccontextmanager
     async def _conversation_lock(self, conversation_root: str) -> AsyncGenerator[None]:
         """Serialize one conversation's work and forget it once nothing is left.
@@ -1202,7 +1214,7 @@ class TalonHost:
             )
             suppress_result = agent_conversation_id in self._terminal_authorizations
         except Exception as error:  # noqa: BLE001  # _invoke_agent logged the traceback for operators
-            text = _AGENT_FAILURE_MESSAGE
+            text = await self._agent_failure_message(agent_conversation_id)
             if _is_model_unavailable(error):
                 text = (
                     f"Model {turn.model or getattr(self.agent, 'default_model', 'default')} "

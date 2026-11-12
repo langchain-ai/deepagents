@@ -698,6 +698,10 @@ def _compiled_graph(runnable: Runnable) -> Pregel | None:
 # `task` call's own for a second run in the same step (`<namespace>|1`) and for
 # `checkpointer=True` (task ids removed). No checkpoint event means nothing was
 # saved. Any other runnable is invoked and assumed to save under `fallback_ns`.
+# Known limit: a `.with_retry()` subagent is invoked this way because
+# `RunnableRetry` retries `invoke` but not `stream`. When it retries, the run
+# that finished saves under `<namespace>|1` while `fallback_ns` holds the failed
+# run. Retrying `task` with `ToolRetryMiddleware` records the right namespace.
 _SUBAGENT_STREAM_MODES: list[StreamMode] = ["values", "checkpoints"]
 
 

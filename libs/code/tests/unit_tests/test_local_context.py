@@ -925,24 +925,32 @@ class TestSectionGitExtended:
 class TestBuildMcpContext:
     """Tests for _build_mcp_context."""
 
-    def test_server_load_failure_error_status(self) -> None:
-        """A server with status='error' surfaces the failure to the model."""
+    @pytest.mark.parametrize("transport", ["http", "sse", "streamable_http", "stdio"])
+    def test_server_load_failure_error_status(self, transport: str) -> None:
+        """Failures offer transport-appropriate recovery within the session."""
         server = MCPServerInfo(
             name="slack",
-            transport="http",
+            transport=transport,
             tools=(),
             status="error",
             error="connection refused",
         )
         result = _build_mcp_context([server])
         assert "(1 servers, 0 tools)" in result
-        assert "**slack** (http):" in result
+        assert f"**slack** ({transport}):" in result
         assert "FAILED TO LOAD" in result
         assert "connection refused" in result
         # The model should be told the integration is unavailable and to
         # surface the failure to the user rather than silently refuse.
         assert "temporarily unavailable" in result
-        assert "restart" in result.lower()
+        if transport == "stdio":
+            assert "local MCP command" in result
+            assert "dcode mcp login" not in result
+        else:
+            assert "restart" not in result.lower()
+            assert "/mcp" in result
+            assert "dcode mcp login slack" in result
+        assert "/reload" in result
         # Must NOT be rendered as the benign "no tools registered" case.
         assert "(no tools registered)" not in result
 
@@ -959,6 +967,9 @@ class TestBuildMcpContext:
         assert "NEEDS LOGIN" in result
         assert "OAuth login required" in result
         assert "/mcp" in result
+        assert "dcode mcp login slack" in result
+        assert "/reload" in result
+        assert "without restarting dcode" in result
         # An auth-pending server has not failed and is not benignly empty.
         assert "FAILED TO LOAD" not in result
         assert "(no tools registered)" not in result

@@ -1857,28 +1857,14 @@ async def _mount_backends(
     ],
     *,
     redact: Mapping[str, bool],
+    oauth_probe_urls: Mapping[str, str] | None = None,
 ) -> tuple[
     FastMCPClient[Any],
     AsyncExitStack,
     dict[str, list[Any]],
     dict[str, tuple[MCPServerStatus, str]],
 ]:
-    """Connect, discover, and mount every backend on one router.
-
-    Discovery runs against each backend before aggregation so tool ownership and
-    per-server failures remain exact. The TUI can then identify a failed server,
-    and filters cannot be bypassed by ambiguous mounted names.
-
-    Args:
-        backends: Transport factories keyed by server name, run immediately
-            before that server's discovery under the same concurrency bound.
-        redact: Per-server flag for whether error detail may quote a config
-            that interpolates `${VAR}` references.
-
-    Returns:
-        The router client, the stack holding every backend open, discovered tools
-            keyed by server, and a `(status, error)` entry for each failed server.
-    """
+    """Return the router, owned connections, tools, and classified failures."""
     from fastmcp import FastMCP
     from fastmcp.client import Client as FastMCPClient
     from fastmcp.server.providers.proxy import StatefulProxyClient
@@ -1931,8 +1917,12 @@ async def _mount_backends(
             discovered[server_name] = tools
             stack.push_async_callback(_close_backend_stack, owned.pop_all())
         except Exception as exc:  # noqa: BLE001 - isolate each backend
-            failures[server_name] = _classify_connect_failure(
-                server_name, exc, redact=redact.get(server_name, False)
+            failures[server_name] = await asyncio.to_thread(
+                _classify_connect_failure,
+                server_name,
+                exc,
+                redact=redact.get(server_name, False),
+                oauth_probe_url=(oauth_probe_urls or {}).get(server_name),
             )
         finally:
             await _close_backend_stack(owned)
@@ -1961,31 +1951,66 @@ async def _mount_backends(
         raise
 
 
+def _probe_oauth_metadata(exc: BaseException, server_url: str) -> str | None:
+    """Return an OAuth metadata URL for a generic MCP protocol failure."""
+    from urllib.parse import urlsplit, urlunsplit
+
+    import httpx
+    import httpx2
+    from mcp.shared.auth import ProtectedResourceMetadata
+    from mcp.shared.exceptions import MCPError
+
+    pending = [exc]
+    visited: set[int] = set()
+    protocol_error = False
+    while pending:
+        current = pending.pop()
+        if id(current) in visited:
+            continue
+        visited.add(id(current))
+        if (
+            isinstance(current, (httpx.HTTPStatusError, httpx2.HTTPStatusError))
+            and current.response.status_code == 401  # noqa: PLR2004 - preserve non-OAuth 401 classification
+        ):
+            return None
+        protocol_error |= isinstance(current, MCPError)
+        if isinstance(current, BaseExceptionGroup):
+            pending.extend(current.exceptions)
+        cause = current.__cause__ or current.__context__
+        if cause is not None:
+            pending.append(cause)
+    if not protocol_error:
+        return None
+
+    parsed = urlsplit(server_url)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        return None
+    url = urlunsplit(
+        (
+            parsed.scheme,
+            parsed.netloc.rsplit("@", 1)[-1],
+            "/.well-known/oauth-protected-resource",
+            "",
+            "",
+        )
+    )
+    try:
+        response = httpx.get(url, timeout=3.0, follow_redirects=False)
+        response.raise_for_status()
+        metadata = ProtectedResourceMetadata.model_validate(response.json())
+    except httpx.HTTPError, ValueError:
+        return None
+    return url if metadata.authorization_servers else None
+
+
 def _classify_connect_failure(
     server_name: str,
     exc: BaseException,
     *,
     redact: bool,
+    oauth_probe_url: str | None = None,
 ) -> tuple[MCPServerStatus, str]:
-    """Describe why a server would not connect, in the terms the TUI offers.
-
-    Two failures are worth telling apart from a generic error because the user
-    can act on them: tokens that exist but no longer refresh, and a server
-    answering an unauthenticated request with an RFC 9728 challenge. Both mean
-    "log in", so both become `unauthenticated`.
-
-    Classification is itself best-effort — a classifier that raises degrades the
-    server to a plain error rather than taking down the rest of the load.
-
-    Args:
-        server_name: MCP server name.
-        exc: The failure raised while connecting.
-        redact: Whether this server's config interpolates `${VAR}`, in which
-            case the message must not quote resolved (secret-bearing) values.
-
-    Returns:
-        The `(status, error)` pair for this server's `MCPServerInfo`.
-    """
+    """Return the server status and actionable connection failure message."""
     from deepagents_code.mcp_auth import (
         find_oauth_challenge,
         find_reauth_required,
@@ -1995,6 +2020,8 @@ def _classify_connect_failure(
     try:
         reauth = find_reauth_required(exc)
         challenge = None if reauth is not None else find_oauth_challenge(exc)
+        if reauth is None and challenge is None and oauth_probe_url is not None:
+            challenge = _probe_oauth_metadata(exc, oauth_probe_url)
     except Exception:
         logger.debug(
             "MCP server %r: failed to classify connect error",
@@ -2009,7 +2036,8 @@ def _classify_connect_failure(
             if reauth is not None
             else (
                 f"MCP server {server_name!r} requires authentication; "
-                f"run `dcode mcp login {server_name}`."
+                f"run `/mcp` to log in, or `dcode mcp login {server_name}` "
+                "in a shell followed by `/reload` to reconnect within this session."
             )
         )
         logger.warning("MCP server '%s' skipped: %s", server_name, error)
@@ -2091,6 +2119,7 @@ async def _load_tools_from_config(
     # discovery, and the final fold-in loop below.
     transports = {name: _resolve_server_type(cfg) for name, cfg in server_items}
     oauth_servers: set[str] = set()
+    oauth_probe_urls: dict[str, str] = {}
     # Whether each server's config interpolates `${VAR}`. Captured from the
     # *raw* config: once refs are expanded, an error message could echo a
     # resolved secret, so those servers' failures are reported without detail.
@@ -2173,6 +2202,9 @@ async def _load_tools_from_config(
                     )
                     return ("unauthenticated", auth_msg)
 
+                if stored_tokens is None and not has_authorization_header:
+                    oauth_probe_urls[server_name] = server_config["url"]
+
                 auth: httpx2.Auth | None = None
                 if explicit_oauth or (
                     stored_tokens is not None and not has_authorization_header
@@ -2235,6 +2267,7 @@ async def _load_tools_from_config(
             for name, cfg in server_items
         },
         redact=redacts,
+        oauth_probe_urls=oauth_probe_urls,
     )
     runtime_manager.adopt(client, stack)
     tool_names = _unique_mcp_tool_names(

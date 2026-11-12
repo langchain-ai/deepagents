@@ -154,12 +154,29 @@ def _build_mcp_context(servers: list[MCPServerInfo]) -> str:
             # reaching the prompt.
             if server.status == "error":
                 detail = _sanitize_error_detail(server.error)
+                if server.transport in {
+                    "http",
+                    "sse",
+                    "streamable_http",
+                    "streamable-http",
+                }:
+                    recovery = (
+                        f"Run `/mcp` to inspect or log in to {server.name}, or run "
+                        f"`dcode mcp login {server.name}` in a shell followed by "
+                        "`/reload` to reconnect within this session."
+                    )
+                elif server.transport == "stdio":
+                    recovery = (
+                        "Check or restart the local MCP command, then run `/reload` "
+                        "after fixing it to reconnect within this session."
+                    )
+                else:
+                    recovery = "Fix the MCP configuration, then run `/reload`."
                 lines.append(
                     f"- **{server.name}** ({server.transport}): "
                     f"FAILED TO LOAD — <error>{detail}</error>. "
                     "Treat this integration as temporarily unavailable; "
-                    "tell the user the server failed to load and suggest "
-                    "restarting the MCP server."
+                    f"tell the user the server failed to load. {recovery}"
                 )
             elif server.status == "unauthenticated":
                 detail = _sanitize_error_detail(server.error)
@@ -168,7 +185,9 @@ def _build_mcp_context(servers: list[MCPServerInfo]) -> str:
                     f"NEEDS LOGIN — <error>{detail}</error>. "
                     "This integration requires authentication before its "
                     "tools are available; tell the user and suggest running "
-                    "`/mcp` to log in."
+                    f"`/mcp` to log in, or `dcode mcp login {server.name}` in a "
+                    "shell followed by `/reload` to load its tools without "
+                    "restarting dcode."
                 )
             elif server.status == "disabled":
                 lines.append(

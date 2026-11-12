@@ -1839,6 +1839,117 @@ class TestLoadToolsFromConfigOAuth:
         assert "Traceback (most recent call last)" not in caplog.text
         await manager.cleanup()
 
+    @pytest.mark.parametrize("transport", ["http", "sse", "streamable_http"])
+    @pytest.mark.parametrize(
+        "metadata_status", ["oauth", "absent", "invalid", "timeout", "public"]
+    )
+    async def test_protocol_error_oauth_metadata_fallback(
+        self, monkeypatch: pytest.MonkeyPatch, transport: str, metadata_status: str
+    ) -> None:
+        """Advertised OAuth metadata identifies protocol failures needing login."""
+        from mcp.shared.exceptions import MCPError
+
+        loop_thread = threading.get_ident()
+
+        def get_metadata(url: str, *, timeout: float, follow_redirects: bool):
+            assert threading.get_ident() != loop_thread
+            assert url == "https://mcp.example.com/.well-known/oauth-protected-resource"
+            assert timeout <= 3.0
+            assert follow_redirects is False
+            if metadata_status == "timeout":
+                msg = "metadata timed out"
+                raise httpx.ReadTimeout(msg)
+            return httpx.Response(
+                404 if metadata_status == "absent" else 200,
+                request=httpx.Request("GET", url),
+                json=(
+                    {
+                        "resource": "https://mcp.example.com/mcp",
+                        "authorization_servers": (
+                            []
+                            if metadata_status == "public"
+                            else ["https://auth.example.com"]
+                        ),
+                    }
+                    if metadata_status in {"oauth", "public"}
+                    else {}
+                ),
+            )
+
+        monkeypatch.setattr(httpx, "get", get_metadata)
+        error = ExceptionGroup(
+            "connection failed",
+            [MCPError(-32603, "login required")],
+        )
+        config = {
+            "mcpServers": {
+                "remote": {
+                    "transport": transport,
+                    "url": "https://mcp.example.com/mcp?key=secret",
+                }
+            }
+        }
+        with _failing_backend(error):
+            tools, manager, infos = await _load_tools_from_config(config)
+        assert tools == []
+        assert infos[0].status == (
+            "unauthenticated" if metadata_status == "oauth" else "error"
+        )
+        if metadata_status == "oauth":
+            assert "dcode mcp login remote" in (infos[0].error or "")
+            assert "/reload" in (infos[0].error or "")
+        assert manager is not None
+        await manager.cleanup()
+
+    @pytest.mark.parametrize(
+        "credentials", ["tokens", "header", "stdio", "401", "network"]
+    )
+    async def test_protocol_error_with_credentials_does_not_probe(
+        self, monkeypatch: pytest.MonkeyPatch, credentials: str
+    ) -> None:
+        """Discovery preserves configured authentication and local errors."""
+        from mcp.shared.auth import OAuthToken
+        from mcp.shared.exceptions import MCPError
+
+        def unexpected_probe(*_args: object, **_kwargs: object):
+            pytest.fail("ineligible server attempted OAuth discovery")
+
+        monkeypatch.setattr(httpx, "get", unexpected_probe)
+        url = "https://mcp.example.com/mcp"
+        if credentials == "tokens":
+            storage = FileTokenStorage("remote", server_url=url)
+            await storage.set_tokens(
+                OAuthToken(access_token="token", token_type="Bearer")
+            )
+        server = {"transport": "http", "url": url}
+        if credentials == "header":
+            server["headers"] = {"Authorization": "Bearer static"}
+        elif credentials == "stdio":
+            server = {"transport": "stdio", "command": sys.executable}
+        error: BaseException = MCPError(-32603, "failed")
+        if credentials == "401":
+            request = httpx.Request("GET", url)
+            response = httpx.Response(401, request=request)
+            error = ExceptionGroup(
+                "connection failed",
+                [
+                    error,
+                    httpx.HTTPStatusError(
+                        "unauthorized", request=request, response=response
+                    ),
+                ],
+            )
+        elif credentials == "network":
+            error = httpx.ConnectError("connection refused")
+        with _failing_backend(error):
+            tools, manager, infos = await _load_tools_from_config(
+                {"mcpServers": {"remote": server}}
+            )
+        assert tools == []
+        assert infos[0].status == "error"
+        assert manager is not None
+        await manager.cleanup()
+
     async def test_discovery_401_without_challenge_stays_error(self) -> None:
         """A 401 lacking `WWW-Authenticate` is not treated as an OAuth challenge."""
         request = httpx.Request("GET", "https://mcp.notion.com/mcp")

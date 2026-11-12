@@ -40,7 +40,7 @@ dependencies = [
 
     # Core model providers - others are added as optional
     "langchain-anthropic>=1.7.10,<2.0.0",
-    "langchain-google-genai>=4.4.3,<4.5.0",
+    "langchain-google-genai>=4.4.3,<5.0.0",
     "langchain-openai>=1.7.4,<2.0.0",
     # Require Pydantic 2.13+ explicitly to avoid Python 3.14 warnings from LangChain's v1 imports.
     "pydantic>=2.13.0,<3.0.0",
@@ -115,7 +115,7 @@ bedrock = ["langchain-aws>=1.9.2,<2.0.0"]
 cohere = ["langchain-cohere>=0.6.0,<1.0.0"]
 deepseek = ["langchain-deepseek>=1.1.1,<2.0.0"]
 fireworks = ["langchain-fireworks>=1.7.3,<2.0.0"]
-google-genai = ["langchain-google-genai>=4.4.3,<4.5.0"]
+google-genai = ["langchain-google-genai>=4.4.3,<5.0.0"]
 groq = ["langchain-groq>=1.1.3,<2.0.0"]
 huggingface = ["langchain-huggingface>=1.2.3,<2.0.0"]
 ibm = ["langchain-ibm>=1.1.2,<2.0.0"]

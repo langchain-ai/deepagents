@@ -147,7 +147,7 @@ jobs:
             echo "::error::dependencies must be a comma-separated list of PyPI distribution names (letters, digits, '.', '-', '_'; each starting and ending alphanumeric); got: $DEPENDENCIES"
             exit 1
           fi
-          args=(--package "$PACKAGE")
+          args=(--package "$PACKAGE" --check-resolution)
           if [ -n "$DEPENDENCIES" ]; then
             args+=(--dependencies "$DEPENDENCIES")
           fi
@@ -423,7 +423,7 @@ jobs:
         # raised-bounds table is never lost: the raise step holds it back in
         # its `summary` output, and this step replays it — after the PR link
         # when an outcome step recorded one.
-        if: always() && steps.raise.outputs.changed == 'true'
+        if: always() && steps.raise.outputs.summary != ''
         env:
           SUMMARY: ${{ steps.raise.outputs.summary }}
         run: |

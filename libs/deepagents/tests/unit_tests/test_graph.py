@@ -35,6 +35,7 @@ from deepagents.graph import (
 from deepagents.middleware._prompt_caching import (
     _create_bedrock_prompt_caching_middleware,
     _create_fireworks_prompt_caching_middleware,
+    _prompt_caching_middleware_class,
     append_prompt_caching_middleware,
 )
 from deepagents.middleware._tool_exclusion import _ToolExclusionMiddleware
@@ -52,7 +53,7 @@ from deepagents.profiles.harness.harness_profiles import (
 from tests.unit_tests.chat_model import GenericFakeChatModel
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Iterator
 
     from deepagents.backends.protocol import BackendProtocol
 
@@ -471,6 +472,36 @@ class TestGeneralPurposeSubagentProfileWiring:
 
 class TestPromptCachingWiring:
     """Tests for provider-specific prompt caching middleware wiring."""
+
+    @pytest.fixture(autouse=True)
+    def clear_provider_cache(self) -> Iterator[None]:
+        _prompt_caching_middleware_class.cache_clear()
+        yield
+        _prompt_caching_middleware_class.cache_clear()
+
+    @pytest.mark.parametrize("factory", [_create_bedrock_prompt_caching_middleware, _create_fireworks_prompt_caching_middleware])
+    def test_unavailable_provider_is_cached(self, factory: Callable[[], AgentMiddleware | None]) -> None:
+        package = "langchain_aws" if factory is _create_bedrock_prompt_caching_middleware else "langchain_fireworks"
+        with patch("deepagents.middleware._prompt_caching.import_module", side_effect=ModuleNotFoundError(name=package)) as load:
+            assert factory() is None
+            assert factory() is None
+        load.assert_called_once()
+
+    @pytest.mark.parametrize(
+        ("factory", "name"),
+        [
+            (_create_bedrock_prompt_caching_middleware, "BedrockPromptCachingMiddleware"),
+            (_create_fireworks_prompt_caching_middleware, "FireworksPromptCachingMiddleware"),
+        ],
+    )
+    def test_cached_provider_class_creates_fresh_instances(self, factory: Callable[[], AgentMiddleware | None], name: str) -> None:
+        middleware_cls = MagicMock(side_effect=[MagicMock(), MagicMock()])
+        module = MagicMock(**{name: middleware_cls})
+        with patch("deepagents.middleware._prompt_caching.import_module", return_value=module) as load:
+            first, second = factory(), factory()
+        assert first is not second
+        load.assert_called_once()
+        assert middleware_cls.call_count == 2
 
     def test_main_and_general_purpose_agents_get_bedrock_prompt_caching(self) -> None:
         model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))

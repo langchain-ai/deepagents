@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -28,18 +29,18 @@ GATEWAY_URLS = {"anthropic": GATEWAY_ANTHROPIC_URL, "openai": GATEWAY_OPENAI_URL
 
 
 def load_gateway_key() -> str:
-    """Read `LC_GATEWAY_KEY` and validate it before passing it to an HTTP client.
+    """Remove stray characters from `LC_GATEWAY_KEY` and check its format.
 
     Returns:
-        The unchanged gateway key.
+        A personal or service key containing only ASCII letters, digits, underscores, and hyphens.
 
     Raises:
         KeyError: If `LC_GATEWAY_KEY` is not set.
-        ValueError: If the key is empty or contains whitespace, control characters, or non-ASCII text.
+        ValueError: If the cleaned value does not match a LangSmith personal or service key.
     """
-    key = os.environ["LC_GATEWAY_KEY"]
-    if not key or not key.isascii() or not key.isprintable() or " " in key:
-        msg = "LC_GATEWAY_KEY must be nonempty printable ASCII without whitespace. Check the configured secret."
+    key = re.sub(r"[^A-Za-z0-9_-]", "", os.environ["LC_GATEWAY_KEY"])
+    if not re.fullmatch(r"lsv2_(?:pt|sk)_[A-Za-z0-9_-]+", key):
+        msg = "LC_GATEWAY_KEY must match a LangSmith personal or service key after cleanup (lsv2_pt_... or lsv2_sk_...)."
         raise ValueError(msg)
     return key
 

@@ -408,7 +408,7 @@ jobs:
           FIREWORKS_API_KEY: ${{ (startsWith(matrix.model, 'fireworks:') || inputs.openai_endpoint == 'fireworks') && secrets.FIREWORKS_API_KEY || '' }}
           GOOGLE_API_KEY: ${{ startsWith(matrix.model, 'google_genai:') && secrets.GOOGLE_API_KEY || '' }}
           GROQ_API_KEY: ${{ startsWith(matrix.model, 'groq:') && secrets.GROQ_API_KEY || '' }}
-          LC_GATEWAY_KEY: ${{ env.HARBOR_AGENT_IMPL == 'routed' && secrets.EVALS_LC_GATEWAY_KEY || '' }}
+          LC_GATEWAY_KEY: ${{ env.HARBOR_AGENT_IMPL == 'routed' && secrets.LC_GATEWAY_KEY || '' }}
           LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
           NVIDIA_API_KEY: ${{ startsWith(matrix.model, 'nvidia:') && secrets.NVIDIA_API_KEY || '' }}
           OLLAMA_API_KEY: ${{ startsWith(matrix.model, 'ollama:') && secrets.OLLAMA_API_KEY || '' }}
@@ -747,7 +747,7 @@ jobs:
           FIREWORKS_API_KEY: ${{ (startsWith(matrix.model, 'fireworks:') || inputs.openai_endpoint == 'fireworks') && secrets.FIREWORKS_API_KEY || '' }}
           GOOGLE_API_KEY: ${{ startsWith(matrix.model, 'google_genai:') && secrets.GOOGLE_API_KEY || '' }}
           GROQ_API_KEY: ${{ startsWith(matrix.model, 'groq:') && secrets.GROQ_API_KEY || '' }}
-          LC_GATEWAY_KEY: ${{ env.HARBOR_AGENT_IMPL == 'routed' && secrets.EVALS_LC_GATEWAY_KEY || '' }}
+          LC_GATEWAY_KEY: ${{ env.HARBOR_AGENT_IMPL == 'routed' && secrets.LC_GATEWAY_KEY || '' }}
           LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
           NVIDIA_API_KEY: ${{ startsWith(matrix.model, 'nvidia:') && secrets.NVIDIA_API_KEY || '' }}
           OLLAMA_API_KEY: ${{ startsWith(matrix.model, 'ollama:') && secrets.OLLAMA_API_KEY || '' }}

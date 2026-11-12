@@ -20,7 +20,6 @@ Routed arms run the agent on the routing ladder instead of --model:
 from __future__ import annotations
 
 import logging
-import os
 from typing import TYPE_CHECKING, Any, Literal
 
 import pytest
@@ -31,7 +30,7 @@ from langgraph.checkpoint.memory import MemorySaver
 from langsmith import testing as t
 from langsmith.run_helpers import get_current_run_tree
 
-from deepagents_evals.routing.config import GATEWAY_OPENAI_URL, load_config
+from deepagents_evals.routing.config import GATEWAY_OPENAI_URL, load_config, load_gateway_key
 from deepagents_evals.routing.middleware import LadderRoutingMiddleware
 from tests.evals.tau2_airline.domain import (
     create_airline_tools,
@@ -163,7 +162,7 @@ def test_tau2_airline(
                 config.models,
                 decision_model=OpenAIDecisions(
                     model=config.decision_model,
-                    api_key=lambda: os.environ["LC_GATEWAY_KEY"],
+                    api_key=load_gateway_key,
                     base_url=GATEWAY_OPENAI_URL,
                 ),
                 granularity=routing,

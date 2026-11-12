@@ -631,7 +631,11 @@ async def make_routed_graph(config: dict[str, object] | None = None) -> object:
     # Only this graph needs the staged routing package.
     from langchain_openai.decisions import OpenAIDecisions  # noqa: PLC0415
 
-    from deepagents_evals.routing.config import GATEWAY_OPENAI_URL, load_config  # noqa: PLC0415
+    from deepagents_evals.routing.config import (  # noqa: PLC0415  # Only routed graphs need this package.
+        GATEWAY_OPENAI_URL,
+        load_config,
+        load_gateway_key,
+    )
     from deepagents_evals.routing.middleware import LadderRoutingMiddleware  # noqa: PLC0415
 
     configurable = _configurable(config)
@@ -651,7 +655,7 @@ async def make_routed_graph(config: dict[str, object] | None = None) -> object:
                 routing.models,
                 decision_model=OpenAIDecisions(
                     model=routing.decision_model,
-                    api_key=lambda: os.environ["LC_GATEWAY_KEY"],
+                    api_key=load_gateway_key,
                     base_url=GATEWAY_OPENAI_URL,
                 ),
                 granularity=routing.granularity,

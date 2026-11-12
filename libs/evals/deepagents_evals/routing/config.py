@@ -27,6 +27,23 @@ CONFIG_ENV = "ROUTING_CONFIG"
 GATEWAY_URLS = {"anthropic": GATEWAY_ANTHROPIC_URL, "openai": GATEWAY_OPENAI_URL}
 
 
+def load_gateway_key() -> str:
+    """Read `LC_GATEWAY_KEY` and validate it before passing it to an HTTP client.
+
+    Returns:
+        The unchanged gateway key.
+
+    Raises:
+        KeyError: If `LC_GATEWAY_KEY` is not set.
+        ValueError: If the key is empty or contains whitespace, control characters, or non-ASCII text.
+    """
+    key = os.environ["LC_GATEWAY_KEY"]
+    if not key or not key.isascii() or not key.isprintable() or " " in key:
+        msg = "LC_GATEWAY_KEY must be nonempty printable ASCII without whitespace. Check the configured secret."
+        raise ValueError(msg)
+    return key
+
+
 @dataclass(frozen=True)
 class RoutingConfig:
     """The models one routing run uses.
@@ -60,7 +77,7 @@ def _gateway_model(spec: Mapping[str, Any]) -> BaseChatModel:
     return init_chat_model(
         model,
         base_url=GATEWAY_URLS[provider],
-        api_key=os.environ["LC_GATEWAY_KEY"],
+        api_key=load_gateway_key(),
         **spec.get("model_kwargs", {}),
     )
 

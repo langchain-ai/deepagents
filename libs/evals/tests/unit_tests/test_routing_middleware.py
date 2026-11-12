@@ -140,6 +140,7 @@ async def test_simulator_turns_route_inside_one_invocation(
     assert cheap.calls == ([1, 1] if granularity == "per_turn" else [1, 1, 1])
     assert len(calls) == (2 if granularity == "per_turn" else 1)
     assert len(state["decision_log"]) == len(calls)
+    assert result["decision_log"] == state["decision_log"]
     assert calls[0].args[0]["input"][-1].content == "Please check my account."
     if granularity == "per_turn":
         context = calls[1].args[0]["input"]
@@ -327,9 +328,23 @@ async def test_harbor_factory_selects_the_turn_reader_for_its_tools(
         "CompiledStateGraph",
         await langgraph_agent.make_routed_graph({"configurable": {"cwd": str(tmp_path)}}),
     )
-    result = await agent.ainvoke({"messages": [HumanMessage(content="Follow the protocol")]})
+    result = await agent.ainvoke(
+        {
+            "messages": [HumanMessage(content="Follow the protocol")],
+            "decision_log": [{"to_tier": 999}],
+        }
+    )
 
     assert result["messages"][-1].content == "Done"
     assert cheap.calls == [1]
     assert strong.calls == ([0, 2] if simulated else [])
     assert decisions.ainvoke.await_count == (2 if simulated else 1)
+    assert [entry["to_tier"] for entry in result["decision_log"]] == ([0, 1] if simulated else [0])
+    assert {
+        "current_tier",
+        "turn",
+        "last_turn_id",
+        "cache_expires_at",
+        "prefix_anchor",
+        "last_usage",
+    }.isdisjoint(result)

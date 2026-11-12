@@ -8,7 +8,8 @@ Call cost uses relative price weights and each tier's estimated prompt-cache sta
 The failure penalty is twice a cold call on the strongest tier. Decide once per thread
 or once per turn, holding the selected tier for every model call until the next decision.
 On decision failure, retain the current tier or start on the strongest tier.
-Read private routing state with `agent.get_state(config).values`.
+Read decisions from the agent output's `decision_log`; inspect private runtime
+state with `agent.get_state(config).values`.
 """
 
 from __future__ import annotations
@@ -25,6 +26,7 @@ from langchain.agents.middleware.types import (
     ExtendedModelResponse,
     ModelRequest,
     ModelResponse,
+    OmitFromInput,
     PrivateStateAttr,
     ResponseT,
     TracePolicy,
@@ -69,7 +71,7 @@ _CACHE_KEYS: Final = (
 
 
 class RouterState(AgentState):
-    """State schema for `LadderRoutingMiddleware`. Every field is private, so none crosses into subagents."""
+    """Expose routing decisions in results while keeping runtime bookkeeping private."""
 
     current_tier: NotRequired[Annotated[int, PrivateStateAttr]]
     """The rung serving calls now."""
@@ -89,8 +91,8 @@ class RouterState(AgentState):
     last_usage: NotRequired[Annotated[UsageMetadata | None, PrivateStateAttr]]
     """Usage of the last call; its `input_tokens` is the measured prompt size."""
 
-    decision_log: Annotated[list[dict[str, Any]], PrivateStateAttr, operator.add]
-    """One record per routing decision, including stays."""
+    decision_log: Annotated[list[dict[str, Any]], OmitFromInput, operator.add]
+    """Output-only records of routing decisions, including stays."""
 
 
 def _model_name(model: BaseChatModel) -> str:

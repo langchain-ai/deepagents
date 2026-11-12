@@ -75,8 +75,7 @@ _RIPGREP_STDERR_READ_SIZE = 8192
 
 
 _PROC_FD = "/proc/self/fd"
-"""Linux exposes each open descriptor here: the link names the real path of
-what is open, and a path through it stays inside that directory."""
+"""Per-descriptor paths, used to run an operation inside a directory held open."""
 
 _SUPPORTS_PINNING = sys.platform.startswith("linux") and hasattr(os, "O_PATH") and Path(_PROC_FD).is_dir()
 
@@ -339,7 +338,7 @@ class FilesystemBackend(BackendProtocol):
             _PINNED.reset(token)
             os.close(fd)
 
-    def _open_parent(  # noqa: C901, PLR0911, PLR0912  # one early return per refusal reads clearer than nesting
+    def _open_parent(
         self,
         key: str,
         *,
@@ -358,12 +357,33 @@ class FilesystemBackend(BackendProtocol):
             except (ValueError, OSError, RuntimeError) as e:
                 return _Pin(error=f"Error: cannot resolve {key}: {e}")
 
+        opened = self._open_existing_ancestor(key, parent)
+        if isinstance(opened, _Pin):
+            return opened
+        fd, missing = opened
+        try:
+            refusal = self._authorize_opened(fd, key, missing, target.name, authorize)
+        except OSError as e:
+            refusal = _Pin(error=f"Error: cannot open the directory of {key}: {e}")
+        if refusal is None and missing and not create:
+            refusal = _Pin(missing=True)
+        if refusal is not None:
+            os.close(fd)
+            return refusal
+        descended = self._descend(fd, missing, key)
+        return descended if isinstance(descended, _Pin) else (descended, parent, target.name)
+
+    @staticmethod
+    def _open_existing_ancestor(key: str, parent: Path) -> tuple[int, list[str]] | _Pin:
+        """Open the nearest existing directory at or above `parent`.
+
+        Returns its descriptor and the names of the missing directories below it.
+        """
         missing: list[str] = []
         directory = parent
         while True:
             try:
-                fd = os.open(directory, _DIR_FLAGS)
-                break
+                return os.open(directory, _DIR_FLAGS), missing
             except (FileNotFoundError, NotADirectoryError):
                 if directory.parent == directory:
                     return _Pin(missing=True)
@@ -372,23 +392,37 @@ class FilesystemBackend(BackendProtocol):
             except OSError as e:
                 return _Pin(error=f"Error: cannot open the directory of {key}: {e}")
 
+    def _authorize_opened(
+        self,
+        fd: int,
+        key: str,
+        missing: list[str],
+        leaf: str,
+        authorize: Callable[[str], str | None],
+    ) -> _Pin | None:
+        """Authorize the target by the real path of the open directory, or return why not.
+
+        Raises:
+            OSError: If the open directory's real path cannot be read.
+        """
+        real_dir = str(Path(f"{_PROC_FD}/{fd}").readlink())
+        if real_dir.endswith(" (deleted)"):
+            return _Pin(missing=True)
         try:
-            real_dir = str(Path(f"{_PROC_FD}/{fd}").readlink())
-            if real_dir.endswith(" (deleted)"):
-                os.close(fd)
-                return _Pin(missing=True)
-            try:
-                real = self._tool_path(Path(real_dir, *missing, target.name))
-            except ValueError:
-                os.close(fd)
-                return _Pin(error=f"Error: {key} resolves outside the root directory")
-            if (error := authorize(real)) is not None:
-                os.close(fd)
-                return _Pin(error=error)
-            if missing and not create:
-                os.close(fd)
-                return _Pin(missing=True)
-            for segment in missing:
+            real = self._tool_path(Path(real_dir, *missing, leaf))
+        except ValueError:
+            return _Pin(error=f"Error: {key} resolves outside the root directory")
+        error = authorize(real)
+        return None if error is None else _Pin(error=error)
+
+    @staticmethod
+    def _descend(fd: int, segments: list[str], key: str) -> int | _Pin:
+        """Create and open each of `segments` under `fd`, without following symlinks.
+
+        Takes ownership of `fd`: returns the innermost descriptor, or closes it on failure.
+        """
+        try:
+            for segment in segments:
                 with contextlib.suppress(FileExistsError):
                     os.mkdir(segment, dir_fd=fd)
                 child = os.open(segment, _DIR_FLAGS | os.O_NOFOLLOW, dir_fd=fd)
@@ -397,7 +431,7 @@ class FilesystemBackend(BackendProtocol):
         except OSError as e:
             os.close(fd)
             return _Pin(error=f"Error: cannot open the directory of {key}: {e}")
-        return fd, parent, target.name
+        return fd
 
     def _io_path(self, key: str, resolved: Path) -> Path:
         """Return the path for I/O on `key`: through the directory `_pin` holds open, if any."""

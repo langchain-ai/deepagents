@@ -50,6 +50,41 @@ PING_TAG = "cache_keepalive"
 _MAX_TRACKED_CALLS = 64
 """Model calls whose tool calls never ran (rejected, interrupted) are dropped past this."""
 
+_DEFAULT_MIN_EXPECTED_SAVINGS = 0.05
+"""Dollars a ping must be expected to save before it is sent, as in pi's cache warming."""
+
+
+@dataclass(frozen=True)
+class CachePricing:
+    """Prompt-cache prices of a model, in dollars per million tokens.
+
+    Used to skip pings that would cost more than the cache miss they prevent.
+
+    Example:
+        ```python
+        # Claude Opus 5.5 list prices: cache read $0.20, 5-minute cache write $5.
+        CachePricing(cache_read=0.20, cache_write=5.0)
+        ```
+    """
+
+    cache_read: float
+    """Price of reading cached prompt tokens."""
+
+    cache_write: float
+    """Price of writing prompt tokens to the cache (the TTL the requests use)."""
+
+    def expected_savings(self, prompt_tokens: int) -> float:
+        """Dollars a ping is expected to save for a prompt of `prompt_tokens` tokens.
+
+        A ping reads the cached prompt and outputs nothing; skipping it means
+        the next request writes the prompt again instead of reading it. While a
+        tool call runs, that next request is certain, so the saving is the
+        miss's extra cost minus the ping's cost.
+        """
+        miss_cost = prompt_tokens * (self.cache_write - self.cache_read) / 1e6
+        ping_cost = prompt_tokens * self.cache_read / 1e6
+        return miss_cost - ping_cost
+
 
 @dataclass
 class _PendingCall:
@@ -57,6 +92,7 @@ class _PendingCall:
 
     request: ModelRequest
     started_at: float
+    prompt_tokens: int | None = None
     handler: Callable[[ModelRequest], ModelResponse] | None = None
     ahandler: Callable[[ModelRequest], Awaitable[ModelResponse]] | None = None
     active_tools: int = 0
@@ -65,11 +101,23 @@ class _PendingCall:
     task: asyncio.Task[None] | None = None
 
 
+def _messages(response: ModelCallResult) -> list[Any]:
+    """Return the messages of a model call result."""
+    return response.result if isinstance(response, ModelResponse) else [response]
+
+
 def _tool_call_ids(response: ModelCallResult) -> list[str]:
     """Return the ids of the tool calls in a model response."""
-    messages = response.result if isinstance(response, ModelResponse) else [response]
-    ids = (call.get("id") for message in messages if isinstance(message, AIMessage) for call in message.tool_calls)
+    ids = (call.get("id") for message in _messages(response) if isinstance(message, AIMessage) for call in message.tool_calls)
     return [i for i in ids if i]
+
+
+def _prompt_tokens(response: ModelCallResult) -> int | None:
+    """Return the prompt size the response reports, cached tokens included."""
+    for message in _messages(response):
+        if isinstance(message, AIMessage) and message.usage_metadata:
+            return message.usage_metadata.get("input_tokens")
+    return None
 
 
 @contextmanager
@@ -105,7 +153,9 @@ class AnthropicCacheKeepaliveMiddleware(AgentMiddleware[Any, Any, Any]):
     Pings start only for tool calls that follow an Anthropic model call, stop as
     soon as the last of those tool calls finishes, and stop for good after
     `max_pings` pings or the first ping error, so a hung tool costs at most
-    `max_pings` cache reads. Pings appear in traces as model calls with no
+    `max_pings` cache reads. With `pricing`, pings are skipped when the prompt
+    is too small for a cache miss to cost `min_expected_savings` more than a
+    ping. Pings appear in traces as model calls with no
     output tokens, tagged `cache_keepalive` and `nostream` so they never reach a
     `messages` stream. Requests to other providers pass through untouched.
 
@@ -125,22 +175,47 @@ class AnthropicCacheKeepaliveMiddleware(AgentMiddleware[Any, Any, Any]):
         ```
     """
 
-    def __init__(self, *, interval: float = _DEFAULT_INTERVAL_SECONDS, max_pings: int = _DEFAULT_MAX_PINGS) -> None:
+    def __init__(
+        self,
+        *,
+        interval: float = _DEFAULT_INTERVAL_SECONDS,
+        max_pings: int = _DEFAULT_MAX_PINGS,
+        pricing: CachePricing | None = None,
+        min_expected_savings: float = _DEFAULT_MIN_EXPECTED_SAVINGS,
+    ) -> None:
         """Initialize the middleware.
 
         Args:
             interval: Seconds between the start of the last model request and
                 the next ping. Keep it under the cache entry's five-minute TTL.
             max_pings: Most pings sent while one batch of tool calls runs.
+            pricing: The model's cache prices. When unset, every long tool call
+                is pinged regardless of prompt size.
+            min_expected_savings: Dollars a ping must be expected to save, per
+                `pricing`, before pings start for a tool call. Prompts whose
+                size the model response did not report are always pinged.
         """
         super().__init__()
         self.interval = interval
         self.max_pings = max_pings
+        self.pricing = pricing
+        self.min_expected_savings = min_expected_savings
         self._pending: OrderedDict[str, _PendingCall] = OrderedDict()
         self._lock = threading.Lock()
 
+    def _pays(self, call: _PendingCall) -> bool:
+        """Whether pinging `call` is expected to save at least `min_expected_savings`."""
+        if self.pricing is None or call.prompt_tokens is None:
+            return True
+        savings = self.pricing.expected_savings(call.prompt_tokens)
+        if savings < self.min_expected_savings:
+            logger.debug("Skipping prompt-cache keep-alive: %d-token prompt saves $%.4f per ping.", call.prompt_tokens, savings)
+            return False
+        return True
+
     def _register(self, response: ModelCallResult, call: _PendingCall) -> None:
         """Remember `call` for each tool call in `response`."""
+        call.prompt_tokens = _prompt_tokens(response)
         with self._lock:
             for tool_call_id in _tool_call_ids(response):
                 self._pending[tool_call_id] = call
@@ -235,7 +310,7 @@ class AnthropicCacheKeepaliveMiddleware(AgentMiddleware[Any, Any, Any]):
     ) -> ToolMessage | Command[Any]:
         """Keep the cache warm in a background thread while the tool runs."""
         call = self._claim(request)
-        if call is None or call.handler is None:
+        if call is None or call.handler is None or not self._pays(call):
             return handler(request)
         if call.active_tools == 1:
             call.stop = threading.Event()
@@ -254,7 +329,7 @@ class AnthropicCacheKeepaliveMiddleware(AgentMiddleware[Any, Any, Any]):
     ) -> ToolMessage | Command[Any]:
         """Keep the cache warm in a background task while the tool runs (async version)."""
         call = self._claim(request)
-        if call is None or call.ahandler is None:
+        if call is None or call.ahandler is None or not self._pays(call):
             return await handler(request)
         if call.active_tools == 1:
             call.task = asyncio.create_task(self._aping_loop(call))

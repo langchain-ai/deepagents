@@ -40,7 +40,7 @@ from deepagents._models import resolve_model
 from deepagents._tools import _apply_tool_description_overrides
 from deepagents._version import _lc_version
 from deepagents.backends import StateBackend
-from deepagents.backends.protocol import BackendProtocol
+from deepagents.backends.protocol import BackendConsumer, BackendProtocol
 from deepagents.middleware._fs_interrupt import _build_interrupt_on_from_permissions
 from deepagents.middleware._parent_notifier import _ParentNotifierMiddleware
 from deepagents.middleware._prompt_caching import append_prompt_caching_middleware
@@ -211,6 +211,13 @@ def _merge_fs_interrupt_on(
 def _passed_skills_sources(middleware: Sequence[AgentMiddleware[Any, Any, Any]]) -> list[str] | None:
     """Sources of a `SkillsMiddleware` passed to take the skills slot by name, if any."""
     return next((m.sources for m in middleware if isinstance(m, SkillsMiddleware) and m.name == "SkillsMiddleware"), None)
+
+
+def _bind_backend(middleware: Sequence[AgentMiddleware[Any, Any, Any]], backend: BackendProtocol) -> None:
+    """Give `backend` to each middleware that asks for the agent's backend."""
+    for m in middleware:
+        if isinstance(m, BackendConsumer):
+            m.bind_backend(backend)
 
 
 def _apply_custom_middleware(
@@ -440,6 +447,11 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             `general_purpose_subagent=GeneralPurposeSubagentProfile(enabled=False)`
             on the active harness profile and pass no synchronous
             subagents via `subagents=`. Async subagents are unaffected.
+
+            Middleware with a `bind_backend` method, such as one implementing
+            [`BackendConsumer`][deepagents.backends.protocol.BackendConsumer],
+            receive `backend` before the agent is built. So does a declarative
+            subagent's own middleware.
         subagents: Subagent specs available to the main agent.
 
             This collection supports three forms:
@@ -670,6 +682,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     )
 
     backend = backend if backend is not None else StateBackend()
+    _bind_backend(middleware or (), backend)
 
     base_prompt = _apply_profile_prompt(_profile, "")
     if system_prompt is None:
@@ -775,6 +788,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
                 # `create_agent` rejects two middleware sharing a name, so a spec
                 # entry replaces the inherited one in place rather than adding to it.
                 subagent_custom_middleware = list({m.name: m for m in [*middleware, *subagent_custom_middleware]}.values())
+            _bind_backend(subagent_custom_middleware, backend)
             subagent_middleware = _apply_custom_middleware(
                 subagent_middleware,
                 subagent_custom_middleware,

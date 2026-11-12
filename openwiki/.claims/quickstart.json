@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:5d5cf084541e0b7afc9874549ea9a48d442cd23a0ee369630a8fba9546cf793a",
+  "pageVersion": "sha256:5f9a8ef0dcc96fd5872dd88f6aa3975da690d0306fbdc986e9a5ea99db2ff133",
   "claims": [
     {
       "id": "claim_7da573d3acfd4e42a24d96f63c118dc3",
@@ -74,25 +74,15 @@
     },
     {
       "id": "claim_877ddb2adf2b4013aa3baed0790b81d2",
-      "statement": "Talon publishes direct requirements on `deepagents>=0.7.34` and `deepagents-code>=0.2.5,<1.0.0`, while history embedding adapters and MongoDB/PostgreSQL support are optional extras rather than base-host dependencies.",
+      "statement": "Talon publishes direct requirements on `deepagents>=0.7.35` and `deepagents-code>=0.2.6,<1.0.0`, while history embedding adapters and MongoDB/PostgreSQL support are optional extras rather than base-host dependencies.",
       "evidence": [
         {
-          "resource": "repo://libs/talon/pyproject.toml",
-          "version": "repo-file-v1:sha256:b59dc97a1fa7b36ae3e8b3644c66002714d6b118f5ab00eb9cf6248372a61e79"
-        }
-      ]
-    },
-    {
-      "id": "claim_bd0047a6855d4048af012e9c1197e2e2",
-      "statement": "For manifest changes, the lockfile refresh helper starts from the named manifest and `make -C libs lock-check` fans out lock freshness validation across package directories.",
-      "evidence": [
-        {
-          "resource": "repo://.github/scripts/checks/refresh_lockfiles.py#L11-L27",
-          "version": "repo-lines-v1:sha256:945f34f3d799e9dc898eee1684dde49d49edec1cf46b248cf3c23fdd60416745:eyJzZWxlY3RlZExpbmVDb3VudCI6MTcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc0MGY0YjJiMTdmOWM0NWE5NjY2NzdiNzM3ZWJmM2NmYWVhOTZjMWM4Mjk5MmRiYjBlZTY5ZWYzOGVjYjlkZmYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjcxYWZhODk3NGQ5ZTExNzUzMTI1N2Y4NzVlM2EwYjc1NmQ4NzNkYzM4ODU3MTcwNGI3MGIzMTA3NDkzNDcxOTIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjczMTU2MWViZTRmMTRlYmFjZjQyZTJkMjhmMWRkYzQ2Y2M4YTg1YzdkMWIyMThlNTZjNjZlMmQwZjZmYzM2NzIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjNkNDEzNDBjYzIzOWExNTljZTliNjAyMmU5ZjYzMjI4MzJlMmVhZDc2Y2FlOWU0NzU0ZDIxMGViOGZiNmQ1ZTgifQ"
+          "resource": "repo://libs/talon/pyproject.toml#L22-L29",
+          "version": "repo-lines-v1:sha256:f0fedc90088f9da6ce756d653ee2590f09de856111ff50bf55b30cd4b2566e35:eyJzZWxlY3RlZExpbmVDb3VudCI6OCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYWQ5NWY1ZTllZGUwMTgxNjA0M2MwNzk3YWNlOGRhMmFjNGU5OWE4YTZhNjEwZmE5ODU3MGVmMzRiOTM1NjEwOSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiOWExNmQyNzM3NTFiZjU1MGUzNmU0OWQxNTBkY2FmNmQzMGI1NTRjOWUyY2ViNjVmZDYxNmZhZDIxZTdjYzFlYiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMDkzZWJmM2FlYTczODE3Y2ZlNDM2ZjhhNWE5YjE0ZWEwMjg2YTYyZWE0NGExZjJlOThmNTE4MGFlNTI4M2JjYyIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNWY1MDVhMWVjOTI4MGZiYmE0NmExNmY5NGMzM2JjZThkZWYzNWE2NjgzMDlhNDQzMGQ0NDM3NWJlYzNkN2Q5ZiJ9"
         },
         {
-          "resource": "repo://libs/Makefile#L47-L53",
-          "version": "repo-lines-v1:sha256:4cb508beca89de82f3462be7ed2d34502b5a772d1aa62d9656577e8d6335ccd4:eyJzZWxlY3RlZExpbmVDb3VudCI6NywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMzc1ZjljNGNhZWI1OTI1YTIwYjZhNDA4ODg5ODk0ZGU0ZmM0NmYwNzA4YTI5NzRkMmM1YjkwYjQzMzVjNTQ2YiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNGZlMDQzM2Q3ODBiODA3Njg5OGJiM2Q2OTU3Y2U4MDhkNjU4MDZiYTM2Y2Q3MjNhOThlODBjZjAwY2EyZDdmMiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMTc0MWVmZjdlYjc0ZjFmMzNjNWEzODE1Yjc5ZDlmYzE3ZDI2NTUwNTA2ZGM1NTI0ZjViY2JkYTAwZWYwNjMyMiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMDliZjgyODAwYzE5NWFlMTBkYzlkMGViZDc4ZGE5MzRkMzI4YWZlZmRjYzgzODZlZGFjYjEwOTY1MmE2OWQwZiJ9"
+          "resource": "repo://libs/talon/pyproject.toml#L52-L78",
+          "version": "repo-lines-v1:sha256:e8ef93528a4d55aee8215d9906ba5191c7a6ad65c5cd2eca1d3125defabc6ef2:eyJzZWxlY3RlZExpbmVDb3VudCI6MjcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU5MjE4ZGM0Y2U5NzFjYmUzZDM4ZDc3NDMwZTYzOTkxODg4NGRkNzdkNzE4NGM3YjkzZGZkYzJlOTk4NjkxYjQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY5NDE2ZTA5Zjc4YmEzMTZjMDMyNTY4MjEzYjg1NWVlNzU2ZTQxNTY1ZDkxOGYwOTUxOWM4MWZkNjIwZjQwNjAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjJiMDgzNjZhNzNmY2E5ZmU0OTdlMmQyZWJmNDA1M2NmN2E1ZmY0Nzc3MTY0Yjc0ZjgxZjdkNzUyODU2YjQ2YjciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjY1NTUxNDRiZWE2ZjNiZGJlMTM2YTdhNzRlOTUwYTM0YTVkYzg5OGQ5M2U2MmMyODgxMWU0YmQ3NTA1ZDk3NjIifQ"
         }
       ]
     },
@@ -106,25 +96,7 @@
         },
         {
           "resource": "repo://libs/talon/pyproject.toml#L5-L50",
-          "version": "repo-lines-v1:sha256:6ad5378b5eea4c590628aa88ebe61c4e33ea4505985bbfa398d919688f6201d5:eyJzZWxlY3RlZExpbmVDb3VudCI6NDYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjcwMmE4MWMzODM2ZWRlZjJkMGJhMTFkMjM1M2ZiNmRhYmM3NzcxNTBhN2NhODNlYTBkOWU5YTcwMzEzZmVhYmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY5NDE2ZTA5Zjc4YmEzMTZjMDMyNTY4MjEzYjg1NWVlNzU2ZTQxNTY1ZDkxOGYwOTUxOWM4MWZkNjIwZjQwNjAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImYxMzdhYWFhYzhhZjRmMGNiYjA4YTcxZjZlNTRjMjhmYjBhNDgxYjdlYWRlZWExMjEzNGM0NzM4NzUzNGU3ZjgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjY3NGY3NjBkNTIwMzNjZGJmMGNiODVmYzMwNmI1MjJhNzA5NjBhZmFmMTg5ZmEyNjQ3OTlmYjAwODkyNzgxM2EifQ"
-        }
-      ]
-    },
-    {
-      "id": "claim_a14b0cd760f141158ecd492cdd1b190c",
-      "statement": "Talon's optional extras separate local, Voyage, and OpenAI-compatible history embeddings; MongoDB/PostgreSQL persistence; OpenShell sandbox support; and media stacks, while `media` and `media-cpu` are mutually exclusive and the latter selects the explicit CPU PyTorch index on Linux.",
-      "evidence": [
-        {
-          "resource": "repo://libs/talon/pyproject.toml#L126-L133",
-          "version": "repo-lines-v1:sha256:b48401f4c29ff5553fa178281399ccffcc70058b05dc01959424338bd66899d7:eyJzZWxlY3RlZExpbmVDb3VudCI6OCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiODNhMDA5ZjBjYTU2MzRiNzcwMjAyMDk0MmZkMTg5Y2RjZDg0YjE2N2FiODAxNTAxMjhlNmY1YjVkYmYyNDAzMSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMDg4YWZiODk0NDM4ZjRmNDJjMjc0MjQ1ZWMxOWJhODRkYTFhNGIwZjRiOWE5ODQ2YWVhYjA3OWFlYzdhYzY5MSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiYjBlYjZmMmMyMGVjZDg2ZjZhMzdmNTFkZWRhZmMyNDNlYzUxZGQ0ZGVkZTVjYzRkMzFhMzU3MTg5N2VlNjM4MiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMmU2ZmM5ZGU2MzMxZmVkYzdkMGQzZmUxNjI1ZmNiZWE1NjM2MTBiZmZmOGY2NTBhZmJkMjI3MDc4ZTM2ODgwNSJ9"
-        },
-        {
-          "resource": "repo://libs/talon/pyproject.toml#L145-L149",
-          "version": "repo-lines-v1:sha256:fd2d560e1c3654ae1ef69c3c379c5afd8bf596bae7381004de09bd8722e459d1:eyJzZWxlY3RlZExpbmVDb3VudCI6NSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMTZlZjAyYjBhNGFiNjg1M2FlNmIyYTI1YjNiMzU4ZmU1ODM3OTk3YjM0ZWU0MWY5MjI3Njc5YWExYzkwMWM4NyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiOGEwZWMzMDYxNWE4NmU2YTk1MDJhNjYxYzMwZWQyOTc0ZDFjMDFiNjdlMzRiNDgyOGY2OGVlZGUzZTU0OWUxNSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZDMxYWFiNDQ2YTRiN2M4YjdkOWUzYWJiMzczNDU2YzNlYzY1MzAxNmE4MzRkZDZlMmYxYjQzZGU4YTlkMTIzMSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNjMyYjkzMmRkMjJhYjNhNzU1YTUxZjBlZTM4M2QxOGIwNmQwMGYyZjU2ZWI4MTE5NzIxNThhNGRiNzc4Y2U5MCJ9"
-        },
-        {
-          "resource": "repo://libs/talon/pyproject.toml#L52-L101",
-          "version": "repo-lines-v1:sha256:5024fad646f7cf17b925a25911739c450904d203002691a2bcb5fac01c358452:eyJzZWxlY3RlZExpbmVDb3VudCI6NTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU5MjE4ZGM0Y2U5NzFjYmUzZDM4ZDc3NDMwZTYzOTkxODg4NGRkNzdkNzE4NGM3YjkzZGZkYzJlOTk4NjkxYjQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY5NDE2ZTA5Zjc4YmEzMTZjMDMyNTY4MjEzYjg1NWVlNzU2ZTQxNTY1ZDkxOGYwOTUxOWM4MWZkNjIwZjQwNjAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjJiMDgzNjZhNzNmY2E5ZmU0OTdlMmQyZWJmNDA1M2NmN2E1ZmY0Nzc3MTY0Yjc0ZjgxZjdkNzUyODU2YjQ2YjciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjU1NDViMzhhOWM0YzA0NzA4YTc3YWM5YTMyOWY4YTdkY2I1ODk1MDRhNGNhOGIxMTk5NThmNWM2ZTc1NThkODUifQ"
+          "version": "repo-lines-v1:sha256:47aeee2ebd235e94ccfd97691137aefe492ea70cf2841eb68b560821d6197099:eyJzZWxlY3RlZExpbmVDb3VudCI6NDYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjcwMmE4MWMzODM2ZWRlZjJkMGJhMTFkMjM1M2ZiNmRhYmM3NzcxNTBhN2NhODNlYTBkOWU5YTcwMzEzZmVhYmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY5NDE2ZTA5Zjc4YmEzMTZjMDMyNTY4MjEzYjg1NWVlNzU2ZTQxNTY1ZDkxOGYwOTUxOWM4MWZkNjIwZjQwNjAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImYxMzdhYWFhYzhhZjRmMGNiYjA4YTcxZjZlNTRjMjhmYjBhNDgxYjdlYWRlZWExMjEzNGM0NzM4NzUzNGU3ZjgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjY3NGY3NjBkNTIwMzNjZGJmMGNiODVmYzMwNmI1MjJhNzA5NjBhZmFmMTg5ZmEyNjQ3OTlmYjAwODkyNzgxM2EifQ"
         }
       ]
     },
@@ -139,20 +111,6 @@
         {
           "resource": "repo://libs/talon/Makefile#L8-L18",
           "version": "repo-lines-v1:sha256:0952ce0f926e46b95cf4e1d3875222090398f364f47d7ba2ffac617907e1c0d8:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjZiZTA4NmJjNzE2ZTQ1ZjVjN2NkMjMwMTFkZTgyNjgyNWU2ZjM5NmI5NDBlOTMyNDdjMzYxZjJmOWQ5YWNjOGQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImNlNjI5YWM1NjQ1YjZiMmYwZDEyNjYwYzhiNTA0MjgxZGMzYjg2M2I5YjYyNTRiYTY2YjdmZmQ5MTg2MWRkNzUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImI0NjNkZTM4NmUwNzkxYWRkNTJlM2Y2ZTNhMDlmMmJmNjQ4ZmU0MzEzMThlMTkxNWI3ZTVkZTk5ZjdhNTg0NTMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjBiZGQ2ODEwMjRlZDhkZjcyOTU4N2JkZDdiMTZmYzI3YWVjMDk2NGJlZTE0Nzc3NDg3ZTg2NGQ0ZTg3ZjkwOWQifQ"
-        }
-      ]
-    },
-    {
-      "id": "claim_a6ede177cfd14cb7a3217bb9f9754541",
-      "statement": "Talon's generated `uv.lock` resolves Python `==3.14.*` and records mutually exclusive `media` and `media-cpu` resolution markers rather than acting as a dependency manifest.",
-      "evidence": [
-        {
-          "resource": "repo://libs/talon/pyproject.toml#L126-L128",
-          "version": "repo-lines-v1:sha256:c19575e07303ea3e1a55b1a345145f280ea4bb264ea6bfccf6abf7337209e598:eyJzZWxlY3RlZExpbmVDb3VudCI6MywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiODNhMDA5ZjBjYTU2MzRiNzcwMjAyMDk0MmZkMTg5Y2RjZDg0YjE2N2FiODAxNTAxMjhlNmY1YjVkYmYyNDAzMSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNGIzNmM5MDc0ODYyMGRiMTdmNGZjYzEzODYxNjhlZTczNzQ3YjVmNmE2MWU1OWUxOTU0NTk4MmJjNWMyYTVhZCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiYjBlYjZmMmMyMGVjZDg2ZjZhMzdmNTFkZWRhZmMyNDNlYzUxZGQ0ZGVkZTVjYzRkMzFhMzU3MTg5N2VlNjM4MiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNmEzYTkyNDU0ZGYzYTI0ODNhZGQxMWIxNTBmNzcwMjRiYTNjNDdlZTQ2NmI4NDlmNTViNDg2NDVmZGZiODhlYiJ9"
-        },
-        {
-          "resource": "repo://libs/talon/uv.lock#L1-L13",
-          "version": "repo-lines-v1:sha256:4240bd91364e06b7e166082882d9412ef68429c3cdeb63390c14ea8d12150465:eyJzZWxlY3RlZExpbmVDb3VudCI6MTMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImRiYWIxMjY2NWQ5OGFlZjAyMWJhNjQ5NTNjNjFiMGVkOGE5MDhjZmI1NmExYzAxZTJmY2I0YjA1MmI3MWEyYTEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjllZTE2MDNhNzViOTViMjFlYmZkZTI3ZGE3ZjM1ZTYwZGNlNWYxNmJmMzMxNDU2NTFmNjVlZmVjYWFmMDI2ZGQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjI3YmU5NjBjMWI1ZTAzZjY5MjRjNDU1YjAyNjhiN2E5ZDdlYzU5YzBiMjVmNjRhMTU0ZGYwN2JkMjMzNGI5ZjAifQ"
         }
       ]
     },
@@ -212,7 +170,7 @@
       "evidence": [
         {
           "resource": "repo://libs/code/pyproject.toml#L5-L32",
-          "version": "repo-lines-v1:sha256:d0512b619f80564a65cc8ba1078b0a5cbb74d04879607834eb89f317e4b2eca1:eyJzZWxlY3RlZExpbmVDb3VudCI6MjgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjcwMmE4MWMzODM2ZWRlZjJkMGJhMTFkMjM1M2ZiNmRhYmM3NzcxNTBhN2NhODNlYTBkOWU5YTcwMzEzZmVhYmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImRlMDg3YTZiMTViYzJhNzA1NmE3NTI1NGZkNDFlMDZlOWJhNzIwZGQ0NmJmY2Y3NzUwNGI3OTE2ODM0ZGFjOWQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImYxMzdhYWFhYzhhZjRmMGNiYjA4YTcxZjZlNTRjMjhmYjBhNDgxYjdlYWRlZWExMjEzNGM0NzM4NzUzNGU3ZjgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQyZmNmZTU0MTY3M2MyNDQ5NjZmYjMzMWNlMjI2YTVlOWMxYzQ2NjFkNzE0MjAwYTVlYTU5MmJlYjE1YTkzMTcifQ"
+          "version": "repo-lines-v1:sha256:32944007a9d500adc7b6e5535d855082577dc13f15f5ba13162256bdcc058b87:eyJzZWxlY3RlZExpbmVDb3VudCI6MjgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjcwMmE4MWMzODM2ZWRlZjJkMGJhMTFkMjM1M2ZiNmRhYmM3NzcxNTBhN2NhODNlYTBkOWU5YTcwMzEzZmVhYmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjNhZjRhZGJmN2MwNTQ1MDY3MGY2MjhhYzU1N2Y1Zjc5OGYyMDBkNmI4ZDA3MmFmYWM0ZWJjMjg4Yjk0NzE1YTciLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImYxMzdhYWFhYzhhZjRmMGNiYjA4YTcxZjZlNTRjMjhmYjBhNDgxYjdlYWRlZWExMjEzNGM0NzM4NzUzNGU3ZjgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQyZmNmZTU0MTY3M2MyNDQ5NjZmYjMzMWNlMjI2YTVlOWMxYzQ2NjFkNzE0MjAwYTVlYTU5MmJlYjE1YTkzMTcifQ"
         },
         {
           "resource": "repo://libs/deepagents/pyproject.toml#L1-L8",
@@ -237,10 +195,20 @@
           "version": "repo-lines-v1:sha256:8033b00733cd01fd78ca4100d44563479ec6085f7de1a30c2dd6c4d4538e54f3:eyJzZWxlY3RlZExpbmVDb3VudCI6MTIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFhOTc2MGVkYmZjYmM0YjBkZjI2YTI1ZGYxZjJkNzNjYTNmMDQ1YzhhZDZjNGJlMTBmZjdkM2ZiMmI5NjkzMjciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFlM2M4ODAzMjQxZjlhNGQyMzg2MDc1YzA1NGM0ODAwZjYxZjQ3NTE4OWY3OTVkN2RkMWFiMjRiNjZhMTc5NDUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjE0NDU4ZTU1M2M2MGU0M2QyZDk5MzQ4NmRjY2MzZmQ5Y2M0ZWNlYzAxOTg4MmUyOTE0MDI5Y2UxODc2NzU2NjkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
         }
       ]
+    },
+    {
+      "id": "claim_1859e6949a7c4922a98feb9b81d306a9",
+      "statement": "The release manifest maintains separate release baselines for `libs/deepagents`, `libs/acp`, `libs/code`, `libs/talon`, and each listed partner package.",
+      "evidence": [
+        {
+          "resource": "repo://.release-please-manifest.json#L1-L11",
+          "version": "repo-lines-v1:sha256:f6b4d999e05c1e544bd39b7aa219be1feff42212c4297b2877a1a66e5645ab9b:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE2ZmIwOGZkYTFhY2I5NTdiNjExNmJkMzc4MTFhMWZlNDFhMDE2MTFjMDYzMWVkYmY3ODZkNjg4OWEyN2E1NWMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-11-10T08:04:01.717Z"
+    "at": "2026-11-11T08:04:08.950Z"
   }
 }

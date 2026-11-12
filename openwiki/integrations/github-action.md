@@ -1,7 +1,7 @@
 ---
 type: composite-action integration
 title: GitHub Action Integration
-description: Run one bounded, non-interactive dcode task from a GitHub Actions job. Documents the root action contract, CLI distribution and runtime assumptions, memory lifecycle, and direct CI validation.
+description: Run one bounded, non-interactive dcode task from a GitHub Actions job. Documents the root action contract, CLI distribution and runtime assumptions, memory lifecycle, security handoff, and direct workflow tests.
 tags: [github-actions, dcode, deepagents-code, ci, automation, memory, mcp, sandbox]
 sources:
   - id: openwiki-source-b1423dca16677f7643488f74
@@ -16,14 +16,16 @@ sources:
     resource: repo://libs/code/CHANGELOG.md
   - id: openwiki-source-ecf20e7a2684ba0d2ae7d701
     resource: repo://libs/code/deepagents_code/client/non_interactive.py
+  - id: openwiki-source-2e03fee957625ca21a1c21af
+    resource: repo://libs/code/deepagents_code/main.py
   - id: openwiki-source-7ba50bd13eb62341a2061ef9
     resource: repo://libs/code/pyproject.toml
   - id: openwiki-source-0fc0e47059e4d07e23e50be2
     resource: repo://libs/deepagents/deepagents/graph.py
 verified:
   - by: openwiki/0.4.2
-    at: 2026-11-10T08:04:01.717Z
-generated: { by: "openwiki/0.4.2", at: "2026-11-10T08:04:01.717Z" }
+    at: 2026-11-11T08:04:08.950Z
+generated: { by: "openwiki/0.4.2", at: "2026-11-11T08:04:08.950Z" }
 ---
 
 # GitHub Action Integration
@@ -100,9 +102,9 @@ All `with:` values are strings. Empty optional value inputs are normally omitted
 | Integrations | `mcp_config`, `no_mcp`, `trust_project_mcp`, `interpreter`, `interpreter_tools`, `sandbox`, `sandbox_id`, `sandbox_snapshot_name`, `sandbox_setup` | Direct mappings for supported MCP, interpreter, and sandbox controls. |
 | Memory | `enable_memory`, `memory_scope` | Control the cache lifecycle. |
 
-`--auto-approve` is intentionally absent from the action contract. Adding a dcode option does not expose it from the action: it must be declared and mapped deliberately in `action.yml`.
+`--auto-approve` is intentionally absent from the action contract. Adding a dcode option does not expose it from the action: it must be declared and mapped deliberately in `action.yml`. In dcode, `--non-interactive` runs one task and exits without human tool approvals; it can still change files and access the network.
 
-At the dcode boundary, no shell allow list disables shell access; a restrictive list enables and gates shell commands; and `all` allows unrestricted shell commands and auto-approves tools. Project stdio MCP is untrusted by default. An explicit MCP config path takes precedence over auto-discovered configuration, `no_mcp` disables MCP tool loading, and `trust_project_mcp` is an explicit grant to load project stdio MCP. An empty `sandbox` means local runner execution, not isolation. Treat prompts, checked-out content, skills, MCP configuration, and agent output as untrusted.
+At the dcode boundary, no shell allow list disables shell access, a restrictive list enables and gates shell commands, and `all` permits unrestricted shell commands and auto-approves tools. Project stdio MCP is untrusted by default. An explicit MCP config path takes precedence over auto-discovered configuration, `no_mcp` disables MCP tool loading, and `trust_project_mcp` is an explicit grant to load project MCP configuration. An empty `sandbox` means local runner execution, not isolation. Treat prompts, checked-out content, skills, MCP configuration, and agent output as untrusted.
 
 ## Memory and skills
 
@@ -122,7 +124,7 @@ The action pipes combined output to `tee` but captures `PIPESTATUS[0]`, so a suc
 
 ## Distribution contract and CI coverage
 
-The action ref and `cli_version` select independent artifacts: `uses: langchain-ai/deepagents@<ref>` selects the root composite action, while `cli_version` selects either the latest `deepagents-code` distribution or the exact version passed to `uvx`. Pin both when reproducibility matters. The current repository package declares `deepagents-code` version `0.2.6` and Python `>=3.14,<3.15`; the `0.2.0` changelog records the Python 3.14 requirement as a breaking change. A CLI pin is consequently also a Python-runtime compatibility choice.
+The action ref and `cli_version` select independent artifacts: `uses: langchain-ai/deepagents@<ref>` selects the root composite action, while `cli_version` selects either the latest `deepagents-code` distribution or the exact version passed to `uvx`. Pin both when reproducibility matters. The current repository package declares `deepagents-code` version `0.2.7` and Python `>=3.14,<3.15`; the `0.2.0` changelog records the Python 3.14 requirement as a breaking change. A CLI pin is consequently also a Python-runtime compatibility choice.
 
 The focused action test parses `action.yml` and the dcode root parser to catch action-input-to-flag drift and ensure `--auto-approve` stays absent. It executes the actual action run body with stubbed `uvx` and `timeout`, covering validation, stdin/skill exclusion, version command construction, timeout arithmetic, exit propagation, and stdin SIGPIPE behavior.
 

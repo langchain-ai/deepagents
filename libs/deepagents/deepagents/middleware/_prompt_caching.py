@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import sys
+from functools import cache
 from importlib import import_module
 from typing import TYPE_CHECKING, Any, cast
 
@@ -87,32 +88,30 @@ class _LazyAnthropicPromptCachingMiddleware(AgentMiddleware[Any, Any, Any]):
         return await delegate.awrap_model_call(request, handler)
 
 
-def _create_bedrock_prompt_caching_middleware() -> AgentMiddleware[Any, Any, Any] | None:
-    """Create Bedrock prompt caching middleware when `langchain-aws` is installed."""
-    module_name = "langchain_aws.middleware.prompt_caching"
+@cache
+def _prompt_caching_middleware_class(package: str, name: str) -> Callable[..., AgentMiddleware[Any, Any, Any]] | None:
+    """Cache optional provider classes, including unavailable results, without sharing instances."""
+    module_name = f"{package}.middleware.prompt_caching"
     try:
         module = import_module(module_name)
     except ImportError as exc:
-        if exc.name not in {"langchain_aws", "langchain_aws.middleware", module_name}:
+        if exc.name not in {package, f"{package}.middleware", module_name}:
             raise
-        logger.debug("Bedrock prompt caching middleware is unavailable.", exc_info=exc)
+        logger.debug("%s is unavailable.", name, exc_info=exc)
         return None
-    middleware_cls = module.BedrockPromptCachingMiddleware
-    return cast("AgentMiddleware[Any, Any, Any]", middleware_cls(unsupported_model_behavior="ignore"))
+    return cast("Callable[..., AgentMiddleware[Any, Any, Any]]", getattr(module, name))
+
+
+def _create_bedrock_prompt_caching_middleware() -> AgentMiddleware[Any, Any, Any] | None:
+    """Create Bedrock prompt caching middleware when `langchain-aws` is installed."""
+    middleware_cls = _prompt_caching_middleware_class("langchain_aws", "BedrockPromptCachingMiddleware")
+    return middleware_cls(unsupported_model_behavior="ignore") if middleware_cls is not None else None
 
 
 def _create_fireworks_prompt_caching_middleware() -> AgentMiddleware[Any, Any, Any] | None:
     """Create Fireworks prompt caching middleware when `langchain-fireworks` is installed."""
-    module_name = "langchain_fireworks.middleware.prompt_caching"
-    try:
-        module = import_module(module_name)
-    except ImportError as exc:
-        if exc.name not in {"langchain_fireworks", "langchain_fireworks.middleware", module_name}:
-            raise
-        logger.debug("Fireworks prompt caching middleware is unavailable.", exc_info=exc)
-        return None
-    middleware_cls = module.FireworksPromptCachingMiddleware
-    return cast("AgentMiddleware[Any, Any, Any]", middleware_cls(unsupported_model_behavior="ignore"))
+    middleware_cls = _prompt_caching_middleware_class("langchain_fireworks", "FireworksPromptCachingMiddleware")
+    return middleware_cls(unsupported_model_behavior="ignore") if middleware_cls is not None else None
 
 
 def append_prompt_caching_middleware(middleware: list[AgentMiddleware[Any, Any, Any]]) -> None:

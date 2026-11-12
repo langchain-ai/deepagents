@@ -2,6 +2,17 @@
 
 # Deep Agents Changelog
 
+## [0.7.36](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.35...deepagents==0.7.36) (2026-11-12)
+
+### Features
+
+- Pass the agent's backend to middleware that requests it ([#7668](https://github.com/langchain-ai/deepagents/pull/7668)).
+- Record the subagent's checkpoint namespace on the `task` tool message ([#7580](https://github.com/langchain-ai/deepagents/pull/7580)).
+
+### Bug Fixes
+
+- Prevent `FilesystemBackend.download_files` from hanging on FIFO files ([#7663](https://github.com/langchain-ai/deepagents/pull/7663)).
+
 ## [0.7.35](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.34...deepagents==0.7.35) (2026-11-09)
 
 ### Bug Fixes

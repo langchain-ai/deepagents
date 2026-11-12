@@ -101,6 +101,21 @@ def _delegate_once(subagent_type: str = "worker") -> _ScriptedChatModel:
     return _ScriptedChatModel(responses=[task_call, AIMessage(content="Done.")])
 
 
+def _subagent_that_fails_once() -> Runnable:
+    """A subagent graph that raises on its first run and answers "SUBAGENT_RESPONSE" on the next."""
+    runs = 0
+
+    def work(_state: MessagesState) -> dict[str, Any]:
+        nonlocal runs
+        runs += 1
+        if runs == 1:
+            msg = "first run fails"
+            raise RuntimeError(msg)
+        return {"messages": [AIMessage(content="SUBAGENT_RESPONSE")]}
+
+    return StateGraph(MessagesState).add_node("work", work).add_edge(START, "work").add_edge("work", END).compile()
+
+
 def _messages_saved_under(checkpointer: InMemorySaver, thread_id: str, checkpoint_ns: str) -> list[Any] | None:
     """The message contents in the latest checkpoint under `checkpoint_ns`, or `None` if there is none."""
     saved = checkpointer.get_tuple({"configurable": {"thread_id": thread_id, "checkpoint_ns": checkpoint_ns}})
@@ -2181,23 +2196,12 @@ class TestSubAgents:
 
         LangGraph saves a second subagent run in the same step under `<namespace>|1`.
         """
-        runs = 0
-
-        def work(_state: MessagesState) -> dict[str, Any]:
-            nonlocal runs
-            runs += 1
-            if runs == 1:
-                msg = "first run fails"
-                raise RuntimeError(msg)
-            return {"messages": [AIMessage(content="SUBAGENT_RESPONSE")]}
-
-        flaky = StateGraph(MessagesState).add_node("work", work).add_edge(START, "work").add_edge("work", END).compile()
         checkpointer = InMemorySaver()
         agent = create_deep_agent(
             model=_delegate_once(),
             checkpointer=checkpointer,
             middleware=[ToolRetryMiddleware(max_retries=1, initial_delay=0, jitter=False)],
-            subagents=[CompiledSubAgent(name="worker", description="Fails once.", runnable=flaky)],
+            subagents=[CompiledSubAgent(name="worker", description="Fails once.", runnable=_subagent_that_fails_once())],
         )
         thread_id = "retried-subagent-checkpoint-namespace"
 
@@ -2207,6 +2211,49 @@ class TestSubAgents:
         assert tool_message.content == "SUBAGENT_RESPONSE"
         saved = _messages_saved_under(checkpointer, thread_id, tool_message.artifact["checkpoint_ns"])
         assert saved == ["Do task", "SUBAGENT_RESPONSE"]
+
+    def test_retried_task_tool_message_records_namespace_of_a_wrapped_subagent_graph(self) -> None:
+        """A subagent graph wrapped in a `RunnableBinding` still names the run that produced its result.
+
+        `.with_listeners()`, `.bind()` and `.with_types()` wrap a compiled graph in a
+        `RunnableBinding`. `task` must still stream the graph inside it: invoking the
+        binding would record the `task` call's own namespace, not `<namespace>|1`.
+        """
+        wrapped = _subagent_that_fails_once().with_listeners(on_start=lambda _run: None)
+        checkpointer = InMemorySaver()
+        agent = create_deep_agent(
+            model=_delegate_once(),
+            checkpointer=checkpointer,
+            middleware=[ToolRetryMiddleware(max_retries=1, initial_delay=0, jitter=False)],
+            subagents=[CompiledSubAgent(name="worker", description="Fails once.", runnable=wrapped)],
+        )
+        thread_id = "retried-wrapped-subagent-checkpoint-namespace"
+
+        result = agent.invoke({"messages": [HumanMessage(content="Do something")]}, {"configurable": {"thread_id": thread_id}})
+
+        tool_message = next(message for message in result["messages"] if isinstance(message, ToolMessage))
+        assert tool_message.content == "SUBAGENT_RESPONSE"
+        saved = _messages_saved_under(checkpointer, thread_id, tool_message.artifact["checkpoint_ns"])
+        assert saved == ["Do task", "SUBAGENT_RESPONSE"]
+
+    def test_subagent_wrapped_in_with_retry_still_retries(self) -> None:
+        """`RunnableRetry` retries `invoke` but not `stream`, so `task` must invoke it rather than stream the graph inside."""
+        agent = create_deep_agent(
+            model=_delegate_once(),
+            checkpointer=InMemorySaver(),
+            subagents=[
+                CompiledSubAgent(
+                    name="worker",
+                    description="Fails once.",
+                    runnable=_subagent_that_fails_once().with_retry(stop_after_attempt=2, wait_exponential_jitter=False),
+                )
+            ],
+        )
+
+        result = agent.invoke({"messages": [HumanMessage(content="Do something")]}, {"configurable": {"thread_id": "subagent-with-retry"}})
+
+        tool_message = next(message for message in result["messages"] if isinstance(message, ToolMessage))
+        assert tool_message.content == "SUBAGENT_RESPONSE"
 
     def test_task_tool_message_records_namespace_of_subagent_compiled_with_checkpointer_true(self) -> None:
         """A `checkpointer=True` subagent saves under the namespace without task ids, and that is recorded."""

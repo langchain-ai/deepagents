@@ -2237,10 +2237,15 @@ class TestSubAgents:
         assert saved == ["Do task", "SUBAGENT_RESPONSE"]
 
     def test_subagent_wrapped_in_with_retry_still_retries(self) -> None:
-        """`RunnableRetry` retries `invoke` but not `stream`, so `task` must invoke it rather than stream the graph inside."""
+        """`RunnableRetry` retries `invoke` but not `stream`, so `task` must invoke it rather than stream the graph inside.
+
+        Known limit: invoking it records the `task` call's own namespace, which
+        holds the failed run, while the run that finished saved under `<namespace>|1`.
+        """
+        checkpointer = InMemorySaver()
         agent = create_deep_agent(
             model=_delegate_once(),
-            checkpointer=InMemorySaver(),
+            checkpointer=checkpointer,
             subagents=[
                 CompiledSubAgent(
                     name="worker",
@@ -2250,10 +2255,14 @@ class TestSubAgents:
             ],
         )
 
-        result = agent.invoke({"messages": [HumanMessage(content="Do something")]}, {"configurable": {"thread_id": "subagent-with-retry"}})
+        thread_id = "subagent-with-retry"
+        result = agent.invoke({"messages": [HumanMessage(content="Do something")]}, {"configurable": {"thread_id": thread_id}})
 
         tool_message = next(message for message in result["messages"] if isinstance(message, ToolMessage))
         assert tool_message.content == "SUBAGENT_RESPONSE"
+        checkpoint_ns = tool_message.artifact["checkpoint_ns"]
+        assert _messages_saved_under(checkpointer, thread_id, checkpoint_ns) == ["Do task"]
+        assert _messages_saved_under(checkpointer, thread_id, f"{checkpoint_ns}|1") == ["Do task", "SUBAGENT_RESPONSE"]
 
     def test_task_tool_message_records_namespace_of_subagent_compiled_with_checkpointer_true(self) -> None:
         """A `checkpointer=True` subagent saves under the namespace without task ids, and that is recorded."""

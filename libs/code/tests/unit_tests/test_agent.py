@@ -2920,6 +2920,18 @@ class TestCreateCliAgentProjectContext:
 
         assert mock_shell.call_args.kwargs["env"]["GIT_TERMINAL_PROMPT"] == "0"
 
+    def test_local_shell_marks_commands_as_dcode(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Shell commands carry `DCODE=1` so the tools they run can detect dcode."""
+        monkeypatch.delenv("DCODE", raising=False)
+
+        mock_shell, _, _ = self._build_shell_agent(
+            monkeypatch, tmp_path, user_langchain_project=None
+        )
+
+        assert mock_shell.call_args.kwargs["env"]["DCODE"] == "1"
+
     @pytest.mark.parametrize("user_project", ["user-project", ""])
     def test_project_context_restores_user_shell_langchain_project(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, user_project: str

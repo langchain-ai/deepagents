@@ -4,10 +4,9 @@
 
 ## [0.7.37](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.36...deepagents==0.7.37) (2026-11-12)
 
-
 ### Bug Fixes
 
-* **sdk:** cache optional prompt caching provider lookups ([#7585](https://github.com/langchain-ai/deepagents/issues/7585)) ([4a51d63](https://github.com/langchain-ai/deepagents/commit/4a51d6370b9eb1085376897e905136866cf5cb94))
+- Cache optional prompt-caching provider lookups in the SDK ([#7585](https://github.com/langchain-ai/deepagents/pull/7585)).
 
 ## [0.7.36](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.35...deepagents==0.7.36) (2026-11-12)
 

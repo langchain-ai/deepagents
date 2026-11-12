@@ -316,15 +316,9 @@ class FilesystemBackend(BackendProtocol):
 
     @contextlib.contextmanager
     def _pin(self, key: str, *, create: bool, authorize: Callable[[str], str | None]) -> Iterator[_Pin]:
-        """Hold the parent directory of `key` open while an operation on `key` runs.
+        """Route I/O on `key` through its parent directory, held open and authorized by its real path.
 
-        Opens the deepest existing directory above `key`, passes `authorize`
-        the real path the kernel reports for it joined with the rest of `key`,
-        creates missing directories beneath it without following symlinks
-        (when `create`), then routes I/O on `key` in this context through the
-        open directory. A path component swapped after the directory is
-        opened cannot redirect the operation. Linux only; see
-        `_supports_pinning`.
+        A path component swapped after the check cannot redirect the operation. Linux only.
         """
         opened = self._open_parent(key, create=create, authorize=authorize)
         if isinstance(opened, _Pin):
